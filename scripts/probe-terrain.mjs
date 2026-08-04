@@ -150,6 +150,138 @@ console.log('\nhorizontal scale')
 console.log(`        peak-to-peak (prominence >=${PROMINENCE.toFixed(0)}m)   ${stat(gaps)}`)
 console.log(`        valley floor run                    ${stat(floors)}`)
 
+// --- summit apex angle -------------------------------------------------------
+// "It should be rare to have a pinnacle whose horizon angle is less than 30
+// degrees" is a shape complaint, and shape complaints have to become numbers or
+// the next tuning pass is guesswork again. So: find real 2D summits, then
+// measure the cone each one sits on.
+//
+// A summit here is a cell that peaksAlong() accepted on BOTH its row and its
+// column. That is a cheap stand-in for true 2D prominence (which needs a
+// flood-fill from every candidate) and it rejects the thing that matters --
+// shoulders on a slope, which pass in one axis and fail in the other.
+//
+// Apex angle is measured against the MEAN of a ring rather than its min, so a
+// summit perched on the end of a spur is judged by all its sides rather than
+// flattered by the one that leans against higher ground. Two radii because the
+// answer differs: a peak can be broad at 64 m and still carry a needle at 24.
+
+const rowPeak = new Uint8Array(N * N)
+const summits = []
+for (let t = 0; t < N; t++) {
+  const row = new Float32Array(N)
+  for (let i = 0; i < N; i++) row[i] = H[t * N + i]
+  for (const p of peaksAlong(row)) rowPeak[t * N + p] = 1
+}
+for (let t = 0; t < N; t++) {
+  const col = new Float32Array(N)
+  for (let i = 0; i < N; i++) col[i] = H[i * N + t]
+  for (const p of peaksAlong(col)) if (rowPeak[p * N + t]) summits.push([t, p])
+}
+
+const RADII = [24, 64]
+const apex = RADII.map(() => [])
+for (const [i, j] of summits) {
+  const x = -WORLD_HALF + i * STEP
+  const z = -WORLD_HALF + j * STEP
+  const top = H[j * N + i]
+  for (let r = 0; r < RADII.length; r++) {
+    let sum = 0
+    for (let a = 0; a < 16; a++) {
+      const th2 = (a / 16) * Math.PI * 2
+      sum += th.heightAt(x + Math.cos(th2) * RADII[r], z + Math.sin(th2) * RADII[r])
+    }
+    const drop = top - sum / 16
+    apex[r].push(drop <= 0 ? 180 : (2 * Math.atan(RADII[r] / drop) * 180) / Math.PI)
+  }
+}
+
+console.log('\nsummit apex angle')
+console.log(`        ${summits.length} summits (peak in both axes, prominence >=${PROMINENCE.toFixed(0)}m)`)
+for (let r = 0; r < RADII.length; r++) {
+  const s = Float32Array.from(apex[r]).sort()
+  if (s.length === 0) {
+    console.log(`        at ${RADII[r]}m: none`)
+    continue
+  }
+  const q = (p) => s[Math.floor(p * (s.length - 1))].toFixed(0)
+  const under = (deg) => ((100 * s.findIndex((v) => v >= deg)) / s.length).toFixed(1)
+  console.log(
+    `        at ${String(RADII[r]).padStart(2)}m  p5 ${q(0.05)}  p25 ${q(0.25)}  median ${q(0.5)}  p75 ${q(0.75)}deg` +
+      `   <30deg ${under(30)}%  <60deg ${under(60)}%`
+  )
+}
+
+// --- unbroken flat ground ----------------------------------------------------
+// "Many wide open unbroken plains 4+km across" needs to be a measurement too.
+// Flat = the 64 m window centred on this sample has less than FLAT_RELIEF of
+// relief in it; then 4-connected components of those samples, reported as the
+// diameter of the equal-area circle.
+//
+// The percentiles are AREA-WEIGHTED -- they answer "how big is the plain you
+// are standing in", not "how big is the average puddle of flatness". Unweighted,
+// ten thousand single-cell specks would drown out one 4 km basin, which is
+// exactly the thing being looked for.
+
+const FLAT_RELIEF = 6
+const flat = new Uint8Array(N * N)
+for (let j = 1; j < N - 1; j++) {
+  for (let i = 1; i < N - 1; i++) {
+    let lo = Infinity
+    let hi = -Infinity
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const v = H[(j + dj) * N + i + di]
+        if (v < lo) lo = v
+        if (v > hi) hi = v
+      }
+    }
+    if (hi - lo < FLAT_RELIEF) flat[j * N + i] = 1
+  }
+}
+
+const plains = []
+const stack = []
+for (let s = 0; s < N * N; s++) {
+  if (flat[s] !== 1) continue
+  let area = 0
+  stack.push(s)
+  flat[s] = 2
+  while (stack.length) {
+    const c = stack.pop()
+    area++
+    const ci = c % N
+    const cj = (c - ci) / N
+    if (ci > 0 && flat[c - 1] === 1) (flat[c - 1] = 2), stack.push(c - 1)
+    if (ci < N - 1 && flat[c + 1] === 1) (flat[c + 1] = 2), stack.push(c + 1)
+    if (cj > 0 && flat[c - N] === 1) (flat[c - N] = 2), stack.push(c - N)
+    if (cj < N - 1 && flat[c + N] === 1) (flat[c + N] = 2), stack.push(c + N)
+  }
+  plains.push(area * STEP * STEP)
+}
+
+console.log('\nunbroken flat ground')
+const flatFrac = (100 * plains.reduce((a, b) => a + b, 0)) / (N * N * STEP * STEP)
+if (plains.length === 0) {
+  console.log(`        none (no 64m window under ${FLAT_RELIEF}m of relief)`)
+} else {
+  plains.sort((a, b) => a - b)
+  const total = plains.reduce((a, b) => a + b, 0)
+  const dia = (m2) => (2 * Math.sqrt(m2 / Math.PI)).toFixed(0)
+  const wq = (p) => {
+    let acc = 0
+    for (const a of plains) {
+      acc += a
+      if (acc >= p * total) return dia(a)
+    }
+    return dia(plains[plains.length - 1])
+  }
+  console.log(`        ${(flatFrac).toFixed(1)}% of the map is flat (<${FLAT_RELIEF}m over 64m), in ${plains.length} regions`)
+  console.log(
+    `        plain diameter, area-weighted: p25 ${wq(0.25)}  median ${wq(0.5)}  p75 ${wq(0.75)}  largest ${dia(plains[plains.length - 1])} m`
+  )
+}
+
 console.log('\ntuning in effect')
 for (const [k, v] of Object.entries(TUNING)) console.log(`        ${k.padEnd(18)} ${v}`)
 console.log()

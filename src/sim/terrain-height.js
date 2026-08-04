@@ -30,62 +30,93 @@ export const WORLD_HALF = WORLD_SIZE / 2
 // range that walled you out still walls you out, just at a smaller size. If the
 // complaint is "I cannot climb anything", only the ratio can fix it.
 //
-// That is precisely the mistake in the previous pass. Chasing a Skyrim-sized
-// valley, every frequency doubled while mountainRelief was deliberately held at
-// 690 -- which doubled the steepness of every mountainside. The result measured
-// fine (864 m ridge spacing, the target) and looked wrong: 800 m sheer walls as
-// the default mountain rather than the exception, whole basins sealed off, and
-// nothing climbable. relief x freq is the number that matters, and it went from
-// 0.23 to 0.47.
+// That is precisely the mistake two passes ago. Chasing a Skyrim-sized valley,
+// every frequency doubled while mountainRelief was held at 690 -- which doubled
+// the steepness of every mountainside. The result measured fine (864 m ridge
+// spacing, the target) and looked wrong: 800 m sheer walls as the default
+// mountain, whole basins sealed off, nothing climbable. relief x freq is the
+// number that matters, and it went from 0.23 to 0.47. The correction overshot
+// the other way to 0.16, which measured as a world with nothing above 40 deg in
+// it anywhere. It now sits at 0.28.
 //
-// So this pass moves the two scales in opposite directions. Frequencies up ~1.4x
-// (ridge spacing 864 -> ~620 m), relief down ~4x (mountainRelief 690 -> 175).
-// relief x freq lands at 0.166, about a third of the last pass and below the
-// first one, which is what puts the typical flank back under the 38 deg walking
-// limit and leaves cliffs to the Worley breaks and the summit jag -- where they
-// were doing the work that got praised in the first place.
+// The rest of this pass was aimed at three complaints, each of which turned out
+// to have a measurement behind it once probe-terrain.mjs was taught to take it:
 //
-// Check any change here with `node scripts/probe-terrain.mjs`, which reports
-// ridge spacing, floor runs and the slope histogram directly. Do not tune these
-// by eye -- "too big" is a feeling, 864 m is a number.
+//   "wide open unbroken plains 4+km across" -> the macro mask reached a true 0,
+//   so basins had no backbone under them at all. mountainFloor fixed it: 12.8%
+//   of the map flat in plains up to 1206 m across, down to 2.0% and up to 284 m.
+//
+//   "tons of highly-pointy peaks" -> summit apex angle, which the probe now
+//   reports. Median 145 deg, nothing at all below 60. The pointiness was never
+//   in the peak heights; it was the ridged backbone, see step 3.
+//
+//   "valleys 50-300 m, peak to peak 200-500 m" -> p25 96 / median 160 / p75 320
+//   and p25 256 / median 384 / p75 544 respectively.
+//
+// Two scales, not one, and that is deliberate: valleyRelief runs at baseFreq
+// (3.5 km) and is LARGER than mountainRelief, which runs at ridgeFreq (345 m).
+// That inversion is the thing that makes the reference heightmap look like a
+// region and ours previously look like gravel -- lumps at one uniform scale read
+// as texture, lumps riding on a slow swell read as high country and low country.
+// It is also what gives the snow line something to mean.
+//
+// Check any change here with `node scripts/probe-terrain.mjs`, which reports all
+// of the above directly, and look at the result with
+// `node scripts/heightmap-png.mjs` next to reference/skyrim-height-map.jpg,
+// which is rendered at the same 6.29 m/px. Numbers catch scale errors; only the
+// image catches character errors -- the ridged backbone measured perfectly well
+// for two passes while looking like crumpled cloth. Do not tune these by eye
+// alone, and do not tune them by number alone either.
 export const TUNING = {
   seaLevel: 30,
-  valleyRelief: 34, // rolling amplitude on valley floors
-  mountainRelief: 175, // added on top where the mountain mask is high
+  valleyRelief: 130, // regional swell under everything else -- see baseFreq
+  mountainRelief: 95, // added on top where the mountain mask is high
 
-  warpAmp: 310, // domain warp strength, metres (§3 item 2)
-  warpFreq: 0.00098,
+  warpAmp: 60, // domain warp strength, metres (§3 item 2)
+  warpFreq: 0.0026, // amplitude is ~17% of the backbone wavelength, as before
 
-  macroFreq: 0.00023, // where mountains are at all
-  mountainMaskLo: 0.3, // widened from 0.34/0.86: a narrow mask leaves huge
-  mountainMaskHi: 0.8, // featureless lowlands between the ranges
+  macroFreq: 0.0005, // where mountains are at all -- ~2 km regions
+  mountainMaskLo: 0.2, // wide, because a narrow mask is what produced the
+  mountainMaskHi: 0.62, // 4 km featureless basins between ranges
+  mountainFloor: 0.2, // the mask never reaches 0 -- see heightAt step 2
 
-  ridgeFreq: 0.00095, // the mountain backbone (§3 item 1)
-  ridgeOctaves: 6,
+  ridgeFreq: 0.0029, // the mountain backbone -- ~345 m base wavelength
+  ridgeOctaves: 5, // stops at ~22 m; below that is the detail layer's job,
+  ridgeGain: 0.52, // and unlike this one that layer is variance-masked
+  ridgeLo: 0.2, // linear remap of the fbm; below Lo pools into valley floor
+  ridgeHi: 0.92,
   ridgeKnee: 0.88, // soft-knee point; see heightAt step 3
 
-  baseFreq: 0.0012, // valley-floor rolling
+  // Knife-edge aretes, kept as a rare accent rather than the default mountain.
+  areteFreq: 0.00042,
+  areteLo: 0.72,
+  areteHi: 0.9,
+  areteAmount: 0.55,
+  areteRound: 0.12,
 
-  jagFreq: 0.0036, // §3 item 1b -- summit jaggedness, see heightAt step 4b
-  jagAmp: 26,
-  jagMean: 0.3, // the ridged field's own mean, subtracted so this carves
-  jagLo: 0.5, // rather than lifts
+  baseFreq: 0.00028, // regional undulation, WELL below ridgeFreq -- this is the
+  // slow high-country/low-country gradient, not a landform
+
+  jagFreq: 0.0085, // §3 item 1b -- summit jaggedness, see heightAt step 4b
+  jagOctaves: 3,
+  jagAmp: 14,
+  jagLo: 0.5, // the backbone height at which crests start to roughen
   jagHi: 0.95,
 
-  detailFreq: 0.0072, // high-frequency surface break-up
-  detailMin: 0.9, // amplitude where the variance mask is 0 (smooth meadow)
-  detailMax: 8.0, // amplitude where it is 1 (shattered ground)
-  varianceFreq: 0.00036, // §3 item 4
+  detailFreq: 0.011, // high-frequency surface break-up
+  detailMin: 0.6, // amplitude where the variance mask is 0 (smooth meadow)
+  detailMax: 5.0, // amplitude where it is 1 (shattered ground)
+  varianceFreq: 0.0008, // §3 item 4
 
   // §3 item 3. Rare and shallow on purpose -- see the note on terrace() below.
-  terraceFreq: 0.00019, // low: a few large banded regions, not sprinkles
-  terraceStep: 8,
+  terraceFreq: 0.0005, // low: a few large banded regions, not sprinkles
+  terraceStep: 6,
   terraceLo: 0.62,
   terraceHi: 0.86,
-  terraceStrength: 0.32,
+  terraceStrength: 0.22,
 
-  cliffFreq: 0.0015, // §3 item 5 -- angular Worley breaks
-  cliffAmp: 24,
+  cliffFreq: 0.0042, // §3 item 5 -- angular Worley breaks
+  cliffAmp: 18,
 }
 
 // Quantise into bands with a sharp-but-not-vertical transition. Produces mesa
@@ -126,6 +157,8 @@ export class TerrainHeight {
     this.nTerrace = new Noise(seed + 71)
     this.nCliff = new Noise(seed + 81)
     this.nJag = new Noise(seed + 91)
+    this.nArete = new Noise(seed + 101)
+    this.nAreteMask = new Noise(seed + 111)
   }
 
   // Metres above sea level at world XZ.
@@ -141,17 +174,62 @@ export class TerrainHeight {
 
     // 2. Macro mask -- where mountains exist at all, so ranges cluster instead
     //    of peppering the map uniformly.
-    const macro = this.nMacro.fbm(wx * T.macroFreq, wz * T.macroFreq, 4) * 0.5 + 0.5
-    const mountain = smoothstep(T.mountainMaskLo, T.mountainMaskHi, macro)
-
-    // 3. Ridged multifractal backbone.
     //
+    //    The floor is what stops the low country being a plate. Measured, the
+    //    mask reaching a true 0 was the single source of the "wide open unbroken
+    //    plains" complaint: with no backbone at all, a basin's only relief was
+    //    the regional swell, which is deliberately a 3.5 km gradient and so lays
+    //    down nothing you could see from inside it. At 0.2 the same backbone
+    //    still runs under the low ground at a fifth of its height -- roughly a
+    //    5% roll over 345 m, which reads as soft valleys rather than as floor,
+    //    and costs nothing because it is the noise that was already sampled.
+    const macro = this.nMacro.fbm(wx * T.macroFreq, wz * T.macroFreq, 4) * 0.5 + 0.5
+    const range = smoothstep(T.mountainMaskLo, T.mountainMaskHi, macro)
+    const mountain = lerp(T.mountainFloor, 1, range)
+
+    // 3. Mountain backbone -- a pile of rounded lumps, NOT a ridge network.
+    //
+    // This started as a ridged multifractal, per §3 item 1, and that was the
+    // single biggest thing wrong with the terrain. Every `1 - abs(n)` family
+    // puts its maxima on the ZERO CONTOUR of the underlying noise, and a zero
+    // contour is a curvilinear network -- so the high ground came out as thin
+    // connected filaments and the map read as crumpled cloth rather than as a
+    // range. Rendered as a heightmap next to Skyrim's (reference/), the two were
+    // not the same kind of object: theirs is broad rounded massifs with valleys
+    // between them, ours was a dark plain with wire on it. Measured, the ridged
+    // field's median was 0.27 -- most of the world was floor by construction.
+    //
+    // Plain fbm has isolated point maxima, which is what a jumbled pile of peaks
+    // actually is. The remap below is a LINEAR one, not a smoothstep: pooling
+    // the bottom into valley floor is wanted, but an S-curve would also dome
+    // every summit, and distinct summits are the whole point.
+    const lump =
+      this.nRidge.fbm(wx * T.ridgeFreq, wz * T.ridgeFreq, T.ridgeOctaves, 2, T.ridgeGain) * 0.5 + 0.5
+    let ridge = (lump - T.ridgeLo) / (T.ridgeHi - T.ridgeLo)
+    if (ridge < 0) ridge = 0
+
+    // 3b. Aretes, as a rare accent. Knife edges are a real landform and worth
+    //     stumbling on; they are just not what every mountain looks like. This
+    //     mask is high on roughly a tenth of the map, and even there the blend
+    //     is partial, so an arete reads as "that range is different".
+    const areteMask =
+      smoothstep(
+        T.areteLo,
+        T.areteHi,
+        this.nAreteMask.fbm(wx * T.areteFreq, wz * T.areteFreq, 2) * 0.5 + 0.5
+      ) * T.areteAmount
+    if (areteMask > 0.001) {
+      const arete = this.nArete.ridged(
+        wx * T.ridgeFreq, wz * T.ridgeFreq, T.ridgeOctaves, 2, 0.5, T.areteRound
+      ) * 1.55
+      ridge = lerp(ridge, arete, areteMask)
+    }
+
     // The soft knee replaced a clamp01, and that was not cosmetic: measured over
     // the whole map, 4.2% of samples exceeded 1 and got truncated dead flat --
     // and that 4.2% is precisely the summits, so every peak came out as a mesa
     // at exactly mountainRelief. Compressing above the knee bounds the height
-    // (asymptote ~1.33) while letting the summit silhouette survive.
-    let ridge = this.nRidge.ridged(wx * T.ridgeFreq, wz * T.ridgeFreq, T.ridgeOctaves) * 1.55
+    // while letting the summit silhouette survive.
     if (ridge > T.ridgeKnee) {
       const over = ridge - T.ridgeKnee
       ridge = T.ridgeKnee + over / (1 + over * 2.2)
@@ -163,18 +241,25 @@ export class TerrainHeight {
     let h = T.seaLevel + base * T.valleyRelief
     h += mountain * ridge * T.mountainRelief
 
-    // 4b. Summit jaggedness. One ridged field sampled at one frequency always
-    //     domes at the top, because the octaves that would cut notches are the
-    //     small ones and their amplitude is gain^n by the time you get there.
-    //     So: a second, much higher-frequency ridged field (385 m down to ~48 m)
-    //     gated to the crests -- full strength where the backbone is already
-    //     high, zero on valley floors, which keeps the walkable ground smooth.
-    //     Its own mean is subtracted so the amplitude is spent on notches and
-    //     spurs rather than on quietly raising every peak by jagAmp/2.
+    // 4b. Summit jaggedness -- a second, much higher-frequency field (118 m down
+    //     to ~29 m) gated to the crests. Full strength where the backbone is
+    //     already high, zero on valley floors, which is what buys knobbly
+    //     summits without roughening the ground she has to walk across.
+    //
+    //     This was a ridged field, for the reason in the note at step 3: a
+    //     single fbm domes at the top, because the octaves that would cut
+    //     notches are the small ones and their amplitude is gain^n by the time
+    //     you reach them. But `ridged` was the wrong cure, and the rendered
+    //     heightmap showed why -- it laid a fine wire network over every summit,
+    //     which is the crumpled-cloth complaint again one scale down. fbm has
+    //     isolated maxima, so it carves knobs and notches instead of filaments;
+    //     the doming it would otherwise cause is handled by the gate, which is
+    //     what makes this layer different from simply adding another octave.
+    //     Signed, so it cuts as often as it lifts -- no mean to subtract.
     //     Hoisted out of the `if` because step 7 needs it too.
     const crest = smoothstep(T.jagLo, T.jagHi, ridge) * mountain
     if (crest > 0.001) {
-      h += (this.nJag.ridged(wx * T.jagFreq, wz * T.jagFreq, 4) - T.jagMean) * T.jagAmp * crest
+      h += this.nJag.fbm(wx * T.jagFreq, wz * T.jagFreq, T.jagOctaves, 2, 0.55) * T.jagAmp * crest
     }
 
     // 5. Variance-masked detail. This is what gives "different levels of
@@ -195,8 +280,13 @@ export class TerrainHeight {
     //    when the flanks came down, this went up (15 -> 24) and its transition
     //    tightened (0.22 -> 0.13), which spends the same relief over less ground
     //    and therefore reads as more of a cliff, not less.
+    //
+    //    Gated on `range` rather than `mountain` -- the UNfloored mask. Once the
+    //    floor went in (step 2) `mountain` is 0.2 everywhere, so gating on it put
+    //    a shallow Worley crack through every field in the low country, and the
+    //    rendered heightmap read as crazed pottery. Cliffs belong to real ranges.
     const cell = this.nCliff.worley(wx * T.cliffFreq, wz * T.cliffFreq)
-    h -= (1 - smoothstep(0.0, 0.13, cell)) * T.cliffAmp * mountain
+    h -= (1 - smoothstep(0.0, 0.13, cell)) * T.cliffAmp * range
 
     // 7. Terracing, gated by its own mask. Uniform terracing looks like a
     //    wedding cake, so most of the world must not terrace at all.

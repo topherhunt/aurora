@@ -140,7 +140,7 @@ Blend biome weights rather than hard-switching. Perturb the biome lookup with lo
 
 Plain multi-octave Perlin produces rolling blobby hills and nothing else. It is the single biggest reason procedural terrain looks procedural. Five techniques, layered:
 
-1. **Ridged multifractal** (`1 - abs(noise)`, accumulated across octaves) -- produces sharp ridgelines and knife-edge arêtes instead of rounded domes. This is the backbone of the mountain layer.
+1. **Ridged multifractal** (`1 - abs(noise)`, accumulated across octaves) -- produces sharp ridgelines and knife-edge arêtes instead of rounded domes. ~~This is the backbone of the mountain layer.~~ **It is not, and this was the largest single mistake in the terrain so far -- see "Ridged noise makes filaments; fbm makes piles" below.** It survives as a rare, masked accent on roughly a tenth of the map, because a knife edge is a real landform and worth stumbling on; it just is not what a mountain looks like.
 2. **Domain warping** -- perturb the noise input coordinates by a second noise field before sampling. Cheap, and it is what turns symmetric blobs into twisted, organic, geologically plausible shapes. Probably the highest ratio of visual payoff to code in the entire terrain system.
 3. **Stratification / terracing** -- quantize elevation into bands with a sharp smoothstep between them, producing mesa edges and cliff bands. Gate it behind a mask so only some regions terrace; uniform terracing looks like a wedding cake.
 4. **Variance masking** -- multiply detail-octave amplitude by a low-frequency mask so some regions are smooth (rolling alpine meadow) and others are chaotic (shattered broken ground). This is what gives "different levels of variation" rather than uniform noisiness everywhere.
@@ -173,23 +173,61 @@ The Skyrim pass above doubled every frequency and deliberately held `mountainRel
 
 **Horizontal scale and vertical scale are independent; steepness is their ratio.** Concretely, `relief × freq` is the number that governs how the world reads:
 
-| | first pass | Skyrim pass | current |
-|---|---|---|---|
-| `mountainRelief` | 690 m | 690 m | 175 m |
-| `ridgeFreq` | 0.00033 | 0.00068 | 0.00095 |
-| product | 0.23 | 0.47 | 0.166 |
-| max elevation | 893 m | 863 m | 252 m |
-| median peak-to-peak | 1600 m | 864 m | 640 m |
-| walkable at 38° | 55% | 53% | 91% |
-| reachable from spawn | 86% | 72% | 99% |
+| | first pass | Skyrim pass | correction | current |
+|---|---|---|---|---|
+| `mountainRelief` | 690 m | 690 m | 175 m | 95 m |
+| `ridgeFreq` | 0.00033 | 0.00068 | 0.00095 | 0.0029 |
+| product | 0.23 | 0.47 | 0.166 | 0.28 |
+| max elevation | 893 m | 863 m | 252 m | 225 m |
+| median peak-to-peak | 1600 m | 864 m | 640 m | 384 m |
+| walkable at 38° | 55% | 53% | 91% | 98% |
+| reachable from spawn | 86% | 72% | 99% | 99.9% |
 
 The corollary is worth stating because it is counter-intuitive and it came up as an explicit request: **scaling the whole world down by 4× cannot un-wall it.** A conformal shrink divides relief and multiplies frequency by the same factor, leaves the ratio untouched, and therefore leaves every slope angle in the world exactly where it was. Only the ratio moves slopes.
+
+And the ratio overshoots in both directions. 0.166 measured as a world with **nothing above 40° anywhere and only 1.7% above 30°** -- gentle to the point of having no cliffs at all, which is its own failure. 0.28 puts 6.7% of the map in the 30-40° band and 1.0% above 40°, which is "some cliffs steep, others gradual" rather than either walls or pillows.
+
+### Ridged noise makes filaments; fbm makes piles
+
+The complaint was that the mountains looked like *wrinkled-up cloth* -- all curving smooth-edged ridgelines, no jumbled pile of peaks -- and that the coarse LOD rings turned those ridgelines into a row of saw teeth. Both had one cause, and it was structural rather than parametric: **no amount of frequency or relief tuning could have fixed it.**
+
+Any `1 - abs(n)` construction puts its maxima on the **zero contour** of the underlying noise. A zero contour is a curvilinear network. So a ridged multifractal can only ever produce thin connected filaments -- rounding the crease just fattens the wire. Measured, the old backbone's distribution was `p10 0.081  median 0.268  p90 0.564`: most of the world was floor by construction, with bright threads on it. Plain fbm has **isolated point maxima**, which is what a jumbled pile of peaks actually is.
+
+The remap on top of the fbm is deliberately **linear**, not a smoothstep. Pooling the bottom into valley floor is wanted; an S-curve would also dome every summit, and distinct summits are the point.
+
+The saw-tooth artifact is a **sampling truth, not a tuning failure**: a crest whose curvature radius is smaller than the cell it is sampled on cannot be represented, so coarse rings land on alternating sides of the edge. The crest has to be wider than the sample spacing. Hence `ridged(..., round)`, where `sqrt(n² + r²)` equals `|n|` everywhere except within `r` of zero. No LOD change fixes it.
+
+The same error recurred one scale down and had to be found the same way: the crest-gated summit-jag layer was also `ridged`, and it laid a fine wire network over every summit. Now fbm, still crest-gated -- the gate is what makes it different from simply adding another octave.
+
+### Two scales, and the big one is the larger
+
+`valleyRelief` (130 m at `baseFreq`, a 3.5 km wavelength) is deliberately **bigger** than `mountainRelief` (95 m at a 345 m wavelength). That inversion is what separates a region from gravel: lumps at one uniform scale read as texture, lumps riding on a slow swell read as high country and low country. It is also the only thing that gives a snow line meaning -- the same-shaped peak is white in one basin and bare in the next.
+
+`reference/skyrim-height-map.jpg` is the target, and `scripts/heightmap-png.mjs` renders our field at the same **6.29 m/px** (the reference is 4 miles across at 1024 px) so the two can be put side by side. **Build this before tuning character.** Numbers catch scale errors; only the image catches character errors -- the ridged backbone measured perfectly well for two passes while looking like crumpled cloth.
+
+### "Wide open plains" was the macro mask reaching zero
+
+Basins 4 km across with nothing in them were not a frequency problem. The mountain mask reached a true 0, so the low country had **no backbone under it at all** and its only relief was the 3.5 km regional swell, which lays down nothing visible from inside it. A `mountainFloor` of 0.2 runs the same already-sampled backbone under the low ground at a fifth of its height -- about a 5% roll over 345 m, which reads as soft valleys rather than as floor, and costs nothing.
+
+| | before | after |
+|---|---|---|
+| map that is flat (<6 m over 64 m) | 12.8% | 2.0% |
+| largest unbroken plain | 1206 m | 284 m |
+| median plain diameter (area-weighted) | 529 m | 102 m |
+
+### Shape complaints have to become numbers
+
+"It should be rare to have a pinnacle whose horizon angle is less than 30°" is a shape complaint, and `probe-terrain.mjs` could not answer it. It now reports **summit apex angle**: find cells that pass the prominence test on *both* their row and their column (a cheap stand-in for 2D prominence that correctly rejects shoulders), then measure the cone against the **mean** of a ring at 24 m and 64 m -- mean rather than min, so a summit on the end of a spur is judged by all its sides. Current: median 145°, p5 114°, and **nothing at all below 60°**.
+
+It also reports unbroken flat ground as connected components, with **area-weighted** percentiles. Unweighted, ten thousand single-cell specks drown out one 4 km basin, which is exactly the thing being looked for.
 
 **Cliffs should come from the cliff layer, not the ridge backbone.** With cliffs sourced from `mountainRelief` they are a property of every mountain; sourced from the Worley break layer (`cliffFreq`, `cliffAmp`, gated by the mountain mask) they are a property of *some faces of some* mountains, which is both what real ranges look like and what leaves the rest climbable.
 
 **Terracing is emergent, and its band width is `step / tan(slope)`.** An 18 m terrace step on a 30° slope puts a 31 m bench on the ground and reads as geology; the same step on a 60° slope puts a 10 m ledge under an 18 m wall and reads as a staircase. The terrace code never changed between the Skyrim pass and the complaint about staircases -- the ground under it got twice as steep. Fixes were all three of: shallower slopes (above), a smaller `terraceStep`, a wider smoothstep riser, and gating the terrace mask by `1 - crest` so summits never terrace.
 
 **Instruments stop measuring when the world moves under them.** Two silently broke during this retune and both had to be fixed before the numbers meant anything again: `probe-terrain.mjs` used a fixed 120 m prominence threshold, which against 175 m peaks disqualified nearly every summit and reported peak spacing had *grown* to 3584 m (it is now `0.17 × mountainRelief`); and `check-sim.mjs` sampled slope at 1 m eps while flood-filling on a 16 m grid, so the same world measured 73% reachable or 99% depending on which number you read. Colour bands in `chunk-mesh.js` and elevation bands in `props/scatter.js` are the same class of hazard -- every one of them is a fraction of the world's relief, and a 470 m treeline against 252 m peaks is not a treeline, it is "trees everywhere."
+
+That hazard then bit again, in the *other* direction: a snow band of `smoothstep(140, 210)` written for 252 m peaks put snow **nowhere at all** once max elevation fell to 137 m. The rule that follows is worth writing down, because it has now cost two passes. **Every elevation-keyed constant outside `TUNING` has to be re-read off the probe whenever `TUNING` moves**, and there are four families of them: `shade()` in `chunk-mesh.js`, the four `minElev`/`maxElev`/`elevFade` sets in `props/scatter.js`, `findSpawn()` in `main.js`, and the spawn band in `check-sim.mjs` that must match it. None of them fail loudly; they all just quietly stop meaning anything.
 
 ### Two hard constraints
 
@@ -634,7 +672,9 @@ Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer 
 
    A second desktop look found that pass had overshot: doubling frequencies while holding relief had doubled every slope, walling the world off behind 800 m cliffs and turning the terrace layer into a staircase. Fixed by cutting `mountainRelief` 690 -> 175 and moving cliff duty from the ridge backbone to the Worley break layer (§3), which took walkable area from 53% to 91% and reachability from 72% to 99%. Same round: a macro colour layer so distance stops reading as flat green and grey (§7), `splitK` -> 1.1 on the strength of a measured plateau (§5), and the desktop survey tools -- Minecraft flight bindings, click-to-measure, one stats panel per platform (§12). Two measurement scripts had silently stopped measuring what they named and were fixed alongside; `check-terrain.mjs` had also lost its exit code, so the gate was printing failures and exiting 0.
 
-   **Still not run in a headset, and the second tuning round has not been run in a browser either.** 72 Hz, comfort, and the four §0 HUD numbers are all unverified, and that is what this step is actually gated on.
+   A third round replaced the terrain's backbone outright rather than tuning it. The mountains read as wrinkled cloth, and the cause was that a ridged multifractal can only make filaments -- so the backbone became plain fbm, ridged noise was demoted to a rare masked arête accent, and the summit-jag layer was caught making the same mistake one scale down (§3). Alongside it: a `mountainFloor` so the low country has a backbone under it and the 4 km plains disappear, `valleyRelief` raised above `mountainRelief` so the world has high and low country, cliffs gated to real ranges, and every elevation-keyed constant outside `TUNING` re-read off the probe (§3). The measurement side grew as much as the terrain did -- `scripts/heightmap-png.mjs` renders the field at the reference heightmap's exact 6.29 m/px, and `probe-terrain.mjs` gained summit apex angle and area-weighted plain size, because "too pointy" and "too open" cannot be tuned against until they are numbers.
+
+   **Still not run in a headset, and none of the last three tuning rounds has been run in a browser.** 72 Hz, comfort, and the four §0 HUD numbers are all unverified, and that is what this step is actually gated on.
 3. **Phase A global pass.** Elevation (§3), priority-flood, flow accumulation, biomes, village siting, connectivity validation. Pure math, no rendering, most reusable code in the project. Debug it with a 2D canvas map view before it ever renders in 3D.
 4. **Asset pipeline + `BatchedMesh` + texture array.** One species end-to-end. Requires installing Blender.
 5. **Placement, paths, LOD tiering.** The lushness pass. **Build LOD tiering in the same step as placement, never after it** -- §0 measured that undifferentiated full-detail props hit the triangle ceiling at ~4,000 instances, well under the density this world needs. A placement system without LOD cannot be evaluated, because it will be unplayable for reasons that have nothing to do with placement.

@@ -47,9 +47,11 @@ const KINDS = [
     tailDensity: 0.3, // ...falling to this at the cull radius
     falloffFrom: 200,
     max: 480,
-    minElev: 34,
-    maxElev: 160, // treeline. One of the strongest scale cues a mountain has:
-    elevFade: 45, // it tells you how high you are without a number.
+    minElev: 50,
+    maxElev: 152, // treeline. One of the strongest scale cues a mountain has:
+    elevFade: 40, // it tells you how high you are without a number. Kept just
+    // under the snow line (chunk-mesh.js shade(), 150 m) so the two read as one
+    // boundary rather than as trees standing in snow.
     maxSlopeDeg: 32,
     scale: [0.75, 1.3],
     sink: 0.15,
@@ -63,7 +65,7 @@ const KINDS = [
     tailDensity: 0.3,
     falloffFrom: 120,
     max: 480,
-    minElev: 32,
+    minElev: 48,
     maxElev: 2000, // boulders go all the way up; nothing to fade against
     elevFade: 0,
     maxSlopeDeg: 41, // they sit on ground steeper than she can walk
@@ -91,9 +93,9 @@ const KINDS = [
     tailDensity: 0.5,
     falloffFrom: 12,
     max: 800,
-    minElev: 33,
-    maxElev: 145,
-    elevFade: 40,
+    minElev: 49,
+    maxElev: 138,
+    elevFade: 38,
     maxSlopeDeg: 27,
     scale: [0.8, 1.4],
     sink: 0.03,
@@ -107,9 +109,9 @@ const KINDS = [
     tailDensity: 0.75,
     falloffFrom: 500,
     max: 28,
-    minElev: 36,
-    maxElev: 105,
-    elevFade: 30,
+    minElev: 52,
+    maxElev: 158,
+    elevFade: 40,
     maxSlopeDeg: 9, // people build on flat ground, and a box on a slope floats
     scale: [0.95, 1.12],
     sink: 0.35,

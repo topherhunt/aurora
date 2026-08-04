@@ -106,14 +106,28 @@ export class Noise {
   // into ridges, and multiplying each octave by the previous one concentrates
   // detail on the ridgelines, which is what produces aretes rather than domes.
   // Returns roughly 0..1.
-  ridged(x, y, octaves = 6, lacunarity = 2, gain = 0.5) {
+  //
+  // `round` replaces the `abs` crease with a smooth minimum of that radius:
+  // sqrt(n^2 + r^2) equals |n| everywhere except within r of zero, where it
+  // rounds off to r instead of coming to a point. Two reasons it exists.
+  // Aesthetically, a knife edge everywhere reads as wrinkled cloth rather than
+  // as mountains. Practically, a crest whose curvature radius is smaller than
+  // the cell it is sampled on CANNOT be represented -- the coarse LOD rings
+  // land on alternating sides of the edge and the ridgeline renders as a row of
+  // saw teeth. No amount of LOD tuning fixes that; the crest has to be wider
+  // than the sample spacing. Divided by (1 - round) so the field keeps its 0..1
+  // range and `round` changes shape without changing amplitude.
+  ridged(x, y, octaves = 6, lacunarity = 2, gain = 0.5, round = 0) {
+    const r2 = round * round
+    const scale = 1 / (1 - round)
     let sum = 0
     let amp = 0.5
     let freq = 1
     let prev = 1
     let norm = 0
     for (let o = 0; o < octaves; o++) {
-      let n = 1 - Math.abs(this.simplex2(x * freq, y * freq))
+      const s = this.simplex2(x * freq, y * freq)
+      let n = (1 - Math.sqrt(s * s + r2)) * scale
       n *= n
       sum += n * amp * prev
       norm += amp

@@ -36,12 +36,12 @@ const C_SNOW = [0.86, 0.88, 0.93]
 function shade(h, ny, out, o) {
   // ny is the normal's Y component: 1 = flat, 0 = vertical.
   const steep = smoothstep(0.86, 0.62, ny)
-  // Both bands are fractions of the world's actual elevation range, so they move
-  // whenever TUNING does. Against the current probe (p10 46, median 66, p90 133,
-  // max 252) this puts scrub over the upper hills and snow on roughly the top
-  // tenth of the map. Hard-coded 60/420 and 380/560 were written for peaks of
-  // 863 m and would put snow nowhere at all now.
-  const alt = clamp01((h - 55) / 130)
+  // Both bands track the world's actual elevation range, so they have to be
+  // re-read off `node scripts/probe-terrain.mjs` whenever TUNING moves -- a band
+  // written for the previous relief silently puts snow nowhere at all, which has
+  // now happened twice. Current probe: ground p10 92, median 124, p90 159,
+  // max 225; summits median 155, and 42% of them clear 160 m.
+  const alt = clamp01((h - 85) / 105)
 
   let r = lerp(C_GRASS[0], C_SCRUB[0], alt)
   let g = lerp(C_GRASS[1], C_SCRUB[1], alt)
@@ -50,7 +50,12 @@ function shade(h, ny, out, o) {
   // Snow accumulates with altitude but not on near-vertical faces -- it slides
   // off. Without that term the cliffs read as white walls and all the relief
   // we just generated becomes invisible.
-  const snow = clamp01(smoothstep(140, 210, h) * (1 - steep * 0.85))
+  //
+  // 150..205 puts a dusting on about half the summits and full cover on the top
+  // tenth, so the regional swell (terrain-height.js baseFreq) reads as high
+  // country and low country: the same-shaped peak is white in one and bare in
+  // the next, which is the thing that makes a snow line look like a snow line.
+  const snow = clamp01(smoothstep(150, 205, h) * (1 - steep * 0.85))
   r = lerp(r, C_ROCK[0], steep)
   g = lerp(g, C_ROCK[1], steep)
   b = lerp(b, C_ROCK[2], steep)

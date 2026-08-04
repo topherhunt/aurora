@@ -29,9 +29,14 @@ import * as THREE from 'three'
 // past ~95 m used to be flat green or flat grey, and the reason was not that the
 // palette was too simple -- it was that the only thing varying the palette had
 // already faded out. So the macro layer runs at every distance, deliberately
-// un-faded, on wavelengths of ~110 m and ~38 m. Those are far larger than a
+// un-faded, on wavelengths of ~27 m and ~10 m. Those are still larger than a
 // pixel from anywhere you can stand, so there is nothing for them to alias
 // into; the near grain needs its fade and this does not.
+//
+// Those wavelengths were 110 m and 38 m and got divided by four, because at that
+// size the two tint layers overlapped across most of any hillside you could see
+// and averaged into one muddy middle tone. The variation was there; it was just
+// too coarse to read as variation rather than as the base colour.
 //
 // Keeping them separate rather than adding two more octaves to one fbm is the
 // point: the near layer's job is a speed cue and it must die at range, the far
@@ -142,8 +147,8 @@ export function createTerrainMaterial() {
           // ---- Macro layer: no distance fade, on purpose. See the note above.
           {
             vec2 auroraM = vWorldPos.xz;
-            float auroraM1 = auroraNoise( auroraM * 0.0092 ); // ~110 m regions
-            float auroraM2 = auroraNoise( auroraM * 0.026 );  // ~38 m within them
+            float auroraM1 = auroraNoise( auroraM * 0.0368 ); // ~27 m regions
+            float auroraM2 = auroraNoise( auroraM * 0.104 );  // ~10 m within them
             float auroraMacro = auroraM1 * 0.65 + auroraM2 * 0.35;
 
             // Snow gets a fraction of the brightness swing and none of the tint.
@@ -154,7 +159,7 @@ export function createTerrainMaterial() {
             diffuseColor.rgb = mix( diffuseColor.rgb, uDry, smoothstep( 0.58, 0.94, auroraMacro ) * auroraGreenBase * uMacroTint );
             diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.42, 0.08, auroraMacro ) * auroraGreenBase * uMacroTint );
             // Rock stains on the finer octave alone: mineral banding follows the
-            // face, not the valley, so it should not track the 110 m regions.
+            // face, not the valley, so it should not track the coarser regions.
             diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.52, 0.95, auroraM2 ) * auroraRockBase * uMacroTint * 0.8 );
           }
 

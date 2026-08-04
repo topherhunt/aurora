@@ -81,8 +81,8 @@ function findSpawn() {
       const z = Math.sin(ang) * r
       const h = terrainHeight.heightAt(x, z)
       // Valley floor, not a hillside. Tied to the elevation distribution in
-      // TUNING (p10 46, median 66), so it moves when the terrain scale does.
-      if (h < 40 || h > 105) continue
+      // TUNING (p10 92, median 124), so it moves when the terrain scale does.
+      if (h < 60 || h > 140) continue
       if (terrainHeight.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       return { x, z, h }
     }
