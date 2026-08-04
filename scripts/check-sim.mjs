@@ -175,7 +175,7 @@ let spawn = null
       const x = Math.cos(ang) * r
       const z = Math.sin(ang) * r
       const h = th.heightAt(x, z)
-      if (h < 170 || h > 280) continue // must match findSpawn() in src/main.js
+      if (h < 85 || h > 140) continue // must match findSpawn() in src/main.js
       if (th.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       spawn = { x, z, h }
       break outer

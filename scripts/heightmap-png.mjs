@@ -21,7 +21,7 @@
 import { deflateSync } from 'node:zlib'
 import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { TerrainHeight, WORLD_SIZE } from '../src/sim/terrain-height.js'
+import { TerrainHeight, SHRINK, WORLD_SIZE } from '../src/sim/terrain-height.js'
 
 const SEED = Number(process.argv[2] ?? 20260804)
 const OUT = process.argv[3] ?? tmpdir()
@@ -125,12 +125,27 @@ function render(name, originX, originZ, span, size, { shade = false } = {}) {
   )
 }
 
-// Reference scale: 4 miles across at 1024 px.
-render('hm-ref-scale', -3200, -3200, 6437, 1024)
+// Reference scale. The reference is 6437 m at 1024 px and this crop used to be
+// the same, so the two could be laid side by side without rescaling either.
+// SHRINK broke that, and it is worth being precise about why rather than just
+// dividing: the point of the comparison is LANDFORM CHARACTER, so what has to
+// match is features per pixel, not metres per pixel. At SHRINK 2 this world
+// carries twice the landforms per kilometre, so the crop that reads like the
+// reference is half as wide. Rendered at the old 6437 m the whole frame came
+// out as an even carpet of same-sized lumps -- not because the terrain had lost
+// its structure, but because the instrument was under-resolving it. Fifth time
+// a measurement here has quietly stopped measuring what it names.
+render('hm-ref-scale', -3200, -3200, 6437 / SHRINK, 1024)
 // Whole world, for the regional distribution of ranges and basins.
 render('hm-world', -WORLD_SIZE / 2, -WORLD_SIZE / 2, WORLD_SIZE, 1024)
 // The same reference crop under a light, for shape rather than height.
-render('hm-ref-shaded', -3200, -3200, 6437, 1024, { shade: true })
+render('hm-ref-shaded', -3200, -3200, 6437 / SHRINK, 1024, { shade: true })
 // 1.5 km at 1.5 m/px: roughly what she can see from one spot, and the only
 // scale at which "rolling hills of clay" versus "jagged" is actually decided.
 render('hm-local-shaded', -800, -800, 1536, 1024, { shade: true })
+// 300 m at 0.3 m/px -- three and a half minutes of walking across the frame,
+// and the ONLY render at which a 10 m feature is big enough to have a shape.
+// Everything above smears the 10 m scale into texture: at 1.5 m/px a 10 m
+// hummock is seven pixels, which is a smudge whether it is a crisp scarp or a
+// clay mound. "Less rounded at the 10 m level" cannot be judged anywhere else.
+render('hm-human-shaded', -150, -150, 300, 1024, { shade: true })

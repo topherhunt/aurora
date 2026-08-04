@@ -47,7 +47,7 @@ export const LOCOMOTION = {
   // deliberate. Steering at 500 m/s near terrain is unusable, and the whole
   // value of the gesture is that it is over before you would want to.
   travelSpeed: 500,
-  travelClearance: 120, // above the HIGHEST ground on the path -- see travelTo()
+  travelClearance: 60, // above the HIGHEST ground on the path -- see travelTo()
   travelEase: 0.15, // fraction of the trip spent rising, and again descending
 }
 

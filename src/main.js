@@ -6,6 +6,7 @@ import { DEFAULT_SPLIT_K, MAX_DEPTH, MIN_SPLIT_K, MAX_SPLIT_K } from './terrain/
 import { Player, LOCOMOTION } from './player.js'
 import { Scatter } from './props/scatter.js'
 import { Vignette } from './vignette.js'
+import { Sky } from './sky.js'
 import { Measure } from './measure.js'
 import { Hud } from './hud.js'
 import { Input } from './input.js'
@@ -34,9 +35,17 @@ document.body.appendChild(renderer.domElement)
 document.body.appendChild(VRButton.createButton(renderer))
 
 const scene = new THREE.Scene()
+// Only ever seen if the sky dome fails to draw -- it is a full enclosing sphere.
+// Kept as the fog colour so that failure degrades to the old flat sky rather
+// than to black.
 scene.background = new THREE.Color(FOG_COLOR)
 // Atmospheric perspective does most of the work of selling scale, and it is
 // also what hides LOD popping at the chunk ring boundaries (§5).
+//
+// FOG_COLOR has to stay close to the sky dome's HORIZON colour, not its zenith:
+// distant terrain fades toward the fog, and it meets the sky at the horizon.
+// Fog matching the zenith would ring every ridgeline in a colour the sky behind
+// it does not have.
 scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00022)
 
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 20000)
@@ -54,6 +63,11 @@ const sun = new THREE.DirectionalLight(SUN_COLOR, 2.1)
 sun.position.set(-0.45, 0.62, 0.3).normalize()
 scene.add(sun)
 scene.add(new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85))
+
+// The dome takes the light's own direction, so the disc is guaranteed to sit
+// where the terrain's highlights say it is -- and takes FOG_COLOR as its
+// horizon, so distant ridges dissolve into the sky with no seam at all.
+const sky = new Sky(scene, sun.position, { horizon: FOG_COLOR })
 
 // --- world ------------------------------------------------------------------
 
@@ -82,7 +96,7 @@ function findSpawn() {
       const h = terrainHeight.heightAt(x, z)
       // Valley floor, not a hillside. Tied to the elevation distribution in
       // TUNING (p10 92, median 124), so it moves when the terrain scale does.
-      if (h < 170 || h > 280) continue // a green valley, below the snow ramp (295 m)
+      if (h < 85 || h > 140) continue // a green valley, below the snow ramp (148 m)
       if (terrainHeight.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       return { x, z, h }
     }
@@ -326,6 +340,8 @@ function tick() {
 
   hud.setLines(hudLines())
   hud.paint(now)
+  // headTmp is her head position, already computed above for terrain streaming.
+  sky.update(headTmp)
   renderer.render(scene, camera)
 }
 

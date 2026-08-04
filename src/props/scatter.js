@@ -42,24 +42,31 @@ const KINDS = [
     name: 'tree',
     salt: 0x9e3779b9,
     spacing: 30, // metres between candidate cells
-    radius: 820,
+    // Was 820. Rebuild cost goes as (radius / spacing)^2 and SCARP's curvature
+    // form needs five field evaluations per surviving candidate where the flat
+    // world needed one, which put the worst single update() at 4.1 ms against a
+    // 4 ms gate. Spacing is not the lever -- that is density, which was doubled
+    // deliberately last round -- so reach pays. 750 m still sits at 97% fog
+    // transmittance, so this is not hidden by haze and is a real if small loss
+    // of the outermost ring of trees; it buys back about 16% of the rebuild.
+    radius: 750,
     density: 0.62, // fraction of cells that hold a candidate at all
     tailDensity: 0.3, // ...falling to this at the cull radius
     falloffFrom: 200,
     max: 960,
-    minElev: 50,
-    maxElev: 430, // treeline. One of the strongest scale cues a mountain has:
-    elevFade: 90, // it tells you how high you are without a number.
+    minElev: 25,
+    maxElev: 215, // treeline. One of the strongest scale cues a mountain has:
+    elevFade: 45, // it tells you how high you are without a number.
     //
     // This used to sit at 152, deliberately just UNDER the snow line so the two
     // read as one boundary. That was wrong, and it is worth saying why: a real
     // treeline is well above the snow line, and conifers standing in snow are
     // the single most recognisable thing a snowy mountain has. Tucking the
     // trees below the snow produced bare white slopes with a hard green edge --
-    // two boundaries pretending to be one. Now the thinning band (250..340)
-    // straddles the snow ramp (295..390) so there is a wide belt of snowy
+    // two boundaries pretending to be one. Now the thinning band (170..215)
+    // straddles the snow ramp (148..195) so there is a wide belt of snowy
     // forest, and the trees give out somewhere up in the white rather than at
-    // the moment it turns white.
+    // the moment it turns white. All four numbers are post-SHRINK.
     maxSlopeDeg: 32,
     scale: [0.75, 1.3],
     sink: 0.15,
@@ -73,8 +80,8 @@ const KINDS = [
     tailDensity: 0.3,
     falloffFrom: 120,
     max: 960,
-    minElev: 48,
-    maxElev: 2000, // boulders go all the way up; nothing to fade against
+    minElev: 24,
+    maxElev: 1000, // boulders go all the way up; nothing to fade against
     elevFade: 0,
     maxSlopeDeg: 41, // they sit on ground steeper than she can walk
     scale: [0.55, 2.1],
@@ -111,9 +118,22 @@ const KINDS = [
     tailDensity: 0.5,
     falloffFrom: 12,
     max: 1600,
-    minElev: 49,
-    maxElev: 320,
-    elevFade: 60,
+    minElev: 25,
+    // Grass used to give out at 160 with the thinning starting at 130, and that
+    // was a band inherited from a taller world without ever being re-read
+    // against this one. The world's MEDIAN elevation is 135 m: the ramp began
+    // at the middle of the map and grass was gone by a little above it. Two of
+    // the four sample sites sit at 165 and 168 m -- ordinary mid-slope ground,
+    // nothing alpine about it -- and rejected 661 and 726 of 917 candidate
+    // cells on elevation alone, before slope was even asked. That is the whole
+    // of the grass disappearing, and it was not the terrain's fault.
+    //
+    // 160..200 puts the thinning where the trees' does (170..215) and where the
+    // snow ramp does (148..195), which is the honest place for it: grass gives
+    // out because it is under snow, not at some independent altitude. Below 160
+    // -- which is most of the walkable world -- it is now at full density.
+    maxElev: 200,
+    elevFade: 40,
     maxSlopeDeg: 27,
     scale: [0.8, 1.4],
     sink: 0.03,
@@ -127,9 +147,9 @@ const KINDS = [
     tailDensity: 0.75,
     falloffFrom: 500,
     max: 56,
-    minElev: 52,
-    maxElev: 330,
-    elevFade: 70,
+    minElev: 26,
+    maxElev: 165,
+    elevFade: 35,
     maxSlopeDeg: 9, // people build on flat ground, and a box on a slope floats
     scale: [0.95, 1.12],
     sink: 0.35,
@@ -272,7 +292,7 @@ export class Scatter {
   _rebuild(s, cx, cz) {
     const k = s.cfg
     const reach = Math.ceil(k.radius / k.spacing)
-    const maxSlope = (k.maxSlopeDeg * Math.PI) / 180
+    const maxSlopeTan = Math.tan((k.maxSlopeDeg * Math.PI) / 180)
     const r2 = k.radius * k.radius
     const fadeFrom = k.radius * 0.82 // scale fade band, so the edge dissolves
     const scaleSpan = k.scale[1] - k.scale[0]
@@ -306,7 +326,10 @@ export class Scatter {
         const near = 1 - smoothstep(k.falloffFrom, k.radius, d)
         if (rand() > k.tailDensity + (1 - k.tailDensity) * near) continue
 
-        const h = this.th.heightAt(x, z)
+        // Height and slope from one shared stencil -- see heightAndSlopeAt().
+        // Asked separately these are 15 field evaluations per candidate and a
+        // 9.5 ms rebuild; shared they are 6 and it fits in a frame again.
+        const { h, tan: slopeTan } = this.th.heightAndSlopeAt(x, z)
         if (h < k.minElev) continue
         if (k.elevFade > 0 && h > k.maxElev - k.elevFade) {
           // Thin out through the band instead of cutting a hard line.
@@ -315,7 +338,7 @@ export class Scatter {
         } else if (h > k.maxElev) {
           continue
         }
-        if (this.th.slopeAt(x, z, 1.5) > maxSlope) continue
+        if (slopeTan > maxSlopeTan) continue
 
         if (n >= k.max) {
           capped = true

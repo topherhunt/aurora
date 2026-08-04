@@ -16,8 +16,41 @@ import { clamp01, lerp, smoothstep } from './mathx.js'
 export const WORLD_SIZE = 16384 // metres, centred on the origin (§2)
 export const WORLD_HALF = WORLD_SIZE / 2
 
+// Wholesale conformal scale-down. heightAt evaluates the field at SHRINK times
+// the requested coordinate and divides the answer by SHRINK, which is exactly
+// equivalent to multiplying every *Freq in TUNING by SHRINK and dividing every
+// relief/amp by it -- 11 frequencies and 12 amplitudes, in one number.
+//
+// It lives here rather than baked into TUNING for two reasons. It is provably
+// CONFORMAL: horizontal and vertical cannot drift apart, so every slope angle
+// in the world is bit-identical to what it was and none of the walkability work
+// is at risk. And it is one edit to undo -- set it to 1 and the world is exactly
+// the one described by the numbers below.
+//
+// Why 2. The proportions were right and the size was not: at SHRINK 1 a valley
+// floor was routinely a kilometre across, which is eleven minutes of walking at
+// 1.45 m/s to cross a single flat thing. Halving the world does not change what
+// anything LOOKS like -- same silhouettes, same angles, same character -- it
+// changes how long it takes to reach, and it doubles how many distinct places
+// exist inside the same 16 km. The price is honest and worth stating: the
+// highest summit goes from 664 m to 332 m, so the 600 m peaks asked for one
+// round ago are gone. Height above the valley floor you are standing in is what
+// reads as scale in a headset, and that ratio is untouched.
+//
+// Anything OUTSIDE this file that compares against an elevation in metres --
+// snow lines, treelines, spawn bands, colour bands -- has to be divided by the
+// same number, and there is no way to make the compiler check that. The list is
+// in DESIGN.md §3.
+export const SHRINK = 2
+
 // Tunables. These are the knobs for "what does this world look like", and they
 // are the ones to reach for during desktop iteration (§17).
+//
+// EVERY NUMBER AND EVERY WAVELENGTH IN THIS BLOCK IS PRE-SHRINK. They describe
+// the field as heightAt evaluates it internally; what reaches the world is all
+// of it divided by SHRINK. At SHRINK 2, read every metre here as half a metre
+// and every quoted wavelength as half its length. Ratios -- and therefore every
+// slope angle -- are unaffected, which is the whole point of doing it there.
 //
 // THE ONE THING TO UNDERSTAND BEFORE TOUCHING THESE. There are two independent
 // scales here and they are easy to conflate:
@@ -133,14 +166,29 @@ export const TUNING = {
 
   // TIER 3. detailOctaves is the "rolling hills of clay" knob: 4 octaves off a
   // 91 m base stops at 11 m, and 11 m was the finest thing in the entire world.
-  // Seven reaches 1.4 m, which is under the 1.0 m cell the finest LOD ring
-  // actually renders, so nothing is left on the table.
+  //
+  // Six is the right count POST-SHRINK, and it is set by the renderer, not by
+  // taste. The base wavelength reaching the world is 91/SHRINK = 45 m, and six
+  // octaves takes that to 1.4 m -- just above the 1.00 m cell the finest LOD
+  // ring actually draws. A seventh would land at 0.7 m, which no ring can
+  // represent: it would not be finer detail, it would be aliasing, and it would
+  // feed the slope limiter noise the mesh does not have. When SHRINK moves,
+  // this moves with it.
   detailFreq: 0.011,
-  detailOctaves: 7,
+  detailOctaves: 6,
   detailGain: 0.5, // exactly 0.5 -- see the note on gain and fur below
-  detailMin: 2.2, // amplitude where the variance mask is 0 (smooth meadow)
+  //
+  // The amplitudes below are the "molded clay in the valleys" fix, and the
+  // problem was arithmetic rather than character. Valley floors were being
+  // multiplied down TWICE -- once by the mountain mask term at step 5 and again
+  // by `rough` -- which took a nominal 2.2 m of detail to about 0.44 m spread
+  // over a 91 m base wavelength. That is not subtle relief, it is nothing: a
+  // 0.4% grade, which shades as a perfectly smooth surface however many octaves
+  // are stacked on it. Both multipliers now have a much higher floor, and
+  // detailMin itself is up, so low ground carries 2.5x the relief it did.
+  detailMin: 3.4, // amplitude where the variance mask is 0 (smooth meadow)
   detailMax: 7.0, // amplitude where it is 1 (shattered ground)
-  detailRock: 0.55, // how much of detailMax is withheld from gentle low ground
+  detailRock: 0.28, // how much of detailMax is withheld from gentle low ground
   varianceFreq: 0.0008, // §3 item 4
 
   // §3 item 3. Rare and shallow on purpose -- see the note on terrace() below.
@@ -148,7 +196,17 @@ export const TUNING = {
   terraceStep: 6,
   terraceLo: 0.62,
   terraceHi: 0.86,
-  terraceStrength: 0.22,
+  // 0.22 -> 0.10 because SCARP amplifies terrace risers into corduroy, and that
+  // is the staircase failure mode arriving down a third path. A terrace riser is
+  // about 1.24x the local slope at strength 0.22, so on any ground already in
+  // the 33-41 deg range the risers cross the scarp knee while the treads do not,
+  // and each band gets its own hard step: regular parallel ridges, unmistakable
+  // and unmistakably artificial. Ablating terraceStrength to 0 removed them
+  // exactly, which is how the cause was pinned. At 0.10 the riser is 1.11x, the
+  // vulnerable band narrows to 37-41 deg, and the corduroy is gone from the
+  // human-scale render while the benching survives. If SCARP is ever disabled,
+  // this can go back to 0.22.
+  terraceStrength: 0.1,
 
   cliffFreq: 0.0042, // §3 item 5 -- angular Worley breaks
   cliffAmp: 18,
@@ -209,6 +267,58 @@ function softCeil(v, k) {
   return 1 - softFloor(1 - v, k)
 }
 
+// ===== EXPERIMENT: SCARP =====================================================
+// Slope-keyed cliff shaping. Set `enabled: false` to turn the whole thing off
+// at zero cost, or see TerrainHeight._scarpDrop() for how to remove it outright.
+//
+// The goal is a BIMODAL slope distribution. Left alone, fbm produces a smooth
+// unimodal spread of angles, so the boundary between ground she can climb and
+// ground she cannot falls in the middle of the most common slope in the world
+// and is invisible until she walks into it. Real mountains are not like that:
+// loose material sits at its angle of repose, roughly 34-38 deg, and anything
+// steeper than that has shed its debris and is bare rock at 55 deg and up. The
+// gap between the two is a real thing, and this puts it back.
+//
+// These are POST-shrink metres and real slope angles -- unlike TUNING, this
+// block is in world units, because it is keyed to LOCOMOTION.maxSlopeDeg.
+// The first version of this subtracted a CONSTANT from steep ground, and that
+// was wrong in a way only walking around in it revealed: a uniform drop takes
+// the whole face down together, so where the face meets the flat ground at its
+// foot it arrives several metres BELOW it. Every ledge sat in its own pit. The
+// operator was moving the cliff down rather than making it steeper.
+//
+// What it does instead now is move earth rather than remove it: cut where the
+// ground is hollow, pile it on where the ground is proud, and do both only on
+// slopes already past the walkable threshold. That is an unsharp mask -- the
+// height minus a blur of itself -- gated by slope. It sharpens the S-curve of a
+// hillside into a step: the rounded shoulder at the top becomes a lip, the
+// rounded hollow at the foot becomes a crisp break, and the face between them
+// gets steeper because the two ends moved apart while the middle stayed put.
+// Nothing is displaced on flat ground, and nothing is displaced anywhere the
+// surface is already planar, so a slope arrives at its foot at the same height
+// it always did.
+export const SCARP = {
+  enabled: true,
+  // eps sets the scale the operator sees, and it matters more than the gain.
+  // At 2 m the curvature it reads is the terrain's GRAIN, not the shape of a
+  // hillside, so it sharpened noise and barely touched the slope distribution.
+  // The S-curve worth cutting -- rounded shoulder, straight face, rounded foot
+  // -- is a 10 m feature, so the half-width has to be about 5.
+  eps: 6.0, // metres over which slope and curvature are measured
+  loTan: Math.tan((41 * Math.PI) / 180), // knee starts above maxSlopeDeg (38)
+  hiTan: Math.tan((52 * Math.PI) / 180), // ...and is fully applied by here
+  // Dimensionless: 0 is a no-op, 1 doubles the local convexity. Read this
+  // together with eps -- they are not independent. In a field with power at
+  // every scale the bulge measured at half-width e grows roughly in proportion
+  // to e, so a gain tuned at eps 2 is off by a factor of three at eps 6. The
+  // first pass at this had eps 5 with a gain of 5, which pinned the cap at
+  // BOTH ends along an entire cliff face: every sample either +6 or -6, which
+  // is a square wave, not a scarp.
+  sharpen: 1.3,
+  cap: 6, // metres, either direction -- a bound on how far earth can move
+}
+// ===== END EXPERIMENT ========================================================
+
 export class TerrainHeight {
   constructor(seed = 1337) {
     this.seed = seed
@@ -227,8 +337,73 @@ export class TerrainHeight {
     this.nAreteMask = new Noise(seed + 111)
   }
 
-  // Metres above sea level at world XZ.
+  // Metres above sea level at world XZ. Everything outside this class calls
+  // this one; _field below is the raw pre-SHRINK field and is private.
   heightAt(x, z) {
+    const h = this._field(x * SHRINK, z * SHRINK) / SHRINK
+    if (!SCARP.enabled) return h
+    return h + this._scarpAt(x, z, h)
+  }
+
+  // ===== EXPERIMENT: SCARP ===================================================
+  // Delete this method, the SCARP block above, and the two lines in heightAt
+  // that reference them. Nothing else in the project depends on it.
+  //
+  // What it does: on ground that is ALREADY too steep to walk on, it pushes the
+  // surface further away from its own local average -- up where the ground is
+  // convex, down where it is concave -- and does nothing at all elsewhere.
+  //
+  // The knee starts ABOVE LOCOMOTION.maxSlopeDeg on purpose. Ground she can walk
+  // on is bit-identical to what it was; only the 38-and-up band gets pushed off
+  // the fence, which is the intent -- slopes should end up clearly on one side
+  // of "can I climb this" or the other rather than piled at the threshold.
+  //
+  // Why curvature rather than a flat drop: a constant offset has no gradient, so
+  // it cannot steepen anything. All it can do is move the whole face down, and
+  // the face has to rejoin the untouched ground somewhere -- which it did, in a
+  // trench around the bottom of every ledge. The curvature term has the opposite
+  // property. It is largest exactly at the two rounded ends of a hillside and
+  // vanishes on the straight part between them, so it eats the roundedness and
+  // leaves the endpoints where they were.
+  //
+  // The costs, both real:
+  //   - Five field evaluations per heightAt instead of one, which is the entire
+  //     reason for the `enabled` flag.
+  //   - Slope and curvature are read on the UNSCARPED field. That is deliberate
+  //     -- it makes the operator a single pass that cannot feed back on itself
+  //     and run away -- but it does mean the result is not itself sharpened, so
+  //     `sharpen` above 3 or so starts to produce overshoot rather than cliffs.
+  _scarpAt(x, z, h) {
+    const e = SCARP.eps
+    const xm = this._field((x - e) * SHRINK, z * SHRINK) / SHRINK
+    const xp = this._field((x + e) * SHRINK, z * SHRINK) / SHRINK
+    const zm = this._field(x * SHRINK, (z - e) * SHRINK) / SHRINK
+    const zp = this._field(x * SHRINK, (z + e) * SHRINK) / SHRINK
+    return this._scarpFrom(h, xm, xp, zm, zp)
+  }
+
+  // The displacement itself, given a point and its four neighbours already
+  // sampled. Split out so heightAndSlopeAt() can reuse the same five samples.
+  // Returns metres to ADD: positive on a lip, negative in a hollow.
+  _scarpFrom(h, xm, xp, zm, zp) {
+    const d = 2 * SCARP.eps
+    const s = Math.hypot((xp - xm) / d, (zp - zm) / d) // tan of the slope
+    if (s <= SCARP.loTan) return 0
+    const t = Math.min(1, (s - SCARP.loTan) / (SCARP.hiTan - SCARP.loTan))
+    const knee = t * t * (3 - 2 * t)
+    // Height minus the mean of its neighbours: the discrete Laplacian, up to a
+    // constant. Positive where the surface bulges out of its own neighbourhood
+    // (the shoulder at the top of a slope), negative where it dishes into it
+    // (the hollow at the foot), and zero wherever the surface is locally flat
+    // OR locally planar -- which is most of a cliff face, and is why the face
+    // itself stays where it is while its two ends pull apart.
+    const bulge = h - (xm + xp + zm + zp) * 0.25
+    return Math.max(-SCARP.cap, Math.min(SCARP.cap, SCARP.sharpen * knee * bulge))
+  }
+  // ===== END EXPERIMENT ======================================================
+
+  // The raw field, in pre-SHRINK units. Read TUNING's comments against this.
+  _field(x, z) {
     const T = TUNING
 
     // 1. Domain warp. Cheapest large visual win available -- it is what turns
@@ -390,8 +565,15 @@ export class TerrainHeight {
     const variance = clamp01(
       this.nVariance.fbm(wx * T.varianceFreq, wz * T.varianceFreq, 2) * 0.5 + 0.5
     )
+    //
+    //    The two multipliers were the entire "molded clay" bug and they were
+    //    compounding: `mountain` floors at 0.2 in the low country, so the old
+    //    `0.3 + 0.7 * mountain` handed valleys 0.44 of the amplitude, and
+    //    `rough` then took another 0.55 off the same ground -- 20% in total,
+    //    which is why the flats looked poured rather than eroded. The guard is
+    //    still here and still needed; it just no longer stacks with itself.
     const rough = lerp(1 - T.detailRock, 1, clamp01(massif * 0.7 + crest))
-    const detailAmp = lerp(T.detailMin, T.detailMax, variance) * (0.3 + 0.7 * mountain) * rough
+    const detailAmp = lerp(T.detailMin, T.detailMax, variance) * (0.62 + 0.38 * mountain) * rough
     h +=
       this.nDetail.fbm(x * T.detailFreq, z * T.detailFreq, T.detailOctaves, 2, T.detailGain) *
       detailAmp
@@ -456,5 +638,44 @@ export class TerrainHeight {
   slopeAt(x, z, eps = 0.75) {
     const n = this.normalAt(x, z, eps)
     return Math.acos(Math.min(1, n.y))
+  }
+
+  // Exact height plus the slope a placement filter needs, from three samples.
+  //
+  // This exists for prop scatter, which asks both questions about the same point
+  // tens of thousands of times per rebuild and is the one caller where SCARP's
+  // cost actually bit: heightAt (3 field evaluations) plus slopeAt (4 heightAt =
+  // 12) took a worst-case tree rebuild from 3.2 ms to 8.5 ms, which is more than
+  // half a 72 Hz frame on a desktop, for a headset target.
+  //
+  // The five samples are the ones the scarp already needs -- a point and its
+  // four neighbours -- and they answer both questions at once, because the
+  // scarp is a function of exactly that central-difference slope. So `tan` is
+  // the PRE-scarp slope, and the useful consequence is a guarantee rather than
+  // an approximation:
+  //
+  //   the scarp is identically zero wherever that slope is at or below
+  //   SCARP.loTan (41 deg), and every prop kind's own slope cap is at or below
+  //   41 deg -- so on any ground a prop can be placed on at all, `h` is exactly
+  //   heightAt. Not close to it. Equal to it.
+  //
+  // That is what makes this safe: props never float, which is the failure that
+  // would matter. What the shortcut does cost is the filter's own honesty at
+  // the margin -- a tree may be admitted onto ground whose POST-scarp slope
+  // exceeds its cap, which happens only within a couple of metres of a scarp
+  // lip, and puts an occasional conifer right on the edge of a drop. Standing
+  // on ground that is flat where it stands, at the top of something steep.
+  //
+  // Five evaluations, which is what this path cost before SCARP existed anyway.
+  heightAndSlopeAt(x, z) {
+    const e = SCARP.eps
+    const h = this._field(x * SHRINK, z * SHRINK) / SHRINK
+    const xm = this._field((x - e) * SHRINK, z * SHRINK) / SHRINK
+    const xp = this._field((x + e) * SHRINK, z * SHRINK) / SHRINK
+    const zm = this._field(x * SHRINK, (z - e) * SHRINK) / SHRINK
+    const zp = this._field(x * SHRINK, (z + e) * SHRINK) / SHRINK
+    const d = 2 * e
+    const tan = Math.hypot((xp - xm) / d, (zp - zm) / d)
+    return { h: SCARP.enabled ? h + this._scarpFrom(h, xm, xp, zm, zp) : h, tan }
   }
 }

@@ -8,10 +8,12 @@
 //
 //   node scripts/probe-terrain.mjs [seed]
 
-import { TerrainHeight, TUNING, WORLD_SIZE, WORLD_HALF } from '../src/sim/terrain-height.js'
+import { TerrainHeight, TUNING, SHRINK, WORLD_SIZE, WORLD_HALF } from '../src/sim/terrain-height.js'
 
 const SEED = Number(process.argv[2] ?? 20260804)
-const STEP = 32 // m between samples
+const STEP = 16 // m between samples -- halved with SHRINK, because a 32 m probe
+// against half-size landforms resolves half as many samples per peak, and peak
+// spacing is exactly what this script exists to report.
 const N = Math.floor(WORLD_SIZE / STEP) + 1
 const MAX_SLOPE = (38 * Math.PI) / 180
 
@@ -35,7 +37,10 @@ const MAX_SLOPE = (38 * Math.PI) / 180
 // to mountainRelief they silently rescaled the moment the massif tier took over
 // most of the elevation -- the third time an instrument here has drifted out
 // from under the thing it names.
-const TOTAL_RELIEF = TUNING.massifRelief + TUNING.mountainRelief
+// Divided by SHRINK: TUNING is in pre-shrink units and H below is not. Getting
+// this wrong is the same drift as above wearing a different hat -- the numbers
+// would still be self-consistent and would still describe the wrong world.
+const TOTAL_RELIEF = (TUNING.massifRelief + TUNING.mountainRelief) / SHRINK
 const PROMINENCE = 0.06 * TOTAL_RELIEF
 const PROMINENCE_MAJOR = 0.25 * TOTAL_RELIEF
 
@@ -174,7 +179,7 @@ console.log(`        valley floor run                    ${stat(floors)}`)
 // track shade() in sim/chunk-mesh.js -- it is repeated rather than imported
 // because that module pulls in the whole mesh builder.
 
-const SNOW_LINE = 295
+const SNOW_LINE = 148 // = 295 pre-SHRINK; must match chunk-mesh.js shade()
 const snowRuns = []
 for (let t = 0; t < N; t += 4) {
   for (const axis of [0, 1]) {

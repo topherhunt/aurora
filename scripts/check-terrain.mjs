@@ -367,7 +367,11 @@ console.log('\nscale-reference props')
       m.decompose(p, q, sc)
       // Props are sunk by sink * scale so they do not sit on a visible seam.
       if (Math.abs(p.y - (th.heightAt(p.x, p.z) - k.sink * sc.x)) > 1e-3) floating++
-      if (th.slopeAt(p.x, p.z, 1.5) > (k.maxSlopeDeg * Math.PI) / 180) tooSteep++
+      // Same measure scatter.js filters on -- forward differences at SCARP.eps.
+      // Re-deriving it a different way here (central differences at 1.5 m) put
+      // the check and the rule a few degrees apart and made props near a cap
+      // read as violations when they were placed correctly.
+      if (th.heightAndSlopeAt(p.x, p.z).tan > Math.tan((k.maxSlopeDeg * Math.PI) / 180)) tooSteep++
       if (th.heightAt(p.x, p.z) > k.maxElev) tooHigh++
       if (Math.hypot(p.x - ox, p.z - oz) > k.radius + 1) outside++
     }
