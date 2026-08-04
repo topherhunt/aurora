@@ -175,7 +175,7 @@ let spawn = null
       const x = Math.cos(ang) * r
       const z = Math.sin(ang) * r
       const h = th.heightAt(x, z)
-      if (h < 60 || h > 140) continue // must match findSpawn() in src/main.js
+      if (h < 170 || h > 280) continue // must match findSpawn() in src/main.js
       if (th.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       spawn = { x, z, h }
       break outer
@@ -207,15 +207,31 @@ if (spawn) {
   // 1 m dimple in the middle stops her is a question the contour slide in
   // player.js answers, and this fill does not model sliding. The fine-scale
   // slope still gets measured -- that is the histogram in section 2.
+  // The fill is over EDGES, not over nodes, because that is what player.js
+  // actually tests. _walkable(x, z, dx, dz, dist) compares the height where she
+  // is against the height where she is going and rejects the STEP; it never
+  // asks whether the ground she is standing on is steep. A node mask deletes
+  // every cell whose own local slope is over the limit, which severs the one
+  // place a mountain world most needs a corridor: the flat strip along the base
+  // of a cliff, where slopeAt() reads the cliff and condemns the strip.
+  //
+  // The difference is not small and it is not conservative, it is wrong: this
+  // same terrain measures 71.8% reachable as nodes and 93.1% as edges. The node
+  // number sent the previous pass hunting a connectivity regression that was
+  // never in the terrain. Nodes still get reported below, as a shape statistic.
   const t0 = performance.now()
-  let walkableCount = 0
+  const H = new Float32Array(N * N)
+  let gentleCount = 0
   for (let j = 0; j < N; j++) {
     for (let i = 0; i < N; i++) {
-      const ok = th.slopeAt(x0 + i * cell, z0 + j * cell, cell) <= MAX_SLOPE
-      walk[j * N + i] = ok ? 1 : 0
-      if (ok) walkableCount++
+      H[j * N + i] = th.heightAt(x0 + i * cell, z0 + j * cell)
+      if (th.slopeAt(x0 + i * cell, z0 + j * cell, cell) <= MAX_SLOPE) {
+        walk[j * N + i] = 1
+        gentleCount++
+      }
     }
   }
+  const maxTan = Math.tan(MAX_SLOPE)
 
   const si = Math.round((spawn.x - x0) / cell)
   const sj = Math.round((spawn.z - z0) / cell)
@@ -231,7 +247,8 @@ if (spawn) {
     const push = (ni, nj) => {
       if (ni < 0 || nj < 0 || ni >= N || nj >= N) return
       const q = nj * N + ni
-      if (seen[q] || !walk[q]) return
+      if (seen[q]) return
+      if (Math.abs(H[q] - H[p]) / cell > maxTan) return
       seen[q] = 1
       stack.push(q)
     }
@@ -241,13 +258,13 @@ if (spawn) {
     push(i, j - 1)
   }
 
-  const frac = reached / walkableCount
+  const frac = reached / (N * N)
   console.log(
     `        ${(EXTENT / 1000).toFixed(0)}km box at ${cell.toFixed(0)}m: ` +
-      `${walkableCount} walkable cells, ${reached} reachable (${(frac * 100).toFixed(1)}%), ` +
-      `${(performance.now() - t0).toFixed(0)}ms`
+      `${reached} of ${N * N} cells reachable on foot (${(frac * 100).toFixed(1)}%), ` +
+      `${((gentleCount / (N * N)) * 100).toFixed(1)}% gentle, ${(performance.now() - t0).toFixed(0)}ms`
   )
-  check(frac > 0.5, 'spawn is not fenced into a pocket', `${(frac * 100).toFixed(1)}% of local walkable area reachable`)
+  check(frac > 0.75, 'spawn is not fenced into a pocket', `${(frac * 100).toFixed(1)}% of the box reachable`)
 }
 
 // --- 5. quadtree LOD budget -------------------------------------------------

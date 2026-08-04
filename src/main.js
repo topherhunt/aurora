@@ -82,7 +82,7 @@ function findSpawn() {
       const h = terrainHeight.heightAt(x, z)
       // Valley floor, not a hillside. Tied to the elevation distribution in
       // TUNING (p10 92, median 124), so it moves when the terrain scale does.
-      if (h < 60 || h > 140) continue
+      if (h < 170 || h > 280) continue // a green valley, below the snow ramp (295 m)
       if (terrainHeight.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       return { x, z, h }
     }
@@ -197,6 +197,7 @@ function setFlying(want) {
 // hand-tremor and comfortably below any intentional look.
 const CLICK_SLOP = 5
 let dragTravel = 0
+let lastGroundClick = -Infinity
 const ndc = new THREE.Vector2()
 
 renderer.domElement.addEventListener('pointerdown', () => {
@@ -214,7 +215,25 @@ addEventListener('pointerup', (e) => {
   )
   // A click on the sky misses the height field and clears the marker, which is
   // also how you get rid of one.
-  measure.measure(camera, ndc)
+  const onGround = measure.measure(camera, ndc)
+
+  // Double-click the ground to fly there. Same DOUBLE_TAP_MS as the space
+  // gesture, so there is one "do it twice" timing in the whole app rather than
+  // two that feel subtly different.
+  //
+  // The single click still measures, which is the point: the first click plants
+  // the beam so you can see exactly where the second one is going to send you.
+  // A miss resets the timer -- clicking sky then ground should not teleport.
+  if (!onGround) {
+    lastGroundClick = -Infinity
+    return
+  }
+  if (e.timeStamp - lastGroundClick < DOUBLE_TAP_MS) {
+    lastGroundClick = -Infinity
+    player.travelTo(measure.hit.x, measure.hit.z)
+  } else {
+    lastGroundClick = e.timeStamp
+  }
 })
 addEventListener('pointermove', (e) => {
   if (!dragging || renderer.xr.isPresenting) return
@@ -292,8 +311,10 @@ function tick() {
   readInput()
   player.update(dt, moveInput)
   // Suppressed while flying: at 29 m/s the speed vignette closes to a pinhole,
-  // and the whole point of fly mode is to see the periphery.
-  vignette.update(player.flying ? 0 : player.speed / LOCOMOTION.maxSpeed, dt)
+  // and the whole point of fly mode is to see the periphery. Travel is the same
+  // argument several times over -- 500 m/s against a walking top speed of 1.45
+  // would peg the vignette shut for the entire flight.
+  vignette.update(player.flying || player.travel ? 0 : player.speed / LOCOMOTION.maxSpeed, dt)
 
   // Called every frame, but it throttles its own quadtree reselection (§5:
   // stagger CPU work). Streaming has to run at frame rate even when selection
@@ -337,7 +358,13 @@ function hudLines() {
     `x ${head.x.toFixed(0)}  z ${head.z.toFixed(0)}`,
     `ground elev ${ground.toFixed(1)}m   eye ${head.y.toFixed(1)}m   agl ${(head.y - ground).toFixed(1)}m`,
     `slope ${slopeDeg.toFixed(0)}deg / max ${LOCOMOTION.maxSlopeDeg}${player.blocked ? '   !! BLOCKED' : ''}`,
-    `speed ${player.speed.toFixed(2)} m/s${player.flying ? '   ** FLYING -- space/shift = up/down, space x2 = land **' : ''}`,
+    `speed ${player.speed.toFixed(2)} m/s${
+      player.travel
+        ? `   ** TRAVELLING -- ${((1 - player.travel.t) * player.travel.dist).toFixed(0)} m to go **`
+        : player.flying
+          ? '   ** FLYING -- space/shift = up/down, space x2 = land **'
+          : ''
+    }`,
     ...(measureLine ? ['', measureLine] : []),
   ]
 }
@@ -348,6 +375,7 @@ renderer.setAnimationLoop(tick)
 // desktop warm-up do not poison the number that actually matters in VR.
 renderer.xr.addEventListener('sessionstart', () => {
   worst = 0
+  player.cancelTravel() // a 500 m/s rail is the last thing to be on entering XR
   player.setFlying(false) // desktop survey tool only; see LOCOMOTION in player.js
   held.clear()
   // In the headset the stats live on the head-locked panel; the DOM corner

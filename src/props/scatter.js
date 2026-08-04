@@ -41,17 +41,25 @@ const KINDS = [
   {
     name: 'tree',
     salt: 0x9e3779b9,
-    spacing: 42, // metres between candidate cells
+    spacing: 30, // metres between candidate cells
     radius: 820,
     density: 0.62, // fraction of cells that hold a candidate at all
     tailDensity: 0.3, // ...falling to this at the cull radius
     falloffFrom: 200,
-    max: 480,
+    max: 960,
     minElev: 50,
-    maxElev: 152, // treeline. One of the strongest scale cues a mountain has:
-    elevFade: 40, // it tells you how high you are without a number. Kept just
-    // under the snow line (chunk-mesh.js shade(), 150 m) so the two read as one
-    // boundary rather than as trees standing in snow.
+    maxElev: 430, // treeline. One of the strongest scale cues a mountain has:
+    elevFade: 90, // it tells you how high you are without a number.
+    //
+    // This used to sit at 152, deliberately just UNDER the snow line so the two
+    // read as one boundary. That was wrong, and it is worth saying why: a real
+    // treeline is well above the snow line, and conifers standing in snow are
+    // the single most recognisable thing a snowy mountain has. Tucking the
+    // trees below the snow produced bare white slopes with a hard green edge --
+    // two boundaries pretending to be one. Now the thinning band (250..340)
+    // straddles the snow ramp (295..390) so there is a wide belt of snowy
+    // forest, and the trees give out somewhere up in the white rather than at
+    // the moment it turns white.
     maxSlopeDeg: 32,
     scale: [0.75, 1.3],
     sink: 0.15,
@@ -59,12 +67,12 @@ const KINDS = [
   {
     name: 'rock',
     salt: 0x85ebca6b,
-    spacing: 26,
+    spacing: 18,
     radius: 430,
     density: 0.5,
     tailDensity: 0.3,
     falloffFrom: 120,
-    max: 480,
+    max: 960,
     minElev: 48,
     maxElev: 2000, // boulders go all the way up; nothing to fade against
     elevFade: 0,
@@ -83,19 +91,29 @@ const KINDS = [
     //
     // The cost that matters is not the triangles, it is the rebuild: every
     // candidate cell in the disc pays a heightAt and most survivors pay a
-    // slopeAt too. At spacing 1.6 / radius 32 that measured 3.0 ms, a fifth of
-    // a 72 Hz frame. Widening the grid and pushing density up keeps the tufts
-    // roughly where they were for about two thirds of the cells.
-    spacing: 1.9,
+    // slopeAt too, and the count of those cells goes as (radius / spacing)^2.
+    // At spacing 1.6 / radius 32 that measured 3.0 ms, a fifth of a 72 Hz frame
+    // on DESKTOP -- the headset CPU is slower, so that number is a ceiling to
+    // stay well under, not a budget to spend.
+    //
+    // Doubling the density means dividing spacing by sqrt(2), which would have
+    // quadrupled nothing but did take the rebuild to 3.45 ms measured. The
+    // radius pays for it instead: at 23 m the disc holds about the same number
+    // of candidate cells it did at spacing 1.9 / radius 30, so the density
+    // doubles for roughly the cost we were already paying. Reach is the right
+    // thing to give up here -- by the file's own reasoning above, a 0.4 m tuft
+    // at 30 m is a sub-pixel speck, so the tufts being sacrificed are the ones
+    // that were never visible.
+    spacing: 1.35,
     rebuildEvery: 10, // decoupled from spacing; see update()
-    radius: 30,
+    radius: 23,
     density: 0.95,
     tailDensity: 0.5,
     falloffFrom: 12,
-    max: 800,
+    max: 1600,
     minElev: 49,
-    maxElev: 138,
-    elevFade: 38,
+    maxElev: 320,
+    elevFade: 60,
     maxSlopeDeg: 27,
     scale: [0.8, 1.4],
     sink: 0.03,
@@ -103,15 +121,15 @@ const KINDS = [
   {
     name: 'cabin',
     salt: 0x27d4eb2f,
-    spacing: 260,
+    spacing: 184,
     radius: 1050,
     density: 0.4,
     tailDensity: 0.75,
     falloffFrom: 500,
-    max: 28,
+    max: 56,
     minElev: 52,
-    maxElev: 158,
-    elevFade: 40,
+    maxElev: 330,
+    elevFade: 70,
     maxSlopeDeg: 9, // people build on flat ground, and a box on a slope floats
     scale: [0.95, 1.12],
     sink: 0.35,

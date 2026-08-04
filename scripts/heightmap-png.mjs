@@ -75,7 +75,13 @@ function writeGrayPng(path, w, h, pixels) {
 
 const th = new TerrainHeight(SEED)
 
-function render(name, originX, originZ, span, size) {
+// Raw elevation answers "how high", which is the question the percentiles
+// already answer better. SHAPE is a question about the gradient, and the eye
+// reads a gradient far more readily as shading than as brightness -- a smooth
+// mountainside and a shattered one occupy the same grey in an elevation map and
+// look nothing alike under a light. Anything being judged by character (is this
+// jagged? does it drain? is that a ridge or a smear?) wants `shade: true`.
+function render(name, originX, originZ, span, size, { shade = false } = {}) {
   const step = span / size
   const H = new Float32Array(size * size)
   let lo = Infinity
@@ -90,7 +96,28 @@ function render(name, originX, originZ, span, size) {
     }
   }
   const px = Buffer.alloc(size * size)
-  for (let i = 0; i < H.length; i++) px[i] = Math.round(255 * ((H[i] - lo) / (hi - lo)))
+  if (shade) {
+    // Lambert against a low sun from the northwest, the convention every
+    // topographic map uses -- and low, because a high sun flattens exactly the
+    // fine relief this is here to inspect.
+    const L = [-0.5, 0.75, -0.43]
+    for (let j = 0; j < size; j++) {
+      for (let i = 0; i < size; i++) {
+        const l = H[j * size + Math.max(0, i - 1)]
+        const r = H[j * size + Math.min(size - 1, i + 1)]
+        const u = H[Math.max(0, j - 1) * size + i]
+        const d = H[Math.min(size - 1, j + 1) * size + i]
+        // Surface normal from central differences, unnormalised then scaled.
+        const nx = (l - r) / (2 * step)
+        const nz = (u - d) / (2 * step)
+        const inv = 1 / Math.hypot(nx, 1, nz)
+        const dot = Math.max(0, (nx * L[0] + L[1] + nz * L[2]) * inv)
+        px[j * size + i] = Math.round(255 * Math.min(1, 0.12 + 0.95 * dot))
+      }
+    }
+  } else {
+    for (let i = 0; i < H.length; i++) px[i] = Math.round(255 * ((H[i] - lo) / (hi - lo)))
+  }
   const path = `${OUT}/${name}.png`
   writeGrayPng(path, size, size, px)
   console.log(
@@ -102,3 +129,8 @@ function render(name, originX, originZ, span, size) {
 render('hm-ref-scale', -3200, -3200, 6437, 1024)
 // Whole world, for the regional distribution of ranges and basins.
 render('hm-world', -WORLD_SIZE / 2, -WORLD_SIZE / 2, WORLD_SIZE, 1024)
+// The same reference crop under a light, for shape rather than height.
+render('hm-ref-shaded', -3200, -3200, 6437, 1024, { shade: true })
+// 1.5 km at 1.5 m/px: roughly what she can see from one spot, and the only
+// scale at which "rolling hills of clay" versus "jagged" is actually decided.
+render('hm-local-shaded', -800, -800, 1536, 1024, { shade: true })

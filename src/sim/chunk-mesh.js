@@ -39,9 +39,10 @@ function shade(h, ny, out, o) {
   // Both bands track the world's actual elevation range, so they have to be
   // re-read off `node scripts/probe-terrain.mjs` whenever TUNING moves -- a band
   // written for the previous relief silently puts snow nowhere at all, which has
-  // now happened twice. Current probe: ground p10 92, median 124, p90 159,
-  // max 225; summits median 155, and 42% of them clear 160 m.
-  const alt = clamp01((h - 85) / 105)
+  // now happened twice. Current probe: ground p10 170, p25 214, median 276,
+  // p75 350, p90 415, p99 512, max 661. The green-to-scrub ramp spans roughly
+  // p25..p90 so that most of the walkable world gets some of the gradient.
+  const alt = clamp01((h - 214) / 200)
 
   let r = lerp(C_GRASS[0], C_SCRUB[0], alt)
   let g = lerp(C_GRASS[1], C_SCRUB[1], alt)
@@ -51,11 +52,17 @@ function shade(h, ny, out, o) {
   // off. Without that term the cliffs read as white walls and all the relief
   // we just generated becomes invisible.
   //
-  // 150..205 puts a dusting on about half the summits and full cover on the top
-  // tenth, so the regional swell (terrain-height.js baseFreq) reads as high
-  // country and low country: the same-shaped peak is white in one and bare in
-  // the next, which is the thing that makes a snow line look like a snow line.
-  const snow = clamp01(smoothstep(150, 205, h) * (1 - steep * 0.85))
+  // 295..390 is a compromise between two failure modes that pull opposite ways,
+  // and the sweep behind it is worth keeping: at a 260 m line 57% of the map is
+  // white, which stops reading as a snow line at all; at 420 m only 9% is, and
+  // the straight-line gap between one patch of snow and the next runs 4.1 km at
+  // p90, which is the "you can walk for kilometres without crossing any snow"
+  // complaint. 295 starts the dusting where ~41% of the map can catch some and
+  // the median gap is ~370 m; full cover at 390 keeps solid white to the top
+  // sixth. The soft band between them is what makes it look like a snow line
+  // rather than a contour: the same-shaped peak is white in the high country
+  // and bare in the low, because the regional swell moves it across the ramp.
+  const snow = clamp01(smoothstep(295, 390, h) * (1 - steep * 0.85))
   r = lerp(r, C_ROCK[0], steep)
   g = lerp(g, C_ROCK[1], steep)
   b = lerp(b, C_ROCK[2], steep)

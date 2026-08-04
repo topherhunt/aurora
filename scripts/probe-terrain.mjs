@@ -25,7 +25,19 @@ const MAX_SLOPE = (38 * Math.PI) / 180
 // disqualified nearly every summit in the world and reported 3584 m, which is
 // not a bigger world -- it is a broken instrument. 0.17 is the ratio the
 // original number happened to encode.
-const PROMINENCE = 0.17 * TUNING.mountainRelief
+// Two thresholds, because the terrain has two tiers of peak and one number
+// cannot describe both. SUB catches the 200-500 m sub-peaks riding on a flank;
+// MAJOR catches the massif summits, which are the ones you navigate by and the
+// ones that carry snow. Reporting only one of them is how "peak spacing" ended
+// up meaning whichever tier the threshold happened to land in.
+//
+// Both are fractions of the FULL mountain height, not of mountainRelief. Keyed
+// to mountainRelief they silently rescaled the moment the massif tier took over
+// most of the elevation -- the third time an instrument here has drifted out
+// from under the thing it names.
+const TOTAL_RELIEF = TUNING.massifRelief + TUNING.mountainRelief
+const PROMINENCE = 0.06 * TOTAL_RELIEF
+const PROMINENCE_MAJOR = 0.25 * TOTAL_RELIEF
 
 const th = new TerrainHeight(SEED)
 
@@ -82,7 +94,7 @@ for (let b = 0; b < slopeHist.length; b++) {
 // Peaks with real prominence along a transect, then the gaps between them. This
 // is the number that says "Skyrim valley" or "continental basin".
 
-function peaksAlong(line) {
+function peaksAlong(line, prominence = PROMINENCE) {
   const peaks = []
   for (let i = 1; i < line.length - 1; i++) {
     if (!(line[i] > line[i - 1] && line[i] >= line[i + 1])) continue
@@ -99,12 +111,13 @@ function peaksAlong(line) {
     const right = k === line.length - 1 ? -Infinity : lo
     const saddle = Math.max(left, right)
     if (saddle === -Infinity) continue
-    if (line[i] - saddle >= PROMINENCE) peaks.push(i)
+    if (line[i] - saddle >= prominence) peaks.push(i)
   }
   return peaks
 }
 
 const gaps = []
+const gapsMajor = []
 const floors = []
 for (let t = 0; t < N; t += 4) {
   for (const axis of [0, 1]) {
@@ -113,6 +126,9 @@ for (let t = 0; t < N; t += 4) {
 
     const peaks = peaksAlong(line)
     for (let p = 1; p < peaks.length; p++) gaps.push((peaks[p] - peaks[p - 1]) * STEP)
+
+    const major = peaksAlong(line, PROMINENCE_MAJOR)
+    for (let p = 1; p < major.length; p++) gapsMajor.push((major[p] - major[p - 1]) * STEP)
 
     // Valley floor: a contiguous run that stays below the midpoint between this
     // transect's own low and high ground. Relative rather than absolute, so a
@@ -147,8 +163,35 @@ const stat = (a) => {
 }
 
 console.log('\nhorizontal scale')
-console.log(`        peak-to-peak (prominence >=${PROMINENCE.toFixed(0)}m)   ${stat(gaps)}`)
+console.log(`        sub-peak to sub-peak (prom >=${PROMINENCE.toFixed(0)}m)  ${stat(gaps)}`)
+console.log(`        massif to massif     (prom >=${PROMINENCE_MAJOR.toFixed(0)}m) ${stat(gapsMajor)}`)
 console.log(`        valley floor run                    ${stat(floors)}`)
+
+// --- snow gaps ---------------------------------------------------------------
+// "You can go for kilometres in a straight line without crossing any snow" is
+// the complaint this answers, and it is a different question from peak spacing:
+// a peak only counts here if it is tall enough to be white. SNOW_LINE has to
+// track shade() in sim/chunk-mesh.js -- it is repeated rather than imported
+// because that module pulls in the whole mesh builder.
+
+const SNOW_LINE = 295
+const snowRuns = []
+for (let t = 0; t < N; t += 4) {
+  for (const axis of [0, 1]) {
+    let run = 0
+    for (let i = 0; i < N; i++) {
+      if ((axis === 0 ? H[t * N + i] : H[i * N + t]) < SNOW_LINE) run++
+      else {
+        if (run > 0) snowRuns.push(run * STEP)
+        run = 0
+      }
+    }
+    if (run > 0) snowRuns.push(run * STEP)
+  }
+}
+const aboveSnow = (100 * H.filter((v) => v >= SNOW_LINE).length) / H.length
+console.log(`        ${aboveSnow.toFixed(1)}% of the map is above the ${SNOW_LINE}m snow line`)
+console.log(`        straight-line gap between snow           ${stat(snowRuns)}`)
 
 // --- summit apex angle -------------------------------------------------------
 // "It should be rare to have a pinnacle whose horizon angle is less than 30

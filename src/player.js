@@ -37,6 +37,18 @@ export const LOCOMOTION = {
   // WASD, double-tap space to drop back to walking.
   flySpeed: 29, // 20x walking -- 16 km of world takes ~9 min to cross end to end
   flyClearance: 2.0, // stay this far above ground, so she cannot fly inside a mountain
+
+  // --- travel mode: double-click the ground to go there --------------------
+  // Free flight at 29 m/s still makes crossing the world a two-minute commute,
+  // which is too slow to compare one region against another while tuning §3.
+  // This is the survey tool's survey tool: point at a place, arrive, walk.
+  //
+  // It is a rail, not a control mode -- she cannot steer during it. That is
+  // deliberate. Steering at 500 m/s near terrain is unusable, and the whole
+  // value of the gesture is that it is over before you would want to.
+  travelSpeed: 500,
+  travelClearance: 120, // above the HIGHEST ground on the path -- see travelTo()
+  travelEase: 0.15, // fraction of the trip spent rising, and again descending
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -52,6 +64,7 @@ export class Player {
     this.smoothY = null
     this.blocked = false // true when the slope limiter refused a move, for the HUD
     this.flying = false
+    this.travel = null // non-null while a double-click flight is in progress
 
     this._head = new THREE.Vector3()
     this._quat = new THREE.Quaternion()
@@ -90,9 +103,96 @@ export class Player {
     }
   }
 
+  // Fly to (x, z) at travelSpeed and land there walking. Returns false if she is
+  // already essentially on the spot. Desktop only -- see the note in LOCOMOTION.
+  //
+  // The arc is decided ONCE, here, rather than reacted to frame by frame. At
+  // 500 m/s a frame covers 7 m of ground, so a ridge that a reactive altitude
+  // rule would start climbing at is a ridge already hit; the only way to clear
+  // terrain reliably at this speed is to know the whole profile before setting
+  // off. One pass at ~40 m spacing costs a few hundred heightAt calls, which is
+  // nothing against doing it wrong.
+  travelTo(x, z) {
+    const head = this.headPosition()
+    const dist = Math.hypot(x - head.x, z - head.z)
+    if (dist < 2) return false
+
+    let peak = -Infinity
+    const n = Math.max(8, Math.min(512, Math.ceil(dist / 40)))
+    for (let i = 0; i <= n; i++) {
+      const t = i / n
+      const h = this.th.heightAt(head.x + (x - head.x) * t, head.z + (z - head.z) * t)
+      if (h > peak) peak = h
+    }
+
+    this.travel = {
+      fromX: head.x,
+      fromZ: head.z,
+      toX: x,
+      toZ: z,
+      dist,
+      t: 0,
+      startY: this.rig.position.y,
+      endY: this.th.heightAt(x, z),
+      cruiseY: peak + LOCOMOTION.travelClearance,
+    }
+    this.flying = false // travel owns the rig until it finishes
+    this.blocked = false
+    this.speed = LOCOMOTION.travelSpeed
+    return true
+  }
+
+  cancelTravel() {
+    if (!this.travel) return
+    this.travel = null
+    this.speed = 0
+    this.flying = true // she is in the air; dropping her would be a surprise
+  }
+
+  _travelStep(dt) {
+    const T = this.travel
+    T.t = Math.min(1, T.t + (LOCOMOTION.travelSpeed * dt) / T.dist)
+
+    const p = this.rig.position
+    p.x = T.fromX + (T.toX - T.fromX) * T.t
+    p.z = T.fromZ + (T.toZ - T.fromZ) * T.t
+
+    // Altitude is a smoothstep up to cruise and back down, laid over a straight
+    // lerp between the two ground heights. Doing it that way rather than as a
+    // ballistic arc keeps it continuous at both ends by construction: the ramp
+    // is 0 at t=0 and t=1, so she leaves from exactly where she was standing
+    // and arrives at exactly the height of the ground she picked, with no jump
+    // to correct on the frame the flight ends.
+    const e = LOCOMOTION.travelEase
+    const ramp = Math.min(1, Math.min(T.t, 1 - T.t) / e)
+    const s = ramp * ramp * (3 - 2 * ramp)
+    const base = T.startY + (T.endY - T.startY) * T.t
+    p.y = base + (T.cruiseY - base) * s
+
+    // The precomputed profile samples every ~40 m and the ground between two
+    // samples can be higher than either, so keep the same floor free flight
+    // uses as a backstop.
+    const floor = this.th.heightAt(p.x, p.z) + LOCOMOTION.flyClearance
+    if (p.y < floor) p.y = floor
+
+    if (T.t >= 1) {
+      this.travel = null
+      this.speed = 0
+      this.smoothY = this.th.heightAt(p.x, p.z)
+      p.y = this.smoothY
+    }
+  }
+
   // input: {move: -1..1 forward/back, strafe: -1..1, lift: -1..1 up/down,
   //         turn: raw stick X, unstick: bool, instant: bool}
   update(dt, input) {
+    // Travel runs before anything else and consumes the frame. Input is ignored
+    // rather than blended: see the note on it being a rail in LOCOMOTION.
+    if (this.travel) {
+      this._travelStep(dt)
+      return
+    }
+
     const L = LOCOMOTION
     const head = this.headPosition()
     const strafe = input.strafe ?? 0
