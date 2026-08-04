@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Aurora</title>
+    <title>Aurora -- multi-draw spike</title>
     <style>
       body { margin: 0; overflow: hidden; background: #0a0e16; font-family: monospace; }
       #desktop-hud {
@@ -12,16 +12,15 @@
         border: 1px solid #2b4a72; border-radius: 6px;
         font-size: 12px; line-height: 1.5; white-space: pre; pointer-events: none;
       }
-      #help {
-        position: fixed; bottom: 8px; left: 8px; z-index: 10;
-        color: #7f95b4; font-size: 12px; line-height: 1.6; white-space: pre;
-        pointer-events: none;
-      }
     </style>
   </head>
   <body>
+    <!--
+      The §0 spike, kept as a separate page rather than deleted. It is still the
+      only harness that reports MAX_ARRAY_TEXTURE_LAYERS, the foveation delta,
+      supported frame rates, and a thermal soak -- all still unread (§0).
+    -->
     <div id="desktop-hud">booting...</div>
-    <div id="help">drag = look   W / up = walk   Q / E = snap turn   H = hud   U = unstick   [ ] = LOD detail</div>
-    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/src/spike-main.js"></script>
   </body>
 </html>

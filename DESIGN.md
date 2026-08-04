@@ -28,9 +28,41 @@ Deliverable: an in-world debug HUD showing `renderer.info.render.calls`, `.trian
 
 Note the HUD-not-console requirement: you cannot see a JS console while wearing the headset, and remote debugging over `chrome://inspect` is slow enough that you will avoid doing it. Print to a world-space panel.
 
+### RESULTS -- measured on Quest 3, 2026-08-04
+
+**`WEBGL_multi_draw` is present. `BatchedMesh` batches. The core thesis holds.**
+
+| Instances (BATCHED) | Draw calls | Triangles (`renderer.info`) | Framerate |
+|---|---|---|---|
+| ≤ 2,000 | 6 | **~800k** | **72-80, buttery** |
+| 4,000 | 6 | ~1.5M | ~30-35 |
+| 8,000 | 6 | ~3M | ~15, nauseating |
+
+**Draw calls stayed flat at 6 from 250 instances to 8,000.** That is the whole thesis, confirmed: object count is now decoupled from draw calls, and the §5 architecture is sound.
+
+**The bottleneck moved to geometry throughput, which is the good failure mode** -- it is exactly what LOD and billboarding attack. The placeholder props run ~200 tris/instance at *full detail regardless of distance*, because the spike deliberately has no LOD.
+
+### Working ceiling: ~800k triangles per frame, as the HUD reports it
+
+**Budget against the `renderer.info` number directly.** Do not divide it by two for "per eye" -- whether that counter double-counts stereo passes was never established on-device, and the whole quantity is only useful as a number the HUD can be compared against. 800k is smooth, 1.5M is 30-35 fps, and the cliff between them is steep.
+
+This is roughly **half** the headroom an earlier draft of this section claimed (it mistakenly recorded the 1.5M *failure* point as the ceiling), so the LOD arithmetic has to be more aggressive than a casual reading of §5 suggests:
+
+| Tier mix | Avg tris/prop | Props affordable in a 400k prop budget |
+|---|---|---|
+| 15% LOD0 (300) / 35% LOD1 (100) / 50% billboard (4) | ~82 | ~4,900 |
+| 10% LOD0 (300) / 25% LOD1 (100) / 65% billboard (4) | ~58 | ~6,900 |
+
+The lush-world target is reachable, but **only with billboards as the majority tier, not the fallback tier.** LOD is not an optimization here, it is load-bearing.
+
+Caveats on what this run did *not* establish:
+
+- **The BATCHED-vs-INDIVIDUAL comparison was inconclusive, and that is expected.** INDIVIDUAL was not much slower at 4,000 because at ~190 tris/instance the scene is geometry-bound long before draw-call submission matters. Batching's win shows up in the opposite regime -- thousands of *cheap* objects (4-tri billboards, grass tufts), which is precisely the regime the real world lives in. The 4,000 cap in INDIVIDUAL mode is a hardcoded guard in `main.js`, not a device limit.
+- Not yet read off the HUD: `MAX_ARRAY_TEXTURE_LAYERS`, foveation delta, 90 Hz behavior, 20-minute thermal soak.
+
 ### Fallback if `WEBGL_multi_draw` is absent
 
-Fall back to one `InstancedMesh` per (asset type × LOD tier × chunk). Costs more draw calls, so the asset variety budget in §5 shrinks substantially. Not fatal, but it changes the numbers.
+Moot -- it is present. Retained for the record: fall back to one `InstancedMesh` per (asset type × LOD tier × chunk), which costs more draw calls and shrinks the §5 asset variety budget substantially.
 
 ---
 
@@ -152,15 +184,31 @@ Water: shallow water is walkable, deep water is not. Same mask, so lakes are bar
 2. **One material for all props**, backed by one `sampler2DArray`. See §9.
 3. **Alpha test, never alpha blend, for anything batched.** See §7.
 
-Terrain, water, sky, and weather each get their own material and their own draw calls. That is expected and budgeted. The one-material rule applies to **props**.
+4. **Terrain goes through `BatchedMesh` too** -- decided at build step 2, and not what the original draft assumed. See below.
+
+Water, sky, and weather each get their own material and their own draw calls. That is expected and budgeted.
+
+### Terrain is batched, for the same reason props are
+
+The first draft of this section said terrain "gets its own material and its own draw calls. That is expected and budgeted," on the assumption that a quadtree produces a handful of chunks. It does not. At the shipped step-2 parameters the selector returned **502 leaves**, which as one `THREE.Mesh` per chunk is 502 draw calls against the 60 the §0 measurements allow -- before a single tree exists.
+
+So terrain uses one `BatchedMesh` with a pre-allocated pool of fixed-size geometry slots, and streaming a chunk in is `setGeometryAt()` on a recycled slot rather than an add/remove from the scene graph. **The whole 16 km world is one draw call.**
+
+This is legal only because every chunk has identical topology -- same `CHUNK_RES`, therefore the same vertex and index count -- so a freed slot always fits whatever arrives next. **If chunk resolution ever varies by LOD level, the slot pool has to become size-classed.** That is the constraint to remember before "optimising" coarse rings to a lower resolution.
+
+Verified on `three@0.180`: `setGeometryAt` reuses a slot in place and throws only if the incoming geometry exceeds the reserved counts; it re-clones `boundingSphere` from the source on every call, so per-instance frustum culling stays correct across reuse; and the batch index widens to `Uint32` automatically once the pooled vertex count passes 65535.
 
 ### Budget
 
-Per eye, at 72 Hz, targeting ~250k triangles with headroom. three.js renders once per eye (no multiview -- `OCULUS_multiview` has never been merged into three.js core), so `renderer.info` will report roughly double these figures.
+Per eye, at 72 Hz, targeting ~250k triangles with headroom. three.js renders once per eye (no multiview -- `OCULUS_multiview` has never been merged into three.js core), so `renderer.info` reports roughly double these figures.
+
+**Measured ceiling (§0): ~800k triangles per frame as `renderer.info` reports them.** 1.5M drops to 30-35 fps.
+
+There is roughly 2× headroom, not the 4× an earlier draft assumed. Treat the per-layer numbers below as a budget to be *defended*, not a floor to build up from. If a layer wants more, another layer gives it up.
 
 | Layer | Visible count | Tris each | Total |
 |---|---|---|---|
-| Terrain (all LOD rings) | -- | -- | 70k |
+| Terrain (all LOD rings) | 304 chunks | 640 | 98k |
 | Trees 0-30 m | 40 | 600 | 24k |
 | Trees 30-80 m | 200 | 150 | 30k |
 | Trees 80-500 m (cross-quad) | 2,000 | 4 | 8k |
@@ -170,21 +218,25 @@ Per eye, at 72 Hz, targeting ~250k triangles with headroom. three.js renders onc
 | Water surfaces | -- | -- | 5k |
 | Snow particles | 1 draw | -- | 4k |
 | Sky dome + aurora | -- | -- | 2k |
-| **Total** | | | **~191k** |
+| **Total** | | | **~219k** |
 
-2,240 trees, 3,000 grass tufts, and a village visible simultaneously, with ~60k tris of headroom. **These are estimates to be replaced by the §0 spike's measurements.**
+2,240 trees, 3,000 grass tufts, and a village visible simultaneously. **Every row except terrain is still an estimate.** Terrain is measured (step 2): 304 chunks × 640 tris = 195k as `renderer.info` reports it, 24% of the ceiling, *before* per-instance frustum culling -- which removes most of the ring behind her, so the drawn figure is lower and the pre-cull number is the safe one to budget against.
+
+~219k/eye is ~438k as the HUD reports it, **~55% of the measured ceiling**, leaving roughly 360k for water, weather, thermal margin, and the props these estimates get wrong.
 
 ### Download budget -- a non-issue, which is the liberating part
 
-- Texture array, 64×64 × ~128 layers, RGBA8: **~2 MB** uncompressed, less with ASTC
+- Texture arrays, 128×128 × ~150 layers, RGBA8: ~9.8 MB uncompressed, **~1.5 MB with ASTC 6×6**. See §9 -- compression is required, not optional
 - ~80 assets × ~500 tris, meshopt-compressed: **~1-2 MB**
 - World data: **0 bytes** (it is a seed)
 
-**Under 10 MB total.** Go wide on asset variety. The constraint is atlas real estate and Meshy generation time, not bandwidth.
+**Under 10 MB total.** Go wide on asset variety. The constraint is `MAX_ARRAY_TEXTURE_LAYERS` and Meshy generation time, not bandwidth.
 
 ### Distance tiering
 
-**Terrain LOD:** quadtree chunks, 4-5 levels, each doubling chunk size and halving vertex density. **Skirts** (vertical flanges at chunk edges) hide cracks between adjacent levels -- far simpler than stitching and invisible in practice. Fog and atmospheric desaturation hide popping and do most of the work of selling scale.
+**Terrain LOD:** quadtree chunks at a **constant** `CHUNK_RES` (16), subdividing when the camera is closer to a node than `splitK` times its own edge length. Chunk size halves with depth; vertex *density* therefore doubles, but vertex *count* stays fixed -- which is what lets every chunk share one slot size in the batch. **Skirts** (vertical flanges at chunk edges) hide cracks between adjacent levels -- far simpler than stitching and invisible in practice. Fog and atmospheric desaturation hide popping and do most of the work of selling scale.
+
+Measured at step 2, `res 16 / splitK 1.3 / MAX_DEPTH 10`: 304 leaves, 195k tris (24% of budget), 16 m leaves at 1.00 m per cell, ~2.75° angular error. The three parameters are one decision, not three -- see the derivation at the top of `src/terrain/quadtree.js`, including why raising `CHUNK_RES` to buy back `splitK` costs *more* triangles at equal quality rather than fewer. `splitK` is live-tunable with `[` and `]` because 2.75° is a judgement call that has to be made looking at ridgelines.
 
 **Prop LOD:**
 
@@ -334,7 +386,7 @@ Also present: `tmp/placeholder-props/high-poly-to-decimate/` -- 23 zipped higher
 
 **Art direction, stated precisely so it does not drift again: low-poly geometry with N64-resolution textures.** Ocarina/Majora, or a lower-res Skyrim. Explicitly **not** the flat-shaded untextured low-poly look. The Quaternius bootstrap assets happen to be flat-colored; that is a property of the placeholders, not the target.
 
-Textures live in a **`DataArrayTexture`** (one layer per surface texture, 64×64) rather than a packed 2048² atlas. Each vertex carries a `texLayer` index attribute; the shader samples `texture(sampler2DArray, vec3(uv, layer))`. One texture binding, so still one material, so `BatchedMesh` still batches everything (§5).
+Textures live in a **`DataArrayTexture`** rather than a packed 2048² atlas. Each vertex carries a `texLayer` index attribute; the shader samples `texture(sampler2DArray, vec3(uv, layer))`. One texture binding, so still one material, so `BatchedMesh` still batches everything (§5). Layer sizing is settled below -- 128×128, in two arrays.
 
 Why the array wins at this texture size:
 
@@ -357,13 +409,47 @@ The numbers:
 
 **The constraint that actually binds is different from the one that looks like it binds.** It is not atlas *area* (2048²/64² = 1024 slots) -- it is `MAX_ARRAY_TEXTURE_LAYERS`, which WebGL2 only guarantees to be **≥256**. The spike (§0) prints the real value for Quest.
 
-But 256 is roomier than it sounds, because **layers are per distinct surface, not per asset.** Every pine, dead pine, and snowy pine shares one bark layer and one needle layer. Forty tree species might consume a dozen layers. 256 distinct surfaces is far more art than this project will produce.
+### Correction: "layers are per surface, not per asset" does not survive a Meshy pipeline
 
-### If variable resolution is genuinely wanted later
+An earlier draft claimed 256 layers is roomier than it sounds because a layer is a *surface* (bark, needles) shared across every species, so forty trees cost a dozen layers. **That is true only of a hand-authored library, and this project does not have one.**
 
-Bind **two arrays simultaneously to the same material** -- `uArr64` and `uArr128` -- and select with a per-vertex tier attribute. This keeps one material and one batch; it costs one extra texture unit (WebGL2 guarantees ≥16 fragment units). Caveat: sampling inside non-uniform control flow with automatic mip derivatives is undefined in GLSL ES 3.00, so either sample both and select, or use `textureGrad` with explicit gradients.
+Meshy emits, per generated asset, a mesh with an auto-generated UV unwrap and its own baked texture set. Bark and needles land in one image in one bespoke UV layout. Nothing is shared with the next generated asset, and there is no non-manual way to make it shared -- extracting a tiling bark texture out of a Meshy unwrap and re-unwrapping the trunk to tile it is exactly the hand-artist labor the pipeline exists to avoid.
 
-**Do not build this now.** Start with a single 64×64 array. Adding a 128×128 tier later for hero assets (buildings, a landmark) requires no restructuring -- one uniform, one attribute, three shader lines.
+**So the honest accounting is one layer per asset, scaling linearly.** ~150 assets = ~150 layers. Still inside the ≥256 guarantee, but with far less slack than the surface-sharing story implied, and worth re-checking against Quest's actual reported value.
+
+### Two texture classes, which is what actually drives sizing
+
+The pipeline produces two genuinely different kinds of texture, and conflating them is what made 64×64 look sufficient:
+
+| | **Class A -- tiling surfaces** | **Class B -- per-asset UV atlases** |
+|---|---|---|
+| Source | Hand-made or procedural, a handful total | Meshy output, one per asset |
+| Content | One material, repeating (snow, rock, grass, dirt, bark) | An entire object's unwrap |
+| UVs | `RepeatWrapping`, scaled by world size | Native 0-1, `ClampToEdge` |
+| Count | ~8-16 | ~1 per asset, ~150 |
+| Size needed | **64×64 is fine** -- it tiles, so texel density comes from repetition | **128×128 minimum** |
+
+The Class B floor is the point. A 64×64 covering a whole tree's unwrap gives each surface maybe 16×16 of effective resolution -- that is mud, not N64. Ocarina's textures were 32×32 *per tiling surface*, which is a completely different quantity than 32×32 per object. **Base the array at 128×128** and let Class A layers simply be upsampled or authored at 128.
+
+Cost at 128²: 64 KB/layer RGBA8, ~150 layers = **~9.8 MB uncompressed**. That is over the §5 download figure, so ASTC/KTX2 compression moves from "nice" to **required** (ASTC 6×6 lands it near 1.5 MB). Verify the KTX2 array round-trip early -- it is now load-bearing rather than a convenience.
+
+### The two-array split, no longer hypothetical
+
+Class A wants small and `RepeatWrapping`; Class B wants larger and `ClampToEdge`. Wrap mode is per-texture, not per-layer, so **these cannot share one array anyway** -- the split is forced by the sampler, not chosen for resolution.
+
+Bind both to the same material: `uArrTile` (128², repeat) and `uArrAsset` (128² or 256², clamp), selected by a per-vertex tier attribute. Still one material, still one batch; costs one extra texture unit of the ≥16 WebGL2 guarantees. Caveat: sampling inside non-uniform control flow with automatic mip derivatives is undefined in GLSL ES 3.00, so sample both and select, or use `textureGrad` with explicit gradients.
+
+Build this at §14 step 4, when the first real Meshy asset arrives -- not before. The spike's single 64×64 array is correct for the spike.
+
+### Where variety comes from instead
+
+Since texture sharing is unavailable, variety has to be generated in the **shader**, and this is cheaper than making more textures anyway:
+
+- **Per-instance tint.** A hue/value multiply keyed off the instance's world position gives eight visually distinct birches from one layer. Nearly free.
+- **Procedural snow accumulation.** Blend toward the snow layer by upward-facing normal, modulated by elevation and the weather state (§10). One asset serves as both its bare and snow-covered variant, which halves what Meshy has to generate.
+- **Rotation, non-uniform scale, slight lean** -- already planned in §6.
+
+This is a better fit for an AI-generation pipeline than texture reuse would have been: Meshy produces *shapes*, and the shader produces *variation on* those shapes.
 
 ### Headless Blender pass
 
@@ -372,12 +458,12 @@ Fully scripted: `blender --background --python pipeline.py`
 1. **Import** OBJ/FBX/GLB
 2. **Decimate** to per-LOD budgets (600 / 150 / billboard)
 3. **Bake AO** into the asset's own texture
-4. **Downscale** each texture to 64×64 and emit it as a texture-array layer; assets keep their native UVs
+4. **Downscale** each texture to 128×128 and emit it into the Class B array; assets keep their native UVs
 5. **Generate billboard** by rendering LOD0 to a cross-quad texture, also as a layer
-6. **Compress** -- meshopt for geometry, ASTC/KTX2 for the array
-7. **Export** a single GLB of all geometries plus the array as a side-loaded asset
+6. **Compress** -- meshopt for geometry, ASTC/KTX2 for the arrays
+7. **Export** a single GLB of all geometries plus the arrays as side-loaded assets
 
-⚠️ Verify that KTX2/Basis round-trips array textures through three's `KTX2Loader`. If it does not, ship the array uncompressed -- at ~2 MB it barely matters.
+⚠️ Verify that KTX2/Basis round-trips array textures through three's `KTX2Loader` **before generating assets in bulk**. At 128×128 × 150 layers the uncompressed fallback is ~9.8 MB, so unlike the earlier 64×64 estimate this is no longer a shrug -- it would force either fewer assets or a drop back to 64×64.
 
 ⚠️ **Blender is not currently installed on this machine** (not on PATH, not in `/Applications`). Needed before step 4 of §14. For the spike, geometry is loaded and processed at runtime in JS instead.
 
@@ -453,11 +539,12 @@ Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer 
 
 ## 14. Build order
 
-1. **§0 spike.** Verify `WEBGL_multi_draw`, `BatchedMesh` batching, foveation, frame rate, thermals. Build the permanent in-world debug HUD.
+1. ~~**§0 spike.**~~ **DONE.** `WEBGL_multi_draw` confirmed, `BatchedMesh` confirmed batching (6 draw calls at 8,000 instances), ceiling measured at ~800k tris/frame as the HUD reports it. In-world HUD built, preserved at `spike.html`. Still to read off the HUD on the next headset visit: `MAX_ARRAY_TEXTURE_LAYERS`, foveation delta, 90 Hz, 20-minute soak.
 2. **Terrain + locomotion vertical slice.** Worker-generated quadtree terrain with skirts, heightmap collision, slope limiting, eased locomotion, vignette, snap turn, recenter. **Get this to a stable 72 Hz with an empty world before adding a single tree.**
+   **Code complete and checked headlessly** (`npm run check`): sim layer validated (relief, slope distribution, winding, spawn connectivity), terrain streaming drilled over an 18 km walk (slot accounting, eviction, geometry placement), empty world at 195k tris / 1 draw call. **Not yet run on a screen or in a headset** -- shader compilation, the look of the terrain, and comfort are all unverified.
 3. **Phase A global pass.** Elevation (§3), priority-flood, flow accumulation, biomes, village siting, connectivity validation. Pure math, no rendering, most reusable code in the project. Debug it with a 2D canvas map view before it ever renders in 3D.
 4. **Asset pipeline + `BatchedMesh` + texture array.** One species end-to-end. Requires installing Blender.
-5. **Placement, paths, LOD tiering.** The lushness pass.
+5. **Placement, paths, LOD tiering.** The lushness pass. **Build LOD tiering in the same step as placement, never after it** -- §0 measured that undifferentiated full-detail props hit the triangle ceiling at ~4,000 instances, well under the density this world needs. A placement system without LOD cannot be evaluated, because it will be unplayable for reasons that have nothing to do with placement.
 6. **Terrain material.** Splat blending, height-blend, triplanar.
 7. **Lighting.** Horizon maps, AO bake, prop light inheritance, day/night cycle.
 8. **Water.**
@@ -474,10 +561,51 @@ Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer 
 
 ## 16. Open questions
 
-- Does Quest Browser expose `WEBGL_multi_draw`? (§0 -- blocks everything)
-- What are the real draw call and triangle ceilings? (§0 -- all §5 numbers are estimates)
+- ~~Does Quest Browser expose `WEBGL_multi_draw`?~~ **Yes** (§0)
+- ~~What are the real draw call and triangle ceilings?~~ **6 draw calls flat; ~800k tris/frame as HUD-reported** (§0)
+- ~~Is 64×64 the right base texture size?~~ **No -- 128×128, in two arrays** (§9)
 - Is 60° the right snap angle, or does it want to be 45°? (§12 -- try it)
+- Is ~2.75° of terrain LOD error acceptable on ridgelines, or does `splitK` need to go up? (§5 -- `[` `]` on desktop; costs 33% of budget at 1.6, 45% at 2.1)
+- Does the coarse ancestor poke through finer chunks while a new LOD ring streams in? (§5 -- expected artifact, needs eyes on it)
 - Is 2048² adequate for global hydrology at 16 km? (§2)
 - Does snow particle overdraw fit the fill-rate budget? (§10)
-- What is Quest's real `MAX_ARRAY_TEXTURE_LAYERS`? (§0 prints it; §9 assumes ≥256)
-- Is 64×64 the right base texture size, or does it want to be 32 or 128? (§9 -- decide by eye on-device)
+- What is Quest's real `MAX_ARRAY_TEXTURE_LAYERS`? (§0 prints it; §9 now needs ~150, not ~12)
+- Does `KTX2Loader` round-trip array textures? (§9 -- now load-bearing at 128×128)
+- Where does the frametime cliff sit once terrain, water, and weather share the budget? (§17 -- re-measure at each gate)
+
+---
+
+## 17. Development workflow: desktop-first, headset-gated
+
+**Iterate in Chrome on the desktop. Verify in the headset at gates.** Deploy-and-don-the-headset is a ~2 minute round trip against a ~2 second one, and most of this project's work -- procedural generation, placement aesthetics, LOD popping, terrain material, lighting, the aurora -- is judged with the eyes and reads fine on a monitor.
+
+### What desktop tells you honestly
+
+Silhouettes, colour, biome transitions, path layout, village siting, LOD pop distances, shadow softness, water shading, sky and aurora. Triangle counts and draw calls are also literally true -- they just need doubling to compare against a headset number.
+
+### What desktop actively lies about
+
+This list is why the gates exist, not a disclaimer:
+
+| Lie | Why |
+|---|---|
+| **Fill rate** | Quest renders ~2× the pixels at a higher effective resolution and is fill-bound far more often than a desktop GPU. Alpha-tested foliage overdraw looks free on a monitor and is not |
+| **Stereo cost** | Everything CPU-side and every draw call happens twice; there is no multiview in three.js (§5) |
+| **`discard` cost** | The early-Z penalty from `alphaTest` is an Adreno tiler behaviour with no desktop analogue (§7) |
+| **Thermals** | Minute 3 and minute 20 are different machines. Only a soak finds the cliff |
+| **Foveation** | No desktop equivalent; it is real headroom that only appears on-device |
+| **Scale and comfort** | Tree height, locomotion speed, snap-turn angle, gorge depth, vignette strength. **Not assessable on a monitor at all.** A mountain that reads as majestic on a screen can read as a hill in VR |
+
+### Making the desktop HUD tell the truth
+
+The §0 HUD stays on desktop and gets a budget line: **red past 1.5M triangles or 60 draw calls** (frame totals, matching the headset's `renderer.info`). Desktop then flags a budget breach the moment it happens, instead of hiding it behind a 200 fps monitor framerate. This converts most performance regressions into desktop-visible failures and shrinks what the gates have to catch to genuinely device-specific effects.
+
+### Gates -- put on the headset when
+
+1. A **new material or shader** enters the scene (fill-rate and `discard` behaviour are unmeasurable on desktop)
+2. **Instance density or LOD distances** change materially
+3. **Anything transparent or full-screen** is added -- snow particles, fog, aurora, vignette
+4. Anything touching **locomotion, scale, or comfort** -- always, no exceptions, and judge by feel rather than by numbers
+5. The end of **each §14 build step**, with a 20-minute soak at the last one before it gets handed over
+
+A gate visit is a checklist, not a look-around: read frametime, worst-frame, draw calls, triangles, and the soak worst-case off the HUD, then toggle foveation to confirm the headroom is still there.

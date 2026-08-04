@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 
@@ -12,8 +13,19 @@ import basicSsl from '@vitejs/plugin-basic-ssl'
 //
 // `base` is relative so the built output works from any subpath, including
 // topherhunt.com/games/aurora.
+// Two pages: index.html is the game, spike.html is the §0 measurement harness,
+// which still has unread numbers on it and stays deployed alongside.
 export default defineConfig({
   base: './',
   plugins: [basicSsl()],
   server: { host: true, port: 5173 },
+  worker: { format: 'es' },
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        spike: resolve(__dirname, 'spike.html'),
+      },
+    },
+  },
 })
