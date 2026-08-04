@@ -4,6 +4,7 @@ import { TerrainHeight, WORLD_SIZE } from './sim/terrain-height.js'
 import { Terrain, CHUNK_RES } from './terrain/terrain.js'
 import { DEFAULT_SPLIT_K, MAX_DEPTH, MIN_SPLIT_K, MAX_SPLIT_K } from './terrain/quadtree.js'
 import { Player, LOCOMOTION } from './player.js'
+import { Trees } from './props/trees.js'
 import { Vignette } from './vignette.js'
 import { Hud } from './hud.js'
 import { Input } from './input.js'
@@ -57,6 +58,9 @@ scene.add(new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85))
 
 const terrainHeight = new TerrainHeight(SEED)
 const terrain = new Terrain(scene, { seed: SEED, workers: 2 })
+// Scale reference only -- see the header of props/trees.js. The real placement
+// system is §6 and lands at build step 5.
+const trees = new Trees(scene, terrainHeight, { seed: SEED })
 const player = new Player(rig, camera, terrainHeight)
 const vignette = new Vignette(camera)
 const hud = new Hud()
@@ -87,15 +91,79 @@ player.spawnAt(spawn.x, spawn.z)
 
 // --- desktop controls -------------------------------------------------------
 
-const keys = new Set()
+// Bindings are resolved to named ACTIONS from both the typed character and the
+// physical key position, and either one firing is enough.
+//
+// This matters here: the keyboard is Dvorak, where `,aoe` sit on the physical
+// WASD keys. `KeyboardEvent.code` reports position (KeyW) and ignores layout;
+// `KeyboardEvent.key` reports the character the layout produced (`,`). Binding
+// only one of them means either the letters are wrong or the finger positions
+// are. Binding both means `,aoe` and `wasd` are the same keys on Dvorak, and
+// the file still works unchanged on a QWERTY machine.
+const KEY_ACTIONS = {
+  ',': 'forward',
+  a: 'left',
+  o: 'back',
+  e: 'right',
+  ' ': 'fly',
+  h: 'hud',
+  u: 'unstick',
+  '[': 'coarser',
+  ']': 'finer',
+}
+
+const CODE_ACTIONS = {
+  KeyW: 'forward',
+  KeyA: 'left',
+  KeyS: 'back',
+  KeyD: 'right',
+  ArrowUp: 'forward',
+  ArrowDown: 'back',
+  ArrowLeft: 'turnLeft',
+  ArrowRight: 'turnRight',
+  Space: 'fly',
+  BracketLeft: 'coarser',
+  BracketRight: 'finer',
+}
+
+const actionsFor = (e) => {
+  const a = KEY_ACTIONS[e.key.length === 1 ? e.key.toLowerCase() : e.key]
+  const b = CODE_ACTIONS[e.code]
+  if (a && b && a !== b) return [a, b]
+  return a ? [a] : b ? [b] : []
+}
+
+const held = new Set()
+const on = (action) => held.has(action)
 let dragging = false
+
 addEventListener('keydown', (e) => {
-  keys.add(e.code)
-  if (e.code === 'KeyH') hud.toggle()
-  if (e.code === 'BracketLeft') terrain.splitK = Math.max(MIN_SPLIT_K, terrain.splitK - 0.1)
-  if (e.code === 'BracketRight') terrain.splitK = Math.min(MAX_SPLIT_K, terrain.splitK + 0.1)
+  const actions = actionsFor(e)
+  if (actions.length === 0) return
+  if (actions.includes('fly')) e.preventDefault() // space scrolls the page otherwise
+  const fresh = actions.filter((a) => !held.has(a))
+  for (const a of actions) held.add(a)
+
+  // One-shot actions fire on the transition, not while held.
+  if (fresh.includes('hud')) hud.toggle()
+  if (fresh.includes('fly')) setFlying(!player.flying)
+  if (fresh.includes('coarser')) terrain.splitK = Math.max(MIN_SPLIT_K, terrain.splitK - 0.1)
+  if (fresh.includes('finer')) terrain.splitK = Math.min(MAX_SPLIT_K, terrain.splitK + 0.1)
 })
-addEventListener('keyup', (e) => keys.delete(e.code))
+
+addEventListener('keyup', (e) => {
+  for (const a of actionsFor(e)) held.delete(a)
+})
+
+// The browser stops delivering keyup while the window is unfocused, so a key
+// held across an alt-tab would otherwise stick down and she would fly away.
+addEventListener('blur', () => held.clear())
+
+function setFlying(want) {
+  // Never in the headset: 14.5 m/s of free flight with no ground reference is
+  // exactly the vestibular mismatch §12 exists to prevent.
+  player.setFlying(want && !renderer.xr.isPresenting)
+}
 renderer.domElement.addEventListener('pointerdown', () => (dragging = true))
 addEventListener('pointerup', () => (dragging = false))
 addEventListener('pointermove', (e) => {
@@ -120,7 +188,7 @@ let frames = 0
 let acc = 0
 let avgMs = 0
 let worst = 0
-const moveInput = { move: 0, turn: 0, unstick: false }
+const moveInput = { move: 0, strafe: 0, turn: 0, unstick: false }
 const headTmp = new THREE.Vector3()
 
 function readInput() {
@@ -128,6 +196,7 @@ function readInput() {
   if (st.connected > 0) {
     // Left stick forward only (§12). axes[1] is negative when pushed up.
     moveInput.move = Math.max(0, -st.left.axes[1])
+    moveInput.strafe = 0 // no strafing in VR, on purpose
     // Snap turn from either stick, so she does not have to remember which.
     const lx = st.left.axes[0]
     const rx = st.right.axes[0]
@@ -137,9 +206,12 @@ function readInput() {
     if (st.left.buttons.PRIMARY?.justPressed) player.recenterXR(renderer)
     return
   }
-  moveInput.move = keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0
-  moveInput.turn = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0)
-  moveInput.unstick = keys.has('KeyU')
+  moveInput.move = (on('forward') ? 1 : 0) - (on('back') ? 1 : 0)
+  moveInput.strafe = (on('right') ? 1 : 0) - (on('left') ? 1 : 0)
+  // Snap turn on the arrow keys, so the VR turn path still gets exercised on
+  // desktop now that the letter keys strafe instead.
+  moveInput.turn = (on('turnRight') ? 1 : 0) - (on('turnLeft') ? 1 : 0)
+  moveInput.unstick = on('unstick')
 }
 
 function tick() {
@@ -168,6 +240,7 @@ function tick() {
   // ancestor until the next selection tick.
   player.headPosition(headTmp)
   terrain.update(headTmp.x, headTmp.z)
+  trees.update(headTmp.x, headTmp.z)
 
   hud.setLines(hudLines())
   hud.paint(now)
@@ -178,6 +251,7 @@ function hudLines() {
   const info = renderer.info
   const head = player.headPosition(headTmp)
   const ts = terrain.stats
+  const tr = trees.stats
   const ground = terrainHeight.heightAt(head.x, head.z)
   const slopeDeg = (terrainHeight.slopeAt(head.x, head.z) * 180) / Math.PI
 
@@ -191,11 +265,13 @@ function hudLines() {
     `chunks  render ${ts.rendered}/${ts.desired}   pending ${ts.pending}   slots ${ts.slots}/${ts.cached}`,
     `chunk tris ${(ts.tris / 1000).toFixed(1)}k   res ${CHUNK_RES}   gen ${ts.lastGenMs.toFixed(1)}ms`,
     `splitK ${terrain.splitK.toFixed(1)} ([ ])   depth<=${MAX_DEPTH}   world ${WORLD_SIZE / 1000}km`,
+    `trees ${tr.count}   ${(tr.tris / 1000).toFixed(1)}k tris   place ${tr.lastBuildMs.toFixed(1)}ms`,
     '',
     '## position',
-    `x ${head.x.toFixed(0)}  z ${head.z.toFixed(0)}  elev ${ground.toFixed(1)}m`,
+    `x ${head.x.toFixed(0)}  z ${head.z.toFixed(0)}`,
+    `ground elev ${ground.toFixed(1)}m   eye ${head.y.toFixed(1)}m   agl ${(head.y - ground).toFixed(1)}m`,
     `slope ${slopeDeg.toFixed(0)}deg / max ${LOCOMOTION.maxSlopeDeg}${player.blocked ? '   !! BLOCKED' : ''}`,
-    `speed ${player.speed.toFixed(2)} m/s`,
+    `speed ${player.speed.toFixed(2)} m/s${player.flying ? '   ** FLYING (space) **' : ''}`,
   ]
 }
 
@@ -205,6 +281,8 @@ renderer.setAnimationLoop(tick)
 // desktop warm-up do not poison the number that actually matters in VR.
 renderer.xr.addEventListener('sessionstart', () => {
   worst = 0
+  player.setFlying(false) // desktop survey tool only; see LOCOMOTION in player.js
+  held.clear()
   const session = renderer.xr.getSession()
   if (session?.supportedFrameRates?.includes(72)) session.updateTargetFrameRate(72)
 })

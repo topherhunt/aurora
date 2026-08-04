@@ -18,6 +18,18 @@ export const LOCOMOTION = {
   vertTau: 0.12, // vertical damping; pitch and bob from naive terrain-following is a nausea source
   eyeHeight: 1.65, // desktop only -- in XR the headset supplies this
   stickDeadzone: 0.18,
+
+  // --- fly mode: a DESKTOP SURVEY TOOL, not a game mechanic ----------------
+  // Reading a 16 km procedural world on foot at 1.45 m/s is not feasible, and
+  // the tuning decisions in §3 (ridge frequency, terrace gating, cliff amount)
+  // are all macro-scale judgements. So desktop gets a free camera.
+  //
+  // It is disabled on entering XR and bound to no controller button. Free
+  // flight at 14.5 m/s with no ground reference is a nausea generator, and §12
+  // gives comfort priority over capability wherever they conflict.
+  flySpeed: 14.5, // 10x walking
+  flyAccelTau: 0.15, // snappier than walking; nothing here is about comfort
+  flyClearance: 2.0, // stay this far above ground, so she cannot fly inside a mountain
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -32,10 +44,13 @@ export class Player {
     this.snapArmed = true
     this.smoothY = null
     this.blocked = false // true when the slope limiter refused a move, for the HUD
+    this.flying = false
 
     this._head = new THREE.Vector3()
     this._quat = new THREE.Quaternion()
     this._fwd = new THREE.Vector3()
+    this._right = new THREE.Vector3()
+    this._step = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._maxTan = Math.tan((LOCOMOTION.maxSlopeDeg * Math.PI) / 180)
   }
@@ -54,22 +69,47 @@ export class Player {
     this.speed = 0
   }
 
-  // input: {move: 0..1, turn: -1|0|1 (raw stick X), unstick: bool}
+  // Desktop only. Leaves her at her current altitude on entry so the view does
+  // not jump, and drops her back onto the ground on exit.
+  setFlying(on) {
+    if (this.flying === on) return
+    this.flying = on
+    this.speed = 0
+    this.blocked = false
+    if (!on) {
+      const head = this.headPosition()
+      this.rig.position.y = this.th.heightAt(head.x, head.z)
+      this.smoothY = this.rig.position.y
+    }
+  }
+
+  // input: {move: -1..1 forward/back, strafe: -1..1, turn: raw stick X, unstick: bool}
   update(dt, input) {
     const L = LOCOMOTION
     const head = this.headPosition()
+    const strafe = input.strafe ?? 0
 
     this._snapTurn(input.turn, head)
 
-    const move = input.move > L.stickDeadzone ? Math.min(1, input.move) : 0
-    if (move > 0) {
-      const target = move * L.maxSpeed
-      this.speed += (target - this.speed) * (1 - Math.exp(-dt / L.accelTau))
+    // Deadzone applies to magnitude, so pulling back works the same as forward.
+    const fwdIn = Math.abs(input.move) > L.stickDeadzone ? THREE.MathUtils.clamp(input.move, -1, 1) : 0
+    const strafeIn = Math.abs(strafe) > L.stickDeadzone ? THREE.MathUtils.clamp(strafe, -1, 1) : 0
+    const demand = Math.min(1, Math.hypot(fwdIn, strafeIn))
+
+    const top = this.flying ? L.flySpeed : L.maxSpeed
+    const tau = this.flying ? L.flyAccelTau : L.accelTau
+    if (demand > 0) {
+      this.speed += (demand * top - this.speed) * (1 - Math.exp(-dt / tau))
     } else {
       this.speed = 0 // instant stop on release (§12)
     }
 
-    if (this.speed > 0.001) this._tryMove(this.speed * dt, head)
+    if (this.flying) {
+      this._fly(dt, fwdIn, strafeIn, demand)
+      return
+    }
+
+    if (this.speed > 0.001) this._tryMove(this.speed * dt, head, fwdIn, strafeIn, demand)
 
     if (input.unstick) this._unstick(head)
 
@@ -80,6 +120,40 @@ export class Player {
     if (this.smoothY === null) this.smoothY = ground
     this.smoothY += (ground - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
     this.rig.position.y = this.smoothY
+  }
+
+  // Free 6DOF flight. Forward follows the full look direction including pitch,
+  // so "any direction" is just a matter of where she is looking -- which is one
+  // fewer control to explain than dedicated ascend/descend keys.
+  _fly(dt, fwdIn, strafeIn, demand) {
+    if (this.speed <= 0.001 || demand <= 0) return
+
+    this.camera.getWorldQuaternion(this._quat)
+    this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
+    this._right.set(1, 0, 0).applyQuaternion(this._quat)
+    this._right.y = 0 // strafe stays level even when looking up or down
+    if (this._right.lengthSq() > 1e-6) this._right.normalize()
+
+    this._step
+      .set(0, 0, 0)
+      .addScaledVector(this._fwd, fwdIn / demand)
+      .addScaledVector(this._right, strafeIn / demand)
+
+    const len = this._step.length()
+    if (len < 1e-6) return
+    this._step.multiplyScalar((this.speed * dt) / len)
+
+    const p = this.rig.position
+    p.x = THREE.MathUtils.clamp(p.x + this._step.x, -WORLD_HALF + 32, WORLD_HALF - 32)
+    p.z = THREE.MathUtils.clamp(p.z + this._step.z, -WORLD_HALF + 32, WORLD_HALF - 32)
+    p.y += this._step.y
+
+    // Never below the ground. Flying inside a mountain is disorienting and the
+    // only way out is guesswork, so the floor just pushes her back up.
+    const head = this.headPosition()
+    const floor = this.th.heightAt(head.x, head.z) + LOCOMOTION.flyClearance
+    if (p.y < floor) p.y = floor
+    this.smoothY = p.y
   }
 
   _snapTurn(stickX, head) {
@@ -98,12 +172,27 @@ export class Player {
     }
   }
 
-  _tryMove(dist, head) {
+  // fwdIn/strafeIn are signed; demand is their magnitude. In XR strafeIn is
+  // always 0 -- §12 keeps VR locomotion forward-only, and this stays a desktop
+  // convenience rather than becoming a second way to move in the headset.
+  _tryMove(dist, head, fwdIn, strafeIn, demand) {
     this.camera.getWorldQuaternion(this._quat)
     this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
     this._fwd.y = 0
     if (this._fwd.lengthSq() < 1e-6) return // looking straight up or down
     this._fwd.normalize()
+    this._right.set(this._fwd.z, 0, -this._fwd.x) // right-hand perpendicular on the ground plane
+
+    this._step
+      .set(0, 0, 0)
+      .addScaledVector(this._fwd, fwdIn / demand)
+      .addScaledVector(this._right, strafeIn / demand)
+    const len = Math.hypot(this._step.x, this._step.z)
+    if (len < 1e-6) return
+    // Reuse _fwd as the actual travel direction: everything below -- the slope
+    // test and the contour slide -- is about where she is going, not where she
+    // is looking, and those differ as soon as strafing exists.
+    this._fwd.set(this._step.x / len, 0, this._step.z / len)
 
     let dx = this._fwd.x * dist
     let dz = this._fwd.z * dist

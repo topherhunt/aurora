@@ -216,5 +216,101 @@ check(
   `${SLOT_COUNT * CHUNK_VERTS} verts`
 )
 
+// --- scattered trees ---------------------------------------------------------
+//
+// A scale reference, not the placement system (§6). What matters here is that
+// it is deterministic -- trees that shuffle when she walks away and back are
+// worse than no trees at all for judging distance -- and that it stays cheap.
+
+console.log('\nscale-reference trees')
+{
+  const { Trees } = await import('../src/props/trees.js')
+  const treeScene = new THREE.Scene()
+  const trees = new Trees(treeScene, th, { seed: SEED })
+
+  const perTree = trees.trisPer
+  console.log(`        ${perTree.length} variants at ${perTree.join(' / ')} tris`)
+  check(Math.max(...perTree) < 200, 'variants stay low-poly', `max ${Math.max(...perTree)} tris`)
+
+  const SITES = [
+    [168, 64],
+    [1200, -800],
+    [-3000, 2400],
+    [5000, 5000],
+  ]
+
+  const snapshot = (px, pz) => {
+    trees.update(px, pz)
+    const m = new THREE.Matrix4()
+    const out = []
+    for (let i = 0; i < trees.stats.count; i++) {
+      trees.batch.getMatrixAt(trees.instances[i], m)
+      out.push(m.elements.slice())
+    }
+    return out
+  }
+
+  let worstMs = 0
+  let anyCapped = false
+  for (const [px, pz] of SITES) {
+    const before = snapshot(px, pz)
+    worstMs = Math.max(worstMs, trees.stats.lastBuildMs)
+    anyCapped = anyCapped || trees.stats.capped
+    const n = trees.stats.count
+    const tris = trees.stats.tris
+
+    // Walk far enough away that everything is rebuilt, then come back.
+    snapshot(px + 4000, pz - 4000)
+    const after = snapshot(px, pz)
+
+    let drift = 0
+    if (after.length !== before.length) {
+      drift = Infinity
+    } else {
+      for (let i = 0; i < before.length; i++) {
+        for (let k = 0; k < 16; k++) if (before[i][k] !== after[i][k]) drift++
+      }
+    }
+    check(drift === 0, `at ${px},${pz}: placement is stable across a round trip`, `${n} trees, ${(tris / 1000).toFixed(1)}k tris`)
+  }
+
+  console.log(`        worst placement pass ${worstMs.toFixed(1)}ms`)
+  check(worstMs < 8, 'placement pass is short enough not to read as a hitch', `${worstMs.toFixed(1)}ms`)
+  check(!anyCapped, 'never hit the instance cap')
+
+  // Every tree must sit on the ground, below the treeline, on walkable-ish
+  // ground. A tree floating over a gorge is the most obvious possible tell that
+  // placement and the height field disagree.
+  trees.update(168, 64)
+  const m = new THREE.Matrix4()
+  const p = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const s = new THREE.Vector3()
+  let floating = 0
+  let tooSteep = 0
+  let aboveLine = 0
+  let minS = Infinity
+  let maxS = -Infinity
+  for (let i = 0; i < trees.stats.count; i++) {
+    trees.batch.getMatrixAt(trees.instances[i], m)
+    m.decompose(p, q, s)
+    if (Math.abs(p.y - th.heightAt(p.x, p.z)) > 1e-3) floating++
+    if (th.slopeAt(p.x, p.z, 1.5) > (32 * Math.PI) / 180) tooSteep++
+    if (p.y > 470) aboveLine++
+    minS = Math.min(minS, s.x)
+    maxS = Math.max(maxS, s.x)
+  }
+  console.log(
+    `        ${trees.stats.count} trees at spawn, elevations up to ${aboveLine === 0 ? '<470' : '>470'}m, ` +
+      `scale ${minS.toFixed(2)}-${maxS.toFixed(2)}x`
+  )
+  check(floating === 0, 'every tree sits on the height field', `${floating} floating`)
+  check(tooSteep === 0, 'no trees on cliff faces', `${tooSteep} too steep`)
+  check(aboveLine === 0, 'no trees above the treeline', `${aboveLine} over 470m`)
+  check(maxS - minS > 0.2, 'trees vary in size', `${minS.toFixed(2)}x to ${maxS.toFixed(2)}x`)
+
+  trees.dispose()
+}
+
 console.log(`\nres ${CHUNK_RES}: ${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)
