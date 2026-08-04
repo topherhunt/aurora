@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { selectNodes, nodeKey, MAX_DEPTH, DEFAULT_SPLIT_K } from './quadtree.js'
 import { WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 import { CHUNK_RES } from '../sim/chunk-mesh.js'
+import { createTerrainMaterial } from './terrain-material.js'
 
 // ---------------------------------------------------------------------------
 // Terrain chunk manager: quadtree LOD, worker-fed geometry, hole-free swaps,
@@ -51,7 +52,7 @@ export class Terrain {
     this.splitK = splitK
     this.maxCached = MAX_CACHED
 
-    this.material = new THREE.MeshLambertMaterial({ vertexColors: true })
+    this.material = createTerrainMaterial()
 
     this.batch = new THREE.BatchedMesh(
       SLOT_COUNT,

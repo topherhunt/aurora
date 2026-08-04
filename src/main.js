@@ -4,7 +4,7 @@ import { TerrainHeight, WORLD_SIZE } from './sim/terrain-height.js'
 import { Terrain, CHUNK_RES } from './terrain/terrain.js'
 import { DEFAULT_SPLIT_K, MAX_DEPTH, MIN_SPLIT_K, MAX_SPLIT_K } from './terrain/quadtree.js'
 import { Player, LOCOMOTION } from './player.js'
-import { Trees } from './props/trees.js'
+import { Scatter } from './props/scatter.js'
 import { Vignette } from './vignette.js'
 import { Hud } from './hud.js'
 import { Input } from './input.js'
@@ -58,9 +58,9 @@ scene.add(new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85))
 
 const terrainHeight = new TerrainHeight(SEED)
 const terrain = new Terrain(scene, { seed: SEED, workers: 2 })
-// Scale reference only -- see the header of props/trees.js. The real placement
-// system is §6 and lands at build step 5.
-const trees = new Trees(scene, terrainHeight, { seed: SEED })
+// Scale reference only -- see the header of props/scatter.js. The real
+// placement system is §6 and lands at build step 5.
+const props = new Scatter(scene, terrainHeight, { seed: SEED })
 const player = new Player(rig, camera, terrainHeight)
 const vignette = new Vignette(camera)
 const hud = new Hud()
@@ -160,7 +160,7 @@ addEventListener('keyup', (e) => {
 addEventListener('blur', () => held.clear())
 
 function setFlying(want) {
-  // Never in the headset: 14.5 m/s of free flight with no ground reference is
+  // Never in the headset: 29 m/s of free flight with no ground reference is
   // exactly the vestibular mismatch §12 exists to prevent.
   player.setFlying(want && !renderer.xr.isPresenting)
 }
@@ -188,7 +188,7 @@ let frames = 0
 let acc = 0
 let avgMs = 0
 let worst = 0
-const moveInput = { move: 0, strafe: 0, turn: 0, unstick: false }
+const moveInput = { move: 0, strafe: 0, turn: 0, unstick: false, instant: false }
 const headTmp = new THREE.Vector3()
 
 function readInput() {
@@ -202,12 +202,18 @@ function readInput() {
     const rx = st.right.axes[0]
     moveInput.turn = Math.abs(lx) > Math.abs(rx) ? lx : rx
     moveInput.unstick = !!st.left.buttons.SECONDARY?.justPressed
+    // The eased ramp is a VR comfort measure (§12) and belongs only here, where
+    // there is a vestibular system to disagree with the moving world.
+    moveInput.instant = false
     if (st.right.buttons.SECONDARY?.justPressed) hud.toggle()
     if (st.left.buttons.PRIMARY?.justPressed) player.recenterXR(renderer)
     return
   }
   moveInput.move = (on('forward') ? 1 : 0) - (on('back') ? 1 : 0)
   moveInput.strafe = (on('right') ? 1 : 0) - (on('left') ? 1 : 0)
+  // A key is already a binary input; ramping it up over half a second just reads
+  // as lag when the world is on a monitor.
+  moveInput.instant = true
   // Snap turn on the arrow keys, so the VR turn path still gets exercised on
   // desktop now that the letter keys strafe instead.
   moveInput.turn = (on('turnRight') ? 1 : 0) - (on('turnLeft') ? 1 : 0)
@@ -232,7 +238,9 @@ function tick() {
 
   readInput()
   player.update(dt, moveInput)
-  vignette.update(player.speed / LOCOMOTION.maxSpeed, dt)
+  // Suppressed while flying: at 29 m/s the speed vignette closes to a pinhole,
+  // and the whole point of fly mode is to see the periphery.
+  vignette.update(player.flying ? 0 : player.speed / LOCOMOTION.maxSpeed, dt)
 
   // Called every frame, but it throttles its own quadtree reselection (§5:
   // stagger CPU work). Streaming has to run at frame rate even when selection
@@ -240,7 +248,7 @@ function tick() {
   // ancestor until the next selection tick.
   player.headPosition(headTmp)
   terrain.update(headTmp.x, headTmp.z)
-  trees.update(headTmp.x, headTmp.z)
+  props.update(headTmp.x, headTmp.z)
 
   hud.setLines(hudLines())
   hud.paint(now)
@@ -251,7 +259,8 @@ function hudLines() {
   const info = renderer.info
   const head = player.headPosition(headTmp)
   const ts = terrain.stats
-  const tr = trees.stats
+  const pr = props.stats
+  const bk = pr.byKind
   const ground = terrainHeight.heightAt(head.x, head.z)
   const slopeDeg = (terrainHeight.slopeAt(head.x, head.z) * 180) / Math.PI
 
@@ -265,7 +274,10 @@ function hudLines() {
     `chunks  render ${ts.rendered}/${ts.desired}   pending ${ts.pending}   slots ${ts.slots}/${ts.cached}`,
     `chunk tris ${(ts.tris / 1000).toFixed(1)}k   res ${CHUNK_RES}   gen ${ts.lastGenMs.toFixed(1)}ms`,
     `splitK ${terrain.splitK.toFixed(1)} ([ ])   depth<=${MAX_DEPTH}   world ${WORLD_SIZE / 1000}km`,
-    `trees ${tr.count}   ${(tr.tris / 1000).toFixed(1)}k tris   place ${tr.lastBuildMs.toFixed(1)}ms`,
+    '',
+    '## props (1 batched draw call)',
+    `tree ${bk.tree ?? 0}  rock ${bk.rock ?? 0}  grass ${bk.grass ?? 0}  cabin ${bk.cabin ?? 0}`,
+    `${(pr.tris / 1000).toFixed(1)}k tris   last place ${pr.lastBuildKind} ${pr.lastBuildMs.toFixed(1)}ms`,
     '',
     '## position',
     `x ${head.x.toFixed(0)}  z ${head.z.toFixed(0)}`,

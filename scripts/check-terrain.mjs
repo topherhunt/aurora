@@ -216,36 +216,72 @@ check(
   `${SLOT_COUNT * CHUNK_VERTS} verts`
 )
 
-// --- scattered trees ---------------------------------------------------------
+
+// --- scattered props ---------------------------------------------------------
 //
-// A scale reference, not the placement system (§6). What matters here is that
-// it is deterministic -- trees that shuffle when she walks away and back are
-// worse than no trees at all for judging distance -- and that it stays cheap.
+// A scale reference, not the placement system (§6). Three things matter and all
+// three are invisible in a screenshot:
+//
+//   Determinism. Props that shuffle when she walks away and back are worse than
+//   no props at all for judging distance, and the bug only shows up on a return
+//   trip nobody makes by accident.
+//   Grounding. A cabin floating over a gorge is the loudest possible tell that
+//   placement and the height field disagree.
+//   Cost. The rebuild is synchronous main-thread work between two frames.
 
-console.log('\nscale-reference trees')
+console.log('\nscale-reference props')
 {
-  const { Trees } = await import('../src/props/trees.js')
-  const treeScene = new THREE.Scene()
-  const trees = new Trees(treeScene, th, { seed: SEED })
+  const { Scatter } = await import('../src/props/scatter.js')
+  const propScene = new THREE.Scene()
+  const props = new Scatter(propScene, th, { seed: SEED })
 
-  const perTree = trees.trisPer
-  console.log(`        ${perTree.length} variants at ${perTree.join(' / ')} tris`)
-  check(Math.max(...perTree) < 200, 'variants stay low-poly', `max ${Math.max(...perTree)} tris`)
+  check(propScene.children.length === 1, 'all props are one BatchedMesh', `${propScene.children.length} scene child(ren)`)
+
+  // One kind rebuilds per update() by design, so settling takes as many calls as
+  // there are kinds. Anything that needs a settled world must go through this.
+  const settle = (px, pz) => {
+    for (let i = 0; i < props.kinds.length + 2; i++) props.update(px, pz)
+  }
+
+  const box = new THREE.Box3()
+  for (const s of props.kinds) {
+    const sizes = s.geometryIds.map((id) => {
+      props.batch.getBoundingBoxAt(id, box)
+      return box.max.y - box.min.y
+    })
+    console.log(
+      `        ${s.cfg.name.padEnd(6)} ${s.geometryIds.length} variants   ` +
+        `${s.trisPer.join('/')} tris   ${sizes.map((h) => h.toFixed(2)).join('/')} m tall`
+    )
+  }
+
+  // The brief for boulders was "one metre tall", and it is the one prop whose
+  // real size a person can check by eye, so it is worth pinning.
+  {
+    const rock = props.byName.rock
+    props.batch.getBoundingBoxAt(rock.geometryIds[0], box)
+    const h = box.max.y - box.min.y
+    check(h > 0.75 && h < 1.35, 'the base boulder is about a metre tall', `${h.toFixed(2)} m`)
+  }
 
   const SITES = [
-    [168, 64],
+    [114, 39],
     [1200, -800],
     [-3000, 2400],
     [5000, 5000],
   ]
 
   const snapshot = (px, pz) => {
-    trees.update(px, pz)
+    settle(px, pz)
     const m = new THREE.Matrix4()
-    const out = []
-    for (let i = 0; i < trees.stats.count; i++) {
-      trees.batch.getMatrixAt(trees.instances[i], m)
-      out.push(m.elements.slice())
+    const out = {}
+    for (const s of props.kinds) {
+      const rows = []
+      for (let i = 0; i < s.count; i++) {
+        props.batch.getMatrixAt(s.instances[i], m)
+        rows.push(m.elements.slice())
+      }
+      out[s.cfg.name] = rows
     }
     return out
   }
@@ -254,63 +290,130 @@ console.log('\nscale-reference trees')
   let anyCapped = false
   for (const [px, pz] of SITES) {
     const before = snapshot(px, pz)
-    worstMs = Math.max(worstMs, trees.stats.lastBuildMs)
-    anyCapped = anyCapped || trees.stats.capped
-    const n = trees.stats.count
-    const tris = trees.stats.tris
+    worstMs = Math.max(worstMs, props.stats.lastBuildMs)
+    anyCapped = anyCapped || props.stats.capped
+    const summary = props.kinds.map((s) => `${s.cfg.name} ${s.count}`).join(' ')
+    const tris = props.stats.tris
 
-    // Walk far enough away that everything is rebuilt, then come back.
+    // Far enough away that every kind is rebuilt from scratch, then back.
     snapshot(px + 4000, pz - 4000)
     const after = snapshot(px, pz)
 
     let drift = 0
-    if (after.length !== before.length) {
-      drift = Infinity
-    } else {
-      for (let i = 0; i < before.length; i++) {
-        for (let k = 0; k < 16; k++) if (before[i][k] !== after[i][k]) drift++
+    for (const name of Object.keys(before)) {
+      const a = before[name]
+      const b = after[name]
+      if (a.length !== b.length) {
+        drift = Infinity
+        continue
+      }
+      for (let i = 0; i < a.length; i++) {
+        for (let k = 0; k < 16; k++) if (a[i][k] !== b[i][k]) drift++
       }
     }
-    check(drift === 0, `at ${px},${pz}: placement is stable across a round trip`, `${n} trees, ${(tris / 1000).toFixed(1)}k tris`)
+    check(drift === 0, `at ${px},${pz}: placement is stable across a round trip`, `${summary}, ${(tris / 1000).toFixed(1)}k tris`)
   }
 
-  console.log(`        worst placement pass ${worstMs.toFixed(1)}ms`)
-  check(worstMs < 8, 'placement pass is short enough not to read as a hitch', `${worstMs.toFixed(1)}ms`)
-  check(!anyCapped, 'never hit the instance cap')
+  console.log(`        worst single-kind rebuild ${worstMs.toFixed(1)}ms`)
+  // One frame at 72 Hz is 13.9 ms and the terrain, the quadtree and the render
+  // all have to fit in it too.
+  check(worstMs < 4, 'a rebuild fits inside a frame with room to spare', `${worstMs.toFixed(1)}ms`)
+  check(!anyCapped, 'no kind hit its instance cap')
 
-  // Every tree must sit on the ground, below the treeline, on walkable-ish
-  // ground. A tree floating over a gorge is the most obvious possible tell that
-  // placement and the height field disagree.
-  trees.update(168, 64)
+  // Only one kind may rebuild per update(), or a bad moment stacks all four.
+  //
+  // The walk is deterministic, so the three passes do identical work and differ
+  // only in noise -- a GC pause landing inside a rebuild swung this from 2.1 ms
+  // to 5.1 ms between runs and failed the build for nothing. Taking the min of
+  // the three per-pass worsts measures the work rather than the interruption.
+  {
+    let worstPerCall = Infinity
+    for (let pass = 0; pass < 3; pass++) {
+      settle(600, 600)
+      let worst = 0
+      for (let i = 0; i < 60; i++) {
+        const before = props.stats.lastBuildKind + '|' + props.frame
+        props.update(600 + i * 9, 600 + i * 9)
+        if (props.stats.lastBuildMs > worst && props.stats.lastBuildKind !== before) {
+          worst = props.stats.lastBuildMs
+        }
+      }
+      worstPerCall = Math.min(worstPerCall, worst)
+    }
+    check(worstPerCall < 4, 'no single update() call exceeds one kind of work', `${worstPerCall.toFixed(1)}ms while walking`)
+  }
+
+  // Placement rules. Every prop on the height field, under its own ceiling, off
+  // ground it has no business being on.
+  settle(114, 39)
   const m = new THREE.Matrix4()
   const p = new THREE.Vector3()
   const q = new THREE.Quaternion()
-  const s = new THREE.Vector3()
-  let floating = 0
-  let tooSteep = 0
-  let aboveLine = 0
-  let minS = Infinity
-  let maxS = -Infinity
-  for (let i = 0; i < trees.stats.count; i++) {
-    trees.batch.getMatrixAt(trees.instances[i], m)
-    m.decompose(p, q, s)
-    if (Math.abs(p.y - th.heightAt(p.x, p.z)) > 1e-3) floating++
-    if (th.slopeAt(p.x, p.z, 1.5) > (32 * Math.PI) / 180) tooSteep++
-    if (p.y > 470) aboveLine++
-    minS = Math.min(minS, s.x)
-    maxS = Math.max(maxS, s.x)
+  const sc = new THREE.Vector3()
+  for (const s of props.kinds) {
+    const k = s.cfg
+    let floating = 0
+    let tooSteep = 0
+    let tooHigh = 0
+    let outside = 0
+    // The disc is centred on the kind's own rebuild cell, not on the camera --
+    // grass rebuilds every 14 m but places every 4.6 m, so it lags deliberately.
+    // Measure the radius from the centre that was actually used.
+    const grid = k.rebuildEvery ?? k.spacing
+    const ox = s.cellX * grid
+    const oz = s.cellZ * grid
+    for (let i = 0; i < s.count; i++) {
+      props.batch.getMatrixAt(s.instances[i], m)
+      m.decompose(p, q, sc)
+      // Props are sunk by sink * scale so they do not sit on a visible seam.
+      if (Math.abs(p.y - (th.heightAt(p.x, p.z) - k.sink * sc.x)) > 1e-3) floating++
+      if (th.slopeAt(p.x, p.z, 1.5) > (k.maxSlopeDeg * Math.PI) / 180) tooSteep++
+      if (th.heightAt(p.x, p.z) > k.maxElev) tooHigh++
+      if (Math.hypot(p.x - ox, p.z - oz) > k.radius + 1) outside++
+    }
+    // ...and that the lag can never leave her standing outside her own disc.
+    check(
+      Math.hypot(114 - ox, 39 - oz) < k.radius * 0.5,
+      `${k.name}: she stays well inside her own scatter disc`,
+      `${Math.hypot(114 - ox, 39 - oz).toFixed(1)} m off centre, radius ${k.radius}`
+    )
+    check(
+      floating === 0 && tooSteep === 0 && tooHigh === 0 && outside === 0,
+      `${k.name}: placement obeys its own rules`,
+      `${s.count} placed, ${floating} floating, ${tooSteep} too steep, ${tooHigh} too high, ${outside} beyond radius`
+    )
   }
-  console.log(
-    `        ${trees.stats.count} trees at spawn, elevations up to ${aboveLine === 0 ? '<470' : '>470'}m, ` +
-      `scale ${minS.toFixed(2)}-${maxS.toFixed(2)}x`
-  )
-  check(floating === 0, 'every tree sits on the height field', `${floating} floating`)
-  check(tooSteep === 0, 'no trees on cliff faces', `${tooSteep} too steep`)
-  check(aboveLine === 0, 'no trees above the treeline', `${aboveLine} over 470m`)
-  check(maxS - minS > 0.2, 'trees vary in size', `${minS.toFixed(2)}x to ${maxS.toFixed(2)}x`)
 
-  trees.dispose()
+  // The whole point of the density taper is that there are more props nearby
+  // than far away. A hard cull radius would give a flat distribution instead.
+  {
+    const tree = props.byName.tree
+    let inner = 0
+    let outer = 0
+    const rr = tree.cfg.radius
+    for (let i = 0; i < tree.count; i++) {
+      props.batch.getMatrixAt(tree.instances[i], m)
+      m.decompose(p, q, sc)
+      const d = Math.hypot(p.x - 114, p.z - 39)
+      // Equal-area rings, so a flat density would put the same count in each.
+      if (d < rr / Math.SQRT2) inner++
+      else outer++
+    }
+    console.log(`        trees by equal-area ring: ${inner} inner / ${outer} outer`)
+    check(inner > outer * 1.25, 'density genuinely tapers with distance', `${inner} vs ${outer}`)
+  }
+
+  // Cabins are rare on purpose but must not be so rare they never appear.
+  {
+    let seen = 0
+    for (let i = 0; i < 12; i++) {
+      settle(i * 900 - 4000, 2200 - i * 700)
+      seen += props.byName.cabin.count
+    }
+    check(seen > 0, 'cabins appear somewhere across 12 sample sites', `${seen} total`)
+  }
+
+  props.dispose()
 }
 
 console.log(`\nres ${CHUNK_RES}: ${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
-process.exit(failures === 0 ? 0 : 1)

@@ -17,10 +17,21 @@ export const CHUNK_RES = 16
 // height-blend, triplanar) and lands at build step 6. This exists so terrain
 // SHAPE is legible during step 2 -- flat grey terrain hides exactly the cliffs
 // and gorges we are trying to tune.
-const C_GRASS = [0.24, 0.33, 0.19]
-const C_SCRUB = [0.31, 0.31, 0.19]
-const C_ROCK = [0.36, 0.345, 0.335]
-const C_SNOW = [0.93, 0.95, 0.99]
+//
+// These are LINEAR values and the first pass had them far too high: linear 0.33
+// is sRGB 0.60, which with a 2.1-intensity sun on top came out as a pale mint
+// green. Roughly linear 0.05 -> sRGB 0.25, and that is the range dark gritty
+// ground actually lives in.
+//
+// Only the base classification lives here. The dirt-and-moss mottling and the
+// fine speckle are in terrain/terrain-material.js, in the fragment shader,
+// because anything baked per-vertex would rescale itself at every LOD ring.
+// Grass is deliberately green-dominant: the shader classifies "is this ground
+// vegetated" off exactly that, so do not neutralise it.
+const C_GRASS = [0.048, 0.088, 0.03]
+const C_SCRUB = [0.075, 0.07, 0.042]
+const C_ROCK = [0.085, 0.082, 0.078]
+const C_SNOW = [0.86, 0.88, 0.93]
 
 function shade(h, ny, out, o) {
   // ny is the normal's Y component: 1 = flat, 0 = vertical.

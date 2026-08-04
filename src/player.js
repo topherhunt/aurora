@@ -10,7 +10,11 @@ import { WORLD_HALF } from './sim/terrain-height.js'
 
 export const LOCOMOTION = {
   maxSpeed: 1.45, // m/s -- normal walking pace
-  accelTau: 0.5, // seconds; the ease-in curve is what prevents nausea, not the top speed
+  // Seconds. The ease-in curve is what prevents nausea, not the top speed -- but
+  // it is nausea from a moving world your inner ear disagrees with, which only
+  // happens in the headset. On a monitor the ramp is pure input lag, so the
+  // desktop path passes instant:true and skips it entirely (see update()).
+  accelTau: 0.5,
   maxSlopeDeg: 38, // §4 -- this is what makes traps impossible by construction
   snapDeg: 60, // §12 -- one tunable constant, easy to try 45 instead
   snapEnter: 0.75, // stick deflection to fire a snap turn
@@ -25,10 +29,9 @@ export const LOCOMOTION = {
   // are all macro-scale judgements. So desktop gets a free camera.
   //
   // It is disabled on entering XR and bound to no controller button. Free
-  // flight at 14.5 m/s with no ground reference is a nausea generator, and §12
+  // flight at 29 m/s with no ground reference is a nausea generator, and §12
   // gives comfort priority over capability wherever they conflict.
-  flySpeed: 14.5, // 10x walking
-  flyAccelTau: 0.15, // snappier than walking; nothing here is about comfort
+  flySpeed: 29, // 20x walking -- 16 km of world takes ~9 min to cross end to end
   flyClearance: 2.0, // stay this far above ground, so she cannot fly inside a mountain
 }
 
@@ -83,7 +86,8 @@ export class Player {
     }
   }
 
-  // input: {move: -1..1 forward/back, strafe: -1..1, turn: raw stick X, unstick: bool}
+  // input: {move: -1..1 forward/back, strafe: -1..1, turn: raw stick X,
+  //         unstick: bool, instant: bool}
   update(dt, input) {
     const L = LOCOMOTION
     const head = this.headPosition()
@@ -97,11 +101,12 @@ export class Player {
     const demand = Math.min(1, Math.hypot(fwdIn, strafeIn))
 
     const top = this.flying ? L.flySpeed : L.maxSpeed
-    const tau = this.flying ? L.flyAccelTau : L.accelTau
-    if (demand > 0) {
-      this.speed += (demand * top - this.speed) * (1 - Math.exp(-dt / tau))
-    } else {
+    if (demand <= 0) {
       this.speed = 0 // instant stop on release (§12)
+    } else if (input.instant) {
+      this.speed = demand * top
+    } else {
+      this.speed += (demand * top - this.speed) * (1 - Math.exp(-dt / L.accelTau))
     }
 
     if (this.flying) {
@@ -181,7 +186,11 @@ export class Player {
     this._fwd.y = 0
     if (this._fwd.lengthSq() < 1e-6) return // looking straight up or down
     this._fwd.normalize()
-    this._right.set(this._fwd.z, 0, -this._fwd.x) // right-hand perpendicular on the ground plane
+    // Right-hand perpendicular on the ground plane. Sign matters and is easy to
+    // get backwards: facing -Z (three's default forward) must give +X, so it is
+    // (-fwd.z, 0, fwd.x). The other sign points left and silently swaps the
+    // strafe keys, which is exactly what it did.
+    this._right.set(-this._fwd.z, 0, this._fwd.x)
 
     this._step
       .set(0, 0, 0)

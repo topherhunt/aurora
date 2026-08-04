@@ -23,21 +23,30 @@ import { WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 //
 // The first version shipped res 24 / K 2.1 / depth 9: 1.14 deg, but 502 leaves
 // and 675k triangles -- 79% of §0's measured 800k budget with nothing in the
-// world but ground. Sweeping the frontier at equal angular error, res 16 /
-// K 1.3 / depth 10 costs 195k (24%) at 2.75 deg with 1.00 m leaf cells, which
-// is §2's stated heightmap resolution. That leaves the budget where it has to
-// go, which is props.
+// world but ground. Sweeping the frontier at equal angular error moved that to
+// res 16 / depth 10, with 1.00 m leaf cells, which is §2's stated heightmap
+// resolution.
 //
-// Raising CHUNK_RES while lowering splitK holds angular error constant but
-// costs MORE triangles, not fewer: ring size bottoms out at low K, so you pay
-// res^2 without getting the K^2 saving back. Do not "optimise" that direction.
+// K then came down again, to 1.0, after looking at it: chunky distant terrain
+// turns out to be perfectly acceptable, and the fog is doing most of that work
+// anyway. Measured worst-case selections over 400 random viewpoints:
 //
-// splitK is live-tunable at runtime ([ and ]) precisely because 2.75 deg is a
+//   K 0.8 -> 187 leaves, 120k tris, 4.48 deg
+//   K 1.0 -> 223 leaves, 143k tris, 3.58 deg     <- default
+//   K 1.3 -> 319 leaves, 204k tris, 2.75 deg     <- previous default
+//
+// Note how flat that curve is below K 1.3. Ring size bottoms out at low K, so
+// most of what a higher K buys is near-field chunks you are looking straight
+// down at. That is also why raising CHUNK_RES while lowering splitK costs MORE
+// triangles at constant angular error, not fewer -- you pay res^2 without ever
+// getting the K^2 saving back. Do not "optimise" that direction.
+//
+// splitK is live-tunable at runtime ([ and ]) precisely because 3.58 deg is a
 // judgement call that has to be made by looking at ridgelines, not at a table.
 // ---------------------------------------------------------------------------
 
 export const MAX_DEPTH = 10 // 16384 m root / 2^10 = 16 m leaves
-export const DEFAULT_SPLIT_K = 1.3
+export const DEFAULT_SPLIT_K = 1.0
 
 // The terrain slot pool is sized for the worst selection at this splitK.
 export const MAX_SPLIT_K = 2.1

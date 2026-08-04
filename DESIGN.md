@@ -148,6 +148,25 @@ Plain multi-octave Perlin produces rolling blobby hills and nothing else. It is 
 
 **Gorges and gulches come primarily from hydrology, not noise.** The `accumulation × slope` carve depth in §2 cuts genuine canyons exactly where a river cuts through steep terrain, which is where canyons actually are. Noise-based gulches on their own look arbitrary; hydrological ones look inevitable.
 
+### Horizontal scale: Skyrim, not the Alps
+
+The first tuning pass got the *character* right and the *size* wrong: valleys read as forty kilometres across and faded into haze rather than framing anywhere. The reference is the Riverwood-to-Whiterun stretch of Skyrim -- those are proper valleys, and they are small.
+
+So all feature frequencies roughly doubled while relief stayed put, which is the whole trick: shrinking a valley without flattening it makes the walls steeper, and steep is what makes a valley read as one. Measured before -> after, with `scripts/probe-terrain.mjs` (a 513×513 sample at 32 m that reports elevation percentiles, a slope histogram, prominence-based peak spacing and valley-floor run lengths):
+
+| | before | after |
+|---|---|---|
+| median peak-to-peak (prominence ≥ 120 m) | 1600 m | 864 m |
+| median valley floor run | 800 m | 416 m |
+| p95 valley floor run | 9952 m | 4736 m |
+| max elevation | 893 m | 863 m |
+
+Build the probe before turning the knobs. "Too big" is a feeling; 1600 m is a number, and only the number tells you when you have arrived.
+
+The trade is walkable area, and it is the intended trade: steeper walls mean less of the map is under the 38° limit (55% -> 47%, reachable-from-spawn 86% -> 72%). §4's actual guarantee is *connectivity*, not coverage -- everything reachable stays leavable -- so the check gate moved rather than the terrain.
+
+**Peaks want a soft ceiling, not a clamp.** `clamp01(ridged * 1.55)` saturated on 4.21% of the map, and that 4.21% was exactly the summits: every peak was a mesa at precisely `mountainRelief`. Replaced with a soft knee (`over / (1 + over * 2.2)` above 0.88) plus a crest-gated high-frequency ridged term, which is what turns domes into something jagged.
+
 ### Two hard constraints
 
 - **Heightmaps cannot represent overhangs, arches, or caves.** One elevation per XZ, period. No natural bridges, no cave mouths. Accepted.
@@ -236,7 +255,9 @@ There is roughly 2× headroom, not the 4× an earlier draft assumed. Treat the p
 
 **Terrain LOD:** quadtree chunks at a **constant** `CHUNK_RES` (16), subdividing when the camera is closer to a node than `splitK` times its own edge length. Chunk size halves with depth; vertex *density* therefore doubles, but vertex *count* stays fixed -- which is what lets every chunk share one slot size in the batch. **Skirts** (vertical flanges at chunk edges) hide cracks between adjacent levels -- far simpler than stitching and invisible in practice. Fog and atmospheric desaturation hide popping and do most of the work of selling scale.
 
-Measured at step 2, `res 16 / splitK 1.3 / MAX_DEPTH 10`: 304 leaves, 195k tris (24% of budget), 16 m leaves at 1.00 m per cell, ~2.75° angular error. The three parameters are one decision, not three -- see the derivation at the top of `src/terrain/quadtree.js`, including why raising `CHUNK_RES` to buy back `splitK` costs *more* triangles at equal quality rather than fewer. `splitK` is live-tunable with `[` and `]` because 2.75° is a judgement call that has to be made looking at ridgelines.
+Measured at step 2, `res 16 / splitK 1.0 / MAX_DEPTH 10`: 214 leaves, 137k tris (17% of budget), 16 m leaves at 1.00 m per cell, ~3.58° angular error. The three parameters are one decision, not three -- see the derivation at the top of `src/terrain/quadtree.js`, including why raising `CHUNK_RES` to buy back `splitK` costs *more* triangles at equal quality rather than fewer. `splitK` is live-tunable with `[` and `]` because the angular error is a judgement call that has to be made looking at ridgelines.
+
+`splitK` started at 1.3 (~2.75°, 195k tris) and came down after looking at it in the headset: chunky terrain at distance turned out to be acceptable, and the triangles are worth more to the props. The sweep, measured: K 0.8 -> 187 leaves / 120k / 4.48°; K 1.0 -> 214 / 137k / 3.58°; K 1.3 -> 304 / 195k / 2.75°.
 
 **Prop LOD:**
 
@@ -269,6 +290,17 @@ Per chunk, in the worker, deterministic from `hash(worldSeed, chunkX, chunkZ)`:
 - **Per-instance random Y-rotation and non-uniform scale** (0.8-1.3x, with slight independent vertical stretch). This is most of what makes a procedural forest stop looking procedural
 - Align to terrain normal but only partially (lerp ~30%) so trees on slopes lean slightly rather than growing perpendicular to the hillside
 
+### Interim: the scale-reference scatter (`src/props/scatter.js`)
+
+None of the above exists yet -- it needs the Phase A biome pass -- but an empty heightfield gives you no way to judge how big a mountain is or how fast you are crossing it. Trees alone give you one number. A cabin, a one-metre boulder and a tuft of grass at your feet give you four scales an order of magnitude apart, and it is having several at once that makes a valley read as a valley rather than as a shape. Placeholder geometry, real architecture: one `BatchedMesh`, one material, per-instance geometry selection, so if that shape is wrong we find out on 1,200 props rather than on 40,000.
+
+Two rules here are not placeholders and should survive into the real system:
+
+- **Density tapers with distance; it does not stop at a cull radius.** A hard edge is visible as a moving wall of trees. A taper reads as depth. The outermost band also fades *scale* to zero, because at 800 m the fog is only 3% and hides nothing, so instances have to dissolve rather than pop.
+- **At most one kind rebuilds per `update()`.** Grass re-places every 10 m of travel, which at fly speed is three times a second; stacking it into the same frame as a tree pass is a visible hitch for no reason. Measured worst single call: 1.7 ms.
+
+Rejection order is cheap-to-expensive -- density roll, jitter, radius, distance taper, *then* the first `heightAt` -- so the far majority of candidates cost one hash. Grass inverts the usual radius/density trade (30 m disc, tufts ~2.5 m apart) because past 30 m a tuft is a sub-pixel speck, and within 30 m it is the only thing giving the ground texture at walking pace. That cost is the rebuild, not the triangles: at spacing 1.6 it measured 3.0 ms, a fifth of a frame, and had to be widened.
+
 ### Paths
 
 Paths are what turn a heightfield into a place. Generate as least-cost routes (A\* with a slope-penalized cost function) between points of interest -- village to village, valley floor to summit. Then:
@@ -299,6 +331,14 @@ Weights pack into a single RGBA texture -- four layers, four channels, exactly. 
 - **Triplanar on steep slopes only.** Lerp toward triplanar projection as slope increases, rather than applying it everywhere. Avoids stretched cliff textures at 1/3 the average cost.
 
 The terrain uses its own material with small tiling textures -- **not** the prop atlas, since atlas tiles cannot wrap. This is a deliberate exception to the one-material rule and costs one draw call family.
+
+### Interim: procedural speckle (`src/terrain/terrain-material.js`)
+
+Until the splat textures exist, the surface gets its grain from a `MeshLambertMaterial` patched through `onBeforeCompile`: a sin-free hash noise at two octaves (~0.5 m grit and ~3.5 m patches), a brightness speckle on everything, then dirt and moss mixes gated on `vColor.g > max(vColor.r, vColor.b)` so only vegetated ground gets them. It fades out between 12 m and 95 m, because past that it is per-pixel noise nobody asked for.
+
+**Keyed to world position, in the fragment shader, deliberately.** Anything baked per-vertex would rescale itself at every quadtree ring and pop as the LOD changed -- the grain would visibly breathe as you walked. Same reason the base classification in `chunk-mesh.js` stays coarse: it is the only part that *can* live on vertices.
+
+Two things this pass got wrong the first time, both worth remembering. Vertex colours and plain `THREE.Color` uniforms are **linear working space**, and the palette had been authored as if they were sRGB: linear 0.33 is sRGB 0.60, which under a 2.1-intensity sun came out as pale mint green. Dark gritty ground lives around linear 0.05. And the speckle is what makes speed legible -- on untextured ground at 29 m/s you cannot tell you are moving at all.
 
 ### Transparency: alpha test, never alpha blend
 
@@ -508,7 +548,7 @@ She is a first-time-ish VR user. Comfort outranks capability.
 
 - **Left stick forward only.** Push up to walk in the direction she is facing. No strafe, no backward.
 - **Snap turn 60°** by tilting either stick left or right. (Note: 30-45° is the more common choice; 60° is a larger vestibular jump but fewer of them. Implemented as a single tunable constant -- easy to change after trying it.)
-- **Eased acceleration to ~1.3-1.5 m/s** (normal walking pace). The ease-in curve is what prevents nausea, not the top speed. Instant stop on release.
+- **Eased acceleration to ~1.3-1.5 m/s** (normal walking pace). The ease-in curve is what prevents nausea, not the top speed. Instant stop on release. **Headset only:** the nausea is from a moving world the inner ear disagrees with, which does not happen on a monitor, so the desktop keyboard path takes top speed instantly -- there the ramp is just input lag.
 - **Comfort vignette** tunneling peripheral vision during movement, tightening with speed
 - **Damp vertical camera motion** on slopes. Pitch and bob from naive terrain-following is a major nausea source
 - **Max walkable slope ~35-40°**, no falling, no sliding (§4)
@@ -541,7 +581,11 @@ Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer 
 
 1. ~~**§0 spike.**~~ **DONE.** `WEBGL_multi_draw` confirmed, `BatchedMesh` confirmed batching (6 draw calls at 8,000 instances), ceiling measured at ~800k tris/frame as the HUD reports it. In-world HUD built, preserved at `spike.html`. Still to read off the HUD on the next headset visit: `MAX_ARRAY_TEXTURE_LAYERS`, foveation delta, 90 Hz, 20-minute soak.
 2. **Terrain + locomotion vertical slice.** Worker-generated quadtree terrain with skirts, heightmap collision, slope limiting, eased locomotion, vignette, snap turn, recenter. **Get this to a stable 72 Hz with an empty world before adding a single tree.**
-   **Code complete and checked headlessly** (`npm run check`): sim layer validated (relief, slope distribution, winding, spawn connectivity), terrain streaming drilled over an 18 km walk (slot accounting, eviction, geometry placement), empty world at 195k tris / 1 draw call. **Not yet run on a screen or in a headset** -- shader compilation, the look of the terrain, and comfort are all unverified.
+   **Code complete and checked headlessly** (`npm run check`): sim layer validated (relief, slope distribution, winding, spawn connectivity), terrain streaming drilled over an 18 km walk (slot accounting, eviction, geometry placement), empty world at 137k tris / 1 draw call.
+
+   Then a first desktop look drove a round of tuning, all recorded above: horizontal scale halved to Skyrim proportions (§3), peaks unclamped and jagged (§3), `splitK` 1.3 -> 1.0 (§5), procedural speckle over a much darker palette (§7), and a four-kind scale-reference scatter at ~24k tris in the same batch (§6). Desktop locomotion lost the acceleration ramp and gained a 29 m/s fly mode (§12), and walking strafe turned out to be mirrored -- the right-hand perpendicular had its sign backwards.
+
+   **Still not run in a headset.** 72 Hz, comfort, and the four §0 HUD numbers are all unverified, and that is what this step is actually gated on.
 3. **Phase A global pass.** Elevation (§3), priority-flood, flow accumulation, biomes, village siting, connectivity validation. Pure math, no rendering, most reusable code in the project. Debug it with a 2D canvas map view before it ever renders in 3D.
 4. **Asset pipeline + `BatchedMesh` + texture array.** One species end-to-end. Requires installing Blender.
 5. **Placement, paths, LOD tiering.** The lushness pass. **Build LOD tiering in the same step as placement, never after it** -- §0 measured that undifferentiated full-detail props hit the triangle ceiling at ~4,000 instances, well under the density this world needs. A placement system without LOD cannot be evaluated, because it will be unplayable for reasons that have nothing to do with placement.
@@ -565,7 +609,7 @@ Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer 
 - ~~What are the real draw call and triangle ceilings?~~ **6 draw calls flat; ~800k tris/frame as HUD-reported** (§0)
 - ~~Is 64×64 the right base texture size?~~ **No -- 128×128, in two arrays** (§9)
 - Is 60° the right snap angle, or does it want to be 45°? (§12 -- try it)
-- Is ~2.75° of terrain LOD error acceptable on ridgelines, or does `splitK` need to go up? (§5 -- `[` `]` on desktop; costs 33% of budget at 1.6, 45% at 2.1)
+- ~~Is ~2.75° of terrain LOD error acceptable on ridgelines?~~ **It can go the other way: 3.58° at `splitK` 1.0 is fine and chunky-at-distance is acceptable** (§5)
 - Does the coarse ancestor poke through finer chunks while a new LOD ring streams in? (§5 -- expected artifact, needs eyes on it)
 - Is 2048² adequate for global hydrology at 16 km? (§2)
 - Does snow particle overdraw fit the fill-rate budget? (§10)

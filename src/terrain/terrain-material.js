@@ -1,0 +1,132 @@
+import * as THREE from 'three'
+
+// ---------------------------------------------------------------------------
+// The terrain material: Lambert + vertex colours + a procedural surface grain.
+//
+// The grain exists for two reasons, and only one of them is looks.
+//
+// 1. Untextured terrain gives you nothing to judge your own speed against. A
+//    smooth green hillside sliding past at 1.45 m/s and the same hillside at
+//    14 m/s look nearly identical, because there is no feature small enough to
+//    move visibly. Sub-metre grain fixes that outright, and at walking pace it
+//    is most of what makes walking feel like walking.
+// 2. It breaks up the flat-shaded look of a low-poly heightfield without
+//    costing a single triangle.
+//
+// It is done in the FRAGMENT shader, keyed to world XZ, rather than baked into
+// vertex colours in the mesher. That is the load-bearing choice here: vertex
+// colours live on a quadtree whose resolution changes with distance, so the
+// same hillside would carry 1 m speckle up close and 16 m blotches one LOD ring
+// out, and every ring boundary would visibly pop as the pattern rescaled. Keyed
+// to world position it is simply the same pattern everywhere, forever.
+//
+// Cost is roughly 40 ALU per fragment, no texture fetches, and it is skipped
+// entirely past `FADE_FAR` -- which is also what stops it aliasing into shimmer
+// once the grain is smaller than a pixel. If the Quest turns out to be fill
+// bound here, dropping to one octave is a one-line change.
+//
+// This is a step-2 stand-in. §7's real material (splat blending, height-blend,
+// triplanar, KTX2 arrays) replaces it at build step 6.
+// ---------------------------------------------------------------------------
+
+// Grain is at full strength inside FADE_NEAR and gone by FADE_FAR.
+const FADE_NEAR = 12
+const FADE_FAR = 95
+
+// Values are LINEAR, not sRGB -- three treats vertex colours and plain Color
+// uniforms as working-space. Roughly: linear 0.05 reads as sRGB 0.25.
+const DIRT = new THREE.Color(0.075, 0.052, 0.028) // exposed soil and grit
+const MOSS = new THREE.Color(0.022, 0.038, 0.016) // the darker green in the mix
+
+export function createTerrainMaterial() {
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true })
+
+  material.userData.uniforms = {
+    uSpeckle: { value: 0.34 }, // +/- brightness swing, applied to every surface
+    uDirtAmount: { value: 0.8 },
+    uMossAmount: { value: 0.65 },
+    uDirt: { value: DIRT },
+    uMoss: { value: MOSS },
+  }
+
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, material.userData.uniforms)
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\n varying vec3 vWorldPos;')
+      // After project_vertex, so `batchingMatrix` is already in scope. Terrain
+      // chunks are batched, and their local vertices are chunk-relative -- the
+      // batch matrix is the only thing that knows where in the world they are.
+      .replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+        vec4 auroraWorld = vec4( transformed, 1.0 );
+        #ifdef USE_BATCHING
+          auroraWorld = batchingMatrix * auroraWorld;
+        #endif
+        vWorldPos = ( modelMatrix * auroraWorld ).xyz;`
+      )
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying vec3 vWorldPos;
+        uniform float uSpeckle;
+        uniform float uDirtAmount;
+        uniform float uMossAmount;
+        uniform vec3 uDirt;
+        uniform vec3 uMoss;
+
+        // Hash-based value noise. No sin() -- it is slow on mobile GPUs and its
+        // precision on some drivers is bad enough to produce visible banding.
+        float auroraHash( vec2 p ) {
+          p = fract( p * vec2( 123.34, 456.21 ) );
+          p += dot( p, p + 45.32 );
+          return fract( p.x * p.y );
+        }
+
+        float auroraNoise( vec2 p ) {
+          vec2 i = floor( p );
+          vec2 f = fract( p );
+          f = f * f * ( 3.0 - 2.0 * f );
+          float a = auroraHash( i );
+          float b = auroraHash( i + vec2( 1.0, 0.0 ) );
+          float c = auroraHash( i + vec2( 0.0, 1.0 ) );
+          float d = auroraHash( i + vec2( 1.0, 1.0 ) );
+          return mix( mix( a, b, f.x ), mix( c, d, f.x ), f.y );
+        }`
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        {
+          float auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, length( vWorldPos - cameraPosition ) );
+          if ( auroraNear > 0.004 ) {
+            vec2 auroraP = vWorldPos.xz;
+            // Two scales: ~0.5 m grit for the speed cue, ~3.5 m patches so the
+            // ground reads as varied rather than as uniform sandpaper.
+            float auroraGrain = auroraNoise( auroraP * 1.9 ) * 0.6 + auroraNoise( auroraP * 0.28 ) * 0.4;
+            auroraGrain = mix( 0.5, auroraGrain, auroraNear );
+
+            // Brightness speckle. Applies to grass, rock and snow alike -- snow
+            // without it is a flat white void with no readable surface at all.
+            diffuseColor.rgb *= 1.0 + ( auroraGrain - 0.5 ) * uSpeckle;
+
+            // Dirt and moss only show through on green ground. Classifying off
+            // the vertex colour rather than a separate attribute keeps the
+            // batched geometry to position/normal/colour: rock is neutral and
+            // snow is near-white, so both land at zero here.
+            float auroraGreen = clamp( ( vColor.g - max( vColor.r, vColor.b ) ) * 20.0, 0.0, 1.0 ) * auroraNear;
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.56, 0.88, auroraGrain ) * auroraGreen * uDirtAmount );
+            diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, smoothstep( 0.44, 0.12, auroraGrain ) * auroraGreen * uMossAmount );
+          }
+        }`
+      )
+  }
+
+  // Distinct cache key so this never gets conflated with an unpatched Lambert.
+  material.customProgramCacheKey = () => 'aurora-terrain-v1'
+
+  return material
+}
