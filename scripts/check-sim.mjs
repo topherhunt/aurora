@@ -44,7 +44,7 @@ console.log('height field')
     }
   }
   check(nan === 0, 'no NaN/Infinity heights', `${nan} bad of ${N * N}`)
-  check(max - min > 300, 'has real vertical relief', `${min.toFixed(0)}m .. ${max.toFixed(0)}m`)
+  check(max - min > 150, 'has real vertical relief', `${min.toFixed(0)}m .. ${max.toFixed(0)}m`)
   check(max < 2000 && min > -200, 'elevations in a plausible band', `${min.toFixed(0)} .. ${max.toFixed(0)}`)
 
   const a = th.heightAt(123.5, -456.25)
@@ -59,12 +59,16 @@ console.log('height field')
 // yields an explorable world if enough of it is under the limit -- if the
 // terrain tuning produces 80% cliffs, she is walking down corridors.
 //
-// The bar here used to be 55%, written when a valley spanned several kilometres.
-// Shrinking the horizontal scale to Skyrim's (see TUNING) without shrinking the
-// peaks is what makes the ranges steep, and it moved this number to ~53%. That
-// is the intended trade and not a regression: what §4 actually guarantees is
-// CONNECTIVITY, which section 4 below measures directly. This check is the
-// coarse backstop against a tuning pass that turns the whole map vertical.
+// This number has been the best single indicator of a bad terrain pass. It was
+// 82% originally, fell to 53% when the horizontal scale shrank without the
+// vertical one, and that 53% was the measurable shadow of what the world
+// actually looked like in the headset: sheer walls as the default mountainside,
+// with whole basins sealed off. Cutting mountainRelief ~4x put it at ~88%.
+//
+// So the gate stays low (0.45) as a backstop against a map turned vertical, but
+// the number itself is worth reading every run. What §4 guarantees is
+// CONNECTIVITY, which section 4 below measures directly -- but a world can be
+// technically connected and still no fun to walk across.
 
 console.log('\nslope distribution (eps = 1 m, matching leaf cell size)')
 {
@@ -171,7 +175,7 @@ let spawn = null
       const x = Math.cos(ang) * r
       const z = Math.sin(ang) * r
       const h = th.heightAt(x, z)
-      if (h < 60 || h > 260) continue
+      if (h < 40 || h > 105) continue // must match findSpawn() in src/main.js
       if (th.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       spawn = { x, z, h }
       break outer
@@ -191,11 +195,23 @@ if (spawn) {
   const x0 = spawn.x - EXTENT / 2
   const z0 = spawn.z - EXTENT / 2
 
+  // Probe at the CELL SIZE, not at 1 m. This used to sample a 1 m slope and then
+  // flood-fill as though each sample owned a 16 m cell, which is not a
+  // conservative reading -- it is an inconsistent one. A single steep metre at a
+  // cell's centre condemned the whole cell, and enough scattered false negatives
+  // fragment a network that is genuinely connected: the same world measured
+  // 73% reachable at eps 1 m and 99% at eps 16 m.
+  //
+  // 16 m is also the honest question for this fill. Whether she can get from one
+  // cell to the next is a question about the grade between them; whether a
+  // 1 m dimple in the middle stops her is a question the contour slide in
+  // player.js answers, and this fill does not model sliding. The fine-scale
+  // slope still gets measured -- that is the histogram in section 2.
   const t0 = performance.now()
   let walkableCount = 0
   for (let j = 0; j < N; j++) {
     for (let i = 0; i < N; i++) {
-      const ok = th.slopeAt(x0 + i * cell, z0 + j * cell, 1.0) <= MAX_SLOPE
+      const ok = th.slopeAt(x0 + i * cell, z0 + j * cell, cell) <= MAX_SLOPE
       walk[j * N + i] = ok ? 1 : 0
       if (ok) walkableCount++
     }

@@ -31,6 +31,10 @@ export const LOCOMOTION = {
   // It is disabled on entering XR and bound to no controller button. Free
   // flight at 29 m/s with no ground reference is a nausea generator, and §12
   // gives comfort priority over capability wherever they conflict.
+  //
+  // Controls are Minecraft's, because that is the muscle memory she already
+  // has: hold space to rise, hold shift to sink, either combined freely with
+  // WASD, double-tap space to drop back to walking.
   flySpeed: 29, // 20x walking -- 16 km of world takes ~9 min to cross end to end
   flyClearance: 2.0, // stay this far above ground, so she cannot fly inside a mountain
 }
@@ -86,8 +90,8 @@ export class Player {
     }
   }
 
-  // input: {move: -1..1 forward/back, strafe: -1..1, turn: raw stick X,
-  //         unstick: bool, instant: bool}
+  // input: {move: -1..1 forward/back, strafe: -1..1, lift: -1..1 up/down,
+  //         turn: raw stick X, unstick: bool, instant: bool}
   update(dt, input) {
     const L = LOCOMOTION
     const head = this.headPosition()
@@ -98,19 +102,26 @@ export class Player {
     // Deadzone applies to magnitude, so pulling back works the same as forward.
     const fwdIn = Math.abs(input.move) > L.stickDeadzone ? THREE.MathUtils.clamp(input.move, -1, 1) : 0
     const strafeIn = Math.abs(strafe) > L.stickDeadzone ? THREE.MathUtils.clamp(strafe, -1, 1) : 0
+    const liftIn = THREE.MathUtils.clamp(input.lift, -1, 1)
     const demand = Math.min(1, Math.hypot(fwdIn, strafeIn))
 
+    // Vertical has to count toward demand while flying, or holding space with no
+    // other key would ask for full lift at zero speed and simply do nothing. On
+    // the ground it must NOT count: lift is meaningless there and folding it in
+    // would make the ascend key double as a walk key.
+    const drive = this.flying ? Math.min(1, Math.hypot(demand, liftIn)) : demand
+
     const top = this.flying ? L.flySpeed : L.maxSpeed
-    if (demand <= 0) {
+    if (drive <= 0) {
       this.speed = 0 // instant stop on release (§12)
     } else if (input.instant) {
-      this.speed = demand * top
+      this.speed = drive * top
     } else {
-      this.speed += (demand * top - this.speed) * (1 - Math.exp(-dt / L.accelTau))
+      this.speed += (drive * top - this.speed) * (1 - Math.exp(-dt / L.accelTau))
     }
 
     if (this.flying) {
-      this._fly(dt, fwdIn, strafeIn, demand)
+      this._fly(dt, fwdIn, strafeIn, liftIn)
       return
     }
 
@@ -128,10 +139,12 @@ export class Player {
   }
 
   // Free 6DOF flight. Forward follows the full look direction including pitch,
-  // so "any direction" is just a matter of where she is looking -- which is one
-  // fewer control to explain than dedicated ascend/descend keys.
-  _fly(dt, fwdIn, strafeIn, demand) {
-    if (this.speed <= 0.001 || demand <= 0) return
+  // so she can dive at a valley just by looking at it -- and `liftIn` is world
+  // up regardless of where she is looking, which is what makes "hold space to
+  // rise" behave the way it does in Minecraft rather than the way "forward"
+  // does. Both at once compose into a diagonal, as they should.
+  _fly(dt, fwdIn, strafeIn, liftIn) {
+    if (this.speed <= 0.001) return
 
     this.camera.getWorldQuaternion(this._quat)
     this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
@@ -139,10 +152,15 @@ export class Player {
     this._right.y = 0 // strafe stays level even when looking up or down
     if (this._right.lengthSq() > 1e-6) this._right.normalize()
 
+    // Built raw and normalised below. The old version pre-divided each term by
+    // `demand` and then normalised anyway, which was redundant -- and with
+    // vertical input in the mix `demand` can be zero, so it was also a divide by
+    // zero waiting to happen.
     this._step
       .set(0, 0, 0)
-      .addScaledVector(this._fwd, fwdIn / demand)
-      .addScaledVector(this._right, strafeIn / demand)
+      .addScaledVector(this._fwd, fwdIn)
+      .addScaledVector(this._right, strafeIn)
+    this._step.y += liftIn
 
     const len = this._step.length()
     if (len < 1e-6) return

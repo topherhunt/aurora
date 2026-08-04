@@ -6,6 +6,7 @@ import { DEFAULT_SPLIT_K, MAX_DEPTH, MIN_SPLIT_K, MAX_SPLIT_K } from './terrain/
 import { Player, LOCOMOTION } from './player.js'
 import { Scatter } from './props/scatter.js'
 import { Vignette } from './vignette.js'
+import { Measure } from './measure.js'
 import { Hud } from './hud.js'
 import { Input } from './input.js'
 import { budgetLine } from './budget.js'
@@ -63,6 +64,7 @@ const terrain = new Terrain(scene, { seed: SEED, workers: 2 })
 const props = new Scatter(scene, terrainHeight, { seed: SEED })
 const player = new Player(rig, camera, terrainHeight)
 const vignette = new Vignette(camera)
+const measure = new Measure(scene, terrainHeight)
 const hud = new Hud()
 camera.add(hud.mesh)
 hud.mesh.position.set(0, -0.28, -1.1)
@@ -78,7 +80,9 @@ function findSpawn() {
       const x = Math.cos(ang) * r
       const z = Math.sin(ang) * r
       const h = terrainHeight.heightAt(x, z)
-      if (h < 60 || h > 260) continue
+      // Valley floor, not a hillside. Tied to the elevation distribution in
+      // TUNING (p10 46, median 66), so it moves when the terrain scale does.
+      if (h < 40 || h > 105) continue
       if (terrainHeight.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       return { x, z, h }
     }
@@ -105,7 +109,8 @@ const KEY_ACTIONS = {
   a: 'left',
   o: 'back',
   e: 'right',
-  ' ': 'fly',
+  ' ': 'flyUp',
+  Shift: 'flyDown',
   h: 'hud',
   u: 'unstick',
   '[': 'coarser',
@@ -121,7 +126,9 @@ const CODE_ACTIONS = {
   ArrowDown: 'back',
   ArrowLeft: 'turnLeft',
   ArrowRight: 'turnRight',
-  Space: 'fly',
+  Space: 'flyUp',
+  ShiftLeft: 'flyDown',
+  ShiftRight: 'flyDown',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
 }
@@ -137,16 +144,36 @@ const held = new Set()
 const on = (action) => held.has(action)
 let dragging = false
 
+// Space does two jobs, Minecraft-style: hold it to rise, tap it twice to land.
+// There is no separate "enter fly mode" key -- the first tap does that, because
+// the only reason to press space on the ground is to leave it.
+const DOUBLE_TAP_MS = 320
+let lastSpaceTap = -Infinity
+
+function onSpacePress(now) {
+  if (now - lastSpaceTap < DOUBLE_TAP_MS) {
+    // Reset rather than carry the timestamp forward, so three taps read as one
+    // pair and a fresh single rather than as two overlapping pairs.
+    lastSpaceTap = -Infinity
+    setFlying(false)
+    return
+  }
+  lastSpaceTap = now
+  setFlying(true)
+}
+
 addEventListener('keydown', (e) => {
   const actions = actionsFor(e)
   if (actions.length === 0) return
-  if (actions.includes('fly')) e.preventDefault() // space scrolls the page otherwise
+  if (actions.includes('flyUp')) e.preventDefault() // space scrolls the page otherwise
   const fresh = actions.filter((a) => !held.has(a))
   for (const a of actions) held.add(a)
 
-  // One-shot actions fire on the transition, not while held.
+  // One-shot actions fire on the transition, not while held. Auto-repeat is
+  // already filtered out by `fresh`, which matters for the double-tap: a held
+  // space would otherwise machine-gun taps and land her immediately.
   if (fresh.includes('hud')) hud.toggle()
-  if (fresh.includes('fly')) setFlying(!player.flying)
+  if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   if (fresh.includes('coarser')) terrain.splitK = Math.max(MIN_SPLIT_K, terrain.splitK - 0.1)
   if (fresh.includes('finer')) terrain.splitK = Math.min(MAX_SPLIT_K, terrain.splitK + 0.1)
 })
@@ -164,10 +191,34 @@ function setFlying(want) {
   // exactly the vestibular mismatch §12 exists to prevent.
   player.setFlying(want && !renderer.xr.isPresenting)
 }
-renderer.domElement.addEventListener('pointerdown', () => (dragging = true))
-addEventListener('pointerup', () => (dragging = false))
+// The mouse does double duty: drag to look, click to measure. Distinguishing
+// them by accumulated pointer travel rather than by button or modifier keeps
+// both on the same gesture you already use, and 5 px is comfortably above
+// hand-tremor and comfortably below any intentional look.
+const CLICK_SLOP = 5
+let dragTravel = 0
+const ndc = new THREE.Vector2()
+
+renderer.domElement.addEventListener('pointerdown', () => {
+  dragging = true
+  dragTravel = 0
+})
+addEventListener('pointerup', (e) => {
+  const wasDragging = dragging
+  dragging = false
+  if (!wasDragging || renderer.xr.isPresenting || dragTravel > CLICK_SLOP) return
+  const rect = renderer.domElement.getBoundingClientRect()
+  ndc.set(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  )
+  // A click on the sky misses the height field and clears the marker, which is
+  // also how you get rid of one.
+  measure.measure(camera, ndc)
+})
 addEventListener('pointermove', (e) => {
   if (!dragging || renderer.xr.isPresenting) return
+  dragTravel += Math.abs(e.movementX) + Math.abs(e.movementY)
   camera.rotation.y -= e.movementX * 0.0026
   camera.rotation.x = THREE.MathUtils.clamp(
     camera.rotation.x - e.movementY * 0.0026,
@@ -188,7 +239,7 @@ let frames = 0
 let acc = 0
 let avgMs = 0
 let worst = 0
-const moveInput = { move: 0, strafe: 0, turn: 0, unstick: false, instant: false }
+const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false }
 const headTmp = new THREE.Vector3()
 
 function readInput() {
@@ -197,6 +248,7 @@ function readInput() {
     // Left stick forward only (§12). axes[1] is negative when pushed up.
     moveInput.move = Math.max(0, -st.left.axes[1])
     moveInput.strafe = 0 // no strafing in VR, on purpose
+    moveInput.lift = 0 // fly mode never runs in XR; see LOCOMOTION in player.js
     // Snap turn from either stick, so she does not have to remember which.
     const lx = st.left.axes[0]
     const rx = st.right.axes[0]
@@ -211,6 +263,7 @@ function readInput() {
   }
   moveInput.move = (on('forward') ? 1 : 0) - (on('back') ? 1 : 0)
   moveInput.strafe = (on('right') ? 1 : 0) - (on('left') ? 1 : 0)
+  moveInput.lift = (on('flyUp') ? 1 : 0) - (on('flyDown') ? 1 : 0)
   // A key is already a binary input; ramping it up over half a second just reads
   // as lag when the world is on a monitor.
   moveInput.instant = true
@@ -263,6 +316,7 @@ function hudLines() {
   const bk = pr.byKind
   const ground = terrainHeight.heightAt(head.x, head.z)
   const slopeDeg = (terrainHeight.slopeAt(head.x, head.z) * 180) / Math.PI
+  const measureLine = measure.line(head)
 
   return [
     '## AURORA -- step 2: terrain + locomotion',
@@ -283,7 +337,8 @@ function hudLines() {
     `x ${head.x.toFixed(0)}  z ${head.z.toFixed(0)}`,
     `ground elev ${ground.toFixed(1)}m   eye ${head.y.toFixed(1)}m   agl ${(head.y - ground).toFixed(1)}m`,
     `slope ${slopeDeg.toFixed(0)}deg / max ${LOCOMOTION.maxSlopeDeg}${player.blocked ? '   !! BLOCKED' : ''}`,
-    `speed ${player.speed.toFixed(2)} m/s${player.flying ? '   ** FLYING (space) **' : ''}`,
+    `speed ${player.speed.toFixed(2)} m/s${player.flying ? '   ** FLYING -- space/shift = up/down, space x2 = land **' : ''}`,
+    ...(measureLine ? ['', measureLine] : []),
   ]
 }
 
@@ -295,8 +350,15 @@ renderer.xr.addEventListener('sessionstart', () => {
   worst = 0
   player.setFlying(false) // desktop survey tool only; see LOCOMOTION in player.js
   held.clear()
+  // In the headset the stats live on the head-locked panel; the DOM corner
+  // panel is not visible there at all. On desktop it is the other way round.
+  hud.setPresenting(true)
   const session = renderer.xr.getSession()
   if (session?.supportedFrameRates?.includes(72)) session.updateTargetFrameRate(72)
+})
+
+renderer.xr.addEventListener('sessionend', () => {
+  hud.setPresenting(false)
 })
 
 console.log(

@@ -36,7 +36,12 @@ const C_SNOW = [0.86, 0.88, 0.93]
 function shade(h, ny, out, o) {
   // ny is the normal's Y component: 1 = flat, 0 = vertical.
   const steep = smoothstep(0.86, 0.62, ny)
-  const alt = clamp01((h - 60) / 420)
+  // Both bands are fractions of the world's actual elevation range, so they move
+  // whenever TUNING does. Against the current probe (p10 46, median 66, p90 133,
+  // max 252) this puts scrub over the upper hills and snow on roughly the top
+  // tenth of the map. Hard-coded 60/420 and 380/560 were written for peaks of
+  // 863 m and would put snow nowhere at all now.
+  const alt = clamp01((h - 55) / 130)
 
   let r = lerp(C_GRASS[0], C_SCRUB[0], alt)
   let g = lerp(C_GRASS[1], C_SCRUB[1], alt)
@@ -45,7 +50,7 @@ function shade(h, ny, out, o) {
   // Snow accumulates with altitude but not on near-vertical faces -- it slides
   // off. Without that term the cliffs read as white walls and all the relief
   // we just generated becomes invisible.
-  const snow = clamp01(smoothstep(380, 560, h) * (1 - steep * 0.85))
+  const snow = clamp01(smoothstep(140, 210, h) * (1 - steep * 0.85))
   r = lerp(r, C_ROCK[0], steep)
   g = lerp(g, C_ROCK[1], steep)
   b = lerp(b, C_ROCK[2], steep)

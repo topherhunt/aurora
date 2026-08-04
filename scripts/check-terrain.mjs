@@ -417,3 +417,4 @@ console.log('\nscale-reference props')
 }
 
 console.log(`\nres ${CHUNK_RES}: ${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
+process.exit(failures === 0 ? 0 : 1)

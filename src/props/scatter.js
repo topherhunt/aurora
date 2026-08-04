@@ -27,9 +27,14 @@ import { buildConifer, buildBoulder, buildGrass, buildCabin } from './shapes.js'
 //   ring also carries a scale fade so the outermost instances dissolve rather
 //   than pop, because at 800 m the fog is only 3% and hides nothing.
 //
-//   At most one kind rebuilds per frame. Grass re-places itself every 14 m of
+//   At most one kind rebuilds per frame. Grass re-places itself every 10 m of
 //   travel, which at fly speed is three times a second, and stacking it in the
 //   same frame as a tree pass is a visible hitch for no reason.
+//
+// Every elevation band below is a fraction of the world's actual relief and has
+// to move when TUNING in sim/terrain-height.js does. A treeline of 470 m is not
+// a treeline once the peaks top out at 252 m -- it is "trees everywhere", and
+// the strongest altitude cue in the scene quietly stops working.
 // ---------------------------------------------------------------------------
 
 const KINDS = [
@@ -42,9 +47,9 @@ const KINDS = [
     tailDensity: 0.3, // ...falling to this at the cull radius
     falloffFrom: 200,
     max: 480,
-    minElev: 45,
-    maxElev: 470, // treeline. One of the strongest scale cues a mountain has:
-    elevFade: 90, // it tells you how high you are without a number.
+    minElev: 34,
+    maxElev: 160, // treeline. One of the strongest scale cues a mountain has:
+    elevFade: 45, // it tells you how high you are without a number.
     maxSlopeDeg: 32,
     scale: [0.75, 1.3],
     sink: 0.15,
@@ -86,9 +91,9 @@ const KINDS = [
     tailDensity: 0.5,
     falloffFrom: 12,
     max: 800,
-    minElev: 34,
-    maxElev: 430,
-    elevFade: 70,
+    minElev: 33,
+    maxElev: 145,
+    elevFade: 40,
     maxSlopeDeg: 27,
     scale: [0.8, 1.4],
     sink: 0.03,
@@ -102,9 +107,9 @@ const KINDS = [
     tailDensity: 0.75,
     falloffFrom: 500,
     max: 28,
-    minElev: 45,
-    maxElev: 340,
-    elevFade: 50,
+    minElev: 36,
+    maxElev: 105,
+    elevFade: 30,
     maxSlopeDeg: 9, // people build on flat ground, and a box on a slope floats
     scale: [0.95, 1.12],
     sink: 0.35,

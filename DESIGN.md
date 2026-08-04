@@ -167,6 +167,30 @@ The trade is walkable area, and it is the intended trade: steeper walls mean les
 
 **Peaks want a soft ceiling, not a clamp.** `clamp01(ridged * 1.55)` saturated on 4.21% of the map, and that 4.21% was exactly the summits: every peak was a mesa at precisely `mountainRelief`. Replaced with a soft knee (`over / (1 + over * 2.2)` above 0.88) plus a crest-gated high-frequency ridged term, which is what turns domes into something jagged.
 
+### Vertical scale: the one number is `relief × freq`
+
+The Skyrim pass above doubled every frequency and deliberately held `mountainRelief` at 690. That is arithmetically identical to doubling every slope in the world, and the result was a landscape of 800 m vertical walls where every mountainside was a cliff and whole regions were sealed off behind them. "Make the peaks jagged" got implemented as "make everything vertical," which is not the same request.
+
+**Horizontal scale and vertical scale are independent; steepness is their ratio.** Concretely, `relief × freq` is the number that governs how the world reads:
+
+| | first pass | Skyrim pass | current |
+|---|---|---|---|
+| `mountainRelief` | 690 m | 690 m | 175 m |
+| `ridgeFreq` | 0.00033 | 0.00068 | 0.00095 |
+| product | 0.23 | 0.47 | 0.166 |
+| max elevation | 893 m | 863 m | 252 m |
+| median peak-to-peak | 1600 m | 864 m | 640 m |
+| walkable at 38° | 55% | 53% | 91% |
+| reachable from spawn | 86% | 72% | 99% |
+
+The corollary is worth stating because it is counter-intuitive and it came up as an explicit request: **scaling the whole world down by 4× cannot un-wall it.** A conformal shrink divides relief and multiplies frequency by the same factor, leaves the ratio untouched, and therefore leaves every slope angle in the world exactly where it was. Only the ratio moves slopes.
+
+**Cliffs should come from the cliff layer, not the ridge backbone.** With cliffs sourced from `mountainRelief` they are a property of every mountain; sourced from the Worley break layer (`cliffFreq`, `cliffAmp`, gated by the mountain mask) they are a property of *some faces of some* mountains, which is both what real ranges look like and what leaves the rest climbable.
+
+**Terracing is emergent, and its band width is `step / tan(slope)`.** An 18 m terrace step on a 30° slope puts a 31 m bench on the ground and reads as geology; the same step on a 60° slope puts a 10 m ledge under an 18 m wall and reads as a staircase. The terrace code never changed between the Skyrim pass and the complaint about staircases -- the ground under it got twice as steep. Fixes were all three of: shallower slopes (above), a smaller `terraceStep`, a wider smoothstep riser, and gating the terrace mask by `1 - crest` so summits never terrace.
+
+**Instruments stop measuring when the world moves under them.** Two silently broke during this retune and both had to be fixed before the numbers meant anything again: `probe-terrain.mjs` used a fixed 120 m prominence threshold, which against 175 m peaks disqualified nearly every summit and reported peak spacing had *grown* to 3584 m (it is now `0.17 × mountainRelief`); and `check-sim.mjs` sampled slope at 1 m eps while flood-filling on a 16 m grid, so the same world measured 73% reachable or 99% depending on which number you read. Colour bands in `chunk-mesh.js` and elevation bands in `props/scatter.js` are the same class of hazard -- every one of them is a fraction of the world's relief, and a 470 m treeline against 252 m peaks is not a treeline, it is "trees everywhere."
+
 ### Two hard constraints
 
 - **Heightmaps cannot represent overhangs, arches, or caves.** One elevation per XZ, period. No natural bridges, no cave mouths. Accepted.
@@ -255,9 +279,21 @@ There is roughly 2× headroom, not the 4× an earlier draft assumed. Treat the p
 
 **Terrain LOD:** quadtree chunks at a **constant** `CHUNK_RES` (16), subdividing when the camera is closer to a node than `splitK` times its own edge length. Chunk size halves with depth; vertex *density* therefore doubles, but vertex *count* stays fixed -- which is what lets every chunk share one slot size in the batch. **Skirts** (vertical flanges at chunk edges) hide cracks between adjacent levels -- far simpler than stitching and invisible in practice. Fog and atmospheric desaturation hide popping and do most of the work of selling scale.
 
-Measured at step 2, `res 16 / splitK 1.0 / MAX_DEPTH 10`: 214 leaves, 137k tris (17% of budget), 16 m leaves at 1.00 m per cell, ~3.58° angular error. The three parameters are one decision, not three -- see the derivation at the top of `src/terrain/quadtree.js`, including why raising `CHUNK_RES` to buy back `splitK` costs *more* triangles at equal quality rather than fewer. `splitK` is live-tunable with `[` and `]` because the angular error is a judgement call that has to be made looking at ridgelines.
+Measured at step 2, `res 16 / splitK 1.1 / MAX_DEPTH 10`: 304 leaves, 195k tris (24% of budget), 16 m leaves at 1.00 m per cell, ~3.26° angular error. The three parameters are one decision, not three -- see the derivation at the top of `src/terrain/quadtree.js`, including why raising `CHUNK_RES` to buy back `splitK` costs *more* triangles at equal quality rather than fewer. `splitK` is live-tunable with `[` and `]` because the angular error is a judgement call that has to be made looking at ridgelines.
 
-`splitK` started at 1.3 (~2.75°, 195k tris) and came down after looking at it in the headset: chunky terrain at distance turned out to be acceptable, and the triangles are worth more to the props. The sweep, measured: K 0.8 -> 187 leaves / 120k / 4.48°; K 1.0 -> 214 / 137k / 3.58°; K 1.3 -> 304 / 195k / 2.75°.
+**`splitK` is a step function, not a gradient**, and this is the thing to know before tuning it. Subdivision is a discrete test, so a whole band of K values selects the same ring layout and costs exactly the same. Measured worst case over 400 viewpoints:
+
+| K | leaves | tris | angular error |
+|---|---|---|---|
+| 0.8 | 148 | 95k | 4.48° |
+| 0.9 | 178 | 114k | 3.98° |
+| 1.0 | 211 | 135k | 3.58° |
+| **1.1** | **304** | **195k** | **3.26°** |
+| 1.2 | 304 | 195k | 2.98° |
+| 1.3 | 304 | 195k | 2.75° |
+| 1.6 | 400 | 256k | 2.24° |
+
+1.1, 1.2 and 1.3 are one plateau. A visible quality jump between 1.0 and 1.1 is that boundary and nothing else -- so 1.1 is the default (cheapest K on its plateau), going up to 1.3 is free, and dropping to 1.0 buys back a real 60k triangles. Regenerate the table by sweeping `selectNodes()` over the `CAMS` list in `check-sim.mjs` section 5.
 
 **Prop LOD:**
 
@@ -339,6 +375,8 @@ Until the splat textures exist, the surface gets its grain from a `MeshLambertMa
 **Keyed to world position, in the fragment shader, deliberately.** Anything baked per-vertex would rescale itself at every quadtree ring and pop as the LOD changed -- the grain would visibly breathe as you walked. Same reason the base classification in `chunk-mesh.js` stays coarse: it is the only part that *can* live on vertices.
 
 Two things this pass got wrong the first time, both worth remembering. Vertex colours and plain `THREE.Color` uniforms are **linear working space**, and the palette had been authored as if they were sRGB: linear 0.33 is sRGB 0.60, which under a 2.1-intensity sun came out as pale mint green. Dark gritty ground lives around linear 0.05. And the speckle is what makes speed legible -- on untextured ground at 29 m/s you cannot tell you are moving at all.
+
+**A second, un-faded macro layer, because the fade is what made distance look flat.** Everything past ~95 m was reading as smooth green or smooth grey, and the cause was not a thin palette -- it was that the only thing varying the palette had already faded out. So there are two independent layers with opposite requirements: the near grain (0.5-3.5 m) *must* die at range or it aliases into shimmer once it is sub-pixel; the macro layer (~110 m regions with ~38 m variation inside them) *must not*, and is safe not to because it is never close to pixel-sized from anywhere you can stand. One shared fade cannot satisfy both, which is why they are not just extra octaves on one fbm. The macro layer swings brightness on everything (damped on snow -- blotchy snow reads as dirty snow), pulls green ground toward a dry ochre or a damp deep green, and stains rock on the finer octave alone, since mineral banding follows the face rather than the valley.
 
 ### Transparency: alpha test, never alpha blend
 
@@ -556,6 +594,15 @@ She is a first-time-ish VR user. Comfort outranks capability.
 - **Recenter** binding (long-press a face button)
 - **Unstick** binding (§4)
 
+### Desktop-only survey controls
+
+None of these exist in the headset, and that is the point -- they are for reading a 16 km world during tuning, at speeds and freedoms §12 forbids in VR.
+
+- **Fly mode uses Minecraft's bindings**, because that is the muscle memory already in place: hold space to rise, hold shift to sink, either freely combined with WASD, double-tap space to drop back to walking. There is no separate "enter fly mode" key -- the first tap is it, since the only reason to press space on the ground is to leave it. Vertical is world-up regardless of gaze; forward follows the full look direction including pitch. Vertical input counts toward movement demand while flying and must not while walking, or the ascend key silently becomes a walk key.
+- **Click to measure.** A click plants a red beam on the ground and puts a live rangefinder in the stats panel (slant, horizontal and vertical separately -- on a mountainside they diverge hard). Live against the *current* eye position rather than frozen at click time, so you can plant a beam on a ridge and walk the distance down; calibrating your own sense of scale needs the walk, not the snapshot. Drag-to-look and click-to-measure are separated by accumulated pointer travel (5 px), not by a modifier.
+- **The hit test raymarches `heightAt()`, never raycasts the mesh.** Terrain geometry is the current LOD selection, so a mesh raycast would measure the same rock differently depending on how far away you were standing, which is the one error a measuring tool cannot make. It also works on chunks that have not finished streaming.
+- **One stats panel per platform.** The head-locked canvas HUD is the only one that exists in the headset; the DOM corner panel is the only one worth having on a monitor. Both render the same lines with the same prefix-driven colour coding (`##` heading, `!!` bad, `++` good, `%%` measurement).
+
 ### Pacing
 
 At 1.4 m/s, 800 m takes ~9.5 minutes. Against a ~15-20 minute thermal window, the summit should be roughly 10-12 minutes of walking from spawn. Place spawn accordingly.
@@ -581,11 +628,13 @@ Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer 
 
 1. ~~**§0 spike.**~~ **DONE.** `WEBGL_multi_draw` confirmed, `BatchedMesh` confirmed batching (6 draw calls at 8,000 instances), ceiling measured at ~800k tris/frame as the HUD reports it. In-world HUD built, preserved at `spike.html`. Still to read off the HUD on the next headset visit: `MAX_ARRAY_TEXTURE_LAYERS`, foveation delta, 90 Hz, 20-minute soak.
 2. **Terrain + locomotion vertical slice.** Worker-generated quadtree terrain with skirts, heightmap collision, slope limiting, eased locomotion, vignette, snap turn, recenter. **Get this to a stable 72 Hz with an empty world before adding a single tree.**
-   **Code complete and checked headlessly** (`npm run check`): sim layer validated (relief, slope distribution, winding, spawn connectivity), terrain streaming drilled over an 18 km walk (slot accounting, eviction, geometry placement), empty world at 137k tris / 1 draw call.
+   **Code complete and checked headlessly** (`npm run check`): sim layer validated (relief, slope distribution, winding, spawn connectivity), terrain streaming drilled over an 18 km walk (slot accounting, eviction, geometry placement), empty world at 195k tris / 1 draw call.
 
    Then a first desktop look drove a round of tuning, all recorded above: horizontal scale halved to Skyrim proportions (§3), peaks unclamped and jagged (§3), `splitK` 1.3 -> 1.0 (§5), procedural speckle over a much darker palette (§7), and a four-kind scale-reference scatter at ~24k tris in the same batch (§6). Desktop locomotion lost the acceleration ramp and gained a 29 m/s fly mode (§12), and walking strafe turned out to be mirrored -- the right-hand perpendicular had its sign backwards.
 
-   **Still not run in a headset.** 72 Hz, comfort, and the four §0 HUD numbers are all unverified, and that is what this step is actually gated on.
+   A second desktop look found that pass had overshot: doubling frequencies while holding relief had doubled every slope, walling the world off behind 800 m cliffs and turning the terrace layer into a staircase. Fixed by cutting `mountainRelief` 690 -> 175 and moving cliff duty from the ridge backbone to the Worley break layer (§3), which took walkable area from 53% to 91% and reachability from 72% to 99%. Same round: a macro colour layer so distance stops reading as flat green and grey (§7), `splitK` -> 1.1 on the strength of a measured plateau (§5), and the desktop survey tools -- Minecraft flight bindings, click-to-measure, one stats panel per platform (§12). Two measurement scripts had silently stopped measuring what they named and were fixed alongside; `check-terrain.mjs` had also lost its exit code, so the gate was printing failures and exiting 0.
+
+   **Still not run in a headset, and the second tuning round has not been run in a browser either.** 72 Hz, comfort, and the four §0 HUD numbers are all unverified, and that is what this step is actually gated on.
 3. **Phase A global pass.** Elevation (§3), priority-flood, flow accumulation, biomes, village siting, connectivity validation. Pure math, no rendering, most reusable code in the project. Debug it with a 2D canvas map view before it ever renders in 3D.
 4. **Asset pipeline + `BatchedMesh` + texture array.** One species end-to-end. Requires installing Blender.
 5. **Placement, paths, LOD tiering.** The lushness pass. **Build LOD tiering in the same step as placement, never after it** -- §0 measured that undifferentiated full-detail props hit the triangle ceiling at ~4,000 instances, well under the density this world needs. A placement system without LOD cannot be evaluated, because it will be unplayable for reasons that have nothing to do with placement.

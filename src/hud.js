@@ -7,10 +7,41 @@ import * as THREE from 'three'
 // is slow enough that you will avoid using it. Every number we care about has
 // to be readable in VR. Per DESIGN.md §0 this panel stays in the project
 // permanently, toggled by a controller button.
+//
+// There are two surfaces for one panel and exactly one of them is ever live:
+// the head-locked canvas mesh in XR, the DOM mirror on desktop. They are not
+// alternatives in the sense of "pick your favourite" -- the canvas one is the
+// only one that exists inside the headset, and on a monitor it is a blurry
+// floating rectangle over the middle of the screen repeating what the crisp
+// corner panel already says. `setPresenting()` is what arbitrates, and both
+// surfaces render the same `lines` array with the same colour coding.
 // ---------------------------------------------------------------------------
 
 const W = 1024
 const H = 640
+
+// Line colours, keyed by a two-character prefix the caller puts on the line.
+// A prefix is a semantic tag, not a colour name: `##` is a section heading,
+// `!!` is something wrong, `++` is something good, `%%` is a measurement.
+const PREFIX_COLORS = {
+  '##': '#7fd1ff',
+  '!!': '#ff9a7a',
+  '++': '#9dffb0',
+  '%%': '#ff5f52',
+}
+const BODY_COLOR = '#cfe3ff'
+
+function classify(line) {
+  const color = PREFIX_COLORS[line.slice(0, 2)]
+  return color ? { color, text: line.slice(2).trim() } : { color: BODY_COLOR, text: line }
+}
+
+// The lines are ours, not user input, but they interpolate free-form strings
+// (prop kind names, error text) and this is set with innerHTML. Escaping is one
+// line and removes the whole category.
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
 
 export class Hud {
   constructor() {
@@ -37,7 +68,9 @@ export class Hud {
 
     this.lines = []
     this.visible = true
+    this.presenting = false
     this.domMirror = document.getElementById('desktop-hud')
+    this._applyVisibility()
 
     this._pos = new THREE.Vector3()
     this._quat = new THREE.Quaternion()
@@ -53,7 +86,19 @@ export class Hud {
 
   toggle() {
     this.visible = !this.visible
-    this.mesh.visible = this.visible
+    this._applyVisibility()
+  }
+
+  // Call on XR sessionstart/sessionend. Which surface is live is a property of
+  // where she is looking, not a preference, so it is not on the H toggle.
+  setPresenting(presenting) {
+    this.presenting = presenting
+    this._applyVisibility()
+  }
+
+  _applyVisibility() {
+    this.mesh.visible = this.visible && this.presenting
+    if (this.domMirror) this.domMirror.style.display = this.visible && !this.presenting ? '' : 'none'
   }
 
   // Head-locked with damping so it does not jitter with micro head motion.
@@ -75,7 +120,23 @@ export class Hud {
   paint(now) {
     if (now - this._lastPaint < 250) return
     this._lastPaint = now
+    if (!this.visible) return
 
+    if (this.presenting) this._paintCanvas()
+    else this._paintDom()
+  }
+
+  _paintDom() {
+    if (!this.domMirror) return
+    this.domMirror.innerHTML = this.lines
+      .map((line) => {
+        const { color, text } = classify(line)
+        return `<span style="color:${color}">${escapeHtml(text)}</span>`
+      })
+      .join('\n')
+  }
+
+  _paintCanvas() {
     const c = this.ctx
     c.clearRect(0, 0, W, H)
     c.fillStyle = 'rgba(8,14,26,0.86)'
@@ -88,28 +149,12 @@ export class Hud {
     c.textBaseline = 'top'
     let y = 22
     for (const line of this.lines) {
-      if (line.startsWith('##')) {
-        c.fillStyle = '#7fd1ff'
-        c.fillText(line.slice(2).trim(), 22, y)
-      } else if (line.startsWith('!!')) {
-        c.fillStyle = '#ff9a7a'
-        c.fillText(line.slice(2).trim(), 22, y)
-      } else if (line.startsWith('++')) {
-        c.fillStyle = '#9dffb0'
-        c.fillText(line.slice(2).trim(), 22, y)
-      } else {
-        c.fillStyle = '#cfe3ff'
-        c.fillText(line, 22, y)
-      }
+      const { color, text } = classify(line)
+      c.fillStyle = color
+      c.fillText(text, 22, y)
       y += 30
     }
 
     this.texture.needsUpdate = true
-
-    if (this.domMirror) {
-      this.domMirror.textContent = this.lines
-        .map((l) => l.replace(/^(##|!!|\+\+)\s*/, ''))
-        .join('\n')
-    }
   }
 }

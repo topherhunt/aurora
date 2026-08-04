@@ -18,7 +18,14 @@ const MAX_SLOPE = (38 * Math.PI) / 180
 // A bump has to rise this far above its surrounding saddle to count as a peak.
 // Without a prominence test every pebble of detail noise registers and the
 // spacing number just reports the detail frequency.
-const PROMINENCE = 120
+//
+// Relative to mountainRelief rather than a fixed metre value, because a fixed
+// one silently stops measuring the thing it names. At 120 m against 690 m peaks
+// it reported a sensible 864 m median; the same 120 m against 175 m peaks
+// disqualified nearly every summit in the world and reported 3584 m, which is
+// not a bigger world -- it is a broken instrument. 0.17 is the ratio the
+// original number happened to encode.
+const PROMINENCE = 0.17 * TUNING.mountainRelief
 
 const th = new TerrainHeight(SEED)
 
@@ -140,7 +147,7 @@ const stat = (a) => {
 }
 
 console.log('\nhorizontal scale')
-console.log(`        peak-to-peak (prominence >=${PROMINENCE}m)   ${stat(gaps)}`)
+console.log(`        peak-to-peak (prominence >=${PROMINENCE.toFixed(0)}m)   ${stat(gaps)}`)
 console.log(`        valley floor run                    ${stat(floors)}`)
 
 console.log('\ntuning in effect')

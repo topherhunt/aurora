@@ -31,22 +31,36 @@ import { WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 // turns out to be perfectly acceptable, and the fog is doing most of that work
 // anyway. Measured worst-case selections over 400 random viewpoints:
 //
-//   K 0.8 -> 187 leaves, 120k tris, 4.48 deg
-//   K 1.0 -> 223 leaves, 143k tris, 3.58 deg     <- default
-//   K 1.3 -> 319 leaves, 204k tris, 2.75 deg     <- previous default
+//   K 0.8 -> 148 leaves,  95k tris, 4.48 deg
+//   K 0.9 -> 178 leaves, 114k tris, 3.98 deg
+//   K 1.0 -> 211 leaves, 135k tris, 3.58 deg
+//   K 1.1 -> 304 leaves, 195k tris, 3.26 deg     <- default
+//   K 1.2 -> 304 leaves, 195k tris, 2.98 deg
+//   K 1.3 -> 304 leaves, 195k tris, 2.75 deg     <- original default
+//   K 1.6 -> 400 leaves, 256k tris, 2.24 deg
 //
-// Note how flat that curve is below K 1.3. Ring size bottoms out at low K, so
+// Read that table carefully, because it is not a smooth curve and the flat spot
+// is the interesting part. 1.1, 1.2 and 1.3 select the SAME 304 leaves: subdivision
+// is a discrete test, so a whole band of K values lands on one ring layout and
+// costs exactly the same. The visible quality step between 1.0 and 1.1 is that
+// boundary, and it means the extra detail from 1.1 up to 1.3 is free -- and that
+// dropping from 1.1 to 1.0 saves a real 60k triangles.
+//
+// 1.1 is therefore the cheapest K on its plateau, which is why it is the default.
+// If distant ridgelines ever need more, go to 1.3 before 1.6; it costs nothing.
+//
+// Note also how flat the curve is below 1.3. Ring size bottoms out at low K, so
 // most of what a higher K buys is near-field chunks you are looking straight
 // down at. That is also why raising CHUNK_RES while lowering splitK costs MORE
 // triangles at constant angular error, not fewer -- you pay res^2 without ever
 // getting the K^2 saving back. Do not "optimise" that direction.
 //
-// splitK is live-tunable at runtime ([ and ]) precisely because 3.58 deg is a
-// judgement call that has to be made by looking at ridgelines, not at a table.
+// Regenerate this table by sweeping selectNodes() over the CAMS list in
+// check-sim.mjs section 5; the numbers above come from exactly that.
 // ---------------------------------------------------------------------------
 
 export const MAX_DEPTH = 10 // 16384 m root / 2^10 = 16 m leaves
-export const DEFAULT_SPLIT_K = 1.0
+export const DEFAULT_SPLIT_K = 1.1
 
 // The terrain slot pool is sized for the worst selection at this splitK.
 export const MAX_SPLIT_K = 2.1
