@@ -62,13 +62,18 @@ export class Sky {
         void main() {
           vec3 dir = normalize( vDir );
 
-          // Height above the horizon, 0..1. The 0.42 exponent is the whole
-          // character of the gradient: a linear ramp puts the midpoint 45 deg
-          // up, which is far too high and makes the sky look washed out,
-          // because most of what she can see through a headset is the lower
-          // half of the sky. Pulling it toward the horizon compresses the pale
-          // band into the bottom ~20 deg, which is where real haze sits.
-          float up = pow( clamp( dir.y, 0.0, 1.0 ), 0.42 );
+          // Height above the horizon, 0..1. The exponent is the whole character
+          // of the gradient: a linear ramp puts the midpoint 45 deg up, which
+          // is far too high and makes the sky look washed out, because most of
+          // what she can see through a headset is the lower half of the sky.
+          //
+          // This was 0.42, which still left a wide pale band -- the midpoint of
+          // the mix sat at asin(0.5^(1/0.42)) = 11 deg, but the approach to it
+          // is slow and the sky did not read as properly blue until ~40 deg up.
+          // 0.21 halves the exponent, which squares the ramp: the same midpoint
+          // lands at 2.4 deg and the pale band collapses into the bottom of the
+          // view, where real haze actually sits.
+          float up = pow( clamp( dir.y, 0.0, 1.0 ), 0.21 );
           vec3 col = mix( uHorizon, uZenith, up );
 
           // Below the horizon the terrain covers everything, but the dome is

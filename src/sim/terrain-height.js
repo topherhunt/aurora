@@ -287,35 +287,128 @@ function softCeil(v, k) {
 // foot it arrives several metres BELOW it. Every ledge sat in its own pit. The
 // operator was moving the cliff down rather than making it steeper.
 //
-// What it does instead now is move earth rather than remove it: cut where the
-// ground is hollow, pile it on where the ground is proud, and do both only on
-// slopes already past the walkable threshold. That is an unsharp mask -- the
-// height minus a blur of itself -- gated by slope. It sharpens the S-curve of a
-// hillside into a step: the rounded shoulder at the top becomes a lip, the
-// rounded hollow at the foot becomes a crisp break, and the face between them
-// gets steeper because the two ends moved apart while the middle stayed put.
-// Nothing is displaced on flat ground, and nothing is displaced anywhere the
-// surface is already planar, so a slope arrives at its foot at the same height
-// it always did.
+// The second was an unsharp mask -- height minus a blur of itself. That fixed
+// the craters, because it displaces nothing on a planar surface and so a slope
+// still arrives at its foot where it always did. But "displaces nothing on a
+// planar surface" is also fatal: a smooth planar over-steep ramp is the WORST
+// case in the system, since she is refused with no visual cue whatsoever, and
+// that is exactly the case a Laplacian cannot touch. And at the eps this has to
+// run at (the limiter's, see below) the curvature it amplifies is the terrain's
+// grain rather than the shape of a hillside, so it manufactured the complaint it
+// was meant to fix: over 41 walking transects the raw field refuses her in 176
+// runs of median 125 cm, and a gain of 9 turned that into 722 runs of median
+// 56 cm.
+//
+// The third was BENCH: cut the upper half of each elevation band, pack the spoil
+// onto the lower half, giving flat treads separated by short steep risers. The
+// metrics were the best of the three -- refused ground down from 21.2% to ~15%,
+// a 15 m unbroken wall turned into treads at 11 deg with risers at 72 deg. It
+// looked like rice paddies, and no amount of tuning was ever going to save it.
+// Softening the power, widening the bands, jittering the phase and finally
+// masking it to a third of the world each thinned the stripes without changing
+// what they were, because the operator is keyed to ABSOLUTE ELEVATION and its
+// output is therefore a family of contour-parallel lines at regular vertical
+// intervals. That is the definition of a terrace. This project has now produced
+// corduroy four times and every one of them was something periodic in height.
+//
+// So the standing lesson, which is worth more than the code: cliffs are not
+// periodic in anything. What real ones have -- jagged in-and-out, bulges,
+// isolated platforms -- is APERIODIC and lateral, and would want a noise-driven
+// displacement along the surface, not a function of h. That is a different
+// operator, and it is not written.
+//
+// The other half of the lesson is that the thing this was built to fix is not
+// really a terrain problem at all. `Player._walkable` compares heights over one
+// frame of travel -- 2 cm at 1.45 m/s and 72 Hz -- so a 46 cm patch of 42 deg
+// stops her dead where a person would step over it. No amount of sculpting makes
+// a 46 cm feature visible; a stride-length baseline in the limiter would make it
+// irrelevant.
 export const SCARP = {
-  enabled: true,
-  // eps sets the scale the operator sees, and it matters more than the gain.
-  // At 2 m the curvature it reads is the terrain's GRAIN, not the shape of a
-  // hillside, so it sharpened noise and barely touched the slope distribution.
-  // The S-curve worth cutting -- rounded shoulder, straight face, rounded foot
-  // -- is a 10 m feature, so the half-width has to be about 5.
-  eps: 6.0, // metres over which slope and curvature are measured
-  loTan: Math.tan((41 * Math.PI) / 180), // knee starts above maxSlopeDeg (38)
-  hiTan: Math.tan((52 * Math.PI) / 180), // ...and is fully applied by here
-  // Dimensionless: 0 is a no-op, 1 doubles the local convexity. Read this
-  // together with eps -- they are not independent. In a field with power at
-  // every scale the bulge measured at half-width e grows roughly in proportion
-  // to e, so a gain tuned at eps 2 is off by a factor of three at eps 6. The
-  // first pass at this had eps 5 with a gain of 5, which pinned the cap at
-  // BOTH ends along an entire cliff face: every sample either +6 or -6, which
-  // is a square wave, not a scarp.
-  sharpen: 1.3,
-  cap: 6, // metres, either direction -- a bound on how far earth can move
+  // OFF. Left in place behind the flag because the tuning notes below are the
+  // record of three failed operators, but nothing in the shipped world runs it,
+  // and turning it on again needs a better idea than any of them -- see the
+  // banner above heightAt for what that would have to look like.
+  //
+  // Disabling it is also a real speed-up rather than a neutral revert: with the
+  // flag off `heightAt` short-circuits to a SINGLE field evaluation instead of
+  // five, and heightAt is the hottest query in the project (collision every
+  // frame, every vertex of every chunk rebuild, every prop candidate).
+  enabled: false,
+  // eps MUST equal the eps the slope limiter decides at, and that is not a
+  // tuning preference -- it is the whole point of the operator. It is a HALF
+  // width: the gate reads slope over 2*eps.
+  //
+  // This was 6, then 1.5, on the reasoning that the S-curve worth cutting is a
+  // 10 m landform. That reasoning was about the wrong thing. What blocks her is
+  // whatever `Player` refuses to step onto, and that is `slopeAt`, a central
+  // difference at eps 0.75. Anything wider is a different measurement of a
+  // different thing, and the error is not small: at the reported case, walking
+  // +x from -205,151, the step that stops her reads 43.6 deg at the limiter's
+  // 1.5 m baseline and 36.6 deg at a 3 m baseline. Gating on the wide measure
+  // gave that step a knee of 0.067 and a displacement of +0.00 m -- an
+  // invisible refusal on featureless snow, with the sculpting that exists
+  // precisely to explain it never firing.
+  //
+  // So: 0.75, the limiter's own eps, and the two are now the same number by
+  // construction. The cost is real and was the original argument for going
+  // wider -- at this scale the curvature it reads is partly the terrain's grain
+  // rather than the shape of a hillside -- but sculpting the grain on ground
+  // that is already too steep to walk on is not a side effect here, it is the
+  // request.
+  eps: 0.75,
+  // The knee used to start at 41 deg, above maxSlopeDeg, so that ground she can
+  // walk on stayed bit-identical. 36 opens it just BELOW the limiter's 38 deg
+  // cut instead. The consequence is deliberate: ground she can still walk on
+  // gets sculpted too, which is what turns an approach into a visibly
+  // steepening ramp rather than a flat white sheet that refuses her without
+  // warning. Prop heights are unaffected -- they come from the same expression
+  // heightAt uses, not from an assumption about where this threshold sits.
+  loTan: Math.tan((36 * Math.PI) / 180),
+  hiTan: Math.tan((50 * Math.PI) / 180), // ...fully applied by here
+  // Safety rail, metres either direction. Nothing currently reaches it -- the
+  // largest displacement measured across the sweep is 1.6 m -- but it is what
+  // stops a future change to bench/benchPow from quietly inventing a landform.
+  cap: 3,
+  // Vertical spacing of the benches, in metres: the rise of one riser, and so
+  // the height of the ledge she has to walk around. On a 40 deg face a 10 m
+  // band puts a ledge every 12 m of ground, which is roughly one per face.
+  bench: 10,
+  // Riser sharpening. 1 is exactly a no-op; above 1 the height gradient at each
+  // band BOUNDARY is multiplied by this while the gradient at the band MIDDLE
+  // goes to zero -- earth cut from the top of each band and packed onto the
+  // bottom of the one below, which is a flat tread with a short steep riser
+  // above it.
+  //
+  // These two were first set to 6 and 4.5, chosen entirely on numbers: that
+  // combination moved 1.6 m of earth and cut refused ground by a quarter, which
+  // is everything the metrics were asking for. The hillshade showed a rice
+  // paddy -- five and six parallel contour stripes down every slope, the same
+  // corduroy this project has now produced three times. Numbers catch scale
+  // errors and images catch character errors, and terracing is a character
+  // problem: the metric cannot tell one legible ledge from six illegible ones,
+  // because both move the same earth.
+  //
+  // 10 and 2.0 came out of an image sweep instead. It is the largest setting
+  // where the only visible change is that the black smears in the hillshade
+  // grow one or two clean ledge lines and the rest of the terrain is left
+  // alone. Every variant at pow 3 combs.
+  benchPow: 2.2,
+  benchJitterFreq: 0.011, // ~90 m: benches drift out of alignment along a face
+  // Fraction of the world where benching happens at all, roughly. Even at pow
+  // 2.0 the hillshade still combed, and the reason was not the strength -- it
+  // was that EVERY face past the gate got the same treatment, so a long uniform
+  // slope came out as five parallel contour lines no matter how gentle each one
+  // was. Terracing has to be a property of the rock, not of the operator.
+  //
+  // So it is masked by a slow noise: about a third of hillsides bench and the
+  // rest stay smooth, which is also what layered ground actually looks like --
+  // bedding planes outcrop in some places and not others. The masked-out
+  // majority is bit-identical to the unscarped field, and the benched minority
+  // reads as a feature of that particular face rather than as a filter someone
+  // ran over the whole map.
+  benchMaskFreq: 0.0022, // ~450 m regions: several hillsides wide, not one face
+  benchMaskLo: 0.12, // noise below this: no benching
+  benchMaskHi: 0.52, // and full benching above this
 }
 // ===== END EXPERIMENT ========================================================
 
@@ -349,56 +442,81 @@ export class TerrainHeight {
   // Delete this method, the SCARP block above, and the two lines in heightAt
   // that reference them. Nothing else in the project depends on it.
   //
-  // What it does: on ground that is ALREADY too steep to walk on, it pushes the
-  // surface further away from its own local average -- up where the ground is
-  // convex, down where it is concave -- and does nothing at all elsewhere.
+  // What it does: on ground steep enough that she is about to be refused by it,
+  // it benches the surface -- flat treads, short steep risers -- and does
+  // nothing at all elsewhere.
   //
-  // The knee starts ABOVE LOCOMOTION.maxSlopeDeg on purpose. Ground she can walk
-  // on is bit-identical to what it was; only the 38-and-up band gets pushed off
-  // the fence, which is the intent -- slopes should end up clearly on one side
-  // of "can I climb this" or the other rather than piled at the threshold.
-  //
-  // Why curvature rather than a flat drop: a constant offset has no gradient, so
-  // it cannot steepen anything. All it can do is move the whole face down, and
-  // the face has to rejoin the untouched ground somewhere -- which it did, in a
-  // trench around the bottom of every ledge. The curvature term has the opposite
-  // property. It is largest exactly at the two rounded ends of a hillside and
-  // vanishes on the straight part between them, so it eats the roundedness and
-  // leaves the endpoints where they were.
+  // Why not a flat drop, which was the first attempt: a constant offset has no
+  // gradient, so it cannot steepen anything. All it can do is move the whole
+  // face down, and the face has to rejoin the untouched ground somewhere --
+  // which it did, in a trench around the bottom of every ledge.
   //
   // The costs, both real:
   //   - Five field evaluations per heightAt instead of one, which is the entire
   //     reason for the `enabled` flag.
-  //   - Slope and curvature are read on the UNSCARPED field. That is deliberate
-  //     -- it makes the operator a single pass that cannot feed back on itself
-  //     and run away -- but it does mean the result is not itself sharpened, so
-  //     `sharpen` above 3 or so starts to produce overshoot rather than cliffs.
+  //   - The slope gate is read on the UNSCARPED field. That is deliberate: it
+  //     makes the operator a single pass that cannot feed back on itself and run
+  //     away. It does mean the gate is slightly out of date with respect to the
+  //     surface it produces, which shows up as benching that fades in a little
+  //     early at the foot of a face.
   _scarpAt(x, z, h) {
     const e = SCARP.eps
     const xm = this._field((x - e) * SHRINK, z * SHRINK) / SHRINK
     const xp = this._field((x + e) * SHRINK, z * SHRINK) / SHRINK
     const zm = this._field(x * SHRINK, (z - e) * SHRINK) / SHRINK
     const zp = this._field(x * SHRINK, (z + e) * SHRINK) / SHRINK
-    return this._scarpFrom(h, xm, xp, zm, zp)
+    return this._scarpFrom(x, z, h, xm, xp, zm, zp)
   }
 
   // The displacement itself, given a point and its four neighbours already
   // sampled. Split out so heightAndSlopeAt() can reuse the same five samples.
-  // Returns metres to ADD: positive on a lip, negative in a hollow.
-  _scarpFrom(h, xm, xp, zm, zp) {
+  // Returns metres to ADD: positive on the lower half of a band, negative on the
+  // upper half, zero at every band boundary and on any slope below the gate.
+  _scarpFrom(x, z, h, xm, xp, zm, zp) {
     const d = 2 * SCARP.eps
     const s = Math.hypot((xp - xm) / d, (zp - zm) / d) // tan of the slope
     if (s <= SCARP.loTan) return 0
     const t = Math.min(1, (s - SCARP.loTan) / (SCARP.hiTan - SCARP.loTan))
     const knee = t * t * (3 - 2 * t)
-    // Height minus the mean of its neighbours: the discrete Laplacian, up to a
-    // constant. Positive where the surface bulges out of its own neighbourhood
-    // (the shoulder at the top of a slope), negative where it dishes into it
-    // (the hollow at the foot), and zero wherever the surface is locally flat
-    // OR locally planar -- which is most of a cliff face, and is why the face
-    // itself stays where it is while its two ends pull apart.
-    const bulge = h - (xm + xp + zm + zp) * 0.25
-    return Math.max(-SCARP.cap, Math.min(SCARP.cap, SCARP.sharpen * knee * bulge))
+
+    // Soft terracing. `u` is the signed position within the current band,
+    // -0.5..0.5, and the band is remapped through an odd power curve about its
+    // own middle. Two properties matter and both are load-bearing:
+    //
+    //   - The remap is the IDENTITY at u = +-0.5, so `bench` is exactly zero at
+    //     every band boundary and consecutive bands join with no step. An
+    //     earlier version pulled toward the nearer level instead, which reads
+    //     naturally but is discontinuous at mid-band -- it jumped by
+    //     pull*bench, a vertical 1.8 m wall wherever the gate was open, and
+    //     would have manufactured more of exactly the invisible refusals this
+    //     is here to remove.
+    //   - Its slope is `benchPow` at the boundary and 0 at the middle. So the
+    //     surface gradient is multiplied by benchPow across the riser and
+    //     driven to flat across the tread: earth cut from the upper half of
+    //     each band and packed onto the lower half of it. That is the "sculpt
+    //     from the lower part onto the upper part" case, and unlike the bulge
+    //     it works on a perfectly planar ramp, where a Laplacian is identically
+    //     zero. It is mass-conserving by symmetry -- the cut and the fill are
+    //     mirror images about the band's middle.
+    //
+    // The jitter phase is a plain noise lookup rather than a field evaluation:
+    // this runs five times per heightAt already and cannot afford another.
+    const phase = this.nTerrace.simplex2(x * SCARP.benchJitterFreq, z * SCARP.benchJitterFreq)
+    const q = h / SCARP.bench + phase
+    const u = q - Math.floor(q) - 0.5
+    const a = Math.abs(u) * 2
+    const eased = 0.5 * Math.sign(u) * Math.pow(a, SCARP.benchPow)
+    const bench = (eased - u) * SCARP.bench
+
+    // Which ground is layered enough to bench at all. Squared-smoothstep on a
+    // slow noise, so the regions have soft edges and benching fades in along a
+    // hillside rather than starting at a line.
+    const mn = this.nTerrace.simplex2(x * SCARP.benchMaskFreq, z * SCARP.benchMaskFreq) * 0.5 + 0.5
+    const mt = Math.min(1, Math.max(0, (mn - SCARP.benchMaskLo) / (SCARP.benchMaskHi - SCARP.benchMaskLo)))
+    const mask = mt * mt * (3 - 2 * mt)
+
+    const move = knee * mask * bench
+    return Math.max(-SCARP.cap, Math.min(SCARP.cap, move))
   }
   // ===== END EXPERIMENT ======================================================
 
@@ -676,6 +794,6 @@ export class TerrainHeight {
     const zp = this._field(x * SHRINK, (z + e) * SHRINK) / SHRINK
     const d = 2 * e
     const tan = Math.hypot((xp - xm) / d, (zp - zm) / d)
-    return { h: SCARP.enabled ? h + this._scarpFrom(h, xm, xp, zm, zp) : h, tan }
+    return { h: SCARP.enabled ? h + this._scarpFrom(x, z, h, xm, xp, zm, zp) : h, tan }
   }
 }

@@ -186,18 +186,50 @@ export function buildChunk(terrain, { ox, oz, size, res }) {
   const indices = new Uint16Array(triCount * 3)
   let k = 0
 
+  // A quad has two vertices too many to be a triangle, so every cell has to
+  // pick a diagonal, and picking the SAME one everywhere is visible. Vertex
+  // colours are interpolated along triangle edges, so a snow-to-rock boundary
+  // can run straight only along the chosen diagonal; across it, it has no
+  // choice but to staircase between the fixed splits. That is the zig-zag that
+  // shows up on some faces and not others -- the faces that look right are the
+  // ones whose boundary happens to run with the grain.
+  //
+  // Choosing the SHORTER diagonal per cell fixes it and is not a compromise:
+  // connecting the two corners that are closest in height is also the better
+  // surface, because splitting a saddle the wrong way invents a ridge or a
+  // gully that is not in the field. Being data-dependent, the pattern is
+  // irregular, so the boundary wanders instead of stepping. A fixed
+  // checkerboard would break the directional bias too, but only by trading it
+  // for a herringbone at the leaf-cell scale.
+  //
+  // This is a mitigation, not a cure. The boundary is still resolved at vertex
+  // spacing, which is 1 m at the leaf and much coarser out in the LOD rings;
+  // the cure is classifying per fragment (DESIGN.md §7), and the fragment-side
+  // dither in terrain-material.js is the down payment on it.
   for (let j = 0; j < res; j++) {
     for (let i = 0; i < res; i++) {
       const a = idx(i, j)
       const b = idx(i + 1, j)
       const c = idx(i, j + 1)
       const d = idx(i + 1, j + 1)
-      indices[k++] = a
-      indices[k++] = c
-      indices[k++] = b
-      indices[k++] = b
-      indices[k++] = c
-      indices[k++] = d
+      if (Math.abs(positions[a * 3 + 1] - positions[d * 3 + 1]) <
+          Math.abs(positions[b * 3 + 1] - positions[c * 3 + 1])) {
+        // split a--d
+        indices[k++] = a
+        indices[k++] = d
+        indices[k++] = b
+        indices[k++] = a
+        indices[k++] = c
+        indices[k++] = d
+      } else {
+        // split b--c
+        indices[k++] = a
+        indices[k++] = c
+        indices[k++] = b
+        indices[k++] = b
+        indices[k++] = c
+        indices[k++] = d
+      }
     }
   }
 
