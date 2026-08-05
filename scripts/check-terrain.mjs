@@ -372,7 +372,13 @@ console.log('\nscale-reference props')
       // the check and the rule a few degrees apart and made props near a cap
       // read as violations when they were placed correctly.
       if (th.heightAndSlopeAt(p.x, p.z).tan > Math.tan((k.maxSlopeDeg * Math.PI) / 180)) tooSteep++
-      if (th.heightAt(p.x, p.z) > k.maxElev) tooHigh++
+      // snowRel kinds read maxElev as an offset from the LOCAL snow line, so the
+      // cap is a field and not a number. Comparing against the raw config value
+      // is how this check failed the moment the treeline started following the
+      // snow line -- which is the correct failure, but it was the instrument
+      // that was wrong, not the placement.
+      const cap = k.snowRel ? th.snowLineAt(p.x, p.z) + k.maxElev : k.maxElev
+      if (th.heightAt(p.x, p.z) > cap) tooHigh++
       if (Math.hypot(p.x - ox, p.z - oz) > k.radius + 1) outside++
     }
     // ...and that the lag can never leave her standing outside her own disc.

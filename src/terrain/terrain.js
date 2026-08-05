@@ -1,6 +1,6 @@
 import * as THREE from 'three'
-import { selectNodes, nodeKey, MAX_DEPTH, DEFAULT_SPLIT_K } from './quadtree.js'
-import { WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
+import { selectNodes, nodeKey, buildElevationLod, MAX_DEPTH, DEFAULT_SPLIT_K } from './quadtree.js'
+import { TerrainHeight, WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 import { CHUNK_RES } from '../sim/chunk-mesh.js'
 import { createTerrainMaterial } from './terrain-material.js'
 
@@ -29,9 +29,14 @@ export const CHUNK_VERTS = (CHUNK_RES + 1) * (CHUNK_RES + 1) + 4 * (CHUNK_RES + 
 export const CHUNK_INDICES = (CHUNK_RES * CHUNK_RES * 2 + 4 * CHUNK_RES * 2) * 3
 
 // Slots are allocated up front and never freed, so this is a hard ceiling on
-// simultaneously-resident chunks and a fixed ~16 MB of GPU buffers. 768 covers
-// the worst selection at splitK 2.1 (568 leaves) plus the pinned base layer
-// plus headroom for LRU retention.
+// simultaneously-resident chunks and a fixed ~16 MB of GPU buffers. It has to
+// cover the worst selection at splitK 2.1 -- the top of the [ ] debug range --
+// plus the 21 pinned base-layer chunks plus headroom for LRU retention.
+//
+// The elevation bias raised that worst case: swept over 600 random camera
+// positions it is 721 leaves, against 577 for the unbiased rule. 721 + 21 = 742
+// leaves 26 slots spare, which is thin, and it is the number to re-measure
+// before touching ELEV_LOD.swing -- overflow here throws at _acquire.
 export const SLOT_COUNT = 768
 const MAX_CACHED = 720
 
@@ -101,6 +106,17 @@ export class Terrain {
     this._dirty = true
 
     this.stats = { desired: 0, rendered: 0, pending: 0, cached: 0, tris: 0, slots: 0, lastGenMs: 0 }
+
+    // Elevation pyramid for the LOD bias (see quadtree.js). ~22 ms of heightAt,
+    // once, here rather than in a worker: the selection runs on the main thread
+    // at 12 Hz and cannot wait on a message round trip to know whether to split.
+    //
+    // Built from `seed` rather than taken as an argument even though main.js
+    // already holds a TerrainHeight. Terrain cannot select nodes without the
+    // height field, so it should own that dependency instead of asking every
+    // caller to remember -- and a TerrainHeight is a pure function of its seed,
+    // so the second instance is the same field, not a second source of truth.
+    this.elev = buildElevationLod(new TerrainHeight(seed))
 
     this.workers = []
     for (let i = 0; i < workers; i++) {
@@ -294,7 +310,7 @@ export class Terrain {
   }
 
   _select(camX, camZ) {
-    const desired = selectNodes(camX, camZ, MAX_DEPTH, this.splitK)
+    const desired = selectNodes(camX, camZ, MAX_DEPTH, this.splitK, this.elev)
     const render = new Set()
     const queue = []
 

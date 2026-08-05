@@ -16,6 +16,12 @@ export const LOCOMOTION = {
   // desktop path passes instant:true and skips it entirely (see update()).
   accelTau: 0.5,
   maxSlopeDeg: 38, // §4 -- this is what makes traps impossible by construction
+  // How far an obstacle has to keep going uphill before it counts as a wall.
+  // See _walkable: without it the slope limiter's baseline is one FRAME of
+  // travel, 2 cm, and a 46 cm bump refuses her. Roughly two paces, and it wants
+  // to stay near slopeAt()'s 1.5 m so the reachability instruments and the
+  // limiter keep asking the same question.
+  stride: 1.5,
   snapDeg: 60, // §12 -- one tunable constant, easy to try 45 instead
   snapEnter: 0.75, // stick deflection to fire a snap turn
   snapExit: 0.4, // must fall back below this before it can fire again
@@ -361,10 +367,36 @@ export class Player {
 
   // Symmetric on purpose: blocking steep descents as well as steep ascents is
   // exactly what guarantees she can leave anywhere she can reach (§4).
+  //
+  // Two baselines, and she is stopped only when BOTH of them say wall.
+  //
+  // The immediate one is the original test and carries the whole of §4's
+  // argument: its probe pair IS her travel pair, so the step that let her in is
+  // bit-identical to the step that lets her back out, and reversibility is a
+  // property of the arithmetic rather than of the terrain. What it is not is a
+  // slope test. `dist` is one frame of travel -- 1.45 m/s at 72 Hz is 2 cm -- so
+  // a 46 cm patch of 42 deg stops her dead where a person would step over it,
+  // and that single fact is what three successive terrain operators were written
+  // to make visible before it was measured. None of them could have: no amount
+  // of sculpting makes a 46 cm feature legible. It was the wrong layer.
+  //
+  // The stride baseline asks what a walker actually asks -- is this still uphill
+  // two paces from now? -- so anything shorter than a stride averages out and a
+  // real cliff does not. Taking the min rather than replacing the immediate test
+  // matters: a lookahead on its own reads the cliff from 1.5 m back and stops
+  // her there, which is an invisible standoff bubble around every wall. This way
+  // she walks right up to the foot of it, and the contour slide above still has
+  // the near test to slide her along.
+  //
+  // The extra sample is only paid on the frames the immediate test already
+  // failed, which are the frames she is not moving anyway.
   _walkable(x, z, dx, dz, dist) {
     const h0 = this.th.heightAt(x, z)
     const h1 = this.th.heightAt(x + dx, z + dz)
-    return Math.abs(h1 - h0) / dist <= this._maxTan
+    if (Math.abs(h1 - h0) / dist <= this._maxTan) return true
+    const k = LOCOMOTION.stride / dist
+    const h2 = this.th.heightAt(x + dx * k, z + dz * k)
+    return Math.abs(h2 - h0) / LOCOMOTION.stride <= this._maxTan
   }
 
   _unstick(head) {

@@ -138,12 +138,32 @@ export class Noise {
     return sum / norm
   }
 
-  // Worley/cellular F1 distance, normalized to roughly 0..1. DESIGN.md §3
-  // item 5 -- angular fractured boundaries rather than round ones.
-  worley(x, y) {
+  // Worley/cellular, for DESIGN.md §3 item 5 -- angular fractured boundaries
+  // rather than round ones. Writes into `out` instead of returning: this runs
+  // per sample inside _field, the hottest path in the project, and a fresh
+  // object literal per call would be millions of allocations per chunk.
+  //
+  //   f1, f2  distance to the nearest and second-nearest feature point
+  //   o1, o2  those two cells' own random elevations, each in -1..1
+  //
+  // THIS USED TO RETURN F1 ALONE, and every caller of it was wrong about what
+  // that meant. F1 is the distance to the nearest feature POINT: it is SMALLEST
+  // AT THE POINT and largest out on the cell boundary. So `F1 < k` selects a
+  // DISC AROUND EACH POINT, and using it to cut a step drew a field of round
+  // dimples -- measured at 15 m radius and 9 m deep -- not fractured lines.
+  //
+  // The quantity that is small on a boundary is F2 - F1, which goes to zero
+  // exactly where the two nearest points are equidistant. That is why f2 is
+  // here. o1/o2 are what make the result a one-sided STEP rather than a
+  // symmetric trench: a trench along the boundaries is a gorge, and gorges were
+  // built, measured and cut for looking fake.
+  worleyMesa(x, y, out) {
     const xi = Math.floor(x)
     const yi = Math.floor(y)
-    let best = 8
+    let f1 = 8
+    let f2 = 8
+    let o1 = 0
+    let o2 = 0
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         const cx = xi + dx
@@ -155,9 +175,26 @@ export class Noise {
         const ddx = fx - x
         const ddy = fy - y
         const d = ddx * ddx + ddy * ddy
-        if (d < best) best = d
+        // A SECOND trip through the permutation table for the cell's own
+        // height. Reusing bits of `h` would tie a cell's elevation to where its
+        // point happens to sit, which lays a visible diagonal drift across the
+        // mosaic; re-hashing decorrelates the two.
+        const off = this.perm[(h + 37) & 255] / 127.5 - 1
+        if (d < f1) {
+          f2 = f1
+          o2 = o1
+          f1 = d
+          o1 = off
+        } else if (d < f2) {
+          f2 = d
+          o2 = off
+        }
       }
     }
-    return Math.min(1, Math.sqrt(best))
+    out.f1 = Math.sqrt(f1)
+    out.f2 = Math.sqrt(f2)
+    out.o1 = o1
+    out.o2 = o2
+    return out
   }
 }

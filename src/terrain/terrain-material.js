@@ -91,16 +91,22 @@ export function createTerrainMaterial() {
     // colours put it, in units of the classification's own 0..1 range. 0
     // restores the old hard interpolated edge.
     //
-    // This was 0.55 when the dither was two short octaves, and 0.55 was not a
-    // taste call: half the amplitude had to stay inside the dead zone of the
-    // sharpening smoothstep( 0.25, 0.75 ) or the noise reached ground the
-    // vertex pass had called unambiguous, and 0.55 sat exactly on that edge.
-    // The elevation guard in the shader replaces that constraint with a better
-    // one -- it shuts the dither off below the snow country entirely -- so the
-    // amplitude is now free to be what the look wants rather than what the
-    // valleys could survive. At 1.0 the extreme excursion comes out half white,
-    // which is a snow patch stranded below the line, not a dissolved border.
-    uBoundary: { value: 1.0 },
+    // The ceiling is not a taste call. Half the amplitude has to stay inside the
+    // dead zone of the sharpening smoothstep( 0.25, 0.75 ) below, because that
+    // dead zone is the only thing confining the dither to the transition band:
+    // vColor saturates to "no snow" somewhat below the line and then reads the
+    // same for the whole rest of the world, so past that point the noise starts
+    // flecking valley floors it has no business touching. At 0.65 the extreme
+    // excursion lands at 0.325 and comes out under a tenth white, which is a
+    // stranded patch rather than a dissolved border.
+    //
+    // An earlier pass ran this at 1.0 behind an explicit world-height guard.
+    // That is gone, and deliberately: the snow line is a FIELD now
+    // (SNOW.swing in sim/terrain-height.js), so any fixed height window is
+    // wrong by up to 22 m in both directions -- it would shut the dither off
+    // exactly where the line happens to sit low. The regional variation the
+    // guard was buying headroom for is now done properly, one layer up.
+    uBoundary: { value: 0.65 },
     // Near-field normal perturbation, as a tangent (i.e. tan of the tilt it
     // adds). 0 disables the whole block, which is the escape hatch if the Quest
     // turns out to be fill bound: it is the most expensive thing in this shader.
@@ -246,29 +252,7 @@ export function createTerrainMaterial() {
           auroraB = auroraRot * auroraB * 3.6;
           auroraBN += auroraNoise( auroraB ) * 0.13;               // ~3.4 m
 
-          // Amplitude guard, and the reason uBoundary can be as large as it
-          // is. auroraVertexSnow saturates to zero a little below the snow
-          // line and then stays there for the whole rest of the world, so
-          // vColor cannot tell a fragment 20 m below the line from one 200 m
-          // below it. Un-guarded, an amplitude big enough to matter at range
-          // scatters white speckles across the valley floors. World height is
-          // the signal vColor threw away.
-          //
-          // Only the low side needs guarding: above the line the dither can
-          // only REMOVE snow, which is wanted and is self-limiting because the
-          // classification is already saturated at 1. And this cannot draw a
-          // contour of its own -- it is a ramp on the AMPLITUDE OF A NOISE, not
-          // on a colour, and it closes in ground that has no snow to argue
-          // about either way.
-          //
-          // 120..165 brackets chunk-mesh.js's own 148..195 ramp from below and
-          // has to move with it. It is set off probe-terrain.mjs, not by eye:
-          // the world's median is 137 m, so a guard that opened much lower
-          // would be wide open across half the map and put stray white flecks
-          // on ordinary hillsides. Fully open by 165, where the vertex ramp is
-          // a third of the way up and the border actually lives.
-          float auroraBand = smoothstep( 120.0, 165.0, vWorldPos.y );
-          float auroraSnowD = clamp( auroraVertexSnow + ( auroraBN - 0.5 ) * uBoundary * auroraBand, 0.0, 1.0 );
+          float auroraSnowD = clamp( auroraVertexSnow + ( auroraBN - 0.5 ) * uBoundary, 0.0, 1.0 );
           auroraSnowBase = smoothstep( 0.25, 0.75, auroraSnowD );
           diffuseColor.rgb = mix( diffuseColor.rgb, uSnow, clamp( auroraSnowBase - auroraVertexSnow, 0.0, 1.0 ) );
           diffuseColor.rgb = mix( diffuseColor.rgb, uRock, clamp( auroraVertexSnow - auroraSnowBase, 0.0, 1.0 ) * ( 1.0 - auroraGreenBase ) );

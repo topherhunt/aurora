@@ -175,17 +175,22 @@ console.log(`        valley floor run                    ${stat(floors)}`)
 // --- snow gaps ---------------------------------------------------------------
 // "You can go for kilometres in a straight line without crossing any snow" is
 // the complaint this answers, and it is a different question from peak spacing:
-// a peak only counts here if it is tall enough to be white. SNOW_LINE has to
-// track shade() in sim/chunk-mesh.js -- it is repeated rather than imported
-// because that module pulls in the whole mesh builder.
-
-const SNOW_LINE = 148 // = 295 pre-SHRINK; must match chunk-mesh.js shade()
+// a peak only counts here if it is tall enough to be white.
+//
+// The line is a field now (SNOW in sim/terrain-height.js), so this asks
+// th.snowLineAt per sample rather than comparing against a constant. That is not
+// pedantry: the swing is +/- 22 m against a 47 m ramp, so a fixed 148 would
+// count barely-dusted ground as white in the low-line regions and miss genuinely
+// white ground in the high-line ones -- and this statistic exists precisely to
+// answer "how far can she walk without seeing snow".
 const snowRuns = []
 for (let t = 0; t < N; t += 4) {
   for (const axis of [0, 1]) {
     let run = 0
     for (let i = 0; i < N; i++) {
-      if ((axis === 0 ? H[t * N + i] : H[i * N + t]) < SNOW_LINE) run++
+      const px = -WORLD_HALF + (axis === 0 ? i : t) * STEP
+      const pz = -WORLD_HALF + (axis === 0 ? t : i) * STEP
+      if ((axis === 0 ? H[t * N + i] : H[i * N + t]) < th.snowLineAt(px, pz)) run++
       else {
         if (run > 0) snowRuns.push(run * STEP)
         run = 0
@@ -194,8 +199,22 @@ for (let t = 0; t < N; t += 4) {
     if (run > 0) snowRuns.push(run * STEP)
   }
 }
-const aboveSnow = (100 * H.filter((v) => v >= SNOW_LINE).length) / H.length
-console.log(`        ${aboveSnow.toFixed(1)}% of the map is above the ${SNOW_LINE}m snow line`)
+let above = 0
+let lineLo = Infinity
+let lineHi = -Infinity
+for (let j = 0; j < N; j++) {
+  for (let i = 0; i < N; i++) {
+    const line = th.snowLineAt(-WORLD_HALF + i * STEP, -WORLD_HALF + j * STEP)
+    if (line < lineLo) lineLo = line
+    if (line > lineHi) lineHi = line
+    if (H[j * N + i] >= line) above++
+  }
+}
+const aboveSnow = (100 * above) / H.length
+console.log(
+  `        ${aboveSnow.toFixed(1)}% of the map is above its local snow line ` +
+    `(line ranges ${lineLo.toFixed(0)}..${lineHi.toFixed(0)}m)`
+)
 console.log(`        straight-line gap between snow           ${stat(snowRuns)}`)
 
 // --- summit apex angle -------------------------------------------------------

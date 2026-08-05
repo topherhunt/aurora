@@ -1,4 +1,5 @@
 import { clamp01, lerp, smoothstep } from './mathx.js'
+import { SNOW } from './terrain-height.js'
 
 // ---------------------------------------------------------------------------
 // Chunk mesh generation. Pure math, no three.js and no worker globals, so it
@@ -33,7 +34,7 @@ const C_SCRUB = [0.075, 0.07, 0.042]
 const C_ROCK = [0.085, 0.082, 0.078]
 const C_SNOW = [0.86, 0.88, 0.93]
 
-function shade(h, ny, out, o) {
+function shade(h, ny, snowLine, out, o) {
   // ny is the normal's Y component: 1 = flat, 0 = vertical.
   const steep = smoothstep(0.86, 0.62, ny)
   // Both bands track the world's actual elevation range, so they have to be
@@ -54,17 +55,22 @@ function shade(h, ny, out, o) {
   // off. Without that term the cliffs read as white walls and all the relief
   // we just generated becomes invisible.
   //
-  // 148..195 is 295..390 halved for SHRINK, and the sweep behind those is worth
-  // keeping: at a 260 m line 57% of the map was white, which stops reading as a
-  // snow line at all; at 420 m only 9% was, and the straight-line gap between
-  // one patch of snow and the next ran 4.1 km at p90, which is the "you can walk
-  // for kilometres without crossing any snow" complaint. 295 started the dusting
-  // where ~41% of the map could catch some; full cover at 390 kept solid white
-  // to the top sixth. The soft band between them is what makes it look like a
+  // `snowLine` is per-vertex now (terrain.snowLineAt, see SNOW in
+  // terrain-height.js) rather than the flat 148 it used to be, because one
+  // elevation gives every summit in a range the same snow line and that reads as
+  // a contour drawn across the world.
+  //
+  // The band above it is unchanged and the sweep behind it is worth keeping: at
+  // a 260 m line 57% of the map was white, which stops reading as a snow line at
+  // all; at 420 m only 9% was, and the straight-line gap between one patch of
+  // snow and the next ran 4.1 km at p90, which is the "you can walk for
+  // kilometres without crossing any snow" complaint. The mean line starts the
+  // dusting where ~41% of the map can catch some, and full cover 47 m higher
+  // keeps solid white to the top sixth. The soft band is what makes it read as a
   // snow line rather than a contour: the same-shaped peak is white in the high
   // country and bare in the low, because the regional swell moves it across the
-  // ramp. Halving both preserves all of that exactly -- the field halved too.
-  const snow = clamp01(smoothstep(148, 195, h) * (1 - steep * 0.85))
+  // ramp -- and now the ramp moves too.
+  const snow = clamp01(smoothstep(snowLine, snowLine + SNOW.band, h) * (1 - steep * 0.85))
   r = lerp(r, C_ROCK[0], steep)
   g = lerp(g, C_ROCK[1], steep)
   b = lerp(b, C_ROCK[2], steep)
@@ -128,7 +134,8 @@ export function buildChunk(terrain, { ox, oz, size, res }) {
       normals[o + 1] = ny
       normals[o + 2] = nz
 
-      shade(h, ny, colors, o)
+      // One extra noise evaluation per vertex (289 at a leaf), not per fragment.
+      shade(h, ny, terrain.snowLineAt(ox + i * step, oz + j * step), colors, o)
     }
   }
 

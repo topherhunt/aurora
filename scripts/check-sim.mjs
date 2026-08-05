@@ -9,7 +9,7 @@
 
 import { TerrainHeight, WORLD_HALF } from '../src/sim/terrain-height.js'
 import { buildChunk, CHUNK_RES } from '../src/sim/chunk-mesh.js'
-import { selectNodes, MAX_DEPTH, DEFAULT_SPLIT_K, MAX_SPLIT_K } from '../src/terrain/quadtree.js'
+import { selectNodes, buildElevationLod, MAX_DEPTH, DEFAULT_SPLIT_K, MAX_SPLIT_K } from '../src/terrain/quadtree.js'
 import { SLOT_COUNT, CHUNK_VERTS, CHUNK_INDICES } from '../src/terrain/terrain.js'
 import { TRI_BUDGET } from '../src/budget.js'
 
@@ -276,8 +276,14 @@ if (spawn) {
 
 console.log('\nquadtree LOD budget')
 {
-  // Sampled at several camera positions: leaf count depends on where the camera
+  // Sampled at many camera positions: leaf count depends on where the camera
   // sits relative to the grid, and the worst case is what has to fit.
+  //
+  // This was six hand-picked positions, which was too thin once the elevation
+  // bias made the count depend on the TERRAIN under the camera and not just on
+  // its alignment to the grid. Six cameras reported a worst case of 700 leaves
+  // at splitK 2.1; 600 positions found 721, and the slot pool only has 47 spare
+  // at that point. A hard limit deserves a real sample.
   const CAMS = [
     [0, 0],
     [137, -4211],
@@ -286,11 +292,17 @@ console.log('\nquadtree LOD budget')
     [-7000, 120],
     [spawn ? spawn.x : 0, spawn ? spawn.z : 0],
   ]
+  // Deterministic LCG so a failure here is reproducible rather than a coin flip.
+  let rs = 12345
+  const rnd = () => ((rs = (rs * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)
+  for (let i = 0; i < 600; i++) CAMS.push([(rnd() * 2 - 1) * 8000, (rnd() * 2 - 1) * 8000])
 
-  const worstAt = (K) => {
+  const elev = buildElevationLod(th)
+
+  const worstAt = (K, e = elev) => {
     let worst = 0
     for (const [cx, cz] of CAMS) {
-      const n = selectNodes(cx, cz, MAX_DEPTH, K).length
+      const n = selectNodes(cx, cz, MAX_DEPTH, K, e).length
       if (n > worst) worst = n
     }
     return worst
@@ -317,8 +329,22 @@ console.log('\nquadtree LOD budget')
   // selection the player can actually reach with the [ ] keys, plus the 21
   // pinned base-layer chunks.
   const maxK = worstAt(MAX_SPLIT_K)
-  console.log(`        worst case at splitK ${MAX_SPLIT_K}: ${maxK} leaves + 21 pinned, pool holds ${SLOT_COUNT}`)
+  console.log(
+    `        worst case at splitK ${MAX_SPLIT_K}: ${maxK} leaves + 21 pinned, pool holds ${SLOT_COUNT} ` +
+      `(${worstAt(MAX_SPLIT_K, null)} without the elevation bias)`
+  )
   check(maxK + 21 <= SLOT_COUNT, 'slot pool covers the worst reachable splitK', `${maxK + 21} vs ${SLOT_COUNT}`)
+
+  // The bias is a REDISTRIBUTION, not a detail hike, and that is the property
+  // worth asserting: its first two versions both quietly turned into "more
+  // triangles everywhere" -- once because every level was normalised against one
+  // global range so every node saturated the top of it, once because the swing
+  // was strongest at depths where a node cannot tell a summit from a valley.
+  // Both looked fine until the leaf count was compared against the plain rule.
+  const biased = worstAt(DEFAULT_SPLIT_K)
+  const plain = worstAt(DEFAULT_SPLIT_K, null)
+  console.log(`        elevation bias: ${plain} -> ${biased} leaves at splitK ${DEFAULT_SPLIT_K}`)
+  check(biased <= plain * 1.25, 'elevation bias redistributes detail rather than adding it', `${plain} -> ${biased}`)
 
   // Uniform chunk topology is what makes slot reuse legal at all.
   check(

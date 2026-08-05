@@ -62,18 +62,31 @@ export class Sky {
         void main() {
           vec3 dir = normalize( vDir );
 
-          // Height above the horizon, 0..1. The exponent is the whole character
-          // of the gradient: a linear ramp puts the midpoint 45 deg up, which
-          // is far too high and makes the sky look washed out, because most of
-          // what she can see through a headset is the lower half of the sky.
+          // Height above the horizon, 0..1.
           //
-          // This was 0.42, which still left a wide pale band -- the midpoint of
-          // the mix sat at asin(0.5^(1/0.42)) = 11 deg, but the approach to it
-          // is slow and the sky did not read as properly blue until ~40 deg up.
-          // 0.21 halves the exponent, which squares the ramp: the same midpoint
-          // lands at 2.4 deg and the pale band collapses into the bottom of the
-          // view, where real haze actually sits.
-          float up = pow( clamp( dir.y, 0.0, 1.0 ), 0.21 );
+          // THIS WAS pow(dir.y, 0.21) AND THE EXPONENT WAS THE BUG. Every
+          // pow(x, p) with p < 1 has INFINITE slope at x = 0, so however
+          // carefully the colours are matched, the gradient leaves the horizon
+          // colour instantaneously: measured against uHorizon 0x9db4cf, half a
+          // degree above the horizon was already 128,154,195 against the band
+          // below at 157,180,207. A 29-unit step across half a degree reads as a
+          // hard line, and it is the line under "below the horizon it is
+          // suddenly very light blue, almost white". The colours were never
+          // mismatched -- FOG_COLOR and uHorizon are literally the same constant
+          // (main.js) -- the DERIVATIVE was.
+          //
+          // A smoothstep has zero slope at both ends, so the sky now leaves the
+          // horizon colour gently and distant fogged terrain melts into it with
+          // no seam to find. The trailing linear term keeps a little gradient
+          // running all the way to the zenith, so the top of the dome does not
+          // flatten into one colour once the smoothstep has saturated.
+          //
+          // 0.35 is the knee, picked by rendering the ramp as a strip rather
+          // than by eye in the headset: it is the widest band that still reads
+          // as properly blue by 20 deg. Wider (0.5, 0.65) brings back the washed
+          // out lower sky that dropping the old exponent to 0.21 was fixing.
+          float t = clamp( dir.y, 0.0, 1.0 );
+          float up = smoothstep( 0.0, 0.35, t ) * 0.86 + t * 0.14;
           vec3 col = mix( uHorizon, uZenith, up );
 
           // Below the horizon the terrain covers everything, but the dome is

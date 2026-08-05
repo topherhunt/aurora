@@ -191,6 +191,48 @@ export const TUNING = {
   detailRock: 0.28, // how much of detailMax is withheld from gentle low ground
   varianceFreq: 0.0008, // §3 item 4
 
+  // TIER 3b. Creases -- see heightAt step 5b for why this is not another octave.
+  // Set creaseAmp to 0 and the world is exactly the one that existed before this
+  // layer, which is the point of keeping it a single additive term.
+  //
+  // THESE TWO WERE BOTH WRONG BY EXACTLY SHRINK, and the reason is worth keeping:
+  // the layer was tuned in a scratch harness that added it on top of heightAt --
+  // i.e. in WORLD metres -- and the constants were then transplanted into this
+  // block, which the header above says in capitals is PRE-SHRINK. So a layer
+  // tuned to sit at 38 m with a 4 m excursion shipped at 19 m with 2 m, and the
+  // measured peak contribution on a hillside was 1.00 m. What makes this hard to
+  // catch by looking is that the error is CONFORMAL: halving wavelength and
+  // amplitude together leaves every slope angle identical, so nothing looked
+  // broken and no walkability number moved -- the features were simply half the
+  // size, which put them back down in the fur band the layer exists to escape.
+  // Any constant arrived at by measuring heightAt has to be scaled on the way in.
+  creaseFreq: 0.013, // 1/(SHRINK*0.013) = 38 m in the world
+  creaseOctaves: 2, // short enough that a hillside carries several of them
+  // 4.0 measured against 7.0 on the same patch (in world metres, at the time):
+  // 7 takes curvature kurtosis to 16 and the hillside becomes a dense corduroy of
+  // wrinkles, which is the fur failure mode arriving down a third path. 4 reads
+  // as ribs, 7 as knitting.
+  creaseAmp: 8.0, // /SHRINK = 4 m peak-to-peak in the world, mean-preserving
+  // The mask runs on `highGround`, not true slope. These were 0.18/0.62 first,
+  // and that was measured wrong rather than guessed wrong: highGround is BIMODAL
+  // over the map (median 0.27, p75 0.54, p90 1.00), so a window starting at 0.18
+  // gave the median cell only 11% of the crease and put the layer almost entirely
+  // on ground the jag and detail layers had already roughened. The clay lives on
+  // the MID-SLOPES, which is exactly the band that window skipped. 0.10-0.42 puts
+  // full strength there and still holds the bottom quartile clean, which is what
+  // "valleys smoother, hills more jagged" actually asks for. Measured on the
+  // patch the complaint came from: kurtosis 3.5 -> 8.1.
+  creaseLo: 0.1,
+  creaseHi: 0.42,
+  // The floor is the answer to "there are still lumpy clay areas" at -9,800, a
+  // patch sitting at the map's MEDIAN elevation with 27 m of relief across 400 m
+  // -- unmistakably a hillside, and one the window above was giving roughly half
+  // strength because `highGround` is an elevation proxy and that hillside is not
+  // high. Rather than swap in a real slope (four extra heightAt evaluations in the
+  // hottest function in the project), floor the mask: no ground is left perfectly
+  // smooth, and the gradient the window provides still holds above it.
+  creaseFloor: 0.35,
+
   // §3 item 3. Rare and shallow on purpose -- see the note on terrace() below.
   terraceFreq: 0.0005, // low: a few large banded regions, not sprinkles
   terraceStep: 6,
@@ -208,8 +250,106 @@ export const TUNING = {
   // this can go back to 0.22.
   terraceStrength: 0.1,
 
-  cliffFreq: 0.0042, // §3 item 5 -- angular Worley breaks
-  cliffAmp: 18,
+  cliffFreq: 0.0042, // §3 item 5 -- angular Worley breaks. 119 m cells.
+  // 18 -> 60. At 18 the mosaic stepped 6 m across 14 m of ground, which is a
+  // 36 deg hillside, not a cliff -- invisible in a render against ground that
+  // already measures 47% over 38 deg. Sized from geometry rather than swept
+  // blind: step = mean|o1-o2| * amp / SHRINK ~= 0.335 * amp, so 60 gives a 20 m
+  // step, and 20 m of relief over the run below is a wall you cannot climb.
+  //
+  // 45 was the first choice and it went back up when cliffBreak had to widen to
+  // reopen the summit (see below). The two knobs trade against each other and
+  // the measured world-wide coverage is the thing to hold steady -- cells whose
+  // face exceeds 45 deg, by the layer's own contribution:
+  //
+  //   amp 45, breaks .58-.82   0.69%  of the world, 54 deg mean face
+  //   amp 60, breaks .50-.75   1.71%  -- fails the summit check
+  //   amp 60, breaks .58-.82   1.21%  56 deg mean face, 23.7 m tallest step
+  //
+  // So widening the breaks enough to keep the peak climbable costs about 30% of
+  // the cliff, and raising amplitude buys it back as height instead of length.
+  cliffAmp: 60,
+  // Width of the step, in F2-F1 units where 1 is a whole cell (119 m). This is
+  // the knob that sets how steep a face is: the layer spends `cliffAmp` of
+  // relief across `cliffEdge` of ground, so halving it doubles the face angle.
+  // 0.09 is a 10.7 m run, which is 10 cells at the finest LOD (1 m) -- tight
+  // enough to read as a face, wide enough that the mesh can still hold it.
+  cliffEdge: 0.09,
+  // Shape of the blend across that width, and the entire answer to "make the
+  // top of a tall cliff a sharp lip rather than smooth/round".
+  //
+  // The blend runs t = 0 on the cell boundary to t = 1 deep inside the cell,
+  // CLAMPED at 1, and the lip is the place where that clamp bites. What matters
+  // there is the DERIVATIVE, not the value:
+  //
+  //   smoothstep  b'(0) = b'(1) = 0  -- arrives at the plateau with no change of
+  //               slope, which is a rounded shoulder BY CONSTRUCTION. This is
+  //               the same defect as the sky horizon seam: the values were right
+  //               and the derivative was wrong.
+  //   t^p, p > 1  b'(1) = p, so the surface leaves the plateau at a finite angle
+  //               and the clamp puts a genuine C1 kink there -- a sharp lip.
+  //               b'(0) = 0 still, so the FOOT stays smooth, which is what keeps
+  //               the base of a wall walkable instead of a crease to trip on.
+  //
+  // Measured on the ISOLATED layer -- (field with) minus (field without) -- and
+  // that is the only reason the numbers mean anything. Against the whole field
+  // this layer is invisible: bare high ground already measures -2.1 of convex
+  // curvature and 47% over 38 deg, so every candidate came back inside the
+  // noise and an early sweep "showed" the shape barely mattered. It does:
+  //
+  //   pow    1.0    1.8    2.5    3.0    4.0    6.0
+  //   face  43.8   49.7   52.5   53.9   55.9   57.9  deg
+  //   kink   1.41   1.98   2.30   2.47   2.71   3.00
+  //
+  // Monotonic with diminishing returns and no measured penalty at the top, so
+  // this is a judgement, not a measurement: 3.0 buys most of the kink that 6.0
+  // does while leaving the face at 54 deg. Pushing it further trades face for
+  // an ever more vertical riser, and a heightfield cannot hold a true vertical
+  // -- past about 70 deg the mesh starts aliasing the face into stair steps,
+  // which is the staircase artifact arriving down yet another path.
+  cliffLipPow: 3.0,
+  // High-ground gate, on top of the `range` gate step 6 already had. Cliffs are
+  // a property of high steep rock; see the crease layer above, which needs the
+  // same thing for the same walkability reason.
+  cliffLo: 0.18,
+  cliffHi: 0.5,
+  // BREAKS ALONG THE CLIFF LINE, and this is a reachability requirement, not
+  // decoration. A Worley boundary is a CLOSED LOOP around its cell, so an
+  // ungapped mosaic rings every summit in an unbroken wall -- the connectivity
+  // check went straight from pass to "summit 5496,7560 unreachable" the first
+  // time this layer had real amplitude. Real cliff bands are cut by gullies and
+  // ramps; this is that, and it is also the "often" in "make the top of a tall
+  // cliff OFTEN be a sharp lip".
+  //
+  // Two things have to be true at once and the first attempt got only one of
+  // them. A gap must be FULLY open -- merely reducing the step does not help,
+  // because 15 m of relief across one 16 m sim cell is still 43 deg -- and it
+  // must be WIDE, because the reachability fill samples at 16 m and cannot see
+  // a pass narrower than two or three cells.
+  //
+  // Measured as run lengths along the mask:
+  //
+  //   freq    wavelen   lo    hi  | fully open   mean pass   mean wall
+  //   0.012      42 m  0.30  0.62 |        18%       11 m        51 m
+  //   0.012      42 m  0.48  0.72 |        50%       23 m        23 m
+  //   0.005     100 m  0.50  0.75 |        55%       58 m        48 m
+  //   0.005     100 m  0.58  0.82 |        70%       83 m        35 m   <- shipped
+  //
+  // The first row is why the summit was walled off: 11 m passes through a wall
+  // sampled every 16 m are not passes. Rows 2 and 3 still failed the summit
+  // check; only the last one cleared it. So the passes are wide (83 m, five sim
+  // cells) and the cliff segments are shorter than a cell edge (35 m of 119),
+  // which is what "OFTEN a sharp lip" has to mean if the peak is to stay
+  // climbable. Wavelength stays under the 119 m cell so the mask cuts stretches
+  // of an edge rather than switching whole cells on and off.
+  //
+  // This is the knob to reach for if the summit check ever fails again. It is
+  // cheaper than amplitude: dropping cliffAmp to 34 or widening cliffEdge to
+  // 0.14 did NOT reopen the summit, because a 12 m step across one 16 m cell is
+  // still too steep to walk. Only removing stretches of wall entirely works.
+  cliffBreakFreq: 0.005,
+  cliffBreakLo: 0.58,
+  cliffBreakHi: 0.82,
 }
 
 // Quantise into bands with a sharp-but-not-vertical transition. Produces mesa
@@ -412,9 +552,44 @@ export const SCARP = {
 }
 // ===== END EXPERIMENT ========================================================
 
+// The snow line is a FIELD, not a constant, and that is the whole point of this
+// block. A single elevation makes every summit in a range start its snow at the
+// same height, which reads as a contour line drawn across the world -- the
+// fragment-side dither in terrain/terrain-material.js can break the *edge* up at
+// close and middle range, but it cannot move the line, and at 2 km the line is
+// all you can see. Real ranges vary by tens of metres over a couple of
+// kilometres: which way a massif faces, how much wind strips its crest, how much
+// sun its south side gets.
+//
+// The division of labour is worth keeping straight, because the two halves look
+// similar and fix completely different complaints:
+//
+//   here (per vertex, ~2.3 km)  WHERE the line sits. Neighbouring massifs get
+//                               visibly different snow lines. Reads at any
+//                               distance, including from across the world.
+//   the shader (per fragment,   what the EDGE looks like once you can see it.
+//   ~130 m and below)           Reads from about 500 m in.
+//
+// Elevations here are post-SHRINK metres and have to be halved by hand if
+// SHRINK moves, exactly like every other elevation constant outside TUNING.
+export const SNOW = {
+  base: 148, // mean line. = 295 pre-SHRINK; probe says 41.4% of the map is above it
+  band: 47, // metres from first dusting to full cover -- the old 148..195 ramp
+  // +/- metres. 44 m of spread between the snowiest and barest region, which is
+  // enough that two massifs in the same view disagree about where winter starts.
+  swing: 22,
+  // ~2.3 km at SHRINK 2. Deliberately slower than the terrain it sits on:
+  // massif-to-massif spacing is 896 m median (probe), so a whole massif shares
+  // one line and its neighbour has a different one. Faster than this and the
+  // line wanders within a single mountain, which reads as blotching rather than
+  // as climate.
+  freq: 0.00022,
+}
+
 export class TerrainHeight {
   constructor(seed = 1337) {
     this.seed = seed
+    this.nSnow = new Noise(seed + 131)
     this.nWarp = new Noise(seed + 11)
     this.nWarp2 = new Noise(seed + 12)
     this.nMacro = new Noise(seed + 21)
@@ -428,6 +603,14 @@ export class TerrainHeight {
     this.nJag = new Noise(seed + 91)
     this.nArete = new Noise(seed + 101)
     this.nAreteMask = new Noise(seed + 111)
+    this.nCrease = new Noise(seed + 141)
+    this.nCliffBreak = new Noise(seed + 151)
+    // Scratch for worleyMesa (step 6), reused so the cliff layer allocates
+    // nothing. _field is called per mesh vertex and per collision probe; a fresh
+    // object here would be millions of them per chunk. Safe to share because a
+    // TerrainHeight is only ever touched by one thread -- each mesh worker
+    // constructs its own from the seed.
+    this._mesa = { f1: 0, f2: 0, o1: 0, o2: 0 }
   }
 
   // Metres above sea level at world XZ. Everything outside this class calls
@@ -690,29 +873,112 @@ export class TerrainHeight {
     //    `rough` then took another 0.55 off the same ground -- 20% in total,
     //    which is why the flats looked poured rather than eroded. The guard is
     //    still here and still needed; it just no longer stacks with itself.
-    const rough = lerp(1 - T.detailRock, 1, clamp01(massif * 0.7 + crest))
+    // "High steep ground", the single signal that decides how jagged anything is.
+    // It is an ELEVATION proxy, not a real slope: true local slope would cost four
+    // extra heightAt evaluations, and heightAt is the hottest function in the
+    // project -- the mesh worker and the collision path both call it per sample.
+    // massif is the 1.7 km tier and h rises with it, so high massif means high
+    // ground, and crest adds the summits on top. Hoisted because step 5b needs the
+    // same answer step 5 does; they are the same rule about where rock lives.
+    const highGround = clamp01(massif * 0.7 + crest)
+    const rough = lerp(1 - T.detailRock, 1, highGround)
     const detailAmp = lerp(T.detailMin, T.detailMax, variance) * (0.62 + 0.38 * mountain) * rough
     h +=
       this.nDetail.fbm(x * T.detailFreq, z * T.detailFreq, T.detailOctaves, 2, T.detailGain) *
       detailAmp
 
-    // 6. Angular cliff breaks. Worley F1 near 0 means "close to a cell
-    //    boundary", so this drops a step exactly along fractured lines.
+    // 5b. CREASES -- slope breaks, which is a different thing from more noise and
+    //     is the actual answer to "molded curves of clay with mottled skin".
+    //
+    //     Measured before writing this: the height field's slope-per-octave is
+    //     already near-constant at ~20% from 1 m to 67 m, so NO OCTAVE IS MISSING
+    //     and adding a finer one only adds more mottle. What is missing is
+    //     non-gaussianity. Curvature kurtosis measured 3.5, where 3.0 is exactly
+    //     gaussian: the surface is smooth everywhere, and smooth-everywhere is
+    //     what clay is. Real hillsides carry ribs, gully edges and facets --
+    //     C0 kinks -- and no amount of gain or octaves produces one, because every
+    //     octave of an fbm is itself a smooth blob. This layer measured 3.5 -> 7.7.
+    //
+    //     That the clay complaint had already been attacked twice by amplitude
+    //     (see the note above, and detailOctaves) and survived both is the
+    //     evidence that it was never an amplitude problem.
+    //
+    //     `1 - |fbm|` puts its maxima on the ZERO CONTOUR of the noise, and a zero
+    //     contour is a curvilinear network. §3 rejected exactly this operator for
+    //     the macro backbone, where at 345 m it made the map read as wire, and for
+    //     the jag layer, where it laid a wire net over every summit. THAT
+    //     REJECTION DOES NOT TRANSFER TO THIS SCALE: at 38 m a curvilinear network
+    //     of creases across a hillside is not wire, it is gullies and rock ribs,
+    //     which is the thing that was missing. Same operator, different scale,
+    //     opposite verdict -- worth stating plainly so it does not get re-argued.
+    //
+    //     Centred on 0.5 so it cuts as often as it lifts: this must not move mean
+    //     elevation, or it would shift the snow line and every biome band with it.
+    //
+    //     Masked hard onto high ground, and that is a walkability requirement, not
+    //     a preference. A crease IS a slope discontinuity, and _walkable() in
+    //     player.js reads local gradient -- creasing a meadow would refuse steps
+    //     across it. Rock up high where nobody has to walk, meadow underfoot.
+    const creaseMask = lerp(T.creaseFloor, 1, smoothstep(T.creaseLo, T.creaseHi, highGround))
+    if (creaseMask > 0.001) {
+      const cr = 1 - Math.abs(this.nCrease.fbm(wx * T.creaseFreq, wz * T.creaseFreq, T.creaseOctaves))
+      h += (cr - 0.5) * T.creaseAmp * creaseMask
+    }
+
+    // 6. Angular cliff breaks -- a PLATEAU MOSAIC with sharp lips.
     //
     //    This layer, not the ridge backbone, is where cliffs are supposed to
     //    come from, and the distinction is the whole shape of §3: a steep ridge
     //    makes EVERY side of EVERY mountain a wall, whereas a Worley break makes
-    //    one face of some mountains a wall and leaves the rest climbable. So
-    //    when the flanks came down, this went up (15 -> 24) and its transition
-    //    tightened (0.22 -> 0.13), which spends the same relief over less ground
-    //    and therefore reads as more of a cliff, not less.
+    //    one face of some mountains a wall and leaves the rest climbable.
     //
-    //    Gated on `range` rather than `mountain` -- the UNfloored mask. Once the
-    //    floor went in (step 2) `mountain` is 0.2 everywhere, so gating on it put
-    //    a shallow Worley crack through every field in the low country, and the
-    //    rendered heightmap read as crazed pottery. Cliffs belong to real ranges.
-    const cell = this.nCliff.worley(wx * T.cliffFreq, wz * T.cliffFreq)
-    h -= (1 - smoothstep(0.0, 0.13, cell)) * T.cliffAmp * range
+    //    WHAT THIS USED TO BE, because the correction is the point. It read F1
+    //    alone and cut where F1 was small, on the stated belief that "F1 near 0
+    //    means close to a cell boundary". That is backwards -- F1 is smallest AT
+    //    the feature point -- so the layer was cutting a disc around each point:
+    //    measured, a 15 m radius dimple 9 m deep, removing 0.08 m of average
+    //    elevation across a 900 m patch. A field of round pits, and nearly
+    //    inert. Every tightening of its transition (0.22 -> 0.13, "spends the
+    //    same relief over less ground") had been making the pits smaller.
+    //
+    //    Now: each Worley cell gets its own elevation, and adjacent cells are
+    //    joined across a narrow band, which is a one-sided STEP -- high ground on
+    //    one side of a line, low on the other, which is what a cliff is. Not a
+    //    trench along the boundary: that is a gorge, and gorges were cut for
+    //    looking fake. `mid` is what makes it continuous -- both cells agree on
+    //    the average exactly on the boundary, so the surface never tears no
+    //    matter how tight cliffEdge gets or how the gate varies.
+    //
+    //    It is zero-mean by construction (o1 and o2 are symmetric about 0), and
+    //    that is a requirement, not a bonus: a layer this large that shifted mean
+    //    elevation would drag the snow line and every biome band with it.
+    //
+    //    TWO gates, and both are load-bearing. `range` is the UNfloored mountain
+    //    mask -- gating on the floored `mountain` instead put a shallow Worley
+    //    crack through every field in the low country and the render read as
+    //    crazed pottery. `highGround` then keeps it off gentle ground inside a
+    //    range, which is the same walkability argument the crease layer makes:
+    //    a cliff lip is a slope discontinuity, and _walkable() reads local
+    //    gradient, so a lip across a meadow is a step she cannot take. Together
+    //    they are also the "often" in the request -- sharp lips on high rock,
+    //    not on everything.
+    //    The break mask multiplies the whole term, so it cannot tear the
+    //    surface: `mid` still agrees from both sides of a boundary at every
+    //    strength, including zero.
+    const gate =
+      range *
+      smoothstep(T.cliffLo, T.cliffHi, highGround) *
+      smoothstep(
+        T.cliffBreakLo,
+        T.cliffBreakHi,
+        this.nCliffBreak.fbm(wx * T.cliffBreakFreq, wz * T.cliffBreakFreq, 2) * 0.5 + 0.5
+      )
+    if (gate > 0.001) {
+      const m = this.nCliff.worleyMesa(wx * T.cliffFreq, wz * T.cliffFreq, this._mesa)
+      const t = Math.min(1, (m.f2 - m.f1) / T.cliffEdge)
+      const mid = (m.o1 + m.o2) * 0.5
+      h += (mid + (m.o1 - mid) * Math.pow(t, T.cliffLipPow)) * T.cliffAmp * gate
+    }
 
     // 7. Terracing, gated by its own mask. Uniform terracing looks like a
     //    wedding cake, so most of the world must not terrace at all.
@@ -750,6 +1016,17 @@ export class TerrainHeight {
     out.y = 1 / len
     out.z = -dz / len
     return out
+  }
+
+  // Elevation at which snow starts here, in metres. See SNOW above.
+  //
+  // The frequency is multiplied by SHRINK for the same reason heightAt divides
+  // by it: SHRINK is a conformal horizontal rescale of the whole world, so a
+  // wavelength written in raw world metres would silently double relative to the
+  // mountains it is draped over the moment SHRINK moved. Written this way the
+  // line stays a fixed number of massifs wide.
+  snowLineAt(x, z) {
+    return SNOW.base + this.nSnow.simplex2(x * SHRINK * SNOW.freq, z * SHRINK * SNOW.freq) * SNOW.swing
   }
 
   // Steepest slope in radians.

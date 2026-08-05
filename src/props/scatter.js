@@ -55,18 +55,24 @@ const KINDS = [
     falloffFrom: 200,
     max: 960,
     minElev: 25,
-    maxElev: 215, // treeline. One of the strongest scale cues a mountain has:
+    snowRel: true, // maxElev is metres ABOVE the local snow line, not absolute
+    maxElev: 67, // treeline. One of the strongest scale cues a mountain has:
     elevFade: 45, // it tells you how high you are without a number.
     //
-    // This used to sit at 152, deliberately just UNDER the snow line so the two
-    // read as one boundary. That was wrong, and it is worth saying why: a real
-    // treeline is well above the snow line, and conifers standing in snow are
-    // the single most recognisable thing a snowy mountain has. Tucking the
+    // This used to sit at 152 absolute, deliberately just UNDER the snow line so
+    // the two read as one boundary. That was wrong, and it is worth saying why:
+    // a real treeline is well above the snow line, and conifers standing in snow
+    // are the single most recognisable thing a snowy mountain has. Tucking the
     // trees below the snow produced bare white slopes with a hard green edge --
-    // two boundaries pretending to be one. Now the thinning band (170..215)
-    // straddles the snow ramp (148..195) so there is a wide belt of snowy
-    // forest, and the trees give out somewhere up in the white rather than at
-    // the moment it turns white. All four numbers are post-SHRINK.
+    // two boundaries pretending to be one. The thinning band now runs from
+    // line+22 to line+67, straddling the snow ramp (line..line+47) so there is a
+    // wide belt of snowy forest and the trees give out somewhere up in the white
+    // rather than at the moment it turns white.
+    //
+    // Relative rather than absolute because that relationship is the whole
+    // point, and an absolute 215 only preserved it where the snow line sat at
+    // its mean. At the mean this is bit-identical to the old 215. All four
+    // numbers are post-SHRINK.
     maxSlopeDeg: 32,
     scale: [0.75, 1.3],
     sink: 0.15,
@@ -331,11 +337,19 @@ export class Scatter {
         // 9.5 ms rebuild; shared they are 6 and it fits in a frame again.
         const { h, tan: slopeTan } = this.th.heightAndSlopeAt(x, z)
         if (h < k.minElev) continue
-        if (k.elevFade > 0 && h > k.maxElev - k.elevFade) {
+        // `snowRel` kinds read maxElev as an offset from the LOCAL snow line
+        // rather than as an absolute elevation. The treeline has to follow the
+        // snow line or the relationship between them -- a wide belt of conifers
+        // standing in snow, see the note on tree.maxElev -- only holds where the
+        // line happens to sit at its mean. Now that SNOW.swing moves it +/- 22 m
+        // an absolute treeline would give bare white slopes in the snowiest
+        // regions and no snowy forest at all in the barest.
+        const maxElev = k.snowRel ? this.th.snowLineAt(x, z) + k.maxElev : k.maxElev
+        if (k.elevFade > 0 && h > maxElev - k.elevFade) {
           // Thin out through the band instead of cutting a hard line.
-          const above = (h - (k.maxElev - k.elevFade)) / k.elevFade
+          const above = (h - (maxElev - k.elevFade)) / k.elevFade
           if (above >= 1 || rand() < above) continue
-        } else if (h > k.maxElev) {
+        } else if (h > maxElev) {
           continue
         }
         if (slopeTan > maxSlopeTan) continue

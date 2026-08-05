@@ -13,8 +13,11 @@ import basicSsl from '@vitejs/plugin-basic-ssl'
 //
 // `base` is relative so the built output works from any subpath, including
 // topherhunt.com/games/aurora.
-// Two pages: index.html is the game, spike.html is the §0 measurement harness,
-// which still has unread numbers on it and stays deployed alongside.
+// Three pages: index.html is the game, spike.html is the §0 measurement harness
+// (which still has unread numbers on it and stays deployed alongside), and
+// map.html is the §14 step 3 Phase A map view -- the only place the global pass
+// can be inspected whole, and the "eye" that every "tune it by eye" constant in
+// phase-a.js refers to.
 export default defineConfig({
   base: './',
   plugins: [basicSsl()],
@@ -25,6 +28,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         spike: resolve(__dirname, 'spike.html'),
+        map: resolve(__dirname, 'map.html'),
       },
     },
   },

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- Phase A map</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #05080f; color: var(--ink); font: 12px/1.5 monospace; }
+      canvas { display: block; cursor: crosshair; }
+
+      .panel {
+        position: fixed; z-index: 10; background: var(--panel);
+        border: 1px solid var(--edge); border-radius: 6px; padding: 10px 12px;
+      }
+      #controls { top: 8px; left: 8px; width: 232px; max-height: calc(100vh - 16px); overflow-y: auto; }
+      #readout { bottom: 8px; left: 8px; white-space: pre; pointer-events: none; min-width: 232px; }
+      #stats { top: 8px; right: 8px; white-space: pre; max-height: calc(100vh - 16px); overflow-y: auto; }
+
+      h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
+      h2:not(:first-child) { margin-top: 12px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      .row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+      .row > label { flex: 0 0 46px; color: var(--dim); }
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      .row > input, .row > select { flex: 1 1 auto; }
+      button { cursor: pointer; width: 100%; padding: 5px; }
+      button:hover { background: #17263c; }
+      button:disabled { opacity: .45; cursor: default; }
+
+      .layer { display: block; padding: 2px 4px; border-radius: 3px; cursor: pointer; }
+      .layer:hover { background: #17263c; }
+      .layer input { margin-right: 6px; }
+      .layer .key { color: var(--dim); float: right; }
+
+      #log { color: var(--dim); white-space: pre; font-size: 11px; }
+      .sw { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border: 1px solid #0008; vertical-align: -1px; }
+      .warn { color: #ffb26b; }
+      .bad { color: #ff7b7b; }
+    </style>
+  </head>
+  <body>
+    <!--
+      DESIGN.md §14 step 3: "Debug it with a 2D canvas map view before it ever
+      renders in 3D." This is that view. It is the only place the global pass can
+      be seen whole -- 16 km of terrain at once -- and every tunable in phase-a.js
+      that is described as "tune it by eye" means this eye.
+
+      Not shipped to the headset; it is a third Vite entry alongside the game and
+      the §0 spike.
+    -->
+    <canvas id="map"></canvas>
+
+    <div class="panel" id="controls">
+      <h2>world</h2>
+      <div class="row"><label for="seed">seed</label><input id="seed" type="number" value="20260804" /></div>
+      <div class="row"><label for="res">grid</label>
+        <select id="res">
+          <option value="512">512 (32 m)</option>
+          <option value="1024" selected>1024 (16 m)</option>
+          <option value="2048">2048 (8 m, real)</option>
+        </select>
+      </div>
+      <button id="run">run phase A</button>
+
+      <h2>layer</h2>
+      <div id="layers"></div>
+
+      <h2>overlay</h2>
+      <div id="overlays"></div>
+
+      <h2>log</h2>
+      <div id="log">not run yet</div>
+    </div>
+
+    <div class="panel" id="stats">click "run phase A"</div>
+    <div class="panel" id="readout">hover the map</div>
+
+    <script type="module" src="/src/map-main.js"></script>
+  </body>
+</html>

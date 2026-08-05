@@ -7,7 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "check": "node scripts/check-sim.mjs && node scripts/check-terrain.mjs"
+    "check": "node scripts/check-sim.mjs && node scripts/check-terrain.mjs && node scripts/check-phase-a.mjs"
   },
   "dependencies": {
     "three": "^0.180.0"
