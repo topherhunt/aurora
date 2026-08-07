@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 import { TerrainHeight, WORLD_SIZE } from './sim/terrain-height.js'
 import { Terrain, CHUNK_RES } from './terrain/terrain.js'
-import { DEFAULT_SPLIT_K, MAX_DEPTH, MIN_SPLIT_K, MAX_SPLIT_K } from './terrain/quadtree.js'
+import { LOD, MAX_DEPTH, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree.js'
 import { Player, LOCOMOTION } from './player.js'
 import { Scatter } from './props/scatter.js'
 import { Vignette } from './vignette.js'
@@ -214,8 +214,12 @@ addEventListener('keydown', (e) => {
   if (fresh.includes('hud')) hud.toggle()
   if (fresh.includes('tuner')) tuner.toggle()
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
-  if (fresh.includes('coarser')) terrain.splitK = Math.max(MIN_SPLIT_K, terrain.splitK - 0.1)
-  if (fresh.includes('finer')) terrain.splitK = Math.min(MAX_SPLIT_K, terrain.splitK + 0.1)
+  // triDeg is a size budget, so finer means smaller. Stepped
+  // multiplicatively because the perceptual distance from 1.0 to 1.2 degrees is
+  // nothing like the distance from 0.4 to 0.6, and a fixed step would crawl at
+  // the coarse end and leap at the fine one.
+  if (fresh.includes('coarser')) LOD.triDeg = Math.min(MAX_TRI_DEG, LOD.triDeg * 1.25)
+  if (fresh.includes('finer')) LOD.triDeg = Math.max(MIN_TRI_DEG, LOD.triDeg / 1.25)
 })
 
 addEventListener('keyup', (e) => {
@@ -366,7 +370,10 @@ function tick() {
   // does not, or a chunk that arrived mid-interval keeps showing its coarse
   // ancestor until the next selection tick.
   player.headPosition(headTmp)
-  terrain.update(headTmp.x, headTmp.z)
+  // Altitude and gaze both feed the split rule: y makes the range term 3D (at
+  // 500 m up, ground 100 m away on the map is 510 m away in fact) and yaw is
+  // what stops two thirds of the slot pool going to terrain behind her head.
+  terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
   props.update(headTmp.x, headTmp.z)
   // After terrain.update, because it reads this frame's selection size to catch
   // an LOD setting that is about to overrun the slot pool.
@@ -398,7 +405,8 @@ function hudLines() {
     '## terrain (1 batched draw call)',
     `chunks  render ${ts.rendered}/${ts.desired}   pending ${ts.pending}   slots ${ts.slots}/${ts.cached}`,
     `chunk tris ${(ts.tris / 1000).toFixed(1)}k   res ${CHUNK_RES}   gen ${ts.lastGenMs.toFixed(1)}ms`,
-    `splitK ${terrain.splitK.toFixed(1)} ([ ])   depth<=${MAX_DEPTH}   world ${WORLD_SIZE / 1000}km`,
+    `triangles <=${LOD.triDeg.toFixed(2)}deg ([ ])   depth<=${MAX_DEPTH}   world ${WORLD_SIZE / 1000}km`,
+    `bounds known for ${ts.bounds} nodes`,
     `T = live terrain tuner${tuner.visible ? '   ** OPEN **' : ''}`,
     '',
     '## props (1 batched draw call)',
@@ -442,5 +450,5 @@ renderer.xr.addEventListener('sessionend', () => {
 
 console.log(
   `aurora: seed ${SEED}, spawn ${spawn.x.toFixed(0)},${spawn.z.toFixed(0)} at ${spawn.h.toFixed(0)}m, ` +
-    `splitK ${DEFAULT_SPLIT_K}`
+    `triangles <=${LOD.triDeg}deg`
 )

@@ -1,6 +1,6 @@
 import * as THREE from 'three'
-import { selectNodes, nodeKey, buildElevationLod, MAX_DEPTH, DEFAULT_SPLIT_K } from './quadtree.js'
-import { TerrainHeight, TUNING, SNOW, WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
+import { selectNodes, nodeKey, MAX_DEPTH } from './quadtree.js'
+import { TUNING, SNOW, WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 import { CHUNK_RES } from '../sim/chunk-mesh.js'
 import { createTerrainMaterial } from './terrain-material.js'
 
@@ -30,13 +30,12 @@ export const CHUNK_INDICES = (CHUNK_RES * CHUNK_RES * 2 + 4 * CHUNK_RES * 2) * 3
 
 // Slots are allocated up front and never freed, so this is a hard ceiling on
 // simultaneously-resident chunks and a fixed ~16 MB of GPU buffers. It has to
-// cover the worst selection at splitK 2.1 -- the top of the [ ] debug range --
-// plus the 21 pinned base-layer chunks plus headroom for LRU retention.
+// cover the worst selection at the finest triDeg the [ ] keys reach, plus the
+// 21 pinned base-layer chunks, plus headroom for LRU retention -- and retention
+// is not a nicety now that selection is view-dependent, it is what makes turning
+// around free. Overflow throws in _onWorkerMessage rather than degrading.
 //
-// The elevation bias raised that worst case: swept over 600 random camera
-// positions it is 721 leaves, against 577 for the unbiased rule. 721 + 21 = 742
-// leaves 26 slots spare, which is thin, and it is the number to re-measure
-// before touching ELEV_LOD.swing -- overflow here throws at _acquire.
+// Re-measure with check-sim.mjs section 5 before moving MIN_TRI_DEG.
 export const SLOT_COUNT = 768
 const MAX_CACHED = 720
 
@@ -52,9 +51,8 @@ const SELECT_EVERY_FRAMES = 6
 const WORKER_QUEUE_DEPTH = 6
 
 export class Terrain {
-  constructor(scene, { seed = 1337, workers = 2, splitK = DEFAULT_SPLIT_K } = {}) {
+  constructor(scene, { seed = 1337, workers = 2 } = {}) {
     this.scene = scene
-    this.splitK = splitK
     this.maxCached = MAX_CACHED
 
     this.material = createTerrainMaterial()
@@ -105,19 +103,29 @@ export class Terrain {
     this._lastSelect = -SELECT_EVERY_FRAMES
     this._dirty = true
 
-    this.stats = { desired: 0, rendered: 0, pending: 0, cached: 0, tris: 0, slots: 0, lastGenMs: 0 }
+    this.stats = { desired: 0, rendered: 0, pending: 0, cached: 0, tris: 0, slots: 0, lastGenMs: 0, bounds: 0 }
 
-    // Elevation pyramid for the LOD bias (see quadtree.js). ~22 ms of heightAt,
-    // once, here rather than in a worker: the selection runs on the main thread
-    // at 12 Hz and cannot wait on a message round trip to know whether to split.
+    // What the mesher has taught us about the world, `key -> {err, minY, maxY}`.
+    // This is the input to the split rule (quadtree.js) and it is LEARNED rather
+    // than precomputed -- the previous design paid ~22 ms of heightAt at load,
+    // and again on every tuning change, to build an elevation pyramid that the
+    // rule then largely ignored.
     //
-    // Built from `seed` rather than taken as an argument even though main.js
-    // already holds a TerrainHeight. Terrain cannot select nodes without the
-    // height field, so it should own that dependency instead of asking every
-    // caller to remember -- and a TerrainHeight is a pure function of its seed,
-    // so the second instance is the same field, not a second source of truth.
-    this.seed = seed // retune() rebuilds the pyramid and needs it
-    this.elev = buildElevationLod(new TerrainHeight(seed))
+    // Learning it costs nothing extra: the worker already samples the field to
+    // build the chunk, so err and the vertical extent come back on a reply that
+    // was being sent anyway. The bootstrapping question -- how do you decide to
+    // split a node before you have built it -- answers itself, because a node is
+    // built BEFORE the decision to split it is ever made. The pinned depth 0-2
+    // base layer seeds the top of the tree and detail flows down one level per
+    // selection from there.
+    //
+    // It is deliberately NOT the chunk cache and is never evicted with it. Two
+    // floats per node is nothing, and keeping it means walking back into a
+    // valley you left ten minutes ago has the right vertical extent immediately.
+    // retune() clears it, because then it describes a world that no longer
+    // exists.
+    this.seed = seed
+    this.info = new Map()
 
     this.workers = []
     for (let i = 0; i < workers; i++) {
@@ -155,10 +163,10 @@ export class Terrain {
    * away, so the coarse fallback in _loadedAncestor still has something to find
    * and the world dissolves to low-poly for a moment instead of to sky.
    *
-   * The elevation pyramid has to be rebuilt too, and it is the expensive half
-   * (~22 ms of heightAt). It is what decides where detail goes, so leaving it
-   * stale would silently bias LOD against the previous terrain -- exactly the
-   * thing the panel exists to let you see.
+   * The per-node bounds table goes with it: the new terrain has different
+   * summits, and a stale maxY makes a node look nearer than it is, which
+   * over-refines. It costs nothing to discard -- unlike the elevation pyramid it
+   * replaced, it is refilled by the re-streaming this method already triggers.
    */
   retune({ tuning = {}, snow = {} } = {}) {
     Object.assign(TUNING, tuning)
@@ -168,7 +176,8 @@ export class Terrain {
       w.postMessage({ type: 'tuning', tuning, snow, epoch: this.epoch })
     }
 
-    this.elev = buildElevationLod(new TerrainHeight(this.seed))
+    // These bounds describe the previous terrain.
+    this.info.clear()
 
     for (const entry of this.cache.values()) {
       if (entry.slot) {
@@ -239,6 +248,12 @@ export class Terrain {
     // the previous terrain -- which looks like a meshing bug rather than a stale
     // read, and would be very hard to recognise while turning a slider.
     if (msg.epoch !== this.epoch) return
+
+    // Record bounds BEFORE the eviction check. The range test wants this node's
+    // vertical extent whether or not its geometry survived the trip -- the two
+    // are cached on completely different terms, and discarding a measurement
+    // because a GPU slot got recycled would make LOD depend on streaming luck.
+    this.info.set(msg.key, { minY: msg.minY, maxY: msg.maxY })
 
     const entry = this.cache.get(msg.key)
     if (!entry) return // evicted while in flight; drop it
@@ -346,14 +361,19 @@ export class Terrain {
     return null
   }
 
-  // Call every frame. Reselecting the quadtree is cheap but not free, so it
-  // only reruns on a timer -- or immediately when a chunk has landed, because
-  // that is the moment a coarse ancestor should stop standing in for it.
-  update(camX, camZ) {
+  // Call every frame with the camera as {x, y, z, yaw}. Reselecting the quadtree
+  // is cheap but not free, so it only reruns on a timer -- or immediately when a
+  // chunk has landed, because that is the moment a coarse ancestor should stop
+  // standing in for it.
+  //
+  // y and yaw are what make the rule 3D and view-dependent; both degrade to the
+  // conservative answer if absent (quadtree.js), so a caller with only a ground
+  // position still gets correct, merely more expensive, terrain.
+  update(cam) {
     this.frame++
 
     if (this._dirty || this.frame - this._lastSelect >= SELECT_EVERY_FRAMES) {
-      this._select(camX, camZ)
+      this._select(cam)
       this._lastSelect = this.frame
       this._dirty = false
     }
@@ -368,14 +388,15 @@ export class Terrain {
   }
 
   // Force a quadtree reselection on the next update instead of waiting out
-  // SELECT_EVERY_FRAMES. splitK and ELEV_LOD are read inside _select, so a
-  // tuning slider that only mutated them would look dead for up to six frames.
+  // SELECT_EVERY_FRAMES. LOD.triDeg is read inside _select, so a tuning
+  // slider that only mutated it would look dead for up to six frames.
   invalidate() {
     this._dirty = true
   }
 
-  _select(camX, camZ) {
-    const desired = selectNodes(camX, camZ, MAX_DEPTH, this.splitK, this.elev)
+  _select(cam) {
+    const desired = selectNodes(cam, { maxDepth: MAX_DEPTH, info: this.info })
+    this._cam = cam
     const render = new Set()
     const queue = []
 
@@ -400,8 +421,8 @@ export class Terrain {
     // Nearest-first. Without this, a fresh load order is effectively random and
     // she stands inside a hole while the horizon fills in.
     queue.sort((a, b) => {
-      const da = (a.x + a.size / 2 - camX) ** 2 + (a.z + a.size / 2 - camZ) ** 2
-      const db = (b.x + b.size / 2 - camX) ** 2 + (b.z + b.size / 2 - camZ) ** 2
+      const da = (a.x + a.size / 2 - cam.x) ** 2 + (a.z + a.size / 2 - cam.z) ** 2
+      const db = (b.x + b.size / 2 - cam.x) ** 2 + (b.z + b.size / 2 - cam.z) ** 2
       return da - db
     })
 
@@ -414,6 +435,7 @@ export class Terrain {
     this._render = render
     this.stats.desired = desired.length
     this.stats.rendered = render.size
+    this.stats.bounds = this.info.size
   }
 
   _syncVisibility() {

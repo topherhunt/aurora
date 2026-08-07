@@ -185,9 +185,38 @@ export const TUNING = {
   massifRelief: 370,
   massifLo: 0.26, // linear remap, same reasoning as ridgeLo
   massifHi: 0.88,
-  massifSharp: 1.0, // see heightAt step 3a -- pointiness is NOT bought here
+  // Pointiness. x^p for p>1 leaves the summit at 1 and steepens the approach, so
+  // the silhouette comes to a point instead of a dome. It was 1.0 -- an exact
+  // no-op -- which is one of the two reasons the horizon read as a hedge.
+  // It also does useful work on the slope ladder (see the banner): sharpening
+  // RAISES the massif tier's own slope, which is the rung everything else has to
+  // sit below, so it buys hierarchy rather than spending it.
+  massifSharp: 1.35,
 
-  mountainRelief: 110, // TIER 2: sub-peaks riding on the massif flanks
+  // PEAK CONTRAST -- "some looming WAY larger than others", and the other reason
+  // the horizon was a hedge.
+  //
+  // `massif` is an fbm remapped to a fixed 0..1 window, so every massif in the
+  // world tops out at the same value BY CONSTRUCTION and the only variation
+  // between summits is which ones happen to clip the top of the window. Measured
+  // with scripts/skyline-png.mjs: 2.4 deg of relief along the horizon at one
+  // viewpoint, where the Skyrim references run 5-9. A top-down render cannot see
+  // this at all -- every summit looks fine from above; they are just all the same
+  // height, which is only visible edge-on.
+  //
+  // The fix is a slow field that MULTIPLIES the tier: some regions get the full
+  // massif, some get a third of it. At 0.55 the tallest massifs are about 3.4x
+  // the shortest, which is roughly the ratio in the references between the peak
+  // that owns the frame and the range falling away behind it.
+  //
+  // It multiplies rather than adds, so it cannot lift valley floors -- a massif
+  // that gets scaled down takes its whole flank with it and the low ground it
+  // sits in is untouched.
+  peakContrast: 0.6,
+  peakSkew: 0.55, // <1 pushes the distribution toward both ends -- see step 3a
+  peakFreq: 0.00013, // ~3.8 km: several massifs share a mood, then it changes
+
+  mountainRelief: 80, // TIER 2: sub-peaks riding on the massif flanks
 
   warpAmp: 32, // domain warp strength, metres (§3 item 2). Sized against the
   warpFreq: 0.0026, // FINEST warped wavelength (86 m), not the base -- see step 1
@@ -197,9 +226,18 @@ export const TUNING = {
   mountainMaskHi: 0.62, // 4 km featureless basins between ranges
   mountainFloor: 0.2, // the mask never reaches 0 -- see heightAt step 2
 
-  ridgeFreq: 0.0029, // the mountain backbone -- ~345 m base wavelength
-  ridgeOctaves: 3, // stops at ~86 m, right where detailFreq (91 m) picks up,
-  ridgeGain: 0.52, // and unlike this one that layer is variance-masked
+  // The mountain backbone. 0.0029 -> 0.0021 (345 m -> 476 m pre-shrink) and
+  // relief 110 -> 80, together a 0.53x cut to this tier's SLOPE.
+  //
+  // Both halves are deliberate rather than one bigger cut to either. Amplitude
+  // alone would have flattened the sub-peaks out of the silhouette, which are
+  // the thing that makes a massif read as a mountain rather than a hill;
+  // wavelength alone would have spaced them too far apart to sit on a massif
+  // flank at all. Spending the cut across both keeps the count and the height
+  // and takes only the steepness, which is the only part that was wrong.
+  ridgeFreq: 0.0021,
+  ridgeOctaves: 3, // stops at ~119 m, above the rock layers that follow
+  ridgeGain: 0.52,
   ridgeLo: 0.34, // linear remap of the fbm; below Lo pools into valley floor
   ridgeHi: 0.92,
   ridgeKnee: 0.88, // soft-knee point; see heightAt step 3
@@ -214,10 +252,90 @@ export const TUNING = {
   baseFreq: 0.00019, // regional undulation, WELL below ridgeFreq -- this is the
   // slow high-country/low-country gradient, not a landform
 
-  jagFreq: 0.0085, // §3 item 1b -- summit jaggedness, see heightAt step 4b
+  // =========================================================================
+  // EXPOSURE -- the one rule that decides how rocky any piece of ground is.
+  // See heightAt step 3c. This replaces `highGround`, and the replacement is the
+  // single most important change in this file.
+  //
+  // WHAT WAS WRONG. Every rock layer -- jag, detail, crease, cliff -- was gated
+  // on `highGround = massif * 0.7 + crest`, which is an ELEVATION proxy. So the
+  // rule the world was actually built on was "high ground is rocky, low ground
+  // is smooth", and that produced both standing complaints at once and could not
+  // have produced anything else:
+  //
+  //   low hills came out as molded clay, because the gate was shut down there
+  //   however much amplitude the layers were given -- and amplitude was raised
+  //   three separate times trying to fix it, which is why it kept not working;
+  //
+  //   high saddles and upper valleys came out shattered, because the gate was
+  //   wide open up there even in the hollows where nothing should be jagged.
+  //
+  // WHAT REPLACES IT. Rockiness is a property of landform POSITION, not height.
+  // Convex ground -- crests, spurs, ribs, outcrops -- sheds its debris and
+  // stands as bare rock. Concave ground -- hollows, saddles, gullies, cirque
+  // floors, valley bottoms -- collects that debris and fills smooth. That is
+  // real geomorphology and, crucially, it is SCALE-FREE: it applies identically
+  // to a 400 m spur and a 15 m outcrop in a meadow, which is exactly the
+  // symmetry being asked for. The same rule that juts a summit juts a low
+  // knoll; the same rule that smooths a valley floor smooths an alpine saddle.
+  //
+  // HOW IT IS COMPUTED, and why it costs nothing. A true convexity would be a
+  // Laplacian: four extra field evaluations in the hottest function in the
+  // project. It is not needed. `massifLump` and `lump` are already in hand, and
+  // an fbm normalised to 0..1 is its own local-relative-height signal -- it sits
+  // near 0.5 at the mean and runs high on local maxima and low on local minima
+  // REGARDLESS OF ABSOLUTE ELEVATION, because an fbm has no absolute elevation
+  // in it. So (lump - 0.5) is, to within a constant, "how far above or below its
+  // surroundings is this point at 476 m scale", and the massif term says the
+  // same at 862 m. Sum them and the signal is free.
+  //
+  // The two weights set which scale of landform decides. Weighted toward the
+  // backbone: a rib on the flank of a massif should be rock even though the
+  // massif around it is mid-height, and a hollow near a summit should be smooth
+  // even though the massif around it is high.
+  exposureMassif: 0.5,
+  exposureRidge: 1.9,
+  // Half-width of the crest/hollow transition, in the same units as the sum
+  // above. Small values make a hard rock/soil boundary -- a distinct crag line;
+  // large values blend it over a whole hillside. 0.30 puts the transition across
+  // roughly the middle third of a flank, so a face reads as smooth at the bottom,
+  // breaking up through the middle, and rock at the crest.
+  exposureBand: 0.3,
+  // Slides the whole rock/soil boundary. Positive puts MORE of the world in
+  // rock. This is the master "how craggy is this world" knob and the one to
+  // reach for first, because unlike every amplitude it changes the FRACTION of
+  // ground that is rocky rather than how violent the rocky part is -- which is
+  // the distinction that matters for walkability. Measured: -0.10 leaves 26% of
+  // the world above half exposure, 0.0 leaves 38%, +0.10 leaves 51%.
+  exposureBias: -0.04,
+  // Regional craggedness, so some ranges are bare rock and others are rounded
+  // and grassy. Multiplies exposure; ~2.6 km, so a whole massif shares a
+  // character and its neighbour disagrees.
+  lithFreq: 0.00019,
+  lithSwing: 0.35,
+  // How much of full rock amplitude LOW ground gets, at equal exposure. This is
+  // the "it can be at a lower angle, it doesn't need to be as jagged or as
+  // peaky" clause -- a low outcrop gets the same SHAPE rule as a summit jut and
+  // a little under half the height, so the character matches and the walking
+  // does not suffer. Set it to 1 and a knoll in a meadow is as savage as a
+  // summit; set it to 0 and the old elevation gate is back.
+  lowlandRock: 0.45,
+  // =========================================================================
+
+  // TIER 3a. Macro-jag: the notches and knobs that give a summit crest its
+  // silhouette, 59 m down to 7 m. Amplitude 60 -> 34 because this tier measured
+  // a slope of 0.457 against the massif tier's 0.539 -- a 59 m layer running as
+  // steep as the 862 m landform it sits on, which is the ladder inversion the
+  // banner describes. It is CONCENTRATED rather than reduced: gated on exposure
+  // it now lands almost entirely on crests, so there is more visible jag on a
+  // skyline than before while the world-wide average falls by half.
+  jagFreq: 0.0085,
   jagOctaves: 4,
-  jagAmp: 60,
-  jagLo: 0.45, // the massif height at which crests start to roughen
+  jagAmp: 34,
+  // These two no longer gate the jag layer -- exposure does. They survive as the
+  // definition of `crest`, which is still what the elevation damper (lowlandRock)
+  // and the terrace gate at step 7 are written against.
+  jagLo: 0.45,
   jagHi: 0.86,
 
   // TIER 3. detailOctaves is the "rolling hills of clay" knob: 4 octaves off a
@@ -242,10 +360,21 @@ export const TUNING = {
   // 0.4% grade, which shades as a perfectly smooth surface however many octaves
   // are stacked on it. Both multipliers now have a much higher floor, and
   // detailMin itself is up, so low ground carries 2.5x the relief it did.
-  detailMin: 3.4, // amplitude where the variance mask is 0 (smooth meadow)
-  detailMax: 7.0, // amplitude where it is 1 (shattered ground)
-  detailRock: 0.28, // how much of detailMax is withheld from gentle low ground
+  // These two used to be the ends of the `variance` mask and are now the ends of
+  // EXPOSURE, which is the whole point of the change: the 1-10 m band is where
+  // "rock juts" live, and it is now placed by landform position rather than by
+  // height. A rib on a 40 m hillock in a valley gets detailRock; a hollow at
+  // 300 m gets detailSoil. `variance` survives as a secondary regional wobble so
+  // that two crests of equal exposure are not identical.
+  //
+  // detailSoil is DELIBERATELY not zero. Smooth is not the same as flat, and a
+  // dead-flat meadow was the original "molded clay" complaint from the other
+  // direction. 2.2 m over a 45 m wavelength is a 5% roll: legible underfoot,
+  // nowhere near the slope limiter.
+  detailSoil: 2.2,
+  detailRock: 12.0, // was an effective ~7 on high ground, and never reached low ground
   varianceFreq: 0.0008, // §3 item 4
+  varianceSwing: 0.3, // how much `variance` is allowed to move the two above
 
   // TIER 3b. Creases -- see heightAt step 5b for why this is not another octave.
   // Set creaseAmp to 0 and the world is exactly the one that existed before this
@@ -278,8 +407,15 @@ export const TUNING = {
   // full strength there and still holds the bottom quartile clean, which is what
   // "valleys smoother, hills more jagged" actually asks for. Measured on the
   // patch the complaint came from: kurtosis 3.5 -> 8.1.
-  creaseLo: 0.1,
-  creaseHi: 0.42,
+  // These two were a window on `highGround` and are now a window on EXPOSURE.
+  // The old numbers were solved against a bimodal elevation proxy and the long
+  // note above is the record of that; none of it transfers, because the input
+  // distribution is different and so is what the layer is for. Exposure is
+  // roughly symmetric about 0.5, so a 0.30-0.70 window puts full crease on the
+  // upper third -- ribs and gully edges on convex ground, nothing in the hollows
+  // between them.
+  creaseLo: 0.3,
+  creaseHi: 0.7,
   // The floor is the answer to "there are still lumpy clay areas" at -9,800, a
   // patch sitting at the map's MEDIAN elevation with 27 m of relief across 400 m
   // -- unmistakably a hillside, and one the window above was giving roughly half
@@ -287,7 +423,15 @@ export const TUNING = {
   // high. Rather than swap in a real slope (four extra heightAt evaluations in the
   // hottest function in the project), floor the mask: no ground is left perfectly
   // smooth, and the gradient the window provides still holds above it.
-  creaseFloor: 0.35,
+  // 0.35 -> 0.06. The floor exists so that no ground is left perfectly smooth,
+  // and at 0.35 it was doing something much larger than that: it put a third of
+  // full crease strength on EVERY square metre of the world including valley
+  // floors, which is a curvilinear network of C0 kinks laid over everything.
+  // That is a large part of the dark squiggle carpet in the hillshade, and it
+  // is why the low country read as neither smooth nor rocky but as crazed.
+  // Exposure is what decides where creases go now; the floor only stops the
+  // hollows going glassy.
+  creaseFloor: 0.06,
 
   // §3 item 3. Rare and shallow on purpose -- see the note on terrace() below.
   terraceFreq: 0.0005, // low: a few large banded regions, not sprinkles
@@ -324,13 +468,31 @@ export const TUNING = {
   //
   // So widening the breaks enough to keep the peak climbable costs about 30% of
   // the cliff, and raising amplitude buys it back as height instead of length.
-  cliffAmp: 60,
+  // ...and 60 is where this layer went from a feature to the dominant fact of
+  // the world, which is the "tons of extreme abrupt steep cliffs" complaint and
+  // the single biggest cause of it. Measured in isolation on the shipped field:
+  // an RMS slope of 1.051, against 0.539 for the massif tier it is supposed to
+  // decorate. The finest structural layer in the world was TWICE as steep as the
+  // largest one, and a Worley boundary is a closed loop, so what that draws is a
+  // carpet of 60 m closed squiggles over every square metre of high ground --
+  // exactly what the hillshade shows and exactly what "jumbled chaos" means.
+  //
+  // The amplitude was raised to 60 for a defensible reason (at 18 the step was a
+  // 36 deg hillside, invisible against ground that already measured 47% over
+  // 38 deg) and the reasoning had the causality backwards: the correct response
+  // to "a cliff is invisible against uniformly steep ground" is to stop the
+  // ground being uniformly steep, not to raise the cliff until it wins. Cutting
+  // the ladder (see backbone, jag, detail) is what makes 30 legible now.
+  cliffAmp: 30,
   // Width of the step, in F2-F1 units where 1 is a whole cell (119 m). This is
   // the knob that sets how steep a face is: the layer spends `cliffAmp` of
   // relief across `cliffEdge` of ground, so halving it doubles the face angle.
   // 0.09 is a 10.7 m run, which is 10 cells at the finest LOD (1 m) -- tight
   // enough to read as a face, wide enough that the mesh can still hold it.
-  cliffEdge: 0.09,
+  // 0.09 -> 0.13. A 15.5 m run rather than 10.7. Combined with the amplitude cut
+  // the face angle comes down from something the mesh was aliasing into stair
+  // steps to a wall that is still unclimbable and now actually renders as one.
+  cliffEdge: 0.13,
   // Shape of the blend across that width, and the entire answer to "make the
   // top of a tall cliff a sharp lip rather than smooth/round".
   //
@@ -367,8 +529,13 @@ export const TUNING = {
   // High-ground gate, on top of the `range` gate step 6 already had. Cliffs are
   // a property of high steep rock; see the crease layer above, which needs the
   // same thing for the same walkability reason.
-  cliffLo: 0.2,
-  cliffHi: 0.32,
+  // Now a window on EXPOSURE rather than on the old elevation proxy, and set
+  // high on purpose: a cliff is what the MOST convex, most stripped ground does,
+  // not what all high ground does. 0.62-0.80 is the top of the exposure range,
+  // so cliffs occur on crest lines and spur noses and nowhere else -- which is
+  // also what keeps the hollows between them open as routes.
+  cliffLo: 0.62,
+  cliffHi: 0.8,
   // BREAKS ALONG THE CLIFF LINE, and this is a reachability requirement, not
   // decoration. A Worley boundary is a CLOSED LOOP around its cell, so an
   // ungapped mosaic rings every summit in an unbroken wall -- the connectivity
@@ -701,6 +868,11 @@ export class TerrainHeight {
     this.nAreteMask = new Noise(seed + 111)
     this.nCrease = new Noise(seed + 141)
     this.nCliffBreak = new Noise(seed + 151)
+    // Peak contrast (step 3a) and regional craggedness (step 4). Both are slow
+    // fields that MULTIPLY a tier rather than adding to it, which is why they
+    // change character without moving the mean.
+    this.nUplift = new Noise(seed + 161)
+    this.nLith = new Noise(seed + 171)
     // Scratch for worleyMesa (step 6), reused so the cliff layer allocates
     // nothing. _field is called per mesh vertex and per collision probe; a fresh
     // object here would be millions of them per chunk. Safe to share because a
@@ -881,10 +1053,28 @@ export class TerrainHeight {
     //     it acts ONLY near the maximum and leaves the valleys alone.
     const massifLump =
       this.nMassif.fbm(wx * T.massifFreq, wz * T.massifFreq, T.massifOctaves, 2, 0.5) * 0.5 + 0.5
-    const massif = Math.pow(
-      softCeil(softFloor((massifLump - T.massifLo) / (T.massifHi - T.massifLo), 0.1), 0.14),
-      T.massifSharp
-    )
+    // Peak contrast. See TUNING.peakContrast: without this every massif in the
+    // world tops out at the same height, because the remap below is a fixed
+    // window. Applied to the SHAPED value so it scales the whole massif -- summit
+    // and flank together -- rather than moving the summit relative to its own
+    // sides, which would change the mountain's slope instead of its size.
+    //
+    // The signed power curve is not decoration and the file has been bitten by
+    // its absence twice already (see valleyLo, and cliffBreakLo). An fbm
+    // normalised to -1..1 is BELL-SHAPED: it sits near zero and almost never
+    // approaches either end, so `1 + fbm * 0.55` has a nominal range of
+    // 0.45..1.55 and an actual working range of roughly 0.8..1.2 -- which is not
+    // "some looming way larger than others", it is every massif the same height
+    // with a slight wobble. |n|^0.55 pushes mass OUT toward both ends, so the
+    // world actually contains the dwarfed massifs and the dominant ones that the
+    // nominal range promises.
+    const un = this.nUplift.fbm(wx * T.peakFreq, wz * T.peakFreq, 2)
+    const uplift = 1 + Math.sign(un) * Math.pow(Math.abs(un), T.peakSkew) * T.peakContrast
+    const massif =
+      Math.pow(
+        softCeil(softFloor((massifLump - T.massifLo) / (T.massifHi - T.massifLo), 0.1), 0.14),
+        T.massifSharp
+      ) * Math.max(0, uplift)
 
     // 3b. Aretes, as a rare accent. Knife edges are a real landform and worth
     //     stumbling on; they are just not what every mountain looks like. This
@@ -913,6 +1103,50 @@ export class TerrainHeight {
       ridge = T.ridgeKnee + over / (1 + over * 2.2)
     }
 
+    // 3c. EXPOSURE -- how rocky this piece of ground is. See the block in TUNING
+    //     for the full argument; the short version is that this is the ONE rule
+    //     every rock layer below is gated on, it is a function of landform
+    //     POSITION rather than of elevation, and it is therefore the same rule
+    //     on a low knoll as on a summit.
+    //
+    //     `massifLump` and `lump` are fbm values normalised to 0..1, so each sits
+    //     near 0.5 at its own local mean and runs high on local maxima and low on
+    //     local minima with no reference to absolute height. Their weighted sum,
+    //     centred on zero, is a free convexity estimate at the two scales that
+    //     matter -- no extra field evaluations, which is the whole reason this is
+    //     affordable in the hottest function in the project.
+    //
+    //     Positive => spur, rib, crest, outcrop: bare rock, jagged.
+    //     Negative => hollow, saddle, gully, valley floor: filled, smooth.
+    //
+    //     The smooth half is not a side effect, it is half the request. A hollow
+    //     runs continuously from the valley floor up to the saddle at the top of
+    //     it, so making hollows smooth while crests break up does not merely
+    //     spare her the rough ground -- it lays down a connected network of
+    //     walkable routes onto every mountain, which is how a person actually
+    //     climbs one. The paths are not placed; they are what is left over.
+    const convex =
+      (massifLump - 0.5) * T.exposureMassif + (lump - 0.5) * T.exposureRidge + T.exposureBias
+    //     Regional craggedness, so the rule does not produce one uniform texture
+    //     everywhere it fires: some ranges are stripped rock, others rounded.
+    const lith =
+      1 + this.nLith.fbm(wx * T.lithFreq, wz * T.lithFreq, 2) * T.lithSwing
+    const exposure = clamp01(
+      smoothstep(-T.exposureBand, T.exposureBand, convex) * Math.max(0, lith)
+    )
+    //     Mild elevation term, and the ONLY place elevation is still allowed to
+    //     touch rockiness. Low outcrops get the same shape rule at a little under
+    //     half the amplitude -- "a lower angle, not as jagged or as peaky".
+    //
+    //     Note what is deliberately NOT here: the `mountain` macro mask. Every
+    //     earlier version multiplied the rock layers by it, which is what made
+    //     the low country between ranges smooth by construction however the
+    //     amplitudes were set. Outcrops in a valley are the request; the only
+    //     thing low ground gets less of now is amplitude, via lowlandRock.
+    const crest = smoothstep(T.jagLo, T.jagHi, massif) * mountain
+    const highGround = clamp01(massif * 0.7 + crest)
+    const rockAmp = exposure * lerp(T.lowlandRock, 1, highGround)
+
     // 4. Valley-floor rolling.
     const base = this.nBase.fbm(wx * T.baseFreq, wz * T.baseFreq, 4) * 0.5 + 0.5
 
@@ -938,13 +1172,12 @@ export class TerrainHeight {
     //     what makes this layer different from simply adding another octave.
     //     Signed, so it cuts as often as it lifts -- no mean to subtract.
     //     Hoisted out of the `if` because step 7 needs it too.
-    //     Gated on `massif` rather than `ridge` now that the massif tier exists,
-    //     because that is where the tall summits are. Gating on the backbone put
-    //     the roughness on every 345 m bump including the ones sitting in valley
-    //     bottoms, which is the opposite of the intent.
-    const crest = smoothstep(T.jagLo, T.jagHi, massif) * mountain
-    if (crest > 0.001) {
-      h += this.nJag.fbm(x * T.jagFreq, z * T.jagFreq, T.jagOctaves, 2, 0.5) * T.jagAmp * crest
+    //     GATED ON EXPOSURE (step 3c), not on `massif`. The old gate was the
+    //     elevation proxy, and it is the reason a high saddle came out shattered
+    //     while a low crest came out as clay -- both of which were asked about,
+    //     and both of which are the same bug seen from opposite ends.
+    if (rockAmp > 0.001) {
+      h += this.nJag.fbm(x * T.jagFreq, z * T.jagFreq, T.jagOctaves, 2, 0.5) * T.jagAmp * rockAmp
     }
 
     // 5. Variance-masked detail. This is what gives "different levels of
@@ -978,9 +1211,15 @@ export class TerrainHeight {
     // massif is the 1.7 km tier and h rises with it, so high massif means high
     // ground, and crest adds the summits on top. Hoisted because step 5b needs the
     // same answer step 5 does; they are the same rule about where rock lives.
-    const highGround = clamp01(massif * 0.7 + crest)
-    const rough = lerp(1 - T.detailRock, 1, highGround)
-    const detailAmp = lerp(T.detailMin, T.detailMax, variance) * (0.62 + 0.38 * mountain) * rough
+    // The 1-10 m band: the scale at which ground reads as rock rather than as
+    // shape. Interpolated between soil and rock BY EXPOSURE, with `variance` left
+    // as a secondary wobble so two equally exposed crests are not identical.
+    // This is the layer that actually delivers "jutting quality on low hills":
+    // it is the same interpolation everywhere, and a low rib gets detailRock
+    // scaled by lowlandRock rather than being gated out.
+    const detailAmp =
+      lerp(T.detailSoil, T.detailRock, rockAmp) *
+      (1 + (variance - 0.5) * 2 * T.varianceSwing)
     h +=
       this.nDetail.fbm(x * T.detailFreq, z * T.detailFreq, T.detailOctaves, 2, T.detailGain) *
       detailAmp
@@ -1017,7 +1256,7 @@ export class TerrainHeight {
     //     a preference. A crease IS a slope discontinuity, and _walkable() in
     //     player.js reads local gradient -- creasing a meadow would refuse steps
     //     across it. Rock up high where nobody has to walk, meadow underfoot.
-    const creaseMask = lerp(T.creaseFloor, 1, smoothstep(T.creaseLo, T.creaseHi, highGround))
+    const creaseMask = lerp(T.creaseFloor, 1, smoothstep(T.creaseLo, T.creaseHi, rockAmp))
     if (creaseMask > 0.001) {
       const cr = 1 - Math.abs(this.nCrease.fbm(wx * T.creaseFreq, wz * T.creaseFreq, T.creaseOctaves))
       h += (cr - 0.5) * T.creaseAmp * creaseMask
@@ -1067,7 +1306,7 @@ export class TerrainHeight {
       T.cliffGateLo,
       T.cliffGateHi,
       range *
-        smoothstep(T.cliffLo, T.cliffHi, highGround) *
+        smoothstep(T.cliffLo, T.cliffHi, rockAmp) *
         smoothstep(
           T.cliffBreakLo,
           T.cliffBreakHi,

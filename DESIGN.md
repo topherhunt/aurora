@@ -348,6 +348,52 @@ Fixed with a floor (`creaseFloor`) rather than a real slope: no ground is left p
 
 **Ablations must not disturb the thing they are holding fixed.** The first ablation of this pass zeroed `massifRelief` and reported it cost 17 points of walkability, which pointed the fix at the massif tier. It was confounded: `jag` is gated on `massif` and the detail roughness mask keys off it too, so zeroing the massif silently removed three layers. Sweeping `massifFreq` across a 2× range moved walkability by 3 points, which is what the massif actually costs.
 
+### The rockiness rule is POSITION, not elevation
+
+Every rock layer -- `jag`, `detail`, `crease`, `cliff` -- used to be gated on `highGround = clamp01(massif * 0.7 + crest)`, and the `mountain` macro mask was a factor on most of them as well. Both are elevation proxies, so the rule the world was actually running was *high ground is rock, low ground is soil*. That rule can produce exactly two complaints and it produced both of them, repeatedly: low hills come out as smooth moulded clay, and high saddles and hanging valleys come out shattered. They are one bug seen from its two ends. Three separate passes raised rock amplitude against it, which is why each fix worked at the peaks and made the second complaint worse.
+
+The replacement is **exposure**, and it is the organising idea of the whole field now. Rockiness follows landform *position*: convex ground -- spurs, ribs, crests, outcrops -- sheds its debris and stands as bare rock, while concave ground -- hollows, saddles, gullies, valley floors -- collects it and fills smooth. That is a real geomorphic process rather than a stylistic choice, and its useful property here is that **it is scale-free**: the same rule governs a 400 m spur off a massif and a 15 m outcrop in a meadow, so low hills get the same jagged jutting character as the peaks, at a gentler angle, with no second rule to tune.
+
+It is free to compute, which is what makes it affordable inside the hottest function in the project. An fbm normalised to 0..1 sits near 0.5 at its own local mean, so `(lump - 0.5)` *is* local relative height with no absolute elevation in it. Convexity is a weighted sum of two already-sampled fbms (massif-scale and ridge-scale), pushed through a smoothstep band and multiplied by a slow lithology field so that whole regions are craggier than others:
+
+```
+convex   = (massifLump - 0.5)*exposureMassif + (lump - 0.5)*exposureRidge + exposureBias
+exposure = smoothstep(-exposureBand, exposureBand, convex) * lith
+rockAmp  = exposure * lerp(lowlandRock, 1, highGround)
+```
+
+`lowlandRock` (0.45) is the only place elevation still enters, and it is deliberately a *damper*, not a gate: low crests are rocky, just less violently so. Measured with a two-scale probe -- classify crest/hollow at a 400 m blur, measure roughness at a 24 m blur -- crest ground is **2.40x** rougher than hollow ground overall, and **2.22x** on low ground specifically (hollow 0.140, crest 0.310). Low crest against high crest is 1.80x: the same rule at both ends, at a gentler angle low down.
+
+The consequence worth naming is that **the paths are what the rule leaves behind**. Concave ground is smooth by construction and hollows run unbroken from a valley floor to a saddle, so a walkable route network up every mountain falls out of the exposure rule without anything being placed. It is not a separate system and there is nothing to keep in sync.
+
+### The slope ladder, not the height ladder
+
+A layer's RMS *height* says how much it moves the ground; its RMS *slope* -- amplitude divided by wavelength -- says how much it moves the gradient, and the eye reads gradient. A hillshade, a silhouette and `_walkable()` are all functions of slope. A layer with a twentieth of the amplitude of the tier above it but a fortieth of the wavelength is **twice as steep** as that tier and will dominate it visually, however modest its height-ladder entry looks.
+
+So the coherence rule is: sort the layers by RMS slope, and each rung should sit roughly 2x below the one above it. A flat ladder means no scale wins, and no scale winning is precisely what "jumbled chaos" looks like from inside. `scripts/ladder.mjs` ablates each layer and prints the ladder with its rung ratios.
+
+Measured before this pass, the ladder was cliff 1.051 / backbone 0.631 / massif 0.539 / jag 0.457 -- four layers inside a 1.2x spread, with the *finest* structural layer twice as steep as the largest one. After: massif 0.556 leads, backbone 0.337, jag 0.322, swell 0.198, cliff 0.189, detail 0.151, crease 0.099. The massif tier dominating the ladder is the structural fix; `cliffAmp` 60 → 30 plus re-gating on exposure took cliff down 5.6x on its own.
+
+This also reframes what a slider is for. Six amplitudes in metres and six frequencies are twelve controls that jointly set one thing nobody can see. Where a rung needs to come down, splitting the cut across amplitude *and* wavelength (here `mountainRelief` 110 → 80 with `ridgeFreq` 0.0029 → 0.0021) buys the slope reduction while keeping the sub-peak count and height, instead of spending the tier's presence to get it.
+
+### A hillshade cannot see a hedge horizon
+
+Every instrument in the repo looked straight down. A hillshade shows the gradient everywhere; it cannot show whether summits *differ*, only whether they exist. `massif` is an fbm remapped into a fixed window, so every massif topped out at the same value by construction and the range read as a hedge along the horizon -- invisible from above, and the single most obvious difference from the Skyrim reference silhouettes.
+
+`scripts/skyline-png.mjs` ray-marches the horizon as she would see it: for each of 1200 azimuth columns across a 75 deg FOV it steps outward with geometric growth to 6000 m from a 1.65 m eye, tracking the maximum elevation angle and the distance of whatever drew it, then paints exponential haze so ridgelines separate into layers. It reports apex, median and relief in degrees, which is directly comparable against a reference screenshot.
+
+The fix it drove is `peakContrast`: a very slow fbm (`peakFreq` 0.00013) that *multiplies* the massif tier rather than adding to it, so it changes which mountains are big without moving the mean. It needs a signed power curve (`sign(n)*|n|^peakSkew`) because a normalised fbm is bell-shaped and almost never approaches its declared ends -- the same pathology already recorded twice in this file for `valleyLo` and `cliffBreakLo`. Measured: mean apex 33.2 → 18.4 deg, relief 6.8 → 6.6 (references measure 5-9), and the viewpoint that had a sheer 71.2 deg wall in her face now reads 14.9.
+
+### Seventy-five sliders is the source file with a mouse
+
+The tuner shipped with every `TUNING` constant exposed, and it was reported as overwhelming and as full of controls that "don't do the thing that they say they do". That report was accurate, for three separate reasons:
+
+- **About a third were gate endpoints.** `cliffGateLo`, `creaseHi`, `massifLo` and two dozen siblings are smoothstep edges on internal noise. Nobody can predict what moving one by 0.05 does, because the answer depends on the distribution of a field you cannot see. They were solved once against measurements; the right home for a solved constant is the source, with its reasoning beside it.
+- **Most of the rest were gated to invisibility.** An amplitude multiplied by three masks does nothing wherever any mask is shut, and the cliff layer as shipped was shut over 96% of the world. Dragging that slider and seeing nothing is indistinguishable from a broken control.
+- **The thing that decided the look was not on the panel.** The slope ratio between tiers is not any one constant, so no slider moved it.
+
+Cut to 17, against the rule that a knob must visibly change the *character* of the world within a couple of seconds of dragging, from wherever you happen to be standing: five for the silhouette, seven for the rock/smooth balance (led by `exposureBias`, which sets what fraction of the world is bare rock), two for the lowlands, three for the snow line.
+
 ### Two hard constraints
 
 - **Heightmaps cannot represent overhangs, arches, or caves.** One elevation per XZ, period. No natural bridges, no cave mouths. Accepted.

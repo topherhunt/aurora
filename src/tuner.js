@@ -1,5 +1,5 @@
 import { TUNING, SNOW, SHRINK } from './sim/terrain-height.js'
-import { ELEV_LOD, MIN_SPLIT_K, MAX_SPLIT_K, MAX_DEPTH } from './terrain/quadtree.js'
+import { LOD, MIN_TRI_DEG, MAX_TRI_DEG, MAX_DEPTH } from './terrain/quadtree.js'
 import { SLOT_COUNT } from './terrain/terrain.js'
 
 // ---------------------------------------------------------------------------
@@ -33,13 +33,13 @@ import { SLOT_COUNT } from './terrain/terrain.js'
 // explicit `src` rather than being looked up by name:
 //
 //   TUNING / SNOW -- the height field. Mutating them here updates the main
-//     thread's TerrainHeight (same module instance, so collision and the
-//     elevation pyramid follow immediately) but NOT the workers, which hold
+//     thread's TerrainHeight (same module instance, so collision follows
+//     immediately) but NOT the workers, which hold
 //     their own module instances. Terrain.retune() ships them across and
 //     re-streams the world; without that the mesh and the ground she stands on
 //     would silently disagree.
-//   ELEV_LOD / splitK -- selection only, main thread, no regeneration. A
-//     reselect is enough, and it is instant.
+//   LOD -- selection only, main thread, no regeneration. A reselect is enough,
+//     and it is instant.
 //
 // Props are NOT re-placed on a retune: scatter.js caches placements per chunk,
 // so trees stay where the old height field put them until they stream out.
@@ -50,9 +50,9 @@ import { SLOT_COUNT } from './terrain/terrain.js'
 // evict anything currently rendering, so once `desired` approaches SLOT_COUNT
 // the pool exhausts and _acquire throws. That is the correct behaviour for the
 // engine -- it is a broken invariant -- but this panel's whole job is to let
-// someone push ELEV_LOD.swing and splitK until something gives, and losing the
-// session to an exception is a bad way to find the ceiling. So the panel backs
-// splitK off instead and says so. SLOT_COUNT less the 21 pinned base-layer
+// someone push LOD.triDeg until something gives, and losing the session to an
+// exception is a bad way to find the ceiling. So the panel backs the target off
+// instead and says so. SLOT_COUNT less the 21 pinned base-layer
 // chunks, less a frame's worth of in-flight arrivals (2 workers x 6 deep).
 const SELECT_BUDGET = SLOT_COUNT - 21 - 12
 
@@ -76,250 +76,108 @@ const k = (key, min, max, step, desc, opts = {}) => ({
 // zero where you happen to be standing looks exactly like a broken slider. Where
 // a knob depends on another, the description says which one, because that
 // dependency is the whole reason the panel was confusing.
+// TWELVE KNOBS, and the cut from seventy-five is the point rather than a
+// side effect. What was here before was every constant in TUNING exposed as a
+// slider, which is not a control panel -- it is the source file with a mouse
+// interface. It failed for three reasons worth recording, because the same
+// failure is easy to rebuild:
+//
+//   ABOUT A THIRD WERE GATE ENDPOINTS. `cliffGateLo`, `creaseHi`, `massifLo`
+//   and their two dozen siblings are smoothstep edges on internal noise. Nobody
+//   can predict what moving one by 0.05 does, because the answer depends on the
+//   distribution of a field you cannot see. They were solved once, against
+//   measurements recorded in terrain-height.js, and the right place for a solved
+//   constant is the source, not a slider.
+//
+//   MOST OF THE REST WERE GATED TO INVISIBILITY. A slider that moves an
+//   amplitude which is then multiplied by three masks does nothing wherever any
+//   mask is shut -- which, for the cliff layer as shipped, was 96% of the world.
+//   Dragging it and seeing no change is indistinguishable from a broken control,
+//   and that is most of what "they don't do the thing that they say they do"
+//   was reporting. It was accurate.
+//
+//   AND THE ONE THING THAT ACTUALLY DECIDED THE LOOK WAS NOT ON THE PANEL AT
+//   ALL. Whether a world reads as a coherent range or as noise is set by the
+//   SLOPE RATIO between tiers -- amplitude divided by wavelength, layer against
+//   layer. Six independent amplitudes in metres and six independent frequencies
+//   is twelve sliders that jointly control one thing nobody can see, and it is
+//   perfectly possible -- it is what shipped -- to have three layers running at
+//   the same steepness at different scales, which is exactly what "jumbled
+//   chaos" looks like. Run `node scripts/ladder.mjs` for that number directly.
+//
+// So the rule for what earns a slider: it must change the CHARACTER of the world
+// visibly within a couple of seconds of dragging, from wherever you happen to be
+// standing. Everything else lives in terrain-height.js with its reasoning next
+// to it. If one of those is genuinely wrong, the fix is an edit and an argument,
+// not a slider that hides the question.
 const GROUPS = [
   {
-    title: 'Regional swell',
+    title: 'The mountains',
     src: 'T',
-    note: 'One 2.6 km undulation under everything, over 4 octaves. `valleyLo` is the lowland floor: raise it and more of the world drops to heath, without lowering the peaks.',
+    note: 'The five that decide the silhouette. Check them with `node scripts/skyline-png.mjs`, which draws the horizon as she would see it -- a top-down render cannot show whether summits differ in height, only whether they exist.',
     knobs: [
-      k('baseFreq', 0.00005, 0.0008, 0.00001,
-        'Size of the regional undulation: how far it is from one high region to the next. Lower = fewer, broader regions. Only reshuffles WHICH ground rises, so where the swell is floored (see valleyLo) it changes nothing.',
-        { freq: true, octFixed: 4 }),
-      k('valleyRelief', 0, 700, 5,
-        'Metres the swell lifts ground where it is fully engaged. It MULTIPLIES the floored curve below, so it does exactly nothing wherever the swell sits under valleyLo -- as shipped that is 73% of the map, including the spawn. Lower valleyLo first and this knob comes alive.',
+      k('massifRelief', 60, 800, 10,
+        'How tall the mountains are. This is the master vertical scale: every other height in the world is meant to sit below it, so raising this alone makes the world grander, and raising the rock knobs to match is what makes it chaotic.',
         { amp: true }),
-      k('valleyLo', 0.2, 1.0, 0.01,
-        'The lowland floor. Swell values below this flatten to exactly zero, so this single knob decides how much of the world is low heath. Raise for more lowland; lower to hand ground back to valleyRelief.'),
-      k('valleyHi', 0.4, 1.4, 0.01,
-        'Swell value at which the full valleyRelief is reached. A wider gap from valleyLo makes a longer, gentler climb out of the lowlands.'),
-      k('valleyKnee', 0.02, 0.4, 0.01,
-        'Rounds the join between flat lowland and the rise. Small values leave a visible crease around the rim of every basin.'),
-      k('seaLevel', -50, 100, 1,
-        'Flat metres added everywhere. Moves the whole world up or down relative to the snow line and the water level, which do not follow it.',
-        { amp: true }),
-    ],
-  },
-  {
-    title: 'Mountain mask -- where ranges are at all',
-    src: 'T',
-    note: 'Gates every mountain layer below. `mountainFloor` is how much gets through where the mask says "no range here" -- 0 gives true empty basins.',
-    knobs: [
-      k('macroFreq', 0.0001, 0.002, 0.00001,
-        'Size of the regions that contain mountains at all. Lower = fewer, larger ranges with wider empty country between them.',
-        { freq: true, octFixed: 4 }),
-      k('mountainMaskLo', 0, 1, 0.01,
-        'Mask noise below this means "no range here". Raise it to shrink the mountainous fraction of the map.'),
-      k('mountainMaskHi', 0, 1.2, 0.01,
-        'Mask noise above this means a full-strength range. A narrow Lo..Hi gap gives hard-edged ranges, a wide one gives ranges that fade in over kilometres.'),
-      k('mountainFloor', 0, 1, 0.01,
-        'How much mountain still gets through where the mask says none. At 0.2 the ranges never fully switch off; 0 gives genuinely empty basins.'),
-    ],
-  },
-  {
-    title: 'Massifs (tier 1)',
-    src: 'T',
-    note: 'The big shapes: whole mountains, not their ridges.',
-    knobs: [
-      k('massifFreq', 0.0001, 0.003, 0.00001,
-        'Spacing from one whole mountain to the next.',
+      k('massifFreq', 0.0002, 0.0016, 0.00002,
+        'How far apart the mountains are. Lower = fewer, broader massifs with longer flanks between them. Steepness is relief DIVIDED by this, so halving it at fixed relief halves every mountainside angle -- this is the knob to reach for if the world feels like a maze of walls.',
         { freq: true, oct: 'massifOctaves' }),
-      k('massifOctaves', 1, 6, 1,
-        'How many finer copies ride on the massif shape. Each one halves the wavelength and carries half the amplitude, so the last octaves are subtle.'),
-      k('massifRelief', 0, 800, 5,
-        'Height of a full-strength massif. Scaled by the mountain mask above, so it does less in the low country and nothing at all if mountainFloor is 0 there.',
+      k('peakContrast', 0, 1.2, 0.02,
+        'How much taller the tallest massifs are than the shortest. 0 makes every summit the same height, which reads as a hedge along the horizon rather than as peaks; 0.6 makes the big ones about three times the small ones. This is the single knob for "some looming way larger than others".'),
+      k('massifSharp', 0.6, 2.5, 0.05,
+        'Spire versus dome. Above 1 the summit stays put and the approach to it steepens, so the peak comes to a point; below 1 it rounds off into a whaleback. Cheap pointiness -- it acts only near the top and leaves the flanks and valleys alone.'),
+      k('mountainRelief', 0, 260, 5,
+        'Height of the sub-peaks riding on the massif flanks -- what makes a massif read as a mountain rather than a hill. Keep it well under a third of massifRelief: when the two approach each other no single scale wins and the range dissolves into lumps.',
         { amp: true }),
-      k('massifLo', 0, 1, 0.01,
-        'Massif noise below this contributes nothing -- raises the fraction of the map that stays flat between mountains.'),
-      k('massifHi', 0, 1.2, 0.01,
-        'Massif noise that reaches full massifRelief. A narrow Lo..Hi gap gives steeper, more abrupt mountain flanks.'),
-      k('massifSharp', 0.5, 3, 0.05,
-        'Pointiness. Above 1 the summit stays put but the approach steepens, so the silhouette comes to a point; below 1 it domes. Acts only near the top, so valleys are untouched.'),
     ],
   },
   {
-    title: 'Backbone ridges (tier 2)',
+    title: 'Rock and smooth ground',
     src: 'T',
-    note: 'Sub-peaks riding the massif flanks. `ridgeGain` is the octave falloff -- lower is smoother, higher is furrier at every scale at once.',
+    note: 'ONE RULE decides all of this, and it is worth knowing before you drag anything: rockiness follows landform POSITION, not height. Convex ground -- spurs, ribs, crests, outcrops -- sheds its debris and stands as bare jagged rock; concave ground -- hollows, saddles, gullies, valley floors -- collects it and fills smooth. Same rule on a low knoll as on a summit, which is why low hills are rocky now and high saddles are not. The smooth hollows are also the paths: they run unbroken from the valley floor to the ridge, so the routes up a mountain are what this rule leaves behind rather than anything placed.',
     knobs: [
-      k('ridgeFreq', 0.0005, 0.008, 0.0001,
-        'Spacing of the sub-peaks that ride the massif flanks -- one bump to the next along a backbone.',
-        { freq: true, oct: 'ridgeOctaves' }),
-      k('ridgeOctaves', 1, 6, 1,
-        'How many halvings of that spacing are stacked on. More octaves = more small bumps on the big ones.'),
-      k('mountainRelief', 0, 300, 5,
-        'Height the ridges add on top of the massif they sit on.',
+      k('exposureBias', -0.35, 0.35, 0.01,
+        'HOW MUCH OF THE WORLD IS ROCK. Slides the crest/hollow boundary: negative leaves only the sharpest spurs bare and everything else grassy, positive strips the whole world back to rock. The first knob to reach for -- it changes the FRACTION of ground that is rough rather than how violent the rough part is, which is the difference that decides whether she can get anywhere.'),
+      k('exposureBand', 0.05, 0.9, 0.01,
+        'How abruptly rock gives way to smooth ground. Small draws a hard crag line partway up a hillside -- meadow below, rock above; large blends the two over a whole flank so the ground breaks up gradually as it rises.'),
+      k('lowlandRock', 0, 1, 0.02,
+        'How rocky low ground is, at equal exposure. 1 makes a knoll in a meadow as savage as a summit; 0 restores the old behaviour where rock was a function of altitude and every low hill came out as smooth clay. Around 0.45 gives low outcrops the same shape at a gentler angle.'),
+      k('jagAmp', 0, 120, 2,
+        'Depth of the notches and knobs along a crest, 60 m down to 7 m -- the macro jag that gives a summit its silhouette. Gated by exposure, so it lands on crests and does nothing in the hollows between them however high you take it.',
         { amp: true }),
-      k('ridgeGain', 0.3, 0.75, 0.01,
-        'Amplitude falloff per octave. Low is a smooth backbone; high is furry at every scale at once.'),
-      k('ridgeLo', 0, 1, 0.01,
-        'Ridge noise below this contributes nothing -- more flat saddle between sub-peaks.'),
-      k('ridgeHi', 0, 1.2, 0.01,
-        'Ridge noise that reaches full mountainRelief.'),
-      k('ridgeKnee', 0.2, 1.2, 0.01,
-        'Above this the ridge sum is compressed instead of clipped. Lower flattens summits; this is what stops peaks turning into mesas at exactly mountainRelief.'),
+      k('detailRock', 0, 30, 0.5,
+        'Height of the juts at the 1-10 m scale, on fully exposed rock -- the scale at which ground stops reading as shape and starts reading as rock. This is what you are standing next to. Its counterpart on soil is fixed low; only the rock end is worth a slider.',
+        { amp: true }),
+      k('creaseAmp', 0, 24, 0.5,
+        'Ribs and gully edges: slope BREAKS rather than more bumps. This is the one layer that adds hard kinks instead of smooth blobs, which is what stops exposed rock reading as crumpled cloth. Small numbers do a lot; past about 12 a hillside turns to corduroy.',
+        { amp: true }),
+      k('cliffAmp', 0, 90, 2,
+        'Height of the step where the cliff mosaic breaks. Rare on purpose -- about 2% of the world, on the most exposed crests only. It was 60 and drew a carpet of squiggles over every summit; if that look returns, this is the knob.',
+        { amp: true }),
     ],
   },
   {
-    title: 'Aretes -- knife-edge crests',
+    title: 'Lowlands and snow',
     src: 'T',
-    note: 'A rare accent, not a global look: the mask is high on roughly a tenth of the map and even there the blend is partial.',
     knobs: [
-      k('areteFreq', 0.0001, 0.002, 0.00001,
-        'Size of the regions that get knife-edge crests instead of rounded ones.',
-        { freq: true, octFixed: 2 }),
-      k('areteAmount', 0, 1, 0.01,
-        'Maximum blend toward the knife-edge form. 0 disables aretes everywhere; this is the master switch for the group.'),
-      k('areteRound', 0, 0.5, 0.01,
-        'Rounds the blade itself. 0 is a true edge; higher gives a crest you could stand on.'),
-      k('areteLo', 0, 1, 0.01,
-        'Mask threshold: noise below this gets no arete. Raise to make them rarer.'),
-      k('areteHi', 0, 1.2, 0.01,
-        'Mask threshold for a full-strength arete. Narrow Lo..Hi = abrupt transitions between rounded and knife-edged ranges.'),
-    ],
-  },
-  {
-    title: 'Summit jaggedness',
-    src: 'T',
-    note: 'Only fires above `jagLo` of the massif height, so it roughens crests without touching valley floors.',
-    knobs: [
-      k('jagFreq', 0.002, 0.03, 0.0005,
-        'Size of the notches cut into a crest -- how close together the teeth are.',
-        { freq: true, oct: 'jagOctaves' }),
-      k('jagOctaves', 1, 6, 1,
-        'How many finer sets of notches ride on the coarse ones.'),
-      k('jagAmp', 0, 150, 1,
-        'Depth of those notches where the mask is fully on. Multiplied by the jagLo/jagHi gate, so it does nothing below jagLo of massif height -- i.e. nothing anywhere you can comfortably walk.',
+      k('valleyLo', 0.2, 0.95, 0.01,
+        'How much of the world is low heath. The regional swell is floored below this value, so raising it drops more ground to near sea level WITHOUT lowering the peaks -- which is the whole reason it is a floor rather than a shift.'),
+      k('valleyRelief', 0, 700, 10,
+        'How high the high country sits above the heath, before any mountain is added. A slow 2.6 km swell, so this is what separates highland from lowland rather than anything you can see the edge of.',
         { amp: true }),
-      k('jagLo', 0, 1, 0.01,
-        'Fraction of massif height below which no jag is applied at all. This is why valley floors stay smooth. Lower it to bring jaggedness down the mountain.'),
-      k('jagHi', 0, 1.2, 0.01,
-        'Fraction of massif height at which jag reaches full jagAmp.'),
-    ],
-  },
-  {
-    title: 'Cliff mosaic',
-    src: 'T',
-    note: 'Worley cells with a hard step at the boundary. The three gates MULTIPLY, so a cliff at half strength is not a small cliff -- it is a rounded one. `cliffGateLo/Hi` crispen the product back toward binary; `cliffLipPow` sharpens the lip itself (1 = rounded shoulder).',
-    knobs: [
-      k('cliffFreq', 0.001, 0.012, 0.0001,
-        'Size of the plateau cells -- how far it is from one cliff band to the next.',
-        { freq: true, cell: true }),
-      k('cliffAmp', 0, 150, 1,
-        'Height of the step at a cell boundary, before the gate. Multiplied by all three gates below, so it is zero on gentle or low ground no matter what you set here.',
-        { amp: true }),
-      k('cliffEdge', 0.01, 0.4, 0.005,
-        'Width of the boundary band as a fraction of a cell. The whole drop happens across this, so halving it doubles the face angle: narrow is a lip you could fall off, wide is a slope.'),
-      k('cliffLipPow', 1, 8, 0.1,
-        'Shape of the lip within that band. 1 is a rounded shoulder; higher pushes the drop into the last metres and leaves a flat tread behind it.'),
-      k('cliffLo', 0, 1, 0.01,
-        'Gate 1: high-steep-ground below this gets no cliffs. Keeps lips off meadows, where a slope discontinuity is a step the player cannot take.'),
-      k('cliffHi', 0, 1, 0.01,
-        'Gate 1 upper end: high-steep-ground at or above this passes the gate fully.'),
-      k('cliffGateLo', 0, 1, 0.01,
-        'Applied to the PRODUCT of the three gates, to crispen it back toward on/off. Without this the product sits near 0.4 over huge areas and every cliff renders as a rounded bump instead of a real cliff somewhere.'),
-      k('cliffGateHi', 0, 1, 0.01,
-        'Product at or above this counts as a full-strength cliff. Pull Lo and Hi together for a binary "cliff or no cliff" map.'),
-      k('cliffBreakFreq', 0.001, 0.02, 0.0005,
-        'Gate 2: size of the regions that have a cliff mosaic at all. The mosaic is deliberately not everywhere.',
-        { freq: true, octFixed: 2 }),
-      k('cliffBreakLo', 0, 1, 0.01,
-        'Break-mask noise below this means no mosaic in this region. This is the knob that was throttling the whole cliff layer to 4% strength.'),
-      k('cliffBreakHi', 0, 1, 0.01,
-        'Break-mask noise at which the mosaic is fully present.'),
-    ],
-  },
-  {
-    title: 'Creases and gullies',
-    src: 'T',
-    note: 'Slope breaks rather than more noise: a curvilinear network of ribs and gully edges. Kept up high on purpose -- a crease is a slope discontinuity, and the walkability check refuses steps across one.',
-    knobs: [
-      k('creaseFreq', 0.002, 0.04, 0.0005,
-        'Spacing of the gully-and-rib network. This layer is ridged, which folds the field and halves what you actually see -- the label already accounts for that.',
-        { freq: true, oct: 'creaseOctaves', ridged: true }),
-      k('creaseOctaves', 1, 4, 1,
-        'How many finer crease networks are laid over the coarse one.'),
-      k('creaseAmp', 0, 25, 0.5,
-        'Depth of the creases. Centred, so it cuts as often as it lifts and does not move mean elevation or the snow line. Multiplied by the high-ground mask below.',
-        { amp: true }),
-      k('creaseLo', 0, 1, 0.01,
-        'High-ground value below which creases fade to creaseFloor. Raise to confine gullies to the highest rock.'),
-      k('creaseHi', 0, 1, 0.01,
-        'High-ground value at which creases reach full creaseAmp.'),
-      k('creaseFloor', 0, 1, 0.01,
-        'How much crease survives on low, gentle ground. Raise it and gullies reach the valleys -- and the walkability check starts refusing steps across the meadow.'),
-    ],
-  },
-  {
-    title: 'Surface detail',
-    src: 'T',
-    note: 'The metre-scale roughness, amplitude-masked by a slow variance field so meadows stay smooth and shattered ground stays shattered.',
-    knobs: [
-      k('detailFreq', 0.002, 0.04, 0.0005,
-        'Size of the finest bumps -- the texture you see underfoot and on a near hillside.',
-        { freq: true, oct: 'detailOctaves' }),
-      k('detailOctaves', 1, 8, 1,
-        'How many halvings of that size are stacked. The last few are below the mesh resolution and cost nothing visible.'),
-      k('detailGain', 0.3, 0.7, 0.01,
-        'Amplitude falloff per octave. Low leaves only the coarse bumps; high makes the surface grainy at every scale.'),
-      k('detailMin', 0, 20, 0.1,
-        'Roughness amplitude in the smoothest patches.',
-        { amp: true }),
-      k('detailMax', 0, 30, 0.1,
-        'Roughness amplitude in the roughest patches. varianceFreq below decides how big those patches are.',
-        { amp: true }),
-      k('detailRock', 0, 1, 0.01,
-        'How much detail is withheld from low, gentle ground. At 1 the valleys get almost none -- meadow underfoot, shattered rock up high.'),
-      k('varianceFreq', 0.0001, 0.004, 0.0001,
-        'Size of the patches that choose between detailMin and detailMax. This is what makes roughness vary from hillside to hillside instead of being uniform.',
-        { freq: true, octFixed: 2 }),
-    ],
-  },
-  {
-    title: 'Terraces',
-    src: 'T',
-    note: 'Stepped contour benches. Uniform terracing looks like a wedding cake, so most of the world must not terrace at all -- hence the mask.',
-    knobs: [
-      k('terraceFreq', 0.0001, 0.002, 0.00001,
-        'Size of the regions that get stepped benches.',
-        { freq: true, octFixed: 2 }),
-      k('terraceStep', 1, 30, 0.5,
-        'Height of one bench, i.e. how far apart the treads are vertically.',
-        { amp: true }),
-      k('terraceStrength', 0, 1, 0.01,
-        'How far the ground is pulled onto the steps. 0 disables the layer; 1 gives hard staircases. Master switch for the group.'),
-      k('terraceLo', 0, 1, 0.01,
-        'Mask noise below this gets no terracing. Raise to make benches rarer.'),
-      k('terraceHi', 0, 1.2, 0.01,
-        'Mask noise at which terracing is fully applied. The layer also fades out on summits so it does not fight the jag pass.'),
-    ],
-  },
-  {
-    title: 'Domain warp',
-    src: 'T',
-    note: 'Bends every layer above sideways, which is what stops ridges reading as noise laid on a grid.',
-    knobs: [
-      k('warpAmp', 0, 120, 1,
-        'How far the ground is pushed sideways before every layer above is sampled. Zero makes ranges read as noise on a grid; too much smears them into swirls.',
-        { amp: true }),
-      k('warpFreq', 0.0005, 0.01, 0.0001,
-        'Size of the warp swirls. Near the massif wavelength it bends whole ranges; much finer and it just adds wobble to their edges.',
-        { freq: true, octFixed: 3 }),
     ],
   },
   {
     title: 'Snow line',
     src: 'S',
-    note: 'COLOUR ONLY -- these do not move the ground, so the "here" readout is blank for them. Painted into vertex colours in the worker, so they still travel with a retune like the height knobs do.',
+    note: 'COLOUR ONLY -- these do not move the ground, so the "here" readout is blank for them.',
     knobs: [
       k('base', 0, 300, 1,
         'Mean snow-line elevation in world metres. Ground above it is white, below it is not. Compare against the elevation shown in the HUD.'),
       k('band', 5, 150, 1,
         'Vertical distance over which bare ground fades to full snow. Small is a crisp line; large is a long dirty-snow gradient.'),
       k('swing', 0, 80, 1,
-        'How far the line wanders regionally, plus or minus around base, so it is not a perfect contour across the whole world.'),
-      k('freq', 0.00005, 0.001, 0.00001,
-        'Size of those regional wanderings.',
-        { freq: true }),
+        'How far the line wanders regionally, so it is not a perfect contour across the whole world.'),
     ],
   },
 ]
@@ -330,28 +188,11 @@ const GROUPS = [
 const LOD_GROUP = {
   title: 'LOD -- where the triangles go',
   src: 'L',
-  note: 'splitK is global detail (also on [ and ]). The swing rows redistribute it BY ELEVATION: at swing 1.0 the highest-ranked nodes of that size get one extra LOD level and the lowest-ranked lose one, so peaks refine and valleys coarsen at no extra cost. Depths 0-2 are structurally excluded (one node at depth 0, so a percentile is undefined). Depth 7 ships at 0 on purpose -- that ring is the ground underfoot, where shifting detail reads as popping. Watch `slots` below: the pool is a hard ceiling.',
+  note: 'One knob, in the units your eye works in. The rule is: keep splitting until no triangle on screen looks bigger than this many degrees -- so a triangle underfoot and a triangle on the horizon end up the same size in your view, which is the whole point. This replaced a splitK plus five elevation-bias rows that privileged high ground and produced the opposite: whole near quadrants blockier than the distant ones behind them. quadtree.js has the measurements, including why a cleverer rule that measures each chunk\'s actual geometric error was built, priced and then thrown away. Watch `slots` below: the pool is a hard ceiling and the panel will back this off if the selection overruns.',
   knobs: [
-    k('splitK', MIN_SPLIT_K, MAX_SPLIT_K, 0.05,
-      'Global detail. A node splits once the camera is within k times its own size, so raising this refines everything at once -- and the slot pool is a hard ceiling, so the panel will back it off again if the selection overruns.'),
-    k('swing3', 0, 3, 0.05,
-      'Elevation bias for 2048 m nodes: whole ranges vs whole basins.',
-      { label: 'swing d3 (2048 m nodes)' }),
-    k('swing4', 0, 3, 0.05,
-      'Elevation bias for 1024 m nodes. 1.0 means the highest-ranked nodes of this size get a whole extra LOD level and the lowest lose one, at no net cost.',
-      { label: 'swing d4 (1024 m nodes)' }),
-    k('swing5', 0, 3, 0.05,
-      'Elevation bias for 512 m nodes -- roughly the scale of one mountain flank, so this is the row that sharpens distant peaks.',
-      { label: 'swing d5 (512 m nodes)' }),
-    k('swing6', 0, 3, 0.05,
-      'Elevation bias for 256 m nodes.',
-      { label: 'swing d6 (256 m nodes)' }),
-    k('swing7', 0, 3, 0.05,
-      'Elevation bias for 128 m nodes. Ships at 0 on purpose: this ring is the ground underfoot, where shifting detail as you walk reads as popping.',
-      { label: 'swing d7 (128 m nodes)' }),
-    k('pivot', 0, 1, 0.05,
-      'The elevation percentile that neither gains nor loses a level. 0.5 is the median node; lower it and more of the map counts as "high" and gets refined.',
-      { label: 'pivot (rank that neither gains nor loses)' }),
+    k('triDeg', MIN_TRI_DEG, MAX_TRI_DEG, 0.05,
+      'The largest a triangle may ever look -- also on [ and ]. 1.0 deg is roughly a thumbnail at arm\'s length. Smaller is finer and costs triangles as 1/deg^2, so halving it is four times the terrain; below about 1.1 the selection stops fitting in the slot pool.',
+      { label: 'max triangle (degrees)' }),
   ],
 }
 
@@ -551,17 +392,13 @@ export class Tuner {
   _read(g, knob) {
     if (g.src === 'T') return TUNING[knob.key]
     if (g.src === 'S') return SNOW[knob.key]
-    if (knob.key === 'splitK') return this.terrain.splitK
-    if (knob.key === 'pivot') return ELEV_LOD.pivot
-    return ELEV_LOD.swing[Number(knob.key.slice(5))]
+    return LOD[knob.key]
   }
 
   _write(g, knob, v) {
     if (g.src === 'T') TUNING[knob.key] = v
     else if (g.src === 'S') SNOW[knob.key] = v
-    else if (knob.key === 'splitK') this.terrain.splitK = v
-    else if (knob.key === 'pivot') ELEV_LOD.pivot = v
-    else ELEV_LOD.swing[Number(knob.key.slice(5))] = v
+    else LOD[knob.key] = v
   }
 
   // Push the model value back into both widgets and rewrite the label. Called
@@ -725,7 +562,7 @@ export class Tuner {
     }
     dump('TUNING (terrain-height.js)', bucket.T)
     dump('SNOW (terrain-height.js)', bucket.S)
-    dump('LOD (quadtree.js ELEV_LOD / terrain splitK)', bucket.L)
+    dump('LOD (quadtree.js LOD)', bucket.L)
     const text = lines.length ? lines.join('\n') : '(nothing changed from the file values)'
 
     this.out.style.display = 'block'
@@ -767,10 +604,10 @@ export class Tuner {
     // reach splitK too, and a crash is no better for having been triggered by a
     // key instead of a slider.
     const st = this.terrain.stats
-    if (st.desired > SELECT_BUDGET && this.terrain.splitK > MIN_SPLIT_K) {
-      this.terrain.splitK = Math.max(MIN_SPLIT_K, this.terrain.splitK - 0.05)
+    if (st.desired > SELECT_BUDGET && LOD.triDeg < MAX_TRI_DEG) {
+      LOD.triDeg = Math.min(MAX_TRI_DEG, LOD.triDeg * 1.1)
       this.terrain.invalidate()
-      this.message = `selection hit ${st.desired} leaves against a ${SELECT_BUDGET} budget -- splitK backed off to ${this.terrain.splitK.toFixed(2)}`
+      this.message = `selection hit ${st.desired} leaves against a ${SELECT_BUDGET} budget -- triangles backed off to ${LOD.triDeg.toFixed(2)}deg`
       this._relabel()
     }
 
@@ -782,7 +619,7 @@ export class Tuner {
       `leaves  ${st.desired} selected / ${st.rendered} drawn   pending ${st.pending}\n` +
       `tris    ${(st.tris / 1000).toFixed(1)}k over ${st.rendered} chunks   gen ${st.lastGenMs.toFixed(1)}ms\n` +
       `<span class="${poolClass}">slots   ${st.slots}/${SLOT_COUNT}  (budget ${SELECT_BUDGET} leaves)</span>\n` +
-      `splitK  ${this.terrain.splitK.toFixed(2)}   depth<=${MAX_DEPTH}` +
+      `LOD  triangles<=${LOD.triDeg.toFixed(2)}deg   depth<=${MAX_DEPTH}` +
       (this.message ? `\n<span class="t-warn">${this.message}</span>` : '')
   }
 }

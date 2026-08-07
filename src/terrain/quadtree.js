@@ -1,247 +1,166 @@
 import { WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
+import { CHUNK_RES } from '../sim/chunk-mesh.js'
 
 // ---------------------------------------------------------------------------
-// Distance-driven quadtree LOD selection (DESIGN.md §5).
+// Quadtree LOD selection (DESIGN.md §5).
 //
-// A node is subdivided when the camera is closer to it than `splitK` times its
-// own edge length. That single rule produces concentric rings of roughly
-// constant screen-space triangle size, which is the property that actually
-// matters -- a fixed distance table would over-tessellate small chunks far away
-// and under-tessellate large ones nearby.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// MAX_DEPTH, DEFAULT_SPLIT_K and chunk-mesh.js's CHUNK_RES are one decision,
-// not three. Together they fix both the triangle cost of an empty world and
-// its silhouette quality:
+// ONE RULE, ONE KNOB, ONE UNIT:
 //
-//   leaves selected  ~= f(splitK, MAX_DEPTH)     -- independent of CHUNK_RES
-//   triangles        =  leaves x 2 x CHUNK_RES x (CHUNK_RES + 2)
-//   angular error    ~= 1 / (CHUNK_RES x splitK) -- a leaf's nearest possible
-//                       viewing distance is splitK x its own edge length, so
-//                       one cell subtends (size/res) / (size x K) radians
+//   split while  cell > range * tan(TRI_DEG)
 //
-// The first version shipped res 24 / K 2.1 / depth 9: 1.14 deg, but 502 leaves
-// and 675k triangles -- 79% of §0's measured 800k budget with nothing in the
-// world but ground. Sweeping the frontier at equal angular error moved that to
-// res 16 / depth 10, with 1.00 m leaf cells, which is §2's stated heightmap
-// resolution.
+//   cell   the node's grid spacing, size / CHUNK_RES, in metres
+//   range  distance from the eye to the node's bounding box, in 3D, in metres
 //
-// K then came down again, to 1.0, after looking at it: chunky distant terrain
-// turns out to be perfectly acceptable, and the fog is doing most of that work
-// anyway. Measured worst-case selections over 400 random viewpoints:
+// A length over a range is an angle, so the rule reads straight off the screen:
+// REFINE UNTIL NO TRIANGLE LOOKS BIGGER THAN TRI_DEG DEGREES. That is the whole
+// LOD policy. It gives every visible triangle, underfoot or on the horizon, the
+// same angular size -- which is exactly what "consistent screen-relative
+// resolution" means, and it is bounded by construction rather than on average.
 //
-//   K 0.8 -> 148 leaves,  95k tris, 4.48 deg
-//   K 0.9 -> 178 leaves, 114k tris, 3.98 deg
-//   K 1.0 -> 211 leaves, 135k tris, 3.58 deg
-//   K 1.1 -> 304 leaves, 195k tris, 3.26 deg     <- default
-//   K 1.2 -> 304 leaves, 195k tris, 2.98 deg
-//   K 1.3 -> 304 leaves, 195k tris, 2.75 deg     <- original default
-//   K 1.6 -> 400 leaves, 256k tris, 2.24 deg
+// WHAT IS DELIBERATELY ABSENT, because it was built, measured and removed:
 //
-// Read that table carefully, because it is not a smooth curve and the flat spot
-// is the interesting part. 1.1, 1.2 and 1.3 select the SAME 304 leaves: subdivision
-// is a discrete test, so a whole band of K values lands on one ring layout and
-// costs exactly the same. The visible quality step between 1.0 and 1.1 is that
-// boundary, and it means the extra detail from 1.1 up to 1.3 is free -- and that
-// dropping from 1.1 to 1.0 saves a real 60k triangles.
+// The obvious next move is a per-node GEOMETRIC ERROR -- mesh each chunk, measure
+// how far it departs from the height field, and spend triangles where the shape
+// is genuinely wrong instead of spreading them evenly. That is the textbook
+// chunked-LOD rule and it was implemented here in full, including the worker
+// plumbing and the monotonicity repair a top-down descent needs.
 //
-// 1.1 is therefore the cheapest K on its plateau, which is why it is the default.
-// If distant ridgelines ever need more, go to 1.3 before 1.6; it costs nothing.
+// It does not pay, and the reason is a property of this terrain rather than a
+// property of the technique. The height field is fbm, so its roughness is
+// SCALE-INVARIANT: measured error per cell is 0.37 at the median and 0.66 at p90
+// at EVERY node size. Error is therefore very nearly proportional to cell size
+// everywhere, which means a cell-size cap already IS an error cap, and measuring
+// the error re-derives what the geometry guarantees.
 //
-// Note also how flat the curve is below 1.3. Ring size bottoms out at low K, so
-// most of what a higher K buys is near-field chunks you are looking straight
-// down at. That is also why raising CHUNK_RES while lowering splitK costs MORE
-// triangles at constant angular error, not fewer -- you pay res^2 without ever
-// getting the K^2 saving back. Do not "optimise" that direction.
+// Priced at matched worst-case slot cost over 60 cameras (scripts/probe-lod.mjs):
 //
-// Regenerate this table by sweeping selectNodes() over the CAMS list in
-// check-sim.mjs section 5; the numbers above come from exactly that.
-// ---------------------------------------------------------------------------
-
+//                            leaf~  leafMAX   err p90   err p99   tri p90  triMAX
+//   error term + 1.3 cap      477      622     0.595     0.946      1.06    1.30
+//   plain 1.2 cap             489      580     0.547     1.101      1.00    1.20
+//
+// The plain cap wins worst-case slots, mean error and both triangle numbers, and
+// loses only the error tail -- one leaf in a hundred, and one outlier. That is
+// not worth 256 extra heightAt calls per chunk (~70% of the mesh cost), a field
+// on every worker message, a learned per-node table, and a monotonicity
+// invariant that has to hold or a coarse ancestor silently vetoes detail
+// underneath it. If the terrain ever grows features that are rough at one scale
+// and smooth at another -- cliffs, erosion channels, anything non-fractal -- this
+// conclusion flips, and the measurement to re-run is in probe-lod.mjs.
+//
+// WHAT THIS REPLACES, because the correction is the point. The previous rule was
+// a raw distance test, `boxDistance < size * splitK`, plus an ELEVATION BIAS
+// that multiplied splitK per node by up to 3.4x or down to 0.30x according to
+// how high that node's MEAN ground was relative to other nodes of its size. It
+// was applied at depths 3-6 -- 2048 m, 1024 m, 512 m and 256 m squares -- and it
+// produced exactly the artifact you would predict from that granularity:
+// measured over 240 camera positions, a 1024 m quadrant 401 m away drawn at
+// 9.14 deg per cell while a 256 m node five times further out was drawn at 0.44.
+// Whole quadrants of near ground coarser than far ground, with a hard seam.
+//
+// It failed for two structural reasons, not for want of tuning:
+//
+//   1. It was a HIERARCHICAL GATE. A 1024 m quadrant whose mean sat below the
+//      pivot never descended, so every summit inside it was pinned at 64 m
+//      cells no matter how tall. Detail was vetoed by an ancestor that could not
+//      possibly know what it contained -- the file's own comment measured that
+//      signal at 0.15 and shipped anyway.
+//
+//   2. It keyed on the WRONG QUANTITY. Elevation is a proxy for "needs
+//      triangles"; geometric error is the thing itself. Measured correlation
+//      between a node's mean elevation and its actual error (probe-error.mjs):
+//
+//        depth 3 (2048 m): 0.16      depth 7 (128 m): 0.70
+//        depth 4 (1024 m): 0.16      depth 8 ( 64 m): 0.68
+//        depth 5 ( 512 m): 0.43      depth 9 ( 32 m): 0.63
+//
+//      The bias put its strongest swing at depths 3-5 and exactly zero from
+//      depth 7 in. It was strongest where the signal is 0.16 and absent where
+//      the signal is 0.70 -- upside down against its own premise.
+//
+//   Measured over 60 cameras, half of them airborne, against the rule below:
+//
+//                        leaf~  leafMAX   tri p90   triMAX   angular inversions
+//     elevation bias      259      325      2.51      9.22        30.8%
+//     this file           489      580      1.00      1.20        12.1%
+//
+//   "Angular inversion" is the reported artifact stated as a number: nearer
+//   ground drawn BLOCKIER than ground at least 1.5x further away. Note that a
+//   nearer leaf being physically LARGER is not a defect -- that is what LOD is --
+//   so the metric is in degrees, not metres.
+//
+//   The 9.22 deg worst case is the complaint itself: a 1024 m quadrant 398 m from
+//   the camera,its triangles twenty times coarser, sitting next to a 256 m node
+//   five times further out drawn at 0.44 deg.
+//
 export const MAX_DEPTH = 10 // 16384 m root / 2^10 = 16 m leaves
-export const DEFAULT_SPLIT_K = 1.1
-
-// The terrain slot pool is sized for the worst selection at this splitK.
-export const MAX_SPLIT_K = 2.1
-export const MIN_SPLIT_K = 0.8
 
 // ---------------------------------------------------------------------------
-// ELEVATION BIAS -- spend the triangle budget where she can actually see it.
+// THE KNOB. The largest a triangle is ever allowed to look, in degrees.
 //
-// The pure distance rule above is elevation-blind, and in a mountain world that
-// is the wrong instinct twice over. Distant VALLEY floors are hidden behind
-// their own ridgelines nearly all the time, so tessellating them is triangles
-// spent on geometry no one ever sees; distant PEAKS are the silhouette against
-// the sky, where the eye is most sensitive to faceting and where §5's ~3.3 deg
-// angular error reads as visible polygon edges on a skyline.
+// Mutable so the tuning panel and the [ ] keys can move it live; selection reads
+// it every frame, so a change lands on the next one with no regeneration.
 //
-// So the split test gets a per-node multiplier keyed on how high that node's
-// ground is, and the multiplier gets STRONGER with distance. Near the camera it
-// is exactly 1.0 and the old behaviour is unchanged -- she is standing on that
-// ground, and biasing it would be visible as detail popping in underfoot.
+// The stated goal was 1.0 -- "no visible triangle wider than a degree", about a
+// thumbnail at arm's length. 1.2 ships instead, and the gap is a slot-pool
+// decision rather than a modelling one, so it is worth being precise about.
 //
-// `swing` is indexed by the depth being TESTED for subdivision, and depth is the
-// honest proxy for ring: a node of size S only ever survives as a leaf beyond
-// splitK x S, so depth 3 (2048 m nodes) is the far field by construction and
-// depth 9 (32 m) is arm's reach. Measured leaf depth by distance band, which is
-// what the shape of the array is fitted to:
+// The current selection is exempt from eviction (terrain.js _evict skips
+// anything in _render), so the WORST-CASE leaf count has to fit under
+// MAX_CACHED = 720, with enough left over for the LRU retention that makes
+// turning your head free. Measured over 60 cameras, half airborne:
 //
-//      0- 500 m: depths 6-10      2000-3000 m: depth 4
-//    500-1000 m: depths 5-6       3000-5000 m: depths 3-4
-//   1000-2000 m: depth 5          5000-8000 m: depths 2-3
+//     cap    leaf~   leafMAX   slots to spare   visible tris MAX
+//    1.0      609      751          -31              280k
+//    1.1      541      664           56              250k
+//    1.2      489      580          140              222k
+//    1.3      459      526          194              208k
 //
-// The array does NOT ramp monotonically outward, and that is a measurement
-// result rather than a preference. A node can only be biased on what its own
-// pooled elevation knows, and past about 1 km the nodes are too big to know
-// anything. Measured as the gap in mean node-rank between summit ground and
-// valley ground inside the node:
+// At 1.0 the pool does not merely thrash, it throws `terrain slot pool
+// exhausted`. At 1.1 it survives on 56 slots of slack, which is less than one
+// head-turn of retention. 1.2 keeps 140, holds visible terrain to 222k against
+// its ~266k third of TRI_BUDGET, and is still a 7.7x improvement on the 9.22 deg
+// worst case it replaces.
 //
-//   depth 3 (2048 m): 0.15      depth 6 (256 m): 0.73
-//   depth 4 (1024 m): 0.29      depth 7 (128 m): 0.85
-//   depth 5 ( 512 m): 0.51
-//
-// A 2 km square in this world contains a summit AND a valley, so its elevation
-// predicts almost nothing about any particular point inside it; 0.15 is close to
-// no signal at all. The swing therefore peaks at depths 4-5 -- the outermost
-// ring where the question is still answerable -- tapers at 3 rather than leading
-// there, and is 0 from depth 7 in, which is the 0-500 m band she is standing on
-// and where shifting detail would read as popping underfoot.
-//
-// The hierarchy is what makes a modest depth-3/4 swing still matter for the
-// skyline: a node only reaches depth 5 if its depth-3 and depth-4 ancestors both
-// split, so the coarse levels act as a gate on whether the better-informed test
-// downstream ever gets to run.
-//
-// The multiplier is 2^(swing x (rank - pivot) x 2), i.e. `swing` is measured in
-// LOD LEVELS, not in raw multiplier. That is the natural unit here -- each level
-// of the tree halves the node size, so "give the top of the band one extra level
-// and take one off the bottom" is swing 1.0, and it reads directly off the
-// constant. The first version was linear, `1 + s x (rank - pivot)`, and it had a
-// landmine in it: at depth 3 with s 2.25 a bottom-band node computed k = -0.01. A
-// negative split threshold happens to do the right thing (never subdivide) but
-// only by accident, and one constant further would have made it large-negative
-// with the same behaviour, hiding the fact that the knob had stopped meaning
-// anything. An exponential cannot go negative, and its ends stay interpretable.
-//
-// The pivot is what makes this a redistribution rather than a global detail
-// hike: nodes above it gain, nodes below it lose.
-//
-// Depths 0-2 are deliberately 0, and not as a tuning choice. The bias ranks a
-// node against the other nodes OF ITS OWN SIZE, and at depth 0 there is exactly
-// one -- its band came out 322-322, `t` went NaN, `boxDistance < size * NaN` was
-// false forever and the entire world rendered as a single 16 km leaf. Depths 1
-// and 2 (4 and 16 nodes) are not degenerate but are still too few for a
-// percentile to mean anything, and those nodes are 8 km and 4 km across: the one
-// under the camera always splits regardless. Depth 3 is the first level with a
-// real population (64) and the first where the answer changes anything.
-// Swept as a scale on the shape below, measured as the share of far-field probe
-// points whose covering leaf moved a full LOD level. The false-positive column is
-// the one that matters -- a promotion rate means nothing without it:
-//
-//            summit finer / coarser   valley finer / coarser   worst leaves  at K 2.1
-//   x1.00          15%   11%                 7%   17%           292 ( -4%)    619
-//   x1.50          26%   12%                11%   18%           304 (  0%)    673
-//   x1.75          31%   13%                14%   19%           328 ( +8%)    700   <- shipped
-//   x2.00          34%   13%                16%   19%           337 (+11%)    745
-//   x2.50          37%   13%                18%   20%           385 (+27%)    820   overflows pool
-//
-// 2.00 fits the 768-slot pool by two slots, which is not headroom, and the curve
-// has already flattened by then. 1.75 keeps 47 slots spare and still refines
-// summit ground 2.2x as often as valley ground, for 178k triangles against the
-// 266k that §0's budget leaves to terrain.
-export const ELEV_LOD = {
-  swing: [0, 0, 0, 1.4, 1.75, 1.75, 1.05, 0, 0, 0, 0],
-  pivot: 0.5,
-  // Base grid is 2^baseDepth per side: 7 -> 128x128 at 128 m, one level finer
-  // than the deepest biased ring (6), so a depth-6 node averages 4 cells.
+// Two ways to buy the last 0.2 deg, neither of them this knob: 45% of selected
+// leaves fall outside the 110 deg eye cone and are never drawn, because
+// VIEW_HALF_ANGLE is a deliberately generous streaming margin -- narrowing it
+// trades pop-in on fast head turns for slots. Or raise SLOT_COUNT, which is a
+// device-memory question rather than a tuning one.
+// ---------------------------------------------------------------------------
+export const LOD = {
+  triDeg: 1.2,
+
+  // Angular slack granted to terrain outside the view cone. Nodes fully outside
+  // stop descending, so they stay present as coarse geometry rather than
+  // vanishing -- there is no such thing as a hole here, only a low-poly stand-in
+  // waiting for you to turn towards it.
   //
-  // 8 (256x256 at 64 m) was measured against it and is not worth it: 72 ms of
-  // heightAt at load against 22 ms, for 31%/14% summit-vs-valley refinement
-  // against 32%/15%. Identical inside the noise. On a Quest that 50 ms is more
-  // like 200, and it buys nothing.
-  baseDepth: 7,
+  // The cone is generous on purpose (see VIEW_HALF_ANGLE). This is the release
+  // valve that makes a degree affordable at all: measured, roughly two thirds of
+  // a 360-degree selection is terrain behind the player's head, which the GPU
+  // was already culling per-instance -- so it cost slots and streaming without
+  // ever costing or contributing a drawn triangle.
+  cull: true,
 }
 
-// Mean ground elevation per quadtree node, as a pyramid: `levels[d]` holds
-// (2^d)^2 entries indexed `iz * 2^d + ix`, matching the node addressing above.
+export const MIN_TRI_DEG = 0.6
+export const MAX_TRI_DEG = 8.0
+
+
+// Half-angle of the cone treated as "she can see this", in radians.
 //
-// This was MAX-pooled first, on the reasoning that the silhouette is made of
-// summits and a node averaging out to nothing can still own the ridgeline. That
-// reasoning is wrong, and measurably so: max separates summit ground from valley
-// ground WORSE than mean at every single depth (0.06 vs 0.15 at depth 3, 0.83 vs
-// 0.85 at depth 7). The reason is saturation -- in a mountain world nearly every
-// node of any size contains something tall, so a max says "yes" everywhere and a
-// test that answers yes for all its inputs is not a test. Mean asks how much of
-// the node is high, which is the question with an informative answer.
-export function buildElevationLod(th, baseDepth = ELEV_LOD.baseDepth) {
-  const n = 1 << baseDepth
-  const cell = WORLD_SIZE / n
-  const levels = new Array(baseDepth + 1)
-
-  const base = new Float32Array(n * n)
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < n; i++) {
-      base[j * n + i] = th.heightAt(-WORLD_HALF + (i + 0.5) * cell, -WORLD_HALF + (j + 0.5) * cell)
-    }
-  }
-  levels[baseDepth] = base
-
-  for (let d = baseDepth - 1; d >= 0; d--) {
-    const m = 1 << d
-    const src = levels[d + 1]
-    const dst = new Float32Array(m * m)
-    for (let j = 0; j < m; j++) {
-      for (let i = 0; i < m; i++) {
-        const a = src[2 * j * 2 * m + 2 * i]
-        const b = src[2 * j * 2 * m + 2 * i + 1]
-        const c = src[(2 * j + 1) * 2 * m + 2 * i]
-        const e = src[(2 * j + 1) * 2 * m + 2 * i + 1]
-        dst[j * m + i] = (a + b + c + e) / 4
-      }
-    }
-    levels[d] = dst
-  }
-
-  // Normalise PER LEVEL, against that level's own percentiles.
-  //
-  // The first version normalised every level against one pair of percentiles
-  // taken from the base grid, and it did not bias anything -- it just raised
-  // detail everywhere, 304 leaves to 376, with LOW ground gaining more than
-  // high. The reason is what max-pooling does as you climb: a depth-3 node is
-  // 2048 m across, and in a mountain world essentially every 2048 m square
-  // contains something tall, so every node at that level saturated the top of
-  // the range and every node got promoted. A test that answers "yes" for all
-  // its inputs is not a test.
-  //
-  // Per-level percentiles fix it by construction: max-pooling still RANKS the
-  // nodes at a level correctly (the ones with the biggest summits stay on top),
-  // and re-spreading each level across 0..1 turns that ranking back into a
-  // decision. Roughly half of any level now falls below the pivot, which is what
-  // makes this a redistribution instead of a detail hike.
-  const bands = levels.map((lv) => {
-    const sorted = Float32Array.from(lv).sort()
-    const q = (p) => sorted[Math.floor(p * (sorted.length - 1))]
-    // 0.15/0.9 rather than 0/1: one outlier summit at either end should not own
-    // the whole scale, and clamping the tails costs nothing since they are
-    // already the nodes we most want fully promoted or fully demoted.
-    return { lo: q(0.15), hi: q(0.9) }
-  })
-  return { levels, bands, baseDepth }
-}
-
-// 0..1 for how high this node's ground is relative to OTHER NODES OF ITS OWN
-// SIZE. Depths below the pyramid clamp to its finest level; they are never
-// biased anyway (strength is 0 there).
-function elevNorm(elev, depth, ix, iz) {
-  const d = Math.min(depth, elev.baseDepth)
-  const shift = depth - d
-  const m = 1 << d
-  const h = elev.levels[d][(iz >> shift) * m + (ix >> shift)]
-  const b = elev.bands[d]
-  const t = (h - b.lo) / (b.hi - b.lo)
-  return t < 0 ? 0 : t > 1 ? 1 : t
-}
+// Quest 3 is ~110 degrees horizontal, so 55 would be the honest frustum. This is
+// 90 -- a full forward hemisphere -- and the extra 35 degrees are not timidity,
+// they are the streaming margin. Selection runs at 12 Hz, so a 200 deg/s head
+// turn moves 17 degrees between selections and the margin is worth about two
+// seconds of it. Chunks that leave the cone stay in the LRU cache and come back
+// visible without a worker round trip (terrain.js), so the margin only has to
+// cover ground that was never loaded at all.
+//
+// It is also why nodes outside the cone are emitted as coarse leaves rather than
+// dropped: turning further than the margin should find low-poly ground, never
+// sky. Measured cost of the whole scheme is in check-sim.mjs section 5.
+export const VIEW_HALF_ANGLE = (90 * Math.PI) / 180
 
 export function nodeKey(depth, ix, iz) {
   return `${depth}|${ix}|${iz}`
@@ -252,40 +171,91 @@ export function parentKey(depth, ix, iz) {
   return nodeKey(depth - 1, ix >> 1, iz >> 1)
 }
 
-function boxDistance(camX, camZ, x, z, size) {
-  const dx = Math.max(x - camX, 0, camX - (x + size))
-  const dz = Math.max(z - camZ, 0, camZ - (z + size))
-  return Math.hypot(dx, dz)
+// Distance from the eye to the node's bounding box.
+//
+// The Y term is why this is not the old boxDistance. That one measured
+// horizontally and terrain.update() was never even given the camera's altitude,
+// so at 500 m up, ground 100 m away on the map -- 510 m away in fact -- was
+// tessellated as though she could touch it. That is a 5x over-refinement of
+// everything directly below, which is most of what is on screen when flying, and
+// it is the second half of why the reported artifact was worst from the air.
+//
+// `info` is what the mesher learned about this node's vertical extent, and is
+// absent until the chunk has been built once. Without it the test falls back to
+// the horizontal distance, which over-estimates how close the node is and
+// therefore over-refines: the conservative direction, and the same answer the
+// old rule gave.
+function nodeRange(cam, x, z, size, info) {
+  const dx = Math.max(x - cam.x, 0, cam.x - (x + size))
+  const dz = Math.max(z - cam.z, 0, cam.z - (z + size))
+  if (!info || cam.y === undefined) return Math.hypot(dx, dz)
+  const dy = Math.max(info.minY - cam.y, 0, cam.y - info.maxY)
+  return Math.hypot(dx, dy, dz)
 }
 
-// Returns the visible leaf set: {key, depth, ix, iz, x, z, size}.
-//
-// `elev` is optional: pass a buildElevationLod() result to enable the elevation
-// bias described above, or omit it for the plain distance rule. It is optional
-// because the rule has to stay measurable in isolation -- check-sim.mjs sweeps
-// both, and "what did the bias actually cost" is only answerable if the unbiased
-// selection is still one call away.
-export function selectNodes(camX, camZ, maxDepth = MAX_DEPTH, splitK = DEFAULT_SPLIT_K, elev = null) {
+// Is any part of this node inside the view cone? Conservative in both directions
+// that matter: a node containing the camera always passes, and a node is widened
+// by the angle it subtends so a big one straddling the edge is never cut.
+function inView(cam, x, z, size) {
+  const cx = x + size / 2
+  const cz = z + size / 2
+  if (Math.abs(cam.x - cx) <= size / 2 && Math.abs(cam.z - cz) <= size / 2) return true
+  const dx = cx - cam.x
+  const dz = cz - cam.z
+  const dist = Math.hypot(dx, dz)
+  // Half-diagonal over range: the angular half-width of the node itself.
+  const spread = Math.atan2(size * 0.71, Math.max(dist, 1))
+  let d = Math.atan2(dx, dz) - cam.yaw
+  while (d > Math.PI) d -= Math.PI * 2
+  while (d < -Math.PI) d += Math.PI * 2
+  return Math.abs(d) <= VIEW_HALF_ANGLE + spread
+}
+
+/**
+ * Select the visible leaf set: [{key, depth, ix, iz, x, z, size}].
+ *
+ * `cam` is {x, z} at minimum; add `y` to enable the 3D range term and `yaw` to
+ * enable view-cone culling. Both degrade to the conservative answer when absent,
+ * which keeps this callable from the Node checks with a bare position.
+ *
+ * `info` is terrain.js's table of per-node vertical bounds, `key -> {minY, maxY}`,
+ * learned as chunks are meshed. It only sharpens the range term; the split
+ * decision itself needs nothing that has to be built first, so selection never
+ * waits on the worker and never changes its mind about a node once the reply
+ * lands. Omit it and every node falls back to its horizontal distance, which
+ * under-estimates range and therefore over-refines -- the safe direction.
+ */
+export function selectNodes(
+  cam,
+  { maxDepth = MAX_DEPTH, triDeg = LOD.triDeg, info = null, cull = LOD.cull } = {}
+) {
   const out = []
+  // tan rather than the small-angle shortcut: the panel range reaches 8 degrees,
+  // where they differ by 1.2%, and the whole point of this file is that the knob
+  // means what it says.
+  const tanTri = Math.tan((triDeg * Math.PI) / 180)
+  const culling = cull && cam.yaw !== undefined
 
   const visit = (depth, ix, iz) => {
     const size = WORLD_SIZE / (1 << depth)
     const x = -WORLD_HALF + ix * size
     const z = -WORLD_HALF + iz * size
 
-    let k = splitK
-    if (elev) {
-      const s = ELEV_LOD.swing[depth] || 0
-      if (s > 0) k *= 2 ** (s * (elevNorm(elev, depth, ix, iz) - ELEV_LOD.pivot) * 2)
-    }
-
-    if (depth < maxDepth && boxDistance(camX, camZ, x, z, size) < size * k) {
-      const cd = depth + 1
-      visit(cd, ix * 2, iz * 2)
-      visit(cd, ix * 2 + 1, iz * 2)
-      visit(cd, ix * 2, iz * 2 + 1)
-      visit(cd, ix * 2 + 1, iz * 2 + 1)
-      return
+    if (depth < maxDepth && (!culling || inView(cam, x, z, size))) {
+      // Range is floored at the node's own half-size: inside the box the
+      // distance is zero and every node would split to maxDepth regardless of
+      // how flat it is, which is a spike of triangles under her feet and the one
+      // place they buy nothing.
+      const bounds = info ? info.get(nodeKey(depth, ix, iz)) : null
+      const range = Math.max(nodeRange(cam, x, z, size, bounds), size * 0.5)
+      if (size / CHUNK_RES > range * tanTri) {
+        const cd = depth + 1
+        visit(cd, ix * 2, iz * 2)
+        visit(cd, ix * 2 + 1, iz * 2)
+        visit(cd, ix * 2, iz * 2 + 1)
+        visit(cd, ix * 2 + 1, iz * 2 + 1)
+        return
+      }
     }
 
     out.push({ key: nodeKey(depth, ix, iz), depth, ix, iz, x, z, size })

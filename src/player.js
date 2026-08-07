@@ -106,6 +106,18 @@ export class Player {
     return out
   }
 
+  // Compass bearing of her gaze, in the same atan2(x, z) convention the quadtree
+  // addresses nodes in. Terrain selection is view-dependent now (quadtree.js,
+  // VIEW_HALF_ANGLE), so this is what decides which part of the world is worth
+  // triangles -- read from the CAMERA rather than the rig for the same reason
+  // headPosition is: in roomscale she can turn her head without the rig moving,
+  // and the rig's yaw would then be pointing somewhere she is not looking.
+  headYaw() {
+    this.camera.getWorldQuaternion(this._quat)
+    this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
+    return Math.atan2(this._fwd.x, this._fwd.z)
+  }
+
   spawnAt(x, z) {
     this.rig.position.set(x, this.th.heightAt(x, z), z)
     this.smoothY = this.rig.position.y

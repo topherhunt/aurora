@@ -9,7 +9,7 @@
 
 import { TerrainHeight, WORLD_HALF } from '../src/sim/terrain-height.js'
 import { buildChunk, CHUNK_RES } from '../src/sim/chunk-mesh.js'
-import { selectNodes, buildElevationLod, MAX_DEPTH, DEFAULT_SPLIT_K, MAX_SPLIT_K } from '../src/terrain/quadtree.js'
+import { selectNodes, MAX_DEPTH, LOD, MIN_TRI_DEG } from '../src/terrain/quadtree.js'
 import { SLOT_COUNT, CHUNK_VERTS, CHUNK_INDICES } from '../src/terrain/terrain.js'
 import { TRI_BUDGET } from '../src/budget.js'
 
@@ -279,11 +279,12 @@ console.log('\nquadtree LOD budget')
   // Sampled at many camera positions: leaf count depends on where the camera
   // sits relative to the grid, and the worst case is what has to fit.
   //
-  // This was six hand-picked positions, which was too thin once the elevation
-  // bias made the count depend on the TERRAIN under the camera and not just on
-  // its alignment to the grid. Six cameras reported a worst case of 700 leaves
-  // at splitK 2.1; 600 positions found 721, and the slot pool only has 47 spare
-  // at that point. A hard limit deserves a real sample.
+  // This was six hand-picked positions, which was too thin: the leaf count moves
+  // with the terrain under the camera and with its altitude, not just with its
+  // alignment to the grid. Six cameras missed the worst case by 3%. A hard limit
+  // deserves a real sample, and this one is a HARD limit -- the current selection
+  // is exempt from eviction (terrain.js _evict), so overrunning the pool throws
+  // rather than degrading.
   const CAMS = [
     [0, 0],
     [137, -4211],
@@ -297,54 +298,78 @@ console.log('\nquadtree LOD budget')
   const rnd = () => ((rs = (rs * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)
   for (let i = 0; i < 600; i++) CAMS.push([(rnd() * 2 - 1) * 8000, (rnd() * 2 - 1) * 8000])
 
-  const elev = buildElevationLod(th)
-
-  const worstAt = (K, e = elev) => {
+  // Half the cameras fly. Altitude is not a detail here: the range test is 3D,
+  // so a camera 400 m up is genuinely further from the ground below it than its
+  // map position suggests, and the airborne case is where the LOD rule this
+  // replaced fell apart worst.
+  const worstAt = (triDeg) => {
     let worst = 0
-    for (const [cx, cz] of CAMS) {
-      const n = selectNodes(cx, cz, MAX_DEPTH, K, e).length
-      if (n > worst) worst = n
+    let at = null
+    for (let i = 0; i < CAMS.length; i++) {
+      const [cx, cz] = CAMS[i]
+      const y = th.heightAt(cx, cz) + (i % 2 === 0 ? 1.7 : 150 + (i % 7) * 64)
+      // Four headings per position: selection is view-dependent now, so the
+      // worst case is over directions as well as over places.
+      for (let q = 0; q < 4; q++) {
+        const n = selectNodes({ x: cx, y, z: cz, yaw: (q * Math.PI) / 2 }, { maxDepth: MAX_DEPTH, triDeg }).length
+        if (n > worst) {
+          worst = n
+          at = `${cx.toFixed(0)},${cz.toFixed(0)} at ${(y - th.heightAt(cx, cz)).toFixed(0)}m AGL`
+        }
+      }
     }
-    return worst
+    return { worst, at }
   }
 
   const tpc = CHUNK_INDICES / 3
-  const leafSize = WORLD_HALF * 2 / 2 ** MAX_DEPTH
+  const leafSize = (WORLD_HALF * 2) / 2 ** MAX_DEPTH
 
-  const dflt = worstAt(DEFAULT_SPLIT_K)
-  const dfltTris = dflt * tpc
+  const dflt = worstAt(LOD.triDeg)
+  const dfltTris = dflt.worst * tpc
   console.log(
-    `        res ${CHUNK_RES}  splitK ${DEFAULT_SPLIT_K}  depth ${MAX_DEPTH}: ` +
-      `${dflt} leaves x ${tpc} tris = ${(dfltTris / 1000).toFixed(0)}k  ` +
+    `        res ${CHUNK_RES}  triangles<=${LOD.triDeg}deg  depth ${MAX_DEPTH}: ` +
+      `worst ${dflt.worst} leaves x ${tpc} tris = ${(dfltTris / 1000).toFixed(0)}k  ` +
       `(${((dfltTris / TRI_BUDGET) * 100).toFixed(0)}% of the ${TRI_BUDGET / 1000}k budget)  ` +
-      `leaf ${leafSize}m at ${(leafSize / CHUNK_RES).toFixed(2)}m/cell  ` +
-      `~${(57.2958 / (CHUNK_RES * DEFAULT_SPLIT_K)).toFixed(2)}deg angular error`
+      `leaf ${leafSize}m at ${(leafSize / CHUNK_RES).toFixed(2)}m/cell`
   )
+  console.log(`        worst selection found at ${dflt.at}`)
 
+  // This counts the whole selection, including the ~45% of it that sits in the
+  // streaming margin outside the eye cone and is culled per-instance by the GPU.
+  // So it is a slot-pool number that happens to be in triangles; what actually
+  // draws is roughly half of it. probe-lod.mjs section 1 reports both.
+  //
   // Ground is the backdrop, not the subject. §0's corrected ceiling only works
   // if props get the majority of it, so terrain is held to a third.
-  check(dfltTris < TRI_BUDGET / 3, 'empty world leaves the budget to props', `${(dfltTris / 1000).toFixed(0)}k of ${TRI_BUDGET / 1000}k`)
-
-  // Slots are pre-allocated and never grow, so the pool must cover the worst
-  // selection the player can actually reach with the [ ] keys, plus the 21
-  // pinned base-layer chunks.
-  const maxK = worstAt(MAX_SPLIT_K)
-  console.log(
-    `        worst case at splitK ${MAX_SPLIT_K}: ${maxK} leaves + 21 pinned, pool holds ${SLOT_COUNT} ` +
-      `(${worstAt(MAX_SPLIT_K, null)} without the elevation bias)`
+  check(
+    dfltTris < TRI_BUDGET / 3,
+    'worst-case terrain selection leaves the budget to props',
+    `${(dfltTris / 1000).toFixed(0)}k of ${TRI_BUDGET / 1000}k`
   )
-  check(maxK + 21 <= SLOT_COUNT, 'slot pool covers the worst reachable splitK', `${maxK + 21} vs ${SLOT_COUNT}`)
 
-  // The bias is a REDISTRIBUTION, not a detail hike, and that is the property
-  // worth asserting: its first two versions both quietly turned into "more
-  // triangles everywhere" -- once because every level was normalised against one
-  // global range so every node saturated the top of it, once because the swing
-  // was strongest at depths where a node cannot tell a summit from a valley.
-  // Both looked fine until the leaf count was compared against the plain rule.
-  const biased = worstAt(DEFAULT_SPLIT_K)
-  const plain = worstAt(DEFAULT_SPLIT_K, null)
-  console.log(`        elevation bias: ${plain} -> ${biased} leaves at splitK ${DEFAULT_SPLIT_K}`)
-  check(biased <= plain * 1.25, 'elevation bias redistributes detail rather than adding it', `${plain} -> ${biased}`)
+  // Slots are pre-allocated and never grow, so the pool must cover the FINEST
+  // setting the [ ] keys and the panel can reach, plus the 21 pinned base-layer
+  // chunks. The tuner has a reactive backoff for this, but a knob whose range
+  // includes values that cannot work is a knob that fails late and in the
+  // headset. MIN_TRI_DEG exists to make the floor safe by construction.
+  const fine = worstAt(MIN_TRI_DEG)
+  console.log(
+    `        finest reachable (${MIN_TRI_DEG}deg): ${fine.worst} leaves + 21 pinned, pool holds ${SLOT_COUNT}` +
+      `  [${fine.at}]`
+  )
+  check(
+    fine.worst + 21 <= SLOT_COUNT,
+    'slot pool covers the finest reachable LOD setting',
+    `${fine.worst + 21} vs ${SLOT_COUNT}`
+  )
+
+  // Cost scales as 1/deg^2, so the knob is not a linear dial and the panel says
+  // so. Asserted because it is the property that makes the reactive backoff in
+  // tuner.js converge: a 1.1x coarsening has to buy meaningfully more than 1.1x.
+  const coarse = worstAt(LOD.triDeg * 2)
+  const ratio = dflt.worst / coarse.worst
+  console.log(`        halving the cap costs ${ratio.toFixed(2)}x the leaves (${coarse.worst} -> ${dflt.worst})`)
+  check(ratio > 2.2, 'leaf count scales superlinearly with the angular cap', `${ratio.toFixed(2)}x`)
 
   // Uniform chunk topology is what makes slot reuse legal at all.
   check(

@@ -139,6 +139,7 @@ export function buildChunk(terrain, { ox, oz, size, res }) {
     }
   }
 
+
   const idx = (i, j) => j * vpr + i
 
   // Skirts (DESIGN.md §5): vertical flanges hiding the cracks between LOD
