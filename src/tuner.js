@@ -617,7 +617,7 @@ export class Tuner {
     const poolClass = pool > 90 ? 't-warn' : pool > 75 ? '' : 't-ok'
     this.live.innerHTML =
       `leaves  ${st.desired} selected / ${st.rendered} drawn   pending ${st.pending}\n` +
-      `tris    ${(st.tris / 1000).toFixed(1)}k over ${st.rendered} chunks   gen ${st.lastGenMs.toFixed(1)}ms\n` +
+      `tris    ${(st.drawnTris / 1000).toFixed(1)}k drawn / ${(st.tris / 1000).toFixed(1)}k resident over ${st.rendered} chunks   gen ${st.lastGenMs.toFixed(1)}ms\n` +
       `<span class="${poolClass}">slots   ${st.slots}/${SLOT_COUNT}  (budget ${SELECT_BUDGET} leaves)</span>\n` +
       `LOD  triangles<=${LOD.triDeg.toFixed(2)}deg   depth<=${MAX_DEPTH}` +
       (this.message ? `\n<span class="t-warn">${this.message}</span>` : '')

@@ -624,6 +624,26 @@ Two things this pass got wrong the first time, both worth remembering. Vertex co
 
 **A second, un-faded macro layer, because the fade is what made distance look flat.** Everything past ~95 m was reading as smooth green or smooth grey, and the cause was not a thin palette -- it was that the only thing varying the palette had already faded out. So there are two independent layers with opposite requirements: the near grain (0.5-3.5 m) *must* die at range or it aliases into shimmer once it is sub-pixel; the macro layer (~110 m regions with ~38 m variation inside them) *must not*, and is safe not to because it is never close to pixel-sized from anywhere you can stand. One shared fade cannot satisfy both, which is why they are not just extra octaves on one fbm. The macro layer swings brightness on everything (damped on snow -- blotchy snow reads as dirty snow), pulls green ground toward a dry ochre or a damp deep green, and stains rock on the finer octave alone, since mineral banding follows the face rather than the valley.
 
+### 10 cm texture is a NORMAL, not a seventh height octave
+
+The ask was bumps and divots at 10 cm on every surface, because the ground was reading as poured and edible up close. That cannot go in the height field, and the reason is a number: the leaf chunk is 16 m over `CHUNK_RES` 16, so the mesh resolves **1.00 m cells**. A 10 cm wavelength is a fifth of Nyquist there. It would alias into a pattern that crawls whenever a chunk rebuilds, cost five more `heightAt` evaluations on the collision path (already the frame's most expensive query), and feed `slopeAt` at eps 0.75 with garbage -- manufacturing exactly the sub-metre walk refusals §4 just finished removing.
+
+Perturbing the shading normal buys the look with none of it: geometry-free so nothing rebuilds and nothing can block her, world-keyed so it does not rescale across LOD rings, and inside a fade so it is gone before it can alias. There were already two octaves there (~1.4 m, ~0.45 m); this is a third rung at ~10 cm on its own tighter fade (gone by 40 m, where a 10 cm feature is about 3 px) and its own flat surface mask -- full on rock, half on grass and snow alike. The coarse pair give snow only a fifth, because half-metre relief makes a drift read as gravel; at 10 cm that does not apply, since windblown snow really is pitted at this scale.
+
+**This ladder wants to be FLAT, which is the exact opposite of the terrain slope ladder in §3, and the difference is worth understanding.** Landform coherence needs one scale to dominate -- rungs ~2x apart, or the eye finds no large form. Surface texture needs every scale to read at once, because a real gritty surface differs at all of them simultaneously. Measured tilt from the transcribed noise, RMS / p99 / max:
+
+```
+~1.39 m   5.0 /  11.3 / 16.1 deg
+~0.45 m   6.6 /  14.7 / 20.5 deg
+~0.10 m   5.1 /  11.5 / 16.3 deg      <- the new rung, 1.8 cm on a 10 cm bump
+```
+
+Amplitude was derived rather than dialled: a rung's visual weight is amplitude over wavelength, so matching the existing pair means `10.0 * uMicroRelief / uRelief` landing near their `0.72*0.7 = 0.50` and `2.2*0.3 = 0.66`. `uMicroRelief = 0.018` gives 0.51, and the measurement above confirms it lands between them.
+
+Two implementation details that are load-bearing. The octave is added to the **same** bump vector rather than applied as a second `normalize` -- two successive normalizes let the coarse tilt swallow the fine one wherever the coarse tilt is large, which is on rock, precisely where this octave is meant to be strongest. And it is nested inside the `uRelief > 0.0` guard, so the fill-bound escape hatch still kills the whole normal pass in one uniform.
+
+Note there are now three separate operations at ~10 cm: the micro tint pair, the snow sparkle, and this. That is not duplication. A real gritty surface differs in albedo *and* in normal at once, and doing only the first is why a flat-shaded hillside with speckle on it still looks like icing.
+
 ### Transparency: alpha test, never alpha blend
 
 `material.alphaTest = 0.5`, binary cutout, no partial alpha.

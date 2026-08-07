@@ -142,20 +142,47 @@ export const MAX_DEPTH = 10 // 16384 m root / 2^10 = 16 m leaves
 // device-memory question.
 // ---------------------------------------------------------------------------
 export const LOD = {
+  // The widest triangle allowed inside the view cone, in degrees. This is the
+  // whole LOD system: one number, meaning what it says.
   triDeg: 1.2,
 
-  // Angular slack granted to terrain outside the view cone. Nodes fully outside
-  // stop descending, so they stay present as coarse geometry rather than
-  // vanishing -- there is no such thing as a hole here, only a low-poly stand-in
-  // waiting for you to turn towards it.
+  // What the same rule targets OUTSIDE the cone. This is a resolution, not a
+  // switch -- peripheral ground still refines, just coarsely -- and getting that
+  // distinction wrong was a shipped bug worth recording.
   //
-  // The cone is generous on purpose (see VIEW_HALF_ANGLE). This is the release
-  // valve that makes a degree affordable at all: measured, roughly two thirds of
-  // a 360-degree selection is terrain behind the player's head, which the GPU
-  // was already culling per-instance -- so it cost slots and streaming without
-  // ever costing or contributing a drawn triangle.
+  // The first version of the cull stopped descent entirely at the first node
+  // that failed the view test. That is far coarser than it sounds: the test
+  // fails at whatever depth the cone edge happens to cut, typically 2 or 3, so
+  // ground behind the player was cached at 256 m per cell. Turning towards it
+  // then asked for depth 8, the only loaded ancestor was that depth-2 leaf, and
+  // terrain.js drew it as a stand-in -- a 4 km chunk whose triangles are 256 m
+  // across. That is the "big flat facet for a split second" that got reported.
+  //
+  // scripts/probe-popping.mjs measures it as the angular size of the largest
+  // triangle actually drawn, which is the same quantity this file caps, so the
+  // steady-state guarantee and the streaming failure are on one scale:
+  //
+  //                             worst triangle drawn   frames over 2x the cap
+  //   binary cull, panning              4.4 deg               16 / 60
+  //   graded cull, panning              1.2 deg                0 / 60
+  //
+  // Panning is the case with no excuse: turning the head moves nothing and
+  // changes no node's range, so everything the new heading wants was already the
+  // right answer a moment ago. Refining the periphery to a coarse target keeps
+  // it that way -- a node waiting behind the player now sits within a level or
+  // two of what turning will ask for, so the stand-in is nearly right instead of
+  // nearly flat.
+  //
+  // 5 degrees is the number the terrain was specified with, and it is affordable
+  // because the periphery is cheap in exactly the way the cone is expensive:
+  // going from no cull to a 5 degree periphery drops the worst-case selection
+  // from 937 leaves to 643, which is the difference between overflowing the slot
+  // pool and fitting in it with room spare.
+  periphDeg: 5.0,
+
   cull: true,
 }
+
 
 // The floor is the default: 1.2 is as fine as the pool goes (see above). The
 // knob coarsens only, which is honest -- the alternative is a slider whose
@@ -178,6 +205,9 @@ export const MAX_TRI_DEG = 8.0
 // dropped: turning further than the margin should find low-poly ground, never
 // sky. Measured cost of the whole scheme is in check-sim.mjs section 5.
 export const VIEW_HALF_ANGLE = (90 * Math.PI) / 180
+// Half the horizontal field the headset actually renders. Not a tuning knob --
+// it describes the hardware, and it is here so that "drawn" can be counted.
+export const EYE_HALF_ANGLE = (55 * Math.PI) / 180
 
 export function nodeKey(depth, ix, iz) {
   return `${depth}|${ix}|${iz}`
@@ -202,7 +232,11 @@ export function parentKey(depth, ix, iz) {
 // the horizontal distance, which over-estimates how close the node is and
 // therefore over-refines: the conservative direction, and the same answer the
 // old rule gave.
-function nodeRange(cam, x, z, size, info) {
+// Exported so probes measure range the way the selection does. A probe that
+// reimplements this is measuring a renderer that does not exist -- and one that
+// used the horizontal distance made ground under a flying camera look infinitely
+// under-refined, because it is ~0 m away on the map and 300 m away in fact.
+export function nodeRange(cam, x, z, size, info) {
   const dx = Math.max(x - cam.x, 0, cam.x - (x + size))
   const dz = Math.max(z - cam.z, 0, cam.z - (z + size))
   if (!info || cam.y === undefined) return Math.hypot(dx, dz)
@@ -213,7 +247,14 @@ function nodeRange(cam, x, z, size, info) {
 // Is any part of this node inside the view cone? Conservative in both directions
 // that matter: a node containing the camera always passes, and a node is widened
 // by the angle it subtends so a big one straddling the edge is never cut.
-function inView(cam, x, z, size) {
+//
+// The half-angle is a parameter because two different cones matter and confusing
+// them is expensive. VIEW_HALF_ANGLE is the STREAMING cone -- deliberately wider
+// than anyone can see, so terrain is resident before it is looked at. EYE_HALF_ANGLE
+// is what is actually drawn, because BatchedMesh culls the rest per instance.
+// Counting the streaming cone's triangles as drawn overstates the ground's share
+// of the frame by about 70%.
+export function inCone(cam, x, z, size, halfAngle) {
   const cx = x + size / 2
   const cz = z + size / 2
   if (Math.abs(cam.x - cx) <= size / 2 && Math.abs(cam.z - cz) <= size / 2) return true
@@ -225,8 +266,10 @@ function inView(cam, x, z, size) {
   let d = Math.atan2(dx, dz) - cam.yaw
   while (d > Math.PI) d -= Math.PI * 2
   while (d < -Math.PI) d += Math.PI * 2
-  return Math.abs(d) <= VIEW_HALF_ANGLE + spread
+  return Math.abs(d) <= halfAngle + spread
 }
+
+const inView = (cam, x, z, size) => inCone(cam, x, z, size, VIEW_HALF_ANGLE)
 
 /**
  * Select the visible leaf set: [{key, depth, ix, iz, x, z, size}].
@@ -244,13 +287,20 @@ function inView(cam, x, z, size) {
  */
 export function selectNodes(
   cam,
-  { maxDepth = MAX_DEPTH, triDeg = LOD.triDeg, info = null, cull = LOD.cull } = {}
+  {
+    maxDepth = MAX_DEPTH,
+    triDeg = LOD.triDeg,
+    periphDeg = LOD.periphDeg,
+    info = null,
+    cull = LOD.cull,
+  } = {}
 ) {
   const out = []
   // tan rather than the small-angle shortcut: the panel range reaches 8 degrees,
   // where they differ by 1.2%, and the whole point of this file is that the knob
   // means what it says.
   const tanTri = Math.tan((triDeg * Math.PI) / 180)
+  const tanPeriph = Math.tan((periphDeg * Math.PI) / 180)
   const culling = cull && cam.yaw !== undefined
 
   const visit = (depth, ix, iz) => {
@@ -258,14 +308,18 @@ export function selectNodes(
     const x = -WORLD_HALF + ix * size
     const z = -WORLD_HALF + iz * size
 
-    if (depth < maxDepth && (!culling || inView(cam, x, z, size))) {
+    // One rule, two targets. Being outside the cone changes how fine the ground
+    // gets, never whether it descends at all -- see LOD.periphDeg.
+    const tan = !culling || inView(cam, x, z, size) ? tanTri : tanPeriph
+
+    if (depth < maxDepth) {
       // Range is floored at the node's own half-size: inside the box the
       // distance is zero and every node would split to maxDepth regardless of
       // how flat it is, which is a spike of triangles under her feet and the one
       // place they buy nothing.
       const bounds = info ? info.get(nodeKey(depth, ix, iz)) : null
       const range = Math.max(nodeRange(cam, x, z, size, bounds), size * 0.5)
-      if (size / CHUNK_RES > range * tanTri) {
+      if (size / CHUNK_RES > range * tan) {
         const cd = depth + 1
         visit(cd, ix * 2, iz * 2)
         visit(cd, ix * 2 + 1, iz * 2)

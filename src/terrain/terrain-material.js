@@ -55,6 +55,14 @@ import * as THREE from 'three'
 // an oversight -- they are different operations on the same scale (sparkle adds
 // isolated highlights, this tints toward a pair) and snow wants both.
 //
+// And at that same 10 cm there is now a third thing: a SHADING one, not a
+// colour one. The tint layer above says "this speck is a different colour"; the
+// relief octave at the bottom of this file says "this speck faces a different
+// way", which is what actually stops a surface reading as poured and edible up
+// close. Three operations at one scale is not duplication -- a real gritty
+// surface differs in albedo and in normal at once, and doing only the first is
+// why a flat-shaded hillside with speckle on it still looks like icing.
+//
 // This is a step-2 stand-in. §7's real material (splat blending, height-blend,
 // triplanar, KTX2 arrays) replaces it at build step 6.
 // ---------------------------------------------------------------------------
@@ -94,7 +102,7 @@ const ROCK = new THREE.Color(0.085, 0.082, 0.078)
 
 // The micro palette: a light and a dark neighbour for each surface, which is
 // all a fleck needs to be. Grass is not here because it already has a pair --
-// DIRT and MOSS -- and giving the 1 cm layer its own greens would put two
+// DIRT and MOSS -- and giving the 10 cm layer its own greens would put two
 // unrelated colour families on the same hillside at two scales.
 //
 // Both pairs straddle their base colour rather than sitting to one side of it,
@@ -145,15 +153,54 @@ export function createTerrainMaterial() {
     // adds). 0 disables the whole block, which is the escape hatch if the Quest
     // turns out to be fill bound: it is the most expensive thing in this shader.
     uRelief: { value: 0.35 },
+    // The relief ladder's third rung: ~10 cm bumps and divots, on every surface.
+    //
+    // Its own uniform rather than a third weight inside uRelief because two
+    // things about it differ from the pair above. It rides the MICRO fade (gone
+    // by 40 m) instead of the grain fade (95 m), since a 10 cm feature is about
+    // 3 px at 40 m and under 1 px past it -- the same argument the micro tint
+    // layer makes, and past that point this is shimmer rather than texture. And
+    // its surface mask is flat: full on rock, half on grass AND snow, where the
+    // coarse pair gives snow only a fifth because heavy relief at half a metre
+    // makes a drift read as gravel. At 10 cm that does not apply -- windblown
+    // snow is pitted at exactly this scale.
+    //
+    // 0.018 is amplitude in metres per noise unit, so a 10 cm cell moves about
+    // 1.8 cm: the same rung as the two octaves above it, since what sets a
+    // rung's visual weight is amplitude OVER wavelength and the arithmetic is
+    // 0.72*0.7 = 0.50, 2.2*0.3 = 0.66, 10.0*0.018/0.35 = 0.51. It is not a free
+    // layer -- one auroraGrad is three noise evaluations, twelve integer hashes
+    // -- but it is only paid inside 40 m, which is a small share of fragments.
+    // It is nested inside the uRelief guard on purpose: if the Quest turns out
+    // to be fill bound, uRelief = 0 must still kill the whole normal pass.
+    uMicroRelief: { value: 0.018 },
     // Glitter on snow. Small because it is thresholded to a few percent of
     // fragments -- this is specular sparkle standing in for a spec model Lambert
     // does not have, not a brightness change.
     uSnowSparkle: { value: 0.3 },
-    // The ~1 cm layer. uMicroTint is how far a fleck pulls toward its palette
+    // The ~10 cm layer. uMicroTint is how far a fleck pulls toward its palette
     // colour, uMicroValue the brightness swing underneath it. 0 on uMicroTint
     // does NOT disable the layer -- uMicroValue is independent; set both to 0.
-    uMicroTint: { value: 0.55 },
-    uMicroValue: { value: 0.14 },
+    //
+    // Both are HALF what the first pass shipped (0.55 and 0.14), because at
+    // full strength the flecks read as garish and pixelly rather than as grit.
+    // Halving the knob rather than moving GRIT/SOOT/FROST/SHADE halfway to
+    // their base colours, which is what it looks like it should have been:
+    // these are only ever applied as mix( base, C, t ), and
+    // mix( base, C, t/2 ) == mix( base, (base+C)/2, t ) exactly. Same pixels,
+    // one number instead of four, and the constants stay legible as the
+    // extreme each surface is tinting TOWARD rather than as a pre-diluted
+    // value that cannot be reasoned about. It also covers grass, whose targets
+    // are the shared DIRT and MOSS and so cannot be moved without dragging the
+    // macro and grain layers along with them.
+    //
+    // The 10 cm normal perturbation below (uMicroRelief) is deliberately NOT
+    // halved with these: shading and albedo are what make a surface read as
+    // gritty at this scale, and the complaint was about colour intensity. If
+    // it still reads pixelly with the tint at 0.275, that layer is the next
+    // one to pull down.
+    uMicroTint: { value: 0.275 },
+    uMicroValue: { value: 0.07 },
     uGrit: { value: GRIT },
     uSoot: { value: SOOT },
     uFrost: { value: FROST },
@@ -197,6 +244,7 @@ export function createTerrainMaterial() {
         uniform vec3 uRock;
         uniform float uBoundary;
         uniform float uRelief;
+        uniform float uMicroRelief;
         uniform float uSnowSparkle;
         uniform float uMicroTint;
         uniform float uMicroValue;
@@ -208,6 +256,7 @@ export function createTerrainMaterial() {
         // Shared between the colour pass and the normal pass, which are two
         // different chunk includes -- hence file scope rather than a block.
         float auroraNear;
+        float auroraMicroFade;
         float auroraRockBase;
         float auroraSnowBase;
 
@@ -233,9 +282,9 @@ export function createTerrainMaterial() {
         // out of 400 at the origin, 16 at 1 km, and at 6 km TWO values with a
         // period of 50 along x and a constant along z. That is the snow flecks
         // in dashed parallel lines -- not a pattern in the noise, the noise
-        // having collapsed into a comb. A 1 cm octave collapses to a single
-        // constant, which is why this had to be fixed before that layer could
-        // exist at all.
+        // having collapsed into a comb. The 10 cm micro octave measured the
+        // same two values on that row, which is why this had to be fixed
+        // before that layer could exist at all.
         //
         // Snow was where it SHOWED, because a hard threshold on a collapsed
         // noise draws the comb in white on white, but the damage was general:
@@ -372,6 +421,11 @@ export function createTerrainMaterial() {
 
           float auroraDist = length( vWorldPos - cameraPosition );
           auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, auroraDist );
+          // Computed here and UNCONDITIONALLY, even though the tint layer that
+          // used to own it sits two blocks deeper: the relief pass at
+          // normal_fragment_begin reads it too, and it runs whether or not the
+          // near block was entered.
+          auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
           if ( auroraNear > 0.004 ) {
             vec2 auroraP = vWorldPos.xz;
             // Two scales: ~0.5 m grit for the speed cue, ~3.5 m patches so the
@@ -426,7 +480,6 @@ export function createTerrainMaterial() {
             // than 0.56/0.88 -- so this reads as discrete specks scattered over
             // the coarser mottling rather than as a second wash of it. That is
             // the whole difference between "speckled" and "muddy" at this size.
-            float auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
             if ( auroraMicroFade > 0.004 ) {
               // ~10 cm cells. World-keyed like everything else here, so it does
               // not swim when she walks and does not rescale across LOD rings.
@@ -469,11 +522,24 @@ export function createTerrainMaterial() {
       // is inside the same near fade as the grain, so it is gone before it can
       // alias.
       //
-      // Two octaves at ~1.4 m and ~0.45 m, which is the "different octaves" the
-      // rock ask wanted -- the coarse one gives a face its lumps and the fine
-      // one gives those lumps a surface. Rock gets all of it, snow a fifth (it
-      // drapes and smooths, and heavy relief makes it read as gravel), grass
-      // the remainder at half strength.
+      // THREE octaves now, at ~1.4 m, ~0.45 m and ~10 cm, which is the "different
+      // octaves" the rock ask wanted -- the coarse one gives a face its lumps,
+      // the middle one gives those lumps a surface, and the fine one is what
+      // stops that surface reading as poured and edible at arm's length.
+      //
+      // The coarse pair share a mask: rock gets all of it, snow a fifth (it
+      // drapes and smooths, and heavy relief at half a metre makes a drift read
+      // as gravel), grass the remainder at half strength. The 10 cm octave has
+      // its own, flat mask -- full on rock, half on grass and snow alike -- and
+      // its own tighter fade. See uMicroRelief for why both differ.
+      //
+      // Note what is NOT happening here: this is not a seventh octave of the
+      // height field. The leaf chunk resolves 1.00 m cells, so 10 cm is a fifth
+      // of Nyquist for the mesh -- it would alias into a pattern that crawls
+      // whenever a chunk rebuilds, cost five field evaluations on the collision
+      // path, and hand the slope limiter sub-metre walls. Perturbing the shading
+      // normal buys the look with none of that: geometry-free, world-keyed so it
+      // does not rescale across LOD rings, and faded out before it can alias.
       //
       // Placed at normal_fragment_begin, which runs after color_fragment, so the
       // classification and fade computed there are already in scope. `normal` is
@@ -489,13 +555,26 @@ export function createTerrainMaterial() {
           vec2 auroraG = auroraGrad( auroraR * 0.72 ) * 0.72 * 0.7
                        + auroraGrad( auroraR * 2.2 ) * 2.2 * 0.3;
           vec3 auroraBump = vec3( -auroraG.x, 0.0, -auroraG.y ) * auroraReliefAmt;
+
+          // ~10 cm bumps and divots. Added to the same bump vector rather than
+          // applied as a second normalize: two successive normalizes would let
+          // the coarse tilt swallow the fine one wherever the coarse tilt is
+          // large, which is on rock -- precisely where this octave is meant to
+          // be strongest.
+          if ( uMicroRelief > 0.0 && auroraMicroFade > 0.004 ) {
+            float auroraMicroAmt = auroraMicroFade * uMicroRelief *
+              ( auroraRockBase + ( 1.0 - auroraRockBase ) * 0.5 );
+            vec2 auroraMG = auroraGrad( auroraR * 10.0 ) * 10.0;
+            auroraBump += vec3( -auroraMG.x, 0.0, -auroraMG.y ) * auroraMicroAmt;
+          }
+
           normal = normalize( normal + ( viewMatrix * vec4( auroraBump, 0.0 ) ).xyz );
         }`
       )
   }
 
   // Distinct cache key so this never gets conflated with an unpatched Lambert.
-  material.customProgramCacheKey = () => 'aurora-terrain-v5'
+  material.customProgramCacheKey = () => 'aurora-terrain-v6'
 
   return material
 }

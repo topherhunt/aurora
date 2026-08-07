@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { selectNodes, nodeKey, MAX_DEPTH } from './quadtree.js'
+import { selectNodes, nodeKey, inCone, MAX_DEPTH, EYE_HALF_ANGLE } from './quadtree.js'
 import { TUNING, SNOW, WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 import { CHUNK_RES } from '../sim/chunk-mesh.js'
 import { createTerrainMaterial } from './terrain-material.js'
@@ -43,16 +43,31 @@ const MAX_CACHED = 720
 // that is 12 cm of movement between selections, well under a leaf cell.
 const SELECT_EVERY_FRAMES = 6
 
-// Requests allowed in flight per worker. The bound that matters is not worker
-// time (a chunk generates in ~0.5 ms) but main-thread upload: each arrival
-// costs a setGeometryAt, so this caps how much buffer traffic one frame can
-// take. update() runs every frame, so the queue refills continuously rather
-// than in 10 Hz bursts.
-const WORKER_QUEUE_DEPTH = 6
+// Requests allowed in flight per worker.
+//
+// This was 6, on the theory that main-thread upload was the bound. Measured, it
+// is not close: setGeometryAt costs 0.005 ms and buildChunk costs 0.393 ms, so
+// the workers are the only thing doing real work here and the cap was leaving
+// them idle. A reply cannot be processed until the frame after it was posted,
+// so an in-flight cap of 12 means at most 12 chunks per frame no matter how
+// fast the workers are -- about 17% utilisation -- while the player is looking
+// at coarse stand-ins waiting for those same chunks.
+//
+// 32 per worker saturates them instead. The ceiling is worker throughput:
+// two workers at 0.393 ms/chunk can produce ~70 chunks per 13.9 ms frame, so
+// this cap no longer binds before the hardware does. That matters most on the
+// Quest, where buildChunk is several times slower and the old cap would have
+// throttled an already-slower generator.
+//
+// Raising it does not risk a hitch on the main thread, because arrivals are
+// cheap; what it costs is worker CPU, which is exactly the budget that should
+// be spent while the world is visibly incomplete.
+const WORKER_QUEUE_DEPTH = 32
 
 export class Terrain {
-  constructor(scene, { seed = 1337, workers = 2 } = {}) {
+  constructor(scene, { seed = 1337, workers = 2, queueDepth = WORKER_QUEUE_DEPTH } = {}) {
     this.scene = scene
+    this.queueDepth = queueDepth
     this.maxCached = MAX_CACHED
 
     this.material = createTerrainMaterial()
@@ -103,7 +118,11 @@ export class Terrain {
     this._lastSelect = -SELECT_EVERY_FRAMES
     this._dirty = true
 
-    this.stats = { desired: 0, rendered: 0, pending: 0, cached: 0, tris: 0, slots: 0, lastGenMs: 0, bounds: 0 }
+    // `tris` is what is RESIDENT and flagged visible; `drawnTris` is the subset
+    // inside the eye cone, which is what the GPU actually rasterises. The gap is
+    // the streaming margin and it is large -- about 40% of the render set -- so
+    // the budget question has to be asked of drawnTris.
+    this.stats = { desired: 0, rendered: 0, pending: 0, cached: 0, tris: 0, drawnTris: 0, slots: 0, lastGenMs: 0, bounds: 0 }
 
     // What the mesher has taught us about the world, `key -> {err, minY, maxY}`.
     // This is the input to the split rule (quadtree.js) and it is LEARNED rather
@@ -322,7 +341,7 @@ export class Terrain {
   }
 
   _pump() {
-    const cap = this.workers.length * WORKER_QUEUE_DEPTH
+    const cap = this.workers.length * this.queueDepth
     while (this.inFlight < cap && this.queue.length > 0) {
       const node = this.queue.shift()
       const entry = this.cache.get(node.key)
@@ -440,7 +459,9 @@ export class Terrain {
 
   _syncVisibility() {
     const render = this._render
+    const cam = this._cam
     let tris = 0
+    let drawn = 0
     for (const entry of this.cache.values()) {
       if (!entry.slot) continue
       const want = render.has(entry)
@@ -448,9 +469,16 @@ export class Terrain {
         entry.visible = want
         this.batch.setVisibleAt(entry.slot.instanceId, want)
       }
-      if (want) tris += entry.tris
+      if (!want) continue
+      tris += entry.tris
+      // Mirrors what BatchedMesh's per-instance culling will do on the GPU. It
+      // is recomputed here rather than read back because there is nothing to
+      // read back -- the cull happens during render, after this runs.
+      const n = entry.node
+      if (!cam || cam.yaw === undefined || inCone(cam, n.x, n.z, n.size, EYE_HALF_ANGLE)) drawn += entry.tris
     }
     this.stats.tris = tris
+    this.stats.drawnTris = drawn
   }
 
   _evict() {

@@ -404,7 +404,7 @@ function hudLines() {
     '',
     '## terrain (1 batched draw call)',
     `chunks  render ${ts.rendered}/${ts.desired}   pending ${ts.pending}   slots ${ts.slots}/${ts.cached}`,
-    `chunk tris ${(ts.tris / 1000).toFixed(1)}k   res ${CHUNK_RES}   gen ${ts.lastGenMs.toFixed(1)}ms`,
+    `chunk tris ${(ts.drawnTris / 1000).toFixed(1)}k drawn of ${(ts.tris / 1000).toFixed(1)}k resident   res ${CHUNK_RES}   gen ${ts.lastGenMs.toFixed(1)}ms`,
     `triangles <=${LOD.triDeg.toFixed(2)}deg ([ ])   depth<=${MAX_DEPTH}   world ${WORLD_SIZE / 1000}km`,
     `bounds known for ${ts.bounds} nodes`,
     `T = live terrain tuner${tuner.visible ? '   ** OPEN **' : ''}`,

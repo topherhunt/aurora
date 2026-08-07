@@ -137,15 +137,17 @@ for (let step = 0; step < 400; step++) {
     const s = terrain.stats
     peakSlots = Math.max(peakSlots, s.slots)
     peakCached = Math.max(peakCached, s.cached)
-    peakTris = Math.max(peakTris, s.tris)
+    peakTris = Math.max(peakTris, s.drawnTris)
   }
 }
 
 console.log(
   `        walked ~18 km: peak slots ${peakSlots}/${SLOT_COUNT}, peak cached ${peakCached}/${terrain.maxCached}, ` +
-    `peak visible ${(peakTris / 1000).toFixed(0)}k tris (${((peakTris / TRI_BUDGET) * 100).toFixed(0)}% of budget)`
+    `peak DRAWN ${(peakTris / 1000).toFixed(0)}k tris (${((peakTris / TRI_BUDGET) * 100).toFixed(0)}% of budget)`
 )
-check(peakTris < TRI_BUDGET / 3, 'ground never took more than a third of the budget while walking')
+// Drawn, not resident: the streaming margin keeps ~40% more terrain in the
+// render set than the headset's field of view ever rasterises.
+check(peakTris < TRI_BUDGET / 3, 'drawn ground never took more than a third of the budget while walking', `${(peakTris / 1000).toFixed(0)}k of ${TRI_BUDGET / 1000}k`)
 // An append-only request queue makes this grow without bound; a rebuilt one
 // cannot exceed the selection plus what is already resident.
 check(peakCached <= terrain.maxCached, 'cache stayed inside its cap while streaming', `${peakCached} vs ${terrain.maxCached}`)
