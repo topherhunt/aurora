@@ -219,23 +219,31 @@ const hex = (v) => [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) /
 //                         every crease and every patch of grass -- which is
 //                         self-occluding by construction -- into a hole.
 //
-// The third night term is `fogDensity`, and it climbs by a factor of five and a
-// half from sunset to full dark while the fog COLOUR drops to nearly black.
-// That is not aerosol -- the air does not thicken at 22:00. It is the same
-// adaptation problem viewed along the depth axis. A dark-adapted eye loses
-// contrast sensitivity long before it loses light, so at night the far half of
-// a landscape does not merely get dim, it stops resolving: ridges go to flat
-// silhouettes cut out of the sky and everything in front of them merges. An
-// exponential-squared fog toward a colour DARKER than the sky is exactly that
-// shape -- near ground stays lit and readable, 300 m is a third gone, 600 m is
-// most of the way to a cutout, and past a kilometre there is nothing but the
-// skyline. It also makes the aurora, the moon and the stars the brightest
-// things in the frame by a wide margin, which at night they should be.
+// The third night term is `fogDensity`, and round four had it climb by a factor
+// of five and a half from sunset to full dark, on the argument that a
+// dark-adapted eye loses contrast sensitivity along the depth axis before it
+// loses light, so the far half of a landscape should stop resolving.
 //
-// One thing had to be exempted for this to work: village fires. See the note on
-// `flameMat` in village.js -- a fire is an emitter, and lerping an emitter
-// toward near-black is the one place this fog gives an answer that is worse
-// than no fog at all.
+// That argument was wrong in practice, and round six backs it out. At 0.0022 a
+// ridge 500 m away was 70 percent gone and one at a kilometre was 99 percent
+// gone, so the world at night ended at arm's length: everything past the next
+// hill was black, and no amount of moonlight on it could show through, because
+// fog is applied AFTER the lighting. What the eye actually does on a clear
+// moonlit night is see the whole valley -- dim, low-contrast, blue, but there.
+// Losing the mountains is not a night-vision effect, it is a wall.
+//
+// So the night rows now sit just above the daytime 0.00022 rather than ten
+// times it. At 0.00032: 500 m is 3 percent gone, a kilometre 10, two
+// kilometres 33 and five kilometres 92. Distance still recedes, and the
+// skyline still reads as far away, but a moonlit ridge two valleys over is
+// scenery again instead of a hole. The far-field lighting split below is what
+// makes distance DIM now; fog is only what makes it HAZY, which is the
+// division of labour those two knobs should have had all along.
+//
+// One thing is exempted regardless: village fires. See the note on `flameMat`
+// in village.js -- a fire is an emitter, and lerping an emitter toward
+// near-black is the one place this fog gives an answer that is worse than no
+// fog at all.
 //
 // Ordered from high to low. `state()` walks it and smoothsteps between
 // neighbours; the check gate sweeps the whole range looking for a jump, since a
@@ -377,7 +385,7 @@ const KEYS = [
     hemiGround: hex(0x1a1620),
     hemiIntensity: 0.34,
     fog: hex(0x8a5a78),
-    fogDensity: 0.0007,
+    fogDensity: 0.0003,
     stars: 0.22,
     moonBright: 0.85,
     auroraMax: 0.08,
@@ -401,7 +409,7 @@ const KEYS = [
     hemiGround: hex(0x272430),
     hemiIntensity: 0.26,
     fog: hex(0x40284c),
-    fogDensity: 0.0012,
+    fogDensity: 0.00031,
     stars: 0.42,
     moonBright: 1.0,
     auroraMax: 0.35,
@@ -426,7 +434,7 @@ const KEYS = [
     hemiGround: hex(0x2e3444),
     hemiIntensity: 0.28,
     fog: hex(0x16162a),
-    fogDensity: 0.0019,
+    fogDensity: 0.00032,
     stars: 0.86,
     moonBright: 1.0,
     auroraMax: 0.85,
@@ -450,7 +458,7 @@ const KEYS = [
     hemiGround: hex(0x333c50),
     hemiIntensity: 0.30,
     fog: hex(0x080b14),
-    fogDensity: 0.0022,
+    fogDensity: 0.00032,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,
@@ -477,7 +485,7 @@ const KEYS = [
     hemiGround: hex(0x333c50),
     hemiIntensity: 0.30,
     fog: hex(0x080b14),
-    fogDensity: 0.0022,
+    fogDensity: 0.00032,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,

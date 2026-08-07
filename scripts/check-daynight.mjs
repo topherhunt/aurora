@@ -568,6 +568,48 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
   // toward one point.
   check(elevMax > 40 && elevMax < 80, 'and the catalogue still reaches high overhead without becoming a cone',
     `highest ${elevMax.toFixed(1)} deg (${highestBand})`)
+
+  // ---- Apparent size, which is the check whose absence caused round six.
+  //
+  // Round five moved every band outward to get its hem near the horizon and
+  // measured, correctly, that the hems had arrived. It never measured what the
+  // move cost, and the cost was everything: the always-on quiet arc went from
+  // one band 11.8 degrees tall to two ribbons 3.4 and 5.1 degrees tall sitting
+  // in the horizon murk, and the report was "no auroras show up at all". That
+  // was true, in the only sense that matters.
+  //
+  // The trap is that distance and apparent size are one knob, not two. Pushing
+  // a band out drops its hem AND shrinks it, and the only way to have both a
+  // low hem and a large form is to raise the top -- which is free, because
+  // rayed structures genuinely reach 300-400 km, and because the deposition
+  // profile is normalised over each column so a taller band is simply a bigger
+  // one rather than a dimmer one. So: measure degrees of sky, per form.
+  const spanOf = (p) => Math.max(...p.bands.map((b) => elevOf(b.alt1, b.dist))) -
+    Math.min(...p.bands.map((b) => elevOf(b.alt0, b.dist)))
+  const spans = PATTERNS.map((p) => ({ name: p.name, deg: spanOf(p) }))
+    .sort((a, b) => a.deg - b.deg)
+  console.log(`       vertical extent: ${spans.map((x) => `${x.name} ${x.deg.toFixed(0)}`).join(', ')}`)
+  check(spans[0].deg >= 10, 'every named form is at least ten degrees of sky tall',
+    `smallest ${spans[0].name} at ${spans[0].deg.toFixed(0)} deg`)
+  // "It should be quite large scale, some of them at least, or most of them
+  // should be quite large scale." Twenty-five degrees is about half the
+  // vertical field of view of the headset, which is the honest reading of
+  // "large" for something you look up at.
+  const big = spans.filter((x) => x.deg >= 25)
+  check(big.length >= 8, 'and most of them fill a good part of the view',
+    `${big.length} of ${spans.length} forms span 25 deg or more`)
+  // The floor form is on screen every clear night, so it carries this promise
+  // more than any of the rare ones do.
+  check(spanOf(floorPat) >= 25, 'and the one you see every night is one of the large ones',
+    `${floorPat.name} spans ${spanOf(floorPat).toFixed(0)} deg`)
+  // The other half of the same trade: a band whose top has to reach 300 km to
+  // stay large is only credible while 300 km is a real auroral altitude. Past
+  // about 450 km there is not enough atomic oxygen left to emit and the shape
+  // stops being an aurora, so this is a physics fence, not a taste one.
+  const tall = PATTERNS.flatMap((p) => p.bands.map((b) => ({ n: p.name, a: b.alt1 })))
+    .filter((x) => x.a > 450)
+  check(tall.length === 0, 'and no band buys its size by leaving the atmosphere',
+    tall.length ? tall.map((x) => `${x.n} ${x.a}km`).join(', ') : 'highest top 350 km')
   // ...and nothing has been pushed so far out that curvature has swallowed it
   // whole. A band drawn entirely below the horizon is not a subtle bug: it
   // costs its full fill and draws nothing, and the composer would keep picking
@@ -900,6 +942,88 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
   // handle anywhere else. Each of these is a specific complaint that was
   // fixed, and each would regress invisibly.
   const auroraSrc = readFileSync(new URL('../src/aurora.js', import.meta.url), 'utf8')
+
+  // ---- Does the GLSL even compile?
+  //
+  // This gate runs in node, so it cannot link a program, and for one release
+  // that gap swallowed the entire system: `float mScale = 250.0 / A.x;` was
+  // declared twice in the same scope of the vertex shader's main(). That is a
+  // GLSL redefinition error, the program never linked, and the aurora did not
+  // draw a single pixel at any hour under any pattern -- while every numeric
+  // check in this file went on passing, because the numbers it checks are in
+  // the catalogue and the catalogue was fine. Worse, the check right below
+  // asserts that the mScale line is PRESENT, which two copies satisfy twice
+  // over. A presence check cannot see a duplicate.
+  //
+  // So: a same-scope redeclaration scan. Brace depth gives the scopes, a fresh
+  // Set per block gives same-scope-only semantics (GLSL does allow an inner
+  // block to shadow an outer name, so only the top Set is consulted), and
+  // for-init declarations are skipped because GLSL scopes those to the loop.
+  // This is not a compiler, and it is not trying to be -- it catches the one
+  // error class that is invisible to every other check here and fatal to all
+  // of them.
+  const TYPES = 'float|int|uint|bool|vec2|vec3|vec4|ivec2|ivec3|ivec4|uvec2|uvec3|uvec4|mat2|mat3|mat4'
+  // One shader at a time, not one file at a time: the vertex and fragment
+  // shaders are separate translation units that legitimately declare the same
+  // varying names, and scanning the whole JS file makes every varying look like
+  // a duplicate. So: pull out every template literal that contains a main(),
+  // which is exactly the set of shader sources, and scan each on its own.
+  const shadersIn = (src) =>
+    (src.match(/`[^`]*\bvoid\s+main\s*\(\s*\)[^`]*`/g) || []).map((t) => t.slice(1, -1))
+  // Preprocessor branches are not duplicates: water.js declares fogAmt once
+  // under #ifdef FOG_EXP2 and once under #else, and only one of those is ever
+  // compiled. Keep the first branch of every conditional and drop the rest --
+  // crude, but it is the right answer for this question, and the alternative is
+  // evaluating the preprocessor, which is a compiler.
+  const stripPre = (glsl) => {
+    const out = []
+    const skip = []
+    for (const line of glsl.split('\n')) {
+      const t = line.trim()
+      if (/^#\s*(if|ifdef|ifndef)\b/.test(t)) { skip.push(false); continue }
+      if (/^#\s*(else|elif)\b/.test(t)) { if (skip.length) skip[skip.length - 1] = true; continue }
+      if (/^#\s*endif\b/.test(t)) { skip.pop(); continue }
+      if (t.startsWith('#')) continue
+      out.push(skip.some(Boolean) ? '' : line)
+    }
+    return out.join('\n')
+  }
+  const redeclarations = (glsl) => {
+    const clean = stripPre(glsl).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ')
+    const bad = []
+    // The synthetic outermost Set is the shader's global scope, so a uniform
+    // and a global of the same name are caught too.
+    const stack = [new Set()]
+    const re = new RegExp(
+      `[{}]|\\bfor\\s*\\(|\\b(?:uniform|attribute|varying|in|out|const)?\\s*(?:${TYPES})\\s+([A-Za-z_]\\w*)\\s*(?=[=;,)\\[])`,
+      'g')
+    let m
+    let forDepth = -1
+    while ((m = re.exec(clean))) {
+      if (m[0] === '{') stack.push(new Set())
+      else if (m[0] === '}') { if (stack.length > 1) stack.pop() }
+      else if (m[0].trimStart().startsWith('for')) forDepth = stack.length
+      else {
+        // Anything declared while a for-header is open belongs to the loop.
+        if (forDepth === stack.length) { forDepth = -1; continue }
+        const scope = stack[stack.length - 1]
+        if (scope.has(m[1])) bad.push(m[1])
+        else scope.add(m[1])
+      }
+    }
+    return bad
+  }
+  const shaderFiles = ['aurora.js', 'sky.js', 'stars.js', 'lighting.js', 'water.js']
+  let shaderCount = 0
+  const dupes = shaderFiles.flatMap((f) => {
+    const src = readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')
+    return shadersIn(src).flatMap((glsl) => {
+      shaderCount++
+      return redeclarations(glsl).map((n) => `${f}: ${n}`)
+    })
+  })
+  check(dupes.length === 0, 'no shader declares the same name twice in one scope, so the GLSL links',
+    dupes.length ? dupes.join(', ') : `${shaderCount} shaders clean`)
   check(/float region = smoothstep[\s\S]{0,120}float wash = smoothstep/.test(auroraSrc),
     'the presence envelope has a slow region and a fast wash, not one rate')
   check(/region \* region \* \( 0\.22 \+ 0\.78 \* wash \)/.test(auroraSrc),
@@ -1245,12 +1369,15 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
   check(/mix\( uSkyFloor, 1\.0, \$\{sky\} \) \* mix\( uFarLight\.y, 1\.0, wlNear \)/.test(lightSrc),
     'and both ambient terms -- the multiplied one and the added lift -- fade together')
 
-  // ---- Distance. FogExp2 in three is factor = 1 - exp(-(density * d)^2),
-  // and it is the only mechanism in the renderer that can make the far half of
-  // a landscape stop resolving while the near half stays lit. Since the night
-  // fog colour is now darker than the night sky, a ridge at a kilometre is a
-  // cutout against the sky rather than a dim version of itself, which is what
-  // a real dark night looks like.
+  // ---- Distance. FogExp2 in three is factor = 1 - exp(-(density * d)^2).
+  //
+  // Round four used this to make the far half of the landscape stop resolving
+  // at night, and round six backs that out: fog is applied AFTER the lighting,
+  // so a density that erases a ridge at 600 m erases it no matter how well the
+  // moon is lighting it, and the world at night ended at the next hill. The
+  // promise these checks now guard is the opposite one -- at night you can
+  // still SEE the valley, dim and low-contrast and blue, and what makes the
+  // distance dim is the far-field lighting split below, not the fog.
   const fogAt = (d, m) => 1 - Math.exp(-Math.pow(d * m, 2))
   const deepNight = paletteAt(-28)
   const noonFog = paletteAt(45).fogDensity
@@ -1261,8 +1388,16 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
     `${(at(30) * 100).toFixed(1)}% at 30 m`)
   check(at(100) < 0.10, 'and the near field still reads as ground rather than as haze',
     `${(at(100) * 100).toFixed(0)}% at 100 m`)
-  check(at(600) > 0.55 && at(1000) > 0.90, 'while distance goes to silhouette',
-    `${(at(600) * 100).toFixed(0)}% at 600 m, ${(at(1000) * 100).toFixed(0)}% at 1 km`)
+  // The regression this replaces: at 0.0022 these read 70% and 99%.
+  check(at(1000) < 0.20, 'and a moonlit ridge a kilometre out is still scenery, not a hole',
+    `${(at(1000) * 100).toFixed(0)}% at 1 km`)
+  check(at(3000) > 0.35 && at(6000) > 0.85, 'while genuine distance still recedes',
+    `${(at(3000) * 100).toFixed(0)}% at 3 km, ${(at(6000) * 100).toFixed(0)}% at 6 km`)
+  // Night air is not actually thicker than day air. Whatever rise there is
+  // here is a look choice, and it should stay small enough to be one.
+  check(deepNight.fogDensity > noonFog && deepNight.fogDensity < noonFog * 2,
+    'and night is hazier than noon by a look-choice margin, not by an order of magnitude',
+    `${deepNight.fogDensity} vs ${noonFog}`)
   // A silhouette only reads as one if it is DARKER than what it is against.
   // Fog brighter than the sky would give haze, which is the daytime look and
   // the opposite of the request.

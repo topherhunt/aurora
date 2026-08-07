@@ -188,8 +188,8 @@ export const ALL = [
     actLo: -0.3,
     actHi: 1.4,
     bands: [
-      band({ dist: 1180, az: 358, span: 150, alt0: 101, alt1: 172, fold: 96, foldHz: 0.14, curl: 2.0, shear: 0.12, twist: 0.05, ray: 0.16, ragged: 0.28, flick: 0.24, fringe: 0.38, pale: 0.15, crown: 0.5, bright: 0.58, seed: 3 }),
-      band({ dist: 560, az: 6, span: 132, alt0: 100, alt1: 152, fold: 48, foldHz: 0.30, curl: 2.0, shear: 0.12, twist: 0.05, ray: 0.14, ragged: 0.26, flick: 0.26, fringe: 0.34, pale: 0.22, crown: 0.4, bright: 0.4, seed: 173 }),
+      band({ dist: 960, az: 358, span: 150, alt0: 101, alt1: 294, fold: 84, foldHz: 0.16, curl: 2.0, shear: 0.12, twist: 0.05, ray: 0.16, ragged: 0.28, flick: 0.24, fringe: 0.38, pale: 0.15, crown: 0.3, bright: 0.62, seed: 3 }),
+      band({ dist: 300, az: 6, span: 132, alt0: 100, alt1: 260, fold: 34, foldHz: 0.42, curl: 2.0, shear: 0.12, twist: 0.05, ray: 0.14, ragged: 0.26, flick: 0.26, fringe: 0.34, pale: 0.22, crown: 0.35, bright: 0.55, seed: 173 }),
     ],
   },
   {
@@ -200,9 +200,9 @@ export const ALL = [
     actLo: 0.05,
     actHi: 0.72,
     bands: [
-      band({ dist: 1000, az: 355, span: 155, alt0: 101, alt1: 128, fold: 124, foldHz: 0.10, curl: 2.4, shear: 0.14, twist: 0.06, ray: 0.3, ragged: 0.3, flick: 0.3, pale: 0.32, crown: 0.35, bright: 0.48, seed: 5 }),
-      band({ dist: 780, az: 2, span: 138, alt0: 101, alt1: 160, fold: 62, foldHz: 0.20, curl: 2.4, shear: 0.14, twist: 0.06, ray: 0.34, ragged: 0.32, flick: 0.34, pale: 0.32, crown: 0.35, bright: 0.6, seed: 17 }),
-      band({ dist: 340, az: 350, span: 124, alt0: 100, alt1: 152, fold: 30, foldHz: 0.45, curl: 2.4, shear: 0.14, twist: 0.06, ray: 0.3, ragged: 0.28, flick: 0.3, pale: 0.32, crown: 0.35, bright: 0.5, seed: 29 }),
+      band({ dist: 1160, az: 355, span: 155, alt0: 101, alt1: 269, fold: 120, foldHz: 0.1, curl: 2.4, shear: 0.14, twist: 0.06, ray: 0.3, ragged: 0.3, flick: 0.3, pale: 0.32, crown: 0.3, bright: 0.48, seed: 5 }),
+      band({ dist: 620, az: 2, span: 138, alt0: 101, alt1: 256, fold: 56, foldHz: 0.22, curl: 2.4, shear: 0.14, twist: 0.06, ray: 0.34, ragged: 0.32, flick: 0.34, pale: 0.32, crown: 0.3, bright: 0.6, seed: 17 }),
+      band({ dist: 300, az: 350, span: 124, alt0: 100, alt1: 241, fold: 28, foldHz: 0.46, curl: 2.4, shear: 0.14, twist: 0.06, ray: 0.3, ragged: 0.28, flick: 0.3, pale: 0.32, crown: 0.35, bright: 0.5, seed: 29 }),
     ],
   },
   {
@@ -213,8 +213,8 @@ export const ALL = [
     actLo: 0.3,
     actHi: 1.3,
     bands: [
-      band({ dist: 750, az: 4, span: 132, alt0: 99, alt1: 225, fold: 76, foldHz: 0.30, curl: 1.7, shear: 0.3, twist: 0.11, ray: 1.0, rayHz: 1.7, ragged: 0.62, flick: 0.55, fringe: 0.85, pale: 0.05, crown: 1.0, bright: 0.9, seed: 7 }),
-      band({ dist: 300, az: 352, span: 118, alt0: 99, alt1: 205, fold: 38, foldHz: 0.58, curl: 1.7, shear: 0.3, twist: 0.11, ray: 0.95, rayHz: 2.1, ragged: 0.6, flick: 0.6, fringe: 0.9, pale: 0.05, crown: 1.0, bright: 0.72, seed: 23 }),
+      band({ dist: 700, az: 4, span: 132, alt0: 99, alt1: 350, fold: 72, foldHz: 0.32, curl: 1.7, shear: 0.3, twist: 0.11, ray: 1.0, rayHz: 1.7, ragged: 0.62, flick: 0.55, fringe: 0.85, pale: 0.05, crown: 1.0, bright: 0.9, seed: 7 }),
+      band({ dist: 280, az: 352, span: 118, alt0: 99, alt1: 317, fold: 34, foldHz: 0.62, curl: 1.7, shear: 0.3, twist: 0.11, ray: 0.95, rayHz: 2.1, ragged: 0.6, flick: 0.6, fringe: 0.9, pale: 0.05, crown: 1.0, bright: 0.72, seed: 23 }),
     ],
   },
   {
@@ -225,9 +225,9 @@ export const ALL = [
     actLo: 0.36,
     actHi: 1.3,
     bands: [
-      band({ dist: 850, az: 357, span: 140, alt0: 101, alt1: 198, fold: 92, foldHz: 0.24, curl: 1.9, shear: 0.26, twist: 0.13, ray: 0.8, rayHz: 1.1, ragged: 0.68, flick: 0.6, fringe: 0.85, pale: 0.1, crown: 1.15, bright: 0.72, seed: 11 }),
-      band({ dist: 380, az: 8, span: 124, alt0: 100, alt1: 246, fold: 60, foldHz: 0.42, curl: 1.8, shear: 0.26, twist: 0.13, ray: 0.9, rayHz: 1.3, ragged: 0.72, flick: 0.66, fringe: 0.9, pale: 0.1, crown: 1.15, bright: 1.0, seed: 31 }),
-      band({ dist: 190, az: 344, span: 104, alt0: 97, alt1: 236, fold: 32, foldHz: 0.72, curl: 2.3, shear: 0.26, twist: 0.13, ray: 0.85, rayHz: 1.5, ragged: 0.75, flick: 0.72, fringe: 0.95, pale: 0.1, crown: 1.15, bright: 0.82, seed: 47 }),
+      band({ dist: 820, az: 357, span: 140, alt0: 101, alt1: 330, fold: 88, foldHz: 0.25, curl: 1.9, shear: 0.26, twist: 0.13, ray: 0.8, rayHz: 1.1, ragged: 0.68, flick: 0.6, fringe: 0.85, pale: 0.1, crown: 1.15, bright: 0.72, seed: 11 }),
+      band({ dist: 360, az: 8, span: 124, alt0: 100, alt1: 312, fold: 56, foldHz: 0.44, curl: 1.8, shear: 0.26, twist: 0.13, ray: 0.9, rayHz: 1.3, ragged: 0.72, flick: 0.66, fringe: 0.9, pale: 0.1, crown: 1.15, bright: 1.0, seed: 31 }),
+      band({ dist: 175, az: 344, span: 104, alt0: 97, alt1: 282, fold: 30, foldHz: 0.78, curl: 2.3, shear: 0.26, twist: 0.13, ray: 0.85, rayHz: 1.5, ragged: 0.75, flick: 0.72, fringe: 0.95, pale: 0.1, crown: 1.15, bright: 0.82, seed: 47 }),
     ],
   },
   {
@@ -260,9 +260,9 @@ export const ALL = [
     actLo: 0.74,
     actHi: 1.3,
     bands: [
-      band({ dist: 480, az: 2, span: 150, alt0: 100, alt1: 236, fold: 78, foldHz: 0.65, curl: 0.8, shear: 0.34, twist: 0.16, speed: 2.6, drift: 1.6, ray: 1.0, rayHz: 2.0, ragged: 0.8, flick: 0.72, fringe: 1.0, pale: 0.18, crown: 1.25, bright: 1.0, seed: 19 }),
-      band({ dist: 280, az: 340, span: 132, alt0: 99, alt1: 250, fold: 52, foldHz: 0.95, curl: 0.8, shear: 0.34, twist: 0.16, speed: 3.0, drift: -2.1, ray: 1.0, rayHz: 2.4, ragged: 0.82, flick: 0.78, fringe: 1.0, pale: 0.18, crown: 1.25, bright: 0.9, seed: 41 }),
-      band({ dist: 160, az: 26, span: 112, alt0: 98, alt1: 238, fold: 30, foldHz: 1.5, curl: 0.8, shear: 0.34, twist: 0.16, speed: 3.4, drift: 2.6, ray: 1.0, rayHz: 2.9, ragged: 0.85, flick: 0.8, fringe: 1.0, pale: 0.18, crown: 1.25, bright: 0.78, seed: 59 }),
+      band({ dist: 560, az: 2, span: 150, alt0: 100, alt1: 330, fold: 88, foldHz: 0.56, curl: 0.8, shear: 0.34, twist: 0.16, speed: 2.6, drift: 1.6, ray: 1.0, rayHz: 2.0, ragged: 0.8, flick: 0.72, fringe: 1.0, pale: 0.18, crown: 1.25, bright: 1.0, seed: 19 }),
+      band({ dist: 260, az: 340, span: 132, alt0: 99, alt1: 315, fold: 48, foldHz: 1.0, curl: 0.8, shear: 0.34, twist: 0.16, speed: 3.0, drift: -2.1, ray: 1.0, rayHz: 2.4, ragged: 0.82, flick: 0.78, fringe: 1.0, pale: 0.18, crown: 1.25, bright: 0.9, seed: 41 }),
+      band({ dist: 150, az: 26, span: 112, alt0: 98, alt1: 284, fold: 28, foldHz: 1.6, curl: 0.8, shear: 0.34, twist: 0.16, speed: 3.4, drift: 2.6, ray: 1.0, rayHz: 2.9, ragged: 0.85, flick: 0.8, fringe: 1.0, pale: 0.18, crown: 1.25, bright: 0.78, seed: 59 }),
     ],
   },
   {
@@ -276,8 +276,8 @@ export const ALL = [
       // Long wavelength and large amplitude: a handful of bulges across the
       // whole span rather than many folds. The name is from the shape the
       // bulges make against the sky.
-      band({ dist: 800, az: 0, span: 145, alt0: 104, alt1: 210, fold: 128, foldHz: 0.11, curl: 2.0, shear: 0.2, twist: 0.09, speed: 0.5, drift: 2.4, ray: 0.5, rayHz: 0.8, ragged: 0.55, flick: 0.4, fringe: 0.7, pale: 0.55, crown: 0.45, bright: 0.85, seed: 67 }),
-      band({ dist: 400, az: 12, span: 128, alt0: 103, alt1: 198, fold: 84, foldHz: 0.15, curl: 2.0, shear: 0.2, twist: 0.09, speed: 0.45, drift: 2.0, ray: 0.45, rayHz: 0.7, ragged: 0.5, flick: 0.38, fringe: 0.65, pale: 0.55, crown: 0.45, bright: 0.6, seed: 71 }),
+      band({ dist: 760, az: 0, span: 145, alt0: 104, alt1: 322, fold: 120, foldHz: 0.12, curl: 2.0, shear: 0.2, twist: 0.09, speed: 0.5, drift: 2.4, ray: 0.5, rayHz: 0.8, ragged: 0.55, flick: 0.4, fringe: 0.7, pale: 0.55, crown: 0.45, bright: 0.85, seed: 67 }),
+      band({ dist: 340, az: 12, span: 128, alt0: 103, alt1: 275, fold: 72, foldHz: 0.17, curl: 2.0, shear: 0.2, twist: 0.09, speed: 0.45, drift: 2.0, ray: 0.45, rayHz: 0.7, ragged: 0.5, flick: 0.38, fringe: 0.65, pale: 0.55, crown: 0.45, bright: 0.6, seed: 71 }),
     ],
   },
   {
@@ -288,11 +288,11 @@ export const ALL = [
     actLo: 0.4,
     actHi: 1.15,
     bands: [
-      band({ dist: 900, az: 4, span: 128, alt0: 100, alt1: 188, fold: 66, foldHz: 0.18, curl: 2.4, shear: 0.16, twist: 0.07, ray: 0.35, ragged: 0.35, flick: 0.3, fringe: 0.5, pale: 0.05, crown: 0.3, bright: 0.4, seed: 97 }),
+      band({ dist: 900, az: 4, span: 128, alt0: 100, alt1: 288, fold: 66, foldHz: 0.18, curl: 2.4, shear: 0.16, twist: 0.07, ray: 0.35, ragged: 0.35, flick: 0.3, fringe: 0.5, pale: 0.05, crown: 0.3, bright: 0.4, seed: 97 }),
       // The fence itself: short, violently rayed, and low enough that the
       // nitrogen violet at the base is a real part of the colour. `pale` stays
       // at zero here for exactly that reason -- the violet IS the form.
-      band({ dist: 880, az: 4, span: 120, alt0: 96, alt1: 128, fold: 58, foldHz: 0.18, curl: 2.4, shear: 0.16, twist: 0.07, ray: 1.0, rayHz: 3.4, ragged: 0.4, flick: 0.5, fringe: 1.0, pale: 0.0, crown: 0.3, bright: 0.95, seed: 101 }),
+      band({ dist: 870, az: 4, span: 120, alt0: 96, alt1: 197, fold: 58, foldHz: 0.18, curl: 2.4, shear: 0.16, twist: 0.07, ray: 1.0, rayHz: 3.4, ragged: 0.4, flick: 0.5, fringe: 1.0, pale: 0.0, crown: 0.3, bright: 0.95, seed: 101 }),
     ],
   },
   {
@@ -326,8 +326,8 @@ export const ALL = [
       // makes it read as a river rather than as a ruled line. STEVE really
       // does snake; the photographs that made it famous are all of a ribbon
       // with a long lazy S in it.
-      band({ dist: 620, az: 90, span: 215, alt0: 172, alt1: 218, fold: 44, foldHz: 0.18, curl: 1.2, shear: 0.08, twist: 0.05, speed: 0.6, drift: 1.2, ray: 0.18, ragged: 0.18, flick: 0.2, fringe: 0.15, breathe: 0.6, tint: [0.88, 0.56, 0.99], tintAmt: 0.95, bright: 1.0, seed: 107 }),
-      band({ dist: 340, az: 90, span: 185, alt0: 97, alt1: 130, fold: 34, foldHz: 0.4, curl: 1.2, shear: 0.2, twist: 0.06, ray: 1.0, rayHz: 3.6, ragged: 0.45, flick: 0.55, fringe: 1.0, pale: 0.1, crown: 0.3, breathe: 0.8, bright: 0.72, seed: 109 }),
+      band({ dist: 300, az: 90, span: 215, alt0: 172, alt1: 250, fold: 24, foldHz: 0.32, curl: 1.2, shear: 0.08, twist: 0.05, speed: 0.6, drift: 1.2, ray: 0.18, ragged: 0.18, flick: 0.2, fringe: 0.15, breathe: 0.6, tint: [0.88, 0.56, 0.99], tintAmt: 0.95, bright: 1.0, seed: 107 }),
+      band({ dist: 320, az: 90, span: 185, alt0: 97, alt1: 190, fold: 32, foldHz: 0.42, curl: 1.2, shear: 0.2, twist: 0.06, ray: 1.0, rayHz: 3.6, ragged: 0.45, flick: 0.55, fringe: 1.0, pale: 0.1, crown: 0.3, breathe: 0.8, bright: 0.72, seed: 109 }),
     ],
   },
 
@@ -436,8 +436,8 @@ export const ALL = [
       // the visible arc at once and it is the succession of crests that reads,
       // not any single one; the previous 62-degree version was too small a
       // window to see a succession in.
-      band({ dist: 360, az: 2, span: 104, alt0: 98, alt1: 232, fold: 54, foldHz: 0.5, curl: 1.5, shear: 0.9, twist: 0.14, speed: 1.2, drift: 0.8, ray: 0.3, rayHz: 0.7, ragged: 0.6, flick: 0.3, fringe: 0.4, flame: 1.0, pale: 0.48, crown: 0.95, bright: 0.92, seed: 151 }),
-      band({ dist: 260, az: 18, span: 88, alt0: 98, alt1: 216, fold: 42, foldHz: 0.7, curl: 1.5, shear: 0.95, twist: 0.14, speed: 1.4, drift: -0.6, ray: 0.26, rayHz: 0.6, ragged: 0.62, flick: 0.32, fringe: 0.35, flame: 0.85, pale: 0.58, crown: 0.8, bright: 0.7, seed: 157 }),
+      band({ dist: 470, az: 2, span: 104, alt0: 98, alt1: 288, fold: 64, foldHz: 0.42, curl: 1.5, shear: 0.9, twist: 0.14, speed: 1.2, drift: 0.8, ray: 0.3, rayHz: 0.7, ragged: 0.6, flick: 0.3, fringe: 0.4, flame: 1.0, pale: 0.48, crown: 0.95, bright: 0.92, seed: 151 }),
+      band({ dist: 260, az: 18, span: 88, alt0: 98, alt1: 280, fold: 42, foldHz: 0.7, curl: 1.5, shear: 0.95, twist: 0.14, speed: 1.4, drift: -0.6, ray: 0.26, rayHz: 0.6, ragged: 0.62, flick: 0.32, fringe: 0.35, flame: 0.85, pale: 0.58, crown: 0.8, bright: 0.7, seed: 157 }),
     ],
   },
 

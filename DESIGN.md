@@ -828,6 +828,42 @@ This is not aerosol and the file says so -- the air does not thicken at 22:00. I
 
 Plus the distance shape: unfogged at 30 m, under 10% at 100 m, over 55% at 600 m and over 90% at 1 km, fog luma below 80% of the horizon's, and daylight density untouched.
 
+#### Round six: the night fog was a wall, and it has been taken back out
+
+The paragraph above is the argument for heavy night fog, and it was wrong. The reported symptom was "all terrain at night is pitch-black except the mountains within ~500 m of me", and that is exactly what `fogDensity` 0.0022 does: 70% gone at 500 m, 95% at 800 m, 99% at a kilometre, toward a colour darker than the sky.
+
+The reasoning error is worth naming, because it is a general one. Fog is applied *after* the lighting, so it is not a contrast effect at all -- it is a multiply toward a constant, and a density that erases a ridge at 600 m erases it however well the moon happens to be lighting it. "A dark-adapted eye loses contrast at distance" is a real observation, but the mechanism that models it is *lighting*, not *fog*: dimmer far-field illumination lowers the far field's contrast while leaving it visible, which is what the eye actually does. Fog toward near-black does not lower contrast, it deletes.
+
+So the two knobs got the division of labour they should have had from the start. **The far-field lighting split makes distance dim. The fog makes distance hazy.** Night density drops from 0.0022 to 0.00032, which is a hair over the daytime 0.00022 rather than ten times it: 3% gone at 500 m, 10% at a kilometre, 33% at two, 60% at three, 92% at five. A moonlit ridge two valleys over is scenery again.
+
+The checks were rewritten to guard the opposite promise -- under 20% at a kilometre, still over 35% at three and over 85% at six, and the night density within a factor of two of noon's, because night air is not actually thicker than day air and whatever rise there is here is a look choice that should stay small enough to be one.
+
+#### Round five: splitting the lighting by distance
+
+The ratio fix above bought slope contrast, but it bought it *everywhere*, and the follow-up request was to split the two jobs the night lighting is doing:
+
+> Make the DEFAULT lighting for the whole scene just based on the position of the moon/sun, ~half as bright as the lighting currently used for nearby terrain. In addition, terrain within 25 m of you should be lit to the same degree that it currently is, fading out to "no additional lighting beyond moon lighting" at 50 m.
+
+Two new palette columns, `farDirect` and `farAmbient`, and one new term in `lighting.js`:
+
+```glsl
+float wlNear = 1.0 - smoothstep( 25.0, 50.0, distance( worldPos, cameraPosition ) );
+reflectedLight.directDiffuse *= sun * mix( uFarLight.x, 1.0, wlNear );
+float wlSkyF = mix( uSkyFloor, 1.0, sky ) * mix( uFarLight.y, 1.0, wlNear );
+```
+
+At full dark `uFarLight` is **(0.40, 0.0)**, and *the zero is the point*. Ambient light has no direction, so out where it was most of the illumination, a slope facing the moon and a slope facing away measured the same -- the same defect the round-four ratio fix addressed, surviving in the part of the frame the round-four fix could not reach. Delete the ambient beyond arm's reach and the far field becomes purely a function of where the moon is. Measured at 01:00: **lit grass 67 near / 34 far, shaded grass 24 near / 0 far, snow 129 / 70.**
+
+The near field keeps its ambient because that is where the ambient is doing honest work -- it is what stops the ground under her feet being a hole -- and 25 m is roughly how far a dark-adapted eye resolves ground texture by starlight.
+
+Both columns are exactly 1.0 whenever the sun is up, so daylight is bit-for-bit untouched; they come down across the same civil-twilight band where the moon takes over as key light, and the continuity sweep now includes them (a step in `farAmbient` is a step in the brightness of most of the frame).
+
+**The cost is honest and is written down**: a brightness gradient centred on the player. Shaded ground fades 24 to 0 across a 25 m annulus that travels with her, and nothing in nature does that. It is a deliberate trade against a flat far field on one side and a near field with no floor on the other, and it is the first thing to judge on device.
+
+There is also an unresolved interaction with the fog. `fogDensity` at full dark (0.0022) was tuned when the far field still had ambient; the far field is now darker by that much again, so distance is being attenuated twice. Nothing was changed -- retuning two coupled knobs without a headset is how the last three rounds went wrong -- but it is flagged in TASKS.md.
+
+The gate carries four new promises: distant moonlit ground is 40-62% of the ground at her feet, ground the moon cannot see is *genuinely zero* out there rather than grey, distant moonlit snow still carries the ridgelines (luma >= 60), and the envelope is exactly inert at 09:00, 12:00 and 15:00.
+
 ---
 
 ## 9. Asset pipeline
@@ -990,13 +1026,26 @@ From the Phase A hydrology (§2):
 - **Lakes:** one flat plane per body, at the spill elevation from priority-flood. Built and shipping -- greedy-merged horizontal runs, one mesh per 64-cell tile so frustum culling has something to cull, and the mask dilated one cell so the polygon edge is buried and the shoreline comes from full-resolution terrain crossing the plane rather than from the sim grid's staircase.
 - **Rivers and streams:** ~~ribbon mesh extruded along the splined flow paths~~ **built, measured, removed.** The ribbons read as paint rather than water, and the reason is not fixable in the renderer: Phase A routes flow over the *carved* surface, and the chunk mesher renders the *raw* one. On the rendered surface **47.4% of river segments run uphill** (0.26% on the carved surface), evenly across every size band, and steepest-descent tracing on the rendered surface pits out after a median of 39 m. A ribbon can be made to sit flush -- fixed 10 m resampling took buried vertices from 14.9% to 36 of 36,527, worst 4.5 m -- but a flush ribbon climbing a valley wall is still wrong, and it is wrong about the one thing rivers are for. **Rivers become possible when the generator produces a surface that drains, i.e. fluvial erosion at generation time (§2), not before.** The three measurements are recorded in `src/water.js`'s header so this is not re-attempted blind.
 
-Shading:
+Shading -- **built, and it is a mirror rather than a blue plane.** Opaque, and only about a quarter its own colour at normal incidence; the rest is sky. What was planned above and what shipped differ in two places, both because something already in the world turned out to answer the question better:
 
-- Two scrolling normal maps at different scales/speeds to break up tiling
-- Fresnel term
-- Skybox/environment cubemap sample
-- Moon specular highlight
-- **No screen-space reflections.** Far too expensive, and at night nobody will miss them
+- **The sky reflection is not a cubemap.** `sky.js` already computes the sky analytically from a world-space direction, so the water calls that same function along the reflected ray. One implementation, no second render pass, no 8-bit round trip -- and the reflection is automatically correct at every time of day including sunset, because it *is* the sky. The shading body moved to `sky-glsl.js` so the dome and the lake share it and cannot drift apart; `check-water-shader.mjs` fails if a second copy is ever started.
+- **The waves are not normal maps, and they are not sines either.** The first pass was six summed directional wave trains with their headings carefully spread across a half turn so nothing would beat into a moire. It tiled visibly anyway, and the reason is not fixable by choosing better headings: *a sum of periodic functions is periodic.* Six sines repeat on the lattice whose cell is the least common multiple of their wavelengths, and the eye finds that lattice in about two seconds -- the lake reads as wallpaper sliding past. What replaced it is four layers of **gradient noise with analytic derivatives**, each with its own lattice rotation, its own sampling offset, its own drift heading and its own drift speed, and the two fine layers **domain-warped by the largest one** so they are dragged around by the swell instead of merely lying on top of it. Still gradient only -- the plane is never displaced, and the analytic derivative avoids picking a finite-difference step size that would be wrong at some distance no matter what it was. The two fine layers sit inside a distance branch, which is coherent because neighbouring fragments are at neighbouring distances, so the far half of a lake pays for two noise evaluations rather than four.
+- **The wave speeds are unphysical on purpose.** 27 m/s for a 52 m feature is roughly a river surface, not a 52 m ocean swell. The first pass was physical -- 1.35 m/s, a 27-second period -- and the note back was "the large octave ripples appear to not move at all!?", which was exactly right: at that speed the biggest layer crosses its own wavelength once every half minute. Everything is 20x now, and `WATER.flow` scales all four together if it ever wants calming.
+- **The tilt is measured, not derived.** A summed-sine surface could be checked from its table alone, because cos() peaks at 1 and the worst tilt is the sum of the slopes. Gradient noise hands you no such bound, so `check-water-shader.mjs` ports the same noise to JS and samples 20k points over 8 km and 60 s: median 4.3 deg, p99 10.3 deg, peak 13.9 deg. The port is not bit-identical to the shader and does not need to be -- the hash returns a *unit* vector from a uniformly distributed angle, so the distribution of gradients is the same on either side of the language boundary. The same file checks that the field does not echo itself at any multiple of a layer wavelength, which is the failure the sines had.
+- **Fresnel term:** yes, and it is what makes the far end of a lake read differently from the near end.
+- **Sun and moon highlight:** a *broadened* lobe, not the sky's hard disc. A 1.1 deg disc sampled through a rippling normal lands somewhere different every pixel -- that is static, not glitter, and it crawls whenever the head moves. So the disc is switched off in the reflection path and the highlight is drawn with a lobe that widens with distance, in step with the wave normal relaxing toward flat over the same range. The two fades are the same idea applied twice and neither works without the other.
+- **Mountains occlude the reflection**, using the horizon map §8 already bakes for terrain shadows: it stores, for every point and 16 compass directions, how high the ground rises, so asking it along the reflected ray says whether that ray reaches sky or hits a ridge. Two texture reads the terrain was already paying for. Deliberately lo-fi -- 16 azimuths and a point sample, so it is a soft rounded silhouette, not a ridgeline. Where it blocks, the surface takes the mountain's **own deep blue**, brightened by the sky's horizon luminance rather than being a dimmed copy of it: dimming a grey dawn gives a grey mountain, and what reads as land-against-sky is a shift in hue as much as one in brightness. A floor keeps a moonless midnight near-black-blue instead of an actual hole in the lake.
+- **The reflection comes back darker and bluer than what it reflects.** One multiply, and it is the term that stops the lake reading as a hole cut through to a second sky. Physically it is the light the surface transmits instead of bouncing, and water swallows red first. Applied to the sky only and not to the glitter, which has its own gains -- otherwise two knobs end up fighting over one number.
+- **Sun and moon glitter is a THRESHOLD, not a falloff.** `pow(d, sharp)` is the statistical answer -- the average over every facet inside one pixel -- and it is right for water too far away to resolve a wavelet and wrong for water at your feet, where a facet either points at the light or it does not. Real glitter is crisp specks of blown-out white in dark water with nothing in between. So the lobe is thresholded, and how hard rides on the same `near` term everything else does: hard up close, relaxing back to the smooth lobe at range. Thresholding *distant* water instead would make every pixel a coin flip as the head moves, which is the specular aliasing the distance fades exist to prevent. The gains are all above 1, so the core clips to white and only each speck's rim keeps the tint of the body that lit it.
+- **Water is exempt from the night fog rule, and this is the one place it deliberately disagrees with the terrain.** Everything else fades toward `scene.fog`, whose colour is pulled well below the sky's after dark on purpose -- that is what hides the far terrain the moon cannot light. Water must not obey it. A distant lake is seen at a grazing angle where Fresnel is essentially 1, so it is a near-perfect mirror of the sky just above the horizon, which is why a lake at night reads *brighter* than the land around it. It still fogs with distance -- air still softens contrast over kilometres -- but toward `skyRadiance` along the horizontal part of the view ray. At full distance a water pixel becomes exactly what the dome behind it is drawing, so the two meet with no seam at all: a better match than `fogColor` ever gave, for one more call to a function the shader already had. Done in linear *before* the colour-space conversion, which is the opposite of three's own order, because three fogs afterwards only on the grounds that `fogColor` is authored in output space and this target is not.
+- **No screen-space reflections.** Far too expensive, and at night nobody will miss them.
+- **The aurora and the stars ARE reflected, via a probe -- and the sky deliberately is not.** Both are meshes with a dozen noise evaluations per vertex, not functions of direction, so the analytic path structurally cannot see them. `sky-probe.js` captures **those two and nothing else**, and water *adds* the result -- which is exactly how they are composited into the real sky, so the two paths agree by construction rather than by tuning. Capturing the sky as well would be a downgrade: a low-res capture of a smooth night gradient bands, which is the whole reason `sky.js` was never a cubemap. Splitting it this way is what makes the probe cheap enough to want: it carries only soft additive light, so 64 px a face is plenty, there is no gradient in it to band, and switching it off tomorrow would cost the lake its aurora and nothing else.
+
+  **The unit of work is one FACE, not one capture.** The cost is not in the fragments -- 64x64 is 4k pixels -- it is all in the aurora's vertex shader, 11 slots x 181 samples x 10 rows = 19,910 vertices of fold, swoop, flare and hem noise. Six faces in one frame is the spike worth avoiding, so each update renders a single face and five updates come round. That fixes the per-update cost at one aurora vertex pass regardless of cadence, and it means the lever for making this cheaper is *less work per update*, not *fewer updates* -- the better trade, because a slower cadence shows as the reflection lagging the aurora while a thinner slice of work shows as nothing at all. Five faces, not six: water folds the reflected ray into the upper hemisphere, so -Y is never sampled. Half-float, because the aurora's dim end sits below one 8-bit step. Parallax is a non-issue -- the aurora is 5.5-17.6 km out, so a capture reused for 100 m of walking is about a degree off.
+
+  **The layer trap, which is the reason this note is this long.** The obvious implementation moves the two meshes to a private layer and points the probe camera at it. In WebXR that is a bug in a very good disguise: three does `cameraXR.layers.mask = camera.layers.mask | 0b110` and then `cameraL &= 0b011`, `cameraR &= 0b101`. Layers 1 and 2 belong to the eyes and the mask is *three bits wide*, so an object on any layer above 2 is drawn by **neither eye** -- perfect on the desktop canvas, invisible in the headset. So nothing is moved: the aurora and stars stay on layer 0 and are additionally *enabled* on layer 3. Object layers are a mask and a camera draws when the masks intersect, so the eyes still see them via layer 0 and the probe camera -- an ordinary camera, outside the XR path -- sees them and nothing else via layer 3.
+
+  Two more failures that are silent and photogenic, both now checked headlessly against a stub renderer: `CubeCamera` leaves all six cameras **unrotated** until `updateCoordinateSystem()` runs, which only its own `update()` calls -- miss it and every face captures the same slice of sky, uniformly wrong and never obviously broken; and leaving `scene.background` set fills all five faces with flat fog grey, turning the lake into a mirror of the fog.
 
 ---
 
@@ -1334,6 +1383,116 @@ Retiring diffuse patches had a consequence that nearly shipped as a bug: **it he
 One more: `STEVE` was declared the rarest form with `gate: 0.78` on a 24.8 h period, and drew **zero frames in a simulated fortnight**. Thirteen cycles of the selector noise is too few draws for a threshold that high, so "rarest" had quietly become "never". A shorter period (19.3 h) and a slightly lower gate (0.72) give the same ~0.6% duty at a sample count where that number means something. The pre-existing "every named form actually occurs" check is what caught it.
 
 Twelve forms, `rMax 405 of 444 km`, `elev 16.5..75.2`, and the same eleven slots and 35,640 triangles as round three.
+
+### Round six: the shader did not compile
+
+The auroras were not dim, not mis-sited and not badly tuned. They did not exist.
+
+`float mScale = 250.0 / A.x;` was declared twice in the same scope of the vertex shader's `main()` -- once for the swoop and once, a hundred and ninety lines later, for the meander. GLSL ES rejects a same-scope redeclaration, so the program never linked, so the mesh drew nothing, at every hour, under every pattern, from the moment round five landed. The error was sitting in the browser console the whole time.
+
+Two things made it survive a full gate run and a round of re-tuning on top of that.
+
+The first is that **this gate runs in node and cannot link a program.** Everything it knows about the shaders it knows from reading their source as text, so the entire class of "the GLSL does not compile" was invisible to it, and that class is fatal to every other check in the file at once.
+
+The second is worse, and is a lesson about how to write a source assertion. The gate contained this check:
+
+```js
+check(/float mScale = 250\.0 \/ A\.x;/.test(auroraSrc), 'and that wave is measured in degrees of sky ...')
+```
+
+**A presence check cannot see a duplicate.** Two copies of the line satisfied it twice over, so the very assertion guarding the feature was reporting green *because* of the bug. Written as a count rather than a match, it would have failed immediately.
+
+The fix is one deleted line. The check added alongside it is a same-scope redeclaration scan: pull every template literal containing a `main()` out of the shader-bearing files, strip comments, keep the first branch of each preprocessor conditional, walk the braces with one scope Set per block, and report any name declared twice in the same Set. Not a compiler and not trying to be -- it catches the one error class that is invisible to every other check here. It was verified the only way a check like this can be verified, by putting the bug back and watching it fail.
+
+### Round six: apparent size is not a free variable
+
+Round five below moved every band outward to put its hem near the horizon, verified that the hems had arrived, and shipped. The report was **"no auroras show up at all"**, and it was accurate.
+
+What the gate never measured was what the move cost. Distance and apparent size are one knob, not two: pushing a band from 263 km to 1,180 km drops its hem from 20.8 degrees to -0.4, and in the same stroke shrinks it from 11.8 degrees of sky to 3.4. The always-on quiet arc became two ribbons 3.4 and 5.1 degrees tall, sitting in the part of the sky where the extinction term was also cutting them to a fifth. On an ordinary night -- which is quiet-arc-only, since it is the floor form -- that is a faint smear along the horizon and nothing else. Two thin dim ribbons is, for practical purposes, no aurora.
+
+The way out is the third variable, which had been sitting untouched at ~170-250 km: **the top of the band**. Both the hem angle and the top angle scale as 1/distance, so raising `alt1` restores the angular height that distance took away, at any distance. And it is nearly free in two separate ways. It is free physically, because rayed structures genuinely reach 300-400 km -- the red-topped tall rayed band is one of the most photographed shapes there is. And it is free in the shader, because the deposition profile is normalised over each column's own height (`h = (alt - base) / (top - base)`), so a 300 km column is a *bigger* band, not a dimmer one.
+
+Every form was re-sited a second time on that basis, as a **ladder rather than a shove**: a far low band whose hem is 0-5 degrees up, plus nearer bands that carry the mass. `multiple arcs` now runs 1,160 km / 620 / 300, from a band whose base is 0.2 degrees *below* the horizon to one reaching 38 degrees up -- 38 degrees of sky in one form, with a genuine below-the-horizon accent in it. The quiet arc is 960 km and 300 km, 1.7 to 40 degrees. Every named form is at least 10 degrees tall and ten of the twelve span 25 or more, against a headset field of view of about 50 degrees vertical.
+
+The horizon extinction was narrowed to match. It reached full brightness at 5.7 degrees, which is precisely the band of sky the curvature term had just been built to fill -- so it was deleting the thing it was supposed to make possible. Now half strength on the horizon line and full by 2.6 degrees. The hard cutoff below -2.6 stays, because it is what stops a band whose base has sunk below the horizon from being drawn out over open ground past the edge of the terrain, where there is no depth buffer to occlude it.
+
+Four checks were added, and they are the point of the round more than the numbers are. The gate now prints every form's vertical extent and asserts a floor on it, a floor on how many forms are "large", a separate floor on the always-on form, and a ceiling of 450 km on `alt1` so a form cannot buy its size by leaving the atmosphere. **A gate that measures where something is and not how big it looks will pass a catalogue that has been optimised into invisibility**, which is what happened, and it is the kind of failure that only a check written in the user's units can catch.
+
+### Round five: it was a polar graph, and the far plane was buying nothing
+
+Three complaints, and the first two turn out to be the same bug: *"they still seem like mostly straight, slightly wavery -- they're not folding back and forth on top of each other... the same segment never folds back over itself, but it should"*, *"many times the aurora should appear like just above the horizon, maybe even coming up from below the horizon, and quite large scale"*, and *"is that just a limitation of the shader?"*
+
+**It was a limitation, and it was one line.** The footprint was
+
+```glsl
+vec3 p = dir * ( dist + fold ) + vec3( 0.0, alt, 0.0 );
+```
+
+which is a **polar graph**: radius as a function of azimuth. A polar graph is single-valued in its angle by construction. No amplitude, no octave count and no noise seed can make it double back, because two points on the band can never share a bearing. It can wander toward and away from the viewer, and perspective turns that into a hem that rises and falls -- so it *flaps* -- but a fold-back is topologically unavailable. Every round up to four had been tuning the amplitude of a shape that could not fold.
+
+The fix is a **tangential** component. `aurFold` returns a `vec2` now: `x` along the footprint normal as before, `y` along the tangent, and the position is
+
+```glsl
+vec3 p = dir * gd + tng * f0.y + vec3( 0.0, alt - drop, 0.0 );
+```
+
+That makes the footprint a general parametric curve in the ground plane, and a general curve may loop. Walking the band, along-track speed is `1 + d(tangential)/d(km)`; where that goes negative the track reverses and the same stretch of sky gets two pieces of curtain, one behind the other. Being optically thin and additive, the overlap is *brighter*, which is what the photographs show.
+
+The tangential octaves are **the same noise sampled a quarter wavelength along**. A quarter-wave offset between two components traces a circle, so each octave contributes a loop rolled along the band -- the trochoid family, which is what an auroral curl physically is. Independent noise in the second axis was tried first and gives a curve that wanders in two axes without closing: jitter, not coiling.
+
+`curl` is the per-form tangential amplitude as a multiple of the radial one, and it is allowed past 1 because the two axes cost different things: the radial component is depth, which the eye barely reads at 300 km, while the tangential component is all visible.
+
+#### The gate had to grow a noise implementation
+
+"Does it fold back" cannot be read off a parameter -- two bands with identical `curl` fold a different number of times depending on fold wavelength, span and distance. So `aurHash`/`aurNoise`/`aurFold` are ported to JS in `check-daynight.mjs` (the uint32 wrap is `Math.imul(x >>> 0, k) >>> 0`), the footprint is walked, and the measurement is **the number of times its bearing reverses** -- zero being exactly the old polar graph. Measured per frame, worst band of each form:
+
+| | | | |
+|---|---|---|---|
+| quiet arc 5.4 | multiple arcs 6.3 | rayed band 15.5 | drapery 18.1 |
+| corona 8.6 | breakup 28.4 | omega band 2.9 | picket fence 4.6 |
+| STEVE 0.3 | vapour spiral 2.2 | rising column 4.3 | flaming aurora 12.4 |
+
+Two reversals is one loop. The gate asserts at least nine of twelve forms average two or more, that the always-on floor form is one of them, **and that at least one form stays straight** -- STEVE is a narrow ribbon, not a curtain, and a catalogue where everything writhes is as wrong as one where nothing does.
+
+The three structural octaves were also slowed about a third (0.020/0.055/0.130 -> 0.014/0.038/0.085). A fold that comes and goes in eight seconds reads as flicker; the same fold over twelve to fifteen seconds reads as the sheet winding and unwinding. The fourth octave stays fast on purpose: that one is the breakup flicker.
+
+#### The shell: the far plane was pricing something nobody could see
+
+The near-horizon half of the request was blocked by arithmetic. A 100 km band whose hem sits 4 degrees up is 1,400 km away; at 45 units/km that is 63,000 units against a 20,000-unit far plane. Three rounds had been spent trimming folds and altitudes to fit inside 444 km.
+
+But **an aurora's distance is not an observable.** It is sky-locked (walking the whole 16 km world moves it under 5 degrees) and 250 km is infinity to a 64 mm interpupillary baseline, so there is no parallax and no stereo disparity. Everything you can see about an aurora is its direction and its colour. So the finished position is normalised onto a shell at 14,000 units -- past the far corner of the world (11,600) and inside the far plane -- and distance becomes free.
+
+This *improves* occlusion rather than compromising it: every aurora fragment is now further away than every mountain, so the only thing that can hide an arc is a silhouette in front of it, which is the only thing that should.
+
+#### And then the Earth had to be round
+
+Freeing the distance was not enough on its own, because on flat ground elevation is `atan(alt / dist)` and a 100 km band at 1,200 km is still 4.8 degrees up -- it never reaches the horizon, it just asymptotes. The missing term is the ground falling away:
+
+```glsl
+float drop = gd * gd / 12742.0;   // d^2 / 2R, R = 6371 km
+```
+
+Under a band 1,000 km away the ground has dropped 78 km below the tangent plane you are standing on, so a base at 101 km altitude is 23 km above *your* horizontal -- 1.3 degrees, not 5.8. Past about 1,130 km the base has gone under the horizon and only the tops of the rays show. That is the requested sight, and it is not a hack: it is the single largest effect acting on where a distant band appears, and every photograph of a low arc is showing it.
+
+It is applied **only to the position**. `vShape` carries the true altitude, because altitude is what sets the colour and the deposition profile and neither cares where the observer stands. The gate asserts the ordering in the source, which makes the mistake structurally impossible rather than merely absent.
+
+It also uses `gd` (distance *including* the radial fold) rather than the band's nominal distance, so a stretch folding 60 km further out sinks another 11 km and the hem weaves across the horizon line for free -- the honest version of what the `swoop` hack approximates.
+
+#### Two lengths are now measured in degrees, not kilometres
+
+The **meander** and the **swoop** are the structures whose size the eye judges angularly. Left metric, a 1,000 km arc showed four times the swings of a 250 km one across the same span of sky -- texture instead of a course. Both are now scaled by `mScale = 250 / dist`, normalising them to a 250 km reference band. Everything else stays metric, because folds, curls and rays are real lengths and really should get finer with distance.
+
+The swoop also gained a cap, `min(fold, 26)`. Amplitude was tied to `fold` so a form has one sinuousness knob, but the far bands now carry folds of 60-130 km, and a hem sliding 60 km up and down is not a swoop -- it is the band leaving the altitude range that gives it its colour.
+
+Extinction was widened to match: `smoothstep(-0.05, 0.10, view.y)` from `(-0.03, 0.14)`. The old window reached full brightness by 8 degrees, which was fine when nothing was catalogued below 13 and would have deleted the picket fence and most of the far arcs outright.
+
+#### The catalogue, re-sited
+
+Distances went from 94-288 km to 94-1,180 km, and hems from 16-75 degrees to **-0.4 to 69**. Eight of twenty-nine bands sit within five degrees of the horizon, including the floor form's, so an ordinary night has a low arc. `picket fence` moved to 900 km, where it stands on the skyline at 2.3 degrees, which is how picket fences are actually seen. `corona` did not move at all -- it is the zenith form.
+
+`MAX_RADIUS_KM` changed meaning with everything else: it was a projection-matrix limit (365 km), it is now a physical one (1,600 km), the distance at which curvature has swallowed even the tallest band's top.
+
+Twelve forms, hems -0.4 to 69 degrees, and the same eleven slots and 35,640 triangles as round three.
 
 ---
 

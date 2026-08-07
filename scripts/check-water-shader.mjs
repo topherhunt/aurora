@@ -355,9 +355,10 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   const { Water } = await import('../src/water.js')
   const { Sky } = await import('../src/sky.js')
   const { WorldLighting } = await import('../src/lighting.js')
+  const { SkyProbe } = await import('../src/sky-probe.js')
 
   const scene = new THREE.Scene()
-  const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting() })
+  const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting(), probe: new SkyProbe() })
 
   const resolve = (src) => {
     let out = src
@@ -393,6 +394,55 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
       'normalMatrix', 'cameraPosition', 'isOrthographic', 'logDepthBufFC'])
     const missing = declared.filter((d) => !(d in water.material.uniforms) && !builtin.has(d))
     check(missing.length === 0, `${stage}: every declared uniform has a value`, missing.join(', '))
+
+    // USE BEFORE DECLARATION, which is the one that actually cost a release.
+    //
+    // GLSL wants declaration first, and JS does not, so main() reads as if it
+    // were fine right up until the driver refuses it. What that looks like from
+    // the outside is worth stating plainly: a ShaderMaterial that fails to
+    // compile does not draw a dimmer lake or an untextured one, it draws
+    // NOTHING. Every check above passed on a shader that rendered no pixels,
+    // because every one of them asks about uniforms and none of them asks
+    // whether the body is legal.
+    //
+    // Narrow on purpose, and that is what keeps it free of false positives: it
+    // only considers names it has already seen DECLARED inside main, so
+    // uniforms, varyings, built-ins and function names are not candidates. It
+    // takes each name's FIRST declaration, so the same local reused in two
+    // disjoint blocks -- which the wave layers do, with 'q' -- is not an error.
+    // Comments are stripped first or a comment naming a variable above its own
+    // declaration would fail it, which is exactly how the real bug read.
+    //
+    // It does not catch a name declared inside a nested block and used after
+    // that block closes. That is a different error and this does not claim it.
+    const mainAt = src.indexOf('void main(')
+    let body = ''
+    if (mainAt >= 0) {
+      const open = src.indexOf('{', mainAt)
+      let depth = 0
+      let i = open
+      for (; i < src.length; i++) {
+        if (src[i] === '{') depth++
+        else if (src[i] === '}' && --depth === 0) break
+      }
+      // Blanked rather than removed, so offsets keep meaning something.
+      body = src.slice(open, i).replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/\S/g, ' '))
+                              .replace(/\/\/[^\n]*/g, (m) => m.replace(/\S/g, ' '))
+    }
+    const TYPES = 'float|int|uint|bool|vec2|vec3|vec4|ivec2|ivec3|ivec4|bvec2|bvec3|bvec4|mat2|mat3|mat4'
+    const firstDecl = new Map()
+    for (const m of body.matchAll(new RegExp(`\\b(?:${TYPES})\\s+(\\w+)\\s*(?:=|;|\\[)`, 'g'))) {
+      const namePos = m.index + m[0].indexOf(m[1])
+      if (!firstDecl.has(m[1])) firstDecl.set(m[1], namePos)
+    }
+    const early = []
+    for (const [name, declPos] of firstDecl) {
+      const use = body.search(new RegExp(`\\b${name}\\b`))
+      if (use >= 0 && use < declPos) early.push(name)
+    }
+    check(mainAt >= 0 && early.length === 0,
+      `${stage}: no local is used above the line that declares it`,
+      mainAt < 0 ? 'no main() found' : early.length ? `${early.join(', ')} used before declared` : `${firstDecl.size} locals, all declared first`)
   }
 
   // The reverse direction: a uniform supplied but not mentioned anywhere means a
@@ -444,6 +494,113 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   check(at >= 0 && inBranch === detailLayers,
     'the detail layers are skipped at distance rather than computed and faded',
     at < 0 ? 'no distance branch found' : `${inBranch} of ${detailLayers} inside the branch`)
+
+  // --- the sky probe ----------------------------------------------------------
+  //
+  // Everything here fails silently and photogenically. A probe that captures
+  // the wrong layers gives a lake reflecting the terrain; one whose cameras
+  // were never oriented gives five copies of the same slice of sky; one that
+  // leaves scene.background set gives a lake full of flat fog grey. All of them
+  // still look like water.
+  const { SkyProbe: Probe, PROBE_LAYER, PROBE } = await import('../src/sky-probe.js')
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'main.js'), 'utf8')
+  const probeSrc = fs.readFileSync(path.join(ROOT, 'src', 'sky-probe.js'), 'utf8')
+  const p = new Probe()
+
+  // THE LAYER TRAP. three's XR manager does cameraL.layers.mask &= 0b011 and
+  // cameraR &= 0b101, so layers 1 and 2 belong to the eyes and the mask is
+  // three bits wide. An object on layer 1 or 2 renders to ONE eye, which in a
+  // headset reads as a headache rather than as a bug; on layer 0 the probe
+  // would capture the whole world.
+  check(PROBE_LAYER > 2, 'the probe layer is clear of the eye layers three reserves', `layer ${PROBE_LAYER}`)
+  check(p.rig.layers.mask === (1 << PROBE_LAYER),
+    'the probe camera sees its own layer and nothing else',
+    `mask ${p.rig.layers.mask.toString(2)}`)
+
+  // ...and the aurora must be ADDED to that layer, not moved to it. `set`
+  // clears layer 0, and the meshes vanish from both eyes while the probe keeps
+  // working perfectly.
+  const meshA = new THREE.Object3D()
+  const meshB = new THREE.Object3D()
+  Probe.include(meshA, meshB)
+  check(meshA.layers.test(new THREE.Layers()) && meshA.layers.mask === (1 | (1 << PROBE_LAYER)),
+    'included objects keep layer 0 and gain the probe layer',
+    `mask ${meshA.layers.mask.toString(2)}`)
+  check(/SkyProbe\.include\(\s*aurora\.mesh,\s*stars\.points\s*\)/.test(mainSrc),
+    'main.js includes both additive meshes, which are the only things worth capturing')
+
+  // Half float, because the aurora's dim end lives below one 8-bit step and
+  // quantising it would plate the curtain in the water while looking fine in
+  // the sky.
+  check(p.target.texture.type === THREE.HalfFloatType, 'the capture is half float, not 8-bit')
+
+  // Drive it with a stub renderer. No GL needed to prove the bookkeeping, and
+  // the bookkeeping is where the silent failures are.
+  const scene2 = new THREE.Scene()
+  scene2.background = new THREE.Color(0x9db4cf)
+  const seen = []
+  let backgroundDuringRender = 'never rendered'
+  const stub = {
+    coordinateSystem: THREE.WebGLCoordinateSystem,
+    xr: { enabled: true },
+    getRenderTarget: () => null,
+    getClearColor: (c) => c.setHex(0x123456),
+    getClearAlpha: () => 1,
+    setClearColor: () => {},
+    setRenderTarget: (t, face) => seen.push(face),
+    clear: () => {},
+    render: (s, cam) => {
+      backgroundDuringRender = s.background
+      seen[seen.length - 1] = { face: seen[seen.length - 1], dir: cam.getWorldDirection(new THREE.Vector3()), xr: stub.xr.enabled }
+    },
+  }
+  const head = new THREE.Vector3(10, 2, -30)
+  // Enough ticks to go all the way round the face cycle, at the real cadence.
+  for (let k = 0; k < PROBE.everyNFrames * 5; k++) p.update(stub, scene2, head)
+  const captures = seen.filter((s) => typeof s === 'object')
+
+  check(captures.length === 5, 'one face per update, five updates to go round', `${captures.length} captures in ${PROBE.everyNFrames * 5} frames`)
+  check(scene2.background !== null && backgroundDuringRender === null,
+    'scene.background is suppressed during the capture and restored after',
+    `during: ${backgroundDuringRender}, after: ${scene2.background ? 'restored' : 'LOST'}`)
+  check(stub.xr.enabled === true, 'renderer.xr is switched back on afterwards')
+  check(captures.every((c) => c.xr === false), 'and off during the capture, so three uses this camera rather than the eyes')
+
+  // The face cycle must cover five DISTINCT faces and skip -Y (index 3). Water
+  // folds the reflected ray into the upper hemisphere, so -Y is never sampled
+  // -- but if either side of that ever changes alone, the lake gets a black
+  // band where the aurora should be.
+  const faces = captures.map((c) => c.face)
+  check(new Set(faces).size === 5 && !faces.includes(3),
+    'the cycle covers five distinct faces and skips the one facing down',
+    `faces ${faces.join(', ')}`)
+  check(/if \( R\.y < 0\.0 \) R\.y = -R\.y;/.test(waterSrc),
+    'and the water folds its reflected ray up, so it never asks for that face')
+
+  // THE ORIENTATION TRAP. CubeCamera leaves all six cameras unrotated until
+  // updateCoordinateSystem() runs, which only its own update() calls. Miss it
+  // and every face captures the same slice of sky -- uniformly wrong, nothing
+  // obviously broken, and the reflection just never quite matches.
+  const axes = captures.map((c) => `${Math.round(c.dir.x)},${Math.round(c.dir.y)},${Math.round(c.dir.z)}`)
+  check(new Set(axes).size === 5, 'the five cameras point five different ways', axes.join('  '))
+  check(axes.includes('1,0,0') && axes.includes('-1,0,0') && axes.includes('0,1,0')
+     && axes.includes('0,0,1') && axes.includes('0,0,-1'),
+    'and they are the five axes the cube faces want', axes.join('  '))
+
+  // The capture carries additive light, so it is ADDED. Mixing it would replace
+  // the analytic sky with a 64-pixel copy of nothing wherever the aurora is not.
+  check(/refl \+= texture\( uProbe, R \)/.test(waterSrc),
+    'the water adds the captured light rather than mixing toward it')
+  // Nothing but the two additive meshes belongs in the capture: it is cleared
+  // to transparent black, and black is the honest value for "no aurora here".
+  check(/setClearColor\(\s*0x000000,\s*0\s*\)/.test(probeSrc),
+    'the capture is cleared to transparent black, which is the absence of aurora')
+
+  // Ordering in the frame loop. The probe binds a render target and toggles xr
+  // off; doing that after the XR framebuffer is bound puts the frame in the
+  // wrong buffer, and on a desktop canvas it would look completely fine.
+  check(mainSrc.indexOf('probe.update(') < mainSrc.indexOf('renderer.render(scene, camera)'),
+    'the probe runs before the frame is drawn, not after')
 }
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

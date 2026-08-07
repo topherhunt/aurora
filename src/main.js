@@ -18,6 +18,7 @@ import { Stars } from './stars.js'
 import { Aurora } from './aurora.js'
 import { WorldClock, CLOCK } from './clock.js'
 import { WorldLighting } from './lighting.js'
+import { SkyProbe } from './sky-probe.js'
 import { Measure } from './measure.js'
 import { Hud } from './hud.js'
 import { Tuner } from './tuner.js'
@@ -111,10 +112,17 @@ const lighting = new WorldLighting()
 // layers on top of it, both hidden entirely whenever their fade is zero.
 const sky = new Sky(scene)
 
-// Constructed AFTER those two on purpose: the water reflects the sky by calling
-// the dome's own shading function, and asks the horizon map where the mountains
-// are, and it takes both uniform blocks by reference. See water.js.
-const water = new Water(scene, { sky, lighting })
+// The aurora and the stars are meshes, so the analytic sky reflection cannot
+// see them. This captures those two and nothing else, five faces at 64 px, one
+// face per update. See sky-probe.js -- particularly the note on why they are
+// ENABLED on a second layer rather than moved to one.
+const probe = new SkyProbe()
+
+// Constructed AFTER those three on purpose: the water reflects the sky by
+// calling the dome's own shading function, asks the horizon map where the
+// mountains are, and adds the probe's aurora on top -- taking all three by
+// reference. See water.js.
+const water = new Water(scene, { sky, lighting, probe })
 // Nothing grows underwater. The village test comes first because it is a
 // distance check against a handful of sites, and heightAt is only paid on the
 // few candidates that land on a water cell at all -- levelAt is one array
@@ -148,6 +156,13 @@ for (const [mat, key] of [
 
 const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio() })
 const aurora = new Aurora(scene, { seed: SEED })
+
+// Both stay on layer 0 and keep rendering to both eyes exactly as before; this
+// only ADDS them to the probe camera's layer. Moving them would make them
+// invisible in the headset -- three reserves layers 1 and 2 for the eyes and
+// masks with three bits, so anything above layer 2 is drawn by neither. The
+// full trap is written out in sky-probe.js.
+SkyProbe.include(aurora.mesh, stars.points)
 
 // Phase A, in the browser, for the first time. It has existed since §2 and been
 // exercised only by map.html; the game itself has been running on the raw
@@ -654,6 +669,13 @@ function tick() {
 
   hud.setLines(hudLines(skyState))
   hud.paint(now)
+
+  // BEFORE the main render, and that ordering is load-bearing: the probe binds
+  // a render target and toggles renderer.xr off to get its own camera looked
+  // through. Doing it after the XR framebuffer is set up but before the scene
+  // is drawn would put the frame in the wrong buffer.
+  probe.update(renderer, scene, headTmp)
+
   renderer.render(scene, camera)
 }
 

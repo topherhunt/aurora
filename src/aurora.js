@@ -619,8 +619,11 @@ export class Aurora {
           // and it is what twist above cannot give: twist turns the ribbon,
           // shear slides the pattern along it, and a vortex needs both.
           float shear = F.z * ( alt - baseKm );
-          // The meander runs in degrees of sky, not kilometres -- see aurFold.
-          float mScale = 250.0 / A.x;
+          // mScale, declared once above, is what makes the meander run in
+          // degrees of sky rather than in kilometres -- see aurFold. It was
+          // declared a SECOND time here for one release, which is a GLSL
+          // redefinition error, which meant this shader did not compile and the
+          // aurora did not exist. Nothing else in the file may redeclare it.
           vec2 f0 = aurFold( km + shear, t, amp, B.w, uActivity, G.z, mScale );
 
           // Surface normal by finite difference along the footprint. Two extra
@@ -838,16 +841,17 @@ export class Aurora {
           // ---- Atmospheric extinction near the horizon. The far arcs' bases
           // sit low, and light from them crosses a great deal of air.
           //
-          // Widened and dropped once the curvature term put real bands at and
-          // below the horizon line. The old window reached full brightness by 8
-          // degrees and cut off at -1.7, which was fine when nothing was
-          // catalogued below 13; against the present catalogue it would have
-          // deleted the picket fence and most of the far arcs outright. Now: a
-          // hem sitting exactly on the horizon is a fifth as bright, full
-          // strength arrives by about 6 degrees, and anything that has sunk
-          // below -2.9 degrees is gone -- which is also what keeps a band whose
-          // base is under the horizon from being drawn through the ground.
-          float ext = smoothstep( -0.05, 0.10, view.y );
+          // Narrowed again in round six. The window reached full brightness at
+          // 5.7 degrees, which sounds harmless until you notice that the whole
+          // point of the curvature term is to put band hems between 0 and 6 --
+          // so the term was cutting exactly the part of the sky it had just
+          // been built to fill, and a 900 km arc came out at a fifth strength
+          // over its lowest few degrees. Now: half strength on the horizon
+          // line, full by 2.6 degrees, gone below -2.6. The cutoff stays,
+          // because it is what stops a band whose base has sunk below the
+          // horizon from being drawn out over open ground past the edge of the
+          // terrain, where there is no depth buffer to occlude it.
+          float ext = smoothstep( -0.045, 0.045, view.y );
 
           // 0.80 rather than 0.46 because vMod.x now carries the presence
           // envelope, whose typical value is about 0.3. Net effect: an average

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- prop library</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+      button:disabled { opacity: .4; cursor: default; }
+
+      /* --- left: the list ---------------------------------------------- */
+      #browser { flex: 0 0 268px; display: flex; flex-direction: column; border-right: 1px solid var(--edge); background: var(--panel); }
+      #browser > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #search { width: 100%; margin-bottom: 6px; }
+      #filters { display: flex; flex-wrap: wrap; gap: 4px; }
+      #filters button { padding: 2px 6px; font-size: 11px; }
+      #list { flex: 1 1 auto; overflow-y: auto; padding: 4px; }
+
+      .item {
+        display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
+        padding: 3px 6px; border: 1px solid transparent; background: none; border-radius: 3px;
+      }
+      .item:hover { background: #12203a; }
+      .item.sel { background: #1d3a5f; border-color: #4a7fbf; }
+      .item .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .item .tr { flex: 0 0 auto; color: var(--dim); font-size: 11px; }
+      .item .cl { flex: 0 0 7px; height: 7px; border-radius: 50%; align-self: center; }
+      .cl-large { background: #6fbf73; } .cl-medium { background: #c9a227; }
+      .cl-small { background: #57b6c9; } .cl-structure { background: #c96f9c; }
+      .group { padding: 10px 6px 2px; color: var(--dim); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+
+      /* --- centre: the viewport ---------------------------------------- */
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      /* Top-left, not bottom-left: the toolbar is centred on the bottom edge and
+         the two overlapped as soon as the stage got narrow. */
+      #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
+      #toolbar {
+        position: absolute; left: 50%; transform: translateX(-50%); bottom: 10px;
+        display: flex; gap: 6px; align-items: center; background: var(--panel);
+        border: 1px solid var(--edge); border-radius: 6px; padding: 6px 8px;
+      }
+      #toolbar .sep { width: 1px; align-self: stretch; background: #1b2c44; margin: 0 2px; }
+      #toolbar label { color: var(--dim); }
+
+      /* --- right: the stats -------------------------------------------- */
+      #stats { flex: 0 0 320px; overflow-y: auto; padding: 10px 12px; border-left: 1px solid var(--edge); background: var(--panel); }
+      #stats h1 { margin: 0; font-size: 15px; font-weight: normal; color: #eaf3ff; word-break: break-all; }
+      #stats .sub { color: var(--dim); margin-bottom: 4px; }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 1px 0; vertical-align: top; }
+      td:first-child { color: var(--dim); padding-right: 8px; white-space: nowrap; }
+      td.num { text-align: right; }
+      .lods th { color: var(--dim); font-weight: normal; text-align: left; font-size: 11px; }
+      .lods td, .lods th { padding: 1px 6px 1px 0; }
+      .lods tr.act td { color: #eaf3ff; }
+      .sheet { display: flex; gap: 8px; flex-wrap: wrap; }
+      .sheet figure { margin: 0; }
+      .sheet img {
+        width: 128px; height: 128px; image-rendering: pixelated; display: block;
+        border: 1px solid var(--edge); background: repeating-conic-gradient(#1a2434 0 25%, #101827 0 50%) 0 0 / 16px 16px;
+      }
+      .sheet figcaption { color: var(--dim); font-size: 11px; }
+      .warn { color: #ffb26b; }
+      .note { color: var(--dim); }
+      .path { color: var(--dim); font-size: 11px; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <!--
+      The prop library browser. DESIGN.md §9 built 160 assets and
+      `scripts/check-props.mjs` asserts they are correct; neither of those lets
+      you SEE one. This page is the eye for the asset pipeline the way map.html
+      is the eye for Phase A -- every "does this read as a birch at 40 m" and
+      "is the impostor good enough" question needs a render, not an assertion.
+
+      Not shipped to the headset: a fourth Vite entry alongside the game, the §0
+      spike and the Phase A map.
+    -->
+    <div id="browser">
+      <header>
+        <input id="search" type="search" placeholder="filter by name..." autocomplete="off" />
+        <div id="filters"></div>
+      </header>
+      <div id="list"></div>
+    </div>
+
+    <div id="stage">
+      <div id="toolbar">
+        <label>lod</label><span id="lodBtns" style="display:flex;gap:4px"></span>
+        <span class="sep"></span>
+        <button id="swayBtn">sway</button>
+        <button id="spinBtn">spin</button>
+        <span class="sep"></span>
+        <label><input type="checkbox" id="refBox" checked /> 1.75 m ref</label>
+      </div>
+      <div id="hint">drag to orbit &middot; scroll to zoom &middot; right-drag to pan &middot; up/down to step through</div>
+    </div>
+
+    <div id="stats">loading manifest...</div>
+
+    <script type="module" src="/src/props-main.js"></script>
+  </body>
+</html>

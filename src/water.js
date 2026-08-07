@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { WORLD_HALF } from './sim/terrain-height.js'
 import { SKY_GLSL } from './sky-glsl.js'
 import { SAMPLE_GLSL } from './lighting.js'
+import { PROBE } from './sky-probe.js'
 
 /**
  * Lake surfaces (§11), built from Phase A's lake mask.
@@ -109,11 +110,21 @@ export const WATER = {
   detailFrom: 45,
   detailTo: 380,
 
-  // Brightness of the broadened sun and moon highlights. The moon's is high
-  // because a moonlit lake is mostly this: the moon is 400,000 times dimmer
-  // than the sun, but the glitter path is the brightest thing in a night scene.
-  sunGlitter: 1.5,
-  moonGlitter: 2.6,
+  // Brightness of the sun and moon highlights, and they are deliberately past
+  // 1.0: the glint is thresholded (see below), so the core clips to white and
+  // only the rim keeps its tint. The moon's is higher because a moonlit lake is
+  // mostly this -- the moon is 400,000 times dimmer than the sun, but the
+  // glitter path is the brightest thing in a night scene.
+  sunGlitter: 3.0,
+  moonGlitter: 5.0,
+
+  // Where the glint switches on, and how sharply. Sun glitter is not a smooth
+  // falloff: a facet either points at the light or it does not, so what the eye
+  // gets is crisp specks of blown-out white in dark water. `glintEdge` is the
+  // lobe value the speck starts at; `glintWidth` is how wide the transition is,
+  // and the whole point is that it is narrow.
+  glintEdge: 0.45,
+  glintWidth: 0.06,
 
   // Where a mountain blocks the sky. The colour is the mountain's own deep
   // blue rather than a dimmed copy of the sky, because a dimmed copy of a grey
@@ -124,9 +135,9 @@ export const WATER = {
   // the floor it never drops below, `silhouetteGain` how fast it follows the
   // sky up -- because a silhouette that is black at noon looks like a hole cut
   // in the lake, and one that is slate grey at midnight glows.
-  silhouetteTint: 0x2a4a72,
-  silhouette: 0.05,
-  silhouetteGain: 3.0,
+  silhouetteTint: 0x14243f,
+  silhouette: 0.015,
+  silhouetteGain: 0.8,
 
   // What the reflection loses on the way back out. Every reflection comes back
   // dimmer and bluer than the thing it reflects: the surface transmits some of
@@ -299,9 +310,10 @@ export class Water {
    * the same sampler the terrain's shadows do (see lighting.js). Both must
    * therefore be constructed before the water.
    */
-  constructor(scene, { sky, lighting }) {
+  constructor(scene, { sky, lighting, probe }) {
     if (!sky?.uniforms) throw new Error('Water needs the Sky, for the reflection')
     if (!lighting?.uniforms) throw new Error('Water needs WorldLighting, for the horizon map')
+    if (!probe?.texture) throw new Error('Water needs the SkyProbe, for the aurora and stars')
 
     this.scene = scene
     this.group = new THREE.Group()
@@ -334,6 +346,11 @@ export class Water {
       uReflTint: { value: new THREE.Color(WATER.reflTint).multiplyScalar(WATER.reflDim) },
       uDetail: { value: new THREE.Vector2(WATER.detailFrom, WATER.detailTo) },
       uGlitter: { value: new THREE.Vector2(WATER.sunGlitter, WATER.moonGlitter) },
+      uGlint: { value: new THREE.Vector2(WATER.glintEdge, WATER.glintWidth) },
+      // The aurora and the stars, which are meshes rather than functions of
+      // direction and so cannot be answered analytically. See sky-probe.js.
+      uProbe: { value: probe.texture },
+      uProbeGain: { value: PROBE.gain },
     }
 
     this.material = new THREE.ShaderMaterial({
@@ -364,10 +381,35 @@ export class Water {
         uniform vec3 uReflTint;
         uniform vec2 uDetail;
         uniform vec2 uGlitter;
+        uniform vec2 uGlint;
+        uniform samplerCube uProbe;
+        uniform float uProbeGain;
         ${SKY_GLSL}
         ${SAMPLE_GLSL}
         ${WAVE_GLSL}
         #include <fog_pars_fragment>
+
+        // Sun and moon glitter, and it is a THRESHOLD rather than a falloff.
+        //
+        // pow( d, sharp ) is the statistical answer: the average brightness
+        // over all the facets inside one pixel. That is exactly right for water
+        // too far away to resolve a single wavelet, and exactly wrong for water
+        // at your feet, where a facet either points at the light or it does not
+        // and what you actually see is crisp specks of blown-out white sitting
+        // in dark water with nothing in between.
+        //
+        // So how hard the threshold bites rides on 'near': hard up close where
+        // a pixel is a fraction of one wavelet, relaxing back to the smooth
+        // lobe at range. Doing it the other way round -- thresholding distant
+        // water -- turns every pixel into a coin flip as the head moves, which
+        // is the specular aliasing the whole distance-fade machinery exists to
+        // avoid. Above the threshold the value is 1.0 and the gains are all
+        // greater than 1, so the core clips to white and only the rim of each
+        // speck keeps the tint of the body that lit it.
+        float glint( float d, float sharp, float near ) {
+          float lobe = pow( d, sharp );
+          return mix( lobe, smoothstep( uGlint.x - uGlint.y, uGlint.x + uGlint.y, lobe ), near );
+        }
 
         void main() {
           vec3 toEye = cameraPosition - vWorldPos;
@@ -423,6 +465,14 @@ export class Water {
           // a crisp ridgeline. Both are the intended lo-fi, not a compromise.
           float blocked = wlBlocked( vWorldPos.xz, R );
 
+          // Declared here, next to what it is derived from, and used twice
+          // below -- by the probe and by the glitter. It lived down with the
+          // glitter until the probe started using it too, which put a use above
+          // its declaration and cost the whole material: GLSL wants declaration
+          // first, and a ShaderMaterial that fails to compile does not draw a
+          // dimmer lake, it draws nothing at all.
+          float lit = 1.0 - blocked;
+
           // The mountain's own deep blue, brightened by however bright the sky
           // at the horizon is. Not a dimmed copy of the sky: dimming a grey
           // dawn gives a grey mountain, and what reads as land-against-sky is a
@@ -433,16 +483,28 @@ export class Water {
           float horizonLuma = dot( uHorizon, vec3( 0.2126, 0.7152, 0.0722 ) );
           refl = mix( refl, uSilTint * ( uSilhouette.x + horizonLuma * uSilhouette.y ), blocked );
 
+          // The aurora and the stars, which no function can answer -- both are
+          // meshes, so they are captured instead (sky-probe.js) and ADDED here.
+          // Added, not mixed, because that is exactly how they are composited
+          // into the sky itself: both draw additively over the dome, so the
+          // reflected version agrees with the real one by construction rather
+          // than by being tuned to match it.
+          //
+          // After the silhouette and scaled by the lit term, so a ridge hides the
+          // aurora's reflection the same way it hides the aurora. Tinted like
+          // everything else, because it loses the same light on the way back
+          // out of the surface as the sky behind it does.
+          refl += texture( uProbe, R ).rgb * ( uProbeGain * lit ) * uReflTint;
+
           // The glitter path. Broadening the lobe with distance is the other
           // half of the anti-aliasing above; multiplying by (1 - blocked) means
           // a mountain hides the moon's reflection the same way it hides the
           // moon.
           float sharp = mix( 190.0, 2600.0, near * near );
-          float lit = 1.0 - blocked;
           float sd = max( dot( R, uSunDir ), 0.0 );
           float md = max( dot( R, uMoonDir ), 0.0 );
-          refl += vec3( 1.0, 0.94, 0.82 ) * ( pow( sd, sharp ) * uGlitter.x * uSunFade * lit );
-          refl += vec3( 0.86, 0.91, 1.0 ) * ( pow( md, sharp ) * uGlitter.y * uMoon.y * lit );
+          refl += vec3( 1.0, 0.94, 0.82 ) * ( glint( sd, sharp, near ) * uGlitter.x * uSunFade * lit );
+          refl += vec3( 0.86, 0.91, 1.0 ) * ( glint( md, sharp, near ) * uGlitter.y * uMoon.y * lit );
 
           // Fresnel. Straight down you see some of the body of the water;
           // edge-on you see nothing but sky. This is the term that makes a flat
@@ -451,21 +513,52 @@ export class Water {
           float f = pow( 1.0 - clamp( dot( -V, N ), 0.0, 1.0 ), 5.0 );
           float mirror = mix( uMirrorDown, 1.0, f );
 
-          gl_FragColor = vec4( mix( uTint, refl, mirror ), 1.0 );
+          vec3 color = mix( uTint, refl, mirror );
 
-          // three's own order, and it is not the intuitive one: fog is applied
-          // AFTER the trip to output space, because fogColor is treated as
-          // already being in it. Doing fog in linear here would fade distant
-          // water toward a different colour than the terrain beside it fades
-          // to, and the seam would appear exactly at the horizon where FOG_COLOR
-          // and the sky's uHorizon were matched so carefully (main.js).
+          // FOG, AND THE WATER IS EXEMPT FROM THE NIGHT RULE.
           //
+          // Everything else in the world fades toward scene.fog, whose colour
+          // is pulled well below the sky's after dark on purpose -- it is what
+          // hides the far terrain the moon is not bright enough to light. Water
+          // must not obey that. A lake at distance is seen at a grazing angle,
+          // where Fresnel is essentially 1, so it is a near-perfect mirror of
+          // the sky just above the horizon -- which is why a lake at night
+          // reads BRIGHTER than the land around it, not darker. Fading it to
+          // the terrain's black is the one thing that unmistakably says
+          // "painted surface".
+          //
+          // So the distance term stays -- air still softens contrast over
+          // kilometres -- but it fades toward the sky along the horizontal part
+          // of the view ray instead. At full distance a water pixel becomes
+          // exactly skyRadiance at the horizon, which is exactly what the dome
+          // behind it is drawing, so the two meet with no seam at all. That is
+          // a better match than fogColor ever gave, and it costs one more call
+          // to a function this shader already has.
+          //
+          // Done in LINEAR, before the trip to output space, which is the
+          // opposite of three's own order -- three fogs afterwards because
+          // fogColor is authored in output space. The sky value here is linear,
+          // so the mix belongs on this side of the conversion. The dome does
+          // the same thing in the same order, which is the whole point.
+          #ifdef USE_FOG
+            vec2 flatV = V.xz;
+            float flatLen = max( length( flatV ), 1e-4 );
+            vec3 horizonDir = vec3( flatV.x / flatLen, 0.0, flatV.y / flatLen );
+            #ifdef FOG_EXP2
+              float fogAmt = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+            #else
+              float fogAmt = smoothstep( fogNear, fogFar, vFogDepth );
+            #endif
+            color = mix( color, skyRadiance( horizonDir, 0.0 ) * uReflTint, fogAmt );
+          #endif
+
+          gl_FragColor = vec4( color, 1.0 );
+
           // tonemapping is a no-op today -- the renderer sets none -- and is
           // here so that turning it on does not leave the water as the one
           // surface in the world that ignored it.
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
-          #include <fog_fragment>
         }
       `,
     })
