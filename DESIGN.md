@@ -541,14 +541,28 @@ Measured at step 2, `res 16 / splitK 1.1 / MAX_DEPTH 10`: 304 leaves, 195k tris 
 
 1.1, 1.2 and 1.3 are one plateau. A visible quality jump between 1.0 and 1.1 is that boundary and nothing else -- so 1.1 is the default (cheapest K on its plateau), going up to 1.3 is free, and dropping to 1.0 buys back a real 60k triangles. Regenerate the table by sweeping `selectNodes()` over the `CAMS` list in `check-sim.mjs` section 5.
 
-**Prop LOD:**
+**Prop LOD: two mesh tiers plus the impostor, and the ladder is per size class.** Derived in `scripts/probe-prop-lod.mjs`, which prints the whole argument; the short version is below. The table this replaces assumed one chain served every prop and that triangles were what forced the crossovers. Neither is true.
 
-| Range | Treatment |
-|---|---|
-| 0-30 m | Full mesh (~600 tris) |
-| 30-80 m | Reduced mesh (~150 tris) |
-| 80-500 m | Cross-quad billboard (4 tris), per-instance random Y-rotation so the forest does not shimmer with a visible grain |
-| > 500 m | **No individual objects at all** |
+| Class | Mesh tiers | Billboard | LOD0 to | Card from | Cull | Count |
+|---|---|---|---|---|---|---|
+| **large** (trees) | 500, 130 | 3 quads | 30 m | 130 m | 260 m | 93 |
+| **structure** (cabins, tower, mill) | 1800 | 3 quads | 60 m | 170 m | 400 m | 5 |
+| **medium** (boulders, stumps, logs, bushes) | 150, 40 | none | 22 m | -- | 95 m | 38 |
+| **small** (grass, ferns, flowers) | 16 | none | 26 m | -- | 26 m | 11 |
+
+**Triangles are not what binds.** The prop budget is 545k (800k ceiling − 195k terrain − 60k everything else), trees get about half of it, and at a dense-forest 0.08 stems/m² the whole 30/130/260 chain costs 215k -- 79% of the tree budget, with the crossovers set by perception rather than by arithmetic. Pushing LOD0 out to where its triangles stop being worth it would put it past 400 m.
+
+**Parallax is what binds.** A billboard's defect is not that it lacks detail -- a 128 px impostor carries more foliage than a 45-triangle decimated conifer does. Its defect is that it does not turn as you walk past it, and that error is an angle, `atan(depth / distance)`, which no triangle count touches. Under ~2° it stops reading as wrong at walking pace, which gives the rule the table above is built from:
+
+> **billboard crossover ≈ prop depth ÷ tan(2°) ≈ depth × 28.6**
+
+That is 120 m for a 4.2 m deep tree, ~170 m for a 6 m deep cabin, and 17 m for a 0.6 m boulder. The rule scaling with prop size is why the ladder is per class and not global: a boulder's crossover falls *inside* its cull radius, so medium props never get a card at all, and small props get one tier and a hard cull.
+
+**Why not a third mesh tier.** Compared at equal budget, a third tier does push real geometry from 151 m out to 234 m. But what it puts there is a 45-triangle conifer at 94 px with no needles and no silhouette, replacing a 128 px impostor of the real canopy whose only defect -- parallax -- is already under 2° at that range. The third tier spends a geometry slot, a build step and a pop event to install a *worse* representation. Two mesh tiers.
+
+**Density is the lever, not the tier count.** Cost moves linearly with stems/m² and only quadratically with the crossovers, so "chaotically lush" is bought by raising density, and it is affordable to ~0.2 stems/m² before triangles bind. Tune density first and treat the LOD table as downstream of it.
+
+⚠️ **The untested regime is instance count, not triangle count.** At 0.08/m² a 30/130/260 chain puts ~4,500 instances in view, most of them 6-triangle cards. §0 measured 8,000 instances but at ~190 tris each, where the scene was geometry-bound long before per-instance bookkeeping mattered; thousands of 6-tri billboards is the opposite regime and §0 records it as explicitly untested. Read this off the HUD on the next headset visit. It is also why clump impostors below are a planned tier rather than an optimisation -- one quad per ~20 trees takes the far band to ~226 instances, well inside what §0 did measure.
 
 **Beyond 500 m: bake the forest into the terrain.** Use the same noise field that *would have* placed trees to modulate the terrain material's albedo and normal (darker, greener, mottled), plus sparse "forest clump" billboards where one quad represents ~20 trees. This is what shipped open-world games do. Sparse individual billboards at distance look like a comb-over; a modulated terrain material reads as continuous forest cover and costs essentially nothing.
 
@@ -593,6 +607,27 @@ Paths are what turn a heightfield into a place. Generate as least-cost routes (A
 - Flatten terrain slightly along the corridor
 
 The slope penalty is what makes paths switchback up mountainsides naturally rather than beelining. It also means A\* failing to find a route is a **signal that the terrain is not traversable**, which feeds §4's connectivity validation.
+
+### Villages (`src/village/plan.js`, `src/village/shapes.js`, `src/village/village.js`)
+
+Villages are split in three, and the split is the load-bearing decision. `plan.js` is pure data with **no three.js import at all**, under the same §1 rule as `src/sim/*` -- which is what lets `scripts/check-village.mjs` plan six real sites headlessly and assert things a screenshot cannot: that no road runs through a building, that every door is within 3 m of a path, that every field fence closes, that no plinth floats. `shapes.js` is the geometry kit and knows nothing about layout. `village.js` is the runtime and knows nothing about either.
+
+**Siting is not here.** Phase A already scores village cells on proximity to fresh water and rejects anything in a lake (`VILLAGE` in `phase-a.js`). `Villages.setSites()` takes those positions and has no opinion about them, so when lakes land and the macro structure moves, the villages move with it and nothing in these three files changes. `main.js` currently passes one stand-in site near spawn because Phase A is not wired into the runtime yet, only into `map.html`; that block is marked temporary and is the only temporary thing about the village.
+
+**There is no flat ground to build on, and that is the whole design problem.** Measured over low ground: neighbourhood-average slope p1 10.3 deg, p25 16.9 deg, p50 21.2 deg. So nothing is placed on the assumption of a level pad. Buildings **terrace**: the floor is set at the highest corner of the footprint and a stone plinth grows *down* from it, which is how a real hillside farmstead is built and also means a building can never float. Halls and fields **run along the contour** -- they are yawed to the local strike, not to a random bearing, because a 17 m hall laid across the fall line either floats a metre at one end or buries itself at the other.
+
+The zoning is concentric and every radius is one constant in `VILLAGE_PLAN`: plaza 12 m, ring 31 m, core 48 m, work 76 m, fields 88-122 m. Market stalls and the well in the plaza; the great hall on the plaza rim; dwellings in the core; barns, sheds and workshops in the work band; fenced crop plots and pasture in the outer ring. Arteries leave the plaza on their own bearings and every door gets a spur routed to the nearest path -- routed *around* buildings, with four candidate joins and four bend scales tried, because the first version cheerfully drew a footpath through a workshop wall.
+
+Four decisions worth keeping:
+
+- **Paths are ribbon geometry, not a splat channel.** §7's packed-dirt channel is the right answer for long-distance paths across a chunk, but a village lays ~1,100 m of path inside 240 m and the splat mask's resolution is the chunk's, not the village's. A ribbon is four vertices per polyline point (feathered edge, surface, surface, feathered edge), height-sampled per vertex so it lies on the ground, with `polygonOffset` to beat z-fighting. Cost measured: 918 path triangles for the whole village.
+- **The static parts are one merged mesh, not a `BatchedMesh`.** The scatter uses batching because trees stream continuously and per-instance culling earns its keep. A village is ~450 static pieces all within 240 m of each other -- per-instance culling would cull nothing and charge a matrix upload per piece per frame. Merged, the entire village is **one draw call**.
+- **Fire is instanced, and no light is attached to it.** §5 allows exactly one real-time light and the sun has it. Torches and bonfires are emissive `MeshBasicMaterial` geometry that flickers on two incommensurable sines, so the flicker never settles into a visible beat, and the flame widens as it shortens -- a flame that only scales in Y reads as a pulsing cone.
+- **Smoke is opaque and shrinks to nothing.** §7 forbids alpha blending in anything instanced, because blending inside a batch cannot be depth-sorted. So each puff is a pure function of `time + phase` -- no state, no per-frame allocation, identical if the village unloads and returns -- that grows as it rises, drifts on an accelerating wind, and scales through zero instead of fading.
+
+Measured, six real Phase A sites, seed 20260804: plan 2.9-7.0 ms (one frame, once, on approach); 283-453 pieces; 9-15 dwellings; 4-7 fenced plots; 21-29 lampposts; 2-3 bonfires; 25-30 paths totalling 874-1,192 m; ~1,100-1,850 terrain probes. Runtime: **24.5k village triangles + 0.9k path triangles in one draw call**, from a kit of 45 geometries totalling 5.6k triangles -- 3% of the §5 budget. Geometry generation is 19.2 ms, spread over 4 frames against a 2.5 ms budget with a worst frame of 8.8 ms, so walking up to a village does not hitch.
+
+The village also feeds the scatter an exclusion predicate (`Villages.excludes`), injected as a callback rather than imported, so the scatter never has to know villages exist. Grass is deliberately exempt outside the plaza: a 136 m circle with no grass in it reads as a bald patch from the ridge above, and grass between the huts is correct anyway.
 
 ---
 
@@ -710,6 +745,36 @@ Blend by distance. **If the fine tier proves too expensive, ship the global tier
 - **AO baked into each asset's own texture/vertex colors** during the Blender pass
 - One real-time directional light for sun/moon. Nothing else
 
+### What shipped
+
+`src/clock.js` (no three.js import, so the gate can run it in node), `src/sim/horizon.js`, `src/lighting.js`. Gated by `scripts/check-daynight.mjs`.
+
+**The clock.** 24 real minutes = 24 in-world hours as specified. Latitude 65 N, declination -4 deg, which is early November at the top of Norway: the sun culminates at 21 deg, so shadows are long *all day*, not only at dawn -- that is the whole reason for the latitude. Day length is 10.85 h, leaving a 13-hour night to put an aurora in. `N` (or the right grip in VR) skips 6 in-world hours.
+
+The clock's `elapsed` counter is monotonic and never wrapped; only the *displayed* hour wraps. That matters because the aurora's substorm noise is indexed on `elapsed` -- if the skip wrapped the counter, skipping forward a full day would land you on a byte-identical sky.
+
+**The palette.** A 10-row keyframe table indexed on **sun elevation**, not on clock hour. Elevation is the physically meaningful variable -- it is what actually determines how much atmosphere the light is crossing -- and keying on it means the whole table stays correct if the latitude or the date ever changes. Rows at +25, +12, +5, +1, -1, -4, -6, -12, -18 and -90 deg; the tight cluster between +5 and -6 is where the entire sunset happens. Each row carries sky horizon and zenith colour, horizon glow colour/amount/sharpness, sun colour and intensity, hemisphere sky/ground/intensity, fog colour and density, star fade, moon brightness and the aurora ceiling. The daytime horizon colour is the pre-existing `FOG_COLOR`, so **noon looks exactly as it did before this work**.
+
+The gate sweeps this table at 20,000 steps and fails on any channel step above 0.009. A keyframe accidentally typed out of order is otherwise a two-frame flash at dusk that nobody is wearing the headset to see.
+
+**Sun and moon share one directional light.** The handover happens at -6 deg sun elevation, where the palette has already taken sun intensity to exactly 0 -- so the direction snaps while the light contributes nothing, and the snap is unobservable. Crossfading the *direction* instead would swing every shadow in the world through angles neither body ever occupies.
+
+**The moon** is a genuine crescent: 19% lit, rising once a day and up for essentially the whole dark. That fraction is art direction and `clock.js` says so out loud -- a real 19% crescent sets shortly after the sun and would be gone by the time the aurora starts. What is *not* faked is the terminator's **orientation**, which is derived from the true sun direction every frame, because the angle of the horns against the sky is the part the eye actually checks.
+
+**The horizon bake** is the interesting piece. Naive raymarching of 1024² texels x 16 azimuths is ~23 billion samples. Instead `bakeHorizon` uses **Stewart's (1998) O(n) upper-convex-hull line sweep**: for each azimuth, walk the grid as a family of near-parallel lines, and sweep each line backwards maintaining the upper hull of the points behind you. The maximum slope from any point to anything ahead of it is always on that hull, so it falls out in amortised O(1) per cell. That is ~25M point visits: **533 ms for 1024² x 16 azimuths**, run inside the existing Phase A worker on `result.elev`, so it costs nothing beyond those 533 ms.
+
+The line enumeration is the part that wants care. The obvious scheme does not cover every cell exactly once, and a missed cell keeps its initial horizon of zero -- which reads as a pinprick of *full sunlight* in the middle of a mountain shadow. The shipped version offsets by an integer that is a bijection onto the minor axis for each major-axis step, and the gate checks the result against brute force: **max error 0.1751 deg, exactly half the byte quantisation step**, i.e. the sweep is exact and quantisation is the only error. That step is in turn 8x finer than the 1.5 deg penumbra, so it is invisible.
+
+The same pass accumulates `mean_a(cos^2(h_a))`, the closed-form cosine-weighted fraction of visible sky, into the AO map for free -- with a 0.16 floor, because this is the *only* ambient occlusion term in the scene and true black in a crevice is worse than a slightly lifted one.
+
+**Two shading granularities.** Terrain samples the horizon map **per fragment**; props and village geometry sample it **per vertex** and pass a `vec2` varying. Terrain has to be per-fragment because far-LOD triangles are 64 m across and per-vertex shading would pin every shadow edge to a quadtree boundary. Props are the triangle budget, and a tree is small against a mountain shadow, so per-vertex is not a compromise there -- it is the right answer.
+
+`WorldLighting.patch()` chains onto any existing `onBeforeCompile` rather than replacing it, which is how the terrain keeps its own surface-grain patch. The gate runs those patches against three.js's real `ShaderLib.lambert` source and asserts the injected identifiers are present, because **a `String.replace` that matches nothing returns the string unchanged** -- a three.js version bump that renames a chunk would silently delete every shadow in the game while everything still compiled and rendered.
+
+The uniforms are shared **by reference** into each compiled shader, so the horizon maps can land four seconds after the world is already on screen with no recompile and no pop. Until they arrive a flag uniform makes the sampler functions early-return 1.0.
+
+The per-chunk fine tier above was **not** built, as anticipated: the global tier plus the AO bake carries it.
+
 ---
 
 ## 9. Asset pipeline
@@ -719,8 +784,7 @@ Blend by distance. **If the fine tier proves too expensive, ship the global tier
 `tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/` -- 150 Quaternius CC0 meshes in OBJ/FBX/Blend. Key findings from inspection:
 
 - **No textures and no UVs at all.** Each mesh carries 2-3 materials that are solid `Kd` colors (`Green`, `Wood`). Flat-shaded.
-- Poly counts are above target: `CommonTree_1` = 1,444 tris, `PineTree_1` = 958, vs. a 600-tri LOD0 budget. **Decimation is required even for these.**
-- `Rock_1` = 36 tris. Rocks are already fine.
+- Poly counts are above target. ⚠️ **Corrected:** the counts first recorded here were *quads*, not triangles, and were therefore half the real cost. Measured after triangulation: `CommonTree_1` = **2,888** tris (recorded 1,444), `PineTree_1` = **1,920** (recorded 958), `Rock_1` = **70** (recorded 36). `len(mesh.polygons)` is the trap -- see `tools/props/common.py:tri_count`. **Decimation is required even for these**, and by twice as much as it looked.
 - **`_Snow` variants exist for nearly every species** (`PineTree_Snow`, `CommonTree_Snow`, `BirchTree_Snow`, `Bush_Snow`, `Rock_Snow`, `TreeStump_Snow`, `Willow_Snow`). Directly usable for a snowy mountainscape and for a snow-accumulation swap.
 - ~40 distinct species prefixes, most with 5 variants each. Ample variety for the whole project.
 
@@ -795,23 +859,46 @@ Since texture sharing is unavailable, variety has to be generated in the **shade
 
 This is a better fit for an AI-generation pipeline than texture reuse would have been: Meshy produces *shapes*, and the shader produces *variation on* those shapes.
 
-### Headless Blender pass
+### Headless Blender pass -- built, `tools/props/`
 
-Fully scripted: `blender --background --python pipeline.py`
+Blender 5.2 LTS. `npm run props` (finds Blender on PATH, falls back to the macOS bundle path); `npm run props:manifest` regenerates the asset list; `npm run check` gates the output via `scripts/check-props.mjs`.
 
-1. **Import** OBJ/FBX/GLB
-2. **Decimate** to per-LOD budgets (600 / 150 / billboard)
-3. **Bake AO** into the asset's own texture
-4. **Downscale** each texture to 128×128 and emit it into the Class B array; assets keep their native UVs
-5. **Generate billboard** by rendering LOD0 to a cross-quad texture, also as a layer
-6. **Compress** -- meshopt for geometry, ASTC/KTX2 for the arrays
-7. **Export** a single GLB of all geometries plus the arrays as side-loaded assets
+```
+tools/props/make-manifest.mjs   the asset list and the per-class LOD table
+tools/props/common.py           import, measure, normalise, weld
+tools/props/build.py            the pipeline
+tools/props/inspect_sources.py  read-only inventory of the raw downloads
+```
 
-⚠️ Verify that KTX2/Basis round-trips array textures through three's `KTX2Loader` **before generating assets in bulk**. At 128×128 × 150 layers the uncompressed fallback is ~9.8 MB, so unlike the earlier 64×64 estimate this is no longer a shrug -- it would force either fewer assets or a drop back to 64×64.
+Stages, in order, each placed where it is for a reason recorded in the source: **import → join → ground+centre → weld/triangulate → scale to declared height → texture-or-vertex-colour → AO bake → one final material → LOD chain → billboard render → GLB**.
 
-⚠️ **Blender is not currently installed on this machine** (not on PATH, not in `/Applications`). Needed before step 4 of §14. For the spike, geometry is loaded and processed at runtime in JS instead.
+**Three source classes, detected not declared.** The manifest cannot know which a file is without opening it, so the pipeline branches on what it finds:
 
-Get **one** species through end-to-end before doing forty. The atlas packing and UV rewrite are where this pipeline will break, and it is much cheaper to debug with one asset.
+| Class | Detect | Colour path | Layer cost | Count |
+|---|---|---|---|---|
+| Textured | a Base Color image | Smart UV Project + Cycles bake into one 128² layer | 1 layer | 8 |
+| Flat `Kd` | materials, no images | material colour → vertex colours | **0 layers** | 138 |
+| Vertex-coloured | a colour attribute and no materials | kept as-is | **0 layers** | 1 (scanned PLY) |
+
+That is the finding that matters for the `MAX_ARRAY_TEXTURE_LAYERS ≥ 256` worry above: **the built library uses 13 layers, not ~150**, because the Quaternius pack carries no textures at all and costs nothing but geometry. The ceiling is not close, and the ~9.8 MB uncompressed estimate does not apply to the current library.
+
+**AO goes into vertex colours, not into a texture** (§8 asked for "the asset's own texture"). Vertex colours because the runtime is already `vertexColors: true`, they cost no layer, and at 500 tris the vertex density is comparable to what a 128² unwrap resolves. Raw AO is floored at 0.45 -- black bottoms-out reads as a hole rather than as shadow under one directional light plus ambient, and a crevice outdoors is lit by ambient, which is never zero. AO ray length is a fraction of the asset (`height × 0.25`), not a constant: 1 m on a 14 m tree turns the canopy into a black mass and 1 m on a 0.4 m grass tuft occludes nothing.
+
+**Decimation only works after welding.** These FBXs are exported per-face or per-leaf-card, and the collapse decimator cannot collapse across a seam it reads as a boundary. Measured on the pine sources, welding first is the difference between reaching 500 tris and stalling around 3,000.
+
+⚠️ **The collapse decimator has a hard floor at open boundaries, and it does not report it.** It takes a ratio, not a target, and silently returns whatever it reached. Anything with many boundary loops -- every building, all photoreal card foliage -- stops well above target. `build.py` therefore records `stalled` and `overshoot` per LOD, and `check-props.mjs` prints them, because a chain that quietly returns 917 tris for a 130 target is the most expensive lie this pipeline could tell. Structures get a planar-dissolve pre-pass (`planar_collapse`), which clears real ground (896 → 544, 2,366 → 1,514) but never reaches the target -- hence the one-mesh-tier `structure` class in §5.
+
+**Not fixable by decimation: photoreal card foliage.** Four downloads were built, measured and then excluded. Every leaf is its own quad, so the mesh is ~100% boundary edges and decimation does not slow down, it does nothing: `island_tree_02` went 1,432,638 → 273,971 tris for a 500 target (54 MB in one GLB, 88% of the library's entire on-disk size), `tall-grass-elegance` 537,210 → 14,847 for a 16 target. Getting these to budget means rebuilding them as a few cross-cards with a baked canopy texture -- authoring an asset, not converting one. Replacing them with game-ready low-poly sources is cheaper. Also excluded, for source reasons rather than topology: one ASCII FBX (Blender does not read it), one FBX whose texture records carry empty file paths, one `.rar`, and two pre-arranged grass *fields* that fight §6's per-tuft scatter. All reasons are recorded inline in `make-manifest.mjs` so nobody re-adds them without reading why.
+
+**Three bugs the gate caught that looking at the render would not have.** Worth stating because each was silent:
+
+1. **Up is +Z inside Blender**, Y only after `export_yup`. Writing the normalisation helpers against +Y scaled every prop along its *depth* axis and centred it vertically instead of standing it on the ground -- 150 assets exported half-buried at arbitrary sizes, and it looks fine in Blender's viewport. Only reading `POSITION.min` out of the GLB catches it.
+2. **The glTF exporter drops a colour attribute no material node reads.** It logs a warning and writes a mesh that loads perfectly and renders flat and AO-less -- discarding the entire point of the pipeline. Fixed by collapsing each asset to one material that reads `Col` (which also gives one primitive per LOD, which is what `BatchedMesh` wants anyway).
+3. **Decimation moves the bounds.** Collapsing a vertex removes an extreme, so every LOD came out shorter than its source and floating -- a 16-tri plant lost 28% of its height and hovered 15 cm. Each tier is now re-grounded and re-scaled, which also removes a visible shrink-and-hop at every LOD transition.
+
+Still to do: **compression.** Geometry is meshopt-able and the layers want ASTC/KTX2. ⚠️ Verify that KTX2/Basis round-trips *array* textures through three's `KTX2Loader` before relying on it.
+
+Get **one** species through end-to-end before doing forty -- this held up exactly as written. Every bug above was found on the three-asset smoke test or on the first full build, and each would have been far more expensive to isolate across 147.
 
 ---
 
@@ -887,6 +974,64 @@ This is driven by the same low-frequency-noise-over-time mechanism as weather (�
 - Tint scene ambient green as it strengthens, so it affects the world rather than sitting on a separate layer
 
 Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer (two scrolling alpha-blended layers).
+
+### What shipped
+
+`src/sky.js` (rewritten), `src/stars.js`, `src/aurora.js`. The cloud layer is still outstanding.
+
+#### What the aurora actually is
+
+Worth writing down, because nearly every shortcut in the implementation is licensed by one of these facts.
+
+An aurora is not a light in the sky. It is the **upper atmosphere itself glowing**, along magnetic field lines, where precipitating electrons excite oxygen and nitrogen. Three consequences:
+
+1. **Colour is a function of altitude and nothing else.** Atomic oxygen at 100-150 km gives the 557.7 nm green that dominates; above ~200 km the same oxygen gives 630.0 nm red (long-lived state, only survives where collisions are rare); ionised nitrogen at 80-100 km gives the 428/470 nm blue-violet that shows as the pink-magenta lower hem. So the vertical colour ramp is not art direction -- it is a spectroscopy table, and it is the single strongest cue that what you are looking at is real.
+2. **All structure is vertical.** The rays are field lines. This is the constraint that decides the shader: the noise that generates striations must be indexed on distance *along* the arc and must **not** contain an altitude term. One character's worth of mistake there and the whole thing stops being an aurora and becomes coloured fog. The gate asserts it textually.
+3. **It is optically thin.** You see straight through it, additively. That means no sorting, no transparency ordering, no depth writes -- and it means the fold-on-fold brightening where a curtain doubles back on itself is *free*, because it is just addition.
+
+#### The factorisation
+
+Lawlor & Genetti (2010) is the load-bearing idea: an aurora is a **2D curtain footprint x a 1D altitude deposition profile**. There is no 3D volume to march. The shipped geometry is 5 ribbons, each a long strip that follows a horizontal path and rises through 8 altitude bands at 86, 92, 100, 112, 132, 165, 210 and 260 km. 8,040 vertices, 14,000 triangles, one draw call.
+
+#### What Skyrim does, and what was worth stealing
+
+Skyrim's auroras are **authored meshes** under `meshes\sky\`, not a shader effect. Each band is a hand-modelled ribbon carrying **three stacked layers**, each with a `BSEffectShaderProperty` -- emissive, additive, unlit, no lighting model at all -- and each layer has its own UV-scroll controller running at a different rate, plus a vertex-colour tint.
+
+**Stolen: the three-layer interference.** Three semi-transparent additive layers drifting at different rates produce a shimmer that no single layer achieves, because the *beat* between them is what reads as motion. The shipped version generalises it to 5 curtains at different distances (38 to 200 km) with drift rates from +0.077 to -0.058, deliberately opposed in sign so nearer and further curtains slide against each other and give real parallax as you walk.
+
+**Rejected: UV scroll.** Scrolling a texture across a fixed mesh slides the *pattern* through a *static silhouette*. Real curtains do the opposite -- the silhouette itself morphs while staying in place. So the folds here are generated by noise where **time is the second noise axis rather than an offset added to the first**:
+
+```glsl
+float f  = ( aurNoise( vec2( km * 0.0125, t * 0.055 ) ) - 0.5 ) * 1.0;
+      f += ( aurNoise( vec2( km * 0.0410, t * 0.130 ) ) - 0.5 ) * 0.52;
+      f += ( aurNoise( vec2( km * 0.1350, t * 0.310 ) ) - 0.5 ) * 0.34 * act;
+```
+
+That is the difference between a curtain that slides and a curtain that *writhes*. The third octave is scaled by activity, so a quiet arc is smooth and a substorm gets small-scale curl.
+
+#### The rest of the shader, and the fill-rate budget
+
+- **Edge-on brightening.** A curtain seen edge-on is far brighter than one seen face-on, because you are looking along much more emitting gas. The fold displacement already gives an analytic surface normal (one extra noise evaluation via finite difference in the *vertex* shader), so `1/|dot(view, normal)|` clamped to 4.2x gives the effect for free and it self-animates as the folds move. This is the single highest-value line in the file.
+- **Altitude deposition.** A sharp lower edge (electrons stop where the air thickens) and a long exponential tail upward, which is why real auroras have a knife-edge bottom and a soft top.
+- **Ray crispness falls with altitude.** Striations are sharp in the green band and washed out in the red, because the red-emitting state is long-lived enough for the gas to move before it radiates.
+- **Two noise evaluations** in the fragment shader, and the gate fails if a third appears. §13's "keep the fragment shader short" is the one budget in this file that is enforced numerically.
+- Curtains have staggered activity thresholds, so a quiet night shows one arc and a storm brings all five in -- the Akasofu substorm sequence (quiet arc, folds, curls and breakup, recovery) rather than a single global brightness knob.
+
+#### Depth, without any sorting
+
+Additive materials land in three.js's transparent pass, which runs *after* the opaque pass has already filled the depth buffer. So `depthTest: true, depthWrite: false` gives correct mountain occlusion for both the aurora and the stars with no `renderOrder` games at all. The aurora geometry sits between 4.2 km and 14.8 km from the player, inside the 20 km far plane, and its lowest vertex is 23 deg above the horizon -- high enough that no mountain can occlude it anywhere it should not.
+
+#### Stars
+
+2,400 points, spectral tints weighted to a real-ish O-through-M distribution, sized and brightened by magnitude with saturation rising with brightness. The Milky Way is **rejection sampling on the CPU** -- a density gradient in the point distribution, costing exactly zero shader instructions. Twinkle is two out-of-phase sines whose amplitude rises near the horizon, because scintillation is an air-mass effect and stars overhead barely twinkle at all. The field rotates about the true celestial pole for the world's latitude.
+
+#### Night-sky banding
+
+An 8-bit framebuffer bands visibly across a dark full-screen gradient. A quarter-LSB hash dither fixes it, and it has to be applied **after** the sRGB conversion, not before: near black, one 8-bit code step is about 0.0003 in linear space, so a dither sized in linear units is either invisible or enormous depending on where in the gradient it lands.
+
+#### Cost when the sun is up
+
+Stars and aurora both set `visible = false` when their fade reaches zero, so this entire system costs **nothing at all** during the day. The gate asserts it.
 
 ---
 

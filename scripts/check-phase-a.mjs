@@ -182,16 +182,22 @@ console.log('\nlakes')
   // dropping them from the list. If these disagree, some consumer is looking at
   // water the map view does not draw.
   check(maskCells === listCells, 'the lake mask and the lake list agree', `${maskCells} vs ${listCells} cells`)
-  // NOT "the world has lakes". With BREACH.maxLakeArea at 0 the world is fully
-  // drained on purpose and there are none -- see the measured table on BREACH.
-  // What must hold is the weaker, always-true statement: if the breacher was
-  // asked to leave water, there is water; if it was not, there is none.
-  const { BREACH } = await import('../src/sim/phase-a.js')
+  // This used to read "a fully drained world has no lakes", keyed off
+  // BREACH.maxLakeArea. That was true when the only lakes were the ones the
+  // breacher declined to cut, and it went stale the moment ponding started
+  // choosing basins deliberately -- water now arrives by a route that constant
+  // knows nothing about. The promise to assert is LAKE.retain's, so assert it
+  // where it is made.
   check(
-    BREACH.maxLakeArea > 0 ? lakes.length > 0 : listCells === 0,
-    BREACH.maxLakeArea > 0 ? 'the world has lakes' : 'a fully drained world has no lakes',
-    `${lakes.length} bodies, largest ${lakes[0] ? lakes[0].cells : 0} cells`
+    lakes.length >= LAKE.retain * 0.5,
+    'deliberate ponding actually retained lakes',
+    `${lakes.length} bodies for retain ${LAKE.retain}, largest ${lakes[0] ? lakes[0].cells : 0} cells`
   )
+  // The cascade §11 wants: high tarns spilling into lower lakes. One lake at
+  // one altitude would satisfy every other check on this list.
+  const surfaces = lakes.map((l) => l.level)
+  const spread = Math.max(...surfaces) - Math.min(...surfaces)
+  check(spread > 30, 'lakes sit at a range of altitudes, not one water table', `${spread.toFixed(0)} m between highest and lowest surface`)
   check(
     lakes.every((l) => l.cells * cell * cell >= 400),
     'every lake is big enough to be worth a water plane (§11)',

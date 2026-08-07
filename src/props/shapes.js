@@ -42,7 +42,7 @@ export function paint(geo, lo, hi, bias = 0) {
   return geo
 }
 
-function assemble(parts, lean = 0) {
+export function assemble(parts, lean = 0) {
   const geo = mergeGeometries(parts, false)
   if (!geo) throw new Error('prop merge failed -- part geometries have mismatched attributes')
   for (const p of parts) p.dispose()

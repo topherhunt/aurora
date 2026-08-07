@@ -38,8 +38,15 @@ import { priorityFlood, flowDirections, flowAccumulation, distanceTo, breachDepr
 // instruments ten times (§14). Phase A is the owner; main.js should consume
 // these rather than restate them.
 export const SPAWN = {
-  minElev: 85, // valley floor, above the lowest ground
-  maxElev: 140, // below the mean snow line, so she starts on green
+  // Stated RELATIVE TO THE LOCAL SNOW LINE rather than in absolute metres,
+  // because "below the snow line, so she starts on green" is a relation and the
+  // absolute form could not hold it. This was `minElev: 85, maxElev: 140` under
+  // exactly that comment, and measured it put her at 102 m -- 7 m ABOVE the 95 m
+  // line, on a white mountainside. main.js had meanwhile been hand-corrected to
+  // 25..70 and check-sim.mjs still held 85..140 under a comment saying it must
+  // match main.js. Three copies, two of them wrong. There is now one.
+  minBelowSnow: 25,
+  maxBelowSnow: 70,
   maxSlope: (15 * Math.PI) / 180,
   searchRadius: 3000,
 }
@@ -85,6 +92,19 @@ export const BREACH = {
 }
 
 export const LAKE = {
+  // How many basins to keep as lakes, world-wide. A COUNT, not an area cap --
+  // see selectLakes for why the cap does not work on this terrain.
+  retain: 24,
+  // How much surface a single lake may cover, in square metres, before its
+  // outlet is treated as having cut down. Bounds the giants without touching
+  // the ponds -- a basin that never reaches this just fills to its own rim.
+  // See selectLakes; this is not BREACH.maxLakeArea and does not behave like it.
+  maxArea: 0.8e6,
+  // A retained basin must offer at least this much unbroken open water, in
+  // metres, or it is a dimple rather than a pond and gets breached like the
+  // rest. Measured as the largest inscribed SQUARE, so it reads low: a body
+  // scoring 400 here is typically 800 m along its long axis.
+  minWidth: 96,
   minDepth: 1.5, // metres of fill before a raised cell counts as water rather than a smoothed dimple
   minCells: 8, // ~512 m^2. Smaller ponds are below the resolution that a flat water plane can honestly represent
 }
@@ -222,8 +242,30 @@ export function runPhaseA(seed, n = GRID_N, log = () => {}) {
   // surface like that produces a network of ten thousand disconnected puddles.
   // The cut has to come first, and then the routing is over a surface that
   // actually drains.
+  // --- 1a. deliberate ponding ----------------------------------------------
+  //
+  // Chosen BEFORE breaching and flattened to their spill level, which is what
+  // keeps them: a flat basin is not a depression, so breachDepressions has
+  // nothing to find and walks past. The bowl goes back afterwards, and the
+  // pipeline's own priority-flood then re-detects them as lakes with no further
+  // help. Damming, mechanically, is DECLINING TO CUT -- so a retained lake has
+  // no dam at all, its shoreline is wherever the terrain meets the spill level,
+  // and nothing is ever built. That answers the "dams must not look like ugly
+  // straight walls" constraint by construction rather than by modelling.
+  const t1a = now()
+  const pond = priorityFlood(base, n)
+  const picked = selectLakes(base, pond.filled, n, cell, LAKE.retain, LAKE.minDepth, LAKE.maxArea)
+  const keep = picked.chosen.filter((b) => b.width >= LAKE.minWidth)
+  let elev = Float32Array.from(base)
+  for (const b of keep) for (const c of b.cells) elev[c] = b.level
+  log(
+    `ponding        ${ms(t1a)}  ${keep.length} of ${picked.total} basins kept, ` +
+      `widest ${keep.length ? keep[0].width.toFixed(0) : 0}m open water, ` +
+      `surfaces ${keep.length ? Math.min(...keep.map((b) => b.level)).toFixed(0) : 0}` +
+      `..${keep.length ? Math.max(...keep.map((b) => b.level)).toFixed(0) : 0}m`
+  )
+
   const t1 = now()
-  let elev = base
   let passes = 0
   let deepestCut = 0
   let totalBreached = 0
@@ -239,6 +281,9 @@ export function runPhaseA(seed, n = GRID_N, log = () => {}) {
     if (c.deepestCut > deepestCut) deepestCut = c.deepestCut
     if (c.breached === 0) break
   }
+  // Put the bowls back under the water we just protected.
+  for (const b of keep) for (const c of b.cells) elev[c] = base[c]
+
   const breach = { passes, breached: totalBreached, refused, deepestCut }
   log(`breach         ${ms(t1)}  ${passes} passes, ${totalBreached} channels, deepest cut ${deepestCut.toFixed(0)}m`)
 
@@ -332,7 +377,7 @@ export function runPhaseA(seed, n = GRID_N, log = () => {}) {
 
   // --- 6. village siting ----------------------------------------------------
   const t6 = now()
-  const spawn = findSpawn(th, elev, n, cell)
+  const spawn = findSpawn(th, n, cell)
   const villages = siteVillages(elev, filled, lake, water, moisture, snowLine, acc, n, cell, minAcc)
   log(`villages       ${ms(t6)}  ${villages.length} sites`)
 
@@ -374,6 +419,11 @@ export function runPhaseA(seed, n = GRID_N, log = () => {}) {
     lakes,
     stream,
     streamCells,
+    // The RESOLUTION-SCALED threshold, not STREAM.minAcc. Returned because
+    // streamWidth needs it and its default argument is the unscaled constant:
+    // a caller who forgets gets plausible rivers at the wrong width, silently,
+    // which is this file's signature failure (see the header of TUNING).
+    minAcc,
     water,
     moisture,
     snowLine,
@@ -451,7 +501,152 @@ function dominantBiome(h, moist, snowLine, x, z, jitterNoise) {
  * Bodies that fail the area filter are erased from the mask, not just dropped
  * from the list, so downstream `lake[c]` and the returned list never disagree.
  */
-function labelLakes(lake, filled, elev, n, cell, minCells) {
+/**
+ * DELIBERATE PONDING (the follow-up BREACH.maxLakeArea's comment asks for).
+ *
+ * Retention by RANK, not by threshold. The table above BREACH records what a
+ * threshold does: every non-zero area cap keeps thirteen to seventeen THOUSAND
+ * ponds, because a cap keeps every basin smaller than itself and this terrain
+ * has ten thousand small basins. Ranking asks a different question -- "which are
+ * the best N" -- and the count is then a number we choose rather than a number
+ * the noise hands us.
+ *
+ * Scored on OPEN WATER, not area. A dendritic flooded region can cover a square
+ * kilometre as a spider of 30 m fingers and read as a swamp, not a lake; what
+ * makes a lake look like a lake is an unbroken expanse you cannot see across.
+ * The proxy is the largest inscribed disc, computed from a Chebyshev distance
+ * transform over the flooded mask -- cheap, and it collapses exactly the
+ * fingers that area rewards.
+ *
+ * Returns the cells of the chosen basins. The caller flattens them to their
+ * spill level before breaching so the breacher walks past them, then restores
+ * the bowl afterwards; the pipeline's own priority-flood re-finds them as lakes.
+ */
+export function selectLakes(base, filled, n, cell, keep, minDepth, maxArea) {
+  const size = n * n
+  const flooded = new Uint8Array(size)
+  for (let c = 0; c < size; c++) if (filled[c] - base[c] > minDepth) flooded[c] = 1
+
+  // Pass 1: connected components of the FULLY flooded mask, only to find each
+  // basin's floor. The full flood is not the lake -- measured on seed 20260804,
+  // the biggest basin flooded to its spill level is 7.75 km^2 at compactness
+  // 37.7 (a disc would be 1.0): a 500 m pool with twenty tributary arms, 50 m
+  // deep, floor at sea level. That is a drowned valley system, not a lake, and
+  // the top 14 of them alone put 12% of the map under water.
+  const seen = new Uint8Array(size)
+  const queue = new Int32Array(size)
+  const groups = []
+  for (let start = 0; start < size; start++) {
+    if (!flooded[start] || seen[start]) continue
+    let head = 0, tail = 0
+    queue[tail++] = start
+    seen[start] = 1
+    let floor = Infinity
+    const spill = filled[start]
+    const first = tail - 1
+    while (head < tail) {
+      const c = queue[head++]
+      if (base[c] < floor) floor = base[c]
+      const i = c % n, j = (c / n) | 0
+      for (let k = 0; k < 8; k++) {
+        const ni = i + NB_DI[k], nj = j + NB_DJ[k]
+        if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
+        const d = nj * n + ni
+        if (flooded[d] && !seen[d]) { seen[d] = 1; queue[tail++] = d }
+      }
+    }
+    groups.push({ cells: queue.slice(first, tail), floor, spill })
+  }
+
+  // Pass 2: the POOL -- how much of the basin the water actually occupies.
+  //
+  // Not the full flood. Measured on seed 20260804, the biggest basin filled to
+  // its spill level is 7.75 km^2 at compactness 37.7 (a disc is 1.0): a 500 m
+  // pool with twenty tributary arms, 50 m deep, floor at sea level. That is a
+  // drowned valley system, and the top 14 of them alone put 12% of the map
+  // under water.
+  //
+  // So each basin is filled until its surface reaches maxArea, or until it
+  // spills, whichever comes first. Area rather than depth, because depth is the
+  // wrong currency: a fixed 14 m cap gave a widest lake of 288 m and put every
+  // large one at 13-19 m altitude, since the basins with the flattest floors
+  // are the sea-level ones. Area lets the terrain decide -- a steep cirque
+  // becomes a deep narrow tarn and a broad valley becomes a wide shallow lake,
+  // which is what those two landforms actually hold.
+  //
+  // This is NOT the BREACH.maxLakeArea threshold that was measured and rejected
+  // above. That one asked "is this whole basin small enough to keep?" and so
+  // kept seventeen thousand puddles and breached the good basins. This asks
+  // "how full does this basin get?" and is applied only to basins already
+  // chosen.
+  const maxCells = Math.max(1, Math.round(maxArea / (cell * cell)))
+  const pool = new Uint8Array(size)
+  for (const g of groups) {
+    // The level at which the pool covers maxCells is the elevation of the
+    // maxCells-th lowest cell in the basin. Sorting is O(m log m) and the
+    // basins partition the grid, so the whole pass is O(size log size).
+    const sorted = Array.from(g.cells).sort((a, b) => base[a] - base[b])
+    const k = Math.min(maxCells, sorted.length) - 1
+    g.level = Math.min(g.spill, base[sorted[k]])
+    const p = []
+    for (let m = 0; m < sorted.length; m++) {
+      const c = sorted[m]
+      if (base[c] >= g.level) break
+      pool[c] = 1
+      p.push(c)
+    }
+    g.pool = p
+  }
+
+  // Pass 3: Chebyshev distance to dry ground, two sweeps. The score is the
+  // largest inscribed disc, because open water is what makes a lake read as a
+  // lake -- area rewards exactly the fingers we are trying not to have.
+  const dist = new Int32Array(size)
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const c = j * n + i
+      if (!pool[c]) { dist[c] = 0; continue }
+      let m = size
+      if (j > 0) m = Math.min(m, dist[c - n])
+      if (i > 0) m = Math.min(m, dist[c - 1])
+      if (j > 0 && i > 0) m = Math.min(m, dist[c - n - 1])
+      if (j > 0 && i < n - 1) m = Math.min(m, dist[c - n + 1])
+      dist[c] = m + 1
+    }
+  }
+  for (let j = n - 1; j >= 0; j--) {
+    for (let i = n - 1; i >= 0; i--) {
+      const c = j * n + i
+      if (!pool[c]) continue
+      let m = dist[c]
+      if (j < n - 1) m = Math.min(m, dist[c + n] + 1)
+      if (i < n - 1) m = Math.min(m, dist[c + 1] + 1)
+      if (j < n - 1 && i < n - 1) m = Math.min(m, dist[c + n + 1] + 1)
+      if (j < n - 1 && i > 0) m = Math.min(m, dist[c + n - 1] + 1)
+      dist[c] = m
+    }
+  }
+
+  const bodies = []
+  for (const g of groups) {
+    if (!g.pool.length) continue
+    let best = 0
+    for (let k = 0; k < g.pool.length; k++) if (dist[g.pool[k]] > best) best = dist[g.pool[k]]
+    bodies.push({
+      cells: g.pool,
+      level: g.level,
+      floor: g.floor,
+      spill: g.spill,
+      width: best * 2 * cell, // diameter of the inscribed square, in metres
+      area: g.pool.length * cell * cell,
+    })
+  }
+
+  bodies.sort((a, b) => b.width - a.width)
+  return { chosen: bodies.slice(0, keep), total: bodies.length }
+}
+
+export function labelLakes(lake, filled, elev, n, cell, minCells) {
   const size = n * n
   const seen = new Uint8Array(size)
   const queue = new Int32Array(size)
@@ -516,7 +711,7 @@ export function streamWidth(a, minAcc = STREAM.minAcc) {
  * rather than the grid for the final slope test, because 8 m is far too coarse
  * to certify the one place in the world she is guaranteed to stand.
  */
-export function findSpawn(th, elev, n, cell) {
+export function findSpawn(th, n = GRID_N, cell = CELL) {
   for (let r = 0; r <= SPAWN.searchRadius; r += 60) {
     const steps = r === 0 ? 1 : 24
     for (let a = 0; a < steps; a++) {
@@ -524,7 +719,9 @@ export function findSpawn(th, elev, n, cell) {
       const x = Math.cos(ang) * r
       const z = Math.sin(ang) * r
       const h = th.heightAt(x, z)
-      if (h < SPAWN.minElev || h > SPAWN.maxElev) continue
+      const snow = th.snowLineAt(x, z)
+      if (h > snow - SPAWN.minBelowSnow) continue
+      if (h < snow - SPAWN.maxBelowSnow) continue
       if (th.slopeAt(x, z) > SPAWN.maxSlope) continue
       return { x, z, h, i: cellOf(x, cell, n), j: cellOf(z, cell, n), kind: 'spawn' }
     }

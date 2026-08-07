@@ -275,6 +275,15 @@ console.log('\nlive retune')
   settle(x, z)
   const before = sampleY()
 
+  // Captured, not hardcoded. The restore at the end of this block used to name
+  // its own literals -- massifRelief 370, SNOW.base 95 -- and when SNOW.base
+  // moved to 275 for the continent tier the restore silently put the snow line
+  // back 180 m too low for every check that runs AFTER this one. Trees, grass
+  // and cabins are all quoted relative to that line, so all three placed zero
+  // and three prop checks failed with nothing wrong in the code they test.
+  const shippedRelief = TUNING.massifRelief
+  const shippedSnowBase = SNOW.base
+
   const epochBefore = terrain.epoch
   terrain.retune({ tuning: { massifRelief: 120 }, snow: { base: 140 } })
   check(terrain.epoch === epochBefore + 1, 'a retune bumps the epoch', `${epochBefore} -> ${terrain.epoch}`)
@@ -292,7 +301,7 @@ console.log('\nlive retune')
   settle(x, z)
   const after = sampleY()
   console.log(
-    `        massifRelief 370 -> 120: mean corner height ${before.mean.toFixed(1)}m -> ${after.mean.toFixed(1)}m ` +
+    `        massifRelief ${shippedRelief} -> 120: mean corner height ${before.mean.toFixed(1)}m -> ${after.mean.toFixed(1)}m ` +
       `over ${after.n} visible chunks`
   )
   check(
@@ -312,7 +321,7 @@ console.log('\nlive retune')
   }
 
   // Put the world back before the prop checks, which assume the shipped values.
-  terrain.retune({ tuning: { massifRelief: 370 }, snow: { base: 95 } })
+  terrain.retune({ tuning: { massifRelief: shippedRelief }, snow: { base: shippedSnowBase } })
   drain()
 }
 

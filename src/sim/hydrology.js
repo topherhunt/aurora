@@ -671,3 +671,87 @@ function select(a, len, k) {
   }
   return a[target]
 }
+
+// ---------------------------------------------------------------------------
+// Fluvial erosion: the stream-power law, solved implicitly (Braun & Willett
+// 2013, "A very efficient O(n), implicit and parallel method to solve the
+// stream power equation").
+//
+// WHY THIS EXISTS. The flow map on uneroded fbm is a LATTICE: closed polygonal
+// cells at a uniform ~500 m spacing, drainage density 1.9-2.1 km/km^2, and only
+// 0.6-1.6% of channel length carrying more than 100 km^2 of catchment. There is
+// no trunk river anywhere in it. That is an egg-carton signature and no amount
+// of macro-scale tiering fixes it, because drainage density is set by the
+// FINEST scale that has local minima -- add a 20 km landform and you still get
+// 500 m puddles on top of it. Real landscapes are not noise; they are noise
+// that water has run over. This runs the water.
+//
+// dh/dt = -K * A^m * S^n, with n = 1 so the solution is linear in h.
+//
+// The implicit form, taking each cell's receiver as already updated:
+//
+//   h_i' = (h_i + f * h_r') / (1 + f),   f = K * dt * A^m / dx
+//
+// Two properties earn it its place over the obvious explicit loop:
+//
+//   1. It is UNCONDITIONALLY STABLE. The explicit form needs dt small enough
+//      that no cell erodes past its receiver in one step, which on a 16 m grid
+//      with 300 m of relief means hundreds of tiny steps.
+//   2. h_i' is a weighted average of h_i and h_r', both of which are >= h_r',
+//      so h_i' >= h_r' ALWAYS: incision cannot invert a slope and therefore
+//      CANNOT CREATE A NEW PIT. That is what makes this cheap to bolt onto the
+//      existing pipeline -- no re-breaching afterwards, and the flow topology
+//      stays valid between iterations.
+//
+// Requires `order` from priorityFlood, which pops lowest-first and so lists
+// every cell after its receiver. Walking it forwards means h_r' is already the
+// updated value, which is exactly what the implicit form asks for.
+export const EROSION = {
+  passes: 25,
+  // K * dt, lumped: the two are not separately observable here because there is
+  // no independent clock. Sized against the group that actually appears in the
+  // update, f = kdt * A^m / dx, at the two ends of the catchment range on a
+  // 1024^2 grid (dx 16 m):
+  //   a headwater cell,  A ~ 1e5 m^2  ->  f ~ 0.02   (barely touched)
+  //   a trunk river,     A ~ 3e8 m^2  ->  f ~ 0.6    (cuts hard)
+  // That 30x separation is the whole point: valleys deepen where water collects
+  // and divides are left alone, so relief goes UP locally even though the total
+  // volume only ever goes down.
+  kdt: 2e-3,
+  m: 0.5,
+  // Below this catchment, in square metres, a cell is a hillslope and not a
+  // channel. Without it the finest scale still gets a little incision
+  // everywhere, which re-smooths the divides the erosion is meant to sharpen.
+  minArea: 4e4,
+}
+
+/**
+ * Incise `elev` in place along the drainage network. `recv` and `order` come
+ * from flowDirections/priorityFlood; `acc` is in CELLS and is converted to
+ * square metres here. Returns the deepest single-cell incision, in metres.
+ */
+export function incise(elev, recv, order, acc, n, cell, opts = EROSION) {
+  const cellArea = cell * cell
+  let deepest = 0
+  for (let k = 0; k < order.length; k++) {
+    const c = order[k]
+    const r = recv[c]
+    if (r < 0) continue // an outlet: base level, nothing downstream to cut toward
+    const area = acc[c] * cellArea
+    if (area < opts.minArea) continue
+    // Diagonal receivers are further away, and using a uniform dx makes
+    // diagonal channels incise ~40% too fast, which shows up as a bias toward
+    // 45-degree valleys -- the same lattice artefact in a different direction.
+    const di = (c % n) - (r % n)
+    const dj = ((c / n) | 0) - ((r / n) | 0)
+    const dx = cell * (di !== 0 && dj !== 0 ? Math.SQRT2 : 1)
+    const f = (opts.kdt * Math.pow(area, opts.m)) / dx
+    const hr = elev[r]
+    const before = elev[c]
+    const after = (before + f * hr) / (1 + f)
+    elev[c] = after
+    const cut = before - after
+    if (cut > deepest) deepest = cut
+  }
+  return deepest
+}

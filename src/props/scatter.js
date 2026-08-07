@@ -247,6 +247,29 @@ export class Scatter {
 
   // Cheap to call every frame: it only does work when she has crossed into a new
   // cell for some kind, and never rebuilds more than one kind per call.
+  /**
+   * A predicate the owner sets to carve holes in the scatter: `(x, z, kindName)
+   * => true` rejects that candidate. Called with every surviving candidate, so
+   * it has to be cheap -- a distance test, not a search.
+   *
+   * `invalidate()` exists because the scatter only rebuilds when the camera
+   * crosses a grid cell, and a village finishing its build is a change to the
+   * answer that no amount of standing still will notice.
+   */
+  setExclusion(fn) {
+    this.exclude = fn
+    this.invalidate()
+  }
+
+  invalidate() {
+    for (const s of this.kinds) {
+      if (!s.dirty) {
+        s.dirty = true
+        s.dirtySince = this.frame
+      }
+    }
+  }
+
   update(camX, camZ) {
     this.frame++
 
@@ -331,6 +354,12 @@ export class Scatter {
         // candidates cost one hash and nothing else.
         const near = 1 - smoothstep(k.falloffFrom, k.radius, d)
         if (rand() > k.tailDensity + (1 - k.tailDensity) * near) continue
+
+        // §6: reject candidates inside a village footprint. The predicate is
+        // injected rather than imported, because the scatter must not care
+        // whether villages exist -- and it is asked AFTER the density taper so
+        // a village costs nothing on the 90% of candidates already rejected.
+        if (this.exclude && this.exclude(x, z, k.name)) continue
 
         // Height and slope from one shared stencil -- see heightAndSlopeAt().
         // Asked separately these are 15 field evaluations per candidate and a

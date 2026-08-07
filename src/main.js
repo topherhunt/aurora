@@ -1,12 +1,23 @@
 import * as THREE from 'three'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 import { TerrainHeight, WORLD_SIZE } from './sim/terrain-height.js'
+// One spawn rule, shared with Phase A and check-sim. It used to be copied
+// into all three, and the copies had already drifted apart -- check-sim held
+// 85-140 m under a comment saying it must match main.js, which held 25-70 m.
+import { findSpawn, SPAWN } from './sim/phase-a.js'
 import { Terrain, CHUNK_RES } from './terrain/terrain.js'
 import { LOD, MAX_DEPTH, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree.js'
 import { Player, LOCOMOTION } from './player.js'
 import { Scatter } from './props/scatter.js'
+import { Villages } from './village/village.js'
+import { VILLAGE_PLAN } from './village/plan.js'
+import { Water } from './water.js'
 import { Vignette } from './vignette.js'
 import { Sky } from './sky.js'
+import { Stars } from './stars.js'
+import { Aurora } from './aurora.js'
+import { WorldClock, CLOCK } from './clock.js'
+import { WorldLighting } from './lighting.js'
 import { Measure } from './measure.js'
 import { Hud } from './hud.js'
 import { Tuner } from './tuner.js'
@@ -57,18 +68,25 @@ const rig = new THREE.Group()
 rig.add(camera)
 scene.add(rig)
 
-// One directional light, per Meta's guidance (§5). Hemisphere fill is not a
+// ONE directional light, per Meta's guidance (§5), and it does double duty: it
+// is the sun by day and the moon after dark. Hemisphere fill is not a
 // shadow-casting light and costs nothing meaningful in Lambert -- without it
 // the shadowed faces of every cliff go flat black.
+//
+// The handover between the two bodies happens at -6 deg of sun elevation, where
+// the sun's intensity has already reached zero, so the direction snapping from
+// one to the other cannot be seen. clock.js has the argument in full.
 const sun = new THREE.DirectionalLight(SUN_COLOR, 2.1)
 sun.position.set(-0.45, 0.62, 0.3).normalize()
 scene.add(sun)
-scene.add(new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85))
+const hemi = new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85)
+scene.add(hemi)
 
-// The dome takes the light's own direction, so the disc is guaranteed to sit
-// where the terrain's highlights say it is -- and takes FOG_COLOR as its
-// horizon, so distant ridges dissolve into the sky with no seam at all.
-const sky = new Sky(scene, sun.position, { horizon: FOG_COLOR })
+// The clock: 24 real minutes to the in-world day (§8), so a minute of standing
+// still is an hour of light changing. Everything below reads its state; nothing
+// below decides anything about time for itself.
+const clock = new WorldClock({ seed: SEED })
+
 
 // --- world ------------------------------------------------------------------
 
@@ -77,6 +95,132 @@ const terrain = new Terrain(scene, { seed: SEED, workers: 2 })
 // Scale reference only -- see the header of props/scatter.js. The real
 // placement system is §6 and lands at build step 5.
 const props = new Scatter(scene, terrainHeight, { seed: SEED })
+// A village appears and disappears under the scatter's feet, so the scatter has
+// to be told to re-place -- otherwise the trees it put there before the village
+// arrived are left standing in the great hall.
+const villages = new Villages(scene, terrainHeight, { seed: SEED, onChange: () => props.invalidate() })
+props.setExclusion((x, z, kind) => villages.excludes(x, z, kind))
+const water = new Water(scene)
+
+// Terrain shadows and ambient occlusion, from the horizon map baked alongside
+// Phase A. The maps arrive a few seconds after the world does; until they land
+// `uSunSky.z` is 0 and every material returns full sun, so the only visible
+// difference is that the mountains have no shadows yet.
+const lighting = new WorldLighting()
+lighting.patch(terrain.material, {
+  mode: 'fragment',
+  cacheKey: 'aurora-terrain-v7-shadow',
+  // terrain-material.js has carried this varying since the surface grain was
+  // written; reusing it saves declaring a second one that holds the same value.
+  worldPosVarying: 'vWorldPos',
+})
+for (const [mat, key] of [
+  [props.material, 'prop-scatter-shadow-v1'],
+  [villages.solidMat, 'village-solid-shadow-v1'],
+  [villages.pathMat, 'village-path-shadow-v1'],
+  [villages.puffMat, 'village-puff-shadow-v1'],
+]) {
+  // Per-vertex for these: a tree is small compared to a mountain's shadow, and
+  // props are the triangle budget. villages.flameMat is deliberately NOT in
+  // this list -- it is MeshBasicMaterial and unlit on purpose, and a fire that
+  // went dark inside a shadow would be the one thing that gave the village
+  // away.
+  lighting.patch(mat, { mode: 'vertex', cacheKey: key })
+}
+
+// The dome takes its colours from the clock every frame -- there is no separate
+// night sky, just a different set of numbers. Stars and aurora are additive
+// layers on top of it, both hidden entirely whenever their fade is zero.
+const sky = new Sky(scene)
+const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio() })
+const aurora = new Aurora(scene)
+
+// Phase A, in the browser, for the first time. It has existed since §2 and been
+// exercised only by map.html; the game itself has been running on the raw
+// analytic surface with no water in it at all.
+//
+// RESOLUTION IS 1024, NOT world-grid's 2048. The pass costs ~4 s at 1024^2 and
+// ~15 s at 2048^2, against §2's 1-3 s load budget. Neither fits, so this is the
+// one that fits WORST-LESS, and it is off the main thread: the world is walkable
+// immediately and the lakes arrive a few seconds later. Say so out loud rather
+// than let it look like a hitch.
+//
+// The cell is 16 m at this resolution instead of 8 m, which costs nothing
+// visible -- Water dilates the mask and lets the terrain cut the shoreline, so
+// the grid never reaches the screen. What it does cost is small ponds: a body
+// has to clear LAKE.minCells at whatever cell size it is measured in.
+const PHASE_A_RES = 1024
+const phaseAWorker = new Worker(new URL('./sim/phase-a-worker.js', import.meta.url), { type: 'module' })
+phaseAWorker.onmessage = (e) => {
+  const m = e.data
+  if (m.type === 'log') {
+    console.log(`[phase A] ${m.line}`)
+    return
+  }
+  // Not a silent fallback. A world with no water is a world missing a feature
+  // §11 exists to provide, and it should be loud about it.
+  if (m.type === 'error') throw new Error(`Phase A failed: ${m.message}\n${m.stack}`)
+  const r = m.result
+
+  // The horizon map, baked in the worker off Phase A's own elevation grid.
+  // From this frame on, mountains cast shadows and valleys are occluded --
+  // see src/sim/horizon.js.
+  lighting.setMaps(r.horizon, r.skyView, r.n)
+  console.log(`[phase A] horizon map live: ${r.n}^2 x 16 azimuths, ${(r.horizon.length / 1048576).toFixed(1)} MB`)
+
+  const built = water.setFromPhaseA({ lake: r.lake, filled: r.filled, ground: r.base, n: r.n, cell: r.cell })
+  const rivers = water.setStreamsFromPhaseA({
+    stream: r.stream,
+    recv: r.recv,
+    acc: r.acc,
+    lake: r.lake,
+    n: r.n,
+    cell: r.cell,
+    th: terrainHeight,
+    minAcc: r.minAcc,
+  })
+
+  // Put her where the water is, if she has not already walked off.
+  //
+  // Measured on seed 20260804: the nearest lake to the analytic spawn is 3.7 km
+  // away, which is a forty-minute walk to look at the feature you just built.
+  // findSpawn cannot fix this itself -- it runs on the main thread before Phase
+  // A exists, and waiting for the lakes would cost 3.5 s of standing still.
+  //
+  // So the analytic spawn stands, and is REVISED once the water lands. The
+  // "has she moved" test is what keeps this from being a teleport: if she is
+  // already exploring, the ground under her does not move.
+  const moved = Math.hypot(player.rig.position.x - spawn.x, player.rig.position.z - spawn.z)
+  const big = r.lakes.filter((l) => l.cells >= 200)
+  if (moved < 5 && big.length) {
+    const target = big.map((l) => ({ l, d: Math.hypot(l.x - spawn.x, l.z - spawn.z) })).sort((a, b) => a.d - b.d)[0].l
+    // The centroid of a lake is IN the lake. Walk out from it until the ground
+    // clears the water, so she starts on the shore rather than treading water.
+    let sx = target.x
+    let sz = target.z
+    for (let rad = r.cell; rad <= 4000; rad += r.cell) {
+      let found = null
+      for (let a = 0; a < 24; a++) {
+        const ang = (a / 24) * Math.PI * 2
+        const x = target.x + Math.cos(ang) * rad
+        const z = target.z + Math.sin(ang) * rad
+        const h = terrainHeight.heightAt(x, z)
+        if (h > target.level + 2 && terrainHeight.slopeAt(x, z) < SPAWN.maxSlope) { found = { x, z }; break }
+      }
+      if (found) { sx = found.x; sz = found.z; break }
+    }
+    player.spawnAt(sx, sz)
+    console.log(`[phase A] spawn revised to the shore of a ${target.cells}-cell lake at ${target.level.toFixed(0)}m, ${(Math.hypot(sx - spawn.x, sz - spawn.z) / 1000).toFixed(2)} km from the analytic spawn`)
+  }
+  console.log(
+    `[phase A] water: ${r.lakes.length} bodies, ${built.tiles} tiles, ${built.triangles} tris, ` +
+      `surfaces ${Math.min(...r.lakes.map((l) => l.level)).toFixed(0)}..${Math.max(...r.lakes.map((l) => l.level)).toFixed(0)}m`
+  )
+  console.log(`[phase A] rivers: ${rivers.chains} chains, ${rivers.tiles} tiles, ${rivers.triangles} tris`)
+  phaseAWorker.terminate()
+}
+phaseAWorker.postMessage({ seed: SEED, n: PHASE_A_RES })
+
 const player = new Player(rig, camera, terrainHeight)
 const vignette = new Vignette(camera)
 const measure = new Measure(scene, terrainHeight)
@@ -93,35 +237,61 @@ const input = new Input(renderer)
 // indistinguishable from a broken one without that.
 const tuner = new Tuner(terrain, terrainHeight)
 
-// Spawn somewhere walkable and low. Dropping her onto a 40-degree face means
-// the slope limiter refuses every direction and the world looks broken.
-function findSpawn() {
-  for (let r = 0; r <= 3000; r += 60) {
-    const steps = r === 0 ? 1 : 24
-    for (let a = 0; a < steps; a++) {
-      const ang = (a / steps) * Math.PI * 2 + r * 0.21
-      const x = Math.cos(ang) * r
-      const z = Math.sin(ang) * r
+const spawn = findSpawn(terrainHeight)
+player.spawnAt(spawn.x, spawn.z)
+
+// TEMPORARY, and the only temporary thing about the village. SITING belongs to
+// Phase A (§6), which scores sites on proximity to fresh water and rejects
+// anything sitting in a lake -- and Phase A is not wired into main.js yet, only
+// into map.html via the worker. So that there is something to walk to
+// meanwhile, one stand-in site is dropped on the gentlest ground in a ring
+// around spawn. Delete this whole block and pass Phase A's scored villages to
+// setSites() the moment the macro pass lands here: nothing about the village
+// CONTENT changes, it just moves to where the water is.
+//
+// No absolute metres anywhere in here, deliberately. The band is SPAWN's own
+// snow-line-relative one, and the slope test is "gentlest of the candidates"
+// rather than a threshold -- §3's recurring failure is a constant drifting out
+// from under the thing it names, and this file has already been bitten once by
+// an elevation window that stopped meaning what it said.
+//
+// Slope is measured across the PLAZA RIM, not at the point. Measured over 263
+// candidates in this band, ranking by point slope gave a best of 1.7 deg that
+// was 24.7 deg across the rim -- a knife-edge crest, gentle exactly where it
+// was sampled -- and 9 of the top 20 could not fit a great hall. Ranking by rim
+// slope: 2 of 20. A village is 136 m across and cares about the ground it
+// covers, not about one probe.
+function devVillageSite() {
+  const rimSlope = (x, z) => {
+    let sum = 0
+    for (const r of [VILLAGE_PLAN.plazaRadius, VILLAGE_PLAN.ringRadius]) {
+      for (let a = 0; a < 12; a++) {
+        const ang = (a / 12) * Math.PI * 2
+        sum += terrainHeight.slopeAt(x + Math.cos(ang) * r, z + Math.sin(ang) * r)
+      }
+    }
+    return sum / 24
+  }
+  let best = null
+  for (let r = 300; r <= 1200; r += 50) {
+    for (let a = 0; a < 32; a++) {
+      const ang = (a / 32) * Math.PI * 2 + r * 0.37
+      const x = spawn.x + Math.cos(ang) * r
+      const z = spawn.z + Math.sin(ang) * r
       const h = terrainHeight.heightAt(x, z)
-      // Valley floor, not a hillside, and this band is quoted in absolute
-      // metres so it has to move whenever the terrain scale does. Flooring the
-      // regional swell (see valleyLo in terrain-height.js) dropped the world
-      // median from 137 m to 68 m and took the snow line down with it, and the
-      // old 85-140 band then sat ON the snow: measured, it put her at 102 m, 7 m
-      // ABOVE the 95 m mean snow line, on a white mountainside rather than in
-      // the green valley this comment claimed. Re-measured against gentle ground
-      // within 3 km of the origin, whose elevations now run p25 12 / p50 31 /
-      // p75 66 / p90 105.
-      if (h < 25 || h > 70) continue // green valley floor, well under the 95 m snow ramp
-      if (terrainHeight.slopeAt(x, z) > (15 * Math.PI) / 180) continue
-      return { x, z, h }
+      const snow = terrainHeight.snowLineAt(x, z)
+      if (h > snow - SPAWN.minBelowSnow) continue // green ground, same rule as spawn
+      if (h < snow - SPAWN.maxBelowSnow) continue
+      const slope = rimSlope(x, z)
+      if (!best || slope < best.slope) best = { x, z, slope, id: 0 }
     }
   }
-  throw new Error('no walkable spawn found within 3 km of the origin -- check TUNING in terrain-height.js')
+  if (!best) throw new Error('no stand-in village site within 1.2 km of spawn -- check SPAWN in phase-a.js')
+  return best
 }
 
-const spawn = findSpawn()
-player.spawnAt(spawn.x, spawn.z)
+const devSite = devVillageSite()
+villages.setSites([devSite])
 
 // --- desktop controls -------------------------------------------------------
 
@@ -144,6 +314,7 @@ const KEY_ACTIONS = {
   h: 'hud',
   u: 'unstick',
   t: 'tuner',
+  n: 'timeSkip',
   '[': 'coarser',
   ']': 'finer',
 }
@@ -161,6 +332,7 @@ const CODE_ACTIONS = {
   ShiftLeft: 'flyDown',
   ShiftRight: 'flyDown',
   KeyT: 'tuner',
+  KeyN: 'timeSkip',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
 }
@@ -213,6 +385,7 @@ addEventListener('keydown', (e) => {
   // space would otherwise machine-gun taps and land her immediately.
   if (fresh.includes('hud')) hud.toggle()
   if (fresh.includes('tuner')) tuner.toggle()
+  if (fresh.includes('timeSkip')) skipTime()
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped
   // multiplicatively because the perceptual distance from 1.0 to 1.2 degrees is
@@ -300,6 +473,60 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight)
 })
 
+// --- time -------------------------------------------------------------------
+
+// The hotkey: N on the keyboard, right grip in VR.
+//
+// Six in-world hours, which at §8's pace is six real minutes of standing about
+// waiting for dusk. That ratio is the entire reason this exists: the day-night
+// cycle is a twenty-four minute loop, so without a skip, checking whether the
+// sunset looks right means watching sixteen minutes of afternoon first.
+//
+// It moves the clock's MONOTONIC hour counter, not the hour of day, so the
+// aurora's substorm envelope advances by the same six hours the sun does. Skip
+// four times and you land back at the same time of day with entirely different
+// weather, which is what should happen.
+let skipFlash = -Infinity
+function skipTime() {
+  clock.skip(CLOCK.skipHours)
+  skipFlash = performance.now()
+  console.log(`[clock] +${CLOCK.skipHours}h -> ${clock.clockText}  sun ${clock.sun.elevDeg.toFixed(1)}deg`)
+}
+
+const tmpCol = new THREE.Color()
+const setSRGB = (col, rgb) => col.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
+
+// Push one clock state into every consumer. This is the whole day-night cycle
+// as far as the scene is concerned: six colours, three intensities and a fog
+// density, all read from one table in clock.js.
+function applySky(state, head, elapsedReal) {
+  // The single directional light follows whichever body is in charge.
+  // `position` on a DirectionalLight is a DIRECTION, since its target sits at
+  // the origin and three uses the difference.
+  sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
+  setSRGB(sun.color, state.lightColor)
+  sun.intensity = state.lightIntensity
+
+  setSRGB(hemi.color, state.hemiSky)
+  setSRGB(hemi.groundColor, state.hemiGround)
+  hemi.intensity = state.hemiIntensity
+
+  // Fog tracks the sky's HORIZON colour, not its zenith (see the note at
+  // scene.fog): distant terrain fades toward the fog and meets the sky at the
+  // horizon, so any mismatch draws a coloured line along every ridge. Density
+  // rises a little after dark because night air reads as thicker -- and because
+  // it hides the far terrain that the moon is not bright enough to light.
+  setSRGB(scene.fog.color, state.fog)
+  scene.fog.density = state.fogDensity
+  setSRGB(tmpCol, state.fog)
+  scene.background.copy(tmpCol)
+
+  lighting.update(state)
+  sky.update(head, state)
+  stars.update(head, state, clock.elapsed, elapsedReal)
+  aurora.update(head, state, elapsedReal)
+}
+
 // --- frame loop -------------------------------------------------------------
 
 let last = performance.now()
@@ -326,6 +553,11 @@ function readInput() {
     // there is a vestibular system to disagree with the moving world.
     moveInput.instant = false
     if (st.right.buttons.SECONDARY?.justPressed) hud.toggle()
+    // Right GRIP: skip six hours. GRIP rather than a face button because the
+    // face buttons are taken and because a squeeze is hard to hit by accident
+    // -- this is the one control in the game that changes the world rather than
+    // her position in it.
+    if (st.right.buttons.GRIP?.justPressed) skipTime()
     if (st.left.buttons.PRIMARY?.justPressed) player.recenterXR(renderer)
     return
   }
@@ -375,18 +607,28 @@ function tick() {
   // what stops two thirds of the slot pool going to terrain behind her head.
   terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
   props.update(headTmp.x, headTmp.z)
+  // After props.update, because a village that finishes building this frame
+  // invalidates the scatter, and the scatter should rebuild on the next frame
+  // rather than twice on this one.
+  villages.update(headTmp.x, headTmp.z, now / 1000)
   // After terrain.update, because it reads this frame's selection size to catch
   // an LOD setting that is about to overrun the slot pool.
   tuner.update(headTmp)
 
-  hud.setLines(hudLines())
-  hud.paint(now)
+  // Real seconds in, in-world hours out. Advanced with the SAME clamped dt the
+  // player uses, so a tab-switch does not fast-forward the sun across the sky
+  // while she stands still.
+  clock.advance(dt)
+  const skyState = clock.state()
   // headTmp is her head position, already computed above for terrain streaming.
-  sky.update(headTmp)
+  applySky(skyState, headTmp, now / 1000)
+
+  hud.setLines(hudLines(skyState))
+  hud.paint(now)
   renderer.render(scene, camera)
 }
 
-function hudLines() {
+function hudLines(skyState) {
   const info = renderer.info
   const head = player.headPosition(headTmp)
   const ts = terrain.stats
@@ -395,12 +637,23 @@ function hudLines() {
   const ground = terrainHeight.heightAt(head.x, head.z)
   const slopeDeg = (terrainHeight.slopeAt(head.x, head.z) * 180) / Math.PI
   const measureLine = measure.line(head)
+  const vs = villages.stats
+  const vd = Math.hypot(head.x - devSite.x, head.z - devSite.z)
 
   return [
     '## AURORA -- step 2: terrain + locomotion',
     `frame ${avgMs.toFixed(2)}ms (${avgMs > 0 ? (1000 / avgMs).toFixed(1) : '--'} fps)  worst ${worst.toFixed(1)}ms`,
     `draw calls ${info.render.calls}   triangles ${(info.render.triangles / 1000).toFixed(1)}k`,
     budgetLine(info),
+    '',
+    '## sky  --  N (or right grip) = +6h',
+    `${clock.clockText}   sun ${clock.sun.elevDeg.toFixed(1)}deg az ${clock.sun.azDeg.toFixed(0)}   ` +
+      `moon ${clock.moon.elevDeg.toFixed(1)}deg lit ${(clock.moonLit * 100).toFixed(0)}%`,
+    `light ${skyState.isNight ? 'moon' : 'sun'} ${skyState.lightIntensity.toFixed(2)}   ` +
+      `stars ${(skyState.stars * 100).toFixed(0)}%   shadows ${lighting.ready ? 'on' : 'baking'}`,
+    `${skyState.aurora > 0.004 ? '++' : ''}aurora ${(skyState.aurora * 100).toFixed(0)}%   ` +
+      `substorm ${(skyState.activity * 100).toFixed(0)}%   ceiling ${(skyState.auroraMax * 100).toFixed(0)}%` +
+      (performance.now() - skipFlash < 1500 ? `   ++ +${CLOCK.skipHours}h` : ''),
     '',
     '## terrain (1 batched draw call)',
     `chunks  render ${ts.rendered}/${ts.desired}   pending ${ts.pending}   slots ${ts.slots}/${ts.cached}`,
@@ -412,6 +665,11 @@ function hudLines() {
     '## props (1 batched draw call)',
     `tree ${bk.tree ?? 0}  rock ${bk.rock ?? 0}  grass ${bk.grass ?? 0}  cabin ${bk.cabin ?? 0}`,
     `${(pr.tris / 1000).toFixed(1)}k tris   last place ${pr.lastBuildKind} ${pr.lastBuildMs.toFixed(1)}ms`,
+    '',
+    '## village (1 draw call + paths + fire)',
+    `${vs.state}${vs.resident === null ? '' : ` #${vs.resident}`}   ${vd.toFixed(0)}m away   (stand-in site -- siting is Phase A's)`,
+    `${(vs.tris / 1000).toFixed(1)}k tris + ${(vs.pathTris / 1000).toFixed(1)}k path   ${vs.instances} pieces   ${vs.flames} flames  ${vs.puffs} puffs`,
+    `plan ${vs.planMs.toFixed(1)}ms   build ${vs.buildMs.toFixed(1)}ms${vs.warnings.length ? `   !! ${vs.warnings.join('; ')}` : ''}`,
     '',
     '## position',
     `x ${head.x.toFixed(0)}  z ${head.z.toFixed(0)}`,

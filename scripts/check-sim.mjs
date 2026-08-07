@@ -7,6 +7,7 @@
 //
 //   node scripts/check-sim.mjs [seed]
 
+import { findSpawn, SPAWN } from '../src/sim/phase-a.js'
 import { TerrainHeight, WORLD_HALF } from '../src/sim/terrain-height.js'
 import { buildChunk, CHUNK_RES } from '../src/sim/chunk-mesh.js'
 import { selectNodes, MAX_DEPTH, LOD, MIN_TRI_DEG, VIEW_HALF_ANGLE } from '../src/terrain/quadtree.js'
@@ -166,22 +167,21 @@ console.log('\nchunk meshing')
 // --- 4. spawn + local connectivity ------------------------------------------
 
 console.log('\nspawn and connectivity')
+// findSpawn throws rather than returning null, so `spawn !== null` would be a
+// test that cannot fail. Assert what the spawn band actually promises: she
+// lands on gentle ground, below the local snow line, on green.
 let spawn = null
-{
-  outer: for (let r = 0; r <= 3000; r += 60) {
-    const steps = r === 0 ? 1 : 24
-    for (let a = 0; a < steps; a++) {
-      const ang = (a / steps) * Math.PI * 2 + r * 0.21
-      const x = Math.cos(ang) * r
-      const z = Math.sin(ang) * r
-      const h = th.heightAt(x, z)
-      if (h < 85 || h > 140) continue // must match findSpawn() in src/main.js
-      if (th.slopeAt(x, z) > (15 * Math.PI) / 180) continue
-      spawn = { x, z, h }
-      break outer
-    }
-  }
-  check(spawn !== null, 'a walkable spawn exists near the origin', spawn ? `${spawn.x.toFixed(0)},${spawn.z.toFixed(0)} @ ${spawn.h.toFixed(0)}m` : '')
+try {
+  spawn = findSpawn(th)
+} catch (e) {
+  spawn = null
+}
+check(spawn !== null, 'a walkable spawn exists near the origin', spawn ? `${spawn.x.toFixed(0)},${spawn.z.toFixed(0)} @ ${spawn.h.toFixed(0)}m` : 'findSpawn threw')
+if (spawn) {
+  const below = th.snowLineAt(spawn.x, spawn.z) - spawn.h
+  check(below >= SPAWN.minBelowSnow, 'spawn is below the snow line, on green', `${below.toFixed(0)}m below it`)
+  const deg = (th.slopeAt(spawn.x, spawn.z) * 180) / Math.PI
+  check(deg <= 15, 'spawn is on gentle ground', `${deg.toFixed(1)} degrees`)
 }
 
 if (spawn) {
