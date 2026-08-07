@@ -7,8 +7,10 @@
 // water still renders, just in the wrong place. So it is checked here directly,
 // against heightAt rather than against the grid the lakes were computed on.
 import * as THREE from 'three'
-import { runPhaseA, STREAM, streamWidth } from '../src/sim/phase-a.js'
+import { runPhaseA } from '../src/sim/phase-a.js'
 import { Water } from '../src/water.js'
+import { Sky } from '../src/sky.js'
+import { WorldLighting } from '../src/lighting.js'
 import { TerrainHeight, WORLD_SIZE, WORLD_HALF } from '../src/sim/terrain-height.js'
 
 let failures = 0
@@ -21,7 +23,8 @@ const SEED = 20260804
 const N = 512
 const r = runPhaseA(SEED, N)
 const th = new TerrainHeight(SEED)
-const water = new Water(new THREE.Scene())
+const scene = new THREE.Scene()
+const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting() })
 const built = water.setFromPhaseA({ lake: r.lake, filled: r.filled, ground: r.base, n: r.n, cell: r.cell })
 
 console.log(`\nwater   seed ${SEED}, ${N}^2, cell ${r.cell.toFixed(1)} m`)
@@ -99,74 +102,105 @@ for (const l of r.lakes) {
 }
 check(touching > 0, 'at least one lake shore is reachable on foot from spawn', `${touching}/${r.lakes.length} bodies`)
 
-// --- rivers ----------------------------------------------------------------
-const riv = water.setStreamsFromPhaseA({
-  stream: r.stream, recv: r.recv, acc: r.acc, lake: r.lake, n: r.n, cell: r.cell, th, minAcc: r.minAcc,
-})
-check(riv.chains > 0, 'the flow network turned into river chains', `${riv.chains} chains, ${riv.triangles} triangles`)
-
-// minAcc is resolution-scaled inside runPhaseA and streamWidth defaults to the
-// UNSCALED constant. A caller who forgets to pass it gets rivers at plausible
-// but wrong widths and nothing complains -- at 1024^2 the scaled value is 625
-// against a constant of 2500, so every river came out half as wide.
-check(r.minAcc !== undefined, 'Phase A reports the scaled stream threshold', `minAcc ${r.minAcc} (constant is ${STREAM.minAcc})`)
-const wide = streamWidth(Math.max(...[...r.acc].filter((_, i) => r.stream[i])), r.minAcc)
-check(wide > STREAM.widthAtMin * 2, 'the trunk rivers are meaningfully wider than the headwaters', `widest ${wide.toFixed(1)} m vs ${STREAM.widthAtMin} m`)
-
-// THE river claim: a ribbon smoothed in plan must still lie in the valley it
-// drains. Smoothing a D8 path cuts corners, and a corner cut across a spur puts
-// the river through a ridge -- visible as water disappearing into a hillside.
-// Sample each segment midpoint and ask how far the real ground is above it.
-let buried = 0
-let segs = 0
-let deepest = 0
-for (const mesh of water.streams.children) {
-  const p = mesh.geometry.getAttribute('position').array
-  // Walk the INDEX buffer, not the vertex buffer. A tile concatenates several
-  // chains into one attribute array, so consecutive vertices are not
-  // necessarily a segment -- reading them in order invents a joining segment
-  // between the tail of one river and the head of the next, which measured as
-  // 1567 buried segments and a 208 m worst case that no real 16 m step could
-  // produce. The index buffer contains only quads that exist.
-  const ix = mesh.geometry.getIndex().array
-  for (let q = 0; q < ix.length; q += 6) {
-    const a = ix[q] * 3
-    const b = ix[q + 2] * 3
-    const mx = (p[a] + p[b]) / 2
-    const mz = (p[a + 2] + p[b + 2]) / 2
-    const my = (p[a + 1] + p[b + 1]) / 2
-    segs++
-    const d = th.heightAt(mx, mz) - my
-    if (d > 2) {
-      buried++
-      if (d > deepest) deepest = d
-    }
+// --- nothing grows underwater ------------------------------------------------
+//
+// levelAt is what the scatter's exclusion predicate calls, so it is checked
+// against the same mask the water is drawn from rather than re-derived.
+let wrong = 0
+let dry = 0
+for (let j = 0; j < r.n; j += 3) {
+  for (let i = 0; i < r.n; i += 3) {
+    const c = j * r.n + i
+    const x = -WORLD_HALF + (i + 0.5) * r.cell
+    const z = -WORLD_HALF + (j + 0.5) * r.cell
+    const lv = water.levelAt(x, z)
+    const submerged = r.lake[c] === 1 && r.base[c] < r.filled[c]
+    if (submerged && lv === null) wrong++
+    if (!submerged && lv !== null) wrong++
+    if (lv === null) dry++
   }
 }
-check(segs > 0, 'there are river segments to sample', `${segs}`)
+check(wrong === 0, 'levelAt reports water exactly where there is water', `${wrong} disagreements`)
+check(dry > 0, 'levelAt reports dry land as dry', `${dry} dry samples`)
+const lakeCell = [...Array(r.n * r.n).keys()].find((c) => r.lake[c] && r.base[c] < r.filled[c])
+const lx = -WORLD_HALF + ((lakeCell % r.n) + 0.5) * r.cell
+const lz = -WORLD_HALF + (((lakeCell / r.n) | 0) + 0.5) * r.cell
 check(
-  buried < segs * 0.02,
-  'no river segment tunnels through the ground it runs over',
-  `${buried}/${segs} segments buried, worst ${deepest.toFixed(1)} m`
+  th.heightAt(lx, lz) < water.levelAt(lx, lz),
+  'a prop standing mid-lake would be rejected as underwater',
+  `ground ${th.heightAt(lx, lz).toFixed(1)} m, water ${water.levelAt(lx, lz).toFixed(1)} m`
 )
 
-// Every ribbon vertex, both banks, must sit ON the ground -- not floating over
-// it and not sunk into it. This is the promise that makes a painted-on river
-// look like water rather than a ramp, and it is the one that broke when the
-// ribbon was held level across its width.
-let off = 0
-let worstOff = 0
-let verts = 0
-for (const mesh of water.streams.children) {
-  const p = mesh.geometry.getAttribute('position').array
-  for (let v = 0; v < p.length; v += 3) {
-    verts++
-    const d = Math.abs(p[v + 1] - th.heightAt(p[v], p[v + 2]))
-    if (d > 1) off++
-    if (d > worstOff) worstOff = d
+// ...and the scatter has to actually ask. levelAt being right proves nothing
+// about placement: the predicate is composed in main.js and installed once, and
+// a scatter that never calls it, or calls it with the wrong argument order,
+// still passes every check above. So drive the real Scatter standing in open
+// water and read the matrices it wrote.
+{
+  const { Scatter } = await import('../src/props/scatter.js')
+
+  // Stand at the deepest water in the world, not at the biggest lake's
+  // centroid: these basins are dendritic, and the centroid of the largest one
+  // sits 88 m up a spur of dry land between two arms of it. A site with no
+  // water under it makes the control below vacuous.
+  let deepest = -1
+  let deepestBy = 0
+  for (let c = 0; c < r.n * r.n; c++) {
+    if (!r.lake[c]) continue
+    const d = r.filled[c] - r.base[c]
+    if (d > deepestBy) { deepestBy = d; deepest = c }
   }
+  const site = {
+    x: -WORLD_HALF + ((deepest % r.n) + 0.5) * r.cell,
+    z: -WORLD_HALF + (((deepest / r.n) | 0) + 0.5) * r.cell,
+  }
+
+  const drowned = (props) => {
+    const m = new THREE.Matrix4()
+    let n = 0
+    let worstSink = 0
+    for (const s of props.kinds) {
+      for (let k = 0; k < s.count; k++) {
+        props.batch.getMatrixAt(s.instances[k], m)
+        const x = m.elements[12]
+        const z = m.elements[14]
+        const lv = water.levelAt(x, z)
+        if (lv === null) continue
+        const d = lv - th.heightAt(x, z)
+        if (d <= 0) continue
+        n++
+        if (d > worstSink) worstSink = d
+      }
+    }
+    return { n, worstSink }
+  }
+
+  // One kind rebuilds per update() by design, so settling takes as many calls
+  // as there are kinds -- the same dance check-terrain.mjs does.
+  const settle = (props) => {
+    for (let i = 0; i < props.kinds.length + 2; i++) props.update(site.x, site.z)
+  }
+
+  // The control. If nothing would have drowned here anyway, the check below is
+  // green for the wrong reason and would stay green with the predicate deleted.
+  const bare = new Scatter(new THREE.Scene(), th, { seed: SEED })
+  settle(bare)
+  const would = drowned(bare)
+  check(would.n > 0, 'open water would drown props if nothing stopped it',
+    `${would.n} props under water, worst ${would.worstSink.toFixed(1)} m down`)
+
+  // The same predicate main.js composes, minus villages (checked in its own file).
+  const guarded = new Scatter(new THREE.Scene(), th, { seed: SEED })
+  guarded.setExclusion((x, z) => {
+    const level = water.levelAt(x, z)
+    return level !== null && th.heightAt(x, z) < level
+  })
+  settle(guarded)
+  const got = drowned(guarded)
+  check(got.n === 0, 'the scatter places nothing underwater',
+    got.n ? `${got.n} still submerged, worst ${got.worstSink.toFixed(1)} m down`
+          : `${would.n} would have drowned, 0 placed under water`)
 }
-check(off === 0, 'both banks of every river sit on the ground', `${off}/${verts} vertices off, worst ${worstOff.toFixed(2)} m`)
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 process.exit(failures ? 1 : 0)

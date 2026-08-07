@@ -120,16 +120,33 @@ import { SLOTS, PATTERNS, composeAuto, bandsFor } from './aurora-patterns.js'
 // SCALE AND PLACEMENT
 // ===========================================================================
 //
-// Everything is built in KILOMETRES and scaled by KM on the way out, because
-// the physics is quoted in kilometres and a file full of 4050.0 would be
-// unreadable. At 45 units/km the camera's 20000-unit far plane sits at 444 km,
-// which is what caps band altitude in aurora-patterns.js.
+// Everything is built in KILOMETRES, because the physics is quoted in
+// kilometres and a file full of 4050.0 would be unreadable. But the kilometres
+// are then thrown away: the finished position is NORMALISED and placed on a
+// shell of fixed radius. Only the DIRECTION survives.
 //
-// The aurora is SKY-LOCKED: it follows the head position with no parallax, like
-// the sky dome and the stars. That is not a cheat, it is correct -- at 100 km
-// altitude, walking the entire 16 km world moves the aurora by under 5 degrees,
-// and the alternative is that it slides past the mountains as she walks, which
-// is precisely the wrong cue.
+// That is not an approximation, it is the removal of one. The aurora is
+// sky-locked -- it follows the head with no parallax -- because at 100 km up,
+// walking the entire 16 km world moves it under 5 degrees, and an aurora that
+// slides past the mountains as she walks is precisely the wrong cue. Given no
+// parallax and no stereo disparity (250 km is infinity to a 64 mm baseline),
+// the true radius is unobservable. Everything you can see about an aurora is
+// its direction and its colour.
+//
+// Keeping the true radius therefore bought nothing and cost the one thing that
+// mattered: the far plane. At 45 units/km a 20000-unit far plane sits at 444
+// km, so a band could not be further out than that, so its lower border could
+// not be lower in the sky than about 13 degrees -- and the request was for
+// arcs sitting ON the horizon, which needs a thousand kilometres and more.
+// Three rounds of trimming folds and altitudes to fit inside 444 km were all
+// paying for a number nobody could see.
+//
+// So: SHELL_UNITS, chosen to sit beyond every piece of terrain in the world
+// (the 16 km world's far corner is 11,600 units from its centre) and well
+// inside the far plane. Terrain occlusion still works, and works BETTER --
+// every aurora fragment is now further away than every mountain, so the only
+// thing that can hide an arc is a silhouette standing in front of it, which is
+// the only thing that should.
 //
 // Depth still works, and does the right thing for free: the material is
 // transparent, so it draws after the opaque pass has filled the depth buffer,
@@ -138,7 +155,10 @@ import { SLOTS, PATTERNS, composeAuto, bandsFor } from './aurora-patterns.js'
 // only happens where it should.
 // ---------------------------------------------------------------------------
 
-const KM = 45 // world units per kilometre
+// Where the aurora shell sits, in world units. Any value between the far
+// corner of the terrain (~11,600) and the far plane (20,000) gives the same
+// image -- see SCALE AND PLACEMENT above for why the number is unobservable.
+const SHELL_UNITS = 14000
 
 // Samples along a band, and rows up it. 180 segments gives a fold wavelength of
 // about 8 samples at the tightest wavelength the vertex shader displaces at,
@@ -168,24 +188,99 @@ const NOISE_GLSL = `
 
 // The fold displacement, shared between the vertex shader's position and its
 // finite-difference normal so the two cannot drift apart. Returns kilometres
-// sideways along the footprint normal.
+// as a vec2: x sideways along the footprint NORMAL (toward and away from the
+// viewer), y along the footprint TANGENT (forward and back along the band).
 //
-// Three octaves at rates that are not integer multiples of each other -- this
+// ===========================================================================
+// WHY THERE ARE TWO COMPONENTS, WHICH IS THE WHOLE OF ROUND FIVE
+// ===========================================================================
+//
+// Until now this returned one number and the vertex shader wrote
+//
+//     p = dir * ( dist + fold ) + up * alt
+//
+// which is a POLAR GRAPH: radius as a function of azimuth. A polar graph is
+// single-valued in its angle by construction, so no amount of amplitude can
+// make the footprint double back on itself. It can wander toward and away from
+// the viewer -- which perspective turns into a hem that rises and falls -- but
+// two parts of the same band can never be at the same bearing, and therefore
+// the curtain can never fold back over itself or overlap itself. It flaps; it
+// does not fold. That was the reported complaint and it was a property of this
+// one line, not of the shader, the hardware or the technique.
+//
+// Adding a TANGENTIAL component turns the footprint into a general parametric
+// curve in the ground plane, and a general curve may loop. Concretely: walking
+// the band, the along-track speed is 1 + d(tangential)/d(km). Where that goes
+// negative the track REVERSES -- the same stretch of sky gets two pieces of
+// curtain, one behind the other, which is exactly the shape in every
+// photograph of a folded arc, and exactly what an optically thin additive
+// emitter should do when it happens (the two layers add, and the fold is
+// brighter, which is also what the photographs show).
+//
+// The tangential octaves are the SAME noise sampled a quarter wavelength
+// along. A quarter-wave phase offset between two components is a circle -- so
+// each octave contributes a loop rolled along the band, which is the trochoid
+// family, and is what an auroral curl or spiral actually is. Using independent
+// noise instead gives a curve that wanders in two axes without ever closing,
+// which reads as jitter rather than as coiling.
+//
+// `curl` is the tangential amplitude relative to the normal one, and it is
+// allowed past 1. It has to be: the normal component is what the fold costs in
+// apparent DEPTH, which the eye reads as very little at 300 km, while the
+// tangential component is free and does all of the visible work. A form with
+// curl 0 is exactly the old behaviour.
+//
+// Four octaves at rates that are not integer multiples of each other -- this
 // is Skyrim's three-layer trick, moved from UV scroll onto the fold amplitude.
 // The time term is INSIDE the noise rather than added to the coordinate, which
 // is the whole difference: adding to the coordinate slides the pattern along
 // the band, putting it in the second axis makes the pattern MORPH IN PLACE.
 // Real folds do the latter.
 const FOLD_GLSL = `
-  float aurFold( float km, float t, float amp, float hz, float act ) {
-    float f = ( aurNoise( vec2( km * 0.0125 * hz, t * 0.055 ) ) - 0.5 ) * 1.0;
-    f     += ( aurNoise( vec2( km * 0.0410 * hz, t * 0.130 ) ) - 0.5 ) * 0.52;
-    // The third octave is gated on activity. A quiet aurora is a smooth arc;
+  // Rates: the three structural octaves were slowed by about a third when the
+  // tangential term went in. A fold that comes and goes in eight seconds reads
+  // as flicker; the same fold over twelve or fifteen seconds reads as the sheet
+  // winding and unwinding, which is the motion an aurora actually has. The
+  // fourth octave was left fast on purpose -- that one is the breakup flicker,
+  // it is gated on activity, and it is supposed to be quick.
+  vec2 aurFold( float km, float t, float amp, float hz, float act, float curl, float ms ) {
+    // The MEANDER, and it is the longest octave by a factor of four. A band
+    // whose largest structure is its fold wavelength runs across the sky as a
+    // near-straight line with texture on it -- which is what an auroral arc
+    // does NOT do. Real arcs snake: one or two enormous swings across the
+    // whole visible span, with the folds riding on top of them.
+    //
+    // Deliberately NOT multiplied by hz. hz is a form's fold CHARACTER -- tight
+    // curls at 3.1, long lazy drapery at 0.3 -- and the meander is a property
+    // of the oval rather than of the form, so a curl band snakes on exactly
+    // the same scale a drapery does. Weighting it 2.30 against the base
+    // octave's 1.0 is what makes it the shape the eye reads first.
+    //
+    // It IS multiplied by 'ms', which normalises it to a 250 km reference
+    // band. The meander is the only octave measured in DEGREES OF SKY rather
+    // than in kilometres, and it has to be: a 1000 km arc low on the horizon
+    // has the same 294 km of meander as a 250 km one overhead, so without this
+    // it would show four times as many swings across the same span of sky and
+    // would read as texture rather than as a course. Everything else -- folds,
+    // curls, rays, the hem -- stays metric, because those are real lengths and
+    // really do get finer with distance.
+    float mkm = km * ms;
+    float q   = 73.5;       // a quarter wavelength of the meander, in mkm
+    vec2 f = vec2( aurNoise( vec2( mkm * 0.0034,             t * 0.014 ) ),
+                   aurNoise( vec2( ( mkm + q ) * 0.0034,     t * 0.014 ) ) ) - 0.5;
+    f *= 2.30;
+    f += ( vec2( aurNoise( vec2( km * 0.0125 * hz,                   t * 0.038 ) ),
+                 aurNoise( vec2( ( km + 20.0 / hz ) * 0.0125 * hz,   t * 0.038 ) ) ) - 0.5 ) * 1.0;
+    f += ( vec2( aurNoise( vec2( km * 0.0410 * hz,                   t * 0.085 ) ),
+                 aurNoise( vec2( ( km + 6.1 / hz ) * 0.0410 * hz,    t * 0.085 ) ) ) - 0.5 ) * 0.52;
+    // The fourth octave is gated on activity. A quiet aurora is a smooth arc;
     // the fine curls only appear at breakup. That progression -- arc, then
     // folds, then curls -- is the Akasofu substorm sequence, and animating it
     // is most of why standing and watching this is worth doing.
-    f     += ( aurNoise( vec2( km * 0.1350 * hz, t * 0.310 ) ) - 0.5 ) * 0.34 * act;
-    return f * amp;
+    f += ( vec2( aurNoise( vec2( km * 0.1350 * hz,                   t * 0.310 ) ),
+                 aurNoise( vec2( ( km + 1.85 / hz ) * 0.1350 * hz,   t * 0.310 ) ) ) - 0.5 )
+         * 0.34 * act;
+    return vec2( f.x, f.y * curl ) * amp;
   }
 `
 
@@ -223,7 +318,10 @@ function buildGeometry() {
   geo.setAttribute('aV', new THREE.Float32BufferAttribute(aV, 1))
   geo.setAttribute('aSlot', new THREE.Float32BufferAttribute(aSlot, 1))
   geo.setIndex(idx)
-  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 150 * KM, 0), 400 * KM)
+  // Every vertex ends up on the shell, so the bounding sphere is the shell.
+  // (frustumCulled is false anyway -- this is here so anything that reads the
+  // bounds, a raycast or a debug helper, gets an honest answer.)
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), SHELL_UNITS)
   return geo
 }
 
@@ -245,6 +343,7 @@ export class Aurora {
     this.bandD = arr(4) // lobes, ragged, flick, fringe
     this.bandE = arr(4) // pulse, tintAmt, seed, --
     this.bandF = arr(4) // pale, crown, shear, breathe
+    this.bandG = arr(4) // twist, flame, curl, --
     this.bandT = arr(3) // tint rgb
 
     this.material = new THREE.ShaderMaterial({
@@ -258,6 +357,7 @@ export class Aurora {
         uBandD: { value: this.bandD },
         uBandE: { value: this.bandE },
         uBandF: { value: this.bandF },
+        uBandG: { value: this.bandG },
         uBandT: { value: this.bandT },
       },
       vertexShader: `
@@ -273,12 +373,13 @@ export class Aurora {
         uniform vec4 uBandD[ ${SLOTS} ];
         uniform vec4 uBandE[ ${SLOTS} ];
         uniform vec4 uBandF[ ${SLOTS} ];
+        uniform vec4 uBandG[ ${SLOTS} ];
         uniform vec3 uBandT[ ${SLOTS} ];
 
         varying vec4 vShape; // altitude km, along-band km, this column's top km, its base km
         varying vec4 vMod;   // envelope, bottom-hem streak, ray contrast, ray frequency
         varying vec4 vTint;  // colour override rgb + how much of it
-        varying vec3 vCol;   // palette: paleness, crown strength, base softness
+        varying vec4 vCol;   // palette: paleness, crown strength, base softness, flame
         varying vec3 vWorld;
         varying vec3 vNrm;
         varying float vBright;
@@ -303,26 +404,34 @@ export class Aurora {
           vec4 D = uBandD[ s ];
           vec4 E = uBandE[ s ];
           vec4 F = uBandF[ s ];
+          vec4 G = uBandG[ s ];
 
           vBright = A.w;
           vTint = vec4( uBandT[ s ], E.y );
 
           float t = uTime * C.x + E.z * 41.0;
 
-          // ---- Footprint. A circular arc centred on the viewer, which is what
-          // an auroral arc looks like from underneath: the oval is thousands of
-          // km across, so the near part of it reads as a band crossing the sky
-          // rather than as a ring.
-          float a = radians( A.y + ( aU - 0.5 ) * A.z );
-          vec3 dir = vec3( sin( a ), 0.0, -cos( a ) );   // north is -z, east is +x
-          vec3 tng = vec3( cos( a ), 0.0, sin( a ) );
-
-          // Distance along the footprint from its centre, in km, plus the slow
-          // translation. Real arcs drift -- usually westward before midnight --
-          // and the drift is applied to the SHAPE coordinate so the whole
-          // structure travels together rather than the pattern sliding through
-          // a stationary silhouette.
+          // ---- Distance along the footprint from its centre, in km, plus the
+          // slow translation. Real arcs drift -- usually westward before
+          // midnight -- and the drift is applied to the SHAPE coordinate so the
+          // whole structure travels together rather than the pattern sliding
+          // through a stationary silhouette.
+          //
+          // This is computed BEFORE the footprint azimuth, which is a reversal
+          // of the obvious order and is deliberate: the azimuth now depends on
+          // altitude (see 'twist' below), altitude depends on the per-column
+          // terms, and every one of those is a function of 'km'. 'km' itself
+          // depends only on aU, so it is the one thing that can come first.
           float km = ( aU - 0.5 ) * radians( A.z ) * A.x + uTime * C.y;
+
+          // How many kilometres along this band make up one kilometre's worth
+          // of ANGLE at the 250 km reference distance. The two structures whose
+          // size the eye judges in degrees rather than in kilometres -- the
+          // meander and the swoop -- are measured in these units instead. A
+          // 1000 km arc on the horizon then shows the same number of long
+          // swings across the same span of sky as a 250 km one overhead, which
+          // is the difference between reading as a course and reading as fuzz.
+          float mScale = 250.0 / A.x;
 
           // ================================================================
           // Per-column terms. Constant up a field line, so they belong here.
@@ -339,6 +448,36 @@ export class Aurora {
           // electrons of a given energy stop, and that is the most uniform
           // thing about an aurora. A few km, no more.
           float baseKm = B.x + ( aurNoise( vec2( km * 0.05, t * 0.05 ) ) - 0.5 ) * 5.0;
+
+          // ---- The SWOOP: the whole column rides up and down on a wavelength
+          // of about 240 km, so the hem crosses the sky as a long serpentine
+          // curve instead of as a level line with texture on it.
+          //
+          // Why this exists as well as the meander in aurFold: the meander
+          // moves the band toward and away from the viewer, and perspective
+          // turns that into a rise and fall of the hem -- which is the honest
+          // mechanism, and it is how a real curtain's hem swoops. But its
+          // amplitude is bounded by the far plane (a band 250 km out cannot
+          // fold 60 km outward and stay inside a 444 km camera), and at the
+          // distances these bands sit at, perspective alone buys about two
+          // degrees. So the swoop does the same job along the axis that costs
+          // nothing: the column slides bodily up and down, base and top
+          // together, which leaves the deposition curve untouched because it
+          // is normalised to the column's own height.
+          //
+          // Amplitude is tied to 'fold', so a form has ONE knob for how
+          // sinuous it is rather than two that have to be kept in agreement --
+          // but CAPPED, which the raw tie is not. The far bands now carry folds
+          // of 60-130 km, and a hem sliding 60 km up and down is not a swoop,
+          // it is the band leaving the altitude range that gives it its colour:
+          // 557.7 nm green needs 100-150 km, and there is nothing at all below
+          // 80. 26 km of fold is what the old near-only catalogue ran at, so
+          // +/- 13 km is the excursion this was tuned against in the first
+          // place.
+          float swoop = ( aurNoise( vec2( km * 0.0042 * mScale + E.z * 1.7, t * 0.026 ) ) - 0.5 )
+                        * min( B.z, 26.0 );
+          baseKm += swoop;
+          topKm += swoop;
 
           // Columns come and go. A band whose every column is permanently lit
           // reads as a painted object; a real one is continually rebuilt out of
@@ -376,27 +515,41 @@ export class Aurora {
           float pulse = mix( 1.0, 0.30 + 0.70 * ( 0.5 + 0.5 * sin( uTime * E.x * 6.2832 + ph ) ),
                              step( 0.001, E.x ) );
 
-          // ---- Presence. The slowest and deepest of the four envelopes, and
-          // the one that decides whether a stretch of band is in the sky at
-          // all right now.
+          // ---- Presence. The deepest of the envelopes, and the one that
+          // decides whether a stretch of band is in the sky at all right now.
           //
-          // flick above works at ~2 km and a few seconds: individual rays
-          // guttering. This works at ~150 km and a couple of minutes: whole
-          // SECTIONS of a band. That separation of scales is the point. An
-          // aurora is not a light that dims, it is a set of regions that are
-          // either lit or not, and the lit regions move.
+          // TWO octaves, because one could not do both halves of the job:
           //
-          // The curve is deliberately not symmetric. Squaring a smoothstep
-          // that only starts climbing at 0.20 leaves the typical value near
-          // 0.15 and the peak near 2.2 -- so a band spends most of its life
-          // faint or invisible, occasionally flares far brighter than a linear
-          // envelope would ever allow, and the flare is an event you notice
-          // rather than a state it sits in. The additive blend clips those
-          // peaks toward white, which is what a real substorm surge does to a
-          // camera and to the eye.
-          float mac = aurNoise( vec2( km * 0.0062, t * 0.028 ) ) * 0.62
-                    + aurNoise( vec2( km * 0.0210, t * 0.070 ) ) * 0.38;
-          float presence = mix( 1.0, 0.10 + 2.10 * pow( smoothstep( 0.20, 0.90, mac ), 2.0 ), F.w );
+          //   REGION (~360 km, a couple of minutes) is which stretch of the
+          //     oval is switched on at all. Slow enough to watch happen, and
+          //     long enough that its boundaries are hundreds of km of gradient
+          //     rather than an edge.
+          //   WASH (~145 km, and five times faster) rolls across whatever the
+          //     region left lit. This is the one that makes the shape hard to
+          //     read: parts of a band brighten and dissolve while you are
+          //     still working out where it ends.
+          //
+          // Both are deliberately LONGER in space than anything else in the
+          // shader -- flick is 18 km, the fringe is 3 km, the folds are tens.
+          // The first version of this ran at 48 km, which is short enough that
+          // a band came out as one small lit patch with hard shoulders: a
+          // confined triangle rather than a curtain fading into the dark. The
+          // blur radius of an envelope is its wavelength, and the fix for a
+          // narrow blur is a longer wave, not a softer curve.
+          //
+          // They MULTIPLY rather than sum. Summed, two envelopes average each
+          // other out and the result sits near its mean; multiplied, either
+          // one can veto, which is what "mostly absent, occasionally blazing"
+          // actually is. Region enters squared, so its dark half is very dark.
+          //
+          // The seed offsets matter: without them every band in the sky shares
+          // one envelope at a given 'km' and they all fade in unison, which
+          // reads as the renderer dimming rather than as weather.
+          float macA = aurNoise( vec2( km * 0.0028 + E.z * 0.7, t * 0.052 ) );
+          float macB = aurNoise( vec2( km * 0.0069 + E.z * 2.3, t * 0.285 ) );
+          float region = smoothstep( 0.18, 0.88, macA );
+          float wash = smoothstep( 0.06, 0.94, macB );
+          float presence = mix( 1.0, 0.08 + 2.55 * region * region * ( 0.22 + 0.78 * wash ), F.w );
 
           // And one breath for the band as a whole, so entire forms come and
           // go rather than only parts of them. Constant along the band -- the
@@ -409,8 +562,13 @@ export class Aurora {
           // silhouette instead of a rectangle with soft edges. The two together
           // are what make overlaid forms read as separate blobs of light rather
           // than as stacked ribbons.
+          //
+          // The height taper floors at 0.58 rather than 0.40. At 0.40 the ends
+          // of a band were short enough that, once the presence envelope had
+          // taken the middle out, what was left read as a wedge with a corner
+          // on it. A band should fade out, not taper to a point.
           float endTaper = smoothstep( 0.0, 0.30, aU ) * smoothstep( 1.0, 0.70, aU );
-          float ovality = mix( 0.40, 1.0,
+          float ovality = mix( 0.58, 1.0,
                                smoothstep( 0.0, 0.44, aU ) * smoothstep( 1.0, 0.56, aU ) );
           topKm = baseKm + ( topKm - baseKm ) * ovality;
 
@@ -419,40 +577,114 @@ export class Aurora {
           // ================================================================
           float alt = mix( baseKm, topKm, aV );
 
+          // ---- Footprint. A circular arc centred on the viewer, which is what
+          // an auroral arc looks like from underneath: the oval is thousands of
+          // km across, so the near part of it reads as a band crossing the sky
+          // rather than as a ring.
+          //
+          // TWIST (G.x, degrees of azimuth per km of altitude) is what makes
+          // the vortex forms actually three-dimensional, and it is the piece
+          // 'shear' alone could not give. Shear moves the point at which the
+          // fold noise is sampled, so a column LEANS -- its pattern is offset
+          // with height, but the sheet it lives on is still a flat vertical
+          // ribbon standing on a fixed ground track. Rotating the azimuth with
+          // altitude moves the GEOMETRY: the ground track at 260 km sits tens
+          // of degrees around the sky from the ground track at 96 km, and the
+          // band between them is a helix. That is a shape you can walk around
+          // and see turn, which a leaning sheet is not.
+          //
+          // At 0.18 deg/km -- the default, and the real dip of the field at
+          // 65 N expressed as rotation rather than as lean -- a 150 km column
+          // rotates 27 degrees, which is the slight corkscrew every tall rayed
+          // band has. Past about 0.3 it stops being a curtain.
+          float a = radians( A.y + ( aU - 0.5 ) * A.z + G.x * ( alt - baseKm ) );
+          vec3 dir = vec3( sin( a ), 0.0, -cos( a ) );   // north is -z, east is +x
+          vec3 tng = vec3( cos( a ), 0.0, sin( a ) );
+
           // Fold amplitude grows with altitude. Field lines converge downward,
           // so a fold is tighter at the bottom edge and splays out above -- it
           // is why curtains look like curtains and not like walls.
-          float amp = B.z * ( 0.55 + ( alt - 90.0 ) * 0.0072 );
+          //
+          // The floor is 0.86 rather than 0.55: at 0.55 the BASE of a band
+          // barely folded at all, so however much the top writhed the hem
+          // stayed a level line. The splay is still there, it just no longer
+          // starts from nothing.
+          float amp = B.z * ( 0.86 + ( alt - 90.0 ) * 0.0042 );
 
           // Field lines are not vertical. At 65 N the magnetic dip is about 78
           // degrees, so the top of a 150 km column sits some 30 km along-band
           // from its own base -- and since the fold pattern is carried BY the
           // field lines, the fold at the top is the fold from further along.
           // That is the lean you see in every photograph of a tall rayed band,
-          // and cranked up it is also the whole of the auroral spiral form:
-          // shear past a full fold wavelength and the column stops reading as
-          // a curtain and starts reading as smoke twisting upward.
+          // and it is what twist above cannot give: twist turns the ribbon,
+          // shear slides the pattern along it, and a vortex needs both.
           float shear = F.z * ( alt - baseKm );
-          float f0 = aurFold( km + shear, t, amp, B.w, uActivity );
+          // The meander runs in degrees of sky, not kilometres -- see aurFold.
+          float mScale = 250.0 / A.x;
+          vec2 f0 = aurFold( km + shear, t, amp, B.w, uActivity, G.z, mScale );
 
           // Surface normal by finite difference along the footprint. Two extra
           // noise evaluations per vertex, and the payoff is the edge-on
           // brightening in the fragment shader, which is the effect that turns
           // a smooth ribbon into distinct bright rays. Without a correct normal
           // here that effect points the wrong way and looks worse than nothing.
+          //
+          // Both components enter the difference now. The along-track term is
+          // ( dk + f1.y - f0.y ), and where the curl is strong enough that goes
+          // NEGATIVE -- the fold has doubled back, and the tangent, and with it
+          // the normal, flips. That is correct and it is also harmless: the
+          // fragment shader only ever uses this normal inside abs(), because an
+          // optically thin emitter has no front and no back.
           float dk = 2.0;
-          float f1 = aurFold( km + shear + dk, t, amp, B.w, uActivity );
-          vec3 tanW = normalize( tng * dk + dir * ( f1 - f0 ) );
+          vec2 f1 = aurFold( km + shear + dk, t, amp, B.w, uActivity, G.z, mScale );
+          vec3 tanW = normalize( tng * ( dk + f1.y - f0.y ) + dir * ( f1.x - f0.x ) );
           // The sheet is vertical, so its normal is the plan tangent turned 90
           // degrees about up.
           vNrm = normalize( vec3( -tanW.z, 0.0, tanW.x ) );
 
           vShape = vec4( alt, km, topKm, baseKm );
           vMod = vec4( endTaper * lobe * flick * pulse * presence * breath, fringe, C.z, C.w );
-          vCol = vec3( F.x, F.y, soft );
+          vCol = vec4( F.x, F.y, soft, G.y );
 
-          vec3 p = ( dir * ( A.x + f0 ) + vec3( 0.0, alt, 0.0 ) ) * ${KM.toFixed(1)};
-          vec4 world = modelMatrix * vec4( p, 1.0 );
+          // The footprint, in kilometres, as a general parametric curve rather
+          // than as a polar graph -- the tangential term is what lets it turn
+          // back on itself.
+          float gd = A.x + f0.x;
+
+          // ---- And the Earth is round, which at these distances is the single
+          // biggest thing acting on where a band appears in the sky.
+          //
+          // The ground under an aurora 1000 km away has fallen 78 km below the
+          // tangent plane you are standing on, so a band whose base is at 101
+          // km altitude is only 23 km above YOUR horizontal -- 1.3 degrees up,
+          // not the 5.8 that flat ground would give. Past about 1130 km the
+          // base has gone under the horizon entirely and you see only the tops
+          // of the rays, which is exactly the sight the request described:
+          // an aurora coming up from below the horizon. Every photograph of a
+          // distant arc is showing this and nothing else.
+          //
+          // d^2 / 2R with R = 6371 km, so 12742. It is applied ONLY here, to
+          // the position; vShape carries the true altitude, because altitude is
+          // what sets the colour and the deposition profile and neither of
+          // those cares where the observer is standing.
+          //
+          // Note it uses gd, not A.x -- the fold is included. At 1180 km the
+          // drop changes by 0.19 km for every km of fold, so a band folding 60
+          // km further out sinks another 11 km, and the hem weaves across the
+          // horizon line of its own accord. That undulation is free, and it is
+          // the honest version of what the swoop above approximates.
+          float drop = gd * gd / 12742.0;
+
+          vec3 p = dir * gd + tng * f0.y + vec3( 0.0, alt - drop, 0.0 );
+
+          // ...and then the kilometres are discarded and only the bearing is
+          // kept. See SCALE AND PLACEMENT at the top of the file: an aurora has
+          // no parallax and no stereo disparity, so its distance is not an
+          // observable, and pinning it to a shell buys back the far plane. A
+          // band at 1,400 km with its hem 4 degrees above the horizon costs
+          // exactly what one at 250 km overhead costs, which is what makes the
+          // low arcs possible at all.
+          vec4 world = modelMatrix * vec4( normalize( p ) * ${SHELL_UNITS.toFixed(1)}, 1.0 );
           vWorld = world.xyz;
           gl_Position = projectionMatrix * viewMatrix * world;
         }
@@ -465,7 +697,7 @@ export class Aurora {
         varying vec4 vShape;
         varying vec4 vMod;
         varying vec4 vTint;
-        varying vec3 vCol;
+        varying vec4 vCol;
         varying vec3 vWorld;
         varying vec3 vNrm;
         varying float vBright;
@@ -508,6 +740,33 @@ export class Aurora {
           // The bottom hem breaks into vertical streaks that come and go. Only
           // the lowest fifth of the column: higher up the rays merge.
           dep *= mix( vMod.y, 1.0, smoothstep( 0.0, 0.30, h ) );
+
+          // ---- Flaming: waves of brightness racing UP the field lines.
+          //
+          // This is the ONE altitude term in the whole shader, and it is here
+          // on purpose rather than by accident. The rule the header states --
+          // no height in the noise -- is about STRUCTURE: rays, folds and
+          // striations are carried by the field lines and must therefore be
+          // constant up a column, and a height term in any of those turns the
+          // aurora into coloured fog. Flaming is not structure. It is a
+          // disturbance PROPAGATING along a field line, and the thing that
+          // moves is brightness, not shape. So the wave rides on 'dep', which
+          // is already a function of height, and nothing that defines the
+          // form's silhouette can see it.
+          //
+          // The previous attempt made this out of the shear instead: a large
+          // shear plus a negative drift does slide the fold pattern upward,
+          // and the arithmetic was right, but what travels is the FOLD, and a
+          // fold moving up a column that is already twisting is not something
+          // the eye can pick out. There was no light racing anywhere.
+          //
+          // Cubed, so it is mostly dark with a narrow bright crest -- a wave
+          // rather than a sine glow. The phase offset along the band is what
+          // stops it being a full-sky strobe: at 115 km per cycle, adjacent
+          // stretches of the same band are out of step, so the crests run up
+          // in ragged succession instead of the sky flashing in unison.
+          float wave = 0.5 + 0.5 * sin( ( h * 2.8 - uTime * 1.1 ) * 6.2832 + km * 0.055 );
+          dep *= mix( 1.0, 0.20 + 1.90 * pow( wave, 3.0 ), vCol.w );
 
           // ---- Colour by altitude, and by nothing else. See the header. The
           // override is for the two forms that are not precipitation.
@@ -578,7 +837,17 @@ export class Aurora {
 
           // ---- Atmospheric extinction near the horizon. The far arcs' bases
           // sit low, and light from them crosses a great deal of air.
-          float ext = smoothstep( -0.03, 0.14, view.y );
+          //
+          // Widened and dropped once the curvature term put real bands at and
+          // below the horizon line. The old window reached full brightness by 8
+          // degrees and cut off at -1.7, which was fine when nothing was
+          // catalogued below 13; against the present catalogue it would have
+          // deleted the picket fence and most of the far arcs outright. Now: a
+          // hem sitting exactly on the horizon is a fifth as bright, full
+          // strength arrives by about 6 degrees, and anything that has sunk
+          // below -2.9 degrees is gone -- which is also what keeps a band whose
+          // base is under the horizon from being drawn through the ground.
+          float ext = smoothstep( -0.05, 0.10, view.y );
 
           // 0.80 rather than 0.46 because vMod.x now carries the presence
           // envelope, whose typical value is about 0.3. Net effect: an average
@@ -708,7 +977,7 @@ export class Aurora {
   }
 
   _packBands(bands) {
-    const { bandA, bandB, bandC, bandD, bandE, bandF, bandT } = this
+    const { bandA, bandB, bandC, bandD, bandE, bandF, bandG, bandT } = this
     for (let s = 0; s < SLOTS; s++) {
       const b = bands[s]
       const i4 = s * 4
@@ -743,6 +1012,9 @@ export class Aurora {
       bandF[i4 + 1] = b.crown
       bandF[i4 + 2] = b.shear
       bandF[i4 + 3] = b.breathe
+      bandG[i4] = b.twist
+      bandG[i4 + 1] = b.flame
+      bandG[i4 + 2] = b.curl
       bandT[i3] = b.tint[0]
       bandT[i3 + 1] = b.tint[1]
       bandT[i3 + 2] = b.tint[2]

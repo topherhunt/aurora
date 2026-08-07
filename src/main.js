@@ -99,7 +99,22 @@ const props = new Scatter(scene, terrainHeight, { seed: SEED })
 // to be told to re-place -- otherwise the trees it put there before the village
 // arrived are left standing in the great hall.
 const villages = new Villages(scene, terrainHeight, { seed: SEED, onChange: () => props.invalidate() })
-const water = new Water(scene)
+
+// Terrain shadows and ambient occlusion, from the horizon map baked alongside
+// Phase A. The maps arrive a few seconds after the world does; until they land
+// `uSunSky.z` is 0 and every material returns full sun, so the only visible
+// difference is that the mountains have no shadows yet.
+const lighting = new WorldLighting()
+
+// The dome takes its colours from the clock every frame -- there is no separate
+// night sky, just a different set of numbers. Stars and aurora are additive
+// layers on top of it, both hidden entirely whenever their fade is zero.
+const sky = new Sky(scene)
+
+// Constructed AFTER those two on purpose: the water reflects the sky by calling
+// the dome's own shading function, and asks the horizon map where the mountains
+// are, and it takes both uniform blocks by reference. See water.js.
+const water = new Water(scene, { sky, lighting })
 // Nothing grows underwater. The village test comes first because it is a
 // distance check against a handful of sites, and heightAt is only paid on the
 // few candidates that land on a water cell at all -- levelAt is one array
@@ -110,11 +125,6 @@ props.setExclusion((x, z, kind) => {
   return level !== null && terrainHeight.heightAt(x, z) < level
 })
 
-// Terrain shadows and ambient occlusion, from the horizon map baked alongside
-// Phase A. The maps arrive a few seconds after the world does; until they land
-// `uSunSky.z` is 0 and every material returns full sun, so the only visible
-// difference is that the mountains have no shadows yet.
-const lighting = new WorldLighting()
 lighting.patch(terrain.material, {
   mode: 'fragment',
   cacheKey: 'aurora-terrain-v7-shadow',
@@ -136,10 +146,6 @@ for (const [mat, key] of [
   lighting.patch(mat, { mode: 'vertex', cacheKey: key })
 }
 
-// The dome takes its colours from the clock every frame -- there is no separate
-// night sky, just a different set of numbers. Stars and aurora are additive
-// layers on top of it, both hidden entirely whenever their fade is zero.
-const sky = new Sky(scene)
 const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio() })
 const aurora = new Aurora(scene, { seed: SEED })
 
@@ -540,6 +546,10 @@ function applySky(state, head, elapsedReal) {
   sky.update(head, state)
   stars.update(head, state, clock.elapsed, elapsedReal)
   aurora.update(head, state, elapsedReal)
+  // After sky.update: the waves are the only thing here on the wall clock, but
+  // the reflection they bend is written by the line above, and a frame where
+  // the two disagree is a frame where the lake is reflecting yesterday's sky.
+  water.update(elapsedReal)
 }
 
 // --- frame loop -------------------------------------------------------------

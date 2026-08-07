@@ -310,7 +310,15 @@ export class Villages {
     })
     // Unlit, so a flame does not go dark on the side away from the sun -- which
     // is the single thing that would give it away.
-    this.flameMat = new THREE.MeshBasicMaterial({ vertexColors: true })
+    //
+    // And unfogged, which matters more than it sounds. Night fog is now dense
+    // and nearly black (see the fogDensity note in clock.js), so a fogged fire
+    // at 600 m would be lerped 80% of the way to black and simply vanish --
+    // when a distant fire on a dark night is in fact the LAST thing to
+    // disappear, because the eye adapts to it rather than to the landscape.
+    // Fog models attenuation between here and there; it has no way to model
+    // the adaptation, so for emitters the honest approximation is to skip it.
+    this.flameMat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: false })
     this.puffMat = new THREE.MeshLambertMaterial({ vertexColors: true })
 
     this.flameGeo = buildFlame({ h: 1, r: 0.36, seed: this.seed })

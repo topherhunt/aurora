@@ -799,6 +799,35 @@ So both night knobs were halved across all six sub-horizon rows -- `skyGlowAmt` 
 
 Measured at 01:00 after: **trunk 12, gully rock 25, grass in shadow 34, lit grass 58, snow 117** -- the snow-to-darkest ratio went from 5.7x to 9.8x while every surface got darker. The gate's night promise is now split in two, because they are different promises: a **tree trunk** is allowed to become a silhouette at 03:00 (floor luma 6), but the **ground she is walking on** is not (floor 14 at 01:00, 12 at the worst moonless hour). A `GROUND` subset excluding trunk and snow carries the second one.
 
+#### And then it was flat, which is a different complaint from grey -- and the check was causing it
+
+"At nighttime the ground and terrain just feel flat and even and grayscale." Note what that is *not*: it is not "too dark" and it is not "too bright". Every brightness number above was in range and the night still had no shape. The missing quantity was **direction**, and the diagnosis is a ratio rather than a level.
+
+At full dark the directional moonlight contributed `0.50 x 0.474 = 0.237` against a hemisphere at 0.50 plus an additive lift. So under a third of any surface's brightness came from the one term that knows where the moon is. Ambient light has no direction by construction, so while it dominated, the answer to "which way is this hillside facing" barely changed what you saw. **Measured, a full moon overhead gave lit grass 80 against shaded grass 34 -- 2.4:1.** That is the number that reads as flat.
+
+Worse, the gate was actively enforcing it. `worstGround >= 12` swept every surface at every dark hour and demanded a floor, and the only way to meet a floor on the *shaded* side is to raise ambient, which lifts the lit side by the same amount and flattens the ratio further. The check had been written to catch "unnavigable" and it had quietly become a check for "evenly lit".
+
+The repair is one move with two halves, and neither half works alone:
+
+- **`MOONLIGHT.intensity` 0.50 -> 1.20**, and
+- **night ambient cut about 40%** across all six sub-horizon rows: `hemiIntensity` 0.50 -> 0.30, `skyGlowAmt` 0.0095 -> 0.0062, `skyFloor` 0.155 -> 0.115 at full dark, proportionately at -12, -6 and -4.
+
+Measured after, at a full moon well up: **lit grass 106 / shaded grass 24, lit snow 197 / shaded snow 43** -- 4.4:1 and 4.6:1, where it was 2.4:1. Snow on the moonlit side is now genuinely bright enough to walk by and a slope with the moon behind it goes most of the way to a silhouette, which is the requested behaviour and is the same behaviour on both counts.
+
+**Distance is the other half of "flat", and fog does it.** A night that is correctly lit at 20 m is still a diorama if the ridge at 800 m is a slightly dimmer version of the same thing. `fogDensity` at full dark goes **0.0004 -> 0.0022** and the night fog colour goes **`0x121729` -> `0x080b14`**, which is darker than the night sky. Since `FogExp2` is `1 - exp(-(density x d)^2)` that gives 0.4% at 30 m, 5% at 100 m, 35% at 300 m, 82% at 600 m and 99% at 1 km: the near field is untouched, the middle distance loses its detail, and a far ridge becomes a black cutout against a lighter sky.
+
+This is not aerosol and the file says so -- the air does not thicken at 22:00. It is the same dark-adaptation problem as the rest of §8, viewed along the depth axis. A dark-adapted eye loses contrast sensitivity well before it loses light, so at night the far half of a landscape does not get dim, it stops *resolving*. An exponential-squared falloff toward a colour darker than the sky is that shape. It also has the useful side effect of making the aurora, the moon and the stars the brightest things in the frame by a wide margin, which at night they should be.
+
+**One thing had to be exempted.** Village fires are `MeshBasicMaterial`, and three fogs those like anything else -- so a hearth at 600 m would be lerped 82% of the way to near-black and simply vanish, when a distant fire on a dark night is in fact the *last* thing to disappear. Fog models attenuation between here and there; it has no way to model the eye adapting to a small bright source rather than to the landscape. So `flameMat` gets `fog: false`, alongside the pre-existing decision that it is unlit. The gate asserts it from `check-daynight.mjs`, reaching into `village.js`, because the reason for the flag lives in the fog table and not in the village.
+
+**The gate's night promise is now three promises, not one**, and the middle one has an *upper* bound, which is the only check in the file that does:
+
+- ground **the moon reaches** is readable at every hour the moon is up (luma >= 40; worst measured 55). Conditioned on the moon actually delivering light, because a 3-degree crescent is not a light source and requiring navigability under one is what put the ambient back.
+- ground **it does not reach** is dark without being gone (luma >= 6; worst measured 8).
+- **slope contrast** at a full moon is at least 3:1 on both grass and snow, and shaded grass is at most 26. Before this round it measured 2.4:1, which passed every brightness check in the file and still looked like nothing.
+
+Plus the distance shape: unfogged at 30 m, under 10% at 100 m, over 55% at 600 m and over 90% at 1 km, fog luma below 80% of the horizon's, and daylight density untouched.
+
 ---
 
 ## 9. Asset pipeline
@@ -1233,6 +1262,78 @@ The fix is structural: `SLOTS` 9 -> 11, `FLOOR_BANDS = 2`, a `floor: true` flag 
 - **HUD line width.** With a reserved floor plus up to three competing forms, the worst-case label ran to 98 characters against a 62-character panel budget (1024 px, 22 px margin, 26 px monospace at 0.60 em advance), and `fillText` does not complain -- it just draws off the edge. The label now budgets its width and appends `+N more`; the gate sweeps the composer and asserts the worst case fits. It is currently **60 of 62**.
 
 Also: a GLSL comment inside a JS template literal must not contain a backtick. Five of them did, and the resulting `SyntaxError` pointed at a line 100 lines away from any of them.
+
+### Round four: shear was not enough, and the catalogue got shorter
+
+Round three's presence envelope, its vortices and its flaming form were all judged from inside the headset and all three came back wrong in the same way -- the *mechanism* was right and the *magnitude of the right axis* was not. The catalogue went 16 forms -> **12**, and three new per-band parameters exist.
+
+#### The blur radius of an envelope is its wavelength
+
+> *the blur envelope feels too narrow, so I'm seeing this very confined triangle of a curtain*
+
+The instinct on hearing "the blur is too narrow" is to soften the transfer curve -- widen the `smoothstep`. That is the wrong knob and it produces a *dimmer* hard edge rather than a soft one. **What sets the visual softness of an envelope is the wavelength of the noise carrying it**, because that is what decides how many metres of sky the transition is spread across. Round three's octaves were 161 km and 48 km. At a band 250 km out those subtend a few degrees, which is the "confined triangle": the edge is sharp because it is short.
+
+So the envelope was rebuilt as two octaves with *different jobs* rather than two octaves of the same job:
+
+```glsl
+float macA = aurNoise( vec2( km * 0.0028 + E.z * 0.7, t * 0.052 ) );   // 360 km, slow
+float macB = aurNoise( vec2( km * 0.0069 + E.z * 2.3, t * 0.285 ) );   // 145 km, 5.5x faster
+float region = smoothstep( 0.18, 0.88, macA );
+float wash   = smoothstep( 0.06, 0.94, macB );
+float presence = mix( 1.0, 0.08 + 2.55 * region * region * ( 0.22 + 0.78 * wash ), F.w );
+```
+
+`region` is which stretches of the band are lit tonight; `wash` is the flicker moving across them. They **multiply rather than sum**, and that is the load-bearing choice: summed envelopes regress toward their mean, so a band is always about half lit and never absent, while multiplied ones let either term veto -- which is what "mostly absent, occasionally blazing" actually is. The per-band seed offsets (`E.z`) are new too. Without them every band in the sky shares one envelope at a given `km` and they all fade in unison, which reads as the renderer dimming rather than as weather.
+
+#### The hem has to snake, and perspective alone cannot do it
+
+> *the bottom line of the curtain waves a little, but it should be dramatically waving across the sky ... very serpentine rather than one long flat line*
+
+The honest mechanism for a wandering hem is perspective on a meandering ground track, and it is **bounded by the camera**: a band 250 km out cannot fold 60 km outward and still fit a 444 km far plane, and folding it that far buys only about 2 degrees of apparent vertical swing anyway. So the work is split between two terms with different costs.
+
+- **A meander octave in `aurFold`**, weighted **2.30** against the base octave's 1.0 and four times its wavelength. Deliberately *not* scaled by the per-band `foldHz`, because otherwise a form with tight folds stops snaking and goes back to a ruled line -- the meander is the band's course across the sky, not its texture. This costs far-plane budget, and three bands had to be trimmed after it landed.
+- **A "swoop"** that slides a whole column bodily up and down. It moves `baseKm` and `topKm` together, so the *normalised* deposition curve is untouched -- the colour ramp and the hem softness are functions of `h` in column-local space and cannot see it. It costs no radius at all.
+
+Both amplitudes are tied to `fold`, so a form still has one sinuousness knob rather than three that have to be kept in agreement.
+
+This changed the gate's arithmetic in a way worth recording. The fold bound was `0.5 x sum(weights)`, which is now 2.08, and applying that to every fence flagged eleven bands as too low or too overhead. The bound is not wrong -- it is the right bound for *the far plane*, where clipping even once a night is a visible bug. It is far too pessimistic for the **aesthetic** fences, because it prices a configuration where all four octaves peak in the same direction at the same instant. So the gate now carries two constants: the worst case for radius, and `0.45x` that -- about two sigma for a sum of four independent terms -- for the elevation fences. `elev 13.2..89.4` became `elev 16.5..75.2` with no change to the shipped catalogue.
+
+#### Shear leans, twist turns -- and the difference is the whole vortex
+
+> *Pattern 13 doesn't at all look like a vortex, it just looks like a triangle*
+
+Round three built four "vortex" forms out of one parameter, `shear`. **`shear` offsets where the fold noise is sampled as a function of altitude.** The pattern therefore leans -- but the sheet it is drawn on is still a flat ribbon standing on a fixed ground track, so from any single viewpoint it is a leaning triangle. There is no far side, because there is no side.
+
+The new parameter is **`twist`: degrees of *footprint azimuth* per km of altitude.** It rotates where the column *is*, not where its texture is sampled, so the band becomes an actual helix with a near limb and a far limb that you can walk around and look up into. It required reordering the vertex shader -- `km` is now computed first, because the azimuth depends on altitude, altitude depends on the per-column terms, and every one of those is a function of `km`, which itself depends only on `aU`.
+
+The gate's vortex check now requires **both** `shear > 0.8` and `twist > 0.1` on every band, which is precisely the failure that shipped last round.
+
+#### Flaming is brightness, not structure
+
+> *there's not any pale light racing up into the sky as it describes*
+
+Same class of mistake. Round three built flaming out of `shear` plus a negative `drift`, so what travelled upward was the *fold pattern* -- and a fold moving up an already-twisting column is not separable by eye from the twist.
+
+Real flaming aurora is a disturbance propagating along a field line, and **the thing that moves is brightness**. So `flame` is a travelling wave on the deposition curve in the fragment shader:
+
+```glsl
+float wave = 0.5 + 0.5 * sin( ( h * 2.8 - uTime * 1.1 ) * 6.2832 + km * 0.055 );
+dep *= mix( 1.0, 0.20 + 1.90 * pow( wave, 3.0 ), vCol.w );
+```
+
+This is **the one legitimate altitude term in the whole system**. §13's rule is that all *structure* is field-aligned and therefore no structural noise may contain a height term -- put one in the ray or fold lookup and the aurora becomes coloured fog. A brightness wave is not structure: it rides on `dep`, which is already a function of height, and nothing that defines the silhouette can see it. The gate asserts both halves -- that the wave is on `dep`, and that the ray lookup still contains no `h`.
+
+#### Retiring forms without losing them
+
+Four forms were cut: diffuse patches, pulsating patches, SAR arc and smoke plume. They are **not commented out.** Each row carries a `retired: '<why>'` string and `PATTERNS` is filtered out of a full `ALL` array.
+
+A commented-out block is dead text -- nothing parses it, so its numbers drift out of agreement with the shader, and by the time you want the form back it no longer runs. A retired row is still a live object: the gate's geometry sweeps still see it, so it still has to fit the far plane, and it can be restored by deleting one line. The cost is exactly one new failure mode -- a retired row leaking back into `PATTERNS` -- which is what the two new checks catch.
+
+Retiring diffuse patches had a consequence that nearly shipped as a bug: **it held `floor: true` and the two reserved slots**, so cutting it would have removed the guarantee that the sky is never empty. `quiet arc` was promoted to the floor and given a second band, which keeps `FLOOR_BANDS = 2` and `SLOTS = 11` exactly as they were.
+
+One more: `STEVE` was declared the rarest form with `gate: 0.78` on a 24.8 h period, and drew **zero frames in a simulated fortnight**. Thirteen cycles of the selector noise is too few draws for a threshold that high, so "rarest" had quietly become "never". A shorter period (19.3 h) and a slightly lower gate (0.72) give the same ~0.6% duty at a sample count where that number means something. The pre-existing "every named form actually occurs" check is what caught it.
+
+Twelve forms, `rMax 405 of 444 km`, `elev 16.5..75.2`, and the same eleven slots and 35,640 triangles as round three.
 
 ---
 

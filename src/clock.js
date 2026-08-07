@@ -219,6 +219,24 @@ const hex = (v) => [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) /
 //                         every crease and every patch of grass -- which is
 //                         self-occluding by construction -- into a hole.
 //
+// The third night term is `fogDensity`, and it climbs by a factor of five and a
+// half from sunset to full dark while the fog COLOUR drops to nearly black.
+// That is not aerosol -- the air does not thicken at 22:00. It is the same
+// adaptation problem viewed along the depth axis. A dark-adapted eye loses
+// contrast sensitivity long before it loses light, so at night the far half of
+// a landscape does not merely get dim, it stops resolving: ridges go to flat
+// silhouettes cut out of the sky and everything in front of them merges. An
+// exponential-squared fog toward a colour DARKER than the sky is exactly that
+// shape -- near ground stays lit and readable, 300 m is a third gone, 600 m is
+// most of the way to a cutout, and past a kilometre there is nothing but the
+// skyline. It also makes the aurora, the moon and the stars the brightest
+// things in the frame by a wide margin, which at night they should be.
+//
+// One thing had to be exempted for this to work: village fires. See the note on
+// `flameMat` in village.js -- a fire is an emitter, and lerping an emitter
+// toward near-black is the one place this fog gives an answer that is worse
+// than no fog at all.
+//
 // Ordered from high to low. `state()` walks it and smoothsteps between
 // neighbours; the check gate sweeps the whole range looking for a jump, since a
 // discontinuity here is a visible flash in the headset and nothing else in the
@@ -244,6 +262,8 @@ const KEYS = [
     skyGlow: hex(0x000000),
     skyGlowAmt: 0,
     skyFloor: 0,
+    farDirect: 1.0,
+    farAmbient: 1.0,
   },
   {
     elev: 12,
@@ -265,6 +285,8 @@ const KEYS = [
     skyGlow: hex(0x000000),
     skyGlowAmt: 0,
     skyFloor: 0,
+    farDirect: 1.0,
+    farAmbient: 1.0,
   },
   {
     // The sun is low enough to redden but still fully in charge of the scene.
@@ -287,6 +309,8 @@ const KEYS = [
     skyGlow: hex(0x000000),
     skyGlowAmt: 0,
     skyFloor: 0,
+    farDirect: 1.0,
+    farAmbient: 1.0,
   },
   {
     // Golden hour proper. The horizon is now warmer than the light, which is
@@ -310,6 +334,8 @@ const KEYS = [
     skyGlow: hex(0x6e86b4),
     skyGlowAmt: 0.0005,
     skyFloor: 0.02,
+    farDirect: 1.0,
+    farAmbient: 1.0,
   },
   {
     // Sunset. The disc is on the horizon; the direct light is nearly gone and
@@ -333,6 +359,8 @@ const KEYS = [
     skyGlow: hex(0x7e93c0),
     skyGlowAmt: 0.002,
     skyFloor: 0.05,
+    farDirect: 1.0,
+    farAmbient: 1.0,
   },
   {
     // Mid civil twilight. This is the rose-over-navy band that people photograph
@@ -347,15 +375,17 @@ const KEYS = [
     sunIntensity: 0.06,
     hemiSky: hex(0x7a6a90),
     hemiGround: hex(0x1a1620),
-    hemiIntensity: 0.42,
+    hemiIntensity: 0.34,
     fog: hex(0x8a5a78),
-    fogDensity: 0.00034,
+    fogDensity: 0.0007,
     stars: 0.22,
     moonBright: 0.85,
     auroraMax: 0.08,
     skyGlow: hex(0x8b9dcb),
-    skyGlowAmt: 0.004,
-    skyFloor: 0.09,
+    skyGlowAmt: 0.0032,
+    skyFloor: 0.078,
+    farDirect: 0.86,
+    farAmbient: 0.72,
   },
   {
     // End of civil twilight. Ground detail is going; the brightest stars are in.
@@ -369,15 +399,17 @@ const KEYS = [
     sunIntensity: 0,
     hemiSky: hex(0x6e6894),
     hemiGround: hex(0x272430),
-    hemiIntensity: 0.40,
-    fog: hex(0x5c4068),
-    fogDensity: 0.00036,
+    hemiIntensity: 0.26,
+    fog: hex(0x40284c),
+    fogDensity: 0.0012,
     stars: 0.42,
     moonBright: 1.0,
     auroraMax: 0.35,
     skyGlow: hex(0x93a4d2),
-    skyGlowAmt: 0.008,
-    skyFloor: 0.13,
+    skyGlowAmt: 0.0053,
+    skyFloor: 0.096,
+    farDirect: 0.58,
+    farAmbient: 0.26,
   },
   {
     // Nautical twilight. The last of the glow is a bruise on one side of the
@@ -392,15 +424,17 @@ const KEYS = [
     sunIntensity: 0,
     hemiSky: hex(0x6a739e),
     hemiGround: hex(0x2e3444),
-    hemiIntensity: 0.45,
-    fog: hex(0x28263f),
-    fogDensity: 0.00038,
+    hemiIntensity: 0.28,
+    fog: hex(0x16162a),
+    fogDensity: 0.0019,
     stars: 0.86,
     moonBright: 1.0,
     auroraMax: 0.85,
     skyGlow: hex(0x99a9d6),
-    skyGlowAmt: 0.009,
-    skyFloor: 0.145,
+    skyGlowAmt: 0.0059,
+    skyFloor: 0.108,
+    farDirect: 0.4,
+    farAmbient: 0.0,
   },
   {
     // Astronomical twilight ends here: from -18 down, nothing more happens.
@@ -414,15 +448,17 @@ const KEYS = [
     sunIntensity: 0,
     hemiSky: hex(0x6d7da6),
     hemiGround: hex(0x333c50),
-    hemiIntensity: 0.50,
-    fog: hex(0x121729),
-    fogDensity: 0.0004,
+    hemiIntensity: 0.30,
+    fog: hex(0x080b14),
+    fogDensity: 0.0022,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,
     skyGlow: hex(0x9cabd8),
-    skyGlowAmt: 0.0095,
-    skyFloor: 0.155,
+    skyGlowAmt: 0.0062,
+    skyFloor: 0.115,
+    farDirect: 0.4,
+    farAmbient: 0.0,
   },
   {
     // The floor. Identical to -18 by construction, so the sweep from -18 to -90
@@ -439,15 +475,17 @@ const KEYS = [
     sunIntensity: 0,
     hemiSky: hex(0x6d7da6),
     hemiGround: hex(0x333c50),
-    hemiIntensity: 0.50,
-    fog: hex(0x121729),
-    fogDensity: 0.0004,
+    hemiIntensity: 0.30,
+    fog: hex(0x080b14),
+    fogDensity: 0.0022,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,
     skyGlow: hex(0x9cabd8),
-    skyGlowAmt: 0.0095,
-    skyFloor: 0.155,
+    skyGlowAmt: 0.0062,
+    skyFloor: 0.115,
+    farDirect: 0.4,
+    farAmbient: 0.0,
   },
 ]
 
@@ -457,7 +495,54 @@ const KEYS = [
 // eye, so the number here is what the SCENE should look like -- bright enough
 // that snow reads as snow and rock reads as nearly black, which is what a
 // moonlit photograph looks like.
-const MOONLIGHT = { color: hex(0xb4c8ee), intensity: 0.50 }
+//
+// 0.50 -> 1.20, and the night rows of KEYS lost about 40% of their ambient at
+// the same time. The two moves are one move. At 0.50 against a hemisphere of
+// 0.50 plus an additive lift, the DIRECTIONAL share of a night surface was
+// under a third of its brightness, which meant the answer to "which way is
+// this slope facing" barely changed what you saw: the world went flat and
+// even and grey, lit from everywhere at once. Ambient light has no direction,
+// so no amount of tuning it can produce a moonlit side and a shaded side.
+// Only the ratio between the two terms can. Measured on the model in the gate,
+// a full moon overhead now gives lit grass 106 against shaded grass 24 where
+// it used to give 80 against 34 -- a 4.4:1 slope contrast in place of 2.4:1.
+export const MOONLIGHT = { color: hex(0xb4c8ee), intensity: 1.20 }
+
+// ---------------------------------------------------------------------------
+// THE FAR FIELD -- farDirect and farAmbient
+// ---------------------------------------------------------------------------
+//
+// Everything above tunes ONE illumination for the whole world. These two
+// numbers split it in half by distance: within 25 m of the head the scene is
+// lit exactly as the rows below describe, and beyond 50 m it is lit by
+// `farDirect` x the directional term and `farAmbient` x everything else.
+// lighting.js does the blend, per fragment, with a smoothstep between the two
+// radii.
+//
+// At full dark that is ( 0.40, 0.0 ), and the zero is the point. Ambient light
+// has no direction, so out where it is the only light, a slope facing the moon
+// and a slope facing away are the same brightness and the landscape has no
+// form -- which is what "flat and even and grayscale" was describing. Delete
+// the ambient beyond arm's reach and the far field becomes purely a function
+// of where the moon is: lit faces at about half the brightness they have at
+// your feet, faces turned away at nothing at all, and the ridgelines between
+// them readable as ridgelines. Measured on the model in the gate, lit grass
+// goes 67 near / 34 far, and shaded grass 24 near / 0 far.
+//
+// The near field keeps the ambient because that is where the ambient is doing
+// honest work: it is the term that stops the ground she is standing on from
+// being a black hole under her feet, and 25 m is about how far a dark-adapted
+// eye can actually resolve ground texture by starlight.
+//
+// The cost is a moving brightness gradient centred on the player -- shaded
+// ground fades 24 to 0 across a 25 m annulus that travels with her. Nothing
+// in nature does that. It is a deliberate trade: the alternative is either a
+// flat far field or a near field with no floor, and both were worse. The knobs
+// are these columns and the two radii in lighting.js.
+//
+// Both are 1.0 whenever the sun is up, so daylight is untouched; they come
+// down across the same civil-twilight band where the moon takes over as the
+// key light.
 
 const lerp = (a, b, t) => a + (b - a) * t
 const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
@@ -494,6 +579,8 @@ function paletteAt(sunElevDeg) {
     skyGlow: lerp3(a.skyGlow, b.skyGlow, t),
     skyGlowAmt: lerp(a.skyGlowAmt, b.skyGlowAmt, t),
     skyFloor: lerp(a.skyFloor, b.skyFloor, t),
+    farDirect: lerp(a.farDirect, b.farDirect, t),
+    farAmbient: lerp(a.farAmbient, b.farAmbient, t),
   }
 }
 
@@ -619,6 +706,10 @@ export class WorldClock {
       skyGlow: p.skyGlow,
       skyGlowAmt: p.skyGlowAmt * (1 + aurora * 0.6),
       skyFloor: p.skyFloor,
+
+      // ---- The near-field envelope. See the FAR FIELD block above KEYS.
+      farDirect: p.farDirect,
+      farAmbient: p.farAmbient,
 
       // ---- Ambient.
       //

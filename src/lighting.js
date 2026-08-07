@@ -35,7 +35,7 @@ import { AZIMUTHS, HORIZON_SOFT } from './sim/horizon.js'
 // GLSL shared by both paths. The sampling function is deliberately identical in
 // vertex and fragment shaders: if the terrain and the trees standing on it
 // disagreed about where a shadow edge is, the trees would appear to float.
-const SAMPLE_GLSL = /* glsl */ `
+export const SAMPLE_GLSL = /* glsl */ `
   precision highp sampler2DArray;
   uniform sampler2DArray uHorizonMap;
   uniform sampler2D uSkyView;
@@ -47,16 +47,20 @@ const SAMPLE_GLSL = /* glsl */ `
     return ( worldXZ + ${WORLD_HALF.toFixed(1)} ) * ( 1.0 / ${WORLD_SIZE.toFixed(1)} );
   }
 
-  // Sun visibility, 0 in full shadow to 1 in full sun.
-  float wlSun( vec2 worldXZ ) {
-    if ( uSunSky.z < 0.5 ) return 1.0;
+  // How high the ground rises, in radians above level, looking from worldXZ
+  // along a compass azimuth given in TURNS (0 = north, growing clockwise).
+  // Beyond that angle you are looking at sky; below it, at a mountain.
+  //
+  // Blends the two baked azimuths straddling the query. Without this the answer
+  // jumps 22.5 degrees at a time, which on a ridge a kilometre off is a shadow
+  // line leaping a couple of hundred metres -- impossible to miss, and the
+  // reason 16 slices are enough WITH the blend and nowhere near enough without.
+  //
+  // Returns 0 -- open sky in every direction -- until the maps arrive.
+  float wlHorizon( vec2 worldXZ, float azTurns ) {
+    if ( uSunSky.z < 0.5 ) return 0.0;
 
-    // Blend the two baked azimuths straddling the sun. Without this the shadow
-    // edge jumps 22.5 degrees at a time as the sun moves, which on a ridge a
-    // kilometre off is a shadow line leaping a couple of hundred metres --
-    // impossible to miss, and the reason 16 slices are enough WITH the blend
-    // and nowhere near enough without it.
-    float f = uSunSky.x * ${AZIMUTHS}.0;
+    float f = azTurns * ${AZIMUTHS}.0;
     float f0 = floor( f );
     float t = f - f0;
     // mod, not clamp: azimuth wraps, and slice 15 blends into slice 0.
@@ -66,8 +70,34 @@ const SAMPLE_GLSL = /* glsl */ `
     vec2 uv = wlUv( worldXZ );
     float h0 = texture( uHorizonMap, vec3( uv, a0 ) ).r;
     float h1 = texture( uHorizonMap, vec3( uv, a1 ) ).r;
-    float h = mix( h0, h1, t ) * 1.5707963;
+    return mix( h0, h1, t ) * 1.5707963;
+  }
 
+  // The compass azimuth of a world-space direction, in turns.
+  //
+  // THE CONVENTION IS FIXED BY THE BAKE AND IT IS EASY TO GET WRONG SILENTLY.
+  // horizon.js walks each azimuth as di = sin(ang), dj = -cos(ang), and the sim
+  // grid maps +i to +x and +j to +z. So north is -z, east is +x, and the angle
+  // grows clockwise from north -- which is atan(x, -z), not the atan(z, x) that
+  // a maths convention would suggest. Swapping them puts every mountain in the
+  // reflection 90 degrees from where it belongs, and nothing about the image
+  // says so. scripts/check-water-shader.mjs pins this against the raw grid.
+  float wlAzimuth( vec3 dir ) {
+    return fract( atan( dir.x, -dir.z ) * ${(1 / (2 * Math.PI)).toFixed(9)} + 1.0 );
+  }
+
+  // 1 where terrain blocks the sky along dir, 0 where the sky is open, with
+  // the same soft edge the sun shadow uses.
+  float wlBlocked( vec2 worldXZ, vec3 dir ) {
+    float h = wlHorizon( worldXZ, wlAzimuth( dir ) );
+    float elev = asin( clamp( dir.y, -1.0, 1.0 ) );
+    return 1.0 - smoothstep( h - ${HORIZON_SOFT.toFixed(5)}, h + ${HORIZON_SOFT.toFixed(5)}, elev );
+  }
+
+  // Sun visibility, 0 in full shadow to 1 in full sun.
+  float wlSun( vec2 worldXZ ) {
+    if ( uSunSky.z < 0.5 ) return 1.0;
+    float h = wlHorizon( worldXZ, uSunSky.x );
     return smoothstep( h - ${HORIZON_SOFT.toFixed(5)}, h + ${HORIZON_SOFT.toFixed(5)}, uSunSky.y );
   }
 
@@ -126,9 +156,22 @@ const WORLD_POS_GLSL = /* glsl */ `
 // It is added AFTER the floor multiply and scaled by the same floored sky term,
 // so an enclosed space still reads as darker than an open one -- just never as
 // nothing.
-const APPLY = (sun, sky) => /* glsl */ `
-  reflectedLight.directDiffuse *= ${sun};
-  float wlSkyF = mix( uSkyFloor, 1.0, ${sky} );
+//
+// ---- The NEAR-FIELD envelope, `near`, which is 1 within WL_NEAR_M of the head
+// and 0 beyond WL_FAR_M.
+//
+// It scales the two AMBIENT terms to uFarLight.y and the DIRECTIONAL term to
+// uFarLight.x out in the far field. Both are 1.0 while the sun is up, so this
+// is inert by day; see the FAR FIELD block in clock.js for why they are (0.40,
+// 0.0) at full dark and what it costs.
+//
+// The directional keeps its shadow multiply either way -- the far field is not
+// "no lighting", it is "lighting that answers only to where the moon is",
+// which means a ridge shadow is still a ridge shadow out there.
+const APPLY = (sun, sky, near) => /* glsl */ `
+  float wlNear = ${near};
+  reflectedLight.directDiffuse *= ${sun} * mix( uFarLight.x, 1.0, wlNear );
+  float wlSkyF = mix( uSkyFloor, 1.0, ${sky} ) * mix( uFarLight.y, 1.0, wlNear );
   reflectedLight.indirectDiffuse *= wlSkyF;
   reflectedLight.indirectDiffuse += uNightLift * wlSkyF;
 `
@@ -140,7 +183,18 @@ const APPLY = (sun, sky) => /* glsl */ `
 const NIGHT_GLSL = /* glsl */ `
   uniform vec3 uNightLift;
   uniform float uSkyFloor;
+  uniform vec2 uFarLight;
 `
+
+// The two radii of the near-field envelope, in metres. 25 is roughly how far a
+// dark-adapted eye resolves ground texture by starlight; 50 is far enough that
+// the transition is not a hard ring and near enough that the far field is the
+// great majority of what is on screen.
+const WL_NEAR_M = 25
+const WL_FAR_M = 50
+
+const NEAR_GLSL = (worldPos) =>
+  `( 1.0 - smoothstep( ${WL_NEAR_M.toFixed(1)}, ${WL_FAR_M.toFixed(1)}, distance( ${worldPos}, cameraPosition ) ) )`
 
 export class WorldLighting {
   constructor() {
@@ -155,6 +209,9 @@ export class WorldLighting {
       // the conversion in one place.
       uNightLift: { value: new THREE.Color(0, 0, 0) },
       uSkyFloor: { value: 0 },
+      // x scales the directional term in the far field, y the ambient ones.
+      // (1, 1) is "no envelope at all", which is what daylight wants.
+      uFarLight: { value: new THREE.Vector2(1, 1) },
     }
 
     this.horizonTex = null
@@ -226,6 +283,7 @@ export class WorldLighting {
     lift.setRGB(state.skyGlow[0], state.skyGlow[1], state.skyGlow[2], THREE.SRGBColorSpace)
     lift.multiplyScalar(state.skyGlowAmt)
     this.uniforms.uSkyFloor.value = state.skyFloor
+    this.uniforms.uFarLight.value.set(state.farDirect, state.farAmbient)
   }
 
   /**
@@ -263,23 +321,28 @@ export class WorldLighting {
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
-            ${APPLY(`wlSun( ${worldPosVarying}.xz )`, `wlSky( ${worldPosVarying}.xz )`)}`
+            ${APPLY(
+              `wlSun( ${worldPosVarying}.xz )`,
+              `wlSky( ${worldPosVarying}.xz )`,
+              NEAR_GLSL(`${worldPosVarying}.xyz`)
+            )}`
           )
       } else {
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\nvarying vec2 vWlShade;`)
+          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\nvarying vec3 vWlShade;`)
           .replace(
             '#include <project_vertex>',
             `#include <project_vertex>
             ${WORLD_POS_GLSL}
-            vWlShade = vec2( wlSun( wlWorld.xz ), wlSky( wlWorld.xz ) );`
+            vWlShade = vec3( wlSun( wlWorld.xz ), wlSky( wlWorld.xz ),
+                             ${NEAR_GLSL('wlWorld')} );`
           )
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\nvarying vec2 vWlShade;\n${NIGHT_GLSL}`)
+          .replace('#include <common>', `#include <common>\nvarying vec3 vWlShade;\n${NIGHT_GLSL}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
-            ${APPLY('vWlShade.x', 'vWlShade.y')}`
+            ${APPLY('vWlShade.x', 'vWlShade.y', 'vWlShade.z')}`
           )
       }
     }
