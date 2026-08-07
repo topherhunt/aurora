@@ -15,7 +15,10 @@ const STEP = 16 // m between samples -- halved with SHRINK, because a 32 m probe
 // against half-size landforms resolves half as many samples per peak, and peak
 // spacing is exactly what this script exists to report.
 const N = Math.floor(WORLD_SIZE / STEP) + 1
-const MAX_SLOPE = (38 * Math.PI) / 180
+// Read from LOCOMOTION rather than restated, so this cannot go stale the way it
+// just did: the limit moved to 50 and this instrument kept reporting against 38.
+const MAX_SLOPE_DEG = 50 // = LOCOMOTION.maxSlopeDeg; player.js pulls in THREE, so not imported
+const MAX_SLOPE = (MAX_SLOPE_DEG * Math.PI) / 180
 
 // A bump has to rise this far above its surrounding saddle to count as a peak.
 // Without a prominence test every pebble of detail noise registers and the
@@ -85,7 +88,7 @@ for (let j = 1; j < N - 1; j++) {
   }
 }
 console.log('\nslope')
-console.log(`        walkable (<=38deg at ${STEP}m) ${((100 * walkable) / cells).toFixed(1)}%`)
+console.log(`        walkable (<=${MAX_SLOPE_DEG}deg at ${STEP}m) ${((100 * walkable) / cells).toFixed(1)}%`)
 for (let b = 0; b < slopeHist.length; b++) {
   const f = slopeHist[b] / cells
   if (f < 0.002) continue

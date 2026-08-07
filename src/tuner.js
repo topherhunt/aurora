@@ -152,7 +152,7 @@ const GROUPS = [
         'Ribs and gully edges: slope BREAKS rather than more bumps. This is the one layer that adds hard kinks instead of smooth blobs, which is what stops exposed rock reading as crumpled cloth. Small numbers do a lot; past about 12 a hillside turns to corduroy.',
         { amp: true }),
       k('cliffAmp', 0, 90, 2,
-        'Height of the step where the cliff mosaic breaks. Rare on purpose -- about 2% of the world, on the most exposed crests only. It was 60 and drew a carpet of squiggles over every summit; if that look returns, this is the knob.',
+        'RETIRED at 0 -- the Worley cliff mosaic, off. Drag it up to bring it back and you get plateau steps on the most exposed crests, but they come out near-vertical however the shape knobs are set, because the wall is the layer\'s GATE switching on under a full-height cell rather than the mosaic itself. Left on the panel so the look is one drag away; see cliffAmp in terrain-height.js before trusting it.',
         { amp: true }),
     ],
   },

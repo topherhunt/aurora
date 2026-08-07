@@ -27,12 +27,15 @@ import { CHUNK_RES } from '../sim/chunk-mesh.js'
 //
 // It does not pay, and the reason is a property of this terrain rather than a
 // property of the technique. The height field is fbm, so its roughness is
-// SCALE-INVARIANT: measured error per cell is 0.37 at the median and 0.66 at p90
-// at EVERY node size. Error is therefore very nearly proportional to cell size
-// everywhere, which means a cell-size cap already IS an error cap, and measuring
-// the error re-derives what the geometry guarantees.
+// SCALE-INVARIANT: error per cell holds near 0.45 at the median across node
+// sizes from 4 km down to 256 m, then FALLS to 0.16 by 32 m
+// (scripts/probe-error.mjs). Error is therefore proportional to cell size over
+// the range that matters and sub-proportional below it, which means a cell-size
+// cap already IS an error cap -- conservatively so at the fine end -- and
+// measuring the error re-derives what the geometry already guarantees.
 //
-// Priced at matched worst-case slot cost over 60 cameras (scripts/probe-lod.mjs):
+// Priced at matched worst-case slot cost over 60 cameras (scripts/probe-lod.mjs),
+// with the error term capped at 1.0 m so the two rules cost the same slots:
 //
 //                            leaf~  leafMAX   err p90   err p99   tri p90  triMAX
 //   error term + 1.3 cap      477      622     0.595     0.946      1.06    1.30
@@ -105,27 +108,38 @@ export const MAX_DEPTH = 10 // 16384 m root / 2^10 = 16 m leaves
 // decision rather than a modelling one, so it is worth being precise about.
 //
 // The current selection is exempt from eviction (terrain.js _evict skips
-// anything in _render), so the WORST-CASE leaf count has to fit under
-// MAX_CACHED = 720, with enough left over for the LRU retention that makes
-// turning your head free. Measured over 60 cameras, half airborne:
+// anything in _render), so the WORST-CASE leaf count has to fit in SLOT_COUNT
+// alongside the 21 pinned base-layer chunks -- and overrunning it THROWS rather
+// than degrading. Measured over 605 positions x 4 headings, half of them
+// airborne (check-sim.mjs "quadtree LOD budget"):
 //
-//     cap    leaf~   leafMAX   slots to spare   visible tris MAX
-//    1.0      609      751          -31              280k
-//    1.1      541      664           56              250k
-//    1.2      489      580          140              222k
-//    1.3      459      526          194              208k
+//     cap    worst selection   + 21 pinned   fits 768?   drawn tris
+//    1.0          814              835          no          301k
+//    1.1          766              787          no          264k
+//    1.2          610              631         yes          237k
+//    1.3          577              598         yes          210k
 //
-// At 1.0 the pool does not merely thrash, it throws `terrain slot pool
-// exhausted`. At 1.1 it survives on 56 slots of slack, which is less than one
-// head-turn of retention. 1.2 keeps 140, holds visible terrain to 222k against
-// its ~266k third of TRI_BUDGET, and is still a 7.7x improvement on the 9.22 deg
-// worst case it replaces.
+// So 1.2 is not a preference, it is the floor of what this pool can hold, which
+// is why MIN_TRI_DEG sits there too: a knob whose range includes values that
+// cannot work is a knob that fails late and in the headset.
 //
-// Two ways to buy the last 0.2 deg, neither of them this knob: 45% of selected
-// leaves fall outside the 110 deg eye cone and are never drawn, because
-// VIEW_HALF_ANGLE is a deliberately generous streaming margin -- narrowing it
-// trades pop-in on fast head turns for slots. Or raise SLOT_COUNT, which is a
-// device-memory question rather than a tuning one.
+// The lever that WOULD buy the stated 1.0 is not this knob but VIEW_HALF_ANGLE.
+// 45% of the selection sits in the streaming margin outside the 110 deg eye cone
+// and is culled per-instance by the GPU, so narrowing the margin is nearly free
+// in drawn triangles and pays for itself in slots:
+//
+//     margin    cap 1.0    cap 1.1    cap 1.2
+//     90 deg      835        787        631
+//     80 deg      742        655        592
+//     70 deg      673        616        541
+//
+// At an 80 deg margin a 1.1 cap fits with 65 slots to spare. What it costs is
+// 10 degrees of margin, and the failure mode is not a hole -- out-of-cone nodes
+// are still emitted, just coarse -- but briefly low-poly terrain at the edge of
+// vision during a fast head turn. That is a judgement about peripheral vision in
+// a headset and cannot be settled from a Node script, so it is left as a lever
+// rather than taken. Raising SLOT_COUNT is the other one, and that is a
+// device-memory question.
 // ---------------------------------------------------------------------------
 export const LOD = {
   triDeg: 1.2,
@@ -143,7 +157,10 @@ export const LOD = {
   cull: true,
 }
 
-export const MIN_TRI_DEG = 0.6
+// The floor is the default: 1.2 is as fine as the pool goes (see above). The
+// knob coarsens only, which is honest -- the alternative is a slider whose
+// bottom third throws.
+export const MIN_TRI_DEG = 1.2
 export const MAX_TRI_DEG = 8.0
 
 

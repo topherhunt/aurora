@@ -15,7 +15,30 @@ export const LOCOMOTION = {
   // happens in the headset. On a monitor the ramp is pure input lag, so the
   // desktop path passes instant:true and skips it entirely (see update()).
   accelTau: 0.5,
-  maxSlopeDeg: 38, // §4 -- this is what makes traps impossible by construction
+  // §4 -- this is what makes traps impossible by construction.
+  //
+  // 38 -> 50, and the number is DERIVED rather than chosen. The rule is: she can
+  // walk on anything the renderer does not draw as bare rock. chunk-mesh.js
+  // shade() ramps rock in over smoothstep(0.86, 0.62, ny), so rock begins to
+  // show at 30.7 deg and is total at 51.7 deg -- and a limit of 38 sat inside
+  // that ramp, on ground still drawn as mostly grass. Measured across a 4 km
+  // box at this stride, the fraction of the world that is BLOCKED while being
+  // shaded as vegetation:
+  //
+  //   limit   38     42     45     48     50     55
+  //   grassy-blocked  7.36%  0.43%  0.00%  0.00%  0.00%  0.00%
+  //   walkable       70.8%  77.8%  82.4%  86.5%  88.8%  93.6%
+  //
+  // 7.36% of the world looking climbable and refusing her is exactly the "areas
+  // that look like they should be walkable that you can't walk on" report, and
+  // it is what sent an earlier pass into the cliff layer looking for the cause.
+  // It was never the terrain. 45 is where it reaches zero; 50 keeps 5 deg of
+  // margin, because the limiter reads a 1.5 m stride while the shader reads a
+  // per-vertex normal at whatever the LOD ring supplies, and those two do not
+  // have to agree at the metre scale.
+  //
+  // IF THE SHADER'S RAMP MOVES, THIS MOVES WITH IT. They are one decision.
+  maxSlopeDeg: 50,
   // How far an obstacle has to keep going uphill before it counts as a wall.
   // See _walkable: without it the slope limiter's baseline is one FRAME of
   // travel, 2 cm, and a 46 cm bump refuses her. Roughly two paces, and it wants

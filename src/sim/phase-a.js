@@ -183,7 +183,11 @@ export const VILLAGE = {
   edgeMargin: 900, // metres of world edge to stay out of
 }
 
-const MAX_WALK_SLOPE = (38 * Math.PI) / 180 // §4
+// §4. Deliberately duplicated from LOCOMOTION.maxSlopeDeg in player.js rather
+// than imported: this file runs in a Web Worker and player.js pulls in THREE.
+// The two ARE one number -- if the connectivity pass and the limiter disagree,
+// the villages and the reachability report describe a world she cannot walk.
+const MAX_WALK_SLOPE = (50 * Math.PI) / 180
 
 /**
  * Run the whole global pass.

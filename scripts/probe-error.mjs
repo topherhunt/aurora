@@ -2,20 +2,34 @@
 //
 //   node scripts/probe-error.mjs [seed]
 //
-// This is the measurement that decides whether an error-driven split rule is
-// worth building at all. The proposed rule is
+// This is the measurement that decided whether an error-driven split rule was
+// worth building. It was, then it was not, and the record of both is the point
+// of keeping this file: the rule considered was
 //
 //   split if  max(delta, cell * FLOOR)  >  range * tan(tau)
 //
 // where `delta` is the node's geometric error in metres and `cell` is its grid
-// spacing (size / CHUNK_RES). The floor term alone reproduces today's uniform
-// angular-triangle rule. So delta only CHANGES anything where delta > cell --
-// where the field's vertical deviation inside one cell exceeds that cell's own
-// width. If that never happens, the error term is dead weight and the honest
-// answer is to ship the plain distance rule and stop.
+// spacing (size / CHUNK_RES). The floor term alone reproduces the plain angular
+// triangle rule. So delta only CHANGES anything where delta > cell -- where the
+// field's vertical deviation inside one cell exceeds that cell's own width.
 //
-// It also asks whether mean elevation -- what the deleted ELEV_LOD bias keyed on
-// -- was ever a usable proxy for delta.
+// It was built end to end (sampled in the mesher, shipped through the worker,
+// cached per node) and then removed, because the answer below is that the
+// terrain is fbm and therefore scale-invariant: delta/cell holds near 0.45 at
+// the median from 4 km nodes down to 256 m and then falls, so a cell-size cap is
+// already an error cap -- and a conservative one at the fine end -- and the
+// extra term buys nothing it does not also pay for. Priced head to
+// head at matched worst-case slot cost, the plain cap won on mean error, on both
+// triangle percentiles and on worst-case slots, losing only the error tail.
+// src/terrain/quadtree.js carries the full comparison.
+//
+// This probe stays runnable so that conclusion stays falsifiable: change the
+// height field into something with genuinely localised roughness -- an erosion
+// pass, a cliff generator, hand-placed features -- and the ratios below stop
+// being flat, at which point the error term is worth rebuilding.
+//
+// It also asks whether mean elevation -- what the deleted elevation LOD bias
+// keyed on -- was ever a usable proxy for delta.
 
 import { TerrainHeight, WORLD_HALF, WORLD_SIZE } from '../src/sim/terrain-height.js'
 import { CHUNK_RES } from '../src/sim/chunk-mesh.js'

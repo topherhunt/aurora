@@ -81,6 +81,6 @@ for (let i = 0; i < sorted.length; i++) {
   const r = sorted[i][1].slope
   const prev = i ? sorted[i - 1][1].slope : r
   console.log(
-    `  ${(i + 1 + '.').padEnd(3)} ${sorted[i][0].padEnd(22)} ${r.toFixed(3).padStart(7)}${i ? `   ${(prev / r).toFixed(1)}x below the rung above` : '   <- dominates the world'}`
+    `  ${(i + 1 + '.').padEnd(3)} ${sorted[i][0].padEnd(22)} ${r.toFixed(3).padStart(7)}${i ? `   ${r < 1e-9 ? 'off' : (prev / r).toFixed(1) + 'x below the rung above'}` : '   <- dominates the world'}`
   )
 }

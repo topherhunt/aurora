@@ -16,7 +16,7 @@
 import * as THREE from 'three'
 import { TerrainHeight, TUNING, SNOW } from '../src/sim/terrain-height.js'
 import { buildChunk, CHUNK_RES } from '../src/sim/chunk-mesh.js'
-import { MAX_SPLIT_K } from '../src/terrain/quadtree.js'
+import { LOD, MIN_TRI_DEG } from '../src/terrain/quadtree.js'
 import { TRI_BUDGET } from '../src/budget.js'
 
 const SEED = Number(process.argv[2] ?? 20260804)
@@ -104,9 +104,16 @@ check(
 // speed is exaggerated (7.5 m per frame vs 1.45 m/s) to put the streaming path
 // under far more pressure than she can actually generate on foot.
 
+// Selection is view-dependent, so the drill has to carry a heading as well as a
+// position. Walking east is arbitrary but fixed: what is being checked here is
+// slot bookkeeping, and holding the heading still is the harder case for it --
+// a turning camera keeps replacing the whole selection, while a straight walk
+// makes the SAME chunks fall in and out of range at the cone edges.
+const camAt = (x, z, yaw = 0) => ({ x, y: th.heightAt(x, z) + 1.7, z, yaw })
+
 const settle = (px, pz, frames = 400) => {
   for (let i = 0; i < frames; i++) {
-    terrain.update(px, pz)
+    terrain.update(camAt(px, pz))
     drain()
     if (terrain.stats.pending === 0 && !terrain._dirty) return i
   }
@@ -123,7 +130,9 @@ for (let step = 0; step < 400; step++) {
   x += Math.cos(ang) * 45
   z += Math.sin(ang) * 45
   for (let i = 0; i < 6; i++) {
-    terrain.update(x, z)
+    // Face along the walk, so the streaming margin sweeps the way it does in
+    // play rather than trailing a fixed compass bearing.
+    terrain.update(camAt(x, z, Math.atan2(Math.cos(ang), Math.sin(ang))))
     drain()
     const s = terrain.stats
     peakSlots = Math.max(peakSlots, s.slots)
@@ -141,15 +150,21 @@ check(peakTris < TRI_BUDGET / 3, 'ground never took more than a third of the bud
 // cannot exceed the selection plus what is already resident.
 check(peakCached <= terrain.maxCached, 'cache stayed inside its cap while streaming', `${peakCached} vs ${terrain.maxCached}`)
 
-// --- push splitK to the ceiling the [ ] keys allow ---------------------------
+// --- push the LOD knob to the finest the [ ] keys allow ----------------------
+//
+// The selection is exempt from eviction, so the pool has to hold the WORST case
+// the player can dial in, not the typical one. check-sim.mjs asserts the same
+// bound analytically over 605 positions; this one asserts it against the real
+// slot allocator, which is where a leak would actually show up.
 
-terrain.splitK = MAX_SPLIT_K
+const wasTriDeg = LOD.triDeg
+LOD.triDeg = MIN_TRI_DEG
 const frames = settle(x, z)
 console.log(
-  `        at splitK ${MAX_SPLIT_K}: settled in ${frames} frames, ${terrain.stats.rendered}/${terrain.stats.desired} nodes shown, ` +
+  `        at ${MIN_TRI_DEG}deg (finest the knob reaches): settled in ${frames} frames, ${terrain.stats.rendered}/${terrain.stats.desired} nodes shown, ` +
     `slots ${terrain.stats.slots}/${SLOT_COUNT}, ${(terrain.stats.tris / 1000).toFixed(0)}k tris`
 )
-check(terrain.stats.slots <= SLOT_COUNT, 'slot pool survived the worst reachable splitK')
+check(terrain.stats.slots <= SLOT_COUNT, 'slot pool survived the finest reachable LOD setting', `${terrain.stats.slots} vs ${SLOT_COUNT}`)
 // Once nothing is in flight, every desired leaf must be resident in its own
 // right -- any shortfall means a coarse ancestor is permanently standing in for
 // a chunk that will never be requested.
@@ -254,7 +269,7 @@ console.log('\nlive retune')
     return { mean: sum / n, n }
   }
 
-  terrain.splitK = 1.6
+  LOD.triDeg = wasTriDeg
   settle(x, z)
   const before = sampleY()
 

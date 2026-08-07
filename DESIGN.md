@@ -394,6 +394,28 @@ The tuner shipped with every `TUNING` constant exposed, and it was reported as o
 
 Cut to 17, against the rule that a knob must visibly change the *character* of the world within a couple of seconds of dragging, from wherever you happen to be standing: five for the silhouette, seven for the rock/smooth balance (led by `exposureBias`, which sets what fraction of the world is bare rock), two for the lowlands, three for the snow line.
 
+### The Worley cliff layer is retired, and the wall was the gate
+
+`cliffAmp` is 0. This layer has now been asked four times to do something its structure cannot do -- it shipped as a field of round pits (F1 read backwards), then as an inert 0.08 m contribution, then at amplitude 60 as a carpet of closed Worley squiggles over every summit, and finally as sheer vertical walls. The fourth complaint is the one that settled it, because the measurement showed the two knobs that are supposed to control face steepness do not control it.
+
+Face angle of the isolated layer, p90 and p99, across the plausible range:
+
+```
+lip 3.0, edge 0.13 (as shipped)   p90 80   p99 85
+lip 1.0, edge 0.30                p90 77   p99 85
+lip 1.0, edge 0.40, amp 22        p90 67   p99 80
+```
+
+That last row is a 7.4 m step spread over a 24 m run. That is a **17 degree** face by arithmetic, and it measures 67. So the angle is not coming from the mosaic.
+
+It is coming from the **gate**. `gate` multiplies the whole term, and deep inside a cell the term already sits at full plateau height, so wherever the gate opens underneath such a cell the ground climbs the entire height of the cliff over the gate's transition distance -- at a location set by three composed smoothsteps on unrelated noise, with no relation to the mosaic at all. `cliffGateLo/Hi` exist precisely to make that transition near-binary, on the stated reasoning that "a partially-gated cliff is not a small cliff, it is the smooth ramp we were trying to get rid of". The vertical faces are what the gate was tightened to produce.
+
+The `mid` construction keeps the surface continuous across **cell** boundaries and was always cited as this layer's continuity argument. Nothing keeps it continuous across **gate** boundaries, and that is where the walls are. Opening the gate windows does soften them (p90 80 → 65) but relocates the cliffs entirely, which is a redesign rather than a knob.
+
+Cost of retiring it, world-wide at a 1.5 m stride: ground over 60 deg 3.27% → 2.93%, over 70 deg 0.51% → 0.21%, **over 80 deg 0.13% → 0.00%**, across 2.9% coverage. The layer supplied all of the genuinely vertical ground and about 60% of everything past 70 deg. What remains over 60 deg comes from the exposure rule, which produces steep rock as a consequence of landform position rather than by drawing a mosaic on top of one. The skyline is unchanged by the removal (mean relief 6.6 → 7.1 deg), so the drama was never coming from this layer either.
+
+The code stays, guarded on `cliffAmp < 0.001` tested *before* the gate so the retired layer costs one compare in the hottest function in the project, and the slider stays on the panel. If it is ever wanted, **fix the gate first, not the blend**.
+
 ### Two hard constraints
 
 - **Heightmaps cannot represent overhangs, arches, or caves.** One elevation per XZ, period. No natural bridges, no cave mouths. Accepted.
@@ -407,13 +429,32 @@ Requirement: deep gulches she cannot cross or might get trapped in, but never ac
 
 The naive solution -- "prop placement guarantees an exit" -- is fragile and hard to verify. Do this instead:
 
-**Enforce a maximum walkable slope in the locomotion controller (~35-40°), with no falling and no sliding.**
+**Enforce a maximum walkable slope in the locomotion controller, with no falling and no sliding.** (The angle is 50° and is derived from the shader's rock threshold, not picked -- see below. The argument here does not depend on which angle it is.)
 
-If she cannot walk onto terrain steeper than 35°, she can never *descend into* a region she cannot climb out of. Traversability is symmetric (a slope is the same slope in both directions), so any place she can reach, she can leave. **Traps become impossible by construction rather than by careful level design.**
+If she cannot walk onto terrain steeper than the limit, she can never *descend into* a region she cannot climb out of. Traversability is symmetric (a slope is the same slope in both directions), so any place she can reach, she can leave. **Traps become impossible by construction rather than by careful level design.**
 
 Gulches, cliffs, and gorges then function exactly as intended: hard visual barriers she must path around, forcing the wending route up each valley. She can stand at the lip of a canyon and look down into somewhere she cannot go, which is better scenery than somewhere she can.
 
 **The limiter needs a baseline, and the obvious one is wrong.** "Steeper than 38°" is not a property of a point, it is a rise over a run, and the run has to be chosen. The first implementation used her travel distance for the frame, which is 2 cm at walking pace and 72 Hz -- so it was not measuring a slope at all, it was measuring a 2 cm difference, and any 40 cm hummock became a wall. `Player._walkable` now takes the gentler of two baselines, one frame and one stride (1.5 m), so an obstacle has to keep going uphill for two paces before it counts. The one-frame test is kept as the first of the two rather than replaced, and that is what preserves the argument above: its probe pair *is* her travel pair, so the arithmetic that let her in is bit-identical to the arithmetic that lets her back out, and reversibility does not depend on the terrain. A lookahead on its own would also read every cliff from 1.5 m back and stop her there, which is an invisible standoff bubble around each wall.
+
+
+### The walk limit is the shader's rock line, not a taste
+
+`LOCOMOTION.maxSlopeDeg` is 50, and it is derived rather than chosen. The rule: **she can walk on anything the renderer does not draw as bare rock.**
+
+`chunk-mesh.js` `shade()` ramps rock in over `smoothstep(0.86, 0.62, ny)`, so rock begins to show at 30.7 deg and is total at 51.7 deg. A limit of 38 sat *inside* that ramp, on ground still shaded as mostly grass. Measured across a 4 km box at the limiter's own 1.5 m stride, the fraction of the world blocked while being drawn as vegetation:
+
+```
+limit            38     42     45     48     50     55
+grassy-blocked  7.36%  0.43%  0.00%  0.00%  0.00%  0.00%
+walkable        70.8%  77.8%  82.4%  86.5%  88.8%  93.6%
+```
+
+**7.36% of the world looked climbable and refused her.** That is the entire "areas that look like they should be walkable that you can't walk on" report, and it is what sent an earlier pass hunting through the cliff layer for a cause that was never in the terrain -- the same class of error as the connectivity instrument above, and the fifth instance of it.
+
+45 is where it reaches zero. 50 keeps 5 deg of margin, because the limiter reads a 1.5 m stride while the shader reads a per-vertex normal at whatever the LOD ring supplies, and those two need not agree at the metre scale. **If the shader's ramp moves, the limit moves with it: they are one decision.**
+
+This strictly strengthens the §4 argument rather than weakening it. Traps are impossible because traversability is symmetric, which holds at any angle; raising the limit only enlarges the reachable set. `phase-a.js` carries the same number as `MAX_WALK_SLOPE`, duplicated because that file runs in a worker and `player.js` pulls in THREE -- if the two ever disagree, the connectivity report and the village siting describe a world she cannot walk.
 
 Two supporting pieces:
 

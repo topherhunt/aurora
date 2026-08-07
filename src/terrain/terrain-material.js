@@ -43,6 +43,18 @@ import * as THREE from 'three'
 // layer's job is to keep distant hillsides from reading as one colour and it
 // must not. One shared fade cannot do both.
 //
+// There is now a THIRD layer, on the same reasoning taken one step further:
+// ~10 cm flecks, on a fade of its own that is over by 40 m. Same argument as
+// the near grain -- a 10 cm feature is a couple of pixels at 40 m and under one
+// past that, so it has to be gone by then or it is shimmer rather than texture.
+// Every surface gets it, each out of its own palette: grass reuses the dirt and
+// moss the coarser octaves already use, rock gets a light and a dark grey, snow
+// gets white and off-white.
+//
+// It sits close to the snow sparkle's ~12 cm, which is deliberate rather than
+// an oversight -- they are different operations on the same scale (sparkle adds
+// isolated highlights, this tints toward a pair) and snow wants both.
+//
 // This is a step-2 stand-in. §7's real material (splat blending, height-blend,
 // triplanar, KTX2 arrays) replaces it at build step 6.
 // ---------------------------------------------------------------------------
@@ -50,6 +62,15 @@ import * as THREE from 'three'
 // Grain is at full strength inside FADE_NEAR and gone by FADE_FAR.
 const FADE_NEAR = 12
 const FADE_FAR = 95
+
+// The micro layer's own fade, tighter than the grain's because the features are
+// smaller -- see the header. A 10 cm fleck is about 3 px at 40 m on a Quest and
+// on a desktop both, and about 1 px by 90 m, so 40 is the conservative end of
+// where it stops being texture. MICRO_FAR is the number to lower if the speckle
+// ever reads as a disc of detail travelling with the camera rather than as
+// detail resolving when you get close to it.
+const MICRO_NEAR = 10
+const MICRO_FAR = 40
 
 // Values are LINEAR, not sRGB -- three treats vertex colours and plain Color
 // uniforms as working-space. Roughly: linear 0.05 reads as sRGB 0.25.
@@ -70,6 +91,19 @@ const STAIN = new THREE.Color(0.062, 0.05, 0.042) // warm mineral staining on ro
 // as a border.
 const SNOW = new THREE.Color(0.86, 0.88, 0.93)
 const ROCK = new THREE.Color(0.085, 0.082, 0.078)
+
+// The micro palette: a light and a dark neighbour for each surface, which is
+// all a fleck needs to be. Grass is not here because it already has a pair --
+// DIRT and MOSS -- and giving the 1 cm layer its own greens would put two
+// unrelated colour families on the same hillside at two scales.
+//
+// Both pairs straddle their base colour rather than sitting to one side of it,
+// so the layer averages back to the base as it fades out and there is no
+// brightness step at the fade edge.
+const GRIT = new THREE.Color(0.155, 0.152, 0.146) // pale mineral grain on rock
+const SOOT = new THREE.Color(0.042, 0.041, 0.039) // the pits between the grains
+const FROST = new THREE.Color(1.0, 1.0, 1.0) // a crystal face square to the sun
+const SHADE = new THREE.Color(0.74, 0.76, 0.82) // the hollow beside it
 
 export function createTerrainMaterial() {
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
@@ -115,6 +149,15 @@ export function createTerrainMaterial() {
     // fragments -- this is specular sparkle standing in for a spec model Lambert
     // does not have, not a brightness change.
     uSnowSparkle: { value: 0.3 },
+    // The ~1 cm layer. uMicroTint is how far a fleck pulls toward its palette
+    // colour, uMicroValue the brightness swing underneath it. 0 on uMicroTint
+    // does NOT disable the layer -- uMicroValue is independent; set both to 0.
+    uMicroTint: { value: 0.55 },
+    uMicroValue: { value: 0.14 },
+    uGrit: { value: GRIT },
+    uSoot: { value: SOOT },
+    uFrost: { value: FROST },
+    uShade: { value: SHADE },
   }
 
   material.onBeforeCompile = (shader) => {
@@ -155,6 +198,12 @@ export function createTerrainMaterial() {
         uniform float uBoundary;
         uniform float uRelief;
         uniform float uSnowSparkle;
+        uniform float uMicroTint;
+        uniform float uMicroValue;
+        uniform vec3 uGrit;
+        uniform vec3 uSoot;
+        uniform vec3 uFrost;
+        uniform vec3 uShade;
 
         // Shared between the colour pass and the normal pass, which are two
         // different chunk includes -- hence file scope rather than a block.
@@ -164,10 +213,53 @@ export function createTerrainMaterial() {
 
         // Hash-based value noise. No sin() -- it is slow on mobile GPUs and its
         // precision on some drivers is bad enough to produce visible banding.
+        //
+        // INTEGER hash, and the reason is a bug rather than a preference. This
+        // was the usual fract-of-a-big-multiply hash:
+        //
+        //   p = fract( p * vec2( 123.34, 456.21 ) );
+        //   p += dot( p, p + 45.32 );
+        //   return fract( p.x * p.y );
+        //
+        // which is fine for small p and falls apart for large p, in two ways at
+        // once. Its inputs are lattice indices, so they are integers: for
+        // integer n, fract( n * 123.34 ) is fract( n * 0.34 ) exactly, and 0.34
+        // is close enough to 17/50 that the sequence repeats every 50 cells.
+        // Then float32 finishes the job -- at 6 km out and the sparkle octave's
+        // frequency, n * 456.21 is around 3e7, past the 24-bit mantissa, so the
+        // fractional part being extracted is mostly gone before fract() sees it.
+        //
+        // Measured on a 400-cell row at the sparkle octave: 148 distinct values
+        // out of 400 at the origin, 16 at 1 km, and at 6 km TWO values with a
+        // period of 50 along x and a constant along z. That is the snow flecks
+        // in dashed parallel lines -- not a pattern in the noise, the noise
+        // having collapsed into a comb. A 1 cm octave collapses to a single
+        // constant, which is why this had to be fixed before that layer could
+        // exist at all.
+        //
+        // Snow was where it SHOWED, because a hard threshold on a collapsed
+        // noise draws the comb in white on white, but the damage was general:
+        // on the same row at 6 km the 0.5 m grain octave had 8 distinct values
+        // and the relief octave 8, so the near texture and the bump lighting
+        // were both quietly degrading with distance from the origin too.
+        //
+        // uint arithmetic has none of this: it is exact, and wrapping on
+        // overflow is defined rather than a precision accident. Same row now
+        // gives 400/400 distinct at every distance out to the world edge, mean
+        // 0.50, and autocorrelation under 0.03 at every shift including the 50
+        // that used to be the period. Costs three integer multiplies, which on
+        // Adreno are slower than the float ops they replace -- this is the
+        // first thing to look at if the Quest turns out to be fill bound here.
+        //
+        // Callers must pass integer-valued p. auroraNoise does; nothing else
+        // calls this.
         float auroraHash( vec2 p ) {
-          p = fract( p * vec2( 123.34, 456.21 ) );
-          p += dot( p, p + 45.32 );
-          return fract( p.x * p.y );
+          uvec2 q = uvec2( ivec2( p ) );
+          uint h = ( q.x * 0x3504f333u ) ^ ( q.y * 0xf1bbcdcbu );
+          h ^= h >> 15u;
+          h *= 0x846ca68bu;
+          h ^= h >> 16u;
+          return float( h ) * ( 1.0 / 4294967296.0 );
         }
 
         float auroraNoise( vec2 p ) {
@@ -278,7 +370,8 @@ export function createTerrainMaterial() {
             diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.52, 0.95, auroraM2 ) * auroraRockBase * uMacroTint * 0.8 );
           }
 
-          auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, length( vWorldPos - cameraPosition ) );
+          float auroraDist = length( vWorldPos - cameraPosition );
+          auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, auroraDist );
           if ( auroraNear > 0.004 ) {
             vec2 auroraP = vWorldPos.xz;
             // Two scales: ~0.5 m grit for the speed cue, ~3.5 m patches so the
@@ -313,6 +406,48 @@ export function createTerrainMaterial() {
             // keeps 12 cm features from aliasing once they go sub-pixel.
             float auroraSparkle = auroraNoise( auroraP * 8.3 );
             diffuseColor.rgb += smoothstep( 0.86, 1.0, auroraSparkle ) * auroraSnowBase * auroraNear * uSnowSparkle;
+
+            // ---- Micro layer: ~10 cm flecks, on every surface, near only.
+            //
+            // Nested inside the near block because the micro fade is strictly
+            // inside the grain fade -- auroraNear is still ~0.72 at MICRO_FAR
+            // and does not reach the 0.004 cutoff until about 90 m -- so there
+            // is no distance at which the micro layer is wanted and the grain
+            // is not. It costs one noise evaluation and six mixes, and it is
+            // skipped for every fragment past 40 m, which is most of them.
+            //
+            // ONE octave feeding both ends of each pair: the light fleck sits
+            // where the noise peaks and the dark fleck in the valleys between,
+            // which is how the grain layer above already works. A second
+            // decorrelated octave would double the cost to separate two
+            // features that are a centimetre apart and never seen apart.
+            //
+            // The thresholds are tighter than the grain's -- 0.62/0.90 rather
+            // than 0.56/0.88 -- so this reads as discrete specks scattered over
+            // the coarser mottling rather than as a second wash of it. That is
+            // the whole difference between "speckled" and "muddy" at this size.
+            float auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
+            if ( auroraMicroFade > 0.004 ) {
+              // ~10 cm cells. World-keyed like everything else here, so it does
+              // not swim when she walks and does not rescale across LOD rings.
+              // vWorldPos resolves about 1 mm at the far edge of a 16 km world,
+              // which is a hundred samples across one fleck -- ample.
+              float auroraMicroN = auroraNoise( auroraP * 10.0 );
+              float auroraMicroHi = smoothstep( 0.62, 0.90, auroraMicroN );
+              float auroraMicroLo = smoothstep( 0.38, 0.10, auroraMicroN );
+              float auroraMicroK = auroraMicroFade * uMicroTint;
+
+              diffuseColor.rgb *= 1.0 + ( auroraMicroN - 0.5 ) * uMicroValue * auroraMicroFade;
+
+              // Grass reuses DIRT and MOSS on purpose -- see the note on the
+              // micro palette. Rock and snow get the pairs of their own.
+              diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, auroraMicroHi * auroraGreenBase * auroraMicroK );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, auroraMicroLo * auroraGreenBase * auroraMicroK );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uGrit, auroraMicroHi * auroraRockBase * auroraMicroK );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uSoot, auroraMicroLo * auroraRockBase * auroraMicroK );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uFrost, auroraMicroHi * auroraSnowBase * auroraMicroK );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uShade, auroraMicroLo * auroraSnowBase * auroraMicroK );
+            }
           }
         }`
       )
@@ -360,7 +495,7 @@ export function createTerrainMaterial() {
   }
 
   // Distinct cache key so this never gets conflated with an unpatched Lambert.
-  material.customProgramCacheKey = () => 'aurora-terrain-v4'
+  material.customProgramCacheKey = () => 'aurora-terrain-v5'
 
   return material
 }

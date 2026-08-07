@@ -483,7 +483,56 @@ export const TUNING = {
   // to "a cliff is invisible against uniformly steep ground" is to stop the
   // ground being uniformly steep, not to raise the cliff until it wins. Cutting
   // the ladder (see backbone, jag, detail) is what makes 30 legible now.
-  cliffAmp: 30,
+  //
+  // RETIRED, 30 -> 0. Not a tuning choice -- a decision that this layer has been
+  // asked to do something it structurally cannot, four separate times:
+  //
+  //   round pits          it read F1 backwards and cut a disc around each point
+  //   inert               15 m dimples that moved 0.08 m of average elevation
+  //   carpet of squiggles amp 60 over 21% of the world, Worley loops and all
+  //   sheer vertical walls this one
+  //
+  // The last is not fixable by softening the blend, and the measurement is what
+  // settled it. Face angle of the ISOLATED layer, p90 and p99, against every
+  // combination of the two knobs that are supposed to control face steepness:
+  //
+  //   lip 3.0, edge 0.13 (shipped)   p90 80   p99 85
+  //   lip 1.0, edge 0.30             p90 77   p99 85
+  //   lip 1.0, edge 0.40, amp 22     p90 67   p99 80
+  //
+  // A step of 0.335*22 = 7.4 m spread over a 24 m run is a SEVENTEEN degree
+  // face. It measures 67. The mosaic geometry is not what sets the angle: the
+  // GATE is. `gate` multiplies the whole term, and deep inside a cell the term
+  // is already at full plateau height, so wherever the gate opens underneath
+  // such a cell the ground climbs the entire height of the cliff over the
+  // gate's transition distance -- at a place decided by three composed
+  // smoothsteps on unrelated noise, with no relation to the mosaic at all.
+  // `cliffGateLo/Hi` exist specifically to make that transition NEAR-BINARY
+  // (see their comment: "a partially-gated cliff is not a small cliff"), which
+  // is to say the vertical faces are what the gate was tightened to produce.
+  //
+  // The `mid` trick keeps the surface continuous across CELL boundaries and was
+  // always cited as the layer's continuity argument. Nothing keeps it continuous
+  // across GATE boundaries, and that is where the walls are. Opening the gate
+  // windows does soften them (p90 80 -> 65) but it also moves cliffs somewhere
+  // else entirely, which is a redesign, not a knob.
+  //
+  // What retiring it costs, measured world-wide at a 1.5 m stride:
+  //
+  //                 >60 deg   >70 deg   >80 deg   coverage
+  //   amp 30          3.27%     0.51%     0.13%      2.9%
+  //   amp 0           2.93%     0.21%     0.00%      0.0%
+  //
+  // So this layer supplied ALL of the genuinely vertical ground and about 60%
+  // of everything past 70 deg, across 2.9% of the world. What is left over
+  // 60 deg comes from the exposure rule (step 3c), which produces steep rock as
+  // a consequence of landform position rather than by drawing a mosaic on top
+  // of one -- organic, and the thing that got approved on sight.
+  //
+  // The code below stays, unchanged and guarded on this value, because the
+  // slider is still on the panel: drag cliffAmp up and the layer is back. If it
+  // is ever wanted for real, the fix to make first is the gate, not the blend.
+  cliffAmp: 0,
   // Width of the step, in F2-F1 units where 1 is a whole cell (119 m). This is
   // the knob that sets how steep a face is: the layer spends `cliffAmp` of
   // relief across `cliffEdge` of ground, so halving it doubles the face angle.
@@ -1302,7 +1351,11 @@ export class TerrainHeight {
     //    The break mask multiplies the whole term, so it cannot tear the
     //    surface: `mid` still agrees from both sides of a boundary at every
     //    strength, including zero.
-    const gate = smoothstep(
+    //    RETIRED at cliffAmp 0. The amplitude test goes FIRST and outside the
+    //    gate, because `gate` costs three smoothsteps and an fbm and this is
+    //    the hottest function in the project: at 0 the layer costs one compare.
+    //    Dragging cliffAmp up on the panel revives all of it immediately.
+    const gate = T.cliffAmp < 0.001 ? 0 : smoothstep(
       T.cliffGateLo,
       T.cliffGateHi,
       range *
