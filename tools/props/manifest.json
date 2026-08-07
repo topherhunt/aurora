@@ -1787,6 +1787,164 @@
         40
       ],
       "billboard": false
+    },
+    {
+      "id": "log_birch_scan",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/birch_log_ti2fbajfa_raw/Birch_Log_ti2fbajfa_Raw.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/birch_log_ti2fbajfa_raw/Birch_Log_ti2fbajfa_Raw_8K_BaseColor.jpg",
+      "class": "medium",
+      "height_m": 0.34,
+      "lod_tris": [
+        150,
+        40
+      ],
+      "billboard": false
+    },
+    {
+      "id": "log_mossy_scan",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/mossy_tree_log_rdkeg_raw/Mossy_Tree_Log_rdkeg_Raw.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/mossy_tree_log_rdkeg_raw/Mossy_Tree_Log_rdkeg_Raw_8K_BaseColor.jpg",
+      "class": "medium",
+      "height_m": 0.75,
+      "lod_tris": [
+        150,
+        40
+      ],
+      "billboard": false
+    },
+    {
+      "id": "tree_dead_standing",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/dead_tree_qletl_raw/Dead_Tree_qlEtl_Raw.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/dead_tree_qletl_raw/Dead_Tree_qlEtl_Raw_8K_BaseColor.jpg",
+      "class": "large",
+      "height_m": 6.5,
+      "lod_tris": [
+        500,
+        130
+      ],
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "forest_floor_cluster",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/nordic_forest_cluster_medium_xisgcic_raw/Nordic_Forest_Cluster_Medium_xisgcic_Raw.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/nordic_forest_cluster_medium_xisgcic_raw/Nordic_Forest_Cluster_Medium_xisgcic_Raw_8K_BaseColor.jpg",
+      "class": "medium",
+      "height_m": 1.15,
+      "lod_tris": [
+        150,
+        40
+      ],
+      "billboard": false
+    },
+    {
+      "id": "tree_cracked_dead",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/realistic-cracked-tree-game-ready-prop/source/rackedTree.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/realistic-cracked-tree-game-ready-prop/textures/rackedTree_DefaultMaterial_BaseColor.png",
+      "class": "large",
+      "height_m": 4.2,
+      "lod_tris": [
+        500,
+        130
+      ],
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "tree_oak_hero",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/high-quality-tree-66/source/Graf1TreeHIGH.fbx",
+      "class": "structure",
+      "height_m": 9.7,
+      "lod_tris": [
+        1800
+      ],
+      "decimate": "planar_collapse",
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "grass_tall_scan_a",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_VarA_LOD0.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg",
+      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg",
+      "class": "small",
+      "height_m": 0.85,
+      "lod_tris": [
+        16
+      ],
+      "billboard": false
+    },
+    {
+      "id": "grass_tall_scan_b",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_VarB_LOD0.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg",
+      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg",
+      "class": "small",
+      "height_m": 0.85,
+      "lod_tris": [
+        16
+      ],
+      "billboard": false
+    },
+    {
+      "id": "grass_tall_scan_c",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_VarC_LOD0.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg",
+      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg",
+      "class": "small",
+      "height_m": 0.85,
+      "lod_tris": [
+        16
+      ],
+      "billboard": false
+    },
+    {
+      "id": "grass_wild_scan_a",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarA_LOD0.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_BaseColor.jpg",
+      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_Opacity.jpg",
+      "class": "small",
+      "height_m": 0.4,
+      "lod_tris": [
+        16
+      ],
+      "billboard": false
+    },
+    {
+      "id": "grass_wild_scan_b",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarB_LOD0.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_BaseColor.jpg",
+      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_Opacity.jpg",
+      "class": "small",
+      "height_m": 0.4,
+      "lod_tris": [
+        16
+      ],
+      "billboard": false
+    },
+    {
+      "id": "grass_wild_scan_c",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarC_LOD0.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_BaseColor.jpg",
+      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_Opacity.jpg",
+      "class": "small",
+      "height_m": 0.4,
+      "lod_tris": [
+        16
+      ],
+      "billboard": false
+    },
+    {
+      "id": "grass_wild_scan_d",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarD_LOD0.fbx",
+      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_BaseColor.jpg",
+      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_Opacity.jpg",
+      "class": "small",
+      "height_m": 0.4,
+      "lod_tris": [
+        16
+      ],
+      "billboard": false
     }
   ]
 }

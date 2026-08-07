@@ -99,8 +99,16 @@ const props = new Scatter(scene, terrainHeight, { seed: SEED })
 // to be told to re-place -- otherwise the trees it put there before the village
 // arrived are left standing in the great hall.
 const villages = new Villages(scene, terrainHeight, { seed: SEED, onChange: () => props.invalidate() })
-props.setExclusion((x, z, kind) => villages.excludes(x, z, kind))
 const water = new Water(scene)
+// Nothing grows underwater. The village test comes first because it is a
+// distance check against a handful of sites, and heightAt is only paid on the
+// few candidates that land on a water cell at all -- levelAt is one array
+// lookup and returns null everywhere else.
+props.setExclusion((x, z, kind) => {
+  if (villages.excludes(x, z, kind)) return true
+  const level = water.levelAt(x, z)
+  return level !== null && terrainHeight.heightAt(x, z) < level
+})
 
 // Terrain shadows and ambient occlusion, from the horizon map baked alongside
 // Phase A. The maps arrive a few seconds after the world does; until they land
@@ -133,7 +141,7 @@ for (const [mat, key] of [
 // layers on top of it, both hidden entirely whenever their fade is zero.
 const sky = new Sky(scene)
 const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio() })
-const aurora = new Aurora(scene)
+const aurora = new Aurora(scene, { seed: SEED })
 
 // Phase A, in the browser, for the first time. It has existed since §2 and been
 // exercised only by map.html; the game itself has been running on the raw
@@ -169,16 +177,6 @@ phaseAWorker.onmessage = (e) => {
   console.log(`[phase A] horizon map live: ${r.n}^2 x 16 azimuths, ${(r.horizon.length / 1048576).toFixed(1)} MB`)
 
   const built = water.setFromPhaseA({ lake: r.lake, filled: r.filled, ground: r.base, n: r.n, cell: r.cell })
-  const rivers = water.setStreamsFromPhaseA({
-    stream: r.stream,
-    recv: r.recv,
-    acc: r.acc,
-    lake: r.lake,
-    n: r.n,
-    cell: r.cell,
-    th: terrainHeight,
-    minAcc: r.minAcc,
-  })
 
   // Put her where the water is, if she has not already walked off.
   //
@@ -216,7 +214,10 @@ phaseAWorker.onmessage = (e) => {
     `[phase A] water: ${r.lakes.length} bodies, ${built.tiles} tiles, ${built.triangles} tris, ` +
       `surfaces ${Math.min(...r.lakes.map((l) => l.level)).toFixed(0)}..${Math.max(...r.lakes.map((l) => l.level)).toFixed(0)}m`
   )
-  console.log(`[phase A] rivers: ${rivers.chains} chains, ${rivers.tiles} tiles, ${rivers.triangles} tris`)
+  // The scatter only rebuilds when the camera crosses a grid cell, and the
+  // lakes arriving is a change to the answer that standing still will not
+  // notice. Without this the trees already placed stay in the water.
+  props.invalidate()
   phaseAWorker.terminate()
 }
 phaseAWorker.postMessage({ seed: SEED, n: PHASE_A_RES })
@@ -315,6 +316,7 @@ const KEY_ACTIONS = {
   u: 'unstick',
   t: 'tuner',
   n: 'timeSkip',
+  p: 'auroraPattern',
   '[': 'coarser',
   ']': 'finer',
 }
@@ -333,6 +335,7 @@ const CODE_ACTIONS = {
   ShiftRight: 'flyDown',
   KeyT: 'tuner',
   KeyN: 'timeSkip',
+  KeyP: 'auroraPattern',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
 }
@@ -386,6 +389,7 @@ addEventListener('keydown', (e) => {
   if (fresh.includes('hud')) hud.toggle()
   if (fresh.includes('tuner')) tuner.toggle()
   if (fresh.includes('timeSkip')) skipTime()
+  if (fresh.includes('auroraPattern')) cycleAurora()
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped
   // multiplicatively because the perceptual distance from 1.0 to 1.2 degrees is
@@ -493,6 +497,17 @@ function skipTime() {
   console.log(`[clock] +${CLOCK.skipHours}h -> ${clock.clockText}  sun ${clock.sun.elevDeg.toFixed(1)}deg`)
 }
 
+// Step the aurora through auto, then each named form in turn, then back to
+// auto. Pinning a form is how you look at one deliberately instead of waiting
+// for the composer to roll it -- some of these are rare on purpose, and a form
+// you cannot summon is a form you cannot judge or debug.
+let auroraFlash = -Infinity
+function cycleAurora() {
+  const i = aurora.cyclePattern()
+  auroraFlash = performance.now()
+  console.log(`[aurora] ${aurora.label}${aurora.blurb ? `  --  ${aurora.blurb}` : ''}`, i)
+}
+
 const tmpCol = new THREE.Color()
 const setSRGB = (col, rgb) => col.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
 
@@ -558,6 +573,10 @@ function readInput() {
     // -- this is the one control in the game that changes the world rather than
     // her position in it.
     if (st.right.buttons.GRIP?.justPressed) skipTime()
+    // Right PRIMARY (A): cycle aurora patterns. The one face button still free
+    // on that hand, and the aurora is the thing you are most likely to want to
+    // change while standing in the headset looking up at it.
+    if (st.right.buttons.PRIMARY?.justPressed) cycleAurora()
     if (st.left.buttons.PRIMARY?.justPressed) player.recenterXR(renderer)
     return
   }
@@ -646,7 +665,7 @@ function hudLines(skyState) {
     `draw calls ${info.render.calls}   triangles ${(info.render.triangles / 1000).toFixed(1)}k`,
     budgetLine(info),
     '',
-    '## sky  --  N (or right grip) = +6h',
+    '## sky  --  N (or right grip) = +6h   P (or right A) = aurora pattern',
     `${clock.clockText}   sun ${clock.sun.elevDeg.toFixed(1)}deg az ${clock.sun.azDeg.toFixed(0)}   ` +
       `moon ${clock.moon.elevDeg.toFixed(1)}deg lit ${(clock.moonLit * 100).toFixed(0)}%`,
     `light ${skyState.isNight ? 'moon' : 'sun'} ${skyState.lightIntensity.toFixed(2)}   ` +
@@ -654,6 +673,12 @@ function hudLines(skyState) {
     `${skyState.aurora > 0.004 ? '++' : ''}aurora ${(skyState.aurora * 100).toFixed(0)}%   ` +
       `substorm ${(skyState.activity * 100).toFixed(0)}%   ceiling ${(skyState.auroraMax * 100).toFixed(0)}%` +
       (performance.now() - skipFlash < 1500 ? `   ++ +${CLOCK.skipHours}h` : ''),
+    // What is actually in the sky right now, named. In auto mode this lists
+    // every form the composer has up and its weight, which is the only way to
+    // tell a deliberate overlay from a bug.
+    `pattern ${skyState.aurora > 0.004 ? aurora.label : '-- (daylight)'}` +
+      (performance.now() - auroraFlash < 2500 ? '   ** CHANGED **' : ''),
+    ...(aurora.blurb && skyState.aurora > 0.004 ? [`        ${aurora.blurb}`] : []),
     '',
     '## terrain (1 batched draw call)',
     `chunks  render ${ts.rendered}/${ts.desired}   pending ${ts.pending}   slots ${ts.slots}/${ts.cached}`,

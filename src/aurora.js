@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { SLOTS, PATTERNS, composeAuto, bandsFor } from './aurora-patterns.js'
 
 // ---------------------------------------------------------------------------
 // The aurora borealis.
@@ -20,8 +21,9 @@ import * as THREE from 'three'
 // 2. IT IS OPTICALLY THIN. The gas is so rarefied that light passes straight
 //    through it -- one curtain behind another simply adds. That is a large
 //    gift: additive blending is COMMUTATIVE, so nothing has to be depth-sorted,
-//    ever. Five overlapping curtains in arbitrary draw order give the identical
-//    frame. This is why the whole thing can be one BufferGeometry.
+//    ever. Nine overlapping bands in arbitrary draw order give the identical
+//    frame. This is why the whole thing can be one BufferGeometry, and why
+//    overlaying several named forms at once costs nothing structurally.
 //
 // 3. IT IS FIELD-ALIGNED. Electrons follow field lines, which near the pole
 //    are close to vertical. Every structure in an aurora is therefore VERTICAL:
@@ -35,7 +37,9 @@ import * as THREE from 'three'
 //   428/470   ionised nitrogen, blue-violet  80-100 km, the pink/purple hem
 // So an aurora's colour is a function of ALTITUDE and of nothing else. Not of
 // intensity, not of time, not of noise. That single fact does most of the work
-// of making this look real rather than like a green ribbon.
+// of making this look real rather than like a green ribbon. The only two forms
+// that override it are the two that are not precipitation at all -- the SAR arc
+// and STEVE -- and they say so in aurora-patterns.js.
 //
 // ===========================================================================
 // LAWLOR & GENETTI, and why there is no volume here
@@ -69,7 +73,8 @@ import * as THREE from 'three'
 // scroll rates over one surface beat one scroll rate at three times the
 // resolution, because the interference between layers never repeats and the eye
 // cannot find the loop. The layering is what makes those auroras feel alive on
-// hardware from 2011.
+// hardware from 2011. Here it appears twice over: three noise octaves inside
+// one band, and up to three overlaid named forms inside one sky.
 //
 // What is deliberately NOT copied: the authored mesh and the scrolling texture.
 // A scrolling texture slides its pattern ACROSS the curtain -- structure moves
@@ -82,16 +87,43 @@ import * as THREE from 'three'
 // texture is replaced by noise so nothing has to be authored or loaded.
 //
 // ===========================================================================
+// ONE SHADER, ONE MESH, TWELVE FORMS
+// ===========================================================================
+//
+// The geometry here is deliberately CONTENTLESS: SLOTS identical parametric
+// grids, each carrying nothing but (aU along, aV up, aSlot). Every number that
+// makes a band a `drapery` rather than a `SAR arc` -- where it is, how tall,
+// how folded, how rayed, what colour -- lives in a uniform array indexed by
+// aSlot. Switching the whole sky is a write of 200 floats; nothing is rebuilt,
+// nothing is recompiled, and there is exactly one shader program to debug.
+//
+// A slot whose brightness is zero collapses to a degenerate vertex outside the
+// clip volume and is discarded before rasterisation, so an empty slot costs one
+// early return and no fill. That is what makes carrying nine slots affordable
+// when three are typically in use.
+//
+// ===========================================================================
+// WHERE THE SHAPE COMES FROM
+// ===========================================================================
+//
+// Everything that varies ALONG the band and is constant UP a column is computed
+// in the VERTEX shader and interpolated -- column height, the flicker that
+// makes columns come and go, the bottom-hem streaks, the lobe mask. That is not
+// an optimisation detail, it is the field-alignment constraint again: these are
+// all properties of a field line, and a field line is a column. Computing them
+// per fragment would be both slower and wrong.
+//
+// It leaves the fragment shader with two noise evaluations, both for the
+// striations, which is the budget §13 sets and the gate enforces.
+//
+// ===========================================================================
 // SCALE AND PLACEMENT
 // ===========================================================================
 //
-// Everything below is built in KILOMETRES and scaled by KM on the way out,
-// because the physics is quoted in kilometres and a file full of 4050.0 would
-// be unreadable. The scale is chosen so the whole structure fits between the
-// terrain and the camera's 20000 m far plane:
-//
-//   nearest curtain point   45 km out,  88 km up  ->  4530 units, 63 deg up
-//   farthest curtain point  200 km out, 250 km up -> 14400 units, 51 deg up
+// Everything is built in KILOMETRES and scaled by KM on the way out, because
+// the physics is quoted in kilometres and a file full of 4050.0 would be
+// unreadable. At 45 units/km the camera's 20000-unit far plane sits at 444 km,
+// which is what caps band altitude in aurora-patterns.js.
 //
 // The aurora is SKY-LOCKED: it follows the head position with no parallax, like
 // the sky dome and the stars. That is not a cheat, it is correct -- at 100 km
@@ -102,48 +134,24 @@ import * as THREE from 'three'
 // Depth still works, and does the right thing for free: the material is
 // transparent, so it draws after the opaque pass has filled the depth buffer,
 // with depthTest on and depthWrite off. A mountain in front of the aurora
-// occludes it. And the geometry is far enough out and high enough up that this
-// only happens where it should -- at 24 deg elevation, the lowest the far arc
-// ever gets, a peak would have to be 3.5 km tall at 8 km range to cut into it.
+// occludes it, and the geometry is far enough out and high enough up that this
+// only happens where it should.
 // ---------------------------------------------------------------------------
 
 const KM = 45 // world units per kilometre
-const DEG = Math.PI / 180
 
-// Altitude rows. Deliberately not evenly spaced: they are packed where the
-// deposition function bends. 88->96 is the hard lower border, and putting three
-// rows in the bottom 25 km buys a clean bottom edge at the only place a linear
-// interpolation of altitude between rows could show.
-const ALTS = [86, 92, 100, 112, 132, 165, 210, 260]
+// Samples along a band, and rows up it. 180 segments gives a fold wavelength of
+// about 8 samples at the tightest wavelength the vertex shader displaces at,
+// which is enough that the silhouette reads as a curve rather than a polyline.
+const SEGS = 180
+const ROWS = 10
 
-// One entry per curtain. Layered in depth exactly as Skyrim layers in the
-// z-buffer, and for the same reason: overlapping structures at different
-// distances and different speeds interfere, and interference is what stops a
-// procedural sky from having a visible period.
-//
-// `threshold` is where in the substorm cycle this curtain switches on. The
-// distant arc is always there; the overhead one only appears in a real storm,
-// which is what makes a storm feel like an event rather than a brightness
-// slider.
-const CURTAINS = [
-  // dist   az      span   fold  drift  bright thresh  seed
-  { dist: 200, az: 355, span: 150, fold: 26, drift: 0.020, bright: 0.55, threshold: 0.0, seed: 11 },
-  { dist: 145, az: 8, span: 130, fold: 22, drift: -0.031, bright: 0.85, threshold: 0.12, seed: 27 },
-  { dist: 96, az: 348, span: 118, fold: 17, drift: 0.044, bright: 1.0, threshold: 0.3, seed: 43 },
-  { dist: 62, az: 20, span: 96, fold: 12, drift: -0.058, bright: 0.9, threshold: 0.52, seed: 61 },
-  { dist: 38, az: 340, span: 78, fold: 8, drift: 0.077, bright: 0.75, threshold: 0.74, seed: 79 },
-]
+// Rows are packed toward the bottom, because that is where the interesting
+// part of the deposition profile is: the lower border is a knife edge and the
+// top is a long smooth fade, so uniform spacing would waste half the rows on
+// the half of the profile that has no features.
+const ROW_BIAS = 1.6
 
-// Samples along each curtain's footprint. 200 gives a fold wavelength of about
-// 8 samples at the shortest wavelength the vertex shader displaces at, which is
-// enough that the silhouette reads as a smooth curve rather than a polyline.
-const SEGS = 200
-
-// Shared GLSL. Integer-hash value noise -- the same shape as the one in
-// terrain-material.js and for the same recorded reason: the fract(sin(dot))
-// hash degenerates once its inputs get large, and these inputs are kilometres
-// plus a monotonically increasing time. That hash was measured collapsing to
-// two distinct values at 6 km in the terrain shader.
 const NOISE_GLSL = `
   float aurHash( vec2 p ) {
     uvec2 q = uvec2( ivec2( floor( p ) ) ) * uvec2( 1597334673u, 3812015801u );
@@ -166,66 +174,44 @@ const NOISE_GLSL = `
 // is Skyrim's three-layer trick, moved from UV scroll onto the fold amplitude.
 // The time term is INSIDE the noise rather than added to the coordinate, which
 // is the whole difference: adding to the coordinate slides the pattern along
-// the curtain, putting it in the second axis makes the pattern MORPH IN PLACE.
+// the band, putting it in the second axis makes the pattern MORPH IN PLACE.
 // Real folds do the latter.
 const FOLD_GLSL = `
-  float aurFold( float km, float t, float amp, float act ) {
-    float f = ( aurNoise( vec2( km * 0.0125, t * 0.055 ) ) - 0.5 ) * 1.0;
-    f     += ( aurNoise( vec2( km * 0.0410, t * 0.130 ) ) - 0.5 ) * 0.52;
+  float aurFold( float km, float t, float amp, float hz, float act ) {
+    float f = ( aurNoise( vec2( km * 0.0125 * hz, t * 0.055 ) ) - 0.5 ) * 1.0;
+    f     += ( aurNoise( vec2( km * 0.0410 * hz, t * 0.130 ) ) - 0.5 ) * 0.52;
     // The third octave is gated on activity. A quiet aurora is a smooth arc;
     // the fine curls only appear at breakup. That progression -- arc, then
     // folds, then curls -- is the Akasofu substorm sequence, and animating it
     // is most of why standing and watching this is worth doing.
-    f     += ( aurNoise( vec2( km * 0.1350, t * 0.310 ) ) - 0.5 ) * 0.34 * act;
+    f     += ( aurNoise( vec2( km * 0.1350 * hz, t * 0.310 ) ) - 0.5 ) * 0.34 * act;
     return f * amp;
   }
 `
 
 function buildGeometry() {
-  const pos = []
-  const aKm = [] // distance along the footprint, km -- drives folds and rays
-  const aAlt = [] // altitude, km -- drives colour and deposition
-  const aNrm = [] // footprint normal in plan, horizontal unit vector
-  const aTan = [] // footprint tangent in plan, for the finite-difference normal
-  const aEnv = [] // per-curtain: x = end taper coord, y = brightness, z = threshold
-  const aSeed = []
+  const aU = []
+  const aV = []
+  const aSlot = []
   const idx = []
+  // position exists only because three requires it; every coordinate is
+  // computed in the vertex shader from the band uniforms.
+  const pos = []
 
-  for (const c of CURTAINS) {
-    const base = pos.length / 3
-    // Arc length of the footprint in km. The curtain is a circular arc centred
-    // on the viewer, which is what an auroral arc looks like from underneath --
-    // the oval is thousands of km across, so the near part of it reads as a
-    // band crossing the sky rather than as a ring.
-    const arcKm = c.dist * c.span * DEG
-
+  for (let s = 0; s < SLOTS; s++) {
+    const base = aU.length
     for (let i = 0; i <= SEGS; i++) {
-      const s = i / SEGS
-      const azDeg = c.az - c.span / 2 + c.span * s
-      const a = azDeg * DEG
-      // North is -z, east is +x, matching clock.js's azimuth convention.
-      const dx = Math.sin(a)
-      const dz = -Math.cos(a)
-      // Tangent along the arc, and the outward normal, both in plan.
-      const tx = Math.cos(a)
-      const tz = Math.sin(a)
-
-      for (let k = 0; k < ALTS.length; k++) {
-        pos.push(dx * c.dist, ALTS[k], dz * c.dist)
-        aKm.push(s * arcKm)
-        aAlt.push(ALTS[k])
-        aNrm.push(dx, 0, dz)
-        aTan.push(tx, 0, tz)
-        aEnv.push(s, c.bright, c.threshold)
-        aSeed.push(c.seed)
+      for (let k = 0; k < ROWS; k++) {
+        aU.push(i / SEGS)
+        aV.push(Math.pow(k / (ROWS - 1), ROW_BIAS))
+        aSlot.push(s)
+        pos.push(0, 0, 0)
       }
     }
-
-    const rows = ALTS.length
     for (let i = 0; i < SEGS; i++) {
-      for (let k = 0; k < rows - 1; k++) {
-        const a0 = base + i * rows + k
-        const b0 = base + (i + 1) * rows + k
+      for (let k = 0; k < ROWS - 1; k++) {
+        const a0 = base + i * ROWS + k
+        const b0 = base + (i + 1) * ROWS + k
         idx.push(a0, b0, a0 + 1, a0 + 1, b0, b0 + 1)
       }
     }
@@ -233,98 +219,239 @@ function buildGeometry() {
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  geo.setAttribute('aKm', new THREE.Float32BufferAttribute(aKm, 1))
-  geo.setAttribute('aAlt', new THREE.Float32BufferAttribute(aAlt, 1))
-  geo.setAttribute('aNrm', new THREE.Float32BufferAttribute(aNrm, 3))
-  geo.setAttribute('aTan', new THREE.Float32BufferAttribute(aTan, 3))
-  geo.setAttribute('aEnv', new THREE.Float32BufferAttribute(aEnv, 3))
-  geo.setAttribute('aSeed', new THREE.Float32BufferAttribute(aSeed, 1))
+  geo.setAttribute('aU', new THREE.Float32BufferAttribute(aU, 1))
+  geo.setAttribute('aV', new THREE.Float32BufferAttribute(aV, 1))
+  geo.setAttribute('aSlot', new THREE.Float32BufferAttribute(aSlot, 1))
   geo.setIndex(idx)
-  // Sky-locked and always in view somewhere; culling a single 30k-triangle draw
-  // against a bounding sphere that has to be recomputed every frame is a worse
-  // deal than not culling it.
   geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 150 * KM, 0), 400 * KM)
   return geo
 }
 
 export class Aurora {
-  constructor(scene) {
+  constructor(scene, { seed = 0 } = {}) {
+    this.seed = seed
+    // -1 is the composer; 0..PATTERNS.length-1 pins one named form, which is
+    // what the J key cycles through.
+    this.pattern = -1
+    this.live = []
+
+    // One vec4 array per four parameters. Grouped by what they do rather than
+    // by type, so a row of this table reads like the row in aurora-patterns.js
+    // it came from.
+    const arr = (n) => new Float32Array(SLOTS * n)
+    this.bandA = arr(4) // dist, azDeg, spanDeg, bright
+    this.bandB = arr(4) // alt0, alt1, fold, foldHz
+    this.bandC = arr(4) // speed, drift, ray, rayHz
+    this.bandD = arr(4) // lobes, ragged, flick, fringe
+    this.bandE = arr(4) // pulse, tintAmt, seed, --
+    this.bandF = arr(4) // pale, crown, shear, breathe
+    this.bandT = arr(3) // tint rgb
+
     this.material = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uIntensity: { value: 0 },
         uActivity: { value: 0 },
+        uBandA: { value: this.bandA },
+        uBandB: { value: this.bandB },
+        uBandC: { value: this.bandC },
+        uBandD: { value: this.bandD },
+        uBandE: { value: this.bandE },
+        uBandF: { value: this.bandF },
+        uBandT: { value: this.bandT },
       },
       vertexShader: `
-        attribute float aKm;
-        attribute float aAlt;
-        attribute vec3 aNrm;
-        attribute vec3 aTan;
-        attribute vec3 aEnv;
-        attribute float aSeed;
+        attribute float aU;
+        attribute float aV;
+        attribute float aSlot;
 
         uniform float uTime;
         uniform float uActivity;
+        uniform vec4 uBandA[ ${SLOTS} ];
+        uniform vec4 uBandB[ ${SLOTS} ];
+        uniform vec4 uBandC[ ${SLOTS} ];
+        uniform vec4 uBandD[ ${SLOTS} ];
+        uniform vec4 uBandE[ ${SLOTS} ];
+        uniform vec4 uBandF[ ${SLOTS} ];
+        uniform vec3 uBandT[ ${SLOTS} ];
 
-        varying float vAlt;
-        varying float vKm;
-        varying float vEnv;
-        varying float vBright;
+        varying vec4 vShape; // altitude km, along-band km, this column's top km, its base km
+        varying vec4 vMod;   // envelope, bottom-hem streak, ray contrast, ray frequency
+        varying vec4 vTint;  // colour override rgb + how much of it
+        varying vec3 vCol;   // palette: paleness, crown strength, base softness
         varying vec3 vWorld;
-        varying vec3 vNormal;
-        varying float vSeed;
+        varying vec3 vNrm;
+        varying float vBright;
 
         ${NOISE_GLSL}
         ${FOLD_GLSL}
 
         void main() {
-          vAlt = aAlt;
-          vSeed = aSeed;
-          vBright = aEnv.y;
+          int s = int( aSlot + 0.5 );
+          vec4 A = uBandA[ s ];
 
-          // Per-curtain switch-on. Below its threshold a curtain is not merely
-          // dim, it is GONE -- collapsed to zero displacement and zero
-          // brightness -- so a quiet sky is genuinely one thin arc rather than
-          // five faint ones stacked up looking like haze.
-          float live = smoothstep( aEnv.z, aEnv.z + 0.18, uActivity );
+          // An unused slot collapses to a point outside the clip volume, so its
+          // triangles are discarded before they cost a single fragment. This is
+          // what lets nine slots exist for the sake of three.
+          if ( A.w < 0.0015 ) {
+            gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 );
+            return;
+          }
 
-          // Taper both ends of the ribbon to nothing. An aurora that stops dead
-          // in mid-air is the single most obvious tell there is; real arcs fade
-          // out along their length as the precipitation thins.
-          vEnv = smoothstep( 0.0, 0.14, aEnv.x ) * smoothstep( 1.0, 0.86, aEnv.x )
-               * live;
+          vec4 B = uBandB[ s ];
+          vec4 C = uBandC[ s ];
+          vec4 D = uBandD[ s ];
+          vec4 E = uBandE[ s ];
+          vec4 F = uBandF[ s ];
 
-          float t = uTime + aSeed * 37.0;
+          vBright = A.w;
+          vTint = vec4( uBandT[ s ], E.y );
+
+          float t = uTime * C.x + E.z * 41.0;
+
+          // ---- Footprint. A circular arc centred on the viewer, which is what
+          // an auroral arc looks like from underneath: the oval is thousands of
+          // km across, so the near part of it reads as a band crossing the sky
+          // rather than as a ring.
+          float a = radians( A.y + ( aU - 0.5 ) * A.z );
+          vec3 dir = vec3( sin( a ), 0.0, -cos( a ) );   // north is -z, east is +x
+          vec3 tng = vec3( cos( a ), 0.0, sin( a ) );
+
+          // Distance along the footprint from its centre, in km, plus the slow
+          // translation. Real arcs drift -- usually westward before midnight --
+          // and the drift is applied to the SHAPE coordinate so the whole
+          // structure travels together rather than the pattern sliding through
+          // a stationary silhouette.
+          float km = ( aU - 0.5 ) * radians( A.z ) * A.x + uTime * C.y;
+
+          // ================================================================
+          // Per-column terms. Constant up a field line, so they belong here.
+          // ================================================================
+
+          // How tall THIS column reaches. Without this every band tops out at
+          // exactly the same altitude and the result is a rectangle -- the
+          // single most artificial thing a procedural aurora does.
+          float ragged = aurNoise( vec2( km * 0.026, t * 0.07 ) );
+          float topF = 1.0 - D.y * ( 1.0 - ragged );
+          float topKm = B.x + ( B.y - B.x ) * mix( 0.30, 1.0, topF );
+
+          // The lower border wanders only slightly: it is set by where
+          // electrons of a given energy stop, and that is the most uniform
+          // thing about an aurora. A few km, no more.
+          float baseKm = B.x + ( aurNoise( vec2( km * 0.05, t * 0.05 ) ) - 0.5 ) * 5.0;
+
+          // Columns come and go. A band whose every column is permanently lit
+          // reads as a painted object; a real one is continually rebuilt out of
+          // rays that live for a few seconds each.
+          float fl = aurNoise( vec2( km * 0.055, t * 0.33 ) );
+          float flick = mix( 1.0, smoothstep( 0.24, 0.74, fl ), D.z );
+
+          // The bottom hem, which is the part the eye is drawn to. High spatial
+          // frequency and fast, so the base breaks into short vertical streaks
+          // that fade in and out independently of the band above them.
+          float fr = aurNoise( vec2( km * 0.28, t * 0.55 ) ) * 0.65
+                   + aurNoise( vec2( km * 0.90, t * 0.90 ) ) * 0.35;
+          float fringe = mix( 1.0, smoothstep( 0.32, 0.80, fr ), D.w );
+
+          // How gradually the lower border fades in, as a fraction of this
+          // column's own height, and it is per-column on purpose. A single
+          // global softness turns the hem into a blurred straight line, which
+          // is the same fabric-curtain tell as a sharp one. Tying it to the
+          // hem noise means the columns that flare brightest are also the
+          // crispest, and the ones fading out feather away -- so the bottom
+          // edge is a ragged gradient rather than an edge at all.
+          float soft = mix( 0.08, 0.26, fr );
+
+          // Break the band into discrete blobs, for the diffuse and pulsating
+          // forms. With lobes = 0 the noise argument is constant and the mix
+          // selects 1.0, so a continuous band pays for one lookup and no
+          // branch.
+          float ln = aurNoise( vec2( aU * D.x + E.z, t * 0.09 ) );
+          float lobe = mix( 1.0, smoothstep( 0.30, 0.66, ln ), step( 0.5, D.x ) );
+
+          // Pulsating patches: each blob on its own beat, phase taken from
+          // along-band noise. The whole sky flashing in unison is the failure
+          // mode here and it looks like a broken light.
+          float ph = aurNoise( vec2( km * 0.09, E.z ) ) * 6.2832;
+          float pulse = mix( 1.0, 0.30 + 0.70 * ( 0.5 + 0.5 * sin( uTime * E.x * 6.2832 + ph ) ),
+                             step( 0.001, E.x ) );
+
+          // ---- Presence. The slowest and deepest of the four envelopes, and
+          // the one that decides whether a stretch of band is in the sky at
+          // all right now.
+          //
+          // flick above works at ~2 km and a few seconds: individual rays
+          // guttering. This works at ~150 km and a couple of minutes: whole
+          // SECTIONS of a band. That separation of scales is the point. An
+          // aurora is not a light that dims, it is a set of regions that are
+          // either lit or not, and the lit regions move.
+          //
+          // The curve is deliberately not symmetric. Squaring a smoothstep
+          // that only starts climbing at 0.20 leaves the typical value near
+          // 0.15 and the peak near 2.2 -- so a band spends most of its life
+          // faint or invisible, occasionally flares far brighter than a linear
+          // envelope would ever allow, and the flare is an event you notice
+          // rather than a state it sits in. The additive blend clips those
+          // peaks toward white, which is what a real substorm surge does to a
+          // camera and to the eye.
+          float mac = aurNoise( vec2( km * 0.0062, t * 0.028 ) ) * 0.62
+                    + aurNoise( vec2( km * 0.0210, t * 0.070 ) ) * 0.38;
+          float presence = mix( 1.0, 0.10 + 2.10 * pow( smoothstep( 0.20, 0.90, mac ), 2.0 ), F.w );
+
+          // And one breath for the band as a whole, so entire forms come and
+          // go rather than only parts of them. Constant along the band -- the
+          // argument is the band's own seed -- so it cannot fight the spatial
+          // term above, it only scales it.
+          float breath = mix( 1.0, 0.25 + 0.75 * aurNoise( vec2( E.z * 7.3, t * 0.017 ) ), F.w );
+
+          // ---- Plan envelope. A 30% taper at each end rather than 14%, and a
+          // separate, wider taper on the column HEIGHT, so a band is a lens in
+          // silhouette instead of a rectangle with soft edges. The two together
+          // are what make overlaid forms read as separate blobs of light rather
+          // than as stacked ribbons.
+          float endTaper = smoothstep( 0.0, 0.30, aU ) * smoothstep( 1.0, 0.70, aU );
+          float ovality = mix( 0.40, 1.0,
+                               smoothstep( 0.0, 0.44, aU ) * smoothstep( 1.0, 0.56, aU ) );
+          topKm = baseKm + ( topKm - baseKm ) * ovality;
+
+          // ================================================================
+          // Position
+          // ================================================================
+          float alt = mix( baseKm, topKm, aV );
+
           // Fold amplitude grows with altitude. Field lines converge downward,
           // so a fold is tighter at the bottom edge and splays out above -- it
           // is why curtains look like curtains and not like walls.
-          float amp = ( 12.0 + uActivity * 22.0 ) * ( 0.55 + aAlt * 0.0042 ) * live;
+          float amp = B.z * ( 0.55 + ( alt - 90.0 ) * 0.0072 );
 
-          float f0 = aurFold( aKm, t, amp, uActivity );
+          // Field lines are not vertical. At 65 N the magnetic dip is about 78
+          // degrees, so the top of a 150 km column sits some 30 km along-band
+          // from its own base -- and since the fold pattern is carried BY the
+          // field lines, the fold at the top is the fold from further along.
+          // That is the lean you see in every photograph of a tall rayed band,
+          // and cranked up it is also the whole of the auroral spiral form:
+          // shear past a full fold wavelength and the column stops reading as
+          // a curtain and starts reading as smoke twisting upward.
+          float shear = F.z * ( alt - baseKm );
+          float f0 = aurFold( km + shear, t, amp, B.w, uActivity );
 
-          // Analytic-ish surface normal by finite difference along the
-          // footprint. Two extra noise evaluations at 1600 vertices per curtain
-          // is nothing, and the payoff is the edge-on brightening in the
-          // fragment shader, which is the effect that turns a smooth ribbon
-          // into distinct bright rays. Without a correct normal here that
-          // effect points the wrong way and actively looks worse than nothing.
+          // Surface normal by finite difference along the footprint. Two extra
+          // noise evaluations per vertex, and the payoff is the edge-on
+          // brightening in the fragment shader, which is the effect that turns
+          // a smooth ribbon into distinct bright rays. Without a correct normal
+          // here that effect points the wrong way and looks worse than nothing.
           float dk = 2.0;
-          float f1 = aurFold( aKm + dk, t, amp, uActivity );
-          // Tangent of the displaced curve in plan: along-track plus the rate
-          // of change of the sideways displacement.
-          vec3 tanW = normalize( aTan * dk + aNrm * ( f1 - f0 ) );
+          float f1 = aurFold( km + shear + dk, t, amp, B.w, uActivity );
+          vec3 tanW = normalize( tng * dk + dir * ( f1 - f0 ) );
           // The sheet is vertical, so its normal is the plan tangent turned 90
           // degrees about up.
-          vNormal = normalize( vec3( -tanW.z, 0.0, tanW.x ) );
+          vNrm = normalize( vec3( -tanW.z, 0.0, tanW.x ) );
 
-          // Slow drift along the arc, on top of the morphing. Real arcs do
-          // translate -- usually westward before midnight -- and a purely
-          // in-place animation reads as a video loop.
-          vKm = aKm + uTime * 0.9;
+          vShape = vec4( alt, km, topKm, baseKm );
+          vMod = vec4( endTaper * lobe * flick * pulse * presence * breath, fringe, C.z, C.w );
+          vCol = vec3( F.x, F.y, soft );
 
-          vec3 p = position + aNrm * f0;
-          p *= ${KM.toFixed(1)};
-
+          vec3 p = ( dir * ( A.x + f0 ) + vec3( 0.0, alt, 0.0 ) ) * ${KM.toFixed(1)};
           vec4 world = modelMatrix * vec4( p, 1.0 );
           vWorld = world.xyz;
           gl_Position = projectionMatrix * viewMatrix * world;
@@ -335,62 +462,101 @@ export class Aurora {
         uniform float uIntensity;
         uniform float uActivity;
 
-        varying float vAlt;
-        varying float vKm;
-        varying float vEnv;
-        varying float vBright;
+        varying vec4 vShape;
+        varying vec4 vMod;
+        varying vec4 vTint;
+        varying vec3 vCol;
         varying vec3 vWorld;
-        varying vec3 vNormal;
-        varying float vSeed;
+        varying vec3 vNrm;
+        varying float vBright;
 
         ${NOISE_GLSL}
 
         void main() {
-          // ---- Deposition: how brightly the gas glows at this altitude.
-          //
-          // This is the whole vertical profile of the aurora in two terms, and
-          // it is the shape of the real thing. The smoothstep is the LOWER
-          // BORDER: electrons of a given energy penetrate to a definite depth
-          // and stop, so the bottom edge of an aurora is startlingly sharp --
-          // sharper than anything else in the sky. The exponential above it is
-          // the tail of the energy spectrum, which is why the top just fades
-          // out with no edge at all. Getting these two the right way round is
-          // most of the silhouette.
-          float dep = smoothstep( 86.0, 99.0, vAlt ) * exp( -( vAlt - 99.0 ) / 62.0 );
+          float alt = vShape.x;
+          float km  = vShape.y;
+          // Height up THIS column, 0 at its own base and 1 at its own ragged
+          // top. Normalising here is what lets one deposition curve serve a
+          // 30 km picket fence and a 90 km SAR arc.
+          float h = ( alt - vShape.w ) / max( vShape.z - vShape.w, 1.0 );
 
-          // ---- Colour by altitude, and by nothing else. See the header.
+          // ---- Deposition: how brightly the gas glows at this height.
           //
-          // The nitrogen hem is the detail people recognise without being able
-          // to name: a narrow band of pink-violet along the very bottom edge,
-          // present only during real activity because it needs electrons
-          // energetic enough to reach 90 km. Gating it on uActivity means a
-          // quiet arc is plain green and a storm gets its magenta fringe.
-          vec3 col = mix( vec3( 0.62, 0.18, 0.72 ),      // N2+ violet, 428 nm
-                          vec3( 0.14, 1.00, 0.44 ),      // OI green, 557.7 nm
-                          smoothstep( 92.0, 111.0, vAlt ) );
-          col = mix( col, vec3( 1.00, 0.16, 0.30 ),      // OI red, 630.0 nm
-                     smoothstep( 155.0, 245.0, vAlt ) * 0.85 );
+          // Three terms, and each one is a piece of the real silhouette:
+          //   the smoothstep is the LOWER BORDER -- electrons of a given energy
+          //     penetrate to a definite depth and stop, so the bottom edge of an
+          //     aurora is startlingly sharp, sharper than anything else in the sky;
+          //   the exponential is the tail of the energy spectrum thinning upward;
+          //   the last smoothstep takes it to EXACTLY ZERO before the mesh ends.
+          //
+          // That third term is not physics, it is honesty about geometry. A
+          // deposition curve that is still non-zero at the top row draws the
+          // top row -- and a row of triangles is a straight line, which is
+          // precisely the hem-of-a-fabric-curtain look this has to avoid. The
+          // top of an aurora has no edge at all; it dissolves.
+          // The lower border is genuinely the sharpest edge in the sky -- but
+          // "sharp" is a physical statement about a few km of altitude, and at
+          // the scale of a 150 km column that is still a gradient. Drawn as a
+          // 5%-of-height step it came out as a hem: a hard line with texture
+          // hanging off it. vCol.z is the per-column width from the vertex
+          // shader, 8% to 26%, so the bottom dissolves the way the top and the
+          // sides do and no two columns end at the same place.
+          float dep = smoothstep( 0.0, vCol.z, h )
+                    * exp( -h * 2.0 )
+                    * smoothstep( 1.0, 0.34, h );
 
-          // ---- Rays: vertical striations, a function of ALONG-CURTAIN
-          // position only.
+          // The bottom hem breaks into vertical streaks that come and go. Only
+          // the lowest fifth of the column: higher up the rays merge.
+          dep *= mix( vMod.y, 1.0, smoothstep( 0.0, 0.30, h ) );
+
+          // ---- Colour by altitude, and by nothing else. See the header. The
+          // override is for the two forms that are not precipitation.
+          //
+          // Two knobs per band, and between them they cover every colour a real
+          // aurora comes in, because both of them are ratios between the same
+          // three emission lines rather than free hue choices:
+          //
+          //   pale (vCol.x) is how hard the precipitation is. Harder
+          //     electrons excite the N2 band systems alongside the atomic
+          //     lines, which whitens the 557.7 green toward mint and pulls the
+          //     hem from N2+ violet toward its own 427.8 nm blue. One knob,
+          //     because it is one cause: at 0 this is the classic green-and-
+          //     violet, at 1 it is the pale alien green with an electric blue
+          //     base.
+          //   crown (vCol.y) is how much soft, slow 630.0 nm sits on top.
+          //     The target is magenta rather than pure red because that is
+          //     what the eye and the camera get: 630.0 red arriving through
+          //     the same column as the 427.8 blue underneath it. This is the
+          //     "purple curtain above the green one" of the photographs.
+          vec3 violet = mix( vec3( 0.62, 0.18, 0.72 ),   // N2+ 428 nm
+                             vec3( 0.18, 0.60, 1.00 ),   // N2+ 427.8, electric blue
+                             vCol.x );
+          vec3 green  = mix( vec3( 0.14, 1.00, 0.44 ),   // OI 557.7 nm
+                             vec3( 0.56, 1.00, 0.84 ),   // whitened by the N2 bands
+                             vCol.x );
+          vec3 col = mix( violet, green, smoothstep( 92.0, 111.0, alt ) );
+          col = mix( col, vec3( 1.00, 0.20, 0.46 ),      // OI 630.0 over the blue hem
+                     clamp( smoothstep( 155.0, 235.0, alt ) * 0.85 * vCol.y, 0.0, 0.95 ) );
+          col = mix( col, vTint.rgb, vTint.a );
+
+          // ---- Rays: vertical striations, a function of ALONG-BAND position
+          // only.
           //
           // This is the field-alignment constraint from the header, expressed
-          // as one missing term: there is no vAlt anywhere in this noise
+          // as one missing term: there is no height anywhere in this noise
           // lookup, so every ray runs perfectly vertically from the bottom edge
-          // to the top, exactly as electrons do. Adding an altitude term here
+          // to the top, exactly as electrons do. Adding a height term here
           // would be one character and would destroy the effect.
           //
-          // Two octaves: ~1.4 km fine structure and ~8 km clumping, which are
-          // about the real spacings.
-          float t = uTime * 0.5 + vSeed;
-          float ray = aurNoise( vec2( vKm * 0.72, t * 0.9 ) ) * 0.62
-                    + aurNoise( vec2( vKm * 0.13, t * 0.4 ) ) * 0.38;
-          // Rays are crisp at the bottom and blur out with altitude, because
-          // the emitting region spreads as the field lines diverge. Contrast is
-          // also a function of activity: a quiet arc is nearly featureless.
-          float crisp = mix( 1.0, 0.25, smoothstep( 100.0, 200.0, vAlt ) );
-          float contrast = ( 0.35 + 0.65 * uActivity ) * crisp;
-          ray = mix( 1.0, ray * 1.8, contrast );
+          // Two octaves, and two is the budget: ~1.4 km fine structure and
+          // ~8 km clumping, which are about the real spacings.
+          float t = uTime * 0.5;
+          float ray = aurNoise( vec2( km * 0.72 * vMod.w, t * 0.9 ) ) * 0.62
+                    + aurNoise( vec2( km * 0.13 * vMod.w, t * 0.4 ) ) * 0.38;
+          // Rays are crisp at the bottom and blur out higher up, because the
+          // emitting region spreads as the field lines diverge.
+          float crisp = mix( 1.0, 0.25, smoothstep( 0.30, 1.0, h ) );
+          ray = mix( 1.0, ray * 1.9, vMod.z * ( 0.40 + 0.60 * uActivity ) * crisp );
 
           // ---- Edge-on brightening.
           //
@@ -405,16 +571,20 @@ export class Aurora {
           // evaluation -- which matters, because §13 says this is the one
           // fragment shader where length shows up in frametime.
           //
-          // Clamped at 4, not left to blow up: an exactly edge-on polygon is a
+          // Clamped, not left to blow up: an exactly edge-on polygon is a
           // division by zero and a line of fireflies across the sky.
           vec3 view = normalize( vWorld - cameraPosition );
-          float grazing = clamp( 1.0 / max( abs( dot( view, normalize( vNormal ) ) ), 0.16 ), 1.0, 4.2 );
+          float grazing = clamp( 1.0 / max( abs( dot( view, normalize( vNrm ) ) ), 0.16 ), 1.0, 4.2 );
 
-          // ---- Atmospheric extinction near the horizon. The far arc's base
-          // sits low, and light from it crosses a great deal of air.
+          // ---- Atmospheric extinction near the horizon. The far arcs' bases
+          // sit low, and light from them crosses a great deal of air.
           float ext = smoothstep( -0.03, 0.14, view.y );
 
-          float a = dep * ray * grazing * ext * vEnv * vBright * uIntensity * 0.42;
+          // 0.80 rather than 0.46 because vMod.x now carries the presence
+          // envelope, whose typical value is about 0.3. Net effect: an average
+          // moment is a little under half as bright as it was, and the rare
+          // ones are three times brighter than it ever got.
+          float a = dep * ray * grazing * ext * vMod.x * vBright * uIntensity * 0.80;
 
           gl_FragColor = vec4( col * max( a, 0.0 ), 1.0 );
           #include <colorspace_fragment>
@@ -422,15 +592,15 @@ export class Aurora {
       `,
       transparent: true,
       // Additive, and therefore order-independent -- see note 2 in the header.
-      // This is why five interpenetrating curtains can live in one draw call
-      // with no sorting.
+      // This is why nine interpenetrating bands can live in one draw call with
+      // no sorting, and why forms can be overlaid at will.
       blending: THREE.AdditiveBlending,
       // Depth tested, never written. The transparent pass runs after the opaque
       // one, so the depth buffer already holds the terrain: mountains occlude
       // the aurora, and the aurora never occludes itself.
       depthWrite: false,
       depthTest: true,
-      // Curtains are two-sided; you can walk under one and look back.
+      // Bands are two-sided; you can walk under one and look back.
       side: THREE.DoubleSide,
       // Fog would erase this completely. At 10 km with FogExp2 at night's
       // density the fog factor is about 1e-7 -- the aurora is above the
@@ -443,9 +613,68 @@ export class Aurora {
     this.mesh.renderOrder = -800
     // Off entirely whenever there is nothing to draw, which is all day. Not a
     // micro-optimisation: it is the difference between this system costing
-    // nothing at noon and costing a 30k-triangle transparent pass at noon.
+    // nothing at noon and costing a transparent pass at noon.
     this.mesh.visible = false
     scene.add(this.mesh)
+  }
+
+  // The cycle runs auto, then each named form in turn, then back to auto -- one
+  // key, and every form reachable, which is what makes this a debugging tool
+  // and not just a toy. Internally -1 is auto, so shift into 0..N and back.
+  cyclePattern(dir = 1) {
+    const n = PATTERNS.length + 1
+    this.pattern = (((this.pattern + 1 + dir) % n) + n) % n - 1
+    return this.pattern
+  }
+
+  setPattern(i) {
+    if (!(i >= -1 && i < PATTERNS.length)) throw new Error(`no aurora pattern ${i}`)
+    this.pattern = i
+    return this.pattern
+  }
+
+  // What the HUD prints. In auto mode this is what the composer actually chose,
+  // which is the only way to know why the sky looks the way it does.
+  get label() {
+    if (this.pattern >= 0) return `[${this.pattern + 1}/${PATTERNS.length}] ${PATTERNS[this.pattern].name} -- pinned`
+    if (this.live.length === 0) return 'auto -- nothing up'
+    // Only what you could actually see. A form crossfading in at 0.004 is in
+    // the live set and is honestly reported by the console log, but printing
+    // "pulsating patches 0.00" on the HUD is noise, and four entries overflows
+    // the panel's 1024 px at 26 px monospace.
+    // ...and only as many as fit. The panel is 1024 px wide with a 22 px
+    // margin, drawn at 26 px in a monospace whose advance is 0.60 em, so the
+    // line budget is (1024 - 44) / 15.7 = 62 characters. Four forms is 98:
+    // "diffuse patches 0.89, pulsating patches 0.25, smoke plume 0.21,
+    // multiple arcs 0.20". Budgeting by width rather than by a fixed count
+    // keeps three short names when they fit and two long ones when they do
+    // not, instead of running off the edge either way.
+    const parts = []
+    let width = 16 // "pattern " in main.js, plus "auto -- " here
+    let dropped = 0
+    for (const l of this._byWeight) {
+      const piece = `${PATTERNS[l.index].name} ${l.weight.toFixed(2)}`
+      // 53 leaves room for the "  +N more" suffix inside the 62.
+      if (l.weight < 0.02 || width + piece.length + 2 > 53) dropped++
+      else {
+        parts.push(piece)
+        width += piece.length + 2
+      }
+    }
+    const head = parts.length ? parts.join(', ') : 'nothing you could see'
+    return `auto -- ${head}${dropped ? `  +${dropped} more` : ''}`
+  }
+
+  get blurb() {
+    if (this.pattern >= 0) return PATTERNS[this.pattern].blurb
+    return this.live.length ? PATTERNS[this._byWeight[0].index].blurb : ''
+  }
+
+  // Read order, not draw order. composeAuto returns the reserved floor form
+  // last because that is where its slots are, but the HUD's job is to say what
+  // you are looking AT, and that is whichever form is loudest.
+  get _byWeight() {
+    return [...this.live].sort((a, b) => b.weight - a.weight)
   }
 
   // `head` is her world position, `state` the clock state, `elapsedReal` real
@@ -454,17 +683,70 @@ export class Aurora {
   // The animation clock is REAL seconds, not in-world hours, and deliberately:
   // the folds should shimmer at the speed a real aurora shimmers regardless of
   // how fast the day is running, and a time skip should not fast-forward the
-  // curtains through six minutes of writhing in one frame.
+  // bands through six minutes of writhing in one frame. The COMPOSER is on
+  // in-world hours, so a skip does change which forms are up -- which is the
+  // whole point of the skip.
   update(head, state, elapsedReal) {
     const i = state.aurora
     this.mesh.visible = i > 0.004
-    if (!this.mesh.visible) return
+    if (!this.mesh.visible) {
+      this.live = []
+      return
+    }
+
+    this.live =
+      this.pattern >= 0
+        ? [{ index: this.pattern, weight: 1 }]
+        : composeAuto(state.elapsed, state.activity, this.seed)
+    this._packBands(bandsFor(this.live))
 
     this.mesh.position.copy(head)
     const u = this.material.uniforms
     u.uTime.value = elapsedReal
     u.uIntensity.value = i
     u.uActivity.value = state.activity
+  }
+
+  _packBands(bands) {
+    const { bandA, bandB, bandC, bandD, bandE, bandF, bandT } = this
+    for (let s = 0; s < SLOTS; s++) {
+      const b = bands[s]
+      const i4 = s * 4
+      const i3 = s * 3
+      if (!b) {
+        // Brightness alone switches a slot off -- the vertex shader tests it
+        // first and returns. The rest is left stale on purpose: writing it
+        // would be 20 floats of work to no effect.
+        bandA[i4 + 3] = 0
+        continue
+      }
+      bandA[i4] = b.dist
+      bandA[i4 + 1] = b.az
+      bandA[i4 + 2] = b.span
+      bandA[i4 + 3] = b.bright
+      bandB[i4] = b.alt0
+      bandB[i4 + 1] = b.alt1
+      bandB[i4 + 2] = b.fold
+      bandB[i4 + 3] = b.foldHz
+      bandC[i4] = b.speed
+      bandC[i4 + 1] = b.drift
+      bandC[i4 + 2] = b.ray
+      bandC[i4 + 3] = b.rayHz
+      bandD[i4] = b.lobes
+      bandD[i4 + 1] = b.ragged
+      bandD[i4 + 2] = b.flick
+      bandD[i4 + 3] = b.fringe
+      bandE[i4] = b.pulse
+      bandE[i4 + 1] = b.tintAmt
+      bandE[i4 + 2] = b.seed
+      bandF[i4] = b.pale
+      bandF[i4 + 1] = b.crown
+      bandF[i4 + 2] = b.shear
+      bandF[i4 + 3] = b.breathe
+      bandT[i3] = b.tint[0]
+      bandT[i3 + 1] = b.tint[1]
+      bandT[i3 + 2] = b.tint[2]
+    }
   }
 
   dispose() {

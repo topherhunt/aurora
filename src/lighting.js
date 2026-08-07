@@ -107,9 +107,39 @@ const WORLD_POS_GLSL = /* glsl */ `
 // both ways round: AO on the direct term double-darkens creases that are
 // already facing away, and shadow on the indirect term makes a shadowed valley
 // pitch black instead of blue.
+//
+// The two NIGHT terms are applied here too, and both exist because a
+// hemisphere light is a multiplier -- see the NIGHT block in clock.js.
+//
+//   uSkyFloor remaps occlusion so that "fully occluded" means uSkyFloor rather
+//   than zero. Zero is right at noon, when the sun fills the gully the AO term
+//   is darkening. It is wrong after dark, when the ambient IS the light and an
+//   occlusion of 0.1 leaves the gully with a tenth of the only illumination
+//   there is.
+//
+//   uNightLift is ADDED, not multiplied, and that is the entire point: it does
+//   not touch diffuseColor, so it lifts a 4% albedo tree trunk by the same
+//   amount it lifts snow. Multiplied light cannot do this at any intensity.
+//   It is airglow and scattered starlight, it is zero during the day, and it is
+//   what the eye reads as "dark but navigable" rather than "off".
+//
+// It is added AFTER the floor multiply and scaled by the same floored sky term,
+// so an enclosed space still reads as darker than an open one -- just never as
+// nothing.
 const APPLY = (sun, sky) => /* glsl */ `
   reflectedLight.directDiffuse *= ${sun};
-  reflectedLight.indirectDiffuse *= ${sky};
+  float wlSkyF = mix( uSkyFloor, 1.0, ${sky} );
+  reflectedLight.indirectDiffuse *= wlSkyF;
+  reflectedLight.indirectDiffuse += uNightLift * wlSkyF;
+`
+
+// Declared separately from SAMPLE_GLSL because the vertex-shaded path does not
+// put SAMPLE_GLSL in its fragment shader at all -- it only carries the two
+// sampled values across as a varying. These two uniforms are needed in the
+// fragment shader either way.
+const NIGHT_GLSL = /* glsl */ `
+  uniform vec3 uNightLift;
+  uniform float uSkyFloor;
 `
 
 export class WorldLighting {
@@ -120,6 +150,11 @@ export class WorldLighting {
       uHorizonMap: { value: null },
       uSkyView: { value: null },
       uSunSky: { value: new THREE.Vector3(0, 1, 0) },
+      // Linear-space, because it is added straight into reflectedLight. The
+      // palette stores it as sRGB like every other colour, and `update` does
+      // the conversion in one place.
+      uNightLift: { value: new THREE.Color(0, 0, 0) },
+      uSkyFloor: { value: 0 },
     }
 
     this.horizonTex = null
@@ -182,6 +217,15 @@ export class WorldLighting {
     // noon, from a different angle and far weaker.
     u.x = state.lightDir.azDeg / 360
     u.y = (state.lightDir.elevDeg * Math.PI) / 180
+
+    // setRGB with SRGBColorSpace converts into the renderer's working space,
+    // which is linear -- the same trip every other palette colour makes on its
+    // way into a THREE.Color, done here rather than in main.js because this is
+    // the only consumer.
+    const lift = this.uniforms.uNightLift.value
+    lift.setRGB(state.skyGlow[0], state.skyGlow[1], state.skyGlow[2], THREE.SRGBColorSpace)
+    lift.multiplyScalar(state.skyGlowAmt)
+    this.uniforms.uSkyFloor.value = state.skyFloor
   }
 
   /**
@@ -215,7 +259,7 @@ export class WorldLighting {
       if (mode === 'fragment') {
         if (!worldPosVarying) throw new Error('patch: fragment mode needs worldPosVarying')
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}`)
+          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\n${NIGHT_GLSL}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
@@ -231,7 +275,7 @@ export class WorldLighting {
             vWlShade = vec2( wlSun( wlWorld.xz ), wlSky( wlWorld.xz ) );`
           )
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', '#include <common>\nvarying vec2 vWlShade;')
+          .replace('#include <common>', `#include <common>\nvarying vec2 vWlShade;\n${NIGHT_GLSL}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>

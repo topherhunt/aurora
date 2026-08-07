@@ -153,6 +153,8 @@ Two smaller things that fall out of it. The bottleneck and the low-ground tie-br
 
 Every non-zero setting leaves thirteen to seventeen *thousand* ponds, because a basin under the cap is kept whole and this terrain has ten thousand small basins. And twelve percent of the map as standing water saturates the distance-to-water field, which collapses the moisture range, which collapses the five biomes into two -- **so the leftover ponds do not merely look bad, they take the biome system with them.** Zero gives the world §2, §6 and §11 actually describe: river valleys, villages sited on them, streams as ribbon meshes. The cost is that §11's flat lake planes have nothing to render. **The fix for that is deliberate ponding -- pick N good basins and dam them -- rather than keeping whatever the fill happens to leave behind.** That is a follow-up, not a knob.
 
+**Follow-up done, and it turned on one idea: a dam is not something you build, it is something you decline to cut.** Rank every basin by the largest inscribed disc of open water it would hold, keep the best N (a *count*, `LAKE.retain = 24`, not an area threshold -- a threshold on this terrain keeps ten thousand dimples or none), flatten each keeper to its pool level *before* the breach loop runs so it is not a depression and nothing tries to drain it, then restore the bowl underneath afterwards. The pipeline's own priority-flood re-finds them as lakes for free. No wall is ever built, so there is nothing to look like a wall. Two cul-de-sacs on the way: a depth cap put every large lake at 13-19 m altitude (deep water wants sea level), and filling to spill level gave dendritic floods of 7.75 km² at compactness 37.7 -- **area, not depth, is the currency**. Result: 24 lakes, surfaces spread 22-71 m so there is no single water table, widest 480 m inscribed *square* (~800-900 m along the long axis), ~2% of the map, 95.1% still reachable on foot, and the five biomes hold. **And the thing that caught the first attempt was the relief PNG, not the metrics** -- at `retain: 120` every number was green and the picture was uniform blue mush from horizon to horizon. Finland, not the Alps.
+
 **The eleventh instrument failure, and the most dangerous one so far, because it looked exactly like success.** The outlet test was `out[c] <= target` -- any cell below the ramp counts as an outlet. But the spanning tree runs back *toward* the spill point, so the first few steps out of a basin floor are still underwater, and every large basin immediately declared itself already drained. It breached 17 basins out of 10,284 while reporting a clean converged run with plausible timings. The fix is one extra clause: the cell must also be outside any depression (`filled[c] <= out[c]`). Two smaller ones in the same function -- Float32 write-back read ~1e-7 above its own float64 target, so every pass re-cut every channel and the loop never converged while reporting a deepest cut of 0.0 m (fixed with a 1e-3 tolerance and a monotone write guard); and drawing a basin down lowers the order statistic that selects its own outlet, so it chases itself forever at ~7,400 re-cuts per pass (fixed with a 0.1 m minimum bite).
 
 **Then the least-cost router stalled at 573 undrained basins, and the convergence signal itself was the liar.** The outer loop terminates when `breached` reaches 0, on the reasoning that a pass which cuts nothing has nothing left to cut. But a basin can also be *silently skipped* -- and a skip is not a refusal, so it decrements `breached` without ever appearing in `refused`. The loop read a stall as a finish and reported a clean converged run with 7.35% of the map still under water. Neither a longer search budget nor an unlimited one moved the number, which is what ruled out the easy explanation. Counting the skip paths directly split the 573 exactly two ways, and each was its own bug:
@@ -775,6 +777,28 @@ The uniforms are shared **by reference** into each compiled shader, so the horiz
 
 The per-chunk fine tier above was **not** built, as anticipated: the global tier plus the AO bake carries it.
 
+#### Night had to be lit properly, and multiplied light could not do it
+
+The first night shipped was unnavigable -- "pitch dark, especially in the grassy areas". Measured rather than eyeballed, by reproducing three.js's Lambert + HemisphereLight maths on the CPU and reading out sRGB bytes: **grass in shadow at luma 1, rock in a gully at 0, a tree trunk at 0**, while snow sat at 89. Not "a bit dark": black.
+
+The obvious repair -- raise `hemiIntensity` -- cannot work, and it is worth being precise about why. **A hemisphere light is a multiplier on albedo.** A tree trunk at 4% albedo under an ambient bright enough to blow the snow out is still black, because 0.04 x anything reasonable is still nothing. Every lever in the palette as it stood was a multiplier, so no combination of them had a solution.
+
+The fix is three terms, and the important one is not a multiplier:
+
+- **`skyGlow` x `skyGlowAmt`** -- an **additive**, albedo-independent glow added to `reflectedLight.indirectDiffuse` in `lighting.js`, *after* the BRDF has already multiplied in `diffuseColor`. Physically this is airglow and scattered starlight, which really are additive at the eye. It lifts a 4% trunk and 90% snow by the same absolute amount, which is exactly the behaviour needed and exactly what a multiplier cannot give.
+- **`skyFloor`** -- remaps the AO term so that full occlusion means `skyFloor` rather than zero. At noon zero is right, because the sun fills the gully the AO term is darkening. After dark the ambient *is* the light, so an unfloored 0.1 occlusion leaves a crease with a tenth of all the illumination there is. Grass is self-occluding by construction, which is why the grass was the worst of it.
+- **Raised night hemisphere and moonlight**, which now *rise* slightly from -6 deg to -18 deg rather than falling. That is deliberate and it is not the sky -- it is the **dark-adaptation curve**. We cannot adapt the viewer's eye; the headset is worn in a lit room. So the number that belongs in the table is what a dark-adapted eye reports, which is far closer to a moonlit photograph than to the physical millionth-of-noon ratio.
+
+All three are exactly zero above the horizon, so **noon is bit-for-bit unchanged** and the gate asserts it.
+
+Measured after: **trunk 21, gully rock 35, grass in shadow 41, lit grass 62, snow 119** -- a 6x range with nothing at black. The gate now sweeps every dark hour of the day, including the ones with the moon under the horizon, and fails if the darkest surface at the darkest hour drops below luma 12. That check found a real dip near dawn that the 01:00 spot-check had missed.
+
+**Then it was too grey, and the fix was to halve the same term.** The complaint was that night had gone flat -- "there's still dark areas and lighter areas" was what it *should* look like, and it did not. The reason is the same additive-versus-multiplicative distinction, read the other way round: because `skyGlow` adds the same absolute amount to a 4% trunk and to 88% snow, **it does not merely brighten, it compresses contrast**. Lifting everything by a constant is what a fog layer does, and a fog layer is exactly what it looked like.
+
+So both night knobs were halved across all six sub-horizon rows -- `skyGlowAmt` 0.019 -> 0.0095 at full dark, `skyFloor` 0.31 -> 0.155 -- and the hemisphere light and moonlight were left alone, because those multiply albedo and are therefore the terms that carry *colour* and *material difference*. Halving the additive term darkens the image and **raises** its contrast at the same time, which is not a tradeoff anyone gets to make with a multiplier.
+
+Measured at 01:00 after: **trunk 12, gully rock 25, grass in shadow 34, lit grass 58, snow 117** -- the snow-to-darkest ratio went from 5.7x to 9.8x while every surface got darker. The gate's night promise is now split in two, because they are different promises: a **tree trunk** is allowed to become a silhouette at 03:00 (floor luma 6), but the **ground she is walking on** is not (floor 14 at 01:00, 12 at the worst moonless hour). A `GROUND` subset excluding trunk and snow carries the second one.
+
 ---
 
 ## 9. Asset pipeline
@@ -868,19 +892,25 @@ tools/props/make-manifest.mjs   the asset list and the per-class LOD table
 tools/props/common.py           import, measure, normalise, weld
 tools/props/build.py            the pipeline
 tools/props/inspect_sources.py  read-only inventory of the raw downloads
+tools/props/probe-source.py     go/no-go on a candidate BEFORE it enters the manifest
 ```
+
+**Boundary-edge fraction decides whether a source is usable at all, and it is measurable in thirty seconds.** The collapse decimator will not collapse an edge that borders a hole, so the fraction of edges with fewer than two faces predicts the shape of the answer: a photoscanned log measures 0.0% and drops from 2,000,000 triangles to exactly 500 in one round, while photoreal card foliage -- every leaf its own quad -- measures 45-52% and does not decimate at all. `probe-source.py` reports it, then runs the collapse anyway and reports the **floor**, because the fraction predicts and only the floor decides: a butterfly bush measured 12.9% boundary and still floored at 1,908 triangles. Running it on a second batch of 13 candidates called every accept and reject correctly before anything was built, against four assets built-and-measured the expensive way the first time round.
 
 Stages, in order, each placed where it is for a reason recorded in the source: **import → join → ground+centre → weld/triangulate → scale to declared height → texture-or-vertex-colour → AO bake → one final material → LOD chain → billboard render → GLB**.
 
-**Three source classes, detected not declared.** The manifest cannot know which a file is without opening it, so the pipeline branches on what it finds:
+**Source classes, detected not declared.** The manifest cannot know which a file is without opening it, so the pipeline branches on what it finds:
 
 | Class | Detect | Colour path | Layer cost | Count |
 |---|---|---|---|---|
 | Textured | a Base Color image | Smart UV Project + Cycles bake into one 128² layer | 1 layer | 8 |
 | Flat `Kd` | materials, no images | material colour → vertex colours | **0 layers** | 138 |
 | Vertex-coloured | a colour attribute and no materials | kept as-is | **0 layers** | 1 (scanned PLY) |
+| Scanned, maps loose | `base_color_map` in the manifest | material built from the files, then Textured | 1 layer | 13 |
 
-That is the finding that matters for the `MAX_ARRAY_TEXTURE_LAYERS ≥ 256` worry above: **the built library uses 13 layers, not ~150**, because the Quaternius pack carries no textures at all and costs nothing but geometry. The ceiling is not close, and the ~9.8 MB uncompressed estimate does not apply to the current library.
+The last row is the one exception to "detected not declared", and it has to be. Megascans ships its FBX with **no material at all** and the maps as loose JPGs beside it, so detection correctly answers "no images" and sends a photoscanned birch log down the flat-colour path -- discarding the only reason to use a photoscan. `attach_loose_textures` reads two paths out of the manifest entry (base colour, and opacity for the cutout foliage) and builds the ordinary Principled tree everything downstream already expects, so it is one generic field rather than a per-asset code path. The other seven maps in those packs -- normal, cavity, gloss, specular, displacement, translucency -- have no consumer: the runtime is one Lambert pass with a 128² albedo layer and baked AO (§8), and a normal map would not survive resampling to 128² anyway.
+
+That is the finding that matters for the `MAX_ARRAY_TEXTURE_LAYERS ≥ 256` worry above: **160 assets need 21 albedo layers, not 160**, because 138 of them carry flat material colours that become vertex colours and cost nothing but geometry. The other 101 layers in the built library are impostor sheets, one per asset that gets a billboard (every `large` and every `structure`), so the total is 122 of a guaranteed 256. The ceiling is not close, and the ~9.8 MB uncompressed estimate does not apply to the current library.
 
 **AO goes into vertex colours, not into a texture** (§8 asked for "the asset's own texture"). Vertex colours because the runtime is already `vertexColors: true`, they cost no layer, and at 500 tris the vertex density is comparable to what a 128² unwrap resolves. Raw AO is floored at 0.45 -- black bottoms-out reads as a hole rather than as shadow under one directional light plus ambient, and a crevice outdoors is lit by ambient, which is never zero. AO ray length is a fraction of the asset (`height × 0.25`), not a constant: 1 m on a 14 m tree turns the canopy into a black mass and 1 m on a 0.4 m grass tuft occludes nothing.
 
@@ -888,17 +918,25 @@ That is the finding that matters for the `MAX_ARRAY_TEXTURE_LAYERS ≥ 256` worr
 
 ⚠️ **The collapse decimator has a hard floor at open boundaries, and it does not report it.** It takes a ratio, not a target, and silently returns whatever it reached. Anything with many boundary loops -- every building, all photoreal card foliage -- stops well above target. `build.py` therefore records `stalled` and `overshoot` per LOD, and `check-props.mjs` prints them, because a chain that quietly returns 917 tris for a 130 target is the most expensive lie this pipeline could tell. Structures get a planar-dissolve pre-pass (`planar_collapse`), which clears real ground (896 → 544, 2,366 → 1,514) but never reaches the target -- hence the one-mesh-tier `structure` class in §5.
 
+**Not every stall is a floor, and the difference is one line of cleanup.** `decimate_to` iterates -- aim, measure, re-aim -- because the modifier takes a ratio and stops early. It used to run a fixed six rounds without cleaning up in between, and that plateaus long before the real floor: the debris of the previous round (the collapsed-but-not-deleted vertices of bug 4 below) presents a topology the next round can barely touch. Validating and dropping loose geometry *inside* the loop, and running it until it stops improving rather than a fixed count, took `wild_grass` from 253 triangles to the 16 asked for. Two assets previously recorded as boundary stalls were not stalled at all. Read a `stalled` flag as "measure it", not as "reject it" -- `probe-source.py` prints the whole trajectory precisely so a plateau (`5.9k → 1.4k → 1.4k`) is distinguishable from a descent that ran out of rounds (`253 → 66 → 28 → 16`).
+
+⚠️ **Smart UV Project's island seams act on the decimator exactly like mesh boundaries.** The collapse decimator protects custom-data discontinuities, so an unwrap that makes many small islands protects many edges. Measured on the same grass tuft with identical topology (13,605 triangles, 46.1% boundary edges): 15 triangles reachable before `consolidate_texture`, 83 after. This is a property of the texture path, not of any asset -- it applies to all 21 textured assets, and it is why textured props sit above their budget more often than flat-colour ones. Not fixed. The options are to decimate before unwrapping (which means a bake per LOD instead of one shared layer, a real architecture change) or to raise the 66° angle limit for fewer, larger islands (cheap, but it trades atlas quality at 128² and wants measuring across the library, not on one tuft).
+
 **Not fixable by decimation: photoreal card foliage.** Four downloads were built, measured and then excluded. Every leaf is its own quad, so the mesh is ~100% boundary edges and decimation does not slow down, it does nothing: `island_tree_02` went 1,432,638 → 273,971 tris for a 500 target (54 MB in one GLB, 88% of the library's entire on-disk size), `tall-grass-elegance` 537,210 → 14,847 for a 16 target. Getting these to budget means rebuilding them as a few cross-cards with a baked canopy texture -- authoring an asset, not converting one. Replacing them with game-ready low-poly sources is cheaper. Also excluded, for source reasons rather than topology: one ASCII FBX (Blender does not read it), one FBX whose texture records carry empty file paths, one `.rar`, and two pre-arranged grass *fields* that fight §6's per-tuft scatter. All reasons are recorded inline in `make-manifest.mjs` so nobody re-adds them without reading why.
 
-**Three bugs the gate caught that looking at the render would not have.** Worth stating because each was silent:
+**Five bugs the gate caught that looking at the render would not have.** Worth stating because each was silent:
 
 1. **Up is +Z inside Blender**, Y only after `export_yup`. Writing the normalisation helpers against +Y scaled every prop along its *depth* axis and centred it vertically instead of standing it on the ground -- 150 assets exported half-buried at arbitrary sizes, and it looks fine in Blender's viewport. Only reading `POSITION.min` out of the GLB catches it.
 2. **The glTF exporter drops a colour attribute no material node reads.** It logs a warning and writes a mesh that loads perfectly and renders flat and AO-less -- discarding the entire point of the pipeline. Fixed by collapsing each asset to one material that reads `Col` (which also gives one primitive per LOD, which is what `BatchedMesh` wants anyway).
 3. **Decimation moves the bounds.** Collapsing a vertex removes an extreme, so every LOD came out shorter than its source and floating -- a 16-tri plant lost 28% of its height and hovered 15 cm. Each tier is now re-grounded and re-scaled, which also removes a visible shrink-and-hop at every LOD transition.
+4. **The decimator does not delete the vertices it collapses**, it unhooks them from the faces and leaves them in the mesh -- 6,180 of `tree_deciduous_hi_LOD0`'s 7,285. Everything that measures the mesh afterwards then reads a ghost point-cloud of the *pre*-decimation silhouette, so the renormalisation in (3) computed a scale factor of 1.0 and applied it perfectly while the exporter -- which writes only face-referenced vertices -- shipped a tree 2% short and a fern 35% short and floating 4 cm. The reported vertex counts were fiction by the same margin, which is not cosmetic: `BatchedMesh` reserves storage against vertex count. This one cost a long hunt for a stale-depsgraph bug, because `obj.bound_box` *is* a lazily-refreshed cache and had the identical symptom; flushing the depsgraph produced bit-identical numbers, which is what finally ruled it out. `drop_loose` now runs at the end of every decimation.
+5. **`transform_apply` bakes an object's LOCAL basis, not its world matrix.** Megascans (and any DCC export that carried a unit conversion) parents the mesh to an empty called `world_root` holding a 0.01 scale and a -90° X rotation. Applying transforms on the child bakes an identity and leaves the parent's scale and rotation exactly where they were: in the node hierarchy. Every helper in `common.py` measures `matrix_world`, so every measurement inside Blender was *right* and the build reported OK -- while what shipped was mesh data 100× too large, lying on its side, with a node transform to compensate. `forest_floor_cluster` exported at 167.75 m against a 1.15 m spec with its base 82 m below the floor. `import_any` now unparents keeping the world placement, before anything measures.
+
+Note the shape all five share, because it is the argument for the gate: **the thing that looks at the mesh and the thing that ships the mesh were reading different data.** In (4) Blender saw vertices the exporter would not write; in (5) the exporter wrote a transform Blender had already folded into its measurement. No amount of checking inside the tool finds either. Only assertions against the exported bytes do.
 
 Still to do: **compression.** Geometry is meshopt-able and the layers want ASTC/KTX2. ⚠️ Verify that KTX2/Basis round-trips *array* textures through three's `KTX2Loader` before relying on it.
 
-Get **one** species through end-to-end before doing forty -- this held up exactly as written. Every bug above was found on the three-asset smoke test or on the first full build, and each would have been far more expensive to isolate across 147.
+Get **one** species through end-to-end before doing forty -- this held up exactly as written. Every bug above was found on the three-asset smoke test or on the first full build, and each would have been far more expensive to isolate across 160.
 
 ---
 
@@ -920,8 +958,8 @@ Get **one** species through end-to-end before doing forty -- this held up exactl
 
 From the Phase A hydrology (§2):
 
-- **Lakes:** one flat plane per body, at the spill elevation from priority-flood
-- **Rivers and streams:** ribbon mesh extruded along the splined flow paths, width from sqrt(accumulation), sitting in the channel carved into the chunk heightmap
+- **Lakes:** one flat plane per body, at the spill elevation from priority-flood. Built and shipping -- greedy-merged horizontal runs, one mesh per 64-cell tile so frustum culling has something to cull, and the mask dilated one cell so the polygon edge is buried and the shoreline comes from full-resolution terrain crossing the plane rather than from the sim grid's staircase.
+- **Rivers and streams:** ~~ribbon mesh extruded along the splined flow paths~~ **built, measured, removed.** The ribbons read as paint rather than water, and the reason is not fixable in the renderer: Phase A routes flow over the *carved* surface, and the chunk mesher renders the *raw* one. On the rendered surface **47.4% of river segments run uphill** (0.26% on the carved surface), evenly across every size band, and steepest-descent tracing on the rendered surface pits out after a median of 39 m. A ribbon can be made to sit flush -- fixed 10 m resampling took buried vertices from 14.9% to 36 of 36,527, worst 4.5 m -- but a flush ribbon climbing a valley wall is still wrong, and it is wrong about the one thing rivers are for. **Rivers become possible when the generator produces a surface that drains, i.e. fluvial erosion at generation time (§2), not before.** The three measurements are recorded in `src/water.js`'s header so this is not re-attempted blind.
 
 Shading:
 
@@ -1019,7 +1057,7 @@ That is the difference between a curtain that slides and a curtain that *writhes
 
 #### Depth, without any sorting
 
-Additive materials land in three.js's transparent pass, which runs *after* the opaque pass has already filled the depth buffer. So `depthTest: true, depthWrite: false` gives correct mountain occlusion for both the aurora and the stars with no `renderOrder` games at all. The aurora geometry sits between 4.2 km and 14.8 km from the player, inside the 20 km far plane, and its lowest vertex is 23 deg above the horizon -- high enough that no mountain can occlude it anywhere it should not.
+Additive materials land in three.js's transparent pass, which runs *after* the opaque pass has already filled the depth buffer. So `depthTest: true, depthWrite: false` gives correct mountain occlusion for both the aurora and the stars with no `renderOrder` games at all. Across all sixteen catalogued forms the aurora geometry sits between 5.5 km and 17.6 km from the player, inside the 20 km far plane, and its lowest point is 17.9 deg above the horizon -- high enough that no mountain can occlude it anywhere it should not. Since the rewrite the vertex buffer is all zeros and every coordinate is computed in the shader, so the gate mirrors that arithmetic on the CPU rather than reading the buffer: the price of a parametric mesh, and worth paying, because it checks all sixteen forms instead of one hard-coded arrangement.
 
 #### Stars
 
@@ -1032,6 +1070,169 @@ An 8-bit framebuffer bands visibly across a dark full-screen gradient. A quarter
 #### Cost when the sun is up
 
 Stars and aurora both set `visible = false` when their fade reaches zero, so this entire system costs **nothing at all** during the day. The gate asserts it.
+
+### Round two: twelve named forms, and fixing the curtain
+
+The first aurora was one hard-coded arrangement of five curtains. It looked right and it was wrong in four specific ways, all of which came from the same root: **the mesh's own geometry was visible in the image**.
+
+#### One shader, one mesh, a table of named parameter rows
+
+The brief asked for at least ten aurora patterns, and flagged the obvious worry about a procedural or combinatorial version: harder to troubleshoot. Both halves of that are correct, and they are separable.
+
+What shipped is **one** shader program, **one** BufferGeometry, and `src/aurora-patterns.js` -- a table of twelve **named parameter rows**. Every form is the same twenty numbers with different values. There is no per-pattern code path, no shader permutation, no branch that only some patterns take, and therefore exactly one program to debug. The geometry is deliberately contentless: nine identical parametric grids carrying nothing but `(aU along, aV up, aSlot)`. Everything that makes a band a *drapery* rather than a *SAR arc* lives in uniform arrays indexed by `aSlot`, which is legal because three.js compiles every non-Raw shader as `#version 300 es` and GLSL ES 3.0 allows dynamic indexing of uniform arrays. Switching the entire sky is a write of 200 floats.
+
+The twelve are the standard auroral morphology, going back to Stormer's classification in the 1910s: **quiet arc, multiple arcs, rayed band, drapery, corona, breakup, omega band, diffuse patches, pulsating patches, picket fence, SAR arc, STEVE**. Ten of them get their colour from the altitude ramp like everything else. The last two override it, and they are the two that are *not* electron precipitation at all -- a SAR arc is thermal excitation of oxygen and STEVE is a hot plasma stream -- so the override is a statement about physics rather than an escape hatch.
+
+The combinatorial part is confined to **which** named forms are up at once, and that is where the real work went.
+
+#### The concurrency cap took three attempts
+
+Up to three forms overlay at a time, each with up to three bands, and `MAX_CONCURRENT x MAX_BANDS == SLOTS` exactly, so overflow is impossible by construction rather than by clamping.
+
+Choosing *which* three is the hard part, and it is a continuity problem:
+
+1. **Sort by weight, keep the top three.** Pops. When the third and fourth swap rank the sky loses a whole curtain in one frame -- a step of 1.0.
+2. **Adaptive cut**: let the weight of the first *rejected* form be a floor that every accepted form fades against. Rank-invariant, so swaps are smooth -- but *worse* in practice, and the gate caught it. When forms saturate at weight 1.0, a fourth form rising from nothing does not displace the marginal one, it **dims the entire sky at once**. Measured: a 0.43 drop across all three in a single step.
+3. **Adaptive cut with no special case**, plus slower channels. The version that shipped.
+
+The subtle bug in between: skipping the crossfade entirely when fewer than four forms were in play meant that the instant a fourth candidate crossed zero, the fade switched *on* for everybody -- a 0.21 to 0.08 step on a form that was not even the one changing. Removing the `cut > 0` special case removes it, because `cut = 0` then gives the same answer on both sides of that moment.
+
+The continuity budget is arithmetic, not taste. The worst-case per-frame change in an output weight is roughly `3 x (rate of raw weight change) / CUT_WIDTH`, and a fade slower than about a second needs that under 0.02. That is *why* the pattern periods are hours rather than minutes: a fast channel and a hard cap cannot both be smooth, and the channel is the one that can give. Weights also carry the channel value as a small continuous term, so exact ties become measure-zero and rank changes become slow crossings rather than flips.
+
+The gate sweeps two in-world weeks at **one-frame resolution** -- 1.2 million samples -- and reports the worst single-frame change in any form's weight. It is **0.0021**, i.e. a fade of about eight seconds end to end. It also asserts that all twelve forms actually occur, that the slot budget is never exceeded, and that the sky is **never empty while the clock says the aurora is up**, which would otherwise leave the HUD reporting a curtain that is not there. That last one is guaranteed structurally: the diffuse form's gate is set below zero so it is always a candidate, which is both convenient and true -- the diffuse aurora really is close to continuous.
+
+`P` (or the right A button in VR) cycles auto, then each named form in turn, then back to auto. The HUD names what is up and its weight. A form you cannot summon is a form you cannot judge, and several of these are rare on purpose.
+
+#### The four shape complaints, and where each one came from
+
+> *the height of the curtains is too regular*
+
+Every column reached the same altitude, so the band was a rectangle. Now each column's top is set by along-band noise (`ragged`), and separately by an **ovality** term that shortens the band toward its ends -- so a band is a lens in silhouette rather than a rectangle with soft edges. The end taper also widened from 14% to 30%. Together these are what make overlaid forms read as separate blobs of light rather than as stacked ribbons.
+
+> *they feel too permanent and they need to shimmer and fade out more*
+
+Added `flick`: individual columns fade out and back on their own schedule. A band whose every column is permanently lit reads as a painted object. A real one is continually rebuilt out of rays that live a few seconds each.
+
+> *especially the bottom fringe should fade in and fade out in vertical streaks*
+
+Added `fringe`: two octaves of fast, high-spatial-frequency noise, applied only to the lowest fifth of the column, so the hem breaks into short vertical streaks that come and go independently of the band above them. Higher up the rays merge, so the term is faded out there.
+
+> *the top fringe is just a solid line, like the top of a fabric curtain*
+
+This one was the most instructive. The old deposition function was keyed on **absolute altitude** and was still non-zero at the top row of the mesh -- so it drew the top row, and a row of triangles is a straight line. The fix is to key on **normalised height up the column** and multiply by a term that reaches exactly zero strictly inside the mesh. That is not physics, it is honesty about geometry: the top of an aurora has no edge at all, it dissolves. Normalising also means one deposition curve serves a 30 km picket fence and a 90 km SAR arc.
+
+#### Everything constant up a column moved to the vertex shader
+
+Column height, flicker, hem streaks, lobe mask, pulse phase -- all of them are properties of a *field line*, and a field line is a column. Computing them per fragment would be both slower and wrong. They arrive in the fragment shader as varyings, which is why the fragment noise budget is still **two** evaluations despite everything added, and why the gate's budget assertion still holds unchanged.
+
+Nine slots at 181 x 10 vertices is 29,160 triangles, and an unused slot collapses to a degenerate vertex outside the clip volume (`gl_Position = vec4(0,0,2,1)`) before a single noise call, so carrying nine slots for the sake of three costs one early return and no fill.
+
+### Round three: lower, rarer, twisting, and in more than one colour
+
+Round two got the shapes right and the *presence* wrong. Four complaints, and one of them turned out to be a bug in the concurrency maths rather than a matter of taste.
+
+#### Lowering it 30% without desaturating it
+
+> *sometimes they go so high that it's like you're looking up into a conical tower from the inside*
+
+The naive fix is to reduce `alt1`. It cannot be done that way, because **colour is a function of altitude** (§13 above) -- pulling the top of a band from 260 km to 180 km does not lower the band, it deletes its red crown. The altitudes are the physics; only the *geometry of where you stand relative to them* is free.
+
+So the transform holds `alt0` fixed, pushes `dist` outward until the band's bottom elevation `atan(alt0/dist)` falls to **0.70x** its previous value, and only then trims `alt1` where the far plane bites. That cap is `hypot(dist, alt1) <= 320` km, against a 20,000-unit far plane at 45 units/km = 444 km. Bottom elevations went from 27-76 deg to **19-49 deg**; the highest line of sight in the catalogue is 79.9 deg (corona, which is *supposed* to be overhead -- that is what a corona is). A new gate check fences it at 80.
+
+#### The presence envelope: mostly absent, rarely blazing
+
+> *they're just two stable and steady presences in the sky ... they should often be down to 20% opacity, and 100% should be rare*
+
+Round two's `flick` shimmer works at **2 km and seconds**. What was missing is a second envelope at **150 km and minutes**, so that whole *sections* of a band come and go while the band itself persists:
+
+```glsl
+float mac = aurNoise( vec2( km * 0.0062, t * 0.028 ) ) * 0.62
+          + aurNoise( vec2( km * 0.0210, t * 0.070 ) ) * 0.38;
+float presence = mix( 1.0, 0.10 + 2.10 * pow( smoothstep( 0.20, 0.90, mac ), 2.0 ), F.w );
+```
+
+The `pow(..., 2.0)` is the whole request in one operator: it makes the mean about **0.15** and the peak about **2.2**. Typical is barely visible; blazing happens, and it is rare. Deliberately separating the two scales by two orders of magnitude is what keeps them from reading as one noise -- a single envelope covering both would just look like static.
+
+Since the mean fell to ~0.3 of what it was, the alpha gain went **0.46 -> 0.80**. An average moment is now a little under half as bright as round two and a rare one is about 3x brighter than round two ever got. Additive blending clips those peaks toward white on its own, which is what a substorm surge actually does. `breathe` is a per-form 0-1 depth knob on the whole envelope, so a SAR arc (the S is for *stable*) sits at 0.35 and a smoke plume at 1.0.
+
+#### The bottom hem, and why it had to become per-column
+
+> *the bottom hem needs a gradient fade like the top and the sides*
+
+The hem's ramp width was a constant, so every column's bottom edge was equally sharp and the row of them read as a line -- the same failure as round two's top edge, one row down. It is now a **per-column** width, computed in the vertex shader and tied to the same noise that drives the hem streaks:
+
+```glsl
+float soft = mix( 0.08, 0.26, fr );   // fr is the hem-streak noise
+```
+
+so a column with a strong streak also has a hard bottom, and a column between streaks dissolves. One extra float in an existing varying, no extra noise call.
+
+#### The vortex family, and the one parameter that generates all of it
+
+> *a giant ribbon of smoke going up, electric-green mist swirling, rather than a curtain*
+
+The literature calls these **auroral vortices**, and they come in a size taxonomy: **curls** at ~15 km, **folds** at tens of km, and **spirals** from 15 to 1300 km (typically 25-75 km), all winding counterclockwise around upward field-aligned currents in the northern hemisphere. "Flaming" is a separate thing -- a wave of brightness running *up* the field lines. ([Small-Scale Dynamic Aurora](https://pmc.ncbi.nlm.nih.gov/articles/PMC8550089/), [Zhou 2025 GRL](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2025GL114714).)
+
+That taxonomy is the design: **four new forms, one mechanism, different scales.** The mechanism is a single line in the vertex shader --
+
+```glsl
+float shear = F.z * ( alt - baseKm );
+float f0 = aurFold( km + shear, t, amp, B.w, uActivity );
+```
+
+-- which makes the sample point depend on altitude, so the fold pattern *leans* as it rises instead of standing straight up. Two things fall out of it that were not designed:
+
+1. **A sheared curtain stops having a vertical edge.** Each altitude row samples a different part of the fold, so the silhouette twists and the thing reads as a volume rather than a sheet. That is the entire "smoke, not curtain" look, with no new geometry and no new noise call.
+2. **Along-band drift becomes vertical motion.** With shear, a `drift` of `d` moves the pattern up the column at exactly `-d/shear`. So **flaming aurora** -- a wave running up the field lines -- is just a large shear plus a *negative* drift. The sign is not optional; a positive drift runs the waves downward, which looks like rain.
+
+The four are **vapour spiral** (3 bands, shear 0.85-1.25, the big slow one), **auroral curls** (2 bands, shear ~1.0 at 2.6-3.1 Hz, the 15 km end), **flaming aurora** (2 bands, shear 2.2-2.5, drift -11 and -13), and **smoke plume** (2 bands, narrow spans of 24-30 deg, mostly invisible by design). None exceeds `ray > 0.5`, because a striated vortex reads as a curtain again; the gate asserts both the count and the softness.
+
+Crucially, **no altitude term entered any noise lookup**. The shear moves the *sample coordinate along the band*, which is the axis the noise was always indexed on. So the round-one gate assertion that guards field alignment -- the one-character mistake that turns an aurora into coloured fog -- still holds textually and unchanged.
+
+#### Folds got much bigger, and they grow with height
+
+> *the "wrinkles" should be way larger -- currently each band feels kinda flat*
+
+Fold amplitudes roughly doubled across the catalogue (drapery 44/38/28 km, breakup 64/56/30, omega band 66/54), and amplitude now **scales with altitude**:
+
+```glsl
+float amp = B.z * ( 0.55 + ( alt - 90.0 ) * 0.0072 );
+```
+
+which is physically the right sign -- the same transverse displacement of a flux tube spreads wider where the field is weaker -- and visually it is what turns a fold into a *fold*, because the bottom stays put while the top swings.
+
+#### Colour per form, from two knobs
+
+> *each time you change up the pattern, change the colour mix too*
+
+Two per-form floats, both 0-1. `pale` slides both endpoints of the ramp together: 0 is the classic OI 557.7 green over N2+ violet, 1 is a pale alien mint over electric blue (which is the real N2+ 427.8 nm line, so this is still the spectroscopy table, just weighted differently). `crown` scales how much 630.0 nm magenta sits above ~180 km.
+
+```glsl
+vec3 violet = mix( vec3( 0.62, 0.18, 0.72 ), vec3( 0.18, 0.60, 1.00 ), vCol.x );
+vec3 green  = mix( vec3( 0.14, 1.00, 0.44 ), vec3( 0.56, 1.00, 0.84 ), vCol.x );
+vec3 col = mix( violet, green, smoothstep( 92.0, 111.0, alt ) );
+col = mix( col, vec3( 1.00, 0.20, 0.46 ),
+           clamp( smoothstep( 155.0, 235.0, alt ) * 0.85 * vCol.y, 0.0, 0.95 ) );
+```
+
+All sixteen forms now have a distinct `(pale, crown, tintAmt)` triple, and the gate requires at least eight distinct ones so a future retune cannot quietly collapse them back to one.
+
+#### The floor had to be reserved, not merely likely
+
+Round two guaranteed "the sky is never empty" by setting the diffuse form's gate below zero, so it was always a *candidate*. Going from twelve forms to sixteen broke that, and the gate caught it: **193 empty frames in 1.2 million.**
+
+Being a candidate was never the same as being admitted. The soft top-K cut is `w * smoothstep((w - cut) / CUT_WIDTH)` where `cut` is the fourth-place weight -- permutation-symmetric and continuous, which is precisely what makes rank swaps invisible. But when four candidates **tie**, `w ~= cut` for all of them and the smoothstep drives *every* output to zero. Sixteen forms made four-way ties common where twelve had made them rare. The old guarantee was statistical, and statistics is not a guarantee.
+
+The fix is structural: `SLOTS` 9 -> 11, `FLOOR_BANDS = 2`, a `floor: true` flag on diffuse patches, and `composeAuto` pulls it out *before* the cut and appends it unconditionally afterward. It never competes for a slot, so it can never be squeezed out by a tie. Empty frames: **0**. It also freed a competitive slot, which fixed a second failure in the same run (15 of 16 forms occurring, rather than 16).
+
+`MAX_CONCURRENT x MAX_BANDS + FLOOR_BANDS == SLOTS` is asserted, so the "overflow is impossible by construction" property of round two survives the change. Eleven slots is 35,640 triangles in one draw call, and the two extra ones are the only slots in the buffer that are never degenerate.
+
+#### Two gates added because of mistakes made writing this round
+
+- **`minBands >= 1`.** A python slice while retuning silently deleted both `band({...})` rows from `flaming aurora`, and **every existing check still passed**: `[].every(...)` is vacuously true, no field was non-finite, no band exceeded the radius cap. A form with no bands is invisible and nothing noticed. Now it fails loudly.
+- **HUD line width.** With a reserved floor plus up to three competing forms, the worst-case label ran to 98 characters against a 62-character panel budget (1024 px, 22 px margin, 26 px monospace at 0.60 em advance), and `fillText` does not complain -- it just draws off the edge. The label now budgets its width and appends `+N more`; the gate sweeps the composer and asserts the worst case fits. It is currently **60 of 62**.
+
+Also: a GLSL comment inside a JS template literal must not contain a backtick. Five of them did, and the resulting `SyntaxError` pointed at a line 100 lines away from any of them.
 
 ---
 
@@ -1087,6 +1288,11 @@ Stars and aurora both set `visible = false` when their fade reaches zero, so thi
    Not yet seen in a browser: the map view builds clean and its layer painters are exercised by the PNG script, but nothing on that page has been rendered by an actual canvas.
    **Phase A now also owes §3 something.** The hillside-gulch experiment in §3 came back negative -- no isotropic noise contour can produce fall-line incision -- so the remaining "molded clay" on mid-slopes has exactly one honest fix left, and it is the flow accumulation this step already computes, applied as a carve depth per chunk in Phase B. That makes folding Phase A into the load path a *character* dependency, not just a rivers-and-lakes one.
 4. **Asset pipeline + `BatchedMesh` + texture array.** One species end-to-end. Requires installing Blender.
+   **The Blender half is built** -- `tools/props/`, `npm run props`, gated by `scripts/check-props.mjs` (in `npm run check`). 160 assets in 4 size classes, 78.4k triangles across every LOD, 122 texture layers of a 256 guarantee, 4.68 MB on disk. The LOD question it was blocking on is answered and derived in `scripts/probe-prop-lod.mjs`: **two mesh tiers plus the impostor, and the ladder is per size class** -- see §5's table and §9 for the pipeline itself.
+   **"One species end-to-end before forty" earned its place, several times over.** Every bug worth finding was silent: the exporter dropped every baked vertex colour because no material node read the layer (loads fine, renders flat), the normalisation helpers were written against +Y when Blender's world is +Z (150 assets exported half-buried, looks fine in the viewport), the decimator leaves the vertices it collapses in the mesh, so every measurement taken after it reads the pre-decimation silhouette and the renormalisation pass runs as a no-op (assets export the wrong size, looking like a decimation artefact), and `transform_apply` bakes an object's *local* basis only, so a mesh parented to a Megascans `world_root` empty kept that empty's 0.01 scale and -90° rotation in the node hierarchy and shipped 100× too large and on its side while every in-Blender measurement read correct. None is visible in a screenshot; all four are one assertion each against the exported GLB bytes.
+   **What the pipeline cannot do is the finding to carry into step 5.** The collapse decimator will not collapse across an open boundary and does not report that it stopped, so buildings floor out well above target -- which is *why* §5 now has a one-mesh-tier `structure` class -- and photoreal card foliage cannot be decimated at all (1.4M → 274k tris for a 500 target). Four such assets were built, measured and excluded. Sources have to be game-ready or get authored as cross-cards; there is no conversion setting that rescues them.
+   **A second shopping run then turned that finding into a purchasing rule.** 18 candidates, every one measured by `probe-source.py` before anything was built, which is the instrument the first round's four build-and-measure rejections paid for. **Photoscans are the ideal source and photoreal card foliage is the worst**, and the two are two orders of magnitude apart on the one statistic that matters: Megascans "Raw" scans measure 0.0-0.1% boundary edges and drop from 2M triangles to exactly 500 in a single round, while the card foliage in the same batch measured 42-52% and floored an order of magnitude over budget. 13 were accepted, three rejected on that floor, and two on grounds that have nothing to do with triangles (a tropical croton in a snowy range; a tree whose bark and leaf atlases are separate unreferenced materials). The rule for future shopping: **ask for photoscans or game-ready meshes, never for photoreal foliage, and probe before adding.**
+   **Still open:** the runtime half. Nothing loads `public/props` yet -- `src/props/scatter.js` still builds its geometry procedurally. Compression (meshopt + KTX2) is not done, and the KTX2 *array*-texture round-trip is still unverified.
 5. **Placement, paths, LOD tiering.** The lushness pass. **Build LOD tiering in the same step as placement, never after it** -- §0 measured that undifferentiated full-detail props hit the triangle ceiling at ~4,000 instances, well under the density this world needs. A placement system without LOD cannot be evaluated, because it will be unplayable for reasons that have nothing to do with placement.
 6. **Terrain material.** Splat blending, height-blend, triplanar.
 7. **Lighting.** Horizon maps, AO bake, prop light inheritance, day/night cycle.

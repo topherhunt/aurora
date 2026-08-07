@@ -1,6 +1,5 @@
 import * as THREE from 'three'
 import { WORLD_HALF } from './sim/terrain-height.js'
-import { streamWidth } from './sim/phase-a.js'
 
 /**
  * Lake surfaces (§11), built from Phase A's lake mask.
@@ -17,7 +16,29 @@ import { streamWidth } from './sim/phase-a.js'
  * line where the full-resolution terrain mesh crosses the water plane -- free,
  * exact, and as detailed as the LOD happens to be. The grid never appears.
  *
- * This works only because Phase A's `base` is sampled from the same heightAt
+ * THERE ARE NO RIVERS, AND THAT IS A MEASURED DECISION.
+ *
+ * Ribbons along Phase A's flow network were built, checked and rejected. Flow
+ * is routed on the CARVED surface, which has ~12,000 breach channels cut
+ * through ridges so the world drains; the mesh is built from raw heightAt,
+ * where none of those cuts exist. Measured on seed 20260804 at 1024^2:
+ *
+ *   - 47.4% of river segments run UPHILL on the rendered surface (0.26% on the
+ *     carved one). 409 of 457 chains climb somewhere; the worst gains 925 m.
+ *   - The uphill rate is 45-50% in EVERY size band, so there is no subset of
+ *     well-behaved trunk rivers to keep. Big ones are as wrong as headwaters.
+ *   - Tracing by steepest descent on the rendered surface instead -- downhill
+ *     by construction -- gives a median run of 39 m before it pits out. Of
+ *     21,014 traces, 8 exceed 300 m and 1.7% reach a lake.
+ *
+ * The third number is the real one: this terrain does not drain. Rivers are not
+ * a rendering problem, and no amount of splining, carving-per-chunk or width
+ * tuning fixes a network whose valleys are simulation artifacts. They become
+ * possible when the GENERATOR produces a draining surface -- fluvial erosion at
+ * generation time -- and not before. Lakes are unaffected: they are chosen and
+ * verified against the raw surface, so they sit in basins that really exist.
+ *
+ * This all works only because Phase A's `base` is sampled from the same heightAt
  * the chunk mesher uses, so a level computed on the sim grid is the same level
  * on the rendered ground. If the carved surface (breach channels) ever reaches
  * the mesher, the two agree by construction; until then the lakes are right and
@@ -36,20 +57,7 @@ export const WATER = {
   opacity: 0.86,
   roughness: 0.08,
   metalness: 0.0,
-  // Rivers read lighter than lakes: they are shallow, moving, and full of
-  // entrained air, and a river painted in still-lake blue looks like a canal.
-  streamColor: 0x486d84,
-  streamOpacity: 0.75,
 }
-
-// Metres the river ribbon is lifted off the ground. Enough to clear the LOD's
-// vertical error nearby without floating visibly; distant rivers sink into the
-// coarser mesh and fade out, which is a graceful loss rather than an artifact.
-const STREAM_LIFT = 0.35
-
-// Metres between centreline vertices. Decoupled from the sim grid on purpose --
-// see the resampling note in setStreamsFromPhaseA.
-const STREAM_SPACING = 10
 
 export class Water {
   constructor(scene) {
@@ -69,31 +77,9 @@ export class Water {
       depthWrite: true,
       fog: true,
     })
-    // Rivers ride ON the terrain rather than in a channel, so they need depth
-    // help the lakes do not: a polygon offset to win the z-fight against the
-    // ground it is coplanar with, and no depth writing so the ribbon never
-    // occludes something standing in it.
-    this.streamMaterial = new THREE.MeshStandardMaterial({
-      color: WATER.streamColor,
-      roughness: WATER.roughness,
-      metalness: WATER.metalness,
-      transparent: true,
-      opacity: WATER.streamOpacity,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
-      side: THREE.DoubleSide,
-      fog: true,
-    })
-    // Lakes and rivers are separate subgroups, not siblings in one list. They
-    // are rebuilt independently and have different materials, and a flat list
-    // meant every consumer had to know which children were meshes.
     this.lakes = new THREE.Group()
     this.lakes.name = 'lakes'
-    this.streams = new THREE.Group()
-    this.streams.name = 'rivers'
-    this.group.add(this.lakes, this.streams)
+    this.group.add(this.lakes)
     this.bodies = 0
     this.triangles = 0
   }
@@ -119,6 +105,8 @@ export class Water {
    */
   setFromPhaseA({ lake, filled, ground, n, cell }) {
     this.clear()
+    this.n = n
+    this.cell = cell
 
     // Dilate by one cell, carrying the neighbour's level in. Done into a
     // separate level array rather than in place, or the dilation would feed on
@@ -127,6 +115,8 @@ export class Water {
     const level = new Float32Array(size)
     const wet = new Uint8Array(size)
     const real = new Uint8Array(size)
+    this.mask = real
+    this.maskLevel = level
     for (let c = 0; c < size; c++) {
       if (!lake[c]) continue
       if (ground[c] >= filled[c]) continue // a puddle in a breach trench; see above
@@ -230,177 +220,6 @@ export class Water {
     return { tiles: tiles.size, triangles: this.triangles, levels: this.bodies }
   }
 
-  /**
-   * Rivers, as ribbons along the flow network.
-   *
-   * WHY CHAINS AND NOT THE MASK. Phase A hands out `stream` as a per-cell flag,
-   * and drawing a quad per flagged cell would give a 16 m-wide staircase --
-   * rivers are 1-14 m across, so the grid IS the river at that resolution. What
-   * carries the shape is `recv`, the D8 receiver: following it turns the mask
-   * back into the paths that produced it, and a path can be smoothed and given
-   * a width where a mask cannot.
-   *
-   * Each chain runs from a headwater to the first cell already claimed by
-   * another chain, and that shared cell is included as its last point. Without
-   * that the tributaries would stop one cell short of their trunk and every
-   * confluence would have a visible gap.
-   *
-   * THE RIVERS ARE PAINTED ON, and that is a known limitation rather than an
-   * oversight. Phase A carves channels into `elev`, but the chunk mesher still
-   * builds from raw heightAt, so there is no groove for the water to sit in.
-   * They follow the valley floors they drain, so they read correctly from the
-   * ground; what they cannot do is look incised. That arrives with the carve
-   * delta, and this code needs no change when it does.
-   */
-  setStreamsFromPhaseA({ stream, recv, acc, lake, n, cell, th, minAcc }) {
-    this.clearStreams()
-    const size = n * n
-
-    // A headwater is a stream cell nothing upstream drains into.
-    const indeg = new Uint8Array(size)
-    for (let c = 0; c < size; c++) {
-      if (!stream[c]) continue
-      const r = recv[c]
-      if (r >= 0 && stream[r] && indeg[r] < 255) indeg[r]++
-    }
-
-    const claimed = new Uint8Array(size)
-    const chains = []
-    for (let s = 0; s < size; s++) {
-      if (!stream[s] || indeg[s] !== 0 || claimed[s]) continue
-      const path = [s]
-      claimed[s] = 1
-      let c = recv[s]
-      while (c >= 0) {
-        // Reaching a lake is a proper ending: the river arrives, and the last
-        // point sits on the water so the two meshes meet.
-        if (lake[c]) {
-          path.push(c)
-          break
-        }
-        if (!stream[c]) break
-        path.push(c)
-        if (claimed[c]) break // joined a trunk; the shared cell closes the gap
-        claimed[c] = 1
-        c = recv[c]
-      }
-      if (path.length >= 3) chains.push(path)
-    }
-
-    // Two passes of [1,2,1]/4 on the horizontal positions only. D8 paths move
-    // in 45-degree steps, which reads as a zig-zag at river width; the heights
-    // are then re-sampled from the terrain so the ribbon still lies on the
-    // ground it was smoothed across rather than cutting the corners in 3D.
-    let quads = 0
-    const perTile = new Map()
-    for (const path of chains) {
-      const m = path.length
-      let xs = new Float32Array(m)
-      let zs = new Float32Array(m)
-      for (let k = 0; k < m; k++) {
-        xs[k] = -WORLD_HALF + ((path[k] % n) + 0.5) * cell
-        zs[k] = -WORLD_HALF + (((path[k] / n) | 0) + 0.5) * cell
-      }
-      for (let pass = 0; pass < 2; pass++) {
-        const nx = Float32Array.from(xs)
-        const nz = Float32Array.from(zs)
-        for (let k = 1; k < m - 1; k++) {
-          nx[k] = (xs[k - 1] + 2 * xs[k] + xs[k + 1]) / 4
-          nz[k] = (zs[k - 1] + 2 * zs[k] + zs[k + 1]) / 4
-        }
-        xs = nx
-        zs = nz
-      }
-
-      // Resample to a fixed spacing before meshing. The ribbon only touches the
-      // ground where a vertex is, so between vertices it is a straight chord
-      // and any convexity in the terrain pokes through it. That makes burial a
-      // function of the SIM GRID, which is the wrong thing for it to depend
-      // on: measured at 2 smoothing passes, 32 m cells buried 14.9% of segments
-      // and 16 m cells buried 3.1%, worst case 15.9 m against 8.9 m. Smoothing
-      // was not the cause -- turning it off made both slightly WORSE -- so
-      // sampling density is, and a fixed spacing fixes it at every resolution.
-      const rx = []
-      const rz = []
-      const rw = []
-      for (let k = 0; k < m - 1; k++) {
-        const w0 = streamWidth(acc[path[k]], minAcc) / 2
-        const w1 = streamWidth(acc[path[k + 1]], minAcc) / 2
-        const seg = Math.hypot(xs[k + 1] - xs[k], zs[k + 1] - zs[k])
-        const steps = Math.max(1, Math.ceil(seg / STREAM_SPACING))
-        for (let t2 = 0; t2 < steps; t2++) {
-          const f = t2 / steps
-          rx.push(xs[k] + (xs[k + 1] - xs[k]) * f)
-          rz.push(zs[k] + (zs[k + 1] - zs[k]) * f)
-          rw.push(w0 + (w1 - w0) * f)
-        }
-      }
-      rx.push(xs[m - 1])
-      rz.push(zs[m - 1])
-      rw.push(streamWidth(acc[path[m - 1]], minAcc) / 2)
-      const pts = rx.length
-
-      const key = `${Math.floor((path[0] % n) / TILE)},${Math.floor((path[0] / n | 0) / TILE)}`
-      let t = perTile.get(key)
-      if (!t) {
-        t = { pos: [], idx: [], nrm: [], base: 0 }
-        perTile.set(key, t)
-      }
-      // Per-point normal in plan: the average of the two adjacent segment
-      // directions, so the ribbon does not pinch or gap at a bend.
-      for (let k = 0; k < pts; k++) {
-        const kp = Math.max(0, k - 1)
-        const kn = Math.min(pts - 1, k + 1)
-        let dx = rx[kn] - rx[kp]
-        let dz = rz[kn] - rz[kp]
-        const len = Math.hypot(dx, dz) || 1
-        dx /= len
-        dz /= len
-        const w = rw[k]
-        // Each BANK is sampled on its own, not given the centreline's height.
-        // A ribbon held level across its width sits in a V-shaped valley with
-        // one bank buried in the hillside and the other hanging in the air --
-        // measured at 32 m cells, 15% of segments were more than 2 m into the
-        // ground with a worst case of 15.8 m. A real river surface IS level
-        // across, but a real river also sits in a channel, and there is no
-        // channel until the carve delta reaches the mesher. Between a wet
-        // stripe that follows the ground and a level plane that floats, the
-        // stripe is the one that reads as water at 1-14 m wide.
-        const xl = rx[k] + dz * w
-        const zl = rz[k] - dx * w
-        const xr = rx[k] - dz * w
-        const zr = rz[k] + dx * w
-        t.pos.push(xl, th.heightAt(xl, zl) + STREAM_LIFT, zl, xr, th.heightAt(xr, zr) + STREAM_LIFT, zr)
-        t.nrm.push(0, 1, 0, 0, 1, 0)
-      }
-      for (let k = 0; k < pts - 1; k++) {
-        const a = t.base + k * 2
-        t.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
-        quads++
-      }
-      t.base += pts * 2
-    }
-
-    for (const [key, t] of perTile) {
-      const geo = new THREE.BufferGeometry()
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(t.pos), 3))
-      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(t.nrm), 3))
-      geo.setIndex(t.idx)
-      geo.computeBoundingSphere()
-      const mesh = new THREE.Mesh(geo, this.streamMaterial)
-      mesh.name = `river-${key}`
-      mesh.renderOrder = 2
-      this.streams.add(mesh)
-    }
-    this.triangles += quads * 2
-    return { chains: chains.length, tiles: perTile.size, triangles: quads * 2 }
-  }
-
-  clearStreams() {
-    for (const m of this.streams.children) m.geometry.dispose()
-    this.streams.clear()
-  }
-
   clear() {
     for (const m of this.lakes.children) m.geometry.dispose()
     this.lakes.clear()
@@ -408,8 +227,20 @@ export class Water {
     this.triangles = 0
   }
 
-  /** Water level under a point, or null on dry land. For the player and props. */
-  levelAt() {
-    throw new Error('Water.levelAt is not implemented -- nothing needs it yet')
+  /**
+   * The water surface above a point, or null on dry land. One array lookup, so
+   * it is cheap enough for the scatter to ask about every candidate prop.
+   *
+   * Uses the UNDILATED mask. The dilation exists to bury the polygon edge under
+   * the terrain, and treating that ring as wet would strip a 16 m band of trees
+   * off every shoreline.
+   */
+  levelAt(x, z) {
+    if (!this.mask) return null
+    const i = Math.floor((x + WORLD_HALF) / this.cell)
+    const j = Math.floor((z + WORLD_HALF) / this.cell)
+    if (i < 0 || j < 0 || i >= this.n || j >= this.n) return null
+    const c = j * this.n + i
+    return this.mask[c] ? this.maskLevel[c] : null
   }
 }

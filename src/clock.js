@@ -184,6 +184,41 @@ const hex = (v) => [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) /
 // actually changes character, and picking round numbers instead would put the
 // keyframes in the wrong places and then need extra keyframes to fix it.
 //
+// NIGHT, and the two fields that are not colours.
+//
+// Night is the hard half of a day-night cycle and it is hard for a reason that
+// is not obvious: BRIGHTNESS IS RELATIVE AND WE CANNOT ADAPT THE EYE. A real
+// moonlit field is about a millionth of noon, and a person standing in it sees
+// it perfectly well because their pupils opened and their rods took over. The
+// headset cannot do that -- a dark frame is just a dark frame, in a room with
+// the lights on. So the number that belongs here is not the physical ratio, it
+// is what a DARK-ADAPTED eye reports, which is far closer to a moonlit
+// photograph: cold, desaturated, low contrast, and entirely navigable.
+//
+// The intensities below therefore RISE slightly from -6 to -18 rather than
+// falling. That is deliberate and it is the adaptation curve, not the sky.
+//
+// The trap, and the reason `skyGlow` and `skyFloor` exist at all: a hemisphere
+// light is a MULTIPLIER on albedo, so no value of hemiIntensity can rescue a
+// dark surface. A tree trunk at 4% albedo under an ambient bright enough to
+// blow out the snow is still black -- and measured, that is exactly what this
+// world did at midnight: snow at luma 89, grass in shadow at 1, trunks at 0.
+// Two extra terms fix it, and neither one is a multiplier:
+//
+//   skyGlow x skyGlowAmt  an ADDITIVE, albedo-independent glow added to the
+//                         indirect term in lighting.js. This is airglow and
+//                         scattered starlight, and it is what puts a floor
+//                         under every surface in the world regardless of how
+//                         dark that surface is. Held at exactly zero above the
+//                         horizon so noon is bit-for-bit unchanged.
+//
+//   skyFloor              remaps ambient occlusion so full occlusion means
+//                         `skyFloor` rather than zero. At noon the sun fills a
+//                         gully and AO going to zero is right; at night the
+//                         ambient IS the light, so an unfloored AO term turns
+//                         every crease and every patch of grass -- which is
+//                         self-occluding by construction -- into a hole.
+//
 // Ordered from high to low. `state()` walks it and smoothsteps between
 // neighbours; the check gate sweeps the whole range looking for a jump, since a
 // discontinuity here is a visible flash in the headset and nothing else in the
@@ -206,6 +241,9 @@ const KEYS = [
     stars: 0,
     moonBright: 0.10,
     auroraMax: 0,
+    skyGlow: hex(0x000000),
+    skyGlowAmt: 0,
+    skyFloor: 0,
   },
   {
     elev: 12,
@@ -224,6 +262,9 @@ const KEYS = [
     stars: 0,
     moonBright: 0.12,
     auroraMax: 0,
+    skyGlow: hex(0x000000),
+    skyGlowAmt: 0,
+    skyFloor: 0,
   },
   {
     // The sun is low enough to redden but still fully in charge of the scene.
@@ -243,6 +284,9 @@ const KEYS = [
     stars: 0,
     moonBright: 0.18,
     auroraMax: 0,
+    skyGlow: hex(0x000000),
+    skyGlowAmt: 0,
+    skyFloor: 0,
   },
   {
     // Golden hour proper. The horizon is now warmer than the light, which is
@@ -263,6 +307,9 @@ const KEYS = [
     stars: 0,
     moonBright: 0.3,
     auroraMax: 0,
+    skyGlow: hex(0x6e86b4),
+    skyGlowAmt: 0.0005,
+    skyFloor: 0.02,
   },
   {
     // Sunset. The disc is on the horizon; the direct light is nearly gone and
@@ -283,6 +330,9 @@ const KEYS = [
     stars: 0.04,
     moonBright: 0.55,
     auroraMax: 0,
+    skyGlow: hex(0x7e93c0),
+    skyGlowAmt: 0.002,
+    skyFloor: 0.05,
   },
   {
     // Mid civil twilight. This is the rose-over-navy band that people photograph
@@ -303,6 +353,9 @@ const KEYS = [
     stars: 0.22,
     moonBright: 0.85,
     auroraMax: 0.08,
+    skyGlow: hex(0x8b9dcb),
+    skyGlowAmt: 0.004,
+    skyFloor: 0.09,
   },
   {
     // End of civil twilight. Ground detail is going; the brightest stars are in.
@@ -314,14 +367,17 @@ const KEYS = [
     glowSharp: 2.0,
     sunLight: hex(0x000000),
     sunIntensity: 0,
-    hemiSky: hex(0x5a5480),
-    hemiGround: hex(0x14121c),
-    hemiIntensity: 0.34,
+    hemiSky: hex(0x6e6894),
+    hemiGround: hex(0x272430),
+    hemiIntensity: 0.40,
     fog: hex(0x5c4068),
     fogDensity: 0.00036,
     stars: 0.42,
     moonBright: 1.0,
     auroraMax: 0.35,
+    skyGlow: hex(0x93a4d2),
+    skyGlowAmt: 0.008,
+    skyFloor: 0.13,
   },
   {
     // Nautical twilight. The last of the glow is a bruise on one side of the
@@ -334,14 +390,17 @@ const KEYS = [
     glowSharp: 2.2,
     sunLight: hex(0x000000),
     sunIntensity: 0,
-    hemiSky: hex(0x323a60),
-    hemiGround: hex(0x0b0d16),
-    hemiIntensity: 0.24,
+    hemiSky: hex(0x6a739e),
+    hemiGround: hex(0x2e3444),
+    hemiIntensity: 0.45,
     fog: hex(0x28263f),
     fogDensity: 0.00038,
     stars: 0.86,
     moonBright: 1.0,
     auroraMax: 0.85,
+    skyGlow: hex(0x99a9d6),
+    skyGlowAmt: 0.009,
+    skyFloor: 0.145,
   },
   {
     // Astronomical twilight ends here: from -18 down, nothing more happens.
@@ -353,14 +412,17 @@ const KEYS = [
     glowSharp: 2.6,
     sunLight: hex(0x000000),
     sunIntensity: 0,
-    hemiSky: hex(0x222c4e),
-    hemiGround: hex(0x070911),
-    hemiIntensity: 0.185,
+    hemiSky: hex(0x6d7da6),
+    hemiGround: hex(0x333c50),
+    hemiIntensity: 0.50,
     fog: hex(0x121729),
     fogDensity: 0.0004,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,
+    skyGlow: hex(0x9cabd8),
+    skyGlowAmt: 0.0095,
+    skyFloor: 0.155,
   },
   {
     // The floor. Identical to -18 by construction, so the sweep from -18 to -90
@@ -375,14 +437,17 @@ const KEYS = [
     glowSharp: 2.6,
     sunLight: hex(0x000000),
     sunIntensity: 0,
-    hemiSky: hex(0x222c4e),
-    hemiGround: hex(0x070911),
-    hemiIntensity: 0.185,
+    hemiSky: hex(0x6d7da6),
+    hemiGround: hex(0x333c50),
+    hemiIntensity: 0.50,
     fog: hex(0x121729),
     fogDensity: 0.0004,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,
+    skyGlow: hex(0x9cabd8),
+    skyGlowAmt: 0.0095,
+    skyFloor: 0.155,
   },
 ]
 
@@ -392,7 +457,7 @@ const KEYS = [
 // eye, so the number here is what the SCENE should look like -- bright enough
 // that snow reads as snow and rock reads as nearly black, which is what a
 // moonlit photograph looks like.
-const MOONLIGHT = { color: hex(0xa8c0ea), intensity: 0.34 }
+const MOONLIGHT = { color: hex(0xb4c8ee), intensity: 0.50 }
 
 const lerp = (a, b, t) => a + (b - a) * t
 const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
@@ -426,6 +491,9 @@ function paletteAt(sunElevDeg) {
     stars: lerp(a.stars, b.stars, t),
     moonBright: lerp(a.moonBright, b.moonBright, t),
     auroraMax: lerp(a.auroraMax, b.auroraMax, t),
+    skyGlow: lerp3(a.skyGlow, b.skyGlow, t),
+    skyGlowAmt: lerp(a.skyGlowAmt, b.skyGlowAmt, t),
+    skyFloor: lerp(a.skyFloor, b.skyFloor, t),
   }
 }
 
@@ -516,6 +584,11 @@ export class WorldClock {
 
     return {
       hour: this.hour,
+      // Total in-world hours since the world started, monotonic and unwrapped.
+      // The aurora composer runs on this rather than on `hour`: it decides
+      // which forms are up over spans of hours, and a value that resets at
+      // midnight would make the sky repeat itself every night.
+      elapsed: this.elapsed,
       sun: this.sun,
       moon: this.moon,
       moonLit: this.moonLit,
@@ -536,6 +609,16 @@ export class WorldClock {
       fogDensity: p.fogDensity,
       stars: p.stars,
       moonBright: p.moonBright,
+
+      // ---- Night lift. See the NIGHT block above KEYS for why these two exist
+      // and why multiplied ambient alone cannot do their job.
+      //
+      // The aurora contributes to the additive term as well as to the ambient
+      // tint: a bright overhead aurora really does light the ground, and it is
+      // the moment the effect stops being a picture in the sky.
+      skyGlow: p.skyGlow,
+      skyGlowAmt: p.skyGlowAmt * (1 + aurora * 0.6),
+      skyFloor: p.skyFloor,
 
       // ---- Ambient.
       //

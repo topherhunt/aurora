@@ -15,6 +15,7 @@ import sys
 
 import bpy
 import bmesh
+import numpy
 from mathutils import Vector
 
 
@@ -89,6 +90,25 @@ def import_any(path):
     meshes = [o for o in created if o.type == "MESH"]
     if not meshes:
         raise RuntimeError("import produced no mesh objects: %s" % path)
+
+    # Unparent, keeping the world placement. Several sources -- every Megascans
+    # FBX, and any DCC export that carried a unit conversion -- hang their mesh
+    # off an empty called `world_root` that holds a 0.01 scale and a -90 deg X
+    # rotation. `transform_apply` bakes an object's LOCAL basis only, so on a
+    # parented mesh it bakes an identity and leaves the parent's scale and
+    # rotation where they were: in the node hierarchy.
+    #
+    # Everything in this file measures `matrix_world`, so every measurement and
+    # every check inside Blender is right, and the build reports OK. What ships
+    # is the mesh DATA plus a node transform -- 100x too large and lying on its
+    # side. `forest_floor_cluster` exported at 167.75 m against a 1.15 m spec
+    # with its base 82 m below the floor, and only `check-props.mjs` reading
+    # POSITION.min straight out of the GLB caught it.
+    for o in meshes:
+        if o.parent:
+            mw = o.matrix_world.copy()
+            o.parent = None
+            o.matrix_world = mw
     return meshes
 
 
@@ -112,15 +132,33 @@ def scene_tris(objs):
 
 
 def world_bounds(objs):
-    """Axis-aligned world-space bounds over a set of objects."""
+    """Axis-aligned world-space bounds, measured from the VERTICES.
+
+    Not `obj.bound_box`, which is a depsgraph-cached value: same numbers when
+    it is fresh, no cache to be stale when it is not. `foreach_get` pulls the
+    coordinates in one C-level call, so this is fast even on the 1.5M-vertex
+    sources -- the equivalent Python loop costs minutes across a full build.
+
+    Caveat worth knowing, because it produced a long and wrong hunt for a
+    stale-depsgraph bug: this measures EVERY vertex, and a decimated mesh is
+    full of unreferenced ones the glTF exporter will not write. Callers that
+    measure after decimation must `drop_loose` first, or they are measuring a
+    ghost of the pre-decimation silhouette."""
     lo = Vector((math.inf,) * 3)
     hi = Vector((-math.inf,) * 3)
     for o in objs:
-        for corner in o.bound_box:
-            p = o.matrix_world @ Vector(corner)
-            for i in range(3):
-                lo[i] = min(lo[i], p[i])
-                hi[i] = max(hi[i], p[i])
+        n = len(o.data.vertices)
+        if n == 0:
+            continue
+        co = numpy.empty(n * 3, dtype=numpy.float32)
+        o.data.vertices.foreach_get("co", co)
+        co = co.reshape((n, 3))
+        m = numpy.array(o.matrix_world, dtype=numpy.float32)
+        world = co @ m[:3, :3].T + m[:3, 3]
+        mn, mx = world.min(axis=0), world.max(axis=0)
+        for i in range(3):
+            lo[i] = min(lo[i], float(mn[i]))
+            hi[i] = max(hi[i], float(mx[i]))
     return lo, hi
 
 
@@ -265,6 +303,37 @@ def scale_to_height(obj, target_h):
     obj.scale = (k, k, k)
     apply_transforms(obj)
     return k
+
+
+def drop_loose(obj):
+    """Delete vertices and edges no face references.
+
+    The decimate modifier does not remove the vertices it collapses -- it
+    unhooks them from the faces and leaves them in the mesh. Two things follow,
+    and both are silent:
+
+    Every measurement is wrong. `world_bounds` reads `data.vertices`, so it sees
+    the ghost cloud of the ORIGINAL silhouette and reports the height the mesh
+    had before decimation. `scale_to_height` then computes k ~= 1.0 and applies
+    it perfectly, so the renormalisation pass runs and does nothing. The glTF
+    exporter writes only face-referenced vertices, so the exported asset is
+    whatever decimation actually left: measured, `tree_deciduous_hi` came out
+    10.77 m against an 11 m spec and `fern_polypody` 0.29 m against 0.45 m,
+    floating 4 cm. `obj.bound_box` has the same blind spot, which is why this
+    looked for a long time like a stale-depsgraph bug.
+
+    And the vertex counts are fiction. LOD0 above reported 7,285 verts for
+    ~1,100 real ones. BatchedMesh reserves storage against vertex count (§5), so
+    that number is not cosmetic -- it is a 6x over-reservation per instance."""
+    me = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    loose = [v for v in bm.verts if not v.link_faces]
+    if loose:
+        bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
 
 
 def clean_mesh(obj, merge_dist=0.0001):

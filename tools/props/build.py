@@ -134,6 +134,52 @@ def has_images(obj):
     return any(_base_color_image(s.material) is not None for s in obj.material_slots)
 
 
+def attach_loose_textures(obj, base_color_path, opacity_path=None):
+    """Build a material from texture files the source did not reference.
+
+    Megascans ships its FBX with no material at all -- the maps are loose JPGs
+    next to it, named by convention, and the importing DCC is expected to wire
+    them up. Without this the pipeline correctly detects "no images" and sends a
+    photoscanned birch log down the flat-colour path, which throws away the only
+    reason to use a photoscan.
+
+    Generic on purpose. It reads two paths out of the manifest entry and builds
+    the same Principled node tree every other textured asset already has, so
+    everything downstream -- `has_images`, `consolidate_texture`, the alpha bake
+    -- sees an ordinary textured asset and needs no special case. Adding another
+    scanned source is a manifest edit, not a code change.
+
+    Only base colour and opacity: the 8K normal, cavity, gloss, specular,
+    displacement and translucency maps in these packs have nowhere to go. The
+    runtime is one unlit-ish Lambert pass with a 128x128 albedo layer and baked
+    AO (§8, §9), so a normal map has no consumer, and resampling one to 128x128
+    would not survive the trip anyway."""
+    img = bpy.data.images.load(base_color_path, check_existing=True)
+    mat = bpy.data.materials.new("loose_%s" % obj.name)
+    nt = mat.node_tree
+    for n in list(nt.nodes):
+        nt.nodes.remove(n)
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+
+    if opacity_path:
+        # Foliage scans put the cutout in a separate greyscale map rather than
+        # in the base colour's alpha, so the alpha bake has nothing to read
+        # unless it is linked here. A fern without it is a fern-shaped slab.
+        op = bpy.data.images.load(opacity_path, check_existing=True)
+        op.colorspace_settings.name = "Non-Color"
+        opnode = nt.nodes.new("ShaderNodeTexImage")
+        opnode.image = op
+        nt.links.new(opnode.outputs["Color"], bsdf.inputs["Alpha"])
+
+    obj.data.materials.clear()
+    obj.data.materials.append(mat)
+
+
 def consolidate_texture(obj, out_png, size=LAYER_SIZE):
     """Bake every material's base colour (and alpha) into ONE `size` image and
     rewrite the object's UVs to match.
@@ -517,10 +563,28 @@ def decimate_to(obj, target_tris, mode="collapse"):
         common.clean_mesh(dup)
         mode = "collapse"
 
-    for _ in range(6):
+    # Iterate until it stops improving, not for a fixed number of rounds.
+    #
+    # The cleanup at the bottom of this loop is what makes the loop work at all,
+    # which is not obvious. The decimator leaves the vertices it collapses in the
+    # mesh (see `common.drop_loose`), and it will not collapse across a boundary
+    # -- so a mesh still carrying the previous round's debris presents a topology
+    # the next round can barely touch, and the whole thing plateaus long before
+    # the real floor. Measured on `wild_grass`, cleaning between rounds is the
+    # difference between stopping at 253 triangles and reaching the 16 asked for.
+    # `boulder_mossy` and `horsetail` had been recorded as boundary stalls on
+    # that evidence, and were not stalled at all.
+    #
+    # `validate` on the same line of reasoning: collapse leaves degenerate faces
+    # at aggressive ratios, and left alone they reach the runtime as zero-area
+    # triangles that still cost a vertex fetch and still get rasterised. It was
+    # the fix for the exporter reporting "Mesh grass_LOD0 is not valid".
+    prev = None
+    for _ in range(12):
         cur = common.tri_count(dup)
-        if cur <= target_tris:
+        if cur <= target_tris or cur == prev:
             break
+        prev = cur
         ratio = max(min(target_tris / float(cur), 1.0), 0.0005)
         m = dup.modifiers.new("dec", "DECIMATE")
         if mode == "unsubdiv":
@@ -535,15 +599,13 @@ def decimate_to(obj, target_tris, mode="collapse"):
             m.use_collapse_triangulate = True
         common.select_only([dup])
         bpy.ops.object.modifier_apply(modifier=m.name)
+        dup.data.validate(verbose=False)
+        common.drop_loose(dup)
         if mode != "collapse":
             break  # planar/unsubdiv are one-shot; iterating them does nothing
 
-    # Collapse leaves degenerate faces behind at aggressive ratios -- measured on
-    # `grass`, which the glTF exporter then reported as "Mesh grass_LOD0 is not
-    # valid, and may be exported wrongly". `validate` deletes them. Left alone
-    # they reach the runtime as zero-area triangles that still cost a vertex
-    # fetch and still get rasterised.
     dup.data.validate(verbose=False)
+    common.drop_loose(dup)
     return dup
 
 
@@ -715,6 +777,11 @@ def build_asset(spec, out_dir, opts):
     objs = common.import_any(spec["src"])
     obj = common.join_all(objs, aid)
     common.apply_transforms(obj)
+
+    # Before anything asks whether this asset is textured -- a scan source needs
+    # its loose maps wired up first or it answers "no". See attach_loose_textures.
+    if spec.get("base_color_map"):
+        attach_loose_textures(obj, spec["base_color_map"], spec.get("opacity_map"))
 
     if spec.get("rotate_x_deg"):
         obj.rotation_euler = (math.radians(spec["rotate_x_deg"]), 0.0, 0.0)

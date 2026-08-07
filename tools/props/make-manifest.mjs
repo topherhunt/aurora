@@ -20,6 +20,7 @@ import path from 'node:path'
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const NATURE = 'tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX'
 const HIGH = 'tmp/placeholder-props/high-poly-to-decimate/_x'
+const NEW = 'tmp/placeholder-props/high-poly-to-decimate/_new'
 
 // ---------------------------------------------------------------------------
 // Size classes. The LOD ladder is per class, NOT one chain for everything, and
@@ -226,7 +227,112 @@ const DOWNLOADS = [
     class: 'medium',
     height_m: 1.5,
   },
+
+  // -------------------------------------------------------------------------
+  // Second shopping run (_new/). Mostly Megascans "Raw" photoscans, and they
+  // are the best-behaved sources in the library by a wide margin: measured at
+  // 0.0-0.1% boundary edges, so a 2M-triangle log collapses to exactly 500 in
+  // ONE round. Compare the photoreal card foliage excluded above at ~50-100%
+  // boundary, which does not decimate at all. `tools/props/probe-source.py`
+  // reports that fraction, and it is the number to check before adding
+  // anything here -- it predicted every accept and reject in this batch.
+  //
+  // They all need `base_color_map`: Megascans ships the FBX with no material
+  // and the maps as loose files beside it, so without it the pipeline correctly
+  // sees "no images" and sends a photoscan down the flat-colour path.
+  // -------------------------------------------------------------------------
+  {
+    id: 'log_birch_scan',
+    src: `${NEW}/birch_log_ti2fbajfa_raw/Birch_Log_ti2fbajfa_Raw.fbx`,
+    base_color_map: `${NEW}/birch_log_ti2fbajfa_raw/Birch_Log_ti2fbajfa_Raw_8K_BaseColor.jpg`,
+    class: 'medium',
+    height_m: 0.34, // lies down: 1.7 m long in the source, 0.28 m thick
+  },
+  {
+    id: 'log_mossy_scan',
+    src: `${NEW}/mossy_tree_log_rdkeg_raw/Mossy_Tree_Log_rdkeg_Raw.fbx`,
+    base_color_map: `${NEW}/mossy_tree_log_rdkeg_raw/Mossy_Tree_Log_rdkeg_Raw_8K_BaseColor.jpg`,
+    class: 'medium',
+    height_m: 0.75, // 5 m long in the source
+  },
+  {
+    id: 'tree_dead_standing',
+    src: `${NEW}/dead_tree_qletl_raw/Dead_Tree_qlEtl_Raw.fbx`,
+    base_color_map: `${NEW}/dead_tree_qletl_raw/Dead_Tree_qlEtl_Raw_8K_BaseColor.jpg`,
+    class: 'large',
+    height_m: 6.5,
+  },
+  {
+    // A scanned patch of forest floor -- moss, litter and small stones. Only
+    // 2.15 m across, so unlike the excluded `3d Grass.obj` fields this is a
+    // prop the scatter can place, not a pre-scattered field that fights it.
+    id: 'forest_floor_cluster',
+    src: `${NEW}/nordic_forest_cluster_medium_xisgcic_raw/Nordic_Forest_Cluster_Medium_xisgcic_Raw.fbx`,
+    base_color_map: `${NEW}/nordic_forest_cluster_medium_xisgcic_raw/Nordic_Forest_Cluster_Medium_xisgcic_Raw_8K_BaseColor.jpg`,
+    class: 'medium',
+    height_m: 1.15,
+  },
+  {
+    // Not a scan and not Megascans -- a game-ready prop, 3,309 triangles and
+    // 1.4% boundary. Cheapest asset here to convert.
+    id: 'tree_cracked_dead',
+    src: `${NEW}/realistic-cracked-tree-game-ready-prop/source/rackedTree.fbx`,
+    base_color_map: `${NEW}/realistic-cracked-tree-game-ready-prop/textures/rackedTree_DefaultMaterial_BaseColor.png`,
+    class: 'large',
+    height_m: 4.2,
+  },
+  {
+    // `structure` is a class defined by DECIMATION BEHAVIOUR, not by subject:
+    // one honest mesh tier then an impostor, for anything whose floor sits near
+    // 1800. This oak floors at 1,703 for any target below it, exactly like the
+    // cabins, so it gets the same ladder. It is the one hero tree in the
+    // library and the scatter must place it sparsely -- at the 0.08 stems/m^2
+    // of §5 a 1,703-triangle tree would eat the entire prop budget on its own.
+    id: 'tree_oak_hero',
+    src: `${NEW}/high-quality-tree-66/source/Graf1TreeHIGH.fbx`,
+    class: 'structure',
+    height_m: 9.7,
+  },
+
+  // Megascans grass, cut down to `small` (16 triangles) with its cutout intact.
+  // These are the assets that make §5's "open fields of low heather scrub" real
+  // rather than procedural, and each variant costs one 128x128 layer.
+  ...['A', 'B', 'C'].map((v) => ({
+    id: `grass_tall_scan_${v.toLowerCase()}`,
+    src: `${NEW}/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_Var${v}_LOD0.fbx`,
+    base_color_map: `${NEW}/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg`,
+    opacity_map: `${NEW}/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg`,
+    class: 'small',
+    height_m: 0.85,
+  })),
+  ...['A', 'B', 'C', 'D'].map((v) => ({
+    id: `grass_wild_scan_${v.toLowerCase()}`,
+    src: `${NEW}/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_Var${v}_LOD0.fbx`,
+    base_color_map: `${NEW}/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_BaseColor.jpg`,
+    opacity_map: `${NEW}/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_Opacity.jpg`,
+    class: 'small',
+    height_m: 0.4,
+  })),
 ]
+
+// Excluded from the _new/ batch, all measured with probe-source.py rather than
+// guessed. The first three are the same photoreal-card-foliage wall documented
+// above -- boundary fraction near half, and a floor an order of magnitude over
+// budget that more decimation rounds do not move:
+//   dead_shrubs   51.7% boundary, floors at 1,127 tris -- for a 0.3 m shrub
+//   lady_fern     45.8% boundary, floors at 1,884 tris
+//   butterfly_bush 12.9% boundary, floors at 1,908 tris for a 1.2 m bush.
+//     Low boundary and it still stalls, which is the useful counter-example:
+//     the fraction predicts, it does not decide. The floor is the answer.
+// And two for reasons that are not about triangles:
+//   green-purple-codiaeum-variegatum -- decimates fine (500 tris, no trouble),
+//     but it is a tropical croton. Same call as PalmTree and Cactus above: a
+//     snowy northern range (§2) has no place to put it.
+//   quick-treeit-tree -- decimates fine too, but its bark and leaf atlases are
+//     separate materials that the FBX does not reference, so `base_color_map`
+//     (which is deliberately one map for the whole asset) would paint leaves on
+//     the trunk. Wiring per-slot textures for one generic sapling is the custom
+//     pipeline this batch exists to avoid, and there are 25 other trees.
 
 // Deliberately excluded from DOWNLOADS, with reasons, so nobody re-adds them
 // without reading why:
@@ -295,10 +401,18 @@ for (const a of assets) {
   if (a.billboard) a.billboard_quads = a.billboard_quads ?? c.billboard_quads
 }
 
-const missing = assets.filter((a) => !fs.existsSync(path.join(ROOT, a.src)))
+// Texture paths are checked here alongside the mesh, because a typo in one is
+// otherwise found by Blender, three hundred assets into a build, as a load
+// error with no asset id attached to it.
+const missing = []
+for (const a of assets) {
+  for (const key of ['src', 'base_color_map', 'opacity_map']) {
+    if (a[key] && !fs.existsSync(path.join(ROOT, a[key]))) missing.push({ id: a.id, key, p: a[key] })
+  }
+}
 if (missing.length) {
   console.warn(`WARNING: ${missing.length} source files not found:`)
-  for (const m of missing.slice(0, 12)) console.warn(`  ${m.id}  ${m.src}`)
+  for (const m of missing.slice(0, 12)) console.warn(`  ${m.id}  (${m.key})  ${m.p}`)
   if (missing.length > 12) console.warn(`  ... and ${missing.length - 12} more`)
 }
 
@@ -324,10 +438,12 @@ const out = {
 
 const dest = path.join(ROOT, 'tools/props/manifest.json')
 fs.writeFileSync(dest, JSON.stringify(out, null, 2))
+// Counted off CLASSES rather than off a hand-written list of class names: the
+// hand-written one silently stopped mentioning `structure` the day that class
+// was added, and a summary that under-reports by five is worse than no summary.
+const byClass = Object.keys(CLASSES)
+  .map((k) => `${assets.filter((a) => a.class === k).length} ${k}`)
+  .join(', ')
 console.log(
-  `wrote ${path.relative(ROOT, dest)} -- ${assets.length} assets ` +
-    `(${assets.filter((a) => a.class === 'large').length} large, ` +
-    `${assets.filter((a) => a.class === 'medium').length} medium, ` +
-    `${assets.filter((a) => a.class === 'small').length} small), ` +
-    `${missing.length} missing`,
+  `wrote ${path.relative(ROOT, dest)} -- ${assets.length} assets (${byClass}), ${missing.length} missing`,
 )
