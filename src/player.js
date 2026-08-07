@@ -41,7 +41,24 @@ export const LOCOMOTION = {
   // Controls are Minecraft's, because that is the muscle memory she already
   // has: hold space to rise, hold shift to sink, either combined freely with
   // WASD, double-tap space to drop back to walking.
-  flySpeed: 29, // 20x walking -- 16 km of world takes ~9 min to cross end to end
+  // Speed scales with HEIGHT ABOVE GROUND, not with a fixed rate, because the
+  // two things fly mode is used for want opposite speeds. Down among the rocks
+  // you are inspecting a cliff face or a treeline and 29 m/s overshoots
+  // everything; up at survey altitude you are crossing a 16 km world and 29 m/s
+  // is a four-minute commute. Tying it to altitude means the gesture that says
+  // "I want to look at the big picture" -- climbing -- is the same gesture that
+  // makes crossing it quick, with no extra control to learn.
+  //
+  // Linear between the two anchors and clamped outside them. Linear rather than
+  // exponential, and now for a stronger reason than when the ratio was 20x: at
+  // 100x a power curve is actually FASTER than linear through the low altitudes
+  // that matter (at 30 m it gives 96 m/s against linear's 66), which is the
+  // opposite of what "10 m/s when I'm two metres off the ground" is asking for.
+  // Linear keeps the slow end slow and puts the whole 100x into the climb.
+  flyLowAlt: 2,
+  flyLowSpeed: 10,
+  flyHighAlt: 500,
+  flyHighSpeed: 1000,
   flyClearance: 2.0, // stay this far above ground, so she cannot fly inside a mountain
 
   // --- travel mode: double-click the ground to go there --------------------
@@ -217,7 +234,7 @@ export class Player {
     // would make the ascend key double as a walk key.
     const drive = this.flying ? Math.min(1, Math.hypot(demand, liftIn)) : demand
 
-    const top = this.flying ? L.flySpeed : L.maxSpeed
+    const top = this.flying ? this.flySpeedAt(head) : L.maxSpeed
     if (drive <= 0) {
       this.speed = 0 // instant stop on release (§12)
     } else if (input.instant) {
@@ -242,6 +259,17 @@ export class Player {
     if (this.smoothY === null) this.smoothY = ground
     this.smoothY += (ground - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
     this.rig.position.y = this.smoothY
+  }
+
+  // Fly speed at a given head position, from height above the ground directly
+  // below. The HUD already shows both halves of this -- `agl` and `speed` on the
+  // position block -- which is what makes a speed that changes on its own
+  // legible rather than mysterious.
+  flySpeedAt(head) {
+    const L = LOCOMOTION
+    const alt = head.y - this.th.heightAt(head.x, head.z)
+    const t = THREE.MathUtils.clamp((alt - L.flyLowAlt) / (L.flyHighAlt - L.flyLowAlt), 0, 1)
+    return L.flyLowSpeed + (L.flyHighSpeed - L.flyLowSpeed) * t
   }
 
   // Free 6DOF flight. Forward follows the full look direction including pitch,

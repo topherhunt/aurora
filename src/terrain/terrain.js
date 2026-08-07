@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { selectNodes, nodeKey, buildElevationLod, MAX_DEPTH, DEFAULT_SPLIT_K } from './quadtree.js'
-import { TerrainHeight, WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
+import { TerrainHeight, TUNING, SNOW, WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 import { CHUNK_RES } from '../sim/chunk-mesh.js'
 import { createTerrainMaterial } from './terrain-material.js'
 
@@ -116,6 +116,7 @@ export class Terrain {
     // height field, so it should own that dependency instead of asking every
     // caller to remember -- and a TerrainHeight is a pure function of its seed,
     // so the second instance is the same field, not a second source of truth.
+    this.seed = seed // retune() rebuilds the pyramid and needs it
     this.elev = buildElevationLod(new TerrainHeight(seed))
 
     this.workers = []
@@ -133,8 +134,56 @@ export class Terrain {
     }
     this._nextWorker = 0
     this._readyCount = 0
+    // Bumped by retune(); stamped on every chunk request so replies built from
+    // superseded tuning can be recognised and dropped.
+    this.epoch = 0
 
     this._seedBaseLayer()
+  }
+
+  /**
+   * Rebuild the whole world against new TUNING values, for the live tuning panel.
+   *
+   * The values are applied to the shared TUNING and SNOW objects rather than
+   * replacing them, so main.js's own TerrainHeight -- the one the player collides
+   * against -- moves with the mesh, and terrain-height.js's module-level `const T
+   * = TUNING` keeps pointing at the live table. If mesh and collision ever
+   * disagree she walks through hillsides.
+   *
+   * Everything cached is now wrong, so this frees every slot rather than waiting
+   * for eviction to notice. The pinned depth 0-2 base layer is re-seeded straight
+   * away, so the coarse fallback in _loadedAncestor still has something to find
+   * and the world dissolves to low-poly for a moment instead of to sky.
+   *
+   * The elevation pyramid has to be rebuilt too, and it is the expensive half
+   * (~22 ms of heightAt). It is what decides where detail goes, so leaving it
+   * stale would silently bias LOD against the previous terrain -- exactly the
+   * thing the panel exists to let you see.
+   */
+  retune({ tuning = {}, snow = {} } = {}) {
+    Object.assign(TUNING, tuning)
+    Object.assign(SNOW, snow)
+    this.epoch++
+    for (const w of this.workers) {
+      w.postMessage({ type: 'tuning', tuning, snow, epoch: this.epoch })
+    }
+
+    this.elev = buildElevationLod(new TerrainHeight(this.seed))
+
+    for (const entry of this.cache.values()) {
+      if (entry.slot) {
+        this.batch.setVisibleAt(entry.slot.instanceId, false)
+        this._free.push(entry.slot)
+      }
+    }
+    this.cache.clear()
+    this._render.clear()
+    this.queue.length = 0
+    // In-flight replies are dropped by the epoch guard, but the counter has to
+    // come back or _pump stays throttled against requests that will never land.
+    this.inFlight = 0
+    this._seedBaseLayer()
+    this._dirty = true
   }
 
   // Pin depths 0-2 (1 + 4 + 16 = 21 chunks) permanently.
@@ -178,10 +227,18 @@ export class Terrain {
       return
     }
 
+    if (msg.type === 'tuned') return // ack; retune() does not wait on it
+
     if (msg.type !== 'chunk') throw new Error(`unknown worker message: ${msg.type}`)
 
     this.inFlight--
     this.stats.lastGenMs = msg.ms
+
+    // Chunks built from superseded tuning. Without this they land in the cache
+    // under the same key as a re-requested node and the world keeps patches of
+    // the previous terrain -- which looks like a meshing bug rather than a stale
+    // read, and would be very hard to recognise while turning a slider.
+    if (msg.epoch !== this.epoch) return
 
     const entry = this.cache.get(msg.key)
     if (!entry) return // evicted while in flight; drop it
@@ -261,6 +318,7 @@ export class Terrain {
       w.postMessage({
         type: 'chunk',
         key: node.key,
+        epoch: this.epoch,
         ox: node.x,
         oz: node.z,
         size: node.size,
@@ -307,6 +365,13 @@ export class Terrain {
     this.stats.pending = this.inFlight + this.queue.length
     this.stats.cached = this.cache.size
     this.stats.slots = SLOT_COUNT - this._free.length
+  }
+
+  // Force a quadtree reselection on the next update instead of waiting out
+  // SELECT_EVERY_FRAMES. splitK and ELEV_LOD are read inside _select, so a
+  // tuning slider that only mutated them would look dead for up to six frames.
+  invalidate() {
+    this._dirty = true
   }
 
   _select(camX, camZ) {

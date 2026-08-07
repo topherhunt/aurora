@@ -1,4 +1,4 @@
-import { TerrainHeight } from './terrain-height.js'
+import { TerrainHeight, TUNING, SNOW } from './terrain-height.js'
 import { buildChunk } from './chunk-mesh.js'
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,23 @@ self.onmessage = (e) => {
     return
   }
 
+  // Live retune from the tuning panel. A worker has its OWN module instance, so
+  // mutating TUNING on the main thread is invisible here -- the values have to
+  // be shipped across explicitly, and a worker that silently kept the old ones
+  // would draw terrain that disagrees with what the player collides against.
+  //
+  // Applied to the existing TUNING object rather than replacing it, because
+  // terrain-height.js closed over that object at module load (`const T = TUNING`).
+  // SNOW travels with it because chunk-mesh.js paints the snow line into vertex
+  // colours here, in the worker -- a snow-line slider that only moved the main
+  // thread's copy would change nothing visible at all.
+  if (msg.type === 'tuning') {
+    Object.assign(TUNING, msg.tuning)
+    Object.assign(SNOW, msg.snow)
+    self.postMessage({ type: 'tuned', epoch: msg.epoch })
+    return
+  }
+
   if (msg.type === 'chunk') {
     if (!terrain) throw new Error('terrain worker got a chunk request before init')
     const t0 = performance.now()
@@ -34,6 +51,7 @@ self.onmessage = (e) => {
       {
         type: 'chunk',
         key: msg.key,
+        epoch: msg.epoch,
         positions: r.positions,
         normals: r.normals,
         colors: r.colors,

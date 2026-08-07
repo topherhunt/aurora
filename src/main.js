@@ -9,6 +9,7 @@ import { Vignette } from './vignette.js'
 import { Sky } from './sky.js'
 import { Measure } from './measure.js'
 import { Hud } from './hud.js'
+import { Tuner } from './tuner.js'
 import { Input } from './input.js'
 import { budgetLine } from './budget.js'
 
@@ -83,6 +84,14 @@ const hud = new Hud()
 camera.add(hud.mesh)
 hud.mesh.position.set(0, -0.28, -1.1)
 const input = new Input(renderer)
+// Desktop-only survey tool (§0): the terrain constants are named after what
+// they do, not after the scale they act at, so tuning them from a written
+// description means guessing which one you meant. The panel labels each one
+// with its real-world wavelength instead. See the header of tuner.js. It also
+// takes terrainHeight so it can report what each knob is worth on the ground
+// she is standing on -- most of these layers are gated, and a gated-off knob is
+// indistinguishable from a broken one without that.
+const tuner = new Tuner(terrain, terrainHeight)
 
 // Spawn somewhere walkable and low. Dropping her onto a 40-degree face means
 // the slope limiter refuses every direction and the world looks broken.
@@ -94,9 +103,16 @@ function findSpawn() {
       const x = Math.cos(ang) * r
       const z = Math.sin(ang) * r
       const h = terrainHeight.heightAt(x, z)
-      // Valley floor, not a hillside. Tied to the elevation distribution in
-      // TUNING (p10 92, median 124), so it moves when the terrain scale does.
-      if (h < 85 || h > 140) continue // a green valley, below the snow ramp (148 m)
+      // Valley floor, not a hillside, and this band is quoted in absolute
+      // metres so it has to move whenever the terrain scale does. Flooring the
+      // regional swell (see valleyLo in terrain-height.js) dropped the world
+      // median from 137 m to 68 m and took the snow line down with it, and the
+      // old 85-140 band then sat ON the snow: measured, it put her at 102 m, 7 m
+      // ABOVE the 95 m mean snow line, on a white mountainside rather than in
+      // the green valley this comment claimed. Re-measured against gentle ground
+      // within 3 km of the origin, whose elevations now run p25 12 / p50 31 /
+      // p75 66 / p90 105.
+      if (h < 25 || h > 70) continue // green valley floor, well under the 95 m snow ramp
       if (terrainHeight.slopeAt(x, z) > (15 * Math.PI) / 180) continue
       return { x, z, h }
     }
@@ -127,6 +143,7 @@ const KEY_ACTIONS = {
   Shift: 'flyDown',
   h: 'hud',
   u: 'unstick',
+  t: 'tuner',
   '[': 'coarser',
   ']': 'finer',
 }
@@ -143,6 +160,7 @@ const CODE_ACTIONS = {
   Space: 'flyUp',
   ShiftLeft: 'flyDown',
   ShiftRight: 'flyDown',
+  KeyT: 'tuner',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
 }
@@ -176,7 +194,14 @@ function onSpacePress(now) {
   setFlying(true)
 }
 
+// Typing a number into the tuning panel must not also walk her across the
+// valley: `,aoe` are movement keys and every one of them is a digit's
+// neighbour on the way to the number box.
+const typing = (e) =>
+  e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
+
 addEventListener('keydown', (e) => {
+  if (typing(e)) return
   const actions = actionsFor(e)
   if (actions.length === 0) return
   if (actions.includes('flyUp')) e.preventDefault() // space scrolls the page otherwise
@@ -187,12 +212,14 @@ addEventListener('keydown', (e) => {
   // already filtered out by `fresh`, which matters for the double-tap: a held
   // space would otherwise machine-gun taps and land her immediately.
   if (fresh.includes('hud')) hud.toggle()
+  if (fresh.includes('tuner')) tuner.toggle()
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   if (fresh.includes('coarser')) terrain.splitK = Math.max(MIN_SPLIT_K, terrain.splitK - 0.1)
   if (fresh.includes('finer')) terrain.splitK = Math.min(MAX_SPLIT_K, terrain.splitK + 0.1)
 })
 
 addEventListener('keyup', (e) => {
+  if (typing(e)) return
   for (const a of actionsFor(e)) held.delete(a)
 })
 
@@ -245,6 +272,10 @@ addEventListener('pointerup', (e) => {
   if (e.timeStamp - lastGroundClick < DOUBLE_TAP_MS) {
     lastGroundClick = -Infinity
     player.travelTo(measure.hit.x, measure.hit.z)
+    // The beam has done its job once the trip is committed. Leaving it up plants
+    // it exactly where she lands, so she arrives inside a 90 m red pillar and
+    // has to click the sky to get rid of it.
+    measure.clear()
   } else {
     lastGroundClick = e.timeStamp
   }
@@ -337,6 +368,9 @@ function tick() {
   player.headPosition(headTmp)
   terrain.update(headTmp.x, headTmp.z)
   props.update(headTmp.x, headTmp.z)
+  // After terrain.update, because it reads this frame's selection size to catch
+  // an LOD setting that is about to overrun the slot pool.
+  tuner.update(headTmp)
 
   hud.setLines(hudLines())
   hud.paint(now)
@@ -365,6 +399,7 @@ function hudLines() {
     `chunks  render ${ts.rendered}/${ts.desired}   pending ${ts.pending}   slots ${ts.slots}/${ts.cached}`,
     `chunk tris ${(ts.tris / 1000).toFixed(1)}k   res ${CHUNK_RES}   gen ${ts.lastGenMs.toFixed(1)}ms`,
     `splitK ${terrain.splitK.toFixed(1)} ([ ])   depth<=${MAX_DEPTH}   world ${WORLD_SIZE / 1000}km`,
+    `T = live terrain tuner${tuner.visible ? '   ** OPEN **' : ''}`,
     '',
     '## props (1 batched draw call)',
     `tree ${bk.tree ?? 0}  rock ${bk.rock ?? 0}  grass ${bk.grass ?? 0}  cabin ${bk.cabin ?? 0}`,

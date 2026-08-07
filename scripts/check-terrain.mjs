@@ -14,7 +14,7 @@
 //   node scripts/check-terrain.mjs
 
 import * as THREE from 'three'
-import { TerrainHeight } from '../src/sim/terrain-height.js'
+import { TerrainHeight, TUNING, SNOW } from '../src/sim/terrain-height.js'
 import { buildChunk, CHUNK_RES } from '../src/sim/chunk-mesh.js'
 import { MAX_SPLIT_K } from '../src/terrain/quadtree.js'
 import { TRI_BUDGET } from '../src/budget.js'
@@ -44,12 +44,22 @@ globalThis.Worker = class {
       pending.push(() => this.onmessage({ data: { type: 'ready' } }))
       return
     }
+    // Mirrors terrain-worker.js's live-retune branch. The stub has to echo the
+    // epoch too: the manager drops any chunk whose epoch does not match, so a
+    // stub that forgot it would silently deliver nothing at all.
+    if (msg.type === 'tuning') {
+      Object.assign(TUNING, msg.tuning)
+      Object.assign(SNOW, msg.snow)
+      pending.push(() => this.onmessage({ data: { type: 'tuned', epoch: msg.epoch } }))
+      return
+    }
     pending.push(() => {
       const r = buildChunk(th, msg)
       this.onmessage({
         data: {
           type: 'chunk',
           key: msg.key,
+          epoch: msg.epoch,
           positions: r.positions,
           normals: r.normals,
           colors: r.colors,
@@ -216,6 +226,78 @@ check(
   `${SLOT_COUNT * CHUNK_VERTS} verts`
 )
 
+
+// --- live retune (the tuning panel's path) -----------------------------------
+//
+// The panel mutates TUNING on the main thread and asks Terrain to rebuild. Three
+// things can go wrong and none of them look like a crash:
+//
+//   the workers keep the old table, so the drawn mesh and the surface she
+//   collides against drift apart;
+//   chunks generated before the change land afterwards and leave patches of the
+//   previous world behind, which reads as a meshing bug;
+//   slots freed during the flush are not all recovered, and the pool bleeds a
+//   little on every slider drag.
+
+console.log('\nlive retune')
+{
+  const sampleY = () => {
+    const pos = terrain.batch.geometry.attributes.position.array
+    let sum = 0
+    let n = 0
+    for (const e of terrain.cache.values()) {
+      if (!e.slot || !e.visible) continue
+      const info = terrain.batch._geometryInfo[e.slot.geometryId]
+      sum += pos[info.vertexStart * 3 + 1]
+      n++
+    }
+    return { mean: sum / n, n }
+  }
+
+  terrain.splitK = 1.6
+  settle(x, z)
+  const before = sampleY()
+
+  const epochBefore = terrain.epoch
+  terrain.retune({ tuning: { massifRelief: 120 }, snow: { base: 140 } })
+  check(terrain.epoch === epochBefore + 1, 'a retune bumps the epoch', `${epochBefore} -> ${terrain.epoch}`)
+
+  // A reply stamped with the previous epoch, delivered by hand. It must be
+  // ignored: nothing cached, no slot taken.
+  const freeBefore = terrain._free.length
+  terrain._onWorkerMessage({ type: 'chunk', key: '0|0|0', epoch: epochBefore, ms: 0.4 })
+  check(
+    terrain._free.length === freeBefore,
+    'a chunk from the previous tuning is dropped rather than shown',
+    `${freeBefore} free slots before and after`
+  )
+
+  settle(x, z)
+  const after = sampleY()
+  console.log(
+    `        massifRelief 370 -> 120: mean corner height ${before.mean.toFixed(1)}m -> ${after.mean.toFixed(1)}m ` +
+      `over ${after.n} visible chunks`
+  )
+  check(
+    Math.abs(after.mean - before.mean) > 5,
+    'the drawn mesh actually follows the new tuning',
+    `${before.mean.toFixed(1)}m -> ${after.mean.toFixed(1)}m`
+  )
+  // The workers hold their own module instance of terrain-height.js, so this is
+  // the check that the values crossed the postMessage boundary at all.
+  check(TUNING.massifRelief === 120 && SNOW.base === 140, 'the worker stub received the new table')
+
+  {
+    const seen = new Set()
+    for (const e of terrain.cache.values()) if (e.slot) seen.add(e.slot.geometryId)
+    for (const sl of terrain._free) seen.add(sl.geometryId)
+    check(seen.size === SLOT_COUNT, 'no slots leaked across the retune', `${seen.size} of ${SLOT_COUNT}`)
+  }
+
+  // Put the world back before the prop checks, which assume the shipped values.
+  terrain.retune({ tuning: { massifRelief: 370 }, snow: { base: 95 } })
+  drain()
+}
 
 // --- scattered props ---------------------------------------------------------
 //

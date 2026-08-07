@@ -140,10 +140,26 @@ export const BIOME_TUNING = {
   // bottoms out at -124. The first pass used -150/-20 and produced ZERO low
   // ground anywhere on the map, because -150 is below the world's minimum: two
   // of §2's five biomes could not exist and the gate said so.
-  lowEdge: -95, // metres relative to the local snow line: below this is unambiguously "low"
-  highEdge: 5, // above this is unambiguously "high"
-  dryEdge: 0.38, // moisture below this is "dry"
-  wetEdge: 0.62, // above this is "moist"
+  //
+  // RE-MEASURED after the swell was floored (see valleyLo in terrain-height.js)
+  // and SNOW.base came down with it. The distribution of (elevation - local snow
+  // line) is now p05 -95, p25 -65, p50 -32, p75 +7, p90 +43, and against the old
+  // -95/+5 edges nearly the whole world read as "low": heath and lush took 55%
+  // between them while pine fell to 1.7% and the gate fired. Same failure as the
+  // first pass, opposite direction, and the same cause both times -- edges quoted
+  // in absolute metres against a distribution that had moved underneath them.
+  lowEdge: -50, // metres relative to the local snow line: below this is unambiguously "low"
+  highEdge: 35, // above this is unambiguously "high"
+  // The moisture split had to come down too, and for a structural reason rather
+  // than a cosmetic one. Pine is `high AND wet`, but high ground is dry ground --
+  // the two conditions actively fight, so pine is the biome that starves first
+  // whenever anything else moves. At the old 0.38/0.62 it sat at 2.3%, a tenth of
+  // a percent above the gate. Widening what counts as wet is the only knob that
+  // feeds pine without touching the altitude axis, and it costs heath directly,
+  // so it is set as far as pine needs and no further: 0.32/0.52 gives pine 4.7%
+  // and still leaves heath at 17.7%, up from 3.1% before this round of work.
+  dryEdge: 0.32, // moisture below this is "dry"
+  wetEdge: 0.52, // above this is "moist"
   // §2: "Perturb the biome lookup with low-frequency noise so borders wander
   // instead of following clean contour lines." This perturbs the *inputs*, which
   // is what makes the border wander rather than merely get noisy.
@@ -320,6 +336,24 @@ export function runPhaseA(seed, n = GRID_N, log = () => {}) {
   const t7 = now()
   const summit = findSummit(elev, n, cell)
   const conn = connectivity(elev, lake, filled, n, cell, spawn, [...villages, summit])
+
+  // How close to the roof of the world can she actually get? This exists because
+  // asking "is the single highest CELL reachable" turned out to answer a
+  // different question than the one §4 cares about. Measured on this seed, that
+  // cell was a two-cell spire whose gentlest escape was 42 deg against the 38 deg
+  // limit, 13 m above the highest ground anyone can stand on -- while every other
+  // cell in the world, all 1048574 of them, was reachable. Knobbly summits are a
+  // deliberate feature (see jagAmp), and any world that has them will grow spires
+  // like that, so a strict test on the top cell fails on the feature rather than
+  // on the fault.
+  //
+  // The shortfall separates the two: a spire reads as a few metres, a summit
+  // stranded in another basin reads as hundreds. Villages stay strict -- there is
+  // no equivalent excuse for one of those being walled off.
+  let topReachable = -Infinity
+  for (let c = 0; c < size; c++) if (conn.reachable[c] === 1 && elev[c] > topReachable) topReachable = elev[c]
+  const summitShortfall = summit.h - topReachable
+
   log(`connectivity   ${ms(t7)}  ${(conn.reachableFraction * 100).toFixed(1)}% reachable`)
 
   return {
@@ -343,6 +377,8 @@ export function runPhaseA(seed, n = GRID_N, log = () => {}) {
     biomeArea,
     spawn,
     summit,
+    topReachable,
+    summitShortfall,
     villages,
     reachable: conn.reachable,
     reachableFraction: conn.reachableFraction,

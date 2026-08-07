@@ -118,8 +118,64 @@ export const SHRINK = 2
 // like crumpled cloth. Do not tune these by eye alone, and do not tune them by
 // number alone either.
 export const TUNING = {
-  seaLevel: 30,
-  valleyRelief: 240, // regional swell under everything else -- see baseFreq
+  seaLevel: 0,
+  // The regional swell, and the answer to "I can't readily find valleys below
+  // ~80 m; around half of them should reach 0-5 m, so there should be much more
+  // heath coverage".
+  //
+  // This term was LINEAR in a 4-octave fbm, and an fbm normalised to 0..1 is
+  // bell-shaped -- it sits near 0.5 and almost never approaches either end. So
+  // `seaLevel + base * valleyRelief` could not produce low ground however the two
+  // constants were set: at seaLevel 30 / relief 240 it spanned only 39-111 m
+  // post-SHRINK across the ENTIRE world, and since every mountain term only ever
+  // ADDS, that band was the world's floor. Measured minimum: 34 m.
+  //
+  // A power curve was the obvious fix and it is not enough, which is worth
+  // recording because the reason is not obvious. Measured: valley floors carry a
+  // median of 0.3 m from all the mountain terms combined, so a valley floor's
+  // height IS this term and nothing else. But the `base` value at valley floors
+  // (p50 0.482) is statistically the same as `base` world-wide (p50 0.513) --
+  // these basins are local minima of the MOUNTAIN layers at a ~140 m scale, and a
+  // 5 km swell has no local minima at that scale, so valleys sample the swell
+  // essentially at random. Therefore "half of valleys reach 0-5 m" is equivalent
+  // to "half the world's swell sits near zero", and no monotone curve on a
+  // bell-shaped input does that -- base^3.2 still left valley p50 at 28 m while
+  // dragging the whole mid-elevation world down with it.
+  //
+  // So: floor it instead of curving it. Below `valleyLo` the swell is flat low
+  // country; above it, it climbs to full relief by `valleyHi`. softFloor rather
+  // than a clamp, for the same reason it is used on `ridge` and `massif`: a hard
+  // max(0, ..) makes the lowlands DEAD flat with a crease where they meet the
+  // rise, and the quadratic knee gives the gentle roll that "hilly bumpy
+  // progressions from those low valleys" asks for. There is deliberately no
+  // ceiling, so the highest ground keeps climbing past valleyHi rather than
+  // forming a mesa.
+  //
+  // valleyLo 0.64 is far above the `base` median of 0.513, and the first cut of
+  // this comment asserted it should sit AT the median so that half the world
+  // would be lowland by construction. Measured, that was wrong twice over. The
+  // knee means the swell is not truly floored until base < valleyLo - valleyKnee
+  // * (valleyHi - valleyLo), i.e. 0.598, and even where the swell is exactly zero
+  // the mountain terms still pile tens of metres on top -- `mountain` floors at
+  // 0.2, so `ridge` and `massif` are never fully off. At lo 0.50 that came out as
+  // only 30% of valleys under 5 m. These two numbers are solved from the target,
+  // not from the input distribution:
+  //
+  //   valleyLo   valleys under 5 m   valley p50   world p50   world max
+  //     0.50            30%              12 m        89 m       362 m
+  //     0.56            38%               8 m        79 m       355 m
+  //     0.60            42%               7 m        72 m       333 m
+  //     0.64            46%               6 m        68 m       321 m   <- shipped
+  //     0.68            48%               5 m        65 m       307 m
+  //
+  // 0.64 is where "around half of valleys reach 0-5 m" is met while the world
+  // maximum is still the 321 m it was before this change -- the whole point of a
+  // floor rather than a shift is that the peaks do not come down with the
+  // valleys, and past 0.64 they start to.
+  valleyLo: 0.64,
+  valleyHi: 0.9,
+  valleyKnee: 0.16,
+  valleyRelief: 300, // see baseFreq -- a 5 km swell, larger than any one mountain
 
   // TIER 1 of the mountains. Broad massifs ~1.4 km apart carrying most of the
   // total height, on flanks long enough to stay climbable -- see the note on
@@ -311,8 +367,8 @@ export const TUNING = {
   // High-ground gate, on top of the `range` gate step 6 already had. Cliffs are
   // a property of high steep rock; see the crease layer above, which needs the
   // same thing for the same walkability reason.
-  cliffLo: 0.18,
-  cliffHi: 0.5,
+  cliffLo: 0.2,
+  cliffHi: 0.32,
   // BREAKS ALONG THE CLIFF LINE, and this is a reachability requirement, not
   // decoration. A Worley boundary is a CLOSED LOOP around its cell, so an
   // ungapped mosaic rings every summit in an unbroken wall -- the connectivity
@@ -347,9 +403,41 @@ export const TUNING = {
   // cheaper than amplitude: dropping cliffAmp to 34 or widening cliffEdge to
   // 0.14 did NOT reopen the summit, because a 12 m step across one 16 m cell is
   // still too steep to walk. Only removing stretches of wall entirely works.
+  // ...and the table above is measured on the WRONG AXIS, which is why "I'm still
+  // not seeing cliff lips" survived all of it. Run lengths along the mask say how
+  // long a wall segment is; they say nothing about how STRONG the mask is, and
+  // strength is what multiplies the step height. Measured on the actual field,
+  // this smoothstep runs at mean 0.15, because its input is a 2-octave fbm that
+  // is bell-shaped about 0.5 (p10 0.27, p50 0.50, p90 0.73) and the 0.58-0.82
+  // band sits out on its upper tail. Combined with the other two factors the
+  // whole gate averaged 0.04, so the layer was drawing 0.5 m bumps -- and a
+  // partially-gated cliff is not a small cliff, it is precisely the "smooth
+  // curves, molded clay" being complained about. Scaling a step down rounds it
+  // off; it does not shrink it.
+  //
+  // Recentred on the input's real distribution. Narrower, too: a wide band spends
+  // most of the map at partial strength, which is the mush.
   cliffBreakFreq: 0.005,
-  cliffBreakLo: 0.58,
-  cliffBreakHi: 0.82,
+  cliffBreakLo: 0.4,
+  cliffBreakHi: 0.52,
+
+  // Crispen the finished gate. Three soft factors multiplied together are soft
+  // however each one is tuned -- the product lands mid-scale over most of the map
+  // -- and mid-scale is the one value a cliff must never take. This maps the
+  // product back to near-binary: full-height cliffs where they occur, nothing
+  // where they do not, and as little in between as possible.
+  //
+  //   break     highGround   crisp    | full (>0.8)   mush (0.1-0.8)   off
+  //   .58/.82     .18/.50     --      |     1.2%           8.7%       90.1%  <- was
+  //   .44/.56     .18/.50     --      |     7.1%          18.8%       74.1%
+  //   .44/.56     .20/.32     --      |    10.1%          19.5%       70.4%
+  //   .44/.56     .20/.32   .30/.55   |    17.9%           3.4%       78.8%
+  //   .40/.52     .20/.32   .30/.55   |    20.9%           3.7%       75.4%  <- shipped
+  //
+  // The crisp column is the whole point: it converts nineteen percent of mush
+  // into either a cliff or flat ground.
+  cliffGateLo: 0.3,
+  cliffGateHi: 0.55,
 }
 
 // Quantise into bands with a sharp-but-not-vertical transition. Produces mesa
@@ -573,7 +661,15 @@ export const SCARP = {
 // Elevations here are post-SHRINK metres and have to be halved by hand if
 // SHRINK moves, exactly like every other elevation constant outside TUNING.
 export const SNOW = {
-  base: 148, // mean line. = 295 pre-SHRINK; probe says 41.4% of the map is above it
+  // Mean line. Was 148 when the world's median ground was 137 m, which put 41.4%
+  // of the map above it. Flooring the regional swell (see valleyLo) dropped the
+  // median to 68 m without lowering the peaks, and 148 then sat above almost
+  // everything -- measured, 8.5% of the map was snowy, in a game whose subject is
+  // a snowy mountainscape. This is the constant most exposed to that change
+  // because it is the only one quoted in absolute metres against ground height.
+  // 95 restores a snowy third (32%): the peaks and their upper flanks, with the
+  // new heath lowland well below it.
+  base: 95,
   band: 47, // metres from first dusting to full cover -- the old 148..195 ramp
   // +/- metres. 44 m of spread between the snowiest and barest region, which is
   // enough that two massifs in the same view disagree about where winter starts.
@@ -820,7 +916,9 @@ export class TerrainHeight {
     // 4. Valley-floor rolling.
     const base = this.nBase.fbm(wx * T.baseFreq, wz * T.baseFreq, 4) * 0.5 + 0.5
 
-    let h = T.seaLevel + base * T.valleyRelief
+    let h =
+      T.seaLevel +
+      softFloor((base - T.valleyLo) / (T.valleyHi - T.valleyLo), T.valleyKnee) * T.valleyRelief
     h += mountain * massif * T.massifRelief
     h += mountain * ridge * T.mountainRelief
 
@@ -965,14 +1063,17 @@ export class TerrainHeight {
     //    The break mask multiplies the whole term, so it cannot tear the
     //    surface: `mid` still agrees from both sides of a boundary at every
     //    strength, including zero.
-    const gate =
+    const gate = smoothstep(
+      T.cliffGateLo,
+      T.cliffGateHi,
       range *
-      smoothstep(T.cliffLo, T.cliffHi, highGround) *
-      smoothstep(
-        T.cliffBreakLo,
-        T.cliffBreakHi,
-        this.nCliffBreak.fbm(wx * T.cliffBreakFreq, wz * T.cliffBreakFreq, 2) * 0.5 + 0.5
-      )
+        smoothstep(T.cliffLo, T.cliffHi, highGround) *
+        smoothstep(
+          T.cliffBreakLo,
+          T.cliffBreakHi,
+          this.nCliffBreak.fbm(wx * T.cliffBreakFreq, wz * T.cliffBreakFreq, 2) * 0.5 + 0.5
+        )
+    )
     if (gate > 0.001) {
       const m = this.nCliff.worleyMesa(wx * T.cliffFreq, wz * T.cliffFreq, this._mesa)
       const t = Math.min(1, (m.f2 - m.f1) / T.cliffEdge)
