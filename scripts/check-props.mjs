@@ -43,7 +43,48 @@ function readGlb(file) {
   const b = fs.readFileSync(file)
   if (b.readUInt32LE(0) !== 0x46546c67) throw new Error(`not a GLB: ${file}`)
   const jsonLen = b.readUInt32LE(12)
-  return JSON.parse(b.slice(20, 20 + jsonLen).toString('utf8'))
+  const json = JSON.parse(b.slice(20, 20 + jsonLen).toString('utf8'))
+  // BIN chunk starts after the JSON chunk plus its own 8-byte header.
+  return { json, bin: b.subarray(20 + jsonLen + 8) }
+}
+
+const COMPONENT = { 5120: Int8Array, 5121: Uint8Array, 5122: Int16Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array }
+const NCOMP = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }
+
+// Accessors here are interleave-tolerant but not sparse-aware; the Blender
+// exporter writes neither sparse accessors nor normalized integer positions.
+function readAccessor(glb, index) {
+  const acc = glb.json.accessors[index]
+  const view = glb.json.bufferViews[acc.bufferView]
+  const Ctor = COMPONENT[acc.componentType]
+  const n = NCOMP[acc.type]
+  const base = (view.byteOffset ?? 0) + (acc.byteOffset ?? 0)
+  const stride = view.byteStride ?? Ctor.BYTES_PER_ELEMENT * n
+  const out = new Float64Array(acc.count * n)
+  for (let i = 0; i < acc.count; i++) {
+    const el = new Ctor(glb.bin.buffer, glb.bin.byteOffset + base + i * stride, n)
+    for (let c = 0; c < n; c++) out[i * n + c] = el[c]
+  }
+  return out
+}
+
+// Total world surface area, and how much of it sits in triangles too small to
+// draw. See the "surface area, not triangle count" check below for why.
+const DEGENERATE_M2 = 1e-4 // 1 cm^2
+function surface(glb, prim) {
+  const p = readAccessor(glb, prim.attributes.POSITION)
+  const idx = readAccessor(glb, prim.indices)
+  let area = 0
+  let degenerate = 0
+  for (let t = 0; t < idx.length; t += 3) {
+    const [i, j, k] = [idx[t] * 3, idx[t + 1] * 3, idx[t + 2] * 3]
+    const ax = p[j] - p[i], ay = p[j + 1] - p[i + 1], az = p[j + 2] - p[i + 2]
+    const bx = p[k] - p[i], by = p[k + 1] - p[i + 1], bz = p[k + 2] - p[i + 2]
+    const a = 0.5 * Math.hypot(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
+    area += a
+    if (a < DEGENERATE_M2) degenerate++
+  }
+  return { area, degenerate }
 }
 
 // PNG IHDR is fixed-offset and the first chunk by spec, so no decoder needed.
@@ -89,13 +130,24 @@ for (const a of assets) {
   }
   totalBytes += fs.statSync(glbPath).size
 
-  let gltf
+  // A texture the build could not find is not a build failure -- Blender
+  // substitutes magenta and the asset exports perfectly -- so the only trace is
+  // this field. Without it the failure is a colour, and nothing here reads
+  // colours.
+  if (a.missing_images) warn(`${id}: built with textures it could not find -- ${a.missing_images.join(', ')}`)
+  // A textured asset with an untextured slot is a chimera: correct trunk, grey
+  // canopy. The build cannot resolve it (the map is on disk but the FBX never
+  // references it), so it says so and this repeats it where it gets read.
+  if (a.untextured_slots) warn(`${id}: ${a.untextured_slots.length} material slot(s) bake flat, not textured -- ${a.untextured_slots.join(', ')}`)
+
+  let glb
   try {
-    gltf = readGlb(glbPath)
+    glb = readGlb(glbPath)
   } catch (e) {
     check(false, `${id}: glb parses`, e.message)
     continue
   }
+  const gltf = glb.json
 
   // Every LOD the manifest promises has to be a mesh in the file. A chain that
   // claims four tiers and ships three degrades to "the far tier never swaps in",
@@ -143,6 +195,35 @@ for (const a of assets) {
 
     if (lod.stalled) stalled.push(`${id}/${lod.name} ${lod.tris} vs ${lod.target_tris} target`)
 
+    // Surface area, not triangle count. A collapse decimator does not fail on a
+    // tuft of grass blades -- it succeeds the only way it can, by flattening
+    // them. The triangles remain, their UVs still address healthy texels, so the
+    // manifest, the tri count and the UV-footprint probe all report a fine
+    // asset that renders as a dozen specks. Four photoscan grass variants passed
+    // every other check in this file that way, and only looking at a render
+    // caught it. This is that look, made mechanical: a tier whose triangles have
+    // no area is not a cheap tier, it is an absent one.
+    // Two measures, because neither decides alone. `degenFrac` is how much of
+    // the tier is triangles too small to draw; `frac` is how much of the
+    // silhouette it could fill that it actually presents. Wasted triangles are
+    // not fatal on their own -- `fern_polypody` is 6 slivers in 15 and the other
+    // 9 are a fern. A thin silhouette is not fatal on its own either -- a wispy
+    // tuft is legitimately thin, and `grass_wild_scan_d` sits at 2.4% in perfect
+    // health. Both at once is the crush, and there it is unambiguous: the four
+    // excluded grass variants ran 84-88% degenerate at 0.1-3.9% of silhouette.
+    const geo = surface(glb, prim)
+    const degenFrac = geo.degenerate / tris
+    const pAcc = gltf.accessors[prim.attributes.POSITION]
+    const hull = pAcc?.min && pAcc?.max
+      ? Math.max(pAcc.max[0] - pAcc.min[0], pAcc.max[2] - pAcc.min[2]) * (pAcc.max[1] - pAcc.min[1])
+      : 0
+    const frac = hull > 0 ? geo.area / hull : 1
+    const crushed = degenFrac > 0.25 && frac < 0.05
+    check(!crushed, `${id}: ${lod.name} kept its surface through decimation`,
+      crushed ? `${geo.degenerate} of ${tris} tris under ${DEGENERATE_M2 * 1e4} cm2, ${(100 * frac).toFixed(1)}% of silhouette` : '')
+    if (!crushed && degenFrac > 0.25) warn(`${id}: ${lod.name} spends ${geo.degenerate} of ${tris} triangles on slivers under ${DEGENERATE_M2 * 1e4} cm2`)
+    if (!crushed && frac < 0.02) warn(`${id}: ${lod.name} presents ${geo.area.toFixed(4)} m2, ${(100 * frac).toFixed(1)}% of its silhouette -- looks thin`)
+
     // The manifest is what the runtime budgets against, so it has to match the
     // file rather than the intent.
     check(lod.tris === tris, `${id}: ${lod.name} manifest tri count matches glb`,
@@ -177,8 +258,22 @@ for (const a of assets) {
   }
 
   // --- texture layers -------------------------------------------------------
-  for (const key of ['layer', 'billboard_layer']) {
-    const rel = a[key]
+  // Per tier, not per asset. Each mesh tier is unwrapped and baked against its
+  // own triangulation (build.py), because a single atlas baked on the full-res
+  // source addresses UVs that decimation has already invalidated -- five assets
+  // rendered fully transparent that way. So a two-tier textured asset spends two
+  // of the 256 slices, and the impostor sheet is another.
+  for (const lod of lods) {
+    const rel = lod.layer
+    const key = `${lod.name} layer`
+    // A billboard always carries its own sheet. A mesh tier carries one exactly
+    // when the asset is textured, and the manifest has to agree with the mesh
+    // about that: a tier with UVs and no layer would sample slice 0, which
+    // belongs to whichever asset happens to be first in the array.
+    if (lod.kind !== 'billboard') {
+      check(!!rel === !!a.textured, `${id}: ${key} matches textured=${!!a.textured}`,
+        !!rel === !!a.textured ? '' : `layer ${rel ?? 'null'}`)
+    }
     if (!rel) continue
     const p = path.join(DIR, rel)
     if (!fs.existsSync(p)) {

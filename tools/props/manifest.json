@@ -1728,18 +1728,6 @@
       "billboard_quads": 3
     },
     {
-      "id": "tree_deciduous_hi",
-      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/realistic-deciduous-tree/source/nested/TREE.fbx",
-      "class": "large",
-      "height_m": 11,
-      "lod_tris": [
-        500,
-        130
-      ],
-      "billboard": true,
-      "billboard_quads": 3
-    },
-    {
       "id": "bush_pine_cluster",
       "src": "tmp/placeholder-props/high-poly-to-decimate/_x/3-pine-bushes/source/bushes done.fbx",
       "class": "medium",
@@ -1849,66 +1837,6 @@
       ],
       "billboard": true,
       "billboard_quads": 3
-    },
-    {
-      "id": "tree_oak_hero",
-      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/high-quality-tree-66/source/Graf1TreeHIGH.fbx",
-      "class": "structure",
-      "height_m": 9.7,
-      "lod_tris": [
-        1800
-      ],
-      "decimate": "planar_collapse",
-      "billboard": true,
-      "billboard_quads": 3
-    },
-    {
-      "id": "grass_tall_scan_a",
-      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_VarA_LOD0.fbx",
-      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg",
-      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg",
-      "class": "small",
-      "height_m": 0.85,
-      "lod_tris": [
-        16
-      ],
-      "billboard": false
-    },
-    {
-      "id": "grass_tall_scan_b",
-      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_VarB_LOD0.fbx",
-      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg",
-      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg",
-      "class": "small",
-      "height_m": 0.85,
-      "lod_tris": [
-        16
-      ],
-      "billboard": false
-    },
-    {
-      "id": "grass_tall_scan_c",
-      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_VarC_LOD0.fbx",
-      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg",
-      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg",
-      "class": "small",
-      "height_m": 0.85,
-      "lod_tris": [
-        16
-      ],
-      "billboard": false
-    },
-    {
-      "id": "grass_wild_scan_a",
-      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarA_LOD0.fbx",
-      "base_color_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_BaseColor.jpg",
-      "opacity_map": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_Opacity.jpg",
-      "class": "small",
-      "height_m": 0.4,
-      "lod_tris": [
-        16
-      ],
-      "billboard": false
     },
     {
       "id": "grass_wild_scan_b",

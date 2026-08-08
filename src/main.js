@@ -564,7 +564,12 @@ function applySky(state, head, elapsedReal) {
   // After sky.update: the waves are the only thing here on the wall clock, but
   // the reflection they bend is written by the line above, and a frame where
   // the two disagree is a frame where the lake is reflecting yesterday's sky.
-  water.update(elapsedReal)
+  // ...and after the hemi light is set, which is the ambient the water's
+  // mountain silhouettes are matched to. `hemi` is passed rather than `state`
+  // because these three have already made the trip into linear here, and the
+  // water needs the same numbers the terrain's shader will get, not the sRGB
+  // triples they were authored as.
+  water.update(elapsedReal, hemi)
 }
 
 // --- frame loop -------------------------------------------------------------

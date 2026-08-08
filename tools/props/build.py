@@ -75,6 +75,38 @@ def _principled(mat):
     return None
 
 
+# Inputs that make a Cycles DIFFUSE bake return less than the base colour,
+# because physically the surface is not diffuse. Zeroing them is not a cheat:
+# §8 ships one directional light against a Lambert-ish pass with no metalness,
+# no specular and no transmission, so there is no downstream consumer for any
+# of this and the bake's only job is to capture albedo.
+_NON_DIFFUSE = ("Metallic", "Transmission Weight", "Specular IOR Level")
+
+
+def neutralize_pbr(obj):
+    """Zero the PBR inputs that would darken or erase the diffuse bake.
+
+    `windmill` arrived from its generator with metallicFactor 1.0, and a fully
+    metallic surface has NO diffuse albedo -- so its 128x128 atlas baked pure
+    black across the 65% of itself that was opaque, and the impostor rendered
+    from it was a black slab. The mesh, the UVs and the 2048x2048 source texture
+    were all fine; the material was telling Cycles the truth and the truth was
+    not what this pipeline wanted. `watchtower` has the same input driven by a
+    metallic-roughness map, so the link has to go too, not just the value."""
+    for slot in obj.material_slots:
+        bsdf = _principled(slot.material)
+        if bsdf is None:
+            continue
+        nt = slot.material.node_tree
+        for name in _NON_DIFFUSE:
+            sock = bsdf.inputs.get(name)
+            if sock is None:
+                continue
+            for link in list(sock.links):
+                nt.links.remove(link)
+            sock.default_value = 0.0
+
+
 def _base_color_image(mat):
     """The image feeding Base Color, if there is one.
 
@@ -130,8 +162,120 @@ def _alpha_image(mat):
     return None
 
 
+def wire_orphan_color(obj):
+    """Link a foliage atlas's RGB into Base Color when only its alpha is wired.
+
+    A cutout leaf sheet is one RGBA image: colour in RGB, the cutout in A. The
+    FBX importer routinely reconstructs only the alpha half of that, because the
+    FBX material records the opacity channel explicitly and leaves the diffuse
+    slot to a texture reference it could not resolve. What is left is a
+    Principled node with a perfect cutout and Base Color sitting at its 0.8 grey
+    default -- which bakes, correctly and uselessly, as white leaves.
+    `tree_oak_hero` shipped a canopy of grey leaves that way and every check in
+    the project passed it.
+
+    Only ever fills an EMPTY Base Color, and only from an image the material
+    already references, so it cannot override an author's wiring. Returns the
+    slots it fixed."""
+    fixed = []
+    for slot in obj.material_slots:
+        mat = slot.material
+        bsdf = _principled(mat)
+        if bsdf is None or mat.node_tree is None:
+            continue
+        bc = bsdf.inputs.get("Base Color")
+        if bc is None or bc.is_linked:
+            continue
+        # Prefer the image already driving Alpha -- for a cutout sheet that IS
+        # the colour map. Otherwise any image whose Color output goes nowhere.
+        alpha_img = _alpha_image(mat)
+        cand = None
+        for n in mat.node_tree.nodes:
+            if n.type != "TEX_IMAGE" or n.image is None:
+                continue
+            if alpha_img is not None and n.image is alpha_img:
+                cand = n
+                break
+            if not n.outputs["Color"].links and cand is None:
+                cand = n
+        if cand is None:
+            continue
+        # An image the importer wired only to Alpha is tagged Non-Color, which is
+        # right for a mask and wrong the moment it feeds Base Color: the bake
+        # then reads sRGB-encoded green as if it were linear and crushes it to
+        # near-black. This was the oak's canopy -- wiring alone left it black,
+        # and only the colour space made it green. Safe for the cutout, because
+        # Blender never colour-manages the alpha channel.
+        cand.image.colorspace_settings.name = "sRGB"
+        mat.node_tree.links.new(cand.outputs["Color"], bc)
+        fixed.append("%s<-%s" % (mat.name, cand.image.name))
+    return fixed
+
+
+def untextured_slots(obj):
+    """Material slots with no Base Color image, in an asset that has some.
+
+    These bake as whatever Principled's default happens to be -- 0.8 white for
+    an importer that wired nothing, near-black for one that wired a colour it
+    read out of the FBX. Either way the asset comes out a chimera: a correctly
+    textured trunk under a canopy of flat grey. Not an error the build can fix
+    (the map exists on disk but nothing references it, so the wiring is a
+    per-slot decision), which is exactly why it has to be reported."""
+    return sorted(s.material.name for s in obj.material_slots
+                  if s.material is not None and _base_color_image(s.material) is None)
+
+
 def has_images(obj):
     return any(_base_color_image(s.material) is not None for s in obj.material_slots)
+
+
+def _unloadable(images):
+    """Images whose file is not where the datablock says it is.
+
+    By path, not by `img.has_data`: Blender loads image pixels lazily, so
+    `has_data` is False for a perfectly good texture nothing has sampled yet.
+    Using it as the test reported three healthy maps as missing on an asset that
+    had just baked correctly from them."""
+    bad = []
+    for img in images:
+        if img is None or img.source != "FILE" or img.packed_file is not None:
+            continue
+        p = bpy.path.abspath(img.filepath)
+        if not p or not os.path.exists(p):
+            bad.append(img)
+    return bad
+
+
+def resolve_missing_images(obj, src, levels=3):
+    """Re-find texture files the source references at a path that does not exist.
+
+    `has_images` answers yes for these -- the material really does have a Base
+    Color image node -- but the image has no pixels, and Blender substitutes
+    magenta. So the asset takes the textured path, bakes magenta into its atlas,
+    and the failure only shows up as a colour. `tree_oak_hero` baked at mean RGB
+    (249, 0, 249) across 44% of its footprint before this existed.
+
+    Two ways a pack does this, and this handles both because it matches on
+    basename rather than on path: the FBX names a directory layout the download
+    does not have (textures beside the mesh in `source/`, actually shipped in a
+    sibling `textures/`), or it preserved the author's own machine
+    (`C:/_Evan/PHOTSCANS/...`). Search outward one directory at a time and stop
+    as soon as nothing is missing, rather than starting wide -- the pack roots
+    sit inside one shared download tree, and a basename match across packs would
+    quietly dress one asset in another's bark.
+
+    Only Base Color maps are reported back. The FBXs carry slots for highlight,
+    normal and specular maps that the packs frequently do not ship, and none of
+    those have a consumer here -- §8 is one Lambert-ish pass -- so a warning
+    about them is noise that would bury the one that matters."""
+    d = os.path.dirname(os.path.abspath(src))
+    for _ in range(levels):
+        if not _unloadable(bpy.data.images):
+            break
+        bpy.ops.file.find_missing_files(directory=d, find_all=False)
+        d = os.path.dirname(d)
+    albedo = {_base_color_image(s.material) for s in obj.material_slots}
+    return sorted(i.name for i in _unloadable(albedo))
 
 
 def attach_loose_textures(obj, base_color_path, opacity_path=None):
@@ -197,6 +341,7 @@ def consolidate_texture(obj, out_png, size=LAYER_SIZE):
     that is the intended trade (§9's Class B), but it is why Class A tiling
     surfaces are a separate array and not baked here."""
     common.select_only([obj])
+    neutralize_pbr(obj)
 
     # A second UV layer, so the bake reads the ORIGINAL UVs through the existing
     # materials while writing into the new layout. Baking into the layer you are
@@ -263,7 +408,7 @@ def consolidate_texture(obj, out_png, size=LAYER_SIZE):
     obj.data.uv_layers.remove(obj.data.uv_layers[src_uv_name])
     obj.data.uv_layers[dst_uv_name].name = "UVMap"
     obj.data.uv_layers.active = obj.data.uv_layers["UVMap"]
-    return True
+    return img
 
 
 def _bake_alpha_into(obj, img, size):
@@ -468,7 +613,7 @@ def bake_ao_to_vertex(obj, samples=64, distance=1.0):
 # Final material
 # ---------------------------------------------------------------------------
 
-def finalize_material(obj, aid, textured):
+def finalize_material(obj, aid, textured, image=None):
     """Collapse every material slot into ONE material that references the vertex
     colour layer and (if textured) a UV-mapped image.
 
@@ -489,10 +634,16 @@ def finalize_material(obj, aid, textured):
     one per source material. BatchedMesh takes a single geometry per instance
     (§5), so a two-primitive LOD would have to be merged at load time anyway.
 
-    The image is a 1x1 stub, not the real 128x128 layer: the runtime samples the
-    baked PNG out of the `uArrAsset` DataArrayTexture (§9), so embedding it in
-    the GLB as well would duplicate every layer. The stub exists only to make
-    the exporter treat UVMap as used."""
+    `image` is this tier's real baked atlas, and it has to be, because
+    `render_billboard` reads Base Color back out of this node tree. Handing it a
+    stub here rendered nine impostor sheets as solid black -- the stub was the
+    only albedo in the tree, and textured assets carry white vertex colours by
+    design, so there was nothing else for the emission shader to pick up.
+
+    The real image must NOT reach the GLB: the runtime samples the baked PNG out
+    of the `uArrAsset` DataArrayTexture (§9), so embedding it would duplicate
+    every layer inside every mesh. `swap_to_stub` does that swap immediately
+    before export, once the billboard render is done with the real one."""
     me = obj.data
     mat = bpy.data.materials.new("prop_%s" % aid)
     nt = mat.node_tree
@@ -508,8 +659,8 @@ def finalize_material(obj, aid, textured):
 
     if textured:
         tex = nt.nodes.new("ShaderNodeTexImage")
-        stub = bpy.data.images.new("stub_%s" % aid, width=1, height=1, alpha=True)
-        tex.image = stub
+        tex.image = image if image is not None else bpy.data.images.new(
+            "stub_%s" % aid, width=1, height=1, alpha=True)
         mix = nt.nodes.new("ShaderNodeMix")
         mix.data_type = "RGBA"
         mix.blend_type = "MULTIPLY"
@@ -526,6 +677,25 @@ def finalize_material(obj, aid, textured):
     for poly in me.polygons:
         poly.material_index = 0
     return mat
+
+
+def swap_to_stub(objs, aid):
+    """Point every Image Texture node at a 1x1 transparent stub.
+
+    Run this after the billboard render and before the export. The texture node
+    has to survive -- it is what makes the glTF exporter treat UVMap as used, and
+    without a UV layer the runtime cannot address `uArrAsset` at all -- but the
+    128x128 pixels behind it must not, or every layer ships twice: once in the
+    array texture the runtime actually samples, and once embedded in the GLB."""
+    stub = bpy.data.images.new("stub_%s" % aid, width=1, height=1, alpha=True)
+    for obj in objs:
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or mat.node_tree is None:
+                continue
+            for node in mat.node_tree.nodes:
+                if node.type == "TEX_IMAGE":
+                    node.image = stub
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +953,23 @@ def build_asset(spec, out_dir, opts):
     if spec.get("base_color_map"):
         attach_loose_textures(obj, spec["base_color_map"], spec.get("opacity_map"))
 
+    # After the line above, not before it: the three `grass_tall_scan` FBXs name
+    # an `Atlas_texture1` that does not ship, and `base_color_map` replaces that
+    # material outright -- so checking first accuses an asset whose texture is
+    # about to be fine.
+    unresolved = resolve_missing_images(obj, spec["src"])
+    if unresolved:
+        # Loud, and recorded, because the asset still builds: it bakes magenta
+        # and ships looking like a Blender error, which is a thing you can only
+        # find by looking at it.
+        print("WARN %-22s textures not found: %s" % (aid, ", ".join(unresolved)))
+
+    # After the resolve, because a slot whose image was missing has nothing to
+    # wire yet, and before `has_images` decides the asset's whole path.
+    rewired = wire_orphan_color(obj)
+    if rewired:
+        print("     %-22s wired Base Color from alpha-only image: %s" % (aid, ", ".join(rewired)))
+
     if spec.get("rotate_x_deg"):
         obj.rotation_euler = (math.radians(spec["rotate_x_deg"]), 0.0, 0.0)
         common.apply_transforms(obj)
@@ -803,15 +990,18 @@ def build_asset(spec, out_dir, opts):
         "source_scale": round(scale_k, 6),
         "lods": [],
     }
+    if unresolved:
+        rec["missing_images"] = unresolved
 
     # --- texture or vertex colour -----------------------------------------
-    layer_png = None
     textured = has_images(obj) and not spec.get("force_vertex_color")
     if textured:
         color_source = "baked_texture"
-        layer_png = os.path.join(out_dir, "layers", "%s.png" % aid)
-        os.makedirs(os.path.dirname(layer_png), exist_ok=True)
-        consolidate_texture(obj, layer_png)
+        flat = untextured_slots(obj)
+        if flat:
+            print("WARN %-22s textured, but %d slot(s) bake flat: %s"
+                  % (aid, len(flat), ", ".join(flat)))
+            rec["untextured_slots"] = flat
         # White vertex colour so the AO multiply below is the only thing in it.
         for d in ensure_corner_col(obj.data).data:
             d.color = (1.0, 1.0, 1.0, 1.0)
@@ -827,15 +1017,16 @@ def build_asset(spec, out_dir, opts):
 
     rec["textured"] = textured
     rec["color_source"] = color_source
-    rec["layer"] = "layers/%s.png" % aid if textured else None
 
     if opts.bake:
         bake_ao_to_vertex(obj, samples=spec.get("ao_samples", 48),
                           distance=spec["height_m"] * spec.get("ao_reach", 0.25))
 
-    # After the bake, before the LOD chain: the LODs are copies of `obj`, so
-    # they inherit the finalised material rather than each needing their own.
-    finalize_material(obj, aid, textured)
+    if not textured:
+        # All the colour is in COLOR_0, which survives decimation, so one
+        # material for the whole chain is enough: the LODs are copies of `obj`
+        # and inherit it. Textured assets cannot do this -- see the loop below.
+        finalize_material(obj, aid, False)
 
     # --- LOD chain ---------------------------------------------------------
     budgets = spec["lod_tris"]
@@ -855,6 +1046,33 @@ def build_asset(spec, out_dir, opts):
         # the tiers interchangeable, which is the whole premise of swapping them.
         common.ground_and_center(lod)
         common.scale_to_height(lod, spec["height_m"])
+
+        # Unwrap and bake PER TIER, not once on the full-res source.
+        #
+        # The atlas addresses the mesh through UVs that Smart UV Project laid out
+        # for a specific triangulation. Decimating afterwards collapses vertices
+        # and drags their UVs with them, so islands smear across the seams and
+        # triangles land on whatever happens to be next door -- usually the
+        # transparent gutter, which alpha-test then discards outright. Measured
+        # on the old order: 11 of 21 textured assets lost more than a quarter of
+        # their triangles to it, and five lost all of them. It tracked decimation
+        # depth exactly -- cabins keeping 8-18% of their source triangles were
+        # fine, photoscans keeping 0.01-0.6% were not -- which is what you would
+        # expect if the UVs are only valid for the topology they were made for.
+        #
+        # Unwrapping after decimation costs one Cycles bake per tier instead of
+        # one per asset, and in exchange every tier's UVs describe that tier's
+        # own triangles. It also unblocks the decimator: Smart UV Project's seams
+        # are boundaries the collapse decimator will not cross, so baking first
+        # was putting a floor under every LOD budget below it.
+        layer = None
+        if textured:
+            layer_png = os.path.join(out_dir, "layers", "%s_L%d.png" % (aid, i))
+            os.makedirs(os.path.dirname(layer_png), exist_ok=True)
+            img = consolidate_texture(lod, layer_png)
+            finalize_material(lod, "%s_L%d" % (aid, i), True, image=img)
+            layer = "layers/%s_L%d.png" % (aid, i)
+
         lod_objs.append(lod)
         got = common.tri_count(lod)
         entry = {
@@ -863,6 +1081,7 @@ def build_asset(spec, out_dir, opts):
             "tris": got,
             "verts": len(lod.data.vertices),
             "kind": "mesh",
+            "layer": layer,
         }
         # The collapse decimator will not collapse across an open boundary, so
         # a mesh with many boundary loops has a hard floor above its target. Say
@@ -896,6 +1115,8 @@ def build_asset(spec, out_dir, opts):
 
     # --- export ------------------------------------------------------------
     bpy.data.objects.remove(obj, do_unlink=True)
+    if textured:
+        swap_to_stub(lod_objs, aid)
     glb = os.path.join(out_dir, "assets", "%s.glb" % aid)
     os.makedirs(os.path.dirname(glb), exist_ok=True)
     common.select_only(lod_objs)

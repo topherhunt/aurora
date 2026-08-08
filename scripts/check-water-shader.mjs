@@ -601,6 +601,141 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   // wrong buffer, and on a desktop canvas it would look completely fine.
   check(mainSrc.indexOf('probe.update(') < mainSrc.indexOf('renderer.render(scene, camera)'),
     'the probe runs before the frame is drawn, not after')
+
+  // --- the mountain silhouette's darkness --------------------------------------
+  //
+  // The silhouette has to be as dark as the darkest terrain on screen, and
+  // water.js works that out by REPLICATING three's Lambert indirect path on the
+  // CPU. A replicated formula is a copy, and copies drift: three could change a
+  // chunk in a minor release, or lighting.js could change what it multiplies,
+  // and the only symptom would be a silhouette that is quietly the wrong
+  // brightness -- which is the exact bug this was written to fix.
+  //
+  // So the formula is pinned to its sources on both sides. These are string
+  // matches against three's own chunks rather than a re-derivation, because
+  // re-deriving it here would just be the same guess written twice.
+  const { ShaderChunk } = THREE
+  check(/hemiDiffuseWeight\s*=\s*0\.5\s*\*\s*dotNL\s*\+\s*0\.5/.test(ShaderChunk.lights_pars_begin)
+    && /mix\(\s*hemiLight\.groundColor,\s*hemiLight\.skyColor,\s*hemiDiffuseWeight\s*\)/.test(ShaderChunk.lights_pars_begin),
+    'three still blends the hemisphere ground-to-sky by 0.5 * dot( N, up ) + 0.5')
+  check(/BRDF_Lambert\([^)]*\)\s*\{\s*return\s+RECIPROCAL_PI\s*\*\s*diffuseColor/.test(ShaderChunk.common),
+    'three still divides the Lambert albedo by PI')
+  check(/reflectedLight\.indirectDiffuse\s*\+=\s*irradiance\s*\*\s*BRDF_Lambert\(\s*material\.diffuseColor\s*\)/
+    .test(ShaderChunk.lights_lambert_pars_fragment),
+    'three still builds indirect diffuse as irradiance times the Lambert BRDF')
+
+  // ...and the other half of the formula, which is ours.
+  const lightingSrc = fs.readFileSync(path.join(ROOT, 'src', 'lighting.js'), 'utf8')
+  check(/reflectedLight\.indirectDiffuse \*= \$\{sky\}/.test(lightingSrc.replace(/wlSkyF/g, '${sky}'))
+    || /indirectDiffuse \*= wlSkyF/.test(lightingSrc),
+    'lighting.js still scales the ambient by the floored sky term')
+  check(/indirectDiffuse \+= uNightLift \* wlSkyF/.test(lightingSrc),
+    'lighting.js still ADDS the night lift, so the silhouette must add it too')
+
+  // The palette end: the darkest colour must come from the palette, not from a
+  // number written down beside it.
+  const { TERRAIN_DARKEST, luminance: lum } = await import('../src/terrain/terrain-material.js')
+  const matSrc = fs.readFileSync(path.join(ROOT, 'src', 'terrain', 'terrain-material.js'), 'utf8')
+  const palette = [...matSrc.matchAll(/^const (\w+) = new THREE\.Color\(([\d.]+), ([\d.]+), ([\d.]+)\)/gm)]
+    .map((m) => ({ name: m[1], l: 0.2126 * +m[2] + 0.7152 * +m[3] + 0.0722 * +m[4] }))
+  const darkest = palette.reduce((a, b) => (a.l <= b.l ? a : b))
+  check(Math.abs(lum(TERRAIN_DARKEST) - darkest.l) < 1e-9,
+    'the exported darkest albedo really is the darkest colour in the palette',
+    `${darkest.name} at ${darkest.l.toFixed(4)}`)
+
+  // And the behaviour, end to end -- driven by the REAL palette at a real sun
+  // elevation, not by numbers invented here. Inventing them is how a check ends
+  // up asserting something true of a lighting state the world never enters.
+  const { paletteAt } = await import('../src/clock.js')
+  const hemi = new THREE.HemisphereLight()
+  const setSRGB = (c, [r, g, b]) => c.setRGB(r, g, b, THREE.SRGBColorSpace)
+
+  // Exactly what applySky and lighting.update do with a palette, in the same
+  // order, so this measures the pipeline rather than a rehearsal of it.
+  const atElev = (sunElevDeg) => {
+    const p = paletteAt(sunElevDeg)
+    setSRGB(hemi.color, p.hemiSky)
+    setSRGB(hemi.groundColor, p.hemiGround)
+    hemi.intensity = p.hemiIntensity
+    setSRGB(water.night.lift.value, p.skyGlow)
+    water.night.lift.value.multiplyScalar(p.skyGlowAmt)
+    water.night.far.value.y = p.farAmbient
+    water.update(0, hemi)
+
+    const lift = water.night.lift.value
+    const c = new THREE.Color().copy(hemi.groundColor).lerp(hemi.color, 0.5)
+      .multiplyScalar(p.hemiIntensity).multiply(TERRAIN_DARKEST).multiplyScalar(1 / Math.PI)
+    return {
+      p,
+      got: lum(water.uniforms.uSilTint.value),
+      want: (lum(c) + lum(lift)) * p.farAmbient,
+    }
+  }
+
+  const noon = atElev(60)
+  check(Math.abs(noon.got - noon.want) < 1e-9,
+    'by day the silhouette lands exactly on the darkest shadowed terrain',
+    `${noon.got.toExponential(3)} vs ${noon.want.toExponential(3)}`)
+
+  const dusk = atElev(-4)
+  check(Math.abs(dusk.got - dusk.want) < 1e-9,
+    'and at dusk, where the night lift starts carrying the answer',
+    `${dusk.got.toExponential(3)} vs ${dusk.want.toExponential(3)}`)
+
+  // The failure being fixed: it used to be a fraction of the horizon's
+  // luminance, which is the brightest part of the sky and left the silhouette
+  // visibly lighter than the terrain casting it. It must track the AMBIENT now,
+  // and the ambient falls by more than a factor of ten between these two.
+  // Swept rather than spot-checked, because two hand-picked hours cannot show
+  // that a formula holds -- only that it holds twice. The claim is that the
+  // silhouette IS the reference brightness at every sun elevation the world
+  // passes through, and that it never exceeds its noon value along the way.
+  //
+  // Note what is deliberately NOT asserted: monotonicity. The measured curve
+  // rises by about 0.4% of noon during twilight, because skyGlowAmt climbs
+  // faster than hemiIntensity falls for a few degrees around sunset. That is
+  // the palette's behaviour and the TERRAIN does exactly the same thing there,
+  // so the silhouette following it is the whole point. Asserting monotonicity
+  // would be asserting something truer than the thing being matched.
+  let worstErr = 0
+  let brightest = 0
+  for (let e = 60; e >= -40; e -= 0.5) {
+    const r = atElev(e)
+    worstErr = Math.max(worstErr, Math.abs(r.got - r.want))
+    brightest = Math.max(brightest, r.got)
+  }
+  check(worstErr < 1e-9,
+    'and at every sun elevation in between, not just at the two checked above',
+    `worst error ${worstErr.toExponential(2)} over 201 elevations`)
+  check(brightest <= noon.got,
+    'the silhouette is never brighter than it is at noon',
+    `peak ${brightest.toExponential(3)}, noon ${noon.got.toExponential(3)}`)
+  check(dusk.got < noon.got * 0.4,
+    'and it has fallen well down before the sun is even properly set',
+    `noon ${noon.got.toExponential(2)}, dusk ${dusk.got.toExponential(2)}`)
+
+  // ...all the way to actual black. farAmbient reaches 0 at full dark, which is
+  // the rule that takes the distant terrain to black -- and the silhouette IS
+  // distant terrain, so it must go with it. This is deliberately the opposite
+  // of the water's FOG, which is exempt from that rule: fog is what the far
+  // water fades to, and a lake at night is a mirror of the sky, not a shadow.
+  const midnight = atElev(-40)
+  check(midnight.p.farAmbient === 0 && midnight.got === 0,
+    'and at full dark it is black, because the terrain it is standing in for is',
+    `farAmbient ${midnight.p.farAmbient}, silhouette ${midnight.got}`)
+  check(!/uHorizon/.test(water.material.fragmentShader.slice(
+    water.material.fragmentShader.indexOf('float blocked'),
+    water.material.fragmentShader.indexOf('uProbe, R'))),
+    'and it is no longer derived from the sky horizon at all')
+
+  // Hue survives the rescale, or the mountain stops being blue. Read at noon:
+  // at midnight the colour is legitimately (0, 0, 0) and has no ratios.
+  atElev(60)
+  const hue = new THREE.Color(WATER.silhouetteTint)
+  const got = water.uniforms.uSilTint.value
+  check(Math.abs(got.r / got.b - hue.r / hue.b) < 1e-6 && Math.abs(got.g / got.b - hue.g / hue.b) < 1e-6,
+    'only the brightness is replaced -- the hue is still WATER.silhouetteTint',
+    `${got.r.toExponential(2)}, ${got.g.toExponential(2)}, ${got.b.toExponential(2)}`)
 }
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

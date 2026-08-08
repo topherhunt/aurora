@@ -72,7 +72,6 @@ const PLACEMENT = [
   { match: /^willow_(snow|autumn|dead)/, where: 'lakeside and riverbank, seasonal or dead dressing' },
   { match: /^willow/, where: 'lakeside and riverbank only -- Phase A already knows where the water is, so this is a flow-accumulation mask, not a biome' },
   { match: /^tree_(dead_standing|cracked_dead)/, where: 'landmark snags. A handful per region in bare and heath, where a lone dead tree reads as scale' },
-  { match: /^tree_oak_hero/, where: 'LANDMARK ONLY. Floors at 1,703 tris; at the pine density it would eat the whole prop budget by itself' },
   { match: /^tree_/, where: 'mixed and lush lowland, low density -- these are the one-offs, so they should never repeat in view' },
   { match: /^rock_snow/, where: 'above the snow line and on bare alpine ground' },
   { match: /^rock_moss/, where: 'lush and damp lowland, forest floor, stream beds' },
@@ -215,17 +214,23 @@ function layerTexture(path) {
 
 // --- does the mesh still land on its own texture? ---------------------------
 //
-// `consolidate_texture` unwraps and bakes the atlas on the FULL-RES object, and
-// the LOD chain is decimated from that object afterwards. Nothing re-checks that
-// the surviving triangles still point at anything: a 14k-tri grass photoscan cut
-// to 83 triangles has UVs that stretch across half the atlas, gutters included,
-// and at alphaTest 0.5 every fragment that lands in a gutter is discarded.
+// Does this tier's atlas actually reach this tier's triangles?
 //
-// So sample each triangle at its UV centroid and count how many land on a texel
-// that is transparent (discarded) or black (drawn, but unlit-black). This is a
-// coarse probe -- one sample per triangle, so a thin gutter can be missed or
-// over-counted -- but it does not need to be precise to separate a working bake
-// from one that has come unstuck from its mesh.
+// It is not a rhetorical question. The bake used to run once on the full-res
+// object with the LOD chain decimated from it afterwards, and nothing rechecked
+// that the surviving triangles still pointed at anything: a 1M-tri photoscan cut
+// to 149 triangles had UVs stretched across the gutters, and at alphaTest 0.5
+// every fragment landing in a gutter is discarded. `build.py` bakes per tier now
+// and the numbers below went from 0% to 100%, but the check stays, because the
+// failure is completely silent -- the GLB loads, the manifest is consistent, and
+// `check-props.mjs` passes byte-for-byte on an asset that renders as nothing.
+//
+// Rasterise the UV footprint rather than sampling the centroid. A decimated
+// alpha-card mesh is a few big quads whose CUTOUT is the shape, so a centroid
+// landing in a transparent hole is expected and means nothing; and conversely a
+// smeared unwrap collapses most triangles below one texel, where an area-only
+// measure would skip them and score the wreck 100% clean. Both instruments got
+// this wrong in opposite directions before they were combined.
 const pixCache = new Map()
 async function layerPixels(path) {
   if (!pixCache.has(path)) {
@@ -248,24 +253,72 @@ function auditMesh(mesh, px) {
   if (!uv) return null
   const count = index ? index.count : uv.count
   const at = (i) => (index ? index.getX(i) : i)
+  const W = px.width
+  const H = px.height
   let tris = 0
-  let clear = 0
-  let dark = 0
+  let hit = 0 // texels the mesh addresses
+  let opaque = 0 // ...of which survive alphaTest 0.5
+  let sum = 0 // luminance of those that survive
+  const P = [[0, 0], [0, 0], [0, 0]]
   for (let t = 0; t + 2 < count; t += 3) {
-    let u = 0
-    let v = 0
-    for (let k = 0; k < 3; k++) { u += uv.getX(at(t + k)); v += uv.getY(at(t + k)) }
-    // glTF UVs use a top-left origin and getImageData rows are top-left too, so
-    // v indexes the row directly. Confirmed by measurement: flipping it makes
-    // strictly more assets sample empty space, not fewer.
-    const x = Math.min(px.width - 1, Math.max(0, Math.floor((u / 3) * px.width)))
-    const y = Math.min(px.height - 1, Math.max(0, Math.floor((v / 3) * px.height)))
-    const i = (y * px.width + x) * 4
     tris++
-    if (px.data[i + 3] < 128) clear++
-    else if ((px.data[i] + px.data[i + 1] + px.data[i + 2]) / 3 < 12) dark++
+    for (let k = 0; k < 3; k++) {
+      // glTF UVs use a top-left origin and getImageData rows are top-left too,
+      // so v indexes the row directly. Confirmed by measurement: flipping it
+      // makes strictly more assets sample empty space, not fewer.
+      P[k][0] = uv.getX(at(t + k)) * W
+      P[k][1] = uv.getY(at(t + k)) * H
+    }
+    const x0 = Math.max(0, Math.floor(Math.min(P[0][0], P[1][0], P[2][0])))
+    const x1 = Math.min(W - 1, Math.ceil(Math.max(P[0][0], P[1][0], P[2][0])))
+    const y0 = Math.max(0, Math.floor(Math.min(P[0][1], P[1][1], P[2][1])))
+    const y1 = Math.min(H - 1, Math.ceil(Math.max(P[0][1], P[1][1], P[2][1])))
+    const d = (P[1][0] - P[0][0]) * (P[2][1] - P[0][1]) - (P[2][0] - P[0][0]) * (P[1][1] - P[0][1])
+    let got = 0
+    if (d !== 0) {
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const cx = x + 0.5
+          const cy = y + 0.5
+          const w0 = ((P[1][0] - cx) * (P[2][1] - cy) - (P[2][0] - cx) * (P[1][1] - cy)) / d
+          const w1 = ((P[2][0] - cx) * (P[0][1] - cy) - (P[0][0] - cx) * (P[2][1] - cy)) / d
+          if (w0 < 0 || w1 < 0 || 1 - w0 - w1 < 0) continue
+          got++
+          tally((y * W + x) * 4)
+        }
+      }
+    }
+    // Sub-texel in the atlas is still a real triangle on screen, so fall back to
+    // one centroid sample rather than dropping it.
+    if (got === 0) {
+      const x = Math.min(W - 1, Math.max(0, Math.floor((P[0][0] + P[1][0] + P[2][0]) / 3)))
+      const y = Math.min(H - 1, Math.max(0, Math.floor((P[0][1] + P[1][1] + P[2][1]) / 3)))
+      tally((y * W + x) * 4)
+    }
   }
-  return { kind: 'mesh', tris, clear, dark }
+  function tally(i) {
+    hit++
+    if (px.data[i + 3] < 128) return
+    opaque++
+    sum += (px.data[i] + px.data[i + 1] + px.data[i + 2]) / 3
+  }
+  // Everything above measures the TEXTURE. None of it measures the mesh, and a
+  // tier can score 89% here and be invisible: a collapse that flattens a grass
+  // blade leaves the triangle addressing perfectly good green texels while
+  // giving it no area at all. So measure the geometry too, in metres, from the
+  // positions rather than the scaled object.
+  const pos = mesh.geometry.getAttribute('position')
+  let area = 0
+  let degen = 0
+  for (let t = 0; t + 2 < count; t += 3) {
+    const [i, j, k] = [at(t), at(t + 1), at(t + 2)]
+    const ax = pos.getX(j) - pos.getX(i), ay = pos.getY(j) - pos.getY(i), az = pos.getZ(j) - pos.getZ(i)
+    const bx = pos.getX(k) - pos.getX(i), by = pos.getY(k) - pos.getY(i), bz = pos.getZ(k) - pos.getZ(i)
+    const a = 0.5 * Math.hypot(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
+    area += a
+    if (a < 1e-4) degen++ // 1 cm^2: under a pixel at any distance you would see it from
+  }
+  return { kind: 'mesh', tris, hit, opaque, lum: opaque ? sum / opaque : 0, area, degen }
 }
 
 // An impostor is a handful of full-sheet quads, so the per-triangle probe above
@@ -319,11 +372,12 @@ async function select(asset) {
   for (const lod of asset.lods) {
     const mesh = byName.get(lod.name)
     if (!mesh) continue // check-props.mjs would have failed the build; nothing to do here
-    // Impostors carry their own sheet; mesh tiers carry the shared albedo layer,
-    // or nothing at all when their colour lives entirely in vertex colours.
+    // Every tier names its own sheet -- an impostor its billboard render, a mesh
+    // tier the atlas baked against that tier's own triangulation -- or names
+    // nothing at all when its colour lives entirely in vertex colours.
     // Billboard COLOR_0 is white, so vertex colours are a no-op there rather
     // than a second multiply against an already-lit sheet.
-    const layer = lod.kind === 'billboard' ? lod.layer : asset.layer
+    const layer = lod.layer
     mesh.material = propMaterial(layer ? layerTexture(layer) : null)
     mesh.visible = false
     root.add(mesh)
@@ -465,15 +519,29 @@ function renderStats(a, live) {
 
   // Two different defects, two different sentences, because they have two
   // different causes and one does not imply the other.
-  const lostTier = audited
-    .filter(([, au]) => au.kind === 'mesh')
-    .map(([label, au]) => ({ label, pct: 100 * (au.clear + au.dark) / au.tris }))
+  const meshes = audited.filter(([, au]) => au.kind === 'mesh')
+  const lostTier = meshes
+    .map(([label, au]) => ({ label, pct: 100 * (au.hit - au.opaque) / Math.max(1, au.hit) }))
     .sort((x, y) => y.pct - x.pct)
     .find((w) => w.pct > 25)
-  const blackSheet = audited.some(([, au]) => au.kind === 'sheet' && au.cover > 0.02 && au.lum < 12)
-  const sheets = []
-  if (a.layer) sheets.push(`<figure><img src="${PROPS}${a.layer}" alt="albedo"><figcaption>albedo ${manifest.layer_size}&sup2;</figcaption></figure>`)
-  if (a.billboard_layer) sheets.push(`<figure><img src="${PROPS}${a.billboard_layer}" alt="impostor"><figcaption>impostor ${manifest.billboard_size}&sup2;</figcaption></figure>`)
+  // 8, not 12: a bake that has actually failed measures 0, while `grass_wild_scan_c`
+  // is a legitimately dark clump of a dark scan at 11 and must not be accused.
+  const blackTier = meshes.find(([, au]) => au.opaque > au.hit * 0.1 && au.lum < 8)
+  const blackSheet = audited.some(([, au]) => au.kind === 'sheet' && au.cover > 0.02 && au.lum < 8)
+  // The mesh defect none of the texture measurements can see. Same AND as the
+  // gate: a fern is legitimately 6 slivers in 15, a wispy tuft is legitimately
+  // thin, and only a tier that is both has actually been crushed.
+  // Silhouette a solid prop of these dimensions would present from the side.
+  const hullArea = size ? Math.max(size.x, size.z) * size.y : a.height_m * a.height_m
+  const crushed = meshes.find(([, au]) => au.degen > au.tris * 0.25 && au.area < 0.05 * hullArea)
+  // One thumbnail per tier that has a sheet, because the tiers no longer share
+  // one: seeing LOD0's atlas next to LOD1's is how you tell a bad unwrap at a
+  // low budget apart from a bad bake, and they need different fixes.
+  const sheets = a.lods.filter((l) => l.layer).map((l) => {
+    const bb = l.kind === 'billboard'
+    const label = bb ? `impostor ${manifest.billboard_size}` : `${l.name.split('_').pop()} ${manifest.layer_size}`
+    return `<figure><img src="${PROPS}${l.layer}" alt="${esc(label)}"><figcaption>${esc(label)}&sup2;</figcaption></figure>`
+  })
 
   $('stats').innerHTML = `
     <h1>${esc(a.id)}</h1>
@@ -502,31 +570,46 @@ function renderStats(a, live) {
     ${stalls.length ? `<div class="warn" style="margin-top:6px">${stalls.length} tier(s) stalled above target -- the collapse
       decimator will not collapse across an open boundary, and these are real triangles the budget pays for.</div>` : ''}
 
+    <h2>surface</h2>
+    <table>
+      ${meshes.map(([label, au]) => {
+        const bad = au.degen > au.tris * 0.25
+        return `<tr><td>${esc(label)}</td><td class="num ${bad ? 'warn' : ''}">${au.area.toFixed(3)} m&sup2;, ${au.degen} of ${au.tris} tris under 1 cm&sup2;</td></tr>`
+      }).join('')}
+    </table>
+    ${crushed ? `<div class="warn" style="margin-top:6px">This tier was crushed, not simplified.
+      <b>${esc(crushed[0])}</b> keeps its triangles and loses their area, which is what a collapse decimator does to
+      a mesh of thin blades or cards. The texture measurements below will look fine -- the surviving triangles still
+      address good texels -- and the asset will still render as nothing. Raising the target buys the area back at a
+      price the scatter cannot pay; the answer is a different source.</div>` : ''}
+
     <h2>colour</h2>
     <table>
       <tr><td>source</td><td>${esc(a.color_source.replace(/_/g, ' '))}</td></tr>
       <tr><td>AO</td><td>baked into vertex colours</td></tr>
       ${audited.map(([label, au]) => {
         if (au.kind === 'sheet') {
-          const dead = au.cover > 0.02 && au.lum < 12
+          const dead = au.cover > 0.02 && au.lum < 8
           return `<tr><td>${esc(label)} sheet</td><td class="${dead ? 'warn' : ''}">${(100 * au.cover).toFixed(0)}% covered, mean RGB ${au.lum.toFixed(0)}${dead ? ' -- black' : ''}</td></tr>`
         }
-        const lost = 100 * au.clear / au.tris
-        const black = 100 * au.dark / au.tris
-        const bad = lost + black > 25
-        return `<tr><td>${esc(label)} on tex</td><td class="${bad ? 'warn' : ''}">${(100 - lost - black).toFixed(0)}% lands on colour${
-          lost >= 1 ? `, ${lost.toFixed(0)}% cut` : ''}${black >= 1 ? `, ${black.toFixed(0)}% black` : ''}</td></tr>`
+        const kept = 100 * au.opaque / Math.max(1, au.hit)
+        const bad = kept < 75 || au.lum < 8
+        return `<tr><td>${esc(label)} on tex</td><td class="${bad ? 'warn' : ''}">${kept.toFixed(0)}% of its UV footprint survives alphaTest, mean RGB ${au.lum.toFixed(0)}</td></tr>`
       }).join('')}
     </table>
     ${lostTier ? `<div class="warn" style="margin-top:6px">The bake has come unstuck from the mesh.
-      <b>${lostTier.pct.toFixed(0)}% of ${esc(lostTier.label)}'s triangles</b> sample a texel that is transparent
-      (discarded at alphaTest 0.5) or black. <code>consolidate_texture</code> unwraps and bakes on the
-      full-res object and the LOD chain is decimated from it afterwards, so at ${(100 * a.lods[0].tris / a.src_tris).toFixed(2)}%
-      of the source triangles the surviving UVs no longer line up with the atlas islands.</div>` : ''}
+      <b>${lostTier.pct.toFixed(0)}% of the atlas area ${esc(lostTier.label)} addresses</b> is transparent, so those
+      fragments are discarded at alphaTest 0.5. At ${(100 * a.lods[0].tris / a.src_tris).toFixed(2)}% of the source
+      triangles, this tier's UVs are not describing this tier's triangles -- check that
+      <code>consolidate_texture</code> ran on the decimated mesh rather than on the full-res source.</div>` : ''}
+    ${blackTier ? `<div class="warn" style="margin-top:6px">The albedo baked black.
+      <b>${esc(blackTier[0])}</b> lands on opaque texels with no colour in them. The usual cause is a source material
+      that is physically not diffuse -- <code>metallicFactor: 1.0</code> makes the Cycles diffuse pass legitimately
+      zero -- which <code>neutralize_pbr</code> is supposed to strip before the bake.</div>` : ''}
     ${blackSheet ? `<div class="warn" style="margin-top:6px">The impostor sheet is black.
-      <code>render_billboard</code> renders LOD0 <em>after</em> <code>finalize_material</code> has swapped the
-      albedo for the 1&times;1 stub, and a textured asset's vertex colours are deliberately white -- so the render
-      has nothing to sample but the stub. Every textured asset with a billboard has this.</div>` : ''}
+      <code>render_billboard</code> re-shades LOD0's material as emission of its base colour, so it renders black
+      whenever the albedo it samples is black or absent -- either the mesh albedo above is bad, or the real image
+      was swapped for the 1&times;1 export stub before the render instead of after.</div>` : ''}
     ${sheets.length ? `<div class="sheet" style="margin-top:6px">${sheets.join('')}</div>` : '<div class="note">no texture layer -- flat material colours became vertex colours, so this asset costs zero of the 256 array slots.</div>'}
 
     <h2>motion</h2>

@@ -186,12 +186,23 @@ const NIGHT_GLSL = /* glsl */ `
   uniform vec2 uFarLight;
 `
 
-// The two radii of the near-field envelope, in metres. 25 is roughly how far a
-// dark-adapted eye resolves ground texture by starlight; 50 is far enough that
-// the transition is not a hard ring and near enough that the far field is the
-// great majority of what is on screen.
-const WL_NEAR_M = 25
-const WL_FAR_M = 50
+// The two radii of the near-field envelope, in metres.
+//
+// The inner radius is 0 on purpose. It was 25, which made the envelope a flat
+// fully-lit DISC around her with the whole falloff crammed into the 25 m ring
+// outside it -- and a disc with an edge is a spotlight, which is what it looked
+// like. With the inner radius at 0 there is no plateau: the lift is strongest
+// underfoot and thins continuously outward, so the gradient reads as her own
+// eyes adapting rather than as a light she is carrying.
+//
+// The outer radius went 50 -> 75 to pay for that. smoothstep is symmetric about
+// its midpoint, so 0..75 puts the half-strength point at 37.5 m, exactly where
+// 25..50 had it; what changes is that the curve now starts at her feet and has
+// a long tail instead of a hard start and a short one. The near field ends up
+// slightly dimmer at 10-25 m and slightly brighter at 50-70 m, which is the
+// trade that removes the ring.
+const WL_NEAR_M = 0
+const WL_FAR_M = 75
 
 const NEAR_GLSL = (worldPos) =>
   `( 1.0 - smoothstep( ${WL_NEAR_M.toFixed(1)}, ${WL_FAR_M.toFixed(1)}, distance( ${worldPos}, cameraPosition ) ) )`

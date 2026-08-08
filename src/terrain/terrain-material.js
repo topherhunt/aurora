@@ -113,6 +113,28 @@ const SOOT = new THREE.Color(0.042, 0.041, 0.039) // the pits between the grains
 const FROST = new THREE.Color(1.0, 1.0, 1.0) // a crystal face square to the sun
 const SHADE = new THREE.Color(0.74, 0.76, 0.82) // the hollow beside it
 
+// The darkest albedo this palette can put on screen, picked from the palette
+// itself rather than written down a second time.
+//
+// It exists for the WATER (§11): where a mountain blocks the lake's reflection
+// the silhouette has to be about as dark as the mountain casting it, and the
+// only way to know how dark that is, is to ask the palette. Writing "the dark
+// blue is roughly 0.03" into water.js instead would be one more constant that
+// drifts out from under the thing it names the first time a colour here moves.
+//
+// Only the dark half of the palette is a candidate: snow and frost are the
+// brightest things in the world and would make nonsense of a minimum. Speckle,
+// micro-relief and ambient occlusion all push real fragments DARKER than this
+// from here, so this is the bright end of the dark end -- which is the safe
+// direction to be wrong in, since it is a floor being matched, not a mean.
+export const TERRAIN_DARKEST = [DIRT, MOSS, DRY, DEEP, STAIN, ROCK, GRIT, SOOT].reduce((a, b) =>
+  luminance(a) <= luminance(b) ? a : b
+)
+
+export function luminance(c) {
+  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+}
+
 export function createTerrainMaterial() {
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
 

@@ -196,12 +196,8 @@ const DOWNLOADS = [
     class: 'large',
     height_m: 9.0,
   },
-  {
-    id: 'tree_deciduous_hi',
-    src: `${HIGH}/realistic-deciduous-tree/source/nested/TREE.fbx`,
-    class: 'large',
-    height_m: 11.0,
-  },
+  // `realistic-deciduous-tree` was here and is excluded -- see the note at the
+  // bottom about assets whose canopy bakes flat.
   {
     id: 'bush_pine_cluster',
     src: `${HIGH}/3-pine-bushes/source/bushes done.fbx`,
@@ -281,31 +277,22 @@ const DOWNLOADS = [
     class: 'large',
     height_m: 4.2,
   },
-  {
-    // `structure` is a class defined by DECIMATION BEHAVIOUR, not by subject:
-    // one honest mesh tier then an impostor, for anything whose floor sits near
-    // 1800. This oak floors at 1,703 for any target below it, exactly like the
-    // cabins, so it gets the same ladder. It is the one hero tree in the
-    // library and the scatter must place it sparsely -- at the 0.08 stems/m^2
-    // of §5 a 1,703-triangle tree would eat the entire prop budget on its own.
-    id: 'tree_oak_hero',
-    src: `${NEW}/high-quality-tree-66/source/Graf1TreeHIGH.fbx`,
-    class: 'structure',
-    height_m: 9.7,
-  },
+  // `high-quality-tree-66` was here as `tree_oak_hero` and is excluded -- see
+  // the note at the bottom. `structure` remains a class defined by DECIMATION
+  // BEHAVIOUR rather than by subject (one honest mesh tier then an impostor,
+  // for anything whose floor sits near 1800); the cabins still use it.
 
   // Megascans grass, cut down to `small` (16 triangles) with its cutout intact.
   // These are the assets that make §5's "open fields of low heather scrub" real
   // rather than procedural, and each variant costs one 128x128 layer.
-  ...['A', 'B', 'C'].map((v) => ({
-    id: `grass_tall_scan_${v.toLowerCase()}`,
-    src: `${NEW}/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_rbEkI_Var${v}_LOD0.fbx`,
-    base_color_map: `${NEW}/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_BaseColor.jpg`,
-    opacity_map: `${NEW}/tall_grass_rbeki_raw/Tall_Grass_rbEkI_Raw_4K_Opacity.jpg`,
-    class: 'small',
-    height_m: 0.85,
-  })),
-  ...['A', 'B', 'C', 'D'].map((v) => ({
+  //
+  // Only the variants that SURVIVE the cut are here. All three `tall_grass`
+  // variants and `wild_grass` Var A are excluded below: they stall above target
+  // AND arrive as slivers, which is one failure, not two. A stalled tier is not
+  // automatically bad (see `decimate_to`), but a stalled tier that has lost its
+  // surface area is, and only `check-props.mjs`'s degeneracy check tells them
+  // apart. Anything added here should be measured the same way before it stays.
+  ...['B', 'C', 'D'].map((v) => ({
     id: `grass_wild_scan_${v.toLowerCase()}`,
     src: `${NEW}/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_Var${v}_LOD0.fbx`,
     base_color_map: `${NEW}/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_8K_BaseColor.jpg`,
@@ -314,6 +301,43 @@ const DOWNLOADS = [
     height_m: 0.4,
   })),
 ]
+
+// Excluded after building them once and LOOKING at them -- TREES WHOSE CANOPY
+// DOES NOT SURVIVE. Both passed every gate and both are wrong in a render:
+//   realistic-deciduous-tree (`tree_deciduous_hi`) -- a white-leaved tree. Its
+//     `normal leaves` material has no Base Color image at all, so it bakes
+//     Principled's 0.8 grey default; `trunks` has none either and bakes the
+//     near-black colour the importer read out of the FBX. The green
+//     `leaves color.png` is right there in the source folder and nothing in the
+//     FBX references it. Fixable only by a per-slot map override, which is the
+//     custom-pipeline-per-asset this batch exists to avoid. `check-props.mjs`
+//     now warns on any textured asset with a slot like this.
+//   high-quality-tree-66 (`tree_oak_hero`) -- at its 1,703-triangle floor the
+//     mesh is 1,794 twig cards, 5 trunk polygons and ZERO leaves. The three
+//     source objects compete for one budget and the twig object wins, because
+//     twig cards are boundary edges the collapse decimator cannot touch while
+//     the solid trunk collapses freely. So the hero oak is a bundle of bare
+//     sticks. Its `LiveOakBranch.png` canopy atlas is also wired to Alpha only
+//     and tagged Non-Color, which would have baked it black even if the leaves
+//     had survived; `wire_orphan_color` in build.py handles that half.
+//
+// Excluded after building them once and LOOKING at them -- PHOTOSCAN GRASS
+// TUFTS. Four variants passed every gate, reported plausible triangle counts,
+// and rendered as a dozen specks. The collapse decimator does not fail on a
+// tuft of blades, it succeeds in the only way it can: it flattens the blades.
+// The triangles are still there and their UVs still address healthy green
+// texels, so both the triangle count and the UV-footprint probe say the asset
+// is fine. Its world surface area says otherwise:
+//   tall_grass  Var A  83 of 13,605 tris survive, 0.4% of its own silhouette,
+//     70 of those 83 under 1 cm^2. Var B 107 tris / 0.1%. Var C 183 / 0.2%.
+//   wild_grass  Var A  101 tris, 3.9%, 89 of 101 degenerate.
+// Raising the target does not rescue them, it just buys the area back at a
+// price no scatter can pay -- measured on tall_grass Var A: 16 and 64 both land
+// on 83 triangles and 0.1% of the source area; 200 buys 35%; 600 buys 79%; it
+// takes 2,000 to be intact. A 600-triangle grass tuft at §5's densities is not
+// a grass tuft, it is a tree. Same wall as the card foliage below, reached from
+// the other side: those would not decimate at all, these decimate to nothing.
+// Replacements want to be authored cross-cards, not scans.
 
 // Excluded from the _new/ batch, all measured with probe-source.py rather than
 // guessed. The first three are the same photoreal-card-foliage wall documented

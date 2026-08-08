@@ -19,9 +19,7 @@ import { Sky } from '../src/sky.js'
 import { Stars } from '../src/stars.js'
 import { Aurora } from '../src/aurora.js'
 import {
-  ALL,
   PATTERNS,
-  RETIRED,
   SLOTS,
   MAX_CONCURRENT,
   MAX_BANDS,
@@ -490,133 +488,57 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
     check(m.fog === false, `${name}: not fogged`)
   }
 
-  // Geometry placement. Since the rewrite, `position` is all zeros -- every
-  // coordinate is computed in the vertex shader from the band uniforms -- so
-  // this has to mirror that arithmetic on the CPU instead of reading the
-  // buffer. That is the price of a parametric mesh, and it is worth paying
-  // here: reading the buffer would have checked ONE hard-coded arrangement,
-  // whereas this checks all sixteen named forms, which is what actually ships.
+  // Geometry placement. `position` is all zeros -- every coordinate is computed
+  // in the vertex shader from the band uniforms -- so this has to mirror that
+  // arithmetic on the CPU instead of reading the buffer. That is the price of a
+  // parametric mesh, and it is worth paying here: reading the buffer would have
+  // checked ONE hard-coded arrangement, whereas this checks all sixteen named
+  // forms, which is what actually ships.
   //
-  // What is checked changed completely in round five. The old block was a set
-  // of far-plane fences -- worst-case fold excursion, nearest radius, lowest
-  // line of sight -- because the aurora was built at true scale against a 444
-  // km camera and clipping was the failure mode. It is now normalised onto a
-  // shell, so the camera has no opinion at all and none of those fences mean
-  // anything. Two questions replace them, and both are about what you SEE:
-  // where in the sky each band sits, and whether it can fold back over itself.
+  // Two placement questions, and they are the two the camera cares about:
+  // where in the sky each band sits, and whether the whole thing stays inside
+  // the far plane without reaching down into the terrain. The far-plane half is
+  // checked further down, where the fold walk has measured how far out the
+  // folds actually push a footprint -- an analytic worst case over four
+  // octaves is far looser than the shape that is drawn.
   const vs = aurora.material.vertexShader
+  const auroraSrc = readFileSync(new URL('../src/aurora.js', import.meta.url), 'utf8')
 
-  // The shell, and the two numbers it has to sit between: past the far corner
-  // of a 16 km world (11.6 km from the centre) so terrain never pokes through
-  // an arc, and inside the far plane so it is never clipped.
-  const shell = Number(vs.match(/normalize\( p \) \* ([\d.]+)/)?.[1])
-  check(shell > 11600 && shell < 20000, 'the aurora sits on a shell clear of the terrain and inside the far plane',
-    `${shell} units`)
-
-  // The curvature drop is the whole reason a band can sit ON the horizon, so
-  // it gets a source check rather than only a numeric one.
-  check(vs.includes('gd * gd / 12742.0'), 'and the Earth is round: bands are dropped by d^2 / 2R')
-  // ...applied to the POSITION only. If it reached vShape it would change the
-  // altitude that sets the colour and the deposition profile, and a distant
-  // green arc would turn violet for a reason that has nothing to do with
-  // physics. vShape is written before `drop` exists, which is the cheap way to
-  // make that structurally impossible.
-  check(vs.indexOf('vShape = vec4( alt,') < vs.indexOf('float drop ='),
-    'and the drop moves the band without touching the altitude that colours it')
-
-  // Where each band actually appears, in degrees above the horizontal, with
-  // the curvature drop applied. This is the number the request was about.
-  const dropOf = (d) => (d * d) / 12742
-  const elevOf = (alt, d) => Math.atan2(alt - dropOf(d), d) / DEG
+  // Elevation of a point at altitude `alt` km on a footprint `d` km away. No
+  // curvature term: the shader places bands on a flat plane at `vec3( dir *
+  // dist, alt, ... )`, so a check that dropped them by d^2 / 2R would be
+  // measuring a shape that is not drawn.
+  const elevOf = (alt, d) => Math.atan2(alt, d) / DEG
   let elevMax = 0
+  let elevMin = 90
   let highestBand = ''
-  let lowHems = 0
-  let underHorizon = 0
-  let sunk = []
+  let lowestBand = ''
   for (const p of PATTERNS) {
     for (const b of p.bands) {
       const hem = elevOf(b.alt0, b.dist)
       const top = elevOf(b.alt1, b.dist)
-      if (hem < 5) lowHems++
-      if (hem < 0) underHorizon++
-      if (top < 1.5) sunk.push(`${p.name} d${b.dist}`)
+      if (hem < elevMin) {
+        elevMin = hem
+        lowestBand = p.name
+      }
       if (top > elevMax) {
         elevMax = top
         highestBand = p.name
       }
     }
   }
-  // "Many times the aurora should appear like just above the horizon, maybe
-  // even coming up from below the horizon." Both halves, as two checks,
-  // because they fail for different reasons: the first goes if someone pulls
-  // the distances back in, the second goes if the curvature term is dropped.
-  check(lowHems >= 7, 'many bands sit within five degrees of the horizon',
-    `${lowHems} of ${PATTERNS.reduce((n, p) => n + p.bands.length, 0)} bands`)
-  // Band count is the wrong unit on its own: the promise is about what is on
-  // screen, and the one form that is always on screen is the floor. If its
-  // lowest band is not low, then "many times the aurora appears just above the
-  // horizon" is false however many rare forms sit down there.
-  const floorPat = PATTERNS.find((p) => p.floor)
-  const floorHem = Math.min(...floorPat.bands.map((b) => elevOf(b.alt0, b.dist)))
-  check(floorHem < 3, 'and the always-on floor form is one of them, so an ordinary night has a low arc',
-    `${floorPat.name} hem at ${floorHem.toFixed(1)} deg`)
-  check(underHorizon >= 1, 'and at least one has its hem under the horizon, so its rays come up out of the ground',
-    `${underHorizon} bands`)
-  // The other end of the same fence. An aurora whose structure runs up past
-  // ~80 degrees stops reading as a thing in the sky and starts reading as the
-  // inside of a cone overhead, because every part of it is foreshortened
-  // toward one point.
+  // The aurora is additive and depth-tested, so a band whose hem sits low
+  // enough to fall behind a ridgeline gets occluded by terrain 200 km closer
+  // than it -- which is correct for a mountain in front of the sky and wrong
+  // for one in front of something 250 km up. Fifteen degrees keeps every hem
+  // clear of anything the terrain can reach.
+  check(elevMin > 15, 'no band sits low enough for a mountain to wrongly occlude it',
+    `lowest hem ${elevMin.toFixed(1)} deg (${lowestBand})`)
+  // The other end of the same fence. Structure running up past ~80 degrees
+  // stops reading as a thing in the sky and starts reading as the inside of a
+  // cone overhead, because every part of it is foreshortened toward one point.
   check(elevMax > 40 && elevMax < 80, 'and the catalogue still reaches high overhead without becoming a cone',
     `highest ${elevMax.toFixed(1)} deg (${highestBand})`)
-
-  // ---- Apparent size, which is the check whose absence caused round six.
-  //
-  // Round five moved every band outward to get its hem near the horizon and
-  // measured, correctly, that the hems had arrived. It never measured what the
-  // move cost, and the cost was everything: the always-on quiet arc went from
-  // one band 11.8 degrees tall to two ribbons 3.4 and 5.1 degrees tall sitting
-  // in the horizon murk, and the report was "no auroras show up at all". That
-  // was true, in the only sense that matters.
-  //
-  // The trap is that distance and apparent size are one knob, not two. Pushing
-  // a band out drops its hem AND shrinks it, and the only way to have both a
-  // low hem and a large form is to raise the top -- which is free, because
-  // rayed structures genuinely reach 300-400 km, and because the deposition
-  // profile is normalised over each column so a taller band is simply a bigger
-  // one rather than a dimmer one. So: measure degrees of sky, per form.
-  const spanOf = (p) => Math.max(...p.bands.map((b) => elevOf(b.alt1, b.dist))) -
-    Math.min(...p.bands.map((b) => elevOf(b.alt0, b.dist)))
-  const spans = PATTERNS.map((p) => ({ name: p.name, deg: spanOf(p) }))
-    .sort((a, b) => a.deg - b.deg)
-  console.log(`       vertical extent: ${spans.map((x) => `${x.name} ${x.deg.toFixed(0)}`).join(', ')}`)
-  check(spans[0].deg >= 10, 'every named form is at least ten degrees of sky tall',
-    `smallest ${spans[0].name} at ${spans[0].deg.toFixed(0)} deg`)
-  // "It should be quite large scale, some of them at least, or most of them
-  // should be quite large scale." Twenty-five degrees is about half the
-  // vertical field of view of the headset, which is the honest reading of
-  // "large" for something you look up at.
-  const big = spans.filter((x) => x.deg >= 25)
-  check(big.length >= 8, 'and most of them fill a good part of the view',
-    `${big.length} of ${spans.length} forms span 25 deg or more`)
-  // The floor form is on screen every clear night, so it carries this promise
-  // more than any of the rare ones do.
-  check(spanOf(floorPat) >= 25, 'and the one you see every night is one of the large ones',
-    `${floorPat.name} spans ${spanOf(floorPat).toFixed(0)} deg`)
-  // The other half of the same trade: a band whose top has to reach 300 km to
-  // stay large is only credible while 300 km is a real auroral altitude. Past
-  // about 450 km there is not enough atomic oxygen left to emit and the shape
-  // stops being an aurora, so this is a physics fence, not a taste one.
-  const tall = PATTERNS.flatMap((p) => p.bands.map((b) => ({ n: p.name, a: b.alt1 })))
-    .filter((x) => x.a > 450)
-  check(tall.length === 0, 'and no band buys its size by leaving the atmosphere',
-    tall.length ? tall.map((x) => `${x.n} ${x.a}km`).join(', ') : 'highest top 350 km')
-  // ...and nothing has been pushed so far out that curvature has swallowed it
-  // whole. A band drawn entirely below the horizon is not a subtle bug: it
-  // costs its full fill and draws nothing, and the composer would keep picking
-  // it.
-  check(sunk.length === 0, 'and no band has been pushed so far out that the Earth hides all of it',
-    sunk.length ? sunk.join(', ') : 'all visible')
-
   // The catalogue's own declared radius has to agree with the shader's. If
   // bandRadiusKm drifted from what the vertex shader builds, MAX_RADIUS_KM
   // would be guarding nothing.
@@ -624,23 +546,36 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
   for (const p of PATTERNS) for (const b of p.bands) declaredMax = Math.max(declaredMax, bandRadiusKm(b))
   check(declaredMax <= MAX_RADIUS_KM, 'no catalogued band exceeds the declared radius cap',
     `${declaredMax.toFixed(0)} of ${MAX_RADIUS_KM} km`)
-
   // =========================================================================
-  // Does the curtain fold back over itself?
+  // Does the hem trace an S, and does the curtain fold back over itself?
   //
-  // This is the one claim in the round-five request that cannot be checked by
-  // reading a parameter, because it is a property of the noise and not of the
-  // catalogue: two bands with identical `curl` fold back a different number of
-  // times depending on their fold wavelength, their span and their distance.
+  // "The auroras look horrible" was answered by reverting the shader; "I still
+  // want them to weave around in the sky, so the bottom hem traces S shapes
+  // rather than just being a slightly wiggly straight-ish line" is the one
+  // thing that was kept, and it is the one claim here that cannot be checked
+  // by reading a parameter. It is a property of the noise, not of the
+  // catalogue: two bands with identical `meander` trace a different shape
+  // depending on their span, their distance and how high their hem sits.
+  //
   // So aurHash/aurNoise/aurFold are ported to JS below -- exactly, including
   // the uint32 wrap, which is what `Math.imul(x >>> 0, k) >>> 0` reproduces --
-  // and the footprint is walked.
+  // and the footprint is walked at several times. Three things come out of the
+  // walk:
   //
-  // The measurement is the number of times the BEARING of the footprint
-  // reverses along the band. Zero reversals is a polar graph: single-valued in
-  // azimuth, which is what the shader built before the tangential term went in
-  // and is exactly the "flapping, never folding" that was reported. Each pair
-  // of reversals is one loop of curtain lying over itself.
+  //   swing  the peak-to-peak rise and fall of the hem, IN DEGREES OF SKY.
+  //          This is the complaint made numeric. Before the meander the
+  //          always-on quiet arc measured 0.7 degrees, which is a straight
+  //          line with texture on it.
+  //   bends  the number of turns in the hem once the fine folds are averaged
+  //          out of it. An S needs at least two. Counting every local extremum
+  //          instead would measure jitter -- the quiet arc had 24 of those
+  //          while swinging 0.7 degrees -- so the hem is resampled coarsely
+  //          first.
+  //   rev    the number of times the BEARING of the footprint reverses. Zero
+  //          reversals is a polar graph: single-valued in azimuth, which is
+  //          what the shader built before the tangential term went in. Each
+  //          pair of reversals is one loop of curtain lying over itself, which
+  //          only the active forms should be doing.
   // =========================================================================
   const aurHash = (x, y) => {
     const qx = Math.imul(Math.floor(x) >>> 0, 1597334673) >>> 0
@@ -658,89 +593,242 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
     const hi = aurHash(ix, iy + 1) + (aurHash(ix + 1, iy + 1) - aurHash(ix, iy + 1)) * ux
     return lo + (hi - lo) * uy
   }
+  // The curtain's own folds: coordinate scale, time scale, weight, quarter-wave
+  // offset. All three are scaled by the band's fold amplitude and by foldHz.
   const OCT = [
-    // coordinate scale, time scale, weight, quarter-wave offset, hz-scaled?
-    { c: 0.0034, t: 0.014, w: 2.30, q: 73.5, hz: false },
-    { c: 0.0125, t: 0.038, w: 1.00, q: 20.0, hz: true },
-    { c: 0.0410, t: 0.085, w: 0.52, q: 6.1, hz: true },
-    { c: 0.1350, t: 0.310, w: 0.34, q: 1.85, hz: true },
+    { c: 0.0125, t: 0.055, w: 1.00, q: 20.0 },
+    { c: 0.0410, t: 0.130, w: 0.52, q: 6.1 },
+    { c: 0.1350, t: 0.310, w: 0.34, q: 1.85 },
   ]
-  const aurFold = (km, t, amp, hz, act, curl, ms) => {
+  // The meander, which is neither scaled by amp nor by hz -- that is the whole
+  // point of it.
+  const MEANDER = { c: 0.0034, t: 0.014, q: 73.5 }
+  const aurFold = (km, t, amp, hz, act, curl, ms, mAmp) => {
     let fx = 0
     let fy = 0
     for (let i = 0; i < OCT.length; i++) {
       const o = OCT[i]
-      // The meander is the one octave measured in degrees of sky rather than
-      // in kilometres, so its coordinate is scaled and its wavelength is not.
-      const k = o.hz ? km : km * ms
-      const c = o.hz ? o.c * hz : o.c
-      const off = o.hz ? o.q / hz : o.q
-      const g = o.w * (i === 3 ? act : 1) * amp
-      fx += (aurNoise(k * c, t * o.t) - 0.5) * g
-      fy += (aurNoise((k + off) * c, t * o.t) - 0.5) * g
+      const c = o.c * hz
+      const off = o.q / hz
+      const g = o.w * (i === 2 ? act : 1)
+      fx += (aurNoise(km * c, t * o.t) - 0.5) * g
+      fy += (aurNoise((km + off) * c, t * o.t) - 0.5) * g
     }
+    fx *= amp
+    fy *= amp
+    const mkm = km * ms
+    fx += (aurNoise(mkm * MEANDER.c, t * MEANDER.t) - 0.5) * mAmp
+    fy += (aurNoise((mkm + MEANDER.q) * MEANDER.c, t * MEANDER.t) - 0.5) * mAmp
     return [fx, fy * curl]
   }
-  // The band's own weights against the shader's, so a re-tuned octave cannot
-  // leave this mirror measuring a shape that is no longer drawn.
-  for (const o of OCT) {
+  // Every rate in the mirror against the shader's, so a re-tuned octave cannot
+  // leave this measuring a shape that is no longer drawn.
+  for (const o of [...OCT, MEANDER]) {
     check(vs.includes(`t * ${o.t.toFixed(3)} )`), `fold octave at rate ${o.t} matches the shader`)
   }
+  // And the amplitude the shader hands the meander, which is the one number
+  // this whole section turns on.
+  const mFrac = Number(auroraSrc.match(/const MEANDER_FRAC = ([\d.]+)/)[1])
+  check(/f \+= \( vec2\( aurNoise\( vec2\( mkm \* 0\.0034,[\s\S]{0,180}\) \* mAmp;/.test(auroraSrc),
+    'the meander is added after the fold amplitude, not multiplied by it', `frac ${mFrac}`)
+  check(/bandG\[i4\] = b\.meander \* MEANDER_FRAC \* b\.dist/.test(auroraSrc),
+    'and its amplitude is a fraction of the distance, so the swing is the same span of sky at any range')
 
-  const reversalsOf = (b, act) => {
-    const amp = b.fold * (0.86 + (b.alt0 - 90) * 0.0042)
+  // The walk. Sampled at several in-world times because the shape morphs, and
+  // over the middle 80% of each band because the ends are tapered out by
+  // `endTaper` and their hem is not on screen.
+  const walkOf = (b, act, meander = b.meander) => {
+    const ampOf = (alt) => b.fold * (0.86 + (alt - 90) * 0.0042)
+    const mAmp = meander * mFrac * b.dist
     const ms = 250 / b.dist
-    let sum = 0
-    let n = 0
-    for (let t = 0; t < 800; t += 37) {
-      let prev = null
-      let last = null
-      let r = 0
-      for (let i = 0; i <= 400; i++) {
-        const aU = i / 400
-        const km = (aU - 0.5) * b.span * DEG * b.dist + t * b.drift
+    const N = 400
+    const lo = Math.round(N * 0.1)
+    const hi = Math.round(N * 0.9)
+    let swing = 0
+    let path = 0
+    let bends = 0
+    let rev = 0
+    let frames = 0
+    let rMax = 0
+    let rMin = Infinity
+    for (let ut = 0; ut < 800; ut += 37) {
+      const t = ut * b.speed
+      const elev = []
+      const bearing = []
+      for (let i = 0; i <= N; i++) {
+        const aU = i / N
+        const km = (aU - 0.5) * b.span * DEG * b.dist + ut * b.drift
         const a = (b.az + (aU - 0.5) * b.span) * DEG
-        const f = aurFold(km, t, amp, b.foldHz, act, b.curl, ms)
+        // The hem, which is what all three measurements are about. shear is
+        // zero at the base, so the hem samples the fold at km exactly.
+        const f = aurFold(km, t, ampOf(b.alt0), b.foldHz, act, b.curl, ms, mAmp)
         const x = Math.sin(a) * (b.dist + f[0]) + Math.cos(a) * f[1]
         const z = -Math.cos(a) * (b.dist + f[0]) + Math.sin(a) * f[1]
-        // Unwrapped, or a band that crosses due south counts two reversals
-        // per frame that are an artefact of atan2 and not of the geometry.
-        let ang = Math.atan2(x, -z)
+        elev.push(elevOf(b.alt0, Math.hypot(x, z)))
+        bearing.push(Math.atan2(x, -z))
+        rMin = Math.min(rMin, Math.hypot(x, z, b.alt0) * KM_UNITS)
+        // ...and the top of the column, where the fold amplitude is largest and
+        // the geometry reaches furthest from the camera.
+        const g = aurFold(km, t, ampOf(b.alt1), b.foldHz, act, b.curl, ms, mAmp)
+        const gx = Math.sin(a) * (b.dist + g[0]) + Math.cos(a) * g[1]
+        const gz = -Math.cos(a) * (b.dist + g[0]) + Math.sin(a) * g[1]
+        rMax = Math.max(rMax, Math.hypot(gx, gz, b.alt1) * KM_UNITS)
+      }
+      const mid = elev.slice(lo, hi)
+      swing += Math.max(...mid) - Math.min(...mid)
+      // Coarse resample before counting turns: 16 buckets across the band,
+      // which is well below the shortest fold wavelength and well above the
+      // meander's, so what survives is the shape of the arc and not its texture.
+      const BUCKETS = 16
+      const coarse = []
+      for (let k = 0; k < BUCKETS; k++) {
+        const a0 = lo + Math.floor(((hi - lo) * k) / BUCKETS)
+        const a1 = lo + Math.floor(((hi - lo) * (k + 1)) / BUCKETS)
+        let sum = 0
+        for (let i = a0; i < a1; i++) sum += elev[i]
+        coarse.push(sum / (a1 - a0))
+      }
+      // The long-wave swing: the same peak-to-peak, measured on the resampled
+      // curve. This is the swing of the PATH the band hangs along, with the
+      // curtain's own folds averaged out of it, and it is the number the
+      // meander is answerable for -- a 12 km fold at 103 km range moves the hem
+      // a degree or so all by itself, which would let a form that is supposed
+      // to run straight across the sky pass a total-swing check on texture.
+      path += Math.max(...coarse) - Math.min(...coarse)
+      let d0 = null
+      for (let k = 1; k < BUCKETS; k++) {
+        const d = coarse[k] - coarse[k - 1]
+        if (d0 !== null && d0 * d < 0) bends++
+        d0 = d
+      }
+      // Unwrapped, or a band that crosses due south counts two reversals per
+      // frame that are an artefact of atan2 and not of the geometry.
+      let prev = null
+      let last = null
+      for (let i = 0; i <= N; i++) {
+        let ang = bearing[i]
         if (last !== null) {
           while (ang - last > Math.PI) ang -= 2 * Math.PI
           while (last - ang > Math.PI) ang += 2 * Math.PI
         }
         const d = last === null ? null : ang - last
-        if (prev !== null && d !== null && prev * d < 0) r++
+        if (prev !== null && d !== null && prev * d < 0) rev++
         prev = d
         last = ang
       }
-      sum += r
-      n++
+      frames++
     }
-    return sum / n
+    return { swing: swing / frames, path: path / frames, bends: bends / frames, rev: rev / frames, rMax, rMin }
   }
 
-  const folds = PATTERNS.map((p) => ({
-    name: p.name,
-    rev: Math.max(...p.bands.map((b) => reversalsOf(b, 0.9))),
-  }))
-  for (const f of folds) console.log(`       ${f.name.padEnd(18)} fold-backs ${f.rev.toFixed(1)} per frame`)
-  const foldy = folds.filter((f) => f.rev >= 2)
-  check(foldy.length >= 9, 'most named forms fold back over themselves rather than only flapping sideways',
-    `${foldy.length} of ${folds.length} average two or more bearing reversals`)
-  // ...and not all of them, because some real forms are straight. STEVE is a
-  // narrow ribbon, not a curtain, and giving it curls would make it a
-  // different phenomenon. A catalogue where EVERY form writhes is as wrong as
-  // one where none does.
-  const straight = folds.filter((f) => f.rev < 1)
-  check(straight.length >= 1, 'but not all of them -- the forms that are straight in nature stay straight',
-    straight.map((f) => f.name).join(', ') || 'none')
-  // The floor form is the one you see most nights, so it carries the promise
-  // on its own.
-  const floorForm = folds.find((f) => PATTERNS.find((p) => p.name === f.name)?.floor)
-  check(floorForm && floorForm.rev >= 2, 'and the always-on floor form is one of the ones that folds',
-    `${floorForm?.name}: ${floorForm?.rev.toFixed(1)}`)
+  // Measured at activity 0.9, which is where the fine octave is fully on. The
+  // meander does not depend on activity, so the hem numbers barely move with it.
+  // Per BAND, not per form. A form's bands are different objects with different
+  // promises -- STEVE is a straight mauve ribbon with a folded green fence
+  // underneath it -- so taking the max over a form's bands would let one band
+  // answer for another, in both directions.
+  const bands = PATTERNS.flatMap((p) => p.bands.map((b, i) => ({
+    name: p.bands.length > 1 ? `${p.name} #${i + 1}` : p.name,
+    form: p.name,
+    floor: !!p.floor,
+    span: b.span,
+    mean: b.meander,
+    ...walkOf(b, 0.9),
+    // The same band with the meander switched off. Differencing the two is the
+    // only way to ask what the MEANDER did, as opposed to what the band's own
+    // folds did: STEVE's green fence hangs at 103 km with 12 km folds, and that
+    // alone moves its hem nearly two degrees whatever its path is doing.
+    flat: walkOf(b, 0.9, 0).path,
+  })))
+  const shapes = PATTERNS.map((p) => {
+    const w = bands.filter((x) => x.form === p.name)
+    return {
+      name: p.name,
+      floor: !!p.floor,
+      swing: Math.max(...w.map((x) => x.swing)),
+      path: Math.max(...w.map((x) => x.path)),
+      bends: Math.max(...w.map((x) => x.bends)),
+      rev: Math.max(...w.map((x) => x.rev)),
+    }
+  })
+  for (const s of shapes) {
+    console.log(`       ${s.name.padEnd(18)} hem swings ${s.swing.toFixed(1).padStart(4)} deg` +
+      ` (${s.path.toFixed(1).padStart(4)} of it the path itself),` +
+      ` ${s.bends.toFixed(1).padStart(4)} bends, ${s.rev.toFixed(1).padStart(5)} fold-backs`)
+  }
+
+  // ---- The hem. The forms this is about are the ARCS AND BANDS: a thing that
+  // crosses the sky and therefore has a hem you can follow. The two narrow
+  // plumes span 30 degrees of azimuth, which is a fraction of one meander
+  // wavelength, so asking their hem to trace an S is asking for a shape that
+  // does not fit in them.
+  // ...and the two forms whose rows declare themselves straight are held out of
+  // it and checked separately below, so that the catalogue's own declaration is
+  // what decides which promise each form carries.
+  const arcs = bands.filter((s) => s.span >= 100 && s.mean >= 0.5)
+  const flat = arcs.filter((s) => s.swing < 2)
+  check(flat.length === 0, 'every arc that crosses the sky has a hem that rises and falls degrees, not fractions of one',
+    flat.length ? flat.map((s) => `${s.name} ${s.swing.toFixed(1)}`).join(', ')
+      : `smallest swing ${Math.min(...arcs.map((s) => s.swing)).toFixed(1)} deg`)
+  // Two turns is the difference between an S and an arch. This is the shape
+  // the request named, so it is checked on its own rather than folded into the
+  // swing number -- a hem could swing five degrees in one smooth bow and still
+  // not be what was asked for.
+  // ...and for the bands that were the actual complaint, the swing has to be
+  // the MEANDER's doing rather than a side effect of a big fold amplitude.
+  // Restricted to the bands whose folds alone leave the hem under two degrees,
+  // because that is the set the mechanism exists for: a breakup band already
+  // swings six degrees on 56 km folds, and differencing peak-to-peak on top of
+  // that measures nothing useful -- two overlapping waves do not add their
+  // extremes.
+  const needy = arcs.filter((s) => s.flat < 2)
+  const notMeander = needy.filter((s) => s.path - s.flat < 1)
+  check(notMeander.length === 0, 'and on the quiet ones it is the path doing it, not a side effect of big folds',
+    notMeander.length ? notMeander.map((s) => `${s.name} ${(s.path - s.flat).toFixed(1)}`).join(', ')
+      : `${needy.length} bands, smallest contribution ` +
+        `${Math.min(...needy.map((s) => s.path - s.flat)).toFixed(1)} deg`)
+  const straightish = arcs.filter((s) => s.bends < 2)
+  check(straightish.length === 0, 'and it turns at least twice across the band, which is what makes it an S',
+    straightish.length ? straightish.map((s) => `${s.name} ${s.bends.toFixed(1)}`).join(', ')
+      : `fewest ${Math.min(...arcs.map((s) => s.bends)).toFixed(1)} turns`)
+  // The floor form is up every clear night, so it carries this promise more
+  // than any of the rare ones do.
+  const floorForm = shapes.find((s) => s.floor)
+  check(floorForm.swing >= 2 && floorForm.bends >= 2, 'and the always-on floor form is one of them',
+    `${floorForm.name}: ${floorForm.swing.toFixed(1)} deg over ${floorForm.bends.toFixed(1)} turns`)
+  // The two forms that are straight in nature have to stay straight. STEVE is
+  // a river of plasma and the SAR arc is stable by definition; a catalogue
+  // where EVERY form serpentines is as wrong as one where none does, and
+  // `meander` on those rows is the only thing holding them down.
+  const damped = bands.filter((s) => s.mean < 0.5)
+  const notCalm = damped.filter((s) => s.path - s.flat > 0.5)
+  check(damped.length >= 2 && notCalm.length === 0,
+    'but the forms that are straight in nature stay straight',
+    notCalm.length ? notCalm.map((s) => `${s.name} ${(s.path - s.flat).toFixed(1)}`).join(', ')
+      : damped.map((s) => `${s.name} ${(s.path - s.flat).toFixed(1)} deg of meander`).join(', '))
+
+  // ---- Folding back. The other half of "weave around in the sky": where the
+  // tangential component outruns the along-track step the footprint doubles
+  // back and the same stretch of sky gets two layers of curtain.
+  const foldy = shapes.filter((s) => s.rev >= 2)
+  check(foldy.length >= 5, 'the active forms fold back over themselves rather than only flapping sideways',
+    `${foldy.length} of ${shapes.length} average two or more bearing reversals`)
+  const quiet = shapes.filter((s) => s.rev < 1)
+  check(quiet.length >= 5, 'while the quiet ones weave without lying over themselves',
+    `${quiet.length} of ${shapes.length}`)
+
+  // ---- And the whole thing still has to fit the camera. These are measured
+  // from the same walk rather than bounded analytically, because an analytic
+  // worst case over four octaves that never peak together is far looser than
+  // the shape that is drawn -- loose enough that it would fail on geometry
+  // which renders perfectly.
+  const rMax = Math.max(...bands.map((s) => s.rMax))
+  const rMin = Math.min(...bands.map((s) => s.rMin))
+  const farthest = bands.find((s) => s.rMax === rMax)
+  check(rMax < 20000, 'the aurora fits inside the far plane with its folds at full stretch',
+    `${rMax.toFixed(0)} of 20000 units (${farthest.name})`)
+  check(rMin > 4000, 'and never reaches down into anything the terrain can occupy',
+    `nearest ${rMin.toFixed(0)} units`)
 
   const tris = aurora.mesh.geometry.index.count / 3
   check(tris < 40000, 'and it costs one draw call of a modest triangle count', `${tris} tris`)
@@ -777,20 +865,6 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
 
   check(PATTERNS.length >= 10, 'there are at least ten named forms', `${PATTERNS.length} patterns`)
 
-  // Forms are retired by a `retired: '<why>'` string on the row rather than by
-  // commenting the block out, and these two checks are the reason that is worth
-  // the extra machinery. A commented-out form is dead text: nothing parses it,
-  // so its numbers drift out of agreement with the shader and by the time you
-  // want it back it no longer runs. A retired row is still a live object -- the
-  // sweeps below still see it, so it still has to fit the far plane -- it is
-  // merely not offered to the composer. The cost of that is exactly one failure
-  // mode, a retired row leaking back into PATTERNS, which is what this catches.
-  check(RETIRED.length > 0 && RETIRED.every((p) => !PATTERNS.includes(p)),
-    'and the retired forms are held out of the catalogue rather than deleted',
-    RETIRED.map((p) => p.name).join(', '))
-  check(RETIRED.every((p) => typeof p.retired === 'string' && p.retired.length > 20),
-    'and each of them says why, so bringing one back is a decision and not a guess')
-
   // Names are what the HUD prints and what the console logs, so a duplicate
   // would be a form you cannot tell apart from another one.
   const names = new Set(PATTERNS.map((p) => p.name))
@@ -824,13 +898,9 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
   // exactly like "that form is rare".
   const FIELDS = ['dist', 'az', 'span', 'alt0', 'alt1', 'fold', 'foldHz', 'speed', 'drift',
     'ray', 'rayHz', 'lobes', 'ragged', 'flick', 'fringe', 'pulse', 'tintAmt', 'bright', 'seed',
-    'pale', 'crown', 'shear', 'breathe', 'twist', 'flame', 'curl']
+    'pale', 'crown', 'shear', 'breathe', 'meander', 'curl']
   let badField = ''
-  // ALL, not PATTERNS: the retirement mechanism only earns its keep if a
-  // retired row is still a live object that the sweeps see, so that restoring
-  // one is a one-word change rather than an archaeology project. This is the
-  // sweep that keeps them honest.
-  for (const p of ALL) {
+  for (const p of PATTERNS) {
     for (const b of p.bands) {
       for (const f of FIELDS) if (!Number.isFinite(b[f])) badField = `${p.name}.${f}`
       if (!Array.isArray(b.tint) || b.tint.length !== 3 || b.tint.some((v) => !Number.isFinite(v))) {
@@ -840,8 +910,7 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
       if (bandRadiusKm(b) > MAX_RADIUS_KM) badField = `${p.name}: radius ${bandRadiusKm(b).toFixed(0)} km`
     }
   }
-  check(badField === '', 'every band carries every parameter as a finite number, retired ones included',
-    badField)
+  check(badField === '', 'every band carries every parameter as a finite number', badField)
 
   // Sweep a simulated fortnight of in-world time. Nothing here may exceed the
   // slot budget, and -- the real point -- nothing may JUMP: a form appearing or
@@ -916,12 +985,7 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
   // a shear past a full fold wavelength, so "is there a vapour form" is
   // literally a question about that one number -- which means it can be
   // checked rather than admired.
-  // Two numbers, and a form has to have both on every band: `shear` past a
-  // full fold wavelength so the pattern stops reading as a decal, and `twist`
-  // far enough past the field's own dip that the GEOMETRY turns rather than
-  // just leans. The first pass shipped four of these with shear alone and they
-  // read as leaning triangles, which is the failure this check now catches.
-  const vortex = PATTERNS.filter((p) => p.bands.every((b) => b.shear > 0.8 && b.twist > 0.1))
+  const vortex = PATTERNS.filter((p) => p.bands.every((b) => b.shear > 0.8))
   check(vortex.length >= 3, 'there are at least three forms that twist rather than hang',
     vortex.map((p) => p.name).join(', '))
   // ...and they have to be soft. A twisting column with hard vertical
@@ -1024,35 +1088,47 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
   })
   check(dupes.length === 0, 'no shader declares the same name twice in one scope, so the GLSL links',
     dupes.length ? dupes.join(', ') : `${shaderCount} shaders clean`)
-  check(/float region = smoothstep[\s\S]{0,120}float wash = smoothstep/.test(auroraSrc),
-    'the presence envelope has a slow region and a fast wash, not one rate')
-  check(/region \* region \* \( 0\.22 \+ 0\.78 \* wash \)/.test(auroraSrc),
-    'and they multiply, so either one can take a stretch of band out')
+  // The presence envelope, which is what makes a band a set of lit REGIONS that
+  // move rather than a ribbon that dims. Two scales of noise and an asymmetric
+  // curve, and each half is a separate promise: drop the second octave and the
+  // regions get big and even, straighten the curve and the band sits at a
+  // steady middling brightness instead of spending most of its life faint and
+  // occasionally flaring.
+  check(/float mac = aurNoise[\s\S]{0,60}\* 0\.62\s*\n\s*\+ aurNoise[\s\S]{0,60}\* 0\.38;/
+    .test(auroraSrc), 'the presence envelope works at two scales, not one')
+  check(/pow\( smoothstep\( 0\.20, 0\.90, mac \), 2\.0 \)/.test(auroraSrc),
+    'and its curve is asymmetric, so a band is usually faint and occasionally flares')
+  check(/float breath = mix\( 1\.0, 0\.25 \+ 0\.75 \* aurNoise\( vec2\( E\.z \* 7\.3/.test(auroraSrc),
+    'and a whole form comes and goes as well as parts of it')
   check(/float dep = smoothstep\( 0\.0, vCol\.z, h \)/.test(auroraSrc),
-    'and the bottom hem fades over a per-column width instead of a fixed one')
+    'the bottom hem fades over a per-column width instead of a fixed one')
   check(/aurFold\( km \+ shear, t, amp/.test(auroraSrc),
     'and the fold pattern leans with altitude instead of standing straight up')
-  // The meander has to be the LONGEST octave, it must not be scaled by hz (or a
-  // form with tight folds stops snaking and goes back to a ruled line), and it
-  // must be scaled by mScale (or a 1000 km arc shows four times the swings of a
-  // 250 km one across the same span of sky, which reads as fuzz).
-  check(/aurNoise\( vec2\( mkm \* 0\.0034, +t \* 0\.014 \) \),[\s\S]{0,140}f \*= 2\.30/.test(auroraSrc),
-    'and the band snakes across the sky on a wave far longer than its folds')
+  // The meander has to be the LONGEST wave here, it must not be scaled by hz (or
+  // a form with tight folds stops snaking and goes back to a ruled line), and it
+  // must be scaled by mScale (or a 295 km arc shows four times the swings of an
+  // 86 km one across the same span of sky, which reads as fuzz rather than as a
+  // path).
+  const foldFn = auroraSrc.slice(auroraSrc.indexOf('vec2 aurFold('), auroraSrc.indexOf('function buildGeometry'))
+  const rates = [...foldFn.matchAll(/t \* (0\.\d+)/g)].map((m) => Number(m[1]))
+  check(Math.min(...rates) === 0.014 && rates.filter((r) => r === 0.014).length === 2,
+    'the meander is the slowest wave in the fold, and it is one wave in two axes',
+    `rates ${[...new Set(rates)].join(', ')}`)
+  const wavelengths = [...foldFn.matchAll(/\* (0\.\d+)( \* hz)?,/g)].map((m) => Number(m[1]))
+  check(Math.min(...wavelengths) === 0.0034 && !/0\.0034 \* hz/.test(foldFn),
+    'and it is the longest, and foldHz does not touch it',
+    `scales ${[...new Set(wavelengths)].join(', ')}`)
   check(/float mkm = km \* ms;/.test(auroraSrc) && /float mScale = 250\.0 \/ A\.x;/.test(auroraSrc),
-    'and that wave is measured in degrees of sky, so a distant arc snakes as widely as a near one')
-  // The tangential term, which is the whole of round five: without it the
-  // footprint is r(theta) and cannot double back at any amplitude.
-  check(/vec3 p = dir \* gd \+ tng \* f0\.y/.test(auroraSrc),
+    'and it is measured in degrees of sky, so a distant arc snakes as widely as a near one')
+  // The tangential term: without it the footprint is r(theta), single-valued in
+  // azimuth, and cannot double back at any amplitude.
+  check(/vec3 p = \( dir \* \( A\.x \+ f0\.x \) \+ tng \* f0\.y/.test(auroraSrc),
     'and the footprint carries a tangential term, so it is a curve and not a polar graph')
-  check(/baseKm \+= swoop;\s*\n\s*topKm \+= swoop;/.test(auroraSrc),
-    'and the hem rides up and down with the column rather than alone')
-  check(/float a = radians\( A\.y \+ \( aU - 0\.5 \) \* A\.z \+ G\.x \* \( alt - baseKm \) \)/.test(auroraSrc),
-    'and the footprint itself rotates with altitude, so a vortex has a far side')
-  // Flaming is the ONE altitude term, and it must ride on `dep` rather than on
-  // any of the noise that defines the shape. A height term in the ray or fold
-  // lookups is the one-character mistake that turns this into coloured fog.
-  check(/dep \*= mix\( 1\.0, 0\.20 \+ 1\.90 \* pow\( wave, 3\.0 \), vCol\.w \)/.test(auroraSrc),
-    'and the flaming wave rides on brightness, never on structure')
+  // Both components have to enter the finite difference, or the normal is the
+  // normal of a shape that is not being drawn and the edge-on brightening in
+  // the fragment shader points the wrong way.
+  check(/tng \* \( dk \+ f1\.y - f0\.y \) \+ dir \* \( f1\.x - f0\.x \)/.test(auroraSrc),
+    'and the surface normal is differenced along the curve the vertices are on')
   const rayLookup = auroraSrc.slice(auroraSrc.indexOf('float ray = aurNoise'),
     auroraSrc.indexOf('float crisp'))
   check(!/\bh\b|vShape\.x|\balt\b/.test(rayLookup),
@@ -1357,13 +1433,39 @@ console.log('\n--- sky, stars and aurora: geometry and shader hygiene ---------'
     check(st.farDirect === 1 && st.farAmbient === 1, `the near-field envelope is inert at ${h}:00`,
       `${st.farDirect} / ${st.farAmbient}`)
   }
-  // And the two radii are what the request named. These live in lighting.js as
-  // constants baked into the generated GLSL, so the source is the only place
-  // they can be read back from.
+  // The two radii live in lighting.js as constants baked into the generated
+  // GLSL, so the source is the only place they can be read back from.
   const lightSrc = readFileSync(new URL('../src/lighting.js', import.meta.url), 'utf8')
-  check(/const WL_NEAR_M = 25\b/.test(lightSrc) && /const WL_FAR_M = 50\b/.test(lightSrc) &&
-    /1\.0 - smoothstep\( \$\{WL_NEAR_M[\s\S]{0,120}distance\([\s\S]{0,40}cameraPosition/.test(lightSrc),
-    'and the envelope runs from 25 m to 50 m, measured to the head')
+  const near = Number(lightSrc.match(/const WL_NEAR_M = ([\d.]+)/)[1])
+  const far = Number(lightSrc.match(/const WL_FAR_M = ([\d.]+)/)[1])
+  check(/1\.0 - smoothstep\( \$\{WL_NEAR_M[\s\S]{0,120}distance\([\s\S]{0,40}cameraPosition/.test(lightSrc),
+    'the near-field envelope is a distance-to-the-head falloff', `${near} m to ${far} m`)
+  // The envelope must have NO PLATEAU. An inner radius above zero makes it a
+  // fully-lit disc with the falloff outside it, and a disc with an edge that
+  // travels with the player is a spotlight -- which is exactly what it looked
+  // like at 25/50, and exactly what the request asked to be taken out. Zero
+  // inner radius is the whole of "scale gradually from your current location
+  // outward", so it is worth a check of its own rather than a comment.
+  check(near === 0, 'and it starts falling off at her feet rather than at the edge of a lit disc',
+    `inner radius ${near} m`)
+  // smoothstep is symmetric about its midpoint, so this is the knob that keeps
+  // the near field about as bright as it was while the plateau goes away.
+  const mid = (near + far) / 2
+  check(mid > 30 && mid < 45, 'and half strength still lands where it did before the plateau went',
+    `half at ${mid} m`)
+  const sampleNear = (d) => {
+    const x = Math.min(Math.max((d - near) / (far - near), 0), 1)
+    return 1 - x * x * (3 - 2 * x)
+  }
+  console.log(`       near-field lift: ${[0, 10, 25, 40, 60, 75]
+    .map((d) => `${d}m ${(sampleNear(d) * 100).toFixed(0)}%`).join('  ')}`)
+  // No step anywhere. A gradient she walks through must not have a knee in it,
+  // and 4% per metre is well under what shows as banding on ground texture.
+  let worstStep = 0
+  for (let d = 0; d < far + 5; d += 0.5) {
+    worstStep = Math.max(worstStep, Math.abs(sampleNear(d) - sampleNear(d + 0.5)))
+  }
+  check(worstStep < 0.02, 'and nothing in it reads as an edge', `worst ${(worstStep * 100).toFixed(1)}% per 0.5 m`)
   check(/reflectedLight\.directDiffuse \*= \$\{sun\} \* mix\( uFarLight\.x, 1\.0, wlNear \)/.test(lightSrc),
     'the directional term is scaled by distance but still shadowed')
   check(/mix\( uSkyFloor, 1\.0, \$\{sky\} \) \* mix\( uFarLight\.y, 1\.0, wlNear \)/.test(lightSrc),
