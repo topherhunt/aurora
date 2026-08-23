@@ -414,6 +414,27 @@ for (const [name, cls, height] of SINGLETONS) {
 }
 assets.push(...DOWNLOADS)
 
+// --- generated foliage ------------------------------------------------------
+//
+// Everything above names a file somebody downloaded. These name TIERS that
+// `tools/trees/generate.mjs` produced to order, so they carry `tiers` and
+// `shared_layer` instead of `src`, and build.py dispatches on that.
+//
+// Folded in here rather than kept in a separate manifest so that one build, one
+// gate and one previewer cover both -- the whole question this proof of concept
+// is answering is whether generated foliage can be a normal citizen of the
+// library, and a second pipeline beside the first would be assuming it cannot.
+//
+// Absent until the generator has run. That is not an error worth failing on:
+// `npm run props:generate` writes it, and a manifest build before that should
+// still produce the other 154 assets rather than refusing outright.
+const GENERATED = path.join(ROOT, 'tmp/generated-props/generated.json')
+if (fs.existsSync(GENERATED)) {
+  assets.push(...JSON.parse(fs.readFileSync(GENERATED, 'utf8')))
+} else {
+  console.warn(`note: ${path.relative(ROOT, GENERATED)} absent -- run \`npm run props:generate\` for the generated foliage`)
+}
+
 // Fold the class defaults into each asset so build.py never has to look one up,
 // and so a per-asset override is a plain field rather than a merge rule.
 for (const a of assets) {
@@ -432,6 +453,11 @@ const missing = []
 for (const a of assets) {
   for (const key of ['src', 'base_color_map', 'opacity_map']) {
     if (a[key] && !fs.existsSync(path.join(ROOT, a[key]))) missing.push({ id: a.id, key, p: a[key] })
+  }
+  // Generated assets have no `src`; their sources are the tier files, and a
+  // missing one is the same class of typo the loop above exists to catch.
+  for (const t of a.tiers ?? []) {
+    if (!fs.existsSync(path.join(ROOT, t))) missing.push({ id: a.id, key: 'tiers', p: t })
   }
 }
 if (missing.length) {

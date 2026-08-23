@@ -557,7 +557,7 @@ def material_colors_to_vertex(obj, override=None):
     return layer
 
 
-def bake_ao_to_vertex(obj, samples=64, distance=1.0):
+def bake_ao_to_vertex(obj, samples=64, distance=1.0, isolate=False):
     """Cycles AO bake, multiplied into the existing vertex colour layer.
 
     Multiplied rather than replacing, because the layer already carries either
@@ -567,7 +567,29 @@ def bake_ao_to_vertex(obj, samples=64, distance=1.0):
 
     `distance` is the AO ray length and it has to be a fraction of the asset,
     not a constant: at 1 m on a 14 m tree the canopy self-occludes into a black
-    mass, and at 1 m on a 0.4 m grass tuft nothing occludes anything."""
+    mass, and at 1 m on a 0.4 m grass tuft nothing occludes anything.
+
+    `isolate` hides every other mesh for the duration. The decimated path bakes
+    once on the source, while it is alone in the scene, so it never needed this.
+    The generated path bakes per tier, and the tiers are all grounded at the
+    origin and fully interpenetrating -- so without it LOD1 casts its shadow
+    onto LOD0 and the tiers get visibly different shading, which is exactly what
+    a LOD swap must not have. `render_billboard` hides the scene the same way,
+    for the same reason."""
+    hidden = []
+    if isolate:
+        for o in bpy.context.scene.objects:
+            if o.type == "MESH" and o is not obj and not o.hide_render:
+                o.hide_render = True
+                hidden.append(o)
+    try:
+        return _bake_ao(obj, samples, distance)
+    finally:
+        for o in hidden:
+            o.hide_render = False
+
+
+def _bake_ao(obj, samples, distance):
     me = obj.data
     layer = ensure_corner_col(me)
 
@@ -1140,6 +1162,179 @@ def build_asset(spec, out_dir, opts):
     return rec
 
 
+# ---------------------------------------------------------------------------
+# Generated assets
+# ---------------------------------------------------------------------------
+
+def adopt_generated_colors(obj):
+    """Rename the imported COLOR_0 to the name the rest of this file expects.
+
+    Blender's glTF importer calls it "Color"; every consumer here -- the vertex
+    colour node in `finalize_material`, `ensure_corner_col`, the AO multiply --
+    looks for "Col". Left alone, `ensure_corner_col` finds nothing, creates a
+    fresh WHITE layer, and the generator's bark and leaf tints vanish without an
+    error: the tree still builds and still renders, in the wrong colours.
+    """
+    ca = obj.data.color_attributes
+    if ca.get("Col") is not None:
+        return
+    src = ca.get("Color")
+    if src is None:
+        raise RuntimeError("%s: imported tier has no COLOR_0 -- the generator "
+                           "must write bark and leaf tints" % obj.name)
+    src.name = "Col"
+    ensure_corner_col(obj.data)  # normalise domain/type, keeping the colours
+
+
+def build_generated(spec, out_dir, opts):
+    """Build an asset whose LOD tiers were AUTHORED, not decimated.
+
+    `tools/trees/generate.mjs` emits one GLB per tier, already on budget, and
+    this walks them through the same finishing the scanned assets get: ground,
+    scale, AO into vertex colour, one material, an impostor sheet, one GLB.
+
+    Two things are deliberately NOT done here, and they are the point:
+
+    NO DECIMATION. The generator takes the triangle budget as an input, so there
+    is nothing to decimate toward. That removes the boundary stall outright --
+    the collapse decimator refuses to cross an open boundary, alpha cards are
+    almost entirely boundary, and that is why four grass variants and two trees
+    had to be dropped from the hand-collected library rather than hit budget.
+
+    NO PER-TIER ATLAS BAKE. Authored tiers share a UV layout, so every tier of
+    every tree of a species addresses ONE `shared_layer` -- five 128x128 PNGs
+    for the whole generated set. `consolidate_texture` exists because decimation
+    invalidates a tier's UVs; nothing here invalidates them.
+    """
+    aid = spec["id"]
+    common.reset_scene()
+
+    # The atlas is an INPUT, staged in tmp/ by tools/trees/layers.py, and it is
+    # copied into the output tree here rather than written there directly
+    # because `--clean` wipes the output tree immediately before this runs.
+    # Several assets share one file, so copying is idempotent by design.
+    layer_rel = spec["shared_layer"]
+    layer_src = spec["shared_layer_src"]
+    if not os.path.exists(layer_src):
+        raise RuntimeError("%s: shared layer %s missing -- run tools/trees/layers.py first"
+                           % (aid, layer_src))
+    layer_png = os.path.join(out_dir, layer_rel)
+    os.makedirs(os.path.dirname(layer_png), exist_ok=True)
+    shutil.copyfile(layer_src, layer_png)
+    image = bpy.data.images.load(layer_png)
+
+    rec = {
+        "id": aid,
+        "class": spec["class"],
+        "src": spec["tiers"][0],
+        "height_m": spec["height_m"],
+        "generated": True,
+        "textured": True,
+        # Not "baked_texture": nothing was baked. The tints the generator wrote
+        # into COLOR_0 are real colour that the AO multiply and the shared atlas
+        # both build on, so this must not be confused with the textured path's
+        # white-vertex-colour convention.
+        "color_source": "generated_vertex_color",
+        "shared_layer": layer_rel,
+        "lods": [],
+    }
+
+    lod_objs = []
+    for i, tier in enumerate(spec["tiers"]):
+        if not os.path.exists(tier):
+            raise RuntimeError("%s: tier %d missing (%s) -- run tools/trees/generate.mjs" % (aid, i, tier))
+        lod = common.join_all(common.import_any(tier), "%s_LOD%d" % (aid, i))
+        common.apply_transforms(lod)  # the importer carries Y-up in as a rotation
+        lod.data.name = lod.name
+        adopt_generated_colors(lod)
+
+        # Ground and scale every tier for the same reason the decimated chain
+        # does: the tiers must be interchangeable, and a tier that sits 3 cm
+        # higher than its neighbour hops at the transition.
+        common.ground_and_center(lod)
+        scale_k = common.scale_to_height(lod, spec["height_m"])
+        if i == 0:
+            rec["source_scale"] = round(scale_k, 6)
+            rec["src_tris"] = common.tri_count(lod)
+            rec["welded_tris"] = rec["src_tris"]
+
+        if opts.bake:
+            # A much shorter reach than the 0.25 the scanned assets use. AO rays
+            # do not know a leaf card is a cutout -- to Cycles the canopy is a
+            # few hundred overlapping opaque quads -- so a reach that spans the
+            # crown buries the whole tree in its own shadow. A short reach still
+            # darkens where cards genuinely stack, which is the depth we want.
+            bake_ao_to_vertex(lod, samples=spec.get("ao_samples", 32),
+                              distance=spec["height_m"] * spec.get("ao_reach", 0.06),
+                              isolate=True)
+
+        finalize_material(lod, "%s_L%d" % (aid, i), True, image=image)
+        lod_objs.append(lod)
+
+        got = common.tri_count(lod)
+        target = spec["lod_tris"][i]
+        entry = {
+            "name": lod.name,
+            "target_tris": target,
+            "tris": got,
+            "verts": len(lod.data.vertices),
+            "kind": "mesh",
+            "layer": layer_rel,
+        }
+        # Kept even though a generator cannot stall the way a decimator does:
+        # if this ever fires it means the generator and the manifest disagree
+        # about the budget, which is worth hearing about rather than absorbing.
+        if got > target * 1.1:
+            entry["stalled"] = True
+            entry["overshoot"] = round(got / float(target), 2)
+        rec["lods"].append(entry)
+
+    if spec.get("billboard") and opts.billboard:
+        bb_png = os.path.join(out_dir, "layers", "%s_bb.png" % aid)
+        os.makedirs(os.path.dirname(bb_png), exist_ok=True)
+        dims = render_billboard(lod_objs[0], bb_png)
+        quads = spec.get("billboard_quads", 3)
+        bb = build_cross_quad("%s_BB" % aid, dims["width"], dims["height"], quads)
+        lod_objs.append(bb)
+        rec["lods"].append({
+            "name": bb.name,
+            "target_tris": quads * 2,
+            "tris": quads * 2,
+            "verts": quads * 4,
+            "kind": "billboard",
+            "layer": "layers/%s_bb.png" % aid,
+            "width_m": round(dims["width"], 4),
+            "height_m": round(dims["height"], 4),
+        })
+        rec["billboard_layer"] = "layers/%s_bb.png" % aid
+
+    # The shared atlas must not travel inside the GLB -- that is the whole
+    # saving. Same swap the textured path makes, and for the same reason, except
+    # here it would duplicate one layer into every tier of every tree using it.
+    swap_to_stub(lod_objs, aid)
+    glb = os.path.join(out_dir, "assets", "%s.glb" % aid)
+    os.makedirs(os.path.dirname(glb), exist_ok=True)
+    common.select_only(lod_objs)
+    bpy.ops.export_scene.gltf(
+        filepath=glb,
+        export_format="GLB",
+        use_selection=True,
+        export_apply=True,
+        export_yup=True,
+        export_normals=True,
+        export_texcoords=True,
+        export_tangents=False,
+        export_cameras=False,
+        export_lights=False,
+        export_animations=False,
+        export_skins=False,
+        export_morph=False,
+    )
+    rec["glb"] = "assets/%s.glb" % aid
+    rec["glb_bytes"] = os.path.getsize(glb)
+    return rec
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
@@ -1164,17 +1359,20 @@ def main():
 
     built, failed = [], []
     for spec in specs:
-        if not os.path.exists(spec["src"]):
+        # A generated spec names authored tiers instead of one source file, so
+        # it is dispatched on that rather than on a `src` it does not have.
+        generated = bool(spec.get("tiers"))
+        if not generated and not os.path.exists(spec["src"]):
             failed.append({"id": spec["id"], "error": "source missing: %s" % spec["src"]})
             print("MISS %s" % spec["id"])
             continue
         try:
-            rec = build_asset(spec, out_dir, opts)
+            rec = build_generated(spec, out_dir, opts) if generated else build_asset(spec, out_dir, opts)
             built.append(rec)
             chain = " -> ".join("%d" % l["tris"] for l in rec["lods"])
             print("OK   %-22s %7d src  %s  %s" % (
                 rec["id"], rec["src_tris"], chain,
-                "tex" if rec["textured"] else "vcol"))
+                "gen" if generated else ("tex" if rec["textured"] else "vcol")))
         except Exception as e:  # noqa: BLE001
             import traceback
             traceback.print_exc()

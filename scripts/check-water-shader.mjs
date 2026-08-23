@@ -669,6 +669,7 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
       p,
       got: lum(water.uniforms.uSilTint.value),
       want: (lum(c) + lum(lift)) * p.farAmbient,
+      tint: lum(water.uniforms.uTint.value),
     }
   }
 
@@ -736,6 +737,74 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   check(Math.abs(got.r / got.b - hue.r / hue.b) < 1e-6 && Math.abs(got.g / got.b - hue.g / hue.b) < 1e-6,
     'only the brightness is replaced -- the hue is still WATER.silhouetteTint',
     `${got.r.toExponential(2)}, ${got.g.toExponential(2)}, ${got.b.toExponential(2)}`)
+
+  // --- the body tint, which is the OTHER half of how dark a night lake is -----
+  //
+  // A correct silhouette is not enough on its own and that is worth spelling
+  // out, because it was the bug: the shader composites mix( body, refl, mirror
+  // ), so the (1 - mirror) share of the body colour reaches the eye at every
+  // viewing angle. A constant body colour is therefore a floor under the whole
+  // lake, and at full dark -- where the silhouette is legitimately zero -- that
+  // floor is 100% of what is left. Measured before the fix, a blocked patch of
+  // water was 1.29x brighter at noon than at midnight. It should be more like
+  // an order of magnitude.
+  const dayTint = new THREE.Color(WATER.tint)
+  check(Math.abs(atElev(90).tint - lum(dayTint)) < 1e-9,
+    'by day the body tint is exactly the colour WATER.tint was authored as',
+    `${atElev(90).tint.toExponential(4)} vs ${lum(dayTint).toExponential(4)}`)
+
+  // The reference is read out of the clock's own noon keyframe, so retuning the
+  // palette moves both ends together and daylight water stays where it was
+  // tuned. Pinned here so that stops being true loudly.
+  const noonPal = paletteAt(90)
+  const ambNoon = lum(setSRGB(new THREE.Color(), noonPal.hemiSky).multiplyScalar(noonPal.hemiIntensity))
+  let worstTint = 0
+  let darkestTint = Infinity
+  for (let e = 90; e >= -40; e -= 0.5) {
+    const r = atElev(e)
+    const amb = lum(setSRGB(new THREE.Color(), r.p.hemiSky).multiplyScalar(r.p.hemiIntensity))
+    worstTint = Math.max(worstTint, Math.abs(r.tint - lum(dayTint) * (amb / ambNoon)))
+    darkestTint = Math.min(darkestTint, r.tint)
+  }
+  check(worstTint < 1e-9,
+    'and at every other hour it is that colour times the sky it actually has',
+    `worst error ${worstTint.toExponential(2)} over 261 elevations`)
+  check(darkestTint < lum(dayTint) * 0.2,
+    'so the body of the water goes properly dark after sunset instead of holding a floor',
+    `noon ${lum(dayTint).toExponential(2)}, darkest ${darkestTint.toExponential(2)},` +
+    ` ${(lum(dayTint) / darkestTint).toFixed(1)}x`)
+
+  // ...and the shader side of the same argument. The body has to be taken to
+  // the silhouette colour by `blocked` as well, or a fully occluded patch is
+  // still (1 - mirror) * uTint no matter how dark the silhouette is -- which at
+  // noon left it three times brighter than the darkest terrain on screen. With
+  // both sides at uSilTint the composite is uSilTint for ANY Fresnel value,
+  // which is what makes the match hold at grazing angles too.
+  check(/vec3 body = mix\( uTint, uSilTint, blocked \);/.test(frag)
+    && /vec3 color = mix\( body, refl, mirror \);/.test(frag),
+    'a fully blocked patch composites to uSilTint at every viewing angle',
+    'both sides of the Fresnel mix are taken to the silhouette colour')
+
+  // --- the glint lobe ----------------------------------------------------------
+  //
+  // The two exponents are named knobs now because the distant one is being
+  // tuned by eye, and the thing that is easy to get wrong by eye is that these
+  // are exponents and the user is looking at an angle. For pow( cos t, n ) the
+  // half-maximum half-angle is sqrt( 2 ln2 / n ), so apparent size goes as
+  // 1 / sqrt( n ): halving the distant sun costs 4x here, not 2x. This check
+  // exists so the comment in WATER cannot drift away from the arithmetic.
+  const halfAngle = (n) => Math.sqrt((2 * Math.LN2) / n) * (180 / Math.PI)
+  check(Math.abs(halfAngle(WATER.sharpFar / 4) / halfAngle(WATER.sharpFar) - 2) < 1e-12,
+    'four times the exponent really is half the angular radius',
+    `${WATER.sharpFar} -> ${halfAngle(WATER.sharpFar).toFixed(2)} deg,` +
+    ` ${WATER.sharpFar / 4} -> ${halfAngle(WATER.sharpFar / 4).toFixed(2)} deg`)
+  check(WATER.sharpNear > WATER.sharpFar,
+    'and near water still gets the tighter lobe than far water',
+    `far ${WATER.sharpFar}, near ${WATER.sharpNear}`)
+  check(/float sharp = mix\( uSharp\.x, uSharp\.y, near \* near \);/.test(frag)
+    && water.uniforms.uSharp.value.x === WATER.sharpFar
+    && water.uniforms.uSharp.value.y === WATER.sharpNear,
+    'and the shader reads them from WATER rather than carrying its own copies')
 }
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

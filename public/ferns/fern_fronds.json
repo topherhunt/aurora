@@ -1,0 +1,20 @@
+{
+  "slice": 128,
+  "fronds": [
+    {
+      "name": "fern_frond_0",
+      "aspect": 0.3785,
+      "bytes": 26770
+    },
+    {
+      "name": "fern_frond_1",
+      "aspect": 0.3429,
+      "bytes": 30709
+    },
+    {
+      "name": "fern_frond_2",
+      "aspect": 0.491,
+      "bytes": 26784
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import { SKY_GLSL } from './sky-glsl.js'
 import { SAMPLE_GLSL } from './lighting.js'
 import { PROBE } from './sky-probe.js'
 import { TERRAIN_DARKEST, luminance } from './terrain/terrain-material.js'
+import { paletteAt } from './clock.js'
 
 /**
  * Lake surfaces (§11), built from Phase A's lake mask.
@@ -73,8 +74,9 @@ import { TERRAIN_DARKEST, luminance } from './terrain/terrain-material.js'
 // world's water instead of drawing every lake every frame.
 const TILE = 64
 
-// Scratch for syncSilhouette, which runs every frame and must not allocate.
+// Scratch for syncShading, which runs every frame and must not allocate.
 const shadeTmp = new THREE.Color()
+const skyTmp = new THREE.Color()
 
 // The hemisphere weight of the reference surface, i.e. 0.5 * dot( N, up ) + 0.5
 // with N horizontal: a VERTICAL rock face, lit by half sky and half ground.
@@ -142,9 +144,27 @@ export const WATER = {
   glintEdge: 0.45,
   glintWidth: 0.06,
 
+  // The specular exponent at each end of the distance fade. Far water gets the
+  // broad lobe because one pixel out there covers many wavelets and the honest
+  // answer is their aggregate; near water gets the tight one because a pixel is
+  // a fraction of a single wavelet.
+  //
+  // These are exponents, not sizes, and the two do not scale together. For
+  // pow( cos t, n ) the half-maximum half-angle is sqrt( 2 ln2 / n ), so the
+  // BLOB IS PROPORTIONAL TO 1 / sqrt( n ) -- halving the apparent size of the
+  // distant sun costs a FACTOR OF FOUR here, not a factor of two. That is why
+  // this went 190 -> 760 rather than 190 -> 95.
+  //
+  // The cost of sharpening the far end is real and worth knowing: the broad
+  // lobe is half of the distance anti-aliasing (the wave normal relaxing toward
+  // flat is the other half), so a tighter far lobe buys realism with a little
+  // more sparkle crawl on distant water when the head moves.
+  sharpFar: 760,
+  sharpNear: 2600,
+
   // Where a mountain blocks the sky. This is the HUE ONLY -- its brightness is
   // thrown away and recomputed every frame to match the darkest terrain the
-  // world can currently draw. See `syncSilhouette`.
+  // world can currently draw. See `syncShading`.
   //
   // The hue is the mountain's own deep blue rather than a dimmed copy of the
   // sky, because a dimmed copy of a grey dawn is a grey mountain, and the thing
@@ -337,7 +357,7 @@ export class Water {
     // The three night terms, held BY REFERENCE like everything else out of
     // WorldLighting. They are NOT put in this.uniforms -- the shader must never
     // see them, for the reason spelled out on uHorizonMap below -- but
-    // syncSilhouette has to read them, because they are two thirds of how dark
+    // syncShading has to read them, because they are two thirds of how dark
     // a shadowed hillside is after sunset.
     this.night = {
       lift: lighting.uniforms.uNightLift,
@@ -351,6 +371,24 @@ export class Water {
     // cannot change how dark the silhouette comes out.
     this.silHue = new THREE.Color(WATER.silhouetteTint)
     this.silHue.multiplyScalar(1 / luminance(this.silHue))
+
+    // WATER.tint was picked by eye under a midday sky, so midday is the
+    // exposure it is correct at, and every other hour is that colour times
+    // however much less sky there is. Reading the reference out of the clock's
+    // own noon keyframe rather than writing the number down here is the whole
+    // point: retune the palette and this follows, and daylight water comes out
+    // pixel-identical to what was tuned because the ratio is exactly 1 there.
+    //
+    // Sky only, no ground bounce: this is the tint of the water's BODY, which
+    // is lit from above through a horizontal surface. That is the hemisphere
+    // weight of an up-facing normal, 0.5 * 1 + 0.5, which drops the ground
+    // term out entirely -- unlike the silhouette below, which stands in for a
+    // vertical rock face and gets half of each.
+    const noon = paletteAt(90)
+    this.ambNoon = luminance(
+      skyTmp.setRGB(...noon.hemiSky, THREE.SRGBColorSpace).multiplyScalar(noon.hemiIntensity)
+    )
+    this.tintDay = new THREE.Color(WATER.tint)
 
     this.uniforms = {
       ...THREE.UniformsLib.fog,
@@ -368,9 +406,12 @@ export class Water {
       uChop: { value: WATER.chop },
       uFlow: { value: WATER.flow },
       uWarp: { value: WATER.warp },
+      // Scaled every frame by syncShading. WATER.tint is the colour as authored
+      // under full daylight; what reaches the shader is that colour dimmed by
+      // however much ambient light there actually is.
       uTint: { value: new THREE.Color(WATER.tint) },
       uMirrorDown: { value: WATER.mirrorDown },
-      // Written every frame by syncSilhouette, never by hand: the hue comes
+      // Written every frame by syncShading, never by hand: the hue comes
       // from WATER.silhouetteTint and the brightness from the terrain palette.
       uSilTint: { value: new THREE.Color(0, 0, 0) },
       // Hue shift and light loss are two knobs in WATER because they are two
@@ -380,6 +421,7 @@ export class Water {
       uDetail: { value: new THREE.Vector2(WATER.detailFrom, WATER.detailTo) },
       uGlitter: { value: new THREE.Vector2(WATER.sunGlitter, WATER.moonGlitter) },
       uGlint: { value: new THREE.Vector2(WATER.glintEdge, WATER.glintWidth) },
+      uSharp: { value: new THREE.Vector2(WATER.sharpFar, WATER.sharpNear) },
       // The aurora and the stars, which are meshes rather than functions of
       // direction and so cannot be answered analytically. See sky-probe.js.
       uProbe: { value: probe.texture },
@@ -414,6 +456,7 @@ export class Water {
         uniform vec2 uDetail;
         uniform vec2 uGlitter;
         uniform vec2 uGlint;
+        uniform vec2 uSharp;
         uniform samplerCube uProbe;
         uniform float uProbeGain;
         ${SKY_GLSL}
@@ -507,7 +550,7 @@ export class Water {
 
           // The mountain's own deep blue, at the brightness of the darkest
           // terrain the world can currently draw. Arrived at whole on the CPU
-          // once a frame -- see syncSilhouette -- rather than being derived
+          // once a frame -- see syncShading -- rather than being derived
           // here from the horizon's luminance, which was the previous answer
           // and was consistently too bright: the sky at the horizon is the
           // brightest part of the sky, and a fraction of it is not the same
@@ -531,7 +574,7 @@ export class Water {
           // half of the anti-aliasing above; multiplying by (1 - blocked) means
           // a mountain hides the moon's reflection the same way it hides the
           // moon.
-          float sharp = mix( 190.0, 2600.0, near * near );
+          float sharp = mix( uSharp.x, uSharp.y, near * near );
           float sd = max( dot( R, uSunDir ), 0.0 );
           float md = max( dot( R, uMoonDir ), 0.0 );
           refl += vec3( 1.0, 0.94, 0.82 ) * ( glint( sd, sharp, near ) * uGlitter.x * uSunFade * lit );
@@ -544,7 +587,22 @@ export class Water {
           float f = pow( 1.0 - clamp( dot( -V, N ), 0.0, 1.0 ), 5.0 );
           float mirror = mix( uMirrorDown, 1.0, f );
 
-          vec3 color = mix( uTint, refl, mirror );
+          // The body of the water is occluded too, and this is the line that
+          // makes the silhouette actually read as dark. uTint is what comes
+          // back OUT of the water after bouncing around inside it, and the
+          // light that went in came from the same piece of sky the mountain is
+          // standing in front of -- so where the sky is blocked, the body goes
+          // dark for exactly the reason the reflection does. Without this the
+          // (1 - mirror) share of uTint survives at every viewing angle and
+          // sets a floor no ridge can get under: at noon that floor alone was
+          // three times the darkest terrain on screen, which is precisely the
+          // "shadowed water is lighter than black rock" this is here to fix.
+          // With both sides taken to uSilTint, a fully blocked patch composites
+          // to uSilTint whatever the Fresnel does, which is the promise made in
+          // syncShading kept.
+          vec3 body = mix( uTint, uSilTint, blocked );
+
+          vec3 color = mix( body, refl, mirror );
 
           // FOG, AND THE WATER IS EXEMPT FROM THE NIGHT RULE.
           //
@@ -605,12 +663,14 @@ export class Water {
    *  thing here that runs on the wall clock rather than on the world clock. */
   update(elapsed, hemi) {
     this.uniforms.uTime.value = elapsed
-    this.syncSilhouette(hemi)
+    this.syncShading(hemi)
   }
 
   /**
-   * How dark a mountain's silhouette in the water should be: exactly as dark as
-   * the darkest terrain the world can currently draw.
+   * The two colours the water carries that are not reflections, both of them a
+   * function of the hour: the body tint, and how dark a mountain's silhouette
+   * should be. The silhouette's target is exactly as dark as the darkest
+   * terrain the world can currently draw.
    *
    * WHY THIS IS NOT A CONSTANT. The silhouette has to sit against real terrain
    * -- the far shore is usually visible directly above its own reflection --
@@ -645,8 +705,25 @@ export class Water {
    * nothing here worth throttling -- a stale silhouette during a sunrise would
    * cost more in visible lag than the arithmetic saves.
    */
-  syncSilhouette(hemi) {
+  syncShading(hemi) {
     if (!hemi?.isHemisphereLight) throw new Error('Water.update needs the HemisphereLight')
+
+    // THE BODY COLOUR, and the reason this method is not only about
+    // silhouettes. uTint is not a reflection -- it is the light that got into
+    // the water, bounced around in it and came back out, and it reaches the eye
+    // through the (1 - mirror) side of the Fresnel mix at EVERY viewing angle.
+    // Left constant it becomes a floor that nothing can get under, which is
+    // what made a moonless lake read almost as bright as a midday one: at full
+    // dark the silhouette term is exactly zero and this floor is then 100% of
+    // what is left. Scaling it by how much sky there actually is turns the
+    // floor into a function of the hour, which is what a lake does.
+    //
+    // No night lift and no uFarLight here, unlike the silhouette. Lift is
+    // airglow on a Lambert surface and this is not one; uFarLight is a
+    // near-field envelope, and using it as a global night factor would make the
+    // water at your feet a different colour from the water ten metres out.
+    const amb = luminance(skyTmp.copy(hemi.color).multiplyScalar(hemi.intensity))
+    this.uniforms.uTint.value.copy(this.tintDay).multiplyScalar(amb / this.ambNoon)
 
     shadeTmp.copy(hemi.groundColor).lerp(hemi.color, REF_HEMI_WEIGHT)
     shadeTmp.multiplyScalar(hemi.intensity)

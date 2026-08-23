@@ -1873,6 +1873,177 @@
         16
       ],
       "billboard": false
+    },
+    {
+      "id": "gen_pine",
+      "class": "large",
+      "height_m": 11,
+      "tiers": [
+        "tmp/generated-props/gen_pine_LOD0.glb",
+        "tmp/generated-props/gen_pine_LOD1.glb"
+      ],
+      "lod_tris": [
+        500,
+        130
+      ],
+      "shared_layer": "layers/leaf_pine.png",
+      "shared_layer_src": "tmp/generated-props/layers/leaf_pine.png",
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "gen_pine_young",
+      "class": "large",
+      "height_m": 5.5,
+      "tiers": [
+        "tmp/generated-props/gen_pine_young_LOD0.glb",
+        "tmp/generated-props/gen_pine_young_LOD1.glb"
+      ],
+      "lod_tris": [
+        500,
+        130
+      ],
+      "shared_layer": "layers/leaf_pine.png",
+      "shared_layer_src": "tmp/generated-props/layers/leaf_pine.png",
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "gen_oak",
+      "class": "large",
+      "height_m": 9,
+      "tiers": [
+        "tmp/generated-props/gen_oak_LOD0.glb",
+        "tmp/generated-props/gen_oak_LOD1.glb"
+      ],
+      "lod_tris": [
+        500,
+        130
+      ],
+      "shared_layer": "layers/leaf_oak.png",
+      "shared_layer_src": "tmp/generated-props/layers/leaf_oak.png",
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "gen_aspen",
+      "class": "large",
+      "height_m": 12,
+      "tiers": [
+        "tmp/generated-props/gen_aspen_LOD0.glb",
+        "tmp/generated-props/gen_aspen_LOD1.glb"
+      ],
+      "lod_tris": [
+        500,
+        130
+      ],
+      "shared_layer": "layers/leaf_aspen.png",
+      "shared_layer_src": "tmp/generated-props/layers/leaf_aspen.png",
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "gen_ash",
+      "class": "large",
+      "height_m": 10,
+      "tiers": [
+        "tmp/generated-props/gen_ash_LOD0.glb",
+        "tmp/generated-props/gen_ash_LOD1.glb"
+      ],
+      "lod_tris": [
+        500,
+        130
+      ],
+      "shared_layer": "layers/leaf_ash.png",
+      "shared_layer_src": "tmp/generated-props/layers/leaf_ash.png",
+      "billboard": true,
+      "billboard_quads": 3
+    },
+    {
+      "id": "gen_bush",
+      "class": "medium",
+      "height_m": 1.1,
+      "tiers": [
+        "tmp/generated-props/gen_bush_LOD0.glb",
+        "tmp/generated-props/gen_bush_LOD1.glb"
+      ],
+      "lod_tris": [
+        150,
+        60
+      ],
+      "shared_layer": "layers/leaf_aspen.png",
+      "shared_layer_src": "tmp/generated-props/layers/leaf_aspen.png",
+      "billboard": false
+    },
+    {
+      "id": "gen_bush_berry",
+      "class": "medium",
+      "height_m": 0.9,
+      "tiers": [
+        "tmp/generated-props/gen_bush_berry_LOD0.glb",
+        "tmp/generated-props/gen_bush_berry_LOD1.glb"
+      ],
+      "lod_tris": [
+        150,
+        60
+      ],
+      "shared_layer": "layers/leaf_oak.png",
+      "shared_layer_src": "tmp/generated-props/layers/leaf_oak.png",
+      "billboard": false
+    },
+    {
+      "id": "gen_grass_tall",
+      "class": "small",
+      "height_m": 0.55,
+      "tiers": [
+        "tmp/generated-props/gen_grass_tall_LOD0.glb",
+        "tmp/generated-props/gen_grass_tall_LOD1.glb",
+        "tmp/generated-props/gen_grass_tall_LOD2.glb"
+      ],
+      "lod_tris": [
+        6,
+        4,
+        2
+      ],
+      "shared_layer": "layers/grass_tuft.png",
+      "shared_layer_src": "tmp/generated-props/layers/grass_tuft.png",
+      "billboard": false
+    },
+    {
+      "id": "gen_grass_dry",
+      "class": "small",
+      "height_m": 0.4,
+      "tiers": [
+        "tmp/generated-props/gen_grass_dry_LOD0.glb",
+        "tmp/generated-props/gen_grass_dry_LOD1.glb",
+        "tmp/generated-props/gen_grass_dry_LOD2.glb"
+      ],
+      "lod_tris": [
+        6,
+        4,
+        2
+      ],
+      "shared_layer": "layers/grass_tuft.png",
+      "shared_layer_src": "tmp/generated-props/layers/grass_tuft.png",
+      "billboard": false
+    },
+    {
+      "id": "gen_grass_lush",
+      "class": "small",
+      "height_m": 0.35,
+      "tiers": [
+        "tmp/generated-props/gen_grass_lush_LOD0.glb",
+        "tmp/generated-props/gen_grass_lush_LOD1.glb",
+        "tmp/generated-props/gen_grass_lush_LOD2.glb"
+      ],
+      "lod_tris": [
+        6,
+        4,
+        2
+      ],
+      "shared_layer": "layers/grass_tuft.png",
+      "shared_layer_src": "tmp/generated-props/layers/grass_tuft.png",
+      "billboard": false
     }
   ]
 }

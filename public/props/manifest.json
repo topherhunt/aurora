@@ -1,0 +1,1703 @@
+{
+  "layer_size": 128,
+  "billboard_size": 128,
+  "lod_ranges": {
+    "parallax_limit_deg": 2,
+    "classes": {
+      "large": {
+        "lod0_m": 30,
+        "billboard_m": 130,
+        "cull_m": 260
+      },
+      "medium": {
+        "lod0_m": 22,
+        "billboard_m": null,
+        "cull_m": 95
+      },
+      "structure": {
+        "lod0_m": 60,
+        "billboard_m": 170,
+        "cull_m": 400
+      },
+      "small": {
+        "lod0_m": 26,
+        "billboard_m": null,
+        "cull_m": 26
+      }
+    }
+  },
+  "classes": {
+    "large": {
+      "lod_tris": [
+        500,
+        130
+      ],
+      "billboard": true,
+      "billboard_quads": 3,
+      "lod0_m": 30,
+      "billboard_m": 130,
+      "cull_m": 260,
+      "note": "trees, cabins, towers -- the only class with an impostor"
+    },
+    "medium": {
+      "lod_tris": [
+        150,
+        40
+      ],
+      "billboard": false,
+      "lod0_m": 22,
+      "cull_m": 95,
+      "note": "boulders, stumps, logs, bushes -- culled before a card would pay"
+    },
+    "structure": {
+      "lod_tris": [
+        1800
+      ],
+      "decimate": "planar_collapse",
+      "billboard": true,
+      "billboard_quads": 3,
+      "lod0_m": 60,
+      "billboard_m": 170,
+      "cull_m": 400,
+      "note": "cabins, watchtower, windmill -- one mesh tier, then an impostor"
+    },
+    "small": {
+      "lod_tris": [
+        16
+      ],
+      "billboard": false,
+      "lod0_m": 26,
+      "cull_m": 26,
+      "note": "grass, ferns, flowers -- one tier, hard cull, no LOD chain at all"
+    }
+  },
+  "assets": [
+    {
+      "id": "cabin_chalet_snowy",
+      "class": "structure",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/snowy-north-american-chalet-cabin-low-poly/source/SNOWY HOUSE LOW POLY .fbx",
+      "src_tris": 17226,
+      "welded_tris": 17226,
+      "height_m": 5.6,
+      "source_scale": 8.166597,
+      "lods": [
+        {
+          "name": "cabin_chalet_snowy_LOD0",
+          "target_tris": 1800,
+          "tris": 1798,
+          "verts": 884,
+          "kind": "mesh",
+          "layer": "layers/cabin_chalet_snowy_L0.png"
+        },
+        {
+          "name": "cabin_chalet_snowy_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/cabin_chalet_snowy_bb.png",
+          "width_m": 6.6686,
+          "height_m": 5.6
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "billboard_layer": "layers/cabin_chalet_snowy_bb.png",
+      "glb": "assets/cabin_chalet_snowy.glb",
+      "glb_bytes": 152820
+    },
+    {
+      "id": "cabin_timberbound",
+      "class": "structure",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/timberbound-cabin/source/model.glb",
+      "src_tris": 21537,
+      "welded_tris": 21537,
+      "height_m": 4.8,
+      "source_scale": 2.969431,
+      "lods": [
+        {
+          "name": "cabin_timberbound_LOD0",
+          "target_tris": 1800,
+          "tris": 1748,
+          "verts": 798,
+          "kind": "mesh",
+          "layer": "layers/cabin_timberbound_L0.png"
+        },
+        {
+          "name": "cabin_timberbound_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/cabin_timberbound_bb.png",
+          "width_m": 5.6446,
+          "height_m": 4.8
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "billboard_layer": "layers/cabin_timberbound_bb.png",
+      "glb": "assets/cabin_timberbound.glb",
+      "glb_bytes": 160912
+    },
+    {
+      "id": "cabin_small_wooden",
+      "class": "structure",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/wooden-structure-that-resembles-a-small-cabin/source/model.glb",
+      "src_tris": 430161,
+      "welded_tris": 430161,
+      "height_m": 3.6,
+      "source_scale": 2.00751,
+      "lods": [
+        {
+          "name": "cabin_small_wooden_LOD0",
+          "target_tris": 1800,
+          "tris": 1766,
+          "verts": 688,
+          "kind": "mesh",
+          "layer": "layers/cabin_small_wooden_L0.png"
+        },
+        {
+          "name": "cabin_small_wooden_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/cabin_small_wooden_bb.png",
+          "width_m": 4.0265,
+          "height_m": 3.6
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "billboard_layer": "layers/cabin_small_wooden_bb.png",
+      "glb": "assets/cabin_small_wooden.glb",
+      "glb_bytes": 173308
+    },
+    {
+      "id": "watchtower",
+      "class": "structure",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/stylized-watchtower-tier-i/source/25d67378a96429991e1eedd1f0213a6a.glb",
+      "src_tris": 1499034,
+      "welded_tris": 1499004,
+      "height_m": 9.5,
+      "source_scale": 14.457198,
+      "lods": [
+        {
+          "name": "watchtower_LOD0",
+          "target_tris": 1800,
+          "tris": 1731,
+          "verts": 742,
+          "kind": "mesh",
+          "layer": "layers/watchtower_L0.png"
+        },
+        {
+          "name": "watchtower_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/watchtower_bb.png",
+          "width_m": 12.2775,
+          "height_m": 9.5
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "billboard_layer": "layers/watchtower_bb.png",
+      "glb": "assets/watchtower.glb",
+      "glb_bytes": 172092
+    },
+    {
+      "id": "windmill",
+      "class": "structure",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/1st-windmill-of-x/source/mesh_h6p8qJp.glb",
+      "src_tris": 10000,
+      "welded_tris": 10000,
+      "height_m": 12,
+      "source_scale": 12.153224,
+      "lods": [
+        {
+          "name": "windmill_LOD0",
+          "target_tris": 1800,
+          "tris": 1800,
+          "verts": 856,
+          "kind": "mesh",
+          "layer": "layers/windmill_L0.png"
+        },
+        {
+          "name": "windmill_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/windmill_bb.png",
+          "width_m": 12.0,
+          "height_m": 12.0
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "billboard_layer": "layers/windmill_bb.png",
+      "glb": "assets/windmill.glb",
+      "glb_bytes": 149624
+    },
+    {
+      "id": "boulder_mossy",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/boulder-rock-3d-model-free/source/Meshy_AI_Layered_Mossy_Boulder_0616172204_texture.glb",
+      "src_tris": 10433,
+      "welded_tris": 10433,
+      "height_m": 1.9,
+      "source_scale": 1.220082,
+      "lods": [
+        {
+          "name": "boulder_mossy_LOD0",
+          "target_tris": 150,
+          "tris": 147,
+          "verts": 81,
+          "kind": "mesh",
+          "layer": "layers/boulder_mossy_L0.png"
+        },
+        {
+          "name": "boulder_mossy_LOD1",
+          "target_tris": 40,
+          "tris": 75,
+          "verts": 45,
+          "kind": "mesh",
+          "layer": "layers/boulder_mossy_L1.png",
+          "stalled": true,
+          "overshoot": 1.88
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/boulder_mossy.glb",
+      "glb_bytes": 28396
+    },
+    {
+      "id": "boulder_scan",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/boulder/source/nested/boulder.ply",
+      "src_tris": 447417,
+      "welded_tris": 447415,
+      "height_m": 2.4,
+      "source_scale": 0.635499,
+      "lods": [
+        {
+          "name": "boulder_scan_LOD0",
+          "target_tris": 150,
+          "tris": 149,
+          "verts": 85,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "boulder_scan_LOD1",
+          "target_tris": 40,
+          "tris": 39,
+          "verts": 24,
+          "kind": "mesh",
+          "layer": null
+        }
+      ],
+      "textured": false,
+      "color_source": "source_vertex_color",
+      "glb": "assets/boulder_scan.glb",
+      "glb_bytes": 23384
+    },
+    {
+      "id": "tree_autumn_broadleaf",
+      "class": "large",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/autumn-tree/TR_01_autumn.fbx",
+      "src_tris": 3628,
+      "welded_tris": 3628,
+      "height_m": 7.5,
+      "source_scale": 1.754724,
+      "lods": [
+        {
+          "name": "tree_autumn_broadleaf_LOD0",
+          "target_tris": 500,
+          "tris": 500,
+          "verts": 852,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "tree_autumn_broadleaf_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 306,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "tree_autumn_broadleaf_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/tree_autumn_broadleaf_bb.png",
+          "width_m": 7.715,
+          "height_m": 7.5
+        }
+      ],
+      "textured": false,
+      "color_source": "material_color",
+      "billboard_layer": "layers/tree_autumn_broadleaf_bb.png",
+      "glb": "assets/tree_autumn_broadleaf.glb",
+      "glb_bytes": 76136
+    },
+    {
+      "id": "tree_pine_stylised",
+      "class": "large",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/pine-tree/source/Tree.fbx",
+      "src_tris": 2173,
+      "welded_tris": 1763,
+      "height_m": 9,
+      "source_scale": 2.924169,
+      "lods": [
+        {
+          "name": "tree_pine_stylised_LOD0",
+          "target_tris": 500,
+          "tris": 500,
+          "verts": 599,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "tree_pine_stylised_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 219,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "tree_pine_stylised_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/tree_pine_stylised_bb.png",
+          "width_m": 9.0,
+          "height_m": 9.0
+        }
+      ],
+      "textured": false,
+      "color_source": "material_color",
+      "billboard_layer": "layers/tree_pine_stylised_bb.png",
+      "glb": "assets/tree_pine_stylised.glb",
+      "glb_bytes": 82284
+    },
+    {
+      "id": "bush_pine_cluster",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/3-pine-bushes/source/bushes done.fbx",
+      "src_tris": 1052,
+      "welded_tris": 1052,
+      "height_m": 1.45,
+      "source_scale": 1.903541,
+      "lods": [
+        {
+          "name": "bush_pine_cluster_LOD0",
+          "target_tris": 150,
+          "tris": 150,
+          "verts": 206,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "bush_pine_cluster_LOD1",
+          "target_tris": 40,
+          "tris": 40,
+          "verts": 96,
+          "kind": "mesh",
+          "layer": null
+        }
+      ],
+      "textured": false,
+      "color_source": "material_color",
+      "glb": "assets/bush_pine_cluster.glb",
+      "glb_bytes": 16764
+    },
+    {
+      "id": "bush_simple",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/bush-test/source/Bush test.obj",
+      "src_tris": 200,
+      "welded_tris": 200,
+      "height_m": 1.1,
+      "source_scale": 1.253643,
+      "lods": [
+        {
+          "name": "bush_simple_LOD0",
+          "target_tris": 150,
+          "tris": 149,
+          "verts": 113,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "bush_simple_LOD1",
+          "target_tris": 40,
+          "tris": 39,
+          "verts": 44,
+          "kind": "mesh",
+          "layer": null
+        }
+      ],
+      "textured": false,
+      "color_source": "material_color",
+      "glb": "assets/bush_simple.glb",
+      "glb_bytes": 10376
+    },
+    {
+      "id": "fern_polypody",
+      "class": "small",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/realistic-hd-common-polypody-fern-855/source/nested/Polypodium vulgare HD_Wall growth 2 mat 50_LOD0.fbx",
+      "src_tris": 5547,
+      "welded_tris": 5545,
+      "height_m": 0.45,
+      "source_scale": 0.658431,
+      "lods": [
+        {
+          "name": "fern_polypody_LOD0",
+          "target_tris": 16,
+          "tris": 15,
+          "verts": 20,
+          "kind": "mesh",
+          "layer": "layers/fern_polypody_L0.png"
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/fern_polypody.glb",
+      "glb_bytes": 3980
+    },
+    {
+      "id": "horsetail",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_x/small-calamite/source/nested/New Project 51.obj",
+      "src_tris": 80625,
+      "welded_tris": 80625,
+      "height_m": 1.5,
+      "source_scale": 1.150383,
+      "lods": [
+        {
+          "name": "horsetail_LOD0",
+          "target_tris": 150,
+          "tris": 140,
+          "verts": 89,
+          "kind": "mesh",
+          "layer": null
+        },
+        {
+          "name": "horsetail_LOD1",
+          "target_tris": 40,
+          "tris": 70,
+          "verts": 29,
+          "kind": "mesh",
+          "layer": null,
+          "stalled": true,
+          "overshoot": 1.75
+        }
+      ],
+      "textured": false,
+      "color_source": "material_color",
+      "glb": "assets/horsetail.glb",
+      "glb_bytes": 30516
+    },
+    {
+      "id": "log_birch_scan",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/birch_log_ti2fbajfa_raw/Birch_Log_ti2fbajfa_Raw.fbx",
+      "src_tris": 1999994,
+      "welded_tris": 1999984,
+      "height_m": 0.34,
+      "source_scale": 1.195489,
+      "lods": [
+        {
+          "name": "log_birch_scan_LOD0",
+          "target_tris": 150,
+          "tris": 150,
+          "verts": 73,
+          "kind": "mesh",
+          "layer": "layers/log_birch_scan_L0.png"
+        },
+        {
+          "name": "log_birch_scan_LOD1",
+          "target_tris": 40,
+          "tris": 60,
+          "verts": 28,
+          "kind": "mesh",
+          "layer": "layers/log_birch_scan_L1.png",
+          "stalled": true,
+          "overshoot": 1.5
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/log_birch_scan.glb",
+      "glb_bytes": 29256
+    },
+    {
+      "id": "log_mossy_scan",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/mossy_tree_log_rdkeg_raw/Mossy_Tree_Log_rdkeg_Raw.fbx",
+      "src_tris": 1823566,
+      "welded_tris": 1823565,
+      "height_m": 0.75,
+      "source_scale": 1.112802,
+      "lods": [
+        {
+          "name": "log_mossy_scan_LOD0",
+          "target_tris": 150,
+          "tris": 149,
+          "verts": 87,
+          "kind": "mesh",
+          "layer": "layers/log_mossy_scan_L0.png"
+        },
+        {
+          "name": "log_mossy_scan_LOD1",
+          "target_tris": 40,
+          "tris": 40,
+          "verts": 23,
+          "kind": "mesh",
+          "layer": "layers/log_mossy_scan_L1.png"
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/log_mossy_scan.glb",
+      "glb_bytes": 26040
+    },
+    {
+      "id": "tree_dead_standing",
+      "class": "large",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/dead_tree_qletl_raw/Dead_Tree_qlEtl_Raw.fbx",
+      "src_tris": 1499700,
+      "welded_tris": 1499675,
+      "height_m": 6.5,
+      "source_scale": 1.04776,
+      "lods": [
+        {
+          "name": "tree_dead_standing_LOD0",
+          "target_tris": 500,
+          "tris": 499,
+          "verts": 254,
+          "kind": "mesh",
+          "layer": "layers/tree_dead_standing_L0.png"
+        },
+        {
+          "name": "tree_dead_standing_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 65,
+          "kind": "mesh",
+          "layer": "layers/tree_dead_standing_L1.png"
+        },
+        {
+          "name": "tree_dead_standing_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/tree_dead_standing_bb.png",
+          "width_m": 6.5,
+          "height_m": 6.5
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "billboard_layer": "layers/tree_dead_standing_bb.png",
+      "glb": "assets/tree_dead_standing.glb",
+      "glb_bytes": 80284
+    },
+    {
+      "id": "forest_floor_cluster",
+      "class": "medium",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/nordic_forest_cluster_medium_xisgcic_raw/Nordic_Forest_Cluster_Medium_xisgcic_Raw.fbx",
+      "src_tris": 1000000,
+      "welded_tris": 999968,
+      "height_m": 1.15,
+      "source_scale": 1.044589,
+      "lods": [
+        {
+          "name": "forest_floor_cluster_LOD0",
+          "target_tris": 150,
+          "tris": 149,
+          "verts": 84,
+          "kind": "mesh",
+          "layer": "layers/forest_floor_cluster_L0.png"
+        },
+        {
+          "name": "forest_floor_cluster_LOD1",
+          "target_tris": 40,
+          "tris": 40,
+          "verts": 24,
+          "kind": "mesh",
+          "layer": "layers/forest_floor_cluster_L1.png"
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/forest_floor_cluster.glb",
+      "glb_bytes": 27588
+    },
+    {
+      "id": "tree_cracked_dead",
+      "class": "large",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/realistic-cracked-tree-game-ready-prop/source/rackedTree.fbx",
+      "src_tris": 3309,
+      "welded_tris": 3307,
+      "height_m": 4.2,
+      "source_scale": 1.182188,
+      "lods": [
+        {
+          "name": "tree_cracked_dead_LOD0",
+          "target_tris": 500,
+          "tris": 500,
+          "verts": 273,
+          "kind": "mesh",
+          "layer": "layers/tree_cracked_dead_L0.png"
+        },
+        {
+          "name": "tree_cracked_dead_LOD1",
+          "target_tris": 130,
+          "tris": 129,
+          "verts": 75,
+          "kind": "mesh",
+          "layer": "layers/tree_cracked_dead_L1.png"
+        },
+        {
+          "name": "tree_cracked_dead_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/tree_cracked_dead_bb.png",
+          "width_m": 4.2,
+          "height_m": 4.2
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "billboard_layer": "layers/tree_cracked_dead_bb.png",
+      "glb": "assets/tree_cracked_dead.glb",
+      "glb_bytes": 63388
+    },
+    {
+      "id": "grass_wild_scan_b",
+      "class": "small",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarB_LOD0.fbx",
+      "src_tris": 104155,
+      "welded_tris": 103593,
+      "height_m": 0.4,
+      "source_scale": 2.337804,
+      "lods": [
+        {
+          "name": "grass_wild_scan_b_LOD0",
+          "target_tris": 16,
+          "tris": 15,
+          "verts": 45,
+          "kind": "mesh",
+          "layer": "layers/grass_wild_scan_b_L0.png"
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/grass_wild_scan_b.glb",
+      "glb_bytes": 4408
+    },
+    {
+      "id": "grass_wild_scan_c",
+      "class": "small",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarC_LOD0.fbx",
+      "src_tris": 59193,
+      "welded_tris": 58874,
+      "height_m": 0.4,
+      "source_scale": 2.609975,
+      "lods": [
+        {
+          "name": "grass_wild_scan_c_LOD0",
+          "target_tris": 16,
+          "tris": 16,
+          "verts": 48,
+          "kind": "mesh",
+          "layer": "layers/grass_wild_scan_c_L0.png"
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/grass_wild_scan_c.glb",
+      "glb_bytes": 4568
+    },
+    {
+      "id": "grass_wild_scan_d",
+      "class": "small",
+      "src": "tmp/placeholder-props/high-poly-to-decimate/_new/wild_grass_vlkhcbxia_raw/Wild_Grass_vlkhcbxia_Raw_vlkhcbxia_VarD_LOD0.fbx",
+      "src_tris": 19293,
+      "welded_tris": 19221,
+      "height_m": 0.4,
+      "source_scale": 1.479594,
+      "lods": [
+        {
+          "name": "grass_wild_scan_d_LOD0",
+          "target_tris": 16,
+          "tris": 16,
+          "verts": 48,
+          "kind": "mesh",
+          "layer": "layers/grass_wild_scan_d_L0.png"
+        }
+      ],
+      "textured": true,
+      "color_source": "baked_texture",
+      "glb": "assets/grass_wild_scan_d.glb",
+      "glb_bytes": 4568
+    },
+    {
+      "id": "gen_pine",
+      "class": "large",
+      "src": "tmp/generated-props/gen_pine_LOD0.glb",
+      "height_m": 11,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/leaf_pine.png",
+      "lods": [
+        {
+          "name": "gen_pine_LOD0",
+          "target_tris": 500,
+          "tris": 482,
+          "verts": 756,
+          "kind": "mesh",
+          "layer": "layers/leaf_pine.png"
+        },
+        {
+          "name": "gen_pine_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 216,
+          "kind": "mesh",
+          "layer": "layers/leaf_pine.png"
+        },
+        {
+          "name": "gen_pine_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/gen_pine_bb.png",
+          "width_m": 11.0,
+          "height_m": 11.0
+        }
+      ],
+      "source_scale": 0.215241,
+      "src_tris": 482,
+      "welded_tris": 482,
+      "billboard_layer": "layers/gen_pine_bb.png",
+      "glb": "assets/gen_pine.glb",
+      "glb_bytes": 62464
+    },
+    {
+      "id": "gen_pine_young",
+      "class": "large",
+      "src": "tmp/generated-props/gen_pine_young_LOD0.glb",
+      "height_m": 5.5,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/leaf_pine.png",
+      "lods": [
+        {
+          "name": "gen_pine_young_LOD0",
+          "target_tris": 500,
+          "tris": 482,
+          "verts": 756,
+          "kind": "mesh",
+          "layer": "layers/leaf_pine.png"
+        },
+        {
+          "name": "gen_pine_young_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 216,
+          "kind": "mesh",
+          "layer": "layers/leaf_pine.png"
+        },
+        {
+          "name": "gen_pine_young_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/gen_pine_young_bb.png",
+          "width_m": 5.5,
+          "height_m": 5.5
+        }
+      ],
+      "source_scale": 0.131344,
+      "src_tris": 482,
+      "welded_tris": 482,
+      "billboard_layer": "layers/gen_pine_young_bb.png",
+      "glb": "assets/gen_pine_young.glb",
+      "glb_bytes": 63848
+    },
+    {
+      "id": "gen_oak",
+      "class": "large",
+      "src": "tmp/generated-props/gen_oak_LOD0.glb",
+      "height_m": 9,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/leaf_oak.png",
+      "lods": [
+        {
+          "name": "gen_oak_LOD0",
+          "target_tris": 500,
+          "tris": 494,
+          "verts": 748,
+          "kind": "mesh",
+          "layer": "layers/leaf_oak.png"
+        },
+        {
+          "name": "gen_oak_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 208,
+          "kind": "mesh",
+          "layer": "layers/leaf_oak.png"
+        },
+        {
+          "name": "gen_oak_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/gen_oak_bb.png",
+          "width_m": 9.0,
+          "height_m": 9.0
+        }
+      ],
+      "source_scale": 0.146128,
+      "src_tris": 494,
+      "welded_tris": 494,
+      "billboard_layer": "layers/gen_oak_bb.png",
+      "glb": "assets/gen_oak.glb",
+      "glb_bytes": 63452
+    },
+    {
+      "id": "gen_aspen",
+      "class": "large",
+      "src": "tmp/generated-props/gen_aspen_LOD0.glb",
+      "height_m": 12,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/leaf_aspen.png",
+      "lods": [
+        {
+          "name": "gen_aspen_LOD0",
+          "target_tris": 500,
+          "tris": 494,
+          "verts": 748,
+          "kind": "mesh",
+          "layer": "layers/leaf_aspen.png"
+        },
+        {
+          "name": "gen_aspen_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 208,
+          "kind": "mesh",
+          "layer": "layers/leaf_aspen.png"
+        },
+        {
+          "name": "gen_aspen_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/gen_aspen_bb.png",
+          "width_m": 12.0,
+          "height_m": 12.0
+        }
+      ],
+      "source_scale": 0.171561,
+      "src_tris": 494,
+      "welded_tris": 494,
+      "billboard_layer": "layers/gen_aspen_bb.png",
+      "glb": "assets/gen_aspen.glb",
+      "glb_bytes": 61928
+    },
+    {
+      "id": "gen_ash",
+      "class": "large",
+      "src": "tmp/generated-props/gen_ash_LOD0.glb",
+      "height_m": 10,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/leaf_ash.png",
+      "lods": [
+        {
+          "name": "gen_ash_LOD0",
+          "target_tris": 500,
+          "tris": 494,
+          "verts": 748,
+          "kind": "mesh",
+          "layer": "layers/leaf_ash.png"
+        },
+        {
+          "name": "gen_ash_LOD1",
+          "target_tris": 130,
+          "tris": 130,
+          "verts": 208,
+          "kind": "mesh",
+          "layer": "layers/leaf_ash.png"
+        },
+        {
+          "name": "gen_ash_BB",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "billboard",
+          "layer": "layers/gen_ash_bb.png",
+          "width_m": 10.0,
+          "height_m": 10.0
+        }
+      ],
+      "source_scale": 0.151018,
+      "src_tris": 494,
+      "welded_tris": 494,
+      "billboard_layer": "layers/gen_ash_bb.png",
+      "glb": "assets/gen_ash.glb",
+      "glb_bytes": 61568
+    },
+    {
+      "id": "gen_bush",
+      "class": "medium",
+      "src": "tmp/generated-props/gen_bush_LOD0.glb",
+      "height_m": 1.1,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/leaf_aspen.png",
+      "lods": [
+        {
+          "name": "gen_bush_LOD0",
+          "target_tris": 150,
+          "tris": 148,
+          "verts": 206,
+          "kind": "mesh",
+          "layer": "layers/leaf_aspen.png"
+        },
+        {
+          "name": "gen_bush_LOD1",
+          "target_tris": 60,
+          "tris": 60,
+          "verts": 68,
+          "kind": "mesh",
+          "layer": "layers/leaf_aspen.png"
+        }
+      ],
+      "source_scale": 0.052993,
+      "src_tris": 148,
+      "welded_tris": 148,
+      "glb": "assets/gen_bush.glb",
+      "glb_bytes": 22384
+    },
+    {
+      "id": "gen_bush_berry",
+      "class": "medium",
+      "src": "tmp/generated-props/gen_bush_berry_LOD0.glb",
+      "height_m": 0.9,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/leaf_oak.png",
+      "lods": [
+        {
+          "name": "gen_bush_berry_LOD0",
+          "target_tris": 150,
+          "tris": 150,
+          "verts": 237,
+          "kind": "mesh",
+          "layer": "layers/leaf_oak.png"
+        },
+        {
+          "name": "gen_bush_berry_LOD1",
+          "target_tris": 60,
+          "tris": 60,
+          "verts": 88,
+          "kind": "mesh",
+          "layer": "layers/leaf_oak.png"
+        }
+      ],
+      "source_scale": 0.059788,
+      "src_tris": 150,
+      "welded_tris": 150,
+      "glb": "assets/gen_bush_berry.glb",
+      "glb_bytes": 23056
+    },
+    {
+      "id": "gen_grass_tall",
+      "class": "small",
+      "src": "tmp/generated-props/gen_grass_tall_LOD0.glb",
+      "height_m": 0.55,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/grass_tuft.png",
+      "lods": [
+        {
+          "name": "gen_grass_tall_LOD0",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        },
+        {
+          "name": "gen_grass_tall_LOD1",
+          "target_tris": 4,
+          "tris": 4,
+          "verts": 8,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        },
+        {
+          "name": "gen_grass_tall_LOD2",
+          "target_tris": 2,
+          "tris": 2,
+          "verts": 4,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        }
+      ],
+      "source_scale": 0.55,
+      "src_tris": 6,
+      "welded_tris": 6,
+      "glb": "assets/gen_grass_tall.glb",
+      "glb_bytes": 5128
+    },
+    {
+      "id": "gen_grass_dry",
+      "class": "small",
+      "src": "tmp/generated-props/gen_grass_dry_LOD0.glb",
+      "height_m": 0.4,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/grass_tuft.png",
+      "lods": [
+        {
+          "name": "gen_grass_dry_LOD0",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        },
+        {
+          "name": "gen_grass_dry_LOD1",
+          "target_tris": 4,
+          "tris": 4,
+          "verts": 8,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        },
+        {
+          "name": "gen_grass_dry_LOD2",
+          "target_tris": 2,
+          "tris": 2,
+          "verts": 4,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        }
+      ],
+      "source_scale": 0.4,
+      "src_tris": 6,
+      "welded_tris": 6,
+      "glb": "assets/gen_grass_dry.glb",
+      "glb_bytes": 5132
+    },
+    {
+      "id": "gen_grass_lush",
+      "class": "small",
+      "src": "tmp/generated-props/gen_grass_lush_LOD0.glb",
+      "height_m": 0.35,
+      "generated": true,
+      "textured": true,
+      "color_source": "generated_vertex_color",
+      "shared_layer": "layers/grass_tuft.png",
+      "lods": [
+        {
+          "name": "gen_grass_lush_LOD0",
+          "target_tris": 6,
+          "tris": 6,
+          "verts": 12,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        },
+        {
+          "name": "gen_grass_lush_LOD1",
+          "target_tris": 4,
+          "tris": 4,
+          "verts": 8,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        },
+        {
+          "name": "gen_grass_lush_LOD2",
+          "target_tris": 2,
+          "tris": 2,
+          "verts": 4,
+          "kind": "mesh",
+          "layer": "layers/grass_tuft.png"
+        }
+      ],
+      "source_scale": 0.35,
+      "src_tris": 6,
+      "welded_tris": 6,
+      "glb": "assets/gen_grass_lush.glb",
+      "glb_bytes": 5140
+    }
+  ],
+  "failed": [
+    {
+      "id": "pinetree_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_1.fbx"
+    },
+    {
+      "id": "pinetree_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_2.fbx"
+    },
+    {
+      "id": "pinetree_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_3.fbx"
+    },
+    {
+      "id": "pinetree_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_4.fbx"
+    },
+    {
+      "id": "pinetree_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_5.fbx"
+    },
+    {
+      "id": "pinetree_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Snow_1.fbx"
+    },
+    {
+      "id": "pinetree_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Snow_2.fbx"
+    },
+    {
+      "id": "pinetree_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Snow_3.fbx"
+    },
+    {
+      "id": "pinetree_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Snow_4.fbx"
+    },
+    {
+      "id": "pinetree_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Snow_5.fbx"
+    },
+    {
+      "id": "pinetree_autumn_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Autumn_1.fbx"
+    },
+    {
+      "id": "pinetree_autumn_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Autumn_2.fbx"
+    },
+    {
+      "id": "pinetree_autumn_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Autumn_3.fbx"
+    },
+    {
+      "id": "pinetree_autumn_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Autumn_4.fbx"
+    },
+    {
+      "id": "pinetree_autumn_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/PineTree_Autumn_5.fbx"
+    },
+    {
+      "id": "commontree_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_1.fbx"
+    },
+    {
+      "id": "commontree_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_2.fbx"
+    },
+    {
+      "id": "commontree_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_3.fbx"
+    },
+    {
+      "id": "commontree_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_4.fbx"
+    },
+    {
+      "id": "commontree_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_5.fbx"
+    },
+    {
+      "id": "commontree_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Snow_1.fbx"
+    },
+    {
+      "id": "commontree_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Snow_2.fbx"
+    },
+    {
+      "id": "commontree_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Snow_3.fbx"
+    },
+    {
+      "id": "commontree_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Snow_4.fbx"
+    },
+    {
+      "id": "commontree_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Snow_5.fbx"
+    },
+    {
+      "id": "commontree_autumn_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Autumn_1.fbx"
+    },
+    {
+      "id": "commontree_autumn_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Autumn_2.fbx"
+    },
+    {
+      "id": "commontree_autumn_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Autumn_3.fbx"
+    },
+    {
+      "id": "commontree_autumn_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Autumn_4.fbx"
+    },
+    {
+      "id": "commontree_autumn_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Autumn_5.fbx"
+    },
+    {
+      "id": "commontree_dead_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_1.fbx"
+    },
+    {
+      "id": "commontree_dead_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_2.fbx"
+    },
+    {
+      "id": "commontree_dead_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_3.fbx"
+    },
+    {
+      "id": "commontree_dead_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_4.fbx"
+    },
+    {
+      "id": "commontree_dead_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_5.fbx"
+    },
+    {
+      "id": "commontree_dead_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_Snow_1.fbx"
+    },
+    {
+      "id": "commontree_dead_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_Snow_2.fbx"
+    },
+    {
+      "id": "commontree_dead_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_Snow_3.fbx"
+    },
+    {
+      "id": "commontree_dead_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_Snow_4.fbx"
+    },
+    {
+      "id": "commontree_dead_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/CommonTree_Dead_Snow_5.fbx"
+    },
+    {
+      "id": "birchtree_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_1.fbx"
+    },
+    {
+      "id": "birchtree_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_2.fbx"
+    },
+    {
+      "id": "birchtree_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_3.fbx"
+    },
+    {
+      "id": "birchtree_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_4.fbx"
+    },
+    {
+      "id": "birchtree_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_5.fbx"
+    },
+    {
+      "id": "birchtree_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Snow_1.fbx"
+    },
+    {
+      "id": "birchtree_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Snow_2.fbx"
+    },
+    {
+      "id": "birchtree_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Snow_3.fbx"
+    },
+    {
+      "id": "birchtree_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Snow_4.fbx"
+    },
+    {
+      "id": "birchtree_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Snow_5.fbx"
+    },
+    {
+      "id": "birchtree_autumn_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Autumn_1.fbx"
+    },
+    {
+      "id": "birchtree_autumn_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Autumn_2.fbx"
+    },
+    {
+      "id": "birchtree_autumn_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Autumn_3.fbx"
+    },
+    {
+      "id": "birchtree_autumn_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Autumn_4.fbx"
+    },
+    {
+      "id": "birchtree_autumn_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Autumn_5.fbx"
+    },
+    {
+      "id": "birchtree_dead_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_1.fbx"
+    },
+    {
+      "id": "birchtree_dead_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_2.fbx"
+    },
+    {
+      "id": "birchtree_dead_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_3.fbx"
+    },
+    {
+      "id": "birchtree_dead_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_4.fbx"
+    },
+    {
+      "id": "birchtree_dead_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_5.fbx"
+    },
+    {
+      "id": "birchtree_dead_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_Snow_1.fbx"
+    },
+    {
+      "id": "birchtree_dead_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_Snow_2.fbx"
+    },
+    {
+      "id": "birchtree_dead_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_Snow_3.fbx"
+    },
+    {
+      "id": "birchtree_dead_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_Snow_4.fbx"
+    },
+    {
+      "id": "birchtree_dead_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BirchTree_Dead_Snow_5.fbx"
+    },
+    {
+      "id": "willow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_1.fbx"
+    },
+    {
+      "id": "willow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_2.fbx"
+    },
+    {
+      "id": "willow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_3.fbx"
+    },
+    {
+      "id": "willow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_4.fbx"
+    },
+    {
+      "id": "willow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_5.fbx"
+    },
+    {
+      "id": "willow_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Snow_1.fbx"
+    },
+    {
+      "id": "willow_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Snow_2.fbx"
+    },
+    {
+      "id": "willow_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Snow_3.fbx"
+    },
+    {
+      "id": "willow_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Snow_4.fbx"
+    },
+    {
+      "id": "willow_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Snow_5.fbx"
+    },
+    {
+      "id": "willow_autumn_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Autumn_1.fbx"
+    },
+    {
+      "id": "willow_autumn_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Autumn_2.fbx"
+    },
+    {
+      "id": "willow_autumn_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Autumn_3.fbx"
+    },
+    {
+      "id": "willow_autumn_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Autumn_4.fbx"
+    },
+    {
+      "id": "willow_autumn_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Autumn_5.fbx"
+    },
+    {
+      "id": "willow_dead_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_1.fbx"
+    },
+    {
+      "id": "willow_dead_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_2.fbx"
+    },
+    {
+      "id": "willow_dead_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_3.fbx"
+    },
+    {
+      "id": "willow_dead_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_4.fbx"
+    },
+    {
+      "id": "willow_dead_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_5.fbx"
+    },
+    {
+      "id": "willow_dead_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_Snow_1.fbx"
+    },
+    {
+      "id": "willow_dead_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_Snow_2.fbx"
+    },
+    {
+      "id": "willow_dead_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_Snow_3.fbx"
+    },
+    {
+      "id": "willow_dead_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_Snow_4.fbx"
+    },
+    {
+      "id": "willow_dead_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Willow_Dead_Snow_5.fbx"
+    },
+    {
+      "id": "rock_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_1.fbx"
+    },
+    {
+      "id": "rock_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_2.fbx"
+    },
+    {
+      "id": "rock_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_3.fbx"
+    },
+    {
+      "id": "rock_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_4.fbx"
+    },
+    {
+      "id": "rock_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_5.fbx"
+    },
+    {
+      "id": "rock_6",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_6.fbx"
+    },
+    {
+      "id": "rock_7",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_7.fbx"
+    },
+    {
+      "id": "rock_moss_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Moss_1.fbx"
+    },
+    {
+      "id": "rock_moss_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Moss_2.fbx"
+    },
+    {
+      "id": "rock_moss_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Moss_3.fbx"
+    },
+    {
+      "id": "rock_moss_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Moss_4.fbx"
+    },
+    {
+      "id": "rock_moss_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Moss_5.fbx"
+    },
+    {
+      "id": "rock_moss_6",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Moss_6.fbx"
+    },
+    {
+      "id": "rock_moss_7",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Moss_7.fbx"
+    },
+    {
+      "id": "rock_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Snow_1.fbx"
+    },
+    {
+      "id": "rock_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Snow_2.fbx"
+    },
+    {
+      "id": "rock_snow_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Snow_3.fbx"
+    },
+    {
+      "id": "rock_snow_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Snow_4.fbx"
+    },
+    {
+      "id": "rock_snow_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Snow_5.fbx"
+    },
+    {
+      "id": "rock_snow_6",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Snow_6.fbx"
+    },
+    {
+      "id": "rock_snow_7",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Rock_Snow_7.fbx"
+    },
+    {
+      "id": "bush_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Bush_1.fbx"
+    },
+    {
+      "id": "bush_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Bush_2.fbx"
+    },
+    {
+      "id": "bush_snow_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Bush_Snow_1.fbx"
+    },
+    {
+      "id": "bush_snow_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Bush_Snow_2.fbx"
+    },
+    {
+      "id": "bushberries_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BushBerries_1.fbx"
+    },
+    {
+      "id": "bushberries_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/BushBerries_2.fbx"
+    },
+    {
+      "id": "plant_1",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Plant_1.fbx"
+    },
+    {
+      "id": "plant_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Plant_2.fbx"
+    },
+    {
+      "id": "plant_3",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Plant_3.fbx"
+    },
+    {
+      "id": "plant_4",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Plant_4.fbx"
+    },
+    {
+      "id": "plant_5",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Plant_5.fbx"
+    },
+    {
+      "id": "treestump",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/TreeStump.fbx"
+    },
+    {
+      "id": "treestump_moss",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/TreeStump_Moss.fbx"
+    },
+    {
+      "id": "treestump_snow",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/TreeStump_Snow.fbx"
+    },
+    {
+      "id": "woodlog",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/WoodLog.fbx"
+    },
+    {
+      "id": "woodlog_moss",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/WoodLog_Moss.fbx"
+    },
+    {
+      "id": "woodlog_snow",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/WoodLog_Snow.fbx"
+    },
+    {
+      "id": "grass",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Grass.fbx"
+    },
+    {
+      "id": "grass_2",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Grass_2.fbx"
+    },
+    {
+      "id": "grass_short",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Grass_Short.fbx"
+    },
+    {
+      "id": "flowers",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Flowers.fbx"
+    },
+    {
+      "id": "wheat",
+      "error": "source missing: tmp/placeholder-props/Ultimate Nature Pack - Jun 2019/FBX/Wheat.fbx"
+    }
+  ]
+}

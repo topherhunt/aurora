@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { fetchOriginals, loadOriginal, disposeOriginal } from './props-original.js'
 
 // ---------------------------------------------------------------------------
 // The prop library browser (props.html).
@@ -342,11 +343,27 @@ function auditSheet(px) {
 // ---------------------------------------------------------------------------
 
 const gltfLoader = new GLTFLoader()
-let current = null // { asset, tiers: [{lod, object}], mixer, clips, box }
+let current = null // { asset, tiers: [{lod, object}], mixer, clips, box, original }
+// A tier index, or ORIG for the source file -- which is not a tier: it has no
+// budget and no place in the LOD chain, and is here to be compared against them.
+const ORIG = 'orig'
 let activeTier = 0
+
+// Per-asset source records from the dev server (the propOriginals plugin in
+// vite.config.js): where the source is, whether it is still on disk, and where
+// its textures are. Null means the endpoint answered with nothing, which is what
+// a built deploy does -- there is no dev server there and no tmp/ either.
+let originals = null
+let origIndexError = null
+let origStatus = null // progress line while an original loads
+let origError = null
 
 function disposeCurrent() {
   if (!current) return
+  if (current.original) {
+    scene.remove(current.original.root)
+    disposeOriginal(current.original)
+  }
   scene.remove(current.root)
   current.root.traverse((o) => {
     if (!o.isMesh) return
@@ -356,6 +373,8 @@ function disposeCurrent() {
     o.material.dispose()
   })
   current = null
+  origStatus = null
+  origError = null
 }
 
 async function select(asset) {
@@ -387,7 +406,7 @@ async function select(asset) {
 
   const mixer = gltf.animations.length ? new THREE.AnimationMixer(root) : null
   const box = new THREE.Box3().setFromObject(tiers[0].mesh)
-  current = { asset, root, tiers, mixer, clips: gltf.animations, box }
+  current = { asset, root, tiers, mixer, clips: gltf.animations, box, original: null, origLoading: false }
 
   const sway = swayOf(asset.id)
   wind.uHeight.value = asset.height_m
@@ -453,8 +472,13 @@ function fitGround(box) {
 
 function setTier(i) {
   if (!current) return
-  activeTier = Math.min(i, current.tiers.length - 1)
-  current.tiers.forEach((t, n) => { t.mesh.visible = n === activeTier })
+  const orig = i === ORIG && Boolean(current.original)
+  activeTier = orig ? ORIG : Math.min(i === ORIG ? 0 : i, current.tiers.length - 1)
+  // No re-frame on a tier change, the original included: the camera staying
+  // exactly where it was is the whole instrument. The original is normalised to
+  // the same declared height as the built tiers, so it lands in the same frame.
+  current.tiers.forEach((t, n) => { t.mesh.visible = !orig && n === activeTier })
+  if (current.original) current.original.root.visible = orig
   // Labels come from this asset's own chain, not from the button's position: a
   // `structure` has two tiers where the second one is the impostor, so a fixed
   // "L0 L1 bb" would offer an "L1" that is actually the billboard.
@@ -465,12 +489,160 @@ function setTier(i) {
     b.textContent = tier ? (tier.lod.kind === 'billboard' ? 'bb' : 'L' + n) : '--'
     b.classList.toggle('on', n === activeTier)
   }
+  paintOrigBtn()
   for (const r of document.querySelectorAll('.lods tr')) r.classList.toggle('act', r.dataset.i === String(activeTier))
+}
+
+// ---------------------------------------------------------------------------
+// The original
+//
+// The half of the question this page could not reach. When a built prop looks
+// bad, "is the SOURCE any good" decides whether it is worth another pass at a
+// different budget or should be dropped -- and the sources are 120 MB photoscans
+// in a gitignored tmp/ that nothing could open. They are loaded from there in
+// place, in their original format, by props-original.js.
+// ---------------------------------------------------------------------------
+
+const origEntry = (a) => (originals ? originals[a.id] ?? null : null)
+
+function paintOrigBtn() {
+  const b = $('origBtn')
+  const entry = current ? origEntry(current.asset) : null
+  const loading = Boolean(current?.origLoading)
+  b.disabled = !entry?.exists || loading
+  b.classList.toggle('on', activeTier === ORIG)
+  b.textContent = loading ? 'orig...' : 'orig'
+  b.title = origIndexError
+    ? origIndexError
+    : !originals
+    ? 'originals need the dev server -- this page was served from a build'
+    : !entry
+      ? (current?.asset.generated
+        ? 'generated, not built from a source file -- tier 1 is the original'
+        : 'no source record: this id is not in tools/props/manifest.json')
+      : !entry.exists
+        ? 'source is gone from tmp/: ' + entry.src
+        : entry.src + ' -- ' + (entry.bytes / 1e6).toFixed(1) + ' MB, loads on demand'
+}
+
+// On demand, never on selection: the sources run to 120 MB and two million
+// triangles, and stepping through the library with the arrow keys would pull
+// gigabytes for assets nobody asked to see the inside of.
+async function showOriginal() {
+  const asset = current?.asset
+  const entry = asset ? origEntry(asset) : null
+  if (!asset || !entry?.exists || current.origLoading) return
+  if (current.original) { setTier(ORIG); return }
+
+  current.origLoading = true
+  origError = null
+  paintOrigBtn()
+  try {
+    const loaded = await loadOriginal(entry, asset.height_m, (msg) => {
+      if (current?.asset !== asset) return
+      origStatus = msg
+      const line = $('origLine')
+      if (line) line.textContent = msg
+    })
+    // The list is steppable with the arrow keys and a parse takes seconds, so
+    // the selection can have moved on. Throw the result away rather than drop a
+    // birch log into a pine tree's frame.
+    if (current?.asset !== asset) { disposeOriginal(loaded); return }
+    loaded.root.visible = false
+    scene.add(loaded.root)
+    current.original = loaded
+    origStatus = null
+    setTier(ORIG)
+  } catch (err) {
+    origStatus = null
+    origError = err.message
+    console.error(err)
+  } finally {
+    if (current) current.origLoading = false
+    if (current?.asset === asset) renderStats(asset, current)
+    paintOrigBtn()
+  }
 }
 
 // ---------------------------------------------------------------------------
 // The stats panel
 // ---------------------------------------------------------------------------
+
+// What the source file is, and -- once it has been loaded -- what it actually
+// contained. The numbers here are the ones the salvage decision turns on: a
+// source with 2 M triangles and an 8K albedo that reads as mush at LOD0 is a
+// budget problem worth another pass, and a source that already looks like the
+// LOD is not salvageable at any budget and should be dropped.
+function originalBlock(a, live) {
+  if (origIndexError) {
+    return `<div class="warn" style="margin-top:6px">${esc(origIndexError)}</div>`
+  }
+  if (!originals) {
+    return `<div class="note" style="margin-top:6px">The original is a dev-server feature. It is read out of the
+      gitignored <code>tmp/</code> tree, which no build contains and nothing deploys; run <code>npm run dev</code>
+      to compare an asset against the file it was built from.</div>`
+  }
+  const entry = origEntry(a)
+  // Generated props have no source to go behind: src/props/*.js writes their
+  // LOD0 directly, so the first tier above IS the original and there is no
+  // decimation step between the two to inspect.
+  if (!entry && a.generated) {
+    return `<div class="note" style="margin-top:6px">Generated, not built from a source file &mdash; <code>${
+      esc(a.src ?? '')}</code> is its own LOD0. What you see in tier 1 is the original.</div>`
+  }
+  if (!entry) return '<div class="warn" style="margin-top:6px">No source record: this id is not in tools/props/manifest.json.</div>'
+
+  if (!entry.exists) {
+    const kept = Object.values(originals).filter((e) => e.exists).length
+    const all = Object.keys(originals).length
+    return `<div class="warn" style="margin-top:6px">This source is no longer on disk, so this asset cannot be
+      compared against what it was built from -- and cannot be rebuilt at a different budget either. ${all - kept} of
+      ${all} sources are gone the same way (deleted from <code>tmp/</code> after the build);
+      the ${kept} that remain are marked &#9670; in the list.</div>`
+  }
+
+  const st = live?.original?.stats
+  const loading = Boolean(live?.origLoading)
+  const rows = [
+    ['format', `${esc(entry.src.split('.').pop().toUpperCase())}, ${(entry.bytes / 1e6).toFixed(1)} MB on disk`],
+  ]
+  if (st) {
+    // The reduction the pipeline actually performed, measured against the source
+    // as the browser reads it rather than as Blender read it. The two can differ
+    // -- build.py welds first -- and the manifest's own `src_tris` is above.
+    const pct = (100 * a.lods[0].tris / st.tris).toFixed(3)
+    rows.push(
+      ['geometry', `${st.tris.toLocaleString()} tris, ${st.verts.toLocaleString()} verts`],
+      ['parts', `${st.meshes} mesh${st.meshes === 1 ? '' : 'es'}, ${st.materials} material${st.materials === 1 ? '' : 's'}`],
+      ['LOD0 is', `${pct}% of it (${a.lods[0].tris} tris)`],
+      ['scaled by', `${st.scale.toExponential(2)} to ${a.height_m.toFixed(2)} m`],
+      ['footprint', `${st.size.x.toFixed(2)} &times; ${st.size.z.toFixed(2)} m`],
+      ['load', `${(st.readMs / 1000).toFixed(1)} s read, ${(st.parseMs / 1000).toFixed(1)} s parse`],
+    )
+    for (const t of st.textures) {
+      const shrunk = t.srcSize.w !== t.size.w
+      // "guessed" is worth saying out loud: it means the source did not name
+      // this file and it was matched by name against what sits beside it, so a
+      // wrong texture here is this page's mistake, not the asset's.
+      rows.push(['texture', `${esc(t.path.split('/').pop())} &mdash; ${t.srcSize.w}&times;${t.srcSize.h}${
+        shrunk ? ` shown at ${t.size.w}&times;${t.size.h}` : ''}${t.guessed ? ' <i>guessed</i>' : ''}`])
+    }
+  }
+
+  return `
+    <table style="margin-top:6px">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
+    ${loading ? `<div class="note" id="origLine" style="margin-top:4px">${esc(origStatus ?? 'loading...')}</div>` : ''}
+    ${origError ? `<div class="warn" style="margin-top:6px">The original would not load: ${esc(origError)}</div>` : ''}
+    ${st?.missingTextures.length ? `<div class="warn" style="margin-top:6px">${st.missingTextures.length} texture(s)
+      the source names were not found next to it: ${esc(st.missingTextures.slice(0, 4).join(', '))}. Those materials are
+      showing untextured here, which is a fact about this download, not about the asset -- build.py resolves the same
+      names the same way and would have warned at build time.</div>` : ''}
+    ${st ? `<div class="note" style="margin-top:6px">Shown in this page's material, not its author's: Lambert,
+      double-sided, alphaTest 0.5, same lights as the tiers above. The difference you see between
+      <b>orig</b> and <b>L0</b> is the pipeline's doing and not the shading model's.</div>`
+      : !loading ? '<div class="note" style="margin-top:6px">Press <b>o</b> or the <b>orig</b> button to load it.</div>' : ''}
+  `
+}
 
 function renderStats(a, live) {
   const cls = manifest.classes[a.class]
@@ -632,6 +804,7 @@ function renderStats(a, live) {
 
     <h2>source</h2>
     <div class="path">${esc(a.src)}</div>
+    ${originalBlock(a, live)}
   `
   for (const r of document.querySelectorAll('.lods tr')) {
     if (r.dataset.i !== undefined) r.onclick = () => setTier(Number(r.dataset.i))
@@ -646,11 +819,13 @@ function renderStats(a, live) {
 let manifest = null
 let shown = []
 const active = new Set()
+let onlyOrig = false
 
 function buildList() {
   const q = $('search').value.trim().toLowerCase()
   shown = manifest.assets.filter((a) =>
-    (!active.size || active.has(a.class)) && (!q || a.id.includes(q))
+    (!active.size || active.has(a.class)) && (!q || a.id.includes(q)) &&
+    (!onlyOrig || Boolean(origEntry(a)?.exists))
   )
   const list = $('list')
   list.innerHTML = ''
@@ -666,7 +841,10 @@ function buildList() {
     const b = document.createElement('button')
     b.className = 'item'
     b.dataset.id = a.id
-    b.innerHTML = `<span class="cl cl-${a.class}"></span><span class="nm">${esc(a.id)}</span><span class="tr">${a.lods[0].tris}</span>`
+    // The diamond is "the file this was built from is still on disk": 21 of 154,
+    // and the only assets whose source can be looked at or rebuilt at all.
+    const og = origEntry(a)?.exists ? '<span class="og" title="source still in tmp/">&#9670;</span>' : ''
+    b.innerHTML = `<span class="cl cl-${a.class}"></span><span class="nm">${esc(a.id)}</span>${og}<span class="tr">${a.lods[0].tris}</span>`
     b.onclick = () => select(a)
     list.appendChild(b)
   }
@@ -695,6 +873,10 @@ function applySway() {
   $('swayBtn').disabled = !sway.amp
 }
 
+// One toggle for both the button and `o`: press it again to go back to L0, so
+// the comparison the page exists for is one key held down and let go.
+const toggleOriginal = () => (activeTier === ORIG ? setTier(0) : showOriginal())
+$('origBtn').onclick = toggleOriginal
 $('swayBtn').onclick = () => { swayOn = !swayOn; applySway() }
 $('spinBtn').onclick = () => {
   controls.autoRotate = !controls.autoRotate
@@ -712,6 +894,7 @@ addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown') { step(1); e.preventDefault() }
   if (e.key === 'ArrowUp') { step(-1); e.preventDefault() }
   if (e.key >= '1' && e.key <= '3') setTier(Number(e.key) - 1)
+  if (e.key === 'o' || e.key === 'O') toggleOriginal()
 })
 
 // ---------------------------------------------------------------------------
@@ -729,6 +912,17 @@ renderer.setAnimationLoop(() => {
 
 async function boot() {
   manifest = await (await fetch(PROPS + 'manifest.json')).json()
+  // Before the list is built: the "has an original" filter and the &#9670; marker
+  // both need it, and a deploy without the endpoint has to fall back quietly to
+  // the page as it was rather than to an error.
+  try {
+    originals = await fetchOriginals()
+  } catch (e) {
+    // The library is the page's job and the originals are an extra: a broken
+    // index costs you the orig button, not the browser.
+    origIndexError = e.message
+    console.error(e)
+  }
 
   for (const name of Object.keys(manifest.classes)) {
     const b = document.createElement('button')
@@ -736,6 +930,22 @@ async function boot() {
     b.onclick = () => {
       active.has(name) ? active.delete(name) : active.add(name)
       b.classList.toggle('on', active.has(name))
+      buildList()
+    }
+    $('filters').appendChild(b)
+  }
+
+  // One filter that is not a class, because 21 of 154 is a needle in a haystack:
+  // the assets whose source is still in tmp/, and therefore the only ones that
+  // can be looked at behind the build or rebuilt at a different budget.
+  const withOrig = manifest.assets.filter((a) => origEntry(a)?.exists).length
+  if (withOrig) {
+    const b = document.createElement('button')
+    b.textContent = `original ${withOrig}`
+    b.title = 'only assets whose source file is still on disk'
+    b.onclick = () => {
+      onlyOrig = !onlyOrig
+      b.classList.toggle('on', onlyOrig)
       buildList()
     }
     $('filters').appendChild(b)
