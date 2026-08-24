@@ -84,17 +84,21 @@ Treat the per-layer numbers below as a budget to be *defended*, not a floor to b
 | Trees 30-130 m | 120 | 130 | 16k |
 | Trees 130-500 m (3 quads) | 900 | 6 | 5k |
 | Forest clump cards past 500 m | ~200 | 6 | 1k |
-| Bush class 0-25 m (ferns, bushes, boulders) | 900 | 42 | 38k |
-| Bush class 25-60 m | 2,000 | 12 | 24k |
-| Bush class cards, 60-500 m, clumped | ~3,700 | 2 | 7k |
+| Ferns 0-5 m (LOD0, 6 seg) | 39 | 84 | 3k |
+| Ferns 5-10 m (LOD1, 4 seg) | 118 | 56 | 7k |
+| Ferns 10-26 m (LOD2, 2 seg) | 610 | 28 | 17k |
+| Fern cards past 26 m, clumped | \-- | 2 | not built |
+| Boulders 0-430 m | 440 | 20 | 9k |
 | Grass class 0-23 m | 1,600 | 4 | 6k |
 | Village buildings | 20 | 800 | 16k |
 | Water surfaces | \-- | \-- | 5k |
 | Snow particles | 1 draw | \-- | 4k |
 | Sky dome + aurora | \-- | \-- | 2k |
-| **Total** | ~9,500 instances |  | **~184k** |
+| **Total** | ~5,300 instances |  | **~151k** |
 
-**~184k against a 350k ceiling is 53%**, leaving ~166k for thermal margin and for the rows that are still estimates. Only terrain is measured; every other row is an estimate.
+**~151k against a 350k ceiling is 43%**, leaving ~199k for thermal margin and for the rows that are still estimates. Terrain and the four fern/boulder rows are measured -- the fern rows come from a settled `Scatter` at 114,39 (767 ferns, 27.3k triangles), the boulder row from the same run. Every other row is still an estimate.
+
+The fern rows are also the honest record of a shortfall: they are what a **0.46 ferns/m²** scatter produces, not the 2 ferns/m² this document prices everywhere else. The binding cost is the rebuild, not the triangles -- every candidate cell in the disc pays a hash and most survivors pay a `heightAndSlopeAt`, and the cell count goes as `(radius / spacing)²`. Closing the gap by tightening spacing is quadratic in rebuild time and would blow the frame. The fix is that ferns grow in patches: scatter a few cluster centres and fill each one, which buys high local density for a fraction of the candidate cells. That is a placement change and it is not built.
 
 Two things changed to make this fit, and both are decisions rather than tuning:
 
@@ -148,13 +152,13 @@ Regenerate the table with `node scripts/probe-trideg.mjs`.
 
 **Prop LOD: two mesh tiers plus the impostor, and the ladder is per size class.** Derived in `scripts/probe-prop-lod.mjs`, which prints the whole argument; the short version is below. The table this replaces assumed one chain served every prop and that triangles were what forced the crossovers. Neither is true.
 
-**Four classes, and foliage is split three ways by SIZE rather than by whether it is a plant.** A fern is not a grass tuft with a different texture -- it is 20x the volume, and giving them one triangle budget starved the fern to feed the grass. The `small` row below used to read "grass, ferns, flowers | 16 tris", and the shipped fern generator produces 42.
+**Four classes, and foliage is split three ways by SIZE rather than by whether it is a plant.** A fern is not a grass tuft with a different texture -- it is 20x the volume, and giving them one triangle budget starved the fern to feed the grass. The `small` row below used to read "grass, ferns, flowers | 16 tris", and the shipped fern generator produces 28 to 108 depending on tier and variant.
 
 | Class | Mesh tiers | Card | LOD0 to | Card from | Cull | Mesh class |
 | --- | --- | --- | --- | --- | --- | --- |
 | **structure** (cabins, tower, mill) | 1800 | 3 quads | 60 m | 170 m | 400 m | Batched |
 | **tree** (trees) | 500, 130 | 3 quads | 30 m | 130 m | 500 m + clumps | Batched, then Instanced |
-| **bush** (ferns, bushes, boulders, stumps, logs) | 42, 12 | 1 quad | 12 m | 25 m | 500 m + clumps | Batched, then Instanced |
+| **bush** (ferns, bushes, boulders, stumps, logs) | 84, 56, 28 | 1 quad | 5 m | 26 m | 500 m + clumps | Batched, then Instanced |
 | **grass** (grass, flowers, moss, leaf scatter) | 4 | none | 23 m | \-- | 23 m | Batched |
 
 **Triangles are not what binds, and neither are they what the card tier is for.** The prop budget is ~190k (350k ceiling − 45k terrain − ~115k everything else). Within that, the crossovers above are set by perception and by instance count, not by arithmetic on triangles -- pushing LOD0 out to where its triangles stop being worth it would put it past 400 m.
@@ -165,7 +169,9 @@ Regenerate the table with `node scripts/probe-trideg.mjs`.
 
 That is 120 m for a 4.2 m deep tree, ~170 m for a 6 m deep cabin, 17 m for a 0.6 m boulder and **14 m for a 0.5 m deep fern**. The rule scaling with prop size is why the ladder is per class and not global.
 
-The bush class takes its card at 25 m rather than the 14 m the rule permits, because the 11 m in between is bought by a 12-triangle LOD1 at a few hundred instances, which is cheap in every budget at once. The rule sets the point past which a card is *allowed*, not the point at which it is *required*.
+The bush class takes its card at 26 m rather than the 14 m the rule permits, because the 12 m in between is bought by a 28-triangle LOD2 at a few hundred instances, which is cheap in every budget at once. The rule sets the point past which a card is *allowed*, not the point at which it is *required*.
+
+**The bush class shipped with three mesh tiers, not two, and the "why not a third tier" argument below does not reach it.** That argument is about trees: a third conifer tier installs a 45-triangle canopy with no silhouette in place of a 128 px impostor whose only defect is already under 2°. The bush class is the opposite case on both counts. Its tiers are not decimations of one mesh but *re-generations at a different segment count* -- 6, 4 and 2 segments per frond -- so a tier costs one more entry in a generated bank rather than a hand-authored asset, and the whole 48-geometry bank is 134 KB. And the thing the tiers control is the smoothness of a frond's arc, which is the fern's silhouette rather than a detail inside it. Judged in `fern.html`: 4 → 6 segments is an obvious gain, 6 → 8 is close to undetectable. So the finest tier only has to reach as far as that arc is legible, which is why LOD0 stops at 5 m instead of the 12 m the class allows, and the two tiers behind it carry the rest for a third of the triangles. A single 6-segment tier out to 25 m costs 82k against this ladder's 42k at the same density.
 
 The grass class gets no card at all, and here the rule is not the reason -- a 4-triangle tuft and a 2-triangle card are the same instance, so a card saves nothing that matters and adds a pop. Grass gets one tier and a hard cull.
 

@@ -26,15 +26,15 @@ import { mulberry32 } from '../sim/mathx.js'
 // TASKS.md asked whether 15 triangles can be a fern at all. Not by crushing a
 // scan down to 15; yes by building 15 on purpose.
 //
-// ATTRIBUTES: position, normal, uv. That is the natural set for a textured
-// alpha-cutout card, and it is what the previewer (fern.html) renders.
-// Batching it into the live world needs one more step, because BatchedMesh
-// requires every geometry in a batch to have an identical attribute layout:
-//   - into the baked atlas batch (src/material.js): rename `uv` -> `uvProj`
-//     and add a constant `texLayer` attribute naming the frond's array slice.
-//   - into the current placeholder batch (props/scatter.js, vertexColors):
-//     not possible as-is -- that batch has no texture, and a fern without its
-//     alpha mask is a rectangle.
+// ATTRIBUTES: two layouts, chosen by whether `frondLayers` is passed, because
+// BatchedMesh requires every geometry in a batch to agree on the attribute set.
+//   - omitted  -> { position, normal, uv }. One bound texture, which is what
+//     the previewer (fern.html) renders.
+//   - an array -> { position, normal, uvProj, texLayer }. The shared prop
+//     material's layout (src/material.js): one sampler2DArray, one material,
+//     one multi-draw call for every prop in the world.
+// The old placeholder batch in props/scatter.js is vertexColors with no texture
+// and still cannot hold a fern -- a fern without its alpha mask is a rectangle.
 // ---------------------------------------------------------------------------
 
 export const FERN_DEFAULTS = {
@@ -68,6 +68,12 @@ export const FERN_DEFAULTS = {
 
   // --- source ---
   frondAspect: 0.378, // width/height of the source frond cutout; see public/ferns/fern_fronds.json
+                      // May be an ARRAY parallel to `frondLayers`, one aspect per scan
+  frondLayers: null,  // null = previewer layout (`uv`, one bound texture).
+                      // An array of texture-array layer indices = batch layout
+                      // (`uvProj` + per-vertex `texLayer`), fronds assigned
+                      // round-robin so one fern wears several scans. See
+                      // FERN_LAYERS/FERN_ASPECTS in src/props/fern-bank.js
 }
 
 // Colour is deliberately NOT here. This module generates geometry; how a fern
@@ -86,7 +92,7 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 // It costs nothing and it is far easier to reason about than fitting a spline,
 // because every parameter is a physical quantity (launch angle, total bend).
 function addFrond(out, p) {
-  const { positions, normals, uvs, indices } = out
+  const { positions, normals, uvs, layers, indices } = out
   const base = positions.length / 3
 
   const cosY = Math.cos(p.yaw)
@@ -141,6 +147,9 @@ function addFrond(out, p) {
       // top of the image, and three flips textures on upload (flipY), so image
       // top lands at v = 1.
       uvs.push(e, 1 - s)
+      // Constant across the frond, but it has to be per-vertex: that is what
+      // lets ONE geometry in ONE batch wear several textures (textures.js).
+      if (layers) layers.push(p.texLayer)
     }
 
     if (k < p.segments) {
@@ -157,7 +166,25 @@ export function buildFern(options = {}) {
   const p = { ...FERN_DEFAULTS, ...options }
   const rand = mulberry32(p.seed)
 
-  const out = { positions: [], normals: [], uvs: [], indices: [] }
+  // `frondLayers` decides the attribute layout, because the two are the same
+  // decision. Omit it and you get { position, normal, uv }: the previewer's
+  // layout, one texture bound as material.map, which is what fern.html renders.
+  // Pass it and you get { position, normal, uvProj, texLayer }: the shared
+  // batch's layout, where `uv` is deliberately NOT the name (three's map path
+  // assumes sampler2D and would fight us) and every geometry in the batch must
+  // agree on the attribute set or BatchedMesh refuses it.
+  //
+  // Fronds are assigned round-robin, so a single fern wears all three scans at
+  // once. That is per-VERTEX variety costing nothing: no extra geometry, no
+  // extra draw call, and the 16-variant bank reads as far more than 16 plants.
+  const frondLayers = p.frondLayers ?? null
+  const out = {
+    positions: [],
+    normals: [],
+    uvs: [],
+    layers: frondLayers ? [] : null,
+    indices: [],
+  }
 
   const count = Math.max(1, Math.round(p.fronds))
   const croziers = Math.round(count * Math.min(1, Math.max(0, p.crozier)))
@@ -174,7 +201,16 @@ export function buildFern(options = {}) {
     let length = p.length * lengthJitter
     let pitch = p.pitch * (1 - p.pitchFalloff * (1 - f))
     let arch = p.arch * (0.85 + rand() * 0.3)
-    let width = length * p.frondAspect * p.widthScale
+
+    // Which scan this frond wears, and therefore how wide its card has to be.
+    // The three cuts are 0.343, 0.379 and 0.491 wide for their height, a 43%
+    // spread -- share one aspect across them and a third of every fern is a
+    // squashed texture. `frondAspect` accepts an array parallel to
+    // `frondLayers` for exactly this.
+    const slot = frondLayers ? i % frondLayers.length : 0
+    const texLayer = frondLayers ? frondLayers[slot] : 0
+    const aspect = Array.isArray(p.frondAspect) ? p.frondAspect[slot] : p.frondAspect
+    let width = length * aspect * p.widthScale
 
     if (isCrozier) {
       // A fiddlehead is the same card, short and curled most of the way round.
@@ -198,13 +234,19 @@ export function buildFern(options = {}) {
       taper: p.taper,
       sway: p.sway * (rand() - 0.5) * 2,
       roll: p.roll * (rand() - 0.5) * 2,
+      texLayer,
     })
   }
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(out.positions, 3))
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(out.normals, 3))
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(out.uvs, 2))
+  if (out.layers) {
+    geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(out.uvs, 2))
+    geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(out.layers, 1))
+  } else {
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(out.uvs, 2))
+  }
   geo.setIndex(out.indices)
 
   // Rescale to the requested height. Everything above works in relative units

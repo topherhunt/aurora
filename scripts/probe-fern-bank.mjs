@@ -22,9 +22,14 @@ const BASE = {
   crozier: 0,
 }
 
+// LOCKED, and TASKS.md carries the same list. 16 variants, not 36: the axes
+// were halved on purpose. `fronds` 5 and 9 average higher than 4/6/10 did, so
+// this bank is slightly MORE triangles per fern and less than half the resident
+// bytes -- cost moved from the pool, which is fixed, to the frame, which has
+// headroom. If you change these, change TASKS.md in the same commit.
 const AXES = {
-  fronds: [4, 6, 10],
-  pitch: [1.55, 1.2, 1.0],
+  fronds: [5, 9],
+  pitch: [1.0, 1.4],
   arch: [0.6, 2],
   taper: [0, 0.6],
 }
@@ -132,7 +137,7 @@ for (const curve of CURVES) {
         ...FERN_DEFAULTS,
         ...BASE,
         curve,
-        fronds: 6,
+        fronds: 9,
         pitch,
         arch,
         taper: 0,
@@ -142,7 +147,7 @@ for (const curve of CURVES) {
       const pos = g.attributes.position.array
       // Fronds are emitted in order, each contributing (segments+1)*2 verts.
       // Vertex 0-1 of a frond is its base (the crown), the last pair is its tip.
-      const perFrond = (6 + 1) * 2
+      const perFrond = (6 + 1) * 2 // segments 6 -> 7 rings of 2 verts
       let crownY = 0
       let tipY = 0
       let lowest = Infinity

@@ -139,6 +139,7 @@ check(
 // water and read the matrices it wrote.
 {
   const { Scatter } = await import('../src/props/scatter.js')
+  const { buildTextureArray } = await import('../src/textures.js')
 
   // Stand at the deepest water in the world, not at the biggest lake's
   // centroid: these basins are dendritic, and the centroid of the largest one
@@ -162,7 +163,7 @@ check(
     let worstSink = 0
     for (const s of props.kinds) {
       for (let k = 0; k < s.count; k++) {
-        props.batch.getMatrixAt(s.instances[k], m)
+        s.batch.getMatrixAt(s.instances[k], m)
         const x = m.elements[12]
         const z = m.elements[14]
         const lv = water.levelAt(x, z)
@@ -184,14 +185,14 @@ check(
 
   // The control. If nothing would have drowned here anyway, the check below is
   // green for the wrong reason and would stay green with the predicate deleted.
-  const bare = new Scatter(new THREE.Scene(), th, { seed: SEED })
+  const bare = new Scatter(new THREE.Scene(), th, buildTextureArray(), { seed: SEED })
   settle(bare)
   const would = drowned(bare)
   check(would.n > 0, 'open water would drown props if nothing stopped it',
     `${would.n} props under water, worst ${would.worstSink.toFixed(1)} m down`)
 
   // The same predicate main.js composes, minus villages (checked in its own file).
-  const guarded = new Scatter(new THREE.Scene(), th, { seed: SEED })
+  const guarded = new Scatter(new THREE.Scene(), th, buildTextureArray(), { seed: SEED })
   guarded.setExclusion((x, z) => {
     const level = water.levelAt(x, z)
     return level !== null && th.heightAt(x, z) < level

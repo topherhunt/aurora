@@ -347,10 +347,22 @@ console.log('\nlive retune')
 console.log('\nscale-reference props')
 {
   const { Scatter } = await import('../src/props/scatter.js')
+  const { buildTextureArray } = await import('../src/textures.js')
   const propScene = new THREE.Scene()
-  const props = new Scatter(propScene, th, { seed: SEED })
+  const props = new Scatter(propScene, th, buildTextureArray(), { seed: SEED })
 
-  check(propScene.children.length === 1, 'all props are one BatchedMesh', `${propScene.children.length} scene child(ren)`)
+  // TWO batches, not one, and the number is a ceiling rather than a target: the
+  // atlas batch is the real pipeline and the placeholder batch is the old
+  // vertexColors art on its way out (see the constructor of scatter.js). When
+  // the last placeholder kind flips to `atlas: true` this goes back to 1. It
+  // must never GROW -- a third child would mean a third material, and a third
+  // material would mean BatchedMesh could no longer collapse props into one
+  // multi-draw call, which is §5's whole constraint.
+  check(
+    propScene.children.length <= 2 && propScene.children.every((c) => c.isBatchedMesh === true),
+    'props are at most two BatchedMeshes',
+    `${propScene.children.length} scene child(ren): ${propScene.children.map((c) => c.name).join(', ')}`
+  )
 
   // One kind rebuilds per update() by design, so settling takes as many calls as
   // there are kinds. Anything that needs a settled world must go through this.
@@ -358,23 +370,33 @@ console.log('\nscale-reference props')
     for (let i = 0; i < props.kinds.length + 2; i++) props.update(px, pz)
   }
 
+  // Geometry ids and instance ids are BOTH per-batch, so every read has to go
+  // through `s.batch` and not through a batch picked once. Reading a fern's ids
+  // out of the placeholder batch does not error -- it silently returns some
+  // tree's matrix, which reads as hundreds of ferns floating in mid-air.
   const box = new THREE.Box3()
   for (const s of props.kinds) {
     const sizes = s.geometryIds.map((id) => {
-      props.batch.getBoundingBoxAt(id, box)
+      s.batch.getBoundingBoxAt(id, box)
       return box.max.y - box.min.y
     })
-    console.log(
-      `        ${s.cfg.name.padEnd(6)} ${s.geometryIds.length} variants   ` +
-        `${s.trisPer.join('/')} tris   ${sizes.map((h) => h.toFixed(2)).join('/')} m tall`
-    )
+    // A tiered kind bakes tiers x variants geometries, all the same shape at
+    // different densities, so summarise rather than printing 48 of them.
+    const per = s.geometryIds.length / s.tierCount
+    const brief =
+      s.tierCount === 1
+        ? `${s.trisPer.join('/')} tris   ${sizes.map((h) => h.toFixed(2)).join('/')} m tall`
+        : `${per} x ${s.tierCount} tiers, ` +
+          `${s.tierTris.map((t) => `${Math.min(...t)}-${Math.max(...t)}`).join(' / ')} tris   ` +
+          `${Math.min(...sizes).toFixed(2)}-${Math.max(...sizes).toFixed(2)} m tall`
+    console.log(`        ${s.cfg.name.padEnd(6)} ${per} variants   ${brief}`)
   }
 
   // The brief for boulders was "one metre tall", and it is the one prop whose
   // real size a person can check by eye, so it is worth pinning.
   {
     const rock = props.byName.rock
-    props.batch.getBoundingBoxAt(rock.geometryIds[0], box)
+    rock.batch.getBoundingBoxAt(rock.geometryIds[0], box)
     const h = box.max.y - box.min.y
     check(h > 0.75 && h < 1.35, 'the base boulder is about a metre tall', `${h.toFixed(2)} m`)
   }
@@ -393,7 +415,7 @@ console.log('\nscale-reference props')
     for (const s of props.kinds) {
       const rows = []
       for (let i = 0; i < s.count; i++) {
-        props.batch.getMatrixAt(s.instances[i], m)
+        s.batch.getMatrixAt(s.instances[i], m)
         rows.push(m.elements.slice())
       }
       out[s.cfg.name] = rows
@@ -478,7 +500,7 @@ console.log('\nscale-reference props')
     const ox = s.cellX * grid
     const oz = s.cellZ * grid
     for (let i = 0; i < s.count; i++) {
-      props.batch.getMatrixAt(s.instances[i], m)
+      s.batch.getMatrixAt(s.instances[i], m)
       m.decompose(p, q, sc)
       // Props are sunk by sink * scale so they do not sit on a visible seam.
       if (Math.abs(p.y - (th.heightAt(p.x, p.z) - k.sink * sc.x)) > 1e-3) floating++
@@ -517,7 +539,7 @@ console.log('\nscale-reference props')
     let outer = 0
     const rr = tree.cfg.radius
     for (let i = 0; i < tree.count; i++) {
-      props.batch.getMatrixAt(tree.instances[i], m)
+      tree.batch.getMatrixAt(tree.instances[i], m)
       m.decompose(p, q, sc)
       const d = Math.hypot(p.x - 114, p.z - 39)
       // Equal-area rings, so a flat density would put the same count in each.

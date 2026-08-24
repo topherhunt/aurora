@@ -1,5 +1,5 @@
 import { dirname, join, relative, resolve } from 'node:path'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 
@@ -118,6 +118,67 @@ function propOriginals() {
 }
 
 
+// --- the v2 world document, written back to disk (dev only) -----------------
+//
+// The §18 editor authors content layers -- snow line points, lakes, rivers,
+// roads -- and they are worth nothing if they live only in the browser. They
+// autosave to localStorage, which survives a reload but not a machine, is
+// invisible to git, and cannot be diffed when a river moves.
+//
+// The document is kilobytes of JSON by construction (§18's two-representation
+// rule: stored parametric, runtime baked), so the cheapest possible thing is
+// also the right one -- POST it and write the file. `apply: 'serve'` because a
+// deployed build has no filesystem to write to and the panel falls back to its
+// Export button there.
+//
+// The path is fixed rather than taken from the request. A dev server bound to
+// `host: true` is reachable from the LAN, and an endpoint that writes to a
+// caller-supplied path is an arbitrary file write to anyone on the wifi.
+function worldDoc() {
+  return {
+    name: 'aurora:world-doc',
+    apply: 'serve',
+    configureServer(server) {
+      const file = resolve(server.config.root, 'public/world/layers.json')
+      server.middlewares.use('/__world', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.end(JSON.stringify({ error: 'POST only' }))
+          return
+        }
+        const chunks = []
+        let bytes = 0
+        req.on('data', (c) => {
+          bytes += c.length
+          // A world document that is megabytes long means the two-representation
+          // rule has been broken somewhere upstream -- something is storing baked
+          // data instead of parameters. Refusing it here is how that gets noticed.
+          if (bytes > 4 << 20) req.destroy(new Error('world document over 4 MB'))
+          chunks.push(c)
+        })
+        req.on('error', (e) => {
+          res.statusCode = 413
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+        })
+        req.on('end', () => {
+          try {
+            const text = Buffer.concat(chunks).toString('utf8')
+            JSON.parse(text) // parse before writing, so a bad body cannot truncate a good file
+            mkdirSync(dirname(file), { recursive: true })
+            writeFileSync(file, text)
+            res.end(JSON.stringify({ ok: true, path: relative(server.config.root, file), bytes: text.length }))
+          } catch (e) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ error: String(e?.stack ?? e) }))
+          }
+        })
+      })
+    },
+  }
+}
+
+
 // WebXR requires a secure context. Three ways to get one on the Quest:
 //
 //   1. `npm run dev` -> https://<your-lan-ip>:5173 (self-signed; Quest Browser will
@@ -140,7 +201,7 @@ function propOriginals() {
 // the "library" for a generated prop is the range its parameters cover.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals()],
+  plugins: [basicSsl(), propOriginals(), worldDoc()],
   server: { host: true, port: 5173 },
   worker: { format: 'es' },
   build: {
@@ -151,6 +212,11 @@ export default defineConfig({
         map: resolve(__dirname, 'map.html'),
         props: resolve(__dirname, 'props.html'),
         fern: resolve(__dirname, 'fern.html'),
+        // §18. The alternative world: coarse shape imported from an image, fine
+        // shape procedural down to 10 cm, and everything a human wants to place
+        // by hand authored as a content layer on top. Shares the coordinate box
+        // with index.html and nothing else.
+        v2: resolve(__dirname, 'v2.html'),
       },
     },
   },

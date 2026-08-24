@@ -1,0 +1,8 @@
+{
+  "world": 16384,
+  "size": 1024,
+  "minY": -0.8159507796821154,
+  "maxY": 319.48550917974467,
+  "encoding": "rg16",
+  "source": "v1 procedural, seed 20260804"
+}

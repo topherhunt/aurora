@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { mulberry32, clamp01, smoothstep } from '../sim/mathx.js'
 import { buildConifer, buildBoulder, buildGrass, buildCabin } from './shapes.js'
+import { buildFernBank } from './fern-bank.js'
+import { createPropMaterial } from '../material.js'
 
 // ---------------------------------------------------------------------------
 // Scattered props -- a SCALE REFERENCE, not the placement system.
@@ -145,6 +147,52 @@ const KINDS = [
     sink: 0.03,
   },
   {
+    // The first kind on the real pipeline: generated geometry, the shared atlas
+    // material, and three LOD tiers. Everything above it is placeholder art on
+    // the old vertexColors batch and will be rebuilt to look like this one.
+    name: 'fern',
+    atlas: true,
+    salt: 0x1b873593,
+
+    // Three mesh tiers at 6 / 4 / 2 segments per frond, swapped at 5 m and 10 m
+    // and measured in scripts/probe-fern-bank.mjs: 84 / 56 / 28 average
+    // triangles. A single 6-segment tier everywhere out to 25 m would cost 82k
+    // triangles against this ladder's 42k, so the tiers pay for themselves twice
+    // over. The bands come from the previewer: 4 -> 6 segments is an obvious
+    // gain in how smooth a frond reads and 6 -> 8 is close to undetectable, so
+    // the finest tier only has to reach as far as a frond's curve is legible.
+    lodBands: [5, 10],
+
+    // Rebuild cost, not triangles, is what bounds fern density. Every candidate
+    // cell in the disc pays a hash and most survivors pay heightAndSlopeAt, and
+    // the cell count goes as (radius / spacing)^2 -- the same wall grass hit.
+    // At 1.4 / 26 that is 1,521 cells against grass's 1,369, so this is grass's
+    // cost class and it is deliberately not more.
+    //
+    // That buys ~0.46 ferns/m^2, not the 2.0/m^2 "lush fernscape" the probe
+    // prices. Tightening spacing cannot close that gap -- it is quadratic in
+    // rebuild time -- and the honest fix is that ferns grow in PATCHES anyway:
+    // scatter a few cluster centres and fill each one, which gives high local
+    // density for a fraction of the candidate cells. That is a placement change,
+    // not a tuning change, and it is not built yet.
+    spacing: 1.4,
+    rebuildEvery: 8,
+    radius: 26,
+    density: 0.9,
+    tailDensity: 0.45,
+    falloffFrom: 15,
+    max: 1400,
+
+    // Understory. Ferns want damp shade low down, and they give out well below
+    // the grass line rather than at it -- nothing about a fern says alpine.
+    minElev: 25,
+    maxElev: 150,
+    elevFade: 35,
+    maxSlopeDeg: 24,
+    scale: [0.75, 1.35],
+    sink: 0.02,
+  },
+  {
     name: 'cabin',
     salt: 0x27d4eb2f,
     spacing: 184,
@@ -188,33 +236,142 @@ function buildVariants(seed) {
   }
 }
 
+// How far past a band a prop must travel before it drops to the coarser tier.
+//
+// Without this an instance sitting exactly on a boundary swaps geometry every
+// time the player sways, and a fern flickering between 4 and 6 segments at 5 m
+// is far more visible than the detail difference the swap is there to deliver.
+// 12% of the band -- 60 cm at the 5 m boundary -- is enough that ordinary head
+// motion cannot cross it, and small enough that walking never reveals a fern
+// holding the wrong tier.
+//
+// The asymmetry is deliberate: getting FINER happens at the true boundary, so
+// detail always arrives on time and only its departure is delayed.
+const LOD_HYSTERESIS = 0.12
+
+/**
+ * Which tier index a prop should draw at SQUARED distance `d2`, given the tier
+ * it draws now (`cur`, or -1 when it is being placed for the first time).
+ *
+ * Squared throughout because this runs on every live instance of every tiered
+ * kind every frame, and a square root per fern buys nothing -- the bands are
+ * constants, so they can be squared once at construction instead.
+ *
+ * `lodBands` is ascending and indexed from the FINEST tier: bands [5, 10] with
+ * three tiers means tier 2 within 5 m, tier 1 out to 10 m, tier 0 beyond. Tier
+ * order matches fern-bank.js, which emits coarsest-first.
+ */
+function tierFor(s, d2, cur) {
+  if (s.tierCount === 1) return 0
+  // `over` counts how many bands we have crossed outward. A band we are already
+  // outside of (over >= overCur) is the one holding us at our current tier, so
+  // it is the one that gets the hysteresis margin; crossing inward uses the
+  // true boundary. See LOD_HYSTERESIS.
+  const overCur = s.tierCount - 1 - cur
+  const near = s.bandSq
+  const far = s.bandSqOut
+  let over = 0
+  while (over < near.length) {
+    if (d2 > (over >= overCur ? far[over] : near[over])) over++
+    else break
+  }
+  return s.tierCount - 1 - over
+}
+
 export class Scatter {
-  constructor(scene, terrainHeight, { seed = 1337 } = {}) {
+  constructor(scene, terrainHeight, textureArray, { seed = 1337 } = {}) {
     this.th = terrainHeight
     this.seed = seed
     this.scene = scene
 
+    // TWO batches, and the split is temporary by design.
+    //
+    // `atlas` is the real one: the shared prop material sampling the shared
+    // texture array (src/material.js, src/textures.js). Every asset ends up
+    // here -- one material, one texture binding, one multi-draw call, with a
+    // per-vertex texLayer letting a single mesh wear bark on its trunk and
+    // leaves on its canopy.
+    //
+    // `placeholder` is the Quaternius-era vertexColors batch. Its geometries
+    // (props/shapes.js) carry `color` and no UVs at all -- shapes.js:41 deletes
+    // the uv attribute outright -- so they cannot enter the atlas material
+    // without being rebuilt, and they are all slated for replacement anyway.
+    // Migrating them would be porting code that is about to be deleted.
+    //
+    // So kinds route by `k.atlas`, one kind at a time, and when the last one
+    // flips this whole batch and shapes.js go with it. Until then the cost is
+    // ONE extra draw call out of CALL_BUDGET's 45.
     const variants = buildVariants(seed)
-    const all = KINDS.flatMap((k) => variants[k.name])
-    const totalVerts = all.reduce((n, g) => n + g.attributes.position.count, 0)
-    const totalIndices = all.reduce((n, g) => n + g.index.count, 0)
-    const totalInstances = KINDS.reduce((n, k) => n + k.max, 0)
+    const fernBank = buildFernBank({ seed: seed + 31 })
+    // Tiers are coarsest-first, so a band index maps straight to a tier index.
+    variants.fern = fernBank.tiers.flatMap((t) => t.geometries)
+    this.fernTierCount = fernBank.tiers.length
 
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true })
-    this.batch = new THREE.BatchedMesh(totalInstances, totalVerts, totalIndices, this.material)
-    this.batch.name = 'props'
-    this.batch.frustumCulled = false // per-instance culling does the work
-    this.batch.sortObjects = true // front-to-back opaque ordering (§5)
-    scene.add(this.batch)
+    this.atlasMaterial = createPropMaterial(textureArray)
+
+    const makeBatch = (kinds, material, name) => {
+      const geos = kinds.flatMap((k) => variants[k.name])
+      const batch = new THREE.BatchedMesh(
+        kinds.reduce((n, k) => n + k.max, 0),
+        geos.reduce((n, g) => n + g.attributes.position.count, 0),
+        geos.reduce((n, g) => n + g.index.count, 0),
+        material
+      )
+      batch.name = name
+      batch.frustumCulled = false // per-instance culling does the work
+      batch.sortObjects = true // front-to-back opaque ordering (§5)
+      scene.add(batch)
+      return batch
+    }
+
+    const atlasKinds = KINDS.filter((k) => k.atlas)
+    const plainKinds = KINDS.filter((k) => !k.atlas)
+    this.atlasBatch = makeBatch(atlasKinds, this.atlasMaterial, 'props-atlas')
+    this.batch = plainKinds.length ? makeBatch(plainKinds, this.material, 'props') : null
 
     // Per-kind state. Instances are allocated up front and never move between
     // kinds; placement only rewrites geometry id, matrix, colour and visibility.
     this.kinds = KINDS.map((k) => {
       const geos = variants[k.name]
+      const batch = k.atlas ? this.atlasBatch : this.batch
+      const geometryIds = geos.map((g) => batch.addGeometry(g))
+      const trisPer = geos.map((g) => g.index.count / 3)
+
+      // A kind with LOD tiers hands us tiers x variants geometries in one flat
+      // list, coarsest tier first. Reshape it so `tierIds[t][v]` is a lookup
+      // rather than an index calculation at every swap.
+      const tierCount = k.lodBands ? k.lodBands.length + 1 : 1
+      const perTier = geos.length / tierCount
+      const tierIds = []
+      const tierTris = []
+      for (let t = 0; t < tierCount; t++) {
+        tierIds.push(geometryIds.slice(t * perTier, (t + 1) * perTier))
+        tierTris.push(trisPer.slice(t * perTier, (t + 1) * perTier))
+      }
+
+      // Band thresholds, squared once here so tierFor never takes a sqrt.
+      // `bandSqOut` is the same boundary pushed out by the hysteresis margin.
+      const bands = k.lodBands ?? []
+      const bandSq = Float32Array.from(bands, (b) => b * b)
+      const bandSqOut = Float32Array.from(bands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
+
       const state = {
         cfg: k,
-        geometryIds: geos.map((g) => this.batch.addGeometry(g)),
-        trisPer: geos.map((g) => g.index.count / 3),
+        batch,
+        geometryIds,
+        trisPer,
+        tierIds,
+        tierTris,
+        tierCount,
+        bandSq,
+        bandSqOut,
+        // Per-instance LOD bookkeeping. Placement writes them, _updateLod reads
+        // and rewrites them; both are dense over [0, count).
+        variantAt: new Uint16Array(k.max),
+        tierAt: new Int8Array(k.max).fill(-1),
+        instX: new Float32Array(k.max),
+        instZ: new Float32Array(k.max),
         instances: [],
         cellX: null,
         cellZ: null,
@@ -225,8 +382,8 @@ export class Scatter {
         capped: false,
       }
       for (let i = 0; i < k.max; i++) {
-        const id = this.batch.addInstance(state.geometryIds[0])
-        this.batch.setVisibleAt(id, false)
+        const id = batch.addInstance(geometryIds[0])
+        batch.setVisibleAt(id, false)
         state.instances.push(id)
       }
       for (const g of geos) g.dispose()
@@ -242,7 +399,15 @@ export class Scatter {
     this._c = new THREE.Color()
 
     this.frame = 0
-    this.stats = { count: 0, tris: 0, lastBuildMs: 0, lastBuildKind: '', byKind: {}, capped: false }
+    this.stats = {
+      count: 0,
+      tris: 0,
+      lastBuildMs: 0,
+      lastBuildKind: '',
+      byKind: {},
+      capped: false,
+      lodSwaps: 0,
+    }
   }
 
   // Cheap to call every frame: it only does work when she has crossed into a new
@@ -291,6 +456,11 @@ export class Scatter {
       if (s.dirty && (due === null || s.dirtySince < due.dirtySince)) due = s
     }
 
+    // Re-tier before rebuilding, not after: a rebuild places instances with the
+    // tier they deserve, and walking them again in the same frame would be pure
+    // waste.
+    const swapped = this._updateLod(camX, camZ)
+
     if (due) {
       const grid = due.cfg.rebuildEvery ?? due.cfg.spacing
       const t0 = performance.now()
@@ -299,7 +469,51 @@ export class Scatter {
       this.stats.lastBuildMs = performance.now() - t0
       this.stats.lastBuildKind = due.cfg.name
       this._roll()
+    } else if (swapped) {
+      this._roll()
     }
+  }
+
+  /**
+   * Move live instances between LOD tiers. Runs EVERY frame, unlike placement.
+   *
+   * The two have to be separate. Placement is expensive and only runs when the
+   * camera crosses a rebuild cell -- 8 m for ferns -- and it measures distance
+   * from the SNAPPED cell centre, which can sit 4 m from where the player
+   * actually is. Against a 5 m band that is not an approximation we can live
+   * with: the tier a fern deserves changes as she walks, not as she crosses a
+   * cell boundary. So placement's tier is a first guess and this corrects it
+   * from the true camera position on the very next frame.
+   *
+   * The work is a squared distance and a compare per live instance, and
+   * setGeometryIdAt is called only when the tier actually changed -- which for
+   * a walking player is a handful of ferns a frame, not all 1,400.
+   *
+   * Returns whether anything moved, so `update` knows to re-roll the stats.
+   */
+  _updateLod(camX, camZ) {
+    let swaps = 0
+    for (const s of this.kinds) {
+      if (s.tierCount === 1) continue
+      const { instX, instZ, variantAt, tierAt, tierIds, tierTris, instances } = s
+      let tris = 0
+      for (let i = 0; i < s.count; i++) {
+        const dx = instX[i] - camX
+        const dz = instZ[i] - camZ
+        const cur = tierAt[i]
+        const tier = tierFor(s, dx * dx + dz * dz, cur)
+        const variant = variantAt[i]
+        if (tier !== cur) {
+          tierAt[i] = tier
+          s.batch.setGeometryIdAt(instances[i], tierIds[tier][variant])
+          swaps++
+        }
+        tris += tierTris[tier][variant]
+      }
+      s.tris = tris
+    }
+    this.stats.lodSwaps = swaps
+    return swaps > 0
   }
 
   _roll() {
@@ -389,8 +603,17 @@ export class Scatter {
         }
 
         const id = s.instances[n]
-        const variant = (rand() * s.geometryIds.length) | 0
-        this.batch.setGeometryIdAt(id, s.geometryIds[variant])
+        const variant = (rand() * s.tierIds[0].length) | 0
+        // LOD state, so _updateLod can re-tier this instance every frame
+        // without re-running any of the placement work above.
+        s.variantAt[n] = variant
+        s.instX[n] = x
+        s.instZ[n] = z
+        // -1 for `cur`: a fern being placed has no tier to be sticky about, so
+        // it lands on the true boundary rather than one margin out.
+        const tier = tierFor(s, d2, -1)
+        s.tierAt[n] = tier
+        s.batch.setGeometryIdAt(id, s.tierIds[tier][variant])
 
         const fade = 1 - smoothstep(fadeFrom, k.radius, d)
         const scale = (k.scale[0] + rand() * scaleSpan) * fade
@@ -398,20 +621,20 @@ export class Scatter {
         this._q.setFromAxisAngle(this._up, rand() * Math.PI * 2)
         this._s.set(scale, scale, scale)
         this._m.compose(this._p, this._q, this._s)
-        this.batch.setMatrixAt(id, this._m)
+        s.batch.setMatrixAt(id, this._m)
 
         // Slight per-instance tint so a stand does not look cloned.
         const g = 0.86 + rand() * 0.28
         this._c.setRGB(clamp01(g * (0.93 + rand() * 0.14)), clamp01(g), clamp01(g * 0.96))
-        this.batch.setColorAt(id, this._c)
+        s.batch.setColorAt(id, this._c)
 
-        this.batch.setVisibleAt(id, true)
-        tris += s.trisPer[variant]
+        s.batch.setVisibleAt(id, true)
+        tris += s.tierTris[tier][variant]
         n++
       }
     }
 
-    for (let i = n; i < k.max; i++) this.batch.setVisibleAt(s.instances[i], false)
+    for (let i = n; i < k.max; i++) s.batch.setVisibleAt(s.instances[i], false)
 
     s.count = n
     s.tris = tris
@@ -422,8 +645,12 @@ export class Scatter {
   }
 
   dispose() {
-    this.scene.remove(this.batch)
-    this.batch.dispose()
+    for (const b of [this.batch, this.atlasBatch]) {
+      if (!b) continue
+      this.scene.remove(b)
+      b.dispose()
+    }
     this.material.dispose()
+    this.atlasMaterial.dispose()
   }
 }

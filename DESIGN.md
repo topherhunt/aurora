@@ -38,6 +38,7 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 14 | `design/14-build-order.md` | Ordered build plan and what is done |
 | 15, 16 | `design/15-open-and-deferred.md` | Deferred decisions and open questions |
 | 17 | `design/17-workflow.md` | Desktop-first, the gate scripts, the headset-gate protocol |
+| 18 | `design/18-v2-world.md` | v2: imported heightmap, procedural detail to 10 cm, authored content layers (snow line, lakes, rivers, roads) |
 
 Plus two files with no section number:
 

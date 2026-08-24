@@ -9,6 +9,7 @@ import { Terrain, CHUNK_RES } from './terrain/terrain.js'
 import { LOD, MAX_DEPTH, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree.js'
 import { Player, LOCOMOTION } from './player.js'
 import { Scatter } from './props/scatter.js'
+import { buildTextureArray, loadImageLayers } from './textures.js'
 import { Villages } from './village/village.js'
 import { VILLAGE_PLAN } from './village/plan.js'
 import { Water } from './water.js'
@@ -93,9 +94,21 @@ const clock = new WorldClock({ seed: SEED })
 
 const terrainHeight = new TerrainHeight(SEED)
 const terrain = new Terrain(scene, { seed: SEED, workers: 2 })
+// The one prop texture: every textured prop in the world is a layer of this
+// single DataArrayTexture, so they all share one material and one draw call.
+// See the header of textures.js for why an array and not a packed atlas.
+const propTextures = buildTextureArray()
+// Real PNG layers arrive asynchronously. The array is usable immediately --
+// unloaded layers are transparent, so alphaTest discards them and a fern is
+// briefly invisible rather than magenta. A failure here is a broken build and
+// is thrown, not swallowed.
+loadImageLayers(propTextures).catch((err) => {
+  console.error('prop textures failed to load', err)
+  throw err
+})
 // Scale reference only -- see the header of props/scatter.js. The real
 // placement system is §6 and lands at build step 5.
-const props = new Scatter(scene, terrainHeight, { seed: SEED })
+const props = new Scatter(scene, terrainHeight, propTextures, { seed: SEED })
 // A village appears and disappears under the scatter's feet, so the scatter has
 // to be told to re-place -- otherwise the trees it put there before the village
 // arrived are left standing in the great hall.
@@ -142,6 +155,10 @@ lighting.patch(terrain.material, {
 })
 for (const [mat, key] of [
   [props.material, 'prop-scatter-shadow-v1'],
+  // Distinct key from the line above even though both are Lambert: this one's
+  // program also carries the sampler2DArray patch, and sharing a cache key
+  // would let three hand one material the other's compiled program.
+  [props.atlasMaterial, 'prop-atlas-shadow-v1'],
   [villages.solidMat, 'village-solid-shadow-v1'],
   [villages.pathMat, 'village-path-shadow-v1'],
   [villages.puffMat, 'village-puff-shadow-v1'],
