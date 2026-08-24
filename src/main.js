@@ -700,7 +700,10 @@ function hudLines(skyState) {
     '## AURORA -- step 2: terrain + locomotion',
     `frame ${avgMs.toFixed(2)}ms (${avgMs > 0 ? (1000 / avgMs).toFixed(1) : '--'} fps)  worst ${worst.toFixed(1)}ms`,
     `draw calls ${info.render.calls}   triangles ${(info.render.triangles / 1000).toFixed(1)}k`,
-    budgetLine(info),
+    // Batched instances, which are a budget of their own -- see budget.js. The
+    // terrain's resident chunks count: they are instances in a BatchedMesh and
+    // pay the same per-frame cull-and-sort as a prop does.
+    budgetLine(info, pr.count + ts.rendered),
     '',
     '## sky  --  N (or right grip) = +6h   P (or right A) = aurora pattern',
     `${clock.clockText}   sun ${clock.sun.elevDeg.toFixed(1)}deg az ${clock.sun.azDeg.toFixed(0)}   ` +

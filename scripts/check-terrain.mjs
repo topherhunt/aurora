@@ -14,7 +14,7 @@
 //   node scripts/check-terrain.mjs
 
 import * as THREE from 'three'
-import { TerrainHeight, TUNING, SNOW } from '../src/sim/terrain-height.js'
+import { TerrainHeight, TUNING, SNOW, WORLD_SIZE, WORLD_HALF } from '../src/sim/terrain-height.js'
 import { buildChunk, CHUNK_RES } from '../src/sim/chunk-mesh.js'
 import { LOD, MIN_TRI_DEG } from '../src/terrain/quadtree.js'
 import { TRI_BUDGET } from '../src/budget.js'
@@ -122,6 +122,7 @@ const settle = (px, pz, frames = 400) => {
 
 let peakSlots = 0
 let peakCached = 0
+let peakDesired = 0
 let peakTris = 0
 let x = 168
 let z = 64
@@ -137,20 +138,26 @@ for (let step = 0; step < 400; step++) {
     const s = terrain.stats
     peakSlots = Math.max(peakSlots, s.slots)
     peakCached = Math.max(peakCached, s.cached)
+    peakDesired = Math.max(peakDesired, s.desired)
     peakTris = Math.max(peakTris, s.drawnTris)
   }
 }
 
 console.log(
-  `        walked ~18 km: peak slots ${peakSlots}/${SLOT_COUNT}, peak cached ${peakCached}/${terrain.maxCached}, ` +
+  `        walked ~18 km: peak slots ${peakSlots}/${terrain.maxReady} (pool ${SLOT_COUNT}), peak cached ${peakCached}, ` +
     `peak DRAWN ${(peakTris / 1000).toFixed(0)}k tris (${((peakTris / TRI_BUDGET) * 100).toFixed(0)}% of budget)`
 )
 // Drawn, not resident: the streaming margin keeps ~40% more terrain in the
 // render set than the headset's field of view ever rasterises.
 check(peakTris < TRI_BUDGET / 3, 'drawn ground never took more than a third of the budget while walking', `${(peakTris / 1000).toFixed(0)}k of ${TRI_BUDGET / 1000}k`)
-// An append-only request queue makes this grow without bound; a rebuilt one
-// cannot exceed the selection plus what is already resident.
-check(peakCached <= terrain.maxCached, 'cache stayed inside its cap while streaming', `${peakCached} vs ${terrain.maxCached}`)
+// Eviction is counted in slot-holding entries, and the margin it leaves under
+// SLOT_COUNT is the in-flight cap -- so this is the invariant that keeps
+// _onWorkerMessage from ever finding an empty pool.
+check(peakSlots <= terrain.maxReady, 'resident chunks stayed inside the eviction target while streaming', `${peakSlots} vs ${terrain.maxReady}`)
+// An append-only request queue makes the cache grow without bound (measured at
+// 1002 entries over this same walk); a rebuilt one cannot exceed the selection
+// plus what is already resident plus the requests in flight for it.
+check(peakCached <= SLOT_COUNT + peakDesired, 'request queue did not grow without bound while streaming', `${peakCached} cached vs ${SLOT_COUNT} slots + ${peakDesired} outstanding`)
 
 // --- push the LOD knob to the finest the [ ] keys allow ----------------------
 //
@@ -532,6 +539,110 @@ console.log('\nscale-reference props')
   }
 
   props.dispose()
+}
+
+// --- surface colour must not depend on LOD -----------------------------------
+// The bug this guards against: shade() used to take the MESH normal, which is a
+// central difference over the chunk's own cell -- 1 m at a leaf, 128 m at depth
+// 3. Steepness is what keeps snow off cliffs, and a face that stands at 74 deg
+// over 1 m averages out to 24 deg over 128 m, so coarsening a chunk repainted
+// its rock as snow. Flying away from close terrain therefore made the world
+// flash white in chunk-shaped squares, one square per LOD swap.
+//
+// None of the existing drills could see it: they all watch geometry and
+// bookkeeping, and this artifact is entirely in the vertex colours.
+//
+// The test fixes a set of world points, colours each one at every depth, and
+// insists the fraction of ground that comes out white does not drift with cell
+// size. Per-vertex disagreement is expected and allowed -- a 128 m vertex
+// cannot resolve a 20 m snowfield, so it can only report an unbiased sample of
+// the steepness around it. What must not happen is a systematic drift, because
+// that is what the eye reads as a flash.
+{
+  console.log('\nsurface colour vs LOD')
+
+  // The material calls a vertex snow at vColor.b > ~0.45 (smoothstep .30...60).
+  const isSnow = (b) => b > 0.45
+  const chunks = new Map()
+  const colorAt = (x, z, depth) => {
+    const size = WORLD_SIZE / (1 << depth)
+    const ix = Math.floor((x + WORLD_HALF) / size)
+    const iz = Math.floor((z + WORLD_HALF) / size)
+    const key = `${depth}|${ix}|${iz}`
+    let c = chunks.get(key)
+    if (!c) {
+      const ox = -WORLD_HALF + ix * size
+      const oz = -WORLD_HALF + iz * size
+      c = { ...buildChunk(th, { ox, oz, size, res: CHUNK_RES }), ox, oz, step: size / CHUNK_RES }
+      chunks.set(key, c)
+    }
+    const i = Math.min(CHUNK_RES, Math.max(0, Math.round((x - c.ox) / c.step)))
+    const j = Math.min(CHUNK_RES, Math.max(0, Math.round((z - c.oz) / c.step)))
+    return c.colors[(j * (CHUNK_RES + 1) + i) * 3 + 2]
+  }
+
+  // Only ground that can hold snow; below the line every depth agrees trivially
+  // and would dilute the statistic to nothing.
+  const sites = []
+  for (let i = 0; sites.length < 400 && i < 200000; i++) {
+    const x = ((i * 977) % 12000) - 6000
+    const z = ((i * 1597) % 12000) - 6000
+    if (th.heightAt(x, z) > th.snowLineAt(x, z)) sites.push({ x, z })
+  }
+
+  const DEPTHS = [10, 8, 6, 4, 3]
+  const white = new Map()
+  for (const d of DEPTHS) {
+    let n = 0
+    for (const s of sites) if (isSnow(colorAt(s.x, s.z, d))) n++
+    white.set(d, n / sites.length)
+  }
+  console.log(
+    `        white fraction by depth: ${DEPTHS.map((d) => `${d}:${(white.get(d) * 100).toFixed(1)}%`).join('  ')}`
+  )
+
+  const leaf = white.get(10)
+  let worst = 0
+  let worstDepth = null
+  for (const d of DEPTHS) {
+    const drift = Math.abs(white.get(d) - leaf)
+    if (drift > worst) { worst = drift; worstDepth = d }
+  }
+  // Before the fix this drift was 0.243 (31.5% white at the leaf, 55.8% at
+  // depth 3) and rose monotonically with cell size. 0.06 leaves room for the
+  // sampling noise of 400 sites without leaving room for that.
+  check(
+    worst < 0.06,
+    'snow coverage does not drift as chunks coarsen',
+    `worst ${(worst * 100).toFixed(1)} points at depth ${worstDepth}, leaf ${(leaf * 100).toFixed(1)}%`
+  )
+
+  // And the drift must not be one-directional, which is the signature of a
+  // scale-dependent classifier even when the magnitude is small.
+  let up = 0
+  for (const d of DEPTHS) if (white.get(d) > leaf) up++
+  check(
+    up < DEPTHS.length - 1,
+    'coarsening does not whiten the world monotonically',
+    `${up}/${DEPTHS.length - 1} coarser levels whiter than the leaf`
+  )
+
+  // The leaf itself must be untouched by any of this: its cells are already the
+  // classification stencil width, so close-up terrain has to be bit-identical
+  // to a plain field query.
+  {
+    const size = WORLD_SIZE / (1 << 10)
+    const c = buildChunk(th, { ox: 1024, oz: 2048, size, res: CHUNK_RES })
+    let worstDiff = 0
+    for (let j = 0; j <= CHUNK_RES; j++) {
+      for (let i = 0; i <= CHUNK_RES; i++) {
+        const o = (j * (CHUNK_RES + 1) + i) * 3
+        const want = th.heightAt(1024 + i * (size / CHUNK_RES), 2048 + j * (size / CHUNK_RES))
+        worstDiff = Math.max(worstDiff, Math.abs(c.positions[o + 1] - want))
+      }
+    }
+    check(worstDiff < 1e-4, 'leaf geometry still comes straight off the field', `worst ${worstDiff.toExponential(1)} m`)
+  }
 }
 
 console.log(`\nres ${CHUNK_RES}: ${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)

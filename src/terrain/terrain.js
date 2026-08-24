@@ -37,11 +37,13 @@ export const CHUNK_INDICES = (CHUNK_RES * CHUNK_RES * 2 + 4 * CHUNK_RES * 2) * 3
 //
 // Re-measure with check-sim.mjs section 5 before moving MIN_TRI_DEG.
 export const SLOT_COUNT = 768
-const MAX_CACHED = 720
 
 // Reselect the quadtree at ~12 Hz when nothing is streaming. At walking pace
 // that is 12 cm of movement between selections, well under a leaf cell.
 const SELECT_EVERY_FRAMES = 6
+
+// Depths 0-2, pinned forever by _seedBaseLayer: 1 + 4 + 16.
+const PINNED_CHUNKS = 21
 
 // Requests allowed in flight per worker.
 //
@@ -68,7 +70,19 @@ export class Terrain {
   constructor(scene, { seed = 1337, workers = 2, queueDepth = WORKER_QUEUE_DEPTH } = {}) {
     this.scene = scene
     this.queueDepth = queueDepth
-    this.maxCached = MAX_CACHED
+
+    // The eviction target, counted in READY entries -- the ones actually holding
+    // a slot. It used to be a cap on cache.size, which counts queued entries too,
+    // and that is a different quantity by a hundred or more while anything is
+    // streaming: a frame that requests 150 chunks would push the cache over its
+    // cap and evict ground that was being drawn, to make room for nodes that hold
+    // no slot at all. That is a hole, produced by the eviction policy, in the one
+    // situation this file exists to keep hole-free.
+    //
+    // The margin below SLOT_COUNT is the in-flight cap. Up to this many replies
+    // can land between two _evict calls and every one of them must find a free
+    // slot, or _onWorkerMessage throws.
+    this.maxReady = SLOT_COUNT - workers * queueDepth
 
     this.material = createTerrainMaterial()
 
@@ -111,10 +125,15 @@ export class Terrain {
 
     this.cache = new Map() // key -> {node, slot, state, lastUsed, tris, visible, pinned}
     this.queue = [] // nearest-first requests, rebuilt from scratch each selection
+    // The pinned base layer's requests, kept OUT of `queue` because _select
+    // rebuilds that from the desired set every selection and these nodes are not
+    // in it. See _seedBaseLayer.
+    this._baseQueue = []
     this.inFlight = 0
     this.frame = 0
     this.ready = false
     this._render = new Set() // entries that should be visible right now
+    this._standIns = new Set() // the subset of _render standing in for a miss
     this._lastSelect = -SELECT_EVERY_FRAMES
     this._dirty = true
 
@@ -206,7 +225,9 @@ export class Terrain {
     }
     this.cache.clear()
     this._render.clear()
+    this._standIns.clear()
     this.queue.length = 0
+    this._baseQueue.length = 0
     // In-flight replies are dropped by the epoch guard, but the counter has to
     // come back or _pump stays throttled against requests that will never land.
     this.inFlight = 0
@@ -238,11 +259,19 @@ export class Terrain {
             z: -WORLD_HALF + iz * size,
           }
           this._request(node).pinned = true
-          // Pushed straight onto the queue: _select never asks for these once
-          // they have been subdivided away, and it rebuilds the queue from the
-          // desired set, so a base-layer request would otherwise be dropped
-          // before it was ever pumped.
-          this.queue.push(node)
+          // Queued SEPARATELY, and this is not a nicety. _select never asks for
+          // these once they have been subdivided away, and it replaces `queue`
+          // wholesale with the requests from the desired set -- so a base-layer
+          // node parked in `queue` is discarded by the first selection, before
+          // _pump has ever run. That is exactly what used to happen: measured on
+          // a settled camera, depth 0 and 1 were 0/1 and 0/4 resident and depth 2
+          // was 4/16, and the only reason those four existed is that they were
+          // far enough away to be in the desired set on their own account. The
+          // "roughly-correct ground beats a hole" fallback below was therefore
+          // finding nothing at all, and _loadedAncestor returned null for ~2100
+          // node lookups over a 2 km back-away -- ground drawn as sky, which is
+          // the reported flash of horizon colour where terrain should be.
+          this._baseQueue.push(node)
         }
       }
     }
@@ -342,30 +371,94 @@ export class Terrain {
 
   _pump() {
     const cap = this.workers.length * this.queueDepth
-    while (this.inFlight < cap && this.queue.length > 0) {
-      const node = this.queue.shift()
-      const entry = this.cache.get(node.key)
-      if (!entry || entry.state !== 'queued') continue
-      entry.state = 'pending'
-      const w = this.workers[this._nextWorker]
-      this._nextWorker = (this._nextWorker + 1) % this.workers.length
-      w.postMessage({
-        type: 'chunk',
-        key: node.key,
-        epoch: this.epoch,
-        ox: node.x,
-        oz: node.z,
-        size: node.size,
-        res: CHUNK_RES,
-      })
-      this.inFlight++
+    // The base layer goes first and only once -- 21 chunks, and everything else
+    // on screen is standing on top of them being hole-free.
+    while (this.inFlight < cap && this._baseQueue.length > 0) {
+      this._send(this._baseQueue.shift())
     }
+    while (this.inFlight < cap && this.queue.length > 0) {
+      this._send(this.queue.shift())
+    }
+  }
+
+  // Hand one queued node to a worker. A node whose entry has been evicted, or
+  // that some other queue already sent, is silently skipped -- both queues can
+  // hold the same key.
+  _send(node) {
+    const entry = this.cache.get(node.key)
+    if (!entry || entry.state !== 'queued') return
+    entry.state = 'pending'
+    const w = this.workers[this._nextWorker]
+    this._nextWorker = (this._nextWorker + 1) % this.workers.length
+    w.postMessage({
+      type: 'chunk',
+      key: node.key,
+      epoch: this.epoch,
+      ox: node.x,
+      oz: node.z,
+      size: node.size,
+      res: CHUNK_RES,
+    })
+    this.inFlight++
+  }
+
+  // Walk DOWN the tree for a set of already-loaded finer chunks that tile this
+  // node exactly, and add them to `out`. Returns false, having added nothing, if
+  // the cover is not complete.
+  //
+  // This is the fallback for COARSENING, and without it flying away from close
+  // terrain punches a hole in the world. The ancestor walk below cannot help
+  // there: a coarse node is not in the desired set while you are standing on top
+  // of it, so it is never requested and the LRU drops it, and by the time
+  // receding puts it back in the set it is cold. Its children, meanwhile, are
+  // resident and ready and cover precisely the same ground -- but _select used
+  // to ignore them and reach past them to the pinned depth 0-2 base layer, whose
+  // 256 m cells sit a hundred metres below a real ridgeline. The fine tiles were
+  // dropped from _render in the same frame, so a square of terrain visibly fell
+  // away to the fog behind it and then popped back as the coarse chunk landed.
+  //
+  // Overshooting detail for a few frames is the right trade: these chunks were
+  // already resident and already being drawn last frame, so this can only hold
+  // the triangle count where it was rather than raise it, and it costs no slots.
+  // Membership in `out` (which becomes `_render`) is also what stops _evict
+  // reclaiming them out from under the swap.
+  //
+  // The all-or-nothing rule matters. A partial cover is worse than the coarse
+  // ancestor: it would draw fine ground with gaps in it, which is the same hole
+  // in a more interesting shape. On failure the DFS aborts at the first
+  // uncovered subtree, so a node with no resident descendants costs about four
+  // map lookups per level rather than a walk of the whole subtree.
+  _addLoadedDescendants(depth, ix, iz, out) {
+    if (depth >= MAX_DEPTH) return false
+    const cd = depth + 1
+    const mark = out.length
+    for (let dz = 0; dz < 2; dz++) {
+      for (let dx = 0; dx < 2; dx++) {
+        const cix = ix * 2 + dx
+        const ciz = iz * 2 + dz
+        const entry = this.cache.get(`${cd}|${cix}|${ciz}`)
+        if (entry && entry.state === 'ready') {
+          out.push(entry)
+          continue
+        }
+        if (!this._addLoadedDescendants(cd, cix, ciz, out)) {
+          out.length = mark
+          return false
+        }
+      }
+    }
+    return true
   }
 
   // Walk up the tree for a coarser chunk that already covers this area. This is
   // what makes LOD transitions hole-free without any explicit "wait for all
   // children" bookkeeping: an unloaded node just keeps showing its nearest
   // loaded ancestor, and depth 0 covers the entire world as the last resort.
+  //
+  // This is the REFINING direction. Coarsening is _addLoadedDescendants above,
+  // and it has to be tried first: an ancestor is always available thanks to the
+  // pinned base layer, so asking for one first would mean never noticing that
+  // something far better was already loaded.
   _loadedAncestor(node) {
     let d = node.depth
     let ix = node.ix
@@ -401,7 +494,7 @@ export class Terrain {
     this._pump()
     this._evict()
 
-    this.stats.pending = this.inFlight + this.queue.length
+    this.stats.pending = this.inFlight + this.queue.length + this._baseQueue.length
     this.stats.cached = this.cache.size
     this.stats.slots = SLOT_COUNT - this._free.length
   }
@@ -418,7 +511,26 @@ export class Terrain {
     this._cam = cam
     const render = new Set()
     const queue = []
+    const standIns = new Set() // subset of render that is covering for a miss
+    const fine = [] // scratch for _addLoadedDescendants, reused across nodes
 
+    // How many extra chunks the fine-stand-in path may retain this selection.
+    //
+    // Retaining a chunk means putting it in `_render`, and _evict prefers to keep
+    // anything in `_render` -- that is what stops the swap being yanked out from
+    // under itself, and it is also why this cannot be unbounded. The union of
+    // (ready desired chunks + every descendant cover) measured no larger than the
+    // desired set itself during a back-away, because a cover is made of chunks
+    // that were already resident; the peak measured 39 chunks over the desired
+    // count. The cap is here for the case that is not true of, and _evict's last
+    // resort is what makes exceeding it survivable rather than fatal.
+    //
+    // Spent nearest-node-first, so what keeps its detail under pressure is the
+    // ground in front of the player rather than whatever the quadtree emitted
+    // first.
+    let standInBudget = Math.max(0, this.maxReady - desired.length - PINNED_CHUNKS)
+
+    const misses = []
     for (const node of desired) {
       const entry = this.cache.get(node.key)
       if (entry && entry.state === 'ready') {
@@ -429,21 +541,49 @@ export class Terrain {
 
       const e = this._request(node)
       if (e.state === 'queued') queue.push(node)
+      misses.push(node)
+    }
+
+    const near = (n) => (n.x + n.size / 2 - cam.x) ** 2 + (n.z + n.size / 2 - cam.z) ** 2
+
+    // Nearest-first. Without this, a fresh load order is effectively random and
+    // she stands inside a hole while the horizon fills in.
+    queue.sort((a, b) => near(a) - near(b))
+
+    // Everything the selection wants but does not have has to be covered by
+    // something, and there are two directions to look. Nearest-first again,
+    // because that is the order the stand-in budget should be spent in.
+    misses.sort((a, b) => near(a) - near(b))
+    for (const node of misses) {
+      // Finer first, then coarser. Keeping detail that is already on screen
+      // until its replacement arrives is what makes coarsening look like a swap
+      // instead of a hole -- and an ancestor is always available from the pinned
+      // base layer, so asking for one first would mean never noticing that
+      // something far better was already loaded.
+      if (standInBudget > 0) {
+        fine.length = 0
+        if (this._addLoadedDescendants(node.depth, node.ix, node.iz, fine) && fine.length <= standInBudget) {
+          // lastUsed is stamped only on the chunks actually retained. Stamping
+          // during the walk would refresh hundreds of chunks a failed cover
+          // merely looked at, and scramble the LRU order that has to keep the
+          // cache under its cap.
+          for (const entry of fine) {
+            entry.lastUsed = this.frame
+            render.add(entry)
+            standIns.add(entry)
+          }
+          standInBudget -= fine.length
+          continue
+        }
+      }
 
       const anc = this._loadedAncestor(node)
       if (anc) {
         anc.lastUsed = this.frame
         render.add(anc)
+        standIns.add(anc)
       }
     }
-
-    // Nearest-first. Without this, a fresh load order is effectively random and
-    // she stands inside a hole while the horizon fills in.
-    queue.sort((a, b) => {
-      const da = (a.x + a.size / 2 - cam.x) ** 2 + (a.z + a.size / 2 - cam.z) ** 2
-      const db = (b.x + b.size / 2 - cam.x) ** 2 + (b.z + b.size / 2 - cam.z) ** 2
-      return da - db
-    })
 
     // The queue is REBUILT, not appended to. An append-only queue grows without
     // bound while walking -- requests for chunks she left behind stay in it and
@@ -452,6 +592,7 @@ export class Terrain {
     // their time generating terrain nobody is looking at any more.
     this.queue = queue
     this._render = render
+    this._standIns = standIns
     this.stats.desired = desired.length
     this.stats.rendered = render.size
     this.stats.bounds = this.info.size
@@ -492,7 +633,11 @@ export class Terrain {
       }
     }
 
-    if (this.cache.size <= this.maxCached) return
+    // Slots are held only by ready entries, so they are the only ones worth
+    // counting here.
+    let ready = 0
+    for (const entry of this.cache.values()) if (entry.state === 'ready') ready++
+    if (ready <= this.maxReady) return
 
     const render = this._render
     const evictable = []
@@ -500,16 +645,44 @@ export class Terrain {
       if (entry.state !== 'ready' || entry.pinned || render.has(entry)) continue
       evictable.push([key, entry])
     }
-    evictable.sort((a, b) => a[1].lastUsed - b[1].lastUsed)
-    let n = this.cache.size - this.maxCached
-    for (const [key, entry] of evictable) {
-      if (n-- <= 0) break
+    let n = this._reclaim(evictable, ready - this.maxReady)
+    if (n <= 0) return
+
+    // Last resort: reclaim the stand-ins themselves. They are in `_render` and
+    // everything above works to keep them, but a chunk covering for a miss is
+    // still less important than not running out of slots -- and running out is
+    // fatal, because _onWorkerMessage throws on an empty pool. Losing one puts a
+    // single tile back on its coarse ancestor for a frame or two.
+    //
+    // This only fires if the desired set alone is within a stand-in of the pool,
+    // which check-sim.mjs section 5 asserts analytically that it is not. It exists
+    // because the alternative to degrading here is a crash.
+    const spare = []
+    for (const [key, entry] of this.cache) {
+      if (entry.state !== 'ready' || entry.pinned || !this._standIns.has(entry)) continue
+      spare.push([key, entry])
+    }
+    this._reclaim(spare, n)
+  }
+
+  // Evict the least-recently-used `n` of `candidates`; returns what is left to
+  // reclaim. Takes [key, entry] pairs because deletion needs the key.
+  _reclaim(candidates, n) {
+    if (n <= 0) return 0
+    candidates.sort((a, b) => a[1].lastUsed - b[1].lastUsed)
+    for (const [key, entry] of candidates) {
+      if (n <= 0) break
       // The slot's contents are left alone; the next occupant overwrites them.
       // Only visibility has to be cleared, or a freed instance keeps drawing.
       this.batch.setVisibleAt(entry.slot.instanceId, false)
+      entry.visible = false
+      this._render.delete(entry)
+      this._standIns.delete(entry)
       this._free.push(entry.slot)
       this.cache.delete(key)
+      n--
     }
+    return n
   }
 
   dispose() {

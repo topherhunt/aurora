@@ -34,8 +34,17 @@ const C_SCRUB = [0.075, 0.07, 0.042]
 const C_ROCK = [0.085, 0.082, 0.078]
 const C_SNOW = [0.86, 0.88, 0.93]
 
+// Half-width of the stencil the SURFACE CLASSIFICATION measures slope over, in
+// metres. See the banner above the classification slope in buildChunk for why
+// this is a fixed world distance and not the chunk's own cell size. 1.0 m is
+// the leaf cell, so leaves keep exactly the appearance everything below was
+// tuned against.
+const CLASS_EPS = 1.0
+
 function shade(h, ny, snowLine, out, o) {
-  // ny is the normal's Y component: 1 = flat, 0 = vertical.
+  // ny is the normal's Y component: 1 = flat, 0 = vertical. It is NOT the mesh
+  // normal -- see buildChunk. Feeding the mesh normal in here was a bug that
+  // made the whole palette a function of LOD.
   const steep = smoothstep(0.86, 0.62, ny)
   // Both bands track the world's actual elevation range, so they have to be
   // re-read off `node scripts/probe-terrain.mjs` whenever TUNING moves -- a band
@@ -134,8 +143,65 @@ export function buildChunk(terrain, { ox, oz, size, res }) {
       normals[o + 1] = ny
       normals[o + 2] = nz
 
+      const wx = ox + i * step
+      const wz = oz + j * step
+
+      // The classification slope, and the reason it is not `ny`.
+      //
+      // shade() decides rock-vs-grass and, far more visibly, snow-vs-no-snow off
+      // steepness, and the mesh normal above is a central difference over this
+      // chunk's OWN cell -- 1 m at a leaf, 128 m at depth 3. An alpine face that
+      // stands at 74 deg over 1 m averages out to 24 deg over 128 m, so the
+      // identical ground classified itself as bare rock up close and as solid
+      // snow from far away. Coarsening a chunk REPAINTED it, and chunks coarsen
+      // one at a time as you fly away, so the world flashed white in
+      // chunk-shaped squares. Measuring 600 snow-capable sites and colouring
+      // each one at every depth (`check-terrain.mjs` keeps a 400-site version of
+      // this as a guard):
+      //
+      //          % of that ground white      % that flips vs the leaf
+      //   depth   before      after           before      after
+      //      10    31.5        31.5             0.0        0.0
+      //       8    35.3        32.3             8.2        5.5
+      //       6    41.3        31.5            18.8       16.0
+      //       3    55.8        29.8            35.0       30.0
+      //
+      // Measuring the slope over a fixed world distance instead makes the colour
+      // a function of position alone, and the 24-point climb -- the flash -- goes
+      // flat. The residual per-site spread is honest and unavoidable, since a
+      // vertex 128 m from its neighbour cannot resolve a 20 m snowfield and can
+      // only report an unbiased sample of the steepness around it; note it is
+      // smaller at every depth than what the old code already had.
+      //
+      // A CENTRAL difference, at the same half-width as a leaf cell, so this is
+      // not merely close to the leaf's mesh normal but IDENTICAL to it at
+      // step == CLASS_EPS. That exactness is worth two of the four samples: a
+      // forward difference costs half as much but is a different estimator, and
+      // the seam where the two met made the depth 10 -> 9 swap worse than doing
+      // nothing at all (6.7% flipped, against 4.3% before the fix and 3.0% with
+      // this). A cheaper idea that did not survive measurement was rescaling the
+      // mesh slope by a power of the cell size -- fbm slope goes as lag^(H-1), so
+      // in principle no extra samples at all -- but no exponent made coverage
+      // flat, and per-site error was worse than this at every depth.
+      //
+      // Chunks at or below the stencil width -- the leaves, which are also the
+      // ones that stream constantly as you walk -- skip it entirely, because for
+      // them the mesh normal ALREADY is the fixed-scale slope; leaf output is
+      // bit-identical to before this existed. So the hot path is free and coarse
+      // chunks pay four field evaluations per vertex: 0.36 ms -> ~1.45 ms per
+      // chunk, once per node and then cached. Priced against the real streamer
+      // that is 0.02 ms/frame of worker time while walking and 0.35 ms/frame
+      // flying cross-country; it lands almost entirely on the cold fill, which
+      // goes from roughly 0.2 s to 0.8 s of worker CPU for a full selection.
+      let nyClass = ny
+      if (step > CLASS_EPS) {
+        const gx = (terrain.heightAt(wx + CLASS_EPS, wz) - terrain.heightAt(wx - CLASS_EPS, wz)) / (2 * CLASS_EPS)
+        const gz = (terrain.heightAt(wx, wz + CLASS_EPS) - terrain.heightAt(wx, wz - CLASS_EPS)) / (2 * CLASS_EPS)
+        nyClass = 1 / Math.hypot(gx, 1, gz)
+      }
+
       // One extra noise evaluation per vertex (289 at a leaf), not per fragment.
-      shade(h, ny, terrain.snowLineAt(ox + i * step, oz + j * step), colors, o)
+      shade(h, nyClass, terrain.snowLineAt(wx, wz), colors, o)
     }
   }
 

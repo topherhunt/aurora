@@ -89,6 +89,15 @@ const controls = new OrbitControls(camera, renderer.domElement)
 controls.target.set(0, 0.25, 0)
 controls.enableDamping = true
 
+// Spin orbits the camera rather than turning the fern, so the ground turns with
+// it and you are walking around a plant instead of watching one on a lazy susan.
+// A rotating mesh also lies about the lighting -- the sun sweeps across the
+// fronds -- which is the one thing this previewer exists to judge honestly.
+// autoRotateSpeed is three's unit: a full orbit takes 60/speed seconds when
+// update() is handed a delta, so this is the 0.35 rad/s the group used to spin at.
+controls.autoRotate = true
+controls.autoRotateSpeed = (0.35 * 60) / (2 * Math.PI)
+
 // Lighting matched to the game's noon, same as props.html, so the fern is
 // judged under the light it will actually stand in.
 scene.add(new THREE.DirectionalLight(0xfff3e2, 2.1).translateY(0))
@@ -288,7 +297,6 @@ const gallerySpacing = () => params.height * 1.9
 
 let galleryMode = false
 let wireframe = false
-let spin = true
 let showGrid = true // the lattice and the metre rule; off is the "stand in it" view
 
 function clearGroup() {
@@ -512,7 +520,7 @@ toggle('gallery', () => galleryMode, (v) => {
 })
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
-toggle('spin', () => spin, (v) => { spin = v })
+toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
 
 document.getElementById('reset').addEventListener('click', () => {
   Object.assign(params, FERN_DEFAULTS, { alphaTest: 0.5, brightness: 2.0, seed: params.seed })
@@ -547,7 +555,6 @@ renderer.setAnimationLoop(() => {
   const now = performance.now()
   const dt = (now - last) / 1000
   last = now
-  if (spin) group.rotation.y += dt * 0.35
-  controls.update()
+  controls.update(dt)
   renderer.render(scene, camera)
 })

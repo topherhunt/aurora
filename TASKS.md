@@ -1,6 +1,30 @@
+### Notes
+
+- Process for setting up a procedural asset:
+  - Find a good basic texture asset
+  - Create a slider-generator to play with the proc-gen parameters
+  - Determine which parameters to lock and which ones should have a combinatorial array
+  - 
+
+### Tasks
 
 - [ ] Procedural ferns
   - [ ] Set randomness range for each parameter: tint (biome-dependent), size (biome-dependent), size variance, curviness, etc.
+    - fronds: \[4, 6, 10\]
+    - segments: \[8 (for LOD0), 4 (LOD1), then one shared billboard for all instances\]
+    - pitch: \[1.55, 1.2, 1.0\]
+    - arch: \[0.6, 2\]
+    - curve: 1.6
+    - pitchFallover: 0.5
+    - lengthVar: 0.5
+    - widthScale: 1.2
+    - taper: \[0, 0.6\]
+    - sway: 1.2
+    - roll: 0.7
+    - yawJitter: 0
+    - crownRadius: 0
+    - crozier: 0
+  - [ ] 
 - [ ] Procedural trees (use EZTrees as a base, but customize to support 3 shape-preserving LODs + 1-2 billboard levels)
   - [ ] Assess with Claude, and smoke-test to confirm that procedural trees don't bog down performance.
 - [ ] Redo the Aurora using a planar shader (one plane, northern tilted sky-wall)
@@ -29,6 +53,7 @@
 - [ ] Procedural caves
   - [ ] Cave-wall meshes that can open up to different sizes and have regions with different tints, darknesses, biome foliage, etc. Very dark by default, some local procedurally placed lights or glowing foliage (lighting baked for performance)
 - [ ] Wild creatures roaming around, walking or running or flying (songbirds, eagles, deer, mythic creatures). They pause and turn to look at you when you get close
+- [ ] Terrain LOD: what if just visible peaks get further decimation (down to ~1.2deg) whereas everything else stays at ~5.72deg
 
 ## Props -- follow-ups
 

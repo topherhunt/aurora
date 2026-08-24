@@ -1,6 +1,8 @@
 # Aurora -- Design Document
 
-A WebXR snowy mountainscape for Meta Quest 3. Procedurally generated, N64-era low-poly with baked lighting, explored on foot at walking pace, with the Northern Lights playing overhead at night.
+A WebXR snowy mountainscape for **Meta Quest 2**. Procedurally generated, N64-era low-poly with baked lighting, explored on foot at walking pace, with the Northern Lights playing overhead at night.
+
+**Quest 2 is the only device this document plans for.** It is the budget target and the measurement target, and there is deliberately no second column: designing against the generous headset is how you ship something that only runs on the generous headset. A quality tier for stronger hardware -- more triangles, more foliage instances -- is a **user-facing setting to be added later**, and it belongs in `src/budget.js` as a multiplier on these numbers, not as a parallel plan.
 
 Status: pre-implementation. Spike in progress (§0).
 
@@ -15,7 +17,7 @@ The entire rendering architecture rests on `THREE.BatchedMesh`, which needs the 
 Build a throwaway page, serve it to the headset, enter immersive VR, and report:
 
 | Check | How | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | `WEBGL_multi_draw` present | `gl.getExtension('WEBGL_multi_draw')` -- print to an in-world HUD, not the console | If absent, `BatchedMesh` degrades to per-geometry draws and §5 needs rethinking |
 | `BatchedMesh` actually batches | Render ~2,000 instances across ~10 distinct geometries, read `renderer.info.render.calls` | Should be a small constant, not ~2,000. This is the whole thesis |
 | Draw call ceiling | Scale instance count and distinct-geometry count until frametime degrades | Establishes the real budget, replacing the estimates in §5 |
@@ -28,13 +30,15 @@ Deliverable: an in-world debug HUD showing `renderer.info.render.calls`, `.trian
 
 Note the HUD-not-console requirement: you cannot see a JS console while wearing the headset, and remote debugging over `chrome://inspect` is slow enough that you will avoid doing it. Print to a world-space panel.
 
-### RESULTS -- measured on Quest 3, 2026-08-04
+### RESULTS -- 2026-08-04, on a Quest 3 (NOT quest 2)
 
-**`WEBGL_multi_draw` is present. `BatchedMesh` batches. The core thesis holds.**
+`WEBGL_multi_draw` **is present.** `BatchedMesh` **batches. The core thesis holds.**
+
+⚠️ **The framerate column below was not read off a Quest 2 and does not apply to one.** The draw-call finding is device-independent and stands; the triangle ceiling is not, and the whole point of the table now is the shape of the curve rather than the numbers on it. **Re-run this spike on the Quest 2** -- it is the single highest-value half hour available, and it retires every derived figure in this document.
 
 | Instances (BATCHED) | Draw calls | Triangles (`renderer.info`) | Framerate |
-|---|---|---|---|
-| ≤ 2,000 | 6 | **~800k** | **72-80, buttery** |
+| --- | --- | --- | --- |
+| ≤ 2,000 | 6 | ~800k | 72-80, buttery |
 | 4,000 | 6 | ~1.5M | ~30-35 |
 | 8,000 | 6 | ~3M | ~15, nauseating |
 
@@ -42,18 +46,32 @@ Note the HUD-not-console requirement: you cannot see a JS console while wearing 
 
 **The bottleneck moved to geometry throughput, which is the good failure mode** -- it is exactly what LOD and billboarding attack. The placeholder props run ~200 tris/instance at *full detail regardless of distance*, because the spike deliberately has no LOD.
 
-### Working ceiling: ~800k triangles per frame, as the HUD reports it
+### Working ceiling: ~350k triangles
 
-**Budget against the `renderer.info` number directly.** Do not divide it by two for "per eye" -- whether that counter double-counts stereo passes was never established on-device, and the whole quantity is only useful as a number the HUD can be compared against. 800k is smooth, 1.5M is 30-35 fps, and the cliff between them is steep.
+**Budget against the** `renderer.info` **number directly.** Do not divide it by two for "per eye" -- whether that counter double-counts stereo passes was never established on-device, and the whole quantity is only useful as a number the HUD can be compared against.
 
-This is roughly **half** the headroom an earlier draft of this section claimed (it mistakenly recorded the 1.5M *failure* point as the ceiling), so the LOD arithmetic has to be more aggressive than a casual reading of §5 suggests:
+Quest 2 is Snapdragon XR2 Gen 1 / Adreno 650. The ceiling is scaled down from the spike above by the ratio of the two GPUs (~2.6x), which is roughly how both geometry throughput and fill rate move; CPU is about half.
 
-| Tier mix | Avg tris/prop | Props affordable in a 400k prop budget |
-|---|---|---|
-| 15% LOD0 (300) / 35% LOD1 (100) / 50% billboard (4) | ~82 | ~4,900 |
-| 10% LOD0 (300) / 25% LOD1 (100) / 65% billboard (4) | ~58 | ~6,900 |
+| Quest 2 |  |
+| --- | --- |
+| Triangles/frame at 72 Hz (`renderer.info`) | **~350k** (derived) |
+| Eye buffer, WebXR default | ~1440 x 1584 |
+| Total overdraw sustainable | ~2x |
+| JS main-thread budget per frame | ~13.9 ms, of which spend **< 3 ms** |
+| Draw calls | 40-50 |
 
-The lush-world target is reachable, but **only with billboards as the majority tier, not the fallback tier.** LOD is not an optimization here, it is load-bearing.
+⚠️ **350k is an estimate from a hardware ratio, not a reading off a headset.** It is the number `src/budget.js` gates against. Replace it with a measured figure at the first opportunity -- the §0 procedure is a half-hour job and it retires this whole paragraph.
+
+Consequence for LOD, and it is the decision this ceiling forced: terrain used to draw **237k worst case** at a 1.2° triangle cap -- 68% of the frame for a world containing nothing but ground. `LOD.triDeg` **now ships at 5.72°, which draws 45k (13%)**, chosen by eye with the `[` `]` keys and then measured. That leaves about **250k triangles for everything else**. Ground is the backdrop, not the subject; see "Terrain LOD" in §5 for the ladder and for why 10% is not reachable with this knob alone.
+
+| Tier mix | Avg tris/prop | Props affordable in a 250k prop budget |
+| --- | --- | --- |
+| 15% LOD0 (300) / 35% LOD1 (100) / 50% billboard (4) | ~82 | ~3,000 |
+| 10% LOD0 (300) / 25% LOD1 (100) / 65% billboard (4) | ~58 | ~4,300 |
+
+The lush-world target is still reachable, but **only with billboards as the majority tier, not the fallback tier**, and only because cards are cheap enough that the count above is not the interesting limit. LOD is not an optimization here, it is load-bearing.
+
+**And triangles are not the wall the foliage carpet hits.** See "What actually binds, per resource" in §5: for anything below ~10 triangles the cost moved to per-instance CPU, and the fix is a different mesh class, not a lower triangle count.
 
 Caveats on what this run did *not* establish:
 
@@ -72,10 +90,10 @@ Moot -- it is present. Retained for the record: fall back to one `InstancedMesh`
 
 Rejected alternatives, with reasoning preserved so we do not relitigate:
 
-- **Unity WebXR Export** -- worst of both worlds. Unity WebGL's wasm/GC overhead on top of browser overhead, community-maintained, with open issues reporting ~45 FPS ceilings on Quest 3.
+- **Unity WebXR Export** -- worst of both worlds. Unity WebGL's wasm/GC overhead on top of browser overhead, community-maintained, with open issues reporting ~45 FPS ceilings on standalone headsets.
 - **Native APK (Unity/Godot) sideloaded** -- genuinely 3-5x more headroom (native does 300-500 draw calls and 1M+ tris/frame vs. WebXR's ~150-200 calls/eye and ~250-400k tris/eye). Rejected because it requires physical access to the headset plus developer mode on her Meta account. Note: hosting an APK on GitHub Pages does **not** work. Horizon OS has no install-from-browser path.
 - **Native via Horizon Store private release channel** -- clean install experience, no content review, 200-user default. Rejected due to verified-developer-org bureaucracy and 90-day expiring invite URLs.
-- **WebGPU / `WebGPURenderer` / TSL** -- **explicitly dropped.** Quest support for `XRGPUBinding` is unconfirmed, Chrome's implementation is Windows/Android-XR behind two flags, and Brandon Jones (WebXR spec editor) states directly that WebGPU-in-WebXR is "not necessarily expected to be an automatic performance win vs. WebGL at this point" due to internal texture copies. **Consequence: shaders are GLSL via `onBeforeCompile`, not TSL.** A deliberate one-way door, walked through knowingly.
+- **WebGPU /** `WebGPURenderer` **/ TSL** -- **explicitly dropped.** Quest support for `XRGPUBinding` is unconfirmed, Chrome's implementation is Windows/Android-XR behind two flags, and Brandon Jones (WebXR spec editor) states directly that WebGPU-in-WebXR is "not necessarily expected to be an automatic performance win vs. WebGL at this point" due to internal texture copies. **Consequence: shaders are GLSL via** `onBeforeCompile`**, not TSL.** A deliberate one-way door, walked through knowingly.
 
 The porting escape hatch: terrain generation, hydrology, biome assignment, and placement are all plain math in Web Workers with no three.js dependency. If we ever hit a wall, that code ports to Godot 4 in a weekend and only the render layer is thrown away. **Keep the sim layer free of three.js imports.**
 
@@ -90,7 +108,7 @@ The porting escape hatch: terrain generation, hydrology, biome assignment, and p
 This is the answer to "does a 7.8 m cell mean 8 m flat polygons?" -- **no.** There are three separate resolutions and only the finest one is ever rendered.
 
 | Grid | Resolution | What it is for | Rendered? |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Global sim grid** | 2048² over 16 km = **7.8 m/cell** | Macro topology, flow routing, lake levels, biome fields, village siting | Never |
 | **Chunk heightmap** | **0.5-1 m/cell** | The actual terrain surface, generated per chunk on demand | Yes |
 | **Rendered mesh** | Varies by LOD ring | What the GPU draws | Yes |
@@ -128,7 +146,7 @@ The carving is **depression breaching**, not filling: from each basin floor, sea
 
 The replacement is **least-cost path breaching (Lindsay 2016)** -- Dijkstra from the basin floor -- and the load-bearing detail is not the algorithm but one operator in its cost function:
 
-> **`g(next) = max(g(current), barrier)`, not `g(current) + barrier`.** A *sum* cost minimises the total volume cut, and volume grows with length, so it forces near-shortest paths -- a straight line with a wiggle. A **bottleneck (minimax)** cost asks only *how high is the highest thing I must cross*, and once the path is under that height it is free to wander. That one substitution is the difference between a river network and a road network: it makes the channel hug the valley floor instead of striking out across it. Sum cost was tried first and reduced the straightness without curing it.
+> `g(next) = max(g(current), barrier)`**, not** `g(current) + barrier`**.** A *sum* cost minimises the total volume cut, and volume grows with length, so it forces near-shortest paths -- a straight line with a wiggle. A **bottleneck (minimax)** cost asks only *how high is the highest thing I must cross*, and once the path is under that height it is free to wander. That one substitution is the difference between a river network and a road network: it makes the channel hug the valley floor instead of striking out across it. Sum cost was tried first and reduced the straightness without curing it.
 
 Two smaller things that fall out of it. The bottleneck and the low-ground tie-break must be carried in **separate arrays** and combined only into the heap key -- folding the tie-break into the running cost lets it accumulate through every subsequent `max()` and slowly turns the bottleneck back into a sum, which is the exact thing being avoided. And a tie-break is *required*: below the bottleneck height every cell is free, which is the same degenerate flat the spanning tree had, so without a small preference for lower ground the straight lines come straight back.
 
@@ -143,8 +161,8 @@ Two smaller things that fall out of it. The bottleneck and the low-ground tie-br
 **The world currently has no lakes at all, and that is a decision rather than a default nobody looked at.** Measured sweep of `BREACH.maxLakeArea` on seed 20260804 at 1024²:
 
 | max lake area | water | bodies | biggest | passes to converge |
-|---|---|---|---|---|
-| 0 km² | 0.00% | 0 | -- | 7 |
+| --- | --- | --- | --- | --- |
+| 0 km² | 0.00% | 0 | \-- | 7 |
 | 0.02 | 11.9% | 17,104 | 0.020 | 16+ (did not converge) |
 | 0.05 | 15.0% | 16,219 | 0.050 | 16+ |
 | 0.12 | 18.7% | 15,326 | 0.120 | 16+ |
@@ -174,13 +192,13 @@ With both fixed the world drains completely in 7 passes -- 10,284 basins, then 5
 
 This is also the honest explanation for the shape of the drainage network. The world produces 10,284 tiny basins spread evenly across the map, each with its own short outlet channel, which is why the flow layer tiles the plane instead of collecting into a few trunk rivers with tributaries. **The hydrology is doing exactly the right thing to the terrain it was given.** `SHRINK = 2` was checked as a suspect and cleared: setting it to 1 doubles the relief (677 m against 328 m) and doubles feature size, but the character is unchanged -- 33% surviving a 2 km blur instead of 16%, still texture rather than landform. The cause is the frequencies, not the scale factor. Fixing it means adding a layer at 5-10 km or pulling `macroFreq`/`massifFreq` down by a factor of four, which changes what the whole world looks like and is a §3 decision to take deliberately rather than a knob to turn in passing. **Not resolved, and deliberately not resolved unilaterally.**
 
-**Phase A does not write its carve back into `TerrainHeight`.** `heightAt` stays a pure function of the noise stack, every existing gate still measures the surface it has always measured, and nothing the player walks on has moved. The pass returns `base` (raw analytic) and `elev` (carved) side by side, and applying the delta per chunk is Phase B's job -- it needs the D8 path splined and given a channel profile before it touches a 0.5 m heightmap. **Until that exists, the streams here are correct routes over a surface the renderer does not yet show.**
+**Phase A does not write its carve back into** `TerrainHeight`**.** `heightAt` stays a pure function of the noise stack, every existing gate still measures the surface it has always measured, and nothing the player walks on has moved. The pass returns `base` (raw analytic) and `elev` (carved) side by side, and applying the delta per chunk is Phase B's job -- it needs the D8 path splined and given a channel profile before it touches a 0.5 m heightmap. **Until that exists, the streams here are correct routes over a surface the renderer does not yet show.**
 
 **The 1-3 second budget above is not met.** Measured at 1024²: 3,850 ms total, of which elevation sampling is ~950 and breaching ~2,400 (7 passes, deepest cut 99 m). Breaching roughly tripled when the spanning-tree walk became a Dijkstra search, which is the price of the shape and worth paying. At 2048² this extrapolates to roughly 15 seconds. Sampling dominates, and it is embarrassingly parallel, so the two outs are a worker pool or accepting a 1024² sim grid -- note that §2's own resolution table treats 8 m as a floor for *stream topology*, not for anything the player sees. Not resolved.
 
 `scripts/check-phase-a.mjs` gates all of this in nine sections (43 checks) and is part of `npm run check`, which is now 102 checks across the three suites. The hydrology invariants are the load-bearing ones: no receiver uphill, no receiver out of priority-flood order, nothing filled below its original height, the flow graph acyclic, and mass balance exact -- all 4,194,304 cells reaching the edge at full 2048².
 
-**`map.html` is the 2D canvas map view §14 step 3 asks for**, and it is the eye that "tune it by eye" refers to. Nine layers (relief, elevation, breach cuts, depression depth, flow accumulation, moisture, biome, slope/walkable, reachability) with four overlays and a per-cell readout, running Phase A in a real Web Worker so the load-path arrangement gets exercised rather than simulated. It is strictly a reader -- it recomputes nothing except hillshade, which is presentation -- because on this project's record the fastest way to get a twelfth drifted instrument is to let the debug view compute its own version of the field.
+`map.html` **is the 2D canvas map view §14 step 3 asks for**, and it is the eye that "tune it by eye" refers to. Nine layers (relief, elevation, breach cuts, depression depth, flow accumulation, moisture, biome, slope/walkable, reachability) with four overlays and a per-cell readout, running Phase A in a real Web Worker so the load-path arrangement gets exercised rather than simulated. It is strictly a reader -- it recomputes nothing except hillshade, which is presentation -- because on this project's record the fastest way to get a twelfth drifted instrument is to let the debug view compute its own version of the field.
 
 ### Phase B -- per-chunk detail, on demand, in a Web Worker
 
@@ -218,8 +236,8 @@ The first tuning pass got the *character* right and the *size* wrong: valleys re
 
 So all feature frequencies roughly doubled while relief stayed put, which is the whole trick: shrinking a valley without flattening it makes the walls steeper, and steep is what makes a valley read as one. Measured before -> after, with `scripts/probe-terrain.mjs` (a 513×513 sample at 32 m that reports elevation percentiles, a slope histogram, prominence-based peak spacing and valley-floor run lengths):
 
-| | before | after |
-|---|---|---|
+|  | before | after |
+| --- | --- | --- |
 | median peak-to-peak (prominence ≥ 120 m) | 1600 m | 864 m |
 | median valley floor run | 800 m | 416 m |
 | p95 valley floor run | 9952 m | 4736 m |
@@ -237,8 +255,8 @@ The Skyrim pass above doubled every frequency and deliberately held `mountainRel
 
 **Horizontal scale and vertical scale are independent; steepness is their ratio.** Concretely, `relief × freq` is the number that governs how the world reads:
 
-| | first pass | Skyrim pass | correction | current |
-|---|---|---|---|---|
+|  | first pass | Skyrim pass | correction | current |
+| --- | --- | --- | --- | --- |
 | `mountainRelief` | 690 m | 690 m | 175 m | 95 m |
 | `ridgeFreq` | 0.00033 | 0.00068 | 0.00095 | 0.0029 |
 | product | 0.23 | 0.47 | 0.166 | 0.28 |
@@ -255,7 +273,7 @@ And the ratio overshoots in both directions. 0.166 measured as a world with **no
 
 The complaint was that the mountains looked like *wrinkled-up cloth* -- all curving smooth-edged ridgelines, no jumbled pile of peaks -- and that the coarse LOD rings turned those ridgelines into a row of saw teeth. Both had one cause, and it was structural rather than parametric: **no amount of frequency or relief tuning could have fixed it.**
 
-Any `1 - abs(n)` construction puts its maxima on the **zero contour** of the underlying noise. A zero contour is a curvilinear network. So a ridged multifractal can only ever produce thin connected filaments -- rounding the crease just fattens the wire. Measured, the old backbone's distribution was `p10 0.081  median 0.268  p90 0.564`: most of the world was floor by construction, with bright threads on it. Plain fbm has **isolated point maxima**, which is what a jumbled pile of peaks actually is.
+Any `1 - abs(n)` construction puts its maxima on the **zero contour** of the underlying noise. A zero contour is a curvilinear network. So a ridged multifractal can only ever produce thin connected filaments -- rounding the crease just fattens the wire. Measured, the old backbone's distribution was `p10 0.081 median 0.268 p90 0.564`: most of the world was floor by construction, with bright threads on it. Plain fbm has **isolated point maxima**, which is what a jumbled pile of peaks actually is.
 
 The remap on top of the fbm is deliberately **linear**, not a smoothstep. Pooling the bottom into valley floor is wanted; an S-curve would also dome every summit, and distinct summits are the point.
 
@@ -273,8 +291,8 @@ The same error recurred one scale down and had to be found the same way: the cre
 
 Basins 4 km across with nothing in them were not a frequency problem. The mountain mask reached a true 0, so the low country had **no backbone under it at all** and its only relief was the 3.5 km regional swell, which lays down nothing visible from inside it. A `mountainFloor` of 0.2 runs the same already-sampled backbone under the low ground at a fifth of its height -- about a 5% roll over 345 m, which reads as soft valleys rather than as floor, and costs nothing.
 
-| | before | after |
-|---|---|---|
+|  | before | after |
+| --- | --- | --- |
 | map that is flat (<6 m over 64 m) | 12.8% | 2.0% |
 | largest unbroken plain | 1206 m | 284 m |
 | median plain diameter (area-weighted) | 529 m | 102 m |
@@ -287,18 +305,18 @@ It also reports unbroken flat ground as connected components, with **area-weight
 
 **Cliffs should come from the cliff layer, not the ridge backbone.** With cliffs sourced from `mountainRelief` they are a property of every mountain; sourced from the Worley break layer (`cliffFreq`, `cliffAmp`, gated by the mountain mask) they are a property of *some faces of some* mountains, which is both what real ranges look like and what leaves the rest climbable.
 
-**Terracing is emergent, and its band width is `step / tan(slope)`.** An 18 m terrace step on a 30° slope puts a 31 m bench on the ground and reads as geology; the same step on a 60° slope puts a 10 m ledge under an 18 m wall and reads as a staircase. The terrace code never changed between the Skyrim pass and the complaint about staircases -- the ground under it got twice as steep. Fixes were all three of: shallower slopes (above), a smaller `terraceStep`, a wider smoothstep riser, and gating the terrace mask by `1 - crest` so summits never terrace.
+**Terracing is emergent, and its band width is** `step / tan(slope)`**.** An 18 m terrace step on a 30° slope puts a 31 m bench on the ground and reads as geology; the same step on a 60° slope puts a 10 m ledge under an 18 m wall and reads as a staircase. The terrace code never changed between the Skyrim pass and the complaint about staircases -- the ground under it got twice as steep. Fixes were all three of: shallower slopes (above), a smaller `terraceStep`, a wider smoothstep riser, and gating the terrace mask by `1 - crest` so summits never terrace.
 
 **Instruments stop measuring when the world moves under them.** Two silently broke during this retune and both had to be fixed before the numbers meant anything again: `probe-terrain.mjs` used a fixed 120 m prominence threshold, which against 175 m peaks disqualified nearly every summit and reported peak spacing had *grown* to 3584 m (it now reports two thresholds, both keyed to total relief, because with a three-tier hierarchy "distance between peaks" has two different right answers); and `check-sim.mjs` sampled slope at 1 m eps while flood-filling on a 16 m grid, so the same world measured 73% reachable or 99% depending on which number you read. Colour bands in `chunk-mesh.js` and elevation bands in `props/scatter.js` are the same class of hazard -- every one of them is a fraction of the world's relief, and a 470 m treeline against 252 m peaks is not a treeline, it is "trees everywhere."
 
-That hazard then bit again, in the *other* direction: a snow band of `smoothstep(140, 210)` written for 252 m peaks put snow **nowhere at all** once max elevation fell to 137 m. The rule that follows is worth writing down, because it has now cost two passes. **Every elevation-keyed constant outside `TUNING` has to be re-read off the probe whenever `TUNING` moves**, and there are four families of them: `shade()` in `chunk-mesh.js`, the four `minElev`/`maxElev`/`elevFade` sets in `props/scatter.js`, `findSpawn()` in `main.js`, and the spawn band in `check-sim.mjs` that must match it. None of them fail loudly; they all just quietly stop meaning anything.
+That hazard then bit again, in the *other* direction: a snow band of `smoothstep(140, 210)` written for 252 m peaks put snow **nowhere at all** once max elevation fell to 137 m. The rule that follows is worth writing down, because it has now cost two passes. **Every elevation-keyed constant outside** `TUNING` **has to be re-read off the probe whenever** `TUNING` **moves**, and there are four families of them: `shade()` in `chunk-mesh.js`, the four `minElev`/`maxElev`/`elevFade` sets in `props/scatter.js`, `findSpawn()` in `main.js`, and the spawn band in `check-sim.mjs` that must match it. None of them fail loudly; they all just quietly stop meaning anything.
 
 ### Three tiers, because height and peak spacing fight
 
 "Peaks should reach 600 m, and 300-400 m should be common" and "peak to peak should be 200-500 m" cannot both come out of one noise layer, and the arithmetic is not close: a 600 m summit 400 m from its neighbour is 470 m of rise over 200 m of ground, a 67° wall -- the exact failure that sealed the world off during the Skyrim pass. Real ranges resolve it with a hierarchy, so the height function now has one:
 
 | tier | wavelength | relief | what it is |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `valleyRelief` | ~5.3 km | 240 m | regional swell -- high country and low country |
 | `massifRelief` | ~1.7 km | 370 m | broad mountains on ~700 m flanks (~25°, walkable) |
 | `mountainRelief` | ~345 m | 110 m | the close-spaced sub-peaks, riding on those flanks |
@@ -439,7 +457,6 @@ Gulches, cliffs, and gorges then function exactly as intended: hard visual barri
 
 **The limiter needs a baseline, and the obvious one is wrong.** "Steeper than 38°" is not a property of a point, it is a rise over a run, and the run has to be chosen. The first implementation used her travel distance for the frame, which is 2 cm at walking pace and 72 Hz -- so it was not measuring a slope at all, it was measuring a 2 cm difference, and any 40 cm hummock became a wall. `Player._walkable` now takes the gentler of two baselines, one frame and one stride (1.5 m), so an obstacle has to keep going uphill for two paces before it counts. The one-frame test is kept as the first of the two rather than replaced, and that is what preserves the argument above: its probe pair *is* her travel pair, so the arithmetic that let her in is bit-identical to the arithmetic that lets her back out, and reversibility does not depend on the terrain. A lookahead on its own would also read every cliff from 1.5 m back and stop her there, which is an invisible standoff bubble around each wall.
 
-
 ### The walk limit is the shader's rock line, not a taste
 
 `LOCOMOTION.maxSlopeDeg` is 50, and it is derived rather than chosen. The rule: **she can walk on anything the renderer does not draw as bare rock.**
@@ -471,11 +488,11 @@ Water: shallow water is walkable, deep water is not. Same mask, so lakes are bar
 
 ### The load-bearing decisions
 
-1. **`THREE.BatchedMesh`, not `InstancedMesh`.** `InstancedMesh` draws N copies of one geometry. `BatchedMesh` uses `WEBGL_multi_draw` to draw many *different* geometries in one call, provided they share a material. The entire prop library -- every tree variant, rock, building, and LOD tier -- collapses into a handful of draw calls. Per-object frustum culling is built in. LOD switching is `setGeometryIdAt(instanceId, geometryId)`: one call, no rebuild, no change in draw call count.
+1. `THREE.BatchedMesh` **for props,** `InstancedMesh` **for the far card bands.** `InstancedMesh` draws N copies of one geometry. `BatchedMesh` uses `WEBGL_multi_draw` to draw many *different* geometries in one call, provided they share a material. The entire prop library -- every tree variant, rock, building, and LOD tier -- collapses into a handful of draw calls. Per-object frustum culling is built in. LOD switching is `setGeometryIdAt(instanceId, geometryId)`: one call, no rebuild, no change in draw call count. **But** `BatchedMesh` **charges for that culling every frame, per instance, on the CPU** -- see "the crossover" below, which is why the far foliage bands do not use it.
 2. **One material for all props**, backed by one `sampler2DArray`. See §9.
 3. **Alpha test, never alpha blend, for anything batched.** See §7.
 
-4. **Terrain goes through `BatchedMesh` too** -- decided at build step 2, and not what the original draft assumed. See below.
+4. **Terrain goes through** `BatchedMesh` **too** -- decided at build step 2, and not what the original draft assumed. See below.
 
 Water, sky, and weather each get their own material and their own draw calls. That is expected and budgeted.
 
@@ -489,31 +506,83 @@ This is legal only because every chunk has identical topology -- same `CHUNK_RES
 
 Verified on `three@0.180`: `setGeometryAt` reuses a slot in place and throws only if the incoming geometry exceeds the reserved counts; it re-clones `boundingSphere` from the source on every call, so per-instance frustum culling stays correct across reuse; and the batch index widens to `Uint32` automatically once the pooled vertex count passes 65535.
 
+### Hole-free LOD swaps: three separate things have to hold
+
+The reported artifact was a square of terrain blinking out to the horizon colour for a few frames while flying *away* from close detail, then reappearing low-poly. Not wrong terrain -- **no** terrain, with the sky showing through. Guarded now by `scripts/probe-hole.mjs`, whose worker stub delays replies by six frames; the existing checks never saw any of this because their stubs answer inside the requesting frame, so no chunk is ever actually absent.
+
+1. **Every node needs a loaded ancestor.** Depths 0-2 (21 chunks, 256 m cells) are pinned forever so an unloaded node can always draw *something*. They were never being built: `_seedBaseLayer` pushed its requests onto `terrain.queue`, and `_select` replaces that queue wholesale from the desired set on the first `update()`, before `_pump` has ever run. Measured on a settled camera: depths 0 and 1 were **0/1 and 0/4 resident**, depth 2 was 4/16, and the only reason those four existed is that they were far enough away to be desired in their own right. `_loadedAncestor` was therefore returning null ~2100 times over a 2 km back-away, and a node with no stand-in draws nothing. The base layer now has its own queue that selection cannot discard.
+
+2. **Coarsening has to look DOWN the tree, not up.** A coarse node is not in the desired set while you are standing on top of it, so it is never requested and the LRU drops it; receding puts it back in the set cold. Its children are resident and cover exactly the same ground -- so `_select` tries a complete cover of loaded descendants *before* an ancestor. All-or-nothing: a partial cover is the same hole in a more interesting shape. With this disabled, backing away falls through to the base layer and draws 256 m cells sitting 69 m below the ridge; with it, the coarsest cell drawn within 250 m stays at 4 m and the worst error is 6 m. This is the mechanism the request asked for -- the low-poly tile phases in *before* the high-poly one is released -- and it costs no slots, because a cover is made of chunks that were already resident and already being drawn.
+
+3. **Eviction has to be counted in slots, not cache entries.** The cap used to apply to `cache.size`, which counts queued entries holding no slot at all -- a different number by a hundred or more while streaming. A frame that requested 150 chunks would push the cache over its cap and evict ground that was being drawn to make room for nodes that own nothing yet. That is a hole *produced by the eviction policy*, and it appeared the moment the base layer started working. The target is now ready (slot-holding) entries, set to `SLOT_COUNT` minus the in-flight cap so every reply that lands between two `_evict` calls is guaranteed a free slot -- which is what makes the "slot pool exhausted" throw unreachable rather than merely unlikely.
+
+Stand-in retention is bounded (`maxReady − desired − 21`) and spent nearest-node-first, and `_evict` will reclaim stand-ins as a last resort rather than throw. Measured peak: 39 chunks over the desired count, 704 of 768 slots, zero missing sample points across a 85 m/s back-away, a 60 m/s climb, a full spin, and a 765 m/s stress run that cannot stream fast enough and correctly degrades to the base layer instead of to sky.
+
+### What actually binds, per resource
+
+Triangles are the only budget this document tracked for its first six months, and they are not the one that binds for a dense foliage carpet. Measured on desktop (`tmp/` benchmarks, 2026-08-24), these are the four separate ceilings and what each one is actually made of:
+
+| Resource | Cost, measured | What it scales with |
+| --- | --- | --- |
+| **Triangles** | ~350k/frame on Quest 2 | tris/prop x visible props |
+| **Per-instance CPU** | **37 ns / visible instance / frame** in `BatchedMesh.onBeforeRender` with `sortObjects` on (24% of it is the sort; 31 ns with sorting off) | instance count, *regardless of triangle count* |
+| **Placement CPU** | `TerrainHeight.heightAndSlopeAt` is **4,912 ns**. The hash that yields position, tint, scale, yaw and variant is **34 ns** -- 145x cheaper | terrain field queries, not randomness |
+| **Fill rate** | a 2 ferns/m² carpet with cards to 510 m is **1.73x one eye buffer** of alpha-tested quads, and **82% of that is the nearest 12 m** | near-field density, *not* draw distance |
+
+Four consequences, all of which contradict something an earlier draft of this section assumed:
+
+- **A billboard is not cheap because it has 2 triangles; it is expensive because it is an instance.** At 76,000 individual cards -- what 2 ferns/m² with density halving per distance doubling produces out to 510 m -- `BatchedMesh` spends 2.8 ms/frame on desktop, ~11 ms on Quest 2, on nothing but culling and sorting. That is the whole frame. The triangles for the same scene are 208k, which Quest 2 can nearly afford.
+- **Draw distance is almost free; near density is not.** The 25-510 m card band costs 0.15x the eye buffer in fill. The nearest 12 m costs 1.42x. Pushing cards from 60 m out to 510 m is a rounding error on fill rate; doubling density at your feet is not. So **push the draw distance out and tune the near density down**, which is the opposite of the instinct.
+- **Procedural randomness is free and terrain queries are not.** See §6 -- placement must sample a cached raster, never the height field.
+- **Below ~10 triangles per instance, the mesh class matters more than the mesh.** Hence the crossover below.
+
+### The `BatchedMesh` / `InstancedMesh` crossover
+
+Verified against `three@0.180` sources and benchmarked:
+
+`BatchedMesh.onBeforeRender` loops over **every** allocated instance every frame -- reading its matrix, transforming its bounding sphere, frustum-testing it, and pushing survivors into a list that is then sorted. That is what buys per-instance culling and per-instance geometry selection, and it costs 37 ns each.
+
+`InstancedMesh` has **no** `onBeforeRender` **at all**. It is one draw call, culled as a single object against its own bounding sphere. Per-instance per-frame CPU is exactly zero. What it gives up is per-instance geometry choice (one geometry per mesh) and per-instance culling.
+
+So the rule is not "batched is better", it is:
+
+> **Many geometries, few instances ->** `BatchedMesh`**. Few geometries, many instances ->** `InstancedMesh`**, tiled.**
+
+The near bands are hundreds of instances across dozens of variants: `BatchedMesh`, as built. The far card bands are tens of thousands of instances of *one* geometry: `InstancedMesh`, one per world tile so the scene graph culls whole tiles for free. At 128 m tiles a 510 m reach is ~64 tiles, of which ~20 are in frustum -- about 20 draw calls against the 40-50 Quest 2 allows, and **zero** per-frame per-instance cost. Rewriting a tile's matrices costs 32 ns each and is paid only when that tile is rebuilt, one tile per frame (§6).
+
+This is the regime §0 flagged as untested and guessed wrong about: it assumed batching's win was "thousands of cheap objects", and thousands of cheap objects is precisely where batching loses.
+
 ### Budget
 
-Per eye, at 72 Hz, targeting ~250k triangles with headroom. three.js renders once per eye (no multiview -- `OCULUS_multiview` has never been merged into three.js core), so `renderer.info` reports roughly double these figures.
+Per eye, at 72 Hz. three.js renders once per eye (no multiview -- `OCULUS_multiview` has never been merged into three.js core), so `renderer.info` reports roughly double the per-eye figures.
 
-**Measured ceiling (§0): ~800k triangles per frame as `renderer.info` reports them.** 1.5M drops to 30-35 fps.
+**Ceiling: ~350k triangles per frame as** `renderer.info` **reports them (§0, derived).**
 
-There is roughly 2× headroom, not the 4× an earlier draft assumed. Treat the per-layer numbers below as a budget to be *defended*, not a floor to build up from. If a layer wants more, another layer gives it up.
+Treat the per-layer numbers below as a budget to be *defended*, not a floor to build up from. If a layer wants more, another layer gives it up.
 
-| Layer | Visible count | Tris each | Total |
-|---|---|---|---|
-| Terrain (all LOD rings) | 304 chunks | 640 | 98k |
-| Trees 0-30 m | 40 | 600 | 24k |
-| Trees 30-80 m | 200 | 150 | 30k |
-| Trees 80-500 m (cross-quad) | 2,000 | 4 | 8k |
-| Grass/scrub 0-25 m | 3,000 | 4 | 12k |
-| Rocks (tiered) | ~400 | -- | 20k |
+| Layer | Visible count | Tris each | Total (HUD) |
+| --- | --- | --- | --- |
+| Terrain, `triDeg` 5.72 | 71 drawn chunks | 640 | 45k |
+| Trees 0-30 m | 30 | 500 | 15k |
+| Trees 30-130 m | 120 | 130 | 16k |
+| Trees 130-500 m (3 quads) | 900 | 6 | 5k |
+| Forest clump cards past 500 m | ~200 | 6 | 1k |
+| Bush class 0-25 m (ferns, bushes, boulders) | 900 | 42 | 38k |
+| Bush class 25-60 m | 2,000 | 12 | 24k |
+| Bush class cards, 60-500 m, clumped | ~3,700 | 2 | 7k |
+| Grass class 0-23 m | 1,600 | 4 | 6k |
 | Village buildings | 20 | 800 | 16k |
-| Water surfaces | -- | -- | 5k |
-| Snow particles | 1 draw | -- | 4k |
-| Sky dome + aurora | -- | -- | 2k |
-| **Total** | | | **~219k** |
+| Water surfaces | \-- | \-- | 5k |
+| Snow particles | 1 draw | \-- | 4k |
+| Sky dome + aurora | \-- | \-- | 2k |
+| **Total** | ~9,500 instances |  | **~184k** |
 
-2,240 trees, 3,000 grass tufts, and a village visible simultaneously. **Every row except terrain is still an estimate.** Terrain is measured (step 2): 304 chunks × 640 tris = 195k as `renderer.info` reports it, 24% of the ceiling, *before* per-instance frustum culling -- which removes most of the ring behind her, so the drawn figure is lower and the pre-cull number is the safe one to budget against.
+**~184k against a 350k ceiling is 53%**, leaving ~166k for thermal margin and for the rows that are still estimates. Only terrain is measured; every other row is an estimate.
 
-~219k/eye is ~438k as the HUD reports it, **~55% of the measured ceiling**, leaving roughly 360k for water, weather, thermal margin, and the props these estimates get wrong.
+Two things changed to make this fit, and both are decisions rather than tuning:
+
+- **Terrain coarsened from a 1.2° triangle cap to 5.72°**, 371 drawn leaves to 71, 237k triangles to 45k. On Quest 2 the ground cannot have 68% of the frame, and this is the single largest triangle recovery available anywhere in the project -- 192k, more than the entire prop budget. `[` and `]` live tuning stays.
+- **Instance count is now a budgeted quantity, not a footnote.** ~9,500 visible instances at 37 ns is 0.35 ms/frame desktop, ~1.4 ms on Quest 2, which fits. The far card bands are excluded from that figure because they are `InstancedMesh` and cost nothing per instance -- which is the only reason the row above them can afford 3,700 cards.
 
 ### Download budget -- a non-issue, which is the liberating part
 
@@ -525,48 +594,93 @@ There is roughly 2× headroom, not the 4× an earlier draft assumed. Treat the p
 
 ### Distance tiering
 
-**Terrain LOD:** quadtree chunks at a **constant** `CHUNK_RES` (16), subdividing when the camera is closer to a node than `splitK` times its own edge length. Chunk size halves with depth; vertex *density* therefore doubles, but vertex *count* stays fixed -- which is what lets every chunk share one slot size in the batch. **Skirts** (vertical flanges at chunk edges) hide cracks between adjacent levels -- far simpler than stitching and invisible in practice. Fog and atmospheric desaturation hide popping and do most of the work of selling scale.
+**Terrain LOD: one rule, one knob, one unit.** Quadtree chunks at a **constant** `CHUNK_RES` (16), splitting while `cell > range * tan(LOD.triDeg)` -- cell being the node's grid spacing in metres and range the 3D distance from the eye to its box. A length over a range is an angle, so the rule reads straight off the screen: **refine until no triangle looks wider than** `triDeg` **degrees.** Every visible triangle, underfoot or on the horizon, gets the same angular size, and it is bounded by construction rather than on average. Chunk size halves with depth; vertex *density* therefore doubles, but vertex *count* stays fixed -- which is what lets every chunk share one slot size in the batch. **Skirts** (vertical flanges at chunk edges) hide cracks between adjacent levels -- far simpler than stitching and invisible in practice. Fog and atmospheric desaturation hide popping and do most of the work of selling scale.
 
-Measured at step 2, `res 16 / splitK 1.1 / MAX_DEPTH 10`: 304 leaves, 195k tris (24% of budget), 16 m leaves at 1.00 m per cell, ~3.26° angular error. The three parameters are one decision, not three -- see the derivation at the top of `src/terrain/quadtree.js`, including why raising `CHUNK_RES` to buy back `splitK` costs *more* triangles at equal quality rather than fewer. `splitK` is live-tunable with `[` and `]` because the angular error is a judgement call that has to be made looking at ridgelines.
+This replaced a raw distance test (`boxDistance < size * splitK`) plus a per-node elevation bias, which produced angular inversions -- near ground blockier than far ground, with a hard seam at quadrant boundaries. A per-node **geometric error** term was also built, measured and removed: this height field is fbm, so its roughness is scale-invariant, which makes a cell-size cap already an error cap. Both arguments are written out in full at the top of `src/terrain/quadtree.js`, including why raising `CHUNK_RES` to buy back angular error costs *more* triangles at equal quality rather than fewer. `triDeg` is live-tunable with `[` and `]` because it is a judgement call that has to be made looking at ridgelines in a headset.
 
-**`splitK` is a step function, not a gradient**, and this is the thing to know before tuning it. Subdivision is a discrete test, so a whole band of K values selects the same ring layout and costs exactly the same. Measured worst case over 400 viewpoints:
+**The cap is the terrain's entire share of the frame, and it is the biggest single lever in the project.** Two ceilings, not one: *selection* holds slot-pool entries and must never overrun `SLOT_COUNT` (768) because the current selection is exempt from eviction and overrunning throws; *drawn* is the part inside the 110° eye cone, and that is what spends triangles. Worst case over 606 positions × 4 headings, half of them airborne (`scripts/probe-trideg.mjs`, same cameras and cone as `check-sim.mjs` section 5):
 
-| K | leaves | tris | angular error |
-|---|---|---|---|
-| 0.8 | 148 | 95k | 4.48° |
-| 0.9 | 178 | 114k | 3.98° |
-| 1.0 | 211 | 135k | 3.58° |
-| **1.1** | **304** | **195k** | **3.26°** |
-| 1.2 | 304 | 195k | 2.98° |
-| 1.3 | 304 | 195k | 2.75° |
-| 1.6 | 400 | 256k | 2.24° |
+| `triDeg` | selection + 21 pinned | drawn leaves | drawn tris | % of 350k |
+| --- | --- | --- | --- | --- |
+| 1.2 (was the default) | 670 | 371 | 237k | 68% |
+| 1.8 | 424 | 219 | 140k | 40% |
+| 2.2 | 340 | 176 | 113k | 32% |
+| 3.0 | 277 | 123 | 79k | 22% |
+| 4.0 | 223 | 95 | 61k | 17% |
+| **5.72** (ships) | **163** | **71** | **45k** | **13%** |
+| 7.0 | 139 | 59 | 38k | 11% |
+| 7.2 | 22 | 1 | 1k | 0% |
 
-1.1, 1.2 and 1.3 are one plateau. A visible quality jump between 1.0 and 1.1 is that boundary and nothing else -- so 1.1 is the default (cheapest K on its plateau), going up to 1.3 is free, and dropping to 1.0 buys back a real 60k triangles. Regenerate the table by sweeping `selectNodes()` over the `CAMS` list in `check-sim.mjs` section 5.
+**5.72° ships.** It was picked by eye with the `[` `]` keys on a ridgeline and then measured, which is the right order for a knob whose whole purpose is a judgement about how chunky is tolerable. It is coarse and it is meant to be: the ground is the backdrop, and 192k triangles is more than the entire prop budget.
+
+**10% of the frame is not reachable with this knob**, and the reason is a floor rather than a tuning failure. Below about 11% the cost stops being "how many splits" and becomes "how many chunks × 640 triangles each", and 640 is fixed by `CHUNK_RES` 16 -- 512 surface triangles plus **128 of skirt, 20% of every chunk drawn**. The levers that would actually reach 35k are `CHUNK_RES`, cheaper skirts, or a smaller `VIEW_HALF_ANGLE`; none of them is this knob, and none is worth spending before the ceiling itself is measured on the device.
+
+**The 7.2° row is a cliff, not a data point, and** `MAX_TRI_DEG` **now stops short of it.** Range is floored at a node's own half-size, so for any node containing the camera the split test reduces to a constant:
+
+> `cell / range = (size / CHUNK_RES) / (size / 2) = 2 / CHUNK_RES = 1/8`
+
+Size cancels, so past `atan(1/8) = 7.125°` *no node containing the camera ever splits* and the entire 16 km world draws as one chunk with 1 km triangles. `MAX_TRI_DEG` was 8.0, which put that inside the reach of the `]` key -- the same class of bug `MIN_TRI_DEG` exists to prevent at the other end. It is now 7.0, and the ceiling moves if `CHUNK_RES` does.
+
+`periphDeg` **is clamped up to** `triDeg` **at the point of use.** The periphery is a *coarser* target; the pair silently inverted the moment `triDeg` passed the 5.0 periphery, refining ground behind the player harder than ground in front of her. Measured at 5.72: 178 slots inverted, 163 clamped, identical drawn triangles. At the shipped cap the clamp binds and the grading does nothing, which is the better outcome anyway with the pool 79% empty -- and the grading resumes on its own if the knob goes back below 5.
+
+Two levers exist besides the cap, and neither replaces it. `VIEW_HALF_ANGLE` (the streaming margin, 90°) buys slots almost for free -- 45% of the selection sits outside the eye cone and is GPU-culled per instance -- but it buys little in *drawn* triangles. **Per-eye stereo** is the other: three renders once per eye with no multiview, so this cost is paid twice, and it is why the ground could never have two thirds of the budget.
+
+The pool is now heavily oversized for the default -- 163 slots used of 768 -- because `SLOT_COUNT` has to cover `MIN_TRI_DEG`, the finest the `[` key can reach. That is roughly 15 MB of vertex and index buffer held for a setting nobody ships. **Shrinking the pool means giving up the fine end of the knob**, which is a trade to make on the device, not before it.
+
+Regenerate the table with `node scripts/probe-trideg.mjs`.
 
 **Prop LOD: two mesh tiers plus the impostor, and the ladder is per size class.** Derived in `scripts/probe-prop-lod.mjs`, which prints the whole argument; the short version is below. The table this replaces assumed one chain served every prop and that triangles were what forced the crossovers. Neither is true.
 
-| Class | Mesh tiers | Billboard | LOD0 to | Card from | Cull | Count |
-|---|---|---|---|---|---|---|
-| **large** (trees) | 500, 130 | 3 quads | 30 m | 130 m | 260 m | 93 |
-| **structure** (cabins, tower, mill) | 1800 | 3 quads | 60 m | 170 m | 400 m | 5 |
-| **medium** (boulders, stumps, logs, bushes) | 150, 40 | none | 22 m | -- | 95 m | 38 |
-| **small** (grass, ferns, flowers) | 16 | none | 26 m | -- | 26 m | 11 |
+**Four classes, and foliage is split three ways by SIZE rather than by whether it is a plant.** A fern is not a grass tuft with a different texture -- it is 20x the volume, and giving them one triangle budget starved the fern to feed the grass. The `small` row below used to read "grass, ferns, flowers | 16 tris", and the shipped fern generator produces 42.
 
-**Triangles are not what binds.** The prop budget is 545k (800k ceiling − 195k terrain − 60k everything else), trees get about half of it, and at a dense-forest 0.08 stems/m² the whole 30/130/260 chain costs 215k -- 79% of the tree budget, with the crossovers set by perception rather than by arithmetic. Pushing LOD0 out to where its triangles stop being worth it would put it past 400 m.
+| Class | Mesh tiers | Card | LOD0 to | Card from | Cull | Mesh class |
+| --- | --- | --- | --- | --- | --- | --- |
+| **structure** (cabins, tower, mill) | 1800 | 3 quads | 60 m | 170 m | 400 m | Batched |
+| **tree** (trees) | 500, 130 | 3 quads | 30 m | 130 m | 500 m + clumps | Batched, then Instanced |
+| **bush** (ferns, bushes, boulders, stumps, logs) | 42, 12 | 1 quad | 12 m | 25 m | 500 m + clumps | Batched, then Instanced |
+| **grass** (grass, flowers, moss, leaf scatter) | 4 | none | 23 m | \-- | 23 m | Batched |
+
+**Triangles are not what binds, and neither are they what the card tier is for.** The prop budget is ~190k (350k ceiling − 45k terrain − ~115k everything else). Within that, the crossovers above are set by perception and by instance count, not by arithmetic on triangles -- pushing LOD0 out to where its triangles stop being worth it would put it past 400 m.
 
 **Parallax is what binds.** A billboard's defect is not that it lacks detail -- a 128 px impostor carries more foliage than a 45-triangle decimated conifer does. Its defect is that it does not turn as you walk past it, and that error is an angle, `atan(depth / distance)`, which no triangle count touches. Under ~2° it stops reading as wrong at walking pace, which gives the rule the table above is built from:
 
 > **billboard crossover ≈ prop depth ÷ tan(2°) ≈ depth × 28.6**
 
-That is 120 m for a 4.2 m deep tree, ~170 m for a 6 m deep cabin, and 17 m for a 0.6 m boulder. The rule scaling with prop size is why the ladder is per class and not global: a boulder's crossover falls *inside* its cull radius, so medium props never get a card at all, and small props get one tier and a hard cull.
+That is 120 m for a 4.2 m deep tree, ~170 m for a 6 m deep cabin, 17 m for a 0.6 m boulder and **14 m for a 0.5 m deep fern**. The rule scaling with prop size is why the ladder is per class and not global.
+
+The bush class takes its card at 25 m rather than the 14 m the rule permits, because the 11 m in between is bought by a 12-triangle LOD1 at a few hundred instances, which is cheap in every budget at once. The rule sets the point past which a card is *allowed*, not the point at which it is *required*.
+
+The grass class gets no card at all, and here the rule is not the reason -- a 4-triangle tuft and a 2-triangle card are the same instance, so a card saves nothing that matters and adds a pop. Grass gets one tier and a hard cull.
 
 **Why not a third mesh tier.** Compared at equal budget, a third tier does push real geometry from 151 m out to 234 m. But what it puts there is a 45-triangle conifer at 94 px with no needles and no silhouette, replacing a 128 px impostor of the real canopy whose only defect -- parallax -- is already under 2° at that range. The third tier spends a geometry slot, a build step and a pop event to install a *worse* representation. Two mesh tiers.
 
-**Density is the lever, not the tier count.** Cost moves linearly with stems/m² and only quadratically with the crossovers, so "chaotically lush" is bought by raising density, and it is affordable to ~0.2 stems/m² before triangles bind. Tune density first and treat the LOD table as downstream of it.
+**Density near the eye is the lever; draw distance is nearly free.** Measured for a 2 ferns/m² carpet with cards running to 510 m: the 25-510 m band is 0.15x an eye buffer of fill and, as `InstancedMesh`, zero per-frame CPU. The nearest 12 m is 1.42x -- **82% of the whole carpet's fill cost lives inside 12 metres**, and it scales linearly with near density. So the tuning order is: set near density against fill, then push the card distance out as far as it reads, because the far bands cost almost nothing.
 
-⚠️ **The untested regime is instance count, not triangle count.** At 0.08/m² a 30/130/260 chain puts ~4,500 instances in view, most of them 6-triangle cards. §0 measured 8,000 instances but at ~190 tris each, where the scene was geometry-bound long before per-instance bookkeeping mattered; thousands of 6-tri billboards is the opposite regime and §0 records it as explicitly untested. Read this off the HUD on the next headset visit. It is also why clump impostors below are a planned tier rather than an optimisation -- one quad per ~20 trees takes the far band to ~226 instances, well inside what §0 did measure.
+**Card reach is set by pixels, and it is further out than it feels.** A 0.55 m fern on Quest 2's default eye buffer (~16.2 px/deg):
 
-**Beyond 500 m: bake the forest into the terrain.** Use the same noise field that *would have* placed trees to modulate the terrain material's albedo and normal (darker, greener, mottled), plus sparse "forest clump" billboards where one quad represents ~20 trees. This is what shipped open-world games do. Sparse individual billboards at distance look like a comb-over; a modulated terrain material reads as continuous forest cover and costs essentially nothing.
+| Fern subtends | Distance |
+| --- | --- |
+| 20 px | 25 m |
+| 10 px | 51 m |
+| 5 px | 102 m |
+| 3 px | 170 m |
+| 1 px | 510 m |
+
+So "cards until each is under 3 px" is **170 m**, not 500 m; 500 m is where a fern is one pixel. Both are far past where a card would previously have been culled, and the fill-rate numbers above say both are affordable.
+
+**Clump cards are the tier that makes the far bands legal, and instance count is why.** At 2 ferns/m² with density halving per distance doubling, individual cards out to 510 m is **76,000 instances**. In `BatchedMesh` that is 2.8 ms/frame on desktop and ~11 ms on Quest 2, spent entirely on culling and sorting 2-triangle quads. Two independent fixes, and the ladder uses both:
+
+| Ladder | Instances | Triangles | BatchedMesh CPU (Quest 2 est.) |
+| --- | --- | --- | --- |
+| card per fern to 510 m | 76,000 | 208k | ~11.2 ms -- the whole frame |
+| clumps of 8 past 170 m | 31,100 | 118k | ~4.6 ms |
+| clumps of 8 past 60 m, 32 past 170 m | 11,800 | 79k | ~1.7 ms |
+
+...and moving the far bands to tiled `InstancedMesh` takes that last column to **zero** regardless of which row you pick, at the cost of ~20 draw calls. The clumping still earns its place on triangles and on rebuild cost, and it looks better: one card baked from 8 ferns has the silhouette of a patch, and sparse individual cards at distance look like a comb-over.
+
+**Beyond the card reach: bake the foliage into the terrain.** Use the same noise field that *would have* placed props to modulate the terrain material's albedo and normal (darker, greener, mottled). This is what shipped open-world games do, and it costs essentially nothing. It is the layer *under* the cards, not a replacement for them -- the terrain modulation runs everywhere including underfoot, and the cards sit on top of it out to wherever they stop being worth an instance.
+
+**Why not a lower near density instead.** Because near density is the one thing you can actually see. 2 ferns/m² is what "lush" means at walking pace, and 1.42x an eye buffer of alpha-tested quads at 2/m² is inside the ~2x Quest 2 sustains -- with nothing else in the frame contributing overdraw, which is the caveat to hold onto. If fill rate turns out to bind on-device, the near band is where it binds, and the fix is a shorter grass class or fewer fronds per fern, not a shorter draw distance.
 
 ### Per Meta's WebXR best practices
 
@@ -588,6 +702,31 @@ Per chunk, in the worker, deterministic from `hash(worldSeed, chunkX, chunkZ)`:
 - **Per-instance random Y-rotation and non-uniform scale** (0.8-1.3x, with slight independent vertical stretch). This is most of what makes a procedural forest stop looking procedural
 - Align to terrain normal but only partially (lerp ~30%) so trees on slopes lean slightly rather than growing perpendicular to the hillside
 
+### Placement samples the DRAWN surface, not the height field
+
+**This is the load-bearing decision in this section, and it is a correctness fix before it is an optimisation.**
+
+`scatter.js` currently asks `TerrainHeight.heightAndSlopeAt(x, z)` for every surviving candidate: the full-fidelity analytic field, six noise evaluations, **4,912 ns measured**. The hash that produces everything else about the prop -- position, yaw, scale, tint, variant -- is **34 ns**. So 99.3% of a placement rebuild is spent asking the terrain a question, which is why rebuild cost has been fought three times in that file's comments (9.5 ms, then 4.1 ms against a 4 ms gate, then radius traded away to buy 16% back).
+
+It is also *wrong*, and visibly so. The terrain that gets **drawn** is a decimated quadtree chunk. A prop placed at the analytic height sits at `field(x, z)` while the ground under it is drawn at `bilinear(chunk_vertices)`, and the difference is exactly the LOD's angular error -- which is why distant trees and rocks float above the hillside or sink into it. Placement is measuring one surface and the renderer is drawing another.
+
+**So placement reads the resident chunk's own raster instead.** Each chunk already computes a 17x17 grid of heights in the worker; keep it, key it by node, and bilinear-sample it. That gives, in one change:
+
+- **~60x cheaper.** A quadtree descent plus a bilinear sample is on the order of 80 ns against 4,912.
+- **Zero float, by construction.** The prop sits on the surface being drawn, at every LOD, because it is sampling that surface. The error is not reduced, it is *identically zero*.
+- **Precision that tracks the terrain's own.** Coarse ground gets coarsely-placed props, which is the correct coupling: 1 m cells near the eye, 8 m cells at depth 3. Nothing is precise where nothing is drawn precisely.
+- **One cache shared by every placeable kind.** Trees, rocks, logs, bushes, ferns, grass, buildings all sample the same raster. Today each kind pays its own field queries on its own cells, so N kinds cost N times over; after this they cost once.
+
+Memory is not an objection: 289 heights per chunk is 1.2 KB, so 304 resident chunks is ~350 KB.
+
+Three things this has to get right:
+
+- **Slope must stay on a fixed world-scale stencil, not on the chunk's own cell.** A coarse chunk's mesh normal averages a 74° cliff over 128 m and reports 24°, so slope-rejection read off coarse geometry would plant trees on cliff faces and then delete them as you approached. This is the identical bug `chunk-mesh.js` fixes for surface *classification* with `CLASS_EPS`, and placement wants the same estimator: have the worker emit a fixed-scale slope raster beside the height raster. It is already computing it for the colour pass, so it costs a `Float32Array` and a transfer.
+- **Placement must invalidate on chunk LOD change, not only on camera cell crossing.** A subdividing chunk changes the answer. `Scatter.invalidate()` already exists for exactly this shape of event (villages use it); terrain streaming becomes a second caller.
+- **A prop's height changes when its chunk's LOD does.** That is not a pop to hide -- the ground moves by the same amount at the same instant, so the prop stays planted and the pair slides together. That is strictly better than today, where the prop is anchored to a surface nobody can see.
+
+The escape hatch in §1 still holds: this is array indexing and lerps, no three.js, so it moves to a worker whenever the main thread needs the room.
+
 ### Interim: the scale-reference scatter (`src/props/scatter.js`)
 
 None of the above exists yet -- it needs the Phase A biome pass -- but an empty heightfield gives you no way to judge how big a mountain is or how fast you are crossing it. Trees alone give you one number. A cabin, a one-metre boulder and a tuft of grass at your feet give you four scales an order of magnitude apart, and it is having several at once that makes a valley read as a valley rather than as a shape. Placeholder geometry, real architecture: one `BatchedMesh`, one material, per-instance geometry selection, so if that shape is wrong we find out on 1,200 props rather than on 40,000.
@@ -595,7 +734,7 @@ None of the above exists yet -- it needs the Phase A biome pass -- but an empty 
 Two rules here are not placeholders and should survive into the real system:
 
 - **Density tapers with distance; it does not stop at a cull radius.** A hard edge is visible as a moving wall of trees. A taper reads as depth. The outermost band also fades *scale* to zero, because at 800 m the fog is only 3% and hides nothing, so instances have to dissolve rather than pop.
-- **At most one kind rebuilds per `update()`.** Grass re-places every 10 m of travel, which at fly speed is three times a second; stacking it into the same frame as a tree pass is a visible hitch for no reason. Measured worst single call: 1.7 ms.
+- **At most one kind rebuilds per** `update()`**.** Grass re-places every 10 m of travel, which at fly speed is three times a second; stacking it into the same frame as a tree pass is a visible hitch for no reason. Measured worst single call: 1.7 ms.
 
 Rejection order is cheap-to-expensive -- density roll, jitter, radius, distance taper, *then* the first `heightAt` -- so the far majority of candidates cost one hash. Grass inverts the usual radius/density trade (30 m disc, tufts ~2.5 m apart) because past 30 m a tuft is a sub-pixel speck, and within 30 m it is the only thing giving the ground texture at walking pace. That cost is the rebuild, not the triangles: at spacing 1.6 it measured 3.0 ms, a fifth of a frame, and had to be widened.
 
@@ -623,7 +762,7 @@ The zoning is concentric and every radius is one constant in `VILLAGE_PLAN`: pla
 Four decisions worth keeping:
 
 - **Paths are ribbon geometry, not a splat channel.** §7's packed-dirt channel is the right answer for long-distance paths across a chunk, but a village lays ~1,100 m of path inside 240 m and the splat mask's resolution is the chunk's, not the village's. A ribbon is four vertices per polyline point (feathered edge, surface, surface, feathered edge), height-sampled per vertex so it lies on the ground, with `polygonOffset` to beat z-fighting. Cost measured: 918 path triangles for the whole village.
-- **The static parts are one merged mesh, not a `BatchedMesh`.** The scatter uses batching because trees stream continuously and per-instance culling earns its keep. A village is ~450 static pieces all within 240 m of each other -- per-instance culling would cull nothing and charge a matrix upload per piece per frame. Merged, the entire village is **one draw call**.
+- **The static parts are one merged mesh, not a** `BatchedMesh`**.** The scatter uses batching because trees stream continuously and per-instance culling earns its keep. A village is ~450 static pieces all within 240 m of each other -- per-instance culling would cull nothing and charge a matrix upload per piece per frame. Merged, the entire village is **one draw call**.
 - **Fire is instanced, and no light is attached to it.** §5 allows exactly one real-time light and the sun has it. Torches and bonfires are emissive `MeshBasicMaterial` geometry that flickers on two incommensurable sines, so the flicker never settles into a visible beat, and the flame widens as it shortens -- a flame that only scales in Y reads as a pulsing cone.
 - **Smoke is opaque and shrinks to nothing.** §7 forbids alpha blending in anything instanced, because blending inside a batch cannot be depth-sorted. So each puff is a pure function of `time + phase` -- no state, no per-frame allocation, identical if the village unloads and returns -- that grows as it rises, drifts on an accelerating wind, and scales through zero instead of fading.
 
@@ -638,7 +777,7 @@ The village also feeds the scatter an exclusion predicate (`Villages.excludes`),
 ### Splat blending: 4 layers, 4 channels
 
 | Layer | Placement rule |
-|---|---|
+| --- | --- |
 | **Snow** | Elevation above snowline, plus noise, plus weather accumulation (§10). Reduced on steep slopes -- snow does not cling to cliffs |
 | **Rock** | Slope above threshold. Dominant on cliffs and gorge walls |
 | **Grass** | Low elevation + moisture. Warmer valleys |
@@ -656,6 +795,10 @@ The terrain uses its own material with small tiling textures -- **not** the prop
 Until the splat textures exist, the surface gets its grain from a `MeshLambertMaterial` patched through `onBeforeCompile`: a sin-free hash noise at two octaves (~0.5 m grit and ~3.5 m patches), a brightness speckle on everything, then dirt and moss mixes gated on `vColor.g > max(vColor.r, vColor.b)` so only vegetated ground gets them. It fades out between 12 m and 95 m, because past that it is per-pixel noise nobody asked for.
 
 **Keyed to world position, in the fragment shader, deliberately.** Anything baked per-vertex would rescale itself at every quadtree ring and pop as the LOD changed -- the grain would visibly breathe as you walked. Same reason the base classification in `chunk-mesh.js` stays coarse: it is the only part that *can* live on vertices.
+
+**And "keyed to world position" has to include the classifier's INPUTS, not just its output grid.** `shade()` obeyed the rule on paper -- one colour per vertex, no scale-dependent noise -- while breaking it completely, because the steepness it classified on was the mesh normal, a central difference over the chunk's own cell: 1 m at a leaf and 128 m at depth 3. Steepness is what keeps snow off cliffs, and an alpine face standing at 74° over 1 m averages out to 24° over 128 m, so the identical ground came out bare rock up close and solid white from a distance. Over 400 snow-capable sites the white fraction ran **31.5% at the leaf to 55.8% at depth 3, rising monotonically with cell size**; flying away from close terrain repainted the world one chunk-shaped square at a time. The fix is that the classification slope is now measured over a **fixed 1 m stencil** (`CLASS_EPS`) regardless of chunk size, which flattens that to 31.5% → 29.8%. Leaves are exempt and therefore bit-identical, since their cells already *are* the stencil; coarse chunks pay four extra `heightAt` per vertex, once, and then cache. `check-terrain.mjs` guards the drift, because every other drill in the suite watches geometry and bookkeeping and none of them can see a colour.
+
+The general form is worth keeping: **a per-vertex quantity is only LOD-safe if every term feeding it is a function of world position alone.** Mesh normals are not -- they are a function of the mesh.
 
 Two things this pass got wrong the first time, both worth remembering. Vertex colours and plain `THREE.Color` uniforms are **linear working space**, and the palette had been authored as if they were sRGB: linear 0.33 is sRGB 0.60, which under a 2.1-intensity sun came out as pale mint green. Dark gritty ground lives around linear 0.05. And the speckle is what makes speed legible -- on untextured ground at 29 m/s you cannot tell you are moving at all.
 
@@ -771,7 +914,7 @@ The same pass accumulates `mean_a(cos^2(h_a))`, the closed-form cosine-weighted 
 
 **Two shading granularities.** Terrain samples the horizon map **per fragment**; props and village geometry sample it **per vertex** and pass a `vec2` varying. Terrain has to be per-fragment because far-LOD triangles are 64 m across and per-vertex shading would pin every shadow edge to a quadtree boundary. Props are the triangle budget, and a tree is small against a mountain shadow, so per-vertex is not a compromise there -- it is the right answer.
 
-`WorldLighting.patch()` chains onto any existing `onBeforeCompile` rather than replacing it, which is how the terrain keeps its own surface-grain patch. The gate runs those patches against three.js's real `ShaderLib.lambert` source and asserts the injected identifiers are present, because **a `String.replace` that matches nothing returns the string unchanged** -- a three.js version bump that renames a chunk would silently delete every shadow in the game while everything still compiled and rendered.
+`WorldLighting.patch()` chains onto any existing `onBeforeCompile` rather than replacing it, which is how the terrain keeps its own surface-grain patch. The gate runs those patches against three.js's real `ShaderLib.lambert` source and asserts the injected identifiers are present, because **a** `String.replace` **that matches nothing returns the string unchanged** -- a three.js version bump that renames a chunk would silently delete every shadow in the game while everything still compiled and rendered.
 
 The uniforms are shared **by reference** into each compiled shader, so the horizon maps can land four seconds after the world is already on screen with no recompile and no pop. Until they arrive a flag uniform makes the sampler functions early-return 1.0.
 
@@ -785,8 +928,8 @@ The obvious repair -- raise `hemiIntensity` -- cannot work, and it is worth bein
 
 The fix is three terms, and the important one is not a multiplier:
 
-- **`skyGlow` x `skyGlowAmt`** -- an **additive**, albedo-independent glow added to `reflectedLight.indirectDiffuse` in `lighting.js`, *after* the BRDF has already multiplied in `diffuseColor`. Physically this is airglow and scattered starlight, which really are additive at the eye. It lifts a 4% trunk and 90% snow by the same absolute amount, which is exactly the behaviour needed and exactly what a multiplier cannot give.
-- **`skyFloor`** -- remaps the AO term so that full occlusion means `skyFloor` rather than zero. At noon zero is right, because the sun fills the gully the AO term is darkening. After dark the ambient *is* the light, so an unfloored 0.1 occlusion leaves a crease with a tenth of all the illumination there is. Grass is self-occluding by construction, which is why the grass was the worst of it.
+- `skyGlow` **x** `skyGlowAmt` -- an **additive**, albedo-independent glow added to `reflectedLight.indirectDiffuse` in `lighting.js`, *after* the BRDF has already multiplied in `diffuseColor`. Physically this is airglow and scattered starlight, which really are additive at the eye. It lifts a 4% trunk and 90% snow by the same absolute amount, which is exactly the behaviour needed and exactly what a multiplier cannot give.
+- `skyFloor` -- remaps the AO term so that full occlusion means `skyFloor` rather than zero. At noon zero is right, because the sun fills the gully the AO term is darkening. After dark the ambient *is* the light, so an unfloored 0.1 occlusion leaves a crease with a tenth of all the illumination there is. Grass is self-occluding by construction, which is why the grass was the worst of it.
 - **Raised night hemisphere and moonlight**, which now *rise* slightly from -6 deg to -18 deg rather than falling. That is deliberate and it is not the sky -- it is the **dark-adaptation curve**. We cannot adapt the viewer's eye; the headset is worn in a lit room. So the number that belongs in the table is what a dark-adapted eye reports, which is far closer to a moonlit photograph than to the physical millionth-of-noon ratio.
 
 All three are exactly zero above the horizon, so **noon is bit-for-bit unchanged** and the gate asserts it.
@@ -809,12 +952,12 @@ Worse, the gate was actively enforcing it. `worstGround >= 12` swept every surfa
 
 The repair is one move with two halves, and neither half works alone:
 
-- **`MOONLIGHT.intensity` 0.50 -> 1.20**, and
+- `MOONLIGHT.intensity` **0.50 -> 1.20**, and
 - **night ambient cut about 40%** across all six sub-horizon rows: `hemiIntensity` 0.50 -> 0.30, `skyGlowAmt` 0.0095 -> 0.0062, `skyFloor` 0.155 -> 0.115 at full dark, proportionately at -12, -6 and -4.
 
 Measured after, at a full moon well up: **lit grass 106 / shaded grass 24, lit snow 197 / shaded snow 43** -- 4.4:1 and 4.6:1, where it was 2.4:1. Snow on the moonlit side is now genuinely bright enough to walk by and a slope with the moon behind it goes most of the way to a silhouette, which is the requested behaviour and is the same behaviour on both counts.
 
-**Distance is the other half of "flat", and fog does it.** A night that is correctly lit at 20 m is still a diorama if the ridge at 800 m is a slightly dimmer version of the same thing. `fogDensity` at full dark goes **0.0004 -> 0.0022** and the night fog colour goes **`0x121729` -> `0x080b14`**, which is darker than the night sky. Since `FogExp2` is `1 - exp(-(density x d)^2)` that gives 0.4% at 30 m, 5% at 100 m, 35% at 300 m, 82% at 600 m and 99% at 1 km: the near field is untouched, the middle distance loses its detail, and a far ridge becomes a black cutout against a lighter sky.
+**Distance is the other half of "flat", and fog does it.** A night that is correctly lit at 20 m is still a diorama if the ridge at 800 m is a slightly dimmer version of the same thing. `fogDensity` at full dark goes **0.0004 -> 0.0022** and the night fog colour goes `0x121729` **->** `0x080b14`, which is darker than the night sky. Since `FogExp2` is `1 - exp(-(density x d)^2)` that gives 0.4% at 30 m, 5% at 100 m, 35% at 300 m, 82% at 600 m and 99% at 1 km: the near field is untouched, the middle distance loses its detail, and a far ridge becomes a black cutout against a lighter sky.
 
 This is not aerosol and the file says so -- the air does not thicken at 22:00. It is the same dark-adaptation problem as the rest of §8, viewed along the depth axis. A dark-adapted eye loses contrast sensitivity well before it loses light, so at night the far half of a landscape does not get dim, it stops *resolving*. An exponential-squared falloff toward a colour darker than the sky is that shape. It also has the useful side effect of making the aurora, the moon and the stars the brightest things in the frame by a wide margin, which at night they should be.
 
@@ -874,7 +1017,7 @@ The gate carries four new promises: distant moonlit ground is 40-62% of the grou
 
 - **No textures and no UVs at all.** Each mesh carries 2-3 materials that are solid `Kd` colors (`Green`, `Wood`). Flat-shaded.
 - Poly counts are above target. ⚠️ **Corrected:** the counts first recorded here were *quads*, not triangles, and were therefore half the real cost. Measured after triangulation: `CommonTree_1` = **2,888** tris (recorded 1,444), `PineTree_1` = **1,920** (recorded 958), `Rock_1` = **70** (recorded 36). `len(mesh.polygons)` is the trap -- see `tools/props/common.py:tri_count`. **Decimation is required even for these**, and by twice as much as it looked.
-- **`_Snow` variants exist for nearly every species** (`PineTree_Snow`, `CommonTree_Snow`, `BirchTree_Snow`, `Bush_Snow`, `Rock_Snow`, `TreeStump_Snow`, `Willow_Snow`). Directly usable for a snowy mountainscape and for a snow-accumulation swap.
+- `_Snow` **variants exist for nearly every species** (`PineTree_Snow`, `CommonTree_Snow`, `BirchTree_Snow`, `Bush_Snow`, `Rock_Snow`, `TreeStump_Snow`, `Willow_Snow`). Directly usable for a snowy mountainscape and for a snow-accumulation swap.
 - ~40 distinct species prefixes, most with 5 variants each. Ample variety for the whole project.
 
 Also present: `tmp/placeholder-props/high-poly-to-decimate/` -- 23 zipped higher-poly assets (cabins, watchtower, windmill, boulders, ferns, grasses) needing heavy decimation.
@@ -883,12 +1026,12 @@ Also present: `tmp/placeholder-props/high-poly-to-decimate/` -- 23 zipped higher
 
 **Art direction, stated precisely so it does not drift again: low-poly geometry with N64-resolution textures.** Ocarina/Majora, or a lower-res Skyrim. Explicitly **not** the flat-shaded untextured low-poly look. The Quaternius bootstrap assets happen to be flat-colored; that is a property of the placeholders, not the target.
 
-Textures live in a **`DataArrayTexture`** rather than a packed 2048² atlas. Each vertex carries a `texLayer` index attribute; the shader samples `texture(sampler2DArray, vec3(uv, layer))`. One texture binding, so still one material, so `BatchedMesh` still batches everything (§5). Layer sizing is settled below -- 128×128, in two arrays.
+Textures live in a `DataArrayTexture` rather than a packed 2048² atlas. Each vertex carries a `texLayer` index attribute; the shader samples `texture(sampler2DArray, vec3(uv, layer))`. One texture binding, so still one material, so `BatchedMesh` still batches everything (§5). Layer sizing is settled below -- 128×128, in two arrays.
 
 Why the array wins at this texture size:
 
-| | Atlas | Texture array |
-|---|---|---|
+|  | Atlas | Texture array |
+| --- | --- | --- |
 | Mip bleeding | Neighboring tiles blend at coarse mips. Padding mitigates, never fixes | None -- layers mip independently |
 | Padding overhead | A 32px tile needs ~4px borders to survive mip 2 → 40×40, **+56%**. Surviving mip 3 needs 8px → **+125%** | None |
 | UV tiling / wrapping | Impossible. Cannot repeat bark up a trunk | Native per layer |
@@ -918,8 +1061,8 @@ Meshy emits, per generated asset, a mesh with an auto-generated UV unwrap and it
 
 The pipeline produces two genuinely different kinds of texture, and conflating them is what made 64×64 look sufficient:
 
-| | **Class A -- tiling surfaces** | **Class B -- per-asset UV atlases** |
-|---|---|---|
+|  | **Class A -- tiling surfaces** | **Class B -- per-asset UV atlases** |
+| --- | --- | --- |
 | Source | Hand-made or procedural, a handful total | Meshy output, one per asset |
 | Content | One material, repeating (snow, rock, grass, dirt, bark) | An entire object's unwrap |
 | UVs | `RepeatWrapping`, scaled by world size | Native 0-1, `ClampToEdge` |
@@ -948,6 +1091,30 @@ Since texture sharing is unavailable, variety has to be generated in the **shade
 
 This is a better fit for an AI-generation pipeline than texture reuse would have been: Meshy produces *shapes*, and the shader produces *variation on* those shapes.
 
+### Procedural variant banks: baked once at load, never per instance
+
+`buildFern()` is a *generator*, and the temptation it creates is to call it per instance so no two ferns in the world are alike. Don't. The runtime model is a **fixed bank of N baked variants**, built once, added to the batch as N geometry IDs, and assigned to instances by hash. Per-instance uniqueness comes from the transform and the tint, not from the mesh: yaw, uniform and non-uniform scale, lean, and hue/value multiply. Those cost nothing and read as more variety than mesh topology does at any distance past arm's reach.
+
+The reason is not generation speed, it is that a per-instance mesh cannot be batched. `BatchedMesh` draws many geometries in one call because they are *resident* -- each has a reserved vertex range and a geometry ID. A mesh that exists for one instance and then never again defeats the entire §5 architecture, and it also defeats LOD, since `setGeometryIdAt` swaps between *pre-existing* tiers.
+
+The bank is cheap enough that variant count is not a budget conversation. Measured (`scripts/probe-variants.mjs`, the fern generator at 5 shape axes × 3 values):
+
+| Bank | Vertex + index bytes | Build time | Avg / max tris per variant |
+| --- | --- | --- | --- |
+| 6 variants | 10.4 KB | 1.1 ms | 35 / 54 |
+| 12 variants | 22.4 KB | 0.7 ms | 39 / 72 |
+| 40 variants | 77.7 KB | 1.3 ms | 41 / 72 |
+
+Forty fern variants are **78 KB and one millisecond**. Against a download budget measured in megabytes (above) and a 1-2 s load, the honest answer is that 6 and 40 are the same price and the choice should be made on whether a seventh shape is *visible*, not on cost. Extrapolated to trees at ~500 tris (the fern runs ~49 bytes per triangle), 6 kinds × 6 variants × two mesh tiers is roughly **1.1 MB** -- still not the constraint.
+
+What a variant *does* cost, and the three things to watch:
+
+- **Space in the batch's shared vertex arena, and nothing more.** There is no fixed number of "geometry slots": `BatchedMesh` takes `maxVertexCount` / `maxIndexCount` at construction and grows its geometry list freely inside that arena. `scatter.js` sizes the arena by summing the variants it is about to add and calls `addGeometry(g)` with no reservation, so **variants pack tight and the only cost of one more is its own vertices.** Terrain is the opposite case and deliberately so -- it reserves uniform `CHUNK_VERTS`-sized ranges because chunks are *recycled* through `setGeometryAt`. Reserve a uniform size only if a geometry will be overwritten in place; a variant bank never is.
+- **Nothing per frame.** Variant count does not appear in the per-frame cost at all -- `onBeforeRender` walks *instances*, not geometries, and multi-draw submits one call regardless. This is the asymmetry worth internalising: **geometries are nearly free, instances are not.** It is the same fact as the crossover in §5, seen from the asset side.
+- **One texture, or the bank stops being cheap.** All variants must share a material and a texture layer, which for the fern means the atlas-joining constraint in the header of `src/props/fern.js` (`uv` renamed to `uvProj`, a constant `texLayer` attribute). A variant that needs its own layer is a new *kind*, not a variant, and it pays §9's per-layer costs.
+
+The far card tier is exempt from all of this and deliberately so: cards live in `InstancedMesh` (§5), which draws *one* geometry, so the entire variant bank collapses to a single quad past the card crossover. Variety out there is tint and scale only, which is all that survives at 20 px anyway.
+
 ### Headless Blender pass -- built, `tools/props/`
 
 Blender 5.2 LTS. `npm run props` (finds Blender on PATH, falls back to the macOS bundle path); `npm run props:manifest` regenerates the asset list; `npm run check` gates the output via `scripts/check-props.mjs`.
@@ -969,7 +1136,7 @@ The texture bake sits *inside* the LOD loop rather than once before it, and that
 **Source classes, detected not declared.** The manifest cannot know which a file is without opening it, so the pipeline branches on what it finds:
 
 | Class | Detect | Colour path | Layer cost | Count |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Textured | a Base Color image | Smart UV Project + Cycles bake into a 128² layer, per mesh tier | 1 layer per mesh tier | 7 |
 | Flat `Kd` | materials, no images | material colour → vertex colours | **0 layers** | 138 |
 | Vertex-coloured | a colour attribute and no materials | kept as-is | **0 layers** | 1 (scanned PLY) |
@@ -1005,23 +1172,23 @@ The cost of the reordering is one Cycles bake per tier instead of one per asset,
 2. **The glTF exporter drops a colour attribute no material node reads.** It logs a warning and writes a mesh that loads perfectly and renders flat and AO-less -- discarding the entire point of the pipeline. Fixed by collapsing each asset to one material that reads `Col` (which also gives one primitive per LOD, which is what `BatchedMesh` wants anyway).
 3. **Decimation moves the bounds.** Collapsing a vertex removes an extreme, so every LOD came out shorter than its source and floating -- a 16-tri plant lost 28% of its height and hovered 15 cm. Each tier is now re-grounded and re-scaled, which also removes a visible shrink-and-hop at every LOD transition.
 4. **The decimator does not delete the vertices it collapses**, it unhooks them from the faces and leaves them in the mesh -- 6,180 of `tree_deciduous_hi_LOD0`'s 7,285. Everything that measures the mesh afterwards then reads a ghost point-cloud of the *pre*-decimation silhouette, so the renormalisation in (3) computed a scale factor of 1.0 and applied it perfectly while the exporter -- which writes only face-referenced vertices -- shipped a tree 2% short and a fern 35% short and floating 4 cm. The reported vertex counts were fiction by the same margin, which is not cosmetic: `BatchedMesh` reserves storage against vertex count. This one cost a long hunt for a stale-depsgraph bug, because `obj.bound_box` *is* a lazily-refreshed cache and had the identical symptom; flushing the depsgraph produced bit-identical numbers, which is what finally ruled it out. `drop_loose` now runs at the end of every decimation.
-5. **`transform_apply` bakes an object's LOCAL basis, not its world matrix.** Megascans (and any DCC export that carried a unit conversion) parents the mesh to an empty called `world_root` holding a 0.01 scale and a -90° X rotation. Applying transforms on the child bakes an identity and leaves the parent's scale and rotation exactly where they were: in the node hierarchy. Every helper in `common.py` measures `matrix_world`, so every measurement inside Blender was *right* and the build reported OK -- while what shipped was mesh data 100× too large, lying on its side, with a node transform to compensate. `forest_floor_cluster` exported at 167.75 m against a 1.15 m spec with its base 82 m below the floor. `import_any` now unparents keeping the world placement, before anything measures.
+5. `transform_apply` **bakes an object's LOCAL basis, not its world matrix.** Megascans (and any DCC export that carried a unit conversion) parents the mesh to an empty called `world_root` holding a 0.01 scale and a -90° X rotation. Applying transforms on the child bakes an identity and leaves the parent's scale and rotation exactly where they were: in the node hierarchy. Every helper in `common.py` measures `matrix_world`, so every measurement inside Blender was *right* and the build reported OK -- while what shipped was mesh data 100× too large, lying on its side, with a node transform to compensate. `forest_floor_cluster` exported at 167.75 m against a 1.15 m spec with its base 82 m below the floor. `import_any` now unparents keeping the world placement, before anything measures.
 
 Note the shape all five share, because it is the argument for the gate: **the thing that looks at the mesh and the thing that ships the mesh were reading different data.** In (4) Blender saw vertices the exporter would not write; in (5) the exporter wrote a transform Blender had already folded into its measurement. No amount of checking inside the tool finds either. Only assertions against the exported bytes do.
 
-**Four more bugs the gate could not catch, and the argument for `props.html`.** The five above were all found by asserting against exported bytes. These four were not, because every byte was valid -- the manifest, the GLB and the PNGs were internally consistent and individually correct, and the assets still rendered as black slabs, as magenta, or as nothing. What found them was building the previewer and looking:
+**Four more bugs the gate could not catch, and the argument for** `props.html`**.** The five above were all found by asserting against exported bytes. These four were not, because every byte was valid -- the manifest, the GLB and the PNGs were internally consistent and individually correct, and the assets still rendered as black slabs, as magenta, or as nothing. What found them was building the previewer and looking:
 
 6. **The albedo bake came unstuck from the mesh under decimation.** Described in full above. Five assets rendered fully transparent.
 7. **Every textured asset's impostor sheet was solid black.** `render_billboard` re-shades LOD0's material as emission of its own base colour, and it ran *after* `finalize_material` had installed the 1×1 export stub. A textured asset's vertex colours are deliberately white (§8 puts only AO in them), so the emission shader had nothing to sample but the stub. All 9 affected; the 92 vertex-colour impostors were fine, which is exactly why nobody noticed. The stub swap now happens after the billboard render instead of before it.
-8. **`tree_oak_hero` baked magenta.** (The asset was later excluded for an unrelated reason -- see below -- but the fix is general and the trap is common.) Its FBX names three textures at paths that do not exist -- two in a `source/` directory that ships them in a sibling `textures/`, one preserving the author's own machine (`C:/_Evan/PHOTSCANS/TREES/...`). `has_images` correctly answers yes, because the material genuinely has a Base Color image node; the image just has no pixels, and Blender substitutes magenta. So the asset took the textured path and baked (249, 0, 249) across 44% of its footprint. `resolve_missing_images` now runs `find_missing_files` outward from the mesh one directory at a time, stopping as soon as nothing is missing -- outward-in rather than starting wide, because all the packs live inside one download tree and a basename match across packs would quietly dress one asset in another's bark. Two false starts worth recording: `img.has_data` is the wrong test (Blender loads pixels lazily, so it reports healthy textures as missing), and the check has to run *after* `attach_loose_textures`, which replaces the broken material on the three `grass_tall_scan` assets outright.
-9. **`windmill` baked pure black albedo, and the source was blameless.** One material, one clean UV layer, a 2048² sRGB texture with mean RGB (0.43, 0.28, 0.15). The material carried `metallicFactor: 1.0` from whatever generated it, and a Cycles **DIFFUSE** bake of a fully metallic surface is black by definition -- metal has no diffuse albedo. Cycles was right; the question was wrong. `neutralize_pbr` now zeroes Metallic, Transmission and Specular before every bake, links included, because `watchtower` drives the same input from a metallic-roughness map. None of these have a consumer downstream: §8 ships one directional light against a Lambert-ish pass, and the bake's only job is to capture albedo.
+8. `tree_oak_hero` **baked magenta.** (The asset was later excluded for an unrelated reason -- see below -- but the fix is general and the trap is common.) Its FBX names three textures at paths that do not exist -- two in a `source/` directory that ships them in a sibling `textures/`, one preserving the author's own machine (`C:/_Evan/PHOTSCANS/TREES/...`). `has_images` correctly answers yes, because the material genuinely has a Base Color image node; the image just has no pixels, and Blender substitutes magenta. So the asset took the textured path and baked (249, 0, 249) across 44% of its footprint. `resolve_missing_images` now runs `find_missing_files` outward from the mesh one directory at a time, stopping as soon as nothing is missing -- outward-in rather than starting wide, because all the packs live inside one download tree and a basename match across packs would quietly dress one asset in another's bark. Two false starts worth recording: `img.has_data` is the wrong test (Blender loads pixels lazily, so it reports healthy textures as missing), and the check has to run *after* `attach_loose_textures`, which replaces the broken material on the three `grass_tall_scan` assets outright.
+9. `windmill` **baked pure black albedo, and the source was blameless.** One material, one clean UV layer, a 2048² sRGB texture with mean RGB (0.43, 0.28, 0.15). The material carried `metallicFactor: 1.0` from whatever generated it, and a Cycles **DIFFUSE** bake of a fully metallic surface is black by definition -- metal has no diffuse albedo. Cycles was right; the question was wrong. `neutralize_pbr` now zeroes Metallic, Transmission and Specular before every bake, links included, because `watchtower` drives the same input from a metallic-roughness map. None of these have a consumer downstream: §8 ships one directional light against a Lambert-ish pass, and the bake's only job is to capture albedo.
 
 **Two more, found by rendering the built GLBs rather than by reading them.** Bugs 6-9 were caught by measuring the layer PNGs. These two survived that too, because the layers were *fine* -- the meshes underneath were not:
 
 10. **A collapse decimator does not fail on a tuft of grass, it succeeds by flattening the blades.** `grass_tall_scan_a` shipped 83 triangles inside a 2.7 m bounding box holding **95 cm² of total surface area** -- 70 of the 83 under 1 cm². It rendered as a dozen specks. Every check passed it: the triangle count was plausible, the manifest matched the GLB, and the UV-footprint probe scored it **89% healthy**, because the surviving triangles still address perfectly good green texels. UV area and world area are independent quantities once a collapse flattens a triangle, and only the second one decides whether you can see it. Four variants were affected; raising the target does not rescue them but buys the area back at a price no scatter can pay -- measured on Var A, targets of 16 and 64 both land on 83 triangles and 0.1% of the source area, 200 buys 35%, 600 buys 79%, and it takes 2,000 to be intact. A 600-triangle grass tuft is a tree. All four are excluded, and `check-props.mjs` now fails any tier that is both >25% degenerate triangles and presenting <5% of its own silhouette. The two halves are deliberately an AND: a fern is legitimately 6 slivers in 15, and a wispy tuft is legitimately thin, but nothing healthy is both.
 11. **"Textured" is per asset and materials are per slot, so an asset can be a chimera.** `has_images` answers yes if *any* material has a Base Color image, and the other slots then bake whatever Principled's default happens to be. `tree_deciduous_hi` shipped a correctly textured trunk under a canopy of 0.8 grey, because its `normal leaves` material has no image at all -- the green `leaves color.png` sits in the source folder and nothing in the FBX references it. Two related traps in the same asset class: an importer that wires a foliage atlas to **Alpha only** leaves Base Color at the same grey default (`wire_orphan_color` now fills an empty Base Color from an image the material already references), and that image is tagged **Non-Color**, so wiring it without re-tagging bakes sRGB green as if it were linear and crushes it to black. Both are fixed; what is not fixable in the build is the missing reference, so `untextured_slots` reports it and the gate repeats it.
 
-And one that is not a pipeline bug at all, recorded because it looked exactly like one: **`tree_oak_hero` at its 1,703-triangle floor is 1,794 twig cards, 5 trunk polygons and zero leaves.** Its three source objects compete for a single budget, and the twig object wins for the reason the card foliage is excluded at all -- twig cards are boundary edges the collapse decimator cannot touch, while the solid trunk collapses freely. The hero oak was a bundle of bare sticks. Excluded. The lesson generalises: **a per-asset triangle budget is not per-object, and a mesh that mixes card geometry with solid geometry spends all of it on the cards.**
+And one that is not a pipeline bug at all, recorded because it looked exactly like one: `tree_oak_hero` **at its 1,703-triangle floor is 1,794 twig cards, 5 trunk polygons and zero leaves.** Its three source objects compete for a single budget, and the twig object wins for the reason the card foliage is excluded at all -- twig cards are boundary edges the collapse decimator cannot touch, while the solid trunk collapses freely. The hero oak was a bundle of bare sticks. Excluded. The lesson generalises: **a per-asset triangle budget is not per-object, and a mesh that mixes card geometry with solid geometry spends all of it on the cards.**
 
 The shape these six share is different from the first five and worth naming separately: **the bytes were all valid and the picture was still wrong.** A gate that reads the output can only check invariants somebody thought to write down. `props.html` now carries the measurements (UV-footprint survival per tier, sheet coverage and luminance) so these failures announce themselves in the panel rather than needing to be rediscovered -- but the general lesson is that an asset pipeline needs an eye, not only an assertion.
 
@@ -1109,7 +1276,7 @@ None of these exist in the headset, and that is the point -- they are for readin
 
 - **Fly mode uses Minecraft's bindings**, because that is the muscle memory already in place: hold space to rise, hold shift to sink, either freely combined with WASD, double-tap space to drop back to walking. There is no separate "enter fly mode" key -- the first tap is it, since the only reason to press space on the ground is to leave it. Vertical is world-up regardless of gaze; forward follows the full look direction including pitch. Vertical input counts toward movement demand while flying and must not while walking, or the ascend key silently becomes a walk key.
 - **Click to measure.** A click plants a red beam on the ground and puts a live rangefinder in the stats panel (slant, horizontal and vertical separately -- on a mountainside they diverge hard). Live against the *current* eye position rather than frozen at click time, so you can plant a beam on a ridge and walk the distance down; calibrating your own sense of scale needs the walk, not the snapshot. Drag-to-look and click-to-measure are separated by accumulated pointer travel (5 px), not by a modifier.
-- **The hit test raymarches `heightAt()`, never raycasts the mesh.** Terrain geometry is the current LOD selection, so a mesh raycast would measure the same rock differently depending on how far away you were standing, which is the one error a measuring tool cannot make. It also works on chunks that have not finished streaming.
+- **The hit test raymarches** `heightAt()`**, never raycasts the mesh.** Terrain geometry is the current LOD selection, so a mesh raycast would measure the same rock differently depending on how far away you were standing, which is the one error a measuring tool cannot make. It also works on chunks that have not finished streaming.
 - **One stats panel per platform.** The head-locked canvas HUD is the only one that exists in the headset; the DOM corner panel is the only one worth having on a monitor. Both render the same lines with the same prefix-driven colour coding (`##` heading, `!!` bad, `++` good, `%%` measurement).
 
 ### Pacing
@@ -1298,7 +1465,7 @@ float shear = F.z * ( alt - baseKm );
 float f0 = aurFold( km + shear, t, amp, B.w, uActivity );
 ```
 
--- which makes the sample point depend on altitude, so the fold pattern *leans* as it rises instead of standing straight up. Two things fall out of it that were not designed:
+\-- which makes the sample point depend on altitude, so the fold pattern *leans* as it rises instead of standing straight up. Two things fall out of it that were not designed:
 
 1. **A sheared curtain stops having a vertical edge.** Each altitude row samples a different part of the fold, so the silhouette twists and the thing reads as a volume rather than a sheet. That is the entire "smoke, not curtain" look, with no new geometry and no new noise call.
 2. **Along-band drift becomes vertical motion.** With shear, a `drift` of `d` moves the pattern up the column at exactly `-d/shear`. So **flaming aurora** -- a wave running up the field lines -- is just a large shear plus a *negative* drift. The sign is not optional; a positive drift runs the waves downward, which looks like rain.
@@ -1347,7 +1514,7 @@ The fix is structural: `SLOTS` 9 -> 11, `FLOOR_BANDS = 2`, a `floor: true` flag 
 
 #### Two gates added because of mistakes made writing this round
 
-- **`minBands >= 1`.** A python slice while retuning silently deleted both `band({...})` rows from `flaming aurora`, and **every existing check still passed**: `[].every(...)` is vacuously true, no field was non-finite, no band exceeded the radius cap. A form with no bands is invisible and nothing noticed. Now it fails loudly.
+- `minBands >= 1`**.** A python slice while retuning silently deleted both `band({...})` rows from `flaming aurora`, and **every existing check still passed**: `[].every(...)` is vacuously true, no field was non-finite, no band exceeded the radius cap. A form with no bands is invisible and nothing noticed. Now it fails loudly.
 - **HUD line width.** With a reserved floor plus up to three competing forms, the worst-case label ran to 98 characters against a 62-character panel budget (1024 px, 22 px margin, 26 px monospace at 0.60 em advance), and `fillText` does not complain -- it just draws off the edge. The label now budgets its width and appends `+N more`; the gate sweeps the composer and asserts the worst case fits. It is currently **60 of 62**.
 
 Also: a GLSL comment inside a JS template literal must not contain a backtick. Five of them did, and the resulting `SyntaxError` pointed at a line 100 lines away from any of them.
@@ -1380,7 +1547,7 @@ float presence = mix( 1.0, 0.08 + 2.55 * region * region * ( 0.22 + 0.78 * wash 
 
 The honest mechanism for a wandering hem is perspective on a meandering ground track, and it is **bounded by the camera**: a band 250 km out cannot fold 60 km outward and still fit a 444 km far plane, and folding it that far buys only about 2 degrees of apparent vertical swing anyway. So the work is split between two terms with different costs.
 
-- **A meander octave in `aurFold`**, weighted **2.30** against the base octave's 1.0 and four times its wavelength. Deliberately *not* scaled by the per-band `foldHz`, because otherwise a form with tight folds stops snaking and goes back to a ruled line -- the meander is the band's course across the sky, not its texture. This costs far-plane budget, and three bands had to be trimmed after it landed.
+- **A meander octave in** `aurFold`, weighted **2.30** against the base octave's 1.0 and four times its wavelength. Deliberately *not* scaled by the per-band `foldHz`, because otherwise a form with tight folds stops snaking and goes back to a ruled line -- the meander is the band's course across the sky, not its texture. This costs far-plane budget, and three bands had to be trimmed after it landed.
 - **A "swoop"** that slides a whole column bodily up and down. It moves `baseKm` and `topKm` together, so the *normalised* deposition curve is untouched -- the colour ramp and the hem softness are functions of `h` in column-local space and cannot see it. It costs no radius at all.
 
 Both amplitudes are tied to `fold`, so a form still has one sinuousness knob rather than three that have to be kept in agreement.
@@ -1391,9 +1558,9 @@ This changed the gate's arithmetic in a way worth recording. The fold bound was 
 
 > *Pattern 13 doesn't at all look like a vortex, it just looks like a triangle*
 
-Round three built four "vortex" forms out of one parameter, `shear`. **`shear` offsets where the fold noise is sampled as a function of altitude.** The pattern therefore leans -- but the sheet it is drawn on is still a flat ribbon standing on a fixed ground track, so from any single viewpoint it is a leaning triangle. There is no far side, because there is no side.
+Round three built four "vortex" forms out of one parameter, `shear`. `shear` **offsets where the fold noise is sampled as a function of altitude.** The pattern therefore leans -- but the sheet it is drawn on is still a flat ribbon standing on a fixed ground track, so from any single viewpoint it is a leaning triangle. There is no far side, because there is no side.
 
-The new parameter is **`twist`: degrees of *footprint azimuth* per km of altitude.** It rotates where the column *is*, not where its texture is sampled, so the band becomes an actual helix with a near limb and a far limb that you can walk around and look up into. It required reordering the vertex shader -- `km` is now computed first, because the azimuth depends on altitude, altitude depends on the per-column terms, and every one of those is a function of `km`, which itself depends only on `aU`.
+The new parameter is `twist`**: degrees of *footprint azimuth* per km of altitude.** It rotates where the column *is*, not where its texture is sampled, so the band becomes an actual helix with a near limb and a far limb that you can walk around and look up into. It required reordering the vertex shader -- `km` is now computed first, because the azimuth depends on altitude, altitude depends on the per-column terms, and every one of those is a function of `km`, which itself depends only on `aU`.
 
 The gate's vortex check now requires **both** `shear > 0.8` and `twist > 0.1` on every band, which is precisely the failure that shipped last round.
 
@@ -1418,7 +1585,7 @@ Four forms were cut: diffuse patches, pulsating patches, SAR arc and smoke plume
 
 A commented-out block is dead text -- nothing parses it, so its numbers drift out of agreement with the shader, and by the time you want the form back it no longer runs. A retired row is still a live object: the gate's geometry sweeps still see it, so it still has to fit the far plane, and it can be restored by deleting one line. The cost is exactly one new failure mode -- a retired row leaking back into `PATTERNS` -- which is what the two new checks catch.
 
-Retiring diffuse patches had a consequence that nearly shipped as a bug: **it held `floor: true` and the two reserved slots**, so cutting it would have removed the guarantee that the sky is never empty. `quiet arc` was promoted to the floor and given a second band, which keeps `FLOOR_BANDS = 2` and `SLOTS = 11` exactly as they were.
+Retiring diffuse patches had a consequence that nearly shipped as a bug: **it held** `floor: true` **and the two reserved slots**, so cutting it would have removed the guarantee that the sky is never empty. `quiet arc` was promoted to the floor and given a second band, which keeps `FLOOR_BANDS = 2` and `SLOTS = 11` exactly as they were.
 
 One more: `STEVE` was declared the rarest form with `gate: 0.78` on a 24.8 h period, and drew **zero frames in a simulated fortnight**. Thirteen cycles of the selector noise is too few draws for a threshold that high, so "rarest" had quietly become "never". A shorter period (19.3 h) and a slightly lower gate (0.72) give the same ~0.6% duty at a sample count where that number means something. The pre-existing "every named form actually occurs" check is what caught it.
 
@@ -1438,7 +1605,7 @@ Then exactly **one** mechanism was re-applied, because "step by step" is a testa
 
 The complaint is about the arc's *course*, not its texture, so the mechanism is a fourth term in `aurFold` that is slower and longer than the three curtain octaves: rate `0.014` against `0.055/0.130/0.310`, wavelength scale `0.0034` against `0.0125/0.0410/0.1350`. Two properties make it a course rather than more noise.
 
-It is **not multiplied by `foldHz`**, the per-form fold frequency. A form with tight folds should have tight folds on a wandering arc, not a tightly wandering arc.
+It is **not multiplied by** `foldHz`, the per-form fold frequency. A form with tight folds should have tight folds on a wandering arc, not a tightly wandering arc.
 
 Its amplitude is `MEANDER_FRAC * dist`, a **fraction of the band's own distance**, and its wavelength is divided by `mScale = 250 / dist`. Both of those make it an angular quantity: a band at 86 km and a band at 295 km swing the same number of degrees of sky over the same span of azimuth. This is the one piece of round five's thinking that was worth keeping, and it is kept without the shell that motivated it.
 
@@ -1450,17 +1617,17 @@ And it **replaces** the old first octave's `amp * 2.30` weighting rather than ad
 
 The complaint is qualitative and the fix has to be checkable, so the gate walks each band's footprint and reduces the hem to numbers. Getting to ones that mean anything took several passes, and the failures are the useful part.
 
-- **`swing`**, peak-to-peak hem elevation in degrees, is the complaint made numeric: "slightly wiggly straight-ish line" was 0.72 degrees.
-- **`bends`** counts extrema of the hem **resampled into 16 buckets**. Counting every local extremum instead measures *jitter*: the quiet arc had 24 of them while swinging 0.7 degrees, which is the ruled-line-with-fuzz being scored as maximally sinuous.
-- **`path`**, the swing of that same coarse resample, separates the arc's course from the curtain's texture.
-- **`flat`** is the identical walk with `meander = 0`, so the mechanism under test can be isolated by differencing rather than inferred from a total.
+- `swing`, peak-to-peak hem elevation in degrees, is the complaint made numeric: "slightly wiggly straight-ish line" was 0.72 degrees.
+- `bends` counts extrema of the hem **resampled into 16 buckets**. Counting every local extremum instead measures *jitter*: the quiet arc had 24 of them while swinging 0.7 degrees, which is the ruled-line-with-fuzz being scored as maximally sinuous.
+- `path`, the swing of that same coarse resample, separates the arc's course from the curtain's texture.
+- `flat` is the identical walk with `meander = 0`, so the mechanism under test can be isolated by differencing rather than inferred from a total.
 
 Two checks then had to be narrowed rather than strengthened. "The meander is what is doing it" cannot be tested by differencing on a band already swinging 6 degrees from folds alone, because two overlapping waves do not add their extremes, so that check runs only on the bands whose folds leave the hem under 2 degrees (14 of 35). And "the straight forms stay straight" is asserted **per band against what the catalogue declares** (`meander < 0.5`) rather than globally, because STEVE's green picket-fence band sits at 103 km and folds 2.2 degrees on its own, with the meander contributing 0.0.
 
 The measured catalogue, hem swing with the meander's own share in brackets:
 
 | form | swing | bends | fold-backs |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | quiet arc | 2.3 (2.2) | 3.0 | 0.0 |
 | multiple arcs | 2.8 (2.7) | 3.7 | 0.3 |
 | rayed band | 3.4 (3.1) | 5.2 | 4.3 |
@@ -1480,7 +1647,7 @@ The measured catalogue, hem swing with the meander's own share in brackets:
 
 The gate's floors are 2 degrees of swing and 2 bends for anything the catalogue calls an arc, 1 degree of meander contribution for the fold-quiet bands, 0.5 degrees maximum for the declared-straight ones, `rMax < 20000` and `rMin > 4000` units, and 35,640 triangles unchanged.
 
-One risk is unchanged and worth restating: **nothing in `npm run check` links a shader.** The vertex shader was dumped and hand-read after this change, and the redeclaration scanner from round six is what stands between here and repeating round five, but neither is a compiler.
+One risk is unchanged and worth restating: **nothing in** `npm run check` **links a shader.** The vertex shader was dumped and hand-read after this change, and the redeclaration scanner from round six is what stands between here and repeating round five, but neither is a compiler.
 
 ### Round six: the shader did not compile
 
@@ -1548,8 +1715,8 @@ The tangential octaves are **the same noise sampled a quarter wavelength along**
 
 "Does it fold back" cannot be read off a parameter -- two bands with identical `curl` fold a different number of times depending on fold wavelength, span and distance. So `aurHash`/`aurNoise`/`aurFold` are ported to JS in `check-daynight.mjs` (the uint32 wrap is `Math.imul(x >>> 0, k) >>> 0`), the footprint is walked, and the measurement is **the number of times its bearing reverses** -- zero being exactly the old polar graph. Measured per frame, worst band of each form:
 
-| | | | |
-|---|---|---|---|
+|  |  |  |  |
+| --- | --- | --- | --- |
 | quiet arc 5.4 | multiple arcs 6.3 | rayed band 15.5 | drapery 18.1 |
 | corona 8.6 | breakup 28.4 | omega band 2.9 | picket fence 4.6 |
 | STEVE 0.3 | vapour spiral 2.2 | rising column 4.3 | flaming aurora 12.4 |
@@ -1600,83 +1767,84 @@ Twelve forms, hems -0.4 to 69 degrees, and the same eleven slots and 35,640 tria
 
 ## 14. Build order
 
-1. ~~**§0 spike.**~~ **DONE.** `WEBGL_multi_draw` confirmed, `BatchedMesh` confirmed batching (6 draw calls at 8,000 instances), ceiling measured at ~800k tris/frame as the HUD reports it. In-world HUD built, preserved at `spike.html`. Still to read off the HUD on the next headset visit: `MAX_ARRAY_TEXTURE_LAYERS`, foveation delta, 90 Hz, 20-minute soak.
-2. **Terrain + locomotion vertical slice.** Worker-generated quadtree terrain with skirts, heightmap collision, slope limiting, eased locomotion, vignette, snap turn, recenter. **Get this to a stable 72 Hz with an empty world before adding a single tree.**
-   **Code complete and checked headlessly** (`npm run check`): sim layer validated (relief, slope distribution, winding, spawn connectivity), terrain streaming drilled over an 18 km walk (slot accounting, eviction, geometry placement), empty world at 195k tris / 1 draw call.
+ 1. **~~§0 spike.~~** **DONE.** `WEBGL_multi_draw` confirmed, `BatchedMesh` confirmed batching (6 draw calls at 8,000 instances), ceiling measured at ~800k tris/frame as the HUD reports it, on a headset stronger than the Quest 2 target -- to be re-measured. In-world HUD built, preserved at `spike.html`. Still to read off the HUD on the next headset visit: `MAX_ARRAY_TEXTURE_LAYERS`, foveation delta, 90 Hz, 20-minute soak.
+ 2. **Terrain + locomotion vertical slice.** Worker-generated quadtree terrain with skirts, heightmap collision, slope limiting, eased locomotion, vignette, snap turn, recenter. **Get this to a stable 72 Hz with an empty world before adding a single tree.**\
+    **Code complete and checked headlessly** (`npm run check`): sim layer validated (relief, slope distribution, winding, spawn connectivity), terrain streaming drilled over an 18 km walk (slot accounting, eviction, geometry placement), empty world at 195k tris / 1 draw call.
 
-   Then a first desktop look drove a round of tuning, all recorded above: horizontal scale halved to Skyrim proportions (§3), peaks unclamped and jagged (§3), `splitK` 1.3 -> 1.0 (§5), procedural speckle over a much darker palette (§7), and a four-kind scale-reference scatter at ~24k tris in the same batch (§6). Desktop locomotion lost the acceleration ramp and gained a 29 m/s fly mode (§12), and walking strafe turned out to be mirrored -- the right-hand perpendicular had its sign backwards.
+    Then a first desktop look drove a round of tuning, all recorded above: horizontal scale halved to Skyrim proportions (§3), peaks unclamped and jagged (§3), `splitK` 1.3 -> 1.0 (§5), procedural speckle over a much darker palette (§7), and a four-kind scale-reference scatter at ~24k tris in the same batch (§6). Desktop locomotion lost the acceleration ramp and gained a 29 m/s fly mode (§12), and walking strafe turned out to be mirrored -- the right-hand perpendicular had its sign backwards.
 
-   A second desktop look found that pass had overshot: doubling frequencies while holding relief had doubled every slope, walling the world off behind 800 m cliffs and turning the terrace layer into a staircase. Fixed by cutting `mountainRelief` 690 -> 175 and moving cliff duty from the ridge backbone to the Worley break layer (§3), which took walkable area from 53% to 91% and reachability from 72% to 99%. Same round: a macro colour layer so distance stops reading as flat green and grey (§7), `splitK` -> 1.1 on the strength of a measured plateau (§5), and the desktop survey tools -- Minecraft flight bindings, click-to-measure, one stats panel per platform (§12). Two measurement scripts had silently stopped measuring what they named and were fixed alongside; `check-terrain.mjs` had also lost its exit code, so the gate was printing failures and exiting 0.
+    A second desktop look found that pass had overshot: doubling frequencies while holding relief had doubled every slope, walling the world off behind 800 m cliffs and turning the terrace layer into a staircase. Fixed by cutting `mountainRelief` 690 -> 175 and moving cliff duty from the ridge backbone to the Worley break layer (§3), which took walkable area from 53% to 91% and reachability from 72% to 99%. Same round: a macro colour layer so distance stops reading as flat green and grey (§7), `splitK` -> 1.1 on the strength of a measured plateau (§5), and the desktop survey tools -- Minecraft flight bindings, click-to-measure, one stats panel per platform (§12). Two measurement scripts had silently stopped measuring what they named and were fixed alongside; `check-terrain.mjs` had also lost its exit code, so the gate was printing failures and exiting 0.
 
-   A third round replaced the terrain's backbone outright rather than tuning it. The mountains read as wrinkled cloth, and the cause was that a ridged multifractal can only make filaments -- so the backbone became plain fbm, ridged noise was demoted to a rare masked arête accent, and the summit-jag layer was caught making the same mistake one scale down (§3). Alongside it: a `mountainFloor` so the low country has a backbone under it and the 4 km plains disappear, `valleyRelief` raised above `mountainRelief` so the world has high and low country, cliffs gated to real ranges, and every elevation-keyed constant outside `TUNING` re-read off the probe (§3). The measurement side grew as much as the terrain did -- `scripts/heightmap-png.mjs` renders the field at the reference heightmap's exact 6.29 m/px, and `probe-terrain.mjs` gained summit apex angle and area-weighted plain size, because "too pointy" and "too open" cannot be tuned against until they are numbers.
+    A third round replaced the terrain's backbone outright rather than tuning it. The mountains read as wrinkled cloth, and the cause was that a ridged multifractal can only make filaments -- so the backbone became plain fbm, ridged noise was demoted to a rare masked arête accent, and the summit-jag layer was caught making the same mistake one scale down (§3). Alongside it: a `mountainFloor` so the low country has a backbone under it and the 4 km plains disappear, `valleyRelief` raised above `mountainRelief` so the world has high and low country, cliffs gated to real ranges, and every elevation-keyed constant outside `TUNING` re-read off the probe (§3). The measurement side grew as much as the terrain did -- `scripts/heightmap-png.mjs` renders the field at the reference heightmap's exact 6.29 m/px, and `probe-terrain.mjs` gained summit apex angle and area-weighted plain size, because "too pointy" and "too open" cannot be tuned against until they are numbers.
 
-   A fourth round put the height back without bringing the wrinkled cloth back with it. The fbm backbone had bought naturalism by giving up altitude and peak frequency, so it was split into three tiers -- massif, sub-peak, detail -- because 600 m summits and 200-500 m peak spacing are geometrically incompatible in a single layer and have to be answered at different scales (§3). Getting there turned up four ways a height field can look wrong while every percentile stays green: a domain warp shears any octave finer than its own amplitude, an fbm gain above 0.5 grows fur, a hard clamp in a remap creases along a level set, and ridged noise still makes filaments. All four were found by rendering the field *shaded* -- hillshading went into `heightmap-png.mjs` and immediately became the primary character instrument, because a crease is a discontinuity in the gradient and an elevation map does not show the gradient. Alongside: `softFloor`/`softCeil` replacing the hard clamps, `detailOctaves` to 7 so relief exists down to 1.4 m, colour bands and the treeline re-read off the probe (the old treeline sat *under* the snow line, which is why snowy ground had no trees), prop density doubled in all four kinds, and double-click-to-travel at 500 m/s (§12) so a region 8 km away is reachable in a survey session. One more instrument had drifted -- `check-sim.mjs` was masking nodes while `player.js` tests edges, reading 71.8% against the player's true 92.5% on the same terrain.
+    A fourth round put the height back without bringing the wrinkled cloth back with it. The fbm backbone had bought naturalism by giving up altitude and peak frequency, so it was split into three tiers -- massif, sub-peak, detail -- because 600 m summits and 200-500 m peak spacing are geometrically incompatible in a single layer and have to be answered at different scales (§3). Getting there turned up four ways a height field can look wrong while every percentile stays green: a domain warp shears any octave finer than its own amplitude, an fbm gain above 0.5 grows fur, a hard clamp in a remap creases along a level set, and ridged noise still makes filaments. All four were found by rendering the field *shaded* -- hillshading went into `heightmap-png.mjs` and immediately became the primary character instrument, because a crease is a discontinuity in the gradient and an elevation map does not show the gradient. Alongside: `softFloor`/`softCeil` replacing the hard clamps, `detailOctaves` to 7 so relief exists down to 1.4 m, colour bands and the treeline re-read off the probe (the old treeline sat *under* the snow line, which is why snowy ground had no trees), prop density doubled in all four kinds, and double-click-to-travel at 500 m/s (§12) so a region 8 km away is reachable in a survey session. One more instrument had drifted -- `check-sim.mjs` was masking nodes while `player.js` tests edges, reading 71.8% against the player's true 92.5% on the same terrain.
 
-   A fifth round shrank the world and tried to make the walkable/unwalkable boundary visible. The macro was finally right, so nothing about landform character was touched: instead a single `SHRINK` constant at the `heightAt` boundary evaluates the field at `x * SHRINK` and divides the result, which is *provably* conformal -- horizontal and vertical cannot drift apart, every slope angle is bit-identical, and it is one number to undo, where the equivalent edit is 11 frequencies and 12 amplitudes. It also halves the peaks, 664 m to 332 m, directly reversing round four's headline change; that was the explicit ask and the cost is worth stating plainly. Every elevation constant outside `TUNING` had to be halved by hand in six files, which nothing can check. Two more instruments had drifted, both the same mistake in a new place: the reference render still cropped 6437 m when the point of that comparison is *features per pixel* rather than metres per pixel, and the probe's `TOTAL_RELIEF` was still reading pre-shrink `TUNING` against post-shrink heights. A `hm-human-shaded` render at 0.29 m/px was added, and it is the only view at which the 10 m scale is big enough to have a shape at all -- at 1.5 m/px a 10 m hummock is seven pixels, which is a smudge whether it is a crisp scarp or a clay mound.
+    A fifth round shrank the world and tried to make the walkable/unwalkable boundary visible. The macro was finally right, so nothing about landform character was touched: instead a single `SHRINK` constant at the `heightAt` boundary evaluates the field at `x * SHRINK` and divides the result, which is *provably* conformal -- horizontal and vertical cannot drift apart, every slope angle is bit-identical, and it is one number to undo, where the equivalent edit is 11 frequencies and 12 amplitudes. It also halves the peaks, 664 m to 332 m, directly reversing round four's headline change; that was the explicit ask and the cost is worth stating plainly. Every elevation constant outside `TUNING` had to be halved by hand in six files, which nothing can check. Two more instruments had drifted, both the same mistake in a new place: the reference render still cropped 6437 m when the point of that comparison is *features per pixel* rather than metres per pixel, and the probe's `TOTAL_RELIEF` was still reading pre-shrink `TUNING` against post-shrink heights. A `hm-human-shaded` render at 0.29 m/px was added, and it is the only view at which the 10 m scale is big enough to have a shape at all -- at 1.5 m/px a 10 m hummock is seven pixels, which is a smudge whether it is a crisp scarp or a clay mound.
 
-   The "smooth molded clay" complaint turned out to be arithmetic rather than character: two multipliers compounded on valley floors and left ~0.44 m of relief over a 91 m base wavelength, a 0.4% grade, which shades as perfectly smooth however many octaves sit on top of it. Also in that round: `detailOctaves` back to 6, because post-shrink a 7th octave lands at 0.7 m against a 1.00 m leaf cell -- that number is set by the renderer, not by taste -- and `terraceStrength` 0.22 -> 0.10, because a terrace riser is ~1.24x the local slope and on ground already at 33-41 deg the risers crossed the scarp knee while the treads did not, giving every band its own hard step. That is the third distinct path to the staircase failure mode.
+    The "smooth molded clay" complaint turned out to be arithmetic rather than character: two multipliers compounded on valley floors and left ~0.44 m of relief over a 91 m base wavelength, a 0.4% grade, which shades as perfectly smooth however many octaves sit on top of it. Also in that round: `detailOctaves` back to 6, because post-shrink a 7th octave lands at 0.7 m against a 1.00 m leaf cell -- that number is set by the renderer, not by taste -- and `terraceStrength` 0.22 -> 0.10, because a terrace riser is ~1.24x the local slope and on ground already at 33-41 deg the risers crossed the scarp knee while the treads did not, giving every band its own hard step. That is the third distinct path to the staircase failure mode.
 
-   The scarp experiment (`SCARP` in `sim/terrain-height.js`, banner-delimited, one flag to disable) is worth recording as a *failure and its correction*. Version one subtracted a constant from ground steeper than 41 deg. It produced beautiful numbers -- the 40-50 deg bin collapsed from 18.5% to 8.4%, a real trough right above the walkable threshold -- and was wrong on the headset, because a constant offset has no gradient, so it cannot steepen anything: all it can do is move the whole face down, and the face still has to rejoin untouched ground at its foot. Every ledge sat in a trench. Version two moves earth instead of removing it -- an unsharp mask, height minus a blur of itself, gated by slope -- so it cuts the hollow at the foot, piles onto the shoulder at the top, and leaves the planar middle alone. A transect across the steepest face in a 3 km box shows +4.3 m of fill on the shoulder, -3 m through the face, and a run-out tapering to -0.4 m instead of a trench. **The honest cost: the bimodality mostly goes with the craters.** They were the same phenomenon -- the trough came *from* the discontinuity -- and the fence-sitting band does not improve at any gain. Two scale lessons fell out: the operator's `eps` matters more than its gain (at 2 m it sharpens the terrain's grain, not the shape of a hillside, which is a 10 m feature), and gain and `eps` are not independent, since in a field with power at every scale the measured bulge grows roughly in proportion to `eps` -- a gain tuned at one is off by 3x at the other, which pinned the cap at both ends along an entire face and produced a square wave.
+    The scarp experiment (`SCARP` in `sim/terrain-height.js`, banner-delimited, one flag to disable) is worth recording as a *failure and its correction*. Version one subtracted a constant from ground steeper than 41 deg. It produced beautiful numbers -- the 40-50 deg bin collapsed from 18.5% to 8.4%, a real trough right above the walkable threshold -- and was wrong on the headset, because a constant offset has no gradient, so it cannot steepen anything: all it can do is move the whole face down, and the face still has to rejoin untouched ground at its foot. Every ledge sat in a trench. Version two moves earth instead of removing it -- an unsharp mask, height minus a blur of itself, gated by slope -- so it cuts the hollow at the foot, piles onto the shoulder at the top, and leaves the planar middle alone. A transect across the steepest face in a 3 km box shows +4.3 m of fill on the shoulder, -3 m through the face, and a run-out tapering to -0.4 m instead of a trench. **The honest cost: the bimodality mostly goes with the craters.** They were the same phenomenon -- the trough came *from* the discontinuity -- and the fence-sitting band does not improve at any gain. Two scale lessons fell out: the operator's `eps` matters more than its gain (at 2 m it sharpens the terrain's grain, not the shape of a hillside, which is a 10 m feature), and gain and `eps` are not independent, since in a field with power at every scale the measured bulge grows roughly in proportion to `eps` -- a gain tuned at one is off by 3x at the other, which pinned the cap at both ends along an entire face and produced a square wave.
 
-   Two performance notes from the same round, both about the cost of asking the field a question. `heightAt` went from one field evaluation to five, so prop scatter -- which asks for height and slope on tens of thousands of candidates per rebuild -- needed `heightAndSlopeAt`, answering both from one shared stencil. The useful part is a guarantee rather than an optimisation: the scarp is identically zero below 41 deg and every prop kind's slope cap is at or below 41, so on any ground a prop can be placed on at all the shared answer is *exactly* `heightAt`, not an approximation. Props cannot float. Second: grass had quietly collapsed to single digits, and the cause was not slope but an elevation band inherited from a taller world -- it thinned from 130 m when the world's median is 137, so two of the four sample sites rejected 70-80% of candidates on altitude before slope was ever asked.
+    Two performance notes from the same round, both about the cost of asking the field a question. `heightAt` went from one field evaluation to five, so prop scatter -- which asks for height and slope on tens of thousands of candidates per rebuild -- needed `heightAndSlopeAt`, answering both from one shared stencil. The useful part is a guarantee rather than an optimisation: the scarp is identically zero below 41 deg and every prop kind's slope cap is at or below 41, so on any ground a prop can be placed on at all the shared answer is *exactly* `heightAt`, not an approximation. Props cannot float. Second: grass had quietly collapsed to single digits, and the cause was not slope but an elevation band inherited from a taller world -- it thinned from 130 m when the world's median is 137, so two of the four sample sites rejected 70-80% of candidates on altitude before slope was ever asked.
 
-   The sky stopped being `scene.background = FOG_COLOR`. A flat sky is not merely dull: it costs depth, because the deep-overhead-to-pale-horizon gradient is one of the cues that places the horizon at infinity, and without it the sky reads as a wall a few hundred metres out, fighting the fog doing the opposite job on the terrain. `src/sky.js` is an inverted sphere with a per-fragment gradient and a two-part sun (a clipped-white core about 1.1 deg across, plus forward-scatter halo). No texture, so nothing to author or round-trip through KTX2, and no banding -- an 8-bit cubemap of a smooth gradient bands badly on a headset. It follows her position but never her rotation, so a snap turn carries the sun with the world.
+    The sky stopped being `scene.background = FOG_COLOR`. A flat sky is not merely dull: it costs depth, because the deep-overhead-to-pale-horizon gradient is one of the cues that places the horizon at infinity, and without it the sky reads as a wall a few hundred metres out, fighting the fog doing the opposite job on the terrain. `src/sky.js` is an inverted sphere with a per-fragment gradient and a two-part sun (a clipped-white core about 1.1 deg across, plus forward-scatter halo). No texture, so nothing to author or round-trip through KTX2, and no banding -- an 8-bit cubemap of a smooth gradient bands badly on a headset. It follows her position but never her rotation, so a snap turn carries the sun with the world.
 
-   **Now run in a browser for the first time in five rounds, which is what turned up the crater bug -- no percentile in the probe could have.** Still not run in a headset: 72 Hz, comfort, and the four §0 HUD numbers remain unverified, and that is what this step is actually gated on.
+    **Now run in a browser for the first time in five rounds, which is what turned up the crater bug -- no percentile in the probe could have.** Still not run in a headset: 72 Hz, comfort, and the four §0 HUD numbers remain unverified, and that is what this step is actually gated on.
 
-   Round six replaced the scarp's unsharp mask with **benching**, which is worth recording because the correction above was itself only half right. The unsharp mask fixed the craters but is *identically zero on a plane*, and a smooth planar over-steep ramp is the worst case in the whole system: she is refused with no visual cue whatsoever. A reported case made it concrete -- walking +x from `-205,151`, 44 deg of featureless snow, bulge contribution `-0.03 m`. Two further scale errors were compounding it. `SCARP.eps` is a HALF-width, so gating at `eps 1.5` reads slope over 3 m while `Player` reads it over 1.5 m, and the blocking step measures 43.6 deg at the limiter's scale and 36.6 deg at the gate's -- the gate gave it a knee of 0.067. And the *gate* wants the limiter's scale by definition, so `eps` is now pinned to `slopeAt`'s 0.75 rather than tuned. With the scales matched, sweeping the gain showed the bulge term was **making the reported complaint worse, not better**: measured over 41 walking transects the raw field refuses her in 176 runs of median 125 cm, and a gain of 9 turned that into 722 runs of median 56 cm. At the limiter's eps the curvature it amplifies is the terrain's grain, not the shape of a hillside. It was deleted.
+    Round six replaced the scarp's unsharp mask with **benching**, which is worth recording because the correction above was itself only half right. The unsharp mask fixed the craters but is *identically zero on a plane*, and a smooth planar over-steep ramp is the worst case in the whole system: she is refused with no visual cue whatsoever. A reported case made it concrete -- walking +x from `-205,151`, 44 deg of featureless snow, bulge contribution `-0.03 m`. Two further scale errors were compounding it. `SCARP.eps` is a HALF-width, so gating at `eps 1.5` reads slope over 3 m while `Player` reads it over 1.5 m, and the blocking step measures 43.6 deg at the limiter's scale and 36.6 deg at the gate's -- the gate gave it a knee of 0.067. And the *gate* wants the limiter's scale by definition, so `eps` is now pinned to `slopeAt`'s 0.75 rather than tuned. With the scales matched, sweeping the gain showed the bulge term was **making the reported complaint worse, not better**: measured over 41 walking transects the raw field refuses her in 176 runs of median 125 cm, and a gain of 9 turned that into 722 runs of median 56 cm. At the limiter's eps the curvature it amplifies is the terrain's grain, not the shape of a hillside. It was deleted.
 
-   Benching replaced it and was **also rejected, from the headset, and `SCARP.enabled` is now `false`.** It remaps each elevation band through an odd power curve about the band's own middle: identity at the boundaries so consecutive bands join with no step, gradient multiplied by `benchPow` across the riser and driven to zero across the tread. Earth cut from the top of each band and packed onto the bottom, and unlike a Laplacian it works on a perfectly planar ramp. Its metrics were the best of the three -- refused ground down from 21.2% to ~15%, and on the reported transect a 15 m unbroken wall became treads at 11 and 15 deg separated by risers at 72-77 deg. It looked like rice paddies. The verdict was *"it's taking things that were continuous cliffs that looked pretty nice and combing the cliffside with these beautiful but unnatural regular curves."*
+    Benching replaced it and was **also rejected, from the headset, and** `SCARP.enabled` **is now** `false`**.** It remaps each elevation band through an odd power curve about the band's own middle: identity at the boundaries so consecutive bands join with no step, gradient multiplied by `benchPow` across the riser and driven to zero across the tread. Earth cut from the top of each band and packed onto the bottom, and unlike a Laplacian it works on a perfectly planar ramp. Its metrics were the best of the three -- refused ground down from 21.2% to ~15%, and on the reported transect a 15 m unbroken wall became treads at 11 and 15 deg separated by risers at 72-77 deg. It looked like rice paddies. The verdict was *"it's taking things that were continuous cliffs that looked pretty nice and combing the cliffside with these beautiful but unnatural regular curves."*
 
-   **That is the fourth time this project has produced corduroy, and this time the cause generalises.** `bench 6 / benchPow 4.5` was chosen entirely on numbers -- 1.6 m of earth moved, refused ground down a quarter, every metric asking for exactly that -- and the hillshade was a paddy field. *No metric can distinguish one legible ledge from six illegible ones, because both move the same earth.* An image sweep gave 10 / 2.0; that still combed, so it was masked by a slow noise to a third of the world; that still combed in the headset. Softening, widening, jittering and masking each thinned the stripes without changing what they were, because **the operator is keyed to absolute elevation and its output is therefore a family of contour-parallel lines at regular vertical intervals -- which is the definition of a terrace.** All four corduroy incidents were something periodic in height. Anything periodic in height is a terrace generator; the parameters only decide how obvious.
+    **That is the fourth time this project has produced corduroy, and this time the cause generalises.** `bench 6 / benchPow 4.5` was chosen entirely on numbers -- 1.6 m of earth moved, refused ground down a quarter, every metric asking for exactly that -- and the hillshade was a paddy field. *No metric can distinguish one legible ledge from six illegible ones, because both move the same earth.* An image sweep gave 10 / 2.0; that still combed, so it was masked by a slow noise to a third of the world; that still combed in the headset. Softening, widening, jittering and masking each thinned the stripes without changing what they were, because **the operator is keyed to absolute elevation and its output is therefore a family of contour-parallel lines at regular vertical intervals -- which is the definition of a terrace.** All four corduroy incidents were something periodic in height. Anything periodic in height is a terrace generator; the parameters only decide how obvious.
 
-   The standing lesson is worth more than the code, which is why the block is left in place behind its flag. Cliffs are not periodic in anything. What real ones have -- jagged in-and-out, bulges, isolated platforms -- is aperiodic and lateral, and wants a noise-driven displacement along the surface rather than a function of `h`. That operator is not written. Turning the flag off is also a real speed-up rather than a neutral revert: `heightAt` short-circuits to a single field evaluation instead of five, and it is the hottest query in the project.
+    The standing lesson is worth more than the code, which is why the block is left in place behind its flag. Cliffs are not periodic in anything. What real ones have -- jagged in-and-out, bulges, isolated platforms -- is aperiodic and lateral, and wants a noise-driven displacement along the surface rather than a function of `h`. That operator is not written. Turning the flag off is also a real speed-up rather than a neutral revert: `heightAt` short-circuits to a single field evaluation instead of five, and it is the hottest query in the project.
 
-   Two process notes. A 340 px sweep tile read as clean where the same setting at 1024 px was visibly combed, so image checks have a resolution floor. And the headset overturned a judgement I had already made from a 1024 px hillshade -- **five rounds of numbers, then two rounds of images, and it still took walking around in it.**
+    Two process notes. A 340 px sweep tile read as clean where the same setting at 1024 px was visibly combed, so image checks have a resolution floor. And the headset overturned a judgement I had already made from a 1024 px hillshade -- **five rounds of numbers, then two rounds of images, and it still took walking around in it.**
 
-   Three surface fixes in the same round, all fragment-side. **The zig-zag on terrain-type boundaries** had two grid-aligned causes: every mesh cell split along the *same* diagonal, so a colour boundary could run straight only along that diagonal and had to staircase across it (hence "some faces look natural and others zig-zag" -- the good ones run with the grain), and the classification is a clean iso-contour of `(h, ny)`. The mesher now picks the shorter diagonal per cell, which is data-dependent so the pattern is irregular, and is independently the better surface because splitting a saddle the wrong way invents a ridge that is not in the field. On top of that the shader displaces the snow/rock decision by a world-space noise, which moves the boundary off the vertex grid entirely -- the real cure is per-fragment classification at step 6, and this is the down payment. **Near-field micro relief** is a normal perturbation, deliberately *not* a 7th height octave: at 0.7 m against a 1.00 m leaf cell it would alias, cost five more field evaluations on the collision path, and feed the slope limiter to manufacture exactly the sub-metre refusals this round removed. **Snow sparkle** is added rather than multiplied and hard-thresholded to the top few percent -- snow's problem is the opposite of grass's, since darkening bright ground reads as dirt rather than as texture.
+    Three surface fixes in the same round, all fragment-side. **The zig-zag on terrain-type boundaries** had two grid-aligned causes: every mesh cell split along the *same* diagonal, so a colour boundary could run straight only along that diagonal and had to staircase across it (hence "some faces look natural and others zig-zag" -- the good ones run with the grain), and the classification is a clean iso-contour of `(h, ny)`. The mesher now picks the shorter diagonal per cell, which is data-dependent so the pattern is irregular, and is independently the better surface because splitting a saddle the wrong way invents a ridge that is not in the field. On top of that the shader displaces the snow/rock decision by a world-space noise, which moves the boundary off the vertex grid entirely -- the real cure is per-fragment classification at step 6, and this is the down payment. **Near-field micro relief** is a normal perturbation, deliberately *not* a 7th height octave: at 0.7 m against a 1.00 m leaf cell it would alias, cost five more field evaluations on the collision path, and feed the slope limiter to manufacture exactly the sub-metre refusals this round removed. **Snow sparkle** is added rather than multiplied and hard-thresholded to the top few percent -- snow's problem is the opposite of grass's, since darkening bright ground reads as dirt rather than as texture.
 
-   The dither's first version fixed the boundary up close and did nothing at range, and the reason is worth keeping because it will recur for every screen-space-invariant trick in this project: its octaves were ~11 m and ~3 m, and 11 m at 2 km subtends about 0.3 degrees. Both octaves average to a flat tint on a distant peak, what survives is the vertex ramp underneath, and that ramp is a function of elevation alone -- so every faraway summit wore a level contour line of snow. **A world-space detail layer has a distance past which it is not a detail layer, and the only fix is at the wavelength.** It is now a four-octave series, ~130 / 42 / 12 / 3.4 m, so something is always resolvable; the octaves are rotated ~37 deg apart because `auroraNoise` is value noise on an axis-aligned lattice, and at range the coarse octave is *all* that is left, so its lattice would be aligned with the very chunk grid the dither exists to hide. Deliberately not distance-gated: it is the same snow line seen from further off, so it should be the same shape. The amplitude that buys is only safe because of an explicit elevation guard -- `auroraVertexSnow` saturates to zero somewhat below the snow line and then stays there for the rest of the world, so vColor cannot tell a fragment 20 m below the line from one 200 m below it, and un-guarded amplitude scatters white flecks across the valleys. World height is the signal vColor threw away; the guard is a 120..165 m ramp on the *amplitude of the noise*, which is why it cannot draw a contour of its own, and it is set off `probe-terrain.mjs` (median elevation 137 m) rather than by eye.
+    The dither's first version fixed the boundary up close and did nothing at range, and the reason is worth keeping because it will recur for every screen-space-invariant trick in this project: its octaves were ~11 m and ~3 m, and 11 m at 2 km subtends about 0.3 degrees. Both octaves average to a flat tint on a distant peak, what survives is the vertex ramp underneath, and that ramp is a function of elevation alone -- so every faraway summit wore a level contour line of snow. **A world-space detail layer has a distance past which it is not a detail layer, and the only fix is at the wavelength.** It is now a four-octave series, ~130 / 42 / 12 / 3.4 m, so something is always resolvable; the octaves are rotated ~37 deg apart because `auroraNoise` is value noise on an axis-aligned lattice, and at range the coarse octave is *all* that is left, so its lattice would be aligned with the very chunk grid the dither exists to hide. Deliberately not distance-gated: it is the same snow line seen from further off, so it should be the same shape. The amplitude that buys is only safe because of an explicit elevation guard -- `auroraVertexSnow` saturates to zero somewhat below the snow line and then stays there for the rest of the world, so vColor cannot tell a fragment 20 m below the line from one 200 m below it, and un-guarded amplitude scatters white flecks across the valleys. World height is the signal vColor threw away; the guard is a 120..165 m ramp on the *amplitude of the noise*, which is why it cannot draw a contour of its own, and it is set off `probe-terrain.mjs` (median elevation 137 m) rather than by eye.
 
-   Then the snow line stopped being a constant, and that is the fix the dither was a proxy for. A fragment shader can break up the *edge* of a boundary but it cannot move the boundary, so with one elevation every summit in a range starts its snow at the same height no matter how ragged the edge is -- and at 2 km the height is all you can see. `TerrainHeight.snowLineAt` makes it a field: mean 148 m, swing +/- 22 m, wavelength ~2.3 km, which measures out to a line running 127..170 m across the world with total coverage unchanged at 41.6%. The wavelength is deliberately slower than the terrain under it (massif spacing is 896 m median) so a whole massif shares one line and its neighbour disagrees; faster than that and it reads as blotching rather than as climate. The two layers now divide cleanly -- **the vertex pass owns where the line is, the fragment pass owns what the edge looks like** -- and the shader's height guard came out, because a fixed window is wrong by up to 22 m in both directions once the line moves. Two consumers had to follow it or silently stop meaning what they said: the treeline is now `snowLineAt + 67` rather than an absolute 215, since "a wide belt of conifers standing in snow" is a statement about the *gap* between the two lines and only held at the mean; and the probe's snow-gap statistic asks `snowLineAt` per sample. `check-terrain.mjs` failed on the first run because it validated placement against the raw `maxElev` -- the right failure, and the tenth time an instrument in this project has drifted out from under the thing it names.
+    Then the snow line stopped being a constant, and that is the fix the dither was a proxy for. A fragment shader can break up the *edge* of a boundary but it cannot move the boundary, so with one elevation every summit in a range starts its snow at the same height no matter how ragged the edge is -- and at 2 km the height is all you can see. `TerrainHeight.snowLineAt` makes it a field: mean 148 m, swing +/- 22 m, wavelength ~2.3 km, which measures out to a line running 127..170 m across the world with total coverage unchanged at 41.6%. The wavelength is deliberately slower than the terrain under it (massif spacing is 896 m median) so a whole massif shares one line and its neighbour disagrees; faster than that and it reads as blotching rather than as climate. The two layers now divide cleanly -- **the vertex pass owns where the line is, the fragment pass owns what the edge looks like** -- and the shader's height guard came out, because a fixed window is wrong by up to 22 m in both directions once the line moves. Two consumers had to follow it or silently stop meaning what they said: the treeline is now `snowLineAt + 67` rather than an absolute 215, since "a wide belt of conifers standing in snow" is a statement about the *gap* between the two lines and only held at the mean; and the probe's snow-gap statistic asks `snowLineAt` per sample. `check-terrain.mjs` failed on the first run because it validated placement against the raw `maxElev` -- the right failure, and the tenth time an instrument in this project has drifted out from under the thing it names.
 
-   **The three failed operators were all attacking the wrong layer, and the fix was four lines in `player.js`.** The reported annoyance was never a terrain problem: `Player._walkable` compared heights over one frame of travel -- 2 cm at 1.45 m/s and 72 Hz -- so a 46 cm patch of 42 deg stopped her dead where a person would step over it. *No amount of sculpting can make a 46 cm feature visible*, which is exactly why every operator that tried either did nothing or wrecked the character of the cliffs. The limiter now takes the gentler of a one-frame and a one-stride baseline (§4 for why the frame test stays). Measured over the same 41 transects the operators were tuned against: refusal runs 738 -> 534, runs shorter than a metre 331 -> 209, refused ground 19.1% -> 16.3%, and the longest unbroken refusal unchanged at 44.5 m -- short spurious ones gone, real cliffs untouched. Median run length went *up*, 120 -> 155 cm, which is the signature to look for.
+    **The three failed operators were all attacking the wrong layer, and the fix was four lines in** `player.js`**.** The reported annoyance was never a terrain problem: `Player._walkable` compared heights over one frame of travel -- 2 cm at 1.45 m/s and 72 Hz -- so a 46 cm patch of 42 deg stopped her dead where a person would step over it. *No amount of sculpting can make a 46 cm feature visible*, which is exactly why every operator that tried either did nothing or wrecked the character of the cliffs. The limiter now takes the gentler of a one-frame and a one-stride baseline (§4 for why the frame test stays). Measured over the same 41 transects the operators were tuned against: refusal runs 738 -> 534, runs shorter than a metre 331 -> 209, refused ground 19.1% -> 16.3%, and the longest unbroken refusal unchanged at 44.5 m -- short spurious ones gone, real cliffs untouched. Median run length went *up*, 120 -> 155 cm, which is the signature to look for.
 
-   Two notes on how that number was picked. Sweeping the stride 0.75 -> 4 m gives a smooth curve with no knee and never eats a cliff (the 44.5 m run survives a 4 m stride), so **the metrics cannot choose it** -- 1.5 m is chosen because it is two paces and because it is `slopeAt`'s own 2 x eps, which finally makes the limiter and the reachability instruments ask the same question. And the reachability gate could not have validated this fix either way: it floods over 16 m edges, so it never saw the 2 cm bug and does not see the repair. Three orders of magnitude of disagreement between the gate and the thing it gates, and it took a headset to notice.
-3. **Phase A global pass.** Elevation (§3), priority-flood, flow accumulation, biomes, village siting, connectivity validation. Pure math, no rendering, most reusable code in the project. Debug it with a 2D canvas map view before it ever renders in 3D.
-   **Code complete and gated** -- `src/sim/hydrology.js`, `src/sim/phase-a.js`, `scripts/check-phase-a.mjs` (43 checks, in `npm run check`), and the map view at `map.html`. Everything measured is written up in §2 under "Phase A as built": the step order had to be inverted because 43% of an uneroded fbm world has no outlet, the carve knob is retained lake *area* after three other framings were measured and rejected, and the world ships fully drained with **no lakes at all** because every alternative leaves 13-17k ponds that collapse the biome system.
-   **"Debug it with a 2D canvas map view before it ever renders in 3D" earned its place in this list on the first look.** The gate was 42 green checks over a river network made entirely of straight 45° segments closing into polygons -- correct drainage, no rivers. The cause was a `sum` where a `max` belonged in the breach router's cost function, and no invariant over a height field can express the difference. **That is the finding this view exists to produce, and the argument for building the instrument before the renderer rather than after.**
-   **Four things are open before this can be called done.** The pass now costs ~3.9 s at 1024² and extrapolates to ~15 s at 2048² against §2's 1-3 s budget -- worse than before, because least-cost routing costs roughly 3x the spanning-tree walk it replaced; elevation sampling is embarrassingly parallel and breaching is now the larger half. §11 has no water bodies to render until deliberate ponding exists. **§3 has no structure above ~2 km**, which is why the map reads as texture and why the drainage is ten thousand small catchments rather than a few river systems -- diagnosed and measured above, deliberately not fixed unilaterally. And **`main.js` still has its own `findSpawn`**, a second implementation of a decision `phase-a.js` owns -- `SPAWN` is exported specifically so it can be consumed, and that should happen when Phase A is wired into the load path rather than being left as a fourteenth-instrument-in-waiting.
-   Not yet seen in a browser: the map view builds clean and its layer painters are exercised by the PNG script, but nothing on that page has been rendered by an actual canvas.
-   **Phase A now also owes §3 something.** The hillside-gulch experiment in §3 came back negative -- no isotropic noise contour can produce fall-line incision -- so the remaining "molded clay" on mid-slopes has exactly one honest fix left, and it is the flow accumulation this step already computes, applied as a carve depth per chunk in Phase B. That makes folding Phase A into the load path a *character* dependency, not just a rivers-and-lakes one.
-4. **Asset pipeline + `BatchedMesh` + texture array.** One species end-to-end. Requires installing Blender.
-   **The Blender half is built** -- `tools/props/`, `npm run props`, gated by `scripts/check-props.mjs` (in `npm run check`). 154 assets in 4 size classes, 75.6k triangles across every LOD, 120 texture layers of a 256 guarantee, 4.46 MB on disk. The LOD question it was blocking on is answered and derived in `scripts/probe-prop-lod.mjs`: **two mesh tiers plus the impostor, and the ladder is per size class** -- see §5's table and §9 for the pipeline itself.
-   **"One species end-to-end before forty" earned its place, several times over.** Every bug worth finding was silent: the exporter dropped every baked vertex colour because no material node read the layer (loads fine, renders flat), the normalisation helpers were written against +Y when Blender's world is +Z (150 assets exported half-buried, looks fine in the viewport), the decimator leaves the vertices it collapses in the mesh, so every measurement taken after it reads the pre-decimation silhouette and the renormalisation pass runs as a no-op (assets export the wrong size, looking like a decimation artefact), and `transform_apply` bakes an object's *local* basis only, so a mesh parented to a Megascans `world_root` empty kept that empty's 0.01 scale and -90° rotation in the node hierarchy and shipped 100× too large and on its side while every in-Blender measurement read correct. None is visible in a screenshot; all four are one assertion each against the exported GLB bytes.
-   **What the pipeline cannot do is the finding to carry into step 5.** The collapse decimator will not collapse across an open boundary and does not report that it stopped, so buildings floor out well above target -- which is *why* §5 now has a one-mesh-tier `structure` class -- and photoreal card foliage cannot be decimated at all (1.4M → 274k tris for a 500 target). Four such assets were built, measured and excluded. Sources have to be game-ready or get authored as cross-cards; there is no conversion setting that rescues them.
-   **A second shopping run then turned that finding into a purchasing rule.** 18 candidates, every one measured by `probe-source.py` before anything was built, which is the instrument the first round's four build-and-measure rejections paid for. **Photoscans are the ideal source and photoreal card foliage is the worst**, and the two are two orders of magnitude apart on the one statistic that matters: Megascans "Raw" scans measure 0.0-0.1% boundary edges and drop from 2M triangles to exactly 500 in a single round, while the card foliage in the same batch measured 42-52% and floored an order of magnitude over budget. 13 were accepted, three rejected on that floor, and two on grounds that have nothing to do with triangles (a tropical croton in a snowy range; a tree whose bark and leaf atlases are separate unreferenced materials). The rule for future shopping: **ask for photoscans or game-ready meshes, never for photoreal foliage, and probe before adding.**
-   **Still open:** the runtime half. Nothing loads `public/props` yet -- `src/props/scatter.js` still builds its geometry procedurally. Compression (meshopt + KTX2) is not done, and the KTX2 *array*-texture round-trip is still unverified.
-5. **Placement, paths, LOD tiering.** The lushness pass. **Build LOD tiering in the same step as placement, never after it** -- §0 measured that undifferentiated full-detail props hit the triangle ceiling at ~4,000 instances, well under the density this world needs. A placement system without LOD cannot be evaluated, because it will be unplayable for reasons that have nothing to do with placement.
-6. **Terrain material.** Splat blending, height-blend, triplanar.
-7. **Lighting.** Horizon maps, AO bake, prop light inheritance, day/night cycle.
-8. **Water.**
-9. **Weather.**
+    Two notes on how that number was picked. Sweeping the stride 0.75 -> 4 m gives a smooth curve with no knee and never eats a cliff (the 44.5 m run survives a 4 m stride), so **the metrics cannot choose it** -- 1.5 m is chosen because it is two paces and because it is `slopeAt`'s own 2 x eps, which finally makes the limiter and the reachability instruments ask the same question. And the reachability gate could not have validated this fix either way: it floods over 16 m edges, so it never saw the 2 cm bug and does not see the repair. Three orders of magnitude of disagreement between the gate and the thing it gates, and it took a headset to notice.
+ 3. **Phase A global pass.** Elevation (§3), priority-flood, flow accumulation, biomes, village siting, connectivity validation. Pure math, no rendering, most reusable code in the project. Debug it with a 2D canvas map view before it ever renders in 3D.\
+    **Code complete and gated** -- `src/sim/hydrology.js`, `src/sim/phase-a.js`, `scripts/check-phase-a.mjs` (43 checks, in `npm run check`), and the map view at `map.html`. Everything measured is written up in §2 under "Phase A as built": the step order had to be inverted because 43% of an uneroded fbm world has no outlet, the carve knob is retained lake *area* after three other framings were measured and rejected, and the world ships fully drained with **no lakes at all** because every alternative leaves 13-17k ponds that collapse the biome system.\
+    **"Debug it with a 2D canvas map view before it ever renders in 3D" earned its place in this list on the first look.** The gate was 42 green checks over a river network made entirely of straight 45° segments closing into polygons -- correct drainage, no rivers. The cause was a `sum` where a `max` belonged in the breach router's cost function, and no invariant over a height field can express the difference. **That is the finding this view exists to produce, and the argument for building the instrument before the renderer rather than after.**\
+    **Four things are open before this can be called done.** The pass now costs ~3.9 s at 1024² and extrapolates to ~15 s at 2048² against §2's 1-3 s budget -- worse than before, because least-cost routing costs roughly 3x the spanning-tree walk it replaced; elevation sampling is embarrassingly parallel and breaching is now the larger half. §11 has no water bodies to render until deliberate ponding exists. **§3 has no structure above ~2 km**, which is why the map reads as texture and why the drainage is ten thousand small catchments rather than a few river systems -- diagnosed and measured above, deliberately not fixed unilaterally. And `main.js` **still has its own** `findSpawn`, a second implementation of a decision `phase-a.js` owns -- `SPAWN` is exported specifically so it can be consumed, and that should happen when Phase A is wired into the load path rather than being left as a fourteenth-instrument-in-waiting.\
+    Not yet seen in a browser: the map view builds clean and its layer painters are exercised by the PNG script, but nothing on that page has been rendered by an actual canvas.\
+    **Phase A now also owes §3 something.** The hillside-gulch experiment in §3 came back negative -- no isotropic noise contour can produce fall-line incision -- so the remaining "molded clay" on mid-slopes has exactly one honest fix left, and it is the flow accumulation this step already computes, applied as a carve depth per chunk in Phase B. That makes folding Phase A into the load path a *character* dependency, not just a rivers-and-lakes one.
+ 4. **Asset pipeline +** `BatchedMesh` **+ texture array.** One species end-to-end. Requires installing Blender.\
+    **The Blender half is built** -- `tools/props/`, `npm run props`, gated by `scripts/check-props.mjs` (in `npm run check`). 154 assets in 4 size classes, 75.6k triangles across every LOD, 120 texture layers of a 256 guarantee, 4.46 MB on disk. The LOD question it was blocking on is answered and derived in `scripts/probe-prop-lod.mjs`: **two mesh tiers plus the impostor, and the ladder is per size class** -- see §5's table and §9 for the pipeline itself.\
+    **"One species end-to-end before forty" earned its place, several times over.** Every bug worth finding was silent: the exporter dropped every baked vertex colour because no material node read the layer (loads fine, renders flat), the normalisation helpers were written against +Y when Blender's world is +Z (150 assets exported half-buried, looks fine in the viewport), the decimator leaves the vertices it collapses in the mesh, so every measurement taken after it reads the pre-decimation silhouette and the renormalisation pass runs as a no-op (assets export the wrong size, looking like a decimation artefact), and `transform_apply` bakes an object's *local* basis only, so a mesh parented to a Megascans `world_root` empty kept that empty's 0.01 scale and -90° rotation in the node hierarchy and shipped 100× too large and on its side while every in-Blender measurement read correct. None is visible in a screenshot; all four are one assertion each against the exported GLB bytes.\
+    **What the pipeline cannot do is the finding to carry into step 5.** The collapse decimator will not collapse across an open boundary and does not report that it stopped, so buildings floor out well above target -- which is *why* §5 now has a one-mesh-tier `structure` class -- and photoreal card foliage cannot be decimated at all (1.4M → 274k tris for a 500 target). Four such assets were built, measured and excluded. Sources have to be game-ready or get authored as cross-cards; there is no conversion setting that rescues them.\
+    **A second shopping run then turned that finding into a purchasing rule.** 18 candidates, every one measured by `probe-source.py` before anything was built, which is the instrument the first round's four build-and-measure rejections paid for. **Photoscans are the ideal source and photoreal card foliage is the worst**, and the two are two orders of magnitude apart on the one statistic that matters: Megascans "Raw" scans measure 0.0-0.1% boundary edges and drop from 2M triangles to exactly 500 in a single round, while the card foliage in the same batch measured 42-52% and floored an order of magnitude over budget. 13 were accepted, three rejected on that floor, and two on grounds that have nothing to do with triangles (a tropical croton in a snowy range; a tree whose bark and leaf atlases are separate unreferenced materials). The rule for future shopping: **ask for photoscans or game-ready meshes, never for photoreal foliage, and probe before adding.**\
+    **Still open:** the runtime half. Nothing loads `public/props` yet -- `src/props/scatter.js` still builds its geometry procedurally. Compression (meshopt + KTX2) is not done, and the KTX2 *array*-texture round-trip is still unverified.
+ 5. **Placement, paths, LOD tiering.** The lushness pass. **Build LOD tiering in the same step as placement, never after it** -- §0 measured that undifferentiated full-detail props hit the triangle ceiling at ~4,000 instances, well under the density this world needs. A placement system without LOD cannot be evaluated, because it will be unplayable for reasons that have nothing to do with placement.
+ 6. **Terrain material.** Splat blending, height-blend, triplanar.
+ 7. **Lighting.** Horizon maps, AO bake, prop light inheritance, day/night cycle.
+ 8. **Water.**
+ 9. **Weather.**
 10. **Aurora and sky.**
 
 ---
 
 ## 15. Decisions deliberately deferred
 
-- **`batched-mesh-extensions`** -- offers BVH culling, LOD helpers, and per-instance uniforms. The per-instance uniform need is eliminated by §8's texture-sampling approach. It is a single-maintainer package sitting under a core system. Validate stock `BatchedMesh` first (§0); adopt only if culling or LOD bookkeeping measurably becomes the bottleneck.
+- `batched-mesh-extensions` -- offers BVH culling, LOD helpers, and per-instance uniforms. The per-instance uniform need is eliminated by §8's texture-sampling approach. It is a single-maintainer package sitting under a core system. Validate stock `BatchedMesh` first (§0); adopt only if culling or LOD bookkeeping measurably becomes the bottleneck.
 - **4096² global sim grid** -- only if stream density is unsatisfying at a low accumulation threshold, and only with the memory caveat in §2.
 - **Per-chunk fine horizon maps** -- ship global-tier-only if too expensive (§8).
 
 ## 16. Open questions
 
-- ~~Does Quest Browser expose `WEBGL_multi_draw`?~~ **Yes** (§0)
-- ~~What are the real draw call and triangle ceilings?~~ **6 draw calls flat; ~800k tris/frame as HUD-reported** (§0)
+- ~~Does Quest Browser expose~~ `WEBGL_multi_draw`~~?~~ **Yes** (§0)
+- ~~What are the real draw call and triangle ceilings?~~ **6 draw calls flat**; the triangle ceiling still needs a Quest 2 reading -- ~350k is derived (§0)
 - ~~Is 64×64 the right base texture size?~~ **No -- 128×128, in two arrays** (§9)
 - Is 60° the right snap angle, or does it want to be 45°? (§12 -- try it)
-- ~~Is ~2.75° of terrain LOD error acceptable on ridgelines?~~ **It can go the other way: 3.58° at `splitK` 1.0 is fine and chunky-at-distance is acceptable** (§5)
+- ~~Is ~2.75° of terrain LOD error acceptable on ridgelines?~~ **It can go the other way: 3.58° at** `splitK` **1.0 is fine and chunky-at-distance is acceptable** (§5)
+- **Is a 2.2° triangle cap acceptable on ridgelines?** The Quest 2 retarget needs it -- 1.2° draws 237k, 68% of the frame, for ground alone -- and it is 1.8x the horizon triangle size the world ships with today. This is the one number that has to be judged in a headset, and it is what `check-sim.mjs`'s terrain-share gate currently fails on (§5)
 - Does the coarse ancestor poke through finer chunks while a new LOD ring streams in? (§5 -- expected artifact, needs eyes on it)
 - Is 2048² adequate for global hydrology at 16 km? (§2)
 - Does snow particle overdraw fit the fill-rate budget? (§10)
@@ -1699,17 +1867,17 @@ Silhouettes, colour, biome transitions, path layout, village siting, LOD pop dis
 This list is why the gates exist, not a disclaimer:
 
 | Lie | Why |
-|---|---|
+| --- | --- |
 | **Fill rate** | Quest renders ~2× the pixels at a higher effective resolution and is fill-bound far more often than a desktop GPU. Alpha-tested foliage overdraw looks free on a monitor and is not |
 | **Stereo cost** | Everything CPU-side and every draw call happens twice; there is no multiview in three.js (§5) |
-| **`discard` cost** | The early-Z penalty from `alphaTest` is an Adreno tiler behaviour with no desktop analogue (§7) |
+| `discard` **cost** | The early-Z penalty from `alphaTest` is an Adreno tiler behaviour with no desktop analogue (§7) |
 | **Thermals** | Minute 3 and minute 20 are different machines. Only a soak finds the cliff |
 | **Foveation** | No desktop equivalent; it is real headroom that only appears on-device |
 | **Scale and comfort** | Tree height, locomotion speed, snap-turn angle, gorge depth, vignette strength. **Not assessable on a monitor at all.** A mountain that reads as majestic on a screen can read as a hill in VR |
 
 ### Making the desktop HUD tell the truth
 
-The §0 HUD stays on desktop and gets a budget line: **red past 1.5M triangles or 60 draw calls** (frame totals, matching the headset's `renderer.info`). Desktop then flags a budget breach the moment it happens, instead of hiding it behind a 200 fps monitor framerate. This converts most performance regressions into desktop-visible failures and shrinks what the gates have to catch to genuinely device-specific effects.
+The §0 HUD stays on desktop and gets a budget line: **red past 350k triangles or 45 draw calls** (frame totals, matching the headset's `renderer.info`). Desktop then flags a budget breach the moment it happens, instead of hiding it behind a 200 fps monitor framerate. This converts most performance regressions into desktop-visible failures and shrinks what the gates have to catch to genuinely device-specific effects.
 
 ### Gates -- put on the headset when
 

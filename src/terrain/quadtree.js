@@ -144,7 +144,17 @@ export const MAX_DEPTH = 10 // 16384 m root / 2^10 = 16 m leaves
 export const LOD = {
   // The widest triangle allowed inside the view cone, in degrees. This is the
   // whole LOD system: one number, meaning what it says.
-  triDeg: 1.2,
+  //
+  // 5.72 is a Quest 2 number, not a quality preference. At 1.2 the ground alone
+  // draws 237k triangles worst case -- 68% of the 350k device budget for a world
+  // containing nothing but terrain. The ladder, measured over 606 positions x 4
+  // headings in scripts/probe-trideg.mjs:
+  //
+  //     1.2 -> 237k (68%)     2.2 -> 113k (32%)     5.72 -> 45k (13%)
+  //
+  // 5.72 was chosen by eye with the [ ] keys and then measured, which is the
+  // right order for this knob. It is chunky and it is meant to be.
+  triDeg: 5.72,
 
   // What the same rule targets OUTSIDE the cone. This is a resolution, not a
   // switch -- peripheral ground still refines, just coarsely -- and getting that
@@ -173,6 +183,13 @@ export const LOD = {
   // two of what turning will ask for, so the stand-in is nearly right instead of
   // nearly flat.
   //
+  // This is CLAMPED UP to triDeg at the point of use, because a periphery finer
+  // than the cone is meaningless. At the shipped 5.72 cap the clamp binds and
+  // the grading does nothing -- peripheral ground gets the same target as the
+  // cone, which is the better outcome anyway now that the worst-case selection
+  // is 163 slots against a pool of 768. The grading resumes on its own if the
+  // knob is taken back below 5.
+  //
   // 5 degrees is the number the terrain was specified with, and it is affordable
   // because the periphery is cheap in exactly the way the cone is expensive:
   // going from no cull to a 5 degree periphery drops the worst-case selection
@@ -184,11 +201,25 @@ export const LOD = {
 }
 
 
-// The floor is the default: 1.2 is as fine as the pool goes (see above). The
-// knob coarsens only, which is honest -- the alternative is a slider whose
-// bottom third throws.
+// The usable band, and BOTH ends are hard walls rather than taste.
+//
+// FLOOR: 1.2 is as fine as the slot pool goes (see above) -- the current
+// selection is exempt from eviction, so a finer setting throws rather than
+// degrading. The default no longer sits on the floor, so the knob now refines as
+// well as coarsens, but it still cannot reach a value that cannot work.
+//
+// CEILING: at 7.125 degrees terrain LOD stops existing. Range is floored at a
+// node's own half-size, so for any node containing the camera the split test is
+//
+//     cell / range  =  (size / CHUNK_RES) / (size / 2)  =  2 / CHUNK_RES  =  1/8
+//
+// -- independent of size, so it either splits every such node or none of them.
+// tan(7.125 deg) = 0.125, and one step past it the root stops subdividing and
+// the entire 16 km world draws as a single chunk with 1 km triangles. Measured:
+// 7.0 deg gives 59 drawn leaves, 7.2 gives 1. This ceiling is a function of
+// CHUNK_RES and moves if that does.
 export const MIN_TRI_DEG = 1.2
-export const MAX_TRI_DEG = 8.0
+export const MAX_TRI_DEG = 7.0
 
 
 // Half-angle of the cone treated as "she can see this", in radians.
@@ -300,7 +331,12 @@ export function selectNodes(
   // where they differ by 1.2%, and the whole point of this file is that the knob
   // means what it says.
   const tanTri = Math.tan((triDeg * Math.PI) / 180)
-  const tanPeriph = Math.tan((periphDeg * Math.PI) / 180)
+  // The periphery is a COARSER target, never a finer one. Without this clamp the
+  // pair inverts as soon as triDeg passes periphDeg -- ground behind the player
+  // refined harder than ground in front of her -- which is nonsense that costs
+  // slots and shows up nowhere. Measured at triDeg 5.72: 178 slots inverted,
+  // 163 clamped, identical drawn triangles.
+  const tanPeriph = Math.tan((Math.max(periphDeg, triDeg) * Math.PI) / 180)
   const culling = cull && cam.yaw !== undefined
 
   const visit = (depth, ix, iz) => {

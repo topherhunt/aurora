@@ -28,8 +28,10 @@
 //
 // Units: `renderer.info` frame totals, matching the §0 HUD. No per-eye halving.
 
-const CEILING = 800_000 // §0, measured on Quest 3
-const TERRAIN = 195_000 // §5, measured at step 2 (304 leaves x 640)
+import { TRI_BUDGET } from '../src/budget.js'
+
+const CEILING = TRI_BUDGET // §0. Quest 2, derived -- re-measure on device
+const TERRAIN = 45_000 // §5, measured at triDeg 5.72 (71 drawn leaves x 640)
 const OTHER = 60_000 // village, water, weather, sky -- §5's estimates summed
 
 // What "chaotically lush and saturated" means as a number. Real closed-canopy
@@ -38,12 +40,15 @@ const OTHER = 60_000 // village, water, weather, sky -- §5's estimates summed
 // which is why section 5 sweeps it rather than trusting it.
 const DENSITY = 0.08
 
-// Fraction of a disc actually in front of you. Quest 3 is ~110 deg horizontal,
+// Fraction of a disc actually in front of you. Quest 2 is ~89 deg horizontal,
 // and per-instance frustum culling (§5) removes the rest.
-const FOV_FRAC = 110 / 360
+const FOV_FRAC = 89 / 360
 
-// Quest 3, per eye: 2064 x 2208 over roughly 110 x 96 deg.
-const PX_PER_DEG = 2208 / 96
+// Quest 2, per eye: the WebXR default framebuffer is ~1440 x 1584 over roughly
+// 89 x 93 deg. That is 17 px/deg against the 23 this was written for, so every
+// pixel figure below is about three quarters of what it used to print -- props
+// go illegible ~26% nearer than the old numbers claimed.
+const PX_PER_DEG = 1584 / 93
 
 const TREE_H = 13.5 // scatter.js buildConifer, the tall variant
 const TREE_D = 4.2 // canopy depth -- what parallax is measured against
@@ -69,7 +74,7 @@ const budget = CEILING - TERRAIN - OTHER
 const treeBudget = budget * 0.5 // grass, rock, bush and village take the rest
 
 console.log('=== 1. The budget props actually have ===\n')
-console.log(`  measured ceiling            ${fmt(CEILING)} tris/frame  (§0, Quest 3)`)
+console.log(`  device ceiling              ${fmt(CEILING)} tris/frame  (§0, derived)`)
 console.log(`  terrain, all LOD rings     -${fmt(TERRAIN)}             (§5, measured)`)
 console.log(`  village + water + sky      -${fmt(OTHER)}             (§5, estimated)`)
 console.log(`  ---------------------------------------`)
