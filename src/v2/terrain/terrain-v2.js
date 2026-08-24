@@ -243,11 +243,22 @@ export class TerrainV2 {
     // the streaming margin and it is large, so the budget question has to be
     // asked of drawnTris.
     //
-    // `finestCell` is the panel's headline: the real cell size of the finest
-    // RENDERED chunk, in metres. Deliberately NOT of the finest selected node --
-    // a selection that wants depth 13 while the streamer is still showing its
-    // depth 7 ancestor would print 6 cm for ground that is visibly 2 m, which is
-    // the one readout that must not lie about what is on screen.
+    // `finestCell` is the cell size of the finest RENDERED chunk anywhere, in
+    // metres. Deliberately NOT of the finest selected node -- a selection that
+    // wants depth 13 while the streamer is still showing its depth 7 ancestor
+    // would print 6 cm for ground that is visibly 2 m.
+    //
+    // `cellUnderfoot` is the same number asked about the chunk she is STANDING
+    // ON, and it is the one the panel prints. The difference is not academic:
+    // the split rule refines by range, so whatever the camera is nearest to is
+    // almost always at the depth cap, and `finestCell` therefore reads 6.3 cm
+    // essentially forever -- a readout that is true, useless, and easy to
+    // mistake for a claim about the ground in front of you. cellUnderfoot moves:
+    // it coarsens as she climbs, it jumps while a chunk under her is streaming
+    // in, and it is null when nothing drawn covers her at all.
+    //
+    // Both are kept because they answer different questions and the probes read
+    // finestCell.
     this.stats = {
       desired: 0,
       rendered: 0,
@@ -267,6 +278,7 @@ export class TerrainV2 {
       workerBusy01: 0,
       deepest: 0,
       finestCell: 0,
+      cellUnderfoot: null,
       triDeg: LOD.triDeg,
     }
 
@@ -379,6 +391,46 @@ export class TerrainV2 {
     if (dirtyRect === null) this._invalidateAll()
     else this._invalidateRect(dirtyRect)
 
+    this._dirty = true
+  }
+
+  /**
+   * Apply a sculpted patch of the COARSE FIELD ITSELF and remesh what it moved.
+   *
+   * setLayers replaces the authored document; this replaces texels of the import
+   * underneath it, which is the one edit in v2 that is not parametric. See
+   * src/v2/height/sculpt.js for why the brush writes the image rather than
+   * accumulating a stroke list.
+   *
+   * `rect` is a half-open texel box {i0, j0, i1, j1}, `data` its contents in
+   * metres, row-major and tightly packed, and `worldRect` the XZ box those texels
+   * can influence -- which is WIDER than the texels themselves, because the
+   * coarse sample is bicubic and each texel is read by a 4x4 stencil. The caller
+   * passes it because the caller owns the heightmap this rect indexes into; the
+   * widening itself is `rectToWorld` in height/sculpt.js.
+   *
+   * The per-worker slice is not an optimisation and not optional: see the
+   * transfer-list argument at the constructor. One array transferred to N workers
+   * leaves N-1 of them holding a husk, and a worker with a zero-length patch
+   * throws where a worker with a zero-length FIELD would silently mesh a plain.
+   */
+  patchHeight(rect, data, worldRect) {
+    if (!validRect(worldRect)) {
+      throw new Error(`TerrainV2.patchHeight: worldRect ${JSON.stringify(worldRect)} is not a rect with finite minX/minZ/maxX/maxZ and max >= min`)
+    }
+    const want = (rect.i1 - rect.i0) * (rect.j1 - rect.j0)
+    if (!(want > 0) || data.length !== want) {
+      throw new Error(`TerrainV2.patchHeight: rect ${JSON.stringify(rect)} wants ${want} samples, got ${data.length}`)
+    }
+
+    // Same order as setLayers: bump first, so every request already in flight is
+    // strictly older than the invalidation about to be stamped over it.
+    this.epoch++
+    for (const w of this.workers) {
+      const copy = data.slice()
+      w.postMessage({ type: 'height', rect, data: copy, epoch: this.epoch }, [copy.buffer])
+    }
+    this._invalidateRect(worldRect)
     this._dirty = true
   }
 
@@ -832,6 +884,10 @@ export class TerrainV2 {
     let tris = 0
     let drawn = 0
     let deepest = 0
+    // Deepest DRAWN chunk that actually contains her, which is a different
+    // question from `deepest` and the one the panel asks. See the note on
+    // cellUnderfoot in the stats block.
+    let underfoot = -1
     for (const [key, entry] of this.cache) {
       if (!entry.slot) continue
       const want = render.has(key)
@@ -843,6 +899,11 @@ export class TerrainV2 {
       tris += entry.tris
       const n = entry.node
       if (n.depth > deepest) deepest = n.depth
+      // n.x/n.z are the node's MIN corner (quadtree-v2.js selectNodes), so this
+      // is a half-open box test and exactly one drawn chunk per depth can match.
+      if (n.depth > underfoot && cam.x >= n.x && cam.x < n.x + n.size && cam.z >= n.z && cam.z < n.z + n.size) {
+        underfoot = n.depth
+      }
       // Mirrors what BatchedMesh's per-instance culling will do on the GPU. It is
       // recomputed here rather than read back because there is nothing to read
       // back -- the cull happens during render, after this runs.
@@ -852,6 +913,10 @@ export class TerrainV2 {
     this.stats.drawnTris = drawn
     this.stats.deepest = deepest
     this.stats.finestCell = cellSize(deepest)
+    // -1 means nothing drawn covers her at all, which is the hole the probe
+    // hunts for. null rather than a fabricated number, so the panel prints ??
+    // instead of quietly showing the cell of ground on the far side of the map.
+    this.stats.cellUnderfoot = underfoot < 0 ? null : cellSize(underfoot)
   }
 
   _evict() {

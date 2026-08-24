@@ -15,10 +15,15 @@ import { buildChunkV2 } from './chunk-mesh-v2.js'
 //
 //   main -> worker   { type: 'init',   heightmap: { width, height, data, meta }, doc, epoch }
 //                    { type: 'layers', doc, epoch }
+//                    { type: 'height', rect, data, epoch }
 //                    { type: 'chunk',  key, epoch, ox, oz, size, res }
 //   worker -> main   { type: 'ready' }
 //                    { type: 'layered', epoch, bakeMs }
 //                    { type: 'chunk',   key, epoch, positions, normals, colors, indices, minY, maxY, skirtDepth, ms }
+//
+// `height` has no reply. Messages from one port arrive in order, so a chunk
+// request posted after a patch is meshed against the patched field by
+// construction, and there is nothing for the main thread to wait on.
 //
 // `epoch` is the whole concurrency story. A chunk is meshed against whichever
 // document the worker holds, and the reply carries the epoch it was built from,
@@ -84,6 +89,30 @@ self.onmessage = (e) => {
     field.setLayers(layers)
     const bakeMs = performance.now() - t0
     self.postMessage({ type: 'layered', epoch: msg.epoch, bakeMs })
+    return
+  }
+
+  if (msg.type === 'height') {
+    if (!field) throw new Error('v2 terrain worker got a height patch before init')
+    // The one edit that writes the IMPORT rather than the document, so unlike
+    // 'layers' there is nothing to deserialize and nothing to rebuild: the texels
+    // are the truth and Heightmap.patch stamps them in place.
+    //
+    // TWO DERIVED THINGS ARE DELIBERATELY NOT REFRESHED HERE.
+    //
+    // field.bands is the altitude ramp, a set of percentiles over all 1024^2
+    // texels. A stroke moves a few hundred of them, which cannot move a
+    // percentile -- and clearing it would recompute the histogram inside whichever
+    // chunk asked first, mid-drag, then paint the freshly meshed chunks off a
+    // ramp their unmeshed neighbours are not using. A seam that follows the brush
+    // is a worse lie than a ramp that is a stroke out of date.
+    //
+    // field.calibration.rough is the detail amplitude, fitted to the IMPORT'S
+    // structure function at 2 and 4 texel lags across the whole world. It
+    // describes the spectrum of the source image, not the ground under the
+    // cursor. Both refresh on the next load, which is also when the sculpt
+    // becomes part of the import rather than an edit on top of it.
+    field.heightmap.patch(msg.rect, msg.data)
     return
   }
 

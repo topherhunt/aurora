@@ -274,6 +274,7 @@ async function bootWorld() {
     layers,
     height,
     markers,
+    terrain,
     onDirty,
     onView,
     orbitLock,
@@ -347,7 +348,17 @@ async function onAction(name) {
   try {
     if (name === 'save') {
       const r = await persist.saveServer(layers)
-      panel.setError(`saved ${r.bytes} B to ${r.path}`)
+      let msg = `saved ${r.bytes} B to ${r.path}`
+      // ONE SAVE BUTTON, TWO FILES. The terrain brush edits the import rather
+      // than the document (see height/sculpt.js), so a sculpted world is only
+      // half-saved by layers.json -- and a second button that has to be
+      // remembered is how an afternoon of sculpting gets lost to a reload.
+      // Written only when there is something to write: it is a megabyte of PNG.
+      if (editor.sculptor.dirty) {
+        const h = await editor.sculptor.save()
+        msg += `, ${(h.bytes / 1024).toFixed(0)} kB to ${h.path}`
+      }
+      panel.setError(msg)
     } else if (name === 'load') {
       const doc = await persist.loadServer()
       if (!doc) throw new Error('no committed world/layers.json to load')
@@ -530,7 +541,13 @@ addEventListener('keyup', (e) => {
 
 // The browser stops delivering keyup while the window is unfocused, so a key
 // held across an alt-tab would otherwise stick down and she would fly away.
-addEventListener('blur', () => held.clear())
+// A held POINTER is the same failure with a worse ending: no pointerup arrives
+// either, and a brush stroke left open keeps digging at 60 Hz for as long as the
+// tab is away.
+addEventListener('blur', () => {
+  held.clear()
+  if (ready) editor.onBlur()
+})
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (!ready) return
@@ -662,7 +679,9 @@ function panelStats() {
     y: headTmp.y,
     z: headTmp.z,
     ground: h,
-    cell: st.finestCell,
+    // The chunk under HER, not the finest one on screen -- see the note on
+    // cellUnderfoot in terrain-v2.js for why those are different readouts.
+    cell: st.cellUnderfoot,
     snowHere: layers.snowLineAt(headTmp.x, headTmp.z),
     snowBase: layers.snow.base,
     mode: editor.active ? `edit:${editor.tool}` : player.flying ? 'fly' : 'walk',

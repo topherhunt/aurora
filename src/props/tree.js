@@ -32,8 +32,9 @@ import { LAYER } from '../textures.js'
 //        + limbs x cone(branchSides, branchRings)
 //        + (limbs x sprays + apexSprays) x cardTris
 //
-// which is the number the previewer (gen-tree.html) puts at the top of its
-// budget panel. DESIGN.md §5 gives the tree class 500 and 130 triangles for its
+// which is `resolveTree` below -- the one place that arithmetic is written, and
+// the number the previewer (gen-tree.html) puts at the top of its budget
+// panel. DESIGN.md §5 gives the tree class 500 and 130 triangles for its
 // two mesh tiers and the bush class 84 / 56 / 28; both are reachable by moving
 // the counts above and nothing else, which is what makes an LOD tier a
 // re-generation rather than a decimation. See §9 bugs 10-11 for why decimating
@@ -55,16 +56,39 @@ import { LAYER } from '../textures.js'
 //   crownPeak 0.5, fullness 2.0   spindle         poplar, cypress
 //   crownPeak 0.9, fullness 1.0   inverted cone   an old open-grown oak
 //
-// HEIGHT IS A SHAPE PARAMETER *AND* A PLACEMENT ONE, and those are different
-// things. Everything here is expressed as a fraction of `height`, so two builds
-// that differ only in `height` are exact scaled copies of each other -- which
-// is correct for the per-instance scale jitter the scatter applies at placement
-// (it is the same plant a bit bigger), and WRONG as a way to make a dwarf pine.
-// A real dwarf pine is not a scaled tower: its trunk is proportionally thicker,
-// its first branch is proportionally lower, and its branches are proportionally
-// longer. So a size ladder in the variant bank has to move `trunkRadius`,
-// `firstBranch` and `branchLength` alongside `height`, and the previewer prints
-// all three in metres for exactly that reason.
+// HEIGHT CHANGES HOW MUCH TREE THERE IS, NOT JUST HOW BIG IT IS DRAWN. Every
+// shape number here is a fraction of `height`, so on its own that would make
+// two builds differing only in height exact scaled copies -- and a scaled copy
+// is the wrong answer in both directions. Scaled UP, the branches stay 13 and
+// the sprays stay 1.5 m, so a 20 m pine is the same sparse skeleton with more
+// air between its parts: barren. Scaled DOWN, a 3 m sapling carries a full
+// grown tree's worth of cards at a size that swallows it.
+//
+// So the counts are stated AT A REFERENCE HEIGHT and scale from there:
+//
+//   k          = height / heightRef
+//   branches  x= k^countPower     sprays per limb x= k^countPower
+//   sprayMetres x= k^sprayPower
+//
+// `countPower` 1 holds the real-world DENSITY constant -- the same branches per
+// metre of trunk and the same sprays per metre of branch at every size, which
+// is what makes a 3 m seedling read as a young tree of the same species rather
+// than as a shrunk photograph, and it is why a seedling is cheap (triangles go
+// as roughly k^2) and a 20 m tree is not. `countPower` 0 restores the old pure
+// scaled copy, which is still what the scatter's per-instance jitter wants: a
+// tree placed 8% bigger is the same plant, not a denser one.
+//
+// `sprayPower` is separate and lower (0.5) because foliage does NOT scale with
+// the tree. A spruce fan is a metre and a half whether the tree is 9 m or 20 m;
+// a sapling's is smaller, but nothing like proportionally. Square root splits
+// that difference, and `resolveTree` reports what a given height actually asks
+// for so the previewer can print it.
+//
+// What this does NOT do is change proportions, and some of them should change:
+// a real dwarf pine has a proportionally thicker trunk, a lower first branch
+// and longer branches than a tower. Those stay a size ladder in the variant
+// bank moving `trunkRadius`, `firstBranch` and `branchLength`, and the
+// previewer prints all three in metres for exactly that reason.
 //
 // FOLIAGE IS MANY SMALL SPRAYS, NOT A FEW BIG CARDS. The tempting way to make
 // a canopy look full is to grow the leaf cards until they cover the gaps, and
@@ -130,7 +154,19 @@ export const TREE_DEFAULTS = {
   seed: 1,
 
   // --- size ---
-  height: 9,           // metres, tip to root. Geometry is rescaled to hit this
+  height: 9,           // metres, tip to root. Geometry is rescaled to hit this,
+                       // AND it drives the counts below -- see the note above
+  heightRef: 9,        // the height every count in this table is stated at. Not
+                       // a shape knob: it says what the numbers MEAN. Move
+                       // `height` away from it and the counts follow
+  countPower: 1,       // how much of a height change goes into COUNTS rather
+                       // than into scale. 1 = constant real-world density
+                       // (branches per metre of trunk, sprays per metre of
+                       // branch); 0 = a pure scaled copy, which is what the
+                       // scatter's per-instance size jitter wants
+  sprayPower: 0.5,     // the same for spray SIZE, and deliberately lower: a
+                       // spruce fan is about a metre and a half whether the
+                       // tree is 9 m or 20 m
 
   // --- trunk ---
   trunkSides: 8,       // sides around. 8 reads as round at any distance you can
@@ -212,7 +248,15 @@ export const TREE_DEFAULTS = {
                        // See addCard: 1 halves the cost of the whole card path
                        // and clips the outer corners of the spray. How much it
                        // clips per cut is printed by gen-layers.mjs
-  sprays: 6,           // leaf cards per limb, INCLUDING one terminal card
+  sprays: 6,           // leaf cards per limb, INCLUDING one terminal card. This
+                       // is the AVERAGE over the crown; see sprayByLength
+  sprayByLength: 0.8,  // how far a limb's share of those cards follows its own
+                       // length. 0 = every limb gets the same count, which puts
+                       // as much foliage on the short branch at the apex as on
+                       // the long one at the hem and gives a conifer a square
+                       // tufted top instead of a point. 1 = fully proportional.
+                       // The total is NORMALISED either way, so this rebalances
+                       // the crown at exactly zero triangles
   apexSprays: 2,       // cards on the TRUNK's own tip. The trunk closes to a
                        // point and the highest branch sits a half-step below
                        // it, so without these every tree ends in a bare spike.
@@ -365,6 +409,10 @@ export const TREE_SPECIES = {
 // shape, so a pine bush is a conifer sapling and an oak bush is a round one.
 export const BUSH_OVERRIDES = {
   height: 1.1,
+  heightRef: 1.1,      // the counts below are a BUSH's counts, stated at a
+                       // bush's height. Without this the height-density law
+                       // would read 1.1 m as a seedling of the 9 m tree and
+                       // deal it one branch and one spray
   firstBranch: 0.04,   // branching from the ground is most of what "bush" means
   branchLength: 0.62,  // and being wider than it is tall is the rest
   branches: 10,
@@ -374,6 +422,67 @@ export const BUSH_OVERRIDES = {
   barkRepeat: 1,
   forks: 0,            // a bush already branches from the ground; forking it as
                        // well triples the limb count against a 84-triangle budget
+}
+
+/**
+ * Every count and cost a set of parameters implies, BEFORE any geometry exists.
+ *
+ * This is the one place the triangle law lives. buildTree builds from what this
+ * returns, the previewer's budget panel prints it, and the probe asserts the
+ * built mesh matches it -- so the law cannot drift away from the builder, which
+ * is exactly what it did when the same arithmetic was written out in three
+ * files. It is also the only honest way to answer "what would a 20 m one cost"
+ * without building it.
+ *
+ *   cone(sides, rings) = sides x ((rings - 1) x 2 + 1)
+ *   limbs              = branches x (1 + forks)
+ *   tris = cone(trunkSides, trunkRings)
+ *        + limbs x cone(branchSides, branchRings)
+ *        + (limbs x sprays + apexSprays) x cardTris
+ *
+ * with `branches` and `sprays` already scaled by height -- see the note at the
+ * top of this file.
+ */
+export function resolveTree(options = {}) {
+  const p = { ...TREE_DEFAULTS, ...options }
+  const k = Math.max(1e-3, p.height) / Math.max(1e-3, p.heightRef)
+  const countK = Math.pow(k, Math.max(0, p.countPower))
+
+  const branches = Math.max(0, Math.round(p.branches * countK))
+  // At least one card per limb once the tree is asking for foliage at all: the
+  // limb cone is drawn either way, and a bare stick costs the same as a stick
+  // with a spray on its tip.
+  const sprays = p.sprays > 0 ? Math.max(1, Math.round(p.sprays * countK)) : 0
+  const forks = Math.max(0, Math.round(p.forks))
+  const apexSprays = Math.max(0, Math.round(p.apexSprays))
+  const cardTris = Math.round(p.cardTris) === 1 ? 1 : 2
+  const limbs = branches * (1 + forks)
+
+  // Mirrors buildTree's own clamps exactly. Under 3 sides addCone draws no
+  // solid at all -- foliage on an invisible twig -- and that is a legal, if
+  // extreme, LOD tier, so it costs zero rather than being clamped up to 3.
+  const cone = (n, r) => (n >= 3 ? n * ((Math.max(1, Math.round(r)) - 1) * 2 + 1) : 0)
+  const trunkTris =
+    p.trunkRadius > 0 ? cone(Math.max(3, Math.round(p.trunkSides)), p.trunkRings) : 0
+  const branchTris = limbs * cone(Math.round(p.branchSides), p.branchRings)
+  const sprayTris = (limbs * sprays + apexSprays) * cardTris
+
+  return {
+    heightScale: k,
+    branches,
+    sprays,
+    apexSprays,
+    forks,
+    limbs,
+    cardTris,
+    // What one spray asks to be in world metres at THIS height. What it comes
+    // out as is a little less -- see the note by sprayH in buildTree.
+    sprayMetres: p.sprayMetres * Math.pow(k, Math.max(0, p.sprayPower)),
+    trunkTris,
+    branchTris,
+    sprayTris,
+    triangles: trunkTris + branchTris + sprayTris,
+  }
 }
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
@@ -587,14 +696,18 @@ export function buildTree(options = {}) {
   // the cause of.
   const out = { positions: [], normals: [], uvs: [], layers: [], leaf: [], indices: [] }
 
+  // Counts come from resolveTree, never from `p` directly: they are height-
+  // scaled, and the budget panel has to be able to predict them without
+  // building anything.
+  const R = resolveTree(options)
   const sides = Math.max(3, Math.round(p.trunkSides))
   const rings = Math.max(1, Math.round(p.trunkRings))
-  const nBranch = Math.max(0, Math.round(p.branches))
+  const nBranch = R.branches
   const brSides = Math.round(p.branchSides)
   const brRings = Math.max(1, Math.round(p.branchRings))
-  const cardTris = Math.round(p.cardTris) === 1 ? 1 : 2
-  const nSpray = Math.max(0, Math.round(p.sprays))
-  const nFork = Math.max(0, Math.round(p.forks))
+  const cardTris = R.cardTris
+  const nSpray = R.sprays
+  const nFork = R.forks
   const whorl = Math.max(0, Math.round(p.whorlSize))
 
   // Leaf cards are sized in world metres, and the geometry below is built at
@@ -604,7 +717,7 @@ export function buildTree(options = {}) {
   // a few percent under; it is computed exactly at the bottom and reported,
   // rather than iterated for -- a second build to recover 4 cm is not a trade
   // worth making, and the previewer prints the truth either way.
-  const sprayH = p.sprayMetres / Math.max(1e-6, p.height)
+  const sprayH = R.sprayMetres / Math.max(1e-6, p.height)
 
   // Everything below is built at height = 1 and rescaled at the end, for the
   // same reason the fern is: `branchDroop` changes how much of a branch's
@@ -667,7 +780,7 @@ export function buildTree(options = {}) {
    * `side` a unit vector it is allowed to sway toward, `phase` an arbitrary
    * angle that decorrelates this limb's azimuths from its neighbours'.
    */
-  const growLimb = (start, dir, side, length, phase, depth, baseRadius) => {
+  const growLimb = (start, dir, side, length, phase, depth, baseRadius, cards) => {
     const pts = branchPath(start, dir, side, {
       droop: p.branchDroop * (0.85 + rand() * 0.3),
       curve: Math.max(0.2, p.branchCurve),
@@ -714,7 +827,7 @@ export function buildTree(options = {}) {
     }
 
     // --- foliage ---
-    for (let j = 0; j < nSpray; j++) {
+    for (let j = 0; j < cards; j++) {
       // j = 0 is the TERMINAL shoot: it sits at the tip and continues the twig
       // rather than leaving its side, which is what stops every limb ending in
       // a bare stick. The rest are side shoots at STRATIFIED-random points
@@ -724,7 +837,7 @@ export function buildTree(options = {}) {
       const terminal = j === 0
       const s = terminal
         ? 1
-        : p.sprayStart + (1 - p.sprayStart) * ((j - 1 + rand()) / Math.max(1, nSpray - 1))
+        : p.sprayStart + (1 - p.sprayStart) * ((j - 1 + rand()) / Math.max(1, cards - 1))
       const q = samplePath(pts, s)
       // Direction from the PATH, position from the drawn axis -- see chordAt.
       const seat = chordAt(limbAxis, s)
@@ -809,10 +922,14 @@ export function buildTree(options = {}) {
       // and the two solids actually intersect. Launched from the surface it
       // reads as a separate stick floating alongside the branch.
       const seat = chordAt(limbAxis, s).addScaledVector(childDir, -rAt * 0.9)
-      growLimb(seat, childDir, perp, length * p.forkScale, az, depth + 1, rAt)
+      growLimb(seat, childDir, perp, length * p.forkScale, az, depth + 1, rAt, cards)
     }
   }
 
+  // Where every branch goes and how long it is, worked out BEFORE anything is
+  // drawn, because the foliage budget is dealt out in proportion to those
+  // lengths and that cannot be decided one branch at a time.
+  const plan = []
   for (let i = 0; i < nBranch; i++) {
     // whorl 0 = scattered: every branch gets its own stratified-random height,
     // so the trunk shows no repeating pattern at all. whorl 1 = spiral, one
@@ -835,7 +952,46 @@ export function buildTree(options = {}) {
     const prof = crownProfile(t, p.crownPeak, p.crownFullness)
     const length = p.branchLength * (p.branchMin + (1 - p.branchMin) * prof)
     if (length < 1e-4) continue
+    plan.push({ t, yaw, f, length })
+  }
 
+  // SPRAY COUNT FOLLOWS BRANCH LENGTH, AND THE TOTAL DOES NOT MOVE. Giving
+  // every limb the same `sprays` puts as much foliage on the one-metre branch
+  // at the apex as on the four-metre one at the hem, and a conifer built that
+  // way has a square tufted top rather than a point -- the crown profile is in
+  // the wood and nowhere in the foliage. Each limb's share is weighted by its
+  // own length instead (`sprayByLength` 0 flat, 1 fully proportional) and then
+  // NORMALISED back to `plan.length x sprays`, so this rebalances the crown at
+  // exactly zero triangles. Shrinking the top sprays instead would have cost
+  // nothing either, but a small spray at the top of a big tree reads as a
+  // different plant; fewer sprays of the same size reads as thinner growth,
+  // which is what a conifer's apex actually is.
+  const maxLen = plan.reduce((m, b) => Math.max(m, b.length), 0) || 1
+  const byLen = Math.min(1, Math.max(0, p.sprayByLength))
+  const share = plan.map((b) => 1 + byLen * (b.length / maxLen - 1))
+  const budget = plan.length * nSpray
+  const weight = share.reduce((a, b) => a + b, 0) || 1
+  const want = share.map((w) => (budget * w) / weight)
+  const counts = want.map((v) => Math.floor(v))
+  // Largest fractional remainder takes the leftovers, so the total is exactly
+  // `budget` and the branches rounded down hardest are the ones made whole.
+  const order = want.map((_, i) => i).sort((a, b) => want[b] - counts[b] - (want[a] - counts[a]))
+  const left = budget - counts.reduce((a, b) => a + b, 0)
+  for (let n = 0; n < left && order.length; n++) counts[order[n % order.length]]++
+  // And no limb ends up bare: the cone is drawn either way, so a stick with a
+  // spray on its tip costs the same as a stick. Taken off the fullest branch,
+  // which keeps the total exact.
+  for (let i = 0; i < counts.length && nSpray > 0; i++) {
+    if (counts[i] > 0) continue
+    let big = 0
+    for (let j = 1; j < counts.length; j++) if (counts[j] > counts[big]) big = j
+    if (counts[big] <= 1) break
+    counts[big]--
+    counts[i] = 1
+  }
+
+  for (let i = 0; i < plan.length; i++) {
+    const { t, yaw, f, length } = plan[i]
     const outward = new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw))
     const side = new THREE.Vector3(-Math.sin(yaw), 0, Math.cos(yaw))
     const elev = p.branchAngle + p.branchRise * t
@@ -850,7 +1006,9 @@ export function buildTree(options = {}) {
     // wood rather than balanced on its skin.
     const start = chordAt(trunkAxis, f).addScaledVector(outward, radiusAt(f) * 0.6)
 
-    growLimb(start, dir, side, length, yaw, 0, length * p.branchWidth)
+    // A fork carries its parent's count, not its own share: it is part of the
+    // same branch, and that is also what keeps the law `limbs x sprays` exact.
+    growLimb(start, dir, side, length, yaw, 0, length * p.branchWidth, counts[i])
   }
 
   // --- the trunk's own tip ---------------------------------------------------
@@ -883,7 +1041,11 @@ export function buildTree(options = {}) {
       const right = new THREE.Vector3().crossVectors(up, outw)
       if (right.lengthSq() < 1e-8) right.set(1, 0, 0)
       right.normalize()
-      const h = sprayH * p.sprayTaper * (1 + (rand() - 0.5) * 2 * p.sprayVary)
+      // FULL size, not the tip size the limb sprays taper down to. The taper is
+      // about position along one branch; the leader is its own shoot and the
+      // only foliage up there, so a tip-sized card leaves the point of the tree
+      // looking like a different, smaller plant was stuck on it.
+      const h = sprayH * (1 + (rand() - 0.5) * 2 * p.sprayVary)
       // Stem on the apex, same as every other card -- see the note in growLimb.
       const centre = apex.clone().addScaledVector(up, h / 2)
       sprayTris += addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer, cardTris)
@@ -979,7 +1141,7 @@ export function buildTree(options = {}) {
     // What a leaf card ACTUALLY came out as in metres, which is `sprayMetres`
     // divided by however far past 1 the pre-scale bounding box reached. Printed
     // rather than corrected -- see the note where sprayH is computed.
-    sprayMetres: p.sprayMetres * (scale / p.height),
+    sprayMetres: R.sprayMetres * (scale / p.height),
     // Above ground, which is what `height` asked for: the tip is at exactly
     // p.height by construction. Foliage that droops through the ground is
     // reported separately rather than folded in, because on a slope that is

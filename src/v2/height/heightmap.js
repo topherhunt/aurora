@@ -1,5 +1,5 @@
 import { WORLD_SIZE, WORLD_HALF } from '../config.js'
-import { decodePng, loadPng, readPng } from './png.js'
+import { decodePng, encodePng, loadPng, readPng } from './png.js'
 
 // ---------------------------------------------------------------------------
 // The imported coarse field. §18 step 1 of the composed height field.
@@ -79,6 +79,27 @@ export class Heightmap {
   /** Metres per texel on X. Square images make this the same on both axes. */
   get texelSize() {
     return this._stepX
+  }
+
+  /**
+   * How much taller than life this import is, as a ratio. 1 means the metres are
+   * the terrain's own; 3 means the bake stretched them 3x for drama.
+   *
+   * Absent from the meta reads as 1, on the same footing as an absent `encoding`
+   * reading as 'gray': a bare image that never claimed to be stretched is not
+   * stretched, and that is the only reading available. scripts/make-heightmap.mjs
+   * always writes it -- see NATURAL_MAX_Y there for what the number means.
+   *
+   * The one consumer is calibrateRough in detail.js, which divides the
+   * procedural detail's amplitude by it so that exaggerating the mountains does
+   * not exaggerate the gravel. Nothing here scales by it: the field really is in
+   * these metres and the player really does climb them.
+   */
+  get exaggeration() {
+    const e = this.meta?.exaggeration
+    if (e === undefined) return 1
+    if (!Number.isFinite(e) || !(e > 0)) throw new Error(`Heightmap: meta.exaggeration must be a finite ratio > 0, got ${e}`)
+    return e
   }
 
   /** Actual decoded extremes in metres -- not meta.minY/maxY, which are the encoding's range. */
@@ -184,6 +205,75 @@ export class Heightmap {
     if (!(data instanceof Float32Array)) throw new Error('Heightmap.fromRaw: data must be a Float32Array of metres, as produced by toRaw')
     if (data.length !== width * height) throw new Error(`Heightmap.fromRaw: data has ${data.length} texels, ${width}x${height} needs ${width * height}`)
     return new Heightmap(INTERNAL, data, width, height, meta)
+  }
+
+  /**
+   * Write a rect of metres back into the field. The terrain brush's path into a
+   * worker, which holds its own copy and never sees the brush.
+   *
+   * `data` is row-major and tightly packed for the rect, as sculpt.js readRect
+   * produces. Bounds are checked rather than trusted: this arrives over
+   * postMessage, and a rect one row off writes a diagonal smear across the
+   * continent that nothing would report.
+   *
+   * The extremes are WIDENED, not recomputed -- a full pass over a million
+   * texels per patch would be the most expensive thing in a drag, and the only
+   * consumer is V2Height.bands, whose percentile histogram is bucketed over
+   * min..max. A max left too high after digging a mountain down costs a few
+   * empty buckets at the top of that histogram and nothing else; the next load
+   * measures it exactly.
+   */
+  patch(rect, data) {
+    const { i0, j0, i1, j1 } = rect
+    if (!Number.isInteger(i0) || !Number.isInteger(j0) || !Number.isInteger(i1) || !Number.isInteger(j1)) {
+      throw new Error(`Heightmap.patch: rect must be integer texel indices, got ${JSON.stringify(rect)}`)
+    }
+    if (i0 < 0 || j0 < 0 || i1 > this.width || j1 > this.height || i1 <= i0 || j1 <= j0) {
+      throw new Error(`Heightmap.patch: rect ${JSON.stringify(rect)} is outside 0..${this.width}/0..${this.height} or empty`)
+    }
+    const w = i1 - i0
+    if (data.length !== w * (j1 - j0)) {
+      throw new Error(`Heightmap.patch: data has ${data.length} texels, rect ${w}x${j1 - j0} needs ${w * (j1 - j0)}`)
+    }
+    for (let j = j0, o = 0; j < j1; j++, o += w) {
+      for (let i = 0; i < w; i++) {
+        const v = data[o + i]
+        if (!Number.isFinite(v)) throw new Error(`Heightmap.patch: non-finite height at texel ${i0 + i},${j}`)
+        this.field[j * this.width + i0 + i] = v
+        if (v < this._min) this._min = v
+        if (v > this._max) this._max = v
+      }
+    }
+  }
+
+  /**
+   * The field as PNG bytes, in the encoding it was loaded in. The inverse of
+   * fromDecoded, and the reason the terrain brush can write its work back to
+   * public/world/height.png rather than living in a browser tab.
+   *
+   * rg16 only. A 'gray' import carries 8 bits and re-encoding a sculpted field
+   * through it would quietly throw away everything below one source level --
+   * 3.5 m of cliff at the shipped range -- so it refuses instead.
+   */
+  async toPng() {
+    if (this.meta.encoding !== 'rg16') {
+      throw new Error(`Heightmap.toPng: encoding '${this.meta.encoding ?? 'gray'}' cannot round-trip a sculpt without losing the low byte -- only rg16 is written`)
+    }
+    const span = this.meta.maxY - this.meta.minY
+    const k = 65535 / span
+    const px = new Uint8Array(this.field.length * 3)
+    for (let i = 0; i < this.field.length; i++) {
+      let q = Math.round((this.field[i] - this.meta.minY) * k)
+      if (q < 0) q = 0
+      else if (q > 65535) q = 65535
+      const high = q >> 8
+      px[i * 3] = high
+      px[i * 3 + 1] = q & 0xff
+      // B repeats the high byte so R and B carry a legible 8-bit grayscale of
+      // the terrain, matching what make-heightmap.mjs writes.
+      px[i * 3 + 2] = high
+    }
+    return encodePng(this.width, this.height, px)
   }
 
   /** Border clamp -- edge-extend, never wrap. A wrapped tap would fold the far side of the world into the near one. */

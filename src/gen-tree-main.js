@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { buildTree, crownProfile, TREE_DEFAULTS, TREE_SPECIES, BUSH_OVERRIDES } from './props/tree.js'
+import { buildTree, resolveTree, crownProfile, TREE_DEFAULTS, TREE_SPECIES, BUSH_OVERRIDES } from './props/tree.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers, IMAGE_LAYERS, TEX_SIZE } from './textures.js'
 import { createPropMaterial } from './material.js'
@@ -26,11 +26,12 @@ import treeSource from './props/tree.js?raw'
 //    lighting.patch() also chains on.
 //
 // 2. It reports metres, not fractions. Every shape parameter in tree.js is a
-//    fraction of `height`, which means two builds differing only in height are
-//    exact scaled copies -- correct for placement jitter, wrong for a dwarf
-//    pine. So the panel prints trunk diameter in centimetres and first-branch
-//    height in metres, and the `sizes` view puts one parameter set at five
-//    heights side by side so you can SEE which fractions have to move.
+//    fraction of `height`, so the panel prints trunk diameter in centimetres
+//    and first-branch height in metres instead, and the `sizes` view puts one
+//    parameter set at five heights side by side. That view is also the only
+//    place the height-density law is visible: `branches` and `sprays` are
+//    stated at `heightRef` and scale from there, so the five trees differ in
+//    how much tree there is and not only in how big it is drawn.
 //
 // 3. It loads the SAME texture layers the game does, through the same
 //    loadImageLayers() path -- bark and leaf art cut from EZ-Tree by
@@ -46,7 +47,10 @@ import treeSource from './props/tree.js?raw'
 // branch back on itself, and seeing that is how you learn where the range stops.
 const SLIDERS = [
   ['#', 'size'],
-  ['height', 0.3, 32, 0.1, 'metres, root to tip. Geometry is rescaled to hit this exactly'],
+  ['height', 0.3, 32, 0.1, 'metres, root to tip. Geometry is rescaled to hit this exactly -- AND it scales the branch and spray counts, so this is a growth slider, not a zoom'],
+  ['heightRef', 0.5, 32, 0.1, 'the height every count below is stated at. Leave it where the species was tuned; move `height` away from it and the counts follow'],
+  ['countPower', 0, 1.5, 0.05, 'how much of a height change goes into COUNTS rather than scale. 1 = constant real-world density, 0 = a pure scaled copy (which is what per-instance placement jitter wants)'],
+  ['sprayPower', 0, 1, 0.05, 'the same for spray SIZE, and lower on purpose: a spruce fan is about a metre and a half whether the tree is 9 m or 20 m'],
 
   ['#', 'trunk'],
   ['trunkSides', 3, 12, 1, 'sides around the trunk. 3 is a wedge, 8 reads round at any range you can make a trunk out at'],
@@ -84,7 +88,8 @@ const SLIDERS = [
   ['forkSideways', 0, 1, 0.01, 'how much of the fork\'s turn is confined to the HORIZONTAL. 1 = it only ever swings out to the side; 0 = it dives and climbs as readily'],
 
   ['#', 'foliage'],
-  ['sprays', 0, 14, 1, 'leaf cards per LIMB, including one terminal card at the tip. This is the whole density knob, and at one triangle a card it is also the whole foliage budget'],
+  ['sprays', 0, 14, 1, 'leaf cards per LIMB on AVERAGE, including one terminal card at the tip. This is the whole density knob, and at one triangle a card it is also the whole foliage budget'],
+  ['sprayByLength', 0, 1, 0.01, 'how far a limb\'s share of those cards follows its own length. 0 = every limb gets the same count, which gives a conifer a square tufted top; 1 = fully proportional. The total is normalised either way, so this costs nothing'],
   ['apexSprays', 0, 6, 1, 'cards on the TRUNK\'s own tip, which no branch reaches. At 0 every tree ends in a bare spike'],
   ['sprayMetres', 0.05, 2.5, 0.01, 'one spray\'s stem-to-tip reach in WORLD METRES. Depends on the cut: a broadleaf spray is about half a metre, the pine fan is a whole branch at 1.5'],
   ['cardTris', 1, 2, 1, '1 = a triangle with its apex at the stem, halving the cost of every card and clipping the outer corners of the art. 2 = the full quad'],
@@ -413,14 +418,15 @@ function refresh() {
   const cone = (n, r) => (n >= 3 ? `${n}&times;((${r}-1)&times;2+1)` : '&mdash;')
   const sides = Math.round(params.trunkSides)
   const rings = Math.round(params.trunkRings)
-  const nb = Math.round(params.branches)
   const bs = Math.round(params.branchSides)
   const br = Math.round(params.branchRings)
-  const ns = Math.round(params.sprays)
-  const nf = Math.round(params.forks)
-  const nl = nb * (1 + nf)
-  const ct = Math.round(params.cardTris) === 1 ? 1 : 2
-  const na = Math.round(params.apexSprays)
+  // Counts come from resolveTree, not from the sliders: `branches` and `sprays`
+  // are stated at `heightRef` and scale with `height`, so at any other height
+  // the slider value is not what gets built. resolveTree is the same function
+  // buildTree grows from, which is what makes this panel a prediction rather
+  // than a second implementation that can disagree.
+  const res = resolveTree(params)
+  const { branches: nb, sprays: ns, forks: nf, limbs: nl, cardTris: ct, apexSprays: na } = res
 
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} total)` : ''}`],
@@ -428,6 +434,10 @@ function refresh() {
     [`&nbsp;&nbsp;limbs ${nb}&times;(1+${nf})`, nl],
     [`&nbsp;&nbsp;branches ${nl}&times;${cone(bs, br)}`, Math.round(s.branch / s.count)],
     [`&nbsp;&nbsp;sprays (${nl}&times;${ns}+${na})&times;${ct}`, Math.round(s.spray / s.count)],
+    [
+      '&nbsp;&nbsp;height &times;' + res.heightScale.toFixed(2),
+      res.heightScale === 1 ? 'at heightRef' : `${nb} br, ${ns} sprays/limb`,
+    ],
     ['vertices', Math.round(s.verts / s.count)],
     ['drawn here', s.count],
     ['geometry in RAM', fmt(s.bytes)],

@@ -8,10 +8,12 @@ v2 does not replace v1 and does not import from `src/terrain/`. It lives entirel
 
 ## The two-representation rule
 
-This is the single idea the whole editor rests on, and every layer obeys it.
+This is the single idea the whole editor rests on, and every CONTENT layer obeys it. The terrain brush does not, deliberately -- see the exception below.
 
 - **Stored representation is PARAMETRIC and tiny.** A river is a handful of control points. A snow line is a handful of (position, deviation) pairs. The entire world document is kilobytes of JSON, diffable, hand-editable, and cheap to ship to a worker on every edit.
 - **Runtime representation is BAKED and O(1) to query.** A uniform spatial index over segments; a rasterised grid for the snow line. No per-vertex loop ever walks a list of authored objects.
+
+**The one exception is the terrain brush**, which writes texels of the imported coarse field itself and saves them back to `height.png`. A sculpt has no parametric form: "I pushed this ridge down and dragged that saddle across" is not a shape, it is a history, and storing the history would replay a growing list of strokes on every worker at every boot -- unbounded work in the one place every vertex already pays for. The image IS the compact representation of an arbitrary height edit, and it is a fixed 1024x1024 that does not grow with how long you sculpt. The cost is that a sculpt is not diffable in git and not undoable from `layers.json`, which is why the editor keeps a per-stroke undo in memory and why Save is explicit.
 
 The bridge between them is a **bake step** keyed on an integer `epoch`. Editing bumps the epoch, the bake reruns over the dirty region only, and the chunk streamer re-meshes only the chunks whose AABB the edit touched.
 
@@ -20,9 +22,10 @@ The bridge between them is a **bake step** keyed on an integer `epoch`. Editing 
 ```
 v2.html                            route
 src/v2/config.js                   all v2 constants in one place (three-free)
-src/v2/height/png.js               zero-dep PNG decode, browser + node (three-free)
+src/v2/height/png.js               zero-dep PNG decode AND encode, browser + node (three-free)
 src/v2/height/heightmap.js         Heightmap: bicubic sample of the imported coarse field (three-free)
 src/v2/height/detail.js            band-limited fractal detail (three-free)
+src/v2/height/sculpt.js            terrain brush kernel: falloff, dirty rects, one stamp (three-free)
 src/v2/height/field.js             V2Height: the composed field the mesher and player both read (three-free)
 src/v2/layers/doc.js               WorldDoc: schema, defaults, (de)serialise, validate (three-free)
 src/v2/layers/grid.js              UniformGrid: the shared spatial index (three-free)
@@ -40,6 +43,7 @@ src/v2/render/road-surfaces.js     road ribbons
 src/v2/render/markers.js           editor handle gizmos (snowline points, spline points)
 src/v2/edit/gizmo.js               three TransformControls wrapper: one active object, T/R/S modes
 src/v2/edit/editor.js              tool state machine, picking, selection, undo, save/load
+src/v2/edit/sculptor.js            the brush's stroke timing, worker throttle, undo stack and PNG save
 src/v2/ui/panel.js                 the compact status + tools panel
 src/v2/main.js                     entry: boot order, the sky wiring, the edit -> world channel, /v2's frame loop
 scripts/make-heightmap.mjs         writes public/world/height.png + height.json
@@ -183,7 +187,7 @@ layers.dirtyRect                   // {minX, minZ, maxX, maxZ} union since last 
 
 `TransformControls` from `three/addons/controls/TransformControls.js` is the move/scale/rotate widget. It is the Blender-style gizmo already written, tested and shipped with the dependency we already have; reimplementing it would be several hundred lines to arrive at something worse.
 
-Tools: `select`, `snowline`, `lake`, `river`, `road`. Each placement tool is one raycast against the terrain `BatchedMesh` per click. Splines are built by clicking successive points; `Enter` ends the spline. Selecting any handle attaches the gizmo; `G` / `R` / `S` switch translate / rotate / scale, matching the muscle memory the request named -- and the panel draws the same three as buttons, because a mode reachable only by a key nobody mentioned is a mode nobody finds.
+Tools: `select`, `snowline`, `lake`, `river`, `road`, `sculpt`. Each placement tool is one raycast against the terrain `BatchedMesh` per click. Splines are built by clicking successive points; `Enter` ends the spline. Selecting any handle attaches the gizmo; `G` / `R` / `S` switch translate / rotate / scale, matching the muscle memory the request named -- and the panel draws the same three as buttons, because a mode reachable only by a key nobody mentioned is a mode nobody finds.
 
 A click within 10 px of an existing handle SELECTS it rather than placing something new behind it: the ray gets first refusal, and only when it hits nothing does screen-space proximity get a say, so a handle drawn on top of the pixel you clicked always wins over one that is merely nearer.
 
@@ -193,11 +197,17 @@ Scale means different things to different selections and the editor writes the p
 
 Right-click on a handle opens a context menu: delete, and on a spline point **split before** / **split after** -- a new control point at the midpoint of that segment with the two widths averaged. Past either end there is no segment to halve, so the path extends instead by half the last segment, taking its Y from the ground. That is the only way to lengthen a river after its draft is committed. The editor builds the items and the panel draws them; deciding what is legal to do to a river point is not the DOM layer's job. The placement arithmetic is `src/v2/edit/split.js`, three-free so the gate can reach it.
 
+**The terrain brush** (`sculpt`) is the one tool with no gizmo and no handles: it is a radius on the ground, and holding the button raises, lowers or smooths whatever it covers. Rate is per SECOND, not per stamp, so a 120 Hz machine does not dig twice as fast as a 60 Hz one; `strength` is metres per second and `smoothRate` is the fraction of the way to the local mean per second, two sliders because metres per second means nothing to a blur. A ground-conforming ring is drawn at the cursor -- without it the radius is a number with no referent. The brush writes the main thread's copy of the field in place, so a stroke is under the player's feet in the same frame it is drawn, and the workers (which hold their own copies, since a `SharedArrayBuffer` would need COOP/COEP headers this dev server does not set) are sent only the texels that moved, accumulated into one dirty rect and flushed every ~90 ms. Posting a patch per stamp would re-mesh the same ground sixty times a second and the world would stop redrawing exactly while it is being sculpted.
+
+Sculpt undo is a SECOND stack, one entry per stroke, holding that stroke's pre-stroke heights: while the brush is armed `Ctrl-Z` takes strokes back until there are none and then falls through to the document stack. Merging the two would mean snapshotting 4 MB of field per document undo entry. Strokes are clamped to the encoding's range (`minY`..`maxY` from `height.json`) and the panel reports how many texels are sitting at the limit -- a brush silently doing nothing at the top of a mountain is the one failure of this tool that looks exactly like a slow brush.
+
 Edits are debounced (~120 ms) before the worker sees them, so a drag is one remesh per frame-ish and not one per mousemove.
 
 **An invalidated chunk keeps its old mesh on screen until the replacement lands** (`invalidationAction` in `stream-policy.js`). Freeing the slot at invalidation time -- the obvious order, and the first one -- put a hole where every re-meshing chunk was for the length of the bake, and the hole went all the way through to the sky, because an edit's dirty rect also catches the PINNED depth 0-2 chunks that contain it, so the ancestor fallback had nothing left to fall back to. Dragging any gizmo flashed sky at 60 Hz. Holding costs one slot per invalidated chunk for one bake, and that fits the budget only because eviction counts HELD SLOTS rather than ready states -- a held chunk is back in state `queued` and is very much still spending one of the 1024. The replacement is written into the same slot, so there is no frame in which neither mesh is drawn.
 
 **Persistence:** autosave to `localStorage` on every commit; Export / Import JSON buttons; and, under the dev server only, a `POST /__world` middleware in `vite.config.js` that writes `public/world/layers.json` so the authored world can be committed.
+
+A sculpted heightmap rides the same Save button through a second endpoint, `POST /__height`, which writes `public/world/height.png` and stamps `sculpted: true` into `height.json`. It has no `localStorage` tier and no export button on purpose: a megabyte of PNG per commit would blow the storage quota, and a sculpt that exists only in a browser profile is a sculpt nobody else will ever see. That flag is also a guard -- `scripts/make-heightmap.mjs` refuses to re-bake over a sculpted file without `--force`, and `check-v2-heightmap.mjs` demotes its "shipped PNG is the import, pixel for pixel" assertions to printed measurements once it is set.
 
 ## The panel
 
@@ -214,10 +224,11 @@ Added to `npm run check`. It must be able to fail. Sections:
 
 1. **heightmap** -- decode `public/world/height.png` in node; assert the decoded metre range matches `height.json`; assert bicubic sampling is C1 across a texel boundary (finite-difference slope is continuous to 1e-3) and that bilinear is not, so the check is measuring the thing it claims.
 2. **field determinism** -- `heightAt(x, z, 0)` is stable across calls and independent of evaluation order; the band limit is monotone in `cell`; `heightAt(x, z, cell)` converges to `heightAt(x, z, 0)` as `cell -> 0`.
-3. **snow line** -- the interpolant passes through every authored point to <1e-3 m; returns exactly `base` outside every radius; a 200-point cluster costs O(1) per query after bake; dirty-rect rebake is bit-identical to a full rebake.
-4. **paths** -- a river carve reaches `depth` at the centreline and 0 at `halfWidth * 2`; a road's surface is within 1 cm of the spline `y` inside `halfWidth`; a tight S-bend does not self-intersect (centripetal, not uniform).
-5. **slot pool** -- worst-case selection over a few hundred camera positions at `MAX_DEPTH 13`, plus pinned chunks, fits `SLOT_COUNT`.
-6. **layer culling** -- over a sampled sweep, the fraction of chunks that early-out is above 95% for a world with a dozen authored objects. This is the claim "compact and performance-efficient" reduces to, so it is the one that gets a number.
-7. **host wiring** -- `src/v2/main.js` constructs a `WebGLRenderer` on its first line, so node cannot import it and no section above can reach it. The rules its collaborators' headers state as "the host must" are asserted textually instead, comment lines stripped first: it does not call `markers.update()` (the editor owns that call and two callers race on the handle scale), it does not transform `water.group` (the shader reads world position off `modelMatrix`), it patches `roads.material` in `vertex` mode (or the road is the one surface that stays lit after dark), it calls `setVisibility` on all three surfaces that draw authored geometry (miss one and the panel's hide toggle silently does nothing to that layer), and `probe.update()` runs before `renderer.render()`. Each corresponds to a failure that is invisible in the frame it happens in, which is what makes a weak check worth more than none.
+3. **terrain brush** -- the falloff's derivative is ~0 at both rim and centre (a cone would leave a crease ring around every stamp, at 6.25 cm cells); the dirty rect covers every texel inside the radius plus the smoothing stencil and no more; the world box handed to the mesher is widened by the 2-texel Catmull-Rom stencil; `smooth` blurs off a snapshot, checked on the texel stamped immediately AFTER a spike (in place it comes out 9x too low); strokes clamp to the encoding's range and report how many texels hit it; a sculpted field survives `toPng` -> `decodePng` to within half a quantisation level; and, headlessly, a `Sculptor` drag of eight stamps costs at most two worker patches, sends every texel it moved, and undoes to bit-exact original heights.
+4. **snow line** -- the interpolant passes through every authored point to <1e-3 m; returns exactly `base` outside every radius; a 200-point cluster costs O(1) per query after bake; dirty-rect rebake is bit-identical to a full rebake.
+5. **paths** -- a river carve reaches `depth` at the centreline and 0 at `halfWidth * 2`; a road's surface is within 1 cm of the spline `y` inside `halfWidth`; a tight S-bend does not self-intersect (centripetal, not uniform).
+6. **slot pool** -- worst-case selection over a few hundred camera positions at `MAX_DEPTH 13`, plus pinned chunks, fits `SLOT_COUNT`.
+7. **layer culling** -- over a sampled sweep, the fraction of chunks that early-out is above 95% for a world with a dozen authored objects. This is the claim "compact and performance-efficient" reduces to, so it is the one that gets a number.
+8. **host wiring** -- `src/v2/main.js` constructs a `WebGLRenderer` on its first line, so node cannot import it and no section above can reach it. The rules its collaborators' headers state as "the host must" are asserted textually instead, comment lines stripped first: it does not call `markers.update()` (the editor owns that call and two callers race on the handle scale), it does not transform `water.group` (the shader reads world position off `modelMatrix`), it patches `roads.material` in `vertex` mode (or the road is the one surface that stays lit after dark), it calls `setVisibility` on all three surfaces that draw authored geometry (miss one and the panel's hide toggle silently does nothing to that layer), and `probe.update()` runs before `renderer.render()`. Each corresponds to a failure that is invisible in the frame it happens in, which is what makes a weak check worth more than none.
 
 Everything DOM, three.js, XR and gizmo on the `/v2` route is still unexercised by any gate: node reaches none of it, and there is no browser harness. The first click through the markers -> editor -> gizmo path will be a human's.

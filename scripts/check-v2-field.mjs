@@ -113,6 +113,9 @@ export async function run({ heightmap } = {}) {
     `        probe at ${cal.probe.toFixed(3)} m: extrapolated ${cal.target.toFixed(4)} m, image supplies ${cal.imageAt.toFixed(4)} m (${pct(cal.imageShare)}), deficit ${cal.deficit.toFixed(4)} m, unit detail ${cal.unitAt.toFixed(4)} m`
   )
   console.log(`        ROUGH = ${cal.rough.toFixed(5)}   knee = ${(texel * KNEE_TEXELS).toFixed(2)} m (${KNEE_TEXELS} texels)`)
+  console.log(
+    `        exaggeration ${cal.exaggeration}x: spectral continuity alone wants ${cal.continuous.toFixed(5)}, the stretch is divided back out`
+  )
   console.log('        octave table (lambda m / amplitude m):')
   console.log('        ' + field.detail.table.map((t) => `${t.lambda >= 1 ? t.lambda : t.lambda.toFixed(2)}:${t.amp.toFixed(4)}`).join('  '))
 
@@ -127,6 +130,23 @@ export async function run({ heightmap } = {}) {
   // would be fitting the import's own resampling noise rather than terrain, and
   // the detail term would be doubling it.
   check(cal.imageShare < 0.5, 'the sub-texel band is genuinely missing from the import', `image supplies ${pct(cal.imageShare)} of the extrapolation at ${cal.probe.toFixed(3)} m`)
+
+  // THE STRETCH DOES NOT REACH THE GRAVEL. The bake exaggerates the import's
+  // metres for drama (make-heightmap.mjs, NATURAL_MAX_Y) and the roughness the
+  // calibration measures scales with it exactly, so without the divide in
+  // calibrateRough a taller world is also a rockier one at 6 cm cells. The first
+  // check would pass vacuously on an unstretched import, so the second one
+  // asserts this world is actually stretched.
+  check(
+    Math.abs(cal.continuous / cal.rough - cal.exaggeration) < 1e-9,
+    "the bake's exaggeration is divided back out of the detail amplitude",
+    `${cal.continuous.toFixed(5)} / ${cal.rough.toFixed(5)} = ${(cal.continuous / cal.rough).toFixed(4)}x, meta says ${cal.exaggeration}x`
+  )
+  check(
+    hm.exaggeration > 1,
+    'and the shipped import really is stretched, so that check is not vacuous',
+    `height.json exaggeration ${hm.exaggeration}x -- ${(hm.max - hm.min).toFixed(0)} m of relief standing in for ${((hm.max - hm.min) / hm.exaggeration).toFixed(0)} m of terrain`
+  )
 
   // The shoulder is the reason the fractal does not lay a second landscape over
   // the authored one: the octave at the coarse field's own scale must be far

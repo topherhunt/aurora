@@ -3,6 +3,7 @@
   "size": 1024,
   "minY": 0,
   "maxY": 900,
+  "exaggeration": 3,
   "encoding": "rg16",
   "source": "reference/skyrim-height-map.jpg",
   "sourceSize": [

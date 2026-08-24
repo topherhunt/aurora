@@ -87,6 +87,12 @@ export class V2Height {
     // A literal fitted to any one of those would still have looked like a
     // plausible number under the next. See calibrateRough for the basis.
     //
+    // Measured against the import's UNEXAGGERATED relief: the bake declares how
+    // far it stretched the image (height.json `exaggeration`) and calibrateRough
+    // divides that back out, so raising MAX_Y makes the mountains taller without
+    // making the gravel coarser. That divide is the one deliberate break in the
+    // spectral-continuity argument and its reasoning lives at calibrateRough.
+    //
     // `rough` may be passed to pin the calibration, which check-v2-field uses to
     // hold the octave table still while it measures something else. Nothing at
     // runtime passes it.

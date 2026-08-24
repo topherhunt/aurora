@@ -9,6 +9,8 @@ import { restoreLayers } from './restore.js'
 import { rebindIndex, pathPointPos, snowPointPos } from './handles.js'
 import { splitPoint } from './split.js'
 import { saveLocal } from './persist.js'
+import { Sculptor } from './sculptor.js'
+import { SCULPT_MODES } from '../height/sculpt.js'
 
 // ---------------------------------------------------------------------------
 // The v2 editing tool state machine (§18 "Editing").
@@ -46,10 +48,10 @@ import { saveLocal } from './persist.js'
 // when it consumed the key, and the host must not act on it in that case.
 // ---------------------------------------------------------------------------
 
-export const TOOLS = ['select', 'snowline', 'lake', 'river', 'road']
+export const TOOLS = ['select', 'snowline', 'lake', 'river', 'road', 'sculpt']
 // Digits, not letters. G/R/S/X/Y/Z are spoken for by the gizmo and WASD by the
 // player, which leaves no mnemonic letters that are not already load-bearing.
-export const TOOL_KEYS = ['1', '2', '3', '4', '5']
+export const TOOL_KEYS = ['1', '2', '3', '4', '5', '6']
 
 // Blender's keys for the gizmo, and the panel's button hints, from one table --
 // translate is G and not T, and a hint that says otherwise is a lie the user
@@ -119,14 +121,19 @@ const MIN_PATH_WIDTH = 0.5
 // has now been restated twice mid-build (16384 -> 4096 -> 8192) and a typed
 // literal was wrong both times. At WORLD_SIZE 8192 this is 409.6 m.
 //
-// 1/40 was the first guess, from the 16 km draft, and it was too small by half:
+// 1/40 was the first guess, from the 16 km draft, and it was too small by four:
 // on an 8 km world a 205 m circle covers one flank of one peak, so pulling a
 // snow line up over a massif took a dozen points where it should have taken two.
+// 1/20 halved the point count and was still short of what painting a snow line
+// across a RANGE takes, which is the actual authoring gesture -- the unit that
+// gets a snow line is a massif, not a summit. 1/10 is 819.2 m at WORLD_SIZE
+// 8192, so two points span a valley.
+//
 // This is the DEFAULT only -- the radius is per point, editable in the panel and
 // draggable with the scale gizmo, and nothing about the field's resolution
 // changes with it (see the note on GRID_RES in layers/snowline.js: that sets how
 // finely the deviation field is SAMPLED, not how far one point reaches).
-const SNOW_RADIUS = WORLD_SIZE / 20
+const SNOW_RADIUS = WORLD_SIZE / 10
 
 // A lake's size is physical rather than world-relative, so this is a literal --
 // but halved from the 16 km draft's 40 m along with the world, because the
@@ -165,12 +172,19 @@ const PATH_WIDTH_MAX = 64
 // The preview polyline is lifted off the ground so it is not in a z-fight with
 // the terrain it traces. 0.4 m is under a step and over any LOD disagreement.
 const PREVIEW_LIFT = 0.4
+// The brush ring. 96 segments is smooth at a 2 km radius filling the screen and
+// costs 96 heightAt calls a frame, against the ~600 a ground pick already pays.
+// It is drawn ON the ground rather than as a flat disc in the air because the
+// thing being judged is which ridge the brush covers, and a flat circle over a
+// 400 m slope covers something else entirely.
+const BRUSH_SEGMENTS = 96
+const BRUSH_LIFT = 0.6
 const PREVIEW_MAX_VERTS = 512
 
 const CURSOR_MS = 250 // the cursor readout repaints with the panel, at 4 Hz
 
 export class Editor {
-  constructor({ scene, camera, renderer, layers, height, markers, onDirty, onView, orbitLock, elevation }) {
+  constructor({ scene, camera, renderer, layers, height, markers, terrain, onDirty, onView, orbitLock, elevation }) {
     if (typeof onDirty !== 'function') throw new Error('Editor: onDirty(rect) is required')
     // Required rather than defaulted to a no-op, because a missing one is
     // invisible: every button still works, the hidden set still fills up, and
@@ -180,6 +194,7 @@ export class Editor {
     if (typeof orbitLock !== 'function') throw new Error('Editor: orbitLock(bool) is required')
     if (typeof layers.takeDirtyRect !== 'function') throw new Error('Editor: layers does not look like a v2 Layers')
     if (typeof markers.hitTest !== 'function') throw new Error('Editor: markers does not look like a v2 Markers')
+    if (typeof terrain?.patchHeight !== 'function') throw new Error('Editor: terrain must be the TerrainV2 -- the sculpt tool patches the coarse field the workers hold')
 
     // ELEVATION RANGES ARE NOT CONSTANTS IN THIS FILE, and that is the whole
     // point of this block. Every metres-above-sea number the panel offers -- a
@@ -226,6 +241,13 @@ export class Editor {
     // surfaces; the markers layer reads it through `markers.sync()`.
     this.hidden = new Set()
 
+    // The terrain brush. Constructed unconditionally rather than on first use,
+    // because it owns the sculpt undo stack and that has to survive tool
+    // switches. It writes `height.heightmap` -- the same decoded field the
+    // player collides against and the picks raymarch -- so a stroke is under her
+    // feet in the frame it is drawn, and the workers are patched separately.
+    this.sculptor = new Sculptor({ heightmap: height.heightmap, terrain })
+
     this.gizmo = new Gizmo({ scene, camera, domElement: renderer.domElement, orbitLock })
     this.gizmo.onChange(() => this._onGizmoChange())
     this.gizmo.onCommit(() => this._onGizmoCommit())
@@ -253,6 +275,20 @@ export class Editor {
     this.preview.visible = false
     scene.add(this.preview)
 
+    // The brush ring: a LineLoop that follows the ground under the cursor at the
+    // sculpt radius. Without it the radius slider is a number with no referent
+    // -- you find out what 160 m covers by digging a hole and looking at it.
+    const ring = new THREE.BufferGeometry()
+    ring.setAttribute('position', new THREE.BufferAttribute(new Float32Array(BRUSH_SEGMENTS * 3), 3))
+    this.brushRing = new THREE.LineLoop(
+      ring,
+      new THREE.LineBasicMaterial({ color: 0xffc46b, depthTest: false, transparent: true, opacity: 0.85 })
+    )
+    this.brushRing.renderOrder = 999
+    this.brushRing.frustumCulled = false
+    this.brushRing.visible = false
+    scene.add(this.brushRing)
+
     this._raycaster = new THREE.Raycaster()
     this._pointer = new THREE.Vector2()
     this._euler = new THREE.Euler()
@@ -272,6 +308,8 @@ export class Editor {
     if (!this.active) {
       this.cancelDraft()
       this.deselect()
+      this.sculptor.end()
+      this.brushRing.visible = false
       this.cursor = null
     }
   }
@@ -279,6 +317,13 @@ export class Editor {
   setTool(name) {
     if (!TOOLS.includes(name)) throw new Error(`Editor.setTool: unknown tool ${name}`)
     if (this.draft && name !== this.draft.kind) this.cancelDraft()
+    // Switching tools mid-drag closes the stroke rather than abandoning it: the
+    // ground has already moved, and an unclosed stroke is one that never reaches
+    // the undo stack.
+    if (name !== 'sculpt') {
+      this.sculptor.end()
+      this.brushRing.visible = false
+    }
     this.tool = name
   }
 
@@ -440,6 +485,30 @@ export class Editor {
     return this.gizmo.setMode(mode)
   }
 
+  /**
+   * The mode buttons the panel draws above the context fields, or null when the
+   * armed tool has no modes. `{modes, active, keys, set}` -- `keys` is a
+   * mode -> keyboard hint map, or null when the modes have no shortcut.
+   *
+   * One call rather than the panel asking about gizmos and brushes separately:
+   * two tools now want that row, and which of them owns it is a question about
+   * the editor's state, not about layout.
+   *
+   * THE BRUSH MODES HAVE NO KEYS, deliberately. G/R/S and X/Y/Z are only safe
+   * for the gizmo because they are consumed exclusively while one is attached;
+   * with the brush armed nothing is attached, so any letter bound here would be
+   * taken away from the player for as long as the tool is selected -- and `s` is
+   * walk-backward.
+   */
+  modeButtons() {
+    if (this.tool === 'sculpt') {
+      return { modes: SCULPT_MODES.slice(), active: this.sculptor.mode, keys: null, set: (m) => this.sculptor.setMode(m) }
+    }
+    const g = this.gizmoModes()
+    if (!g) return null
+    return { ...g, keys: GIZMO_KEYS, set: (m) => this.setGizmoMode(m) }
+  }
+
   // Visibility is EDITOR-LOCAL: `Layers` has no hidden flag, because hiding is
   // a render decision and the document is the authored truth. The set is keyed
   // on the whole handle -- a snow point has no id, only an index -- so the two
@@ -475,6 +544,22 @@ export class Editor {
 
     this._flushDirty(false)
 
+    // THE BRUSH RUNS ON THE FRAME CLOCK, for the same reason as the pick below
+    // and one more: `dt` is what makes the rate metres per second rather than
+    // metres per pointermove, so a slow drag with a high-polling mouse does not
+    // dig four times as deep as a fast one on a trackpad.
+    if (this.tool === 'sculpt') {
+      // Picked EVERY frame rather than at CURSOR_MS, whether or not the button
+      // is down: the ring is this tool's cursor, and a cursor that catches up
+      // four times a second reads as a broken brush. Same per-frame pick the
+      // spline preview below already pays for.
+      const hit = this._ndc ? this._pickNdc() : null
+      if (hit) this.cursor = hit
+      if (this.sculptor.sculpting && hit) this.sculptor.stroke(hit.x, hit.z, dt)
+      this._repaintBrush(hit)
+      return
+    }
+
     // One ground pick per frame at most, never one per mousemove: a pick is
     // ~600 heightAt calls (pick.js measures it) and a mousemove arrives far more often
     // than a frame does.
@@ -501,7 +586,22 @@ export class Editor {
       this._down = null // the gizmo's own listener owns this press -- see the header
       return
     }
+    if (this.tool === 'sculpt') {
+      // No `_down` and therefore no click on release: a brush has no click. The
+      // press IS the edit, and it starts on this event so the first frame of the
+      // stroke is the one after the button went down.
+      this._down = null
+      this._ndc = pointerNdc(ev, this.renderer.domElement)
+      this.sculptor.begin()
+      return
+    }
     this._down = { x: ev.clientX, y: ev.clientY }
+  }
+
+  /** The window lost focus: no pointerup is coming, so nothing may be left held. */
+  onBlur() {
+    this.sculptor.end()
+    this._down = null
   }
 
   onPointerMove(ev) {
@@ -511,6 +611,10 @@ export class Editor {
 
   onPointerUp(ev) {
     if (!this.active || ev.button !== 0) return
+    if (this.sculptor.sculpting) {
+      this.sculptor.end()
+      return
+    }
     const down = this._down
     this._down = null
     if (!down) return
@@ -711,6 +815,29 @@ export class Editor {
     this.draft = null
     this.preview.visible = false
     this.preview.geometry.setDrawRange(0, 0)
+  }
+
+  // The ring follows the GROUND, one vertex per segment, so it drapes over what
+  // it is about to move. `at` is null whenever the pointer is off the terrain
+  // -- over the sky, or past the world edge -- and then there is no brush to
+  // draw, which is also the honest answer to "what would clicking here do".
+  _repaintBrush(at) {
+    if (!at) {
+      this.brushRing.visible = false
+      return
+    }
+    const r = this.sculptor.radius
+    const arr = this.brushRing.geometry.attributes.position.array
+    for (let i = 0; i < BRUSH_SEGMENTS; i++) {
+      const a = (i / BRUSH_SEGMENTS) * Math.PI * 2
+      const x = at.x + Math.cos(a) * r
+      const z = at.z + Math.sin(a) * r
+      arr[i * 3] = x
+      arr[i * 3 + 1] = this.height.heightAt(x, z, 0) + BRUSH_LIFT
+      arr[i * 3 + 2] = z
+    }
+    this.brushRing.geometry.attributes.position.needsUpdate = true
+    this.brushRing.visible = true
   }
 
   _repaintPreview() {
@@ -957,11 +1084,31 @@ export class Editor {
     }
   }
 
+  /**
+   * TWO UNDO STACKS, and which one Ctrl-Z reaches is decided by the armed tool.
+   *
+   * The document stack is JSON snapshots of layers.json; a sculpt is not in that
+   * document and cannot be (see height/sculpt.js), so it keeps its own stack of
+   * texel rects in the Sculptor. Merging them would mean either snapshotting the
+   * whole 4 MB field into every document undo entry, or replaying a growing
+   * stroke list at boot -- and §18's history is a 64-deep ring of a few kB.
+   *
+   * So the rule is: while the sculpt tool is armed, Ctrl-Z takes back strokes
+   * until there are none left, and then falls through to the document. Every
+   * other tool never touches the sculpt stack. It is a rule you can say in one
+   * sentence, which is the most that can be claimed for it.
+   */
   undo() {
+    if (this.tool === 'sculpt' && this.sculptor.undo()) return true
     const snap = this.history.undo()
     if (snap === null) return false
     this._apply(snap)
     return true
+  }
+
+  /** Whether either undo path has anything left, for the panel's button state. */
+  get canUndo() {
+    return this.history.canUndo || (this.tool === 'sculpt' && this.sculptor.canUndo)
   }
 
   redo() {
@@ -1002,6 +1149,10 @@ export class Editor {
    * which is the same undo boundary a gizmo drag uses.
    */
   status() {
+    // The brush has no selection -- it edits the ground, not an object -- so its
+    // controls go here, in the zone that is otherwise empty while it is armed.
+    if (this.tool === 'sculpt') return this.sculptor.status()
+
     const sel = this.selection
     if (!sel) return []
 
@@ -1218,5 +1369,8 @@ export class Editor {
     this.scene.remove(this.preview)
     this.preview.geometry.dispose()
     this.preview.material.dispose()
+    this.scene.remove(this.brushRing)
+    this.brushRing.geometry.dispose()
+    this.brushRing.material.dispose()
   }
 }

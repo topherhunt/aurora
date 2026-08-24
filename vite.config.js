@@ -1,6 +1,7 @@
 import { dirname, join, relative, resolve } from 'node:path'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
+import { decodePng } from './src/v2/height/png.js'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 
 // --- the prop originals index (dev only) ------------------------------------
@@ -178,6 +179,85 @@ function worldDoc() {
   }
 }
 
+// --- the v2 heightmap, written back to disk (dev only) ----------------------
+//
+// The terrain brush (src/v2/height/sculpt.js) is the one editor tool that
+// changes the IMPORT rather than the document, so Save has a second half: the
+// sculpted texels go back to public/world/height.png, the file
+// scripts/make-heightmap.mjs baked and every boot loads.
+//
+// THIS ENDPOINT OVERWRITES A COMMITTED ASSET, which is a heavier act than
+// /__world's, so it verifies rather than trusts. The body is decoded with the
+// same decoder the browser loads the world through, and the result must match
+// world/height.json's own `size` and be RGB8 -- the rg16 encoding. A truncated
+// upload, a half-written stream, or a browser that quietly handed back a
+// re-encoded canvas image all fail here, at the cost of one inflate, rather than
+// on the next boot with the world already flattened.
+//
+// It changes ONE field of height.json: `sculpted`. Everything else there still
+// describes this file correctly -- the metres are recovered through minY/maxY
+// and the brush clamps to exactly that range (see sculpt.js) -- but the PNG is
+// no longer only what the bake produced, and make-heightmap.mjs refuses to
+// overwrite it without --force on the strength of that one flag. Without it, a
+// re-bake would replace an afternoon of sculpting with the JPEG and say nothing.
+//
+// Same fixed path and `apply: 'serve'` as /__world, and for the same reason: a
+// dev server on `host: true` is on the LAN, and a caller-supplied path here
+// would be an arbitrary file write to anyone on the wifi.
+function worldHeight() {
+  return {
+    name: 'aurora:world-height',
+    apply: 'serve',
+    configureServer(server) {
+      const file = resolve(server.config.root, 'public/world/height.png')
+      const metaFile = resolve(server.config.root, 'public/world/height.json')
+      server.middlewares.use('/__height', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.end(JSON.stringify({ error: 'POST only' }))
+          return
+        }
+        const chunks = []
+        let bytes = 0
+        req.on('data', (c) => {
+          bytes += c.length
+          // 1024^2 RGB8 is 3 MB raw and deflates to about 1.3 MB. 8 MB is room
+          // for a much larger import without being room for a mistake.
+          if (bytes > 8 << 20) req.destroy(new Error('heightmap over 8 MB'))
+          chunks.push(c)
+        })
+        req.on('error', (e) => {
+          res.statusCode = 413
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+        })
+        req.on('end', async () => {
+          try {
+            const buf = Buffer.concat(chunks)
+            const png = await decodePng(new Uint8Array(buf))
+            const meta = JSON.parse(readFileSync(metaFile, 'utf8'))
+            if (png.width !== meta.size || png.height !== meta.size) {
+              throw new Error(`heightmap is ${png.width}x${png.height}, but world/height.json says ${meta.size}x${meta.size}`)
+            }
+            if (png.channels !== 3 || png.depth !== 8) {
+              throw new Error(`heightmap is ${png.channels}x${png.depth}-bit, but the rg16 encoding is RGB8`)
+            }
+            writeFileSync(file, buf)
+            if (meta.sculpted !== true) {
+              meta.sculpted = true
+              writeFileSync(metaFile, JSON.stringify(meta, null, 2) + '\n')
+            }
+            res.end(JSON.stringify({ ok: true, path: relative(server.config.root, file), bytes: buf.length }))
+          } catch (e) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ error: String(e?.stack ?? e) }))
+          }
+        })
+      })
+    },
+  }
+}
+
 // --- /v2 as a route rather than a filename (dev only) -----------------------
 //
 // §18 asks for a "/v2 route", and without this there is not one. `v2.html` is a
@@ -226,7 +306,7 @@ function v2Route() {
 // cover, and the only way to see a range is to put twenty seeds side by side.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), v2Route()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), v2Route()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`

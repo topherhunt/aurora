@@ -13,6 +13,13 @@ import { emptyDoc } from './restore.js'
 //     COMMITTABLE. This is the source of truth. Dev server only: the middleware
 //     is `apply: 'serve'` in vite.config.js, so a deployed build has no writer
 //     and Export is the answer there.
+//   public/world/height.png via POST /__height -- the same store for the one
+//     edit that is not a document. The terrain brush writes texels of the import
+//     itself, so there is nothing parametric to keep and nowhere else to put it;
+//     see src/v2/height/sculpt.js. It has NO localStorage tier and no export
+//     button on purpose: a megabyte of PNG per commit would blow the storage
+//     quota, and a sculpt that only exists in a browser profile is a sculpt
+//     nobody else will ever see.
 //   Export / Import files -- move a world between machines, and are the escape
 //     hatch when the dev server is not running.
 //
@@ -27,6 +34,7 @@ import { emptyDoc } from './restore.js'
 
 const KEY = 'aurora.v2.world'
 const ENDPOINT = '/__world'
+const HEIGHT_ENDPOINT = '/__height'
 
 export function saveLocal(layers) {
   const text = JSON.stringify(layers.serialize())
@@ -72,6 +80,38 @@ export async function saveServer(layers) {
   }
   const json = JSON.parse(body)
   if (json.ok !== true) throw new Error(`save to ${ENDPOINT} refused: ${json.error}`)
+  return json
+}
+
+/**
+ * Write the SCULPTED HEIGHTMAP to `public/world/height.png` through the dev
+ * server. Same shape as saveServer above and deliberately a separate call: the
+ * document is kilobytes and saves on every commit, while this is a megabyte of
+ * PNG that only exists once someone has used the terrain brush.
+ *
+ * The encode happens here rather than in the endpoint because the browser is
+ * where the field lives -- see Heightmap.toPng, which is the exact inverse of
+ * the rg16 encoding scripts/make-heightmap.mjs writes.
+ */
+export async function saveHeightServer(heightmap) {
+  const bytes = await heightmap.toPng()
+  const res = await fetch(HEIGHT_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'image/png' },
+    body: bytes,
+  })
+  const body = await res.text()
+  if (!res.ok) {
+    let msg = body.slice(0, 200)
+    try {
+      msg = JSON.parse(body).error
+    } catch {
+      msg = `HTTP ${res.status} -- ${msg}`
+    }
+    throw new Error(`save to ${HEIGHT_ENDPOINT} failed: ${msg}`)
+  }
+  const json = JSON.parse(body)
+  if (json.ok !== true) throw new Error(`save to ${HEIGHT_ENDPOINT} refused: ${json.error}`)
   return json
 }
 

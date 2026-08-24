@@ -200,6 +200,117 @@ export async function decodePng(bytes) {
   return { width, height, channels, depth, data }
 }
 
+// --- encode ------------------------------------------------------------------
+//
+// The other direction, and it exists because the terrain brush writes texels
+// back to public/world/height.png. Same constraint as the decoder: three-free,
+// node and browser off one code path, no npm encoder.
+//
+// RGB8 non-interlaced only, which is the rg16 encoding scripts/make-heightmap.mjs
+// writes and the only thing this repo has any reason to produce. A grayscale or
+// 16-bit writer would be dead code with no gate behind it.
+
+async function deflate(bytes) {
+  if (IS_NODE) {
+    if (!nodeZlib) nodeZlib = await import(/* @vite-ignore */ 'node:zlib')
+    // Level 9 because this is a build artifact written once and read forever,
+    // and because it is what make-heightmap.mjs has always used -- a re-bake
+    // must produce the same bytes as before, or `git diff` on the world stops
+    // meaning anything.
+    return new Uint8Array(nodeZlib.deflateSync(bytes, { level: 9 }))
+  }
+  if (typeof CompressionStream === 'undefined') {
+    throw new Error('png: no deflate available -- not node, and this browser has no CompressionStream')
+  }
+  // The browser gives no level control, so a PNG saved from the editor is a few
+  // percent larger than one from make-heightmap.mjs. It decodes identically;
+  // only the byte count differs.
+  const stream = new Response(bytes).body.pipeThrough(new CompressionStream('deflate'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+const CRC_TABLE = new Int32Array(256)
+for (let n = 0; n < 256; n++) {
+  let c = n
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+  CRC_TABLE[n] = c
+}
+
+function crc32(buf) {
+  let c = -1
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  return (c ^ -1) >>> 0
+}
+
+function chunk(type, data) {
+  const out = new Uint8Array(12 + data.length)
+  const view = new DataView(out.buffer)
+  view.setUint32(0, data.length)
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i)
+  out.set(data, 8)
+  view.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)))
+  return out
+}
+
+/**
+ * Encode RGB8 pixels as a PNG.
+ *
+ * `pixels` is row-major, three bytes per pixel, length width * height * 3.
+ *
+ * Filter 4 (Paeth) on every scanline, for the reason make-heightmap.mjs gave
+ * when this lived there: it is the filter a decoder is most likely to get subtly
+ * wrong, so writing the shipped world with it means the asset itself exercises
+ * that path in decodePng every time anything loads.
+ */
+export async function encodePng(width, height, pixels) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+    throw new Error(`png: encodePng needs positive integer dimensions, got ${width}x${height}`)
+  }
+  const stride = width * 3
+  if (pixels.length !== stride * height) {
+    throw new Error(`png: encodePng got ${pixels.length} bytes, ${width}x${height} RGB needs ${stride * height}`)
+  }
+
+  const ihdr = new Uint8Array(13)
+  const iv = new DataView(ihdr.buffer)
+  iv.setUint32(0, width)
+  iv.setUint32(4, height)
+  ihdr[8] = 8 // bit depth
+  ihdr[9] = 2 // colour type: RGB
+  // 10..12 stay 0: deflate, adaptive filtering, no interlace
+
+  const raw = new Uint8Array(height * (stride + 1))
+  for (let y = 0; y < height; y++) {
+    const o = y * (stride + 1)
+    raw[o] = 4
+    const row = y * stride
+    const prev = row - stride
+    for (let i = 0; i < stride; i++) {
+      const a = i >= 3 ? pixels[row + i - 3] : 0
+      const b = y > 0 ? pixels[prev + i] : 0
+      const c = i >= 3 && y > 0 ? pixels[prev + i - 3] : 0
+      raw[o + 1 + i] = (pixels[row + i] - paeth(a, b, c)) & 0xff
+    }
+  }
+
+  const idat = await deflate(raw)
+  const parts = [
+    new Uint8Array(SIGNATURE),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', new Uint8Array(0)),
+  ]
+  let total = 0
+  for (const p of parts) total += p.length
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const p of parts) {
+    out.set(p, at)
+    at += p.length
+  }
+  return out
+}
+
 /** Browser: fetch and decode. Throws on a non-2xx rather than decoding an error page. */
 export async function loadPng(url) {
   if (IS_NODE) throw new Error('png: loadPng is the browser path -- use readPng in node')

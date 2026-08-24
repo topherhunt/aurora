@@ -1,8 +1,8 @@
 ### Notes
 
 - Resources:
-  - https://sketchfab.com/
-  - https://polyhaven.com/
+  - <https://sketchfab.com/>
+  - <https://polyhaven.com/>
   - https://www.opensource3dassets.com/en
 - Process for setting up a procedural asset:
   - Find a good basic texture asset
@@ -12,25 +12,11 @@
 
 ### Tasks
 
-- [ ] Procedural ferns
-  - [ ] Set randomness range for each parameter: tint (biome-dependent), size (biome-dependent), size variance, curviness, etc.
-    - fronds: \[5, 9\]
-    - segments: \[6 (for LOD0), 4 (LOD1), 2 (LOD2), then one shared billboard for all instances\]
-    - pitch: \[1.0, 1.4\]
-    - arch: \[0.6, 2\]
-    - curve: 1.6
-    - pitchFalloff: 0.5
-    - lengthVar: 0.5
-    - widthScale: 1.2
-    - taper: \[0, 0.6\]
-    - sway: 1.2
-    - roll: 0.7
-    - yawJitter: 0
-    - crownRadius: 0
-    - crozier: 0
-  - \[ \]
+- [x] Procedural ferns
 - [ ] Procedural trees (use EZTrees as a base, but customize to support 3 shape-preserving LODs + 1-2 billboard levels)
   - [ ] Assess with Claude, and smoke-test to confirm that procedural trees don't bog down performance.
+  - [ ] Dead variants
+  - [ ] Snow cover partial/full (just a shader on the sprays?)
 - [ ] Redo the Aurora using a planar shader (one plane, northern tilted sky-wall)
   - [ ] Look at Skyrim's auroras. They're specific procedurally-determined(?) channels in the sky, sinuous and snaking around, the magnetic leylines, and various neon patterns flow and shimmer through them. Shimmering overlaid intersectional shader similar to what water surfaces have?
   - [ ] Layers to weave in:

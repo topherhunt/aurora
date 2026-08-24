@@ -298,6 +298,25 @@ export async function run() {
   const baked = await bakeLevels()
   const meta = JSON.parse(await readFile(JSON_PATH, 'utf8'))
   const hm = await Heightmap.read({ path: PNG_PATH, metaPath: JSON_PATH })
+
+  // A SCULPTED WORLD IS NOT THE SOURCE IMAGE ANY MORE, and most of this section
+  // asserts that it is. The v2 terrain brush writes texels straight into
+  // height.png and the /__height endpoint stamps `sculpted` into the meta, so
+  // once one stroke is saved every comparison against a fresh bake is measuring
+  // the sculpt rather than the importer.
+  //
+  // Those comparisons become MEASUREMENTS -- still computed, still printed, and
+  // now readable as "how far has this world been moved from its import" --
+  // through `asImported` below. Everything about the FILE stays a check:
+  // dimensions, encoding, the vertical range, the C1 claim, the corners, the
+  // 65535 in the encoder. A sculpt excuses none of those, and a re-bake brings
+  // the rest of the assertions back.
+  const sculpted = meta.sculpted === true
+  const asImported = (ok, label, detail = '') => {
+    if (!sculpted) return check(ok, label, detail)
+    console.log(`  --   ${label}   [sculpted: measured, not asserted]${detail ? `   ${detail}` : ''}`)
+  }
+  if (sculpted) console.log('        height.json says sculpted -- the round trip below is a measurement, not a gate')
   const quantum = (meta.maxY - meta.minY) / 65535
   const step = WORLD_SIZE / (meta.size - 1)
 
@@ -329,7 +348,7 @@ export async function run() {
       }
     }
     console.log(`        ${meta.size * meta.size} texels: max ${(max * 100).toFixed(4)} cm at texel ${worst % meta.size},${Math.floor(worst / meta.size)}`)
-    check(max <= quantum, 'every texel of the shipped PNG is within one quantisation step of the bake', `max ${(max * 100).toFixed(4)} cm vs ${(quantum * 100).toFixed(3)} cm`)
+    asImported(max <= quantum, 'every texel of the shipped PNG is within one quantisation step of the bake', `max ${(max * 100).toFixed(4)} cm vs ${(quantum * 100).toFixed(3)} cm`)
   }
 
   // A full-white texel has to land exactly on maxY -- that is the 65535-not-65536 in the encoder, and getting it wrong tilts the whole field by a quantum in a way no visual check would ever show.
@@ -361,8 +380,8 @@ export async function run() {
     let corner = 0
     for (const [i, j] of [[0, 0], [meta.size - 1, 0], [0, meta.size - 1], [meta.size - 1, meta.size - 1]])
       corner = Math.max(corner, Math.abs(hm.sample(i === 0 ? -WORLD_HALF : WORLD_HALF, j === 0 ? -WORLD_HALF : WORLD_HALF) - toMetres(baked.levels[j * meta.size + i], meta.minY, meta.maxY)))
-    check(max <= quantum, 'sample() at a texel position returns that texel', `max ${(max * 100).toFixed(4)} cm over 4000 texels`)
-    check(corner <= quantum, 'and the four corners land on +-WORLD_HALF', `max ${(corner * 100).toFixed(4)} cm`)
+    asImported(max <= quantum, 'sample() at a texel position returns that texel', `max ${(max * 100).toFixed(4)} cm over 4000 texels`)
+    asImported(corner <= quantum, 'and the four corners land on +-WORLD_HALF', `max ${(corner * 100).toFixed(4)} cm`)
   }
 
   // --- the non-square fit --------------------------------------------------
@@ -415,8 +434,8 @@ export async function run() {
     // --maxY. It was 1 m against a 300 m range; the same 1/300 against whatever
     // range is shipped is the check that was actually meant.
     const rel = fit.rms / (meta.maxY - meta.minY)
-    check(rel < 1 / 300, 'the shipped field is the source, pixel for pixel, under the stated mapping', `rms ${fit.rms.toFixed(4)} m = ${(rel * 100).toFixed(3)}% of the ${(meta.maxY - meta.minY).toFixed(0)} m range`)
-    check(stretched.rms > 10 * fit.rms, 'and the measurement can see a wrong mapping -- a stretched Z fails it', `${(stretched.rms / fit.rms).toFixed(0)}x worse`)
+    asImported(rel < 1 / 300, 'the shipped field is the source, pixel for pixel, under the stated mapping', `rms ${fit.rms.toFixed(4)} m = ${(rel * 100).toFixed(3)}% of the ${(meta.maxY - meta.minY).toFixed(0)} m range`)
+    asImported(stretched.rms > 10 * fit.rms, 'and the measurement can see a wrong mapping -- a stretched Z fails it', `${(stretched.rms / fit.rms).toFixed(0)}x worse`)
   }
 
   // The mirror. A whole-sample mirror is C0 with ZERO Z-gradient at the seam by construction, so "continuous" is not the interesting claim -- the seam is a watershed line running the full width of the map whether the code is right or wrong. What IS checkable is that the band beyond it reflects rather than clamps, and those two predict very different fields: mirror says h(seam + t) == h(seam - t), clamp says h(seam + t) == h(seam). Both residuals are measured and they have to disagree by orders of magnitude.
@@ -461,9 +480,9 @@ export async function run() {
         `mirror residual ${mirrorErr.toFixed(4)} m vs clamp residual ${clampErr.toFixed(3)} m   ` +
         `relief ${band.toFixed(1)} m in the band, ${inside.toFixed(1)} m just inside`
     )
-    check(jump < 0.25, `the ${label} seam has no step in metres`, `${(jump * 100).toFixed(2)} cm across 1 m`)
-    check(mirrorErr < 0.25 && clampErr > 20 * mirrorErr, `the ${label} band mirrors rather than clamps`, `mirror ${mirrorErr.toFixed(4)} m, clamp ${clampErr.toFixed(3)} m`)
-    check(band > 0.9 * inside, `and the ${label} band carries the same relief as the terrain it reflects`, `${band.toFixed(1)} vs ${inside.toFixed(1)} m`)
+    asImported(jump < 0.25, `the ${label} seam has no step in metres`, `${(jump * 100).toFixed(2)} cm across 1 m`)
+    asImported(mirrorErr < 0.25 && clampErr > 20 * mirrorErr, `the ${label} band mirrors rather than clamps`, `mirror ${mirrorErr.toFixed(4)} m, clamp ${clampErr.toFixed(3)} m`)
+    asImported(band > 0.9 * inside, `and the ${label} band carries the same relief as the terrain it reflects`, `${band.toFixed(1)} vs ${inside.toFixed(1)} m`)
   }
 
   // --- the deblocking pass -------------------------------------------------

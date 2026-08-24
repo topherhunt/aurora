@@ -1,5 +1,5 @@
 import { TRI_BUDGET, CALL_BUDGET } from '../../budget.js'
-import { TOOLS, TOOL_KEYS, GIZMO_KEYS } from '../edit/editor.js'
+import { TOOLS, TOOL_KEYS } from '../edit/editor.js'
 
 // ---------------------------------------------------------------------------
 // The v2 status + tools panel. Replaces v1's `#desktop-hud` on the v2 route.
@@ -196,6 +196,21 @@ export class Panel {
     // never hears about. Same 4 Hz comparison as the selection, and for the same
     // reason: cheaper than a callback the host has to remember to fire.
     this._paintGizmo()
+
+    // The brush's own readouts -- how many texels are pinned at the encoding's
+    // ceiling, whether the sculpt is saved -- move without the DOCUMENT moving,
+    // so they cannot ride the epoch cache below.
+    if (this.editor.tool === 'sculpt') {
+      this._refreshFields()
+      // And the undo button: a stroke does not move the document epoch, so
+      // without this the button stays greyed out over a stack with strokes in
+      // it -- which reads as "sculpting cannot be undone".
+      this._syncUndo()
+    }
+
+    // Tools are switched by key as well as by button (1..6), and the keyboard
+    // path never reaches the panel. Same 4 Hz comparison, one class toggle.
+    this._paintTools()
 
     // Everything below is document-shaped, so it only redraws when the document
     // moved. `epoch` is bumped by every mutation (§18), which makes it exactly
@@ -403,15 +418,21 @@ export class Panel {
     )
 
     // The one number this whole world exists to make true: the sampling spacing
-    // of the ground under the cursor. §18's "down to 10 cm" is a claim about
+    // of the ground she is standing on. §18's "down to 10 cm" is a claim about
     // THIS value, so it is the only readout with its own row and its own size.
+    //
+    // "underfoot" and not "under cursor", which is what this said while it was
+    // showing terrain.stats.finestCell -- the finest chunk ANYWHERE on screen,
+    // which is pinned at the depth cap by whatever the camera is nearest to and
+    // therefore read 6.3 cm in every situation anyone ever looked at it in. It
+    // now reads terrain.stats.cellUnderfoot and it moves.
     const cell =
       s.cell === null || s.cell === undefined || !Number.isFinite(s.cell)
         ? '??'
         : s.cell < 1
           ? `${(s.cell * 100).toFixed(1)} cm`
           : `${s.cell.toFixed(2)} m`
-    cells.push(`<span class="p-cell"><span class="p-k">cell under cursor</span><b>${escapeHtml(cell)}</b></span>`)
+    cells.push(`<span class="p-cell"><span class="p-k">cell underfoot</span><b>${escapeHtml(cell)}</b></span>`)
 
     this._status.innerHTML = cells.join('')
   }
@@ -426,8 +447,11 @@ export class Panel {
 
   // --- zone 3: context fields ----------------------------------------------
 
+  // The mode row: gizmo modes with something selected, brush modes with the
+  // sculpt tool armed. The editor decides which -- see Editor.modeButtons -- so
+  // this stays one row of buttons that draws whatever it is handed.
   _paintGizmo() {
-    const g = this.editor.gizmoModes()
+    const g = this.editor.modeButtons()
     const sig = g === null ? '-' : `${g.modes.join(',')}:${g.active}`
     if (sig === this._gizmoSig) return
     this._gizmoSig = sig
@@ -436,11 +460,16 @@ export class Panel {
     for (const m of g.modes) {
       const b = document.createElement('button')
       b.className = 'p-btn p-i'
-      b.innerHTML = `${escapeHtml(m)}<small>${escapeHtml(GIZMO_KEYS[m].toUpperCase())}</small>`
+      const key = g.keys?.[m]
+      b.innerHTML = escapeHtml(m) + (key ? `<small>${escapeHtml(key.toUpperCase())}</small>` : '')
       b.classList.toggle('p-on', m === g.active)
       b.onclick = () => {
-        this.editor.setGizmoMode(m)
+        g.set(m)
+        // The mode changes which FIELDS exist (strength is metres per second for
+        // raise, a rate for smooth), so this repaints both rows and not just its
+        // own. The signature above has already moved, so _paintGizmo redraws.
         this._paintGizmo()
+        this._buildFields()
       }
       this._gizmoRow.appendChild(b)
     }
@@ -655,7 +684,10 @@ export class Panel {
   }
 
   _syncUndo() {
-    this._undoBtn.disabled = !this.editor.history.canUndo
+    // canUndo, not history.canUndo: the sculpt tool has its own stack and a
+    // greyed-out button over a stack with strokes in it reads as "sculpting
+    // cannot be undone", which was the first thing anyone asked.
+    this._undoBtn.disabled = !this.editor.canUndo
     this._redoBtn.disabled = !this.editor.history.canRedo
   }
 }

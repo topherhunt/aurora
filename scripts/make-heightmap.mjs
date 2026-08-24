@@ -13,24 +13,24 @@
 // receives a square 16-bit image on the grid it already expects, with no runtime
 // branch on the shape or the format of whatever the world came from.
 //
-// The PNG writer at the bottom is lifted from scripts/heightmap-png.mjs rather
-// than shared with it. That file is v1's diagnostic renderer and writes
-// grayscale; this one writes RGB with a packed 16-bit payload, and folding both
-// into one parameterised encoder would make the diagnostic tool depend on v2's
-// encoding. Forty lines of CRC table is a cheaper coupling to avoid.
+// The PNG encoder lives in src/v2/height/png.js, next to the decoder that has to
+// invert it, because the terrain brush in the v2 editor writes this same file
+// from the browser and two encoders for one asset is one encoder too many. v1's
+// scripts/heightmap-png.mjs keeps its own grayscale writer: that one is a
+// diagnostic renderer, and folding it in would make a debug tool depend on v2's
+// encoding.
 //
 // Everything the gate needs is exported. scripts/check-v2-heightmap.mjs re-runs
 // this pipeline in memory and compares it against the shipped PNG, which is the
 // only way an assertion about the asset can be about the asset rather than about
 // a number this script also wrote into height.json.
 
-import { deflateSync } from 'node:zlib'
-import { writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { writeFileSync, readFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { readPng } from '../src/v2/height/png.js'
+import { encodePng, readPng } from '../src/v2/height/png.js'
 import { WORLD_SIZE, WORLD_HALF } from '../src/v2/config.js'
 
 export const SOURCE_JPG = fileURLToPath(new URL('../reference/skyrim-height-map.jpg', import.meta.url))
@@ -53,16 +53,15 @@ export const SRC_H = 873
 // The deciding number is the fraction of the world under the locomotion slope
 // limit -- LOCOMOTION.maxSlopeDeg = 50 in src/player.js, itself derived from
 // where chunk-mesh.js starts shading bare rock. Measured two ways, because the
-// two read different fields at different stencils and can disagree by tens of
-// points at the same span:
+// two read different fields at different stencils:
 //
-//   span   step   detail | COARSE @8.01m       | COMPOSED @1.5m stride  | >148 m
-//                        | walk%  med   p90    | walk%  med   p90       |
-//    300   1.18   0.38   | 99.2%   5.4  15.2   | 99.2%  11.6  23.5      | 52.4%
-//    450   1.76   0.57   | 98.6%   8.0  22.2   | 98.2%  16.9  33.3      | 78.1%
-//    600   2.35   0.75   | 97.8%  10.7  28.6   | 96.3%  21.8  41.3      | 82.9%
-//    900   3.53   1.13   | 95.5%  15.8  39.2   | 86.8%  30.6  52.9      | 87.6%
-//   1200   4.71   1.50   | 91.8%  20.6  47.4   | 74.6%  38.0  60.6      | 89.0%
+//   span   step  detail ratio | COARSE @8.01m       | COMPOSED @1.5m stride
+//                             | walk%  med   p90    | walk%  med   p90   p99
+//    300   1.18   0.38  1.55  | 99.2%   5.4  15.2   | 99.2%  11.6  23.5  46.4
+//    450   1.76   0.38  2.33  | 98.6%   8.0  22.2   | 98.4%  13.1  28.8  56.4
+//    600   2.35   0.38  3.12  | 97.8%  10.7  28.6   | 97.5%  15.0  33.9  63.4
+//    900   3.53   0.38  4.70  | 95.5%  15.8  39.2   | 94.0%  19.5  43.1  71.7
+//   1200   4.71   0.37  6.28  | 91.8%  20.6  47.4   | 89.8%  24.4  50.4  76.2
 //
 // The composed column is the honest instrument and the coarse one is not: the
 // coarse column reads half the field (no detail.js) with a stencil five times
@@ -72,58 +71,67 @@ export const SRC_H = 873
 // deg, p90 51.1, the exact table in src/player.js, which is where the 50 deg
 // limit came from.
 //
-// BUT THE COMPOSED COLUMN IS NOT STABLE, and that is what actually decides this.
-// It is coupled to detail.js's calibrated amplitude, which is still being tuned:
-// within a single afternoon calibrateRough went from 1.25 m rms at this span to
-// 0.38 m, and the 300 m row went from 93.7% walkable to 99.2%. A rule of "match
-// v1's 88.8%" would have picked 300 m under the first amplitude and 900 m under
-// the second. That is a moving target, not a measurement. The coarse column, by
-// contrast, is a property of the image and the range alone and does not move.
+// THE DETAIL COLUMN NO LONGER MOVES DOWN THE TABLE, and that is what makes the
+// table readable as a choice at all. detail.js is calibrated against the
+// import's UNEXAGGERATED relief (NATURAL_MAX_Y below), so raising this constant
+// tilts the coarse ground and leaves the gravel where it was; the composed
+// column therefore tracks the coarse one within 1.5 points at every span, and
+// the gap between them is simply what detail costs. It used to be otherwise --
+// detail grew with the span, the 900 m row read 86.8% composed against 95.5%
+// coarse, and a rule of "match v1's 88.8%" moved by hundreds of metres whenever
+// calibrateRough was retuned.
 //
-// So the range is chosen for robustness: 300 m is the only row that reads
-// comfortably walkable under BOTH amplitudes, and its composed p99 is 46.4 deg
-// -- under the limit, so even the worst percentile of the world lets her
-// through, where 900 m puts the p99 at 72.3 deg. Revisit this once detail.js
-// settles; until then a larger span is a bet on an amplitude that has already
-// moved by 3.3x.
+// The column that does still move is `ratio`, and it is now the binding
+// constraint rather than walkability -- see QUANTISATION below.
 //
 // RELIEF PER KILOMETRE, as a cross-check rather than a criterion. v1 spans
 // -0.62..313.06 m over 16 km, i.e. 19 m/km. 900 m over 8 km is 113 m/km, 5.9x
-// v1's, because this is an authored range and not a procedural continent. The 8 km reading is also what makes it credible: heightmap-png.mjs
-// has called this same image 6437 m across since build step 2, and 8192 is
-// within 27% of that where the earlier 4096 was out by 1.57x.
+// v1's, because this is an authored range and not a procedural continent. The
+// 8 km reading is also what makes it credible: heightmap-png.mjs has called this
+// same image 6437 m across since build step 2, and 8192 is within 27% of that
+// where the earlier 4096 was out by 1.57x.
 //
-// QUANTISATION IS NOT AN ARGUMENT HERE, and the survey prints the reason. The
-// step is span/255, so the worst ripple bicubic leaves through it is span/510.
-// detail.js's amplitude comes from calibrateRough, which matches the detail term
-// to the coarse field's own structure function -- so it scales with the span
-// too, and the ratio between them is constant down the table to three digits.
-// No choice of range changes it, which is why the range cannot be argued from
-// quantisation -- the ratio column reads 1.548 at 300 m and 1.560 at 1200 m.
-// Worth flagging for detail.js's owner rather than acting on here: §18 expected
-// the detail term to sit an order of magnitude ABOVE the ripple, and at the
-// current calibration it sits 1.56x BELOW it, so the finest thing in the
-// composed field is the 8-bit source step and not the detail.
+// QUANTISATION IS THE ARGUMENT AGAINST GOING HIGHER, and the survey's ratio
+// column is where to read it. The step is span/255, so the worst ripple bicubic
+// leaves through it is span/510 -- 1.77 m at the shipped 900 m span, on a
+// wavelength of one or two texels, i.e. 8 to 16 m of gentle terracing on ground
+// too shallow to hide it.
+//
+// That ripple used to be invisible in the table because detail.js grew with the
+// span alongside it and the ratio between them stayed at 1.55 down every row.
+// It does not any more: the detail term is calibrated against the import's
+// UNEXAGGERATED relief (NATURAL_MAX_Y below), so its rms sits at 0.38 m whatever
+// this constant says, while the source staircase keeps scaling. At 900 m the
+// ratio is 4.7, which means the largest feature in the fine band is now the
+// 8-bit source step and not the terrain -- §18 wanted the detail an order of
+// magnitude ABOVE the ripple and it is most of an order of magnitude below.
+//
+// The cure is a 16-bit source image, not a louder detail term: turning detail
+// back up to cover the staircase is what put gravel and craters on the ground at
+// 6 cm cells, which is the complaint the exaggeration divide exists to answer.
 //
 // minY is 0 and not a negative sea level. §18's water is a LAYER (lakes carve
 // basins, see src/v2/layers/water-bodies.js), so the import has no reason to
 // spend codes on ground below the darkest pixel of the image -- and 9.8% of the
 // image already sits on that floor.
-// MAX_Y WENT 300 -> 600 -> 900, BY EYE AND ON PURPOSE, AND 900 IS THE LAST ROW
-// THE SURVEY ARGUES FOR. The survey chooses a range that keeps slopes walkable;
-// what it cannot judge is whether the world reads as mountains, and at 300 m
-// over 8 km it did not -- nor, from the ground, at 600. Every raise scales every
-// slope with it, so this is a trade and here is the current side of it: at 900
-// the coarse column is 95.5% walkable and the composed column is 86.8%, against
-// v1's shipped 88.8%. That is the first row where the composed field is HARDER
-// to walk than the world this engine has been tuned against, and its composed
-// p99 is 72.3 deg -- well past LOCOMOTION.maxSlopeDeg, so the steepest percentile
-// of the world is now ground she is refused rather than ground she climbs
-// slowly. That is acceptable for scenery (a cliff is allowed to be a cliff, and
-// the rivers and roads are authored layers that flatten their own way through)
-// and it is not acceptable to raise much further without re-reading --survey:
-// the 1200 row drops the composed column to 74.6%, which is a quarter of the
-// world walled off.
+//
+// MAX_Y WENT 300 -> 600 -> 900, BY EYE AND ON PURPOSE. The survey chooses a
+// range that keeps slopes walkable; what it cannot judge is whether the world
+// reads as mountains, and at 300 m over 8 km it did not -- nor, from the ground,
+// at 600. Every raise scales every coarse slope with it, so this is a trade and
+// here is the current side of it: at 900 the coarse column is 95.5% walkable and
+// the composed column is 94.0%, against v1's shipped 88.8%. The composed p99 is
+// 71.7 deg, past LOCOMOTION.maxSlopeDeg, so the steepest percentile of the world
+// is ground she is refused rather than ground she climbs slowly -- acceptable
+// for scenery, since a cliff is allowed to be a cliff and the rivers and roads
+// are authored layers that flatten their own way through.
+//
+// The wall is no longer walkability. Detail stopped scaling with this constant
+// when the exaggeration divide landed, so the composed column now sits within
+// 1.5 points of the coarse one and 1200 m would still be 89.8% -- fine on that
+// axis. What does NOT survive the raise is the 8-bit source: see the ratio
+// column above. Anything past 900 should come with a 16-bit import, not with a
+// bigger number here.
 //
 // Raising it is a one-flag experiment: this constant is the only thing that has
 // to move, because the PNG stores normalised levels and every metre in v2 is
@@ -134,6 +142,31 @@ export const SRC_H = 873
 // `node scripts/rescale-world.mjs <factor>` over the document in the same pass.
 export const MIN_Y = 0
 export const MAX_Y = 900
+
+// THE STRETCH IS DECLARED, because the procedural detail must not follow it.
+//
+// NATURAL_MAX_Y is the range the survey argues for on its own terms -- the row
+// where the composed field's walkable fraction still sits comfortably above the
+// world v1 was tuned against -- and 300 m over 8 km is it. Everything above that
+// is DRAMA: a deliberate vertical exaggeration, chosen by eye, for a world that
+// otherwise reads as hills rather than mountains.
+//
+// The distinction has to be recorded because detail.js cannot see it. Its
+// amplitude comes from calibrateRough, which measures the coarse field's own
+// structure function and scales the octave table to continue it below one texel.
+// That is exactly right for an unexaggerated import and exactly wrong for a
+// stretched one: stretching the image 3x multiplies its roughness at every lag
+// by 3, so the calibration faithfully asks for 3x the sub-texel detail and the
+// ground turns to gravel and craters at 6 cm cells while the mountains behind it
+// look correct. The macro shape is exaggerated on purpose; the boulder under her
+// boot is not, and a boulder scaled by the same 3 is a boulder in the wrong
+// world.
+//
+// So the ratio travels with the bake, in world/height.json, and V2Height divides
+// the calibrated amplitude by it. See calibrateRough in src/v2/height/detail.js.
+// An import with no `exaggeration` in its meta reads as 1, which is the only
+// honest reading of an image that never said it was stretched.
+export const NATURAL_MAX_Y = 300
 
 // The 8x8 DCT grid. Baseline JPEG transforms 8x8 blocks of luma aligned to pixel
 // zero regardless of chroma subsampling, so the block edges sit between columns
@@ -524,69 +557,12 @@ export const toMetres = (level, minY = MIN_Y, maxY = MAX_Y) => minY + (level / 2
 // The PNG writer.
 // ---------------------------------------------------------------------------
 
-const CRC = new Int32Array(256)
-for (let n = 0; n < 256; n++) {
-  let c = n
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-  CRC[n] = c
-}
-function crc32(buf) {
-  let c = -1
-  for (let i = 0; i < buf.length; i++) c = CRC[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
-  return (c ^ -1) >>> 0
-}
-
-function chunk(type, data) {
-  const len = Buffer.alloc(4)
-  len.writeUInt32BE(data.length)
-  const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
-  const crc = Buffer.alloc(4)
-  crc.writeUInt32BE(crc32(body))
-  return Buffer.concat([len, body, crc])
-}
-
-function writeRgbPng(path, w, h, pixels) {
-  const ihdr = Buffer.alloc(13)
-  ihdr.writeUInt32BE(w, 0)
-  ihdr.writeUInt32BE(h, 4)
-  ihdr[8] = 8 // bit depth
-  ihdr[9] = 2 // colour type: RGB
-  // 10..12 stay 0: deflate, adaptive filtering, no interlace
-
-  // Filter 4 (Paeth) on every scanline. The floor on the file size is the low
-  // byte, which is ~1 MB of genuine entropy and cannot compress -- that is the
-  // price of storing 16 bits exactly and it is paid knowingly.
-  //
-  // Paeth on purpose: it is the filter a decoder is most likely to get subtly
-  // wrong, so writing the shipped world with it means the asset itself exercises
-  // that path every time anything loads.
-  const raw = Buffer.alloc(h * (w * 3 + 1))
-  const stride = w * 3
-  for (let y = 0; y < h; y++) {
-    const o = y * (stride + 1)
-    raw[o] = 4
-    for (let i = 0; i < stride; i++) {
-      const a = i >= 3 ? pixels[y * stride + i - 3] : 0
-      const b = y > 0 ? pixels[(y - 1) * stride + i] : 0
-      const c = i >= 3 && y > 0 ? pixels[(y - 1) * stride + i - 3] : 0
-      const p = a + b - c
-      const pa = Math.abs(p - a)
-      const pb = Math.abs(p - b)
-      const pc = Math.abs(p - c)
-      const pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c
-      raw[o + 1 + i] = (pixels[y * stride + i] - pred) & 0xff
-    }
-  }
-
-  writeFileSync(
-    path,
-    Buffer.concat([
-      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-      chunk('IHDR', ihdr),
-      chunk('IDAT', deflateSync(raw, { level: 9 })),
-      chunk('IEND', Buffer.alloc(0)),
-    ])
-  )
+// The PNG writer lives in src/v2/height/png.js, next to the decoder, because the
+// terrain brush in the v2 editor writes the same file from the browser and two
+// encoders for one asset is one encoder too many. It is byte-identical to the
+// one that used to be here: RGB8, Paeth on every scanline, deflate level 9.
+async function writeRgbPng(path, w, h, pixels) {
+  writeFileSync(path, await encodePng(w, h, pixels))
 }
 
 /**
@@ -648,12 +624,21 @@ function slopeDegrees(levels, size, minY, maxY) {
   return out
 }
 
-/** Build a Heightmap from a level field and a candidate range, without touching the disk. */
+/**
+ * Build a Heightmap from a level field and a candidate range, without touching
+ * the disk.
+ *
+ * `exaggeration` is carried exactly as the writer below carries it, and it is
+ * what makes the survey's composed column mean anything: the runtime divides the
+ * detail amplitude by it, so a candidate range that is mostly stretch pays for
+ * that stretch in COARSE slope alone. Leave it out and every row would report
+ * the composed field of a world nobody ships.
+ */
 export async function heightmapFor(levels, size, minY, maxY) {
   const { Heightmap } = await import('../src/v2/height/heightmap.js')
   return Heightmap.fromDecoded(
     { width: size, height: size, channels: 3, depth: 8, data: encodeRg16(levels) },
-    { world: WORLD_SIZE, size, minY, maxY, encoding: 'rg16' }
+    { world: WORLD_SIZE, size, minY, maxY, encoding: 'rg16', exaggeration: (maxY - minY) / (NATURAL_MAX_Y - MIN_Y) }
   )
 }
 
@@ -763,11 +748,14 @@ async function survey(baked) {
     )
   }
   console.log('\nstep is span/255, the source quantisation in metres; half-s is the worst residual ripple bicubic leaves through it.')
-  console.log('detail is the rms of detail.js at cell 0 over the world, calibrated against THIS range with calibrateRough.')
-  console.log('ratio = half-s / detail. It is CONSTANT across the table, and that is the point: the detail term is calibrated to the')
-  console.log('coarse field, so both columns scale linearly with the span and quantisation has no opinion about which range to pick.')
-  console.log(`The composed walk% column is the honest one -- compare against v1's shipped 88.8% (the table in src/player.js) -- but`)
-  console.log('it moves with detail.js\'s calibrated amplitude, so read it beside the coarse column, which depends only on the image.')
+  console.log('detail is the rms of detail.js at cell 0 over the world, calibrated against this range and then divided by the')
+  console.log(`exaggeration this row implies (span / ${NATURAL_MAX_Y - MIN_Y} m). It is CONSTANT down the table, and that is the point: stretching`)
+  console.log('the world is a decision about the skyline, and the gravel under her boot is not supposed to hear about it.')
+  console.log('ratio = half-s / detail, and it therefore GROWS with the range. Read it as a warning column: above about 2 the largest')
+  console.log("thing in the fine band is no longer terrain but the 8-bit source's own staircase, ~8 m of wavelength and half-s tall,")
+  console.log('and the cure for that is a 16-bit source image rather than a louder detail term.')
+  console.log(`The composed walk% column is the honest one -- compare against v1's shipped 88.8% (the table in src/player.js). It now`)
+  console.log('tracks the coarse column closely, because detail no longer grows with the span; the gap between them is what detail costs.')
 }
 
 // ---------------------------------------------------------------------------
@@ -779,13 +767,30 @@ async function main(argv) {
   let maxY = MAX_Y
   let size = SRC_W
   let wantSurvey = false
+  let force = false
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--survey') wantSurvey = true
+    else if (a === '--force') force = true
     else if (a === '--minY') minY = Number(argv[++i])
     else if (a === '--maxY') maxY = Number(argv[++i])
     else if (a === '--size') size = Number(argv[++i])
-    else throw new Error(`make-heightmap: unknown argument '${a}' (expected --survey, --minY, --maxY, --size)`)
+    else throw new Error(`make-heightmap: unknown argument '${a}' (expected --survey, --force, --minY, --maxY, --size)`)
+  }
+
+  // THE SCULPT GUARD. The v2 terrain brush writes texels straight into
+  // height.png and marks the meta `sculpted` (see the /__height middleware in
+  // vite.config.js). Those edits exist in no other file: they are not in
+  // layers.json, they are not parametric, and re-baking would silently replace
+  // an afternoon of them with the JPEG. Refuse, and say what to do instead.
+  if (!wantSurvey && !force && existsSync(JSON_PATH)) {
+    const prev = JSON.parse(readFileSync(JSON_PATH, 'utf8'))
+    if (prev.sculpted) {
+      throw new Error(
+        'make-heightmap: public/world/height.png has been sculpted in the v2 editor and re-baking would discard those edits.\n' +
+          '  Copy it somewhere first if you want them, then re-run with --force.'
+      )
+    }
   }
   if (!Number.isFinite(minY) || !Number.isFinite(maxY)) throw new Error(`make-heightmap: --minY/--maxY must be finite metres, got ${minY}/${maxY}`)
   if (maxY <= minY) throw new Error(`make-heightmap: --maxY ${maxY} must be above --minY ${minY}`)
@@ -819,7 +824,7 @@ async function main(argv) {
   }
 
   mkdirSync(OUT_DIR, { recursive: true })
-  writeRgbPng(PNG_PATH, size, size, encodeRg16(baked.levels))
+  await writeRgbPng(PNG_PATH, size, size, encodeRg16(baked.levels))
 
   const step = WORLD_SIZE / (size - 1)
   const span = maxY - minY
@@ -828,6 +833,10 @@ async function main(argv) {
     size,
     minY,
     maxY,
+    // How much of that range is drama rather than terrain. See NATURAL_MAX_Y --
+    // the runtime divides the detail term's calibrated amplitude by this, so
+    // stretching the mountains does not also stretch the gravel.
+    exaggeration: (maxY - minY) / (NATURAL_MAX_Y - MIN_Y),
     encoding: 'rg16',
     source: 'reference/skyrim-height-map.jpg',
     // Everything a reader needs to re-run this bake and get the same bytes.

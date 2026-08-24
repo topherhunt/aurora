@@ -300,8 +300,38 @@ function roughnessOf(f, lag, sites = CAL_SITES) {
  * The gate asserts it stays small: a large value means the import has sub-texel
  * structure of its own (JPEG blocking, a bad resample) and the extrapolation is
  * measuring that instead of terrain.
+ *
+ * THE ONE PLACE SPECTRAL CONTINUITY IS DELIBERATELY BROKEN, and it is the last
+ * step: divide by the import's `exaggeration`.
+ *
+ * Continuity is the right target for an image whose metres are the terrain's
+ * own. It is the wrong target for a stretched one, and this world is stretched
+ * 3x (scripts/make-heightmap.mjs, NATURAL_MAX_Y). Multiplying an image by 3
+ * multiplies its structure function by 3 at every lag, so every measurement
+ * above scales with it and the estimator dutifully asks for three times the
+ * sub-texel roughness. It is not wrong -- a mountain range three times as steep
+ * really would be three times as rough -- but the stretch is a rendering
+ * decision about how the horizon reads, not a claim about the rock, and the eye
+ * reads the two bands separately: 3x on a 4 km massif is drama, 3x on a 20 cm
+ * bump is a cratered, pockmarked ground plane at 6 cm cells.
+ *
+ * So the seam gets a kink of exactly the exaggeration factor, knowingly, and the
+ * detail term stays calibrated against the terrain the image would describe if
+ * nobody had stretched it. `rough` is linear in every measurement above, so this
+ * single divide is exactly equivalent to having measured a 1/exaggeration copy
+ * of the coarse field throughout.
+ *
+ * NOT divided out: SLOPE_BOOST's redistribution. `unitAt` is measured through
+ * the same slope modulation on the same stretched field, so the world AVERAGE is
+ * still matched to `deficit` -- what changes is that the stretched field's
+ * steeper slopes take a larger share of that average. Detail follows the
+ * exaggerated shape around while keeping its unexaggerated size, which is the
+ * behaviour wanted: more rock on the cliffs, not more rock in total.
  */
-export function calibrateRough({ heightmap, seed, knee, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
+export function calibrateRough({ heightmap, seed, knee, exaggeration = heightmap.exaggeration, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
+  if (!Number.isFinite(exaggeration) || !(exaggeration > 0)) {
+    throw new Error(`calibrateRough: exaggeration must be a finite ratio > 0, got ${exaggeration} -- it comes from heightmap.exaggeration, i.e. from world/height.json`)
+  }
   const coarse = (x, z) => heightmap.sample(x, z)
   const lagA = knee
   const lagB = knee * 2
@@ -331,6 +361,10 @@ export function calibrateRough({ heightmap, seed, knee, hurst = HURST, slopeKnee
   const unitAt = unit.roughnessAt(probe, heightmap)
   if (!(unitAt > 0)) throw new Error(`calibrateRough: unit detail has no roughness at lag ${probe} m -- the octave table is empty or the band limit is inverted`)
 
-  const rough = deficit / unitAt
-  return { rough, exponent, C, fitLagA: lagA, fitLagB: lagB, rA, rB, probe, target, imageAt, imageShare, deficit, unitAt }
+  // `continuous` is what spectral continuity alone asks for; `rough` is that
+  // with the bake's declared exaggeration taken back out. Both are reported so
+  // the gate can assert the ratio is the exaggeration and nothing else.
+  const continuous = deficit / unitAt
+  const rough = continuous / exaggeration
+  return { rough, continuous, exaggeration, exponent, C, fitLagA: lagA, fitLagB: lagB, rA, rB, probe, target, imageAt, imageShare, deficit, unitAt }
 }

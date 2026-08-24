@@ -240,6 +240,7 @@ if (statSync(V2, { throwIfNoEntry: false })) {
 // module -> the §18 "The gate" section it implements. Order is evaluation order.
 const SECTIONS = [
   ['check-v2-heightmap.mjs', 'heightmap -- PNG decode, metre round trip, C1 across a texel edge'],
+  ['check-v2-sculpt.mjs', 'brush -- falloff derivative, dirty rects, smooth-off-a-snapshot, the PNG round trip'],
   ['check-v2-field.mjs', 'field -- determinism, band limit monotone in cell, convergence at cell 0'],
   ['check-v2-layers.mjs', 'layers -- snow line interpolation, carve depths, dirty-rect rebake, culling rate'],
   ['check-v2-quadtree.mjs', 'quadtree -- split rule, depth ladder, slot pool high-water mark'],
