@@ -79,25 +79,24 @@ const SLIDERS = [
   ['forks', 0, 4, 1, 'child limbs split off each branch. One level only, so limbs = branches x (1 + forks)'],
   ['forkScale', 0.15, 0.9, 0.01, 'child length as a fraction of its parent branch'],
   ['forkAngle', 0, 1.4, 0.01, 'radians the child turns off the parent tangent. 0 = a straight continuation'],
-  ['forkStart', 0, 0.9, 0.01, 'earliest point along the parent a child may split off'],
+  ['forkStart', 0.05, 0.9, 0.01, 'earliest point along the parent a child may split off'],
+  ['forkEnd', 0.1, 1, 0.01, 'latest. Keep it off 1: a fork at the tip is a kink, and the parent has no radius left there to match'],
+  ['forkSideways', 0, 1, 0.01, 'how much of the fork\'s turn is confined to the HORIZONTAL. 1 = it only ever swings out to the side; 0 = it dives and climbs as readily'],
 
   ['#', 'foliage'],
-  ['sprayMetres', 0.05, 1.5, 0.01, 'one spray\'s stem-to-tip reach in WORLD METRES, in BOTH modes. Half a metre is about what a real spray is -- push it up and a needle becomes two feet long'],
-
-  ['#', 'foliage: cards'],
-  ['sprays', 0, 10, 1, 'leaf cards per LIMB, including one terminal card at the tip'],
+  ['sprays', 0, 14, 1, 'leaf cards per LIMB, including one terminal card at the tip. This is the whole density knob, and at one triangle a card it is also the whole foliage budget'],
+  ['apexSprays', 0, 6, 1, 'cards on the TRUNK\'s own tip, which no branch reaches. At 0 every tree ends in a bare spike'],
+  ['sprayMetres', 0.05, 2.5, 0.01, 'one spray\'s stem-to-tip reach in WORLD METRES. Depends on the cut: a broadleaf spray is about half a metre, the pine fan is a whole branch at 1.5'],
+  ['cardTris', 1, 2, 1, '1 = a triangle with its apex at the stem, halving the cost of every card and clipping the outer corners of the art. 2 = the full quad'],
+  ['sprayTaper', 0.1, 1.5, 0.01, 'spray size at the limb TIP as a fraction of its size at the base. Under 1 puts the big sprays near the trunk and fine ones at the ends'],
+  ['sprayVary', 0, 0.6, 0.01, 'random +/- size variation per card, on top of the taper'],
   ['sprayStart', 0, 1, 0.01, 'earliest point along a limb a side shoot may attach'],
   ['sprayOut', 0, 1, 0.01, '0 = shoots continue the limb, 1 = they leave straight out its side'],
   ['sprayLift', 0, 1, 0.01, '0 = card lies along the shoot (needled spray), 1 = stands upright (broadleaf)'],
+  ['sprayDown', 0, 1, 0.01, 'and then this much of UP taken back off, so the spray hangs outward and down off the twig. Randomised half-to-full per card'],
   ['sprayJitter', 0, 2, 0.01, 'random roll of each card about its own axis'],
-  ['sprayVary', 0, 0.6, 0.01, 'random +/- size variation per card'],
   ['sprayAspect', 0.3, 2.5, 0.01, 'card width/height. Set from the art\'s alpha bounds -- move it and the leaves stretch'],
-
-  ['#', 'foliage: cloak'],
-  ['cloakQuads', 1, 4, 1, 'segments per flap. 1 is a straight chord, which matches a one-ring branch cone exactly'],
-  ['cloakTaper', 0, 0.9, 0.01, 'fraction of the reach lost by the flap\'s tip'],
-  ['cloakDihedral', -0.4, 1.2, 0.01, 'radians each flap lifts off horizontal. 0 = one flat plane of needles, which is nearly what a spruce is'],
-  ['cloakAspect', 0.3, 2.5, 0.01, 'tile length / reach. Set from the PADDED cut\'s alpha bounds -- move it and the needles stretch along the branch'],
+  ['leafSkyward', 0, 1, 0.01, 'how far foliage normals turn toward the sky. This is the black-underside knob: 0 shades each card by its own plane, 1 shades the whole canopy as if lit from above'],
 
   ['#', 'material'],
   ['alphaTest', 0.05, 0.95, 0.01, 'cutout threshold. Low = lacy and aliased, high = eats the leaf edges'],
@@ -420,20 +419,15 @@ function refresh() {
   const ns = Math.round(params.sprays)
   const nf = Math.round(params.forks)
   const nl = nb * (1 + nf)
-  const cloaked = params.foliage === 'cloak'
-  const cq = Math.max(1, Math.round(params.cloakQuads))
+  const ct = Math.round(params.cardTris) === 1 ? 1 : 2
+  const na = Math.round(params.apexSprays)
 
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} total)` : ''}`],
     [`&nbsp;&nbsp;trunk ${cone(sides, rings)}`, Math.round(s.trunk / s.count)],
     [`&nbsp;&nbsp;limbs ${nb}&times;(1+${nf})`, nl],
     [`&nbsp;&nbsp;branches ${nl}&times;${cone(bs, br)}`, Math.round(s.branch / s.count)],
-    [
-      cloaked
-        ? `&nbsp;&nbsp;cloaks ${nl}&times;2&times;${cq}&times;2`
-        : `&nbsp;&nbsp;sprays ${nl}&times;${ns}&times;2`,
-      Math.round(s.spray / s.count),
-    ],
+    [`&nbsp;&nbsp;sprays (${nl}&times;${ns}+${na})&times;${ct}`, Math.round(s.spray / s.count)],
     ['vertices', Math.round(s.verts / s.count)],
     ['drawn here', s.count],
     ['geometry in RAM', fmt(s.bytes)],
@@ -456,18 +450,21 @@ function refresh() {
     ['first branch at', `${f.firstBranchHeight.toFixed(2)} m`],
     // What a leaf card actually came out as, not what was asked for: the final
     // rescale divides by a bounding box that stands a little above the trunk
-    // tip, so this runs a few percent under `sprayMetres`. A spray much over
-    // half a metre is a needle a foot long, which is the whole reason it prints.
+    // tip, so this runs a few percent under `sprayMetres`. What counts as too
+    // big depends on the cut: a broadleaf card is one spray of leaves and half
+    // a metre is already generous, while spray_pine is a whole needled fan and
+    // a metre and a half of it is one spruce branch. Past ~1.6 m no cut we have
+    // is that big and the card is a billboard pretending to be foliage.
     [
       'leaf spray',
       `${(f.sprayMetres * 100).toFixed(0)} cm`,
-      f.sprayMetres > 0.9 ? 'warn' : 'ok',
+      f.sprayMetres > 1.6 ? 'warn' : 'ok',
     ],
-    // The point of the cloak: one quad wearing N tiled sprays costs the same
-    // four triangles as one card, so this ratio is the whole argument. Cards sit
-    // at 2.0 by construction and cannot go lower; a cloak drops with length.
+    // Whole-tree triangles per spray, wood included. It falls as `sprays` rises
+    // -- the trunk and the limbs are a fixed cost that more foliage amortises --
+    // and it is the honest way to compare two canopies of different density.
     [
-      `sprays on it (${cloaked ? 'tiled' : 'cards'})`,
+      'sprays on it',
       `${f.sprays} @ ${(f.triangles / Math.max(1, f.sprays)).toFixed(1)} tris each`,
     ],
     ['crown / height', (f.crownWidth / f.height).toFixed(2)],
@@ -664,10 +661,6 @@ function syncSliders() {
     r.input.value = params[key]
     r.out.textContent = r.step >= 1 ? params[key] : Number(params[key]).toFixed(2)
   }
-  // `foliage` is a mode, not a number, so it has a button rather than a slider
-  // -- and unlike the other buttons its state belongs to the species preset, so
-  // it has to be re-read here rather than only when it is clicked.
-  document.getElementById('cloak').classList.toggle('on', params.foliage === 'cloak')
 }
 
 // Loading a species replaces the whole parameter set, not just the shape ones:
@@ -732,9 +725,6 @@ viewButton('sizes')
 toggle('bush', () => bushMode, (v) => {
   bushMode = v
   loadSpecies()
-})
-toggle('cloak', () => params.foliage === 'cloak', (v) => {
-  params.foliage = v ? 'cloak' : 'cards'
 })
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })

@@ -95,11 +95,12 @@ export const LAYER = {
 
   // --- buildings (DESIGN.md §19) -------------------------------------------
   //
-  // Nine layers for the whole Nordic kit, which is the number it takes to make
-  // a building read as ONE object rather than as a pile of parts. The test each
-  // of these passed is the one FROND_0 sets above -- a layer has to read as
-  // different at the distance it will be seen -- and three candidates failed it
-  // and are not here:
+  // Ten layers here, plus ROOF_TILE and DOOR appended at the end of the
+  // registry once real photographic sources for them turned up. Twelve is what
+  // it takes to make a building read as ONE object rather than as a pile of
+  // parts. The test each of them passed is the one FROND_0 sets above -- a
+  // layer has to read as different at the distance it will be seen -- and three
+  // candidates failed it and are not here:
   //
   //   Slate roof. It is SHINGLE at a colder tint and a lower value. At 128 px
   //   from the 15 m a roof is normally seen at, the shake pattern is what you
@@ -116,7 +117,7 @@ export const LAYER = {
   //   A moss layer would need a second blended pass over the roof, which means
   //   a second material, which splits the batch. That trade is never worth it.
   //
-  // 10 building layers x 64 KB = 640 KB, taking the array from 9 to 19 of the
+  // 12 building layers x 64 KB = 768 KB, taking the array from 9 to 25 of the
   // 256 layers §9 measured as available.
   TIMBER_HEWN: 9, // round log courses -- log-cabin walls, corner posts, purlins
   TIMBER_PLANK: 10, // sawn boards -- stave walls, doors, shutters, decking, gables
@@ -145,13 +146,35 @@ export const LAYER = {
   BARK_PINE: 19,
   LEAF_ASH: 20,
   LEAF_ASPEN: 21,
-  // The TILING pine spray, for cloaked branches. Same art as NEEDLES but cut
-  // with transparent side margin so it repeats along a branch without its
-  // neighbours fusing; NEEDLES stays, cropped tight, because the scanned props
-  // in src/props.js still address it as a single card.
+  // The pine spray a procedural tree wears. Same art as NEEDLES but cut with
+  // transparent side margin, which is left over from a tiled-branch scheme that
+  // is gone (see tree.js) and is still the better card of the two: a spray with
+  // air around it reads as one twig rather than as a slab. NEEDLES stays,
+  // cropped tight, because the scanned props in src/props.js address it.
   SPRAY_PINE: 22,
+
+  // --- buildings, second pass (real photographic sources) -------------------
+  //
+  // Two layers the first nine could not cover, appended for the same reason the
+  // tree layers were: an index is baked into every shipped `texLayer`, so this
+  // list only ever grows at the end.
+  //
+  // ROOF_TILE is the one that contradicts the argument made above for slate.
+  // That argument stands -- slate is a shake in a colder hue, and hue is free
+  // -- and it is precisely why a scalloped pantile is NOT: its silhouette is a
+  // row of half-circles where a shake roof is a row of rectangles, and
+  // silhouette is the thing that survives 128 px from fifteen metres. A tint
+  // cannot round a corner.
+  //
+  // DOOR is a decal sheet, not a tiling layer: one photographed leaf addressed
+  // 0..1 by island, the way IRON and RUNE are. It pays for itself in triangles
+  // rather than costing them -- the scan already has its hinge straps and its
+  // ring pull painted on, so doorway() stopped emitting six doubled decal quads
+  // when this landed.
+  ROOF_TILE: 23, // red scalloped pantile -- the roof a prosperous inn has
+  DOOR: 24, // decal sheet: one plank door leaf, ironwork included
 }
-export const LAYER_COUNT = 23
+export const LAYER_COUNT = 25
 
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
@@ -174,11 +197,16 @@ export const LAYER_COUNT = 23
 // which are addressed by island and never scaled.
 // ---------------------------------------------------------------------------
 export const TILE_METRES = {
+  // These follow the SHIPPED tile, not the generator that stands in for it for
+  // the first few frames: the photograph is what the player looks at, so it is
+  // the photograph's content that has to be the right size. Where the two
+  // disagree the generator is briefly the wrong scale, which is invisible.
   [LAYER.TIMBER_HEWN]: 0.84, // 2 courses per tile -> a 0.42 m log
-  [LAYER.TIMBER_PLANK]: 1.15, // 5 boards per tile -> a 0.23 m board
+  [LAYER.TIMBER_PLANK]: 0.72, // 3 boards per tile -> a 0.24 m board
   [LAYER.THATCH]: 1.6, // 3 courses per tile
-  [LAYER.SHINGLE]: 1.1, // 5 x 6 shakes per tile -> a 0.22 x 0.18 m shake
-  [LAYER.STONE]: 1.3, // 4 courses of 4 -> a 0.33 x 0.33 m stone
+  [LAYER.SHINGLE]: 1.1, // 6 x 6 shakes per tile -> a 0.18 m shake
+  [LAYER.ROOF_TILE]: 1.35, // 5 x 6 pantiles per tile -> a 0.27 x 0.22 m tile
+  [LAYER.STONE]: 2.4, // roughly 8 rubble stones across -> a 0.3 m stone
   [LAYER.PLASTER]: 2.2, // deliberately large; the panel should read as flat
   [LAYER.THATCH_FRINGE]: 1.6, // matches THATCH so straws line up across the eave
   [LAYER.GLASS]: 0.46, // 2 x 2 panes per tile -> a 0.23 m quarry
@@ -191,15 +219,26 @@ export const TILE_METRES = {
 // The two thatch layers are cut from the thatch photograph by
 // `tools/props/extract-thatch.mjs` (DESIGN.md §19).
 //
-// Note that BARK, BARK_BIRCH, NEEDLES, LEAVES, THATCH and THATCH_FRINGE ALSO
-// have procedural generators below and are filled by them first:
+// Note that every building layer here, and BARK, BARK_BIRCH, NEEDLES and
+// LEAVES, ALSO have procedural generators below and are filled by them first:
 // `loadImageLayers` patches over that a few frames later, so a trunk is
 // placeholder bark for an instant rather than invisible. Do not delete those
 // generators thinking they are dead.
+//
+// The building tiles are cut from the photographs in tmp/building-src/ by
+// `tools/buildings/cut-tiles.mjs`, which is also where the reasoning for each
+// crop, flip and grade lives.
 export const IMAGE_LAYERS = {
   [LAYER.FROND_0]: 'ferns/fern_frond_0.png',
   [LAYER.THATCH]: 'buildings/thatch.png',
   [LAYER.THATCH_FRINGE]: 'buildings/thatch_fringe.png',
+  [LAYER.TIMBER_HEWN]: 'buildings/timber_hewn.png',
+  [LAYER.TIMBER_PLANK]: 'buildings/timber_plank.png',
+  [LAYER.SHINGLE]: 'buildings/shingle.png',
+  [LAYER.ROOF_TILE]: 'buildings/roof_tile.png',
+  [LAYER.STONE]: 'buildings/stone.png',
+  [LAYER.GLASS]: 'buildings/glass.png',
+  [LAYER.DOOR]: 'buildings/door.png',
   [LAYER.BARK]: 'trees/bark_oak.png',
   [LAYER.BARK_BIRCH]: 'trees/bark_birch.png',
   [LAYER.BARK_PINE]: 'trees/bark_pine.png',
@@ -321,6 +360,13 @@ export function buildTextureArray() {
   layers[LAYER.GLASS] = tileGlass(n)
   layers[LAYER.IRON] = sheetIron(n)
   layers[LAYER.RUNE] = sheetRunes(n)
+  // The two photographic-only layers have no generator of their own, so they
+  // borrow the nearest one purely to avoid a transparent hole in the frames
+  // before loadImageLayers() lands: a pantile roof stands in as shakes (right
+  // layout, wrong hue, for about three frames), and a door leaf as the plank
+  // tile it used to be drawn with.
+  layers[LAYER.ROOF_TILE] = tileShingles(n)
+  layers[LAYER.DOOR] = tilePlanks(n)
 
   // DataArrayTexture wants one contiguous buffer, layers back to back. Image
   // layers are left at zero -- fully transparent, so alphaTest discards them --

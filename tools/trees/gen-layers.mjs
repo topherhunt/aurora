@@ -41,12 +41,13 @@ const SIZE = 128 // TEX_SIZE in src/textures.js -- every layer of the array must
 const LEAVES = ['oak', 'ash', 'aspen', 'pine']
 const BARK = ['oak', 'birch', 'pine']
 
-// The TILING cut. A cloaked branch (tree.js, `foliage: 'cloak'`) wears one long
-// quad with the spray repeated along it, so the art has to have transparent
-// margin at u = 0 and u = 1 or neighbouring tiles fuse into a hedge. The plain
-// `leaf_pine` cut has opaque pixels hard against both edges by construction --
-// it is cropped to its alpha bounds -- so it cannot be the same file, and it is
-// also still wanted as-is by the scanned props in src/props.js.
+// The PADDED cut, which is what a procedural pine wears. It was cut this way
+// for a tiled-branch scheme that has since been thrown out (tree.js), and it
+// survives that on its own merits: the plain `leaf_pine` cut is cropped to its
+// alpha bounds, so opaque pixels run hard into all four edges and the card
+// reads as a slab of needles rather than as one twig with air around it. It
+// cannot be the same file as `leaf_pine`, which the scanned props in
+// src/props.js still want cropped tight.
 const TILING = [{ name: 'pine', out: 'spray_pine', pad: 0.09 }]
 
 const ALPHA = 128 // the alphaTest the props material uses; the cutout is judged at this
@@ -130,9 +131,49 @@ function coverage(px) {
   return n / (px.length / 4)
 }
 
+// The ONE-TRIANGLE card (tree.js `cardTris: 1`) draws a spray as a single
+// triangle with its apex at the stem instead of a quad, which halves the cost
+// of every card in a canopy. In UV terms that triangle is (0.5, 0) at the stem
+// and (0, 1) / (1, 1) across the tip: at height v it reaches |u - 0.5| <= k*v
+// with k = 0.5. So it keeps half the square, and the half it drops is the two
+// BOTTOM CORNERS -- which on a spray, leaving its twig at a point, is mostly
+// transparent already.
+//
+// MOSTLY. Not entirely, and the difference is a look decision rather than an
+// arithmetic one, so this measures it rather than asserting it. `kept` is the
+// fraction of OPAQUE texels the triangle keeps, and it is reported at a spread
+// of k so the shape of the trade is visible: every cut here is well over 90% by
+// k = 1.
+//
+// WHY k IS NEVER RAISED PAST 0.5 EVEN SO. Widening the triangle means UVs
+// outside [0, 1], and the whole texture array is RepeatWrapping (textures.js,
+// which the bark tiling depends on) -- so a card reaching past the edge does not
+// find empty space there, it finds the NEXT COPY of the leaf and draws it. A
+// padded cut buys back exactly its margin and no more. If the clipping at k =
+// 0.5 ever matters, the fix is in the cut: resample each row horizontally by v
+// so the art fills the triangle instead of being cropped by it, which loses no
+// leaf and instead tapers the spray toward its stem.
+const TRI_KS = [0.5, 0.75, 1, 1.5, 2]
+
+function triangleFit(px) {
+  const ratios = []
+  for (let y = 0; y < SIZE; y++) {
+    const v = (y + 0.5) / SIZE
+    for (let x = 0; x < SIZE; x++) {
+      if (px[(y * SIZE + x) * 4 + 3] < ALPHA) continue
+      ratios.push(Math.abs((x + 0.5) / SIZE - 0.5) / v)
+    }
+  }
+  if (!ratios.length) throw new Error('triangleFit: nothing survives the alpha test')
+  const kept = {}
+  for (const t of TRI_KS) kept[t] = ratios.filter((r) => r <= t).length / ratios.length
+  return kept
+}
+
 // --- the two jobs -----------------------------------------------------------
 
 const aspects = {}
+const triKept = {}
 
 // `pad` leaves that fraction of the square transparent at each SIDE, so the cut
 // tiles horizontally without its neighbours touching. 0 fills the square, which
@@ -169,9 +210,12 @@ function buildLeaf(name, outName = `leaf_${name}`, pad = 0) {
   // the whole square. Dividing by the margin fraction is what keeps needles
   // un-stretched once the tile is laid down.
   aspects[outName] = box.w / box.h / (inner / SIZE)
+  const kept = triangleFit(flipped)
+  triKept[outName] = kept
   report(file, `crop ${box.w}x${box.h}`, `aspect ${aspects[outName].toFixed(3)}`,
     pad ? `${(pad * 100).toFixed(0)}% side margin` : 'fills the square',
-    `${(coverage(flipped) * 100).toFixed(0)}% opaque`)
+    `${(coverage(flipped) * 100).toFixed(0)}% opaque`,
+    `1-tri card keeps ${(kept[0.5] * 100).toFixed(0)}%`)
 }
 
 function buildBark(name, scratch) {
@@ -217,5 +261,12 @@ try {
 // to a JSON the runtime reads: they are a property of art that changes about
 // never, and a build-time file the game must fetch to draw a leaf correctly is
 // a whole failure mode bought for nothing.
-console.log('\nsprayAspect / cloakAspect per cut (square width / height as drawn):')
-for (const [k, v] of Object.entries(aspects)) console.log(`  ${k.padEnd(8)} ${v.toFixed(3)}`)
+console.log('\nsprayAspect per cut (square width / height as drawn):')
+for (const [k, v] of Object.entries(aspects)) console.log(`  ${k.padEnd(11)} ${v.toFixed(3)}`)
+console.log('\nopaque art a ONE-TRIANGLE card keeps, at each triangle half-width k.')
+console.log('k = 0.5 is what tree.js draws; the rest is what widening would buy if the')
+console.log('array were not RepeatWrapping. See the note on triangleFit.')
+console.log(`  ${'cut'.padEnd(11)} ${TRI_KS.map((t) => `k=${t}`.padStart(6)).join(' ')}`)
+for (const [n, kept] of Object.entries(triKept)) {
+  console.log(`  ${n.padEnd(11)} ${TRI_KS.map((t) => `${(kept[t] * 100).toFixed(0)}%`.padStart(6)).join(' ')}`)
+}

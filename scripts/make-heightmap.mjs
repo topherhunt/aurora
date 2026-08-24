@@ -88,7 +88,7 @@ export const SRC_H = 873
 // moved by 3.3x.
 //
 // RELIEF PER KILOMETRE, as a cross-check rather than a criterion. v1 spans
-// -0.62..313.06 m over 16 km, i.e. 19 m/km. 600 m over 8 km is 75 m/km, 3.9x
+// -0.62..313.06 m over 16 km, i.e. 19 m/km. 900 m over 8 km is 113 m/km, 5.9x
 // v1's, because this is an authored range and not a procedural continent. The 8 km reading is also what makes it credible: heightmap-png.mjs
 // has called this same image 6437 m across since build step 2, and 8192 is
 // within 27% of that where the earlier 4096 was out by 1.57x.
@@ -109,16 +109,31 @@ export const SRC_H = 873
 // basins, see src/v2/layers/water-bodies.js), so the import has no reason to
 // spend codes on ground below the darkest pixel of the image -- and 9.8% of the
 // image already sits on that floor.
-// MAX_Y WAS 300 AND IS NOW 600, BY EYE AND ON PURPOSE. The survey chooses a
-// range that keeps slopes walkable; what it cannot judge is whether the world
-// reads as mountains, and at 300 m over 8 km it did not -- the shipped bake was
-// squashed flat from the ground. Doubling the span doubles every slope with it,
-// so the walk% column in --survey is the number to re-read if the ground starts
-// refusing to be climbed. Doubling again is a one-flag experiment: this constant
-// is the only thing that has to move, because the PNG stores normalised levels
-// and every metre in v2 is recovered through minY/maxY in world/height.json.
+// MAX_Y WENT 300 -> 600 -> 900, BY EYE AND ON PURPOSE, AND 900 IS THE LAST ROW
+// THE SURVEY ARGUES FOR. The survey chooses a range that keeps slopes walkable;
+// what it cannot judge is whether the world reads as mountains, and at 300 m
+// over 8 km it did not -- nor, from the ground, at 600. Every raise scales every
+// slope with it, so this is a trade and here is the current side of it: at 900
+// the coarse column is 95.5% walkable and the composed column is 86.8%, against
+// v1's shipped 88.8%. That is the first row where the composed field is HARDER
+// to walk than the world this engine has been tuned against, and its composed
+// p99 is 72.3 deg -- well past LOCOMOTION.maxSlopeDeg, so the steepest percentile
+// of the world is now ground she is refused rather than ground she climbs
+// slowly. That is acceptable for scenery (a cliff is allowed to be a cliff, and
+// the rivers and roads are authored layers that flatten their own way through)
+// and it is not acceptable to raise much further without re-reading --survey:
+// the 1200 row drops the composed column to 74.6%, which is a quarter of the
+// world walled off.
+//
+// Raising it is a one-flag experiment: this constant is the only thing that has
+// to move, because the PNG stores normalised levels and every metre in v2 is
+// recovered through minY/maxY in world/height.json. What does NOT follow it is
+// the authored content -- snow base, snow point deltas, lake and spline
+// elevations are metres in public/world/layers.json and a rebake leaves them
+// where they were, at the wrong height on the new ground. Run
+// `node scripts/rescale-world.mjs <factor>` over the document in the same pass.
 export const MIN_Y = 0
-export const MAX_Y = 600
+export const MAX_Y = 900
 
 // The 8x8 DCT grid. Baseline JPEG transforms 8x8 blocks of luma aligned to pixel
 // zero regardless of chroma subsampling, so the block edges sit between columns
@@ -131,8 +146,8 @@ const BLOCK = 8
 // this says: the deblocker may never displace the ground by more than the amount
 // the file format has already thrown away. A ridge line crossing a block
 // boundary can be softened by at most 1/3 of a level per axis pass (the
-// correction is split three ways, see deblockAxis), i.e. 0.67 levels = 1.57 m at
-// the shipped 600 m span, and that bound is what the gate's ridge test enforces.
+// correction is split three ways, see deblockAxis), i.e. 0.67 levels = 2.35 m at
+// the shipped 900 m span, and that bound is what the gate's ridge test enforces.
 export const DEBLOCK_CAP = 1
 
 // ---------------------------------------------------------------------------

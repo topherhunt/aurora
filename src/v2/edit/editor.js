@@ -114,12 +114,19 @@ const HANDLE_PICK_PX = 10
 const MIN_SNOW_RADIUS = 10
 const MIN_PATH_WIDTH = 0.5
 
-// A snow-line control point should shape ONE mountain flank, which is a fraction
-// of the world rather than a fixed number of metres. DERIVED, because the world
-// box has now been restated twice mid-build (16384 -> 4096 -> 8192) and a typed
-// literal was wrong both times: 400 m was 1/40 of the 16 km draft, so 1/40 is
-// the number that carries the intent. At WORLD_SIZE 8192 that is 204.8 m.
-const SNOW_RADIUS = WORLD_SIZE / 40
+// A snow-line control point should shape ONE MOUNTAIN, which is a fraction of
+// the world rather than a fixed number of metres. DERIVED, because the world box
+// has now been restated twice mid-build (16384 -> 4096 -> 8192) and a typed
+// literal was wrong both times. At WORLD_SIZE 8192 this is 409.6 m.
+//
+// 1/40 was the first guess, from the 16 km draft, and it was too small by half:
+// on an 8 km world a 205 m circle covers one flank of one peak, so pulling a
+// snow line up over a massif took a dozen points where it should have taken two.
+// This is the DEFAULT only -- the radius is per point, editable in the panel and
+// draggable with the scale gizmo, and nothing about the field's resolution
+// changes with it (see the note on GRID_RES in layers/snowline.js: that sets how
+// finely the deviation field is SAMPLED, not how far one point reaches).
+const SNOW_RADIUS = WORLD_SIZE / 20
 
 // A lake's size is physical rather than world-relative, so this is a literal --
 // but halved from the 16 km draft's 40 m along with the world, because the
@@ -127,7 +134,26 @@ const SNOW_RADIUS = WORLD_SIZE / 40
 // to have to drag OUTWARD", and that is a fraction of what you can see. 20 m of
 // radius is a 40 m pond: visible from the shore you clicked on, and small enough
 // that growing it reads as authoring where shrinking one reads as fixing.
-const LAKE_DEFAULTS = { rx: 20, rz: 20, rot: 0, shape: 0, carve: 1, depth: 8 }
+//
+// SHAPE 1 (rectangle) AND CARVE 0, both of which were the other way round first.
+//
+// The rectangle is about control. An ellipse gives the author two half-extents
+// and a rotation and then rounds every corner off; a lake tucked into the corner
+// of a valley wants to REACH the corner, and the only way to do that with an
+// ellipse is to oversize it until it swallows the ground on either side. Both
+// shapes are still authored by the same two numbers -- see water-bodies.js's
+// footprint(), where the rectangle case is two comparisons -- so this costs
+// nothing and the ellipse is one click away in the panel.
+//
+// Carving is off because the basin it digs is the footprint, which means a
+// carving lake is always exactly as round (or as rectangular) as its own outline
+// and every shoreline in the world reads as stamped. A lake now sits on whatever
+// ground is already there and it is the AUTHOR's job to put it somewhere with a
+// hollow -- which is also what keeps the shoreline irregular, because the
+// waterline is then the intersection of a flat plane with real terrain. `depth`
+// is kept on the record: it is the number carve WOULD use, and turning carve
+// back on for one lake should not also require re-typing it.
+const LAKE_DEFAULTS = { rx: 20, rz: 20, rot: 0, shape: 1, carve: 0, depth: 8 }
 const LAKE_LIFT = 1 // §18: "y = groundY + 1" -- the water sits just above the hit
 const PATH_WIDTH = { river: 8, road: 6 } // metres of real river and real road; nothing to rescale
 

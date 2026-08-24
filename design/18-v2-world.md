@@ -115,13 +115,15 @@ Arrays-of-numbers, not objects-of-keys, for anything there are many of.
 
 `shape` 0 = ellipse, 1 = rectangle. `y` on a lake is the water level. `y` on a river/road point is the surface elevation at that point; the editor seeds it from the terrain and the move gizmo can lift it.
 
-`snow.base` and `snow.band` are elevations in metres and therefore belong to whatever vertical range the import chose, so neither is a constant anywhere in the code. A new world takes them from the loaded image: `snowDefaults(V2Height.bands)` in `src/v2/main.js` puts the base at the p75 texel elevation and the band at half the p50..p90 spread, which on the shipped bake (0..299 m) is **194.2 m +/- 35.4 m**, a quarter of the world in snow. `DEFAULT_SNOW_BASE` / `DEFAULT_SNOW_BAND` in `doc.js` are 148/47 and exist only for documents built with no heightmap in the room -- every node gate -- none of which asserts an elevation. The altitude ramp in the mesher's shading is derived the same way, off `bands.altLo` / `bands.altSpan`.
+`snow.base` and `snow.band` are elevations in metres and therefore belong to whatever vertical range the import chose, so neither is a constant anywhere in the code. A new world takes them from the loaded image: `snowDefaults(V2Height.bands)` in `src/v2/layers/doc.js` puts the base at the p75 texel elevation and the band at half the p50..p90 spread, which on the shipped bake (0..900 m) is **582.7 m +/- 106.1 m**, a quarter of the world in snow. `DEFAULT_SNOW_BASE` / `DEFAULT_SNOW_BAND` in `doc.js` are 148/47 and exist only for documents built with no heightmap in the room -- every node gate -- none of which asserts an elevation. The altitude ramp in the mesher's shading is derived the same way, off `bands.altLo` / `bands.altSpan`.
+
+**The band is CENTRED on the line**, so the mesher's cover opens at `base - band/2` and closes at `base + band/2` and the authored elevation is the half-cover contour. It used to stack above the line, which made every authored number read about half a band low: an author clicking the mountain where the snow should start got bare ground there and white 35 m higher, then dragged the point down by roughly that much, every time.
 
 ### Snow line -- the interpolation scheme
 
 The requirement: one global default elevation; authored points that the line must pass **through**; clusters of points give tight local control; cost per queried vertex is O(1) and independent of how many points exist.
 
-**Stored:** `[x, z, delta, radius]` per point, 16 bytes. `delta` is metres of deviation from `snow.base`, so an unedited world is an empty array and a point dragged in a flat region is one number.
+**Stored:** `[x, z, delta, radius]` per point, 16 bytes. `delta` is metres of deviation from `snow.base`, so an unedited world is an empty array and a point dragged in a flat region is one number. A new point's `radius` defaults to `WORLD_SIZE / 20` (409.6 m), which is about one mountain on an 8 km world -- `/40` was the first guess and took a dozen points to lift the line over one massif. `GRID_RES` is unrelated to it: that sets how finely the deviation field is SAMPLED, not how far one point reaches.
 
 **Interpolant:** Shepard with a compactly-supported singular kernel, blended toward the base by a partition-of-unity mask.
 
@@ -144,9 +146,11 @@ Points are indexed in a `UniformGrid` so a bake texel visits only points whose r
 
 A lake is a transformable primitive, not a mesh: centre, half-extents `rx`/`rz`, rotation about Y, ellipse or rectangle. `footprint(x, z)` returns 0..1 (1 inside, feathering to 0 over the last 15% of the radius). With `carve` set, terrain inside is pulled down to `y - depth * footprint`, which guarantees the bank meets the water rather than poking through it.
 
+**New lakes are RECTANGLES and do NOT carve**, which is the opposite of both original defaults and is an authoring decision, not a rendering one. A carved basin is the footprint, so a carving lake is exactly as round as its own outline and every shoreline in the world reads as stamped; a lake that carves nothing sits on whatever ground is there, and its waterline is the intersection of a flat plane with real terrain, which is irregular for free. That makes finding a hollow the author's job -- the placement click no longer guarantees the lake has a bed. `carve` is per lake and still switchable; `depth` stays on the record whether or not it is being used. Detail suppression follows carving (`flattenAt` skips non-carving lakes), because flattening under a lake that is meant to sit on the existing ground would erase the ground it is sitting on.
+
 The surface drawn for it is an OCTAGON -- eight triangles, whatever the lake's size. Water is flat and its edge is under a bank, so the segment count buys nothing; what it costs is that the rim has to cover the basin the carve dug, in both shapes, or the four corners of a rectangular lake show bare bed. So the octagon CIRCUMSCRIBES the ellipse (each vertex 8.2% of the radius outside it, over ground the bank hides) and traces the rectangle EXACTLY, matching `footprint`'s hard `max(|ux|, |uz|)` test. Vertices are sampled on the unit shape and stretched by the half-extents afterwards, not ray-cast against the stretched one: otherwise a 100x10 m lake puts seven of its eight vertices at the ends and the rim along the flat falls to 0.58 of the footprint.
 
-Indexed in a `UniformGrid` by AABB. Placement is one click on the terrain: centre at the hit XZ, `y = groundY + 1`, `rx = rz = 40`. Everything after that is the gizmo.
+Indexed in a `UniformGrid` by AABB. Placement is one click on the terrain: centre at the hit XZ, `y = groundY + 1`, `rx = rz = 20`. Everything after that is the gizmo.
 
 ### Rivers and roads (`paths.js`)
 
@@ -183,11 +187,15 @@ Tools: `select`, `snowline`, `lake`, `river`, `road`. Each placement tool is one
 
 A click within 10 px of an existing handle SELECTS it rather than placing something new behind it: the ray gets first refusal, and only when it hits nothing does screen-space proximity get a say, so a handle drawn on top of the pixel you clicked always wins over one that is merely nearer.
 
+Handles are sized in three regimes and only the first is angular: constant 22 px out to 120 m, constant WORLD size beyond that so they recede with the ground, and a floor at 3 px wide so a far-off river is still findable. Holding 22 px all the way out -- the first version -- turned a river drawn across the valley into a chain of beads the size of houses, in front of the terrain the author was trying to look at. The 10 px pick radius is unaffected by any of it, so a 3 px handle is still a 20 px click target.
+
 Scale means different things to different selections and the editor writes the parameter rather than storing a transform: a lake takes `rx`/`rz`, a snow point its `radius`, a spline point its `width`. Each has a multiplicative floor, so a drag can shrink something small but never to an unrecoverable zero.
 
 Right-click on a handle opens a context menu: delete, and on a spline point **split before** / **split after** -- a new control point at the midpoint of that segment with the two widths averaged. Past either end there is no segment to halve, so the path extends instead by half the last segment, taking its Y from the ground. That is the only way to lengthen a river after its draft is committed. The editor builds the items and the panel draws them; deciding what is legal to do to a river point is not the DOM layer's job. The placement arithmetic is `src/v2/edit/split.js`, three-free so the gate can reach it.
 
 Edits are debounced (~120 ms) before the worker sees them, so a drag is one remesh per frame-ish and not one per mousemove.
+
+**An invalidated chunk keeps its old mesh on screen until the replacement lands** (`invalidationAction` in `stream-policy.js`). Freeing the slot at invalidation time -- the obvious order, and the first one -- put a hole where every re-meshing chunk was for the length of the bake, and the hole went all the way through to the sky, because an edit's dirty rect also catches the PINNED depth 0-2 chunks that contain it, so the ancestor fallback had nothing left to fall back to. Dragging any gizmo flashed sky at 60 Hz. Holding costs one slot per invalidated chunk for one bake, and that fits the budget only because eviction counts HELD SLOTS rather than ready states -- a held chunk is back in state `queued` and is very much still spending one of the 1024. The replacement is written into the same slot, so there is no frame in which neither mesh is drawn.
 
 **Persistence:** autosave to `localStorage` on every commit; Export / Import JSON buttons; and, under the dev server only, a `POST /__world` middleware in `vite.config.js` that writes `public/world/layers.json` so the authored world can be committed.
 

@@ -227,7 +227,25 @@ function v2Route() {
 export default defineConfig({
   base: './',
   plugins: [basicSsl(), propOriginals(), worldDoc(), v2Route()],
-  server: { host: true, port: 5173 },
+  // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
+  //
+  // None of these pages accepts a hot update -- there is no `import.meta.hot`
+  // anywhere in src/ -- so every save turned into a full page reload. That is
+  // fine when the person editing and the person looking are the same person. It
+  // is not fine here: agents write files while the world is being walked
+  // through, and a reload throws away the camera, the flying/walking state, the
+  // selection, and any edit not yet saved to localStorage. Losing your place
+  // mid-flight to someone else's save is worse than pressing a key.
+  //
+  // `false` disables the HMR websocket entirely, so the dev server never pushes
+  // anything to an open tab. Files are still WATCHED -- the module graph is
+  // invalidated on save, which is what makes the next manual reload serve the
+  // new code rather than a cached transform. It also takes the error overlay
+  // with it, since that arrives over the same socket; a syntax error now shows
+  // up in the console on reload instead of as a red panel.
+  //
+  // Set `hmr: true` to get the old behaviour back.
+  server: { host: true, port: 5173, hmr: false },
   worker: { format: 'es' },
   build: {
     rollupOptions: {

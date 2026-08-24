@@ -1,7 +1,7 @@
 import { LAYER } from '../textures.js'
 import {
   Builder, WALL_STYLE, TINT,
-  plinth, wall, gableEnd, gableRoof, leanToRoof,
+  plinth, wall, gableEnd, leanEnd, gableRoof, leanToRoof,
   doorway, windowUnit, chimney, porch, steps,
 } from './parts.js'
 
@@ -35,11 +35,17 @@ const STYLE_OF = {
 
 /** Roof kind -> the layer and tint that render it. `slate` is not a texture:
  *  it is SHINGLE at a cold tint, which is the whole argument in textures.js for
- *  why there is no slate layer. */
+ *  why there is no slate layer. `pantile` IS one, for the argument made in the
+ *  same place: a scallop is a shape, and no tint makes a rectangle round.
+ *
+ *  Pantile takes the least moss of the four. A fired clay tile sheds water and
+ *  gives nothing to root in, which is most of the reason anyone who could
+ *  afford them bought them. */
 const ROOF_OF = {
   thatch: { layer: LAYER.THATCH, tint: TINT.thatchNew, fringe: true, moss: 0.4 },
   shake: { layer: LAYER.SHINGLE, tint: TINT.shake, fringe: false, moss: 0.22 },
   slate: { layer: LAYER.SHINGLE, tint: TINT.slate, fringe: false, moss: 0.12 },
+  pantile: { layer: LAYER.ROOF_TILE, tint: TINT.pantile, fringe: false, moss: 0.08 },
 }
 
 /**
@@ -62,12 +68,13 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
       b.box(
         [m.cx - m.w / 2, plan.plinthBottom, m.cz - m.d / 2],
         [m.cx + m.w / 2, m.eaveY, m.cz + m.d / 2],
-        { layer: LAYER.TIMBER_HEWN, color: TINT.timber, skip: ['-y'] }
+        { layer: LAYER.TIMBER_HEWN, color: TINT.timber }
       )
       if (m.roof.kind === 'gable') {
         gableRoof(b, {
           cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
           ridgeAxis: m.ridgeAxis, overhang: 0.15, verge: 0.1,
+          ...wingVerge(m, main, 0.1),
           layer: roofSpec.layer, tint: roofSpec.tint, fringe: false, detail: 0,
         })
         gableEnds(b, m, style, 0)
@@ -77,6 +84,7 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
           highY: m.roof.highY, lowY: m.roof.lowY, dir: m.roof.dir,
           overhang: 0.12, layer: roofSpec.layer, tint: roofSpec.tint, detail: 0,
         })
+        leanEnds(b, m, style)
       }
     }
     const geometry = b.toGeometry()
@@ -110,6 +118,7 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
       gableRoof(b, {
         cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
         ridgeAxis: m.ridgeAxis, overhang: plan.overhang ?? 0.4, verge: 0.3,
+        ...wingVerge(m, main, 0.3),
         layer: roofSpec.layer, tint: roofSpec.tint,
         moss: roofSpec.moss, fringe: roofSpec.fringe, detail,
       })
@@ -119,6 +128,7 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
         highY: m.roof.highY, lowY: m.roof.lowY, dir: m.roof.dir,
         overhang: 0.28, layer: roofSpec.layer, tint: roofSpec.tint, detail,
       })
+      leanEnds(b, m, style)
     }
   }
 
@@ -130,7 +140,7 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
   chimney(b, { ...plan.chimney, detail })
   // The porch keeps its roof at detail 1 (it changes the outline against the
   // sky) and loses its posts and rails, which do not.
-  if (plan.porch) porch(b, { ...plan.porch, detail })
+  if (plan.porch) porch(b, { ...plan.porch, groundY: plan.plinthBottom, detail })
   if (plan.steps) steps(b, plan.steps)
 
   const geometry = b.toGeometry()
@@ -156,4 +166,64 @@ function gableEnds(b, m, style, detail) {
   for (const e of ends) {
     gableEnd(b, { p0: e.p0, p1: e.p1, y0: m.eaveY, apexY: apex, style, detail })
   }
+}
+
+/** The two triangles of wall between a lean-to's own eave and the slope that
+ *  climbs away above it. Without these an outshut is open to the sky at both
+ *  ends -- see leanEnd() in parts.js. */
+function leanEnds(b, m, style) {
+  const axis = m.roof.dir[1]
+  const sign = m.roof.dir[0] === '+' ? 1 : -1
+  const runHalf = (axis === 'x' ? m.w : m.d) / 2
+  const alongHalf = (axis === 'x' ? m.d : m.w) / 2
+  for (const s of [-1, 1]) {
+    const a = s * alongHalf
+    // Low end first: leanEnd() raises the second corner to the high side.
+    const p0 = axis === 'z' ? [m.cx + a, m.cz + sign * runHalf] : [m.cx + sign * runHalf, m.cz + a]
+    const p1 = axis === 'z' ? [m.cx + a, m.cz - sign * runHalf] : [m.cx - sign * runHalf, m.cz + a]
+    leanEnd(b, { p0, p1, y0: m.eaveY, y1: m.roof.highY, style })
+  }
+}
+
+/**
+ * How far a cross-wing's roof has to oversail its own gable wall to actually
+ * REACH the roof it abuts.
+ *
+ * On a T-plan the wing's ridge runs into the main roof's slope, and the point
+ * where it disappears under it is a long way inboard of the wing's own gable
+ * wall: the main roof only rises above the wing's ridge within
+ * `(mainRidge - wingRidge)/rise * runHalf` of the main ridge line. Stop the wing
+ * roof at its wall plus a normal verge and it ends in mid-air short of that,
+ * leaving a notch at the junction that shows the far slope through it -- which
+ * is what "roof faces don't extend far enough to fully join the T-shaped roof
+ * peaks together" is. No amount of adding faces closes it; the two roofs simply
+ * have to overlap, so this works out by how much and gableRoof() extends that
+ * one end of the ridge.
+ *
+ * Returns {} unless the wing genuinely crosses the main mass: a wing whose ridge
+ * is parallel to the main one is a range, and a wing displaced sideways rather
+ * than along its own ridge (an L-plan) meets the main roof across its slope,
+ * where the overhang already carries it inside.
+ */
+function wingVerge(m, main, verge) {
+  if (m === main || m.roof.kind !== 'gable' || main.roof.kind !== 'gable') return {}
+  if (m.ridgeAxis === main.ridgeAxis) return {}
+  const axis = m.ridgeAxis
+  const c = axis === 'x' ? m.cx : m.cz
+  const mc = axis === 'x' ? main.cx : main.cz
+  const half = (axis === 'x' ? m.w : m.d) / 2
+  const mainHalf = (axis === 'x' ? main.w : main.d) / 2
+  const gap = mc - c
+  if (Math.abs(gap) <= mainHalf) return {} // sideways, not end-on
+  const toward = Math.sign(gap)
+
+  // The main mass's across-the-ridge axis IS the wing's ridge axis, so its
+  // runHalf and rise are measured in the direction we are extending.
+  const R = main.roof
+  const limit = Math.max(0, ((R.ridgeY - m.roof.ridgeY) / R.rise) * R.runHalf)
+  // Reach 0.4 m past the first point where the main roof is overhead, and never
+  // past the main ridge itself.
+  const reach = mc - toward * Math.max(0, limit - 0.4)
+  const v = Math.max(verge, toward * (reach - c) - half)
+  return toward > 0 ? { vergeHi: v } : { vergeLo: v }
 }

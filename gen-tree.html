@@ -77,7 +77,7 @@
     <div id="panel">
       <header>
         <div class="t">PROCEDURAL TREES</div>
-        <div class="s">tapered cones, and cut-out leaves as cards or tiled cloaks</div>
+        <div class="s">tapered cones, and cut-out leaf sprays one triangle apiece</div>
       </header>
       <div id="controls">
         <h2>species</h2>
@@ -91,7 +91,6 @@
       </div>
       <div id="buttons">
         <button id="bush">bush</button>
-        <button id="cloak" title="tile the spray along two flaps hinged on each limb, instead of hanging N separate cards off it">cloak</button>
         <button id="gallery">seeds</button>
         <button id="sizes">sizes</button>
         <button id="grid">grid</button>
@@ -109,9 +108,11 @@
       <p class="note">
         Trunk and limbs are <em>cones</em>: rings of quads closed by a fan of single triangles at a
         point, so one ring plus an apex costs <em>sides</em> triangles rather than the
-        <em>sides&times;2</em> a flat-capped tube would. Foliage is either N cards per limb at 2
-        triangles each, or a <em>cloak</em> -- two flaps hinged along the limb with the spray tiled
-        down them, where one quad carries as many sprays as it is long.
+        <em>sides&times;2</em> a flat-capped tube would. Foliage is N cards per limb plus
+        <em>apexSprays</em> on the trunk's own tip, at <em>cardTris</em> apiece, and the default
+        card is ONE triangle with its apex at the stem --
+        the shape a spray already is. There is no tiled surface anywhere in the tree: a repeating
+        strip of sprays down a branch reads as corduroy, and no amount of UV cleverness fixes it.
       </p>
 
       <h2>measured, in metres</h2>

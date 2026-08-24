@@ -14,8 +14,8 @@ import { LAYER } from '../textures.js'
 //            fern frond is. A limb is a branch off the trunk OR a fork off a
 //            branch -- same code, one level deep, so
 //            `limbs = branches x (1 + forks)`.
-//   FOLIAGE  leaf-spray cutouts off the texture array, in one of two modes --
-//            see CARDS OR CLOAKS below.
+//   FOLIAGE  leaf-spray cutouts off the texture array, one card per spray --
+//            see FOLIAGE IS MANY SMALL SPRAYS below.
 //
 // A CONE THAT ENDS IN A POINT IS THE CHEAP SOLID. A tube of `sides` x `rings`
 // quads costs `sides x rings x 2` triangles and ends in a flat cap that is a
@@ -30,7 +30,7 @@ import { LAYER } from '../textures.js'
 //   limbs              = branches x (1 + forks)
 //   tris = cone(trunkSides, trunkRings)
 //        + limbs x cone(branchSides, branchRings)
-//        + limbs x (cloaked ? 2 x cloakQuads x 2 : sprays x 2)
+//        + (limbs x sprays + apexSprays) x cardTris
 //
 // which is the number the previewer (gen-tree.html) puts at the top of its
 // budget panel. DESIGN.md §5 gives the tree class 500 and 130 triangles for its
@@ -75,40 +75,49 @@ import { LAYER } from '../textures.js'
 // That is the one place in this file deliberately not scale-invariant, and
 // lushness has to be bought with COUNT instead.
 //
-// CARDS OR CLOAKS. `foliage` picks how that count is paid for.
+// ONE CARD PER SPRAY, AND NO TILED SURFACES ANYWHERE. There was a second mode
+// here -- a "cloak", two long flaps hinged on each limb with the spray tiled
+// down them -- and on paper it was unbeatable: the tile count is a UV number,
+// so twenty sprays on a branch cost the same four triangles as one. It is gone,
+// because a tiled quad LOOKS like a tiled quad. A row of identical sprays down
+// a branch reads as corduroy, and nothing inside one quad can break that: the
+// two flaps can run their u in opposite directions and each flap can pick a
+// different tile size, and it still reads as a repeating strip. Cheap and
+// obviously fake beats nothing. A conifer branch is now what it looks like --
+// many separate sprays, no two the same size or angle.
 //
-//   'cards'  one quad per spray. Sprays leave a limb SIDEWAYS (`sprayOut`) at
-//            stratified-random points along it, at golden-angle azimuths, with
-//            one terminal card continuing the twig. Two triangles each, so
-//            density costs triangles. Right for broadleaves, whose foliage is
-//            clumps rather than rows.
+// What makes that affordable is that a card is ONE triangle (`cardTris: 1`):
+// apex at the stem, base across the tip, which is the shape a spray already is.
+// Its UVs are (0.5, 0), (1, 1), (0, 1) -- strictly inside the layer, so there
+// is no bleed from the neighbouring copy the way a widened triangle would have.
+// What it gives up is the two BOTTOM CORNERS of the square, which on a spray
+// cut are nearly all transparent: gen-layers.mjs measures the opaque fraction
+// each cut keeps and prints it (82% ash, 72% aspen, 71% oak, 64% pine spray).
+// A quad is still one slider away for a cut that cannot afford it.
 //
-//   'cloak'  two long tapering flaps hinged on the limb, with the spray TILED
-//            along them. A conifer branch really is a planar fan of needled
-//            twigs, so two flaps in a shallow V (`cloakDihedral`) is what one
-//            looks like -- and the tile count is a UV number, so twenty sprays
-//            on a branch cost the same four triangles as one. This is the whole
-//            reason a pine can afford to have needles the right size.
-//
-//            The art must be the PADDED cut (trees/spray_pine.png, `pad` in
-//            gen-layers.mjs): the plain cut is cropped hard to its alpha bounds,
-//            so tiling it fuses each spray into the next. And the art is turned
-//            a quarter turn -- the tile repeats along the art's WIDTH, while its
-//            stem-to-tip axis runs ACROSS the flap, stem on the branch. Hence
-//            `cloakAspect` rather than `sprayAspect`: tile length is
-//            `sprayMetres x cloakAspect`.
-//
-//            The tile count is CEILED, not fitted, so a flap is always a whole
-//            number of sprays and no spray is ever sliced. That makes a flap
-//            run past the twig tip by up to one tile, which is what a real
-//            branch tip looks like, and it means a limb shorter than one tile
-//            gets exactly one -- a short branch degrades to two plain cards
-//            without a second code path.
+// A limb's sprays are BIG AT THE TRUNK AND SMALL AT THE TIP (`sprayTaper`),
+// spaced at stratified-random points along it (never evenly), rolled to
+// golden-angle azimuths, sized +/- `sprayVary` and pushed outward and DOWN by
+// `sprayDown`. That is what a spruce branch is: a fan of needled twigs that
+// hangs. One terminal card continues the twig so no limb ends in a bare stick.
 //
 // `forks` buys the other half of lushness. A single limb with foliage on it
 // reads as a broom; a branch that splits once carries its foliage out into two
 // directions and doubles the places foliage can attach without touching the
 // trunk's branch count.
+//
+// A FORK HAS TO ATTACH TO THE SOLID THAT IS DRAWN, NOT TO THE PATH. This is
+// subtle and it was visible from across the clearing. A limb's centreline is
+// integrated at PATH_N = 8 points and curves; the limb's CONE is built from
+// `branchRings` rings and an apex, so at the default of one ring it is a single
+// straight chord from base to tip. Between them sits the sagitta of the droop
+// -- centimetres at branch scale, but a fork launched from the path rather than
+// from the chord starts that far off the wood and reads as a stick hovering
+// beside the branch. `chordAt` returns the point on the drawn axis, everything
+// that sits ON a limb uses it, and a fork additionally backs up half a radius
+// INTO its parent so the two cones actually intersect. The trunk has the same
+// problem for the same reason (`trunkBend` curves the path, one ring draws a
+// straight cone) and takes the same fix.
 //
 // ATTRIBUTES: one layout, always `{ position, normal, uvProj, texLayer }` --
 // the shared prop material's (src/material.js). fern.js carries two layouts
@@ -165,42 +174,62 @@ export const TREE_DEFAULTS = {
                        // foliage. Five is the cheapest thing that still reads
                        // as round rather than as a flat ribbon seen edge-on
   branchRings: 1,      // rings below the tip, as trunkRings. 1 = a straight
-                       // cone from base to tip, which is the same chord a
-                       // one-quad cloak lies along, so the two agree exactly.
-                       // 2 makes a strongly drooping branch actually curve, at
-                       // twice the triangles
+                       // cone from base to tip; 2 makes a strongly drooping
+                       // branch actually curve, at twice the triangles. Note
+                       // that at 1 the DRAWN limb is a chord of a curved path
+                       // -- see chordAt, and everything that sits on a limb
   branchWidth: 0.03,   // base radius as a fraction of the limb's own length
 
   // --- forks ---
   // One level only. A second level is a geometric series in the triangle count
   // and an unreadable budget panel; if it is ever wanted, `growLimb` already
   // recurses and the guard is the `depth` argument.
-  forks: 2,            // child limbs per branch
+  forks: 1,            // child limbs per branch
   forkScale: 0.45,     // child length as a fraction of its parent's
-  forkAngle: 0.6,      // radians the child turns off the parent's tangent
-  forkStart: 0.3,      // earliest point along the parent a child may split off
+  forkAngle: 0.95,     // radians the child turns off the parent's tangent
+  forkSideways: 0.8,   // how much of that turn is confined to the HORIZONTAL.
+                       // 1 = a fork only ever swings out to the side; 0 = it is
+                       // as likely to dive or climb. A real branch forks across
+                       // the canopy to reach light its parent is not already
+                       // taking, so it goes sideways -- and a fork that dives
+                       // reads as a broken branch
+  // A fork splits off the MIDDLE of its parent, never the tip. Past ~0.7 the
+  // parent has almost no radius left, so the child either sprouts from a point
+  // thinner than itself or lands beyond the end of the branch entirely; and a
+  // child at the tip is not a fork at all, it is a kink. Its base radius is
+  // matched to the parent's radius AT THE SPLIT, so the joint is flush.
+  forkStart: 0.3,
+  forkEnd: 0.7,
 
   // --- foliage ---
-  foliage: 'cards',    // 'cards' or 'cloak' -- see the note at the top
   sprayMetres: 0.5,    // one spray's stem-to-tip reach in WORLD METRES. Not a
                        // fraction: the art is a leaf spray at a real size
-
-  // cards only
+  leafSkyward: 0.6,    // how far foliage normals are turned toward the sky --
+                       // see the canopy-normal pass at the bottom of buildTree.
+                       // 0 is the card's own plane (turned outward), 1 is
+                       // straight up. This is the black-underside knob
+  cardTris: 1,         // 1 = a triangle with its apex at the stem, 2 = a quad.
+                       // See addCard: 1 halves the cost of the whole card path
+                       // and clips the outer corners of the spray. How much it
+                       // clips per cut is printed by gen-layers.mjs
   sprays: 6,           // leaf cards per limb, INCLUDING one terminal card
+  apexSprays: 2,       // cards on the TRUNK's own tip. The trunk closes to a
+                       // point and the highest branch sits a half-step below
+                       // it, so without these every tree ends in a bare spike.
+                       // A real conifer carries a leader shoot there
   sprayStart: 0.15,    // earliest point along a limb a side shoot may attach
   sprayOut: 0.8,       // 0 = shoots continue the limb, 1 = straight out its side
   sprayLift: 0.35,     // then turned this far toward vertical
+  sprayDown: 0.2,      // ...and then this much of UP subtracted again, so the
+                       // spray hangs outward and DOWN off the twig instead of
+                       // standing off it. Randomised per card, half to full
+  sprayTaper: 0.5,     // spray size at the limb's TIP as a fraction of its size
+                       // at the base. A branch carries its big sprays near the
+                       // trunk and fine ones at the ends; 1 is a uniform row,
+                       // which is what a tiled surface could only ever do
   sprayJitter: 0.6,    // radians of random roll about the card's own up axis
   sprayVary: 0.3,      // +/- this fraction of random size variation per card
   sprayAspect: 1.0,    // card width/height; must match the art (note below)
-
-  // cloak only
-  cloakQuads: 1,       // segments per flap. 1 is a straight chord, matching a
-                       // one-ring branch cone exactly
-  cloakTaper: 0.45,    // fraction of the reach lost by the flap's tip
-  cloakDihedral: 0.35, // radians each flap lifts off horizontal. 0 = one flat
-                       // plane of needles, which is nearly what a spruce is
-  cloakAspect: 1.0,    // tile length / reach; must match the PADDED art
 
   leafLayer: LAYER.LEAVES,
   barkLayer: LAYER.BARK,
@@ -212,12 +241,7 @@ export const TREE_DEFAULTS = {
 // card at any other ratio hands back a leaf that is visibly squashed or drawn
 // out. Re-run the tool and re-paste if the atlases are ever re-cut.
 //
-//     oak 0.651   ash 0.642   aspen 0.492   pine 0.781
-//
-// `cloakAspect` is the same measurement on the PADDED cut, which stands for a
-// wider piece of world than the art inside it covers:
-//
-//     spray_pine 0.961
+//     oak 0.651   ash 0.642   aspen 0.492   spray_pine 0.961
 //
 // Presets, not a taxonomy. Each is a starting point in the previewer, and the
 // numbers that matter for telling one from another are crownPeak, crownFullness
@@ -228,10 +252,16 @@ export const TREE_SPECIES = {
     barkLayer: LAYER.BARK_PINE,
     leafLayer: LAYER.SPRAY_PINE,
     params: {
-      foliage: 'cloak',
-      cloakAspect: 0.961,
-      cloakDihedral: 0.3,
-      cloakTaper: 0.5,
+      sprayAspect: 0.961,
+      // A spruce branch: a lot of small needled twigs, biggest where it leaves
+      // the trunk, hanging outward and down, none of them the same size.
+      sprays: 8,
+      sprayTaper: 0.35,
+      sprayLift: 0.05,      // needles continue the twig, they do not stand up
+      sprayDown: 0.35,
+      sprayOut: 0.7,
+      sprayVary: 0.4,
+      sprayJitter: 1.1,
       crownPeak: 0.0,
       crownFullness: 1.15,
       firstBranch: 0.2,   // a spruce carries branches most of the way down
@@ -241,9 +271,11 @@ export const TREE_SPECIES = {
       branchAngle: -0.12,
       branchRise: 0.55,
       branchDroop: 0.30,
-      forks: 2,
-      forkAngle: 0.5,
-      sprayMetres: 0.28,  // needle reach off the twig, not the branch length
+      forkAngle: 0.8,
+      // The spray_pine cut is a whole needled FAN, not a single twig, so its
+      // world size is a branch's worth of foliage: 1.5 m at the trunk falling
+      // to sprayTaper x that, ~0.5 m, at the tips.
+      sprayMetres: 1.5,
       barkRepeat: 8,
       trunkRadius: 0.026,
       trunkBend: 0.02,
@@ -417,20 +449,41 @@ function samplePath(pts, s) {
 
 const PATH_N = 8
 
-// One flat quad. `up` is its long axis and `right` its width; the face normal
-// falls out of the pair, and the material draws it double-sided so which way it
-// ends up facing costs nothing.
-function addCard(out, centre, right, up, w, h, texLayer) {
+// One flat leaf card. `up` is its long axis and `right` its width, and it is
+// seated so v = 0 -- the art's STEM end -- is at -h/2 along `up`.
+//
+// `tris` picks the shape, and 1 is the interesting one.
+//
+//   2  the quad. Every texel of the square is reachable.
+//   1  a TRIANGLE, apex at the stem and base across the tip: uv (0.5, 0),
+//      (1, 1), (0, 1). This is the shape a leaf spray already is -- it leaves
+//      the twig at a point and flares out -- so most of what the triangle gives
+//      up is the two BOTTOM CORNERS of the square, which on a spray cut are
+//      nearly all transparent. It halves the cost of every card in the tree.
+//      What it costs is measured, not assumed: gen-layers.mjs prints the
+//      fraction of OPAQUE art each cut keeps, and it is 82% for ash, 72% for
+//      aspen, 71% for oak and 64% for the padded pine spray. So it is a real
+//      trade, and `cardTris: 2` is there for a cut that cannot take it. The
+//      triangle cannot be WIDENED to recover the rest: the texture array is
+//      RepeatWrapping (barkRepeat needs it), so a UV past the edge draws the
+//      NEXT copy of the leaf rather than empty space. The way to recover it is
+//      in the art -- resample each row of the cut horizontally by v so the
+//      spray FILLS the triangle instead of being cropped by it, which is
+//      lossless and tapers the spray toward its stem, which is the shape it
+//      wants anyway. See tools/trees/gen-layers.mjs.
+//
+// The face normal falls out of right x up, and the material draws double-sided
+// so the winding costs nothing -- but foliage does not KEEP this normal. See
+// the canopy-normal pass at the bottom of buildTree.
+function addCard(out, centre, right, up, w, h, texLayer, tris) {
   const base = out.positions.length / 3
   const n = new THREE.Vector3().crossVectors(right, up).normalize()
   const hw = w / 2
   const hh = h / 2
-  const corners = [
-    [-hw, -hh, 0, 0],
-    [hw, -hh, 1, 0],
-    [hw, hh, 1, 1],
-    [-hw, hh, 0, 1],
-  ]
+  const corners =
+    tris === 1
+      ? [[0, -hh, 0.5, 0], [hw, hh, 1, 1], [-hw, hh, 0, 1]]
+      : [[-hw, -hh, 0, 0], [hw, -hh, 1, 0], [hw, hh, 1, 1], [-hw, hh, 0, 1]]
   for (const [cx, cy, u, v] of corners) {
     out.positions.push(
       centre.x + right.x * cx + up.x * cy,
@@ -440,8 +493,11 @@ function addCard(out, centre, right, up, w, h, texLayer) {
     out.normals.push(n.x, n.y, n.z)
     out.uvs.push(u, v)
     out.layers.push(texLayer)
+    out.leaf.push(1)
   }
-  out.indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  if (tris === 1) out.indices.push(base, base + 1, base + 2)
+  else out.indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  return tris
 }
 
 // A tapered solid closing to a POINT: `rings` rings of `sides` vertices each,
@@ -470,6 +526,7 @@ function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer) {
       out.normals.push(n.x, n.y, n.z)
       out.uvs.push((k / sides) * uRepeat, ring.v)
       out.layers.push(texLayer)
+      out.leaf.push(0)
     }
   }
 
@@ -485,6 +542,7 @@ function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer) {
     out.normals.push(n.x, n.y, n.z)
     out.uvs.push(((k + 0.5) / sides) * uRepeat, vRepeat)
     out.layers.push(texLayer)
+    out.leaf.push(0)
   }
 
   let tris = 0
@@ -503,71 +561,38 @@ function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer) {
   return tris
 }
 
-// One flap of a cloak: a long tapering quad hinged on the limb, with the leaf
-// spray tiled along it. `spineAt` takes metres along the flap and hands back
-// the point and tangent there -- past the twig tip it extrapolates, because the
-// flap is a whole number of tiles and so is a little longer than the limb.
+// The DRAWN axis of a cone, which is NOT the path it was integrated along.
+// addCone places rings at `branchRings` samples and then closes to a point, so
+// at one ring a limb is a single straight chord while its path curves away from
+// it by the sagitta of the droop. Anything that has to sit ON the limb -- a
+// fork, a leaf shoot -- has to ask for the chord, or it attaches to a
+// centreline the mesh does not follow and hangs in the air beside the wood.
 //
-// v runs 0 at the hinge to 1 at the free edge, which is the art's stem-to-tip
-// axis; u runs along the limb and carries the tiling. `sign` flips the flap to
-// the other side of the limb AND reverses its u, which is free and stops the
-// two halves of the V reading as one mirrored image of each other.
-function addFlap(out, spineAt, len, tiles, reach, o, sign, texLayer) {
-  const base = out.positions.length / 3
-  const quads = Math.max(1, Math.round(o.quads))
-  const lift = new THREE.Vector3()
-  const dir = new THREE.Vector3()
-  const nrm = new THREE.Vector3()
-  const b1 = new THREE.Vector3()
-  const b2 = new THREE.Vector3()
-  const tmp = new THREE.Vector3()
-
-  for (let k = 0; k <= quads; k++) {
-    const f = k / quads
-    const { pos, tan } = spineAt(f * len)
-
-    b1.crossVectors(tan, UP)
-    if (b1.lengthSq() < 1e-8) b1.set(1, 0, 0) // a limb straight up the axis
-    b1.normalize()
-    b2.crossVectors(tan, b1).normalize()
-    lift.crossVectors(b1, tan).normalize()
-    dir
-      .copy(b1)
-      .multiplyScalar(sign * Math.cos(o.dihedral))
-      .addScaledVector(lift, Math.sin(o.dihedral))
-      .normalize()
-    nrm.crossVectors(tan, dir).normalize()
-
-    const w = reach * (1 - o.taper * f)
-    const u = sign > 0 ? f * tiles : (1 - f) * tiles
-    for (let e = 0; e < 2; e++) {
-      tmp.copy(pos).addScaledVector(dir, e * w)
-      out.positions.push(tmp.x, tmp.y, tmp.z)
-      out.normals.push(nrm.x, nrm.y, nrm.z)
-      out.uvs.push(u, e)
-      out.layers.push(texLayer)
-    }
-
-    if (k < quads) {
-      const a = base + k * 2
-      out.indices.push(a, a + 1, a + 3, a, a + 3, a + 2)
-    }
-  }
-  return quads * 2
+// `samples` is the ring positions in order with the apex appended, evenly
+// spaced in the same normalised parameter the rings were built from.
+function chordAt(samples, s) {
+  const f = Math.min(samples.length - 1, Math.max(0, s * (samples.length - 1)))
+  const i = Math.min(samples.length - 2, Math.floor(f))
+  return new THREE.Vector3().lerpVectors(samples[i], samples[i + 1], f - i)
 }
 
 export function buildTree(options = {}) {
   const p = { ...TREE_DEFAULTS, ...options }
   const rand = mulberry32(p.seed)
 
-  const out = { positions: [], normals: [], uvs: [], layers: [], indices: [] }
+  // `leaf` is one flag per VERTEX, not per triangle: the canopy-normal pass at
+  // the bottom needs to know which vertices are foliage, and it cannot ask the
+  // texLayer -- a species is free to wear the same layer on its bark and its
+  // leaves, and a silent misfire there would be a shading bug nobody could see
+  // the cause of.
+  const out = { positions: [], normals: [], uvs: [], layers: [], leaf: [], indices: [] }
 
   const sides = Math.max(3, Math.round(p.trunkSides))
   const rings = Math.max(1, Math.round(p.trunkRings))
   const nBranch = Math.max(0, Math.round(p.branches))
   const brSides = Math.round(p.branchSides)
   const brRings = Math.max(1, Math.round(p.branchRings))
-  const cloaked = p.foliage === 'cloak'
+  const cardTris = Math.round(p.cardTris) === 1 ? 1 : 2
   const nSpray = Math.max(0, Math.round(p.sprays))
   const nFork = Math.max(0, Math.round(p.forks))
   const whorl = Math.max(0, Math.round(p.whorlSize))
@@ -606,11 +631,14 @@ export function buildTree(options = {}) {
   const E1 = new THREE.Vector3(1, 0, 0)
   const E2 = new THREE.Vector3(0, 0, 1)
   let trunkTris = 0
+  const trunkAxis = []
+  for (let r = 0; r < rings; r++) trunkAxis.push(trunkAt(r / rings))
+  trunkAxis.push(trunkAt(1))
   if (p.trunkRadius > 0) {
     const list = []
     for (let r = 0; r < rings; r++) {
       const f = r / rings // rings at 0 .. (R-1)/R; the apex takes f = 1
-      list.push({ pos: trunkAt(f), e1: E1, e2: E2, radius: radiusAt(f), v: f * p.barkRepeat })
+      list.push({ pos: trunkAxis[r], e1: E1, e2: E2, radius: radiusAt(f), v: f * p.barkRepeat })
     }
     trunkTris = addCone(out, list, trunkAt(1), sides, uRepeat, p.barkRepeat, p.barkLayer)
   }
@@ -619,7 +647,7 @@ export function buildTree(options = {}) {
   const whorls = Math.max(1, Math.ceil(nBranch / Math.max(1, whorl)))
   let branchTris = 0
   let sprayTris = 0
-  let sprayTiles = 0 // foliage INSTANCES, which a cloak decouples from triangles
+  let sprayCards = 0
   let limbs = 0
 
   // An orthonormal pair spanning the plane perpendicular to `tan`, written into
@@ -639,7 +667,7 @@ export function buildTree(options = {}) {
    * `side` a unit vector it is allowed to sway toward, `phase` an arbitrary
    * angle that decorrelates this limb's azimuths from its neighbours'.
    */
-  const growLimb = (start, dir, side, length, phase, depth) => {
+  const growLimb = (start, dir, side, length, phase, depth, baseRadius) => {
     const pts = branchPath(start, dir, side, {
       droop: p.branchDroop * (0.85 + rand() * 0.3),
       curve: Math.max(0.2, p.branchCurve),
@@ -651,8 +679,17 @@ export function buildTree(options = {}) {
     const b1 = new THREE.Vector3()
     const b2 = new THREE.Vector3()
 
+    // The axis the limb is actually DRAWN along: the ring positions and the
+    // apex, which at one ring is a straight chord and at more than one is a
+    // polyline that cuts every corner of the path. Built whether or not the
+    // cone is drawn, because with `branchSides` under 3 there is no wood and
+    // the path IS the centreline -- the two agree there by construction.
+    const limbAxis = []
+    for (let r = 0; r < brRings; r++) limbAxis.push(samplePath(pts, r / brRings).pos)
+    limbAxis.push(samplePath(pts, 1).pos)
+
     // --- the limb itself, a solid cone to a point ---
-    if (brSides >= 3 && p.branchWidth > 0) {
+    if (brSides >= 3 && baseRadius > 0) {
       const list = []
       for (let r = 0; r < brRings; r++) {
         const f = r / brRings
@@ -662,7 +699,10 @@ export function buildTree(options = {}) {
           pos: q.pos,
           e1: b1.clone(),
           e2: b2.clone(),
-          radius: length * p.branchWidth * (1 - f),
+          // Linear to zero at the tip, which is what makes matching a fork to
+          // its parent one multiplication: the parent's radius at split point
+          // s is just `baseRadius x (1 - s)`.
+          radius: baseRadius * (1 - f),
           // Bark along the limb at the same metres-per-tile as the trunk, and
           // once around: a branch is a few centimetres thick, so a second tile
           // round it would be sub-texel from anywhere you can see it.
@@ -674,36 +714,20 @@ export function buildTree(options = {}) {
     }
 
     // --- foliage ---
-    if (cloaked) {
-      // A whole number of tiles, ceiled, so no spray is ever sliced -- see the
-      // note at the top. The flap therefore runs past the twig tip by up to one
-      // tile, and a limb shorter than a single tile gets exactly one, which is
-      // a plain card on each side and needs no separate code path.
-      const tileLen = Math.max(1e-6, sprayH * p.cloakAspect)
-      const tiles = Math.max(1, Math.ceil(length / tileLen))
-      const flapLen = tiles * tileLen
-      const end = samplePath(pts, 1)
-      const spineAt = (d) =>
-        d <= length
-          ? samplePath(pts, d / length)
-          : { pos: end.pos.clone().addScaledVector(end.tan, d - length), tan: end.tan }
-
-      const o = { quads: p.cloakQuads, taper: p.cloakTaper, dihedral: p.cloakDihedral }
-      const reach = sprayH * (1 + (rand() - 0.5) * 2 * p.sprayVary)
-      sprayTris += addFlap(out, spineAt, flapLen, tiles, reach, o, 1, p.leafLayer)
-      sprayTris += addFlap(out, spineAt, flapLen, tiles, reach, o, -1, p.leafLayer)
-      sprayTiles += tiles * 2
-    } else for (let j = 0; j < nSpray; j++) {
+    for (let j = 0; j < nSpray; j++) {
       // j = 0 is the TERMINAL shoot: it sits at the tip and continues the twig
       // rather than leaving its side, which is what stops every limb ending in
       // a bare stick. The rest are side shoots at STRATIFIED-random points
       // along the limb -- stratified rather than uniform because uniform
-      // random at these counts clumps two cards together and leaves a gap.
+      // random at these counts clumps two cards together and leaves a gap,
+      // and evenly spaced is the corduroy the cloak was thrown out for.
       const terminal = j === 0
       const s = terminal
         ? 1
         : p.sprayStart + (1 - p.sprayStart) * ((j - 1 + rand()) / Math.max(1, nSpray - 1))
       const q = samplePath(pts, s)
+      // Direction from the PATH, position from the drawn axis -- see chordAt.
+      const seat = chordAt(limbAxis, s)
 
       frame(q.tan, b1, b2)
       const az = phase + j * GOLDEN_ANGLE + (rand() - 0.5) * p.sprayJitter
@@ -716,23 +740,36 @@ export function buildTree(options = {}) {
         .normalize()
 
       // The card's own up axis: along the shoot at sprayLift 0 (a needled
-      // spray continues the twig), vertical at 1 (a broadleaf hangs off it).
-      const up = new THREE.Vector3().lerpVectors(shoot, UP, p.sprayLift).normalize()
+      // spray continues the twig), vertical at 1 (a broadleaf hangs off it),
+      // and then pulled back DOWN by sprayDown, because a spray hangs off the
+      // twig it grows on rather than standing to attention on top of it. The
+      // pull is randomised half-to-full per card so a limb is a fan at a
+      // spread of angles rather than a row at one.
+      const up = new THREE.Vector3()
+        .lerpVectors(shoot, UP, p.sprayLift)
+        .addScaledVector(UP, -p.sprayDown * (0.5 + rand() * 0.5))
+      if (up.lengthSq() < 1e-8) up.copy(shoot) // sprayDown cancelled it exactly
+      up.normalize()
       const ref = new THREE.Vector3(Math.cos(az), 0.35, Math.sin(az))
       const right = new THREE.Vector3().crossVectors(up, ref)
       if (right.lengthSq() < 1e-8) right.set(1, 0, 0)
       right.normalize()
 
-      const h = sprayH * (1 + (rand() - 0.5) * 2 * p.sprayVary)
+      // Big where the limb leaves the trunk, small at its tip -- `sprayTaper`
+      // is the tip size as a fraction of the base size -- and then +/-
+      // `sprayVary` on top of that. Between the two, no two cards on a branch
+      // are the same size, which is the whole thing a tiled surface could not
+      // do.
+      const grade = 1 + (p.sprayTaper - 1) * s
+      const h = sprayH * grade * (1 + (rand() - 0.5) * 2 * p.sprayVary)
       // Seated at its STEM, not its centre. v = 0 of the art is the cut end of
       // the spray (see tools/trees/gen-layers.mjs), and addCard puts v = 0 at
       // -h/2 along `up`, so offsetting by +h/2 attaches the stem exactly where
-      // the shoot leaves the limb. Centring on q.pos buries half of every card
-      // inside the branch it grows from.
-      const centre = new THREE.Vector3().copy(q.pos).addScaledVector(up, h / 2)
-      addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer)
-      sprayTris += 2
-      sprayTiles += 1
+      // the shoot leaves the limb. Centring on the seat buries half of every
+      // card inside the branch it grows from.
+      const centre = seat.addScaledVector(up, h / 2)
+      sprayTris += addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer, cardTris)
+      sprayCards += 1
     }
 
     // One level of forking only, so `limbs = branches x (1 + forks)` stays
@@ -741,20 +778,38 @@ export function buildTree(options = {}) {
     // one level, and that is easier to raise than to reintroduce.
     if (depth > 0) return
     for (let k = 0; k < nFork; k++) {
-      const s = p.forkStart + (1 - p.forkStart) * ((k + rand()) / nFork)
+      // Stratified across [forkStart, forkEnd] -- the MIDDLE of the parent, and
+      // never its tip. See the note on forkStart/forkEnd in TREE_DEFAULTS.
+      const s = p.forkStart + (p.forkEnd - p.forkStart) * ((k + rand()) / nFork)
       const q = samplePath(pts, s)
       frame(q.tan, b1, b2)
       const az = phase + k * GOLDEN_ANGLE + (rand() - 0.5) * p.yawJitter
+      // b1 is horizontal (tan x UP) and b2 carries all the vertical there is,
+      // so squashing the b2 term is exactly "turn sideways, not up or down".
+      // At forkSideways 1 a fork stays in the horizontal plane through the
+      // split; at 0 the azimuth is free and forks dive as often as they climb.
       const perp = new THREE.Vector3()
         .copy(b1)
         .multiplyScalar(Math.cos(az))
-        .addScaledVector(b2, Math.sin(az))
+        .addScaledVector(b2, Math.sin(az) * (1 - Math.min(1, Math.max(0, p.forkSideways))))
+      if (perp.lengthSq() < 1e-10) perp.copy(b1) // az landed on the squashed axis
+      perp.normalize()
       const childDir = new THREE.Vector3()
         .copy(q.tan)
         .multiplyScalar(Math.cos(p.forkAngle))
         .addScaledVector(perp, Math.sin(p.forkAngle))
         .normalize()
-      growLimb(q.pos.clone(), childDir, perp, length * p.forkScale, az, depth + 1)
+      // The child leaves at exactly the radius the parent has where it splits,
+      // so the joint is flush instead of a thin stick poking out of a fat one
+      // -- or a fat one out of a thin one, which is what happened when the
+      // child sized itself off its own length.
+      const rAt = baseRadius * (1 - s)
+      // Seated on the DRAWN axis and then backed up nearly a full radius INTO
+      // the parent, so the child's base ring starts buried in the parent cone
+      // and the two solids actually intersect. Launched from the surface it
+      // reads as a separate stick floating alongside the branch.
+      const seat = chordAt(limbAxis, s).addScaledVector(childDir, -rAt * 0.9)
+      growLimb(seat, childDir, perp, length * p.forkScale, az, depth + 1, rAt)
     }
   }
 
@@ -789,10 +844,100 @@ export function buildTree(options = {}) {
       .multiplyScalar(Math.cos(elev))
       .addScaledVector(UP, Math.sin(elev))
       .normalize()
-    // Start just inside the trunk surface so a branch does not float off it.
-    const start = trunkAt(f).addScaledVector(outward, radiusAt(f) * 0.85)
+    // Start INSIDE the drawn trunk, not on the trunk path: with one ring the
+    // trunk is a straight cone while `trunkBend` curves the path away from it.
+    // 0.6 of the radius rather than 0.85 so the branch cone is seated in the
+    // wood rather than balanced on its skin.
+    const start = chordAt(trunkAxis, f).addScaledVector(outward, radiusAt(f) * 0.6)
 
-    growLimb(start, dir, side, length, yaw, 0)
+    growLimb(start, dir, side, length, yaw, 0, length * p.branchWidth)
+  }
+
+  // --- the trunk's own tip ---------------------------------------------------
+  //
+  // The trunk closes to a POINT, and the highest branch sits a half-step below
+  // it (the +0.5 offsets above), so the top of every tree is a bare spike
+  // unless something grows on the apex itself. These cards are the leader
+  // shoot: seated on the DRAWN apex, continuing the trunk's own direction, at
+  // the size of the finest sprays on the tree -- a leader is one season's new
+  // growth, not a branch.
+  const nApex = Math.max(0, Math.round(p.apexSprays))
+  if (nApex > 0) {
+    const apex = trunkAxis[trunkAxis.length - 1]
+    const lead = new THREE.Vector3().subVectors(apex, trunkAxis[trunkAxis.length - 2])
+    if (lead.lengthSq() < 1e-10) lead.copy(UP) // a zero-length top segment
+    lead.normalize()
+    for (let j = 0; j < nApex; j++) {
+      // Fanned evenly around the axis rather than at the golden angle: at two
+      // or three cards the golden angle leaves them all on one side of the tip.
+      const az = (j / nApex) * TAU + rand() * p.sprayJitter
+      const outw = new THREE.Vector3(Math.cos(az), 0, Math.sin(az))
+      // Leaning out and back down by the same two knobs the limb sprays use, so
+      // the tip belongs to the same plant as the rest of the crown.
+      const up = new THREE.Vector3()
+        .copy(lead)
+        .addScaledVector(outw, p.sprayOut * 0.5)
+        .addScaledVector(UP, -p.sprayDown * (0.5 + rand() * 0.5))
+      if (up.lengthSq() < 1e-8) up.copy(UP)
+      up.normalize()
+      const right = new THREE.Vector3().crossVectors(up, outw)
+      if (right.lengthSq() < 1e-8) right.set(1, 0, 0)
+      right.normalize()
+      const h = sprayH * p.sprayTaper * (1 + (rand() - 0.5) * 2 * p.sprayVary)
+      // Stem on the apex, same as every other card -- see the note in growLimb.
+      const centre = apex.clone().addScaledVector(up, h / 2)
+      sprayTris += addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer, cardTris)
+      sprayCards += 1
+    }
+  }
+
+  // --- canopy normals -------------------------------------------------------
+  //
+  // WHY FOLIAGE THROWS AWAY ITS FACE NORMAL. The scene is one sun plus a
+  // hemisphere light whose ground colour is nearly black (that is correct: it
+  // is the bounce off soil). A card whose normal points DOWN therefore gets
+  // dotNL 0 from the sun and the ground colour from the hemisphere, and comes
+  // out black. Wrap diffuse (preview-stage.js) lifts the shaded half but still
+  // bottoms out at zero for a normal facing straight away.
+  //
+  // This is HALF the fix; the other half is in src/material.js, which undoes
+  // three's double-sided normal flip. Without that, a card's normal is turned
+  // toward the viewer no matter what is written here -- which is exactly what
+  // points it at the ground when you stand under a canopy and look up -- and
+  // the two faces of one card shade differently. With both, a card is lit by
+  // the normal below from either side.
+  //
+  // The fix is not to light the card, it is to light the CANOPY. A real leaf is
+  // one cell thick and lit from every side at once, so which way its quad
+  // happens to face carries no information worth shading. Every leaf vertex
+  // instead takes the normal of the canopy shell at that point: turned away
+  // from the trunk axis so nothing ever faces inward, then tilted toward the
+  // sky by `leafSkyward`. Both faces of a card then get the same light, the
+  // underside of the crown reads as a dimmer green instead of a black hole,
+  // and it costs no triangles and no new attribute -- the normals were already
+  // in the buffer.
+  const nrm = new THREE.Vector3()
+  const outward = new THREE.Vector3()
+  const sky = Math.min(1, Math.max(0, p.leafSkyward))
+  for (let i = 0; i < out.leaf.length; i++) {
+    if (!out.leaf[i]) continue
+    const o = i * 3
+    outward.set(out.positions[o], 0, out.positions[o + 2])
+    if (outward.lengthSq() < 1e-10) outward.set(0, 0, 1) // a card on the axis
+    outward.normalize()
+    nrm.set(out.normals[o], out.normals[o + 1], out.normals[o + 2])
+    // Flipped into the outward hemisphere first, so blending toward the sky can
+    // never cancel it out and leave a zero-length normal.
+    if (nrm.dot(outward) < 0) nrm.negate()
+    nrm.lerp(UP, sky)
+    // A card lying flat, face down, is the one input that cancels: it survives
+    // the flip (its dot with a horizontal `outward` is zero) and then blends
+    // against UP to nothing. Send it outward and up.
+    if (nrm.lengthSq() < 1e-8) nrm.copy(outward).add(UP)
+    nrm.normalize()
+    out.normals[o] = nrm.x
+    out.normals[o + 1] = nrm.y
+    out.normals[o + 2] = nrm.z
   }
 
   // --- finish ---------------------------------------------------------------
@@ -830,7 +975,7 @@ export function buildTree(options = {}) {
     sprayTris,
     branches: nBranch,
     limbs,
-    sprays: sprayTiles,
+    sprays: sprayCards,
     // What a leaf card ACTUALLY came out as in metres, which is `sprayMetres`
     // divided by however far past 1 the pre-scale bounding box reached. Printed
     // rather than corrected -- see the note where sprayH is computed.

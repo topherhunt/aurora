@@ -44,6 +44,7 @@ import {
   boxesOverlap,
   cellSize,
   invalidatedKeys,
+  invalidationAction,
   nodeBox,
   nodeBoxFromKey,
   validRect,
@@ -508,12 +509,49 @@ export async function run() {
     }
   }
 
+  // --- 4b. what an edit does to one entry -----------------------------------
+
+  console.log('\ninvalidation, per entry')
+  {
+    const held = { slot: { geometryId: 1, instanceId: 1 }, pinned: false, state: 'ready' }
+    const heldStale = { slot: { geometryId: 2, instanceId: 2 }, pinned: false, state: 'queued' }
+    const heldPinned = { slot: { geometryId: 3, instanceId: 3 }, pinned: true, state: 'ready' }
+    const queued = { slot: null, pinned: false, state: 'queued' }
+    const inFlight = { slot: null, pinned: false, state: 'pending' }
+    const pinnedQueued = { slot: null, pinned: true, state: 'queued' }
+
+    check(invalidationAction(held) === 'hold', 'a chunk on screen keeps its slot through an edit', 'the no-sky-flash rule')
+    check(invalidationAction(heldStale) === 'hold', 'and keeps it through a SECOND edit inside the same bake', 'a drag invalidates the same key every 120 ms')
+    check(invalidationAction(heldPinned) === 'hold', 'a pinned chunk on screen holds too, rather than being reseeded out from under itself')
+    check(invalidationAction(queued) === 'drop', 'a queued chunk with nothing on screen is dropped, not re-requested')
+    check(invalidationAction(inFlight) === 'drop', 'and so is one in flight -- there is no hole to leave')
+    check(invalidationAction(pinnedQueued) === 'reseed', 'but a pinned one is re-requested even with nothing on screen', 'the base layer must not thin out')
+
+    // The distinction the whole table turns on: it reads the SLOT, not the state.
+    // Every stale holder is state 'queued' or 'pending', which is exactly what the
+    // pre-fix code freed.
+    let byState = 0
+    for (const e of [held, heldStale, heldPinned]) if (e.state === 'ready') byState++
+    check(byState === 2 && invalidationAction(heldStale) === 'hold', 'holding is decided by the slot and not by the state', `${byState} of 3 holders are in state ready`)
+
+    let threw = false
+    try { invalidationAction(undefined) } catch { threw = true }
+    check(threw, 'and an entry that is not in the cache throws rather than being silently dropped')
+  }
+
   // --- 5. eviction ---------------------------------------------------------
 
   console.log('\neviction')
   {
     // A cache with a mix of states, pinned entries, rendered entries and
     // stand-ins, at spread-out lastUsed stamps so the LRU order is unambiguous.
+    //
+    // STALE HOLDERS ARE IN THE FIXTURE, and they are the reason this section is
+    // written against `slot` rather than `state`: an invalidated chunk goes back to
+    // 'queued' or 'pending' while keeping the slot its old geometry is in, so it is
+    // NOT ready and it IS spending one of the 1024. Counting states would have left
+    // every one of them out of the budget, and the budget is the only thing between
+    // the pool and the throw in _onWorkerMessage.
     const makeCache = (n) => {
       const cache = new Map()
       const render = new Set()
@@ -522,16 +560,20 @@ export async function run() {
         const key = nodeKey(8, i % 256, Math.floor(i / 256))
         const pinned = i < PINNED_CHUNKS
         const state = i % 17 === 3 ? 'queued' : i % 23 === 7 ? 'pending' : 'ready'
-        cache.set(key, { state, pinned, lastUsed: i })
-        if (state === 'ready' && i % 5 === 0) render.add(key)
-        if (state === 'ready' && i % 15 === 0) standIns.add(key)
+        // Every 11th non-ready entry is mid-rebake with its old mesh still up.
+        const held = state === 'ready' || i % 11 === 5
+        cache.set(key, { state, pinned, lastUsed: i, slot: held ? { geometryId: i, instanceId: i } : null })
+        if (held && i % 5 === 0) render.add(key)
+        if (held && i % 15 === 0) standIns.add(key)
       }
       return { cache, render, standIns }
     }
 
     const { cache, render, standIns } = makeCache(600)
     let readyTotal = 0
-    for (const e of cache.values()) if (e.state === 'ready') readyTotal++
+    for (const e of cache.values()) if (e.slot) readyTotal++
+    const staleHolders = [...cache.values()].filter((e) => e.slot && e.state !== 'ready').length
+    check(staleHolders > 0, 'the fixture actually contains chunks holding a slot while not ready', `${staleHolders} of ${readyTotal} held slots`)
 
     // Under target: nothing moves.
     {
@@ -550,11 +592,11 @@ export async function run() {
       for (const key of r.primary) {
         if (render.has(key)) inRender++
         if (cache.get(key).pinned) pinned++
-        if (cache.get(key).state !== 'ready') notReady++
+        if (!cache.get(key).slot) notReady++
       }
       check(inRender === 0, 'eviction never frees an entry in the current render set', `${inRender} of ${r.primary.length}`)
       check(pinned === 0, 'eviction never frees a pinned entry', `${pinned} of ${r.primary.length}`)
-      check(notReady === 0, 'eviction only frees entries that actually hold a slot', `${notReady} not ready`)
+      check(notReady === 0, 'eviction only frees entries that actually hold a slot', `${notReady} held no slot`)
 
       // LRU order: everything freed must be older than everything eligible and
       // kept, or "least recently used" is a claim rather than a policy.
@@ -562,7 +604,7 @@ export async function run() {
       let newestFreed = -Infinity
       let oldestKept = Infinity
       for (const [key, e] of cache) {
-        if (e.state !== 'ready' || e.pinned || render.has(key)) continue
+        if (!e.slot || e.pinned || render.has(key)) continue
         if (freed.has(key)) newestFreed = Math.max(newestFreed, e.lastUsed)
         else oldestKept = Math.min(oldestKept, e.lastUsed)
       }
@@ -574,7 +616,7 @@ export async function run() {
     // set is, because losing a stand-in costs one tile of detail for a frame while
     // an empty slot pool throws.
     {
-      const evictable = [...cache].filter(([k, e]) => e.state === 'ready' && !e.pinned && !render.has(k)).length
+      const evictable = [...cache].filter(([k, e]) => e.slot && !e.pinned && !render.has(k)).length
       const target = readyTotal - (evictable + 5)
       const r = selectEvictions(cache, { maxReady: target, render, standIns })
       check(r.primary.length === evictable, 'the primary pass frees everything it is allowed to before degrading', `${r.primary.length} of ${evictable}`)
@@ -590,12 +632,12 @@ export async function run() {
       check(new Set([...r.primary, ...r.lastResort]).size === r.primary.length + r.lastResort.length, 'no entry is freed twice across the two passes')
     }
 
-    // Counting READY entries rather than cache.size is the whole point: a frame
-    // that queues hundreds of requests must not evict ground that is being drawn.
+    // Counting HELD SLOTS rather than cache.size is the whole point: a frame that
+    // queues hundreds of requests must not evict ground that is being drawn.
     {
       const flooded = new Map(cache)
       for (let i = 0; i < 400; i++) {
-        flooded.set(nodeKey(9, i, 0), { state: 'queued', pinned: false, lastUsed: 10000 })
+        flooded.set(nodeKey(9, i, 0), { state: 'queued', pinned: false, lastUsed: 10000, slot: null })
       }
       const before = selectEvictions(cache, { maxReady: readyTotal, render, standIns })
       const after = selectEvictions(flooded, { maxReady: readyTotal, render, standIns })

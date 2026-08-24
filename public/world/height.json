@@ -2,7 +2,7 @@
   "world": 8192,
   "size": 1024,
   "minY": 0,
-  "maxY": 600,
+  "maxY": 900,
   "encoding": "rg16",
   "source": "reference/skyrim-height-map.jpg",
   "sourceSize": [

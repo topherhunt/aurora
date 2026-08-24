@@ -751,7 +751,11 @@ export async function run({ heightmap } = {}) {
     // --maxY moves the percentiles under it without touching the fallback.
     const snow = snowDefaults(bands)
     check(snow.base > bands.altLo, 'the snow line sits above the foot of the altitude ramp', `snow base ${snow.base.toFixed(1)} m vs altLo ${bands.altLo.toFixed(1)} m`)
-    check(snow.base + snow.band < bands.max, 'and the snow band closes below the highest ground', `${(snow.base + snow.band).toFixed(1)} m vs max ${bands.max.toFixed(1)} m`)
+    // Half a band, because shade() centres the transition on the line: it opens at
+    // base - band/2 and closes at base + band/2. A world whose top is inside that
+    // ramp has no fully white ground anywhere, which is the "snow nowhere at all"
+    // failure with an extra step.
+    check(snow.base + snow.band / 2 < bands.max, 'and the snow band closes below the highest ground', `${(snow.base + snow.band / 2).toFixed(1)} m vs max ${bands.max.toFixed(1)} m`)
   }
 
   // --- 13. mesher throughput ------------------------------------------------

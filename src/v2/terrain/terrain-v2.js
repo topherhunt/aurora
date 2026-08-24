@@ -16,6 +16,7 @@ import {
   invalidateAll,
   invalidateKeys,
   invalidatedKeys,
+  invalidationAction,
   loadedAncestorKey,
   loadedDescendantKeys,
   makeFloors,
@@ -43,10 +44,11 @@ import { createTerrainMaterial } from '../../terrain/terrain-material.js'
 //   because every chunk has identical topology -- CHUNK_RES is fixed for every
 //   depth -- so a freed slot always fits whatever arrives next.
 //
-//   FOUR separate mechanisms keep the world hole-free, and they are not
+//   FIVE separate mechanisms keep the world hole-free, and they are not
 //   alternatives to each other: the pinned depth 0-2 base layer on its own queue,
 //   the loaded-ancestor walk for refining, the loaded-descendant walk for
-//   coarsening, and eviction counted in READY entries. Removing any one of them
+//   coarsening, eviction counted in HELD SLOTS, and an invalidated chunk keeping
+//   its stale geometry until the replacement lands. Removing any one of them
 //   reintroduces a specific reported artifact. See stream-policy.js, which now
 //   owns the decisions, for what each one is for.
 //
@@ -413,18 +415,31 @@ export class TerrainV2 {
 
   // The partial reset, which has no v1 counterpart.
   //
-  // Three things happen per invalidated key and the order matters. The floor is
+  // THE OLD CHUNK STAYS ON SCREEN UNTIL THE NEW ONE LANDS. This used to free the
+  // slot here and re-request into an empty one, which meant every invalidated
+  // chunk was a hole for as long as the bake took -- and the holes went all the
+  // way through, because an edit's rect also catches the PINNED depth 0-2 chunks
+  // that contain it, so the ancestor fallback had nothing to fall back to
+  // either. Dragging a snow point or a lake gizmo flashed sky at 60 Hz.
+  //
+  // Holding it instead costs one slot per invalidated chunk for the length of
+  // one bake, and that cost is inside the budget only because eviction now
+  // counts SLOTS rather than ready states -- see selectEvictions. What is on
+  // screen during the drag is one epoch stale, which is exactly what the author
+  // is trying to change; it is replaced in place, without a frame of nothing,
+  // when the reply arrives.
+  //
+  // The other three things per key, and the order still matters. The floor is
   // stamped first so any reply already in flight for that key is dead on arrival.
   // The bounds entry is dropped, because a carve moves a node's floor by metres
   // and a stale minY would over-refine the ground around it for as long as it
-  // survived. The slot is freed, and only then is the chunk re-requested, so the
-  // freed slot is available to whatever lands first rather than being held by an
-  // entry that is about to be overwritten anyway.
+  // survived. And the entry goes back to 'queued', which is what lets _send pick
+  // it up again -- from 'pending' too, for a key invalidated twice inside one
+  // bake, whose first reply the raised floor has already condemned.
   //
-  // Only chunks that were RESIDENT or PINNED are re-requested here. A key that was
-  // merely queued or in flight had nothing on screen, so dropping it leaves no
-  // hole and the next selection will ask again if it still wants it. A pinned key
-  // is re-requested unconditionally, because the base layer is the floor under
+  // A key with NO slot -- merely queued, or in flight -- had nothing on screen,
+  // so it is dropped outright: no hole, and the next selection asks again if it
+  // still wants it. Except when pinned, because the base layer is the floor under
   // every other fallback and it must not thin out just because an edit crossed it.
   _invalidateRect(rect) {
     const keys = invalidatedKeys(this.cache.keys(), rect)
@@ -435,13 +450,19 @@ export class TerrainV2 {
     for (const key of keys) {
       const entry = this.cache.get(key)
       const node = entry.node
-      const wasResident = entry.state === 'ready'
       const wasPinned = entry.pinned
       this.info.delete(key)
-      this._freeEntry(key, entry)
-      if (!wasResident && !wasPinned) continue
-      const e = this._request(node)
-      e.pinned = wasPinned
+
+      const action = invalidationAction(entry)
+      if (action === 'hold') {
+        entry.state = 'queued'
+        entry.lastUsed = this.frame
+      } else {
+        this._freeEntry(key, entry)
+        if (action === 'drop') continue
+        this._request(node).pinned = true
+      }
+
       this._editPending.add(key)
       if (wasPinned) this._baseQueue.push(node)
       else requeue.push(node)
@@ -557,10 +578,18 @@ export class TerrainV2 {
       )
     }
 
-    // Eviction runs every update and keeps ready entries under maxReady, and the
-    // margin maxReady leaves under SLOT_COUNT is exactly the in-flight cap, so
-    // this can only fire if that invariant has broken.
-    const slot = this._free.pop()
+    // An entry that already holds a slot is an invalidated chunk that kept its old
+    // geometry on screen (see _invalidateRect); it is REPLACED IN PLACE, which is
+    // the whole point -- taking a fresh slot and freeing the old one would put a
+    // frame of nothing between the two and give back the flash this exists to
+    // prevent. It also needs no slot from the pool, which is what keeps the budget
+    // argument below true while stale chunks are being held.
+    //
+    // Otherwise: eviction runs every update and keeps slot-holding entries under
+    // maxReady, and the margin maxReady leaves under SLOT_COUNT is exactly the
+    // in-flight cap, so an empty pool can only mean that invariant has broken.
+    const held = entry.slot !== null
+    const slot = held ? entry.slot : this._free.pop()
     if (!slot) {
       throw new Error(
         `v2 terrain slot pool exhausted (${SLOT_COUNT} slots, ${this.cache.size} cached, maxReady ${this.maxReady}, ${this.inFlight} in flight)`
@@ -587,10 +616,17 @@ export class TerrainV2 {
     this.batch.setGeometryAt(slot.geometryId, g)
     this._mat.makeTranslation(n.x, 0, n.z)
     this.batch.setMatrixAt(slot.instanceId, this._mat)
-    this.batch.setVisibleAt(slot.instanceId, false)
+    // A held slot keeps the visibility it already had. Hiding it here and letting
+    // _syncVisibility turn it back on next frame would work -- replies are handled
+    // between frames, never mid-render -- but it makes the no-flash property
+    // depend on when the message pump happens to run, and that is not a thing to
+    // leave to chance in the one place this file exists to get right.
+    if (!held) {
+      this.batch.setVisibleAt(slot.instanceId, false)
+      entry.visible = false
+    }
 
     entry.slot = slot
-    entry.visible = false
     entry.state = 'ready'
     entry.tris = CHUNK_INDICES / 3
 
@@ -652,9 +688,14 @@ export class TerrainV2 {
     this.inFlight++
   }
 
-  _isReady = (key) => {
+  // Has this key GEOMETRY ON THE GPU right now -- which is what the stand-in walks
+  // actually want to know, and is not quite the same question as "is it ready".
+  // An invalidated chunk holding its old mesh while the new one bakes is
+  // drawable, one epoch stale, and is a far better cover for a miss than the
+  // depth-2 ancestor that is the alternative.
+  _isDrawable = (key) => {
     const entry = this.cache.get(key)
-    return entry !== undefined && entry.state === 'ready'
+    return entry !== undefined && entry.slot !== null
   }
 
   /**
@@ -727,7 +768,10 @@ export class TerrainV2 {
     const misses = []
     for (const node of desired) {
       const entry = this.cache.get(node.key)
-      if (entry && entry.state === 'ready') {
+      // Slot, not state: a chunk holding stale geometry through an edit is drawn
+      // as itself rather than counted as a miss, so a drag does not also spend the
+      // stand-in budget covering ground that is already covered.
+      if (entry && entry.slot) {
         entry.lastUsed = this.frame
         render.add(node.key)
         continue
@@ -752,7 +796,7 @@ export class TerrainV2 {
       // far better was already loaded.
       if (standInBudget > 0) {
         fine.length = 0
-        if (loadedDescendantKeys(node.depth, node.ix, node.iz, this._isReady, fine) && fine.length <= standInBudget) {
+        if (loadedDescendantKeys(node.depth, node.ix, node.iz, this._isDrawable, fine) && fine.length <= standInBudget) {
           // lastUsed is stamped only on the chunks actually retained. Stamping
           // during the walk would refresh hundreds of chunks a failed cover merely
           // looked at, and scramble the LRU order eviction depends on.
@@ -766,7 +810,7 @@ export class TerrainV2 {
         }
       }
 
-      const anc = loadedAncestorKey(node.depth, node.ix, node.iz, this._isReady)
+      const anc = loadedAncestorKey(node.depth, node.ix, node.iz, this._isDrawable)
       if (anc !== null) {
         this.cache.get(anc).lastUsed = this.frame
         render.add(anc)

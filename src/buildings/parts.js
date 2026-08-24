@@ -107,6 +107,13 @@ export class Builder {
    *   island   {u0,v0,u1,v1}; use these UVs directly. For decal sheets.
    *   uvs      four explicit [u,v] pairs. For anything else non-tiling.
    *   color    [r,g,b] linear, or (p) => [r,g,b]
+   *   double   also emit the back face. See below.
+   *
+   * `double` EMITS THE BACK FACE WITH THE SAME UV FRAME, not a re-derived one.
+   * Re-winding d->c->b->a would reverse U and V with it, which mirrors a decal
+   * and hangs the thatch fringe upside down on its far side. It also makes the
+   * quad self-sealing for the airtightness gate: a lone quad leaves four
+   * boundary edges, and a back-to-back pair leaves none.
    */
   quad(a, b, c, d, o) {
     const layer = o.layer
@@ -139,15 +146,20 @@ export class Builder {
     }
 
     const tint = typeof o.color === 'function' ? o.color : () => o.color ?? WHITE
-    const i0 = this.vertex(a, n, uvAt(a), layer, tint(a))
-    const i1 = this.vertex(b, n, uvAt(b), layer, tint(b))
-    const i2 = this.vertex(c, n, uvAt(c), layer, tint(c))
-    const i3 = this.vertex(d, n, uvAt(d), layer, tint(d))
-    this.idx.push(i0, i1, i2, i0, i2, i3)
+    const emit = (p, q, r, s, nrm) => {
+      const i0 = this.vertex(p, nrm, uvAt(p), layer, tint(p))
+      const i1 = this.vertex(q, nrm, uvAt(q), layer, tint(q))
+      const i2 = this.vertex(r, nrm, uvAt(r), layer, tint(r))
+      const i3 = this.vertex(s, nrm, uvAt(s), layer, tint(s))
+      this.idx.push(i0, i1, i2, i0, i2, i3)
+    }
+    emit(a, b, c, d, n)
+    if (o.double) emit(a, d, c, b, [-n[0], -n[1], -n[2]])
     return this
   }
 
-  /** One triangle. Same frame convention: a->b is U, a->c seeds V. */
+  /** One triangle. Same frame convention: a->b is U, a->c seeds V.
+   *  Takes `double` on the same terms as quad(). */
   tri(a, b, c, o) {
     const layer = o.layer
     const tile = o.tile ?? TILE_METRES[layer] ?? 1
@@ -165,20 +177,28 @@ export class Builder {
       return [dot(r, uh) / tile, (o.vWorldY ? p[1] : dot(r, vh)) / tile]
     }
     const tint = typeof o.color === 'function' ? o.color : () => o.color ?? WHITE
-    const i0 = this.vertex(a, n, uvAt(a), layer, tint(a))
-    const i1 = this.vertex(b, n, uvAt(b), layer, tint(b))
-    const i2 = this.vertex(c, n, uvAt(c), layer, tint(c))
-    this.idx.push(i0, i1, i2)
+    const emit = (p, q, r, nrm) => {
+      const i0 = this.vertex(p, nrm, uvAt(p), layer, tint(p))
+      const i1 = this.vertex(q, nrm, uvAt(q), layer, tint(q))
+      const i2 = this.vertex(r, nrm, uvAt(r), layer, tint(r))
+      this.idx.push(i0, i1, i2)
+    }
+    emit(a, b, c, n)
+    if (o.double) emit(a, c, b, [-n[0], -n[1], -n[2]])
     return this
   }
 
   /**
    * An axis-aligned box from `min` to `max`.
    *
-   * `skip` drops faces by name ('+x','-x','+y','-y','+z','-z'). Dropping the
-   * face that is buried in a wall is not a micro-optimisation: a timber frame
-   * is dozens of these, and at 2 triangles a face the buried ones are a fifth
-   * of a building's budget for something no one can ever see.
+   * `skip` drops faces by name ('+x','-x','+y','-y','+z','-z'). It exists, but
+   * NOTHING IN THE KIT USES IT ANY MORE and new code should not reach for it.
+   * Dropping the face buried in a wall used to save a fifth of a building's
+   * budget on triangles nobody could see; what it actually bought was a mesh
+   * full of holes, and the holes were visible from inside the building and
+   * through every roof valley. Airtightness is the gate now
+   * (scripts/check-buildings.mjs), a hole fails it, and the four triangles a
+   * closed step tread costs are not worth arguing about.
    *
    * Side faces measure V as world height so a box of logs courses in with the
    * wall behind it; top and bottom project onto XZ.
@@ -213,6 +233,95 @@ export class Builder {
 }
 
 // ---------------------------------------------------------------------------
+// Airtightness
+// ---------------------------------------------------------------------------
+
+/**
+ * Every open edge in a geometry: the gate that says a building has no holes.
+ *
+ * THE INVARIANT IS DIRECTED-EDGE PAIRING. Quantise every vertex position, then
+ * for every triangle count its three directed edges a->b. The mesh is closed
+ * iff count(a->b) === count(b->a) for every pair. Returns the unmatched ones.
+ *
+ * Why that test and not "every edge is shared by exactly two triangles", which
+ * is the one everybody writes first: this kit is a UNION OF INTERPENETRATING
+ * SOLIDS, not a boolean union. A chimney is a box driven through a roof slope;
+ * a log end is a box driven through a wall. Nothing is cut, so faces cross each
+ * other freely and an edge can legitimately be shared by four triangles where
+ * two solids happen to touch along a line. Counting incidences flags that as a
+ * defect. Counting DIRECTIONS does not: two closed shells overlapping still
+ * balance, because each shell balances on its own.
+ *
+ * It also passes the other thing this kit is made of, which the two-triangle
+ * rule rejects outright: a back-to-back double-sided quad. The thatch fringe
+ * and the ironwork decals are zero-thickness by design -- alpha carries their
+ * shape -- and a front face plus its mirrored back face balances every edge.
+ *
+ * What it still catches is the thing that was actually wrong: a roof slope
+ * emitted as a single quad, a step tread with its underside skipped, a lean-to
+ * with no triangle closing its end. All of those leave a directed edge with no
+ * partner, and all of them are a hole you can see the inside of the building
+ * through.
+ *
+ * `eps` quantises positions before comparing, because two parts that are meant
+ * to share a corner arrive there by different arithmetic. 1e-4 m is far below
+ * anything the kit places deliberately and far above float drift.
+ */
+export function openEdges(geometry, eps = 1e-4) {
+  const pos = geometry.getAttribute('position').array
+  const index = geometry.getIndex().array
+  const q = (i) => {
+    const k = i * 3
+    return `${Math.round(pos[k] / eps)},${Math.round(pos[k + 1] / eps)},${Math.round(pos[k + 2] / eps)}`
+  }
+  // One pass, one map: key on the UNORDERED pair and keep a signed count, so a
+  // balanced edge nets to zero and only the survivors need looking at.
+  const net = new Map()
+  for (let t = 0; t < index.length; t += 3) {
+    const v = [q(index[t]), q(index[t + 1]), q(index[t + 2])]
+    for (let e = 0; e < 3; e++) {
+      const a = v[e]
+      const b = v[(e + 1) % 3]
+      if (a === b) continue // a degenerate triangle has no edge to balance
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`
+      net.set(key, (net.get(key) ?? 0) + (a < b ? 1 : -1))
+    }
+  }
+  const open = []
+  for (const [key, n] of net) if (n !== 0) open.push({ key, imbalance: n })
+  return open
+}
+
+/**
+ * Signed volume, by the divergence theorem: sum of the tetrahedra each triangle
+ * makes with the origin.
+ *
+ * The companion to openEdges(), and it earns its keep because openEdges() has
+ * one blind spot -- a shell wound INSIDE OUT balances every edge just as well as
+ * a correct one, and renders as a hole in exactly the same way under back-face
+ * culling. A shell with outward normals contributes positive volume, an inverted
+ * one contributes negative, and a double-sided quad contributes exactly zero, so
+ * a building's total should come out near its actual massing. Anything at or
+ * below zero means a part is inside out.
+ */
+export function signedVolume(geometry) {
+  const p = geometry.getAttribute('position').array
+  const idx = geometry.getIndex().array
+  let v = 0
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3
+    const b = idx[t + 1] * 3
+    const c = idx[t + 2] * 3
+    v += (
+      p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1])
+      - p[a + 1] * (p[b] * p[c + 2] - p[b + 2] * p[c])
+      + p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c])
+    ) / 6
+  }
+  return v
+}
+
+// ---------------------------------------------------------------------------
 // Palette of tints, applied per vertex over the shared tiles.
 //
 // This is where a building gets to be its own building without spending a
@@ -226,6 +335,7 @@ export const TINT = {
   thatchOld: [0.66, 0.66, 0.62],
   slate: [0.52, 0.56, 0.64], // SHINGLE, tinted cold -- this is the whole "slate roof"
   shake: [1, 1, 1],
+  pantile: [1, 1, 1], // the fired clay is already in the tile; do not tint it twice
   timber: [1, 1, 1],
   timberDark: [0.62, 0.55, 0.48], // pitch-tarred, as a stave church is
   moss: [0.55, 0.78, 0.42],
@@ -321,10 +431,17 @@ export function plinth(b, { cx, cz, w, d, top, bottom, batter = 0.05, tint = TIN
       { layer: LAYER.STONE, vWorldY: true, color }
     )
   }
-  // The ledge the walls stand on. No underside: it is buried in the hill.
+  // The ledge the walls stand on, and the sole under it. The sole is buried in
+  // the hill and nobody will ever see it; it is here because the plinth is the
+  // bottom of the building and a solid needs a bottom -- see openEdges().
   b.quad(
     [cx - hw, top, cz + hd], [cx + hw, top, cz + hd],
     [cx + hw, top, cz - hd], [cx - hw, top, cz - hd],
+    { layer: LAYER.STONE, color: tint }
+  )
+  b.quad(
+    [cx - bw, bottom, cz - bd], [cx + bw, bottom, cz - bd],
+    [cx + bw, bottom, cz + bd], [cx - bw, bottom, cz + bd],
     { layer: LAYER.STONE, color: tint }
   )
 }
@@ -350,8 +467,14 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
   const nz = ux
 
   const A = (t, y) => [p0[0] + ux * len * t, y, p0[1] + uz * len * t]
+  // Double-sided, and NOT because anyone is meant to see the inside face. A
+  // wall is one quad because openings are never cut out of it (see below), so
+  // giving it real thickness would triple the cost of the cheapest part in the
+  // kit for a reveal that no window ever exposes. The back face is what closes
+  // it instead: a lone quad leaves four open edges, and the inside of a
+  // building whose walls are one-sided is a view straight out through them.
   const face = (ya, yb, layer, color) =>
-    b.quad(A(0, ya), A(1, ya), A(1, yb), A(0, yb), { layer, vWorldY: true, color })
+    b.quad(A(0, ya), A(1, ya), A(1, yb), A(0, yb), { layer, vWorldY: true, color, double: true })
 
   const split = sillY ?? y0 + (y1 - y0) * 0.38
 
@@ -366,7 +489,7 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
         [p1[0] + nx * t, split, p1[1] + nz * t],
         [p1[0], split, p1[1]],
         [p0[0], split, p0[1]],
-        { layer: LAYER.STONE, color: TINT.stone }
+        { layer: LAYER.STONE, color: TINT.stone, double: true }
       )
     }
     return
@@ -384,7 +507,7 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
       b.box(
         [Math.min(p0[0], p1[0]) - (ux ? 0 : t), ya, Math.min(p0[1], p1[1]) - (uz ? 0 : t)],
         [Math.max(p0[0], p1[0]) + (ux ? 0 : t), yb, Math.max(p0[1], p1[1]) + (uz ? 0 : t)],
-        { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark, skip: [nx > 0 ? '-x' : nx < 0 ? '+x' : nz > 0 ? '-z' : '+z'] }
+        { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
       )
     }
     rail(y0, y0 + w)
@@ -447,12 +570,7 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
       b.box(
         [Math.min(px, ex) - (ux ? 0 : r), y - r, Math.min(pz, ez) - (uz ? 0 : r)],
         [Math.max(px, ex) + (ux ? 0 : r), y + r, Math.max(pz, ez) + (uz ? 0 : r)],
-        {
-          layer: LAYER.TIMBER_HEWN,
-          color: tint,
-          // The face buried back inside the building is never visible.
-          skip: [out > 0 ? (ux ? '-x' : '-z') : ux ? '+x' : '+z'],
-        }
+        { layer: LAYER.TIMBER_HEWN, color: tint }
       )
     }
   }
@@ -467,11 +585,13 @@ export function gableEnd(b, { p0, p1, y0, apexY, style, tint = TINT.timber, deta
     style === WALL_STYLE.LOG ? LAYER.TIMBER_HEWN : LAYER.TIMBER_PLANK
   const mx = (p0[0] + p1[0]) / 2
   const mz = (p0[1] + p1[1]) / 2
+  // Double-sided for the same reason wall() is: it is a wall, and the roof
+  // verge overhangs past it, so its thickness is never in view.
   b.tri(
     [p0[0], y0, p0[1]],
     [p1[0], y0, p1[1]],
     [mx, apexY, mz],
-    { layer, vWorldY: true, color: tint }
+    { layer, vWorldY: true, color: tint, double: true }
   )
   if (detail < 2) return
   // A vertical king post up the middle of the gable, which every timber gable
@@ -483,12 +603,58 @@ export function gableEnd(b, { p0, p1, y0, apexY, style, tint = TINT.timber, deta
   )
 }
 
+/** How thick a roof of each covering is, in metres. A thatched roof is a
+ *  half-metre of packed straw and a shingled one is a board and a shake. */
+const ROOF_THICKNESS = { [LAYER.THATCH]: 0.3, [LAYER.SHINGLE]: 0.11 }
+
+/**
+ * One roof plane, with a real thickness.
+ *
+ * `corners` are the four corners of the TOP surface in quad winding (eave-left,
+ * eave-right, ridge-right, ridge-left), so the caller keeps the UV frame it
+ * already had and this only adds what is under it.
+ *
+ * THE THICKNESS IS VERTICAL, not normal to the slope, which is both cheaper and
+ * more correct: a roof is rafters and covering stacked on a wall plate and cut
+ * plumb at the eave, so the band you see along an overhanging edge is a plumb
+ * cut through the covering. The underside is boarding rather than more thatch,
+ * because that is what is actually over your head when you stand under an eave,
+ * and because a dark plank soffit is what makes an overhang read as depth
+ * instead of as a thick outline.
+ *
+ * Before this existed each slope was a single quad. From below and from behind
+ * -- under the verge, in a roof valley, anywhere inside -- it was backface-
+ * culled to nothing, which is most of what "I can see inside the building" was.
+ */
+function roofPlane(b, corners, t, { layer, color }) {
+  const [a, c1, c2, c3] = corners
+  const down = (p) => [p[0], p[1] - t, p[2]]
+  const soffit = { layer: LAYER.TIMBER_PLANK, color: TINT.timberDark }
+
+  b.quad(a, c1, c2, c3, { layer, color })
+  b.quad(down(a), down(c3), down(c2), down(c1), soffit)
+  // The plumb-cut band around the edge, in the covering itself. Winding is
+  // (below-p, below-q, q, p) for each edge of the top loop, which faces outward
+  // wherever the top surface faces upward -- true of every roof plane here.
+  for (const [p, q] of [[a, c1], [c1, c2], [c2, c3], [c3, a]]) {
+    b.quad(down(p), down(q), q, p, { layer, color, vWorldY: true })
+  }
+}
+
 /**
  * A gable roof over an axis-aligned mass.
  *
  * `ridgeAxis` is 'x' or 'z' and names the axis the RIDGE runs along, so the
  * slopes face the other one. Returns the ridge height, which the chimney and
  * any abutting catslide need.
+ *
+ * `verge` is how far the roof oversails the gable wall. `vergeLo` and `vergeHi`
+ * override it at the low and high end of the ridge axis independently, which is
+ * how a wing roof is driven INTO the roof it abuts instead of stopping at its
+ * own wall -- see wingVerge() in building.js. A T-plan whose two ridges do not
+ * actually reach each other leaves a notch at the junction that you can see the
+ * far slope through, and that notch is not a hole any amount of face-adding
+ * fixes: the two roofs simply have to overlap.
  */
 export function gableRoof(
   b,
@@ -497,6 +663,8 @@ export function gableRoof(
     ridgeAxis = 'x',
     overhang = 0.4,
     verge = 0.3,
+    vergeLo = null,
+    vergeHi = null,
     layer = LAYER.THATCH,
     tint = TINT.thatchNew,
     moss = 0.35,
@@ -505,8 +673,12 @@ export function gableRoof(
   }
 ) {
   const ridgeY = eaveY + rise
-  // Along the ridge, and across it.
-  const alongHalf = (ridgeAxis === 'x' ? w : d) / 2 + verge
+  // Along the ridge, and across it. The two ends of the ridge are independent:
+  // aLo and aHi are signed offsets from the centre, not a half-extent.
+  const half = (ridgeAxis === 'x' ? w : d) / 2
+  const aLo = -(half + (vergeLo ?? verge))
+  const aHi = half + (vergeHi ?? verge)
+  const alongHalf = Math.max(-aLo, aHi)
   const runHalf = (ridgeAxis === 'x' ? d : w) / 2
   // Overhanging past the wall means continuing down the same plane, so the
   // eave ends up BELOW the wall top. That drop is the thing that makes a roof
@@ -520,16 +692,24 @@ export function gableRoof(
   // Two slopes. Corners are ordered eave-left, eave-right, ridge-right,
   // ridge-left, so U runs along the eave and V runs UP the slope, which is the
   // orientation tileThatch and tileShingles are drawn for.
+  const thick = ROOF_THICKNESS[layer] ?? 0.12
   const slope = (sign) => {
     const P = (alongT, up) => {
-      const a = -alongHalf + 2 * alongHalf * alongT
+      const a = aLo + (aHi - aLo) * alongT
       const acr = sign * (up ? 0 : run)
       const y = up ? ridgeY : eave
       return ridgeAxis === 'x' ? [cx + a, y, cz + acr] : [cx + acr, y, cz + a]
     }
-    // Wind so the face points outward on each side.
-    if (sign > 0) b.quad(P(0, false), P(1, false), P(1, true), P(0, true), { layer, color })
-    else b.quad(P(1, false), P(0, false), P(0, true), P(1, true), { layer, color })
+    // Wind so the face points outward on each side. The along-axis runs +x for
+    // a ridge on x and +z for a ridge on z, but the across-axis it is crossed
+    // with does NOT change sign to match, so the handedness of (along, across)
+    // flips with the ridge axis and the winding has to flip back. Getting this
+    // wrong pointed both slopes of every z-ridged roof downwards and inwards,
+    // which is invisible to the airtightness gate -- an inside-out shell pairs
+    // its edges perfectly -- and is why signedVolume() exists beside it.
+    roofPlane(b, (ridgeAxis === 'x') === (sign > 0)
+      ? [P(0, false), P(1, false), P(1, true), P(0, true)]
+      : [P(1, false), P(0, false), P(0, true), P(1, true)], thick, { layer, color })
   }
   slope(1)
   slope(-1)
@@ -539,12 +719,12 @@ export function gableRoof(
     // where the two slopes meet and reads as the ridge roll a thatcher pegs on.
     const t = 0.13
     const min = ridgeAxis === 'x'
-      ? [cx - alongHalf, ridgeY - t, cz - t]
-      : [cx - t, ridgeY - t, cz - alongHalf]
+      ? [cx + aLo, ridgeY - t, cz - t]
+      : [cx - t, ridgeY - t, cz + aLo]
     const max = ridgeAxis === 'x'
-      ? [cx + alongHalf, ridgeY + t * 0.7, cz + t]
-      : [cx + t, ridgeY + t * 0.7, cz + alongHalf]
-    b.box(min, max, { layer, color: tint, skip: ['-y'] })
+      ? [cx + aHi, ridgeY + t * 0.7, cz + t]
+      : [cx + t, ridgeY + t * 0.7, cz + aHi]
+    b.box(min, max, { layer, color: tint })
   }
 
   // The frayed eave. Alpha carries the shape, so this is a hanging strip rather
@@ -556,18 +736,24 @@ export function gableRoof(
   // roof at 60 m, and four triangles is not a price worth paying that for.
   if (fringe && detail >= 1 && layer === LAYER.THATCH) {
     const dropH = 0.34
-    const uSpan = (2 * alongHalf) / TILE_METRES[LAYER.THATCH_FRINGE]
+    const uSpan = (aHi - aLo) / TILE_METRES[LAYER.THATCH_FRINGE]
     for (const sign of [1, -1]) {
       const P = (alongT, y, push) => {
-        const a = -alongHalf + 2 * alongHalf * alongT
+        const a = aLo + (aHi - aLo) * alongT
         const acr = sign * (run + push)
         return ridgeAxis === 'x' ? [cx + a, y, cz + acr] : [cx + acr, y, cz + a]
       }
       // v = 0 at the hanging tip, v = 1 at the eave line -- see tileFringe.
+      // Doubled, because a fringe hangs clear of the roof and you see its back
+      // from anywhere below the eave line, which is most of a village street.
       const uvs = [[0, 0], [uSpan, 0], [uSpan, 1], [0, 1]]
-      const lo = eave - dropH
-      if (sign > 0) b.quad(P(0, lo, 0.02), P(1, lo, 0.02), P(1, eave, 0), P(0, eave, 0), { layer: LAYER.THATCH_FRINGE, uvs, color: tint })
-      else b.quad(P(1, lo, 0.02), P(0, lo, 0.02), P(0, eave, 0), P(1, eave, 0), { layer: LAYER.THATCH_FRINGE, uvs, color: tint })
+      const lo = eave - thick - dropH
+      const top = eave - thick
+      const o = { layer: LAYER.THATCH_FRINGE, uvs, color: tint, double: true }
+      // Same handedness flip as the slope above. Doubled, so this only decides
+      // which side gets the front face's normal -- but that is the lit one.
+      if ((ridgeAxis === 'x') === (sign > 0)) b.quad(P(0, lo, 0.02), P(1, lo, 0.02), P(1, top, 0), P(0, top, 0), o)
+      else b.quad(P(1, lo, 0.02), P(0, lo, 0.02), P(0, top, 0), P(1, top, 0), o)
     }
   }
 
@@ -599,10 +785,12 @@ export function leanToRoof(
     return axis === 'x' ? [cx + acr, y, cz + a] : [cx + a, y, cz + acr]
   }
   const color = roofTint({ base: tint, eaveY: eave, ridgeY: highY, moss: 0.3 })
+  const thick = ROOF_THICKNESS[layer] ?? 0.12
   // Eave corners first so V runs up the slope, as on a gable.
   const flip = (axis === 'x') === (sign > 0)
-  if (flip) b.quad(P(1, true), P(0, true), P(0, false), P(1, false), { layer, color })
-  else b.quad(P(0, true), P(1, true), P(1, false), P(0, false), { layer, color })
+  roofPlane(b, flip
+    ? [P(1, true), P(0, true), P(0, false), P(1, false)]
+    : [P(0, true), P(1, true), P(1, false), P(0, false)], thick, { layer, color })
 
   if (detail >= 1 && layer === LAYER.THATCH) {
     const uSpan = (2 * alongHalf) / TILE_METRES[LAYER.THATCH_FRINGE]
@@ -612,11 +800,35 @@ export function leanToRoof(
       const acr = sign * (run + push)
       return axis === 'x' ? [cx + acr, y, cz + a] : [cx + a, y, cz + acr]
     }
-    const lo = eave - 0.3
-    if (flip) b.quad(E(1, lo, 0.02), E(0, lo, 0.02), E(0, eave, 0), E(1, eave, 0), { layer: LAYER.THATCH_FRINGE, uvs, color: tint })
-    else b.quad(E(0, lo, 0.02), E(1, lo, 0.02), E(1, eave, 0), E(0, eave, 0), { layer: LAYER.THATCH_FRINGE, uvs, color: tint })
+    const top = eave - thick
+    const lo = top - 0.3
+    const o = { layer: LAYER.THATCH_FRINGE, uvs, color: tint, double: true }
+    if (flip) b.quad(E(1, lo, 0.02), E(0, lo, 0.02), E(0, top, 0), E(1, top, 0), o)
+    else b.quad(E(0, lo, 0.02), E(1, lo, 0.02), E(1, top, 0), E(0, top, 0), o)
   }
-  return { eave, run }
+  return { eave, run, highY, runHalf, alongHalf, axis, sign, thick }
+}
+
+/**
+ * The triangle of wall between a lean-to's side wall and the slope above it.
+ *
+ * An outshut's side walls stop at its own eave while its roof carries on up to
+ * the main wall, which leaves a right triangle of nothing at each end. That
+ * gap was open sky straight into the shed -- the most literal instance of "I
+ * can see inside the building" in the kit, and one no amount of double-siding
+ * the roof would have closed, because the face was never there to begin with.
+ *
+ * `p0 -> p1` runs across the slope at the wall line, low end first.
+ */
+export function leanEnd(b, { p0, p1, y0, y1, style, tint = TINT.timber }) {
+  if (y1 - y0 < 0.02) return
+  const layer = style === WALL_STYLE.LOG ? LAYER.TIMBER_HEWN : LAYER.TIMBER_PLANK
+  b.tri(
+    [p0[0], y0, p0[1]],
+    [p1[0], y0, p1[1]],
+    [p1[0], y1, p1[1]],
+    { layer, vWorldY: true, color: tint, double: true }
+  )
 }
 
 // --- openings ---------------------------------------------------------------
@@ -650,10 +862,17 @@ export function doorway(
   ]
 
   // The leaf, set just proud of the wall so it never z-fights it.
+  //
+  // ONE quad, addressed 0..1 off the DOOR layer rather than tiled off
+  // TIMBER_PLANK. The layer is a photograph of a whole door -- boards, straps,
+  // ring pull and all -- so this quad now carries what used to take three more
+  // doubled decal quads on top of it, and a door leaf costs four triangles
+  // instead of sixteen. It is also the only thing on a building that is not
+  // world-scaled, which is correct: a door is a size, not a pattern.
   const leafOut = 0.03
   b.quad(
     p(-hw, y0, leafOut), p(hw, y0, leafOut), p(hw, y0 + height, leafOut), p(-hw, y0 + height, leafOut),
-    { layer: LAYER.TIMBER_PLANK, vWorldY: true, color: TINT.timberDark }
+    { layer: LAYER.DOOR, island: { u0: 0, v0: 0, u1: 1, v1: 1 }, color: TINT.timber, double: true }
   )
   if (detail < 2) return
 
@@ -678,43 +897,61 @@ export function doorway(
     { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
   )
 
-  // Ironwork. Two hinge straps and a ring pull, each one quad off the shared
-  // sheet -- six triangles for the detail that most says "someone lives here".
-  const deco = leafOut + 0.006
-  const strap = (yc) => {
-    const h = 0.19
-    const sw = width * 0.86
-    b.quad(
-      p(-hw + 0.04, yc - h / 2, deco), p(-hw + 0.04 + sw, yc - h / 2, deco),
-      p(-hw + 0.04 + sw, yc + h / 2, deco), p(-hw + 0.04, yc + h / 2, deco),
-      { layer: LAYER.IRON, island: IRON_ISLANDS.hingeStrap, color: TINT.iron }
-    )
-  }
-  strap(y0 + height * 0.78)
-  strap(y0 + height * 0.24)
-  const rs = 0.17
-  b.quad(
-    p(hw - 0.26, y0 + 0.95, deco), p(hw - 0.26 + rs, y0 + 0.95, deco),
-    p(hw - 0.26 + rs, y0 + 0.95 + rs, deco), p(hw - 0.26, y0 + 0.95 + rs, deco),
-    { layer: LAYER.IRON, island: IRON_ISLANDS.ringHandle, color: TINT.iron }
-  )
+  // No ironwork quads here any more. The two hinge straps and the ring pull
+  // used to be three doubled decals off IRON_ISLANDS; they are now texels in
+  // the DOOR layer, which is strictly better -- twelve fewer triangles, and a
+  // strap that is photographed rather than painted with two gradients. IRON is
+  // still used by the shutters in windowUnit(), so the sheet is not dead.
 
   if (runes) {
     const ly = y0 + height + jw + 0.005
     b.quad(
       p(-(hw + jw), ly, out * 0.5), p(hw + jw, ly, out * 0.5),
       p(hw + jw, ly + 0.055, out * 0.5), p(-(hw + jw), ly + 0.055, out * 0.5),
-      { layer: LAYER.RUNE, island: RUNE_ISLANDS.lintelBand, color: TINT.timber }
+      { layer: LAYER.RUNE, island: RUNE_ISLANDS.lintelBand, color: TINT.timber, double: true }
     )
+  }
+}
+
+/**
+ * A rectangular ring with a rectangular hole, extruded: a picture frame.
+ *
+ * Both rectangles are given in the caller's flat 2D frame as [a0, v0, a1, v1],
+ * and `p(a, y0 + v, out)` lifts them into the world -- so this works for any
+ * wall orientation without knowing anything about one.
+ *
+ * The four surfaces are the front ring, the back ring, the outer skirt and the
+ * inner reveal, four quads each, and together they close a solid. Nothing is
+ * doubled and nothing needs to be: a closed solid pairs its own edges, which is
+ * the whole reason to prefer this over a ring of four flat quads.
+ *
+ * Windings below are derived, not eyeballed. Note that (a, v, out) is a LEFT
+ * handed frame -- p()'s tangent is (-nz, 0, nx), and t x up = -n -- so the
+ * ordering that looks anticlockwise when you sketch it faces INTO the wall.
+ */
+function frameRing(b, { p, y0, outer, inner, back, front, layer, color }) {
+  const ring = ([a0, v0, a1, v1], out) => [
+    p(a0, y0 + v0, out), p(a1, y0 + v0, out), p(a1, y0 + v1, out), p(a0, y0 + v1, out),
+  ]
+  const Of = ring(outer, front)
+  const Ob = ring(outer, back)
+  const If = ring(inner, front)
+  const Ib = ring(inner, back)
+  const o = { layer, color }
+  for (let k = 0; k < 4; k++) {
+    const j = (k + 1) % 4
+    b.quad(If[k], If[j], Of[j], Of[k], o) // front ring, facing out
+    b.quad(Ob[k], Ob[j], Ib[j], Ib[k], o) // back ring, facing into the wall
+    b.quad(Of[k], Of[j], Ob[j], Ob[k], o) // outer skirt
+    b.quad(Ib[k], Ib[j], If[j], If[k], o) // inner reveal, facing into the hole
   }
 }
 
 /**
  * A window as a shallow box standing out of the wall, glass on its outer face.
  *
- * Twelve triangles including shutters. The box is what gives a window depth in
- * silhouette against the sky, which a flat quad on the wall never does, and it
- * costs four triangles more than the flat quad would.
+ * The frame is what gives a window depth in silhouette against the sky, which a
+ * flat quad on the wall never does.
  */
 export function windowUnit(
   b,
@@ -730,28 +967,25 @@ export function windowUnit(
   // Glass, at the outer face of the reveal.
   b.quad(
     p(-hw, y0, depth), p(hw, y0, depth), p(hw, y0 + height, depth), p(-hw, y0 + height, depth),
-    { layer: LAYER.GLASS, vWorldY: true, color: TINT.glass }
+    { layer: LAYER.GLASS, vWorldY: true, color: TINT.glass, double: true }
   )
   if (detail < 2) return
 
-  // The surround, as four thin boxes around the glass. Emitting it as a ring
-  // rather than a solid box is what lets the glass sit inside it.
+  // The surround, as ONE mitred ring rather than four overlapping boxes.
+  //
+  // Four boxes cost 48 triangles and the inn carries fifteen windows, which is
+  // 720 triangles of surround on a 1800-triangle budget -- by a wide margin the
+  // most expensive thing on the building, spent on eight faces per stick that
+  // are buried inside the neighbouring stick. The ring is 32, has proper mitred
+  // corners instead of a lap joint, and is still a closed solid.
   const ow = hw + frame
-  const sides = [
-    [-ow, -frame, ow, 0], // sill
-    [-ow, height, ow, height + frame], // head
-    [-ow, 0, -hw, height], // left
-    [hw, 0, ow, height], // right
-  ]
-  for (const [a0, v0, a1, v1] of sides) {
-    const c0 = p(a0, y0 + v0, 0)
-    const c1 = p(a1, y0 + v1, depth + 0.02)
-    b.box(
-      [Math.min(c0[0], c1[0]) - 0.001, y0 + v0, Math.min(c0[2], c1[2]) - 0.001],
-      [Math.max(c0[0], c1[0]) + 0.001, y0 + v1, Math.max(c0[2], c1[2]) + 0.001],
-      { layer: LAYER.TIMBER_PLANK, color: TINT.timberDark }
-    )
-  }
+  frameRing(b, {
+    p, y0,
+    outer: [-ow, -frame, ow, height + frame],
+    inner: [-hw, 0, hw, height],
+    back: 0, front: depth + 0.02,
+    layer: LAYER.TIMBER_PLANK, color: TINT.timberDark,
+  })
 
   if (shutters) {
     const sd = depth + 0.03
@@ -760,12 +994,12 @@ export function windowUnit(
       b.quad(
         p(a0, y0, sd), p(a0 + width * 0.52, y0, sd),
         p(a0 + width * 0.52, y0 + height, sd), p(a0, y0 + height, sd),
-        { layer: LAYER.TIMBER_PLANK, vWorldY: true, color: TINT.timberDark }
+        { layer: LAYER.TIMBER_PLANK, vWorldY: true, color: TINT.timberDark, double: true }
       )
       b.quad(
         p(a0 + 0.02, y0 + height * 0.62, sd + 0.006), p(a0 + width * 0.5, y0 + height * 0.62, sd + 0.006),
         p(a0 + width * 0.5, y0 + height * 0.62 + 0.1, sd + 0.006), p(a0 + 0.02, y0 + height * 0.62 + 0.1, sd + 0.006),
-        { layer: LAYER.IRON, island: IRON_ISLANDS.shutterStrap, color: TINT.iron }
+        { layer: LAYER.IRON, island: IRON_ISLANDS.shutterStrap, color: TINT.iron, double: true }
       )
     }
   }
@@ -784,23 +1018,16 @@ export function chimney(b, { x, z, baseY, topY, w = 0.62, d = 0.62, detail = 2 }
   b.box(
     [x - w / 2, baseY - 0.35, z - d / 2],
     [x + w / 2, topY, z + d / 2],
-    { layer: LAYER.STONE, color: grime, skip: ['-y', '+y'] }
+    { layer: LAYER.STONE, color: grime }
   )
-  if (detail < 2) {
-    b.quad(
-      [x - w / 2, topY, z + d / 2], [x + w / 2, topY, z + d / 2],
-      [x + w / 2, topY, z - d / 2], [x - w / 2, topY, z - d / 2],
-      { layer: LAYER.STONE, color: TINT.stone }
-    )
-    return
-  }
+  if (detail < 2) return
   // A corbelled cap: the courses step out at the top, which is both how a
   // chimney is actually built and what stops it reading as a plain post.
   const o = 0.09
   b.box(
     [x - w / 2 - o, topY - 0.16, z - d / 2 - o],
     [x + w / 2 + o, topY, z + d / 2 + o],
-    { layer: LAYER.STONE, color: TINT.stone, skip: ['-y'] }
+    { layer: LAYER.STONE, color: TINT.stone }
   )
 }
 
@@ -812,15 +1039,28 @@ export function chimney(b, { x, z, baseY, topY, w = 0.62, d = 0.62, detail = 2 }
  * steps, so a village on a slope grows porches and a village on the flat does
  * not, and the variation is free and correct.
  */
-export function porch(b, { x, z, floorY, width = 2.0, depth = 1.3, headY, detail = 2 }) {
+export function porch(b, { x, z, floorY, groundY = null, width = 2.0, depth = 1.3, headY, detail = 2 }) {
   const hw = width / 2
   const z1 = z + depth
-  // Deck.
-  b.quad(
-    [x - hw, floorY, z1], [x + hw, floorY, z1],
-    [x + hw, floorY, z], [x - hw, floorY, z],
+  // The deck, as boarding on a rubble footing rather than a floating rectangle.
+  //
+  // The deck used to be one quad: no bottom, no edge, nothing holding it up, so
+  // from anywhere below the doorstep it vanished and the posts stood on air.
+  // A porch is the one part of a building people walk right up to, and the two
+  // things that make it read as built are that the boards have an edge you can
+  // see the thickness of, and that something carries them to the ground.
+  const deckT = 0.14
+  b.box(
+    [x - hw, floorY - deckT, z], [x + hw, floorY, z1],
     { layer: LAYER.TIMBER_PLANK, color: TINT.timber }
   )
+  const base = groundY ?? floorY - deckT - 0.4
+  if (base < floorY - deckT - 0.02) {
+    b.box(
+      [x - hw + 0.07, base, z + 0.07], [x + hw - 0.07, floorY - deckT, z1 - 0.07],
+      { layer: LAYER.STONE, color: groundGrime(base, 0.9, 0.32) }
+    )
+  }
   const roof = leanToRoof(b, {
     cx: x, cz: z + depth / 2, w: width + 0.3, d: depth,
     highY: headY, lowY: headY - 0.34, dir: '+z', overhang: 0.18,
@@ -854,7 +1094,7 @@ export function steps(b, { x, z, topY, groundY, width = 1.4, tread = 0.3 }) {
     const z0 = z + tread * i
     b.box(
       [x - hw, y, z0], [x + hw, y + rise / n + 0.02, z0 + tread * 1.05],
-      { layer: LAYER.STONE, color: groundGrime(groundY, 0.8, 0.3), skip: ['-y', '-z'] }
+      { layer: LAYER.STONE, color: groundGrime(groundY, 0.8, 0.3) }
     )
   }
 }

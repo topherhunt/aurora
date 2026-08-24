@@ -152,14 +152,28 @@ function fbm(seed, gx, gy = gx, octaves = 3) {
  * Rasterise one tile. `fn(u, v)` returns [r,g,b] or [r,g,b,a] in 0-255.
  *
  * u runs left to right and v runs BOTTOM to TOP, matching the UV space the
- * geometry addresses -- three flips on upload (flipY), so image row 0 is v=1.
- * Authoring in UV space rather than image space means the drawing code and the
- * parts kit share one convention and nothing has to remember to invert.
+ * geometry addresses. Authoring in UV space rather than image space means the
+ * drawing code and the parts kit share one convention and nothing has to
+ * remember to invert.
+ *
+ * ROW 0 OF THE BUFFER IS v = 0, and that is the whole subtlety here. An earlier
+ * version wrote row 0 as v = 1 on the strength of three flipping on upload --
+ * but flipY is false on every data texture, and UNPACK_FLIP_Y cannot be applied
+ * to the texImage3D a DataArrayTexture uploads with in any case. There is no
+ * flip to compensate for, so every tile in this file came out mirrored top to
+ * bottom. Invisible on logs, plaster and rubble, and visible on exactly the one
+ * tile whose whole content is a direction: the thatch fringe hung its ragged
+ * tips along the ridge and pressed its solid edge into the sky.
+ *
+ * The same convention reaches the shipped PNGs, which loadImageLayers decodes
+ * with drawImage/getImageData and uploads unflipped: PNG row 0 is v = 0 too. So
+ * public/buildings/thatch_fringe.png looks upside down in an image viewer, and
+ * is right on the roof.
  */
 function paint(n, fn) {
   const data = new Uint8Array(n * n * 4)
   for (let y = 0; y < n; y++) {
-    const v = 1 - (y + 0.5) / n
+    const v = (y + 0.5) / n
     for (let x = 0; x < n; x++) {
       const u = (x + 0.5) / n
       const c = fn(u, v)

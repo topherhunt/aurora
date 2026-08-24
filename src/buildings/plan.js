@@ -25,7 +25,7 @@ import { mulberry32 } from '../sim/mathx.js'
 // ---------------------------------------------------------------------------
 
 export const WALL_STYLES = ['log', 'stave', 'halfTimber', 'stoneBase']
-export const ROOF_KINDS = ['thatch', 'shake', 'slate']
+export const ROOF_KINDS = ['thatch', 'shake', 'slate', 'pantile']
 
 /**
  * The kinds, and what each one is allowed to be.
@@ -48,7 +48,7 @@ export const KINDS = {
     area: [22, 34], ratio: [1.25, 1.7], wallH: [2.4, 2.9],
     shapes: ['single', 'outshut', 'ell', 'wing'],
     styles: ['log', 'stave', 'halfTimber', 'stoneBase'],
-    roofs: ['thatch', 'thatch', 'shake', 'slate'],
+    roofs: ['thatch', 'thatch', 'shake', 'slate', 'pantile'],
     pitch: [0.6, 0.78], windows: 0.62, runes: 0.3,
   },
   longhouse: {
@@ -62,7 +62,7 @@ export const KINDS = {
     area: [58, 84], ratio: [1.4, 1.9], wallH: [4.4, 5.4],
     shapes: ['ell', 'tee', 'wing'],
     styles: ['halfTimber', 'stoneBase', 'stave'],
-    roofs: ['shake', 'slate', 'thatch'],
+    roofs: ['shake', 'slate', 'pantile', 'thatch'],
     pitch: [0.58, 0.72], windows: 0.8, runes: 0.6,
   },
 }

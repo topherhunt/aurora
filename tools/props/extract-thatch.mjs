@@ -289,7 +289,10 @@ function courses(img, bands) {
   const { w, h, px } = img
   const out = new Float64Array(px.length)
   for (let y = 0; y < h; y++) {
-    const v = 1 - (y + 0.5) / h
+    // Row 0 is v = 0. Nothing flips between here and the sampler: the PNG is
+    // decoded with drawImage/getImageData and uploaded to a DataArrayTexture
+    // whose flipY is false. See the paint() header in src/buildings/tiles.js.
+    const v = (y + 0.5) / h
     for (let x = 0; x < w; x++) {
       const u = (x + 0.5) / w
       const fb = v * bands
@@ -343,9 +346,11 @@ writePng(join(OUT_DIR, 'thatch.png'), N, N, rgba, 4)
 // not obvious and both matter:
 //
 //   The fringe is sampled from the BOTTOM of the roof tile, wrapped. Row 0 of
-//   both images is v = 1 (the `paint` helper flips for upload), so the fringe's
-//   eave line reads the tile's row 0 and walks down from there -- the straw
-//   continues across the join instead of restarting at a course butt.
+//   both images is v = 0, so the fringe's eave line (v = 1, the last row) reads
+//   the tile's row 0 and walks BACKWARDS from there, wrapping to the top of the
+//   tile -- which is the row that would be immediately below the eave if the
+//   roof carried on. The straw continues across the join instead of restarting
+//   at a course butt.
 //
 //   The tips are darkened, not lightened. A cut straw end is end-grain in
 //   shadow, hanging clear of the roof with nothing behind it to bounce light
@@ -355,12 +360,13 @@ writePng(join(OUT_DIR, 'thatch.png'), N, N, rgba, 4)
 const fringeAlpha = tileFringe(N)
 const fringe = new Uint8Array(N * N * 4)
 for (let y = 0; y < N; y++) {
-  const v = 1 - (y + 0.5) / N
+  const v = (y + 0.5) / N
   // v = 1 at the eave maps to row 0 of the tile and v = 0 at the tip to row
-  // FRINGE_DROP of it: the fringe hangs less than a full course, so it must not
-  // walk the whole tile or it re-crosses a butt line halfway down the fray.
+  // -FRINGE_DROP of it, wrapped: the fringe hangs less than a full course, so
+  // it must not walk the whole tile or it re-crosses a butt line halfway down
+  // the fray.
   const FRINGE_DROP = Math.round(N / BANDS)
-  const sy = Math.round((1 - v) * FRINGE_DROP) % N
+  const sy = ((-Math.round((1 - v) * FRINGE_DROP) % N) + N) % N
   for (let x = 0; x < N; x++) {
     const s = (sy * N + x) * 4
     const d = (y * N + x) * 4
@@ -371,10 +377,11 @@ for (let y = 0; y < N; y++) {
 }
 writePng(join(OUT_DIR, 'thatch_fringe.png'), N, N, fringe, 4)
 
+// Row N-1 is v = 1, the eave line; row 0 is v = 0, the hanging tip.
 let solid = 0
-for (let x = 0; x < N; x++) solid += fringe[x * 4 + 3]
+for (let x = 0; x < N; x++) solid += fringe[((N - 1) * N + x) * 4 + 3]
 let ragged = 0
-for (let x = 0; x < N; x++) ragged += fringe[((N - 1) * N + x) * 4 + 3]
+for (let x = 0; x < N; x++) ragged += fringe[x * 4 + 3]
 console.log(`fringe  alpha ${(solid / N / 255).toFixed(2)} at the eave, ${(ragged / N / 255).toFixed(2)} at the tip`)
 console.log(`wrote   public/buildings/thatch.png, public/buildings/thatch_fringe.png`)
 

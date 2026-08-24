@@ -5,15 +5,25 @@ import * as THREE from 'three'
  *
  * ONE InstancedMesh PER KIND, NOT ONE MESH PER POINT. A world that has been authored for an afternoon holds hundreds of snow points and hundreds of spline points, and this is a debug overlay -- it is allowed to cost a rounding error and nothing more. Three instanced draws for the whole overlay is that; three hundred Object3Ds, each with its own matrix update and its own frustum test every frame, is not, and the cost would land on the editor exactly when the world is big enough to be worth editing.
  *
- * HANDLES SCALE WITH DISTANCE, which is the difference between an overlay and a toy. A fixed-size handle is a 40 cm blob you cannot hit at 2 km and a wall you cannot see past at 2 m. These hold a CONSTANT ANGULAR SIZE instead -- see HANDLE_TAN -- so a river point at the far side of the world is the same number of pixels, and the same click target, as one at your feet.
+ * HANDLES SCALE WITH DISTANCE, which is the difference between an overlay and a toy. A fixed-size handle is a 40 cm blob you cannot hit at 2 km and a wall you cannot see past at 2 m. See HANDLE_TAN for the three regimes: constant angular size up close, constant WORLD size in the middle distance, and a 3 px floor beyond that.
  *
  * They also draw through the terrain (depthTest false, high renderOrder) because a handle you cannot see is a handle you cannot select, and half of what gets authored -- a river bed, a lake floor -- is by construction below the ground it is being authored into.
  */
 
-// Tangent of the handle's angular HALF-size, so world radius = distance * this. 0.6 degrees: on a 1080-row display at a 60 degree vertical FOV that is about 11 px of radius, a 22 px target, which is comfortably clickable with a mouse and still small enough that a dense spline does not become a wall of beads. At 2 km it is a 21 m octahedron, which sounds absurd until you remember it is 22 px.
+// Tangent of the handle's angular HALF-size, so world radius = distance * this. 0.6 degrees: on a 1080-row display at a 60 degree vertical FOV that is about 11 px of radius, a 22 px target, which is comfortably clickable with a mouse and still small enough that a dense spline does not become a wall of beads.
 const HANDLE_TAN = Math.tan((0.6 * Math.PI) / 180)
+const HANDLE_PX = 11 // what that angle is worth on that display, so the floor below can be written in pixels
 
-// Floor on that radius, in metres, for a handle nearly touching the near plane. Without it the scale goes to zero at the camera and the handle you are leaning over disappears.
+// CONSTANT ANGULAR SIZE ONLY OUT TO HERE. Past this distance the handle keeps the world size it had at this distance, so it recedes exactly like the ground it is sitting on. Holding 22 px all the way out was the first version and it is wrong for the same reason a fixed world size is wrong at the other end: a river drawn across the valley became a chain of beads the size of houses, hiding the terrain the author was trying to look at, and a snow field of a hundred points was an opaque wall. 120 m is roughly "the near half of what you can see while editing" -- inside it nothing has changed, and a handle is still 22 px at arm's length.
+const HANDLE_FULL_M = 120
+
+// ...but never smaller than 3 px WIDE, which is 1.5 px of radius. A handle that recedes to nothing is a point you cannot find again, and the far field is exactly where "where did I put that river" matters. 3 px is the smallest thing that still reads as a deliberate mark rather than as a stuck pixel. The floor bites at HANDLE_FULL_M * HANDLE_PX / HANDLE_FLOOR_PX = 880 m; past that every handle in the world is the same 3 px.
+//
+// It stays SELECTABLE at 3 px because picking does not go through this size at all: editor.js hit-tests within HANDLE_PICK_PX (10 px) of the handle's centre in screen space, so the click target is unchanged by anything here.
+const HANDLE_FLOOR_PX = 1.5
+const HANDLE_FLOOR_TAN = (HANDLE_TAN * HANDLE_FLOOR_PX) / HANDLE_PX
+
+// Floor on the radius in metres, for a handle nearly touching the near plane. Without it the scale goes to zero at the camera and the handle you are leaning over disappears.
 const HANDLE_MIN = 0.15
 
 // What selection does to a handle. Scale as well as colour: colour alone is invisible to anyone selecting the handle that is currently under the cursor, because the cursor is on top of it.
@@ -254,7 +264,8 @@ export class Markers {
         const y = kind.positions[i * 3 + 1]
         const z = kind.positions[i * 3 + 2]
         const dist = Math.hypot(x - tmpCam.x, y - tmpCam.y, z - tmpCam.z)
-        let s = Math.max(HANDLE_MIN, dist * HANDLE_TAN)
+        // Angular up close, fixed-world past HANDLE_FULL_M, and never under the 3 px floor.
+        let s = Math.max(HANDLE_MIN, dist * HANDLE_FLOOR_TAN, Math.min(dist, HANDLE_FULL_M) * HANDLE_TAN)
         const r = kind.records[i]
         if (this.highlight !== null && this.highlight.kind === r.kind && this.highlight.id === r.id && this.highlight.index === r.index) s *= HIGHLIGHT_SCALE
         tmpMat.makeScale(s, s, s)

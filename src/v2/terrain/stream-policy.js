@@ -356,12 +356,51 @@ export function slotBudget(workers, queueDepth) {
 }
 
 /**
+ * What happens to ONE cached entry when an edit invalidates its key.
+ *
+ * Three lines, and it lives here rather than inline in _invalidateRect because
+ * the sky-flash bug was a wrong answer from exactly this table and there is no
+ * other way to assert it: the caller needs a BatchedMesh and a worker pool, so
+ * nothing around it can run under a gate.
+ *
+ *   'hold'   the entry has geometry on the GPU. Keep the slot AND keep it
+ *            visible; the chunk is one epoch stale, which is the epoch the
+ *            author is in the middle of changing, and it is replaced in place
+ *            when the new mesh lands. Freeing it here is what used to punch a
+ *            hole through to the sky for the length of every bake.
+ *
+ *   'reseed' nothing on screen, but pinned. The depth 0-2 base layer is the
+ *            floor under every other fallback, so it is re-requested even though
+ *            dropping it would cost nothing visible THIS frame.
+ *
+ *   'drop'   nothing on screen and not pinned: merely queued, or in flight. No
+ *            hole to leave, and the next selection asks again if it still wants
+ *            it. Re-requesting these is how a drag builds a queue of chunks
+ *            nobody is looking at.
+ */
+export function invalidationAction(entry) {
+  if (!entry) throw new Error('invalidationAction: no entry -- invalidatedKeys only yields keys that are in the cache')
+  if (entry.slot) return 'hold'
+  return entry.pinned ? 'reseed' : 'drop'
+}
+
+/**
  * Which resident entries to free this pass.
  *
- * `entries` is any iterable of [key, {state, pinned, lastUsed}]. `render` and
+ * `entries` is any iterable of [key, {slot, pinned, lastUsed}]. `render` and
  * `standIns` are Sets of KEYS -- v2 keys are packed integers, so a Set of keys is
  * cheaper than v1's Set of entry objects and does not tie this function to the
  * cache entry's shape.
+ *
+ * THE UNIT OF ACCOUNTING IS THE SLOT, NOT THE STATE. This counted `state ===
+ * 'ready'` entries, which was the same set right up until an edit was allowed to
+ * keep the OLD geometry on screen while the replacement bakes (see
+ * TerrainV2._invalidateRect). Such an entry is back in state 'queued' and still
+ * holds its slot, so counting states would have left it out of the budget
+ * entirely -- and the budget is the only thing standing between the pool and
+ * `_free.pop()` returning undefined, which throws. `entry.slot !== null` is the
+ * exact question this function has always meant to ask: how many of the pool's
+ * slots are spoken for right now.
  *
  * Two lists come back and they are deliberately separate rather than one
  * concatenated answer:
@@ -386,7 +425,7 @@ export function selectEvictions(entries, { maxReady, render, standIns }) {
   const ready = []
   let readyCount = 0
   for (const [key, entry] of entries) {
-    if (entry.state !== 'ready') continue
+    if (!entry.slot) continue
     readyCount++
     if (entry.pinned) continue
     ready.push([key, entry])

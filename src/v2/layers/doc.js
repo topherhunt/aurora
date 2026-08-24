@@ -12,7 +12,7 @@ export const DOC_VERSION = 1
 
 // The snow line of an unedited world. Both are read by the mesher's shading and by the props, so they live in the document rather than in a module constant -- an author moving the snow line is an edit, not a code change.
 //
-// THESE ARE THE FALLBACK, NOT THE ANSWER. A snow line is an elevation, and an elevation only means something against a particular bake: these two came from v1's procedural field (range -0.82 to 319.49 m) and on the current 0..600 m import they land at the 17th percentile, which is four fifths of the world under snow. The browser derives its own from the loaded image instead -- snowDefaults() below, which reads 388.4 m +/- 70.7 m off the bake now on disk and puts a quarter of the world white.
+// THESE ARE THE FALLBACK, NOT THE ANSWER. A snow line is an elevation, and an elevation only means something against a particular bake: these two came from v1's procedural field (range -0.82 to 319.49 m) and on the current 0..900 m import they land at the 12th percentile, which is seven eighths of the world under snow. The browser derives its own from the loaded image instead -- snowDefaults() below, which reads 582.7 m +/- 106.1 m off the bake now on disk and puts a quarter of the world white.
 //
 // What is left here is what a document needs when there is no heightmap in the room at all, which is every node gate: they construct worlds to test the interpolant's SHAPE (exact at its points, exactly base outside every radius, smooth between) and none of them cares what the elevation is. That is also why nothing asserts these numbers.
 export const DEFAULT_SNOW_BASE = 148

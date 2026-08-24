@@ -86,6 +86,13 @@ export function readPng(path) {
   let width = 0
   let height = 0
   let channels = 0
+  // 1 for an 8-bit image, 2 for a 16-bit one. Only the high byte of a 16-bit
+  // sample survives: every consumer here is a 128px tile or a mask, and no
+  // amount of precision below 1/255 reaches the screen. What the second byte
+  // DOES have to do is participate in the un-filter, because a PNG filter
+  // predicts from the pixel `bpp` bytes to the left -- get that wrong and every
+  // row filtered Sub or Paeth (which is most of them) decodes to noise.
+  let sampleBytes = 1
   let palette = null // colour type 3 only: RGBA, 4 bytes per entry
   let paletted = false
   const idat = []
@@ -102,7 +109,9 @@ export function readPng(path) {
       const depth = data[8]
       const colourType = data[9]
       const interlace = data[12]
-      if (depth !== 8) throw new Error(`${path}: bit depth ${depth}, only 8 supported`)
+      if (depth !== 8 && depth !== 16) throw new Error(`${path}: bit depth ${depth}, only 8 and 16 supported`)
+      if (depth === 16 && colourType === 3) throw new Error(`${path}: 16-bit palette is not a thing`)
+      sampleBytes = depth === 16 ? 2 : 1
       if (interlace !== 0) throw new Error(`${path}: interlaced PNGs unsupported`)
       // A palette image is ONE byte per pixel on the wire -- the index -- so the
       // un-filter below runs at 1 channel and the expansion to RGBA happens
@@ -132,8 +141,9 @@ export function readPng(path) {
   }
 
   const raw = inflateSync(Buffer.concat(idat))
-  const stride = width * channels
-  const out = new Uint8Array(width * height * channels)
+  const bpp = channels * sampleBytes
+  const stride = width * bpp
+  const bytes = new Uint8Array(width * height * bpp)
 
   // Un-filter. Each scanline is prefixed by its filter type and predicts from
   // the already-reconstructed pixel to the left (a) and the row above (b/c).
@@ -145,9 +155,9 @@ export function readPng(path) {
 
     for (let x = 0; x < stride; x++) {
       const val = raw[src + x]
-      const a = x >= channels ? out[dst + x - channels] : 0
-      const b = y > 0 ? out[up + x] : 0
-      const c = y > 0 && x >= channels ? out[up + x - channels] : 0
+      const a = x >= bpp ? bytes[dst + x - bpp] : 0
+      const b = y > 0 ? bytes[up + x] : 0
+      const c = y > 0 && x >= bpp ? bytes[up + x - bpp] : 0
 
       let recon
       switch (filter) {
@@ -166,8 +176,15 @@ export function readPng(path) {
         default:
           throw new Error(`${path}: bad filter type ${filter} on row ${y}`)
       }
-      out[dst + x] = recon & 0xff
+      bytes[dst + x] = recon & 0xff
     }
+  }
+
+  // Drop to one byte per sample, keeping the high byte (PNG is big-endian).
+  let out = bytes
+  if (sampleBytes === 2) {
+    out = new Uint8Array(width * height * channels)
+    for (let i = 0; i < out.length; i++) out[i] = bytes[i * 2]
   }
 
   if (paletted) {

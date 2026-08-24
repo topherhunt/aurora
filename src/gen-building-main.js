@@ -4,6 +4,7 @@ import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE, TILE_METRES } from
 import { createPropMaterial } from './material.js'
 import { planBuilding, KINDS, WALL_STYLES, ROOF_KINDS } from './buildings/plan.js'
 import { buildBuilding } from './buildings/building.js'
+import { openEdges, signedVolume } from './buildings/parts.js'
 import { grassTexture } from './preview-stage.js'
 import { TRI_BUDGET, CALL_BUDGET } from './budget.js'
 
@@ -232,11 +233,22 @@ function refresh() {
   const plan = s.hero
   const per = Math.round(s.tris / s.plans.length)
 
+  // The airtightness probe, run on the geometry that is ON SCREEN rather than
+  // on a rebuild, so this panel cannot disagree with what you are looking at.
+  // Both halves matter and they catch different things: an unpaired edge is a
+  // missing face, and a shell wound inside out pairs every edge and still
+  // renders as a hole. scripts/check-buildings.mjs gates the same two.
+  const heroGeo = group.children[0].geometry
+  const open = openEdges(heroGeo).length
+  const vol = signedVolume(heroGeo)
+
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${s.tris.toLocaleString()}</span>${s.plans.length > 1 ? ` (${per} ea)` : ''}`],
     ['draw calls', '1', 'ok'],
-    ['texture layers used', usedLayers(group.children[0].geometry).length],
+    ['texture layers used', usedLayers(heroGeo).length],
     ['structure budget', `${per} / ${STRUCTURE_BUDGET}`, per <= STRUCTURE_BUDGET ? 'ok' : 'warn'],
+    ['airtight', open === 0 ? 'yes' : `${open} open edges`, open === 0 ? 'ok' : 'warn'],
+    ['enclosed volume', `${vol.toFixed(1)} m&sup3;`, vol > 0 ? 'ok' : 'warn'],
   ])
   document.getElementById('geonote').innerHTML =
     `One mesh, one material, one call -- walls, thatch, stone and glass together. That is what the ` +
@@ -338,7 +350,7 @@ const pickDefs = [
   ['kind', Object.keys(KINDS), 'what the building is for. Sets area, height, and which styles are legal'],
   ['shape', ['auto', 'single', 'outshut', 'ell', 'tee', 'wing'], 'how the masses combine. Not every kind allows every shape -- auto picks a legal one'],
   ['style', ['auto', ...WALL_STYLES], 'wall treatment. ONE per building: mixing them makes it read as several buildings shoved together'],
-  ['roof', ['auto', ...ROOF_KINDS], 'slate is not a texture -- it is the shake tile at a cold tint'],
+  ['roof', ['auto', ...ROOF_KINDS], 'slate is not a texture -- it is the shake tile at a cold tint. pantile is, because a scallop is a shape'],
   ['detail', ['2', '1', '0'], 'which LOD tier to build. 2 is what you see inside 60 m'],
 ]
 for (const [key, options, help] of pickDefs) {

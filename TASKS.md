@@ -1,5 +1,9 @@
 ### Notes
 
+- Resources:
+  - https://sketchfab.com/
+  - https://polyhaven.com/
+  - https://www.opensource3dassets.com/en
 - Process for setting up a procedural asset:
   - Find a good basic texture asset
   - Create a slider-generator to play with the proc-gen parameters
@@ -24,7 +28,7 @@
     - yawJitter: 0
     - crownRadius: 0
     - crozier: 0
-  - [ ] 
+  - \[ \]
 - [ ] Procedural trees (use EZTrees as a base, but customize to support 3 shape-preserving LODs + 1-2 billboard levels)
   - [ ] Assess with Claude, and smoke-test to confirm that procedural trees don't bog down performance.
 - [ ] Redo the Aurora using a planar shader (one plane, northern tilted sky-wall)

@@ -29,6 +29,11 @@
 
 import { planBuilding, KINDS, roofHeightAt } from '../src/buildings/plan.js'
 import { buildBuilding } from '../src/buildings/building.js'
+import {
+  Builder, WALL_STYLE, openEdges, signedVolume,
+  plinth, wall, gableEnd, leanEnd, gableRoof, leanToRoof,
+  doorway, windowUnit, chimney, porch, steps,
+} from '../src/buildings/parts.js'
 import { LAYER, TEX_SIZE } from '../src/textures.js'
 import {
   tileLogs, tilePlanks, tileThatch, tileShingles, tileStone, tilePlaster,
@@ -136,6 +141,96 @@ report('roomCount', 'room count stays plausible')
 check(worstPlanMs < 5, 'planning is cheap enough to gate exhaustively', `worst ${worstPlanMs.toFixed(2)} ms`)
 
 // ---------------------------------------------------------------------------
+// 1b. Every part, alone, at every orientation.
+//
+// The whole-building gate below catches the same defects, but it reports them as
+// "hut/2 detail 2 has an unpaired edge", which is a hole somewhere in nine
+// hundred triangles. Building each part into its own Builder localises the
+// failure to the function that has the bug, and -- more usefully -- covers the
+// orientations a plan happens not to produce. Windows sit on all four walls of
+// every building, but leanEnd() only ever gets the outshut directions the
+// grammar picks, and the winding of a part is exactly the thing that is right on
+// one axis and inside out on another.
+//
+// TWO PROPERTIES, and they are not the same property:
+//
+//   AIRTIGHT   openEdges() -- no boundary. This is the user-visible one: a
+//              missing face is a hole you see the inside of the building
+//              through.
+//   OUTWARD    signedVolume() -- and this is openEdges()'s blind spot. A shell
+//              wound inside out balances every edge just as neatly as a correct
+//              one, and under back-face culling it renders as the same hole.
+//              Solid parts must come out positive; the parts that are honestly
+//              zero-thickness (a doubled gable triangle, a lean-to end) come out
+//              at zero and are declared so here rather than skipped.
+// ---------------------------------------------------------------------------
+
+console.log('\nparts')
+
+const NORMALS = [[0, 1], [0, -1], [1, 0], [-1, 0]]
+const PARTS = []
+for (const [nx, nz] of NORMALS) {
+  const at = (a, out) => [-nz * a + nx * out, nx * a + nz * out]
+  const dir = nx ? (nx > 0 ? '+x' : '-x') : nz > 0 ? '+z' : '-z'
+  PARTS.push(
+    [`window ${dir}`, (b, detail) => windowUnit(b, { x: 0, z: 0, y0: 1.2, nx, nz, detail }), 'solid'],
+    [`window+shutters ${dir}`, (b, detail) => windowUnit(b, { x: 0, z: 0, y0: 1.2, nx, nz, shutters: true, detail }), 'solid'],
+    [`door ${dir}`, (b, detail) => doorway(b, { x: 0, z: 0, y0: 0, nx, nz, runes: true, detail }), 'solid'],
+    [`wall log ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.LOG, detail }), 'solid'],
+    [`wall stave ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STAVE, detail }), 'solid'],
+    [`wall halfTimber ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.HALF_TIMBER, detail }), 'solid'],
+    [`wall stoneBase ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STONE_BASE, detail }), 'flat'],
+    [`gableEnd ${dir}`, (b, detail) => gableEnd(b, { p0: at(-2, 0), p1: at(2, 0), y0: 2.4, apexY: 4.2, style: WALL_STYLE.LOG, detail }), 'solid'],
+    [`leanEnd ${dir}`, (b) => leanEnd(b, { p0: at(-1.5, 0), p1: at(1.5, 0), y0: 2, y1: 3.1, style: WALL_STYLE.LOG }), 'flat'],
+  )
+}
+for (const axis of ['x', 'z']) {
+  PARTS.push(
+    [`gableRoof thatch ${axis}`, (b, detail) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.THATCH, tint: [1, 1, 1], fringe: true, detail }), 'solid'],
+    [`gableRoof shingle ${axis}`, (b, detail) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], fringe: false, detail }), 'solid'],
+    [`gableRoof catslide ${axis}`, (b, detail) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], vergeHi: 2.2, detail }), 'solid'],
+  )
+}
+for (const dir of ['+x', '-x', '+z', '-z']) {
+  PARTS.push([`leanToRoof ${dir}`, (b, detail) => leanToRoof(b, { cx: 0, cz: 0, w: 3, d: 2.5, highY: 3.2, lowY: 2.2, dir, layer: LAYER.THATCH, tint: [1, 1, 1], detail }), 'solid'])
+}
+PARTS.push(
+  ['plinth', (b, detail) => plinth(b, { cx: 0, cz: 0, w: 5, d: 4, top: 0.4, bottom: -0.3, batter: detail >= 2 ? 0.06 : 0 }), 'solid'],
+  ['chimney', (b, detail) => chimney(b, { x: 0, z: 0, baseY: 3, topY: 5, detail }), 'solid'],
+  ['porch', (b, detail) => porch(b, { x: 0, z: 2, floorY: 0.4, groundY: -0.3, headY: 2.4, detail }), 'solid'],
+  ['porch flat', (b, detail) => porch(b, { x: 0, z: 2, floorY: 0.05, groundY: 0, headY: 2.4, detail }), 'solid'],
+  ['steps', (b) => steps(b, { x: 0, z: 2, topY: 0.55, groundY: -0.2 }), 'solid'],
+)
+
+const partBad = { open: [], vol: [] }
+for (const [name, draw, kindOf] of PARTS) {
+  for (const detail of [2, 1, 0]) {
+    const b = new Builder()
+    draw(b, detail)
+    if (b.triangles === 0) continue
+    const g = b.toGeometry()
+    const open = openEdges(g)
+    if (open.length) partBad.open.push(`${name} d${detail} ${open.length} unpaired`)
+    const vol = signedVolume(g)
+    // 1e-5 m3 is below anything the kit places deliberately and far above the
+    // drift on a doubled quad, whose two halves cancel to the last bit.
+    //
+    // Only detail 2 has to be POSITIVE: the lower tiers drop the solid parts of
+    // a window or a door and keep the doubled panel, which is honestly zero. No
+    // tier of anything may ever be negative.
+    const ok = kindOf === 'flat'
+      ? Math.abs(vol) < 1e-5
+      : detail === 2 ? vol > 1e-5 : vol > -1e-5
+    if (!ok) partBad.vol.push(`${name} d${detail} ${vol.toExponential(2)} m3, wanted ${kindOf}`)
+    g.dispose()
+  }
+}
+check(partBad.open.length === 0, 'every part is airtight on its own',
+  partBad.open.length ? `${partBad.open.length} bad, e.g. ${partBad.open[0]}` : `${PARTS.length} parts x 3 tiers`)
+check(partBad.vol.length === 0, 'every solid part is wound outwards, every flat part is flat',
+  partBad.vol.length ? `${partBad.vol.length} bad, e.g. ${partBad.vol[0]}` : 'signed volume as declared')
+
+// ---------------------------------------------------------------------------
 // 2. The geometry. Fewer seeds -- this one allocates.
 // ---------------------------------------------------------------------------
 
@@ -147,7 +242,8 @@ let worstTris = 0
 let worstId = ''
 let sumTris = 0
 let geoCount = 0
-const geoBad = { attrs: [], finite: [], budget: [], lod: [], below: [], layer: [] }
+const geoBad = { attrs: [], finite: [], budget: [], lod: [], below: [], layer: [], open: [], inverted: [] }
+let worstOpen = 0
 
 for (const kind of Object.keys(KINDS)) {
   for (let s = 1; s <= GEO_SEEDS; s++) {
@@ -178,9 +274,29 @@ for (const kind of Object.keys(KINDS)) {
       const legal = new Set([
         LAYER.TIMBER_HEWN, LAYER.TIMBER_PLANK, LAYER.THATCH, LAYER.SHINGLE,
         LAYER.STONE, LAYER.PLASTER, LAYER.THATCH_FRINGE, LAYER.GLASS,
-        LAYER.IRON, LAYER.RUNE,
+        LAYER.IRON, LAYER.RUNE, LAYER.ROOF_TILE, LAYER.DOOR,
       ])
       for (let k = 0; k < lay.length; k++) if (!legal.has(lay[k])) { geoBad.layer.push(`${id} d${2 - i} layer ${lay[k]}`); break }
+
+      // AIRTIGHT. Every directed edge a->b must be matched by a b->a somewhere,
+      // which is what it means for the surface to have no boundary. This is
+      // deliberately NOT "every edge is shared by exactly two triangles": the kit
+      // is a union of interpenetrating solids -- a chimney driven through a roof
+      // slope, a log end driven through a wall -- so four triangles may meet at
+      // one edge quite legitimately, and a back-to-back double-sided quad (the
+      // thatch fringe, the door leaf) pairs its edges perfectly while sharing
+      // none. What no arrangement of solids can do is leave an edge unpaired, so
+      // an imbalance here is always a face that is genuinely missing, and always
+      // a hole you can see the inside of the building through.
+      // The composition, as a net under the per-part gate above: a part added to
+      // building.js but never listed in PARTS still has to not be inside out.
+      if (signedVolume(g) <= 0) geoBad.inverted.push(`${id} d${2 - i}`)
+
+      const open = openEdges(g)
+      if (open.length) {
+        geoBad.open.push(`${id} d${2 - i} ${open.length} unpaired, e.g. ${open[0].key}`)
+        if (open.length > worstOpen) worstOpen = open.length
+      }
     }
 
     // LOD by re-generation only works if the tiers actually get cheaper.
@@ -202,6 +318,8 @@ geoReport('attrs', 'every tier carries the full attribute set', ATTRS.join(', ')
 geoReport('finite', 'no non-finite positions or UVs')
 geoReport('layer', 'every texLayer names a building layer')
 geoReport('below', 'nothing hangs below the plinth')
+geoReport('open', 'every tier is airtight -- no unpaired edges', `${geoCount * 3} meshes closed`)
+geoReport('inverted', 'every assembled tier encloses positive volume')
 geoReport('lod', 'detail 2 > detail 1 > detail 0, every seed')
 geoReport('budget', `every building fits the structure budget (${STRUCTURE_BUDGET} tris)`,
   `worst ${worstTris} (${worstId}), mean ${Math.round(sumTris / geoCount)}`)
@@ -310,13 +428,13 @@ for (const [name, gen, islands] of [['iron', sheetIron, IRON_ISLANDS], ['runes',
     // Walk the gutter band and demand it be fully transparent.
     const x0 = Math.floor(isl.u0 * N) - GUTTER_TEXELS
     const x1 = Math.ceil(isl.u1 * N) + GUTTER_TEXELS
-    const y0 = Math.floor((1 - isl.v1) * N) - GUTTER_TEXELS
-    const y1 = Math.ceil((1 - isl.v0) * N) + GUTTER_TEXELS
+    const y0 = Math.floor(isl.v0 * N) - GUTTER_TEXELS
+    const y1 = Math.ceil(isl.v1 * N) + GUTTER_TEXELS
     for (let y = Math.max(0, y0); y < Math.min(N, y1); y++) {
       for (let x = Math.max(0, x0); x < Math.min(N, x1); x++) {
         const inIsland =
           x >= Math.floor(isl.u0 * N) && x < Math.ceil(isl.u1 * N) &&
-          y >= Math.floor((1 - isl.v1) * N) && y < Math.ceil((1 - isl.v0) * N)
+          y >= Math.floor(isl.v0 * N) && y < Math.ceil(isl.v1 * N)
         if (inIsland) continue
         if (px[(y * N + x) * 4 + 3] > 8) { dirty++; break }
       }
@@ -337,8 +455,11 @@ for (const [name, gen, islands] of [['iron', sheetIron, IRON_ISLANDS], ['runes',
     for (let x = 0; x < N; x++) sum += px[(y * N + x) * 4 + 3]
     return sum / N / 255
   }
-  const eave = rowAlpha(0) // v = 1 is row 0: the paint helper flips for upload
-  const tip = rowAlpha(N - 1)
+  // Row 0 is v = 0 and row N-1 is v = 1. Nothing flips on upload -- see the
+  // paint() header in tiles.js, which is where this was wrong for a while and
+  // where the fringe learned to hang its tips along the ridge.
+  const eave = rowAlpha(N - 1)
+  const tip = rowAlpha(0)
   check(eave > 0.97, 'the fringe is solid at the eave line', `alpha ${eave.toFixed(2)} at v=1`)
   check(tip < 0.4, 'the fringe is ragged at the hanging tip', `alpha ${tip.toFixed(2)} at v=0`)
 }
@@ -355,9 +476,19 @@ for (const [name, gen, islands] of [['iron', sheetIron, IRON_ISLANDS], ['runes',
 
 console.log('\nshipped tiles')
 
+// Every entry of IMAGE_LAYERS that points into public/buildings/. `door.png` is
+// the one exception and is deliberately absent: it is a decal sheet addressed
+// 0..1 by island, never repeated, so a seam across its edge is a seam nothing
+// samples. It gets its own assertion below instead.
 for (const [name, file, axes] of [
   ['thatch.png', 'public/buildings/thatch.png', 'uv'],
   ['thatch_fringe.png', 'public/buildings/thatch_fringe.png', 'u'],
+  ['timber_hewn.png', 'public/buildings/timber_hewn.png', 'uv'],
+  ['timber_plank.png', 'public/buildings/timber_plank.png', 'uv'],
+  ['shingle.png', 'public/buildings/shingle.png', 'uv'],
+  ['roof_tile.png', 'public/buildings/roof_tile.png', 'uv'],
+  ['stone.png', 'public/buildings/stone.png', 'uv'],
+  ['glass.png', 'public/buildings/glass.png', 'uv'],
 ]) {
   let png
   try {
@@ -385,22 +516,76 @@ for (const [name, file, axes] of [
     for (let x = 0; x < N; x++) sum += px[(y * N + x) * 4 + 3]
     return sum / N / 255
   }
-  check(rowAlpha(0) > 0.97, 'the shipped fringe is solid at the eave line', `alpha ${rowAlpha(0).toFixed(2)} at v=1`)
-  check(rowAlpha(N - 1) < 0.4, 'the shipped fringe is ragged at the hanging tip', `alpha ${rowAlpha(N - 1).toFixed(2)} at v=0`)
+  check(rowAlpha(N - 1) > 0.97, 'the shipped fringe is solid at the eave line', `alpha ${rowAlpha(N - 1).toFixed(2)} at v=1`)
+  check(rowAlpha(0) < 0.4, 'the shipped fringe is ragged at the hanging tip', `alpha ${rowAlpha(0).toFixed(2)} at v=0`)
 }
 
-// A multiply-only tint (§19: thatchOld and the moss overlay are both per-vertex
-// colour multiplies) can take brightness away and never add it. A shipped tile
-// with texels at 255 has nowhere left to go, and the roof that is supposed to
-// look NEW ends up identical to the one that is supposed to look old.
+// The door sheet is addressed by island, so what matters about it is not a seam
+// but that it is fully opaque -- a hole in a door leaf is a hole into the
+// building, and `alphaTest: 0.5` would happily cut one.
 {
-  const px = readPng(new URL('../public/buildings/thatch.png', import.meta.url).pathname).data
+  const png = readPng(new URL('../public/buildings/door.png', import.meta.url).pathname)
+  check(png.width === N && png.height === N && png.channels === 4,
+    `door.png is ${N}x${N} RGBA`, `${png.width}x${png.height}x${png.channels}`)
+  let clear = 0
+  for (let i = 0; i < N * N; i++) if (png.data[i * 4 + 3] < 128) clear++
+  check(clear === 0, 'the shipped door leaf is fully opaque',
+    clear ? `${clear} texels would be cut by alphaTest` : 'nothing for alphaTest to cut')
+}
+
+// A multiply-only tint (§19: thatchOld, slate and the moss overlay are all
+// per-vertex colour multiplies) can take brightness away and never add it. A
+// shipped tile with texels at 255 has nowhere left to go, and the roof that is
+// supposed to look NEW ends up identical to the one that is supposed to look
+// old -- or the slate one comes out the same value as the shake one.
+for (const name of ['thatch', 'timber_hewn', 'timber_plank', 'shingle', 'roof_tile', 'stone']) {
+  const px = readPng(new URL(`../public/buildings/${name}.png`, import.meta.url).pathname).data
   let hot = 0
   for (let i = 0; i < N * N; i++) {
     if (px[i * 4] > 240 && px[i * 4 + 1] > 240 && px[i * 4 + 2] > 240) hot++
   }
-  check(hot / (N * N) < 0.005, 'the shipped thatch keeps headroom for the tint',
+  check(hot / (N * N) < 0.005, `the shipped ${name} keeps headroom for the tint`,
     `${((hot / (N * N)) * 100).toFixed(2)}% of texels are at the ceiling`)
+}
+
+// WHICH WAY UP a lapped roof tile is.
+//
+// This is the assertion that the thatch fringe earned for everything else. Row
+// 0 is v = 0 is the EAVE, and a lapped roof is photographed the way it is
+// looked at, with the courses running down the frame -- so every roof source
+// has to be flipped on the way in, and a tile that was not flipped renders as a
+// roof that laps uphill. Nothing about the finished tile looks wrong in an
+// image viewer, and nothing about the building looks obviously wrong either;
+// it just sheds water into itself.
+//
+// The measurable consequence is that the exposed butt of each course is the
+// brightest band on the roof and the head, under the course above, is the
+// darkest -- so the low-v half of every course period must be brighter than the
+// high-v half. Thatch is combed rather than lapped but its butt ends sit proud
+// and catch the light the same way.
+//
+// roof_tile is absent, and that is a gap rather than an oversight: a pantile's
+// direction is carried by the SHAPE of the scallop and not by its value, its
+// two halves measure 1.003 apart, and a threshold tight enough to catch a flip
+// would be a number fitted to this one file. It was checked by eye instead.
+for (const [name, courses, floor] of [['shingle', 6, 1.1], ['thatch', 4, 1.05]]) {
+  const px = readPng(new URL(`../public/buildings/${name}.png`, import.meta.url).pathname).data
+  const period = N / courses
+  let butt = 0
+  let head = 0
+  let nb = 0
+  let nh = 0
+  for (let y = 0; y < N; y++) {
+    let row = 0
+    for (let x = 0; x < N; x++) {
+      const i = (y * N + x) * 4
+      row += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]
+    }
+    if (((y + 0.5) % period) / period < 0.5) { butt += row; nb++ } else { head += row; nh++ }
+  }
+  const ratio = (butt / nb) / (head / nh)
+  check(ratio > floor, `the shipped ${name} laps downhill`,
+    `butt half is ${ratio.toFixed(2)}x the head half`)
 }
 
 // ---------------------------------------------------------------------------

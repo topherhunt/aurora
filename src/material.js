@@ -38,7 +38,10 @@ export function createPropMaterial(textureArray, { vertexColors = false } = {}) 
     // draw call, so it is architecturally unavailable to us (DESIGN.md §7).
     alphaTest: 0.5,
     transparent: false,
-    side: THREE.DoubleSide, // foliage cards are single-sided geometry
+    // Foliage cards are single-sided geometry, and both of their sides are the
+    // same leaf. See the normal_fragment_begin patch below: three's flip is
+    // undone so a card is lit by its authored normal from either side.
+    side: THREE.DoubleSide,
     vertexColors,
   })
 
@@ -69,6 +72,29 @@ export function createPropMaterial(textureArray, { vertexColors = false } = {}) 
         uniform sampler2DArray uAtlas;
         varying float vTexLayer;
         varying vec2 vUvProj;`
+      )
+      // BOTH SIDES OF A CUTOUT ARE THE SAME SURFACE. Three's double-sided path
+      // flips the normal toward the VIEWER (`normal *= faceDirection` in
+      // normal_fragment_begin), which is right for a solid seen from inside and
+      // catastrophic for a leaf: stand under a canopy, look up, and every card
+      // hands the lighting a normal pointing at the ground -- dotNL 0 from the
+      // sun and the hemisphere's near-black ground colour -- so the whole
+      // underside of the tree goes black. Undoing the flip (faceDirection twice
+      // is the identity) means a fragment is lit by the normal the GEOMETRY
+      // authored, whichever side you are on. tree.js gives every leaf vertex
+      // the canopy shell's normal for exactly this reason, and a leaf really is
+      // one cell thick and lit from every side at once.
+      //
+      // What is left is a gentle darkening when you are looking at the back of
+      // that normal, which is the underside of a canopy and the inside of a
+      // wall. Ramped rather than stepped so a solid's silhouette, where the dot
+      // passes through zero, does not get a hard rim.
+      .replace(
+        '#include <normal_fragment_begin>',
+        `#include <normal_fragment_begin>
+        normal *= faceDirection;
+        diffuseColor.rgb *= mix( 0.72, 1.0,
+          smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) );`
       )
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',

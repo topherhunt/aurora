@@ -147,7 +147,16 @@ function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, out, o) {
   // that term the cliffs read as white walls and all the relief goes invisible.
   // The soft band is what makes it a snow LINE rather than a contour: the same
   // peak is white in the high country and bare in the low.
-  const snow = clamp01(smoothstep(snowLine, snowLine + snowBand, h) * (1 - steep * 0.85))
+  //
+  // THE BAND IS CENTRED ON THE LINE, not stacked above it. It used to run from
+  // snowLine to snowLine + snowBand, which put bare ground AT the elevation the
+  // author had just set and the visible edge half a band higher -- 35 m up, as
+  // shipped. That is not a rounding error to an author: every snow point placed
+  // by clicking the mountain had to be dragged down by roughly that much
+  // afterwards, every time, because the click sets the elevation and the eye
+  // judges the result by where the white starts. Centred, `snow.base + delta` IS
+  // the half-cover contour, so the place you click is the place the snow appears.
+  const snow = clamp01(smoothstep(snowLine - snowBand / 2, snowLine + snowBand / 2, h) * (1 - steep * 0.85))
   r = lerp(r, C_ROCK[0], steep)
   g = lerp(g, C_ROCK[1], steep)
   b = lerp(b, C_ROCK[2], steep)
