@@ -4,18 +4,18 @@
   - Find a good basic texture asset
   - Create a slider-generator to play with the proc-gen parameters
   - Determine which parameters to lock and which ones should have a combinatorial array
-  - 
+  - Check how much of the GPU buffer asset slot pool the variants will use
 
 ### Tasks
 
 - [ ] Procedural ferns
   - [ ] Set randomness range for each parameter: tint (biome-dependent), size (biome-dependent), size variance, curviness, etc.
-    - fronds: \[4, 6, 10\]
-    - segments: \[8 (for LOD0), 4 (LOD1), then one shared billboard for all instances\]
-    - pitch: \[1.55, 1.2, 1.0\]
+    - fronds: \[5, 9\]
+    - segments: \[6 (for LOD0), 4 (LOD1), 2 (LOD2), then one shared billboard for all instances\]
+    - pitch: \[1.0, 1.4\]
     - arch: \[0.6, 2\]
     - curve: 1.6
-    - pitchFallover: 0.5
+    - pitchFalloff: 0.5
     - lengthVar: 0.5
     - widthScale: 1.2
     - taper: \[0, 0.6\]

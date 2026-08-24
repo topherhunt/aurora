@@ -1,0 +1,43 @@
+## 4. Traversability: making traps impossible by construction
+
+> **Covers:** the promise that the world contains no traps, and the walkability limiter that keeps it.
+> **Read this when:** touching `src/player.js` slope logic or a reachability gate.
+
+Requirement: deep gulches she cannot cross or might get trapped in, but never actually stuck.
+
+The naive solution -- "prop placement guarantees an exit" -- is fragile and hard to verify. Do this instead:
+
+**Enforce a maximum walkable slope in the locomotion controller, with no falling and no sliding.** (The angle is 50° and is derived from the shader's rock threshold, not picked -- see below. The argument here does not depend on which angle it is.)
+
+If she cannot walk onto terrain steeper than the limit, she can never *descend into* a region she cannot climb out of. Traversability is symmetric (a slope is the same slope in both directions), so any place she can reach, she can leave. **Traps become impossible by construction rather than by careful level design.**
+
+Gulches, cliffs, and gorges then function exactly as intended: hard visual barriers she must path around, forcing the wending route up each valley. She can stand at the lip of a canyon and look down into somewhere she cannot go, which is better scenery than somewhere she can.
+
+**The limiter needs a baseline, and the obvious one is wrong.** "Steeper than 38°" is not a property of a point, it is a rise over a run, and the run has to be chosen. The first implementation used her travel distance for the frame, which is 2 cm at walking pace and 72 Hz -- so it was not measuring a slope at all, it was measuring a 2 cm difference, and any 40 cm hummock became a wall. `Player._walkable` now takes the gentler of two baselines, one frame and one stride (1.5 m), so an obstacle has to keep going uphill for two paces before it counts. The one-frame test is kept as the first of the two rather than replaced, and that is what preserves the argument above: its probe pair *is* her travel pair, so the arithmetic that let her in is bit-identical to the arithmetic that lets her back out, and reversibility does not depend on the terrain. A lookahead on its own would also read every cliff from 1.5 m back and stop her there, which is an invisible standoff bubble around each wall.
+
+### The walk limit is the shader's rock line, not a taste
+
+`LOCOMOTION.maxSlopeDeg` is 50, and it is derived rather than chosen. The rule: **she can walk on anything the renderer does not draw as bare rock.**
+
+`chunk-mesh.js` `shade()` ramps rock in over `smoothstep(0.86, 0.62, ny)`, so rock begins to show at 30.7 deg and is total at 51.7 deg. A limit of 38 sat *inside* that ramp, on ground still shaded as mostly grass. Measured across a 4 km box at the limiter's own 1.5 m stride, the fraction of the world blocked while being drawn as vegetation:
+
+```
+limit            38     42     45     48     50     55
+grassy-blocked  7.36%  0.43%  0.00%  0.00%  0.00%  0.00%
+walkable        70.8%  77.8%  82.4%  86.5%  88.8%  93.6%
+```
+
+**7.36% of the world looked climbable and refused her.** That is the entire "areas that look like they should be walkable that you can't walk on" report, and it is what sent an earlier pass hunting through the cliff layer for a cause that was never in the terrain -- the same class of error as the connectivity instrument above, and the fifth instance of it.
+
+45 is where it reaches zero. 50 keeps 5 deg of margin, because the limiter reads a 1.5 m stride while the shader reads a per-vertex normal at whatever the LOD ring supplies, and those two need not agree at the metre scale. **If the shader's ramp moves, the limit moves with it: they are one decision.**
+
+This strictly strengthens the §4 argument rather than weakening it. Traps are impossible because traversability is symmetric, which holds at any angle; raising the limit only enlarges the reachable set. `phase-a.js` carries the same number as `MAX_WALK_SLOPE`, duplicated because that file runs in a worker and `player.js` pulls in THREE -- if the two ever disagree, the connectivity report and the village siting describe a world she cannot walk.
+
+Two supporting pieces:
+
+- **Connectivity validation in Phase A.** Build a coarse walkable mask (slope < max, not deep water), flood-fill from spawn, and verify every village and the summit are in the reachable set. If not, either lower the path-carving slope penalty (§6) or reseed. Log loudly on failure -- do not ship a world with an unreachable summit.
+- **An "unstick" binding** that teleports to the nearest walkable cell. Pure insurance against a collision bug. Cheap, and the alternative is her removing the headset.
+
+Water: shallow water is walkable, deep water is not. Same mask, so lakes are barriers and stream crossings are not.
+
+---
