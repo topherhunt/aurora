@@ -115,6 +115,75 @@ function extentAgreement() {
   return { out, worldSize, maxDepth, finestCell }
 }
 
+// --- section 0c: the host wiring --------------------------------------------
+//
+// src/v2/main.js is the one v2 module no section below can touch: it constructs
+// a WebGLRenderer on line one, so node cannot import it and every check-v2-*.mjs
+// stops at its door. It is also where six modules meet, which makes it exactly
+// the file where a contract gets broken quietly.
+//
+// So the four rules that are written down in those modules' headers as "the host
+// must" are asserted here, by reading the text. Textual assertions are weak and
+// this one is deliberately narrow: each line below corresponds to a failure that
+// is INVISIBLE in the frame it happens in, which is what makes a weak check
+// worth more than none.
+function hostWiring() {
+  const root = join(HERE, '..')
+  const out = []
+  const mainPath = join(root, 'src', 'v2', 'main.js')
+  if (!statSync(mainPath, { throwIfNoEntry: false })) {
+    return ['src/v2/main.js is missing -- v2.html loads it and /v2 renders nothing without it']
+  }
+  // COMMENT LINES ARE DROPPED FIRST, and finding that out cost a false failure:
+  // main.js explains in prose why it must not call markers.update(), and the
+  // first version of this check read that sentence as the call itself. A gate
+  // that fires on a file DOCUMENTING the rule it enforces trains you to ignore
+  // it. Whole-line only -- a trailing comment cannot hide a call, since the call
+  // would be on the same line ahead of it.
+  const src = readFileSync(mainPath, 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n')
+  const html = readFileSync(join(root, 'v2.html'), 'utf8')
+
+  if (!html.includes('/src/v2/main.js')) out.push('v2.html no longer loads /src/v2/main.js')
+
+  // editor.js: "the host must NOT also call markers.update()". The handles are
+  // scaled to a constant ANGULAR size from the camera, so a second call sizes
+  // them for whichever camera came last -- which on the frame an XR session
+  // starts is not the one being looked through.
+  if (/\bmarkers\.update\s*\(/.test(src)) {
+    out.push('src/v2/main.js calls markers.update() -- editor.update(dt, camera) owns that call, and two callers race on the handle scale')
+  }
+
+  // water-surfaces.js: the water shader recovers world position from
+  // modelMatrix, so any transform on water.group slides every wave off the
+  // world while the mesh stays put.
+  if (/water\.group\.(position|rotation|scale|matrix)/.test(src)) {
+    out.push('src/v2/main.js transforms water.group -- the water shader reads world position off modelMatrix and the waves would detach from the world')
+  }
+
+  // road-surfaces.js: without this the road is the only surface the night lift
+  // and the horizon shadow never reach, and it reads as the brightest thing on
+  // the hillside after sunset.
+  if (!/lighting\.patch\(\s*roads\.material,\s*\{\s*mode:\s*'vertex'/.test(src)) {
+    out.push("src/v2/main.js does not lighting.patch(roads.material, {mode: 'vertex'}) -- the road would stay lit after dark")
+  }
+
+  // sky-probe.js: the probe binds a render target and toggles renderer.xr off.
+  // After the render it captures into the frame that was just presented.
+  // LAST occurrence of each, not first: main.js renders once more from the
+  // pre-boot branch, and anchoring on the first render would compare the probe
+  // against a call that happens before the world exists.
+  const probeAt = src.lastIndexOf('probe.update(renderer')
+  const renderAt = src.lastIndexOf('renderer.render(')
+  if (probeAt < 0) out.push('src/v2/main.js never calls probe.update() -- the water would reflect a black sky')
+  else if (renderAt >= 0 && probeAt > renderAt) {
+    out.push('src/v2/main.js calls probe.update() after renderer.render() -- the probe binds its own target and must run first')
+  }
+  return out
+}
+
 function jsFilesUnder(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name)
@@ -143,7 +212,7 @@ if (statSync(V2, { throwIfNoEntry: false })) {
   }
 
   const agree = extentAgreement()
-  for (const line of agree.out) {
+  for (const line of [...agree.out, ...hostWiring()]) {
     console.log(` FAIL ${line}`)
     violations++
   }
@@ -189,7 +258,12 @@ for (const [file, title] of SECTIONS) {
     process.exit(1)
   }
   try {
-    await mod.run()
+    // A section signals failure by THROWING. It may also return its failure count, and that return value is checked too: check-v2-surfaces.mjs once returned the count WITHOUT throwing, which meant its FAIL lines printed and then this runner declared ALL SECTIONS PASSED over the top of them. A gate that can be silenced by a section's choice of error convention is not a gate, so both conventions are honoured here rather than trusting every section to pick the same one.
+    const failures = await mod.run()
+    if (typeof failures === 'number' && failures > 0) {
+      console.log(`\nv2: ${file} reported ${failures} failure(s) by return value without throwing\n`)
+      process.exit(1)
+    }
   } catch (e) {
     // The section already printed its own ok/FAIL lines; this is the summary.
     console.log(`\nv2: ${e.message}\n`)

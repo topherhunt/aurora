@@ -25,8 +25,14 @@ sources README crediting texturecan.com and polyhaven. Its LEAF atlases and the
 grass tuft inside grass.glb carry no attribution anywhere in the package, and
 they are photographic, so they did not originate with the project. Fine for a
 proof of concept; needs an answer before these reach a build anyone can play.
-The fallback if the answer is bad is to paint four leaf sprays procedurally --
-at 128x128 with an alpha cutout that is a tractable amount of work.
+
+DECISION ON RECORD (2026-08-24): use them, settle attribution later. Judged
+premature to design around, and the procedural leaf sprays written as the
+fallback were not convincing at 128x128 -- silhouette is the whole of a leaf
+card and a painted one does not have it. `tools/trees/gen-layers.mjs` now cuts
+the same EZ-Tree art for the procedural trees as well, so the exposure is wider
+than this file. If the answer comes back bad, both tools point at the same four
+atlases and re-cutting is a one-line change in each.
 """
 
 import argparse

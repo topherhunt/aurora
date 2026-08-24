@@ -29,7 +29,7 @@ import { mulberry32 } from '../sim/mathx.js'
 // ATTRIBUTES: two layouts, chosen by whether `frondLayers` is passed, because
 // BatchedMesh requires every geometry in a batch to agree on the attribute set.
 //   - omitted  -> { position, normal, uv }. One bound texture, which is what
-//     the previewer (fern.html) renders.
+//     the previewer (gen-fern.html) renders.
 //   - an array -> { position, normal, uvProj, texLayer }. The shared prop
 //     material's layout (src/material.js): one sampler2DArray, one material,
 //     one multi-draw call for every prop in the world.
@@ -79,7 +79,7 @@ export const FERN_DEFAULTS = {
 // Colour is deliberately NOT here. This module generates geometry; how a fern
 // is tinted or brightened is a property of the material it ends up in, and the
 // scan is dark enough (mean RGB 28,41,4 over its own coverage) that the
-// adjustment is a real one to make -- see the brightness control in fern.html.
+// adjustment is a real one to make -- see the brightness control in gen-fern.html.
 
 // The golden angle gives the most even radial spread for any frond count
 // without the regular spokes that an even division produces at low counts.
@@ -168,7 +168,7 @@ export function buildFern(options = {}) {
 
   // `frondLayers` decides the attribute layout, because the two are the same
   // decision. Omit it and you get { position, normal, uv }: the previewer's
-  // layout, one texture bound as material.map, which is what fern.html renders.
+  // layout, one texture bound as material.map, which is what gen-fern.html renders.
   // Pass it and you get { position, normal, uvProj, texLayer }: the shared
   // batch's layout, where `uv` is deliberately NOT the name (three's map path
   // assumes sampler2D and would fight us) and every geometry in the batch must

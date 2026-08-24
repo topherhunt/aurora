@@ -17,6 +17,15 @@ import { PathSet } from './paths.js'
 import { clamp01 } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'
 
+// The rect that means EVERYTHING: a document swap, a change to the global snow base, anything whose effect is not bounded by a box smaller than the world.
+//
+// Stated as a real rect and never as null, because null is read in opposite directions at the two ends of this channel. TerrainV2.setLayers takes null as "the whole document was replaced, rebuild every chunk"; Editor._flushDirty does `if (rect) this.onDirty(rect)` and drops it as "nothing to do". A full-world rect is unambiguous to both: the streamer intersects it with every chunk box and gets every chunk, and the editor sees a truthy rect and forwards it. So on this side of the boundary null has exactly one meaning -- nothing changed -- and _commit throws rather than let the other one through.
+//
+// A fresh object rather than a frozen singleton, because the value is handed to code that may keep it, and two callers sharing one rect is a bug waiting for the first one that clips it in place.
+function wholeWorld() {
+  return { minX: -WORLD_HALF, minZ: -WORLD_HALF, maxX: WORLD_HALF, maxZ: WORLD_HALF }
+}
+
 function unionRect(a, b) {
   if (a === null) return b
   if (b === null) return a
@@ -97,13 +106,23 @@ export class Layers {
 
   // --- dirty tracking -------------------------------------------------------
 
+  // The union of every region edited since the last call, and consumes it.
+  //
+  // null means NOTHING CHANGED. It never means "everything" -- that is wholeWorld(), see the comment on it. A caller that forwards this straight to a streamer should skip the call entirely on null rather than treat it as a full reset.
   takeDirtyRect() {
     const d = this._dirty
     this._dirty = null
     return d
   }
 
+  // Whole-document invalidation: what a caller that has swapped the document out from under a live streamer should call, and what setSnowBase uses.
+  markAllDirty() {
+    return this._commit(wholeWorld())
+  }
+
   _commit(rect) {
+    // An edit that reports no region is an invariant violation and not a shrug: whichever way the consumer at the far end reads a null, one of the two readings silently corrupts something -- either the streamer rebuilds the world for nothing, or it rebuilds nothing when the world changed.
+    if (rect === null) throw new Error('Layers._commit: a mutation must report a dirty rect; null is reserved for "nothing changed since the last takeDirtyRect"')
     this.epoch++
     this._dirty = unionRect(this._dirty, rect)
     return rect
@@ -114,7 +133,8 @@ export class Layers {
   // The rect handed on to the streamer is grown by two texels on every side: deltaAt is a bicubic tap over a 4x4 neighbourhood, so a vertex up to two texels outside the edited region still reads a texel inside it, and a chunk out there has genuinely changed.
   _commitSnow() {
     const rect = this.snow.takeDirty()
-    if (rect === null) return this._commit(null)
+    // An edit the sub-layer decided changed nothing. Do not bump the epoch and do not record a rect: an epoch bump makes every resident chunk stale, and the whole point of tracking rects is to not do that for an edit with no effect.
+    if (rect === null) return null
     this.snow.bakeRect(rect.minX, rect.minZ, rect.maxX, rect.maxZ)
     const pad = 2 * TEXEL
     return this._commit({ minX: rect.minX - pad, minZ: rect.minZ - pad, maxX: rect.maxX + pad, maxZ: rect.maxZ + pad })
@@ -147,9 +167,11 @@ export class Layers {
 
   setSnowBase(base) {
     if (typeof base !== 'number' || !Number.isFinite(base)) throw new Error(`Layers.setSnowBase: base must be a finite number, got ${base}`)
+    // Setting the base to the base it already has is a no-op, and a no-op must not invalidate the world. This is the case the drag handlers actually produce: a slider that fires on every pointer move sends the same value dozens of times between real changes.
+    if (base === this.snow.base) return null
     this.snow.base = base
-    // No rebake: base is added on top of the baked delta grid, so moving it changes every query without touching a texel. The whole world is dirty, though, and the rect is stated in world bounds rather than as an infinity so a consumer can intersect it with a chunk box without producing a NaN.
-    return this._commit({ minX: -WORLD_HALF, minZ: -WORLD_HALF, maxX: WORLD_HALF, maxZ: WORLD_HALF })
+    // No rebake: base is added on top of the baked delta grid, so moving it changes every query without touching a texel. Every chunk in the world is stale, though, which is exactly what wholeWorld() is for.
+    return this.markAllDirty()
   }
 
   // record may omit id; one is allocated and written back onto the returned lake.

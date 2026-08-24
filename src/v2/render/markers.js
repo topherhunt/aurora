@@ -103,7 +103,9 @@ export class Markers {
    *
    * A snow point is drawn at the elevation it authors, `snow.base + delta`, because a point in a 2D field has no y of its own and putting it on the ground would hide exactly the number it exists to set. Dragging one vertically therefore edits its delta directly, which is the reading the move gizmo wants anyway.
    *
-   * Snow point IDENTITY is its index in SnowField.points, holes included. SnowField.removePoint nulls a slot rather than splicing, precisely so a held selection does not silently repoint, so the hole is skipped for drawing while `i` keeps counting past it. Path control points are the opposite -- PathSet.removePoint splices -- so a spline handle's index is only valid until the next removal on that path, which is the editor's problem and not this file's.
+   * HANDLE IDENTITY IS THE RAW ARRAY INDEX, HOLES INCLUDED, and both layers now agree on that: SnowField.removePoint and PathSet.removePoint both TOMBSTONE the slot (`points[i] = null`, `pts[i] = null`) rather than splicing, precisely so a held selection does not silently repoint to its neighbour. So every loop here skips nulls for drawing while `i` keeps counting past them, and `records.push({ index: i })` publishes the index the editor addresses the point by. Compacting the counter instead would shift every handle above a hole by one, which is the exact bug the tombstones exist to prevent.
+   *
+   * The corollary, and the reason `pts.length` and `points.length` still appear as loop bounds: those lengths count tombstones, so they are the right thing to ITERATE and the wrong thing to report as a count. PathSet.pointsOf / handlesOf are the live-order accessors for anyone who wants the latter.
    */
   sync() {
     const snow = this.layers.snow
@@ -134,8 +136,10 @@ export class Markers {
       if (path.kind !== 'river' && path.kind !== 'road') throw new Error(`Markers.sync: path ${path.id} has kind ${path.kind}, expected river or road`)
       const c = path.kind === 'river' ? RIVER_COLOR : ROAD_COLOR
       for (let i = 0; i < path.pts.length; i++) {
-        const [x, y, z] = path.pts[i]
-        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) throw new Error(`Markers.sync: ${path.id} point ${i} is [${path.pts[i]}], expected finite [x, y, z, width]`)
+        const p = path.pts[i]
+        if (p === null) continue
+        const [x, y, z] = p
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) throw new Error(`Markers.sync: ${path.id} point ${i} is [${p}], expected finite [x, y, z, width]`)
         sp.positions.push(x, y, z)
         sp.colors.push(c.r, c.g, c.b)
         sp.records.push({ kind: 'spline', id: path.id, index: i })

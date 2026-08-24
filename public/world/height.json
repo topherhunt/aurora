@@ -1,8 +1,35 @@
 {
-  "world": 16384,
+  "world": 8192,
   "size": 1024,
-  "minY": -0.8159507796821154,
-  "maxY": 319.48550917974467,
+  "minY": 0,
+  "maxY": 300,
   "encoding": "rg16",
-  "source": "v1 procedural, seed 20260804"
+  "source": "reference/skyrim-height-map.jpg",
+  "sourceSize": [
+    1024,
+    873
+  ],
+  "sourceWidthMetres": 8192,
+  "metresPerTexel": 8.007820136852395,
+  "fit": {
+    "zCoverMetres": 6984,
+    "mirrorBandMetres": 604,
+    "seamZ": 3492,
+    "mode": "mirror",
+    "resample": "catmull-rom"
+  },
+  "deblock": {
+    "block": 8,
+    "cap": 1,
+    "kx": 1.5800352096557617,
+    "kz": 0.6069822311401367,
+    "ratioBefore": {
+      "x": 1.4037305041286183,
+      "z": 1.4651352923777186
+    },
+    "ratioAfter": {
+      "x": 1.0015256974720907,
+      "z": 1.0000001478696947
+    }
+  }
 }

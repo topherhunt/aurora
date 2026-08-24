@@ -1,6 +1,4 @@
-// Node-side gate for src/v2/terrain/quadtree-v2.js -- the LOD selector for the
-// deep tree v2 needs (DESIGN.md §18). Three-free on both sides, so this runs
-// headless and needs no browser, no GPU and no worker.
+// Node-side gate for src/v2/terrain/quadtree-v2.js -- the LOD selector for the deep tree v2 needs (DESIGN.md §18). Three-free on both sides, so this runs headless and needs no browser, no GPU and no worker.
 //
 //   node scripts/check-v2-quadtree.mjs
 //
@@ -10,19 +8,9 @@
 //
 //     split while  cell > range * tan(triDeg)
 //
-// and NOTHING in it reads the height field. `range` reads a node's vertical
-// bounds, which the mesher reports and selection merely consumes; the field
-// could be a photograph of the Alps or a plane and the descent would be the same
-// shape. So this gate supplies its own analytic stand-in for those bounds -- a
-// couple of sines, ~600 m of relief -- and every claim below is a claim about
-// the selector, not about the terrain. When src/v2/height/field.js lands, the
-// thing to re-measure with the real field is the DRAWN triangle counts (which
-// depend on where the ground is relative to the eye) and the angular-inversion
-// percentage; the slot-pool ladder and the tiling invariants will not move.
+// and NOTHING in it reads the height field. `range` reads a node's vertical bounds, which the mesher reports and selection merely consumes; the field could be a photograph of the Alps or a plane and the descent would be the same shape. So this gate supplies its own analytic stand-in for those bounds -- a couple of sines, ~600 m of relief -- and every claim below is a claim about the selector, not about the terrain. When src/v2/height/field.js lands, the thing to re-measure with the real field is the DRAWN triangle counts (which depend on where the ground is relative to the eye) and the angular-inversion percentage; the slot-pool ladder and the tiling invariants will not move.
 //
-// Sweep construction, the eye cone and the counting are deliberately identical
-// to scripts/check-sim.mjs section 5 and scripts/probe-lod.mjs section 3, so the
-// v2 numbers can be read directly against v1's.
+// Sweep construction, the eye cone and the counting are deliberately identical to scripts/check-sim.mjs section 5 and scripts/probe-lod.mjs section 3, so the v2 numbers can be read directly against v1's.
 
 import {
   LOD,
@@ -53,18 +41,9 @@ const TRIS_PER_CHUNK = CHUNK_INDICES / 3
 
 // --- the analytic stand-in --------------------------------------------------
 //
-// Three sines, +-320 m about zero so ~640 m of relief across the box, continuous
-// everywhere and cheap enough that a 2400-selection sweep can afford to bound
-// every node it touches. It is NOT v2's field and does not pretend to be: it
-// exists to give nodeRange() a plausible minY/maxY so the 3D range term is
-// exercised rather than falling back to the horizontal distance. See the header
-// for why that is sufficient.
+// Three sines, +-320 m about zero so ~640 m of relief across the box, continuous everywhere and cheap enough that a 2400-selection sweep can afford to bound every node it touches. It is NOT v2's field and does not pretend to be: it exists to give nodeRange() a plausible minY/maxY so the 3D range term is exercised rather than falling back to the horizontal distance. See the header for why that is sufficient.
 //
-// The two long wavelengths are written as fractions of the world box so this
-// stays three or four ridges across the map if WORLD_SIZE moves again -- it
-// already moved twice mid-write, 16384 to 4096 to 8192. The short one is absolute:
-// it is standing in for metre-scale roughness, which does not care how big the
-// world is.
+// The two long wavelengths are written as fractions of the world box so this stays three or four ridges across the map if WORLD_SIZE moves again -- it already moved twice mid-write, 16384 to 4096 to 8192. The short one is absolute: it is standing in for metre-scale roughness, which does not care how big the world is.
 const L1 = WORLD_SIZE / 2.8
 const L2 = WORLD_SIZE / 15
 const groundAt = (x, z) =>
@@ -72,10 +51,7 @@ const groundAt = (x, z) =>
   100 * Math.sin(x / L2 + z / (L2 * 1.31)) +
   20 * Math.sin(x / 33 + z / 29)
 
-// A node's vertical extent, sampled on a 3x3 over its box. Under-estimates the
-// true extent slightly, which makes the node look CLOSER than it is and so
-// over-refines: the conservative direction, the same one selection takes when
-// bounds are missing entirely.
+// A node's vertical extent, sampled on a 3x3 over its box. Under-estimates the true extent slightly, which makes the node look CLOSER than it is and so over-refines: the conservative direction, the same one selection takes when bounds are missing entirely.
 function nodeBounds(key) {
   const { depth, ix, iz } = unpackKey(key)
   const size = WORLD_SIZE / (1 << depth)
@@ -95,13 +71,7 @@ function nodeBounds(key) {
 
 // Lazily-populated bounds table, shaped like the Map terrain-v2.js will hold.
 //
-// This is the SETTLED answer in one pass. scripts/lod-sim.mjs iterates
-// select-mesh-select until the selection stops moving, because the real mesher
-// only learns a node's bounds by building it. A node's extent is a property of
-// the world and not of the camera, so the fixed point that iteration converges
-// to is exactly "every node tested knows its own bounds" -- which is what a lazy
-// provider gives directly. Same answer, one pass, and shared across the whole
-// sweep because the world does not move.
+// This is the SETTLED answer in one pass. scripts/lod-sim.mjs iterates select-mesh-select until the selection stops moving, because the real mesher only learns a node's bounds by building it. A node's extent is a property of the world and not of the camera, so the fixed point that iteration converges to is exactly "every node tested knows its own bounds" -- which is what a lazy provider gives directly. Same answer, one pass, and shared across the whole sweep because the world does not move.
 const boundsCache = new Map()
 const info = {
   get(key) {
@@ -116,19 +86,9 @@ const info = {
 
 // --- the sweep --------------------------------------------------------------
 //
-// 606 positions x 4 headings = 2424 selections, half of them airborne, from the
-// same deterministic LCG and the same construction check-sim.mjs section 5 uses.
-// Airborne is not a detail: the range test is 3D, so a camera 400 m up is
-// genuinely further from the ground below it than its map position says, and
-// that is where a range rule falls apart if it is going to.
+// 606 positions x 4 headings = 2424 selections, half of them airborne, from the same deterministic LCG and the same construction check-sim.mjs section 5 uses. Airborne is not a detail: the range test is 3D, so a camera 400 m up is genuinely further from the ground below it than its map position says, and that is where a range rule falls apart if it is going to.
 //
-// Positions are stated as FRACTIONS of WORLD_HALF rather than as metres, because
-// the metres form of this sweep quietly stopped testing anything the first time
-// the world shrank: v1's hard-coded +-8000 m puts every camera outside a smaller
-// box, and a camera outside the box selects one coarse leaf and passes every
-// count it is asked about. That is design/lessons.md's first entry -- an
-// instrument still reporting a number after the thing it measured moved -- and
-// the box has since moved twice more, which the fractions absorbed silently.
+// Positions are stated as FRACTIONS of WORLD_HALF rather than as metres, because the metres form of this sweep quietly stopped testing anything the first time the world shrank: v1's hard-coded +-8000 m puts every camera outside a smaller box, and a camera outside the box selects one coarse leaf and passes every count it is asked about. That is design/lessons.md's first entry -- an instrument still reporting a number after the thing it measured moved -- and the box has since moved twice more, which the fractions absorbed silently.
 const CAMS = []
 {
   const f = [
@@ -145,9 +105,7 @@ const CAMS = []
   for (let i = 0; i < f.length; i++) {
     const x = f[i][0] * WORLD_HALF
     const z = f[i][1] * WORLD_HALF
-    // Half on foot, half airborne. The airborne band is absolute metres because
-    // the stand-in's 640 m of relief is absolute too, so 150-534 m AGL is
-    // "flying over the ridges" for either world size.
+    // Half on foot, half airborne. The airborne band is absolute metres because the stand-in's 640 m of relief is absolute too, so 150-534 m AGL is "flying over the ridges" for either world size.
     const agl = i % 2 === 0 ? 1.65 : 150 + (i % 7) * 64
     const y = groundAt(x, z) + agl
     for (let q = 0; q < 4; q++) CAMS.push({ x, y, z, yaw: (q * Math.PI) / 2, agl })
@@ -159,12 +117,7 @@ const pct = (a, p) => {
   return s[Math.min(s.length - 1, Math.floor(p * s.length))]
 }
 
-// Worst case over the whole sweep at one cap. `worst` is the SLOT question --
-// the selection is exempt from eviction in terrain-v2.js, so the maximum has to
-// fit, not the mean. `drawn` is the BUDGET question and is counted against the
-// 110 deg eye cone, not the 180 deg streaming cone: BatchedMesh culls the rest
-// per instance, and conflating the two overstates terrain's share of the frame
-// by about 70%.
+// Worst case over the whole sweep at one cap. `worst` is the SLOT question -- the selection is exempt from eviction in terrain-v2.js, so the maximum has to fit, not the mean. `drawn` is the BUDGET question and is counted against the 110 deg eye cone, not the 180 deg streaming cone: BatchedMesh culls the rest per instance, and conflating the two overstates terrain's share of the frame by about 70%.
 function worstAt(triDeg, opts = {}) {
   let worst = 0
   let drawn = 0
@@ -172,9 +125,7 @@ function worstAt(triDeg, opts = {}) {
   const times = []
   for (const cam of CAMS) {
     const o = { triDeg, info, ...opts }
-    // Warm the bounds cache first, then time the second call. The timed call is
-    // then measuring selection against a populated Map, which is what the
-    // renderer does every 83 ms -- not the cost of this file's stand-in field.
+    // Warm the bounds cache first, then time the second call. The timed call is then measuring selection against a populated Map, which is what the renderer does every 83 ms -- not the cost of this file's stand-in field.
     const warm = selectNodes(cam, o)
     const t0 = performance.now()
     const sel = selectNodes(cam, o)
@@ -207,11 +158,7 @@ export async function run() {
 
   // --- 1. key packing -------------------------------------------------------
   //
-  // The packing is the one change here that could corrupt the slot pool rather
-  // than merely look wrong: two nodes colliding on a key means one slot with two
-  // owners. So it is proved rather than spot-checked -- exhaustive round-trip
-  // where exhaustive is affordable, plus the band-disjointness that turns the
-  // sampled part into an argument instead of a hope.
+  // The packing is the one change here that could corrupt the slot pool rather than merely look wrong: two nodes colliding on a key means one slot with two owners. So it is proved rather than spot-checked -- exhaustive round-trip where exhaustive is affordable, plus the band-disjointness that turns the sampled part into an argument instead of a hope.
 
   console.log('key packing')
   {
@@ -219,11 +166,7 @@ export async function run() {
     check(typeof k === 'number', 'nodeKey returns a Number, not a string', `${typeof k} ${k}`)
     check(Number.isInteger(k) && Number.isSafeInteger(k), 'keys are exact safe integers', `${k}`)
 
-    // `seen` maps key -> the triple that produced it. A collision is the same
-    // key from a DIFFERENT triple; the same triple twice is just the sample
-    // repeating itself and must not be counted, which is a trap the first
-    // version of this check fell straight into (23395 "collisions", every one of
-    // them a duplicate draw from the random sampler).
+    // `seen` maps key -> the triple that produced it. A collision is the same key from a DIFFERENT triple; the same triple twice is just the sample repeating itself and must not be counted, which is a trap the first version of this check fell straight into (23395 "collisions", every one of them a duplicate draw from the random sampler).
     const seen = new Map()
     let bad = 0
     let collide = 0
@@ -238,8 +181,7 @@ export async function run() {
       n++
     }
 
-    // Exhaustive over depths 0..8: 87381 triples, every one round-tripped and
-    // every one checked for collision against every other.
+    // Exhaustive over depths 0..8: 87381 triples, every one round-tripped and every one checked for collision against every other.
     for (let d = 0; d <= 8; d++) {
       const span = 1 << d
       for (let iz = 0; iz < span; iz++) for (let ix = 0; ix < span; ix++) record(d, ix, iz)
@@ -247,9 +189,7 @@ export async function run() {
     check(bad === 0 && n === 87381, `round-trip exhaustive over depths 0..8`, `${n} triples, ${bad} bad`)
     check(collide === 0, 'no collisions among all depth 0..8 keys', `${collide}`)
 
-    // The deep levels are tens of millions of triples; sample the corners, the edges and a
-    // large deterministic interior sample instead. The completeness argument for
-    // what the sample cannot reach is the band-disjointness check below.
+    // The deep levels are tens of millions of triples; sample the corners, the edges and a large deterministic interior sample instead. The completeness argument for what the sample cannot reach is the band-disjointness check below.
     let rs = 777
     const rnd = () => ((rs = (rs * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)
     bad = 0
@@ -266,10 +206,7 @@ export async function run() {
     check(bad === 0, `round-trip over depths 9..${MAX_DEPTH} (corners, edges, sampled interior)`, `${n - n0} triples, ${bad} bad`)
     check(collide === 0, `no collisions across the sampled depth 9..${MAX_DEPTH} keys`, `${collide} of ${n - n0}`)
 
-    // The completeness argument the sample cannot give: at depth d both indices
-    // are < 2**d <= 2**14, so iz * 2**14 + ix < 2**28 and depth bands cannot
-    // reach into each other. Within a band ix < 2**14 makes iz*2**14+ix
-    // injective. Together those two facts are the whole proof.
+    // The completeness argument the sample cannot give: at depth d both indices are < 2**d <= 2**14, so iz * 2**14 + ix < 2**28 and depth bands cannot reach into each other. Within a band ix < 2**14 makes iz*2**14+ix injective. Together those two facts are the whole proof.
     let overlap = 0
     for (let d = 0; d <= MAX_DEPTH; d++) {
       const span = 1 << d
@@ -292,8 +229,7 @@ export async function run() {
     check(pbad === 0, 'parentKey(d,ix,iz) === nodeKey(d-1, ix>>1, iz>>1)', `${pbad} bad of 7000`)
     check(parentKey(0, 0, 0) === null, 'parentKey is null at the root', `${parentKey(0, 0, 0)}`)
 
-    // The bounds check must actually throw. A key that silently aliases is the
-    // failure this whole section exists to make impossible.
+    // The bounds check must actually throw. A key that silently aliases is the failure this whole section exists to make impossible.
     const throws = (fn) => {
       try {
         fn()
@@ -317,11 +253,7 @@ export async function run() {
 
   // --- 2. the selection is a quadtree -------------------------------------
   //
-  // "A set of leaves" is only meaningful if it is the leaf set of a real
-  // quadtree: no node is an ancestor of another (no overlaps) and the areas add
-  // up to the world (no holes). Either failure is a visible hole or a z-fighting
-  // double-draw, and neither is visible in a leaf COUNT, which is all the v1
-  // gate checked.
+  // "A set of leaves" is only meaningful if it is the leaf set of a real quadtree: no node is an ancestor of another (no overlaps) and the areas add up to the world (no holes). Either failure is a visible hole or a z-fighting double-draw, and neither is visible in a leaf COUNT, which is all the v1 gate checked.
 
   console.log('\nselection is a valid quadtree leaf set')
   {
@@ -375,17 +307,14 @@ export async function run() {
     )
     check(posBad === 0, 'each node reports the x/z/size its (depth,ix,iz) implies', `${posBad}`)
 
-    // Determinism. Selection is pure -- no cache, no history, no RNG -- and the
-    // streamer relies on that: a node that changed its mind between frames would
-    // thrash a slot every time it did.
+    // Determinism. Selection is pure -- no cache, no history, no RNG -- and the streamer relies on that: a node that changed its mind between frames would thrash a slot every time it did.
     const a = selectNodes(probes[1], { info })
     const b = selectNodes(probes[1], { info })
     const same =
       a.length === b.length && a.every((n, i) => n.key === b[i].key && n.x === b[i].x && n.size === b[i].size)
     check(same, 'same camera gives byte-identical selection', `${a.length} leaves`)
 
-    // nodeRange is the thing the whole rule is written in terms of, so its two
-    // documented behaviours get an assertion each rather than being trusted.
+    // nodeRange is the thing the whole rule is written in terms of, so its two documented behaviours get an assertion each rather than being trusted.
     const bare = nodeRange({ x: 0, z: 0 }, 100, 0, 50, null)
     const with3d = nodeRange({ x: 0, y: 0, z: 0 }, 100, 0, 50, { minY: 300, maxY: 400 })
     check(bare === 100, 'nodeRange falls back to horizontal distance without bounds', `${bare}`)
@@ -398,13 +327,7 @@ export async function run() {
 
   // --- 3. the MAX_TRI_DEG ceiling -----------------------------------------
   //
-  // Range is floored at a node's own half-size, so for ANY node containing the
-  // camera cell/range = (size/CHUNK_RES)/(size/2) = 2/CHUNK_RES = 0.125,
-  // independent of size. atan(0.125) = 7.125 deg is therefore not a tuning
-  // threshold but a cliff: one side of it every such node splits, the other side
-  // none of them do and the entire world draws as one chunk with WORLD_SIZE/16
-  // triangles. v1 asserts this at MAX_DEPTH 10; the depth changed, so it is
-  // MEASURED here rather than inherited.
+  // Range is floored at a node's own half-size, so for ANY node containing the camera cell/range = (size/CHUNK_RES)/(size/2) = 2/CHUNK_RES = 0.125, independent of size. atan(0.125) = 7.125 deg is therefore not a tuning threshold but a cliff: one side of it every such node splits, the other side none of them do and the entire world draws as one chunk with WORLD_SIZE/16 triangles. v1 asserts this at MAX_DEPTH 10; the depth changed, so it is MEASURED here rather than inherited.
 
   console.log('\nMAX_TRI_DEG ceiling')
   {
@@ -426,13 +349,9 @@ export async function run() {
 
   // --- 4. the MIN_TRI_DEG floor, and the slot pool ------------------------
   //
-  // §18 section "slot pool". The current selection is exempt from eviction in
-  // terrain-v2.js, so the WORST case over the sweep -- not the mean -- plus the
-  // PINNED_CHUNKS base layer has to fit SLOT_COUNT, and overflow THROWS.
+  // §18 section "slot pool". The current selection is exempt from eviction in terrain-v2.js, so the WORST case over the sweep -- not the mean -- plus the PINNED_CHUNKS base layer has to fit SLOT_COUNT, and overflow THROWS.
   //
-  // Asserted in BOTH directions. "1.5 fits" alone would pass for any floor at or
-  // above 1.5, which makes the constant arbitrary; "and 1.4 does not" is what
-  // makes it the floor.
+  // Asserted in BOTH directions. "1.5 fits" alone would pass for any floor at or above 1.5, which makes the constant arbitrary; "and 1.4 does not" is what makes it the floor.
 
   console.log('\nMIN_TRI_DEG budget (the slot pool floor)')
   console.log(
@@ -440,14 +359,7 @@ export async function run() {
       `pool ${SLOT_COUNT} + ${PINNED_CHUNKS} pinned, terrain's third of the ${TRI_BUDGET / 1000}k budget is ` +
       `${(TRI_BUDGET / 3000).toFixed(0)}k`
   )
-  // The "unbounded" column runs the identical sweep with info omitted, so range
-  // degrades to the horizontal distance. hypot(dx,dy,dz) is never less than
-  // hypot(dx,dz), so unbounded range is a lower bound on range and therefore an
-  // UPPER bound on refinement -- for every height field, not just this file's
-  // stand-in. That is what lets a floor be set before v2's field exists: a cap
-  // that fits the unbounded column cannot be broken by whatever the field turns
-  // out to be. Drawn triangles inherit the same bound, because refining a node
-  // can only add leaves to the eye cone, never remove them.
+  // The "unbounded" column runs the identical sweep with info omitted, so range degrades to the horizontal distance. hypot(dx,dy,dz) is never less than hypot(dx,dz), so unbounded range is a lower bound on range and therefore an UPPER bound on refinement -- for every height field, not just this file's stand-in. That is what lets a floor be set before v2's field exists: a cap that fits the unbounded column cannot be broken by whatever the field turns out to be. Drawn triangles inherit the same bound, because refining a node can only add leaves to the eye cone, never remove them.
   console.log('        "unbounded" = same sweep with no vertical bounds: a field-INDEPENDENT upper bound.\n')
   console.log(
     `        ${'cap'.padStart(5)} | ${'bounded'.padStart(7)} ${'+pin'.padStart(5)} | ${'unbnd'.padStart(6)} ${'+pin'.padStart(5)} | ` +
@@ -476,12 +388,7 @@ export async function run() {
       `the pool covers the finest reachable setting (${MIN_TRI_DEG} deg) for ANY height field`,
       `unbounded ${fits.unbounded} + ${PINNED_CHUNKS} vs ${SLOT_COUNT}  [bounded worst at ${fits.at}]`
     )
-    // Tested on the SAME column the floor is set against. Using the bounded
-    // column here would be picking whichever column happens to make the claim
-    // pass: at 1.0 the bounded worst is 1003, which plus 21 pinned is exactly
-    // 1024 -- it "fits" by the strict inequality with zero LRU headroom, for one
-    // particular stand-in field. The unbounded column is the one that holds for
-    // any field, and there 1.0 does not fit.
+    // Tested on the SAME column the floor is set against. Using the bounded column here would be picking whichever column happens to make the claim pass: at 1.0 the bounded worst is 1003, which plus 21 pinned is exactly 1024 -- it "fits" by the strict inequality with zero LRU headroom, for one particular stand-in field. The unbounded column is the one that holds for any field, and there 1.0 does not fit.
     check(
       finer.unbounded + PINNED_CHUNKS > SLOT_COUNT,
       `and does NOT cover one step finer (${(MIN_TRI_DEG - 0.1).toFixed(1)} deg), so the floor is tight`,
@@ -494,15 +401,13 @@ export async function run() {
       `the shipped default (${LOD.triDeg} deg) fits with headroom for the LRU`,
       `${SLOT_COUNT - dflt.unbounded - PINNED_CHUNKS} slots spare at the upper bound`
     )
-    // §0 holds terrain to a third of the frame. Asserted on the field-independent
-    // column, so this claim survives the real height field landing.
+    // §0 holds terrain to a third of the frame. Asserted on the field-independent column, so this claim survives the real height field landing.
     check(
       dflt.uTris < TRI_BUDGET / 3,
       `worst-case DRAWN terrain at ${LOD.triDeg} deg leaves the budget to props`,
       `${(dflt.uTris / 1000).toFixed(0)}k of ${(TRI_BUDGET / 3000).toFixed(0)}k`
     )
-    // Printed rather than asserted, because "it fits" and "it fits comfortably"
-    // are different claims and only the first one is true here.
+    // Printed rather than asserted, because "it fits" and "it fits comfortably" are different claims and only the first one is true here.
     console.log(
       `\n        NOTE  triDeg ${LOD.triDeg} draws ${(dflt.tris / 1000).toFixed(0)}k, at most ${(dflt.uTris / 1000).toFixed(0)}k = ` +
         `${((dflt.uTris / (TRI_BUDGET / 3)) * 100).toFixed(0)}% of terrain's §0 third. It fits with no margin worth ` +
@@ -510,9 +415,7 @@ export async function run() {
         `${((ladder.get(4.0).uTris / (TRI_BUDGET / 3)) * 100).toFixed(0)}%) or coarser.`
     )
 
-    // The periphery grading. Priced at BOTH ends of the knob, because how much
-    // it buys is a function of the cap, and at the default it is headroom while
-    // at the floor it is the difference between fitting and throwing.
+    // The periphery grading. Priced at BOTH ends of the knob, because how much it buys is a function of the cap, and at the default it is headroom while at the floor it is the difference between fitting and throwing.
     console.log('')
     let gradingLoadBearing = false
     for (const cap of [LOD.triDeg, MIN_TRI_DEG]) {
@@ -531,8 +434,7 @@ export async function run() {
       `without it the floor would have to move coarser`
     )
 
-    // What the four extra levels actually cost. This is the measurement
-    // SLOT_COUNT 1024 rests on, and config.js states it in prose.
+    // What the four extra levels actually cost. This is the measurement SLOT_COUNT 1024 rests on, and config.js states it in prose.
     const byDepth = [6, 8, 10, MAX_DEPTH - 1, MAX_DEPTH].map((d) => `${d} -> ${worstAt(MIN_TRI_DEG, { maxDepth: d }).worst}`)
     console.log(`\n        worst selection at ${MIN_TRI_DEG} deg by MAX_DEPTH:  ${byDepth.join('   ')}   leaves`)
     const shallow = worstAt(MIN_TRI_DEG, { maxDepth: MAX_DEPTH - 4 }).worst
@@ -545,10 +447,7 @@ export async function run() {
 
   // --- 5. does it actually reach 10 cm? -----------------------------------
   //
-  // The headline claim of §18. MAX_DEPTH is a CAP, not a target -- the
-  // angular rule decides what is reached -- so "the cap allows 6.25 cm cells" is
-  // not the same statement as "standing on the ground you get them", and only
-  // the second one is the feature.
+  // The headline claim of §18. MAX_DEPTH is a CAP, not a target -- the angular rule decides what is reached -- so "the cap allows 6.25 cm cells" is not the same statement as "standing on the ground you get them", and only the second one is the feature.
 
   console.log('\nreaches 10 cm underfoot')
   {
@@ -587,10 +486,7 @@ export async function run() {
       'at eye height on the ground the finest cell is <= 12.5 cm',
       `worst of the five spots ${worstCell.toFixed(4)}m at ${worstAtPos}`
     )
-    // The cap has to be the binding constraint down there, otherwise raising it
-    // was pointless. At triDeg 3.0 and 1.65 m of eye height the rule wants
-    // 1.65 * tan(3) = 8.6 cm, which is between depth 13 (12.5 cm) and 14
-    // (6.25 cm), so it lands on 14 and stops because it is not allowed lower.
+    // The cap has to be the binding constraint down there, otherwise raising it was pointless. At triDeg 3.0 and 1.65 m of eye height the rule wants 1.65 * tan(3) = 8.6 cm, which is between depth 13 (12.5 cm) and 14 (6.25 cm), so it lands on 14 and stops because it is not allowed lower.
     const want = 1.65 * Math.tan((LOD.triDeg * Math.PI) / 180)
     check(
       want < 0.125 && want > WORLD_SIZE / 2 ** MAX_DEPTH / CHUNK_RES,
@@ -601,43 +497,19 @@ export async function run() {
 
   // --- 6. angular inversions ----------------------------------------------
   //
-  // v1's reported defect, stated as a number and reproduced verbatim from
-  // probe-lod.mjs section 3: how often is nearer ground drawn at a COARSER
-  // angular resolution than ground at least 1.5x further away? "Angular" is
-  // load-bearing -- a nearer leaf being physically bigger is what LOD IS; a
-  // nearer leaf looking blockier is the seam the complaint was about.
+  // v1's reported defect, stated as a number and reproduced verbatim from probe-lod.mjs section 3: how often is nearer ground drawn at a COARSER angular resolution than ground at least 1.5x further away? "Angular" is load-bearing -- a nearer leaf being physically bigger is what LOD IS; a nearer leaf looking blockier is the seam the complaint was about.
   //
-  // THE OBVIOUS ASSERTION IS THE WRONG ONE, and finding that out is most of what
-  // this section is for. quadtree.js quotes 12.1% for v1's rule, so "v2 must be
-  // at or under 12.1%" looks like the check to write. It is not, because this
-  // metric is a function of three things and depth is the only one the assertion
-  // would be trying to hold:
+  // THE OBVIOUS ASSERTION IS THE WRONG ONE, and finding that out is most of what this section is for. quadtree.js quotes 12.1% for v1's rule, so "v2 must be at or under 12.1%" looks like the check to write. It is not, because this metric is a function of three things and depth is the only one the assertion would be trying to hold:
   //
-  //   THE CAP. Measured on v1's own rule, field and camera set, varying nothing
-  //   but the cap: 1.2 -> 9.57%, 2.0 -> 12.61%, 3.0 -> 15.57%, 5.72 -> 22.99%.
-  //   The rate rises with the cap because a coarser cap admits a wider band
-  //   between a leaf that just split and one that just failed to, and this
-  //   metric flags anything past 1.5x. Comparing v2 at 3.0 against a number
-  //   taken at 1.2 measures the knob, not the tree.
+  //   THE CAP. Measured on v1's own rule, field and camera set, varying nothing but the cap: 1.2 -> 9.57%, 2.0 -> 12.61%, 3.0 -> 15.57%, 5.72 -> 22.99%. The rate rises with the cap because a coarser cap admits a wider band between a leaf that just split and one that just failed to, and this metric flags anything past 1.5x. Comparing v2 at 3.0 against a number taken at 1.2 measures the knob, not the tree.
   //
-  //   THE FIELD. The 12.1% in quadtree.js does not reproduce today: v1's rule on
-  //   v1's current terrain at cap 1.2 measures 9.57%, and at its shipped 5.72
-  //   probe-lod.mjs prints 24.41%. The terrain moved under the constant. That is
-  //   design/lessons.md's first entry happening again, and it is why the
-  //   comparison below is re-measured rather than quoted.
+  //   THE FIELD. The 12.1% in quadtree.js does not reproduce today: v1's rule on v1's current terrain at cap 1.2 measures 9.57%, and at its shipped 5.72 probe-lod.mjs prints 24.41%. The terrain moved under the constant. That is design/lessons.md's first entry happening again, and it is why the comparison below is re-measured rather than quoted.
   //
   //   THE SWEEP. v1's figure is 60 cameras; this is 2424.
   //
-  // So the claim actually worth gating is the controlled one -- SAME field, SAME
-  // sweep, SAME metric, SAME cap, varying ONLY MAX_DEPTH -- because "does going
-  // four levels deeper make the seams worse" is the question a deeper tree raises and
-  // the only one any of this can answer. It does not: deepening is neutral to
-  // mildly favourable, which makes sense, since the extra levels land on ground
-  // near the camera that is already the finest thing on screen.
+  // So the claim actually worth gating is the controlled one -- SAME field, SAME sweep, SAME metric, SAME cap, varying ONLY MAX_DEPTH -- because "does going four levels deeper make the seams worse" is the question a deeper tree raises and the only one any of this can answer. It does not: deepening is neutral to mildly favourable, which makes sense, since the extra levels land on ground near the camera that is already the finest thing on screen.
   //
-  // The absolute number is reported alongside and held under a stated ceiling,
-  // so a regression that made the default behave like a much coarser cap would
-  // still be caught.
+  // The absolute number is reported alongside and held under a stated ceiling, so a regression that made the default behave like a much coarser cap would still be caught.
 
   console.log('\nangular inversions (nearer ground blockier than ground 1.5x further out)')
   {
@@ -651,10 +523,7 @@ export async function run() {
         for (const n of sel) {
           if (!inCone(cam, n.x, n.z, n.size, EYE_HALF_ANGLE)) continue
           const r = Math.max(nodeRange(cam, n.x, n.z, n.size, info.get(n.key)), 1)
-          // Leaves closer than 50 m are dropped. Not to flatter the number: the
-          // leaf she is STANDING IN has a range of ~1 m, so it subtends tens of
-          // degrees by arithmetic alone and swamps every comparison it appears
-          // in -- and it is guaranteed to be at full depth.
+          // Leaves closer than 50 m are dropped. Not to flatter the number: the leaf she is STANDING IN has a range of ~1 m, so it subtends tens of degrees by arithmetic alone and swamps every comparison it appears in -- and it is guaranteed to be at full depth.
           if (r < 50) continue
           v.push({ n, r, triDeg: ((n.size / CHUNK_RES) / r) * DEG })
         }
@@ -708,10 +577,7 @@ export async function run() {
           `   -- v1's pre-fix worst was 20.8x`
       )
     }
-    // 25% is where this rule sits at a 5.72 cap (27.09% measured), so the
-    // ceiling is "the default must not start behaving like the coarsest setting
-    // anyone would ship". It is not a quality target; the quality target is the
-    // CAP, which is bounded by construction.
+    // 25% is where this rule sits at a 5.72 cap (27.09% measured), so the ceiling is "the default must not start behaving like the coarsest setting anyone would ship". It is not a quality target; the quality target is the CAP, which is bounded by construction.
     check(here.rate < CEIL, `and under the stated ${CEIL}% ceiling`, `${here.rate.toFixed(2)}%`)
     console.log('        The residual does not go to zero for a structural reason: a node can only halve, so')
     console.log('        two leaves either side of the quantisation boundary read as a 2x "inversion" while')
@@ -720,18 +586,9 @@ export async function run() {
 
   // --- 7. selection time ---------------------------------------------------
   //
-  // Depth 14 recurses 14 levels four ways. That was the one shape question worth
-  // asking about carrying v1's recursive descent forward, and it is answered by
-  // measurement rather than by converting it to an explicit stack on a hunch --
-  // design/lessons.md is largely about the second thing.
+  // Depth 14 recurses 14 levels four ways. That was the one shape question worth asking about carrying v1's recursive descent forward, and it is answered by measurement rather than by converting it to an explicit stack on a hunch -- design/lessons.md is largely about the second thing.
   //
-  // The ceiling: selection runs at 12 Hz on the render thread, so one selection
-  // has an 83 ms window and shares a 16 ms frame with everything else. 1 ms is
-  // the stated limit -- 6% of one frame, once every five frames. The measured
-  // p99 at MIN_TRI_DEG, the finest the knob reaches, is ~0.18 ms, so the ceiling
-  // is roughly 5x the measurement: loose enough to survive a slower machine or a
-  // v8 version bump, tight enough that an algorithmic regression cannot hide
-  // under it. Reintroducing v1's string keys alone would cost 1.6x.
+  // The ceiling: selection runs at 12 Hz on the render thread, so one selection has an 83 ms window and shares a 16 ms frame with everything else. 1 ms is the stated limit -- 6% of one frame, once every five frames. The measured p99 at MIN_TRI_DEG, the finest the knob reaches, is ~0.18 ms, so the ceiling is roughly 5x the measurement: loose enough to survive a slower machine or a v8 version bump, tight enough that an algorithmic regression cannot hide under it. Reintroducing v1's string keys alone would cost 1.6x.
 
   console.log('\nselection time')
   {

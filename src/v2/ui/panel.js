@@ -130,6 +130,7 @@ export class Panel {
 
     this.open = true
     this._epoch = -1
+    this._selSig = ''
     this._listSig = ''
     this._rows = [] // {row, input, valueEl}
     this._scrubbing = false
@@ -161,6 +162,20 @@ export class Panel {
     if (!this.open) return
     this._paintStatus(s)
 
+    // A click in the VIEWPORT changes the selection without changing the
+    // document, so neither the host nor `epoch` necessarily says so. Rather
+    // than make main.js remember to call syncSelection() after every forwarded
+    // pointer event -- one forgotten call and the context fields silently
+    // describe the previously selected object -- the selection is compared here
+    // at the same 4 Hz. syncSelection() stays public for the paths that want
+    // the panel correct before the next tick.
+    const sel = this.editor.selection
+    const selSig = sel === null ? '-' : `${sel.kind}:${sel.id}:${sel.index}`
+    if (selSig !== this._selSig) {
+      this._selSig = selSig
+      this.syncSelection()
+    }
+
     // Everything below is document-shaped, so it only redraws when the document
     // moved. `epoch` is bumped by every mutation (§18), which makes it exactly
     // the right cache key -- including for undo, which is otherwise invisible.
@@ -174,6 +189,8 @@ export class Panel {
 
   /** Called when `editor.selection` changes. Rebuilds the context fields. */
   syncSelection() {
+    const sel = this.editor.selection
+    this._selSig = sel === null ? '-' : `${sel.kind}:${sel.id}:${sel.index}`
     this._buildFields()
     this._paintTools()
     this._paintLayers()
@@ -453,7 +470,7 @@ export class Panel {
     const items = this.editor.layerList()
     const sel = this.editor.selection
     const sig =
-      items.map((it) => `${it.kind}:${it.id}:${it.summary}`).join('|') +
+      items.map((it) => `${it.kind}:${it.label}:${it.summary}`).join('|') +
       '#' + (sel ? `${sel.kind}:${sel.id}:${sel.index}` : '-') +
       '#' + [...this.editor.hidden].sort().join(',')
     if (sig === this._listSig) return
@@ -485,13 +502,15 @@ export class Panel {
     if (sel && sel.kind === it.kind && sel.id === it.id && sel.index === it.index) row.classList.add('p-sel')
     row.onclick = (ev) => {
       if (ev.target !== row && ev.target.tagName === 'BUTTON') return
-      this.editor.select(it.kind, it.kind === 'snow' ? null : it.id, it.index)
+      this.editor.select(it.kind, it.id, it.index)
       this.syncSelection()
     }
 
+    // label, not id: a snow point's id is null (it is addressed by index), and
+    // `id` is what goes back to the editor untouched.
     const id = document.createElement('span')
     id.className = 'p-id'
-    id.textContent = it.id
+    id.textContent = it.label
 
     const sum = document.createElement('span')
     sum.className = 'p-sum'
@@ -499,12 +518,12 @@ export class Panel {
 
     const eye = document.createElement('button')
     eye.className = 'p-mini p-i'
-    const visible = this.editor.isVisible(it.kind, it.id)
+    const visible = this.editor.isVisible(it.kind, it.id, it.index)
     eye.textContent = visible ? 'o' : '-'
     eye.title = visible ? 'hide' : 'show'
     eye.onclick = (ev) => {
       ev.stopPropagation()
-      this.editor.setVisible(it.kind, it.id, !visible)
+      this.editor.setVisible(it.kind, it.id, it.index, !visible)
       this._listSig = '' // force a repaint: the signature includes the hidden set
       this._paintLayers()
     }
@@ -515,8 +534,10 @@ export class Panel {
     del.title = 'delete'
     del.onclick = (ev) => {
       ev.stopPropagation()
-      this.editor.select(it.kind, it.kind === 'snow' ? null : it.id, it.index)
-      this.editor.deleteSelected()
+      // removeAt, not select-then-delete: deleting a row is not a reason to
+      // throw away what the user was working on, and the editor re-resolves the
+      // live selection across the edit itself.
+      this.editor.removeAt(it.kind, it.id, it.index)
       this.syncSelection()
     }
 

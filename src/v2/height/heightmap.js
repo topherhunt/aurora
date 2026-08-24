@@ -11,8 +11,8 @@ import { decodePng, loadPng, readPng } from './png.js'
 // interpolant is the whole design.
 //
 // Bicubic, not bilinear, and §18 is emphatic about why: bilinear is C0 but not
-// C1, so the gradient jumps at every texel edge. Over a 16 m/texel image that
-// puts a crease every 16 m, running the length of the world in both directions.
+// C1, so the gradient jumps at every texel edge. Over an 8 m/texel image that
+// puts a crease every 8 m, running the length of the world in both directions.
 // v1 never saw it because its finest cell is 1 m and a 1 m triangle cannot
 // resolve a crease. v2's finest cell is 6.25 cm (config.js MAX_DEPTH), and at
 // 6.25 cm a slope discontinuity is a visible facet edge under a low sun -- the
@@ -29,8 +29,8 @@ import { decodePng, loadPng, readPng } from './png.js'
 // nothing extrapolated. The alternative -- WORLD_SIZE / width, texel i at the
 // LOW corner of cell i -- leaves the last texel-width of world off the right
 // and far edges, where sampling would silently fall back on the border clamp
-// and flatten a 16 m strip along two sides of the map. At 1024 that makes the
-// spacing 16.0156 m rather than a round 16; a hundredth of a percent of scale
+// and flatten an 8 m strip along two sides of the map. At 1024 that makes the
+// spacing 8.0078 m rather than a round 8; a hundredth of a percent of scale
 // is a cheaper price than a flat edge, and make-heightmap.mjs renders on the
 // same registration so the round trip is exact at every texel.
 const step = (width) => WORLD_SIZE / (width - 1)

@@ -3,11 +3,16 @@
 // stays a zero-dependency repo, and the subset we need is small.
 //
 // Encode: 8-bit RGBA or grayscale, filter 0, one IDAT.
-// Decode: 8-bit non-interlaced, colour types 0/2/4/6, all five filter types.
+// Decode: 8-bit non-interlaced, colour types 0/2/3/4/6, all five filter types.
 //
-// Deliberately NOT supported: 16-bit depth, palettes, interlacing. Nothing in
-// this pipeline produces them and a half-working decoder that silently returns
-// garbage is worse than one that throws.
+// Colour type 3 (palette, with optional tRNS alpha) is here because the EZ-Tree
+// leaf atlases are palette PNGs and nothing else on this machine will read
+// them -- no sharp, no PIL, no Blender. It expands to RGBA on the way out, so
+// callers never see an index.
+//
+// Deliberately NOT supported: 16-bit depth, sub-8-bit palettes, interlacing.
+// Nothing in this pipeline produces them and a half-working decoder that
+// silently returns garbage is worse than one that throws.
 // ---------------------------------------------------------------------------
 
 import { deflateSync, inflateSync } from 'node:zlib'
@@ -81,6 +86,8 @@ export function readPng(path) {
   let width = 0
   let height = 0
   let channels = 0
+  let palette = null // colour type 3 only: RGBA, 4 bytes per entry
+  let paletted = false
   const idat = []
 
   let off = 8
@@ -97,8 +104,25 @@ export function readPng(path) {
       const interlace = data[12]
       if (depth !== 8) throw new Error(`${path}: bit depth ${depth}, only 8 supported`)
       if (interlace !== 0) throw new Error(`${path}: interlaced PNGs unsupported`)
-      channels = CHANNELS[colourType]
+      // A palette image is ONE byte per pixel on the wire -- the index -- so the
+      // un-filter below runs at 1 channel and the expansion to RGBA happens
+      // after. Getting this wrong (filtering at 4) silently corrupts every row
+      // that uses filter 1 or 4, which is most of them.
+      channels = colourType === 3 ? 1 : CHANNELS[colourType]
+      paletted = colourType === 3
       if (!channels) throw new Error(`${path}: colour type ${colourType} unsupported`)
+    } else if (type === 'PLTE') {
+      palette = new Uint8Array((data.length / 3) * 4).fill(255)
+      for (let i = 0; i < data.length / 3; i++) {
+        palette[i * 4] = data[i * 3]
+        palette[i * 4 + 1] = data[i * 3 + 1]
+        palette[i * 4 + 2] = data[i * 3 + 2]
+      }
+    } else if (type === 'tRNS') {
+      // tRNS may be SHORTER than the palette; entries past its end are opaque,
+      // which the fill(255) above already established.
+      if (!palette) throw new Error(`${path}: tRNS before PLTE`)
+      for (let i = 0; i < data.length; i++) palette[i * 4 + 3] = data[i]
     } else if (type === 'IDAT') {
       idat.push(data)
     } else if (type === 'IEND') {
@@ -144,6 +168,20 @@ export function readPng(path) {
       }
       out[dst + x] = recon & 0xff
     }
+  }
+
+  if (paletted) {
+    if (!palette) throw new Error(`${path}: colour type 3 with no PLTE chunk`)
+    const rgba = new Uint8Array(width * height * 4)
+    for (let i = 0; i < width * height; i++) {
+      const p = out[i] * 4
+      if (p + 3 >= palette.length) throw new Error(`${path}: palette index ${out[i]} out of range`)
+      rgba[i * 4] = palette[p]
+      rgba[i * 4 + 1] = palette[p + 1]
+      rgba[i * 4 + 2] = palette[p + 2]
+      rgba[i * 4 + 3] = palette[p + 3]
+    }
+    return { width, height, channels: 4, data: rgba }
   }
 
   return { width, height, channels, data: out }

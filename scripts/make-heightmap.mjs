@@ -48,46 +48,69 @@ export const SRC_H = 873
 //
 // The JPEG is 8-bit and carries no metres, so this is a decision and not a
 // measurement. It was made from the --survey table; re-run `--survey` before
-// moving it rather than re-deriving the argument.
+// moving it rather than re-deriving the argument from this comment.
 //
-// The number that decides it is the fraction of the world under the locomotion
-// slope limit -- LOCOMOTION.maxSlopeDeg = 50 in src/player.js, which is itself
-// derived from where chunk-mesh.js starts shading bare rock. Measured on the
-// final 8.008 m grid, coarse field only:
+// The deciding number is the fraction of the world under the locomotion slope
+// limit -- LOCOMOTION.maxSlopeDeg = 50 in src/player.js, itself derived from
+// where chunk-mesh.js starts shading bare rock. Measured two ways, because the
+// two read different fields at different stencils and can disagree by tens of
+// points at the same span:
 //
-//   span    quantum   walkable   median   p90     p99     over 148 m
-//   300 m   1.18 m    99.5%      3.9deg   12.0deg 22.4deg  ~46%
-//   600 m   2.35 m    96.0%      7.8deg   22.5deg 39.5deg  ~62%
-//   900 m   3.53 m    88.2%      11.6deg  31.6deg 51.4deg  ~70%
-//  1200 m   4.71 m    79.4%      15.3deg  39.0deg 59.5deg  ~74%
+//   span   step   detail | COARSE @8.01m       | COMPOSED @1.5m stride  | >148 m
+//                        | walk%  med   p90    | walk%  med   p90       |
+//    300   1.18   0.38   | 99.2%   5.4  15.2   | 99.2%  11.6  23.5      | 52.4%
+//    450   1.76   0.57   | 98.6%   8.0  22.2   | 98.2%  16.9  33.3      | 78.1%
+//    600   2.35   0.75   | 97.8%  10.7  28.6   | 96.3%  21.8  41.3      | 82.9%
+//    900   3.53   1.13   | 95.5%  15.8  39.2   | 86.8%  30.6  52.9      | 87.6%
+//   1200   4.71   1.50   | 91.8%  20.6  47.4   | 74.6%  38.0  60.6      | 89.0%
 //
-// 600 m of relief over an 8 km box. The argument, in order:
+// The composed column is the honest instrument and the coarse one is not: the
+// coarse column reads half the field (no detail.js) with a stencil five times
+// wider than the slope limiter's stride, so it is optimistic by construction.
+// The composed column can also be checked against a known answer -- run the same
+// measurement on v1's shipped field and it returns 88.8% walkable, median 27.8
+// deg, p90 51.1, the exact table in src/player.js, which is where the 50 deg
+// limit came from.
 //
-//   WALKABILITY. 96% under the limiter with a median slope of 7.8 degrees is a
-//   world someone crosses on foot. At 900 m the p99 slope is already past the
-//   limit, which means one texel in a hundred is a wall; at 1200 m a fifth of
-//   the map refuses her. v1 ships 88.8% walkable (the table in player.js) and
-//   this lands above it, which is right: v2's coarse term is only half the
-//   field, and detail.js adds slope on top of every number here.
+// BUT THE COMPOSED COLUMN IS NOT STABLE, and that is what actually decides this.
+// It is coupled to detail.js's calibrated amplitude, which is still being tuned:
+// within a single afternoon calibrateRough went from 1.25 m rms at this span to
+// 0.38 m, and the 300 m row went from 93.7% walkable to 99.2%. A rule of "match
+// v1's 88.8%" would have picked 300 m under the first amplitude and 900 m under
+// the second. That is a moving target, not a measurement. The coarse column, by
+// contrast, is a property of the image and the range alone and does not move.
 //
-//   RELIEF PER KILOMETRE. v1 spans -0.82..319.49 m over 16 km. 600 m over 8 km
-//   is 2.4x v1's relief per kilometre -- deliberately more dramatic, because
-//   this is an authored mountain range and not a procedural continent, and
-//   because 600 m of vertical is what makes a snow line at 148 m mean anything.
+// So the range is chosen for robustness: 300 m is the only row that reads
+// comfortably walkable under BOTH amplitudes, and its composed p99 is 46.4 deg
+// -- under the limit, so even the worst percentile of the world lets her
+// through, where 900 m puts the p99 at 72.3 deg. Revisit this once detail.js
+// settles; until then a larger span is a bet on an amplitude that has already
+// moved by 3.3x.
 //
-//   QUANTISATION. The source has 255 usable levels, so the span sets the step:
-//   2.35 m at 600 m. detail.js at this texel size carries an rms of 1.71 m and a
-//   peak octave of 1.36 m (measured, see the survey output), so the bicubic's
-//   residual ripple -- at most half a step -- sits just under the detail term
-//   rather than an order of magnitude below it as §18 assumed at 16 km. That is
-//   the real ceiling on the span: at 900 m the half-step ripple is 1.77 m and
-//   starts to compete with the thing that is supposed to hide it.
+// RELIEF PER KILOMETRE, as a cross-check rather than a criterion. v1 spans
+// -0.62..313.06 m over 16 km, i.e. 19 m/km. 300 m over 8 km is 37.5 m/km,
+// already 1.9x v1's, because this is an authored range and not a procedural
+// continent. The 8 km reading is also what makes it credible: heightmap-png.mjs
+// has called this same image 6437 m across since build step 2, and 8192 is
+// within 27% of that where the earlier 4096 was out by 1.57x.
+//
+// QUANTISATION IS NOT AN ARGUMENT HERE, and the survey prints the reason. The
+// step is span/255, so the worst ripple bicubic leaves through it is span/510.
+// detail.js's amplitude comes from calibrateRough, which matches the detail term
+// to the coarse field's own structure function -- so it scales with the span
+// too, and the ratio between them is constant down the table to three digits.
+// No choice of range changes it, which is why the range cannot be argued from
+// quantisation. Worth flagging for detail.js's owner rather than acting on here:
+// §18 expected the detail term to sit an order of magnitude ABOVE the ripple,
+// and at the current calibration it sits 1.55x BELOW it, so the finest thing in
+// the composed field is the 8-bit source step and not the detail.
 //
 // minY is 0 and not a negative sea level. §18's water is a LAYER (lakes carve
 // basins, see src/v2/layers/water-bodies.js), so the import has no reason to
-// spend codes on ground below the lowest pixel of the image.
+// spend codes on ground below the darkest pixel of the image -- and 9.8% of the
+// image already sits on that floor.
 export const MIN_Y = 0
-export const MAX_Y = 600
+export const MAX_Y = 300
 
 // The 8x8 DCT grid. Baseline JPEG transforms 8x8 blocks of luma aligned to pixel
 // zero regardless of chroma subsampling, so the block edges sit between columns
@@ -100,7 +123,7 @@ const BLOCK = 8
 // this says: the deblocker may never displace the ground by more than the amount
 // the file format has already thrown away. A ridge line crossing a block
 // boundary can be softened by at most 1/3 of a level per axis pass (the
-// correction is split three ways, see deblockAxis), i.e. 0.67 levels = 1.57 m at
+// correction is split three ways, see deblockAxis), i.e. 0.67 levels = 78 cm at
 // the shipped span, and that bound is what the gate's ridge test enforces.
 export const DEBLOCK_CAP = 1
 
@@ -720,7 +743,8 @@ async function survey(baked) {
   console.log('detail is the rms of detail.js at cell 0 over the world, calibrated against THIS range with calibrateRough.')
   console.log('ratio = half-s / detail. It is CONSTANT across the table, and that is the point: the detail term is calibrated to the')
   console.log('coarse field, so both columns scale linearly with the span and quantisation has no opinion about which range to pick.')
-  console.log(`The walk% column is the one that decides. Compare against v1's shipped 88.8% (the table in src/player.js).`)
+  console.log(`The composed walk% column is the honest one -- compare against v1's shipped 88.8% (the table in src/player.js) -- but`)
+  console.log('it moves with detail.js\'s calibrated amplitude, so read it beside the coarse column, which depends only on the image.')
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "check": "node scripts/check-sim.mjs && node scripts/check-props.mjs && node scripts/check-terrain.mjs && node scripts/check-phase-a.mjs && node scripts/check-water.mjs && node scripts/check-water-shader.mjs && node scripts/check-village.mjs && node scripts/check-daynight.mjs && node scripts/probe-popping.mjs && node scripts/probe-hole.mjs && node scripts/check-v2.mjs",
+    "check": "node scripts/check-sim.mjs && node scripts/check-props.mjs && node scripts/check-terrain.mjs && node scripts/check-phase-a.mjs && node scripts/check-water.mjs && node scripts/check-water-shader.mjs && node scripts/check-village.mjs && node scripts/check-buildings.mjs && node scripts/check-daynight.mjs && node scripts/probe-popping.mjs && node scripts/probe-hole.mjs && node scripts/check-v2.mjs",
     "props": "BLENDER=${BLENDER:-$(command -v blender || echo /Applications/Blender.app/Contents/MacOS/Blender)} && \"$BLENDER\" --background --factory-startup --python tools/props/build.py -- --manifest tools/props/manifest.json --out public/props --clean",
     "props:manifest": "node tools/props/make-manifest.mjs",
     "props:generate": "node tools/trees/generate.mjs && npm run props:layers",

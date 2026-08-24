@@ -1,23 +1,26 @@
 // ---------------------------------------------------------------------------
 // Re-resolving a point selection across a structural edit.
 //
-// THE BUG THIS EXISTS TO PREVENT, which is real and was found in the layer code
-// rather than imagined: the two point-holding layers disagree about what happens
-// to the indices above a removed point. SnowField.removePoint NULLS the slot
-// (snowline.js says why: "the editor holds indices as selection handles and a
-// splice would silently repoint every selection above the removed one"), while
-// PathSet.removePoint SPLICES (paths.js:352). So an editor that caches
-// {kind, id, index} is correct for snow and silently wrong for splines: delete
-// point 2 of a six-point river while point 4 is selected and the selection now
-// names what used to be point 5, with the gizmo attached to the wrong handle and
-// nothing anywhere reporting an error.
+// THE BUG THIS EXISTS TO PREVENT is an editor that treats an index as an
+// identity across an edit that renumbers the list: delete point 2 of a six-point
+// river while point 4 is selected, and if the list compacted, the selection now
+// names what used to be point 5 -- the gizmo attached to the wrong handle, the
+// next drag editing something the author was not looking at, and nothing
+// anywhere reporting an error.
 //
-// The fix is not to pick a side. It is to stop treating an index as an identity
-// across an edit that can move it: remember WHERE the selected point was, redo
-// the lookup afterwards, and take whichever index now holds that position. That
-// is correct under nulling, correct under splicing, and stays correct if the two
-// are made consistent later -- which is the point, because they are being made
-// consistent by someone else while this is being written.
+// BOTH POINT-HOLDING LAYERS NOW TOMBSTONE rather than compact, for exactly this
+// reason: SnowField.removePoint nulls the slot (snowline.js), and so does
+// PathSet.removePoint (paths.js, "Tombstones the point rather than splicing it
+// out, so every OTHER handle into this path still addresses the point it
+// addressed before"). They did not always agree, and the shape of that
+// disagreement is why this file exists.
+//
+// It stays because the convention is not the whole story. PathSet.insertPoint
+// into the MIDDLE still shifts everything after it -- unavoidably, since a
+// path's points are ordered and the order IS the curve -- and it returns the new
+// index precisely because a caller has to re-anchor. Re-resolving by position is
+// correct under tombstones, correct under compaction, and correct across an
+// insert, so the editor does not have to know which of the three it just did.
 //
 // EPS is 1 mm. Positions are metres and every path here is a copy of a number
 // that was never arithmetic'd, so an exact match would work; 1 mm costs nothing

@@ -16,7 +16,22 @@ import * as THREE from 'three'
 // our own uv varying plus a per-vertex texLayer index.
 // ---------------------------------------------------------------------------
 
-export function createPropMaterial(textureArray) {
+/**
+ * `vertexColors` opts into a per-vertex tint multiplied over the array sample.
+ *
+ * Off for props, and it has to stay off for them: turning it on changes the
+ * program, and every geometry in a batch would then need a `color` attribute it
+ * does not have. Buildings pass true, because they are a SEPARATE merged mesh
+ * (DESIGN.md §6 -- a village is ~450 static pieces inside 240 m, so per-instance
+ * culling would cull nothing and one merged mesh beats a BatchedMesh), so the
+ * cost of the second program is one extra draw call for a whole village.
+ *
+ * What it buys is most of the variation the buildings need without spending
+ * texture layers on it: thatch weathering from new straw to grey, moss on the
+ * north side of a roof, grime up a plaster panel, one shared timber tile
+ * reading as oak on one cottage and pine on the next.
+ */
+export function createPropMaterial(textureArray, { vertexColors = false } = {}) {
   const material = new THREE.MeshLambertMaterial({
     color: 0xffffff,
     // Binary cutout only. Alpha blending cannot be sorted within a batched
@@ -24,6 +39,7 @@ export function createPropMaterial(textureArray) {
     alphaTest: 0.5,
     transparent: false,
     side: THREE.DoubleSide, // foliage cards are single-sided geometry
+    vertexColors,
   })
 
   material.onBeforeCompile = (shader) => {
@@ -65,7 +81,7 @@ export function createPropMaterial(textureArray) {
 
   // Force a distinct program cache key so this patched material never gets
   // conflated with an unpatched MeshLambertMaterial.
-  material.customProgramCacheKey = () => 'prop-array-v1'
+  material.customProgramCacheKey = () => (vertexColors ? 'prop-array-v1-vc' : 'prop-array-v1')
 
   return material
 }

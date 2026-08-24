@@ -10,9 +10,11 @@
 
 export const DOC_VERSION = 1
 
-// Matches §18's constants: 148 m base, 47 m band. Both are read by the mesher's shading and by the props, so they live in the document rather than in a module constant -- an author moving the snow line is an edit, not a code change.
+// The snow line of an unedited world. Both are read by the mesher's shading and by the props, so they live in the document rather than in a module constant -- an author moving the snow line is an edit, not a code change.
 //
-// PROVISIONAL. These two numbers came from v1's procedural field, whose range was -0.82 to 319.49 m. v2's coarse field is imported from an 8-bit jpg that carries no metres at all, and its vertical range is still being chosen from slope statistics, so the day that lands these become wrong by whatever the ratio turns out to be. Nothing asserts them -- check-v2-layers.mjs tests the interpolant's shape (exact at its points, exactly base outside every radius, smooth between) rather than any elevation.
+// THESE ARE THE FALLBACK, NOT THE ANSWER. A snow line is an elevation, and an elevation only means something against a particular bake: these two came from v1's procedural field (range -0.82 to 319.49 m) and on the current import they would put the line at the 52nd percentile, which is half the world in snow. The browser derives its own from the loaded image instead -- `snowDefaults(V2Height.bands)` in src/v2/main.js, p75 for the base and half the p50..p90 spread for the band, which is 194.2 m +/- 35.4 m and a quarter of the world white on the bake now on disk.
+//
+// What is left here is what a document needs when there is no heightmap in the room at all, which is every node gate: they construct worlds to test the interpolant's SHAPE (exact at its points, exactly base outside every radius, smooth between) and none of them cares what the elevation is. That is also why nothing asserts these numbers.
 export const DEFAULT_SNOW_BASE = 148
 export const DEFAULT_SNOW_BAND = 47
 

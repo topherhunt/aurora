@@ -1,10 +1,14 @@
-// The v2 surface geometry, checked without a browser and without three.js.
+// The v2 surface geometry, checked without a browser.
 //
 // src/v2/render/ribbon.js is the arithmetic behind every lake disc, river ribbon and road ribbon in a v2 world, and it is deliberately three-free so that this file can exercise it directly -- no GL context, no stub renderer, no shader compile. What is being checked is not that something drew: it is that the vertices are in the right places, that the winding is uniform, and that the miter clamp really does stop an inside corner folding the ribbon through itself. All three fail silently on screen. A folded ribbon looks like a dark smear, a mis-wound disc looks like a lake that is only visible from underneath, and a segment rule that is quietly wrong looks like a slightly polygonal shoreline nobody mentions for a month.
+//
+// Section 6 is the exception and imports three.js, because Markers is a three class and the bug it guards is not arithmetic. three constructs InstancedMesh, Scene and BufferGeometry perfectly well in node -- what needs a GPU is rendering, and nothing here renders.
 //
 //   node scripts/check-v2-surfaces.mjs
 
 import { pathToFileURL } from 'node:url'
+import * as THREE from 'three'
+import { Markers } from '../src/v2/render/markers.js'
 import { ribbonVertices, discVertices, discSegments, LAKE_OVERHANG, RIVER_WIDEN, RIVER_WIDEN_FRAC, ROAD_LIFT } from '../src/v2/render/ribbon.js'
 import { Layers } from '../src/v2/layers/layers.js'
 // The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
@@ -314,7 +318,61 @@ export async function run() {
     check(ROAD_LIFT > 0, 'the road lift is a positive gap, so the depth test never has to break a tie', `${ROAD_LIFT} m`)
   }
 
-  // --- 6. the invariants that must throw ------------------------------------
+  // --- 6. handles survive a deletion -----------------------------------------
+  //
+  // THIS IS A CRASH THAT ONLY EXISTS AFTER AN EDIT, which is why it needs a check that edits. Both layers tombstone a removed point (`pts[i] = null`, `points[i] = null`) instead of splicing, so a handle index stays pinned to the point it was pinned to; the cost is that every consumer walking the raw array meets a null. Markers.sync walked one of those arrays by destructuring, which is a TypeError the moment anyone deletes a control point, and no amount of checking the geometry of an unedited world would have found it.
+  //
+  // The second half matters as much as the first. Not crashing is easy -- a loop that compacts as it goes does not crash either, and it silently repoints every handle above the hole, so the editor's selection jumps to a different point and a drag moves the wrong one. So this asserts the identity, not just the survival: a marker that addressed control point 3 still addresses control point 3, and still sits where control point 3 sits.
+  {
+    const doc = {
+      v: 1,
+      snow: { base: 100, band: 40, points: [[0, 0, 10, 200], [300, 300, -8, 150]] },
+      lakes: [],
+      rivers: [],
+      roads: [{ id: 'd', feather: 8, pts: [[-500, 80, 400, 4], [-120, 74, 320, 4], [300, 66, 380, 5], [700, 61, 520, 5]] }],
+    }
+    const layers = new Layers(doc)
+    const markers = new Markers({ scene: new THREE.Scene(), layers })
+    markers.sync()
+
+    const slotOf = (index) => markers.kinds.spline.records.findIndex((r) => r.id === 'd' && r.index === index)
+    const posOf = (slot) => [markers.kinds.spline.positions[slot * 3], markers.kinds.spline.positions[slot * 3 + 1], markers.kinds.spline.positions[slot * 3 + 2]]
+    const before = posOf(slotOf(3))
+    check(markers.kinds.spline.count === 4, 'four control points, four handles', `${markers.kinds.spline.count}`)
+
+    // Point 1 is a middle point: deleting an end would not shift anything even under a splice, so it would prove nothing.
+    layers.paths.removePoint('d', 1)
+    let threw = null
+    try {
+      markers.sync()
+    } catch (e) {
+      threw = e
+    }
+    check(threw === null, 'deleting a middle control point does not crash the next sync', threw === null ? '' : threw.message)
+
+    if (threw === null) {
+      check(markers.kinds.spline.count === 3, 'the deleted point loses its handle and nothing else does', `${markers.kinds.spline.count} handles`)
+      check(slotOf(1) === -1, 'no handle still claims the tombstoned index')
+      const slot = slotOf(3)
+      check(slot !== -1, 'the handle above the hole is still published under its own index')
+      if (slot !== -1) {
+        const after = posOf(slot)
+        check(
+          Math.abs(after[0] - before[0]) < 1e-6 && Math.abs(after[1] - before[1]) < 1e-6 && Math.abs(after[2] - before[2]) < 1e-6,
+          'and it still sits exactly where control point 3 sits',
+          `${after.map((v) => v.toFixed(1)).join(', ')}`
+        )
+      }
+      // The same convention on the other layer, and the loop that already had it right: deleting snow point 0 must leave point 1 addressed as 1.
+      layers.snow.removePoint(0)
+      markers.sync()
+      check(markers.kinds.snow.count === 1 && markers.kinds.snow.records[0].index === 1, 'a snow handle above a hole keeps its own index too', `index ${markers.kinds.snow.records[0].index}`)
+    }
+
+    markers.dispose()
+  }
+
+  // --- 7. the invariants that must throw ------------------------------------
   //
   // Fail explicitly, not gracefully. Each of these is a caller bug that would otherwise produce geometry that renders and is wrong.
   {
@@ -335,9 +393,17 @@ export async function run() {
   }
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
+  // THROW rather than return the count. scripts/check-v2.mjs runs each section inside a try/catch and ignores what run() returns, so a section that reports failure by returning a number reports it to nobody: the FAIL lines scroll past and the aggregator still prints ALL SECTIONS PASSED. Every other check-v2-*.mjs throws here; this one did not, which made the combined gate silently blind to this whole section.
+  if (failures > 0) throw new Error(`check-v2-surfaces: ${failures} check(s) failed`)
   return failures
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exit((await run()) === 0 ? 0 : 1)
+// Guarded against argv[1] being undefined, which is what happens under `node -e` and inside any harness that imports run() without a script path. pathToFileURL(undefined) THROWS, so the old form turned "someone imported this module" into a crash from the module's own tail -- a failure that looks like a broken gate rather than a missing argument.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    await run()
+  } catch (e) {
+    console.error(e.message)
+    process.exit(1)
+  }
 }

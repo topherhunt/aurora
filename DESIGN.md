@@ -39,6 +39,7 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 15, 16 | `design/15-open-and-deferred.md` | Deferred decisions and open questions |
 | 17 | `design/17-workflow.md` | Desktop-first, the gate scripts, the headset-gate protocol |
 | 18 | `design/18-v2-world.md` | v2: imported heightmap, procedural detail to 10 cm, authored content layers (snow line, lakes, rivers, roads) |
+| 19 | `design/19-buildings.md` | The Nordic building kit: its texture layers, the `Builder`, the plan grammar, LOD by re-generation |
 
 Plus two files with no section number:
 

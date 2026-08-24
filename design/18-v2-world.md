@@ -41,7 +41,7 @@ src/v2/render/markers.js           editor handle gizmos (snowline points, spline
 src/v2/edit/gizmo.js               three TransformControls wrapper: one active object, T/R/S modes
 src/v2/edit/editor.js              tool state machine, picking, selection, undo, save/load
 src/v2/ui/panel.js                 the compact status + tools panel
-src/v2/main.js                     entry
+src/v2/main.js                     entry: boot order, the sky wiring, the edit -> world channel, /v2's frame loop
 scripts/make-heightmap.mjs         writes public/world/height.png + height.json
 scripts/check-v2.mjs               the gate
 ```
@@ -115,7 +115,7 @@ Arrays-of-numbers, not objects-of-keys, for anything there are many of.
 
 `shape` 0 = ellipse, 1 = rectangle. `y` on a lake is the water level. `y` on a river/road point is the surface elevation at that point; the editor seeds it from the terrain and the move gizmo can lift it.
 
-`snow.base` and `snow.band` are elevations in metres and therefore belong to whatever vertical range the import chose; the values above are placeholders until `scripts/make-heightmap.mjs` reports the actual range for `reference/skyrim-height-map.jpg`. The same goes for the altitude ramp in the mesher's shading. Both must be re-derived from the shipped `world/height.json` rather than carried forward.
+`snow.base` and `snow.band` are elevations in metres and therefore belong to whatever vertical range the import chose, so neither is a constant anywhere in the code. A new world takes them from the loaded image: `snowDefaults(V2Height.bands)` in `src/v2/main.js` puts the base at the p75 texel elevation and the band at half the p50..p90 spread, which on the shipped bake (0..299 m) is **194.2 m +/- 35.4 m**, a quarter of the world in snow. `DEFAULT_SNOW_BASE` / `DEFAULT_SNOW_BAND` in `doc.js` are 148/47 and exist only for documents built with no heightmap in the room -- every node gate -- none of which asserts an elevation. The altitude ramp in the mesher's shading is derived the same way, off `bands.altLo` / `bands.altSpan`.
 
 ### Snow line -- the interpolation scheme
 
@@ -202,3 +202,6 @@ Added to `npm run check`. It must be able to fail. Sections:
 4. **paths** -- a river carve reaches `depth` at the centreline and 0 at `halfWidth * 2`; a road's surface is within 1 cm of the spline `y` inside `halfWidth`; a tight S-bend does not self-intersect (centripetal, not uniform).
 5. **slot pool** -- worst-case selection over a few hundred camera positions at `MAX_DEPTH 13`, plus pinned chunks, fits `SLOT_COUNT`.
 6. **layer culling** -- over a sampled sweep, the fraction of chunks that early-out is above 95% for a world with a dozen authored objects. This is the claim "compact and performance-efficient" reduces to, so it is the one that gets a number.
+7. **host wiring** -- `src/v2/main.js` constructs a `WebGLRenderer` on its first line, so node cannot import it and no section above can reach it. The four rules its collaborators' headers state as "the host must" are asserted textually instead, comment lines stripped first: it does not call `markers.update()` (the editor owns that call and two callers race on the handle scale), it does not transform `water.group` (the shader reads world position off `modelMatrix`), it patches `roads.material` in `vertex` mode (or the road is the one surface that stays lit after dark), and `probe.update()` runs before `renderer.render()`. Each corresponds to a failure that is invisible in the frame it happens in, which is what makes a weak check worth more than none.
+
+Everything DOM, three.js, XR and gizmo on the `/v2` route is still unexercised by any gate: node reaches none of it, and there is no browser harness. The first click through the markers -> editor -> gizmo path will be a human's.

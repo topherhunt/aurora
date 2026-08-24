@@ -188,24 +188,14 @@ export class Detail {
   }
 
   /**
-   * rms of ( at(p + d) - at(p) ) over a deterministic site set -- the detail
-   * term's own structure function. Used by calibrateRough and by the gate; it is
-   * the quantity the calibration matches, so it lives here next to what it
-   * measures rather than being reimplemented in the script.
+   * The detail term's own roughness at one lag -- see roughnessOf for why this is
+   * a second difference and not a first one. Lives here rather than in the gate
+   * because it is the quantity the calibration matches, and the two must not be
+   * able to drift apart.
    */
-  structureAt(lag, heightmap, sites = CAL_SITES) {
-    let s2 = 0
-    for (let n = 0; n < sites; n++) {
-      const p = calSite(n)
-      const a = calAngle(n)
-      const x2 = p.x + Math.cos(a) * lag
-      const z2 = p.z + Math.sin(a) * lag
-      const d =
-        this.at(x2, z2, 0, heightmap.slopeAt(x2, z2), 0) -
-        this.at(p.x, p.z, 0, heightmap.slopeAt(p.x, p.z), 0)
-      s2 += d * d
-    }
-    return Math.sqrt(s2 / sites)
+  roughnessAt(lag, heightmap, sites = CAL_SITES) {
+    const f = (x, z) => this.at(x, z, 0, heightmap.slopeAt(x, z), 0)
+    return roughnessOf(f, lag, sites)
   }
 }
 
@@ -229,13 +219,38 @@ const calSite = (n) => ({
 })
 const calAngle = (n) => ((n * 2.399963229728653) % (Math.PI * 2))
 
-/** rms of ( f(p + d) - f(p) ) over the same sites, for any scalar field of (x, z). */
-function structureOf(f, lag, sites = CAL_SITES) {
+/**
+ * THE INSTRUMENT: rms of the SECOND difference, f(p + d) - 2 f(p) + f(p - d),
+ * over the calibration sites. This is the measurement the whole calibration
+ * rests on and it is deliberately not the obvious one.
+ *
+ * The obvious one is the structure function, rms( f(p + d) - f(p) ). It is the
+ * wrong instrument here because at short lags it measures SLOPE, not roughness:
+ * on a smooth hillside standing at 40 degrees it reports 0.84 * d whatever the
+ * ground is doing, and the ground doing nothing gives the same number as the
+ * ground being rough. Calibrating against it on this repo's own terrain
+ * over-read the missing sub-texel band by SIX TIMES -- fitted from lags of 32
+ * and 128 m it extrapolated 5.07 m of increment at a 2 m lag where the true
+ * field has 2.15 m, and the resulting octave table put a 6.8 m ripple on a 16 m
+ * wavelength. That is not detail, it is a second mountain range, and the gate's
+ * walkable-fraction section caught it: 82.7% of the world walkable on the coarse
+ * field, 32.2% with the detail on top.
+ *
+ * A second difference annihilates any linear ramp exactly, so a plane reads zero
+ * however steep it is, and what is left is curvature -- which is what roughness
+ * IS. Measured on the same field this repo ships, it separates cleanly: the
+ * bicubic interpolant reads 0.0087 m of curvature at a 0.25 m lag where the full
+ * procedural field reads 0.0774 m, a factor of nine, while their first
+ * differences differ by only 20%.
+ */
+function roughnessOf(f, lag, sites = CAL_SITES) {
   let s2 = 0
   for (let n = 0; n < sites; n++) {
     const p = calSite(n)
     const a = calAngle(n)
-    const d = f(p.x + Math.cos(a) * lag, p.z + Math.sin(a) * lag) - f(p.x, p.z)
+    const cx = Math.cos(a) * lag
+    const cz = Math.sin(a) * lag
+    const d = f(p.x + cx, p.z + cz) - 2 * f(p.x, p.z) + f(p.x - cx, p.z - cz)
     s2 += d * d
   }
   return Math.sqrt(s2 / sites)
@@ -244,59 +259,78 @@ function structureOf(f, lag, sites = CAL_SITES) {
 /**
  * THE AMPLITUDE CALIBRATION, and the reason there is no ROUGH constant.
  *
- * The target is SPECTRAL CONTINUITY at the seam. Measure the coarse field's own
- * structure function -- rms( h(p + d) - h(p) ) as a function of lag d -- over
- * lags the image genuinely resolves, fit a power law to it, extrapolate that law
- * below one texel, and set `rough` so the detail term's structure function lands
- * on the extrapolation. The composed field then passes through the seam without
- * a kink: no scale at which the ground suddenly gets smoother or rougher than
- * the scale above it, which is the artifact an eye reads as "this is a low
- * resolution heightmap with noise on top".
+ * The target is SPECTRAL CONTINUITY AT THE SEAM: the composed field should pass
+ * from the imported band into the fractal band without a kink -- no scale at
+ * which the ground suddenly gets smoother or rougher than the scale above it,
+ * which is the artifact an eye reads as "this is a low-resolution heightmap with
+ * noise on top".
  *
- * This basis was chosen over the obvious alternative -- match the 0.79 m mean
- * gap measured between the coarse field and v1's procedural field between texels
- * -- because that gap is a property of ONE imported image, and the import is the
- * thing v2 exists to let a human replace. It was replaced once during this
- * build: a 16 km v1-derived field at 16.0156 m texels became a 4 km photographic
- * source at ~4 m texels, and a literal calibrated against the first would have
- * been four octaves wrong for the second while still looking like a plausible
- * number. Spectral continuity is a property of whatever is loaded.
+ * The procedure, in four measurements:
  *
- * FIT LAGS: 2 and 8 knees, i.e. 4 and 16 texels -- comfortably inside what the
- * image resolves, and clear of the bicubic's own roll-off near Nyquist.
- * PROBE LAG: knee / 8, one quarter of a texel, deep inside a cell where the
- * interpolant is smooth and carries almost none of the band being fitted. The
- * returned `imageShare` is how much of the target the image already supplied
- * there; the gate asserts it stays small, because a large value means the import
- * has sub-texel structure of its own (JPEG blocking, a resample) and the
- * extrapolation is measuring that instead of terrain.
+ *   1. Read the coarse field's roughness at the two lags just above its own
+ *      Nyquist -- 2 and 4 texels. Near enough to Nyquist to be reading the local
+ *      exponent rather than the whole continent's shape, far enough that the
+ *      bicubic still represents them faithfully. Fitting further out reads the
+ *      shallower large-scale exponent and over-reads the fine end by 3x; fitting
+ *      closer in reads the interpolant's own roll-off and under-reads it.
+ *   2. Fit R(d) = C * d ** exponent through those two.
+ *   3. Extrapolate to a probe lag an eighth of a texel down, and subtract what
+ *      the image already supplies there IN QUADRATURE, because the detail term
+ *      is uncorrelated with the import and uncorrelated variances add.
+ *   4. Scale the octave table to supply exactly that deficit.
+ *
+ * This basis was chosen over the obvious alternative -- match the mean gap
+ * measured between the coarse field and a known-good procedural field between
+ * texels -- because that gap is a property of ONE imported image, and the import
+ * is the thing v2 exists to let a human replace. It was replaced three times
+ * during this build alone: 16 km at 16 m texels, then 4 km at 4 m, then 8 km at
+ * 8 m. A literal calibrated against any one of them would have been octaves
+ * wrong for the next while still looking like a plausible number. Spectral
+ * continuity is a property of whatever is loaded.
+ *
+ * The estimator was checked against ground truth on this repo's own field, where
+ * both the interpolated import and the full procedural field it was baked from
+ * are available: the per-octave deficit the truth actually needs corresponds to
+ * a `rough` between 0.053 and 0.116 depending on the lag you ask at, geometric
+ * mean 0.082, and this estimator returns 0.077 to 0.082 depending on the probe
+ * lag. That agreement is what says the estimator measures the missing band
+ * rather than the terrain's overall steepness.
+ *
+ * `imageShare` is how much of the target the image already supplied at the probe.
+ * The gate asserts it stays small: a large value means the import has sub-texel
+ * structure of its own (JPEG blocking, a bad resample) and the extrapolation is
+ * measuring that instead of terrain.
  */
 export function calibrateRough({ heightmap, seed, knee, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
   const coarse = (x, z) => heightmap.sample(x, z)
-  const lagA = knee * 2
-  const lagB = knee * 8
-  const dA = structureOf(coarse, lagA)
-  const dB = structureOf(coarse, lagB)
-  if (!(dA > 0) || !(dB > dA)) {
-    throw new Error(`calibrateRough: coarse structure function is not increasing with lag (D(${lagA.toFixed(2)}m) = ${dA.toFixed(4)}, D(${lagB.toFixed(2)}m) = ${dB.toFixed(4)}) -- that is not a terrain, check the import`)
+  const lagA = knee
+  const lagB = knee * 2
+  const rA = roughnessOf(coarse, lagA)
+  const rB = roughnessOf(coarse, lagB)
+  if (!(rA > 0) || !(rB > rA)) {
+    throw new Error(`calibrateRough: coarse roughness is not increasing with lag (R(${lagA.toFixed(2)}m) = ${rA.toFixed(4)}, R(${lagB.toFixed(2)}m) = ${rB.toFixed(4)}) -- that is not a terrain, check the import`)
   }
-  // D(d) = C * d ** exponent, fitted through the two lags.
-  const exponent = Math.log(dB / dA) / Math.log(lagB / lagA)
-  const C = dA / lagA ** exponent
+  const exponent = Math.log(rB / rA) / Math.log(lagB / lagA)
+  const C = rA / lagA ** exponent
 
-  const probe = knee / 8
+  const probe = knee / 16
   const target = C * probe ** exponent
-  const imageAt = structureOf(coarse, probe)
+  const imageAt = roughnessOf(coarse, probe)
   const imageShare = imageAt / target
+  const deficit2 = target * target - imageAt * imageAt
+  if (!(deficit2 > 0)) {
+    throw new Error(`calibrateRough: the import already carries more sub-texel roughness than a terrain power law predicts (R(${probe.toFixed(3)}m) = ${imageAt.toFixed(4)} vs extrapolated ${target.toFixed(4)}) -- there is nothing for detail.js to add, so the import is carrying resampling noise rather than terrain`)
+  }
+  const deficit = Math.sqrt(deficit2)
 
   // Amplitude is linear in `rough`, so one measurement at rough = 1 scales
   // exactly. Measured through Detail.at with the real slope modulation applied,
   // so SLOPE_BOOST redistributes roughness across the world rather than adding
   // to the world average -- change the boost and the calibration absorbs it.
   const unit = new Detail({ seed, knee, rough: 1, hurst, slopeKnee, hurstFine, shoulder })
-  const unitAt = unit.structureAt(probe, heightmap)
-  if (!(unitAt > 0)) throw new Error(`calibrateRough: unit detail has no structure at lag ${probe} m -- the octave table is empty or the band limit is inverted`)
+  const unitAt = unit.roughnessAt(probe, heightmap)
+  if (!(unitAt > 0)) throw new Error(`calibrateRough: unit detail has no roughness at lag ${probe} m -- the octave table is empty or the band limit is inverted`)
 
-  const rough = target / unitAt
-  return { rough, exponent, C, fitLagA: lagA, fitLagB: lagB, dA, dB, probe, target, imageAt, imageShare, unitAt }
+  const rough = deficit / unitAt
+  return { rough, exponent, C, fitLagA: lagA, fitLagB: lagB, rA, rB, probe, target, imageAt, imageShare, deficit, unitAt }
 }

@@ -77,15 +77,25 @@ The Blender pipeline is built and gated (`npm run props`, `scripts/check-props.m
 - [ ] `fern_polypody` **is thin and it is an art call, not a bug.** It keeps 29% of its UV footprint through alphaTest and spends 6 of its 15 triangles on slivers, which is what a frond made of alpha cards genuinely looks like at that budget -- it passes the crush check because the other 9 triangles are a real fern. The question is whether 15 triangles can be a fern at all. Same for `grass_wild_scan_b`/`_c` baking at mean RGB 20 and 12: all the `grass_wild` variants share one 8K map averaging (64,64,36), so the dark ones are clumps that sat in shadow in the scan.
 - [ ] **Replacement grass and a replacement hero tree.** Four grass variants and two trees came out of the library above and nothing has taken their place; `grass_wild_scan_b/c/d` plus the hand-built tufts are what is left for ground cover. Both wants are the same want: authored low-poly cross-cards with a baked canopy, not photoscans and not card foliage. See the shopping list in `make-manifest.mjs`.
 
+## Buildings -- follow-ups
+
+The Nordic building kit is built and gated (`src/buildings/*`, `gen-building.html`, `scripts/check-buildings.mjs`, DESIGN.md §19). Ten texture layers, four wall styles, four kinds, three LOD tiers from one plan; mean 705 triangles and worst 1,670 against §5's 1,800 for the `structure` class. Nothing in the runtime uses it yet.
+
+- [ ] **Visual review pass in** `gen-building.html`. The whole kit is a set of proportion calls -- log diameter, roof pitch, eave overhang, window size, porch depth -- and the sliders exist so they can be argued about against a 1.75 m figure rather than in the abstract. This is the gate that matters and it is not a script.
+- [ ] **Migrate** `src/village/*` **onto the kit** and delete the vertex-coloured placeholder shapes. The plan already places buildings correctly and the +Z door convention is shared, so this is a substitution at the shapes layer -- but the old kit's architectural range is not a ceiling on the new one, and the village's building mix should be re-picked from the four kinds rather than mapped one-for-one.
+- [ ] **Cut the remaining six tiles from photographs.** `TIMBER_HEWN` from `MI_Old_Railroad_Tie`, `TIMBER_PLANK` from `MI_Old_Wooden_Beam`, `PLASTER` and a door leaf from `MI_Medieval_Modular_Door`, `STONE` from `MI_Mossy_Stone_Wall`, `SHINGLE` from `MI_Modular_Wooden_Roof`. `tools/props/extract-thatch.mjs` is the pattern: heal the wrap by cross-fade, grade per channel onto the shared palette with tint headroom, resample with a wrapping area filter. None of the sources tiles as shot.
+- [ ] **Interiors.** Every building is a closed shell; the door is a leaf on the outside of a solid wall. Opening one means the first hole in the kit, and a hole is what LOD-by-re-generation was chosen to avoid -- so an interior is a separate mesh swapped in at the threshold, not a subtraction from the exterior.
+- [ ] **Real ironwork and runes.** `IRON` and `RUNE` are the other two layers where alpha carries the shape, so they are the other two the placeholder genuinely lies about. Both are hand-drawn geometry in `sheetIron`/`sheetRunes` today.
+- [ ] **Headset gate (§17).** 20 buildings at the mean is 14k triangles in one draw call, which is comfortable on paper. The untested part is the merge cost at village load, not the frame cost.
+
 ## Villages -- follow-ups
 
 Content and layout are done and gated by `scripts/check-village.mjs` (see DESIGN.md §6). What is left:
 
 - [ ] Replace the stand-in village site in `src/main.js` (`devVillageSite()`) with Phase A's scored villages, once the macro pass is wired into the runtime rather than only into `map.html`. `villages.setSites(phaseA.villages)` and delete the block -- the village content does not change, it just moves to where the water is.
 - [ ] Connect villages to the §6 long-distance path network. Arteries currently end at the village edge; they should hand off to the A\* routes between villages so a road actually goes somewhere.
-- [ ] Interiors. Every building is a closed shell right now -- doors are marked in the plan and geometry, but nothing opens.
 - [ ] Villagers. The plan already knows where the market, the fires, the fields and the doors are, which is the hard half of a schedule.
-- [ ] Swap placeholder geometry for the §9 asset pipeline. The kit is 45 geometries / 5.6k triangles of hand-built boxes and blobs; the shapes are sized and sited correctly, so this is a substitution, not a re-layout.
+- [ ] Swap the remaining placeholder geometry -- wells, fences, drying racks, market stalls -- for the §9 asset pipeline. The dwellings are handled separately by the §19 kit; see Buildings above.
 - [ ] Smoke drifts on a constant wind (`TUNING.wind` in `village.js`). Should follow the weather system when there is one.
 
 ## Day/night, sky and aurora -- follow-ups

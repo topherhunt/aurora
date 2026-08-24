@@ -1,11 +1,11 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildFern, geometryBytes, FERN_DEFAULTS } from './props/fern.js'
-import { mulberry32 } from './sim/mathx.js'
+import { grassTexture, wrapLambert } from './preview-stage.js'
 import fernSource from './props/fern.js?raw'
 
 // ---------------------------------------------------------------------------
-// The procedural fern previewer (fern.html).
+// The procedural fern previewer (gen-fern.html).
 //
 // A generator is only as good as the range it covers, and a range is a seeing
 // question: one fern proves nothing, twenty seeds side by side show whether the
@@ -95,7 +95,10 @@ controls.enableDamping = true
 // fronds -- which is the one thing this previewer exists to judge honestly.
 // autoRotateSpeed is three's unit: a full orbit takes 60/speed seconds when
 // update() is handed a delta, so this is the 0.35 rad/s the group used to spin at.
-controls.autoRotate = true
+// Off by default. A turntable is useful for judging a silhouette and actively
+// in the way when you are dragging a slider and watching one branch -- and
+// judging a silhouette is the thing you do second.
+controls.autoRotate = false
 controls.autoRotateSpeed = (0.35 * 60) / (2 * Math.PI)
 
 // Lighting matched to the game's noon, same as props.html, so the fern is
@@ -106,87 +109,8 @@ scene.add(new THREE.HemisphereLight(0x9fc6ff, 0x2a2418, 0.85))
 
 // --- ground -----------------------------------------------------------------
 //
-// Generated on the fly rather than loaded, for one reason that matters: a PNG
-// fetched out of public/ would land in the "what ships" panel, and a ground
-// texture is not part of what a fern costs. This way the budget stays honest
-// and the ground costs zero bytes on disk.
-//
-// Lo-fi is the intent, not a shortcut, and NearestFilter is the load-bearing
-// part. A smoothed 64px texture stretched over two metres reads as green mud;
-// hard texels read as ground. Same argument as the N64 fidelity target for the
-// ferns themselves -- at this budget the SHAPE of the noise carries the image,
-// so spending resolution on it is the wrong purchase.
-
-// Tileable value noise on a g x g lattice. Wrapping the lattice indices is the
-// whole trick: without the wrap the ground seams visibly at every tile edge.
-function lattice(rand, g) {
-  const v = new Float32Array(g * g)
-  for (let i = 0; i < v.length; i++) v[i] = rand()
-  const smooth = (t) => t * t * (3 - 2 * t)
-  return (x, y) => {
-    const fx = x * g
-    const fy = y * g
-    const ix = Math.floor(fx)
-    const iy = Math.floor(fy)
-    const x0 = ((ix % g) + g) % g
-    const y0 = ((iy % g) + g) % g
-    const x1 = (x0 + 1) % g
-    const y1 = (y0 + 1) % g
-    const tx = smooth(fx - ix)
-    const ty = smooth(fy - iy)
-    const a = v[y0 * g + x0]
-    const b = v[y0 * g + x1]
-    const c = v[y1 * g + x0]
-    const d = v[y1 * g + x1]
-    return (a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty
-  }
-}
-
-// Darker and less saturated than the fern deliberately. Ground and foliage that
-// share a value sit on top of each other and the fern reads as a stain on the
-// grass rather than as a plant standing in it -- which is also true in the game,
-// where the ferns will be the thing you look at and the ground is what they are
-// seen against.
-const GRASS_DARK = [0x16, 0x1e, 0x10]
-const GRASS_LIGHT = [0x3c, 0x50, 0x22]
-
-function grassTexture(size = 64) {
-  const rand = mulberry32(7)
-  const clump = lattice(rand, 4) // patches, a couple of metres across
-  const blade = lattice(rand, 16) // texture within a patch
-
-  const data = new Uint8Array(size * size * 4)
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const u = x / size
-      const v = y / size
-      let n = clump(u, v) * 0.62 + blade(u, v) * 0.38
-      // Quantise to six steps. The banding IS the look: a console of this era
-      // could not afford a smooth gradient across a ground texture, and the eye
-      // reads the steps as clumps rather than as an artefact.
-      n = Math.round(n * 5) / 5
-      // Per-texel speckle AFTER quantising, so the bands do not read as flat
-      // plates of colour.
-      n = Math.min(1, Math.max(0, n + (rand() - 0.5) * 0.18))
-
-      const o = (y * size + x) * 4
-      for (let c = 0; c < 3; c++) {
-        data[o + c] = Math.round(GRASS_DARK[c] + (GRASS_LIGHT[c] - GRASS_DARK[c]) * n)
-      }
-      data[o + 3] = 255
-    }
-  }
-
-  const tex = new THREE.DataTexture(data, size, size)
-  tex.colorSpace = THREE.SRGBColorSpace
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  tex.magFilter = THREE.NearestFilter
-  tex.minFilter = THREE.NearestMipmapLinearFilter
-  tex.generateMipmaps = true
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
-  tex.needsUpdate = true
-  return tex
-}
+// Generated, not loaded, so it costs nothing in the "what ships" panel; see
+// preview-stage.js for why it is deliberately lo-fi and nearest-filtered.
 
 // 24 m of ground, one texture tile every 2 m. The size is set by the fog rather
 // than by the ferns: the plane has to reach past where the fog closes, or the
@@ -194,7 +118,7 @@ function grassTexture(size = 64) {
 const GROUND_SIZE = 24
 const GROUND_TILE = 3 // 3 m, so ~4.7 cm texels and a repeat you have to hunt for
 
-const groundTex = grassTexture()
+const groundTex = grassTexture(renderer)
 groundTex.repeat.set(GROUND_SIZE / GROUND_TILE, GROUND_SIZE / GROUND_TILE)
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE).rotateX(-Math.PI / 2),
@@ -236,51 +160,9 @@ const material = new THREE.MeshLambertMaterial({
   side: THREE.DoubleSide,
 })
 
-// --- wrap lighting ----------------------------------------------------------
-//
-// Fixing the inverted normal made the top of a frond render, but it could not
-// fix the other half of the problem, which is not a bug at all: a rosette
-// radiates through 360 degrees, so under ONE sun a third of its blades always
-// point away and land on dot(N,L) <= 0. Correct Lambert, wrong-looking plant.
-//
-// A real frond is one cell layer thick and light passes straight through it,
-// so the shaded side of a fern is never black -- it is a backlit green. Wrap
-// (half-Lambert) diffuse is the cheap standard model of exactly that: remap
-// the cosine term from [-1,1] to [0,1] instead of clamping the negative half
-// away, so a blade facing directly away still receives `1 - wrap` of the sun.
-//
-// Doing it by string surgery on the stock chunk rather than by writing a
-// material: this is one line of the lighting model, and a hand-written shader
-// would have to re-implement fog, the alpha cutout, and the colour space that
-// MeshLambertMaterial already gets right.
-const WRAP = 0.5
-
-// The chunk has to be patched and inlined over its own #include, not found in
-// the shader body: onBeforeCompile runs BEFORE three resolves #include
-// directives, so at this point the shader still says `#include <...>` and a
-// search for the Lambert source finds nothing.
-const INCLUDE = '#include <lights_lambert_pars_fragment>'
-const DOT_NL = 'float dotNL = saturate( dot( geometryNormal, directLight.direction ) );'
-const WRAPPED =
-  `float dotNL = saturate( ( dot( geometryNormal, directLight.direction ) + ${WRAP} ) ` +
-  `/ ( 1.0 + ${WRAP} ) );`
-
-material.onBeforeCompile = (shader) => {
-  const chunk = THREE.ShaderChunk.lights_lambert_pars_fragment
-  // Loudly, not silently. A three.js upgrade that renames either of these would
-  // otherwise quietly restore the black fronds, and a lighting regression is
-  // exactly the kind of thing nobody notices for six months.
-  if (!chunk.includes(DOT_NL)) {
-    throw new Error('fern wrap lighting: three.js reworded the Lambert dotNL line')
-  }
-  if (!shader.fragmentShader.includes(INCLUDE)) {
-    throw new Error(`fern wrap lighting: no ${INCLUDE} in the Lambert fragment shader`)
-  }
-  shader.fragmentShader = shader.fragmentShader.replace(
-    INCLUDE,
-    chunk.replace(DOT_NL, WRAPPED)
-  )
-}
+// Wrap (half-Lambert) diffuse, so the fronds facing away from the sun read as
+// backlit rather than black. See preview-stage.js for the whole argument.
+material.onBeforeCompile = wrapLambert
 
 // --- the ferns --------------------------------------------------------------
 

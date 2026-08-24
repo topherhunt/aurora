@@ -10,6 +10,9 @@
 //   the baked bicubic tap is O(1) in the point count -- measured, because it is the performance claim the design rests on;
 //   the spline is centripetal and not uniform -- the fixture here is an S-bend that uniform Catmull-Rom demonstrably self-intersects on, so the check is measuring the thing it claims;
 //   the carve profiles hit their stated numbers -- depth at the centreline, zero at two half-widths, road surface on the spline;
+//   a selection handle survives the removal of another point -- the same rule in both point-holding layers, because the failure is silent: the highlight stays put while the drag edits a different point;
+//   water is water -- waterLevelAt answers for rivers as well as lakes, or every riverbed in the world reads as dry land to whatever asks;
+//   null on the dirty-rect channel means "nothing changed" and never "everything" -- the two consumers read it in opposite directions, so the producer only ever emits the unambiguous one;
 //   and >95% of chunks early out of the whole system -- which is what "compact and performance-efficient" reduces to.
 //
 //   node scripts/check-v2-layers.mjs
@@ -566,7 +569,13 @@ export async function run() {
     ])
     const was = paths.pointAt('r1', 3)
     paths.removePoint('r1', 1)
-    const now = paths.pointAt('r1', 3)
+    // Caught rather than allowed to propagate: a layer that compacts makes handle 3 out of range and throws, and a thrown error here would abort the run and hide every check below it behind a stack trace.
+    let now = null
+    try {
+      now = paths.pointAt('r1', 3)
+    } catch (e) {
+      now = [NaN, NaN, NaN, NaN]
+    }
     check(
       now[0] === was[0] && now[2] === was[2],
       'a path handle held on a LATER point still refers to the same world position after a removal',
@@ -689,6 +698,29 @@ export async function run() {
     check(Math.abs(world.snowLineAt(0, 0) - base - 40) < 0.5, 'the facade sees the snow edit through the baked grid', `base + ${(world.snowLineAt(0, 0) - base).toFixed(2)} m`)
     check(world.snowLineAt(0.9 * W, 0.9 * W) === base, 'and the far side of the world is still exactly at the base', `${world.snowLineAt(0.9 * W, 0.9 * W)} vs ${base}`)
 
+    // What null MEANS on this channel. TerrainV2.setLayers reads a null rect as "the document was replaced, rebuild every chunk"; Editor._flushDirty reads it as "nothing to do" and drops it. Both readings cannot be right, so the producer never emits null for anything but "nothing changed" and says "everything" with a full-world rect that both consumers read the same way.
+    const e1 = world.epoch
+    const noop = world.setSnowBase(world.snow.base)
+    check(noop === null && world.epoch === e1, 'a no-op edit changes nothing, bumps no epoch and asks for no rebuild', `epoch ${e1} -> ${world.epoch}`)
+    check(world.takeDirtyRect() === null, 'and leaves the dirty rect empty rather than asking to rebuild the world')
+
+    const everything = world.setSnowBase(world.snow.base + 25)
+    check(
+      everything !== null && everything.minX <= -W && everything.maxX >= W && everything.minZ <= -W && everything.maxZ >= W,
+      'a change with unbounded effect reports the whole world as a rect, not as null',
+      `[${everything.minX},${everything.minZ}]..[${everything.maxX},${everything.maxZ}]`
+    )
+    // Unions only ever grow, so a small edit after a whole-document change cannot shrink the rect back down and strand stale terrain outside it.
+    world.addSnowPoint(0, 0, 5, 200)
+    const merged = world.takeDirtyRect()
+    check(
+      merged.minX <= -W && merged.maxX >= W && merged.minZ <= -W && merged.maxZ >= W,
+      'and a small edit after it does not union the whole-world rect back down to a sub-rect',
+      `[${merged.minX.toFixed(0)},${merged.minZ.toFixed(0)}]..[${merged.maxX.toFixed(0)},${merged.maxZ.toFixed(0)}]`
+    )
+    check(world.markAllDirty().maxX >= W, 'markAllDirty is the one way to say "everything" and it says it as a rect')
+    world.takeDirtyRect()
+
     // carve() order: rivers, then lakes, then roads. A road crossing a river must read as a causeway, which means the road wins where they overlap.
     world.addPath({ kind: 'river', depth: 4, pts: [[-300, 100, 0, 40], [300, 100, 0, 40]] })
     world.addPath({ kind: 'road', feather: 8, pts: [[0, 103, -300, 14], [0, 103, 300, 14]] })
@@ -705,6 +737,23 @@ export async function run() {
     check(world.flattenAt(0, 0) > 0.99, 'flattenAt is saturated on a road deck')
     check(world.flattenAt(4000, 4000) === 0, 'and zero in open country')
     check(world.waterLevelAt(600, 0) === 98, 'waterLevelAt reports the lake surface')
+  }
+
+  console.log('\nwater level: rivers are water too')
+  {
+    // "Is this point underwater" is what keeps trees out of water, and answering it from lakes alone plants a forest down the middle of every river.
+    const world = new Layers(defaultDoc())
+    world.addPath({ kind: 'river', depth: 3, pts: [[-400, 90, 0, 30], [0, 90, 0, 30], [400, 90, 0, 30]] })
+    check(world.waterLevelAt(0, 0) === 90, 'a probe on a river centreline returns that river surface', `${world.waterLevelAt(0, 0)}`)
+    check(world.waterLevelAt(0, 14) === 90, 'and anywhere inside the half-width', `${world.waterLevelAt(0, 14)} at 14 m of 15 m`)
+    // The outer half of the carve profile is the feathered BANK, which the river shapes but is not in.
+    check(world.waterLevelAt(0, 22) === null, 'but the shaped bank outside the half-width is dry land', `${world.waterLevelAt(0, 22)} at 22 m`)
+    check(world.waterLevelAt(0, 4000) === null, 'and open country is dry')
+
+    // A river running into a lake: contiguous water, so the higher surface wins. Taking the lower would sink the river's last few metres into the lake it is joining.
+    world.addLake({ x: 300, z: 0, y: 84, rx: 200, rz: 200, rot: 0, shape: 0, carve: 1, depth: 9 })
+    check(world.waterLevelAt(300, 0) === 90, 'where a river crosses a lake the higher surface wins', `river 90 vs lake 84 -> ${world.waterLevelAt(300, 0)}`)
+    check(world.waterLevelAt(300, 100) === 84, 'and in the lake beside the river it is the lake', `${world.waterLevelAt(300, 100)}`)
   }
 
   // --- culling ----------------------------------------------------------------

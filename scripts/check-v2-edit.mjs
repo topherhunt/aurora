@@ -9,6 +9,12 @@
 //   lake-transform.js  the gizmo-transform -> lake-record mapping
 //   history.js       the bounded undo stack
 //   restore.js       replaying a snapshot into a live Layers
+//   handles.js       re-resolving a point selection across a structural edit
+//
+// Sections 4 and 5 run against the REAL src/v2/layers/, which is three-free by
+// constraint 3 and therefore imports here. That matters: a stub would test this
+// gate's idea of the layer API rather than the layer API, and the six places
+// that idea was already wrong are the reason the section was rewritten.
 //
 // The lake mapping is the one that earns its section. Reading an Object3D's
 // ABSOLUTE scale into a lake's rx/rz in METRES teleports the lake to 1 m across
@@ -17,11 +23,16 @@
 //
 //   node scripts/check-v2-edit.mjs
 
+import { fileURLToPath } from 'node:url'
+
 import { WORLD_SIZE } from '../src/v2/config.js'
 import { raymarchGround } from '../src/v2/edit/pick.js'
 import { gizmoFromLake, lakeFromGizmo, MIN_LAKE_RADIUS } from '../src/v2/edit/lake-transform.js'
 import { History } from '../src/v2/edit/history.js'
 import { restoreLayers, emptyDoc } from '../src/v2/edit/restore.js'
+import { rebindIndex, pathPointPos, snowPointPos } from '../src/v2/edit/handles.js'
+import { Layers } from '../src/v2/layers/layers.js'
+import { livePoints } from '../src/v2/layers/paths.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -243,144 +254,56 @@ function sectionHistory() {
   check(threw, 'a limit with no room for an undo is refused at construction')
 }
 
-// --- section 4: restoring a snapshot into a live Layers ----------------------
-//
-// A stand-in for src/v2/layers/layers.js implementing exactly the mutation
-// surface restore.js codes against. The point is not to test Layers -- that is
-// check-v2.mjs's job -- but to prove the replay leaves the instance holding the
-// document it was handed, ids and all.
+// A six-point spline that stays inside the +/-4096 m world: 210 m of x and
+// 140 m of z per step, so the whole thing is about 1 km long -- a real river,
+// not a fixture at the world edge that would pass here and clamp in the editor.
+const mkPts = (n, ox) =>
+  Array.from({ length: n }, (_, i) => [ox + i * 210, 100 - i * 3, i * 140 - 300, 8 - i * 0.4])
 
-class StubLayers {
-  constructor() {
-    this.doc = { v: 1, snow: { base: 148, band: 47, points: [] }, lakes: [], rivers: [], roads: [] }
-    this.snow = { points: this.doc.snow.points }
-    this.lakes = { items: this.doc.lakes }
-    this.paths = { items: [] }
-    this.epoch = 0
-    this._seq = 0
-    this._dirty = null
-  }
-  _bump(minX = -1, minZ = -1, maxX = 1, maxZ = 1) {
-    this.epoch++
-    this._dirty = this._dirty
-      ? {
-          minX: Math.min(this._dirty.minX, minX), minZ: Math.min(this._dirty.minZ, minZ),
-          maxX: Math.max(this._dirty.maxX, maxX), maxZ: Math.max(this._dirty.maxZ, maxZ),
-        }
-      : { minX, minZ, maxX, maxZ }
-  }
-  takeDirtyRect() {
-    const d = this._dirty
-    this._dirty = null
-    return d
-  }
-  addSnowPoint(x, z, delta, radius) {
-    this.snow.points.push([x, z, delta, radius])
-    this._bump(x - radius, z - radius, x + radius, z + radius)
-    return this.snow.points.length - 1
-  }
-  moveSnowPoint(i, x, z) {
-    this.snow.points[i][0] = x
-    this.snow.points[i][1] = z
-    this._bump()
-  }
-  setSnowPoint(i, p) {
-    if ('delta' in p) this.snow.points[i][2] = p.delta
-    if ('radius' in p) this.snow.points[i][3] = p.radius
-    this._bump()
-  }
-  removeSnowPoint(i) {
-    this.snow.points.splice(i, 1)
-    this._bump()
-  }
-  addLake(l) {
-    const id = `l${++this._seq}`
-    this.lakes.items.push({ id, ...l })
-    this._bump()
-    return id
-  }
-  _lake(id) {
-    const l = this.lakes.items.find((k) => k.id === id)
-    if (!l) throw new Error(`StubLayers: no lake ${id}`)
-    return l
-  }
-  updateLake(id, patch) {
-    Object.assign(this._lake(id), patch)
-    this._bump()
-  }
-  removeLake(id) {
-    this.lakes.items.splice(this.lakes.items.indexOf(this._lake(id)), 1)
-    this._bump()
-  }
-  addPath(kind, pts) {
-    const id = `${kind === 'river' ? 'r' : 'd'}${++this._seq}`
-    this.paths.items.push({ id, kind, depth: kind === 'river' ? 2 : 0, feather: kind === 'road' ? 8 : 0, pts })
-    this._bump()
-    return id
-  }
-  movePathPoint(id, i, x, y, z) {
-    const p = this.paths.items.find((k) => k.id === id).pts[i]
-    p[0] = x
-    p[1] = y
-    p[2] = z
-    this._bump()
-  }
-  setPathWidth(id, i, w) {
-    this.paths.items.find((k) => k.id === id).pts[i][3] = w
-    this._bump()
-  }
-  removePathPoint(id, i) {
-    this.paths.items.find((k) => k.id === id).pts.splice(i, 1)
-    this._bump()
-  }
-  removePath(id) {
-    this.paths.items.splice(this.paths.items.findIndex((k) => k.id === id), 1)
-    this._bump()
-  }
-  serialize() {
-    const of = (kind) =>
-      this.paths.items
-        .filter((p) => p.kind === kind)
-        .map((p) => (kind === 'river'
-          ? { id: p.id, depth: p.depth, pts: p.pts.map((q) => q.slice()) }
-          : { id: p.id, feather: p.feather, pts: p.pts.map((q) => q.slice()) }))
-    return {
-      v: 1,
-      snow: { base: this.doc.snow.base, band: this.doc.snow.band, points: this.snow.points.map((p) => p.slice()) },
-      lakes: this.lakes.items.map((l) => ({ ...l })),
-      rivers: of('river'),
-      roads: of('road'),
-    }
-  }
-}
-
-function sectionRestore() {
-  console.log('\nsnapshot -> live Layers')
-
-  const layers = new StubLayers()
-  layers.doc.snow.base = 210
-  layers.doc.snow.band = 38
+function fixtureLayers() {
+  const layers = new Layers()
+  // Band has no setter (see restore.js); base does, and it marks the world dirty.
+  layers.snow.band = 38
+  layers.setSnowBase(210)
   layers.addSnowPoint(-1200, 400, 55, 900)
   layers.addSnowPoint(2100, -800, -30, 600)
   layers.addSnowPoint(120, 60, 12, 350)
   layers.addLake({ x: 0, z: 0, y: 120, rx: 80, rz: 55, rot: 0.4, shape: 0, carve: 1, depth: 8 })
   layers.addLake({ x: 900, z: -420, y: 96, rx: 40, rz: 40, rot: 0, shape: 1, carve: 1, depth: 5 })
-  const mkPts = (n, ox) =>
-    Array.from({ length: n }, (_, i) => [ox + i * 210, 100 - i * 3, i * 140 - 300, 8 - i * 0.4])
-  layers.addPath('river', mkPts(6, -2000))
-  layers.addPath('river', mkPts(6, 1400))
-  layers.addPath('road', mkPts(5, -400))
+  layers.addPath({ kind: 'river', pts: mkPts(6, -2000) })
+  layers.addPath({ kind: 'river', pts: mkPts(6, 1400) })
+  layers.addPath({ kind: 'road', pts: mkPts(5, -400) })
+  return layers
+}
 
+function sectionRestore() {
+  console.log('\nsnapshot -> live Layers')
+
+  const layers = fixtureLayers()
   const snapshot = JSON.stringify(layers.serialize())
   // §18's compactness claim, measured rather than asserted. If this ever reaches
   // hundreds of kB, something baked has leaked into the stored representation.
   console.log(`        8 authored objects (3 snow points, 2 lakes, 2 rivers, 1 road) serialise to ${snapshot.length} B`)
   check(snapshot.length < 8192, 'a typical authored world is kilobytes, not megabytes', `${snapshot.length} B`)
 
+  // The document has to survive doc.js's own validator, not just a round trip
+  // through code that wrote it: this is the form that gets committed as
+  // world/layers.json and read back by a boot that never saw this process.
+  let reloaded = null
+  try {
+    reloaded = Layers.deserialize(JSON.parse(snapshot))
+  } catch (e) {
+    check(false, 'the serialised document passes validate() on a cold load', e.message)
+  }
+  if (reloaded !== null) {
+    check(JSON.stringify(reloaded.serialize()) === snapshot, 'the serialised document reloads into an identical world')
+  }
+
   // Wreck the world, then put it back.
   layers.removeLake('l2')
-  layers.moveSnowPoint(0, 9999, 9999)
-  layers.addPath('road', mkPts(3, 5000))
+  layers.moveSnowPoint(0, 3900, -3900)
+  layers.removePathPoint('r1', 2)
+  layers.addPath({ kind: 'road', pts: mkPts(3, 1500) })
   const epochBefore = layers.epoch
   layers.takeDirtyRect()
 
@@ -388,13 +311,14 @@ function sectionRestore() {
   check(JSON.stringify(layers.serialize()) === snapshot, 'a replayed snapshot reproduces the document exactly')
   check(layers.epoch > epochBefore, 'the replay goes through the mutation API and bumps the epoch', `${epochBefore} -> ${layers.epoch}`)
   check(layers.takeDirtyRect() !== null, 'and leaves a dirty rect for the remesh')
-  // The stub mints a fresh id on every add, so a replay that did NOT write the
-  // snapshot's ids back would leave these two lakes called l10 and l11.
-  check(
-    layers.lakes.items.map((l) => l.id).join(',') === 'l1,l2',
-    'ids survive the replay, so a selection and a git diff both stay stable',
-    layers.lakes.items.map((l) => l.id).join(',')
-  )
+  // IdAllocator mints l3 next, having seen l1 and l2 -- so a replay that did NOT
+  // carry the snapshot's ids would leave these two lakes called l3 and l4, and
+  // every selection, every undo entry and every line of the committed
+  // layers.json diff would name an object that no longer exists.
+  const ids = [...layers.lakes.lakes.keys()].join(',')
+  check(ids === 'l1,l2', 'ids survive the replay, so a selection and a git diff both stay stable', ids)
+  const pathIds = [...layers.paths.paths.keys()].join(',')
+  check(pathIds === 'r1,r2,d1', 'and so do river and road ids, including the road that was added and undone', pathIds)
 
   restoreLayers(layers, emptyDoc(210, 38))
   const empty = layers.serialize()
@@ -422,16 +346,87 @@ function sectionRestore() {
   check(baseThrew, 'an empty document refuses to default the snow line to a stale elevation')
 }
 
+// --- section 5: a selection handle across a structural edit ------------------
+//
+// The failure this is here to catch does not throw and does not look wrong on
+// screen: delete a middle control point while a later one is selected, and if
+// the list compacted, the selection silently becomes its neighbour. The gizmo is
+// still drawn on a point, the panel still shows a row, and the next drag moves
+// something the author was not pointing at.
+//
+// Both layers tombstone today, so a cached index would in fact survive a delete.
+// The checks below do not assume that: they assert the WORLD POSITION a handle
+// resolves to, which is the property that actually matters, and they run the
+// same rebind against a compacting list to show it is not leaning on the
+// current convention. insertPoint still renumbers under any convention.
+function sectionHandles() {
+  console.log('\nselection handles across a structural edit')
+
+  const layers = fixtureLayers()
+  const rec = layers.paths.paths.get('r1')
+  const held = pathPointPos(rec.pts[4])
+  const heldXYZ = [...rec.pts[4]]
+
+  layers.removePathPoint('r1', 2)
+  const after = rebindIndex(rec.pts, held, pathPointPos)
+  check(after !== null, 'a handle on a later point survives deleting a middle one', `#4 -> #${after}`)
+  check(
+    after !== null && rec.pts[after][0] === heldXYZ[0] && rec.pts[after][2] === heldXYZ[2],
+    'and still addresses the same world position',
+    after === null ? 'lost' : `${rec.pts[after][0]}, ${rec.pts[after][2]}`
+  )
+  check(livePoints(rec).length === 5, 'the path really did lose a point', `${livePoints(rec).length} live of ${rec.pts.length} slots`)
+
+  // The point that WAS deleted resolves to nothing, which is the honest answer
+  // and the one the editor needs: it falls back to selecting the whole path.
+  check(rebindIndex(rec.pts, { x: -2000 + 2 * 210, z: 2 * 140 - 300 }, pathPointPos) === null, 'the deleted point itself resolves to nothing rather than to its neighbour')
+
+  // A mid-insert renumbers under every convention -- the order IS the curve.
+  const beforeInsert = pathPointPos(rec.pts[4])
+  layers.insertPathPoint('r1', 0, -1900, 98, -230, 7)
+  const shifted = rebindIndex(rec.pts, beforeInsert, pathPointPos)
+  check(shifted === 5, 'an insert below the handle shifts it, and the rebind follows', `#4 -> #${shifted}`)
+
+  // Snow points: same rebind, different storage shape ({x, z, ...} objects).
+  const snowHeld = snowPointPos(layers.snow.points[2])
+  layers.removeSnowPoint(1)
+  const snowAfter = rebindIndex(layers.snow.points, snowHeld, snowPointPos)
+  check(snowAfter === 2 && layers.snow.points[snowAfter].x === snowHeld.x, 'a snow handle survives deleting an earlier snow point', `#2 -> #${snowAfter}`)
+  check(rebindIndex(layers.snow.points, { x: 2100, z: -800 }, snowPointPos) === null, 'and the removed snow point resolves to nothing')
+
+  // The same rebind against a list that COMPACTS. Nothing in the layers does
+  // this now; the point is that the editor would still be correct if one did.
+  const compacting = mkPts(6, 0).map((p) => [...p])
+  const wantCompact = pathPointPos(compacting[4])
+  compacting.splice(2, 1)
+  const idx = rebindIndex(compacting, wantCompact, pathPointPos)
+  check(idx === 3 && compacting[idx][0] === wantCompact.x, 'the same rebind is correct against a list that splices instead', `#4 -> #${idx}`)
+}
+
 export async function run() {
   console.log('\n=== v2 editing tools ===')
   sectionRaymarch()
   sectionLake()
   sectionHistory()
   sectionRestore()
+  sectionHandles()
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
+  // THROWS rather than returning the count, because check-v2.mjs's aggregator
+  // only catches: it calls `await mod.run()` and ignores what comes back, so a
+  // section that returns its failure count reports FAIL lines and then lets the
+  // whole gate print ALL SECTIONS PASSED. The count is still returned for a
+  // caller that wants it, on the path where there is nothing to return but 0.
+  if (failures > 0) throw new Error(`check-v2-edit: ${failures} check(s) failed`)
   return failures
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  process.exit((await run()) === 0 ? 0 : 1)
+// argv[1] is undefined under `node -e`, and comparing it to a string is false
+// rather than a crash -- which is what an aggregator importing run() needs.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  try {
+    await run()
+  } catch (e) {
+    console.error(e.message)
+    process.exit(1)
+  }
 }

@@ -22,7 +22,7 @@ import { LAYER } from '../textures.js'
 // prices it. Change one, change all three in the same commit.
 // ---------------------------------------------------------------------------
 
-// Held constant across the bank. These were chosen in the previewer (fern.html)
+// Held constant across the bank. These were chosen in the previewer (gen-fern.html)
 // against the whole spec, not one variant at a time.
 export const FERN_BASE = {
   curve: 1.6,

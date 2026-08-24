@@ -52,6 +52,32 @@ export const TOOL_KEYS = ['1', '2', '3', '4', '5']
 
 const SELECTABLE = ['snow', 'lake', 'river', 'road']
 
+// ---------------------------------------------------------------------------
+// THE EDITOR AND THE MARKER LAYER NAME HANDLES DIFFERENTLY, and the two shapes
+// have to be translated rather than assumed equal.
+//
+// Markers has one InstancedMesh per GEOMETRY, so its kinds are snow / spline /
+// lake -- a river point and a road point are the same bead and live in the same
+// mesh. Its snow records carry the literal id 'snow' (a snow point has no id in
+// the document) and its lake records carry index 0.
+//
+// The editor selects by DOCUMENT identity: kind river or road, so the context
+// panel can name the thing and the tools can tell one from the other; id null
+// for a snow point; index null for a whole lake or a whole path.
+//
+// Handing one vocabulary to the other throws -- setHighlight rejects an unknown
+// kind -- which is the good case. The quiet one is the id and index mismatch:
+// setHighlight compares all three fields to decide which instance to light up,
+// so ('lake', 'l3', null) against a record of ('lake', 'l3', 0) selects nothing
+// at all and simply draws no highlight.
+// ---------------------------------------------------------------------------
+
+function markerHandle(kind, id, index) {
+  if (kind === 'snow') return { kind: 'snow', id: 'snow', index }
+  if (kind === 'lake') return { kind: 'lake', id, index: 0 }
+  return { kind: 'spline', id, index }
+}
+
 // §18: "a drag must be one remesh per frame-ish, not one per mousemove". 120 ms
 // is eight remeshes a second, which reads as continuous while leaving the worker
 // most of its time for the chunks the drag actually invalidated.
@@ -216,7 +242,8 @@ export class Editor {
   select(kind, id, index) {
     if (!SELECTABLE.includes(kind)) throw new Error(`Editor.select: unknown kind ${kind}`)
     this.selection = { kind, id, index }
-    this.markers.setHighlight(kind, id, index)
+    const m = markerHandle(kind, id, index)
+    this.markers.setHighlight(m.kind, m.id, m.index)
     this._attachGizmo()
   }
 
@@ -238,8 +265,9 @@ export class Editor {
    * to be selected first: the panel's layer list deletes rows the user is not
    * working on and should not have to clobber the selection to do it.
    *
-   * The selection is re-resolved by position rather than kept, because removing
-   * a spline point splices the ones above it down by one. See handles.js.
+   * The selection is re-resolved by POSITION rather than by index, because an
+   * index is only an identity for as long as nothing renumbers the list it
+   * points into. See handles.js.
    */
   removeAt(kind, id, index) {
     if (!SELECTABLE.includes(kind)) throw new Error(`Editor.removeAt: unknown kind ${kind}`)
@@ -258,8 +286,10 @@ export class Editor {
       // Two points is the minimum that is still a line. Deleting one of the last
       // two leaves a spline that carves a single point of nothing, so the whole
       // path goes instead -- which is also what the user meant.
-      const path = this._path(id)
-      if (path.pts.length <= 2) {
+      // The LIVE count, not pts.length: pts carries a null tombstone for every
+      // point already removed, so the raw length says four for a path that has
+      // two points left and the guard below would never fire.
+      if (this._pathCount(id) <= 2) {
         this.layers.removePath(id)
         removedSelection = sel !== null && sel.id === id
       } else {
@@ -273,15 +303,20 @@ export class Editor {
     return true
   }
 
-  setVisible(kind, id, visible) {
-    const key = `${kind}:${id}`
+  // Visibility is EDITOR-LOCAL and currently cosmetic. `Layers` has no hidden
+  // flag and `Markers.sync()` reads the document directly, so this set records
+  // what the author asked for and nothing downstream reads it yet. It is keyed
+  // on the whole handle -- a snow point has no id, only an index -- so the two
+  // sides cannot disagree about what a row addresses.
+  setVisible(kind, id, index, visible) {
+    const key = `${kind}:${id}:${index}`
     if (visible) this.hidden.delete(key)
     else this.hidden.add(key)
     this.markers.sync()
   }
 
-  isVisible(kind, id) {
-    return !this.hidden.has(`${kind}:${id}`)
+  isVisible(kind, id, index) {
+    return !this.hidden.has(`${kind}:${id}:${index}`)
   }
 
   // --- the frame loop -------------------------------------------------------
@@ -298,7 +333,7 @@ export class Editor {
     this._flushDirty(false)
 
     // One ground pick per frame at most, never one per mousemove: a pick is
-    // ~840 heightAt calls (pick.js) and a mousemove can arrive far more often
+    // ~600 heightAt calls (pick.js measures it) and a mousemove arrives far more often
     // than a frame does.
     if (this.draft && this._ndc) {
       const hit = this._pickNdc()
@@ -455,10 +490,17 @@ export class Editor {
     this._raycaster.setFromCamera(this._pointer, this.camera)
     const hit = this.markers.hitTest(this._raycaster)
     if (!hit) return null
-    if (!SELECTABLE.includes(hit.kind)) {
-      throw new Error(`Editor: markers.hitTest returned kind ${hit.kind}, which is not one of ${SELECTABLE.join('/')}`)
-    }
-    return hit
+    return this._editorHandle(hit)
+  }
+
+  // The other direction of markerHandle: a Markers hit, in the editor's terms.
+  // A spline bead does not know whether it belongs to a river or a road -- both
+  // live in the same InstancedMesh -- so the kind comes from the path record.
+  _editorHandle(hit) {
+    if (hit.kind === 'snow') return { kind: 'snow', id: null, index: hit.index }
+    if (hit.kind === 'lake') return { kind: 'lake', id: hit.id, index: null }
+    if (hit.kind === 'spline') return { kind: this._path(hit.id).kind, id: hit.id, index: hit.index }
+    throw new Error(`Editor: markers.hitTest returned kind ${hit.kind}, expected snow/spline/lake`)
   }
 
   _pickEvent(ev) {
@@ -591,24 +633,22 @@ export class Editor {
       // a thing in space -- so the handle rides on the ground beneath it.
       return { x: p.x, y: this.height.heightAt(p.x, p.z, 0), z: p.z }
     }
-    const pts = this._path(sel.id).pts
-    const p = pts[sel.index]
-    if (!p) throw new Error(`Editor: ${sel.kind} ${sel.id} has no point ${sel.index}`)
+    const p = this._pathPoint(sel.id, sel.index)
     return { x: p[0], y: p[1], z: p[2] }
   }
 
   /**
    * Re-resolve the selected point handle by WORLD POSITION, for use around any
-   * edit that can renumber the list it lives in. See handles.js: the two layers
-   * disagree about whether removing a point splices or leaves a hole, and this
-   * is correct under either. Returns a function to call after the edit.
+   * edit that can renumber the list it lives in. Returns a function to call
+   * after the edit. See handles.js for why this does not lean on either layer's
+   * current removal convention.
    */
   _holdPointHandle() {
     const sel = this.selection
     if (!sel || sel.index === null) return () => {}
     const want = sel.kind === 'snow'
       ? { x: this._snowPoint(sel.index).x, z: this._snowPoint(sel.index).z }
-      : pathPointPos(this._path(sel.id).pts[sel.index])
+      : pathPointPos(this._pathPoint(sel.id, sel.index))
     return () => {
       const found = sel.kind === 'snow'
         ? rebindIndex(this.layers.snow.points, want, snowPointPos)
@@ -749,8 +789,10 @@ export class Editor {
     const relief = this.relief
 
     if (sel.kind === 'snow') {
-      const p = this.layers.snow.points[sel.index]
-      if (p === undefined || p === null) return []
+      // Throws rather than returning [] on a dead handle: an empty context panel
+      // beside a drawn selection is a bug that shows as nothing at all, and the
+      // selection cannot legitimately outlive its point (removeAt re-resolves).
+      const p = this._snowPoint(sel.index)
       return [
         { label: 'snow point', value: `#${sel.index}` },
         { label: 'x', value: p.x, step: 1, ...xz, set: (v, c) => this._setSnow(sel.index, { x: v }, c) },
@@ -792,17 +834,21 @@ export class Editor {
     }
 
     const path = this._path(sel.id)
+    const live = this._pathCount(sel.id)
     if (sel.index === null) {
       return [
         { label: sel.kind, value: path.id },
-        { label: 'points', value: path.pts.length },
+        { label: 'points', value: live },
         { label: 'depth', value: path.depth, unit: 'm' },
         { label: 'feather', value: path.feather, unit: 'm' },
       ]
     }
-    const p = path.pts[sel.index]
+    const p = this._pathPoint(sel.id, sel.index)
     return [
-      { label: sel.kind, value: `${path.id} #${sel.index} of ${path.pts.length}` },
+      // The handle is an index into pts INCLUDING tombstones and the count is
+      // of the live ones, so "#5 of 4" is a correct reading of a path that has
+      // had a point deleted, not a bug in this row.
+      { label: sel.kind, value: `${path.id} #${sel.index} of ${live}` },
       { label: 'x', value: p[0], step: 1, ...xz, set: (v, c) => this._setPathPoint(sel, { x: v }, c) },
       { label: 'y', value: p[1], step: 0.5, min: yMin, max: yMax, unit: 'm', set: (v, c) => this._setPathPoint(sel, { y: v }, c) },
       { label: 'z', value: p[2], step: 1, ...xz, set: (v, c) => this._setPathPoint(sel, { z: v }, c) },
@@ -820,18 +866,24 @@ export class Editor {
       // Holes, from SnowField.removePoint. They are not rows; the index they
       // hold open belongs to a point that no longer exists.
       if (p === null) continue
+      // id null and label 's3': a snow point has no id in the document -- it is
+      // addressed by its index alone -- and `id` here is what the panel hands
+      // straight back to select() and removeAt(). They were once the same field
+      // and the row for the selected snow point never highlighted, because
+      // `sel.id` was null and the row's was the string.
       out.push({
         kind: 'snow',
-        id: `s${i}`,
+        id: null,
         index: i,
+        label: `s${i}`,
         summary: `${p.delta >= 0 ? '+' : ''}${p.delta.toFixed(0)} m over r${p.radius.toFixed(0)}`,
       })
     }
     for (const l of this.layers.lakes.lakes.values()) {
-      out.push({ kind: 'lake', id: l.id, index: null, summary: `${l.rx.toFixed(0)} x ${l.rz.toFixed(0)} m, y ${l.y.toFixed(0)}` })
+      out.push({ kind: 'lake', id: l.id, index: null, label: l.id, summary: `${l.rx.toFixed(0)} x ${l.rz.toFixed(0)} m, y ${l.y.toFixed(0)}` })
     }
     for (const p of this.layers.paths.paths.values()) {
-      out.push({ kind: p.kind, id: p.id, index: null, summary: `${p.pts.length} pts` })
+      out.push({ kind: p.kind, id: p.id, index: null, label: p.id, summary: `${this._pathCount(p.id)} pts` })
     }
     return out
   }
@@ -851,6 +903,23 @@ export class Editor {
     const p = this.layers.paths.paths.get(id)
     if (p === undefined) throw new Error(`Editor: no path ${id}`)
     return p
+  }
+
+  // A path point by HANDLE, which is an index into rec.pts and not a position
+  // in the curve: PathSet.removePoint tombstones, so index 3 stays index 3 for
+  // the rest of the session however many points below it are deleted.
+  //
+  // Through pointAt rather than pts[index], because pointAt distinguishes an
+  // out-of-range index (arithmetic) from a tombstone (a handle held across a
+  // delete) and says which. Indexing pts gives undefined or null and turns a
+  // stale selection into a silent no-op drag.
+  _pathPoint(id, index) {
+    return this.layers.paths.pointAt(id, index)
+  }
+
+  /** Live control points of a path, tombstones excluded -- pts.length counts holes. */
+  _pathCount(id) {
+    return this.layers.paths.handlesOf(id).length
   }
 
   _snowPoint(index) {
@@ -908,7 +977,7 @@ export class Editor {
   }
 
   _setPathPoint(sel, patch, commit = true) {
-    const p = this._path(sel.id).pts[sel.index]
+    const p = this._pathPoint(sel.id, sel.index)
     if ('width' in patch) this.layers.setPathWidth(sel.id, sel.index, patch.width)
     if ('x' in patch || 'y' in patch || 'z' in patch) {
       const at = this._clampXZ('x' in patch ? patch.x : p[0], 'z' in patch ? patch.z : p[2])

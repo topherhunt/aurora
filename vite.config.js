@@ -178,6 +178,29 @@ function worldDoc() {
   }
 }
 
+// --- /v2 as a route rather than a filename (dev only) -----------------------
+//
+// §18 asks for a "/v2 route", and without this there is not one. `v2.html` is a
+// rollup input, so `/v2.html` works -- but a bare `/v2` misses on disk and falls
+// into vite's SPA fallback, which answers index.html. That is the WRONG page
+// served with a 200, so the failure looks like "v2 renders the v1 world" rather
+// than like a missing route.
+//
+// Registered in the body of configureServer, not in the returned post-hook, so
+// it rewrites the URL before vite's own html middleware and fallback see it.
+function v2Route() {
+  return {
+    name: 'aurora:v2-route',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const path = req.url.split('?')[0]
+        if (path === '/v2' || path === '/v2/') req.url = `/v2.html${req.url.slice(path.length)}`
+        next()
+      })
+    },
+  }
+}
 
 // WebXR requires a secure context. Three ways to get one on the Quest:
 //
@@ -196,12 +219,14 @@ function worldDoc() {
 // inspected whole, and the "eye" that every "tune it by eye" constant in
 // phase-a.js refers to -- and props.html is the same kind of eye for the §9
 // asset library: 160 built props that check-props.mjs can assert are correct and
-// nothing could actually show you. fern.html is the tuning bench for the
-// procedural ferns (src/props/fern.js), which have no built asset to inspect --
-// the "library" for a generated prop is the range its parameters cover.
+// nothing could actually show you. gen-fern.html, gen-tree.html and
+// gen-building.html are the tuning benches for the procedural content
+// (src/props/fern.js, tree.js, src/buildings/), which has no built asset to
+// inspect -- the "library" for a generated asset is the range its parameters
+// cover, and the only way to see a range is to put twenty seeds side by side.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), v2Route()],
   server: { host: true, port: 5173 },
   worker: { format: 'es' },
   build: {
@@ -211,7 +236,9 @@ export default defineConfig({
         spike: resolve(__dirname, 'spike.html'),
         map: resolve(__dirname, 'map.html'),
         props: resolve(__dirname, 'props.html'),
-        fern: resolve(__dirname, 'fern.html'),
+        genFern: resolve(__dirname, 'gen-fern.html'),
+        genTree: resolve(__dirname, 'gen-tree.html'),
+        genBuilding: resolve(__dirname, 'gen-building.html'),
         // §18. The alternative world: coarse shape imported from an image, fine
         // shape procedural down to 10 cm, and everything a human wants to place
         // by hand authored as a content layer on top. Shares the coordinate box

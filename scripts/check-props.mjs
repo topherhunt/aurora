@@ -312,6 +312,38 @@ const orphans = onDisk.filter((f) => !layers.has(`layers/${f}`))
 check(orphans.length === 0, 'no orphaned layer PNGs',
   orphans.length ? orphans.slice(0, 5).join(', ') : '')
 
+// --- the IMAGE_LAYERS registry ----------------------------------------------
+//
+// A different set from the baked prop layers above: these are the hand-cut
+// PNGs that src/textures.js patches into the array at startup -- the fern
+// fronds and the tree bark and leaves. Checked here because the failure mode is
+// silent and slow. `loadImageLayers` throws on a 404, but that throw happens in
+// a browser, at runtime, in a `.catch` that logs; what a player sees is a
+// forest of invisible trees, and what a developer sees is a console line they
+// scrolled past. The registry is a list of paths and sizes, and a build gate is
+// where a list of paths and sizes belongs.
+const { IMAGE_LAYERS, TEX_SIZE, LAYER, LAYER_COUNT } = await import(
+  path.join(ROOT, 'src/textures.js')
+)
+const { readPng } = await import(path.join(ROOT, 'tools/props/png.mjs'))
+
+for (const [layer, url] of Object.entries(IMAGE_LAYERS)) {
+  const name = Object.keys(LAYER).find((k) => LAYER[k] === Number(layer)) ?? `layer ${layer}`
+  const file = path.join(ROOT, 'public', url)
+  if (!fs.existsSync(file)) {
+    check(false, `${name} -> ${url}`, 'missing')
+    continue
+  }
+  const png = readPng(file)
+  check(png.width === TEX_SIZE && png.height === TEX_SIZE, `${name} -> ${url}`,
+    `${png.width}x${png.height}${png.width === TEX_SIZE && png.height === TEX_SIZE ? '' : ` -- every array layer must be ${TEX_SIZE}x${TEX_SIZE}`}`)
+}
+
+// An index past the end writes into another layer's slice, or off the buffer.
+const overflow = Object.entries(LAYER).filter(([, v]) => v >= LAYER_COUNT)
+check(overflow.length === 0, 'every LAYER index is inside LAYER_COUNT',
+  overflow.length ? overflow.map(([k, v]) => `${k}=${v} >= ${LAYER_COUNT}`).join(', ') : `${Object.keys(LAYER).length} named / ${LAYER_COUNT} slices`)
+
 // --- report -----------------------------------------------------------------
 
 console.log(`\n=== summary ===\n`)
