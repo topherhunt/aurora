@@ -408,7 +408,14 @@ export async function run() {
       `        ${fit.n} source pixels: rms ${fit.rms.toFixed(4)} m, max ${fit.max.toFixed(2)} m   ` +
         `with Z stretched to fill the square: rms ${stretched.rms.toFixed(2)} m, max ${stretched.max.toFixed(1)} m`
     )
-    check(fit.rms < 1, 'the shipped field is the source, pixel for pixel, under the stated mapping', `rms ${fit.rms.toFixed(4)} m over a ${(meta.maxY - meta.minY).toFixed(0)} m range`)
+    // The tolerance is a FRACTION OF THE RELIEF, not a number of metres. Every
+    // term in this residual -- the quantisation step, the deblock's correction,
+    // the fit itself -- is a fraction of maxY, so an absolute threshold silently
+    // tightens or loosens whenever make-heightmap.mjs is re-run with a different
+    // --maxY. It was 1 m against a 300 m range; the same 1/300 against whatever
+    // range is shipped is the check that was actually meant.
+    const rel = fit.rms / (meta.maxY - meta.minY)
+    check(rel < 1 / 300, 'the shipped field is the source, pixel for pixel, under the stated mapping', `rms ${fit.rms.toFixed(4)} m = ${(rel * 100).toFixed(3)}% of the ${(meta.maxY - meta.minY).toFixed(0)} m range`)
     check(stretched.rms > 10 * fit.rms, 'and the measurement can see a wrong mapping -- a stretched Z fails it', `${(stretched.rms / fit.rms).toFixed(0)}x worse`)
   }
 

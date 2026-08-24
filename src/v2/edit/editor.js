@@ -7,6 +7,7 @@ import { raymarchGround, screenRay, pointerNdc } from './pick.js'
 import { gizmoFromLake, lakeFromGizmo, MIN_LAKE_RADIUS } from './lake-transform.js'
 import { restoreLayers } from './restore.js'
 import { rebindIndex, pathPointPos, snowPointPos } from './handles.js'
+import { splitPoint } from './split.js'
 import { saveLocal } from './persist.js'
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,11 @@ export const TOOLS = ['select', 'snowline', 'lake', 'river', 'road']
 // player, which leaves no mnemonic letters that are not already load-bearing.
 export const TOOL_KEYS = ['1', '2', '3', '4', '5']
 
+// Blender's keys for the gizmo, and the panel's button hints, from one table --
+// translate is G and not T, and a hint that says otherwise is a lie the user
+// only finds out about by pressing it.
+export const GIZMO_KEYS = { translate: 'g', rotate: 'r', scale: 's' }
+
 const SELECTABLE = ['snow', 'lake', 'river', 'road']
 
 // ---------------------------------------------------------------------------
@@ -87,10 +93,26 @@ const DIRTY_MS = 120
 const DRAG_SLOP = 4
 const DOUBLE_CLICK_MS = 350
 
-// §18 "Placement is one click on the terrain". delta 0 means the new point
-// starts ON the global line, so placing one changes nothing until it is dragged
-// -- placement and authoring stay separate gestures.
-const SNOW_DELTA = 0
+// How near a handle a click still counts as a click ON it, in pixels.
+//
+// A raycast alone asks "did the pointer land on the geometry", and for a
+// PLACEMENT tool that is the wrong question. The two ways to miss are not
+// symmetric: clicking a handle you meant to place near costs one click to undo,
+// while missing a handle you meant to grab drops a SECOND object on top of the
+// first -- often behind it, where the only sign anything happened is that the
+// numbers in the panel stopped matching what you drag. So a near miss resolves
+// toward selecting. 10 px is just inside the 11 px radius the handles are drawn
+// at (HANDLE_TAN in markers.js), which is what keeps this from feeling magnetic.
+const HANDLE_PICK_PX = 10
+
+// Floors for SCALE drags, and only for scale drags. Neither layer needs them --
+// SnowField takes any radius > 0 and a path any width > 0 -- but a scale gizmo
+// is MULTIPLICATIVE, and a factor that is allowed to reach zero cannot be
+// dragged back out: the size it was scaling is gone. Same reason MIN_LAKE_RADIUS
+// exists in lake-transform.js. The panel's own numeric fields keep their own
+// bounds and are not affected.
+const MIN_SNOW_RADIUS = 10
+const MIN_PATH_WIDTH = 0.5
 
 // A snow-line control point should shape ONE mountain flank, which is a fraction
 // of the world rather than a fixed number of metres. DERIVED, because the world
@@ -122,8 +144,13 @@ const PREVIEW_MAX_VERTS = 512
 const CURSOR_MS = 250 // the cursor readout repaints with the panel, at 4 Hz
 
 export class Editor {
-  constructor({ scene, camera, renderer, layers, height, markers, onDirty, orbitLock, elevation }) {
+  constructor({ scene, camera, renderer, layers, height, markers, onDirty, onView, orbitLock, elevation }) {
     if (typeof onDirty !== 'function') throw new Error('Editor: onDirty(rect) is required')
+    // Required rather than defaulted to a no-op, because a missing one is
+    // invisible: every button still works, the hidden set still fills up, and
+    // the only symptom is that hiding an object does not hide it -- which is
+    // the bug this argument was added to fix.
+    if (typeof onView !== 'function') throw new Error('Editor: onView() is required -- it is how a visibility change reaches the water and road surfaces')
     if (typeof orbitLock !== 'function') throw new Error('Editor: orbitLock(bool) is required')
     if (typeof layers.takeDirtyRect !== 'function') throw new Error('Editor: layers does not look like a v2 Layers')
     if (typeof markers.hitTest !== 'function') throw new Error('Editor: markers does not look like a v2 Markers')
@@ -158,6 +185,7 @@ export class Editor {
     this.height = height
     this.markers = markers
     this.onDirty = onDirty
+    this.onView = onView
 
     this.tool = 'select'
     this.active = false
@@ -303,16 +331,105 @@ export class Editor {
     return true
   }
 
-  // Visibility is EDITOR-LOCAL and currently cosmetic. `Layers` has no hidden
-  // flag and `Markers.sync()` reads the document directly, so this set records
-  // what the author asked for and nothing downstream reads it yet. It is keyed
+  /**
+   * Split the segment on one side of a control point. Where the new point lands
+   * is splitPoint()'s decision and is gated there; this is the part that cannot
+   * be -- finding the neighbour through the tombstones, and re-anchoring the
+   * selection afterwards.
+   *
+   * `dir` is -1 for the segment before the point and +1 for the one after.
+   *
+   * NOTE ON HANDLES, because insertPoint is the ONE operation that renumbers
+   * them: it shifts every index at or after the insertion, so the caller's
+   * `index` is stale the moment this returns. Selecting by the index insertPoint
+   * hands back is how that is dealt with here (see handles.js) -- and selecting
+   * the NEW point is also what the user wants, since it is the one they are
+   * about to drag. Anything else holding a handle into this path has to
+   * re-resolve.
+   */
+  insertPathPoint(id, index, dir) {
+    const handles = this.layers.paths.handlesOf(id)
+    const at = handles.indexOf(index)
+    if (at < 0) throw new Error(`Editor.insertPathPoint: ${id} has no live point at index ${index}`)
+
+    const pts = handles.map((h) => this._pathPoint(id, h))
+    const q = splitPoint(pts, at, dir, (x, z) => this.height.heightAt(x, z, 0))
+    const on = this._clampXZ(q[0], q[2])
+    // afterIndex is a HANDLE, not a curve position: -1 means "before the first",
+    // which is what a backwards split at the head of the path is.
+    const after = dir > 0 ? index : at > 0 ? handles[at - 1] : -1
+    const created = this.layers.insertPathPoint(id, after, on.x, q[1], on.z, q[3])
+    this._commit()
+    this.select(this._path(id).kind, id, created)
+    return created
+  }
+
+  /**
+   * The menu for a right-click: `[{label, run}]`, empty when the click was not
+   * on anything. Selecting the thing under the cursor is part of it -- a menu
+   * that acts on something other than what the panel is showing is a trap.
+   *
+   * The editor builds the ITEMS and the panel draws them. It is the editor that
+   * knows a spline point can be split and a lake cannot, and putting that
+   * knowledge in the panel means the DOM layer deciding what is legal.
+   */
+  menuFor(ev) {
+    if (!this.active) return []
+    const handle = this._hitHandle(ev)
+    if (!handle) return []
+    const { kind, id, index } = handle
+    this.select(kind, id, index)
+
+    if (kind === 'snow') {
+      return [{ label: `delete snow point #${index}`, run: () => this.removeAt(kind, id, index) }]
+    }
+    if (kind === 'lake') {
+      return [{ label: `delete ${id}`, run: () => this.removeAt(kind, id, null) }]
+    }
+    const last = this._pathCount(id) <= 2
+    return [
+      { label: 'split before', run: () => this.insertPathPoint(id, index, -1) },
+      { label: 'split after', run: () => this.insertPathPoint(id, index, 1) },
+      // Named for what it does rather than for what was clicked: below three
+      // points removeAt takes the whole path, and a menu that says "delete point"
+      // and deletes the river is worse than one that says so first.
+      { label: last ? `delete point (takes ${id} with it)` : `delete point #${index}`, run: () => this.removeAt(kind, id, index) },
+      { label: `delete ${kind} ${id}`, run: () => this.removeAt(kind, id, null) },
+    ]
+  }
+
+  /**
+   * Which gizmo modes the current selection accepts and which one is live, or
+   * null when nothing is selected. The panel draws this as buttons: G/R/S are
+   * Blender's keys and §18 asked for them, but a key you have to already know
+   * about is not a control, and "I don't see a way to change its size" is what
+   * a hidden mode looks like from the outside.
+   */
+  gizmoModes() {
+    if (!this.gizmo.attached) return null
+    return { modes: this.gizmo.modes.slice(), active: this.gizmo.mode }
+  }
+
+  setGizmoMode(mode) {
+    return this.gizmo.setMode(mode)
+  }
+
+  // Visibility is EDITOR-LOCAL: `Layers` has no hidden flag, because hiding is
+  // a render decision and the document is the authored truth. The set is keyed
   // on the whole handle -- a snow point has no id, only an index -- so the two
   // sides cannot disagree about what a row addresses.
+  //
+  // Everything that draws from the document has to be TOLD, and that is what
+  // onView is for. This used to end at `markers.sync()`, so the panel's eye
+  // button hid the handle and left the lake exactly where it was: the row said
+  // hidden, the world said otherwise, and the only thing that had actually
+  // happened was that the object could no longer be clicked.
   setVisible(kind, id, index, visible) {
     const key = `${kind}:${id}:${index}`
     if (visible) this.hidden.delete(key)
     else this.hidden.add(key)
     this.markers.sync()
+    this.onView()
   }
 
   isVisible(kind, id, index) {
@@ -411,9 +528,9 @@ export class Editor {
 
     if (!this.gizmo.attached) return false
     const k = ev.key.toLowerCase()
-    if (k === 'g') return this.gizmo.setMode('translate')
-    if (k === 'r') return this.gizmo.setMode('rotate')
-    if (k === 's') return this.gizmo.setMode('scale')
+    for (const [mode, key] of Object.entries(GIZMO_KEYS)) {
+      if (k === key) return this.gizmo.setMode(mode)
+    }
     if (k === 'x' || k === 'y' || k === 'z') {
       // Blender-style: press an axis to constrain, press the same axis again to
       // let go of the constraint. A toggle rather than an armed-after-G-R-S
@@ -465,7 +582,17 @@ export class Editor {
     const at = this._clampXZ(hit.x, hit.z)
 
     if (this.tool === 'snowline') {
-      const i = this.layers.addSnowPoint(at.x, at.z, SNOW_DELTA, SNOW_RADIUS)
+      // The new point's delta puts the local snow line THROUGH THE GROUND YOU
+      // CLICKED, rather than at 0, which would leave it on the global line.
+      // Placing at 0 is the tidier idea and the wrong one to use: every snow
+      // point is placed by pointing at a piece of mountain and saying "the snow
+      // starts about here", so the click already carries the elevation the
+      // author meant, and starting at 0 throws it away and makes them drag the
+      // point back to the ground they were pointing at before authoring can
+      // start. Clamped because a click on a peak in a world whose relief is
+      // shallower than snow.base can ask for a delta the field will not take.
+      const delta = this._clampDelta(hit.y - this.layers.snow.base)
+      const i = this.layers.addSnowPoint(at.x, at.z, delta, SNOW_RADIUS)
       this._commit()
       this.select('snow', null, i)
       return
@@ -484,11 +611,26 @@ export class Editor {
     this._repaintPreview()
   }
 
+  // Two passes, in this order on purpose: the ray first, so that when handles
+  // overlap the one you can actually SEE under the cursor wins, and only when
+  // the ray hits nothing does proximity get a say. Doing it the other way round
+  // would sometimes select a nearer-in-screen-space handle over the one drawn on
+  // top of the pixel that was clicked.
   _hitHandle(ev) {
     const ndc = pointerNdc(ev, this.renderer.domElement)
     this._pointer.set(ndc.x, ndc.y)
     this._raycaster.setFromCamera(this._pointer, this.camera)
-    const hit = this.markers.hitTest(this._raycaster)
+    let hit = this.markers.hitTest(this._raycaster)
+    if (!hit) {
+      const el = this.renderer.domElement
+      const w = el.clientWidth
+      const h = el.clientHeight
+      if (!(w > 0) || !(h > 0)) throw new Error(`Editor: canvas has no size (${w}x${h}), cannot convert a pixel tolerance to NDC`)
+      // NDC spans 2 across the viewport, hence the 2x: HANDLE_PICK_PX pixels is
+      // 2 * px / size in each axis, and the two axes differ on any canvas that
+      // is not square.
+      hit = this.markers.hitTestNear(this.camera, ndc.x, ndc.y, (2 * HANDLE_PICK_PX) / w, (2 * HANDLE_PICK_PX) / h)
+    }
     if (!hit) return null
     return this._editorHandle(hit)
   }
@@ -611,10 +753,43 @@ export class Editor {
     this.proxy.rotation.set(0, 0, 0)
     this.proxy.scale.set(1, 1, 1)
     this.proxy.updateMatrixWorld()
-    this._dragBase = null
-    // A point has no rotation and no size, so it gets translate and nothing
-    // else. Offering R and S here would offer controls with nowhere to write.
-    return { modes: ['translate'] }
+    // A point has no rotation, so R still has nowhere to write. It DOES have a
+    // size: a snow point's `radius` is how far its influence reaches and a
+    // control point's `width` is how wide the river is there, and both were
+    // reachable only by typing in the panel while the object they describe is
+    // drawn in the world at that exact size. S is that drag. The proxy has no
+    // scale of its own to keep -- it is reset to 1 on every commit -- so the
+    // base size the drag multiplies is captured here instead.
+    this._dragBase = sel.kind === 'snow'
+      ? { radius: this._snowPoint(sel.index).radius }
+      : { width: this._pathPoint(sel.id, sel.index)[3] }
+    return { modes: ['translate', 'scale'] }
+  }
+
+  /**
+   * One number out of a three-axis scale drag, for the things that have a single
+   * size rather than a box: whichever axis was pulled FURTHEST from 1, measured
+   * as a ratio so a halving counts the same as a doubling.
+   *
+   * The alternative -- average the three -- reads as sluggish, because the two
+   * axes the user did not touch are both exactly 1 and drag the answer back
+   * toward no change. This way the uniform-scale square and any single axis all
+   * do what they look like they do.
+   */
+  _scaleFactor() {
+    const s = this.proxy.scale
+    let best = 1
+    for (const v of [Math.abs(s.x), Math.abs(s.y), Math.abs(s.z)]) {
+      if (!(v > 0)) continue // a degenerate axis says nothing about intent
+      if (Math.abs(Math.log(v)) > Math.abs(Math.log(best))) best = v
+    }
+    return best
+  }
+
+  /** A snow delta may push the line anywhere within the world's relief and no further -- see status(). */
+  _clampDelta(d) {
+    const r = this.relief
+    return Math.min(r, Math.max(-r, d))
   }
 
   _attachGizmo() {
@@ -629,9 +804,14 @@ export class Editor {
   _selectionPoint(sel) {
     if (sel.kind === 'snow') {
       const p = this._snowPoint(sel.index)
-      // A snow point stores no elevation -- it is a deviation of a CONTOUR, not
-      // a thing in space -- so the handle rides on the ground beneath it.
-      return { x: p.x, y: this.height.heightAt(p.x, p.z, 0), z: p.z }
+      // AT THE LINE IT AUTHORS, `snow.base + delta`, which is where markers.js
+      // draws the diamond. It used to ride the ground below, on the reasoning
+      // that a snow point is a deviation of a contour rather than a thing in
+      // space -- true, and it put the gizmo metres beneath the only thing on
+      // screen that shows what the point does, so the arrows appeared to belong
+      // to nothing and the vertical one had no meaning at all. Here, the Y arrow
+      // IS the delta: drag the marker up and the snow line follows it up.
+      return { x: p.x, y: this.layers.snow.base + p.delta, z: p.z }
     }
     const p = this._pathPoint(sel.id, sel.index)
     return { x: p[0], y: p[1], z: p[2] }
@@ -670,7 +850,20 @@ export class Editor {
     const at = this._clampXZ(p.x, p.z)
 
     if (sel.kind === 'snow') {
-      this.layers.moveSnowPoint(sel.index, at.x, at.z)
+      // Three fields off one proxy: XZ is the position, Y is the delta (the
+      // handle is drawn AT snow.base + delta, so the arrow moves the line it is
+      // sitting on), and the scale drag is the radius. Each write is guarded by
+      // a comparison because every one of them bumps the layer's epoch and marks
+      // a dirty rect -- a scale drag that also "moved" the point to where it
+      // already is would rebake the snow grid twice per mousemove.
+      const p = this._snowPoint(sel.index)
+      if (at.x !== p.x || at.z !== p.z) this.layers.moveSnowPoint(sel.index, at.x, at.z)
+      const patch = {}
+      const delta = this._clampDelta(this.proxy.position.y - this.layers.snow.base)
+      if (delta !== p.delta) patch.delta = delta
+      const radius = Math.max(MIN_SNOW_RADIUS, this._dragBase.radius * this._scaleFactor())
+      if (radius !== p.radius) patch.radius = radius
+      if ('delta' in patch || 'radius' in patch) this.layers.setSnowPoint(sel.index, patch)
     } else if (sel.kind === 'lake') {
       this._euler.setFromQuaternion(this.proxy.quaternion, 'YXZ')
       const patch = lakeFromGizmo(this._dragBase, {
@@ -682,7 +875,14 @@ export class Editor {
       patch.z = at.z
       this.layers.updateLake(sel.id, patch)
     } else {
-      this.layers.movePathPoint(sel.id, sel.index, at.x, p.y, at.z)
+      const pt = this._pathPoint(sel.id, sel.index)
+      if (at.x !== pt[0] || p.y !== pt[1] || at.z !== pt[2]) this.layers.movePathPoint(sel.id, sel.index, at.x, p.y, at.z)
+      // §18 wants a river's width authored where the river is, not in a number
+      // field beside it. There is no per-point scale in the document to write --
+      // a control point is [x, y, z, w] -- so the scale drag lands on w, which
+      // is the only size a point has.
+      const w = Math.min(PATH_WIDTH_MAX, Math.max(MIN_PATH_WIDTH, this._dragBase.width * this._scaleFactor()))
+      if (w !== pt[3]) this.layers.setPathWidth(sel.id, sel.index, w)
     }
     this._touch()
   }

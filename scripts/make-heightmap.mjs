@@ -88,9 +88,8 @@ export const SRC_H = 873
 // moved by 3.3x.
 //
 // RELIEF PER KILOMETRE, as a cross-check rather than a criterion. v1 spans
-// -0.62..313.06 m over 16 km, i.e. 19 m/km. 300 m over 8 km is 37.5 m/km,
-// already 1.9x v1's, because this is an authored range and not a procedural
-// continent. The 8 km reading is also what makes it credible: heightmap-png.mjs
+// -0.62..313.06 m over 16 km, i.e. 19 m/km. 600 m over 8 km is 75 m/km, 3.9x
+// v1's, because this is an authored range and not a procedural continent. The 8 km reading is also what makes it credible: heightmap-png.mjs
 // has called this same image 6437 m across since build step 2, and 8192 is
 // within 27% of that where the earlier 4096 was out by 1.57x.
 //
@@ -100,17 +99,26 @@ export const SRC_H = 873
 // to the coarse field's own structure function -- so it scales with the span
 // too, and the ratio between them is constant down the table to three digits.
 // No choice of range changes it, which is why the range cannot be argued from
-// quantisation. Worth flagging for detail.js's owner rather than acting on here:
-// §18 expected the detail term to sit an order of magnitude ABOVE the ripple,
-// and at the current calibration it sits 1.55x BELOW it, so the finest thing in
-// the composed field is the 8-bit source step and not the detail.
+// quantisation -- the ratio column reads 1.548 at 300 m and 1.560 at 1200 m.
+// Worth flagging for detail.js's owner rather than acting on here: §18 expected
+// the detail term to sit an order of magnitude ABOVE the ripple, and at the
+// current calibration it sits 1.56x BELOW it, so the finest thing in the
+// composed field is the 8-bit source step and not the detail.
 //
 // minY is 0 and not a negative sea level. §18's water is a LAYER (lakes carve
 // basins, see src/v2/layers/water-bodies.js), so the import has no reason to
 // spend codes on ground below the darkest pixel of the image -- and 9.8% of the
 // image already sits on that floor.
+// MAX_Y WAS 300 AND IS NOW 600, BY EYE AND ON PURPOSE. The survey chooses a
+// range that keeps slopes walkable; what it cannot judge is whether the world
+// reads as mountains, and at 300 m over 8 km it did not -- the shipped bake was
+// squashed flat from the ground. Doubling the span doubles every slope with it,
+// so the walk% column in --survey is the number to re-read if the ground starts
+// refusing to be climbed. Doubling again is a one-flag experiment: this constant
+// is the only thing that has to move, because the PNG stores normalised levels
+// and every metre in v2 is recovered through minY/maxY in world/height.json.
 export const MIN_Y = 0
-export const MAX_Y = 300
+export const MAX_Y = 600
 
 // The 8x8 DCT grid. Baseline JPEG transforms 8x8 blocks of luma aligned to pixel
 // zero regardless of chroma subsampling, so the block edges sit between columns
@@ -123,8 +131,8 @@ const BLOCK = 8
 // this says: the deblocker may never displace the ground by more than the amount
 // the file format has already thrown away. A ridge line crossing a block
 // boundary can be softened by at most 1/3 of a level per axis pass (the
-// correction is split three ways, see deblockAxis), i.e. 0.67 levels = 78 cm at
-// the shipped span, and that bound is what the gate's ridge test enforces.
+// correction is split three ways, see deblockAxis), i.e. 0.67 levels = 1.57 m at
+// the shipped 600 m span, and that bound is what the gate's ridge test enforces.
 export const DEBLOCK_CAP = 1
 
 // ---------------------------------------------------------------------------

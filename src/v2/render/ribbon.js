@@ -11,17 +11,20 @@
 // Same trick as Water.setFromPhaseA's one-cell mask dilation, for the same reason spelled out in its header: a polygon edge that stops exactly where the water meets the ground is a straight line you can see, and it moves with the LOD. Push it a metre and a half under the bank instead and the shoreline you see is where the full-resolution terrain crosses the plane -- free, exact, and as detailed as the chunk happens to be. v1 needed a whole 16 m sim cell because its mask was a raster; here the ellipse is exact, so this only has to cover the lake carve's feather (the last 15% of the radius, where the ground is still coming down to meet the water) plus the mesher's 6.25 cm leaf.
 export const LAKE_OVERHANG = 1.5
 
-// The chord sag a lake rim is allowed to cut inside its own ellipse, in metres. This is what picks the segment count, and it is expressed as a length rather than as a segment count because the thing that must stay true is "the polygon edge stays buried under LAKE_OVERHANG" -- a sag budget of a third of the overhang leaves the rim inside the bank at every size.
-const LAKE_SAG = 0.5
-
-// Floor and ceiling on that count. The floor is cosmetic -- below about 24 segments a small pond reads as a polygon from the shore even though the sag is tiny -- and the ceiling is where the sag budget stops being affordable: 128 segments holds LAKE_SAG out to a 1.66 km half-extent.
+// How many segments a lake rim gets. EIGHT, at every size, which is the shape of the request that produced it: a lake is a flat quad-ish sheet of water, and 128 triangles of rim were buying a curve nobody was ever close enough to read. Eight is also the smallest count that still puts a vertex on all four axes AND all four diagonals, so a rotated or elongated lake keeps its own axes rather than reading as a tilted stop sign.
 //
-// The ceiling is where the sag budget stops being met, not where the rim stops being buried, and the second is the one that matters. WORLD_HALF is 4096 m, so the biggest lake the box can physically hold is a 4096 m half-extent, and 128 segments there sag 4096 * pi^2 / (2 * 128^2) = 1.23 m -- over LAKE_SAG, and under LAKE_OVERHANG's 1.5 m by only 27 cm. That is the guardrail case (a lake the width of the world) rather than a size anyone will author, but it is also where the two constants stop being independent: RAISING LAKE_MAX_SEG IS FREE, LOWERING LAKE_OVERHANG IS NOT. The gate asserts this at WORLD_HALF rather than at a literal, so it follows the world box -- which has now moved twice.
-const LAKE_MIN_SEG = 24
-const LAKE_MAX_SEG = 128
+// The rim is CIRCUMSCRIBED, not inscribed, and at eight segments that stops being a detail. An inscribed polygon has its edge midpoints INSIDE the footprint, by 7.6% of the radius here -- on a 400 m lake that is a 30 m band of carved lake bed showing through a hole in the water, at eight places around the shore. So every vertex is pushed out by RIM_SCALE below, which puts the edge midpoints exactly on the footprint + overhang and leaves the whole error on the outside, where the bank hides it. The old sag-budget-picks-the-count rule was solving the same problem from the other end and could afford to be inscribed because the error was half a metre.
+//
+// WHAT THE CORNERS COST, since it is the price of this: a vertex now sticks out 8.2% of the radius past the rim -- 1.6 m on the default 20 m pond, 33 m on a 400 m lake -- lying on natural terrain rather than on anything the lake carved. That is buried wherever the ground keeps rising away from the water, which is what a basin does; where it does not, a corner of the sheet can show over falling ground. The same assumption already justifies LAKE_OVERHANG, just at 1.5 m rather than at a fraction, and it is the reason to reach for a shorter, wider lake rather than one huge one.
+const LAKE_SEGMENTS = 8
 
-// Superellipse exponent for shape 1. 2 is the ellipse; infinity is a hard rectangle; 8 is a rectangle with a corner radius of roughly a tenth of the short half-extent, which is what a lake edge actually looks like and what keeps the radial fan from putting two vertices a millimetre apart at each corner.
-const RECT_EXP = 8
+// Vertex radius / rim radius: sec(pi/N). The edge midpoint of a circumscribed regular N-gon sits at cos(pi/N) of its vertex radius, so this is exactly the factor that puts that midpoint back on the rim. Exact for an ellipse as well as a circle -- the rim is the affine image of a circle and an affine map preserves midpoints -- and measured rather than assumed for the superellipse, in check-v2-surfaces.mjs.
+const RIM_SCALE = 1 / Math.cos(Math.PI / LAKE_SEGMENTS)
+
+// A shape-1 lake's rim is the RECTANGLE ITSELF, exactly, which is why there is no superellipse exponent here any more. There was one -- 8, a rectangle with a corner radius of about a tenth of the short half-extent, "what a lake edge actually looks like" -- and it was drawing a shape the document does not have: water-bodies.js's footprint() tests shape 1 as max(|x/rx|, |z/rz|), a hard rectangle with square corners, and that is what the basin is carved to and what the player reads as wet. A rounded rim over a square basin leaves the four corners of the bed uncovered, which is bare ground inside the lake. Rounding is authored by choosing shape 0.
+//
+// It falls out of the fan for free at a multiple of eight segments: cast a ray at every multiple of 45 degrees onto the rectangle and the hits ARE its four corners and its four edge midpoints, so the polygon through them is the rectangle and not an approximation of one.
+if (LAKE_SEGMENTS % 8 !== 0) throw new Error(`ribbon.js: LAKE_SEGMENTS is ${LAKE_SEGMENTS}; it must be a multiple of 8 or a shape-1 lake's rim cuts its own corners off`)
 
 // How far above the road spline's y the road ribbon sits, in metres.
 //
@@ -47,15 +50,14 @@ const REPAIR_PASSES = 24
 const cross2 = (ax, az, bx, bz) => ax * bz - az * bx
 
 /**
- * Segments in a lake's rim, from the sag budget.
+ * Segments in a lake's rim: eight, always. See LAKE_SEGMENTS.
  *
- * For an ellipse sampled at uniform angle the worst chord sag is max(rx, rz) * pi^2 / (2 * N^2) -- at the end of the major axis the chord is short but the curvature is sharp, at the end of the minor axis the reverse, and the two land on the same expression. Inverting it for N and rounding up to a multiple of 8 (so a superellipse gets a vertex on all four corners as well as all four axis midpoints) gives, at LAKE_SAG 0.5 m: a 40 m pond 24 segments, a 400 m lake 64, a 1.5 km one 128.
+ * It stays a FUNCTION of the extents rather than becoming a bare constant because it is also where a degenerate lake is caught -- discVertices would happily emit a fan of zero-area triangles for rx 0 -- and because the count being size-independent is a decision that could be revisited, whereas callers asking "how many segments does this lake get" is not.
  */
 export function discSegments(rx, rz) {
   const r = Math.max(rx, rz)
   if (!(r > 0)) throw new Error(`discSegments: lake half-extents must be positive, got rx ${rx} rz ${rz}`)
-  const need = Math.PI * Math.sqrt(r / (2 * LAKE_SAG))
-  return Math.min(LAKE_MAX_SEG, Math.max(LAKE_MIN_SEG, Math.ceil(need / 8) * 8))
+  return LAKE_SEGMENTS
 }
 
 /**
@@ -63,7 +65,7 @@ export function discSegments(rx, rz) {
  *
  * `lake` is a LakeSet record -- { x, z, y, rx, rz, rot, shape } -- and `rot` is radians about +Y, matching three's own rotation matrix so the disc and the gizmo cannot disagree about which way positive is.
  *
- * A fan rather than a strip because the surface is flat and the shading is entirely a function of world XZ (see src/water.js): interior vertices buy nothing at all, so N + 1 vertices and N triangles is the whole cost -- 25 verts / 24 tris for a pond, 129 / 128 for the biggest lake the rule allows.
+ * A fan rather than a strip because the surface is flat and the shading is entirely a function of world XZ (see src/water.js): interior vertices buy nothing at all, so N + 1 vertices and N triangles is the whole cost -- nine vertices and eight triangles, for a pond and for a lake the width of the world alike.
  */
 export function discVertices(lake, opts = {}) {
   const { overhang = LAKE_OVERHANG } = opts
@@ -93,13 +95,16 @@ export function discVertices(lake, opts = {}) {
     let lx
     let lz
     if (shape === 0) {
-      lx = ax * c
-      lz = bz * s
+      // RIM_SCALE here and not on the rectangle: an ellipse can only be approximated by a polygon, so its rim is pushed out until the edge midpoints land back on the footprint, while the rectangle's rim is exact and needs no push at all.
+      lx = ax * RIM_SCALE * c
+      lz = bz * RIM_SCALE * s
     } else {
-      // Superellipse: |lx/ax|^n + |lz/bz|^n = 1, solved along the ray at angle th. One code path for both shapes, and the exponent is the only thing that separates a pond from a reservoir.
-      const t = Math.pow(Math.abs(c / ax) ** RECT_EXP + Math.abs(s / bz) ** RECT_EXP, -1 / RECT_EXP)
-      lx = t * c
-      lz = t * s
+      // The UNIT SQUARE cast along the ray at angle th, then stretched by (ax, bz): the affine image of a unit-square polygon, exactly as the ellipse case is the affine image of a circle.
+      //
+      // NOT a ray cast against the already-stretched shape, which is what this was. The two agree on a square lake and diverge hard on a long one: casting at uniform WORLD angle puts almost every vertex in the short direction, so a 100 x 10 m rectangular lake spent seven of its eight vertices on the ends and the rim along the flat fell to 0.58 of the footprint -- 42 m of bed showing. Sampling the unit shape instead makes the coverage independent of how elongated the lake is, which is the only reason eight vertices can be enough for both shapes.
+      const t = 1 / Math.max(Math.abs(c), Math.abs(s))
+      lx = ax * t * c
+      lz = bz * t * s
     }
     // Local -> world, and it is the INVERSE of the rotation water-bodies.js's footprint() applies. That function takes a world offset to the lake's frame with [[c, s], [-s, c]]; getting back out wants [[c, -s], [s, c]], and using the first matrix in both directions is a bug that is invisible on a round lake and silently mirrors the rotation of an elongated one -- the drawn water at ninety degrees to the basin it was carved into. The gate checks the drawn rim against footprint() itself for exactly this reason.
     const o = (k + 1) * 3

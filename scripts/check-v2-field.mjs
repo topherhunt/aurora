@@ -48,6 +48,7 @@ import { Heightmap } from '../src/v2/height/heightmap.js'
 import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN } from '../src/v2/height/detail.js'
 import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
 import { Layers } from '../src/v2/layers/layers.js'
+import { snowDefaults } from '../src/v2/layers/doc.js'
 import { buildChunkV2, shade, CLASS_EPS } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 
@@ -742,8 +743,15 @@ export async function run({ heightmap } = {}) {
     check(bands.altSpan > 0, 'the altitude ramp is monotone increasing', `span ${bands.altSpan.toFixed(2)} m`)
     check(bands.altLo >= bands.min && bands.altLo + bands.altSpan <= bands.max, 'the ramp lies inside the relief it was cut from', `${bands.altLo.toFixed(1)}..${(bands.altLo + bands.altSpan).toFixed(1)} within ${bands.min.toFixed(1)}..${bands.max.toFixed(1)}`)
     check(bands.p25 <= bands.p50 && bands.p50 <= bands.p75 && bands.p75 <= bands.p90, 'the percentile ladder is ordered', 'histogram sanity')
-    check(layers.snow.base > bands.altLo, 'the snow line sits above the foot of the altitude ramp', `snow base ${layers.snow.base} m vs altLo ${bands.altLo.toFixed(1)} m`)
-    check(layers.snow.base + layers.snow.band < bands.max, 'and the snow band closes below the highest ground', `${layers.snow.base + layers.snow.band} m vs max ${bands.max.toFixed(1)} m`)
+    // Against snowDefaults(bands) and NOT against `layers.snow`, which is doc.js's
+    // fallback: that pair of literals is what a document gets when there is no
+    // heightmap in the room, and every gate in here is exactly that case. The
+    // browser derives its line from the loaded image, so the browser's line is
+    // the one that has to sit inside the relief -- and re-baking with a different
+    // --maxY moves the percentiles under it without touching the fallback.
+    const snow = snowDefaults(bands)
+    check(snow.base > bands.altLo, 'the snow line sits above the foot of the altitude ramp', `snow base ${snow.base.toFixed(1)} m vs altLo ${bands.altLo.toFixed(1)} m`)
+    check(snow.base + snow.band < bands.max, 'and the snow band closes below the highest ground', `${(snow.base + snow.band).toFixed(1)} m vs max ${bands.max.toFixed(1)} m`)
   }
 
   // --- 13. mesher throughput ------------------------------------------------

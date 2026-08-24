@@ -1,5 +1,5 @@
 import { TRI_BUDGET, CALL_BUDGET } from '../../budget.js'
-import { TOOLS, TOOL_KEYS } from '../edit/editor.js'
+import { TOOLS, TOOL_KEYS, GIZMO_KEYS } from '../edit/editor.js'
 
 // ---------------------------------------------------------------------------
 // The v2 status + tools panel. Replaces v1's `#desktop-hud` on the v2 route.
@@ -110,6 +110,21 @@ const CSS = `
   font: 11px ui-monospace, Menlo, monospace; padding: 0 3px; }
 #v2-panel .p-mini:hover { color: ${COLORS.bad}; }
 #v2-panel .p-err { color: ${COLORS.bad}; padding: 2px 8px; white-space: pre-wrap; }
+#v2-panel .p-gz { margin-bottom: 3px; }
+
+/* The context menu lives on <body>, not in the panel: it opens at the CURSOR,
+   which is out in the viewport, and a child of a 340px panel with its own
+   scrolling body cannot be positioned there. */
+#v2-menu {
+  position: fixed; z-index: 40; min-width: 130px; padding: 2px;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: ${COLORS.body};
+  background: rgba(8,14,26,.96); border: 1px solid #2b4a72; border-radius: 3px;
+  box-shadow: 0 2px 10px rgba(0,0,0,.5); user-select: none;
+}
+#v2-menu[hidden] { display: none; }
+#v2-menu button { display: block; width: 100%; text-align: left; background: none; border: 0;
+  color: inherit; font: inherit; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+#v2-menu button:hover { background: #1f4570; color: #eaf4ff; }
 `
 
 export class Panel {
@@ -132,6 +147,7 @@ export class Panel {
     this._epoch = -1
     this._selSig = ''
     this._listSig = ''
+    this._gizmoSig = ''
     this._rows = [] // {row, input, valueEl}
     this._scrubbing = false
     this._openGroups = new Set(['snow', 'lake', 'river', 'road'])
@@ -176,6 +192,11 @@ export class Panel {
       this.syncSelection()
     }
 
+    // The gizmo mode also changes from the KEYBOARD (G/R/S), which the panel
+    // never hears about. Same 4 Hz comparison as the selection, and for the same
+    // reason: cheaper than a callback the host has to remember to fire.
+    this._paintGizmo()
+
     // Everything below is document-shaped, so it only redraws when the document
     // moved. `epoch` is bumped by every mutation (§18), which makes it exactly
     // the right cache key -- including for undo, which is otherwise invisible.
@@ -192,6 +213,7 @@ export class Panel {
     const sel = this.editor.selection
     this._selSig = sel === null ? '-' : `${sel.kind}:${sel.id}:${sel.index}`
     this._buildFields()
+    this._paintGizmo()
     this._paintTools()
     this._paintLayers()
     this._syncUndo()
@@ -241,9 +263,16 @@ export class Panel {
 
     this._ctx = document.createElement('div')
     this._ctx.className = 'p-z'
+    // The gizmo's own mode buttons. G/R/S are bound on the window and always
+    // were, but a keyboard shortcut nobody told you about is not a control --
+    // "I don't see a way to change its size" is what an invisible mode looks
+    // like from the outside. Which modes exist is the EDITOR's answer: a snow
+    // point cannot rotate and the panel should not be the one deciding that.
+    this._gizmoRow = document.createElement('div')
+    this._gizmoRow.className = 'p-flow p-gz'
     this._fields = document.createElement('div')
     this._fields.className = 'p-fields'
-    this._ctx.appendChild(this._fields)
+    this._ctx.append(this._gizmoRow, this._fields)
 
     this._layersZone = document.createElement('div')
     this._layersZone.className = 'p-z'
@@ -277,6 +306,66 @@ export class Panel {
 
     this._body.append(this._status, tools, this._ctx, this._layersZone, foot, this._err)
     this.root.append(this._head, this._body)
+
+    this._menu = document.createElement('div')
+    this._menu.id = 'v2-menu'
+    this._menu.hidden = true
+    document.body.appendChild(this._menu)
+    // Capture phase, so the press that dismisses the menu is also the press that
+    // does whatever it was going to do in the viewport. A menu you have to close
+    // before you can click anything is a modal, and this is not one.
+    window.addEventListener('pointerdown', (ev) => {
+      if (this._menu.hidden || this._menu.contains(ev.target)) return
+      this.hideMenu()
+    }, true)
+    window.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') this.hideMenu()
+    })
+  }
+
+  // --- the context menu -----------------------------------------------------
+
+  /**
+   * Open a menu of `[{label, run}]` at viewport pixel (x, y). An empty list
+   * closes any open menu and returns false, which is what a right-click on
+   * nothing should do -- the host does not have to test for it.
+   *
+   * The items come from `editor.menuFor(ev)` fully formed, `run` included. The
+   * panel draws labels and calls closures; it never works out what is legal to
+   * do to a river point.
+   */
+  showMenu(x, y, items) {
+    this.hideMenu()
+    if (!Array.isArray(items) || items.length === 0) return false
+
+    for (const it of items) {
+      if (typeof it.run !== 'function') throw new Error(`Panel.showMenu: item ${it.label} has no run()`)
+      const b = document.createElement('button')
+      b.textContent = it.label
+      b.onclick = () => {
+        this.hideMenu()
+        it.run()
+        // The run() closures mutate the document and often the selection, and
+        // both zones are otherwise only repainted on the 4 Hz tick. Doing it
+        // here means the panel is right in the same frame as the click.
+        this.syncSelection()
+      }
+      this._menu.appendChild(b)
+    }
+
+    this._menu.hidden = false
+    // Placed AFTER unhiding, because a hidden element measures 0x0 and would
+    // always look like it fits.
+    const w = this._menu.offsetWidth
+    const h = this._menu.offsetHeight
+    this._menu.style.left = `${Math.max(0, Math.min(x, window.innerWidth - w - 2))}px`
+    this._menu.style.top = `${Math.max(0, Math.min(y, window.innerHeight - h - 2))}px`
+    return true
+  }
+
+  hideMenu() {
+    this._menu.hidden = true
+    this._menu.innerHTML = ''
   }
 
   // --- zone 1: status -------------------------------------------------------
@@ -336,6 +425,26 @@ export class Panel {
   }
 
   // --- zone 3: context fields ----------------------------------------------
+
+  _paintGizmo() {
+    const g = this.editor.gizmoModes()
+    const sig = g === null ? '-' : `${g.modes.join(',')}:${g.active}`
+    if (sig === this._gizmoSig) return
+    this._gizmoSig = sig
+    this._gizmoRow.innerHTML = ''
+    if (g === null) return
+    for (const m of g.modes) {
+      const b = document.createElement('button')
+      b.className = 'p-btn p-i'
+      b.innerHTML = `${escapeHtml(m)}<small>${escapeHtml(GIZMO_KEYS[m].toUpperCase())}</small>`
+      b.classList.toggle('p-on', m === g.active)
+      b.onclick = () => {
+        this.editor.setGizmoMode(m)
+        this._paintGizmo()
+      }
+      this._gizmoRow.appendChild(b)
+    }
+  }
 
   _buildFields() {
     this._fields.innerHTML = ''

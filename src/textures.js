@@ -145,8 +145,13 @@ export const LAYER = {
   BARK_PINE: 19,
   LEAF_ASH: 20,
   LEAF_ASPEN: 21,
+  // The TILING pine spray, for cloaked branches. Same art as NEEDLES but cut
+  // with transparent side margin so it repeats along a branch without its
+  // neighbours fusing; NEEDLES stays, cropped tight, because the scanned props
+  // in src/props.js still address it as a single card.
+  SPRAY_PINE: 22,
 }
-export const LAYER_COUNT = 22
+export const LAYER_COUNT = 23
 
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
@@ -202,6 +207,7 @@ export const IMAGE_LAYERS = {
   [LAYER.LEAVES]: 'trees/leaf_oak.png',
   [LAYER.LEAF_ASH]: 'trees/leaf_ash.png',
   [LAYER.LEAF_ASPEN]: 'trees/leaf_aspen.png',
+  [LAYER.SPRAY_PINE]: 'trees/spray_pine.png',
 }
 
 // Deterministic value noise so the placeholder looks the same every run.
@@ -294,6 +300,7 @@ export function buildTextureArray() {
   layers[LAYER.BARK_PINE] = bark([84, 46, 30], [132, 84, 56], 19)
   layers[LAYER.LEAF_ASH] = foliage([44, 76, 34], [96, 132, 58], 20, true)
   layers[LAYER.LEAF_ASPEN] = foliage([146, 108, 26], [214, 172, 52], 21, true)
+  layers[LAYER.SPRAY_PINE] = foliage([28, 56, 34], [52, 88, 51], 22, true)
   layers[LAYER.ROCK] = mottled([92, 92, 96], [138, 137, 132], 7, 15)
   layers[LAYER.SNOW] = mottled([222, 230, 240], [255, 255, 255], 5, 16)
   layers[LAYER.DIRT] = mottled([94, 76, 58], [126, 106, 82], 9, 17)

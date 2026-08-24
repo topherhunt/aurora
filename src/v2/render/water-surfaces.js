@@ -38,6 +38,10 @@ export class WaterSurfaces {
     this.buckets = new Map()
     this.lakeBoxes = []
 
+    // The editor's per-object hide, as a predicate. Default: everything is
+    // drawn, so nothing outside the editor has to know this exists.
+    this.isVisible = () => true
+
     this.triangles = 0
     this.epoch = -1
   }
@@ -56,8 +60,24 @@ export class WaterSurfaces {
     }
 
     this.reindex()
+    this.applyVisibility()
     this.epoch = this.layers.epoch
     return { bodies: this.meshes.size, triangles: this.triangles }
+  }
+
+  /**
+   * `fn(kind, id, null)` in the editor's vocabulary -- kind 'lake' or 'river' here -- returning false for a body that should not be drawn.
+   *
+   * HIDING IS `mesh.visible`, NOT A SKIPPED BUILD, and the difference is the whole reason this is three lines instead of one condition inside rebuild(). This class is not only a renderer: `levelAt` answers what is wet, and the prop scatter, the spawn search and the player all ask it. Hiding a lake by not building it would take it out of `lakeBoxes` too, and the author would get a lake they cannot see that the player also cannot swim in -- which is not hiding, it is deleting with the record left behind. The terrain carve is likewise untouched: hide a lake and its basin stays, which is correct, because the ground under a lake is a baked fact of the document and this button is about the overlay.
+   */
+  setVisibility(fn) {
+    if (typeof fn !== 'function') throw new Error('WaterSurfaces.setVisibility needs a (kind, id, index) => boolean')
+    this.isVisible = fn
+    this.applyVisibility()
+  }
+
+  applyVisibility() {
+    for (const [id, mesh] of this.meshes) mesh.visible = this.isVisible(mesh.userData.kind, id, null) !== false
   }
 
   /**
@@ -79,6 +99,7 @@ export class WaterSurfaces {
     if (lake) {
       this.buildLake(lake)
       this.reindex()
+      this.applyVisibility()
       return
     }
     const path = this.layers.paths.paths.get(id)
@@ -86,6 +107,7 @@ export class WaterSurfaces {
     if (path.kind !== 'river') throw new Error(`WaterSurfaces.rebuildOne: path ${id} is a ${path.kind}, which belongs to RoadSurfaces`)
     this.buildRiver(path)
     this.reindex()
+    this.applyVisibility()
   }
 
   buildLake(lake) {
@@ -98,6 +120,7 @@ export class WaterSurfaces {
 
     const mesh = new THREE.Mesh(geo, this.water.material)
     mesh.name = `v2-lake-${lake.id}`
+    mesh.userData.kind = 'lake'
     mesh.userData.triangles = triangles
     this.group.add(mesh)
     this.meshes.set(lake.id, mesh)
@@ -136,6 +159,7 @@ export class WaterSurfaces {
 
     const mesh = new THREE.Mesh(geo, this.water.material)
     mesh.name = `v2-river-${river.id}`
+    mesh.userData.kind = 'river'
     mesh.userData.triangles = r.triangles
     this.group.add(mesh)
     this.meshes.set(river.id, mesh)

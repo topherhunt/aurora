@@ -122,7 +122,7 @@ function extentAgreement() {
 // stops at its door. It is also where six modules meet, which makes it exactly
 // the file where a contract gets broken quietly.
 //
-// So the four rules that are written down in those modules' headers as "the host
+// So the rules that are written down in those modules' headers as "the host
 // must" are asserted here, by reading the text. Textual assertions are weak and
 // this one is deliberately narrow: each line below corresponds to a failure that
 // is INVISIBLE in the frame it happens in, which is what makes a weak check
@@ -168,6 +168,17 @@ function hostWiring() {
   // the hillside after sunset.
   if (!/lighting\.patch\(\s*roads\.material,\s*\{\s*mode:\s*'vertex'/.test(src)) {
     out.push("src/v2/main.js does not lighting.patch(roads.material, {mode: 'vertex'}) -- the road would stay lit after dark")
+  }
+
+  // The eye toggle in the panel's layer list is EDITOR-LOCAL state -- Layers has
+  // no hidden flag -- so every surface that draws authored geometry has to be
+  // told how to read it. Miss one and hiding a lake takes its handles away and
+  // leaves the water sitting there, which reads as "the toggle sometimes works"
+  // and is exactly the bug this check was written after.
+  for (const target of ['markers', 'waterSurfaces', 'roads']) {
+    if (!new RegExp(`\\b${target}\\.setVisibility\\s*\\(`).test(src)) {
+      out.push(`src/v2/main.js never calls ${target}.setVisibility() -- the panel's hide toggle would silently do nothing to that layer`)
+    }
   }
 
   // sky-probe.js: the probe binds a render target and toggles renderer.xr off.

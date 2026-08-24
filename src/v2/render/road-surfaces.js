@@ -44,8 +44,25 @@ export class RoadSurfaces {
     this.material.name = 'v2-road'
 
     this.meshes = new Map()
+
+    // The editor's per-object hide, as a predicate. Default: everything is drawn, so nothing outside the editor has to know this exists.
+    this.isVisible = () => true
+
     this.triangles = 0
     this.epoch = -1
+  }
+
+  /**
+   * `fn('road', id, null)` returning false for a road that should not be drawn. Hiding is `mesh.visible` rather than a skipped build, for the reason spelled out in WaterSurfaces.setVisibility: the road SMOOTH is baked into the terrain from the document, so a hidden road leaves its flattened strip behind either way, and rebuilding the set is not the cheap operation a button press should trigger.
+   */
+  setVisibility(fn) {
+    if (typeof fn !== 'function') throw new Error('RoadSurfaces.setVisibility needs a (kind, id, index) => boolean')
+    this.isVisible = fn
+    this.applyVisibility()
+  }
+
+  applyVisibility() {
+    for (const [id, mesh] of this.meshes) mesh.visible = this.isVisible('road', id, null) !== false
   }
 
   /** Every road, from scratch. Called when the epoch moves and nothing narrower is known. */
@@ -61,6 +78,7 @@ export class RoadSurfaces {
       if (path.kind === 'road') this.buildRoad(path)
     }
 
+    this.applyVisibility()
     this.epoch = this.layers.epoch
     return { roads: this.meshes.size, triangles: this.triangles }
   }
@@ -79,6 +97,7 @@ export class RoadSurfaces {
     if (!path) throw new Error(`RoadSurfaces.rebuildOne: no path with id ${id}`)
     if (path.kind !== 'road') throw new Error(`RoadSurfaces.rebuildOne: path ${id} is a ${path.kind}, which belongs to WaterSurfaces`)
     this.buildRoad(path)
+    this.applyVisibility()
   }
 
   buildRoad(road) {

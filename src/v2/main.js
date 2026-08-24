@@ -5,6 +5,7 @@ import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, WORLD_HALF } from './config.js'
 import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
 import { Layers } from './layers/layers.js'
+import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
 import { Markers } from './render/markers.js'
@@ -168,10 +169,6 @@ let ready = false
  * middle of the terrain actually climbs -- a fixed band is either a hard line on
  * a gentle world or a hundred-metre smear on a steep one.
  */
-function snowDefaults(bands) {
-  return { base: bands.p75, band: Math.max(10, (bands.p90 - bands.p50) / 2) }
-}
-
 /**
  * A place to stand, on v2's own field.
  *
@@ -278,12 +275,22 @@ async function bootWorld() {
     height,
     markers,
     onDirty,
+    onView,
     orbitLock,
     // The heightmap's DECODED extremes, not meta.minY/maxY: the encoding's range
     // is what the bake could have expressed, and the sliders should offer what
     // the image actually contains. See heightmap.js's `min`/`max`.
     elevation: { min: heightmap.min, max: heightmap.max },
   })
+  // The hide set lives in the editor and every renderer that draws from the
+  // document has to read it. Wired AFTER the editor exists rather than in each
+  // constructor, because `markers.setVisibility` re-syncs immediately and the
+  // predicate it is handed is the editor's.
+  const isVisible = (kind, id, index) => editor.isVisible(kind, id, index)
+  markers.setVisibility(isVisible)
+  waterSurfaces.setVisibility(isVisible)
+  roads.setVisibility(isVisible)
+
   panel = new Panel({ layers, editor, onTool, onAction })
 
   ready = true
@@ -316,6 +323,17 @@ function onDirty(rect) {
   terrain.setLayers(layers.serialize(), rect)
   waterSurfaces.rebuild()
   roads.rebuild()
+}
+
+/**
+ * A row's eye button was clicked. Nothing about the DOCUMENT changed, so this is
+ * deliberately not onDirty: no rebake, no rebuild, no dirty rect, no undo entry
+ * -- hiding a lake must not cost a terrain remesh. Both surface sets already
+ * hold the predicate, so all that is needed is for them to re-read it.
+ */
+function onView() {
+  waterSurfaces.applyVisibility()
+  roads.applyVisibility()
 }
 
 function onTool(name) {
@@ -516,8 +534,22 @@ addEventListener('blur', () => held.clear())
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (!ready) return
-  dragging = !orbitLocked
+  // Left button only, now that the right one opens the editor's context menu:
+  // otherwise a right-click also spins the camera out from under the menu it
+  // just opened.
+  dragging = e.button === 0 && !orbitLocked
   editor.onPointerDown(e)
+})
+// Right-click on a handle. The editor decides WHAT can be done to the thing
+// under the cursor and hands back closures; the panel draws them. The browser's
+// own menu is suppressed only when the editor is armed and actually answered --
+// on a right-click over empty ground in walk mode you still get the browser's.
+renderer.domElement.addEventListener('contextmenu', (e) => {
+  if (!ready || !editor.active) return
+  const items = editor.menuFor(e)
+  if (items.length === 0) return
+  e.preventDefault()
+  panel.showMenu(e.clientX, e.clientY, items)
 })
 addEventListener('pointerup', (e) => {
   dragging = false

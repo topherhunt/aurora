@@ -49,21 +49,20 @@ const SLIDERS = [
   ['height', 0.3, 32, 0.1, 'metres, root to tip. Geometry is rescaled to hit this exactly'],
 
   ['#', 'trunk'],
-  ['trunkSides', 3, 8, 1, 'sides around the trunk. 3 is a wedge, 5 reads round at 10 m'],
-  ['trunkRings', 1, 6, 1, 'segments up the trunk. Only visible if trunkBend > 0'],
+  ['trunkSides', 3, 12, 1, 'sides around the trunk. 3 is a wedge, 8 reads round at any range you can make a trunk out at'],
+  ['trunkRings', 1, 6, 1, 'rings below the apex. The trunk always closes to a point, so 1 is a plain cone; raise it to let trunkBend curve rather than lean'],
   ['trunkRadius', 0, 0.09, 0.001, 'base radius as a FRACTION of height -- the panel prints the metres'],
-  ['trunkTaper', 0, 1, 0.01, 'fraction of the base radius lost by the top'],
-  ['trunkBend', 0, 0.3, 0.005, 'sideways lean at the top, as a fraction of height'],
-  ['barkRepeat', 0.5, 8, 0.5, 'how many times the bark tile repeats up the trunk'],
+  ['trunkBend', 0, 0.3, 0.005, 'sideways offset of the top, as a fraction of height'],
+  ['barkRepeat', 0.5, 16, 0.5, 'bark tiles UP the trunk this many times. The tiling AROUND it is derived so a tile stays roughly square in world space'],
 
   ['#', 'crown'],
-  ['branches', 0, 40, 1, 'branch count. Triangles = branches x (branchQuads + sprays) x 2'],
+  ['branches', 0, 40, 1, 'branches off the trunk. Each one also carries `forks` children -- see the budget panel'],
   ['firstBranch', 0, 0.9, 0.01, 'height of the LOWEST branch, as a fraction of the tree'],
   ['branchLength', 0.05, 0.8, 0.01, 'the longest branch, as a fraction of height'],
   ['crownPeak', 0, 1, 0.01, 'where up the crown the longest branch sits. 0 = cone (pine), 0.5 = round (oak)'],
   ['crownFullness', 0.2, 3, 0.05, 'falloff from that peak. <1 fuller and blockier, >1 pointier and sparser'],
   ['branchMin', 0, 1, 0.01, 'shortest branch as a fraction of the longest, so the apex still carries foliage'],
-  ['whorlSize', 1, 6, 1, '1 = spiral. >1 = conifer whorls, this many branches sharing one height'],
+  ['whorlSize', 0, 6, 1, '0 = scattered, every branch its own random height. 1 = spiral. >1 = conifer whorls of this size'],
   ['yawJitter', 0, 1, 0.01, 'how far each branch may wander off even spacing'],
 
   ['#', 'branch shape'],
@@ -72,18 +71,33 @@ const SLIDERS = [
   ['branchDroop', 0, 2.5, 0.01, 'total bend from launch to tip. High = weeping birch'],
   ['branchCurve', 0.3, 3, 0.05, 'where the bend concentrates. >1 = stiff at the trunk, floppy at the tip'],
   ['branchSway', 0, 1, 0.01, 'lateral drift, so a branch is not confined to a plane'],
-  ['branchQuads', 0, 4, 1, 'ribbon segments per branch. 0 draws no branch at all, only its leaves'],
-  ['branchWidth', 0, 0.2, 0.005, 'branch ribbon width, as a fraction of its own length'],
-  ['branchTaper', 0, 1, 0.01, 'fraction of that width lost by the tip'],
-  ['branchRoll', 0, 1.5, 0.01, 'random twist of each ribbon about its own axis'],
+  ['branchSides', 0, 8, 1, 'sides around a solid limb. Under 3 draws no limb at all, only its foliage. Each limb costs branchSides triangles'],
+  ['branchRings', 1, 4, 1, 'rings below the tip. 1 is a straight cone; 2 lets a strongly drooping branch actually curve, at twice the triangles'],
+  ['branchWidth', 0, 0.12, 0.002, 'limb base radius, as a fraction of its own length'],
+
+  ['#', 'forks'],
+  ['forks', 0, 4, 1, 'child limbs split off each branch. One level only, so limbs = branches x (1 + forks)'],
+  ['forkScale', 0.15, 0.9, 0.01, 'child length as a fraction of its parent branch'],
+  ['forkAngle', 0, 1.4, 0.01, 'radians the child turns off the parent tangent. 0 = a straight continuation'],
+  ['forkStart', 0, 0.9, 0.01, 'earliest point along the parent a child may split off'],
 
   ['#', 'foliage'],
-  ['sprays', 0, 6, 1, 'leaf cards per branch'],
-  ['sprayStart', 0, 1, 0.01, 'where along the branch the first card sits'],
-  ['sprayScale', 0.2, 2, 0.01, 'card height as a fraction of the branch length'],
-  ['sprayLift', 0, 1, 0.01, '0 = card lies along the branch (needled spray), 1 = stands upright (broadleaf)'],
+  ['sprayMetres', 0.05, 1.5, 0.01, 'one spray\'s stem-to-tip reach in WORLD METRES, in BOTH modes. Half a metre is about what a real spray is -- push it up and a needle becomes two feet long'],
+
+  ['#', 'foliage: cards'],
+  ['sprays', 0, 10, 1, 'leaf cards per LIMB, including one terminal card at the tip'],
+  ['sprayStart', 0, 1, 0.01, 'earliest point along a limb a side shoot may attach'],
+  ['sprayOut', 0, 1, 0.01, '0 = shoots continue the limb, 1 = they leave straight out its side'],
+  ['sprayLift', 0, 1, 0.01, '0 = card lies along the shoot (needled spray), 1 = stands upright (broadleaf)'],
   ['sprayJitter', 0, 2, 0.01, 'random roll of each card about its own axis'],
+  ['sprayVary', 0, 0.6, 0.01, 'random +/- size variation per card'],
   ['sprayAspect', 0.3, 2.5, 0.01, 'card width/height. Set from the art\'s alpha bounds -- move it and the leaves stretch'],
+
+  ['#', 'foliage: cloak'],
+  ['cloakQuads', 1, 4, 1, 'segments per flap. 1 is a straight chord, which matches a one-ring branch cone exactly'],
+  ['cloakTaper', 0, 0.9, 0.01, 'fraction of the reach lost by the flap\'s tip'],
+  ['cloakDihedral', -0.4, 1.2, 0.01, 'radians each flap lifts off horizontal. 0 = one flat plane of needles, which is nearly what a spruce is'],
+  ['cloakAspect', 0.3, 2.5, 0.01, 'tile length / reach. Set from the PADDED cut\'s alpha bounds -- move it and the needles stretch along the branch'],
 
   ['#', 'material'],
   ['alphaTest', 0.05, 0.95, 0.01, 'cutout threshold. Low = lacy and aliased, high = eats the leaf edges'],
@@ -393,17 +407,33 @@ function refresh() {
   const per = Math.round(s.tris / s.count)
   const budget = bushMode ? CLASS_BUDGET.bush : CLASS_BUDGET.tree
 
+  // Every solid here is a CONE -- rings of quads closed by a fan of single
+  // triangles at the apex -- so it costs sides x ((rings - 1) x 2 + 1) rather
+  // than the sides x rings x 2 a capped tube would. One ring plus a point is
+  // exactly `sides` triangles, and that is the default for both trunk and limb.
+  const cone = (n, r) => (n >= 3 ? `${n}&times;((${r}-1)&times;2+1)` : '&mdash;')
   const sides = Math.round(params.trunkSides)
   const rings = Math.round(params.trunkRings)
   const nb = Math.round(params.branches)
-  const bq = Math.round(params.branchQuads)
+  const bs = Math.round(params.branchSides)
+  const br = Math.round(params.branchRings)
   const ns = Math.round(params.sprays)
+  const nf = Math.round(params.forks)
+  const nl = nb * (1 + nf)
+  const cloaked = params.foliage === 'cloak'
+  const cq = Math.max(1, Math.round(params.cloakQuads))
 
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} total)` : ''}`],
-    [`&nbsp;&nbsp;trunk ${sides}&times;${rings}&times;2`, Math.round(s.trunk / s.count)],
-    [`&nbsp;&nbsp;branches ${nb}&times;${bq}&times;2`, Math.round(s.branch / s.count)],
-    [`&nbsp;&nbsp;sprays ${nb}&times;${ns}&times;2`, Math.round(s.spray / s.count)],
+    [`&nbsp;&nbsp;trunk ${cone(sides, rings)}`, Math.round(s.trunk / s.count)],
+    [`&nbsp;&nbsp;limbs ${nb}&times;(1+${nf})`, nl],
+    [`&nbsp;&nbsp;branches ${nl}&times;${cone(bs, br)}`, Math.round(s.branch / s.count)],
+    [
+      cloaked
+        ? `&nbsp;&nbsp;cloaks ${nl}&times;2&times;${cq}&times;2`
+        : `&nbsp;&nbsp;sprays ${nl}&times;${ns}&times;2`,
+      Math.round(s.spray / s.count),
+    ],
     ['vertices', Math.round(s.verts / s.count)],
     ['drawn here', s.count],
     ['geometry in RAM', fmt(s.bytes)],
@@ -424,6 +454,22 @@ function refresh() {
     ['crown width', `${f.crownWidth.toFixed(2)} m`],
     ['trunk at the base', `${(f.trunkDiameter * 100).toFixed(0)} cm`],
     ['first branch at', `${f.firstBranchHeight.toFixed(2)} m`],
+    // What a leaf card actually came out as, not what was asked for: the final
+    // rescale divides by a bounding box that stands a little above the trunk
+    // tip, so this runs a few percent under `sprayMetres`. A spray much over
+    // half a metre is a needle a foot long, which is the whole reason it prints.
+    [
+      'leaf spray',
+      `${(f.sprayMetres * 100).toFixed(0)} cm`,
+      f.sprayMetres > 0.9 ? 'warn' : 'ok',
+    ],
+    // The point of the cloak: one quad wearing N tiled sprays costs the same
+    // four triangles as one card, so this ratio is the whole argument. Cards sit
+    // at 2.0 by construction and cannot go lower; a cloak drops with length.
+    [
+      `sprays on it (${cloaked ? 'tiled' : 'cards'})`,
+      `${f.sprays} @ ${(f.triangles / Math.max(1, f.sprays)).toFixed(1)} tris each`,
+    ],
     ['crown / height', (f.crownWidth / f.height).toFixed(2)],
     [
       'foliage below ground',
@@ -510,9 +556,13 @@ function drawProfile() {
 
   // A tick per branch on the trunk, so `branches` and `whorlSize` are legible
   // here too: a conifer's whorls collapse into a handful of stacked ticks.
+  // At whorlSize 0 the real heights are stratified-random -- one branch somewhere
+  // inside each 1/n band -- so the tick is drawn at the CENTRE of its band. That
+  // is the honest summary of where it may land; the exact draw is per-seed and
+  // this canvas has no seed.
   ctx.fillStyle = '#4a7fbf'
-  const whorl = Math.max(1, Math.round(params.whorlSize))
-  const whorls = Math.max(1, Math.ceil(n / whorl))
+  const whorl = Math.max(0, Math.round(params.whorlSize))
+  const whorls = Math.max(1, Math.ceil(n / Math.max(1, whorl)))
   for (let i = 0; i < n; i++) {
     const t = whorl > 1 ? (Math.floor(i / whorl) + 0.5) / whorls : (i + 0.5) / n
     ctx.fillRect(W / 2 - 3, toY(firstY + t * (1 - firstY)), 6, 1)
@@ -614,6 +664,10 @@ function syncSliders() {
     r.input.value = params[key]
     r.out.textContent = r.step >= 1 ? params[key] : Number(params[key]).toFixed(2)
   }
+  // `foliage` is a mode, not a number, so it has a button rather than a slider
+  // -- and unlike the other buttons its state belongs to the species preset, so
+  // it has to be re-read here rather than only when it is clicked.
+  document.getElementById('cloak').classList.toggle('on', params.foliage === 'cloak')
 }
 
 // Loading a species replaces the whole parameter set, not just the shape ones:
@@ -678,6 +732,9 @@ viewButton('sizes')
 toggle('bush', () => bushMode, (v) => {
   bushMode = v
   loadSpecies()
+})
+toggle('cloak', () => params.foliage === 'cloak', (v) => {
+  params.foliage = v ? 'cloak' : 'cards'
 })
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })

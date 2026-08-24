@@ -144,6 +144,8 @@ Points are indexed in a `UniformGrid` so a bake texel visits only points whose r
 
 A lake is a transformable primitive, not a mesh: centre, half-extents `rx`/`rz`, rotation about Y, ellipse or rectangle. `footprint(x, z)` returns 0..1 (1 inside, feathering to 0 over the last 15% of the radius). With `carve` set, terrain inside is pulled down to `y - depth * footprint`, which guarantees the bank meets the water rather than poking through it.
 
+The surface drawn for it is an OCTAGON -- eight triangles, whatever the lake's size. Water is flat and its edge is under a bank, so the segment count buys nothing; what it costs is that the rim has to cover the basin the carve dug, in both shapes, or the four corners of a rectangular lake show bare bed. So the octagon CIRCUMSCRIBES the ellipse (each vertex 8.2% of the radius outside it, over ground the bank hides) and traces the rectangle EXACTLY, matching `footprint`'s hard `max(|ux|, |uz|)` test. Vertices are sampled on the unit shape and stretched by the half-extents afterwards, not ray-cast against the stretched one: otherwise a 100x10 m lake puts seven of its eight vertices at the ends and the rim along the flat falls to 0.58 of the footprint.
+
 Indexed in a `UniformGrid` by AABB. Placement is one click on the terrain: centre at the hit XZ, `y = groundY + 1`, `rx = rz = 40`. Everything after that is the gizmo.
 
 ### Rivers and roads (`paths.js`)
@@ -177,7 +179,13 @@ layers.dirtyRect                   // {minX, minZ, maxX, maxZ} union since last 
 
 `TransformControls` from `three/addons/controls/TransformControls.js` is the move/scale/rotate widget. It is the Blender-style gizmo already written, tested and shipped with the dependency we already have; reimplementing it would be several hundred lines to arrive at something worse.
 
-Tools: `select`, `snowline`, `lake`, `river`, `road`. Each placement tool is one raycast against the terrain `BatchedMesh` per click. Splines are built by clicking successive points; `Enter` ends the spline. Selecting any handle attaches the gizmo; `G` / `R` / `S` switch translate / rotate / scale, matching the muscle memory the request named.
+Tools: `select`, `snowline`, `lake`, `river`, `road`. Each placement tool is one raycast against the terrain `BatchedMesh` per click. Splines are built by clicking successive points; `Enter` ends the spline. Selecting any handle attaches the gizmo; `G` / `R` / `S` switch translate / rotate / scale, matching the muscle memory the request named -- and the panel draws the same three as buttons, because a mode reachable only by a key nobody mentioned is a mode nobody finds.
+
+A click within 10 px of an existing handle SELECTS it rather than placing something new behind it: the ray gets first refusal, and only when it hits nothing does screen-space proximity get a say, so a handle drawn on top of the pixel you clicked always wins over one that is merely nearer.
+
+Scale means different things to different selections and the editor writes the parameter rather than storing a transform: a lake takes `rx`/`rz`, a snow point its `radius`, a spline point its `width`. Each has a multiplicative floor, so a drag can shrink something small but never to an unrecoverable zero.
+
+Right-click on a handle opens a context menu: delete, and on a spline point **split before** / **split after** -- a new control point at the midpoint of that segment with the two widths averaged. Past either end there is no segment to halve, so the path extends instead by half the last segment, taking its Y from the ground. That is the only way to lengthen a river after its draft is committed. The editor builds the items and the panel draws them; deciding what is legal to do to a river point is not the DOM layer's job. The placement arithmetic is `src/v2/edit/split.js`, three-free so the gate can reach it.
 
 Edits are debounced (~120 ms) before the worker sees them, so a drag is one remesh per frame-ish and not one per mousemove.
 
@@ -188,7 +196,7 @@ Edits are debounced (~120 ms) before the worker sees them, so a drag is one reme
 One panel, top-left, replacing v1's `#desktop-hud` block-of-lines. Two zones:
 
 - **Status**, compact: a dense two-column key/value grid rather than one fact per line -- fps, draw tris, chunks resident/drawn, triDeg, position, ground height, snow line here, mode. It is what v1's HUD said, in about a third of the height.
-- **Tools**: the tool row, the selected object's numeric fields (editable), the layer list with visibility toggles and per-item delete, and save/load.
+- **Tools**: the tool row, the gizmo's mode buttons, the selected object's numeric fields (editable), the layer list with visibility toggles and per-item delete, and save/load. Visibility is EDITOR-LOCAL and hides the actual surface -- `mesh.visible` on the water and road meshes, not a skipped build -- so hiding costs no remesh and no undo entry, and `levelAt`/`lakeBoxes` keep answering the gameplay questions (prop scatter, spawn search, where the player is standing) about a lake you have merely stopped looking at.
 
 The XR canvas mirror keeps showing status only. Editing is a desktop activity and the gizmo has no controller binding.
 
@@ -202,6 +210,6 @@ Added to `npm run check`. It must be able to fail. Sections:
 4. **paths** -- a river carve reaches `depth` at the centreline and 0 at `halfWidth * 2`; a road's surface is within 1 cm of the spline `y` inside `halfWidth`; a tight S-bend does not self-intersect (centripetal, not uniform).
 5. **slot pool** -- worst-case selection over a few hundred camera positions at `MAX_DEPTH 13`, plus pinned chunks, fits `SLOT_COUNT`.
 6. **layer culling** -- over a sampled sweep, the fraction of chunks that early-out is above 95% for a world with a dozen authored objects. This is the claim "compact and performance-efficient" reduces to, so it is the one that gets a number.
-7. **host wiring** -- `src/v2/main.js` constructs a `WebGLRenderer` on its first line, so node cannot import it and no section above can reach it. The four rules its collaborators' headers state as "the host must" are asserted textually instead, comment lines stripped first: it does not call `markers.update()` (the editor owns that call and two callers race on the handle scale), it does not transform `water.group` (the shader reads world position off `modelMatrix`), it patches `roads.material` in `vertex` mode (or the road is the one surface that stays lit after dark), and `probe.update()` runs before `renderer.render()`. Each corresponds to a failure that is invisible in the frame it happens in, which is what makes a weak check worth more than none.
+7. **host wiring** -- `src/v2/main.js` constructs a `WebGLRenderer` on its first line, so node cannot import it and no section above can reach it. The rules its collaborators' headers state as "the host must" are asserted textually instead, comment lines stripped first: it does not call `markers.update()` (the editor owns that call and two callers race on the handle scale), it does not transform `water.group` (the shader reads world position off `modelMatrix`), it patches `roads.material` in `vertex` mode (or the road is the one surface that stays lit after dark), it calls `setVisibility` on all three surfaces that draw authored geometry (miss one and the panel's hide toggle silently does nothing to that layer), and `probe.update()` runs before `renderer.render()`. Each corresponds to a failure that is invisible in the frame it happens in, which is what makes a weak check worth more than none.
 
 Everything DOM, three.js, XR and gizmo on the `/v2` route is still unexercised by any gate: node reaches none of it, and there is no browser harness. The first click through the markers -> editor -> gizmo path will be a human's.

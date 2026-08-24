@@ -41,6 +41,14 @@ const SIZE = 128 // TEX_SIZE in src/textures.js -- every layer of the array must
 const LEAVES = ['oak', 'ash', 'aspen', 'pine']
 const BARK = ['oak', 'birch', 'pine']
 
+// The TILING cut. A cloaked branch (tree.js, `foliage: 'cloak'`) wears one long
+// quad with the spray repeated along it, so the art has to have transparent
+// margin at u = 0 and u = 1 or neighbouring tiles fuse into a hedge. The plain
+// `leaf_pine` cut has opaque pixels hard against both edges by construction --
+// it is cropped to its alpha bounds -- so it cannot be the same file, and it is
+// also still wanted as-is by the scanned props in src/props.js.
+const TILING = [{ name: 'pine', out: 'spray_pine', pad: 0.09 }]
+
 const ALPHA = 128 // the alphaTest the props material uses; the cutout is judged at this
 
 // --- resampling -------------------------------------------------------------
@@ -126,14 +134,24 @@ function coverage(px) {
 
 const aspects = {}
 
-function buildLeaf(name) {
+// `pad` leaves that fraction of the square transparent at each SIDE, so the cut
+// tiles horizontally without its neighbours touching. 0 fills the square, which
+// is what a single card wants -- there every texel should be art.
+function buildLeaf(name, outName = `leaf_${name}`, pad = 0) {
   const src = readPng(path.join(EZ, 'leaves', `${name}_color.png`))
   const box = alphaBounds(src.data, src.width, src.height)
 
-  // Stretched to fill the square, NOT letterboxed, and the aspect is handed
-  // back so the card in tree.js can be built at the art's real proportions and
-  // un-stretch it. Letterboxing would spend up to half the texels on nothing.
-  const px = resample(src.data, src.width, src.height, box.x0, box.y0, box.w, box.h, SIZE, SIZE)
+  // Stretched to fill the square (less the margin), NOT letterboxed, and the
+  // aspect is handed back so the card in tree.js can be built at the art's real
+  // proportions and un-stretch it. Letterboxing would spend up to half the
+  // texels on nothing.
+  const inner = SIZE - 2 * Math.round(SIZE * pad)
+  const x0 = Math.round((SIZE - inner) / 2)
+  const scaled = resample(src.data, src.width, src.height, box.x0, box.y0, box.w, box.h, inner, SIZE)
+  const px = new Uint8Array(SIZE * SIZE * 4) // zeroed: the margin is transparent
+  for (let y = 0; y < SIZE; y++) {
+    px.set(scaled.subarray(y * inner * 4, (y + 1) * inner * 4), (y * SIZE + x0) * 4)
+  }
 
   // Row 0 of the file is the TOP of the image, and `decodeLayer` in
   // textures.js writes file rows straight into the array with no flip, so file
@@ -144,10 +162,16 @@ function buildLeaf(name) {
     flipped.set(px.subarray((SIZE - 1 - y) * SIZE * 4, (SIZE - y) * SIZE * 4), y * SIZE * 4)
   }
 
-  const file = path.join(OUT, `leaf_${name}.png`)
+  const file = path.join(OUT, `${outName}.png`)
   writePng(file, SIZE, SIZE, flipped, 4)
-  aspects[name] = box.w / box.h
-  report(file, `crop ${box.w}x${box.h}`, `aspect ${(box.w / box.h).toFixed(3)}`, `${(coverage(flipped) * 100).toFixed(0)}% opaque`)
+  // The aspect of the SQUARE as drawn, not of the art inside it: a padded cut
+  // stands for a wider piece of world than the art covers, and tree.js sizes
+  // the whole square. Dividing by the margin fraction is what keeps needles
+  // un-stretched once the tile is laid down.
+  aspects[outName] = box.w / box.h / (inner / SIZE)
+  report(file, `crop ${box.w}x${box.h}`, `aspect ${aspects[outName].toFixed(3)}`,
+    pad ? `${(pad * 100).toFixed(0)}% side margin` : 'fills the square',
+    `${(coverage(flipped) * 100).toFixed(0)}% opaque`)
 }
 
 function buildBark(name, scratch) {
@@ -181,6 +205,8 @@ const scratch = mkdtempSync(path.join(tmpdir(), 'aurora-bark-'))
 try {
   console.log('leaves')
   for (const n of LEAVES) buildLeaf(n)
+  console.log('tiling sprays')
+  for (const t of TILING) buildLeaf(t.name, t.out, t.pad)
   console.log('bark')
   for (const n of BARK) buildBark(n, scratch)
 } finally {
@@ -191,5 +217,5 @@ try {
 // to a JSON the runtime reads: they are a property of art that changes about
 // never, and a build-time file the game must fetch to draw a leaf correctly is
 // a whole failure mode bought for nothing.
-console.log('\nsprayAspect per species (art width / height):')
+console.log('\nsprayAspect / cloakAspect per cut (square width / height as drawn):')
 for (const [k, v] of Object.entries(aspects)) console.log(`  ${k.padEnd(8)} ${v.toFixed(3)}`)

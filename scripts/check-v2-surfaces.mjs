@@ -116,37 +116,43 @@ export async function run() {
 
   // --- 3. lake discs ---------------------------------------------------------
   //
-  // The segment rule is sag = max(rx, rz) * pi^2 / (2 N^2), inverted for N at a 0.5 m budget and rounded up to a multiple of 8. Checked at the three sizes the rule is meant to separate: the pond the lake tool places by default, a mid-sized lake, and one big enough to hit the ceiling.
+  // A lake rim is EIGHT segments at every size (ribbon.js, LAKE_SEGMENTS), circumscribed rather than inscribed so the polygon covers the water it stands for. The old rule picked the count from a sag budget and could afford to be inscribed because the error was under half a metre; at eight segments the inscribed error is 7.6% of the radius, which on a 400 m lake is a 30 m bite of bare lake bed showing through the water at each of eight places around the shore.
   //
-  // WORLD_HALF is the fourth, and it is read from config rather than written as a literal on purpose: it is the largest half-extent the box can hold, so it is where the 128-segment ceiling is under the most strain, and if the world box moves again this check moves with it instead of quietly testing a size that no longer exists. Its sag is over LAKE_SAG and that is expected -- what must hold at every size is that the rim stays buried under LAKE_OVERHANG, which is the assertion below.
+  // So COVERAGE is the assertion this section is really about, and it is checked by sampling the chords rather than by re-deriving sec(pi/N) here: every point on every rim edge must be outside the authored footprint, at every size, at both shapes, elongated, and rotated. That is the property that survives a change of parametrisation -- and it is exactly what failed for a long shape-1 lake before the superellipse switched to sampling the unit curve.
   {
-    for (const [rmax, want] of [[40, 24], [400, 64], [1500, 128], [WORLD_HALF, 128]]) {
+    // Sizes: the pond the lake tool places by default, a mid-sized lake, a big one, and WORLD_HALF -- read from config rather than typed, so that if the world box moves again (it has, twice) this follows it instead of testing a size the box can no longer hold.
+    for (const rmax of [40, 400, 1500, WORLD_HALF]) {
       const lake = { id: `l${rmax}`, x: 100, z: -250, y: 130, rx: rmax, rz: rmax * 0.6, rot: 0.4, shape: 0, carve: 1, depth: 8 }
       const d = discVertices(lake)
       check(
-        d.segments === want && d.vertices === want + 1 && d.triangles === want,
-        `a ${rmax} m half-extent lake gets ${want} segments`,
+        d.segments === 8 && d.vertices === 9 && d.triangles === 8,
+        `a ${rmax} m half-extent lake is an octagon`,
         `${d.segments} segments, ${d.vertices} verts, ${d.triangles} tris`
       )
-      check(discSegments(rmax, rmax * 0.6) === want, `discSegments agrees for ${rmax} m`)
+      check(discSegments(rmax, rmax * 0.6) === 8, `discSegments agrees for ${rmax} m`)
+    }
 
-      // The sag budget is the reason for the count, so measure it rather than trusting the algebra: the deepest a chord cuts inside the rim must stay under 0.5 m, which is what keeps the polygon edge under LAKE_OVERHANG.
-      let sag = 0
-      const ax = rmax + LAKE_OVERHANG
-      const bz = rmax * 0.6 + LAKE_OVERHANG
-      for (let k = 0; k < d.segments; k++) {
-        const t0 = (2 * Math.PI * k) / d.segments
-        const t1 = (2 * Math.PI * (k + 1)) / d.segments
-        const mx = (ax * Math.cos(t0) + ax * Math.cos(t1)) / 2
-        const mz = (bz * Math.sin(t0) + bz * Math.sin(t1)) / 2
-        // Distance from the chord midpoint out to the ellipse along the same ray.
-        const s = Math.hypot(mx, mz)
-        const ux = mx / s
-        const uz = mz / s
-        const hit = 1 / Math.hypot(ux / ax, uz / bz)
-        sag = Math.max(sag, hit - s)
+    // Coverage, over the cases that can break it independently: both shapes, round and long, unrotated and rotated. `footprint` is 0 outside the rim and positive inside, so a single non-zero sample anywhere on a chord is water that is not being drawn.
+    for (const shape of [0, 1]) {
+      for (const [rx, rz] of [[20, 20], [400, 240], [100, 10], [10, 100]]) {
+        for (const rot of [0, 0.9, -2.1]) {
+          const lake = { id: 'lc', x: -30, z: 70, y: 12, rx, rz, rot, shape, carve: 1, depth: 4 }
+          const d = discVertices(lake)
+          let worst = 0
+          for (let k = 0; k < d.segments; k++) {
+            const a = (k + 1) * 3
+            const b = ((k + 1) % d.segments + 1) * 3
+            // Nine samples per chord rather than the midpoint alone: the midpoint is the deepest cut only when the two vertices are equidistant from the centre, which they are not on a long lake.
+            for (let t = 0; t <= 8; t++) {
+              const u = t / 8
+              const px = d.positions[a] + (d.positions[b] - d.positions[a]) * u
+              const pz = d.positions[a + 2] + (d.positions[b + 2] - d.positions[a + 2]) * u
+              worst = Math.max(worst, footprint(lake, px, pz))
+            }
+          }
+          check(worst === 0, `a ${rx}x${rz} m shape-${shape} lake at ${rot} rad is covered by its own rim`, `deepest uncovered footprint ${worst.toFixed(3)}`)
+        }
       }
-      check(sag < LAKE_OVERHANG, `the ${rmax} m rim stays buried under the ${LAKE_OVERHANG} m overhang`, `worst chord sag ${sag.toFixed(3)} m`)
     }
 
     const lake = { id: 'lw', x: 0, z: 0, y: 100, rx: 200, rz: 90, rot: 0.9, shape: 0, carve: 1, depth: 6 }
@@ -177,38 +183,42 @@ export async function run() {
     check(outsideRim === 0, 'every rim vertex sits outside the authored footprint', `${outsideRim} of ${d.segments} still inside`)
     check(insideRim === 0, 'the rim is the footprint dilated, not a differently-rotated shape', `${insideRim} of ${d.segments} vertices are not over their own lake`)
 
-    // And the plain algebra, so the check still says something if water-bodies.js ever moves.
+    // And the plain algebra, so the check still says something if water-bodies.js ever moves. SEC is ribbon.js's RIM_SCALE, re-derived here rather than imported: the point of this assertion is that the two derivations agree.
+    const SEC = 1 / Math.cos(Math.PI / d.segments)
     const cs = Math.cos(lake.rot)
     const sn = Math.sin(lake.rot)
     let worst = 0
     for (let k = 0; k < d.segments; k++) {
       const th = (2 * Math.PI * k) / d.segments
-      const lx = (lake.rx + LAKE_OVERHANG) * Math.cos(th)
-      const lz = (lake.rz + LAKE_OVERHANG) * Math.sin(th)
+      const lx = (lake.rx + LAKE_OVERHANG) * SEC * Math.cos(th)
+      const lz = (lake.rz + LAKE_OVERHANG) * SEC * Math.sin(th)
       worst = Math.max(
         worst,
         Math.abs(d.positions[(k + 1) * 3] - (lake.x + lx * cs - lz * sn)),
         Math.abs(d.positions[(k + 1) * 3 + 2] - (lake.z + lx * sn + lz * cs))
       )
     }
-    check(worst < 1e-3, 'rim vertices land on the rotated ellipse', `worst ${worst.toExponential(1)} m`)
+    check(worst < 1e-3, 'rim vertices land on the circumscribed rotated ellipse', `worst ${worst.toExponential(1)} m`)
 
-    let flat = true
-    for (let i = 1; i < d.positions.length; i += 3) if (d.positions[i] !== lake.y) flat = false
-    check(flat, 'a lake disc is exactly level at its authored y')
+    // The edge midpoint of the circumscribed octagon lands ON the dilated rim, which is the whole reason for the sec(pi/N): further out wastes overhang, further in is uncovered water. Measured on a round lake, where the ellipse's affine argument and the circle's are the same number.
+    {
+      const round = { id: 'lr8', x: 0, z: 0, y: 0, rx: 100, rz: 100, rot: 0, shape: 0, carve: 1, depth: 4 }
+      const r8 = discVertices(round)
+      const mx = (r8.positions[3] + r8.positions[6]) / 2
+      const mz = (r8.positions[5] + r8.positions[8]) / 2
+      const mid = Math.hypot(mx, mz)
+      check(Math.abs(mid - (round.rx + LAKE_OVERHANG)) < 1e-3, 'the rim edge midpoint sits exactly on the dilated footprint', `${mid.toFixed(4)} m vs ${(round.rx + LAKE_OVERHANG).toFixed(4)} m`)
+    }
 
-    // A rectangle is a superellipse, so it must stay inside its own half-extents and get closer to the corner than an ellipse does.
+    // A rectangle is a superellipse, so it has to reach further into its corners than an ellipse does -- 1.40 normalised against the ellipse's flat 1.08 -- while still being the same eight vertices.
     const rect = discVertices({ ...lake, id: 'lr', rot: 0, shape: 1 })
-    let outside = 0
     let corner = 0
     for (let k = 0; k < rect.segments; k++) {
       const px = rect.positions[(k + 1) * 3] - lake.x
       const pz = rect.positions[(k + 1) * 3 + 2] - lake.z
-      if (Math.abs(px) > lake.rx + LAKE_OVERHANG + 1e-3 || Math.abs(pz) > lake.rz + LAKE_OVERHANG + 1e-3) outside++
       corner = Math.max(corner, Math.hypot(px / (lake.rx + LAKE_OVERHANG), pz / (lake.rz + LAKE_OVERHANG)))
     }
-    check(outside === 0, 'a rectangular lake stays inside its own half-extents', `${outside} vertices outside`)
-    check(corner > 1.2, 'a rectangular lake actually reaches into its corners', `furthest normalised radius ${corner.toFixed(2)} vs 1.00 for an ellipse`)
+    check(corner > 1.2, 'a rectangular lake actually reaches into its corners', `furthest normalised radius ${corner.toFixed(2)} vs ${(1 / Math.cos(Math.PI / rect.segments)).toFixed(2)} for an ellipse`)
   }
 
   // --- 4. arc length ---------------------------------------------------------

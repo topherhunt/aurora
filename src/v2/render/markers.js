@@ -36,6 +36,7 @@ const OVERLAY_ORDER = 999
 
 const tmpMat = new THREE.Matrix4()
 const tmpCam = new THREE.Vector3()
+const tmpProj = new THREE.Vector3()
 const tmpColor = new THREE.Color()
 
 export class Markers {
@@ -76,8 +77,10 @@ export class Markers {
       snow: this.makeKind(new THREE.OctahedronGeometry(1, 0)),
       // A low sphere, 96 triangles. Spline points sit in dense runs and a faceted one would read as noise.
       spline: this.makeKind(new THREE.SphereGeometry(1, 8, 6)),
-      // A flat ring, pre-rotated into XZ at construction so the instance matrices stay translation-and-scale and never need a rotation composed per frame.
-      lake: this.makeKind(new THREE.RingGeometry(0.62, 1, 20).rotateX(-Math.PI / 2)),
+      // A TORUS in XZ, pre-rotated at construction so the instance matrices stay translation-and-scale and never need a rotation composed per frame.
+      //
+      // It was a flat RingGeometry, and a flat ring is the one handle shape that cannot be clicked: a lake's marker sits AT the water plane, which is where the camera usually is when a lake is being edited, so the ring is seen edge-on and presents a zero-area target to both the eye and the raycaster. A lake was the only object in the editor that could not be selected, and this is why. The tube gives it thickness from every angle for 168 triangles a lake, which is nothing beside not being able to select one.
+      lake: this.makeKind(new THREE.TorusGeometry(0.82, 0.17, 6, 14).rotateX(-Math.PI / 2)),
     }
 
     // The selected snow point's RADIUS, drawn at its true size. This is the only way to author overlapping influence deliberately -- the Shepard kernel (§18) is compactly supported, so two points either reach each other or they do not, and the difference is invisible until the radii are drawn. One mesh, not an instanced one: exactly one point is selected at a time.
@@ -90,6 +93,20 @@ export class Markers {
 
     this.highlight = null
     this.epoch = -1
+
+    // What the layer panel's eye toggles actually do. Everything is visible until a host says otherwise; see setVisibility.
+    this.isVisible = () => true
+  }
+
+  /**
+   * Filter what sync() draws: `fn(kind, id, index)` in the EDITOR's vocabulary -- kind snow/lake/river/road, id null for a snow point, index null for a whole object -- not in this file's geometry-kind vocabulary. The editor owns the hidden set (hiding is a render decision and the document is the authored truth), and this is the one channel by which it reaches the overlay.
+   *
+   * Filtering in sync() rather than at draw time is what makes a hidden object genuinely gone: it is not in `records`, so it is not in the instance buffers, and both hitTest paths therefore cannot select it. A hidden handle you can still click is worse than one you cannot hide.
+   */
+  setVisibility(fn) {
+    if (typeof fn !== 'function') throw new Error('Markers.setVisibility needs a (kind, id, index) => boolean')
+    this.isVisible = fn
+    this.sync()
   }
 
   makeKind(geometry) {
@@ -122,6 +139,7 @@ export class Markers {
     for (let i = 0; i < snow.points.length; i++) {
       const p = snow.points[i]
       if (p === null) continue
+      if (!this.isVisible('snow', null, i)) continue
       if (!Number.isFinite(p.x) || !Number.isFinite(p.z) || !Number.isFinite(p.delta) || !(p.radius > 0)) throw new Error(`Markers.sync: snow point ${i} is ${JSON.stringify(p)}, expected finite x, z, delta and radius > 0`)
       s.positions.push(p.x, snow.base + p.delta, p.z)
       const t = Math.max(-1, Math.min(1, p.delta / snow.band))
@@ -134,6 +152,7 @@ export class Markers {
     // The control points, NOT the flattened samples: these are the things a mouse drags, and there are a dozen of them per path where there are thousands of samples.
     for (const path of this.layers.paths.paths.values()) {
       if (path.kind !== 'river' && path.kind !== 'road') throw new Error(`Markers.sync: path ${path.id} has kind ${path.kind}, expected river or road`)
+      if (!this.isVisible(path.kind, path.id, null)) continue
       const c = path.kind === 'river' ? RIVER_COLOR : ROAD_COLOR
       for (let i = 0; i < path.pts.length; i++) {
         const p = path.pts[i]
@@ -148,6 +167,7 @@ export class Markers {
 
     const lk = this.kinds.lake
     for (const lake of this.layers.lakes.lakes.values()) {
+      if (!this.isVisible('lake', lake.id, null)) continue
       lk.positions.push(lake.x, lake.y, lake.z)
       lk.colors.push(LAKE_COLOR.r, LAKE_COLOR.g, LAKE_COLOR.b)
       lk.records.push({ kind: 'lake', id: lake.id, index: 0 })
@@ -266,6 +286,39 @@ export class Markers {
     const record = kind.records[hit.instanceId]
     if (!record) throw new Error(`Markers.hitTest: ${hit.object.name} reported instance ${hit.instanceId} with only ${kind.records.length} records; sync() and the InstancedMesh count have diverged`)
     return { kind: record.kind, id: record.id, index: record.index }
+  }
+
+  /**
+   * The handle NEAREST THE CURSOR in screen space, within `tolX`/`tolY` NDC units, or null.
+   *
+   * The companion to hitTest, and the reason it exists: a raycast answers "did the pointer land ON a handle", which is the wrong question for a placement tool. Reaching for a snow point and missing it by six pixels does not do nothing -- it drops a NEW snow point in front of the one that was being reached for, and the world quietly gains an object nobody wanted. A miss has to be forgiving in the direction of selecting rather than creating.
+   *
+   * Nearest to the CURSOR, not to the camera, which is the opposite of what a raycast picks. Within a few pixels of two overlapping handles the one the pointer is actually closest to is the one being pointed at, whichever is in front.
+   *
+   * The projection is done by hand rather than through Vector3.project() so a handle BEHIND the camera can be rejected on its view-space z: project() divides by w, and for w < 0 that mirrors the point back into the frustum, which is how a river point behind your head gets picked when you click empty sky.
+   */
+  hitTestNear(camera, ndcX, ndcY, tolX, tolY) {
+    if (!camera || !camera.isCamera) throw new Error('Markers.hitTestNear needs the camera')
+    if (!(tolX > 0) || !(tolY > 0)) throw new Error(`Markers.hitTestNear: tolerances must be positive NDC spans, got ${tolX}, ${tolY}`)
+    camera.updateMatrixWorld()
+
+    let best = null
+    let bestD2 = 1 // the tolerance ellipse, in normalised units -- anything past it is not a near miss
+    for (const kind of Object.values(this.kinds)) {
+      for (let i = 0; i < kind.count; i++) {
+        tmpProj.set(kind.positions[i * 3], kind.positions[i * 3 + 1], kind.positions[i * 3 + 2])
+        tmpProj.applyMatrix4(camera.matrixWorldInverse)
+        if (tmpProj.z > -camera.near) continue // at or behind the eye
+        tmpProj.applyMatrix4(camera.projectionMatrix)
+        const dx = (tmpProj.x - ndcX) / tolX
+        const dy = (tmpProj.y - ndcY) / tolY
+        const d2 = dx * dx + dy * dy
+        if (d2 > bestD2) continue
+        bestD2 = d2
+        best = kind.records[i]
+      }
+    }
+    return best === null ? null : { kind: best.kind, id: best.id, index: best.index }
   }
 
   dispose() {

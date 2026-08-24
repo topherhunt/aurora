@@ -31,6 +31,7 @@ import { gizmoFromLake, lakeFromGizmo, MIN_LAKE_RADIUS } from '../src/v2/edit/la
 import { History } from '../src/v2/edit/history.js'
 import { restoreLayers, emptyDoc } from '../src/v2/edit/restore.js'
 import { rebindIndex, pathPointPos, snowPointPos } from '../src/v2/edit/handles.js'
+import { splitPoint } from '../src/v2/edit/split.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { livePoints } from '../src/v2/layers/paths.js'
 
@@ -403,6 +404,80 @@ function sectionHandles() {
   check(idx === 3 && compacting[idx][0] === wantCompact.x, 'the same rebind is correct against a list that splices instead', `#4 -> #${idx}`)
 }
 
+// --- section 6: splitting a spline segment -----------------------------------
+//
+// The right-click "split before / split after" arithmetic. What makes it worth
+// a section is that BOTH ends of it are silent when wrong: a dir sign error
+// splits the segment on the wrong side, which looks fine until you notice the
+// point landed where you did not click, and averaging the wrong pair of widths
+// steps the bank at a point nobody moved.
+
+function sectionSplit() {
+  console.log('\nsplitting a spline segment')
+
+  const ground = (x, z) => 100 + x * 0.01 - z * 0.02
+  // Deliberately NOT evenly spaced and NOT of one width: an even ladder cannot
+  // tell a midpoint apart from a neighbour's position, and equal widths cannot
+  // tell a mean apart from a copy.
+  const pts = [
+    [0, 50, 0, 4],
+    [100, 70, 40, 10],
+    [400, 60, 240, 6],
+  ]
+
+  const mid = splitPoint(pts, 0, 1, ground)
+  check(
+    mid[0] === 50 && mid[1] === 60 && mid[2] === 20 && mid[3] === 7,
+    'split-after lands on the midpoint of the pair, width averaged',
+    `[${mid.join(', ')}]`
+  )
+
+  const back = splitPoint(pts, 2, -1, ground)
+  check(
+    back[0] === 250 && back[2] === 140 && back[3] === 8,
+    'split-before halves the segment BEFORE the point, not after it',
+    `[${back.join(', ')}]`
+  )
+
+  // Equidistance is the user's word for it, and it is a property worth asserting
+  // directly rather than inferring from three coordinates being right.
+  const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+  check(near(d(pts[1], mid), d(mid, pts[0]), 1e-9), 'and the new point is equidistant from both', `${d(pts[0], mid).toFixed(3)} m each way`)
+
+  const ext = splitPoint(pts, 2, 1, ground)
+  check(
+    ext[0] === 550 && ext[2] === 340 && ext[3] === 6,
+    'past the last point the path EXTENDS by half the last segment, keeping its width',
+    `[${ext.join(', ')}]`
+  )
+  check(ext[1] === ground(ext[0], ext[2]), 'and the extension takes Y from the ground, not from the slope it was on', `${ext[1].toFixed(2)} m`)
+  // The slope from p1 to p2 is falling 10 m over 300; continued, it would put
+  // the new point at 55 m while the ground there is 98.7. A river cannot be
+  // authored 44 m in the air by accident.
+  check(ext[1] !== 55, 'specifically NOT the segment slope continued', `slope would say 55 m`)
+
+  const head = splitPoint(pts, 0, -1, ground)
+  check(head[0] === -50 && head[2] === -20 && head[3] === 4, 'the same extension works off the head of the path', `[${head.join(', ')}]`)
+
+  const solo = splitPoint([[10, 5, -10, 3]], 0, 1, ground)
+  check(solo[0] === 22 && solo[2] === -10, 'a one-point path steps sideways by four widths -- there is no direction to extend along', `[${solo.join(', ')}]`)
+
+  for (const [label, fn] of [
+    ['an out-of-range index', () => splitPoint(pts, 3, 1, ground)],
+    ['a dir that is not +/-1', () => splitPoint(pts, 0, 2, ground)],
+    ['an empty point list', () => splitPoint([], 0, 1, ground)],
+    ['a missing groundAt', () => splitPoint(pts, 0, 1, null)],
+  ]) {
+    let threw = false
+    try {
+      fn()
+    } catch {
+      threw = true
+    }
+    check(threw, `${label} throws rather than returning a plausible point`)
+  }
+}
+
 export async function run() {
   console.log('\n=== v2 editing tools ===')
   sectionRaymarch()
@@ -410,6 +485,7 @@ export async function run() {
   sectionHistory()
   sectionRestore()
   sectionHandles()
+  sectionSplit()
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
   // THROWS rather than returning the count, because check-v2.mjs's aggregator
   // only catches: it calls `await mod.run()` and ignores what comes back, so a
