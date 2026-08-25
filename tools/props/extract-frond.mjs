@@ -45,6 +45,75 @@ const WORK_SIZE = 2048
 const SLICE = 128
 const ALPHA_CUT = 128 // opacity byte above which a pixel is "frond"
 
+// --- de-lighting ------------------------------------------------------------
+// Megascans' "Raw" means NOT de-lit: the BaseColor is a photograph of a fern
+// standing in the shaded understory it was scanned in, and the shading is baked
+// into the pixels. Measured over the opaque texels of the cut, the raw frond
+// sits at a mean LINEAR luminance of 0.018 and its single BRIGHTEST texel is
+// 0.042. For comparison the tree atlas's oak leaf is 0.178 and the grass tuft
+// is 0.271. That is not a dark green, it is very nearly black, and no amount of
+// per-instance tint rescues it -- setColorAt multiplies, so it can only take
+// the 0.018 down. Dropped into a lit scene the result reads exactly as what it
+// is: a plant photographed in shade, sitting on ground that is not.
+//
+// So the grade is applied HERE, once, into the checked-in cutout, the same way
+// cut-rock.mjs and cut-tiles.mjs grade their photographs -- rather than at load
+// (a per-frame-zero cost for a constant) or per instance (it is a property of
+// the art, not of the plant).
+//
+// TWO STEPS, and they are separate on purpose:
+//
+//   EXPOSURE is the de-light. A flat linear gain, so every ratio the scan
+//   recorded -- pinna against rachis, lit face against shaded one -- survives
+//   exactly. 6.6 puts the mean at 0.119, between the oak leaf and a real
+//   fern's albedo, and the brightest texel at 0.275.
+//
+//   PULL fixes the hue, and it is needed because the scan's blue channel is
+//   flat on the floor: bytes 1, 3, 7 at the 10th, 50th and 90th percentiles.
+//   Gaining that up to a plausible leaf blue would need a 25x on a channel with
+//   three distinct values in it, which is banding. Instead the colour is lerped
+//   toward TARGET renormalised to the pixel's OWN luminance, so the pull moves
+//   hue and saturation and leaves the brightness the exposure just set alone,
+//   and the blue arrives smooth because most of it comes from the constant.
+//
+// TARGET is a linear leaf albedo, a little deeper and greener than the oak
+// leaf's (0.115, 0.212, 0.036) because a fern is an understory plant and should
+// still read as one. The three numbers land the cut at a mean of about
+// (74, 106, 35) sRGB.
+const DELIGHT = {
+  exposure: 6.6,
+  target: [0.068, 0.158, 0.027],
+  pull: 0.55,
+}
+
+const s2l = (v) => (v /= 255) <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+const l2s = (v) => {
+  const s = v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055
+  return Math.max(0, Math.min(255, Math.round(s * 255)))
+}
+const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b
+const TARGET_LUM = lum(...DELIGHT.target)
+
+// In place, over the whole slice including the transparent texels: a texel at
+// (0,0,0) maps to (0,0,0), which is what `dilate` below reads as "no data yet".
+function delight(rgba) {
+  for (let i = 0; i < rgba.length; i += 4) {
+    let r = s2l(rgba[i]) * DELIGHT.exposure
+    let g = s2l(rgba[i + 1]) * DELIGHT.exposure
+    let b = s2l(rgba[i + 2]) * DELIGHT.exposure
+
+    const k = lum(r, g, b) / TARGET_LUM
+    r += (DELIGHT.target[0] * k - r) * DELIGHT.pull
+    g += (DELIGHT.target[1] * k - g) * DELIGHT.pull
+    b += (DELIGHT.target[2] * k - b) * DELIGHT.pull
+
+    rgba[i] = l2s(r)
+    rgba[i + 1] = l2s(g)
+    rgba[i + 2] = l2s(b)
+  }
+  return rgba
+}
+
 const args = process.argv.slice(2)
 const LIST_ONLY = args.includes('--list')
 const COUNT = Number(args[args.indexOf('--count') + 1]) || 3
@@ -271,8 +340,11 @@ const meta = []
 for (const [i, c] of picks.entries()) {
   const name = `fern_frond_${i}`
   const file = join(OUT_DIR, `${name}.png`)
+  // De-light BEFORE the dilate, so the colour that bleeds outward into the
+  // transparent margin is the graded colour and the mip chain does not average
+  // a raw near-black fringe back in.
   const rgba = dilate(
-    cutSlice(color, opac, label, c.id, { minX: c.minX, minY: c.minY, bw: c.bw, bh: c.bh }, w),
+    delight(cutSlice(color, opac, label, c.id, { minX: c.minX, minY: c.minY, bw: c.bw, bh: c.bh }, w)),
     SLICE
   )
   writePng(file, SLICE, SLICE, rgba, 4)

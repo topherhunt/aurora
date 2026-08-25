@@ -194,13 +194,24 @@ function cardFrame(arch, height) {
  * same aspect; what still varies per instance is yaw and scale, which is where
  * variety at this range was always going to come from.
  */
-export function fernCardGeometries({ height = FERN_DEFAULTS.height, planes = FERN_CARD_PLANES } = {}) {
+export function fernCardGeometries({
+  height = FERN_DEFAULTS.height,
+  planes = FERN_CARD_PLANES,
+  // ONE PLANE IS ONLY LEGAL IF SOMETHING TURNS IT, which is the note above this
+  // function and still holds. `billboard` is that something: it asks for the
+  // single quad with a vertical normal that material.js's billboardVertex spins
+  // toward the eye. Two flags rather than one because they are independent
+  // questions -- v2's carpet passes { planes: 1, billboard: true }, the sparse
+  // v1 scatter passes neither, and asking for one plane WITHOUT the billboard
+  // is the broken case that vanishes edge-on.
+  billboard = false,
+} = {}) {
   const layers = FERN_AXES.arch.map(fernCardLayer)
   const cards = FERN_AXES.arch.map((arch, i) => {
     const { geo, frame } = cardFrame(arch, height)
     geo.dispose()
     const ext = impostorCardExtents(frame)
-    return buildImpostorCard(ext.width, ext.height, layers[i], planes)
+    return buildImpostorCard(ext.width, ext.height, layers[i], planes, { upNormal: billboard })
   })
   return {
     layers,

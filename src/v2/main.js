@@ -14,6 +14,12 @@ import { RoadSurfaces } from './render/road-surfaces.js'
 import { Editor, TOOL_KEYS, TOOLS } from './edit/editor.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
+import { Trees } from './render/trees.js'
+import { Ferns } from './render/ferns.js'
+import { Grass } from './render/grass.js'
+import { Rocks } from './render/rocks.js'
+import { buildTextureArray, loadImageLayers } from '../textures.js'
+import { setSnow, setMoss, setPropClock } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -56,8 +62,32 @@ import { Input } from '../input.js'
 //   WaterSurfaces onto the same shared water material, so they wave and reflect
 //   exactly like v1's does.
 //
-//   No prop scatter. §18 is about the ground and the layers on it. An empty
-//   world is also the honest way to look at a heightmap.
+//   The prop scatter is TREES, GRASS, FERNS AND ROCKS, and all of them are TILED,
+//   camera-following scatters that THIN WITH DISTANCE -- full density inside
+//   80 m for trees, 20 m for grass and 35 m for ferns, then halving every time
+//   the distance doubles, out to 1.5 km, 70 m and 90 m respectively. All three
+//   are pure functions of position, so they cover the whole map and the same
+//   plants come back when you walk away and return, and the thinning is what
+//   makes a 1.5 km forest cost ~41k instances instead of the 350k a uniform disc
+//   would need, a 3/m^2 grass carpet 27k instead of 46k, and a 0.5/m^2 fern bed
+//   ~9k instead of the 13k a 90 m disc would need. Each instance also carries
+//   the distance at which it stops existing, and the prop shader dissolves it
+//   over the last 15% of that, so the rim and the thinning bands fade rather
+//   than pop. The plants' far tiers are camera-facing billboards spun in the
+//   vertex shader; the rocks' is real geometry, because a boulder photographed
+//   from the side has nothing to lean into. See the headers of render/trees.js,
+//   render/grass.js, render/ferns.js and render/rocks.js.
+//
+//   ROCKS RUN THREE OF THAT SAME SCATTER AT ONCE, because a pebble is 11 cm and
+//   a summit fang is 7.5 m and no one density-and-radius pair can carry both:
+//   an underfoot bed to 55 m, a boulder bed to 460 m and a giants bed to 1.25
+//   km. What stands where is a function of the GROUND -- each site is classified
+//   river / forest / cliff / peak, and that decides both which of the sixteen
+//   variants may stand there and how many. Snow and moss then arrive from two
+//   world lines running in opposite directions, so a rock on a summit is white,
+//   the same rock in a damp wood is green, and neither costs a byte per
+//   instance. See props/rock-bank.js for the sixteen and material.js for the
+//   two lines.
 //
 // BOOT IS ASYNCHRONOUS AND ORDERED, and the order is forced by a real
 // dependency, not by taste:
@@ -148,6 +178,10 @@ let player = null
 let markers = null
 let waterSurfaces = null
 let roads = null
+let trees = null
+let ferns = null
+let grass = null
+let rocks = null
 let editor = null
 let panel = null
 let ready = false
@@ -266,6 +300,128 @@ async function bootWorld() {
   const spawn = findSpawnV2(height, waterSurfaces, bands)
   player.spawnAt(spawn.x, spawn.z)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
+
+  // Trees. The atlas is built empty and its image layers land asynchronously;
+  // the bank and the batch do not wait on them, so the world has trees from the
+  // first frame wearing whatever the procedural layers already hold. The card
+  // BAKE does wait, because a photograph taken before the bark has loaded would
+  // be a photograph of nothing -- see Trees.bakeCards.
+  const propTextures = buildTextureArray()
+  // `ground: terrain` is what stops distant trees floating: a tree's Y comes off
+  // the chunk mesh that is actually drawn under it, not off the exact field the
+  // chunk's triangles are chording across. See Trees._groundFor.
+  trees = new Trees(scene, height, waterSurfaces, propTextures, { seed: SEED, ground: terrain })
+  // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
+  // shadow lookup is worth. Skipping this is a visible failure -- the trees
+  // would be the one surface the night lift never reaches.
+  // The cacheKey MUST differ from the ferns' below. three keys its program cache
+  // on it, and these two materials compile DIFFERENT shader source -- the tree
+  // material's uBillboardLayers is four long, the ferns' is two -- so sharing a
+  // key would hand one of them the other's program.
+  lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb' })
+  // So a tree and the ground it stands on cross the snow line together.
+  trees.syncSnowLine(layers)
+  trees.place(spawn.x, spawn.z)
+  const ts = trees.stats
+  console.log(
+    `[v2] trees ${ts.placed} placed over ${ts.tiles} tiles in ${ts.placeMs.toFixed(0)} ms ` +
+    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning to ${ts.radius} m, ` +
+    `pool ${ts.used}/${ts.pool}), ${ts.bankKB} KB bank`
+  )
+
+  // Ferns, as an undercarpet at ~1 per square metre. A SECOND BatchedMesh
+  // and a second material rather than instances in the tree batch, and that is
+  // not a violation of DESIGN.md §5's one-material rule -- the rule is that a
+  // batch cannot be split by material, and these are two batches. Ferns need
+  // their own program anyway: WHICH texture layers billboard is compiled into
+  // the shader, and the two lists differ -- four tree impostor layers against
+  // two fern ones -- so one shared material could not spin both correctly.
+  //
+  // The whole Layers goes in, not just its paths: a fern takes a hue cue from
+  // the terrain colour underfoot, which needs the snow band and the road
+  // flattening as well as the path exclusions.
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED })
+  lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
+  ferns.syncSnowLine(layers)
+  ferns.place(spawn.x, spawn.z)
+  const fs = ferns.stats
+  const fr = fs.rejected
+  console.log(
+    `[v2] ferns ${fs.placed} placed over ${fs.tiles} tiles in ${fs.placeMs.toFixed(0)} ms ` +
+    `(${fs.density}/m^2 to ${fs.fullRadius} m, thinning to ${fs.radius} m, ` +
+    `${fs.heightRange[0]}-${fs.heightRange[1]} m tall, pool ${fs.used}/${fs.pool}) ` +
+    `(dropped: ${fr.elev} elev, ${fr.slope} slope, ${fr.water} water, ${fr.snow} snow, ${fr.path} path)`
+  )
+  // A/B hook for the billboard, from the console: v2ferns.setFarTier('mesh')
+  // holds real LOD2 geometry past 14 m so the card can be judged against ground
+  // truth, and 'card' puts it back. See Ferns.setFarTier.
+  window.v2ferns = ferns
+
+  // Grass, at 3 tufts per square metre -- the densest thing in the world by a
+  // factor of sixty, and a THIRD batch for the same reason ferns are a second
+  // one: its billboard list is one layer long and neither of the others' is.
+  //
+  // It follows the TREE pattern rather than the fern one, which is the whole
+  // point of it: a tiled scatter that follows the camera, thinned so every
+  // doubling of distance halves the density, and dissolved with an ordered
+  // dither at each tuft's own cull distance so nothing pops. A fixed disc at
+  // this density would be 46,000 instances for the same horizon. See
+  // render/grass.js, which lays out where its ~54k triangles go.
+  grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, { seed: SEED })
+  lighting.patch(grass.material, { mode: 'vertex', cacheKey: 'v2-grass-bb' })
+  grass.syncSnowLine(layers)
+  grass.place(spawn.x, spawn.z)
+  const gs = grass.stats
+  const gr = gs.rejected
+  console.log(
+    `[v2] grass ${gs.placed} of ${gs.samples} placed over ${gs.tiles} tiles in ` +
+    `${gs.placeMs.toFixed(0)} ms (${gs.density}/m^2 to ${gs.fullRadius} m, thinning to ` +
+    `${gs.radius} m, pool ${gs.used}/${gs.pool}; dropped: ${gr.elev} elev, ${gr.slope} slope, ` +
+    `${gr.water} water, ${gr.snow} snow, ${gr.path} path)`
+  )
+
+  // Stone, in three size beds at once: pebbles underfoot, boulders through the
+  // wood and across the cliffsides, and giants on the crags and the summits.
+  // Three more BatchedMeshes and three more draw calls, but ONE material for all
+  // three -- nothing in the rock beds billboards, so unlike the trees, the ferns
+  // and the grass there is no per-bed shader source. See render/rocks.js.
+  //
+  // Which shapes stand where is decided by the ground, not by a roll: each site
+  // is classified river / forest / cliff / peak off the field sample the
+  // placement test already pays for, and both WHICH variants may stand there and
+  // HOW MANY of them follow from that.
+  rocks = new Rocks(scene, height, waterSurfaces, propTextures, { seed: SEED, ground: terrain })
+  lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
+  rocks.syncBands(layers)
+  rocks.place(spawn.x, spawn.z)
+  const rs = rocks.stats
+  console.log(
+    `[v2] rocks ${rs.placed} placed in ${rs.placeMs.toFixed(0)} ms, bank ${rs.shapes} shapes / ` +
+    `${rs.bankTris} tris / ${rs.bankKB} KB in ${rs.buildMs.toFixed(0)} ms; ` +
+    rs.beds.map((b) => `${b.name} ${b.placed} (${b.used}/${b.pool}) to ${b.radius} m`).join(', ')
+  )
+
+  // The weather, which until now nothing in v2 ever turned on: the props have
+  // carried a snow shader and a moss shader since they were written, and both
+  // have been sitting at zero. Setting them here is what makes a rock on a
+  // summit white and the same rock in a damp wood green -- and it also puts snow
+  // on the TREES above the line for the first time, because it is one uniform
+  // for the whole world by design (see material.js).
+  //
+  // Both are CEILINGS. What a given prop wears is this scaled by where it stands
+  // against its line, which is what rocks.syncBands set from the terrain's own
+  // snow band a few lines up.
+  setSnow(1)
+  setMoss(0.8)
+
+  // ONE loadImageLayers for all three, and the bakes hang off the same promise.
+  // Separate calls would be separate decodes of the same PNGs into the same
+  // atlas.
+  loadImageLayers(propTextures).then(() => {
+    trees.bakeCards(renderer)
+    ferns.bakeCards(renderer)
+    grass.bakeCards(renderer)
+  })
 
   editor = new Editor({
     scene,
@@ -700,6 +856,17 @@ function panelStats() {
     drawn: st.rendered,
     queued: st.queued,
     triDeg: st.triDeg,
+    // `tris` above is the whole frame as the GPU sees it; these three say how
+    // much of it is the prop scatter, which is the layer currently being tuned.
+    treeCount: trees.stats.placed,
+    treeTris: trees.stats.tris,
+    fernCount: ferns.stats.placed,
+    fernTris: ferns.stats.tris,
+    grassCount: grass.stats.placed,
+    grassVeiled: grass.stats.veiled,
+    grassTris: grass.stats.tris,
+    rockCount: rocks.stats.placed,
+    rockTris: rocks.stats.tris,
     x: headTmp.x,
     y: headTmp.y,
     z: headTmp.z,
@@ -736,10 +903,20 @@ function tick() {
   readInput()
   player.update(dt, moveInput)
 
+  // The clock the prop LOD cross-dissolves run on, and the only per-frame cost
+  // any of them has. Set BEFORE the scatters update, so the sweep that retires
+  // finished fades and the shader that draws them read the same instant. It
+  // wraps at 1024 s inside setPropClock -- see the packing note in material.js.
+  setPropClock(now / 1000)
+
   player.headPosition(headTmp)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
   terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
+  trees.update(headTmp.x, headTmp.y, headTmp.z)
+  ferns.update(headTmp.x, headTmp.y, headTmp.z)
+  grass.update(headTmp.x, headTmp.y, headTmp.z)
+  rocks.update(headTmp.x, headTmp.y, headTmp.z)
 
   clock.advance(dt)
   applySky(clock.state(), headTmp, now / 1000)

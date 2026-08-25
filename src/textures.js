@@ -111,11 +111,19 @@ export const LAYER = {
   //   ashlar for a manor chimney that is a new layer for a new BUILDING class,
   //   not a second version of this one.
   //
-  //   Moss on thatch. Not a texture at all -- it is a per-vertex colour
-  //   multiply driven by roof height, normal and distance from the eave, which
-  //   costs zero layers and zero triangles and varies per building for free.
-  //   A moss layer would need a second blended pass over the roof, which means
-  //   a second material, which splits the batch. That trade is never worth it.
+  //   Moss on thatch. Not a texture -- it is a per-vertex colour multiply
+  //   driven by roof height, normal and distance from the eave, which costs
+  //   zero layers and zero triangles and varies per building for free.
+  //
+  //   There IS a moss texture now (LAYER.MOSS), and a roof could join
+  //   MOSS_LAYERS the day somebody wants it: the second blended pass it needs
+  //   turned out to cost a branch and a fetch inside the one shared material
+  //   rather than a second material, so the batch-splitting argument that used
+  //   to end this paragraph was wrong. The per-vertex multiply stays anyway,
+  //   because what it is doing on a roof is not what moss does on a rock: it is
+  //   a WEATHERING gradient -- damp at the eave, bleached at the ridge -- and a
+  //   tiled photograph cannot express a gradient that runs the length of a
+  //   surface. If a roof ever wants real moss clumps, it wants BOTH.
   //
   // 13 building layers x 64 KB = 832 KB, taking the array from 9 to 26 of the
   // 256 layers §9 measured as available.
@@ -238,8 +246,82 @@ export const LAYER = {
   // judgement. `gen-fern.html`'s `card` button is where it gets confirmed.
   IMPOSTOR_FERN_UPRIGHT: 30, // baked from the low-`arch` half of the bank
   IMPOSTOR_FERN_ARCHED: 31, // ...and the high-`arch` half
+
+  // --- rock impostor (src/props/rock.js) ------------------------------------
+  //
+  // ONE scratch layer, and it is deliberately not yet a decision. The fern's
+  // two layers were cut on `arch` because the bank was already settled and the
+  // axis that survives to 26 px was known; the rock bank is not settled -- what
+  // gen-rock.html exists for is to find out which shapes we actually want --
+  // so committing N impostor layers now would be committing to a bank nobody
+  // has chosen. The bench bakes into this one so the card tier can be LOOKED at
+  // while the shapes are being picked, and the split into per-shape layers is a
+  // thing to do once the shapes exist.
+  //
+  // Note that a rock's card is a much weaker idea than a fern's, and the bench
+  // says so on screen: a fern is a lacy volume that a flat photograph flatters,
+  // while a rock is an OPAQUE CONVEX LUMP whose whole read is the way its
+  // facets catch the light as you walk past. Crossed planes give a rock a
+  // visible X-shaped intersection where a fern's fronds hide it. The honest
+  // ladder may well be "8-triangle LOD2, then cull" -- §5's boulder row already
+  // assumes exactly that -- and the card button is how that gets confirmed
+  // rather than assumed.
+  IMPOSTOR_ROCK: 32,
+
+  // --- grass (src/props/grass-bank.js, src/v2/render/grass.js) --------------
+  //
+  // The EZ-Tree tuft, cut by tools/trees/layers.py and staged at
+  // public/grass/grass_tuft.png. This is the SAME image the generated grass
+  // props in public/props/ wear, and it is here rather than reused from there
+  // because public/props is a build tree that `npm run props --clean` deletes;
+  // see the note in layers.py's main().
+  //
+  // IT IS GREYSCALE ON PURPOSE and that is what makes one layer enough. Measured
+  // over the file: mean RGB 141/141/141, mean chroma 0.0, 18.9% opaque. All the
+  // colour arrives as the instance TINT, so lush, dry and autumn grass -- and
+  // the per-instance variation the carpet is scattered with -- cost nothing
+  // beyond this one slice. The tints the /props asset ships are sRGB
+  // (0.30, 0.50, 0.20), (0.42, 0.52, 0.24) and (0.60, 0.56, 0.30), and
+  // generate.mjs calibrates them against v1's procedural blades: a dry tint
+  // through a mid-grey texel lands near linear (0.03, 0.047, 0.010), which is
+  // the same brightness as shapes.js's BLADE_BASE.
+  GRASS_TUFT: 33,
+
+  // The grass impostor, baked at load from the 3-plane LOD0 tuft.
+  //
+  // ONE layer, and the reason it needs a layer of its own is mechanical rather
+  // than artistic: material.js picks what to BILLBOARD by texture layer, so a
+  // spinning single quad cannot wear GRASS_TUFT without every crossed quad in
+  // the same batch spinning with it. The fern's two impostor layers were a
+  // judgement about silhouette; this one is forced.
+  //
+  // Given that it has to exist, it is a photograph of the 3-plane cross rather
+  // than a copy of the tuft, which costs one 512² render at load and buys a
+  // fuller outline: a single blade card is a third of what a tuft looks like
+  // from the side, and the far tier carries about 80% of the instances.
+  IMPOSTOR_GRASS: 34,
+
+  // --- moss (src/material.js MOSS_APPLY) ------------------------------------
+  //
+  // Cut from a photograph by tools/props/cut-moss.mjs. Not a prop and not worn
+  // by any geometry: nothing in the world carries MOSS as its `texLayer`. It is
+  // sampled by the SHADER, as a second fetch laid over whatever the surface
+  // already is, wherever MOSS_LAYERS says moss grows.
+  //
+  // That is what makes it worth a slot under §9's earns-its-layer rule, and the
+  // arithmetic is unusually good: ONE layer puts moss on every rock in the world
+  // and, when the bark layers join MOSS_LAYERS, on every trunk too, at no
+  // triangles, no second material and no per-prop authoring. The alternative --
+  // mossy VARIANTS of the tiles that want moss -- costs a layer per tile and
+  // still cannot vary within one surface.
+  //
+  // It is also the first layer that is deliberately NOT tintable. stone.png is
+  // graded bright and neutral so a per-instance tint decides its hue; moss is
+  // graded to its final colour, because moss on basalt and moss on sandstone are
+  // the same green.
+  MOSS: 35,
 }
-export const LAYER_COUNT = 32
+export const LAYER_COUNT = 36
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -255,15 +337,18 @@ export const LAYER_COUNT = 32
 // The impostor bake is unlit and snow-free, so the card stays dynamic: turning
 // snow up whitens LOD2 without rebaking.
 //
-// DELIBERATELY OUT, and each is one line to add: FROND_0, GRASS, and the two
-// fern impostors. Both plants would snow in a real winter, but the ground layer
-// is a separate argument (a snowy world wants a snow-covered TERRAIN shader,
-// not white ferns on green ground) and that argument has not been had yet.
+// DELIBERATELY OUT, and each is one line to add: FROND_0, GRASS, GRASS_TUFT,
+// and the fern and grass impostors. All of them would snow in a real winter,
+// but they sit ON the ground, and the ground is a separate argument (a snowy
+// world wants a snow-covered TERRAIN shader, not white ferns on green grass)
+// that has not been had yet. A tree is IN because a canopy reads against the
+// sky and can be believed on its own; nothing at ankle height can.
 //
-// The fern impostors are out because FROND_0 is out, and they have to move
-// together: a mesh fern and a card fern standing next to each other at the LOD
-// boundary would otherwise be green and white. That is the same reasoning that
-// puts the four TREE impostors IN -- they match the foliage they replace.
+// An impostor always moves with the art it replaces. IMPOSTOR_FERN_* are out
+// because FROND_0 is out and IMPOSTOR_GRASS is out because GRASS_TUFT is: a
+// mesh plant and a card plant standing either side of an LOD boundary would
+// otherwise be green and white. That is the same reasoning that puts the four
+// TREE impostors IN -- they match the foliage they replace.
 export const SNOW_LAYERS = [
   LAYER.NEEDLES,
   LAYER.LEAVES,
@@ -275,6 +360,50 @@ export const SNOW_LAYERS = [
   LAYER.IMPOSTOR_BIRCH,
   LAYER.IMPOSTOR_ASPEN,
 ]
+
+// --- and which layers snow settles on AS STONE rather than as foliage --------
+//
+// Same uniform, same noise at the same size, same one material -- a second list
+// rather than more entries in the first one, because a boulder fills in from the
+// top down more decisively than a canopy does. Both are patches of noise; stone
+// simply leans twice as hard on which way the surface faces, so the top whitens
+// first and an underside goes last. That is ONE weight, SNOW_ROCK_UP in
+// src/material.js, and the reasoning lives with it -- including why leaning it
+// any harder than that is the wrong answer on a faceted rock.
+//
+// The lists must stay DISJOINT. A layer in both would be counted by both masks
+// and take the foliage weight, which is silently the wrong look rather than an
+// error; scripts/check-rocks.mjs gates it.
+//
+// IMPOSTOR_ROCK is deliberately not here, and the reason is sharper than the one
+// that keeps the fern cards out. A rock card cannot wear the stone lean at all:
+// its normals are outward and horizontal by construction (impostor.js), so every
+// fragment of it reads as a sheer face and the lean has nothing to bite on. The
+// four TREE impostors are in the foliage list because a noise-dominated recipe
+// does survive being flattened onto a card. So a snowed rock's LOD2 shows bare
+// stone, which is one more entry on the bench's running case against a rock card
+// (see LAYER.IMPOSTOR_ROCK above); if the ladder ever ships one, the card has to
+// bake its snow in.
+export const SNOW_ROCK_LAYERS = [LAYER.ROCK]
+
+// --- and which layers moss grows on ------------------------------------------
+//
+// A third list, and unlike the two above it does not select weights -- it
+// selects whether MOSS_APPLY runs at all. Snow recolours what is already there;
+// moss lays a SECOND TEXTURE over it, so this list is the set of surfaces that
+// pay an extra atlas fetch, and that is a reason to keep it short.
+//
+// ROCK only, for now. Bark is the obvious next entry and the shader needs
+// nothing new for it -- moss is projected from world position and tiled off
+// whatever UV the surface already has, so a trunk would work the day a bark
+// layer is added here. It is out because moss up a trunk wants a HEIGHT cue (it
+// stops a metre or two up) that the rock recipe has no notion of, and adding
+// that before anybody has looked at moss on a rock is guessing twice.
+//
+// IMPOSTOR_ROCK is out for a duller reason than it is out of the snow lists: a
+// card is photographed from the mesh, so if the mesh was mossy when it was
+// baked, the moss is already in the picture. Mossing it again would double it.
+export const MOSS_LAYERS = [LAYER.ROCK]
 
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
@@ -311,6 +440,14 @@ export const TILE_METRES = {
   [LAYER.PLASTER]: 2.2, // deliberately large; the panel should read as flat
   [LAYER.THATCH_FRINGE]: 1.6, // matches THATCH so straws line up across the eave
   [LAYER.GLASS]: 0.46, // 2 x 2 panes per tile -> a 0.23 m quarry
+  // LAYER.ROCK IS DELIBERATELY ABSENT, and it is the one exception to everything
+  // said above. It had an entry here (0.9 m) on exactly the argument this table
+  // makes: constant texel density, so a 12 cm cobble and a 14 m outcrop wear the
+  // same size of crystal. It looks wrong, because a building is made of parts
+  // whose real size the player knows -- a log, a shake, a pane -- and a rock is
+  // not. Under a fixed tile a big rock is just the same speckle repeated more
+  // times, which reads as fabric. So rock.js sizes its tile as a fraction of the
+  // ROCK (`texRepeat`, plus a per-seed jitter) and never asks this table.
 }
 
 // Layers whose pixels come from a PNG rather than from a generator here.
@@ -331,6 +468,14 @@ export const TILE_METRES = {
 // crop, flip and grade lives.
 export const IMAGE_LAYERS = {
   [LAYER.FROND_0]: 'ferns/fern_frond_0.png',
+  // Cut from stone-1.jpg by `tools/props/cut-rock.mjs`, which is also where the
+  // argument for grading it bright and near-neutral lives: it is one tile for
+  // every rock in the world, and the environments are told apart by a
+  // per-instance TINT rather than by more layers.
+  [LAYER.ROCK]: 'rocks/stone.png',
+  // Cut from moss.png by `tools/props/cut-moss.mjs`, which is where the argument
+  // for grading it to a final colour rather than to tint headroom lives.
+  [LAYER.MOSS]: 'rocks/moss.png',
   [LAYER.THATCH]: 'buildings/thatch.png',
   [LAYER.THATCH_FRINGE]: 'buildings/thatch_fringe.png',
   [LAYER.TIMBER_BEAM]: 'buildings/timber_beam.png',
@@ -349,6 +494,13 @@ export const IMAGE_LAYERS = {
   [LAYER.LEAF_ASH]: 'trees/leaf_ash.png',
   [LAYER.LEAF_ASPEN]: 'trees/leaf_aspen.png',
   [LAYER.SPRAY_PINE]: 'trees/spray_pine.png',
+  // Cut from EZ-Tree's grass.glb by tools/trees/layers.py, which also copies it
+  // here. IMPOSTOR_GRASS is deliberately absent: it is baked at load from this
+  // one (grass-bank.js), the same way the tree and fern cards are.
+  //
+  // It is the one layer that does not reach the array as the file has it: the
+  // foot of the picture is frayed on the way in. See LAYER_SHAPERS.
+  [LAYER.GRASS_TUFT]: 'grass/grass_tuft.png',
 }
 
 // Deterministic value noise so the placeholder looks the same every run.
@@ -442,7 +594,17 @@ export function buildTextureArray() {
   layers[LAYER.LEAF_ASH] = foliage([44, 76, 34], [96, 132, 58], 20, true)
   layers[LAYER.LEAF_ASPEN] = foliage([146, 108, 26], [214, 172, 52], 21, true)
   layers[LAYER.SPRAY_PINE] = foliage([28, 56, 34], [52, 88, 51], 22, true)
+  // ROCK now has a photograph over it (IMAGE_LAYERS), so this is a stand-in for
+  // the few frames before it lands. Its light end is 138 against the PNG's mean
+  // of 142, which is why the swap is invisible rather than a flash of a
+  // different grey -- keep them together if either moves.
   layers[LAYER.ROCK] = mottled([92, 92, 96], [138, 137, 132], 7, 15)
+  // Same job for moss, and here it matters more than usual: MOSS is only ever
+  // read through a blend, so an unpatched transparent-black slice would not be
+  // discarded by alphaTest -- it would paint the moss patches BLACK for the few
+  // frames before the PNG lands. Light end 92/116/60 against the PNG's mean of
+  // 73/93/48; keep them together if either moves.
+  layers[LAYER.MOSS] = mottled([50, 66, 32], [92, 116, 60], 8, 23)
   layers[LAYER.SNOW] = mottled([222, 230, 240], [255, 255, 255], 5, 16)
   layers[LAYER.DIRT] = mottled([94, 76, 58], [126, 106, 82], 9, 17)
   layers[LAYER.GRASS] = foliage([58, 92, 44], [96, 130, 62], 18, false)
@@ -524,6 +686,157 @@ async function decodeLayer(url) {
   return new Uint8Array(ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE).data.buffer)
 }
 
+// ---------------------------------------------------------------------------
+// Layer SHAPERS: the one place a decoded PNG is edited on its way into the
+// array. A layer whose pixels are wrong should be fixed in the tool that cuts
+// it, so there is exactly one entry here and the bar for a second is high.
+//
+// WHY GRASS_TUFT IS THE EXCEPTION. Its pixels are lifted whole out of EZ-Tree's
+// grass.glb by tools/trees/layers.py, which needs Blender to run and writes the
+// same file the /props browser draws. What follows is not a fix to that cut --
+// it is a decision about how the v2 CARPET stands on the ground, it wants to be
+// tuned against a screenshot rather than against a Blender run, and the PNG on
+// disk stays the art as EZ-Tree drew it.
+// ---------------------------------------------------------------------------
+
+// The tuft PNG's bottom quarter is its densest and its darkest -- 45-52% of
+// each row opaque against 4-20% higher up, mean luminance 81-120 against
+// 160-190 -- and it ends in a straight cut at the last row. Every card in the
+// carpet wears that same picture, so a bed of them shares ONE horizontal dark
+// line, which is the most obviously synthetic thing about the grass.
+//
+// THE LINE THE EYE FINDS IS NOT THE CARD'S OWN EDGE. render/grass.js sinks
+// every tuft by PLACEMENT.sink scaled with the instance, which is a constant
+// 0.04 / 0.55 = 7.3% of the card's height at any size, so the terrain cuts the
+// picture at v = 0.927 and the rows below that are buried whatever we do here.
+// The fray therefore has to bite ABOVE that line to be worth anything, which is
+// what `top` is set against: it puts the deepest cut about 7 texels above the
+// ground line and the shallowest below it.
+//
+// EACH COLUMN OF THE PICTURE GETS ITS OWN CUT HEIGHT, so the foot of the card
+// becomes a row of separate stalks instead of a hem -- measured at the ground
+// row, 31 of the 58 opaque texels survive. Half the decision is the column's own
+// roll and half is THE TEXEL'S BRIGHTNESS: a dark texel is eaten before a bright
+// one at the same height, so what goes first is the shadowed mass at the base of
+// the clump and what is left standing is the lit blades running through it.
+//
+// AT LOAD, NOT IN THE FRAGMENT SHADER, and the density is what settles it.
+// Grass is about 45% of the world's rasterised pixels (render/grass.js), so a
+// per-fragment fray would recompute a decision that never changes some two
+// million times a frame. Doing it once into the layer also carries it into the
+// far tier for nothing: bakeGrassImpostor photographs THIS layer after this has
+// run, so the billboard is a picture of a frayed tuft and the silhouette does
+// not change across the LOD swap.
+//
+// WHAT THAT COSTS is that all 23,000 tufts are frayed identically. The same
+// argument grass-bank.js makes for TUFT_TWIST being a constant applies unchanged
+// -- per-instance yaw turns the pattern to a different azimuth, alternate cards
+// read their u backwards, and the 0.25-1.5 m height range puts the cut at a
+// different world height on every tuft -- and unlike the shader version it is
+// free.
+const GRASS_FRAY = {
+  // Where the erosion begins, in v (0 at the top of the card, 1 at its foot).
+  // See above: the terrain's own cut is at 0.927, so this has to be well clear
+  // of it or the whole effect happens underground.
+  top: 0.87,
+  // How much of a texel's cut height is decided by its own brightness rather
+  // than by its column's roll. At 0 the foot is a ragged line drawn without
+  // regard to the art; at 1 it is the art's own shading with no raggedness. The
+  // point of the effect is the dark mass at the base, so this sits over half.
+  bright: 0.55,
+  // The brightness window the above is measured across, as a fraction of white.
+  // The band's texels run about 0.3 to 0.7, and mapping that range onto the full
+  // decision is what makes the darkness bias actually bite rather than nudge.
+  lum: [0.25, 0.7],
+  // Feather, in v. About 5 texels: enough that a cut column ends in a taper
+  // rather than a step, short enough that the taper is not itself a line.
+  soft: 0.04,
+  // Wavelength in texels and weight, per octave of the column noise. 10 texels
+  // is the width of a clump of blades and 3.5 is about one blade, so the foot
+  // undulates and is nibbled at the same time.
+  octaves: [[10, 0.6], [3.5, 0.4]],
+  seed: 0x9e37,
+}
+
+/** The fray's tuning, exported so scripts/check-grass.mjs gates these numbers. */
+export const GRASS_FRAY_TUNING = GRASS_FRAY
+
+/**
+ * A cut height per texture column, in 0..1, from smoothed value noise.
+ *
+ * RANK-NORMALISED rather than scaled to its own range, and that is the whole
+ * reason this is not two lines: a sum of octaves piles up around its mean, so
+ * the raw field cuts nearly every column to nearly the same height and the fray
+ * comes out as a slightly fuzzy straight line. Ranking spreads the cut depths
+ * evenly across the columns while leaving their ORDER -- which is where the
+ * clump-and-blade structure lives -- untouched.
+ */
+function frayColumnCut(width, seed, octaves) {
+  const rand = mulberry32(seed)
+  const raw = new Float32Array(width)
+  for (const [wave, weight] of octaves) {
+    const n = Math.max(2, Math.round(width / wave))
+    const k = new Float32Array(n + 1)
+    for (let i = 0; i < n; i++) k[i] = rand()
+    k[n] = k[0] // wraps, so the two halves of a mirrored card still meet
+    for (let x = 0; x < width; x++) {
+      const s = (x / width) * n
+      const i = Math.floor(s)
+      const f = s - i
+      raw[x] += weight * (k[i] + (k[i + 1] - k[i]) * (f * f * (3 - 2 * f)))
+    }
+  }
+  const order = Array.from({ length: width }, (_, i) => i).sort((a, b) => raw[a] - raw[b])
+  const cut = new Float32Array(width)
+  order.forEach((x, r) => { cut[x] = r / (width - 1) })
+  return cut
+}
+
+/**
+ * Eat the foot of the grass tuft away, darkest texels first, in place.
+ *
+ * See GRASS_FRAY for what this is for and why it happens here. `px` is one
+ * decoded TEX_SIZE^2 RGBA layer.
+ */
+function frayGrassBase(px) {
+  const { top, bright, lum: [lumLo, lumHi], soft, octaves, seed } = GRASS_FRAY
+  const cut = frayColumnCut(TEX_SIZE, seed, octaves)
+  for (let y = 0; y < TEX_SIZE; y++) {
+    const v = (y + 0.5) / TEX_SIZE
+    if (v <= top) continue
+    for (let x = 0; x < TEX_SIZE; x++) {
+      const i = (y * TEX_SIZE + x) * 4
+      if (px[i + 3] === 0) continue
+      const l = clamp01(((px[i] + px[i + 1] + px[i + 2]) / 765 - lumLo) / (lumHi - lumLo))
+      // The v this texel is cut at: its column's roll and its own brightness,
+      // both pushing the cut further down the card.
+      const edge = top + (1 - top) * ((1 - bright) * cut[x] + bright * l)
+      px[i + 3] = Math.round(px[i + 3] * (1 - smoothstep01(edge, edge + soft, v)))
+      // Flood what is now clear to white, the same rule and for the same reason
+      // as tools/trees/layers.py's: mip generation averages RGB without regard
+      // to alpha, so leaving the eaten texels their dark colour would bleed a
+      // dark rim back along the fray one mip down -- which is the line this is
+      // here to remove, redrawn softer.
+      if (px[i + 3] < 128) px[i] = px[i + 1] = px[i + 2] = 255
+    }
+  }
+  return px
+}
+
+/** Layer -> a transform applied to its decoded pixels before they are uploaded. */
+const LAYER_SHAPERS = {
+  [LAYER.GRASS_TUFT]: frayGrassBase,
+}
+
+function clamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v
+}
+
+function smoothstep01(a, b, x) {
+  const t = clamp01((x - a) / (b - a))
+  return t * t * (3 - 2 * t)
+}
+
 /**
  * Patch every entry of IMAGE_LAYERS into `tex` in place. Loads in parallel and
  * uploads once, because each `needsUpdate` re-uploads the whole array and
@@ -535,8 +848,19 @@ export async function loadImageLayers(tex, sources = IMAGE_LAYERS) {
   const decoded = await Promise.all(entries.map(([, url]) => decodeLayer(url)))
   const stride = TEX_SIZE * TEX_SIZE * 4
   entries.forEach(([layer, url], i) => {
-    tex.image.data.set(decoded[i], Number(layer) * stride)
+    const shaper = LAYER_SHAPERS[layer]
+    tex.image.data.set(shaper ? shaper(decoded[i]) : decoded[i], Number(layer) * stride)
   })
   tex.needsUpdate = true
   return entries.length
+}
+
+/**
+ * Run a layer's shaper over pixels that did not come through `loadImageLayers`.
+ * Node-side checks decode the PNG themselves, and a gate that measured the file
+ * rather than what the array holds would pass over any change to the fray.
+ */
+export function shapeImageLayer(layer, px) {
+  const shaper = LAYER_SHAPERS[layer]
+  return shaper ? shaper(px) : px
 }

@@ -37,7 +37,9 @@ import { TOOLS, TOOL_KEYS } from '../edit/editor.js'
 //
 // `setStats` takes a flat object; the host fills what it can and anything
 // missing prints as `??` in the warn colour rather than as a plausible zero:
-//   { fps, ms, tris, calls, resident, drawn, queued, triDeg,
+//   { fps, ms, tris, calls, resident, drawn, queued, triDeg, treeCount,
+//     treeTris, grassCount, grassVeiled, grassTris, fernCount, fernTris,
+//     rockCount, rockTris,
 //     x, y, z, ground, cell, snowHere, snowBase, mode }
 // `cell` is the sampling spacing of the chunk under the cursor -- the "am I
 // actually seeing 10 cm" readout -- and gets a row of its own.
@@ -403,6 +405,23 @@ export class Panel {
     kv('chunks', Number.isFinite(s.resident) ? `${s.resident}/${s.drawn}` : null)
     kv('queued', Number.isFinite(s.queued) ? String(s.queued) : null, s.queued > 64 ? 'c-bad' : '')
     kv('triDeg', num(s.triDeg, 2))
+    // The three prop layers get a row each: count, then what that count is
+    // actually costing in triangles. DESIGN.md §5 allots trees 37k, and the
+    // grass row is the one to watch -- it is the newest and by far the densest,
+    // and at 3 tufts/m^2 it is a fifth of the §5 budget on its own, so `tris`
+    // above going red is most likely to be this line's doing. Grass shows
+    // drawn/resident, because the two differ: the veil (render/grass.js) sets
+    // the already-dithered-away tufts invisible without releasing them, so a
+    // bare resident count would overstate what the triangle figure beside it is
+    // counting.
+    kv('trees', Number.isFinite(s.treeCount) ? `${s.treeCount} ${(s.treeTris / 1000).toFixed(0)}k` : null)
+    kv('grass', Number.isFinite(s.grassCount)
+      ? `${s.grassCount - s.grassVeiled}/${s.grassCount} ${(s.grassTris / 1000).toFixed(0)}k`
+      : null)
+    kv('ferns', Number.isFinite(s.fernCount) ? `${s.fernCount} ${(s.fernTris / 1000).toFixed(0)}k` : null)
+    // All three rock beds summed. They reach 55 m, 460 m and 1250 m, so the
+    // count moves with the terrain rather than with the player's speed.
+    kv('rocks', Number.isFinite(s.rockCount) ? `${s.rockCount} ${(s.rockTris / 1000).toFixed(0)}k` : null)
     kv('mode', s.mode ? String(s.mode) : null, 'c-head')
     kv('ground', num(s.ground, 1))
     kv('snow', Number.isFinite(s.snowHere) ? `${s.snowHere.toFixed(0)} (${s.snowBase.toFixed(0)})` : null)

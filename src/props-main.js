@@ -365,12 +365,18 @@ function disposeCurrent() {
     disposeOriginal(current.original)
   }
   scene.remove(current.root)
+  const disposed = new Set()
   current.root.traverse((o) => {
     if (!o.isMesh) return
     // Geometry and material are per-asset; the layer textures are cached and
     // shared across selections, so they are deliberately not disposed here.
+    // Tiers on one sheet share a material, so the Set keeps this to one
+    // dispose per material rather than one per tier.
     o.geometry.dispose()
-    o.material.dispose()
+    if (!disposed.has(o.material)) {
+      disposed.add(o.material)
+      o.material.dispose()
+    }
   })
   current = null
   origStatus = null
@@ -388,6 +394,7 @@ async function select(asset) {
   gltf.scene.traverse((o) => { if (o.isMesh) byName.set(o.name, o) })
 
   const tiers = []
+  const mats = new Map()
   for (const lod of asset.lods) {
     const mesh = byName.get(lod.name)
     if (!mesh) continue // check-props.mjs would have failed the build; nothing to do here
@@ -397,7 +404,15 @@ async function select(asset) {
     // Billboard COLOR_0 is white, so vertex colours are a no-op there rather
     // than a second multiply against an already-lit sheet.
     const layer = lod.layer
-    mesh.material = propMaterial(layer ? layerTexture(layer) : null)
+    // One material per SHEET, not per tier. A decimated asset bakes a fresh
+    // atlas per tier, so its tiers really do want three; a generated one shares
+    // a UV layout across its tiers and names the same `shared_layer` three
+    // times, and giving each an identical Lambert makes the page report three
+    // materials for what the runtime draws with one. Keyed on the layer path,
+    // with `''` standing in for the vertex-colour-only tiers so they share too.
+    const key = layer ?? ''
+    if (!mats.has(key)) mats.set(key, propMaterial(layer ? layerTexture(layer) : null))
+    mesh.material = mats.get(key)
     mesh.visible = false
     root.add(mesh)
     tiers.push({ lod, mesh, layer, audit: null })
@@ -706,13 +721,23 @@ function renderStats(a, live) {
   // Silhouette a solid prop of these dimensions would present from the side.
   const hullArea = size ? Math.max(size.x, size.z) * size.y : a.height_m * a.height_m
   const crushed = meshes.find(([, au]) => au.degen > au.tris * 0.25 && au.area < 0.05 * hullArea)
-  // One thumbnail per tier that has a sheet, because the tiers no longer share
-  // one: seeing LOD0's atlas next to LOD1's is how you tell a bad unwrap at a
-  // low budget apart from a bad bake, and they need different fixes.
-  const sheets = a.lods.filter((l) => l.layer).map((l) => {
-    const bb = l.kind === 'billboard'
-    const label = bb ? `impostor ${manifest.billboard_size}` : `${l.name.split('_').pop()} ${manifest.layer_size}`
-    return `<figure><img src="${PROPS}${l.layer}" alt="${esc(label)}"><figcaption>${esc(label)}&sup2;</figcaption></figure>`
+  // One thumbnail per SHEET. A decimated asset bakes a fresh atlas per tier, and
+  // seeing LOD0's next to LOD1's is how you tell a bad unwrap at a low budget
+  // apart from a bad bake -- they need different fixes -- so those still get one
+  // figure each. A generated asset names one `shared_layer` from every tier, and
+  // printing the same PNG three times only implied a cost it does not have; the
+  // label then carries every tier that lands on it.
+  const bySheet = new Map()
+  for (const l of a.lods) {
+    if (!l.layer) continue
+    if (!bySheet.has(l.layer)) bySheet.set(l.layer, [])
+    bySheet.get(l.layer).push(l)
+  }
+  const sheets = [...bySheet].map(([layer, lods]) => {
+    const bb = lods[0].kind === 'billboard'
+    const tier = lods.map((l) => l.name.split('_').pop()).join(' + ')
+    const label = bb ? `impostor ${manifest.billboard_size}` : `${tier} ${manifest.layer_size}`
+    return `<figure><img src="${PROPS}${layer}" alt="${esc(label)}"><figcaption>${esc(label)}&sup2;</figcaption></figure>`
   })
 
   $('stats').innerHTML = `

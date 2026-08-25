@@ -694,11 +694,27 @@ def finalize_material(obj, aid, textured, image=None):
     else:
         nt.links.new(vcol.outputs["Color"], bsdf.inputs["Base Color"])
 
+    assign_material(obj, mat)
+    return mat
+
+
+def assign_material(obj, mat):
+    """Put an ALREADY-BUILT material on `obj`, replacing every slot it had.
+
+    The other half of `finalize_material`, split out so a caller whose tiers all
+    address the same atlas can build the node tree once and hang it on every
+    tier. The scanned path cannot: `consolidate_texture` bakes a fresh 128²
+    sheet per tier because decimation moves the UVs, so tier 1's material really
+    does reference a different image from tier 0's. The generated path is the
+    opposite case by construction -- authored tiers share a UV layout and a
+    `shared_layer` -- and calling `finalize_material` per tier there minted
+    three identical materials, which the exporter faithfully wrote out as three
+    glTF materials and three glTF textures over one image."""
+    me = obj.data
     me.materials.clear()
     me.materials.append(mat)
     for poly in me.polygons:
         poly.material_index = 0
-    return mat
 
 
 def swap_to_stub(objs, aid):
@@ -1240,6 +1256,7 @@ def build_generated(spec, out_dir, opts):
     }
 
     lod_objs = []
+    shared_mat = None
     for i, tier in enumerate(spec["tiers"]):
         if not os.path.exists(tier):
             raise RuntimeError("%s: tier %d missing (%s) -- run tools/trees/generate.mjs" % (aid, i, tier))
@@ -1268,7 +1285,16 @@ def build_generated(spec, out_dir, opts):
                               distance=spec["height_m"] * spec.get("ao_reach", 0.06),
                               isolate=True)
 
-        finalize_material(lod, "%s_L%d" % (aid, i), True, image=image)
+        # ONE material for the whole asset, not one per tier. Every tier
+        # addresses `shared_layer` through the same UV layout, so a per-tier
+        # material differs from its neighbours in nothing but its name -- and
+        # the exporter writes each one out as a separate glTF material with its
+        # own texture entry, so a three-tier tuft shipped 3 materials and 3
+        # textures pointing at 1 image. See `assign_material`.
+        if shared_mat is None:
+            shared_mat = finalize_material(lod, aid, True, image=image)
+        else:
+            assign_material(lod, shared_mat)
         lod_objs.append(lod)
 
         got = common.tri_count(lod)

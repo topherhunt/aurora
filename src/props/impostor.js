@@ -320,6 +320,16 @@ function dilate(px) {
  * fails on is a fern, which is a ROSETTE and therefore close to its own mirror
  * image anyway. A pine would notice; a plant with radial symmetry does not.
  *
+ * `upNormal` REPLACES THE PER-PLANE NORMAL WITH A VERTICAL ONE, and it exists
+ * for exactly one caller: a single-plane card drawn as a camera-facing
+ * billboard (see billboardVertex in material.js). Everywhere else it is wrong
+ * and the paragraph below is why. On a billboard the horizontal normal is worse
+ * than wrong, it is UNSTABLE: the quad's facing tracks the camera but a normal
+ * left in object space does not, so material.js's back-facing ramp swings as
+ * the player turns on the spot and the whole bed twinkles. A vertical normal is
+ * both steady and closer to true, because a fern bed seen from 14 m out is a
+ * ground surface and is lit like one.
+ *
  * NORMALS ARE OUTWARD AND HORIZONTAL, one per plane. The bake is unlit albedo
  * (see createImpostorBakeMaterial), so all of the shading lives here, and this
  * is the same normal the LOD0 canopy carries -- tree.js's canopy pass gives
@@ -336,7 +346,7 @@ function dilate(px) {
  * until it discards the same fraction the top level does), not a lower
  * alphaTest, which is shared by every prop in the batch.
  */
-export function buildImpostorCard(width, height, layer, planes = 3) {
+export function buildImpostorCard(width, height, layer, planes = 3, { upNormal = false } = {}) {
   const n = Math.max(1, Math.round(planes))
   const positions = []
   const normals = []
@@ -365,7 +375,8 @@ export function buildImpostorCard(width, height, layer, planes = 3) {
     for (const [x, y, u0, v] of corners) {
       const u = flip ? 1 - u0 : u0
       positions.push(dx * x, y, dz * x)
-      normals.push(nx, 0, nz)
+      if (upNormal) normals.push(0, 1, 0)
+      else normals.push(nx, 0, nz)
       uvs.push(u, v)
       layers.push(layer)
     }
@@ -380,6 +391,8 @@ export function buildImpostorCard(width, height, layer, planes = 3) {
   geo.setIndex(indices)
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
-  geo.userData.impostor = { width, height, planes: n, layer, triangles: n * 2, mirrored: n > 1 }
+  geo.userData.impostor = {
+    width, height, planes: n, layer, triangles: n * 2, mirrored: n > 1, upNormal,
+  }
   return geo
 }

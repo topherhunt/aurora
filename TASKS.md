@@ -13,50 +13,95 @@
 ### Tasks
 
 - [x] Procedural ferns
+
   - [x] Card tier. `bakeFernImpostors` in `src/props/fern-bank.js` photographs the LOD0 mesh side-on at load and stands it up as 2 crossed quads (4 tris) wearing `IMPOSTOR_FERN_UPRIGHT` / `IMPOSTOR_FERN_ARCHED`. No offline asset, no build step: the card cannot disagree with the mesh. `gen-fern.html`'s `card` button draws it, and its `planes` slider and `can it be a card?` table are how the two calls below get settled.
   - [x] Card tier wired into the world. The geometry half (`fernCardGeometries`) runs in the `Scatter` constructor; the pixel half is chained off `loadImageLayers()` in `src/main.js`, because the photograph is of a fern wearing a PNG that has not arrived yet. Ferns no longer stop dead at 26 m: a second scatter kind, `fern_far`, shares `fern`'s geometry bank via `geometryFrom` and reaches 80 m at 5.0 m spacing, drawing cards past 26 m and meshes inside it. Sparse out there (~0.02 ferns/m² against 0.46 close in) and that is an instance-cap limit, not a tuning one -- see the clump bullet below.
-  - [ ] **A fern's far reach is bounded by rebuild cost, and clump cards are what lifts it.** `fern_far` costs 1,089 candidate cells and ~2.4 ms per rebuild for 80 m; DESIGN.md §5's pixel argument permits 170 m and its fill argument says the band is nearly free, so the ceiling is placement, not drawing. One card baked from a patch of ferns buys reach at a fraction of the cells and looks better than sparse singles, and moving the far band to tiled `InstancedMesh` takes it off the per-frame budget entirely. Neither is built.
+  - [ ] **A fern's far reach is bounded by rebuild cost, and clump cards are what lifts it.** `fern_far` costs 1,089 candidate cells and ~2.4 ms per rebuild for 80 m; DESIGN.md §5's pixel argument permits 170 m and its fill argument says the band is nearly free, so the ceiling is placement, not drawing. One card baked from a patch of ferns buys reach at a fraction of the cells and looks better than sparse singles; that is still not built. The other half of the lift is the tiling, and /v2 now has it (bullet below) -- v1's `Scatter` does not.
+  - [x] **A true camera-facing billboard, and the /v2 fern carpet that needed one.** `billboardVertex` in `src/material.js` spins a quad about its own Y axis toward `cameraPosition` in the vertex shader -- no CPU matrices, no second material, works under `BatchedMesh` and `InstancedMesh` alike. Cylindrical not spherical, it cancels the instance's own yaw, it is selected by texture layer against a per-material uniform list (so v1's crossed cards on the same layers do not spin), and its normal stays vertical so the bed does not brighten and dim as the player turns. Crossover at 14 m, which is what §5's parallax rule permitted all along.
+  - [x] **The /v2 carpet is a tiled camera-following scatter over the whole map**, on `render/trees.js`'s architecture: `tileSeed` + `mulberry32` makes the bed a pure function of position, full 0.5 ferns/m² inside 35 m and thinning as `35/d` out to 90 m so instance count grows linearly in radius, incremental regrow replays the stream and only the new rank band pays a `heightAndSlopeAt`, and a 2 ms/frame build budget drains the queue nearest-first with a Bayer dissolve over the last 15% of the reach. Kept or dropped against elevation, slope, water, snow and path with no re-rolls, so exclusions read as bare ground rather than as crowding elsewhere. Heights run 0.25-1.5 m on a `t²` roll (median 0.56 m), which is what makes a carpet read as ground cover rather than as one repeated plant. Measured over a 400 m walk: ~10,200 standing, 31k triangles, 0.09 ms mean update and 0.42 ms worst.
+  - [x] **Ferns take their colour from the scan and their hue from the ground.** The Megascans capture is "Raw", meaning not de-lit, and it baked at 10% of the oak leaf's albedo -- the bed read as permanently in shadow. `tools/props/extract-frond.mjs` now grades at cut time, alongside how `cut-rock.mjs` and `cut-tiles.mjs` handle their photographs: a flat linear 6.6x exposure (which preserves every ratio the scan recorded) then a 0.55 hue pull toward a target renormalised to the pixel's own luminance, so the dead blue channel comes from a constant instead of from a 25x gain on three distinct byte values. The grade runs before the dilate so the colour bleeding into the transparent margin is the graded one. On top of that each instance takes a hue cue from `shade()` at its own feet, renormalised to unit luminance so it moves hue and not magnitude -- the terrain palette is near-black in linear and a raw multiply would have re-blackened the bed.
+  - [ ] **The /v2 carpet's far tier needs a look, and there is a control for it.** `v2ferns.setFarTier('mesh')` from the console holds real LOD2 geometry past 14 m; `'card'` puts the billboard back. Two questions: does the billboard read at 14 m against ground truth, and does a fern bed of ~8,800 flat cards hold up in a headset, where a screen-facing quad has no binocular disparity across its own surface and can read as a cutout at a fixed depth. Both are looking questions.
   - [ ] **Two numbers in the card are arithmetic, not a looked-at judgement.** `FERN_CARD_PLANES = 2` is a triangle-for-solidity trade, and the choice of *two* impostor layers cut on `arch` rests on a fern being ~20 px tall at 26 m. Both need a pass in `gen-fern.html`: walk 1 / 2 / 3 planes and check whether the arched and upright bakes really read apart at that size, or whether one layer would do.
-- [ ] Procedural trees (use EZTrees as a base, but customize to support 3 shape-preserving LODs + 1-2 billboard levels)
+
+- [ ] Terrain: instead of smoothing over cliffsides & peaks, make them jagged and pointy.
+
+- [ ] What would it take to render grass like Breath of the Wild? Not indiv cards but an entire field's worth of lush triangular grass blades?
+
+- [ ] Grass idea: tile the grass texture onto long rectangles, so fewer tris = more grass.
+
+- [ ] Procedural trees:
+
+  - [ ] Mossy trunks (shader slider like on rock)
+
+  - [ ] different sizes heights, populated into the world, incl bushes. And randomly vary the height more -- currently the forest reads as pretty uniform.
+
   - [ ] let's bake variants!! I'm thinking of these combinatorial variations (and as with ferns, each variant should be a different seed\
     roll):
+
     - 3 heights (default, 2/3 default young, 1/3 default sapling)
     - firstBranch: \[default, or default / 2\]
 
     Bushes also need variants: 2 sizes x 2 random seed rolls each.
-  - [ ] Assess with Claude, and smoke-test to confirm that procedural trees don't bog down performance.
-  - [ ] 
-  - [ ] Snow cover partial/full (just a shader on the sprays?)
+
+  - [ ] Angle each leaf card by 20-70 deg up or down so no card is flat
+
+- [ ] Leaf atlas and lichen atlas - scatter onto boulders & forest floor. (Moss is done for boulders -- see the moss bullet under nature props; trunks are the next entry in `MOSS_LAYERS` and need a height cue first.)
+
 - [ ] Redo the Aurora using a planar shader (one plane, northern tilted sky-wall)
+
   - [ ] Look at Skyrim's auroras. They're specific procedurally-determined(?) channels in the sky, sinuous and snaking around, the magnetic leylines, and various neon patterns flow and shimmer through them. Shimmering overlaid intersectional shader similar to what water surfaces have?
   - [ ] Layers to weave in:
     - [ ] global perlin shader that causes dim/opacity/fuzz/scatter/blur/sharpness
     - \[ \]
+
 - [ ] Procedural other nature props
-  - [ ] Giant fallen logs, broken stumps, boulders & rocks
+
+  - [x] Rock generator and the `/gen-rock` bench. One tinted 128px granite tile for the whole library; four mesh tiers (180 / 80 / 20 / 8 faces) that are the same displacement field sampled on a coarser solid, so a boulder's LOD1 *is* a cobble's LOD0 -- `ROCK_LADDERS` is nothing but a different `tier` index. `src/props/rock.js`, gated by `scripts/check-rocks.mjs`.
+  - [x] **The rock tile scales with the ROCK, not with the world, and it is the one place that breaks the** `TILE_METRES` **convention.** A fixed tile gave constant texel density -- a cobble and a 14 m crag wearing the same crystal -- which is the textbook answer and looks wrong: on a big rock it is one photograph repeated fifteen times, which reads as fabric. So `texRepeat` (2.2) tiles across the rock's widest plan axis whatever that is in metres, `texJitter` rolls it ±50% per seed, and `LAYER.ROCK` is out of `TILE_METRES` entirely. Buildings keep the old rule, because a log and a shake are things whose real size the player knows and a rock is not. The payoff is that a shape is one picture at every scale, so a preset is authored at 2 m and simply scaled to fit the scenery.
+  - [x] **Snow on stone: patches, top-down.** The same `setSnow` uniform the trees already share; `SNOW_ROCK_LAYERS` is a second list in `textures.js` selecting a single different weight, `SNOW_ROCK_UP` = 0.5 against foliage's 0.25. Everything else -- blob size, the one-pixel `fwidth` cutover, the linear load ramp, the full span -- is shared, so the top whitens first, a sheer side is about half covered by the time the top is solid, an underside goes last, and a full winter still reaches every face. **The trap, walked into twice:** weighting `up` heavily (0.84, plus a soft feathered rim) gives a clean white cap, and on a rock that is wrong in a way a canopy never exposes -- `up` is *constant across a cut facet*, so the whole facet lands on one side of the cut, facets flip as units, and the snowline becomes a straight seam along the facet edges with faces the slider cannot reach. `scripts/check-rocks.mjs` now gates against exactly that: coverage climbing strictly from underside to top, a full load whitening overhangs included, and every facet steepness spending >25% of the slider *partly* covered (the number that collapses when `up` dominates). **World up, not view up:** three's `normal` at `normal_fragment_begin` is `normalize(vNormal)` and therefore view-space, so the first cut took its lean from the camera -- snow swept around a rock as you orbited it and drew a hard rim across whatever face pointed at you. `inverseTransformDirection(normal, viewMatrix)` fixes it, and it was quietly wrong for the trees' lean too. Worth recording because it is the question everyone asks: the noise samples **world position**, not UV, so the rock's per-face dominant-axis projection and its seams are irrelevant to snow -- no unwrap, no bake, no second projection. The rock card is deliberately out: its normals are horizontal by construction, so the lean has nothing to bite on -- one more entry in the case against shipping a rock impostor at all.
+  - [x] **Moss, as a shader overlay rather than as mossy variants of the tiles.** `LAYER.MOSS` is the first layer nothing *wears*: no geometry carries it as a `texLayer`, and `MOSS_APPLY` in `src/material.js` fetches it as a second sample laid over whatever the surface already is, wherever `MOSS_LAYERS` says moss grows. One layer therefore mosses every rock in the world -- and every trunk, the day bark joins the list -- at no triangles, no second material and no per-prop authoring; the alternative costs a layer per tile that wants moss and still cannot vary *within* one surface. The extra `texture()` is paid only inside a uniform branch (`uMoss > 0`) and a layer branch, and that branch is quad-uniform, which is what makes a fetch inside it legal. It creeps up from the shaded flanks (`MOSS_DOWN` = 0.35, the mirror of snow's lean, and lighter because what really decides moss is damp rather than aspect) in ~17 cm colonies against snow's 8 cm flecks, and it is applied *before* the snow, because snow falls on moss and not the other way round. `tools/props/cut-moss.mjs` grades the tile the **opposite** way to `cut-rock.mjs` and section 5 of `check-rocks.mjs` defends that: `stone.png` is bright and near-neutral because a per-instance tint multiplies it, while moss is never tinted -- it goes over the *already-tinted* diffuse -- so moss on basalt and moss on sandstone are the same green, and what is graded is what ships (luma 86, saturation 0.48, up from a near-black source at 46/45/21).
+  - [x] **Moss varies by ELEVATION, from a line, exactly as snow does -- and it is snow upside down.** `setMossLine(base, band)` is the mirror of `setSnowLine`: `vMoss` is derived in the vertex shader from the instance root's world Y with the smoothstep run the other way, so moss is full below its line and gone above it, and it costs one varying riding the matrix-vector product snow already pays for. That is what routes around the missing per-instance channel (BatchedMesh's colour is spent on the stone tint, its alpha on the fade distance). The two lines are separate numbers because they are separate facts -- snow is cold, moss is damp -- and `Rocks.syncBands` sets moss 220 m below the terrain's snow base over a band twice as wide, so a rock in a valley is green, the same rock on a ridge is bare and the one on the summit is white. Defaults are a bit-identical no-op (`+1e6`), which is what keeps `/gen-rock`'s slider meaning what it says. **Still open:** bark. Trunks joining `MOSS_LAYERS` needs a height cue so moss stops a metre or two up rather than running to the crown, and that is a different cue from this one.
+  - [x] **The sixteen, and the three beds that scatter them.** `src/props/rock-bank.js` is the single source of truth: sixteen named variants from `pebble` (11 cm) to `fang` (7.5 m), each carrying its size, its tint index and the environments it may stand in, plus `buildRockBank` which bakes every tier of every one (48 rocks, 123 geometries, 7.4k triangles, 872 KB, ~24 ms). `/gen-rock`'s preset dropdown IS that table, so a shape signed off on the bench is bit-identical to the one the world scatters. **Three beds, not one, and that is the whole design of** `src/v2/render/rocks.js`: a rock's size spans two orders of magnitude and no single density-and-radius pair carries both ends, so underfoot (0.35/m² to 55 m), boulders (0.0025/m² to 460 m) and giants (0.0006/m² to 1.25 km) each run trees.js's tiled graded-thinning scatter independently, with their own pools and their own LOD bands. Three BatchedMeshes but ONE material -- nothing here billboards, so unlike trees/ferns/grass there is no per-bed shader source. **Where a rock goes is decided by where it IS:** each site is classified river / forest / cliff / peak off the field sample the placement test already pays for, and that gates both which variants may stand there and `envDensity`, how many. The second half matters more than the first -- without it a bed is equally dense everywhere and only its shapes change, which puts a house-sized block every 40 m through a wood. Rocks are bedded by a fraction of their own height that grows with the slope (6% flat, ~32% on a cliff, which is what makes a giant read as protruding from a face rather than balanced on it) and tilted toward the FIELD normal, not the drawn mesh's, so nothing rocks back and forth as the terrain LOD moves. Sections 7-8 of `scripts/check-rocks.mjs` gate it.
+  - [ ] **The v2 world now turns the weather on** (`setSnow(1)`, `setMoss(0.8)` in `src/v2/main.js`), which it never did before -- so this is also the first time the TREES wear snow above the line. Both are global ceilings by design. Whether 1.0 and 0.8 are the right numbers, and whether they should become a season the editor drives, is unjudged: nothing here has been looked at in a headset yet.
+  - [ ] Giant fallen logs, broken stumps
   - Placed to hem off paths & create a sense of verticality & obstacle clutters
-  - [ ] Procedural rock cliffsides, procedural rock crags on hillocks, hillsides, & especially on snowy peaks. To add that toothy jaggedness.
+  - [ ] Procedural rock CLIFFSIDES -- the face itself built out of stone rather than dressed with it. The crags are placed now (the giants bed puts `shelf`/`buttress`/`blockhouse` on anything past 34° and `spire`/`fang` in peak country, at full density on a cliff and a tenth of it in a wood), so what is left is the terrain half: a cliff is still a steep triangle with rocks stuck to it, and reads as one from below.
+
 - [ ] Clear out the scanned 3D assets that are bad-quality & not worth keeping
+
 - [ ] Improve the water shader
+
   - [ ] Don't fade out the small octave at distance.
   - [ ] Large octave: irregular alternating blobs of more-reflection and more-darkness. Or maybe the large octave is just a larger scale of the small-octave, but don't fade out the small-octave. Large octave MUST be 4x slower in its progression than the small octave.
+
 - [ ] Weather
+
   - [ ] Randomly changes / comes and goes
   - [ ] Rain & snow: visibility distance
   - [ ] Rain at temperate elevations, snow once you reach snowline
   - [ ] Low-lying cloud cover in mountains sometimes
   - [ ] Performance-efficient mist clouds floating around/between distant mountains, drifting slowly
+
 - [ ] Spike: Procedural buildings, from a kit system?
+
   - [ ] I'd need to hand it a bunch of screenshots of skyrim buildings, for it to get art-element-inspiration ideas. And hand it a bunch of textures for wood beam, cut timber, shingle, thatch, stone/cement wall, door, window, etc.
   - [ ] Props: wood chopping piles, axe & chopping block, barrels, baskets of food, market stalls, etc.
   - [ ] Research first: Would it be faster/easier to just gen 8 med-poly buildings with Meshy and use those instead of making it actually procedural?
+
 - [ ] Procedural caves
+
   - [ ] Cave-wall meshes that can open up to different sizes and have regions with different tints, darknesses, biome foliage, etc. Very dark by default, some local procedurally placed lights or glowing foliage (lighting baked for performance)
+
 - [ ] Wild creatures roaming around, walking or running or flying (songbirds, eagles, deer, mythic creatures). They pause and turn to look at you when you get close
+
 - [ ] Terrain LOD: what if just visible peaks get further decimation (down to ~1.2deg) whereas everything else stays at ~5.72deg?
+
 - [ ] Blue distance shader
+
 - [ ] Fog
+
 - [ ] River water renderer
+
   - Shader for flowing water. Narrower = faster, wider = shallower. Steeper = faster. beyond 45deg = waterfall, with emitted spray clouds.
 
 ## Props -- follow-ups
@@ -78,7 +123,7 @@ The Blender pipeline is built and gated (`npm run props`, `scripts/check-props.m
 - [x] `windmill`**~~'s albedo bakes pure black.~~** Fixed, and the source was blameless: it carried `metallicFactor: 1.0`, and a Cycles DIFFUSE bake of a fully metallic surface is black by definition. `neutralize_pbr` zeroes Metallic, Transmission and Specular (links included -- `watchtower` drives the same input from a map) before every bake. windmill went RGB (0,0,0) → (112,75,41).
 - [x] **~~Four grass variants and two trees shipped broken, and only a render caught them.~~** Excluded, with reasons recorded in `make-manifest.mjs`. `grass_tall_scan_a/b/c` and `grass_wild_scan_a` were crushed rather than simplified -- 84-88% of their triangles under 1 cm², presenting 0.1-3.9% of their own silhouette, rendering as a dozen specks while every check passed them. `tree_deciduous_hi` had a canopy of 0.8 grey (its leaf material references no image at all). `tree_oak_hero` at its floor was 1,794 twig cards, 5 trunk polygons and zero leaves. `check-props.mjs` now measures world surface area and degenerate-triangle fraction, so this class fails the gate instead of shipping. DESIGN.md §9 bugs 10-11.
 - [ ] `fern_polypody` **is thin and it is an art call, not a bug.** It keeps 29% of its UV footprint through alphaTest and spends 6 of its 15 triangles on slivers, which is what a frond made of alpha cards genuinely looks like at that budget -- it passes the crush check because the other 9 triangles are a real fern. The question is whether 15 triangles can be a fern at all. Same for `grass_wild_scan_b`/`_c` baking at mean RGB 20 and 12: all the `grass_wild` variants share one 8K map averaging (64,64,36), so the dark ones are clumps that sat in shadow in the scan.
-- [ ] **Replacement grass and a replacement hero tree.** Four grass variants and two trees came out of the library above and nothing has taken their place; `grass_wild_scan_b/c/d` plus the hand-built tufts are what is left for ground cover. Both wants are the same want: authored low-poly cross-cards with a baked canopy, not photoscans and not card foliage. See the shopping list in `make-manifest.mjs`.
+- [ ] **A replacement hero tree.** Two trees came out of the library above and nothing has taken their place. The want is authored low-poly cross-cards with a baked canopy, not a photoscan and not card foliage. See the shopping list in `make-manifest.mjs`. **The grass half of this is answered**: `gen_grass_tall/lush/dry` are generated cross-cards over one shared 128² tuft, and `src/v2/render/grass.js` carpets /v2 with them at 3/m² off that same layer without touching a GLB.
 
 ## Buildings -- follow-ups
 
@@ -86,7 +131,7 @@ The Nordic building kit is built and gated (`src/buildings/*`, DESIGN.md §19). 
 
 - [ ] **Visual review pass in** `gen-building-v2.html`. Two questions, and both are looking questions rather than script questions. The proportion calls -- log diameter, roof pitch, eave overhang, window size, porch depth -- argued against the 1.75 m figure. And **how crooked is too crooked**: the master `strength` slider reaches 0 for the straight control, `vs straight` stands the pair side by side, and the per-term multipliers are there so "too warped" can be pinned on the term that did it. The shipping strength is currently 1 by assertion, not by having been looked at.
 - [ ] **Migrate** `src/village/*` **onto the v2 kit** and delete the vertex-coloured placeholder shapes. Until this lands, §5's village row is what the kit measures rather than what a frame draws, and `npm run check` never reaches either building gate -- `check-village.mjs` has two pre-existing failures that stop the `&&` chain ahead of them. The plan already places buildings correctly and the +Z door convention is shared, so this is a substitution at the shapes layer -- but the old kit's architectural range is not a ceiling on the new one, and the village's building mix should be re-picked from the four kinds rather than mapped one-for-one.
-- [ ] **`PLASTER` is the last tile still generated**, `MI_Medieval_Modular_Door` being the intended source. Lowest priority of the three placeholders and arguably not worth doing at all: a plaster wall's texture is not its silhouette, so only texel scale matters and that is already right. `tools/buildings/cut-tiles.mjs` is where it would go.
+- [ ] `PLASTER` **is the last tile still generated**, `MI_Medieval_Modular_Door` being the intended source. Lowest priority of the three placeholders and arguably not worth doing at all: a plaster wall's texture is not its silhouette, so only texel scale matters and that is already right. `tools/buildings/cut-tiles.mjs` is where it would go.
 - [ ] **Interiors.** Every building is a closed shell; the door is a leaf on the outside of a solid wall. Opening one means the first hole in the kit, and a hole is what LOD-by-re-generation was chosen to avoid -- so an interior is a separate mesh swapped in at the threshold, not a subtraction from the exterior.
 - [ ] **Real ironwork and runes.** `IRON` and `RUNE` are the other two layers where alpha carries the shape, so they are the other two the placeholder genuinely lies about. Both are hand-drawn geometry in `sheetIron`/`sheetRunes` today.
 - [ ] **Headset gate (§17).** 20 buildings at the v2 mean is 27k triangles in one draw call, which is comfortable on paper. The untested part is the merge cost at village load, not the frame cost.

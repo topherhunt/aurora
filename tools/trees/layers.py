@@ -38,6 +38,7 @@ atlases and re-cutting is a one-line change in each.
 import argparse
 import json
 import os
+import shutil
 import struct
 import sys
 
@@ -225,9 +226,23 @@ def main():
     # thing that fills the most screen.
     tuft = extract_glb_image(os.path.join(EZ, "app/public/grass.glb"),
                              os.path.join(ROOT, "tmp/generated-props/grass_tuft_src.png"))
-    build(tuft, os.path.join(layers, "grass_tuft.png"), patch=False)
+    tuft_png = os.path.join(layers, "grass_tuft.png")
+    build(tuft, tuft_png, patch=False)
+
+    # ...and once more into public/, which is NOT the same thing as the copy
+    # build.py makes. That one lands in public/props/ as an input to the props
+    # BROWSER, and `npm run props --clean` owns that whole tree. This one is
+    # RUNTIME ART, in the same sense as public/trees and public/ferns: the /v2
+    # grass carpet samples it out of the DataArrayTexture (LAYER.GRASS_TUFT in
+    # src/textures.js) and never touches a GLB. The leaf atlases have no runtime
+    # copy because the procedural trees wear `gen-layers.mjs`'s cut instead;
+    # grass has no procedural generator of its own, so this file is the art.
+    runtime = os.path.join(ROOT, "public/grass/grass_tuft.png")
+    os.makedirs(os.path.dirname(runtime), exist_ok=True)
+    shutil.copyfile(tuft_png, runtime)
 
     print("\n%d shared layers -> %s" % (len(LEAVES) + 1, os.path.relpath(layers, ROOT)))
+    print("grass tuft also -> %s" % os.path.relpath(runtime, ROOT))
 
 
 main()

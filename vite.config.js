@@ -258,24 +258,31 @@ function worldHeight() {
   }
 }
 
-// --- /v2 as a route rather than a filename (dev only) -----------------------
+// --- bare paths as routes rather than filenames (dev only) ------------------
 //
-// §18 asks for a "/v2 route", and without this there is not one. `v2.html` is a
-// rollup input, so `/v2.html` works -- but a bare `/v2` misses on disk and falls
-// into vite's SPA fallback, which answers index.html. That is the WRONG page
-// served with a 200, so the failure looks like "v2 renders the v1 world" rather
-// than like a missing route.
+// §18 asks for a "/v2 route", and gen-rock was asked for as "/gen-rock". Without
+// this there is neither. `v2.html` is a rollup input, so `/v2.html` works -- but
+// a bare `/v2` misses on disk and falls into vite's SPA fallback, which answers
+// index.html. That is the WRONG page served with a 200, so the failure looks
+// like "v2 renders the v1 world" rather than like a missing route.
+//
+// A list rather than a blanket "append .html to anything that misses": the
+// fallback is what makes a genuine 404 look like a working page, and widening
+// the rewrite to every miss would spread that failure mode rather than fix it.
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-function v2Route() {
+const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-building', 'gen-building-v2']
+
+function bareRoutes() {
   return {
-    name: 'aurora:v2-route',
+    name: 'aurora:bare-routes',
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use((req, _res, next) => {
         const path = req.url.split('?')[0]
-        if (path === '/v2' || path === '/v2/') req.url = `/v2.html${req.url.slice(path.length)}`
+        const name = path.replace(/^\/|\/$/g, '')
+        if (BARE_ROUTES.includes(name)) req.url = `/${name}.html${req.url.slice(path.length)}`
         next()
       })
     },
@@ -299,15 +306,15 @@ function v2Route() {
 // inspected whole, and the "eye" that every "tune it by eye" constant in
 // phase-a.js refers to -- and props.html is the same kind of eye for the §9
 // asset library: 160 built props that check-props.mjs can assert are correct and
-// nothing could actually show you. gen-fern.html, gen-tree.html and
-// gen-building.html (with gen-building-v2.html beside it) are the tuning
+// nothing could actually show you. gen-fern.html, gen-tree.html, gen-rock.html
+// and gen-building.html (with gen-building-v2.html beside it) are the tuning
 // benches for the procedural content
-// (src/props/fern.js, tree.js, src/buildings/), which has no built asset to
+// (src/props/fern.js, tree.js, rock.js, src/buildings/), which has no built asset to
 // inspect -- the "library" for a generated asset is the range its parameters
 // cover, and the only way to see a range is to put twenty seeds side by side.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), v2Route()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), bareRoutes()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -337,6 +344,11 @@ export default defineConfig({
         props: resolve(__dirname, 'props.html'),
         genFern: resolve(__dirname, 'gen-fern.html'),
         genTree: resolve(__dirname, 'gen-tree.html'),
+        // The rock bench, served at /gen-rock. Its job is narrower than the
+        // others': the tree and fern generators ship a settled bank, this one is
+        // still choosing which variants the world gets, and PRESETS in
+        // src/gen-rock-main.js is where that choice is being written down.
+        genRock: resolve(__dirname, 'gen-rock.html'),
         genBuilding: resolve(__dirname, 'gen-building.html'),
         // v2 of the same bench. Kept alongside v1 rather than replacing it: the
         // question v2 asks is "how crooked is too crooked", and the only honest
@@ -347,6 +359,13 @@ export default defineConfig({
         // by hand authored as a content layer on top. Shares the coordinate box
         // with index.html and nothing else.
         v2: resolve(__dirname, 'v2.html'),
+        // The grass bench, served at /v2-new-grass. Not a mode inside v2: the
+        // comparison it exists to make is between two carpets on one hill under
+        // one light, and it needs its own world -- GPU-placed blades out to
+        // 72 m and a ground material that IS the grass past it -- standing
+        // beside the shipped scatter's measured numbers rather than replacing
+        // it. See the header of src/newgrass/grass-field.js.
+        v2NewGrass: resolve(__dirname, 'v2-new-grass.html'),
       },
     },
   },

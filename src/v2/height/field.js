@@ -315,4 +315,59 @@ export class V2Height {
     const d = 2 * e
     return { h, tan: Math.hypot((xp - xm) / d, (zp - zm) / d) }
   }
+
+  /**
+   * The same `{ h, tan }` shape as heightAndSlopeAt, at ONE FIFTH the cost, for
+   * scatter that is deciding WHETHER a prop exists rather than where its trunk
+   * meets the ground.
+   *
+   * Two differences from heightAndSlopeAt, and both are the point:
+   *
+   *   THE SLOPE IS FREE. heightAt already computes hm.slopeAt(x, z) to modulate
+   *   the detail amplitude and throws it away; this returns it. heightAndSlopeAt
+   *   instead takes four EXTRA composed samples 75 cm out, so it costs five
+   *   field evaluations where this costs one. Measured on the shipped heightmap:
+   *   3.84 us against 0.71 us, which over a 41,000-tree boot is 157 ms against
+   *   29 ms.
+   *
+   *   THE COARSE SLOPE IS ALSO THE MORE HONEST ONE, which is why this is not
+   *   simply a cheaper approximation. heightAndSlopeAt measures a 75 cm central
+   *   difference on a field that still has real energy at 10 cm, so what it
+   *   reports is the ROUGHNESS OF THE GROUND, not the pitch of the hillside: it
+   *   reads steeper than the coarse gradient at 66% of world sites, median 1.8
+   *   deg and p95 10.5 deg. A tree was being refused for standing on a 30 cm
+   *   gravel bump. Swapping the basis flips 7.7% of individual placements and
+   *   moves the accept rate 72.1% -> 75.6%, i.e. about 5% more trees, which is
+   *   the direction render/trees.js already documents as the safe one.
+   *
+   *   What it gives up: the slope no longer sees the carve chain, so a tree may
+   *   stand on a river bank the composed slope would have refused. A tree IN the
+   *   river bed is still refused, because `h` below does carry the carve and
+   *   WaterSurfaces.isSubmerged reads it. Numbers from tmp/probe-tree-ground.mjs.
+   *
+   *   `cell` IS MANDATORY, and callers should pass a FIXED one. Prop existence
+   *   has to be a pure function of position: if the band limit followed the
+   *   terrain's LOD, trees near the elevation floor or the slope limit would
+   *   appear and vanish as chunks re-split under them, and the deterministic
+   *   tiled scatter -- walk away, walk back, same forest -- would be gone. See
+   *   render/trees.js PLACEMENT_CELL.
+   *
+   * `tan` converts Heightmap.slopeAt's 0..1 convention back to a tangent (see
+   * slope01At), because a tangent is what scatter compares against.
+   */
+  scatterAt(x, z, cell, out = { h: 0, tan: 0 }) {
+    if (!(cell > 0)) throw new Error(`V2Height.scatterAt: cell must be a positive fixed band limit, got ${cell}`)
+    if (this.layers.epoch !== this._epoch) this._syncAuthored()
+    const hm = this.heightmap
+    const s = hm.slopeAt(x, z)
+    out.tan = s / (1 - s)
+    if (!this._authored) {
+      out.h = hm.sample(x, z) + this.detail.at(x, z, cell, s, 0)
+      return out
+    }
+    const layers = this.layers
+    const h = hm.sample(x, z) + this.detail.at(x, z, cell, s, layers.flattenAt(x, z))
+    out.h = layers.carve(x, z, h)
+    return out
+  }
 }

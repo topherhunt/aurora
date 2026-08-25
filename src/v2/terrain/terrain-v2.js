@@ -124,6 +124,13 @@ const SELECT_EVERY_FRAMES = 6
 // maxReady and re-running the ladder above.
 const WORKER_QUEUE_DEPTH = 24
 
+// The interior grid of a chunk: (CHUNK_RES + 1)^2 = 289 vertices, the first
+// block of every position array chunk-mesh-v2 emits. The skirt vertices follow
+// and are deliberately excluded -- they are a flange hanging below the surface,
+// not part of it.
+const GRID_SIDE = CHUNK_RES + 1
+const GRID_VERTS = GRID_SIDE * GRID_SIDE
+
 export class TerrainV2 {
   /**
    * @param scene         THREE.Scene to add the single BatchedMesh to.
@@ -190,7 +197,11 @@ export class TerrainV2 {
       const geometryId = this.batch.addGeometry(this._scratch, CHUNK_VERTS, CHUNK_INDICES)
       const instanceId = this.batch.addInstance(geometryId)
       this.batch.setVisibleAt(instanceId, false)
-      this._free.push({ geometryId, instanceId })
+      // See groundAt: the interior height grid is kept CPU-side so props can
+      // stand on the surface that is DRAWN rather than on the one the field
+      // would have drawn at infinite resolution. Allocated with the slot and
+      // never reallocated -- 289 floats x 1024 slots is 1.18 MB, fixed.
+      this._free.push({ geometryId, instanceId, heights: new Float32Array(GRID_VERTS) })
     }
 
     this._mat = new THREE.Matrix4()
@@ -654,6 +665,13 @@ export class TerrainV2 {
     g.attributes.color.array.set(msg.colors)
     g.index.array.set(msg.indices)
 
+    // Keep the interior heights. setGeometryAt copies the positions into the
+    // batch's arena and there is no way to read them back, so this is the one
+    // moment the drawn surface is legible to the CPU. 289 strided reads per
+    // chunk load, against the ~360 the worker already spent building it.
+    const heights = slot.heights
+    for (let i = 0; i < GRID_VERTS; i++) heights[i] = msg.positions[i * 3 + 1]
+
     // Set the bounding sphere by hand rather than calling computeBoundingSphere,
     // which would walk every vertex on the main thread for every chunk load.
     // setGeometryAt clones this into the slot, so per-instance culling picks it up
@@ -876,6 +894,87 @@ export class TerrainV2 {
     this.stats.desired = desired.length
     this.stats.rendered = render.size
     this.stats.bounds = this.info.size
+  }
+
+  /**
+   * The key of the chunk actually DRAWN at (x, z), or null if nothing covers it.
+   *
+   * Finest first: an ancestor standing in for a missing node covers its whole
+   * extent, including siblings that are drawing themselves, so the render set is
+   * not a clean partition and "the first hit walking down" would find the wrong
+   * one. Fourteen integer keys and fourteen Set probes worst case; callers are
+   * expected to ask about a few hundred points a frame, not tens of thousands.
+   */
+  groundKeyAt(x, z) {
+    const u = x + WORLD_HALF
+    const v = z + WORLD_HALF
+    if (u < 0 || v < 0 || u >= WORLD_SIZE || v >= WORLD_SIZE) return null
+    for (let d = MAX_DEPTH; d >= 0; d--) {
+      const span = 1 << d
+      const key = nodeKey(d, ((u / WORLD_SIZE) * span) | 0, ((v / WORLD_SIZE) * span) | 0)
+      if (!this._render.has(key)) continue
+      const entry = this.cache.get(key)
+      if (entry && entry.slot) return key
+    }
+    return null
+  }
+
+  /**
+   * The height of the DRAWN terrain surface at (x, z), or null if no chunk is
+   * covering it yet.
+   *
+   * This is deliberately NOT V2Height.heightAt. The field is the surface at
+   * infinite resolution; what the player sees is a triangle chord across a cell
+   * that runs from 6 cm underfoot to 64 m at a kilometre and a half, and the gap
+   * between the two is what makes a distant tree hang in the air. Measured on
+   * the shipped heightmap, that gap is 1 cm at 8 m and 4.6 m of MEAN error at
+   * 1.5 km, with a p95 of 14.7 m -- more than a tree's own height. Anything
+   * standing on the ground has to stand on the ground that is drawn.
+   *
+   * Both the grid spacing and the diagonal are chunk-mesh-v2's, not an
+   * approximation of them: same band-limited samples, same shorter-diagonal
+   * rule. Where a chunk is resident this returns the drawn surface exactly.
+   *
+   * `key` may be passed by a caller that already resolved it (see groundKeyAt)
+   * to skip the depth walk.
+   */
+  groundAt(x, z, key = this.groundKeyAt(x, z)) {
+    if (key === null) return null
+    const entry = this.cache.get(key)
+    if (!entry || !entry.slot) return null
+    const n = entry.node
+    const step = n.size / CHUNK_RES
+    let fi = (x - n.x) / step
+    let fj = (z - n.z) / step
+    // Clamped rather than trusted: a caller asking about a point a hair outside
+    // the chunk it just resolved would otherwise index into the next row.
+    let i = fi | 0
+    let j = fj | 0
+    if (i < 0) i = 0
+    else if (i >= CHUNK_RES) i = CHUNK_RES - 1
+    if (j < 0) j = 0
+    else if (j >= CHUNK_RES) j = CHUNK_RES - 1
+    fi -= i
+    fj -= j
+
+    const H = entry.slot.heights
+    const o = j * GRID_SIDE + i
+    const a = H[o] // (0, 0)
+    const b = H[o + 1] // (1, 0)
+    const c = H[o + GRID_SIDE] // (0, 1)
+    const d = H[o + GRID_SIDE + 1] // (1, 1)
+
+    // The shorter diagonal, exactly as the mesher chose it. Picking the other
+    // one here would invent a ridge across every saddle quad and put back a
+    // fraction of the error this exists to remove.
+    if (Math.abs(a - d) < Math.abs(b - c)) {
+      return fi >= fj
+        ? a + (b - a) * fi + (d - b) * fj
+        : a + (c - a) * fj + (d - c) * fi
+    }
+    return fi + fj <= 1
+      ? a + (b - a) * fi + (c - a) * fj
+      : d + (b - d) * (1 - fj) + (c - d) * (1 - fi)
   }
 
   _syncVisibility() {
