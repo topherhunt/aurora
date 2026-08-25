@@ -300,7 +300,8 @@ function v2Route() {
 // phase-a.js refers to -- and props.html is the same kind of eye for the §9
 // asset library: 160 built props that check-props.mjs can assert are correct and
 // nothing could actually show you. gen-fern.html, gen-tree.html and
-// gen-building.html are the tuning benches for the procedural content
+// gen-building.html (with gen-building-v2.html beside it) are the tuning
+// benches for the procedural content
 // (src/props/fern.js, tree.js, src/buildings/), which has no built asset to
 // inspect -- the "library" for a generated asset is the range its parameters
 // cover, and the only way to see a range is to put twenty seeds side by side.
@@ -337,6 +338,10 @@ export default defineConfig({
         genFern: resolve(__dirname, 'gen-fern.html'),
         genTree: resolve(__dirname, 'gen-tree.html'),
         genBuilding: resolve(__dirname, 'gen-building.html'),
+        // v2 of the same bench. Kept alongside v1 rather than replacing it: the
+        // question v2 asks is "how crooked is too crooked", and the only honest
+        // answer is the straight version standing next to it.
+        genBuildingV2: resolve(__dirname, 'gen-building-v2.html'),
         // §18. The alternative world: coarse shape imported from an image, fine
         // shape procedural down to 10 cm, and everything a human wants to place
         // by hand authored as a content layer on top. Shares the coordinate box

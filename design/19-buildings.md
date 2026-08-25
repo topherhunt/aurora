@@ -11,15 +11,20 @@ Skyrim-adjacent Nordic vernacular: log cabins, thatch huts, stocky timber, rough
 |---|---|---|
 | `src/buildings/tiles.js` | The pixel generators for all thirteen building layers | no |
 | `src/buildings/plan.js` | The grammar. Pure data: masses, walls, openings, attachments | **no** -- §1's porting rule |
-| `src/buildings/parts.js` | The `Builder` and the geometry vocabulary | yes |
-| `src/buildings/building.js` | `buildBuilding(plan, {detail})` -- the translation, deliberately thin | yes |
+| `src/buildings/parts.js` | v1: the `Builder` and the geometry vocabulary | yes |
+| `src/buildings/building.js` | v1: `buildBuilding(plan, {detail})` -- the translation, deliberately thin | yes |
+| `src/buildings/v2/warp.js` | The displacement field and the per-building character | no |
+| `src/buildings/v2/parts.js` | v2's vocabulary: what v1 draws, subdivided enough to bend | yes |
+| `src/buildings/v2/building.js` | `buildBuilding2(plan, {detail, strength})` | yes |
 | `tools/buildings/imageops.mjs` | decode / crop / flip / heal the wrap / resample / grade / encode | no (node) |
 | `tools/buildings/cut-tiles.mjs` | Cuts the eight shipped non-thatch PNGs from their sources | no (node) |
 | `tools/props/extract-thatch.mjs` | Cuts the two shipped thatch PNGs out of the photograph | no (node) |
 
 `plan.js` staying three-free is what makes `scripts/check-buildings.mjs` able to plan 1,200 buildings in half a millisecond each and assert every one, rather than sampling. The bugs in a grammar live in the combinations nobody thought to look at, so exhaustive coverage is the point.
 
-`gen-building.html` + `src/gen-building-main.js` is the tuning bench, in the same family as `gen-fern.html` and `gen-tree.html`. It runs the **real** shared `DataArrayTexture` and the real `createPropMaterial()`, because the whole premise is that one array plus a per-vertex `texLayer` puts thatch, logs, stone and glass in one draw call, and a previewer faking that with four materials would be checking the thing that is not in question.
+**v2 is the geometry layer; v1 is kept as the straight control.** Both build the same `plan.js` output -- the grammar, the styles, the bays and the terrain response are shared and unchanged, which is the whole reason v2 is a second geometry layer and not a second generator. v1 stays because "is the crooked version better" needs a "than what", and because its gate passing is what says the warp did not break something that used to work.
+
+`gen-building.html` and `gen-building-v2.html` are the tuning benches, in the same family as `gen-fern.html` and `gen-tree.html`. They run the **real** shared `DataArrayTexture` and the real `createPropMaterial()`, because the whole premise is that one array plus a per-vertex `texLayer` puts thatch, logs, stone and glass in one draw call, and a previewer faking that with four materials would be checking the thing that is not in question. The v2 bench adds a master **strength** slider that reaches 0 -- the straight building, on the same page -- per-term multipliers so a building that looks wrong can be traced to the term that did it, and a `vs straight` mode that stands the two side by side.
 
 ### Thirteen layers, and the three that were refused
 
@@ -140,6 +145,33 @@ A porch is a boarded deck on a rubble footing down to the plinth bottom, not a f
 
 **Neither gate can see a blade, and that is their known blind spot.** A back-to-back doubled quad is airtight, has honestly zero volume, is *declared* as having zero volume, and passes -- and it is still a face with no thickness. The stone-base offset course was one: 6 cm of ledge standing out of the wall at the top of the masonry with nothing between its two sides, so from anywhere near its own height it was a paper edge on a stone building. It is a swept member now. The rule the gates cannot state is that **doubled quads are for things that are genuinely sheets** -- a fringe, an iron strap, a shutter leaf, a pane of glass -- and anything the eye reads as *stone* or *timber* needs a section.
 
+### Nothing is quite straight: the warp field
+
+v1 was correct and generic. Straight lines, square corners, a chimney with a flange on it -- every part individually right and the whole thing reading as a kit rather than as a building somebody put up. v2's answer is **one displacement field over space**, applied to the finished vertex array as a post-pass, normals recomputed after.
+
+**The field is a pure function of position** -- `f(x,y,z) -> (x',y',z')`, continuous, deterministic, with no knowledge of which part it is bending. That one property is why it can be this large without breaking anything:
+
+- **Airtightness survives exactly.** Two vertices that were coincident had the same input, so they get the same output and are still coincident. The directed-edge count is untouched. This is the whole reason it is a field over space rather than a per-part jitter: **per-part jitter has to be threaded through every seam by hand, and one of them is always missed.** Draw straight, warp once.
+- **Winding survives**, as long as the displacement stays small against the local feature size -- which is what the gate's strength sweep past 1 is measuring.
+- **UVs survive and are not warped.** They are computed from *unwarped* world extents, so texel density stays uniform. Warping them too would smear the tile exactly where the geometry has become interesting.
+
+`computeVertexNormals()` afterwards is exactly right rather than merely adequate: `Builder.vertex()` never dedupes across quads, so it averages only the two triangles of each quad -- correct, because a warped quad is genuinely non-planar -- and leaves every quad-to-quad crease as sharp as it was drawn.
+
+**A building is warped as one object with one character, not as a pile of independently wobbly components.** `makeCharacter(seed, strength)` draws the personality once and every part takes it: the two noise octaves, the settle (a lean growing as `height^1.35`, so the eaves lean and the plinth does not), roof sag and buckle, eave reach and sway, chimney flare, window skew, shutter splay, post bow. That distinction is most of what separates *hand-built* from *noisy* -- a real crooked house is crooked in a consistent direction, because it settled that way. `strength` scales all of it at once and at 0 v2 builds exactly what v1 builds.
+
+**What the field cannot do is why half of `parts.js` had to be rewritten.** A warp can only bend geometry that *has vertices to bend*. A wall drawn as one quad has four corners and no middle, so the field translates and shears it and cannot bow it. So v2's parts carry interior vertices v1's did not:
+
+- **A roof plane is an `nu × nv` grid**, not a quad -- one to three columns along the eave by three rows up the slope, which is what "each roof piece needs two horizontal seams so it can buckle under the weight of the tiles" costs. Row displacement is explicit rather than left to the field: sag on a half-sine between eave and ridge, a wandering buckle on the interior rows, and an **eave row that reaches out past its nominal overhang and sways along its length**. Its UVs are passed explicitly from the unwarped parameterisation, because letting `quad()` derive a frame per cell would step the tile at every seam once the cells stop being planar.
+- **The ridge row is left alone.** Two slopes share the ridge line and walk it in *opposite directions*, so any per-plane wobble applied there would have to agree bit for bit between them. The position-keyed field gives both slopes the same answer for free, which is the general form of this whole argument in miniature.
+- **Walls subdivide** into up to four columns, so a long wall can bow instead of shearing.
+- **Posts and rails are segmented and bowed** by a `sin` that leaves both ends exactly where the caller put them -- a member whose ends have drifted is a member that has come out of its mortice.
+- **A window's four corners are skewed independently** off the rectangle it was planned as, and its shutters splay off the wall. Below detail 2 the skew goes and the rectangle comes back.
+- **The chimney is one flared prism**: a four-corner section with each corner's jitter drawn per axis, scaled outward at the crown. v1's battered stack plus corbelled cap was 48 triangles and read as masonry catalogue; this is 12 and reads as a chimney somebody built.
+
+The rounding of the section is `boxSection()` and **not** `roughSection(4, ...)`, which is a trap worth naming: `roughSection` places its points at evenly spaced *angles*, so at n=4 they land on the rectangle's edge midpoints and give a diamond, not a jittered box.
+
+The measured cost of all this is roughly nothing, because the chimney and the window surrounds paid for the roof grid: **worst 2,508 against v1's 2,472, mean 1,383 against 1,211.**
+
 ### The grammar
 
 Footprint-first and additive. One or two axis-aligned masses; **room count is not a knob**, it falls out of floor area. What the caller picks is a *kind*, and the kind sets area, height, and which shapes and styles are legal -- a whitelist rather than a weight table, because a half-timbered woodcutter's hut is not less likely, it is wrong.
@@ -163,17 +195,21 @@ The chimney rides a gable end, offset in from the verge so it visibly pierces th
 
 Not decimation, for the boundary-edge reason above. Three tiers from the **same plan**, so they cannot drift out of agreement:
 
-| Tier | Range (§5 `structure`) | Holds | Typical |
+| Tier | Range (§5 `structure`) | Holds | Typical (v2) |
 |---|---|---|---|
-| detail 2 | to 60 m | everything: hewn members, log ends, rounded eave, frames, ironwork, corbelled cap, porch posts, broken slab arrises, stair stringers | ~1,210 tris |
-| detail 1 | to 170 m | massing, roof, gables, plinth, chimney, flat door and glass -- **plus the thatch fringe and the porch roof**, which are silhouette | ~190 tris |
-| detail 0 | to the card | box and roof prism | ~70 tris |
+| detail 2 | to 60 m | everything: hewn members, log ends, rounded and reaching eave, roof grid, mitred frames, ironwork, splayed shutters, porch posts, broken slab arrises, stair stringers | ~1,383 tris |
+| detail 1 | to 170 m | the massing and **the warp**, with the bevelling, rounding and 3D joinery gone: roof planes as single quads with a one-ring edge band, walls unsubdivided, windows/frames/shutters one flat rectangle each, the stair flight coarsened to two risers -- **plus the thatch fringe and the porch roof**, which are silhouette | ~215 tris |
+| detail 0 | to the card | box and roof prism, still warped | ~75 tris |
+
+Every tier goes through the same field. **detail 0 is warped too**, which is not thoroughness -- the silhouette is all there is at that range, and a straight LOD0 under a leaning LOD1 pops on the swap.
 
 The fringe stays at detail 1 against the general rule because dropping it would pop the outline of the roof at the LOD0 boundary, and four triangles is not worth that.
 
-Measured over 1,200 buildings: **mean 1,211 tris, worst 2,472** (`inn`), against §5's 2,500 for the `structure` class and its 20 × 1,210 = 24k village allotment. The worst case is a genuine outlier -- the next eleven buildings sit at 2,280-2,372 and only one seed in 1,200 clears 2,400 -- which leaves the ceiling with **28 triangles of headroom on the tail, and nothing on it at all for the next feature**.
+**Detail 1 targets an eighth of detail 2 and measures a sixth, and the floor is the windows.** A detail-1 rectangle has to be `double: true` to pair its directed edges for the airtightness gate, so it is 4 triangles and not 2, and a shuttered window is 16. An inn with twelve shuttered windows and three plain ones spends 216 triangles on openings before a wall, roof or plinth is drawn. Reaching a literal eighth means dropping the shutters, and a shutterless inn at 30 m reads as a blank wall. So the gate is on the **mean** (0.161 measured, 0.18 allowed), which governs what a village costs, plus an **absolute 460-triangle cap** on any single tier, which governs the worst frame. Per-building ratio is deliberately not gated: it is worst on the *cheapest* buildings, where a 620-triangle cottage drops to a perfectly good 168 and scores 0.256 only because its detail 2 had little ornament to lose.
 
-**Those two §5 numbers were raised once, for the rounding, and are not to be raised again casually.** Boxes measured 766 mean / 1,660 worst against 1800 and 16k. Hewn prisms are +40% and the trade was made deliberately: the silhouette is what the whole style rests on, it is spent only at detail 2, and the ladder means it is spent on the handful of buildings actually within 60 m. The next thing that wants triangles takes them from somewhere else.
+Measured over 1,200 buildings: **mean 1,383 tris, worst 2,508** (`inn`), against a `structure` ceiling of 2,600 and a 20 × 1,383 = 28k village allotment. v1 measured 1,211 / 2,472 against 2,500. The warp is close to free -- the roof grid and the two extra edge-band rings on a thatched eave are paid for by the chimney (48 → 12) and by the window surround dropping from a five-or-six-sided ring to four-or-five, across as many as fifteen windows on an inn.
+
+**Those two §5 numbers have been raised twice -- once for the rounding, once for the warp -- and are not to be raised again casually.** Boxes measured 766 mean / 1,660 worst against 1800 and 16k. Hewn prisms are +40% and the trade was made deliberately: the silhouette is what the whole style rests on, it is spent only at detail 2, and the ladder means it is spent on the handful of buildings actually within 60 m. The next thing that wants triangles takes them from somewhere else.
 
 The two places the increase was bought back are worth knowing, because both were pure waste rather than detail:
 
@@ -182,9 +218,11 @@ The two places the increase was bought back are worth knowing, because both were
 
 ### The gate
 
-`scripts/check-buildings.mjs`, in the `npm run check` chain. Asserts, over every seed of every kind: the door faces +Z and sits on the front wall; no window overlaps the doorway or overflows its own wall; every chimney is seated on the roof surface and clears the ridge; the footprint hull closes and covers the plan area; nothing floats or buries its sill on a slope. Over the geometry: every tier carries the full attribute set (a mismatch makes the village merge return `null`, which is a silent disappearance rather than an error), no non-finite positions or UVs, no stray non-building `texLayer`, tiers strictly decreasing, the budget, and **airtight with positive enclosed volume**.
+`scripts/check-buildings.mjs` and `scripts/check-buildings-v2.mjs`, both in the `npm run check` chain. The v2 gate does **not** re-run the tile checks -- v2 shares every texture layer with v1 and there is one set of tiles -- and adds the two invariants v2 is most likely to break and least likely to break visibly: **airtightness under the warp** (the claim in `warp.js` is an argument, not a proof that the code implements it; a part computing its own jitter instead of taking the field's would pass every visual check and leave a hairline you can see the inside of the building through) and **winding under the warp**, at strengths 0, 0.5, 1 and 1.6, because the previewer's slider goes past 1 and "how far can it go before it breaks" should be measured rather than assumed. It also asserts the field is deterministic to the byte, that strength 0 builds no warp at all, and that strength 1 moves the worst vertex by a derived amount -- swept over a sample of the corpus rather than one plan, because the worst case is a tall building with a long eave and any single seed is very unlikely to be it.
 
-And over every part **on its own, at every orientation**, which is the sharper half. The whole-building pass reports "hut/2 detail 2 has an unpaired edge", which is a hole somewhere in nine hundred triangles; building one part into one `Builder` names the function with the bug. More usefully it covers orientations the grammar happens not to produce -- windows land on all four walls of every building, but a lean-to only ever gets the outshut directions a plan picks, and the winding of a part is exactly the thing that is right on one axis and inside out on another. Each part declares itself `solid` or `flat` and the volume has to agree. `gen-building.html` runs both probes live on the geometry that is on screen.
+v1's gate asserts, over every seed of every kind: the door faces +Z and sits on the front wall; no window overlaps the doorway or overflows its own wall; every chimney is seated on the roof surface and clears the ridge; the footprint hull closes and covers the plan area; nothing floats or buries its sill on a slope. Over the geometry: every tier carries the full attribute set (a mismatch makes the village merge return `null`, which is a silent disappearance rather than an error), no non-finite positions or UVs, no stray non-building `texLayer`, tiers strictly decreasing, the budget, and **airtight with positive enclosed volume**.
+
+And over every part **on its own, at every orientation**, which is the sharper half. The whole-building pass reports "hut/2 detail 2 has an unpaired edge", which is a hole somewhere in nine hundred triangles; building one part into one `Builder` names the function with the bug. More usefully it covers orientations the grammar happens not to produce -- windows land on all four walls of every building, but a lean-to only ever gets the outshut directions a plan picks, and the winding of a part is exactly the thing that is right on one axis and inside out on another. Each part declares itself `solid` or `flat` and the volume has to agree. The v2 gate runs the same sweep over 64 parts *warped*, at every strength. Both benches run the two probes live on the geometry that is on screen -- which in v2 is the `warp.js` claim being checked on the building you are currently looking at, at whatever strength you have set.
 
 Over the tiles: the **seam score**, which is the wrap-edge step divided by the strongest interior step in the same axis. The baseline took three wrong answers to reach -- one interior pair (usually in a smooth region, so every deliberate line scores as a seam), the whole-tile mean (the tile's own hard lines drag it down, and an integer course count puts one of them exactly on the boundary), and the 95th percentile (a tile with four strong lines has them all above p95). The max is the right question: *is the boundary worse than the strongest line this tile already contains?* ≤ 1 means indistinguishable from the tile's own periodic detail.
 
@@ -198,4 +236,5 @@ Related: a value-noise lattice is periodic with period exactly 1, so it must **a
 
 - `PLASTER`, `IRON` and `RUNE` are still procedural, for want of a source. `PLASTER` can stay that way -- a wall's texture is not its silhouette, only texel scale matters, and that is a UV decision. The other two cannot, or not comfortably: alpha carries their shape, so the placeholder *is* the asset rather than a stand-in for it.
 - `tools/props/extract-thatch.mjs` still carries its own copies of the decode/heal/resample helpers, which now live in `tools/buildings/imageops.mjs`. Two implementations of the same cross-fade is exactly how the fringe and the roof drift apart at the eave.
-- `src/village/*` still generates its own vertex-coloured placeholder buildings and has not been migrated onto this kit. The old kit's architectural range is not a constraint on this one.
+- `src/village/*` still generates its own vertex-coloured placeholder buildings and has not been migrated onto this kit. The old kit's architectural range is not a constraint on this one. Until it is migrated, §5's `structure` and village rows describe what the kit measures rather than what a frame currently draws -- as they did before v2.
+- **v1 is kept, and it is not free.** Two geometry layers over one plan layer is two places a part can be fixed, and `parts.js`/`v2/parts.js` already share only what v2 re-exports unchanged. It stays as long as the straight control is worth having; when the village is on v2 and the strength is chosen, v1 goes.

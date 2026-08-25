@@ -112,7 +112,7 @@ const SLIDERS = [
 // DESIGN.md §5's per-class mesh-tier budgets, which is what the panel checks
 // against. Two numbers for trees because the class has two mesh tiers.
 // DESIGN.md §5's prop ladder, per class and per mesh tier.
-const CLASS_BUDGET = { tree: [500, 130], bush: [84, 56] }
+const CLASS_BUDGET = { tree: [500, 130, 6], bush: [84, 56, 2] }
 
 let speciesKey = 'pine'
 let bushMode = false
@@ -232,10 +232,17 @@ const ROWS = 4
 // five are exact scaled copies of each other, and the biggest one looks wrong.
 const SIZE_LADDER = [0.2, 0.45, 1, 1.8, 3]
 
-let view = 'single' // 'single' | 'gallery' | 'sizes' | 'card'
-// Which mesh tier to build. LOD1 is not a separate parameter set to tune -- it
-// is `treeLod` applied to whatever the sliders currently say, so a change to
-// LOD0 moves LOD1 with it and the two cannot drift apart.
+let view = 'single' // 'single' | 'gallery' | 'sizes'
+// Which tier to draw: 0 and 1 are meshes, 2 is the impostor. LOD1 is not a
+// separate parameter set to tune -- it is `treeLod` applied to whatever the
+// sliders currently say, so a change to LOD0 moves LOD1 with it and the two
+// cannot drift apart.
+//
+// The tier is deliberately NOT a `view`: a view change reframes the camera,
+// and the whole question a tier asks is "does this read as the same tree from
+// where I am standing", which you cannot answer if the camera jumps when you
+// press the button. Switching tiers swaps the geometry and leaves the camera
+// exactly where you put it.
 let lodTier = 0
 let wireframe = false
 let showGrid = true
@@ -264,7 +271,10 @@ function rebuild() {
   material.needsUpdate = true
 
   const sp = TREE_SPECIES[speciesKey]
-  const base = treeLod({ ...params, leafLayer: sp.leafLayer, barkLayer: sp.barkLayer }, lodTier)
+  // LOD2 has no parameter set of its own: it is a photograph of LOD0, so that is
+  // what gets built and then baked.
+  const meshTier = Math.min(lodTier, 1)
+  const base = treeLod({ ...params, leafLayer: sp.leafLayer, barkLayer: sp.barkLayer }, meshTier)
 
   // What to build: a seed grid, a size ladder, or one tree.
   const jobs = []
@@ -277,7 +287,6 @@ function rebuild() {
       }
     }
   } else {
-    // 'single' and 'card' both build one tree; 'card' then bakes it.
     jobs.push({ seed: Number(params.seed), height: params.height })
   }
 
@@ -310,27 +319,39 @@ function rebuild() {
   lastWidth = Math.max(0.2, width)
   const spacing = lastWidth * 1.25
 
-  // The impostor view stands the baked card next to the tree it was captured
-  // from, at the same scale, because the only question worth asking of an
-  // impostor is "from here, can you tell which one is which" -- and a card on
-  // its own always looks fine.
-  if (view === 'card') {
-    const geo = geos[0]
-    const u = geo.userData.tree
+  // At LOD2 the trees were built only to be photographed. ONE bake feeds every
+  // card on screen, which is not a shortcut but the shipping arrangement: there
+  // is one impostor layer per species, so a seed gallery at this tier really
+  // does show fifteen instances of one picture, and the size ladder really does
+  // show one picture scaled. Seeing that is the point of looking.
+  let drawn = geos
+  if (lodTier === 2) {
+    const src = geos[0]
+    const u0 = src.userData.tree
     const layer = TREE_SPECIES[speciesKey].impostorLayer
-    const card = bakeImpostor(renderer, geo, atlas, layer, { width: u.crownWidth, height: u.height })
-    const hex = buildImpostorCard(card.width, card.height, layer)
-    const mesh = new THREE.Mesh(hex, material)
-    mesh.position.x = lastWidth * 0.85
-    group.add(mesh)
-    agg.card = hex.userData.impostor.triangles
+    const card = bakeImpostor(renderer, src, atlas, layer, { width: u0.crownWidth, height: u0.height })
+    agg.tris = 0
+    agg.verts = 0
+    agg.bytes = 0
+    agg.trunk = 0
+    agg.branch = 0
+    agg.spray = 0
+    drawn = geos.map((geo) => {
+      const k = geo.userData.tree.height / u0.height
+      const hex = buildImpostorCard(card.width * k, card.height * k, layer)
+      agg.tris += hex.userData.impostor.triangles
+      agg.verts += hex.getAttribute('position').count
+      agg.bytes += geometryBytes(hex)
+      return hex
+    })
+    agg.card = drawn[0].userData.impostor.triangles
+    // clearGroup only disposes what is IN the group, and these never go in.
+    for (const geo of geos) geo.dispose()
   }
 
-  geos.forEach((geo, i) => {
+  drawn.forEach((geo, i) => {
     const mesh = new THREE.Mesh(geo, material)
-    if (view === 'card') {
-      mesh.position.x = -lastWidth * 0.85
-    } else if (view !== 'single') {
+    if (view !== 'single') {
       mesh.position.set(
         ((i % COLS) - (COLS - 1) / 2) * spacing,
         0,
@@ -436,7 +457,7 @@ function refresh() {
   const per = Math.round(s.tris / s.count)
   const budget = (bushMode ? CLASS_BUDGET.bush : CLASS_BUDGET.tree)[lodTier]
   // What the tier actually builds, which at LOD1 is not what the sliders say.
-  const shown = treeLod(params, lodTier)
+  const shown = treeLod(params, Math.min(lodTier, 1))
 
   // Every solid here is a CONE -- rings of quads closed by a fan of single
   // triangles at the apex -- so it costs sides x ((rings - 1) x 2 + 1) rather
@@ -468,7 +489,7 @@ function refresh() {
       res.heightScale === 1 ? 'at heightRef' : `${nb} br, ${ns} sprays/limb`,
     ],
     ...(s.card
-      ? [['&nbsp;&nbsp;impostor 3 planes&times;2', `${s.card} &mdash; on its own layer`]]
+      ? [['&nbsp;&nbsp;impostor 3 planes&times;2', `${s.card} &mdash; one layer, one bake`]]
       : []),
     ['vertices', Math.round(s.verts / s.count)],
     ['drawn here', s.count],
@@ -754,7 +775,7 @@ function viewButton(id) {
   const btn = document.getElementById(id)
   btn.addEventListener('click', () => {
     view = view === id ? 'single' : id
-    for (const other of ['gallery', 'sizes', 'card']) {
+    for (const other of ['gallery', 'sizes']) {
       document.getElementById(other).classList.toggle('on', view === other)
     }
     refresh()
@@ -763,13 +784,26 @@ function viewButton(id) {
 }
 viewButton('gallery')
 viewButton('sizes')
-viewButton('card')
+
+// The three tiers are one radio group: pressing the tier you are on returns you
+// to LOD0, which makes A/B against the real tree a single key away. No frame()
+// here -- see the note by `lodTier`.
+function tierButton(id, tier) {
+  document.getElementById(id).addEventListener('click', () => {
+    lodTier = lodTier === tier ? 0 : tier
+    for (const [other, t] of [['lod1', 1], ['lod2', 2]]) {
+      document.getElementById(other).classList.toggle('on', lodTier === t)
+    }
+    refresh()
+  })
+}
+tierButton('lod1', 1)
+tierButton('lod2', 2)
 
 toggle('bush', () => bushMode, (v) => {
   bushMode = v
   loadSpecies()
 })
-toggle('lod1', () => lodTier === 1, (v) => { lodTier = v ? 1 : 0 })
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })

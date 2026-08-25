@@ -252,6 +252,26 @@ function dilate(px) {
  * sided, so three planes over 180 degrees is the hex and three over 360 would
  * be two planes and a duplicate.
  *
+ * They all intersect in one line up the trunk, which was tried the other way
+ * and put back: sliding each plane out along its own normal so their footprint
+ * is a triangle rather than a point encloses a volume, but each plane carries a
+ * whole tree INCLUDING ITS TRUNK drawn up the plane's own centre line, so the
+ * offset splits one trunk into three. Crossing on the axis keeps the three
+ * trunk images on top of each other, which is what a trunk has to look like.
+ *
+ * ALTERNATE PLANES ARE MIRRORED IN U. Three double-sided quads give SIX
+ * apparent faces as you walk around, their normals 60 degrees apart, and the
+ * order you meet them in is not p0, p1, p2 front then back -- it interleaves:
+ * p2-back, p0-front, p1-front, p2-front, p0-back, p1-back. Since the back of a
+ * quad is already the mirror of its front, that sequence is M N N N M M, and
+ * those three N's in a row are the same picture three times running. Flipping u
+ * on the odd-indexed plane turns it into M N M N M N: no two neighbours alike,
+ * and from one bake.
+ *
+ * The parity only works out for an ODD number of planes. At 4 the wrap lands
+ * two alike at one of the eight seams. 3 is the default, so this is noted
+ * rather than solved.
+ *
  * NORMALS ARE OUTWARD AND HORIZONTAL, one per plane. The bake is unlit albedo
  * (see createImpostorBakeMaterial), so all of the shading lives here, and this
  * is the same normal the LOD0 canopy carries -- tree.js's canopy pass gives
@@ -285,6 +305,8 @@ export function buildImpostorCard(width, height, layer, planes = 3) {
     const nx = -dz
     const nz = dx
     const base = positions.length / 3
+    // Every other plane reads its u backwards -- see the mirroring note above.
+    const flip = i % 2 === 1
     // v = 0 at the top -- see the note by flipY in bakeImpostor.
     const corners = [
       [-hw, 0, 0, 1],
@@ -292,7 +314,8 @@ export function buildImpostorCard(width, height, layer, planes = 3) {
       [hw, height, 1, 0],
       [-hw, height, 0, 0],
     ]
-    for (const [x, y, u, v] of corners) {
+    for (const [x, y, u0, v] of corners) {
+      const u = flip ? 1 - u0 : u0
       positions.push(dx * x, y, dz * x)
       normals.push(nx, 0, nz)
       uvs.push(u, v)
@@ -309,6 +332,6 @@ export function buildImpostorCard(width, height, layer, planes = 3) {
   geo.setIndex(indices)
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
-  geo.userData.impostor = { width, height, planes: n, layer, triangles: n * 2 }
+  geo.userData.impostor = { width, height, planes: n, layer, triangles: n * 2, mirrored: n > 1 }
   return geo
 }

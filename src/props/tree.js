@@ -518,10 +518,21 @@ export function treeLod(options, tier) {
   if (tier === 0) return { ...options }
   // Fail loudly rather than silently handing back LOD1 for a tier that does not
   // exist yet: LOD2 is the impostor, and it is not a mesh.
-  if (tier !== 1) throw new Error(`treeLod: no tier ${tier}; trees have LOD0 and LOD1`)
+  if (tier !== 1) {
+    throw new Error(
+      `treeLod: no MESH tier ${tier}; trees have LOD0 and LOD1. LOD2 is the ` +
+        'three-plane impostor, which is a baked card rather than a parameter set -- ' +
+        'see buildImpostorCard in props/impostor.js'
+    )
+  }
   const p = { ...TREE_DEFAULTS, ...options }
   return {
     ...p,
+    // Three is the floor resolveTree clamps to anyway, and a three-sided trunk
+    // seen against the sky has the same silhouette width as a five-sided one --
+    // what it loses is the shading gradient around the barrel, which at the
+    // range this tier is for is under a pixel wide.
+    trunkSides: 3,
     branchSides: 1,
     cardTris: 1,
     sprays: Math.max(1, Math.round(p.sprays / 2)),
