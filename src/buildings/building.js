@@ -68,7 +68,7 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
       b.box(
         [m.cx - m.w / 2, plan.plinthBottom, m.cz - m.d / 2],
         [m.cx + m.w / 2, m.eaveY, m.cz + m.d / 2],
-        { layer: LAYER.TIMBER_HEWN, color: TINT.timber }
+        { layer: LAYER.TIMBER_BEAM, color: TINT.timber }
       )
       if (m.roof.kind === 'gable') {
         gableRoof(b, {
@@ -92,56 +92,78 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
   }
 
   // --- plinth --------------------------------------------------------------
+  //
+  // The `m.id` nudge is not cosmetic. Masses interpenetrate by construction (an
+  // ell butts its wing INTO the main range), so on a flat site two plinths get
+  // top ledges at exactly the same height over the strip where they overlap --
+  // coincident coplanar faces, which z-fight and crawl as the head moves. 3 mm
+  // is invisible in a rubble plinth and decides the depth test once and for all.
+  // Upward, never downward: down would open a hairline between the ledge and the
+  // wall standing on it.
   for (const m of plan.masses) {
     plinth(b, {
       cx: m.cx, cz: m.cz, w: m.w + 0.16, d: m.d + 0.16,
-      top: m.floorY, bottom: plan.plinthBottom,
+      top: m.floorY + m.id * 0.003, bottom: plan.plinthBottom - m.id * 0.004,
       batter: detail >= 2 ? 0.06 : 0,
+      bevel: detail >= 2 ? 0.05 : 0,
+      seed: plan.seed * 97 + m.id,
     })
   }
 
   // --- walls ---------------------------------------------------------------
-  for (const wl of plan.walls) {
-    if (wl.buried) continue
+  //
+  // `seed` picks the log-course phase and must AGREE between the two walls that
+  // meet at a corner, or their log ends collide; `rough` drives the hewn jitter
+  // and must DIFFER everywhere, or every timber on the building is the same
+  // timber. Hence two numbers rather than one.
+  plan.walls.forEach((wl, i) => {
+    if (wl.buried) return
     const m = plan.masses.find((mm) => mm.id === wl.massId)
     wall(b, {
       p0: wl.p0, p1: wl.p1, y0: m.floorY, y1: m.eaveY,
       style, seed: wl.massId + (wl.side === 'front' || wl.side === 'back' ? 0 : 1),
+      rough: plan.seed * 131 + i * 7 + 1,
       detail,
     })
-  }
+  })
 
   // --- gables and roofs ----------------------------------------------------
   for (const m of plan.masses) {
+    const seed = plan.seed * 29 + m.id
     if (m.roof.kind === 'gable') {
-      gableEnds(b, m, style, detail)
+      gableEnds(b, m, style, detail, seed)
       gableRoof(b, {
         cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
         ridgeAxis: m.ridgeAxis, overhang: plan.overhang ?? 0.4, verge: 0.3,
         ...wingVerge(m, main, 0.3),
-        layer: roofSpec.layer, tint: roofSpec.tint,
+        layer: roofSpec.layer, tint: roofSpec.tint, seed,
         moss: roofSpec.moss, fringe: roofSpec.fringe, detail,
       })
     } else {
       leanToRoof(b, {
         cx: m.cx, cz: m.cz, w: m.w, d: m.d,
         highY: m.roof.highY, lowY: m.roof.lowY, dir: m.roof.dir,
-        overhang: 0.28, layer: roofSpec.layer, tint: roofSpec.tint, detail,
+        overhang: 0.28, layer: roofSpec.layer, tint: roofSpec.tint, seed, detail,
       })
       leanEnds(b, m, style)
     }
   }
 
   // --- openings ------------------------------------------------------------
-  doorway(b, { ...plan.door, detail })
-  for (const wn of plan.windows) windowUnit(b, { ...wn, detail })
+  doorway(b, { ...plan.door, seed: plan.seed * 53 + 3, detail })
+  plan.windows.forEach((wn, i) =>
+    windowUnit(b, { ...wn, seed: plan.seed * 53 + 11 + i, detail }))
 
   // --- attachments ---------------------------------------------------------
-  chimney(b, { ...plan.chimney, detail })
+  chimney(b, { ...plan.chimney, seed: plan.seed * 53 + 5, detail })
   // The porch keeps its roof at detail 1 (it changes the outline against the
   // sky) and loses its posts and rails, which do not.
-  if (plan.porch) porch(b, { ...plan.porch, groundY: plan.plinthBottom, detail })
-  if (plan.steps) steps(b, plan.steps)
+  if (plan.porch) {
+    porch(b, {
+      ...plan.porch, groundY: plan.plinthBottom, seed: plan.seed * 53 + 7, detail,
+    })
+  }
+  if (plan.steps) steps(b, { ...plan.steps, seed: plan.seed * 53 + 9, detail })
 
   const geometry = b.toGeometry()
   return { geometry, triangles: b.triangles, plan }
@@ -149,7 +171,7 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
 
 /** The two triangles of wall above the eave, at whichever pair of walls the
  *  ridge runs into. */
-function gableEnds(b, m, style, detail) {
+function gableEnds(b, m, style, detail, seed = 0) {
   const hw = m.w / 2
   const hd = m.d / 2
   const apex = m.eaveY + m.roof.rise
@@ -163,9 +185,9 @@ function gableEnds(b, m, style, detail) {
         { p0: [m.cx - hw, m.cz + hd], p1: [m.cx + hw, m.cz + hd] }, // +Z
         { p0: [m.cx + hw, m.cz - hd], p1: [m.cx - hw, m.cz - hd] }, // -Z
       ]
-  for (const e of ends) {
-    gableEnd(b, { p0: e.p0, p1: e.p1, y0: m.eaveY, apexY: apex, style, detail })
-  }
+  ends.forEach((e, i) => {
+    gableEnd(b, { p0: e.p0, p1: e.p1, y0: m.eaveY, apexY: apex, style, seed: seed * 3 + i, detail })
+  })
 }
 
 /** The two triangles of wall between a lean-to's own eave and the slope that

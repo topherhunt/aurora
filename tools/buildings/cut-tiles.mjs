@@ -18,7 +18,8 @@
 // only the material (`shade()` multiplies one into the other), and where the
 // photograph already HAS the right layout it is used whole.
 //
-//   TIMBER_HEWN   photo material x generated log-course shading
+//   TIMBER_BEAM   photo material x generated log-course shading  (new layer)
+//   TIMBER_HEWN   photo material x generated board grooves
 //   TIMBER_PLANK  photo, cropped to a whole number of boards
 //   SHINGLE       photo, flipped so the exposed butts face the eave
 //   ROOF_TILE     photo, flipped so the scallops face the eave  (new layer)
@@ -52,6 +53,7 @@ mkdirSync(OUT, { recursive: true })
 // code and pulling it into a build tool to read six constants would drag the
 // whole tile generator along with it. If the palette moves, move these.
 const TARGET = {
+  beam: [100, 90, 74], // weathered raw timber, greyer than the sawn face
   log: [104, 84, 62],
   plank: [96, 83, 70],
   shake: [96, 84, 74],
@@ -96,6 +98,42 @@ function noise(seed, gx, gy) {
 
 console.log('cutting building tiles')
 
+// --- TIMBER_BEAM ------------------------------------------------------------
+//
+// Source: wood-beam.jpeg, a straight-on 1627x1699 photograph of one weathered
+// baulk -- silvered surface, open checks, a black split running most of its
+// length. It is the tile every RAW member wears: the log courses of a cabin
+// wall, the log ends poking past the corner, posts, rails, jambs.
+//
+// ROTATED, because the beam was shot standing up: its grain runs down the frame
+// and a log course needs it running ALONG the course, which is u. That same
+// rotation is what lets one tile serve a standing post too -- prism() swaps u
+// and v for a member whose grain follows its own axis, so the grain ends up
+// along the post and the course shading below ends up wrapped around it, which
+// is exactly where a round log wants both.
+//
+// The generated two-course cylinder shading is then multiplied back in, because
+// that shading is the entire reason a flat tile reads as stacked round logs
+// (see tileLogs) and no photograph of one beam can supply it.
+{
+  let img = rotate90(decode(`${SRC}/wood-beam.jpeg`, WORK))
+  img = healWrap(img, 'u', 0.1)
+  img = healWrap(img, 'v', 0.1)
+  img = resample(img, N)
+  img = grade(img, { target: TARGET.beam, spread: 0.44, desaturate: 0.3, ceiling: 0.74 })
+
+  // Two courses per tile, matching TILE_METRES[TIMBER_BEAM] = 0.84.
+  img = shade(img, (u, v) => {
+    const f = v * 2 - Math.floor(v * 2)
+    const belly = Math.sin(Math.PI * f) // lit along the log's belly
+    const chink = smooth(clamp01(Math.min(f, 1 - f) / 0.09)) // dark where two meet
+    return (0.5 + 0.6 * belly) * lerp(0.3, 1, chink)
+  }, 0.9)
+
+  writeTile(`${OUT}/timber_beam.png`, img)
+  report('timber_beam', img)
+}
+
 // --- TIMBER_HEWN ------------------------------------------------------------
 //
 // Source: the basecolor of wood_beam_v2.glb, unpacked to beam_0.jpg. It is a
@@ -103,11 +141,14 @@ console.log('cutting building tiles')
 // and the bottom third is its ends and chamfers -- so the clean region is cut
 // out by hand and everything below y = 700 is dropped.
 //
-// ROTATED, because the beam was scanned standing up: its grain runs down the
-// image and a log course needs it running ALONG the course, which is u. Then
-// the generated two-course cylinder shading is multiplied back in, because
-// that shading is the entire reason a flat tile reads as stacked round logs
-// (see tileLogs) and no photograph of one beam can supply it.
+// This USED to be the log tile and is now rough-sawn boarding: porch decks,
+// the soffit under an eave, wide planking that is cut but not planed. The
+// source did not change; what changed is that wood-beam.jpeg is a better log
+// than a squared beam is, and that one tile serving both logs and boards was
+// serving neither. So the same crop gets board grooves instead of a cylinder
+// belly, three per tile against TIMBER_PLANK's three at a smaller pitch -- a
+// 0.3 m rough board beside a 0.24 m sawn one, which is the difference a saw
+// mill makes and is legible at the scale a porch is walked onto.
 {
   const raw = crop(decode(`${SRC}/beam_0.jpg`, WORK), 24, 16, 760, 680)
   let img = rotate90(raw)
@@ -116,13 +157,13 @@ console.log('cutting building tiles')
   img = resample(img, N)
   img = grade(img, { target: TARGET.log, spread: 0.42, desaturate: 0.34, ceiling: 0.72 })
 
-  // Two courses per tile, matching TILE_METRES[TIMBER_HEWN] = 0.84.
+  // Three boards per tile, matching TILE_METRES[TIMBER_HEWN] = 0.9. Boards run
+  // along u, so the grooves are lines of constant v.
   img = shade(img, (u, v) => {
-    const f = v * 2 - Math.floor(v * 2)
-    const belly = Math.sin(Math.PI * f) // lit along the log's belly
-    const chink = smooth(clamp01(Math.min(f, 1 - f) / 0.09)) // dark where two meet
-    return (0.5 + 0.6 * belly) * lerp(0.3, 1, chink)
-  }, 0.9)
+    const f = v * 3 - Math.floor(v * 3)
+    const groove = smooth(clamp01(Math.min(f, 1 - f) / 0.055))
+    return lerp(0.34, 1, groove)
+  }, 0.85)
 
   writeTile(`${OUT}/timber_hewn.png`, img)
   report('timber_hewn', img)

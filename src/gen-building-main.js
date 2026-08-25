@@ -223,8 +223,10 @@ function table(el, rows) {
     .join('')
 }
 
-// DESIGN.md §5 gives the `structure` prop class one mesh tier at 1800 triangles.
-const STRUCTURE_BUDGET = 1800
+// DESIGN.md §5 gives the `structure` prop class a top mesh tier at 2500
+// triangles. Keep this in step with scripts/check-buildings.mjs, which is the
+// one that actually fails the build.
+const STRUCTURE_BUDGET = 2500
 // §5's budget table allots 20 visible buildings to a village.
 const VISIBLE_BUILDINGS = 20
 
@@ -310,10 +312,11 @@ function usedLayers(geometry) {
 
 function drawTiles() {
   const names = {
-    [LAYER.TIMBER_HEWN]: 'logs', [LAYER.TIMBER_PLANK]: 'plank', [LAYER.THATCH]: 'thatch',
-    [LAYER.SHINGLE]: 'shake', [LAYER.STONE]: 'stone', [LAYER.PLASTER]: 'plaster',
+    [LAYER.TIMBER_BEAM]: 'beam', [LAYER.TIMBER_HEWN]: 'board', [LAYER.TIMBER_PLANK]: 'plank',
+    [LAYER.THATCH]: 'thatch', [LAYER.SHINGLE]: 'shake', [LAYER.ROOF_TILE]: 'pantile',
+    [LAYER.STONE]: 'stone', [LAYER.PLASTER]: 'plaster',
     [LAYER.THATCH_FRINGE]: 'fringe', [LAYER.GLASS]: 'glass', [LAYER.IRON]: 'iron',
-    [LAYER.RUNE]: 'rune',
+    [LAYER.RUNE]: 'rune', [LAYER.DOOR]: 'door',
   }
   const host = document.getElementById('tiles')
   const stride = TEX_SIZE * TEX_SIZE * 4

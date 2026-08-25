@@ -670,6 +670,66 @@ async function sectionEndpoint() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 10. A save that lands on a dev server too old to have the route.
+//
+// THE FAILURE THAT WROTE THIS SECTION, which cost an hour of sculpting: vite's
+// SPA fallback answers a POST to an unknown path with index.html and HTTP 200.
+// `res.ok` is therefore true, the not-ok branch never runs, and `JSON.parse` on
+// "<!doctype html>" throws "Unexpected token '<'" -- a message that names
+// neither the file that failed to save nor the one-keystroke cause. Nobody
+// reads that as "restart the dev server", so the tab gets reloaded and the
+// Float32Array that was the only copy of the sculpt goes with it.
+//
+// Asserted on the MESSAGE, not just on the throw, because the throw was never
+// the problem. persist.js touches no DOM on this path, so a stubbed fetch is
+// the whole harness.
+async function sectionStaleServer() {
+  console.log('\n-- stale dev server')
+  const real = globalThis.fetch
+  const calls = []
+  const fake = (status, body, type) => {
+    globalThis.fetch = async (url, opts) => {
+      calls.push({ url, method: opts.method })
+      return { ok: status >= 200 && status < 300, status, text: async () => body, headers: { get: () => type } }
+    }
+  }
+  // toPng is the only thing saveHeightServer asks of a heightmap, so the field
+  // itself is beside the point here -- what is under test is the answer.
+  const heightmap = { toPng: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]) }
+  const layers = { serialize: () => ({ version: 1 }) }
+  try {
+    const { saveHeightServer, saveServer } = await import('../src/v2/edit/persist.js')
+
+    fake(200, '<!doctype html>\n<html><head><title>aurora</title>', 'text/html')
+    let msg = await saveHeightServer(heightmap).then(() => null, (e) => e.message)
+    check(msg !== null, 'a 200 that is really the SPA fallback throws rather than resolving', 'HTTP 200 is not proof of a save')
+    check(!/JSON|token/i.test(msg ?? ''), 'and not as a JSON parse error', msg)
+    check(/__height/.test(msg ?? ''), 'the message names the route that is missing', msg)
+    check(/dev server/i.test(msg ?? '') && /restart/i.test(msg ?? ''), 'and says to restart the dev server', msg)
+    check(calls.length === 1 && calls[0].method === 'POST', 'after actually attempting the POST', JSON.stringify(calls))
+
+    msg = await saveServer(layers).then(() => null, (e) => e.message)
+    check(/__world/.test(msg ?? '') && /restart/i.test(msg ?? ''), 'the document save is diagnosed the same way', msg)
+
+    // The other three answers must still read as themselves: a fallback check
+    // that swallowed real refusals would be worse than the bug it replaced.
+    fake(400, JSON.stringify({ ok: false, error: 'heightmap is 8x8, expected 1024x1024' }), 'application/json')
+    msg = await saveHeightServer(heightmap).then(() => null, (e) => e.message)
+    check(/8x8/.test(msg ?? ''), "a real refusal still reports the server's own reason", msg)
+
+    fake(200, JSON.stringify({ ok: false, error: 'read-only' }), 'application/json')
+    msg = await saveHeightServer(heightmap).then(() => null, (e) => e.message)
+    check(/read-only/.test(msg ?? ''), 'and so does a 200 that says ok:false', msg)
+
+    fake(200, JSON.stringify({ ok: true, path: 'public/world/height.png', bytes: 1317369 }), 'application/json')
+    const good = await saveHeightServer(heightmap)
+    check(good.bytes === 1317369 && good.path.endsWith('height.png'), 'a genuine save resolves to the endpoint answer', JSON.stringify(good))
+  } finally {
+    globalThis.fetch = real
+  }
+}
+
 export async function run() {
   console.log('\n=== v2 terrain brush ===')
   sectionFalloff()
@@ -681,6 +741,7 @@ export async function run() {
   sectionSculptor()
   await sectionRoundTrip()
   await sectionEndpoint()
+  await sectionStaleServer()
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
   if (failures > 0) throw new Error(`check-v2-sculpt: ${failures} check(s) failed`)
   return failures

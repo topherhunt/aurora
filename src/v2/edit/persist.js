@@ -36,6 +36,35 @@ const KEY = 'aurora.v2.world'
 const ENDPOINT = '/__world'
 const HEIGHT_ENDPOINT = '/__height'
 
+/**
+ * The endpoint's answer, or a throw that names the ACTUAL problem.
+ *
+ * THE FAILURE THIS EXISTS FOR, because it cost an hour of sculpting once. A dev
+ * server that was started before an endpoint was written does not 404 that
+ * route: vite's SPA fallback answers index.html with a **200**, so `res.ok` is
+ * true, the body is HTML, and a bare `JSON.parse` throws "Unexpected token '<'".
+ * That message names neither the file that did not save nor the reason, and the
+ * reason is one Ctrl-C away. So an HTML body is diagnosed here, on any status.
+ */
+function answerOf(res, body, endpoint) {
+  if (body.trimStart().startsWith('<')) {
+    throw new Error(
+      `${endpoint} is not being served -- the dev server was started before that route existed. ` +
+        'Restart it (Ctrl-C in the dev terminal, then npm run dev) and press Save again. ' +
+        'Nothing is lost as long as this tab is not reloaded.'
+    )
+  }
+  let json
+  try {
+    json = JSON.parse(body)
+  } catch {
+    throw new Error(`${endpoint} answered HTTP ${res.status} with a body that is not JSON: ${body.slice(0, 120)}`)
+  }
+  if (!res.ok) throw new Error(`save to ${endpoint} failed: ${json.error ?? `HTTP ${res.status}`}`)
+  if (json.ok !== true) throw new Error(`save to ${endpoint} refused: ${json.error}`)
+  return json
+}
+
 export function saveLocal(layers) {
   const text = JSON.stringify(layers.serialize())
   // A quota failure is real and must be seen -- silently not autosaving looks
@@ -56,10 +85,9 @@ export function clearLocal() {
 
 /**
  * Write the document to `public/world/layers.json` through the dev-server
- * middleware. Resolves to the endpoint's `{ok, path, bytes}`; throws with the
- * server's own message otherwise, so a build with no middleware (which answers
- * the SPA fallback HTML, not JSON) reads as "no dev server" in the panel rather
- * than as a save that quietly did nothing.
+ * middleware. Resolves to the endpoint's `{ok, path, bytes}`; throws through
+ * answerOf otherwise, so a build with no middleware reads as "that route is not
+ * served" in the panel rather than as a save that quietly did nothing.
  */
 export async function saveServer(layers) {
   const text = JSON.stringify(layers.serialize())
@@ -68,19 +96,7 @@ export async function saveServer(layers) {
     headers: { 'content-type': 'application/json' },
     body: text,
   })
-  const body = await res.text()
-  if (!res.ok) {
-    let msg = body.slice(0, 200)
-    try {
-      msg = JSON.parse(body).error
-    } catch {
-      msg = `HTTP ${res.status} -- ${msg}` // not JSON at all: almost certainly the SPA fallback
-    }
-    throw new Error(`save to ${ENDPOINT} failed: ${msg}`)
-  }
-  const json = JSON.parse(body)
-  if (json.ok !== true) throw new Error(`save to ${ENDPOINT} refused: ${json.error}`)
-  return json
+  return answerOf(res, await res.text(), ENDPOINT)
 }
 
 /**
@@ -100,19 +116,27 @@ export async function saveHeightServer(heightmap) {
     headers: { 'content-type': 'image/png' },
     body: bytes,
   })
-  const body = await res.text()
-  if (!res.ok) {
-    let msg = body.slice(0, 200)
-    try {
-      msg = JSON.parse(body).error
-    } catch {
-      msg = `HTTP ${res.status} -- ${msg}`
-    }
-    throw new Error(`save to ${HEIGHT_ENDPOINT} failed: ${msg}`)
-  }
-  const json = JSON.parse(body)
-  if (json.ok !== true) throw new Error(`save to ${HEIGHT_ENDPOINT} refused: ${json.error}`)
-  return json
+  return answerOf(res, await res.text(), HEIGHT_ENDPOINT)
+}
+
+/**
+ * THE ESCAPE HATCH: the sculpted field into the downloads folder, as a PNG that
+ * can simply be copied over public/world/height.png.
+ *
+ * Called when the server save FAILS. The document has a localStorage tier and a
+ * megabyte of PNG cannot have one, so without this a heightmap that could not
+ * reach the dev server exists in exactly one place -- a tab, one Cmd-R from
+ * gone. A file in ~/Downloads survives the tab, the server and the reload.
+ */
+export async function exportHeightFile(heightmap, name = 'height.png') {
+  const bytes = await heightmap.toPng()
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  return { name, bytes: bytes.length }
 }
 
 /** The committed world, or null when nothing has been authored yet. */

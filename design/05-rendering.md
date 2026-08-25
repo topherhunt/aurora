@@ -90,13 +90,13 @@ Treat the per-layer numbers below as a budget to be *defended*, not a floor to b
 | Fern cards past 26 m, clumped | \-- | 2 | not built |
 | Boulders 0-430 m | 440 | 20 | 9k |
 | Grass class 0-23 m | 1,600 | 4 | 6k |
-| Village buildings | 20 | 800 | 16k |
+| Village buildings | 20 | 1,210 | 24k |
 | Water surfaces | \-- | \-- | 5k |
 | Snow particles | 1 draw | \-- | 4k |
 | Sky dome + aurora | \-- | \-- | 2k |
-| **Total** | ~5,300 instances |  | **~151k** |
+| **Total** | ~5,300 instances |  | **~159k** |
 
-**~151k against a 350k ceiling is 43%**, leaving ~199k for thermal margin and for the rows that are still estimates. Terrain and the four fern/boulder rows are measured -- the fern rows come from a settled `Scatter` at 114,39 (767 ferns, 27.3k triangles), the boulder row from the same run. Every other row is still an estimate.
+**~159k against a 350k ceiling is 45%**, leaving ~191k for thermal margin and for the rows that are still estimates. Terrain, the four fern/boulder rows and the village row are measured -- the fern rows come from a settled `Scatter` at 114,39 (767 ferns, 27.3k triangles), the boulder row from the same run, the village row from `scripts/check-buildings.mjs` over 1,200 plans. Every other row is still an estimate.
 
 The fern rows are also the honest record of a shortfall: they are what a **0.46 ferns/m²** scatter produces, not the 2 ferns/m² this document prices everywhere else. The binding cost is the rebuild, not the triangles -- every candidate cell in the disc pays a hash and most survivors pay a `heightAndSlopeAt`, and the cell count goes as `(radius / spacing)²`. Closing the gap by tightening spacing is quadratic in rebuild time and would blow the frame. The fix is that ferns grow in patches: scatter a few cluster centres and fill each one, which buys high local density for a fraction of the candidate cells. That is a placement change and it is not built.
 
@@ -156,7 +156,7 @@ Regenerate the table with `node scripts/probe-trideg.mjs`.
 
 | Class | Mesh tiers | Card | LOD0 to | Card from | Cull | Mesh class |
 | --- | --- | --- | --- | --- | --- | --- |
-| **structure** (cabins, tower, mill) | 1800 | 3 quads | 60 m | 170 m | 400 m | Batched |
+| **structure** (cabins, tower, mill) | 2500, 230, 80 | 3 quads | 60 m | 170 m | 400 m | Batched |
 | **tree** (trees) | 500, 130 | 3 quads | 30 m | 130 m | 500 m + clumps | Batched, then Instanced |
 | **bush** (ferns, bushes, boulders, stumps, logs) | 84, 56, 28 | 1 quad | 5 m | 26 m | 500 m + clumps | Batched, then Instanced |
 | **grass** (grass, flowers, moss, leaf scatter) | 4 | none | 23 m | \-- | 23 m | Batched |

@@ -347,18 +347,30 @@ async function onAction(name) {
   panel.setError('')
   try {
     if (name === 'save') {
-      const r = await persist.saveServer(layers)
-      let msg = `saved ${r.bytes} B to ${r.path}`
       // ONE SAVE BUTTON, TWO FILES. The terrain brush edits the import rather
       // than the document (see height/sculpt.js), so a sculpted world is only
       // half-saved by layers.json -- and a second button that has to be
       // remembered is how an afternoon of sculpting gets lost to a reload.
       // Written only when there is something to write: it is a megabyte of PNG.
+      //
+      // THE HEIGHTMAP GOES FIRST, and a failure to write it downloads it. The
+      // document has a localStorage tier behind it and the field has none, so
+      // between the two this is the one whose only other copy is a tab.
+      let sculpt = ''
       if (editor.sculptor.dirty) {
-        const h = await editor.sculptor.save()
-        msg += `, ${(h.bytes / 1024).toFixed(0)} kB to ${h.path}`
+        try {
+          const h = await editor.sculptor.save()
+          sculpt = `, ${(h.bytes / 1024).toFixed(0)} kB to ${h.path}`
+        } catch (err) {
+          const f = await persist.exportHeightFile(editor.sculptor.heightmap)
+          throw new Error(
+            `${err.message} (downloaded ${f.name}, ${(f.bytes / 1024).toFixed(0)} kB -- ` +
+              'copy it over public/world/height.png if the retry does not work)'
+          )
+        }
       }
-      panel.setError(msg)
+      const r = await persist.saveServer(layers)
+      panel.setError(`saved ${r.bytes} B to ${r.path}${sculpt}`)
     } else if (name === 'load') {
       const doc = await persist.loadServer()
       if (!doc) throw new Error('no committed world/layers.json to load')
@@ -547,6 +559,19 @@ addEventListener('keyup', (e) => {
 addEventListener('blur', () => {
   held.clear()
   if (ready) editor.onBlur()
+})
+
+// THE LAST LINE OF DEFENCE FOR AN UNSAVED SCULPT, and it is here because it was
+// once needed and absent. The document is autosaved to localStorage on every
+// commit, so a reload costs it nothing; the heightmap has no such tier -- it is
+// a Float32Array in this tab and, until Save reaches the dev server, nowhere
+// else at all. Cmd-R on that state is silent, instant and total. Returning a
+// string makes the browser ask first, which is the whole point.
+addEventListener('beforeunload', (e) => {
+  if (!ready || !editor.sculptor.dirty) return
+  e.preventDefault()
+  e.returnValue = 'The terrain you sculpted has not been saved and will be lost.'
+  return e.returnValue
 })
 
 renderer.domElement.addEventListener('pointerdown', (e) => {

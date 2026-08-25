@@ -52,7 +52,26 @@ function unit(v) {
   return [v[0] / l, v[1] / l, v[2] / l]
 }
 
+const lerp = (a, b, t) => a + (b - a) * t
+
 const WHITE = [1, 1, 1]
+
+/**
+ * A STATELESS hash, deliberately, where the obvious thing is a seeded stream.
+ *
+ * Everything rough-hewn in this kit is jittered off a hash of (seed, index).
+ * A running PRNG would do the same job until the day somebody adds a part in
+ * the middle of a function, at which point every draw after it shifts and the
+ * whole village silently re-rolls. Indexing by hand means a member's shape
+ * depends on that member and nothing else.
+ */
+export function hash(seed, i) {
+  let h = Math.imul((seed | 0) ^ 0x9e3779b9, 2654435761) ^ Math.imul((i | 0) + 1, 0x85ebca6b)
+  h ^= h >>> 15
+  h = Math.imul(h, 0x2c1b3c6d)
+  h ^= h >>> 12
+  return (h >>> 0) / 4294967296
+}
 
 // ---------------------------------------------------------------------------
 // Builder
@@ -159,22 +178,29 @@ export class Builder {
   }
 
   /** One triangle. Same frame convention: a->b is U, a->c seeds V.
-   *  Takes `double` on the same terms as quad(). */
+   *  Takes `double` and `uvs` on the same terms as quad(). */
   tri(a, b, c, o) {
     const layer = o.layer
     const tile = o.tile ?? TILE_METRES[layer] ?? 1
     const n = unit(cross(sub(b, a), sub(c, a)))
-    const origin = o.origin ?? a
-    const uh = unit(sub(b, a))
-    const raw = sub(c, a)
-    const vh = unit([
-      raw[0] - uh[0] * dot(raw, uh),
-      raw[1] - uh[1] * dot(raw, uh),
-      raw[2] - uh[2] * dot(raw, uh),
-    ])
-    const uvAt = (p) => {
-      const r = sub(p, origin)
-      return [dot(r, uh) / tile, (o.vWorldY ? p[1] : dot(r, vh)) / tile]
+
+    let uvAt
+    if (o.uvs) {
+      const map = new Map([[a, o.uvs[0]], [b, o.uvs[1]], [c, o.uvs[2]]])
+      uvAt = (p) => map.get(p)
+    } else {
+      const origin = o.origin ?? a
+      const uh = unit(sub(b, a))
+      const raw = sub(c, a)
+      const vh = unit([
+        raw[0] - uh[0] * dot(raw, uh),
+        raw[1] - uh[1] * dot(raw, uh),
+        raw[2] - uh[2] * dot(raw, uh),
+      ])
+      uvAt = (p) => {
+        const r = sub(p, origin)
+        return [dot(r, uh) / tile, (o.vWorldY ? p[1] : dot(r, vh)) / tile]
+      }
     }
     const tint = typeof o.color === 'function' ? o.color : () => o.color ?? WHITE
     const emit = (p, q, r, nrm) => {
@@ -215,6 +241,93 @@ export class Builder {
     if (!skip.has('-x')) q([x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], { vWorldY: true })
     if (!skip.has('+y')) q([x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0], {})
     if (!skip.has('-y')) q([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], {})
+    return this
+  }
+
+  /**
+   * A closed prism: the cross-section `section` swept from `a` to `bEnd`.
+   *
+   * THIS IS THE PART THAT MAKES THE KIT LOOK HEWN RATHER THAN SAWN. Every
+   * timber in a Nordic building was shaped with an axe against the grain of a
+   * tree that was never straight, and the single thing that says so is that its
+   * section is not a rectangle: five to seven faces, no two the same width, no
+   * corner a right angle. A box says "extruded", and no texture argues it out
+   * of that -- the silhouette is decided before the sampler is reached.
+   *
+   * `section` is a closed loop of [u, v] in the plane perpendicular to the
+   * sweep, anticlockwise looking back down the axis, and roughSection() below
+   * is what produces one. Costs 4n-4 triangles against a box's 12, so a
+   * six-sided member is 20; that is the price of the whole look and it is only
+   * paid at detail 2.
+   *
+   * U runs AROUND the section and V along the sweep -- except when
+   * `uAlongAxis`, which swaps them, and which almost every member wants. The
+   * beam tile is a photograph of a log lying down, so its grain runs along U;
+   * a standing post's grain runs along its own axis, and swapping is how one
+   * tile serves both without a second layer.
+   */
+  prism(a, bEnd, section, o) {
+    const axis = sub(bEnd, a)
+    const len = Math.hypot(axis[0], axis[1], axis[2])
+    if (len < 1e-6 || section.length < 3) return this
+    const w = [axis[0] / len, axis[1] / len, axis[2] / len]
+    // Any reference not parallel to the axis. Which one only rotates the
+    // section inside its own plane, and the jitter makes that meaningless.
+    const ref = Math.abs(w[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]
+    const uh = unit(cross(ref, w))
+    const vh = cross(w, uh) // unit already: w and uh are unit and perpendicular
+    const n = section.length
+    const layer = o.layer
+    const tile = o.tile ?? TILE_METRES[layer] ?? 1
+    const opts = { layer, color: o.color, tile }
+
+    // `sectionEnd` lets the far end differ, which is how a chimney batters in
+    // toward its top without a second solid stacked on the first. It must be
+    // the SAME loop scaled, not a re-roll: re-rolling the corner angles twists
+    // the facets, and a twisted post reads as a modelling error rather than as
+    // a hand-shaped one.
+    const end = o.sectionEnd ?? section
+    const at = (origin, sec, k) => [
+      origin[0] + uh[0] * sec[k][0] + vh[0] * sec[k][1],
+      origin[1] + uh[1] * sec[k][0] + vh[1] * sec[k][1],
+      origin[2] + uh[2] * sec[k][0] + vh[2] * sec[k][1],
+    ]
+    const A = []
+    const B = []
+    for (let k = 0; k < n; k++) { A.push(at(a, section, k)); B.push(at(bEnd, end, k)) }
+
+    // Arc length around the section, carried past the wrap rather than reset to
+    // zero, so the texture runs continuously around the member.
+    const perim = [0]
+    for (let k = 0; k < n; k++) {
+      const j = (k + 1) % n
+      perim.push(perim[k] + Math.hypot(section[j][0] - section[k][0], section[j][1] - section[k][1]))
+    }
+    const frame = (around, along) =>
+      o.uAlongAxis ? [along / tile, around / tile] : [around / tile, along / tile]
+    // `vWorldY` measures the sweep in absolute world height, so a standing post
+    // courses in with the wall behind it exactly as box() does.
+    const along = (p, d) => (o.vWorldY ? p[1] : d)
+
+    for (let k = 0; k < n; k++) {
+      const j = (k + 1) % n
+      this.quad(A[k], A[j], B[j], B[k], {
+        ...opts,
+        uvs: [
+          frame(perim[k], along(A[k], 0)),
+          frame(perim[k + 1], along(A[j], 0)),
+          frame(perim[k + 1], along(B[j], len)),
+          frame(perim[k], along(B[k], len)),
+        ],
+      })
+    }
+    // The two end caps, as fans. They are end grain and are usually buried in a
+    // wall, but a prism without them is not a solid and openEdges() says so.
+    const cap = (k) => [section[k][0] / tile, section[k][1] / tile]
+    for (let k = 1; k < n - 1; k++) {
+      this.tri(A[0], A[k + 1], A[k], { ...opts, uvs: [cap(0), cap(k + 1), cap(k)] })
+      this.tri(B[0], B[k], B[k + 1], { ...opts, uvs: [cap(0), cap(k), cap(k + 1)] })
+    }
     return this
   }
 
@@ -388,6 +501,137 @@ export function groundGrime(y0, height = 0.9, strength = 0.32) {
 // know about the plan -- they are a vocabulary, and plan.js writes sentences.
 // ---------------------------------------------------------------------------
 
+/**
+ * A rough cross-section: `n` corners, none of them square, none of them evenly
+ * spaced, all of them a deterministic function of `seed`.
+ *
+ * `round` blends between the rectangle `hu x hv` (0) and the ellipse inscribed
+ * in it (1), which is the difference between a squared-off beam and a log with
+ * the bark still on. `jitter` then moves each corner in or out, which is what
+ * stops five of them reading as a pentagon.
+ *
+ * Corner ANGLES are jittered by less than half their own spacing, so they can
+ * never cross and the loop stays wound anticlockwise -- prism()'s cap fans and
+ * the outward winding of its sides both depend on that.
+ */
+export function roughSection(n, hu, hv, seed, { jitter = 0.18, round = 0.55 } = {}) {
+  const pts = []
+  const spin = (hash(seed, 91) - 0.5) * ((Math.PI * 2) / n)
+  const j = Math.min(jitter, 0.22)
+  for (let k = 0; k < n; k++) {
+    const th = spin + ((Math.PI * 2) * (k + (hash(seed, k * 3 + 1) - 0.5) * 0.5)) / n
+    const c = Math.cos(th)
+    const s = Math.sin(th)
+    // Where this direction leaves the rectangle, and where it leaves the ellipse.
+    const t = Math.min(hu / Math.max(Math.abs(c), 1e-4), hv / Math.max(Math.abs(s), 1e-4))
+    const g = 1 + (hash(seed, k * 3 + 2) - 0.5) * 2 * j
+    pts.push([lerp(t * c, hu * c, round) * g, lerp(t * s, hv * s, round) * g])
+  }
+  return pts
+}
+
+/**
+ * One rough member -- a post, a beam, a rail, a log end -- from `a` to `bEnd`.
+ *
+ * The number of sides is drawn from the seed too, between 5 and 7. A kit whose
+ * every timber has six faces is a kit whose every timber came from the same
+ * function, and at LOD0 that is visible even when the jitter is not.
+ */
+export function member(b, a, bEnd, o) {
+  const seed = o.seed ?? 0
+  const sides = o.sides ?? 5 + Math.floor(hash(seed, 77) * 3)
+  const hv = o.hv ?? o.hu
+  const shape = { jitter: o.jitter, round: o.round }
+  const section = roughSection(sides, o.hu, hv, seed, shape)
+  const taper = o.taper ?? 1
+  return b.prism(a, bEnd, section, {
+    sectionEnd: taper === 1 ? null : roughSection(sides, o.hu * taper, hv * taper, seed, shape),
+    layer: o.layer ?? LAYER.TIMBER_BEAM,
+    color: o.color ?? TINT.timber,
+    tile: o.tile,
+    uAlongAxis: o.uAlongAxis ?? true,
+    vWorldY: o.vWorldY ?? false,
+  })
+}
+
+/**
+ * A slab with irregularly broken edges -- a plinth, a doorstep, a porch deck.
+ *
+ * A box reads as machined no matter what texture is on it, and a slab is the one
+ * part of a building the player's feet are level with. So the top arris (and the
+ * bottom, where it is not buried) is knocked off by a chamfer whose depth is
+ * drawn per corner AND per axis: the four corners of a split stone are never
+ * broken by the same amount, and a uniform 45 degrees is just a smaller machine.
+ * The shoulder heights are jittered on the same terms, which is what turns a
+ * chamfer into a break.
+ *
+ * `batter` spreads the bottom outward, which is what plinth() has always done.
+ * Horizontal extent is measured at the TOP, so lo/hi are the top footprint and
+ * the bottom flares out from it. The rings, bottom up:
+ *
+ *   y0            bottom face, inset per corner     <- omitted if !bevelBottom
+ *   y0 + bev_k    full extent + batter
+ *   y1 - bev_k    full extent
+ *   y1            top face, inset per corner
+ *
+ * 28 triangles, or 20 with the bottom buried, against a box's 12.
+ *
+ * WINDING: the corner order is CLOCKWISE seen from above, because a side quad's
+ * normal is (ring tangent) x up -- anticlockwise gives four inward faces and a
+ * shell that balances every edge while being inside out. See openEdges().
+ */
+export function roughSlab(b, lo, hi, o) {
+  const { seed = 0, layer, color, batter = 0, bevelBottom = true, tile } = o
+  const hw = (hi[0] - lo[0]) / 2
+  const hd = (hi[2] - lo[2]) / 2
+  const cx = (lo[0] + hi[0]) / 2
+  const cz = (lo[2] + hi[2]) / 2
+  const h = hi[1] - lo[1]
+  const bev = Math.min(o.bevel ?? 0.05, hw * 0.35, hd * 0.35, h * 0.4)
+  if (bev < 1e-3) return b.box(lo, hi, { layer, color, tile })
+
+  const S = [[-1, -1], [-1, 1], [1, 1], [1, -1]] // clockwise from above
+  const k = (i) => 0.3 + hash(seed, i) * 0.7
+  const spread = (y) => batter * (1 - (y - lo[1]) / (h || 1))
+  /** A full-extent ring, pulled `dir * bev_k` off `yBase` corner by corner. */
+  const shoulder = (yBase, dir) => S.map(([sx, sz], i) => {
+    const y = yBase + dir * bev * k(i * 3 + 2)
+    const sp = spread(y)
+    return [cx + sx * (hw + sp), y, cz + sz * (hd + sp)]
+  })
+  /** A face ring at `y`, inset per corner and per axis. */
+  const face = (y) => S.map(([sx, sz], i) => {
+    const sp = spread(y)
+    return [
+      cx + sx * (hw + sp - bev * k(i * 3)),
+      y,
+      cz + sz * (hd + sp - bev * k(i * 3 + 1)),
+    ]
+  })
+
+  const rings = bevelBottom
+    ? [face(lo[1]), shoulder(lo[1], 1), shoulder(hi[1], -1), face(hi[1])]
+    : [shoulder(lo[1], 0), shoulder(hi[1], -1), face(hi[1])]
+  // vWorldY on the sides so a plinth's courses line up all the way round; NOT on
+  // the caps, where a constant V would smear one row of pixels across the whole
+  // footprint.
+  const side = { layer, color, tile, vWorldY: true }
+  const cap = { layer, color, tile }
+  for (let r = 0; r < rings.length - 1; r++) {
+    const lower = rings[r]
+    const upper = rings[r + 1]
+    for (let c = 0; c < 4; c++) {
+      const cn = (c + 1) % 4
+      b.quad(lower[c], lower[cn], upper[cn], upper[c], side)
+    }
+  }
+  const t = rings[rings.length - 1]
+  b.quad(t[0], t[1], t[2], t[3], cap)
+  const u = rings[0]
+  b.quad(u[3], u[2], u[1], u[0], cap)
+  return b
+}
+
 /** Wall styles. One is chosen per BUILDING, not per wall: mixing them makes a
  *  building read as several buildings pushed together. */
 export const WALL_STYLE = {
@@ -405,45 +649,24 @@ export const WALL_STYLE = {
  * the HIGHEST of them and grows the plinth down to the LOWEST, so a building on
  * a slope gets a tall plinth on the downhill side and cannot ever float. The
  * batter (the slight inward lean) is what stops it reading as a cardboard box.
+ *
+ * The top arris is broken irregularly by roughSlab(): the ledge the walls stand
+ * on is at eye level for nothing and at FOOT level for everyone, and a crisp
+ * 90-degree edge there is the first thing that gives the building away. The
+ * sole is buried in the hill and gets no chamfer at all -- 8 triangles of stone
+ * nobody can see is 8 triangles the roof wanted.
  */
-export function plinth(b, { cx, cz, w, d, top, bottom, batter = 0.05, tint = TINT.stone }) {
+export function plinth(
+  b, { cx, cz, w, d, top, bottom, batter = 0.05, seed = 0, tint = TINT.stone, bevel = 0.05 }
+) {
   const grime = groundGrime(bottom, 1.1, 0.3)
   const color = (p) => {
     const g = grime(p)
     return [g[0] * tint[0], g[1] * tint[1], g[2] * tint[2]]
   }
-  const hw = w / 2
-  const hd = d / 2
-  const bw = hw + batter
-  const bd = hd + batter
-  const corners = [
-    [[-bw, bottom, bd], [bw, bottom, bd], [hw, top, hd], [-hw, top, hd]],
-    [[bw, bottom, bd], [bw, bottom, -bd], [hw, top, -hd], [hw, top, hd]],
-    [[bw, bottom, -bd], [-bw, bottom, -bd], [-hw, top, -hd], [hw, top, -hd]],
-    [[-bw, bottom, -bd], [-bw, bottom, bd], [-hw, top, hd], [-hw, top, -hd]],
-  ]
-  for (const [a, bb, c, dd] of corners) {
-    b.quad(
-      [a[0] + cx, a[1], a[2] + cz],
-      [bb[0] + cx, bb[1], bb[2] + cz],
-      [c[0] + cx, c[1], c[2] + cz],
-      [dd[0] + cx, dd[1], dd[2] + cz],
-      { layer: LAYER.STONE, vWorldY: true, color }
-    )
-  }
-  // The ledge the walls stand on, and the sole under it. The sole is buried in
-  // the hill and nobody will ever see it; it is here because the plinth is the
-  // bottom of the building and a solid needs a bottom -- see openEdges().
-  b.quad(
-    [cx - hw, top, cz + hd], [cx + hw, top, cz + hd],
-    [cx + hw, top, cz - hd], [cx - hw, top, cz - hd],
-    { layer: LAYER.STONE, color: tint }
-  )
-  b.quad(
-    [cx - bw, bottom, cz - bd], [cx + bw, bottom, cz - bd],
-    [cx + bw, bottom, cz + bd], [cx - bw, bottom, cz + bd],
-    { layer: LAYER.STONE, color: tint }
-  )
+  roughSlab(b,
+    [cx - w / 2, bottom, cz - d / 2], [cx + w / 2, top, cz + d / 2],
+    { seed, batter, bevel, bevelBottom: false, layer: LAYER.STONE, color })
 }
 
 /**
@@ -456,7 +679,7 @@ export function plinth(b, { cx, cz, w, d, top, bottom, batter = 0.05, tint = TIN
  * Measuring from each wall's own base instead is the classic way to get a
  * building whose logs step at every corner.
  */
-export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, tint = TINT.timber }) {
+export function wall(b, { p0, p1, y0, y1, style, seed = 0, rough = 0, sillY, detail = 2, tint = TINT.timber }) {
   const dx = p1[0] - p0[0]
   const dz = p1[1] - p0[1]
   const len = Math.hypot(dx, dz)
@@ -481,16 +704,29 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
   if (style === WALL_STYLE.STONE_BASE) {
     face(y0, split, LAYER.STONE, groundGrime(y0, 1.0, 0.28))
     face(split, y1, LAYER.TIMBER_PLANK, tint)
-    // The offset where the timber sits back on the masonry, as a real ledge.
+    // The offset course where the timber sits back on the masonry.
+    //
+    // This was a doubled quad standing 0.06 proud of the wall with NOTHING
+    // between its two faces: from anywhere near its own height it was a blade
+    // with no thickness, and on a stone building that is the one edge the eye
+    // goes to. It is a swept member now, so it has a section, a broken top
+    // arris and a shadow. Five sides, 16 triangles, and it runs 0.05 past each
+    // corner so the courses of two walls meet instead of leaving a notch.
     if (detail >= 2) {
-      const t = 0.06
-      b.quad(
-        [p0[0] + nx * t, split, p0[1] + nz * t],
-        [p1[0] + nx * t, split, p1[1] + nz * t],
-        [p1[0], split, p1[1]],
-        [p0[0], split, p0[1]],
-        { layer: LAYER.STONE, color: TINT.stone, double: true }
-      )
+      const L = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1
+      const ex = ((p1[0] - p0[0]) / L) * 0.05
+      const ez = ((p1[1] - p0[1]) / L) * 0.05
+      // Horizontal sweep along a wall: the section's u is the wall normal and
+      // its v is world up. Centred 0.018 out, so it projects 0.068 and buries
+      // its back inside the wall plane rather than hanging off it.
+      const out = 0.018
+      member(b,
+        [p0[0] - ex + nx * out, split, p0[1] - ez + nz * out],
+        [p1[0] + ex + nx * out, split, p1[1] + ez + nz * out],
+        {
+          hu: 0.05, hv: 0.045, sides: 5, seed: rough * 23 + 9,
+          round: 0.3, jitter: 0.2, layer: LAYER.STONE, color: TINT.stone,
+        })
     }
     return
   }
@@ -498,32 +734,37 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
   if (style === WALL_STYLE.HALF_TIMBER) {
     face(y0, y1, LAYER.PLASTER, groundGrime(y0, y1 - y0, 0.34))
     if (detail < 2) return
-    // The frame, standing proud of the plaster. Sill, head, two posts, and one
-    // brace per bay -- which is what actually tells the eye "half-timbered",
-    // far more than the plaster does.
+    // The frame, standing proud of the plaster. Sill, head, and one post per bay
+    // boundary -- which is what actually tells the eye "half-timbered", far more
+    // than the plaster does.
+    //
+    // Every one of them is a rough prism rather than a box: these are the
+    // members closest to the eye on a half-timbered wall, and a right-angled
+    // frame on a hand-daubed panel is the single thing that says "generated".
     const t = 0.075 // how far the timber stands out
     const w = 0.16 // member width
-    const rail = (ya, yb) => {
-      b.box(
-        [Math.min(p0[0], p1[0]) - (ux ? 0 : t), ya, Math.min(p0[1], p1[1]) - (uz ? 0 : t)],
-        [Math.max(p0[0], p1[0]) + (ux ? 0 : t), yb, Math.max(p0[1], p1[1]) + (uz ? 0 : t)],
-        { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
-      )
-    }
-    rail(y0, y0 + w)
-    rail(y1 - w, y1)
+    const beam = { layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true }
+    const rail = (ya, yb, k) =>
+      member(b, [p0[0], (ya + yb) / 2, p0[1]], [p1[0], (ya + yb) / 2, p1[1]],
+        { hu: t, hv: (yb - ya) / 2, seed: rough * 17 + k, round: 0.35, ...beam })
+    rail(y0, y0 + w, 1)
+    rail(y1 - w, y1, 2)
+    // `i < bays`, not `i <= bays`: a wall owns the post at its START corner and
+    // leaves the one at its end to the wall that starts there. Closing the loop
+    // at both ends put TWO independently jittered posts inside each corner of
+    // every mass -- eight buried, interpenetrating members on a half-timbered
+    // inn, 160 triangles of nothing.
     const bays = Math.max(1, Math.round(len / 1.5))
-    for (let i = 0; i <= bays; i++) {
+    for (let i = 0; i < bays; i++) {
       const s = i / bays
       const px = p0[0] + dx * s
       const pz = p0[1] + dz * s
-      const hx = (ux ? w / 2 : t)
-      const hz = (uz ? w / 2 : t)
-      b.box(
-        [px - hx, y0 + w, pz - hz],
-        [px + hx, y1 - w, pz + hz],
-        { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
-      )
+      // The section's u axis is +z and its v axis is +x (see prism), so which
+      // half-extent is which depends on the wall's direction.
+      member(b, [px, y0 + w, pz], [px, y1 - w, pz], {
+        hu: ux ? t : w / 2, hv: ux ? w / 2 : t,
+        seed: rough * 17 + 10 + i, round: 0.35, ...beam,
+      })
     }
     return
   }
@@ -535,17 +776,16 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
     for (const t of [0, 1]) {
       const px = p0[0] + dx * t
       const pz = p0[1] + dz * t
-      b.box(
-        [px - 0.11, y0, pz - 0.11],
-        [px + 0.11, y1 + 0.04, pz + 0.11],
-        { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
-      )
+      member(b, [px, y0, pz], [px, y1 + 0.04, pz], {
+        hu: 0.115, seed: rough * 17 + 30 + t, round: 0.5,
+        layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true,
+      })
     }
     return
   }
 
   // WALL_STYLE.LOG
-  face(y0, y1, LAYER.TIMBER_HEWN, tint)
+  face(y0, y1, LAYER.TIMBER_BEAM, tint)
   if (detail < 2) return
 
   // Notched log ends poking past the corner. This is the silhouette of a log
@@ -553,7 +793,11 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
   // reads as painted-on stripes. Only every other course sticks out on a given
   // wall, because the courses interlock: the ones between belong to the wall
   // running the other way.
-  const course = TILE_METRES[LAYER.TIMBER_HEWN] / 2
+  // Each end is a ROUND prism, not a box, and this is the single best return on
+  // triangles anywhere in the kit: a log end is seen against the sky at every
+  // corner of the building, at eye level, from a metre away. Six or seven faces
+  // with the radius jittered is a log; four is a fence post.
+  const course = TILE_METRES[LAYER.TIMBER_BEAM] / 2
   const r = course * 0.46
   const stick = 0.22
   const phase = seed & 1
@@ -565,12 +809,10 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
       const px = p0[0] + dx * t
       const pz = p0[1] + dz * t
       const out = t === 0 ? -1 : 1
-      const ex = px + ux * out * stick
-      const ez = pz + uz * out * stick
-      b.box(
-        [Math.min(px, ex) - (ux ? 0 : r), y - r, Math.min(pz, ez) - (uz ? 0 : r)],
-        [Math.max(px, ex) + (ux ? 0 : r), y + r, Math.max(pz, ez) + (uz ? 0 : r)],
-        { layer: LAYER.TIMBER_HEWN, color: tint }
+      member(b,
+        [px - ux * out * 0.02, y, pz - uz * out * 0.02],
+        [px + ux * out * stick, y, pz + uz * out * stick],
+        { hu: r, seed: rough * 17 + 40 + k * 2 + t, round: 0.95, jitter: 0.14, color: tint }
       )
     }
   }
@@ -580,9 +822,9 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, sillY, detail = 2, ti
  * The triangle of wall between the eave and the ridge at a gable end.
  * `p0 -> p1` runs along the base with the same winding rule as wall().
  */
-export function gableEnd(b, { p0, p1, y0, apexY, style, tint = TINT.timber, detail = 2 }) {
+export function gableEnd(b, { p0, p1, y0, apexY, style, seed = 0, tint = TINT.timber, detail = 2 }) {
   const layer =
-    style === WALL_STYLE.LOG ? LAYER.TIMBER_HEWN : LAYER.TIMBER_PLANK
+    style === WALL_STYLE.LOG ? LAYER.TIMBER_BEAM : LAYER.TIMBER_PLANK
   const mx = (p0[0] + p1[0]) / 2
   const mz = (p0[1] + p1[1]) / 2
   // Double-sided for the same reason wall() is: it is a wall, and the roof
@@ -596,16 +838,30 @@ export function gableEnd(b, { p0, p1, y0, apexY, style, tint = TINT.timber, deta
   if (detail < 2) return
   // A vertical king post up the middle of the gable, which every timber gable
   // has and which breaks up an otherwise blank triangle.
-  b.box(
-    [mx - 0.09, y0, mz - 0.09],
-    [mx + 0.09, apexY - 0.12, mz + 0.09],
-    { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
-  )
+  member(b, [mx, y0, mz], [mx, apexY - 0.12, mz], {
+    hu: 0.095, seed, round: 0.6, layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true,
+  })
 }
 
-/** How thick a roof of each covering is, in metres. A thatched roof is a
- *  half-metre of packed straw and a shingled one is a board and a shake. */
-const ROOF_THICKNESS = { [LAYER.THATCH]: 0.3, [LAYER.SHINGLE]: 0.11 }
+/**
+ * How thick a roof of each covering is, in metres, and how far its cut edge
+ * bulges out past the plane.
+ *
+ * A thatched roof is a HALF-METRE of packed straw, which is the number that
+ * matters most in this table: the thickness of the eave is the single loudest
+ * thing about a thatched cottage, and 0.3 m read as a heavy shingle roof rather
+ * than as thatch. A shake roof is a board and a shake and stays thin.
+ *
+ * `bulge` is how far the middle of that cut edge stands proud of the two faces
+ * it joins, and it only does anything when the edge is built as more than one
+ * band -- see roofPlane().
+ */
+const ROOF_EDGE = {
+  [LAYER.THATCH]: { thick: 0.46, bulge: 0.075 },
+  [LAYER.SHINGLE]: { thick: 0.14, bulge: 0.025 },
+  [LAYER.ROOF_TILE]: { thick: 0.15, bulge: 0.03 },
+}
+const DEFAULT_EDGE = { thick: 0.12, bulge: 0.02 }
 
 /**
  * One roof plane, with a real thickness.
@@ -625,19 +881,60 @@ const ROOF_THICKNESS = { [LAYER.THATCH]: 0.3, [LAYER.SHINGLE]: 0.11 }
  * Before this existed each slope was a single quad. From below and from behind
  * -- under the verge, in a roof valley, anywhere inside -- it was backface-
  * culled to nothing, which is most of what "I can see inside the building" was.
+ *
+ * THE CUT EDGE IS BUILT IN `rounds` BANDS, not one, and that is what makes a
+ * thatched eave read as a rolled half-metre of straw instead of a slab with a
+ * dark stripe down it. One band is a plumb cut and looks it. Two or three, with
+ * the joins between them pushed out past the plane by `bulge`, give the edge a
+ * silhouette that curves -- and the silhouette is the whole of it, because
+ * against the sky the eave is the only part of the roof you see edge-on.
+ *
+ * The bulge is applied per corner in the plane's OWN axes, and the ridge end
+ * gets a fraction of what the eave end does. Pushing the ridge corners out by
+ * the full amount drives each slope through the other above the ridge line,
+ * where only the capping hides it.
  */
-function roofPlane(b, corners, t, { layer, color }) {
+function roofPlane(b, corners, t, { layer, color, rounds = 1, bulge = 0 }) {
   const [a, c1, c2, c3] = corners
-  const down = (p) => [p[0], p[1] - t, p[2]]
-  const soffit = { layer: LAYER.TIMBER_PLANK, color: TINT.timberDark }
+  const soffit = { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
+
+  // Corner order is eave-left, eave-right, ridge-right, ridge-left, so these
+  // two are the plane's along-the-eave and up-the-slope directions in XZ, and
+  // the signs below say which corner is on which side of each.
+  const flat = (p, q) => {
+    const dx = q[0] - p[0]
+    const dz = q[2] - p[2]
+    const l = Math.hypot(dx, dz) || 1
+    return [dx / l, dz / l]
+  }
+  const eaveDir = flat(a, c1)
+  const slopeDir = flat(a, c3)
+  const SIGNS = [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+  const RIDGE_SHARE = 0.3
+  const out = SIGNS.map(([sa, sc]) => {
+    const w = sc < 0 ? 1 : RIDGE_SHARE
+    return [eaveDir[0] * sa + slopeDir[0] * sc * w, eaveDir[1] * sa + slopeDir[1] * sc * w]
+  })
+  // s = 0 at the top surface, 1 at the soffit. The push is a half sine, so both
+  // ends of the profile meet the faces they join without a crease.
+  const ring = (s) => {
+    const push = bulge * Math.sin(Math.PI * s)
+    return corners.map((p, i) => [p[0] + out[i][0] * push, p[1] - t * s, p[2] + out[i][1] * push])
+  }
 
   b.quad(a, c1, c2, c3, { layer, color })
-  b.quad(down(a), down(c3), down(c2), down(c1), soffit)
-  // The plumb-cut band around the edge, in the covering itself. Winding is
-  // (below-p, below-q, q, p) for each edge of the top loop, which faces outward
-  // wherever the top surface faces upward -- true of every roof plane here.
-  for (const [p, q] of [[a, c1], [c1, c2], [c2, c3], [c3, a]]) {
-    b.quad(down(p), down(q), q, p, { layer, color, vWorldY: true })
+  const bottom = ring(1)
+  b.quad(bottom[0], bottom[3], bottom[2], bottom[1], soffit)
+  // Winding is (lower-p, lower-q, q, p) for each edge of the loop, which faces
+  // outward wherever the top surface faces upward -- true of every plane here.
+  let prev = corners
+  for (let k = 1; k <= rounds; k++) {
+    const cur = k === rounds ? bottom : ring(k / rounds)
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4
+      b.quad(cur[i], cur[j], prev[j], prev[i], { layer, color, vWorldY: true })
+    }
+    prev = cur
   }
 }
 
@@ -661,6 +958,7 @@ export function gableRoof(
   {
     cx, cz, w, d, eaveY, rise,
     ridgeAxis = 'x',
+    seed = 0,
     overhang = 0.4,
     verge = 0.3,
     vergeLo = null,
@@ -692,7 +990,13 @@ export function gableRoof(
   // Two slopes. Corners are ordered eave-left, eave-right, ridge-right,
   // ridge-left, so U runs along the eave and V runs UP the slope, which is the
   // orientation tileThatch and tileShingles are drawn for.
-  const thick = ROOF_THICKNESS[layer] ?? 0.12
+  const edge = ROOF_EDGE[layer] ?? DEFAULT_EDGE
+  const thick = edge.thick
+  // Two bands or three, drawn from the seed. A village where every eave is
+  // faceted the same way is a village of one roof, and the cost of the third
+  // band is four triangles a slope.
+  const rounds = detail >= 2 ? 2 + (hash(seed, 5) < 0.5 ? 1 : 0) : 1
+  const bulge = detail >= 2 ? edge.bulge : 0
   const slope = (sign) => {
     const P = (alongT, up) => {
       const a = aLo + (aHi - aLo) * alongT
@@ -709,22 +1013,24 @@ export function gableRoof(
     // its edges perfectly -- and is why signedVolume() exists beside it.
     roofPlane(b, (ridgeAxis === 'x') === (sign > 0)
       ? [P(0, false), P(1, false), P(1, true), P(0, true)]
-      : [P(1, false), P(0, false), P(0, true), P(1, true)], thick, { layer, color })
+      : [P(1, false), P(0, false), P(0, true), P(1, true)], thick, { layer, color, rounds, bulge })
   }
   slope(1)
   slope(-1)
 
   if (detail >= 2) {
-    // The ridge capping: a shallow box along the top, which hides the seam
+    // The ridge capping: a rolled bolster along the top, which hides the seam
     // where the two slopes meet and reads as the ridge roll a thatcher pegs on.
-    const t = 0.13
-    const min = ridgeAxis === 'x'
-      ? [cx + aLo, ridgeY - t, cz - t]
-      : [cx - t, ridgeY - t, cz + aLo]
-    const max = ridgeAxis === 'x'
-      ? [cx + aHi, ridgeY + t * 0.7, cz + t]
-      : [cx + t, ridgeY + t * 0.7, cz + aHi]
-    b.box(min, max, { layer, color: tint })
+    // Round rather than square for the same reason the eave is -- it is the
+    // topmost line of the building against the sky, and a square one is a box.
+    const t = 0.14
+    const y = ridgeY - t * 0.2
+    const lo = ridgeAxis === 'x' ? [cx + aLo, y, cz] : [cx, y, cz + aLo]
+    const hi = ridgeAxis === 'x' ? [cx + aHi, y, cz] : [cx, y, cz + aHi]
+    member(b, lo, hi, {
+      hu: t, hv: t * 0.85, seed: seed * 7 + 3, sides: 6, round: 0.85, jitter: 0.1,
+      layer, color: tint, uAlongAxis: false,
+    })
   }
 
   // The frayed eave. Alpha carries the shape, so this is a hanging strip rather
@@ -768,7 +1074,7 @@ export function gableRoof(
  */
 export function leanToRoof(
   b,
-  { cx, cz, w, d, highY, lowY, dir = '+z', overhang = 0.3, layer = LAYER.THATCH, tint = TINT.thatchNew, detail = 2 }
+  { cx, cz, w, d, highY, lowY, dir = '+z', seed = 0, overhang = 0.3, layer = LAYER.THATCH, tint = TINT.thatchNew, detail = 2 }
 ) {
   const axis = dir[1] // 'x' or 'z'
   const sign = dir[0] === '+' ? 1 : -1
@@ -785,12 +1091,15 @@ export function leanToRoof(
     return axis === 'x' ? [cx + acr, y, cz + a] : [cx + a, y, cz + acr]
   }
   const color = roofTint({ base: tint, eaveY: eave, ridgeY: highY, moss: 0.3 })
-  const thick = ROOF_THICKNESS[layer] ?? 0.12
+  const edge = ROOF_EDGE[layer] ?? DEFAULT_EDGE
+  const thick = edge.thick
+  const rounds = detail >= 2 ? 2 + (hash(seed, 5) < 0.5 ? 1 : 0) : 1
+  const bulge = detail >= 2 ? edge.bulge : 0
   // Eave corners first so V runs up the slope, as on a gable.
   const flip = (axis === 'x') === (sign > 0)
   roofPlane(b, flip
     ? [P(1, true), P(0, true), P(0, false), P(1, false)]
-    : [P(0, true), P(1, true), P(1, false), P(0, false)], thick, { layer, color })
+    : [P(0, true), P(1, true), P(1, false), P(0, false)], thick, { layer, color, rounds, bulge })
 
   if (detail >= 1 && layer === LAYER.THATCH) {
     const uSpan = (2 * alongHalf) / TILE_METRES[LAYER.THATCH_FRINGE]
@@ -822,7 +1131,7 @@ export function leanToRoof(
  */
 export function leanEnd(b, { p0, p1, y0, y1, style, tint = TINT.timber }) {
   if (y1 - y0 < 0.02) return
-  const layer = style === WALL_STYLE.LOG ? LAYER.TIMBER_HEWN : LAYER.TIMBER_PLANK
+  const layer = style === WALL_STYLE.LOG ? LAYER.TIMBER_BEAM : LAYER.TIMBER_PLANK
   b.tri(
     [p0[0], y0, p0[1]],
     [p1[0], y0, p1[1]],
@@ -850,7 +1159,7 @@ export function leanEnd(b, { p0, p1, y0, y1, style, tint = TINT.timber }) {
  */
 export function doorway(
   b,
-  { x, z, y0, nx, nz, width = 1.0, height = 1.95, runes = false, detail = 2 }
+  { x, z, y0, nx, nz, width = 1.0, height = 1.95, runes = false, seed = 0, detail = 2 }
 ) {
   const tx = -nz // along the wall
   const tz = nx
@@ -876,26 +1185,33 @@ export function doorway(
   )
   if (detail < 2) return
 
-  // Surround: two jambs and a lintel, standing proud of both wall and leaf.
-  const jw = 0.13
-  const out = 0.11
-  const jamb = (s) => {
-    const a = p(s * (hw + jw / 2), y0, 0)
-    b.box(
-      [Math.min(a[0], a[0] + nx * out) - (tx ? jw / 2 : 0.06), y0, Math.min(a[2], a[2] + nz * out) - (tz ? jw / 2 : 0.06)],
-      [Math.max(a[0], a[0] + nx * out) + (tx ? jw / 2 : 0.06), y0 + height + jw, Math.max(a[2], a[2] + nz * out) + (tz ? jw / 2 : 0.06)],
-      { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
-    )
+  // Surround: two jambs and a lintel, standing proud of both wall and leaf, and
+  // all three of them hewn baulks rather than boxes.
+  //
+  // Their half-extents are stated as "across the wall" and "out of the wall"
+  // and then resolved into the section's own axes, because prism() picks its
+  // cross-section frame from the sweep direction and that frame is +z, +x for
+  // anything standing up and normal, up for anything lying along a wall. The
+  // wall normal here is always axis-aligned, so |nx| and |nz| select.
+  const jw = 0.14 // across the wall
+  const jd = 0.19 // out of the wall
+  const jc = 0.05 // where the middle of that depth sits, measured from the face
+  const beam = { layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, round: 0.4 }
+  const jamb = (s, k) => {
+    const a = s * (hw + jw / 2)
+    member(b, p(a, y0 - 0.02, jc), p(a, y0 + height + jw, jc), {
+      hu: Math.abs(nz) * (jd / 2) + Math.abs(nx) * (jw / 2),
+      hv: Math.abs(nx) * (jd / 2) + Math.abs(nz) * (jw / 2),
+      seed: seed * 13 + k, vWorldY: true, ...beam,
+    })
   }
-  jamb(-1)
-  jamb(1)
-  const l0 = p(-(hw + jw), y0 + height, 0)
-  const l1 = p(hw + jw, y0 + height, 0)
-  b.box(
-    [Math.min(l0[0], l1[0], l0[0] + nx * out, l1[0] + nx * out) - 0.001, y0 + height, Math.min(l0[2], l1[2], l0[2] + nz * out, l1[2] + nz * out) - 0.001],
-    [Math.max(l0[0], l1[0], l0[0] + nx * out, l1[0] + nx * out) + 0.001, y0 + height + jw + 0.06, Math.max(l0[2], l1[2], l0[2] + nz * out, l1[2] + nz * out) + 0.001],
-    { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
-  )
+  jamb(-1, 1)
+  jamb(1, 2)
+  // The lintel sweeps along the wall, so its section frame is (normal, up).
+  const ly0 = y0 + height + jw / 2
+  member(b, p(-(hw + jw), ly0, jc), p(hw + jw, ly0, jc), {
+    hu: jd / 2, hv: jw / 2 + 0.03, seed: seed * 13 + 3, vWorldY: true, ...beam,
+  })
 
   // No ironwork quads here any more. The two hinge straps and the ring pull
   // used to be three doubled decals off IRON_ISLANDS; they are now texels in
@@ -904,46 +1220,51 @@ export function doorway(
   // still used by the shutters in windowUnit(), so the sheet is not dead.
 
   if (runes) {
-    const ly = y0 + height + jw + 0.005
+    // Carved across the FACE of the lintel, clear of its jitter. It used to sit
+    // at half the old lintel's depth, which put it inside the timber.
+    const ro = jc + jd / 2 + 0.03
     b.quad(
-      p(-(hw + jw), ly, out * 0.5), p(hw + jw, ly, out * 0.5),
-      p(hw + jw, ly + 0.055, out * 0.5), p(-(hw + jw), ly + 0.055, out * 0.5),
+      p(-(hw + jw * 0.6), ly0 - 0.03, ro), p(hw + jw * 0.6, ly0 - 0.03, ro),
+      p(hw + jw * 0.6, ly0 + 0.03, ro), p(-(hw + jw * 0.6), ly0 + 0.03, ro),
       { layer: LAYER.RUNE, island: RUNE_ISLANDS.lintelBand, color: TINT.timber, double: true }
     )
   }
 }
 
 /**
- * A rectangular ring with a rectangular hole, extruded: a picture frame.
+ * A picture frame: ONE rough section swept around a mitred rectangular path.
  *
- * Both rectangles are given in the caller's flat 2D frame as [a0, v0, a1, v1],
- * and `p(a, y0 + v, out)` lifts them into the world -- so this works for any
- * wall orientation without knowing anything about one.
+ * The path is given in the caller's flat 2D frame -- `ha`/`hv` are the half
+ * extents of its CENTRE LINE about (0, vc), and `p(a, y0 + v, out)` lifts it
+ * into the world, so this works for any wall orientation without knowing
+ * anything about one. Offsetting a corner by `r` on BOTH axes at once is what
+ * makes the mitre: the corner of a rectangle grown by r sits at (ha+r, hv+r).
  *
- * The four surfaces are the front ring, the back ring, the outer skirt and the
- * inner reveal, four quads each, and together they close a solid. Nothing is
- * doubled and nothing needs to be: a closed solid pairs its own edges, which is
- * the whole reason to prefer this over a ring of four flat quads.
+ * A closed tube has no caps and no boundary, so it is airtight by construction,
+ * and the section being the same loop at all four corners is what keeps the
+ * mitre a real mitre rather than a lap joint.
  *
- * Windings below are derived, not eyeballed. Note that (a, v, out) is a LEFT
- * handed frame -- p()'s tangent is (-nz, 0, nx), and t x up = -n -- so the
- * ordering that looks anticlockwise when you sketch it faces INTO the wall.
+ * WINDING IS DERIVED, NOT EYEBALLED. (a, v, out) is a LEFT handed frame --
+ * p()'s tangent is (-nz, 0, nx) and t x up = -n -- and for the corner order
+ * below the sweep tangent T satisfies T = e_r x e_o. A side quad's normal is
+ * T x S for section tangent S, and T x S points outward only when S turns
+ * CLOCKWISE in (r, o). roughSection() winds anticlockwise, hence the reverse().
  */
-function frameRing(b, { p, y0, outer, inner, back, front, layer, color }) {
-  const ring = ([a0, v0, a1, v1], out) => [
-    p(a0, y0 + v0, out), p(a1, y0 + v0, out), p(a1, y0 + v1, out), p(a0, y0 + v1, out),
-  ]
-  const Of = ring(outer, front)
-  const Ob = ring(outer, back)
-  const If = ring(inner, front)
-  const Ib = ring(inner, back)
+function frameRing(b, { p, y0, ha, hv, vc, width, back, front, seed = 0, sides = 5, layer, color }) {
+  const oc = (back + front) / 2
+  const sec = roughSection(sides, width / 2, (front - back) / 2, seed, {
+    jitter: 0.15, round: 0.3,
+  }).reverse()
+  const CORNERS = [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+  const P = CORNERS.map(([sa, sv]) =>
+    sec.map(([r, o]) => p(sa * (ha + r), y0 + vc + sv * (hv + r), oc + o)))
   const o = { layer, color }
-  for (let k = 0; k < 4; k++) {
-    const j = (k + 1) % 4
-    b.quad(If[k], If[j], Of[j], Of[k], o) // front ring, facing out
-    b.quad(Ob[k], Ob[j], Ib[j], Ib[k], o) // back ring, facing into the wall
-    b.quad(Of[k], Of[j], Ob[j], Ob[k], o) // outer skirt
-    b.quad(Ib[k], Ib[j], If[j], If[k], o) // inner reveal, facing into the hole
+  for (let c = 0; c < 4; c++) {
+    const cn = (c + 1) % 4
+    for (let s = 0; s < sides; s++) {
+      const sn = (s + 1) % sides
+      b.quad(P[c][s], P[cn][s], P[cn][sn], P[c][sn], o)
+    }
   }
 }
 
@@ -955,7 +1276,7 @@ function frameRing(b, { p, y0, outer, inner, back, front, layer, color }) {
  */
 export function windowUnit(
   b,
-  { x, z, y0, nx, nz, width = 0.7, height = 0.85, shutters = false, detail = 2 }
+  { x, z, y0, nx, nz, width = 0.7, height = 0.85, shutters = false, seed = 0, detail = 2 }
 ) {
   const tx = -nz
   const tz = nx
@@ -964,26 +1285,34 @@ export function windowUnit(
   const frame = 0.07
   const p = (a, y, out) => [x + tx * a + nx * out, y, z + tz * a + nz * out]
 
-  // Glass, at the outer face of the reveal.
+  // Glass, set BACK in the reveal rather than flush with the front of the
+  // frame. It used to sit at `depth`, 2 cm behind a surround that stands 16 cm
+  // out of the wall, so the pane read as glued onto the front of the box. At a
+  // third of the depth the frame throws a reveal shadow across it and the window
+  // looks like a hole with something in it.
+  const glassAt = depth * 0.33
   b.quad(
-    p(-hw, y0, depth), p(hw, y0, depth), p(hw, y0 + height, depth), p(-hw, y0 + height, depth),
+    p(-hw, y0, glassAt), p(hw, y0, glassAt),
+    p(hw, y0 + height, glassAt), p(-hw, y0 + height, glassAt),
     { layer: LAYER.GLASS, vWorldY: true, color: TINT.glass, double: true }
   )
   if (detail < 2) return
 
-  // The surround, as ONE mitred ring rather than four overlapping boxes.
+  // The surround, as ONE swept ring rather than four overlapping boxes.
   //
   // Four boxes cost 48 triangles and the inn carries fifteen windows, which is
-  // 720 triangles of surround on a 1800-triangle budget -- by a wide margin the
+  // 720 triangles of surround on a 2500-triangle budget -- by a wide margin the
   // most expensive thing on the building, spent on eight faces per stick that
-  // are buried inside the neighbouring stick. The ring is 32, has proper mitred
-  // corners instead of a lap joint, and is still a closed solid.
+  // are buried inside the neighbouring stick. The ring is 8n: five sides is 40
+  // for a frame that is round-cornered on every edge, six is 48 for what four
+  // boxes bought squared off.
   const ow = hw + frame
+  const sides = 5 + Math.floor(hash(seed, 21) * 2)
   frameRing(b, {
     p, y0,
-    outer: [-ow, -frame, ow, height + frame],
-    inner: [-hw, 0, hw, height],
-    back: 0, front: depth + 0.02,
+    ha: hw + frame / 2, hv: height / 2 + frame / 2, vc: height / 2,
+    width: frame, back: 0, front: depth + 0.02,
+    seed: seed * 31 + 7, sides,
     layer: LAYER.TIMBER_PLANK, color: TINT.timberDark,
   })
 
@@ -1013,22 +1342,43 @@ export function windowUnit(
  * or sinks below it is the most obvious possible generation bug, and
  * scripts/check-buildings.mjs asserts against exactly that.
  */
-export function chimney(b, { x, z, baseY, topY, w = 0.62, d = 0.62, detail = 2 }) {
+export function chimney(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, detail = 2 }) {
   const grime = groundGrime(baseY, 1.4, 0.22)
-  b.box(
-    [x - w / 2, baseY - 0.35, z - d / 2],
-    [x + w / 2, topY, z + d / 2],
-    { layer: LAYER.STONE, color: grime }
-  )
-  if (detail < 2) return
-  // A corbelled cap: the courses step out at the top, which is both how a
-  // chimney is actually built and what stops it reading as a plain post.
-  const o = 0.09
-  b.box(
-    [x - w / 2 - o, topY - 0.16, z - d / 2 - o],
-    [x + w / 2 + o, topY, z + d / 2 + o],
-    { layer: LAYER.STONE, color: TINT.stone }
-  )
+  if (detail < 2) {
+    b.box(
+      [x - w / 2, baseY - 0.35, z - d / 2],
+      [x + w / 2, topY, z + d / 2],
+      { layer: LAYER.STONE, color: grime }
+    )
+    return
+  }
+
+  // A chimney is a pile of field stone, not a cast column, so it gets more
+  // corners than a timber does and almost none of the rounding: `round` near
+  // zero keeps the facets flat and the jitter is what makes their widths
+  // haphazard. The batter (the lean inward as it rises) is real masonry
+  // practice and reads at any distance the chimney is visible from at all.
+  //
+  // For a VERTICAL sweep prism()'s section frame is (+z, +x), so the section's
+  // u is the world z half-extent and its v is the world x one.
+  const sides = 6 + Math.floor(hash(seed, 3) * 3)
+  const shape = { jitter: 0.13, round: 0.16 }
+  const capY = topY - 0.17
+  const batter = 0.86
+  const sec = (s) => roughSection(sides, (d / 2) * s, (w / 2) * s, seed, shape)
+  b.prism([x, baseY - 0.35, z], [x, capY, z], sec(1), {
+    sectionEnd: sec(batter),
+    layer: LAYER.STONE, color: grime, vWorldY: true,
+  })
+  // The corbelled cap: the courses step OUT at the top, which is both how a
+  // chimney is built and what stops it reading as a plain post. It reuses the
+  // stack's seed so it is the same polygon scaled up -- a re-rolled cap can be
+  // locally narrower than the stack it crowns and let a corner poke through.
+  const c0 = batter * 1.07
+  b.prism([x, capY, z], [x, topY, z], sec(c0), {
+    sectionEnd: sec(c0 * 1.34),
+    layer: LAYER.STONE, color: TINT.stone, vWorldY: true,
+  })
 }
 
 /**
@@ -1039,7 +1389,7 @@ export function chimney(b, { x, z, baseY, topY, w = 0.62, d = 0.62, detail = 2 }
  * steps, so a village on a slope grows porches and a village on the flat does
  * not, and the variation is free and correct.
  */
-export function porch(b, { x, z, floorY, groundY = null, width = 2.0, depth = 1.3, headY, detail = 2 }) {
+export function porch(b, { x, z, floorY, groundY = null, width = 2.0, depth = 1.3, headY, seed = 0, detail = 2 }) {
   const hw = width / 2
   const z1 = z + depth
   // The deck, as boarding on a rubble footing rather than a floating rectangle.
@@ -1049,17 +1399,29 @@ export function porch(b, { x, z, floorY, groundY = null, width = 2.0, depth = 1.
   // A porch is the one part of a building people walk right up to, and the two
   // things that make it read as built are that the boards have an edge you can
   // see the thickness of, and that something carries them to the ground.
+  //
+  // Both edges of the deck get broken, not just the top one: a porch is walked
+  // onto from ground level, so the underside arris of the boarding is in view
+  // the whole way up to it, and a rough-sawn board that is crisp underneath and
+  // broken on top reads as a plank with a bug in it.
   const deckT = 0.14
-  b.box(
-    [x - hw, floorY - deckT, z], [x + hw, floorY, z1],
-    { layer: LAYER.TIMBER_PLANK, color: TINT.timber }
-  )
+  const deck = [[x - hw, floorY - deckT, z], [x + hw, floorY, z1]]
+  const deckO = { layer: LAYER.TIMBER_HEWN, color: TINT.timber }
+  if (detail >= 2) {
+    roughSlab(b, deck[0], deck[1], { ...deckO, seed: seed * 7 + 31, bevel: 0.03 })
+  } else {
+    b.box(deck[0], deck[1], deckO)
+  }
   const base = groundY ?? floorY - deckT - 0.4
   if (base < floorY - deckT - 0.02) {
-    b.box(
-      [x - hw + 0.07, base, z + 0.07], [x + hw - 0.07, floorY - deckT, z1 - 0.07],
-      { layer: LAYER.STONE, color: groundGrime(base, 0.9, 0.32) }
-    )
+    const lo = [x - hw + 0.07, base, z + 0.07]
+    const hi = [x + hw - 0.07, floorY - deckT, z1 - 0.07]
+    const o = { layer: LAYER.STONE, color: groundGrime(base, 0.9, 0.32) }
+    if (detail >= 2) {
+      roughSlab(b, lo, hi, { ...o, seed: seed * 7 + 37, bevel: 0.045, bevelBottom: false })
+    } else {
+      b.box(lo, hi, o)
+    }
   }
   const roof = leanToRoof(b, {
     cx: x, cz: z + depth / 2, w: width + 0.3, d: depth,
@@ -1067,34 +1429,67 @@ export function porch(b, { x, z, floorY, groundY = null, width = 2.0, depth = 1.
     layer: LAYER.SHINGLE, tint: TINT.shake, detail,
   })
   if (detail < 2) return roof
+  // The posts and rails are the part of a building a player stands closest to,
+  // so they are where the hewn section is worth the most and costs the least:
+  // two posts and two rails is four members, 80 triangles against the 48 the
+  // four boxes cost, for the four silhouettes nobody can avoid looking at.
   for (const s of [-1, 1]) {
     const px = x + s * (hw - 0.1)
-    b.box(
-      [px - 0.08, floorY, z1 - 0.16], [px + 0.08, headY - 0.3, z1],
-      { layer: LAYER.TIMBER_HEWN, color: TINT.timberDark }
-    )
-    // Rail along the open side.
-    b.box(
-      [Math.min(px - 0.05, x + s * hw - 0.05), floorY + 0.82, z + 0.05],
-      [Math.max(px + 0.05, x + s * hw + 0.05), floorY + 0.92, z1 - 0.05],
-      { layer: LAYER.TIMBER_PLANK, color: TINT.timberDark }
-    )
+    const pz = z1 - 0.08
+    member(b, [px, floorY - deckT, pz], [px, headY - 0.3, pz], {
+      hu: 0.085, seed: seed * 7 + s + 1, round: 0.4, jitter: 0.2,
+      color: TINT.timberDark, vWorldY: true,
+    })
+    // Rail along the open side. It sweeps horizontally, so vWorldY would hold V
+    // constant down its whole length and collapse the texture to a line.
+    const rx = x + s * (hw - 0.05)
+    member(b, [rx, floorY + 0.87, z + 0.05], [rx, floorY + 0.87, z1 - 0.05], {
+      hu: 0.055, hv: 0.048, seed: seed * 7 + s + 5, round: 0.55, jitter: 0.16,
+      layer: LAYER.TIMBER_PLANK, color: TINT.timberDark,
+    })
   }
   return roof
 }
 
-/** Steps down from a doorway to the ground, one box a tread. */
-export function steps(b, { x, z, topY, groundY, width = 1.4, tread = 0.3 }) {
+/**
+ * Steps down from a doorway to the ground: one broken stone slab a tread, on a
+ * pair of raking timber stringers.
+ *
+ * Each tread box overhangs the one below by a whole tread depth, so the flight
+ * used to be a stack of slabs each with clear air under its nose -- correct in
+ * section and obviously floating from the side, which is the angle anyone
+ * approaching a door sees it from. The stringers are what it stands on.
+ */
+export function steps(b, { x, z, topY, groundY, width = 1.4, tread = 0.3, seed = 0, detail = 2 }) {
   const rise = topY - groundY
   if (rise < 0.12) return
   const n = Math.max(1, Math.round(rise / 0.19))
   const hw = width / 2
+  const step = rise / n
+  const grime = groundGrime(groundY, 0.8, 0.3)
   for (let i = 0; i < n; i++) {
-    const y = topY - (rise * (i + 1)) / n
+    const y = topY - step * (i + 1)
     const z0 = z + tread * i
-    b.box(
-      [x - hw, y, z0], [x + hw, y + rise / n + 0.02, z0 + tread * 1.05],
-      { layer: LAYER.STONE, color: groundGrime(groundY, 0.8, 0.3) }
-    )
+    const lo = [x - hw, y, z0]
+    const hi = [x + hw, y + step + 0.02, z0 + tread * 1.05]
+    const o = { layer: LAYER.STONE, color: grime }
+    if (detail >= 2) {
+      roughSlab(b, lo, hi, { ...o, seed: seed * 13 + i, bevel: 0.035, bevelBottom: false })
+    } else {
+      b.box(lo, hi, o)
+    }
+  }
+  if (detail < 2) return
+  // The stringers, just outboard of the treads and overlapping them by 2 cm so
+  // there is no seam to see between the two. A one-riser doorstep gets a
+  // shallower stringer than a four-riser flight -- 0.1 deep under a 0.14 rise is
+  // a sleeper, not a stair.
+  const sh = Math.min(0.1, Math.max(0.045, rise * 0.4))
+  for (const s of [-1, 1]) {
+    const sx = x + s * (hw + 0.05)
+    member(b, [sx, topY - 0.06, z + 0.04], [sx, groundY + 0.05, z + tread * n], {
+      hu: 0.07, hv: sh, seed: seed * 13 + 40 + s, round: 0.4, jitter: 0.2,
+      color: TINT.timberDark,
+    })
   }
 }

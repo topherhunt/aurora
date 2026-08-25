@@ -32,7 +32,7 @@ import { buildBuilding } from '../src/buildings/building.js'
 import {
   Builder, WALL_STYLE, openEdges, signedVolume,
   plinth, wall, gableEnd, leanEnd, gableRoof, leanToRoof,
-  doorway, windowUnit, chimney, porch, steps,
+  doorway, windowUnit, chimney, porch, steps, roughSection, roughSlab,
 } from '../src/buildings/parts.js'
 import { LAYER, TEX_SIZE } from '../src/textures.js'
 import {
@@ -42,7 +42,13 @@ import {
 import { readPng } from '../tools/props/png.mjs'
 
 const SEEDS = Number(process.argv[2] ?? 300)
-const STRUCTURE_BUDGET = 1800 // §5, the `structure` prop class mesh tier
+// §5, the `structure` prop class mesh tier. Raised from 1800 when the kit went
+// from boxes to hewn prisms (§19, "Rough-hewn"): the measured worst case moved
+// 1660 -> 2380 and the mean 766 -> 1064, and §5's village row moved with it.
+// This is a budget to be DEFENDED, not a number to raise whenever a part grows
+// -- it was raised once, deliberately, for the silhouette the whole style rests
+// on, and the next thing that wants triangles takes them from somewhere else.
+const STRUCTURE_BUDGET = 2500
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -167,66 +173,131 @@ check(worstPlanMs < 5, 'planning is cheap enough to gate exhaustively', `worst $
 
 console.log('\nparts')
 
+// The hewn cross-section, before anything is swept along it.
+//
+// EVERYTHING ELSE IN THIS SECTION RESTS ON THIS ONE PROPERTY: prism() derives
+// its outward winding and both of its cap fans from the section being a SIMPLE
+// polygon wound anticlockwise. Jitter two corners past each other and the loop
+// crosses itself -- which still pairs every directed edge, so the airtight
+// check passes, and produces a member with an inside-out lobe that renders as a
+// hole. Cheaper to assert here, on the 2D loop, than to infer it from a volume.
+{
+  const cross2 = (o, a, c) => (a[0] - o[0]) * (c[1] - o[1]) - (a[1] - o[1]) * (c[0] - o[0])
+  const hits = (p1, p2, p3, p4) => {
+    const d1 = cross2(p3, p4, p1)
+    const d2 = cross2(p3, p4, p2)
+    const d3 = cross2(p1, p2, p3)
+    const d4 = cross2(p1, p2, p4)
+    return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0))
+  }
+  const bad = []
+  let count = 0
+  // Aspect ratios out past anything the kit asks for: a window surround's
+  // section is the widest at about 1:2.3.
+  for (const [hu, hv] of [[0.1, 0.1], [0.035, 0.08], [0.3, 0.1], [0.02, 0.16], [0.4, 0.05]]) {
+    for (let n = 5; n <= 8 && bad.length < 4; n++) {
+      for (let seed = 0; seed < 250; seed++) {
+        for (const round of [0, 0.16, 0.55, 0.95]) {
+          const s = roughSection(n, hu, hv, seed, { round, jitter: 0.22 })
+          count++
+          let area = 0
+          for (let k = 0; k < n; k++) {
+            const j = (k + 1) % n
+            area += s[k][0] * s[j][1] - s[j][0] * s[k][1]
+          }
+          if (!(area > 0)) { bad.push(`n${n} seed${seed} round${round} area ${area.toExponential(2)}`); continue }
+          for (let k = 0; k < n; k++) {
+            for (let m = k + 2; m < n; m++) {
+              if (k === 0 && m === n - 1) continue // adjacent across the wrap
+              if (hits(s[k], s[(k + 1) % n], s[m], s[(m + 1) % n])) {
+                bad.push(`n${n} seed${seed} round${round} edges ${k}/${m} cross`)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  check(bad.length === 0, 'every rough section is simple and wound anticlockwise',
+    bad.length ? `${bad.length} bad, e.g. ${bad[0]}` : `${count.toLocaleString()} sections, 5-8 sides`)
+}
+
 const NORMALS = [[0, 1], [0, -1], [1, 0], [-1, 0]]
 const PARTS = []
 for (const [nx, nz] of NORMALS) {
   const at = (a, out) => [-nz * a + nx * out, nx * a + nz * out]
   const dir = nx ? (nx > 0 ? '+x' : '-x') : nz > 0 ? '+z' : '-z'
   PARTS.push(
-    [`window ${dir}`, (b, detail) => windowUnit(b, { x: 0, z: 0, y0: 1.2, nx, nz, detail }), 'solid'],
-    [`window+shutters ${dir}`, (b, detail) => windowUnit(b, { x: 0, z: 0, y0: 1.2, nx, nz, shutters: true, detail }), 'solid'],
-    [`door ${dir}`, (b, detail) => doorway(b, { x: 0, z: 0, y0: 0, nx, nz, runes: true, detail }), 'solid'],
-    [`wall log ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.LOG, detail }), 'solid'],
-    [`wall stave ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STAVE, detail }), 'solid'],
-    [`wall halfTimber ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.HALF_TIMBER, detail }), 'solid'],
-    [`wall stoneBase ${dir}`, (b, detail) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STONE_BASE, detail }), 'flat'],
-    [`gableEnd ${dir}`, (b, detail) => gableEnd(b, { p0: at(-2, 0), p1: at(2, 0), y0: 2.4, apexY: 4.2, style: WALL_STYLE.LOG, detail }), 'solid'],
+    [`window ${dir}`, (b, detail, seed) => windowUnit(b, { x: 0, z: 0, y0: 1.2, nx, nz, seed, detail }), 'solid'],
+    [`window+shutters ${dir}`, (b, detail, seed) => windowUnit(b, { x: 0, z: 0, y0: 1.2, nx, nz, shutters: true, seed, detail }), 'solid'],
+    [`door ${dir}`, (b, detail, seed) => doorway(b, { x: 0, z: 0, y0: 0, nx, nz, runes: true, seed, detail }), 'solid'],
+    [`wall log ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.LOG, seed, rough: seed, detail }), 'solid'],
+    [`wall stave ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STAVE, seed, rough: seed, detail }), 'solid'],
+    [`wall halfTimber ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.HALF_TIMBER, seed, rough: seed, detail }), 'solid'],
+    [`wall stoneBase ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STONE_BASE, seed, rough: seed, detail }), 'solid'],
+    [`gableEnd ${dir}`, (b, detail, seed) => gableEnd(b, { p0: at(-2, 0), p1: at(2, 0), y0: 2.4, apexY: 4.2, style: WALL_STYLE.LOG, seed, detail }), 'solid'],
     [`leanEnd ${dir}`, (b) => leanEnd(b, { p0: at(-1.5, 0), p1: at(1.5, 0), y0: 2, y1: 3.1, style: WALL_STYLE.LOG }), 'flat'],
   )
 }
 for (const axis of ['x', 'z']) {
   PARTS.push(
-    [`gableRoof thatch ${axis}`, (b, detail) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.THATCH, tint: [1, 1, 1], fringe: true, detail }), 'solid'],
-    [`gableRoof shingle ${axis}`, (b, detail) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], fringe: false, detail }), 'solid'],
-    [`gableRoof catslide ${axis}`, (b, detail) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], vergeHi: 2.2, detail }), 'solid'],
+    [`gableRoof thatch ${axis}`, (b, detail, seed) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.THATCH, tint: [1, 1, 1], fringe: true, seed, detail }), 'solid'],
+    [`gableRoof shingle ${axis}`, (b, detail, seed) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], fringe: false, seed, detail }), 'solid'],
+    [`gableRoof catslide ${axis}`, (b, detail, seed) => gableRoof(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], vergeHi: 2.2, seed, detail }), 'solid'],
   )
 }
 for (const dir of ['+x', '-x', '+z', '-z']) {
-  PARTS.push([`leanToRoof ${dir}`, (b, detail) => leanToRoof(b, { cx: 0, cz: 0, w: 3, d: 2.5, highY: 3.2, lowY: 2.2, dir, layer: LAYER.THATCH, tint: [1, 1, 1], detail }), 'solid'])
+  PARTS.push([`leanToRoof ${dir}`, (b, detail, seed) => leanToRoof(b, { cx: 0, cz: 0, w: 3, d: 2.5, highY: 3.2, lowY: 2.2, dir, layer: LAYER.THATCH, tint: [1, 1, 1], seed, detail }), 'solid'])
 }
 PARTS.push(
-  ['plinth', (b, detail) => plinth(b, { cx: 0, cz: 0, w: 5, d: 4, top: 0.4, bottom: -0.3, batter: detail >= 2 ? 0.06 : 0 }), 'solid'],
-  ['chimney', (b, detail) => chimney(b, { x: 0, z: 0, baseY: 3, topY: 5, detail }), 'solid'],
-  ['porch', (b, detail) => porch(b, { x: 0, z: 2, floorY: 0.4, groundY: -0.3, headY: 2.4, detail }), 'solid'],
-  ['porch flat', (b, detail) => porch(b, { x: 0, z: 2, floorY: 0.05, groundY: 0, headY: 2.4, detail }), 'solid'],
-  ['steps', (b) => steps(b, { x: 0, z: 2, topY: 0.55, groundY: -0.2 }), 'solid'],
+  ['plinth', (b, detail, seed) => plinth(b, { cx: 0, cz: 0, w: 5, d: 4, top: 0.4, bottom: -0.3, batter: detail >= 2 ? 0.06 : 0, bevel: detail >= 2 ? 0.05 : 0, seed }), 'solid'],
+  ['chimney', (b, detail, seed) => chimney(b, { x: 0, z: 0, baseY: 3, topY: 5, seed, detail }), 'solid'],
+  ['porch', (b, detail, seed) => porch(b, { x: 0, z: 2, floorY: 0.4, groundY: -0.3, headY: 2.4, seed, detail }), 'solid'],
+  ['porch flat', (b, detail, seed) => porch(b, { x: 0, z: 2, floorY: 0.05, groundY: 0, headY: 2.4, seed, detail }), 'solid'],
+  ['steps', (b, detail, seed) => steps(b, { x: 0, z: 2, topY: 0.55, groundY: -0.2, seed, detail }), 'solid'],
+  // One riser, where the tread is shallower than the chamfer wants to be and the
+  // stringer is nearly flat. Both clamps in roughSlab() and steps() live here.
+  ['steps doorstep', (b, detail, seed) => steps(b, { x: 0, z: 2, topY: 0.16, groundY: 0, seed, detail }), 'solid'],
+  // A slab far thinner than its chamfer, to prove the bevel clamps rather than
+  // turning the thing inside out.
+  ['roughSlab thin', (b, detail, seed) => roughSlab(b, [-1, 0, -0.06], [1, 0.04, 0.06], { seed, bevel: 0.05, layer: LAYER.STONE, color: [1, 1, 1] }), 'solid'],
 )
 
+// Seeds, because the hewn section draws its SIDE COUNT from the seed: at one
+// seed a part is only ever tested as (say) a six-gon, and the winding of a
+// prism, the non-crossing of its corners and the mitre of a swept ring are all
+// properties of n. Only detail 2 varies -- it is the only tier that rounds
+// anything.
+const PART_SEEDS = [0, 1, 2, 3, 4, 5, 6, 7]
 const partBad = { open: [], vol: [] }
+let partCases = 0
 for (const [name, draw, kindOf] of PARTS) {
   for (const detail of [2, 1, 0]) {
-    const b = new Builder()
-    draw(b, detail)
-    if (b.triangles === 0) continue
-    const g = b.toGeometry()
-    const open = openEdges(g)
-    if (open.length) partBad.open.push(`${name} d${detail} ${open.length} unpaired`)
-    const vol = signedVolume(g)
-    // 1e-5 m3 is below anything the kit places deliberately and far above the
-    // drift on a doubled quad, whose two halves cancel to the last bit.
-    //
-    // Only detail 2 has to be POSITIVE: the lower tiers drop the solid parts of
-    // a window or a door and keep the doubled panel, which is honestly zero. No
-    // tier of anything may ever be negative.
-    const ok = kindOf === 'flat'
-      ? Math.abs(vol) < 1e-5
-      : detail === 2 ? vol > 1e-5 : vol > -1e-5
-    if (!ok) partBad.vol.push(`${name} d${detail} ${vol.toExponential(2)} m3, wanted ${kindOf}`)
-    g.dispose()
+    for (const seed of detail === 2 ? PART_SEEDS : [0]) {
+      const b = new Builder()
+      draw(b, detail, seed)
+      if (b.triangles === 0) continue
+      partCases++
+      const g = b.toGeometry()
+      const open = openEdges(g)
+      if (open.length) partBad.open.push(`${name} d${detail} s${seed} ${open.length} unpaired`)
+      const vol = signedVolume(g)
+      // 1e-5 m3 is below anything the kit places deliberately and far above the
+      // drift on a doubled quad, whose two halves cancel to the last bit.
+      //
+      // Only detail 2 has to be POSITIVE: the lower tiers drop the solid parts
+      // of a window or a door and keep the doubled panel, which is honestly
+      // zero. No tier of anything may ever be negative.
+      const ok = kindOf === 'flat'
+        ? Math.abs(vol) < 1e-5
+        : detail === 2 ? vol > 1e-5 : vol > -1e-5
+      if (!ok) partBad.vol.push(`${name} d${detail} s${seed} ${vol.toExponential(2)} m3, wanted ${kindOf}`)
+      g.dispose()
+    }
   }
 }
 check(partBad.open.length === 0, 'every part is airtight on its own',
-  partBad.open.length ? `${partBad.open.length} bad, e.g. ${partBad.open[0]}` : `${PARTS.length} parts x 3 tiers`)
+  partBad.open.length ? `${partBad.open.length} bad, e.g. ${partBad.open[0]}` : `${PARTS.length} parts, ${partCases} cases`)
 check(partBad.vol.length === 0, 'every solid part is wound outwards, every flat part is flat',
   partBad.vol.length ? `${partBad.vol.length} bad, e.g. ${partBad.vol[0]}` : 'signed volume as declared')
 
@@ -272,7 +343,7 @@ for (const kind of Object.keys(KINDS)) {
       // typo that renders as a plausible-looking wrong material.
       const lay = g.getAttribute('texLayer').array
       const legal = new Set([
-        LAYER.TIMBER_HEWN, LAYER.TIMBER_PLANK, LAYER.THATCH, LAYER.SHINGLE,
+        LAYER.TIMBER_BEAM, LAYER.TIMBER_HEWN, LAYER.TIMBER_PLANK, LAYER.THATCH, LAYER.SHINGLE,
         LAYER.STONE, LAYER.PLASTER, LAYER.THATCH_FRINGE, LAYER.GLASS,
         LAYER.IRON, LAYER.RUNE, LAYER.ROOF_TILE, LAYER.DOOR,
       ])
@@ -326,7 +397,7 @@ geoReport('budget', `every building fits the structure budget (${STRUCTURE_BUDGE
 
 // A whole village of the largest kind still has to fit §5's allotment.
 const villageTris = worstTris * 20
-check(villageTris < 45000, '20 of the worst-case building fit the village allotment',
+check(villageTris < 55000, '20 of the worst-case building fit the village allotment',
   `${villageTris.toLocaleString()} tris for 20 visible`)
 
 // One material, and therefore one draw call, is the entire architectural
@@ -483,6 +554,7 @@ console.log('\nshipped tiles')
 for (const [name, file, axes] of [
   ['thatch.png', 'public/buildings/thatch.png', 'uv'],
   ['thatch_fringe.png', 'public/buildings/thatch_fringe.png', 'u'],
+  ['timber_beam.png', 'public/buildings/timber_beam.png', 'uv'],
   ['timber_hewn.png', 'public/buildings/timber_hewn.png', 'uv'],
   ['timber_plank.png', 'public/buildings/timber_plank.png', 'uv'],
   ['shingle.png', 'public/buildings/shingle.png', 'uv'],
@@ -538,7 +610,7 @@ for (const [name, file, axes] of [
 // shipped tile with texels at 255 has nowhere left to go, and the roof that is
 // supposed to look NEW ends up identical to the one that is supposed to look
 // old -- or the slate one comes out the same value as the shake one.
-for (const name of ['thatch', 'timber_hewn', 'timber_plank', 'shingle', 'roof_tile', 'stone']) {
+for (const name of ['thatch', 'timber_beam', 'timber_hewn', 'timber_plank', 'shingle', 'roof_tile', 'stone']) {
   const px = readPng(new URL(`../public/buildings/${name}.png`, import.meta.url).pathname).data
   let hot = 0
   for (let i = 0; i < N * N; i++) {

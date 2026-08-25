@@ -70,13 +70,19 @@ import { LAYER } from '../textures.js'
 //   branches  x= k^countPower     sprays per limb x= k^countPower
 //   sprayMetres x= k^sprayPower
 //
-// `countPower` 1 holds the real-world DENSITY constant -- the same branches per
-// metre of trunk and the same sprays per metre of branch at every size, which
-// is what makes a 3 m seedling read as a young tree of the same species rather
-// than as a shrunk photograph, and it is why a seedling is cheap (triangles go
-// as roughly k^2) and a 20 m tree is not. `countPower` 0 restores the old pure
-// scaled copy, which is still what the scatter's per-instance jitter wants: a
-// tree placed 8% bigger is the same plant, not a denser one.
+// `countPower` 1 would hold the real-world DENSITY constant -- the same
+// branches per metre of trunk and the same sprays per metre of branch at every
+// size -- and triangles would then go as k^2, which is 3100 for a 20 m pine.
+// `countPower` 0 is the pure scaled copy, which is what a placement-time size
+// jitter wants (a tree set down 8% bigger is the same plant, not a denser one)
+// and what makes a 20 m tree barren.
+//
+// It is set to 0.35, which is neither, and it was found by eye in the previewer
+// rather than derived. Two reasons it lands that low. The eye judges density on
+// SCREEN, not in the world, and a taller tree is further away or subtends more
+// of the view either way; and `sprayPower` is already growing the cards, so the
+// counts are not carrying the job alone. What comes out is a 20 m pine that
+// looks as full as the 9 m one at 1200 triangles instead of 3100.
 //
 // `sprayPower` is separate and lower (0.5) because foliage does NOT scale with
 // the tree. A spruce fan is a metre and a half whether the tree is 9 m or 20 m;
@@ -159,11 +165,12 @@ export const TREE_DEFAULTS = {
   heightRef: 9,        // the height every count in this table is stated at. Not
                        // a shape knob: it says what the numbers MEAN. Move
                        // `height` away from it and the counts follow
-  countPower: 1,       // how much of a height change goes into COUNTS rather
+  countPower: 0.35,    // how much of a height change goes into COUNTS rather
                        // than into scale. 1 = constant real-world density
                        // (branches per metre of trunk, sprays per metre of
                        // branch); 0 = a pure scaled copy, which is what the
-                       // scatter's per-instance size jitter wants
+                       // scatter's per-instance size jitter wants. 0.35 holds
+                       // apparent density across the ladder -- see above
   sprayPower: 0.5,     // the same for spray SIZE, and deliberately lower: a
                        // spruce fan is about a metre and a half whether the
                        // tree is 9 m or 20 m
@@ -291,35 +298,61 @@ export const TREE_DEFAULTS = {
 // numbers that matter for telling one from another are crownPeak, crownFullness
 // and firstBranch -- the rest is character.
 export const TREE_SPECIES = {
+  // PINE -- LOD0 LOCKED. Signed off in the previewer; do not drift these
+  // without re-checking the tree AND the bush, since the bush is this preset
+  // with BUSH_OVERRIDES on top and the two share every number below.
+  //
+  //   tree   9.0 m,  792 tris,  30 branches / 60 limbs, 242 cards, 5.7 m crown
+  //   bush   1.1 m,  138 tris,  10 branches / 10 limbs,  42 cards, 1.3 m crown
+  //
+  // The tree is over DESIGN.md §5's 500-triangle LOD0 tree budget and stays
+  // there deliberately for now: 300 of it is limb cones at 5 sides each, and
+  // that is the lever an LOD1 pulls (see the note on LOD tiers at the top).
+  //
+  // What each group is doing, so a future edit knows what it would break:
+  //
+  //   SILHOUETTE  crownPeak 0 is the cone -- a spruce's longest branches are at
+  //     the very bottom and shorten all the way up. crownFullness just over 1
+  //     keeps the sides straight rather than bellied. firstBranch 0.2 carries
+  //     branches nearly to the ground, which is the other half of "spruce".
+  //   BRANCHES    30 scattered (whorlSize 0), not ringed: real whorls read as
+  //     regular and fake at this count. They leave the trunk very slightly
+  //     BELOW horizontal (-0.12) at the hem and rise to +0.43 at the top, and
+  //     droop 0.3 rad on the way out, which is the sag that makes it a conifer
+  //     and not a bottle brush.
+  //   FOLIAGE     the spray_pine cut is a whole needled FAN, not one twig, so
+  //     1.5 m is a branch's worth of foliage and sprayTaper drops it to ~0.5 m
+  //     at the tips. sprayLift 0.05 lays the fan along its twig instead of
+  //     standing it up, sprayDown 0.35 hangs it, and sprayVary/sprayJitter make
+  //     sure no two are the same size or angle. 4 cards a limb at cardTris 2:
+  //     the same 8 triangles as 8 triangular cards bought, spent on half as
+  //     many WHOLE sprays, because the one-triangle cut crops the fan's bottom
+  //     corners and on a needled cut that shows as a clipped edge.
   pine: {
     label: 'pine',
     barkLayer: LAYER.BARK_PINE,
     leafLayer: LAYER.SPRAY_PINE,
     params: {
       sprayAspect: 0.961,
-      // A spruce branch: a lot of small needled twigs, biggest where it leaves
-      // the trunk, hanging outward and down, none of them the same size.
-      sprays: 8,
+      sprays: 4,
+      cardTris: 2,
+      sprayMetres: 1.5,
       sprayTaper: 0.35,
-      sprayLift: 0.05,      // needles continue the twig, they do not stand up
+      sprayLift: 0.05,
       sprayDown: 0.35,
       sprayOut: 0.7,
       sprayVary: 0.4,
       sprayJitter: 1.1,
       crownPeak: 0.0,
       crownFullness: 1.15,
-      firstBranch: 0.2,   // a spruce carries branches most of the way down
+      firstBranch: 0.2,
       branchLength: 0.3,
       branches: 30,
-      whorlSize: 0,       // scattered, not ringed -- see the note on whorlSize
+      whorlSize: 0,
       branchAngle: -0.12,
       branchRise: 0.55,
       branchDroop: 0.30,
       forkAngle: 0.8,
-      // The spray_pine cut is a whole needled FAN, not a single twig, so its
-      // world size is a branch's worth of foliage: 1.5 m at the trunk falling
-      // to sprayTaper x that, ~0.5 m, at the tips.
-      sprayMetres: 1.5,
       barkRepeat: 8,
       trunkRadius: 0.026,
       trunkBend: 0.02,
@@ -340,7 +373,12 @@ export const TREE_SPECIES = {
       branchAngle: 0.32,
       branchRise: 0.5,
       branchDroop: 0.55,
-      sprays: 5,
+      sprays: 8,
+      // A quad, not a triangle. The one-triangle card crops the bottom corners
+      // of its cut, and on a broadleaf spray -- where the leaves run right down
+      // to the stem -- that reads as a leaf sliced off rather than as the edge
+      // of a spray. The pine's needled fan hides it; leaves do not.
+      cardTris: 2,
       sprayLift: 0.45,
       sprayMetres: 0.6,
       trunkRadius: 0.045,

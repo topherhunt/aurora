@@ -95,10 +95,10 @@ export const LAYER = {
 
   // --- buildings (DESIGN.md §19) -------------------------------------------
   //
-  // Ten layers here, plus ROOF_TILE and DOOR appended at the end of the
-  // registry once real photographic sources for them turned up. Twelve is what
-  // it takes to make a building read as ONE object rather than as a pile of
-  // parts. The test each of them passed is the one FROND_0 sets above -- a
+  // Ten layers here, plus ROOF_TILE, DOOR and TIMBER_BEAM appended at the end
+  // of the registry once real photographic sources for them turned up. Thirteen
+  // is what it takes to make a building read as ONE object rather than as a
+  // pile of parts. The test each of them passed is the one FROND_0 sets -- a
   // layer has to read as different at the distance it will be seen -- and three
   // candidates failed it and are not here:
   //
@@ -117,10 +117,10 @@ export const LAYER = {
   //   A moss layer would need a second blended pass over the roof, which means
   //   a second material, which splits the batch. That trade is never worth it.
   //
-  // 12 building layers x 64 KB = 768 KB, taking the array from 9 to 25 of the
+  // 13 building layers x 64 KB = 832 KB, taking the array from 9 to 26 of the
   // 256 layers §9 measured as available.
-  TIMBER_HEWN: 9, // round log courses -- log-cabin walls, corner posts, purlins
-  TIMBER_PLANK: 10, // sawn boards -- stave walls, doors, shutters, decking, gables
+  TIMBER_HEWN: 9, // rough-sawn boarding -- porch decks, soffits, wide planking
+  TIMBER_PLANK: 10, // sawn boards -- stave walls, shutters, window frames, rails
   THATCH: 11, // straw roof
   SHINGLE: 12, // wood shakes; tint cold for slate
   STONE: 13, // rubble masonry -- plinths, foundations, chimneys
@@ -155,9 +155,9 @@ export const LAYER = {
 
   // --- buildings, second pass (real photographic sources) -------------------
   //
-  // Two layers the first nine could not cover, appended for the same reason the
-  // tree layers were: an index is baked into every shipped `texLayer`, so this
-  // list only ever grows at the end.
+  // Three layers the first nine could not cover, appended for the same reason
+  // the tree layers were: an index is baked into every shipped `texLayer`, so
+  // this list only ever grows at the end.
   //
   // ROOF_TILE is the one that contradicts the argument made above for slate.
   // That argument stands -- slate is a shake in a colder hue, and hue is free
@@ -171,10 +171,24 @@ export const LAYER = {
   // rather than costing them -- the scan already has its hinge straps and its
   // ring pull painted on, so doorway() stopped emitting six doubled decal quads
   // when this landed.
+  //
+  // TIMBER_BEAM is the split of what used to be one wood layer into the two
+  // things a Nordic building is actually made of. TIMBER_HEWN was cut from a
+  // squared beam and then had log-course shading multiplied into it, which made
+  // it serve as round logs, as posts and as boarding all at once and read as
+  // none of them well. The photograph here is a weathered baulk with the checks
+  // and the splits still in it, and it is what every raw member wears -- log
+  // courses, log ends, posts, rails, jambs. TIMBER_HEWN kept its own source and
+  // is now rough-SAWN boarding: the porch deck, the soffit under an eave, the
+  // wide planking that is cut but not planed. The distinction is worth 64 KB
+  // because it is a silhouette distinction as much as a texture one; the beam
+  // tile is what prism() members are lit by, and a plank tile on a five-sided
+  // log is the one combination that makes the rounding look like a mistake.
   ROOF_TILE: 23, // red scalloped pantile -- the roof a prosperous inn has
   DOOR: 24, // decal sheet: one plank door leaf, ironwork included
+  TIMBER_BEAM: 25, // raw uncut baulk -- log courses, posts, rails, every member
 }
-export const LAYER_COUNT = 25
+export const LAYER_COUNT = 26
 
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
@@ -201,8 +215,9 @@ export const TILE_METRES = {
   // the first few frames: the photograph is what the player looks at, so it is
   // the photograph's content that has to be the right size. Where the two
   // disagree the generator is briefly the wrong scale, which is invisible.
-  [LAYER.TIMBER_HEWN]: 0.84, // 2 courses per tile -> a 0.42 m log
-  [LAYER.TIMBER_PLANK]: 0.72, // 3 boards per tile -> a 0.24 m board
+  [LAYER.TIMBER_BEAM]: 0.84, // 2 log courses per tile -> a 0.42 m log
+  [LAYER.TIMBER_HEWN]: 0.9, // 3 rough boards per tile -> a 0.3 m board
+  [LAYER.TIMBER_PLANK]: 0.72, // 3 sawn boards per tile -> a 0.24 m board
   [LAYER.THATCH]: 1.6, // 3 courses per tile
   [LAYER.SHINGLE]: 1.1, // 6 x 6 shakes per tile -> a 0.18 m shake
   [LAYER.ROOF_TILE]: 1.35, // 5 x 6 pantiles per tile -> a 0.27 x 0.22 m tile
@@ -232,6 +247,7 @@ export const IMAGE_LAYERS = {
   [LAYER.FROND_0]: 'ferns/fern_frond_0.png',
   [LAYER.THATCH]: 'buildings/thatch.png',
   [LAYER.THATCH_FRINGE]: 'buildings/thatch_fringe.png',
+  [LAYER.TIMBER_BEAM]: 'buildings/timber_beam.png',
   [LAYER.TIMBER_HEWN]: 'buildings/timber_hewn.png',
   [LAYER.TIMBER_PLANK]: 'buildings/timber_plank.png',
   [LAYER.SHINGLE]: 'buildings/shingle.png',
@@ -367,6 +383,7 @@ export function buildTextureArray() {
   // tile it used to be drawn with.
   layers[LAYER.ROOF_TILE] = tileShingles(n)
   layers[LAYER.DOOR] = tilePlanks(n)
+  layers[LAYER.TIMBER_BEAM] = tileLogs(n)
 
   // DataArrayTexture wants one contiguous buffer, layers back to back. Image
   // layers are left at zero -- fully transparent, so alphaTest discards them --
