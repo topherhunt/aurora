@@ -111,3 +111,68 @@ export function createPropMaterial(textureArray, { vertexColors = false } = {}) 
 
   return material
 }
+
+/**
+ * The material an IMPOSTOR IS BAKED WITH -- not one anything in the world is
+ * drawn with.
+ *
+ * This looks like it breaks the one-material rule at the top of this file, and
+ * it does not: that rule is about what BatchedMesh can collapse into one
+ * multi-draw call, and nothing drawn with this ever enters a batch. It is used
+ * for exactly one offscreen render into a 128x128 target, after which the
+ * result is bytes in a texture layer and this material is disposed.
+ *
+ * Basic rather than Lambert, and that is the whole point of its existing.
+ * An impostor is shaded TWICE if you let it be: once when the tree is captured
+ * and again when the card carrying that capture is lit. Baking unlit albedo
+ * leaves all the shading to the card's own normals, which is the same choice
+ * tree.js makes for its canopy -- see the canopy-normal pass at the bottom of
+ * buildTree, which hands every leaf the crown shell's normal. The impostor card
+ * carries an outward horizontal normal per plane for the same reason, so a tree
+ * shades the same way either side of the LOD swap.
+ */
+export function createImpostorBakeMaterial(textureArray) {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    alphaTest: 0.5,
+    transparent: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  })
+
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uAtlas = { value: textureArray }
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute float texLayer;
+        attribute vec2 uvProj;
+        varying float vTexLayer;
+        varying vec2 vUvProj;`
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vTexLayer = texLayer;
+        vUvProj = uvProj;`
+      )
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        precision highp sampler2DArray;
+        uniform sampler2DArray uAtlas;
+        varying float vTexLayer;
+        varying vec2 vUvProj;`
+      )
+      .replace(
+        'vec4 diffuseColor = vec4( diffuse, opacity );',
+        `vec4 diffuseColor = vec4( diffuse, opacity );
+        diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );`
+      )
+  }
+
+  material.customProgramCacheKey = () => 'impostor-bake-v1'
+  return material
+}

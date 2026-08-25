@@ -93,6 +93,8 @@
         <button id="bush">bush</button>
         <button id="gallery">seeds</button>
         <button id="sizes">sizes</button>
+        <button id="lod1">LOD1</button>
+        <button id="card">impostor</button>
         <button id="grid">grid</button>
         <button id="wire">wireframe</button>
         <button id="spin">spin</button>
@@ -108,7 +110,10 @@
       <p class="note">
         Trunk and limbs are <em>cones</em>: rings of quads closed by a fan of single triangles at a
         point, so one ring plus an apex costs <em>sides</em> triangles rather than the
-        <em>sides&times;2</em> a flat-capped tube would. Foliage is N cards per limb plus
+        <em>sides&times;2</em> a flat-capped tube would. At <em>branchSides</em> 1 -- which is what
+        <em>LOD1</em> builds -- a limb is instead ONE triangle, that same cone sliced down its
+        vertical plane, so it keeps its full thickness from every view you can have of it standing
+        on the ground. Foliage is N cards per limb plus
         <em>apexSprays</em> on the trunk's own tip, at <em>cardTris</em> apiece, and the default
         card is ONE triangle with its apex at the stem --
         the shape a spray already is. There is no tiled surface anywhere in the tree: a repeating

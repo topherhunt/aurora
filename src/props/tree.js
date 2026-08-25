@@ -27,9 +27,10 @@ import { LAYER } from '../textures.js'
 // bought a tube with a cap on it.
 //
 //   cone(sides, rings) = sides x ((rings - 1) x 2 + 1)
+//   limb(sides, rings) = 1 if sides == 1, else cone(sides, rings)
 //   limbs              = branches x (1 + forks)
 //   tris = cone(trunkSides, trunkRings)
-//        + limbs x cone(branchSides, branchRings)
+//        + limbs x limb(branchSides, branchRings)
 //        + (limbs x sprays + apexSprays) x cardTris
 //
 // which is `resolveTree` below -- the one place that arithmetic is written, and
@@ -213,9 +214,10 @@ export const TREE_DEFAULTS = {
   branchDroop: 0.55,   // total bend from launch to tip, radians
   branchCurve: 1.5,    // >1 concentrates the bend at the tip
   branchSway: 0.25,    // lateral drift, so a branch is not confined to a plane
-  branchSides: 5,      // sides around a limb. <3 draws no limb at all, only its
-                       // foliage. Five is the cheapest thing that still reads
-                       // as round rather than as a flat ribbon seen edge-on
+  branchSides: 5,      // sides around a limb. Five is the cheapest thing that
+                       // still reads as round rather than as a flat ribbon seen
+                       // edge-on. 1 is the LOD1 limb: ONE triangle, a vertical
+                       // fin (addFin). 0 draws no limb at all, only its foliage
   branchRings: 1,      // rings below the tip, as trunkRings. 1 = a straight
                        // cone from base to tip; 2 makes a strongly drooping
                        // branch actually curve, at twice the triangles. Note
@@ -332,6 +334,7 @@ export const TREE_SPECIES = {
     label: 'pine',
     barkLayer: LAYER.BARK_PINE,
     leafLayer: LAYER.SPRAY_PINE,
+    impostorLayer: LAYER.IMPOSTOR_PINE,
     params: {
       sprayAspect: 0.961,
       sprays: 4,
@@ -362,6 +365,7 @@ export const TREE_SPECIES = {
     label: 'oak',
     barkLayer: LAYER.BARK,
     leafLayer: LAYER.LEAVES,
+    impostorLayer: LAYER.IMPOSTOR_OAK,
     params: {
       sprayAspect: 0.651,
       crownPeak: 0.5,
@@ -380,7 +384,7 @@ export const TREE_SPECIES = {
       // of a spray. The pine's needled fan hides it; leaves do not.
       cardTris: 2,
       sprayLift: 0.45,
-      sprayMetres: 0.6,
+      sprayMetres: 1.5,
       trunkRadius: 0.045,
       trunkBend: 0.07,
     },
@@ -389,21 +393,27 @@ export const TREE_SPECIES = {
     label: 'birch',
     barkLayer: LAYER.BARK_BIRCH,
     leafLayer: LAYER.LEAF_ASH,
+    impostorLayer: LAYER.IMPOSTOR_BIRCH,
     params: {
       sprayAspect: 0.642,
+      // A birch is a 6 m tree, and heightRef says so: the counts below ARE the
+      // counts for one, rather than a 9 m tree's counts scaled down. Move
+      // `height` off 6 and they scale from here.
+      height: 6,
+      heightRef: 6,
       crownPeak: 0.35,
       crownFullness: 0.8,
       firstBranch: 0.45,
-      branchLength: 0.20,
+      branchLength: 0.36,
       branches: 13,
       whorlSize: 1,
       branchAngle: 0.45,
       branchRise: 0.35,
       branchDroop: 0.95, // birch twigs hang; this is most of what says "birch"
       branchCurve: 2.2,
-      sprays: 5,
+      sprays: 6,
       sprayLift: 0.2,
-      sprayMetres: 0.4,
+      sprayMetres: 2.0,
       trunkRadius: 0.018,
       trunkBend: 0.09,
     },
@@ -412,21 +422,25 @@ export const TREE_SPECIES = {
     label: 'aspen',
     barkLayer: LAYER.BARK_BIRCH,
     leafLayer: LAYER.LEAF_ASPEN,
+    impostorLayer: LAYER.IMPOSTOR_ASPEN,
     params: {
       sprayAspect: 0.492,
+      height: 6,          // as birch: stated at its own height, not scaled
+      heightRef: 6,       // down from the 9 m the other two are tuned at
       crownPeak: 0.45,
       crownFullness: 1.6, // narrow and columnar -- aspens grow in stands and
                           // have almost no room to spread sideways
-      firstBranch: 0.52,
-      branchLength: 0.16,
+      firstBranch: 0.35,
+      branchLength: 0.45,
       branches: 14,
       whorlSize: 1,
       branchAngle: 0.7,
       branchRise: 0.3,
       branchDroop: 0.3,
       sprays: 5,
+      cardTris: 2,
       sprayLift: 0.4,
-      sprayMetres: 0.4,
+      sprayMetres: 1.5,
       trunkRadius: 0.016,
       trunkBend: 0.04,
     },
@@ -463,6 +477,59 @@ export const BUSH_OVERRIDES = {
 }
 
 /**
+ * The LOD1 overlay: the same tree, regenerated coarser.
+ *
+ * NOT A DECIMATION, and it cannot be one. A collapse decimator does not fail on
+ * card foliage, it succeeds by flattening it -- see DESIGN.md §9 bugs 10-11,
+ * where a grass tuft decimated to 95 cm2 of surface while every texture-based
+ * gate scored it 89% healthy, and a 1,703-triangle hero oak collapsed to 1,794
+ * twig cards, five trunk polygons and no leaves, because cards are boundary
+ * edges a collapse cannot touch while the solid trunk collapses freely. So a
+ * tier is a re-run of the generator with different numbers, the way the fern
+ * bank's three tiers are 6, 4 and 2 segments per frond.
+ *
+ * This tier covers 30-130 m (DESIGN.md §5's tree class), and every cut below is
+ * argued against what a pixel is worth at that range -- Quest 2's eye buffer is
+ * about 16.2 px/deg, so a 9 m tree at 30 m is roughly 280 px tall.
+ *
+ *   branchSides 1   A limb cone becomes ONE vertical triangle. A pine limb is
+ *                   16 cm across at its thickest, which is 5 px at 30 m, and
+ *                   most of that is behind its own foliage -- but branches are
+ *                   NOT deleted, because the ones that poke out past the crown
+ *                   are skyline, and skyline is the whole silhouette. See
+ *                   addFin for why one triangle is enough to keep them.
+ *   cardTris 1      The triangular card crops the two bottom corners of its
+ *                   cut, which is why LOD0 broadleaves refuse it. At 30 m that
+ *                   relic is about two pixels.
+ *   sprays / 2      Halved per LIMB rather than by dropping branches: the two
+ *                   cost the same triangles (cards = limbs x sprays) and are
+ *                   perceptually opposite. Fewer branches removes crown
+ *                   POSITIONS and opens holes in the silhouette; fewer sprays
+ *                   per limb thins evenly and keeps the spread.
+ *   bigger sprays   Half as many cards, each keeping ~70% of its art as a
+ *                   triangle, is x2.85 area to make up and so x1.7 on a side.
+ *                   Capped at SPRAY_METRES_MAX, which is where the previewer's
+ *                   slider stops and where a spray stops being a spray.
+ */
+export const LOD1_SPRAY_SCALE = 1.7
+export const SPRAY_METRES_MAX = 2.5
+
+export function treeLod(options, tier) {
+  if (tier === 0) return { ...options }
+  // Fail loudly rather than silently handing back LOD1 for a tier that does not
+  // exist yet: LOD2 is the impostor, and it is not a mesh.
+  if (tier !== 1) throw new Error(`treeLod: no tier ${tier}; trees have LOD0 and LOD1`)
+  const p = { ...TREE_DEFAULTS, ...options }
+  return {
+    ...p,
+    branchSides: 1,
+    cardTris: 1,
+    sprays: Math.max(1, Math.round(p.sprays / 2)),
+    sprayMetres: Math.min(SPRAY_METRES_MAX, p.sprayMetres * LOD1_SPRAY_SCALE),
+  }
+}
+
+/**
  * Every count and cost a set of parameters implies, BEFORE any geometry exists.
  *
  * This is the one place the triangle law lives. buildTree builds from what this
@@ -473,9 +540,10 @@ export const BUSH_OVERRIDES = {
  * without building it.
  *
  *   cone(sides, rings) = sides x ((rings - 1) x 2 + 1)
+ *   limb(sides, rings) = 1 if sides == 1, else cone(sides, rings)
  *   limbs              = branches x (1 + forks)
  *   tris = cone(trunkSides, trunkRings)
- *        + limbs x cone(branchSides, branchRings)
+ *        + limbs x limb(branchSides, branchRings)
  *        + (limbs x sprays + apexSprays) x cardTris
  *
  * with `branches` and `sprays` already scaled by height -- see the note at the
@@ -500,9 +568,14 @@ export function resolveTree(options = {}) {
   // solid at all -- foliage on an invisible twig -- and that is a legal, if
   // extreme, LOD tier, so it costs zero rather than being clamped up to 3.
   const cone = (n, r) => (n >= 3 ? n * ((Math.max(1, Math.round(r)) - 1) * 2 + 1) : 0)
+  // A limb has a third state the trunk does not: ONE triangle, the vertical
+  // fin -- see addFin. It ignores branchRings, because a fin is a chord by
+  // construction and a second ring would only buy it a bend nobody can see at
+  // the range this tier is for.
+  const limb = (n, r) => (Math.round(n) === 1 ? 1 : cone(Math.round(n), r))
   const trunkTris =
     p.trunkRadius > 0 ? cone(Math.max(3, Math.round(p.trunkSides)), p.trunkRings) : 0
-  const branchTris = limbs * cone(Math.round(p.branchSides), p.branchRings)
+  const branchTris = limbs * limb(p.branchSides, p.branchRings)
   const sprayTris = (limbs * sprays + apexSprays) * cardTris
 
   return {
@@ -645,6 +718,63 @@ function addCard(out, centre, right, up, w, h, texLayer, tris) {
   if (tris === 1) out.indices.push(base, base + 1, base + 2)
   else out.indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
   return tris
+}
+
+// A limb in ONE triangle: the LOD1 branch.
+//
+// A limb cone is already a shape that tapers linearly to a point, so the
+// cheapest honest thing that keeps its silhouette is the triangle you get by
+// slicing that cone down its own axis -- two corners a radius either side of
+// the base, and the apex at the tip. No card, no texture trick, the same bark
+// layer as the cone it replaces.
+//
+// THE SLICING PLANE IS THE VERTICAL ONE, and that is the whole reason this
+// works rather than reading as a flat scrap of cardboard. A branch is roughly
+// horizontal, and what a viewer standing on the ground sees of a real round
+// branch is its thickness measured PERPENDICULAR to both the branch and their
+// own eyeline -- which, for a horizontal branch and a roughly horizontal
+// eyeline, is vertical. So the fin's width runs along the component of UP
+// perpendicular to the limb: from anywhere on the ground, all the way round the
+// tree, the fin presents its full width and is indistinguishable from the cone.
+// The one angle that catches it out is looking straight down the limb's own
+// axis, where it thins to a line -- but a real branch pointed at your eye is a
+// dot, so that view was never going to show thickness either.
+//
+// The normal is horizontal, perpendicular to the fin, so the material lights it
+// like the side of a cylinder. Seen from the far side, material.js keeps that
+// authored normal (it undoes three's double-sided flip) and applies its gentle
+// back-facing ramp, which is exactly the shaded side of a branch.
+function addFin(out, base, tip, radius, vRepeat, texLayer) {
+  const d = new THREE.Vector3().subVectors(tip, base)
+  if (d.lengthSq() < 1e-12) return 0
+  d.normalize()
+
+  // UP with the along-limb component taken out. A near-vertical limb has no
+  // such component to speak of, and then any horizontal perpendicular will do:
+  // the fin is upright already and every ground-level view sees across it.
+  const w = new THREE.Vector3().copy(UP).addScaledVector(d, -UP.dot(d))
+  if (w.lengthSq() < 1e-6) w.set(-d.z, 0, d.x)
+  if (w.lengthSq() < 1e-12) w.set(1, 0, 0)
+  w.normalize()
+
+  const n = new THREE.Vector3().crossVectors(w, d).normalize()
+  const i = out.positions.length / 3
+  const corners = [
+    [base.x + w.x * radius, base.y + w.y * radius, base.z + w.z * radius, 0, 0],
+    [base.x - w.x * radius, base.y - w.y * radius, base.z - w.z * radius, 1, 0],
+    [tip.x, tip.y, tip.z, 0.5, vRepeat],
+  ]
+  for (const [x, y, z, u, v] of corners) {
+    out.positions.push(x, y, z)
+    out.normals.push(n.x, n.y, n.z)
+    out.uvs.push(u, v)
+    out.layers.push(texLayer)
+    // Wood, not leaf: the canopy-normal pass at the bottom of buildTree must
+    // leave that horizontal normal exactly where it is.
+    out.leaf.push(0)
+  }
+  out.indices.push(i, i + 1, i + 2)
+  return 1
 }
 
 // A tapered solid closing to a POINT: `rings` rings of `sides` vertices each,
@@ -861,6 +991,12 @@ export function buildTree(options = {}) {
         })
       }
       branchTris += addCone(out, list, samplePath(pts, 1).pos, brSides, 1,
+        Math.max(1, Math.round(length * p.barkRepeat)), p.barkLayer)
+    } else if (brSides === 1 && baseRadius > 0) {
+      // The LOD1 limb. It spans the DRAWN axis, not the path, so it agrees with
+      // the cone it stands in for -- and with the card seats, which use the
+      // same chord.
+      branchTris += addFin(out, limbAxis[0], limbAxis[limbAxis.length - 1], baseRadius,
         Math.max(1, Math.round(length * p.barkRepeat)), p.barkLayer)
     }
 

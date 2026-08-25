@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { buildTree, resolveTree, crownProfile, TREE_DEFAULTS, TREE_SPECIES, BUSH_OVERRIDES } from './props/tree.js'
+import { buildTree, resolveTree, treeLod, crownProfile, TREE_DEFAULTS, TREE_SPECIES, BUSH_OVERRIDES } from './props/tree.js'
+import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers, IMAGE_LAYERS, TEX_SIZE } from './textures.js'
 import { createPropMaterial } from './material.js'
@@ -75,7 +76,7 @@ const SLIDERS = [
   ['branchDroop', 0, 2.5, 0.01, 'total bend from launch to tip. High = weeping birch'],
   ['branchCurve', 0.3, 3, 0.05, 'where the bend concentrates. >1 = stiff at the trunk, floppy at the tip'],
   ['branchSway', 0, 1, 0.01, 'lateral drift, so a branch is not confined to a plane'],
-  ['branchSides', 0, 8, 1, 'sides around a solid limb. Under 3 draws no limb at all, only its foliage. Each limb costs branchSides triangles'],
+  ['branchSides', 0, 8, 1, 'sides around a solid limb, costing branchSides triangles each. 1 is the LOD1 limb: one vertical fin, 1 triangle. 0 draws no limb at all, only its foliage'],
   ['branchRings', 1, 4, 1, 'rings below the tip. 1 is a straight cone; 2 lets a strongly drooping branch actually curve, at twice the triangles'],
   ['branchWidth', 0, 0.12, 0.002, 'limb base radius, as a fraction of its own length'],
 
@@ -110,7 +111,8 @@ const SLIDERS = [
 
 // DESIGN.md §5's per-class mesh-tier budgets, which is what the panel checks
 // against. Two numbers for trees because the class has two mesh tiers.
-const CLASS_BUDGET = { tree: 500, bush: 84 }
+// DESIGN.md §5's prop ladder, per class and per mesh tier.
+const CLASS_BUDGET = { tree: [500, 130], bush: [84, 56] }
 
 let speciesKey = 'pine'
 let bushMode = false
@@ -230,7 +232,11 @@ const ROWS = 4
 // five are exact scaled copies of each other, and the biggest one looks wrong.
 const SIZE_LADDER = [0.2, 0.45, 1, 1.8, 3]
 
-let view = 'single' // 'single' | 'gallery' | 'sizes'
+let view = 'single' // 'single' | 'gallery' | 'sizes' | 'card'
+// Which mesh tier to build. LOD1 is not a separate parameter set to tune -- it
+// is `treeLod` applied to whatever the sliders currently say, so a change to
+// LOD0 moves LOD1 with it and the two cannot drift apart.
+let lodTier = 0
 let wireframe = false
 let showGrid = true
 
@@ -258,7 +264,7 @@ function rebuild() {
   material.needsUpdate = true
 
   const sp = TREE_SPECIES[speciesKey]
-  const base = { ...params, leafLayer: sp.leafLayer, barkLayer: sp.barkLayer }
+  const base = treeLod({ ...params, leafLayer: sp.leafLayer, barkLayer: sp.barkLayer }, lodTier)
 
   // What to build: a seed grid, a size ladder, or one tree.
   const jobs = []
@@ -271,6 +277,7 @@ function rebuild() {
       }
     }
   } else {
+    // 'single' and 'card' both build one tree; 'card' then bakes it.
     jobs.push({ seed: Number(params.seed), height: params.height })
   }
 
@@ -303,9 +310,27 @@ function rebuild() {
   lastWidth = Math.max(0.2, width)
   const spacing = lastWidth * 1.25
 
+  // The impostor view stands the baked card next to the tree it was captured
+  // from, at the same scale, because the only question worth asking of an
+  // impostor is "from here, can you tell which one is which" -- and a card on
+  // its own always looks fine.
+  if (view === 'card') {
+    const geo = geos[0]
+    const u = geo.userData.tree
+    const layer = TREE_SPECIES[speciesKey].impostorLayer
+    const card = bakeImpostor(renderer, geo, atlas, layer, { width: u.crownWidth, height: u.height })
+    const hex = buildImpostorCard(card.width, card.height, layer)
+    const mesh = new THREE.Mesh(hex, material)
+    mesh.position.x = lastWidth * 0.85
+    group.add(mesh)
+    agg.card = hex.userData.impostor.triangles
+  }
+
   geos.forEach((geo, i) => {
     const mesh = new THREE.Mesh(geo, material)
-    if (view !== 'single') {
+    if (view === 'card') {
+      mesh.position.x = -lastWidth * 0.85
+    } else if (view !== 'single') {
       mesh.position.set(
         ((i % COLS) - (COLS - 1) / 2) * spacing,
         0,
@@ -318,11 +343,11 @@ function rebuild() {
   // The rule stands beside the single tree, and beside the leftmost column of a
   // ladder where it is doing the most work.
   rule.visible = showGrid
-  rule.position.x = view === 'single' ? -Math.max(1.2, lastWidth * 0.75) : -(COLS / 2 + 0.35) * spacing
+  rule.position.x = view === 'gallery' || view === 'sizes' ? -(COLS / 2 + 0.35) * spacing : -Math.max(1.2, lastWidth * 0.75)
 
   // Fog and grid scale with the subject: a 1 m bush and a 30 m pine want very
   // different horizons, and a fixed one either hides the tree or does nothing.
-  const reach = view === 'single' ? params.height : Math.max(params.height, spacing * COLS)
+  const reach = view === 'gallery' || view === 'sizes' ? Math.max(params.height, spacing * COLS) : params.height
   scene.fog.near = reach * 1.5
   scene.fog.far = reach * 9
 
@@ -355,7 +380,7 @@ function frame() {
       ? Math.max(params.height, lastWidth) * 0.6
       : Math.hypot((COLS * spacing) / 2, (ROWS * spacing) / 2)
   const dist = (half / Math.tan((camera.fov * Math.PI) / 360)) * 1.5
-  controls.target.set(0, view === 'single' ? params.height * 0.45 : params.height * 0.3, 0)
+  controls.target.set(0, view === 'gallery' || view === 'sizes' ? params.height * 0.3 : params.height * 0.45, 0)
   camera.position.set(0, dist * 0.45, dist * 0.9)
 }
 
@@ -409,40 +434,47 @@ async function measureDisk() {
 function refresh() {
   const s = rebuild()
   const per = Math.round(s.tris / s.count)
-  const budget = bushMode ? CLASS_BUDGET.bush : CLASS_BUDGET.tree
+  const budget = (bushMode ? CLASS_BUDGET.bush : CLASS_BUDGET.tree)[lodTier]
+  // What the tier actually builds, which at LOD1 is not what the sliders say.
+  const shown = treeLod(params, lodTier)
 
   // Every solid here is a CONE -- rings of quads closed by a fan of single
   // triangles at the apex -- so it costs sides x ((rings - 1) x 2 + 1) rather
   // than the sides x rings x 2 a capped tube would. One ring plus a point is
   // exactly `sides` triangles, and that is the default for both trunk and limb.
   const cone = (n, r) => (n >= 3 ? `${n}&times;((${r}-1)&times;2+1)` : '&mdash;')
-  const sides = Math.round(params.trunkSides)
-  const rings = Math.round(params.trunkRings)
-  const bs = Math.round(params.branchSides)
-  const br = Math.round(params.branchRings)
+  const sides = Math.round(shown.trunkSides)
+  const rings = Math.round(shown.trunkRings)
+  const bs = Math.round(shown.branchSides)
+  const br = Math.round(shown.branchRings)
+  // A limb at one side is the vertical fin, not a cone -- see addFin in tree.js.
+  const limb = (n, r) => (n === 1 ? '1 fin' : cone(n, r))
   // Counts come from resolveTree, not from the sliders: `branches` and `sprays`
   // are stated at `heightRef` and scale with `height`, so at any other height
   // the slider value is not what gets built. resolveTree is the same function
   // buildTree grows from, which is what makes this panel a prediction rather
   // than a second implementation that can disagree.
-  const res = resolveTree(params)
+  const res = resolveTree(shown)
   const { branches: nb, sprays: ns, forks: nf, limbs: nl, cardTris: ct, apexSprays: na } = res
 
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} total)` : ''}`],
     [`&nbsp;&nbsp;trunk ${cone(sides, rings)}`, Math.round(s.trunk / s.count)],
     [`&nbsp;&nbsp;limbs ${nb}&times;(1+${nf})`, nl],
-    [`&nbsp;&nbsp;branches ${nl}&times;${cone(bs, br)}`, Math.round(s.branch / s.count)],
+    [`&nbsp;&nbsp;branches ${nl}&times;${limb(bs, br)}`, Math.round(s.branch / s.count)],
     [`&nbsp;&nbsp;sprays (${nl}&times;${ns}+${na})&times;${ct}`, Math.round(s.spray / s.count)],
     [
       '&nbsp;&nbsp;height &times;' + res.heightScale.toFixed(2),
       res.heightScale === 1 ? 'at heightRef' : `${nb} br, ${ns} sprays/limb`,
     ],
+    ...(s.card
+      ? [['&nbsp;&nbsp;impostor 3 planes&times;2', `${s.card} &mdash; on its own layer`]]
+      : []),
     ['vertices', Math.round(s.verts / s.count)],
     ['drawn here', s.count],
     ['geometry in RAM', fmt(s.bytes)],
     [
-      `${bushMode ? 'bush' : 'tree'}-class LOD0`,
+      `${bushMode ? 'bush' : 'tree'}-class LOD${lodTier}`,
       `${per} / ${budget} tris`,
       per <= budget ? 'ok' : 'warn',
     ],
@@ -722,7 +754,7 @@ function viewButton(id) {
   const btn = document.getElementById(id)
   btn.addEventListener('click', () => {
     view = view === id ? 'single' : id
-    for (const other of ['gallery', 'sizes']) {
+    for (const other of ['gallery', 'sizes', 'card']) {
       document.getElementById(other).classList.toggle('on', view === other)
     }
     refresh()
@@ -731,11 +763,13 @@ function viewButton(id) {
 }
 viewButton('gallery')
 viewButton('sizes')
+viewButton('card')
 
 toggle('bush', () => bushMode, (v) => {
   bushMode = v
   loadSpecies()
 })
+toggle('lod1', () => lodTier === 1, (v) => { lodTier = v ? 1 : 0 })
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })

@@ -187,8 +187,32 @@ export const LAYER = {
   ROOF_TILE: 23, // red scalloped pantile -- the roof a prosperous inn has
   DOOR: 24, // decal sheet: one plank door leaf, ironwork included
   TIMBER_BEAM: 25, // raw uncut baulk -- log courses, posts, rails, every member
+
+  // --- tree impostors (src/props/impostor.js) -------------------------------
+  //
+  // NOT ART. These four are the only layers in the registry with no source of
+  // their own: they are written at load, by rendering the LOD0 tree of each
+  // species side-on into a 128x128 target and reading the pixels back. That is
+  // the same argument fern-bank.js makes for having no offline bake step --
+  // an impostor generated from the mesh cannot disagree with the mesh, and a
+  // PNG on disk can, silently, for as long as nobody looks.
+  //
+  // They pass the FROND_0 rule easily and in the opposite direction from
+  // everything else here: what a player sees at 30 m IS this layer, so a pine
+  // impostor and a birch impostor are not merely different textures, they are
+  // different trees. One per SPECIES rather than per variant, because the
+  // scatter already gives every instance a yaw and the card is three planes --
+  // spinning it is three apparent silhouettes from one bake.
+  //
+  // They are also the only layers whose UVs are not tiled: an impostor is
+  // addressed 0..1 exactly once, so RepeatWrapping must never reach them. The
+  // bake leaves a transparent margin on three sides for exactly that reason.
+  IMPOSTOR_PINE: 26,
+  IMPOSTOR_OAK: 27,
+  IMPOSTOR_BIRCH: 28,
+  IMPOSTOR_ASPEN: 29,
 }
-export const LAYER_COUNT = 26
+export const LAYER_COUNT = 30
 
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
