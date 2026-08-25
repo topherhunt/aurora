@@ -3,8 +3,13 @@ import { TEX_SIZE } from '../textures.js'
 import { createImpostorBakeMaterial } from '../material.js'
 
 // ---------------------------------------------------------------------------
-// Tree impostors: a photograph of the LOD0 tree, stood up as three crossed
-// planes.
+// Prop impostors: a photograph of the LOD0 mesh, stood up as crossed planes.
+//
+// Written for trees, and the argument below is told in trees because that is
+// where it was had. Ferns use the same two functions unchanged -- see
+// bakeFernImpostors in props/fern-bank.js for the two places a rosette wants a
+// different NUMBER (two planes rather than three, two layers rather than one
+// per species) and why. Nothing here is tree-specific except the prose.
 //
 // WHY THIS INSTEAD OF A SECOND MESH TIER. DESIGN.md §5 argues at length that a
 // third conifer tier installs "a 45-triangle conifer at 94 px with no needles
@@ -42,6 +47,15 @@ import { createImpostorBakeMaterial } from '../material.js'
 // side, which is the other side of the same tree. The margin is on the sides
 // and the top; the bottom is the ground line, and what sits against it is an
 // opaque trunk rather than a leaf.
+//
+// A FERN puts leaves against that bottom edge -- a drooping frond tip really
+// does reach the ground -- so there the wrap blends the last row of tips with
+// the first row of empty sky. It is left as it is, and the reason is the range
+// rather than the geometry: the card only ever draws from 26 m out, where the
+// whole 128-texel slice covers about 20 screen pixels, so the affected texel is
+// a sixth of a pixel wide and the mip chain has averaged it away before it gets
+// there. A bottom margin would have to be paid for by sinking the card below
+// y = 0, which is a real change to every caller for an artefact nobody can see.
 const MARGIN = 0.06
 
 // How far colour is pushed outward into fully transparent texels before the
@@ -74,6 +88,21 @@ const SUPERSAMPLE = 4
  * rather than shipping an asset. It restores the render target and clear state
  * it found.
  */
+/**
+ * The card size a subject of `width` x `height` gets framed into: its own
+ * extents plus the transparent MARGIN.
+ *
+ * Exported because the card GEOMETRY and the card PIXELS do not have to be made
+ * at the same moment, and in the game they are not -- the quads go into the
+ * batch's arena when the scatter is constructed, while the photograph cannot be
+ * taken until the frond PNG has landed in the array. Both have to agree about
+ * the framing to the last texel or the picture is stretched across the quad, so
+ * both ask this rather than each applying the margin themselves.
+ */
+export function impostorCardExtents({ width, height }) {
+  return { width: width * (1 + MARGIN * 2), height: height * (1 + MARGIN) }
+}
+
 export function bakeImpostor(renderer, geometry, texArray, layer, { width, height, azimuth = 0 }) {
   if (!(width > 0) || !(height > 0)) {
     throw new Error(`bakeImpostor: need a positive width and height, got ${width}x${height}`)
@@ -82,18 +111,25 @@ export function bakeImpostor(renderer, geometry, texArray, layer, { width, heigh
     throw new Error(`bakeImpostor: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
 
-  const cardW = width * (1 + MARGIN * 2)
-  const cardH = height * (1 + MARGIN)
+  const { width: cardW, height: cardH } = impostorCardExtents({ width, height })
+
+  // How far back to stand and how deep to see. An ortho capture does not care
+  // about the distance -- that is the point of it -- so this only has to put
+  // the whole prop between the near and far planes, and it keys off the LARGER
+  // extent because a fern is wider than it is tall and a spreading one is
+  // deeper than it is high. Keying it off `height` alone would clip the front
+  // fronds off exactly the variant that most needs a card.
+  const reach = Math.max(width, height)
 
   // Ortho, because an impostor seen from 30 m and from 130 m has to be the same
   // picture. A perspective capture bakes in one distance's worth of convergence
   // and is visibly wrong at every other.
-  const cam = new THREE.OrthographicCamera(-cardW / 2, cardW / 2, cardH, 0, 0.01, height * 8)
+  const cam = new THREE.OrthographicCamera(-cardW / 2, cardW / 2, cardH, 0, 0.01, reach * 8)
   // Level with the ground and looking horizontally, so camera-y IS world-y and
   // the frustum's [bottom, top] of [0, cardH] is the tree standing on the
   // texture's bottom edge. Any tilt here bakes a worm's- or bird's-eye view
   // into a card that will be seen from neither.
-  cam.position.set(Math.sin(azimuth) * height * 2, 0, Math.cos(azimuth) * height * 2)
+  cam.position.set(Math.sin(azimuth) * reach * 2, 0, Math.cos(azimuth) * reach * 2)
   cam.lookAt(0, 0, 0)
   cam.updateMatrixWorld()
 
@@ -243,9 +279,18 @@ function dilate(px) {
  * a worst case of 22 degrees, which is not a change you can see.
  *
  *   planes  triangles  worst angle off a plane
+ *   1       2          90 deg -- edge on, it is GONE
  *   2       4          45 deg
  *   3       6          30 deg
  *   4       8          22.5 deg
+ *
+ * ONE PLANE IS ONLY LEGAL IF SOMETHING TURNS IT. The 90-degree row is not a
+ * quality figure, it is a disappearance: a fixed single quad seen along its own
+ * plane covers no pixels at all, and a batched multi-draw has no per-frame
+ * chance to yaw it toward the eye. So one plane belongs to a camera-facing
+ * billboard and nothing else, and every fixed card here starts at two. That is
+ * the whole reason a fern's card is 4 triangles and not the 2 that DESIGN.md §5
+ * originally tabled for the bush class.
  *
  * Planes are spread over HALF a turn, not a whole one: a quad at azimuth `a`
  * and a quad at `a + 180` are the same plane, and the material draws double
@@ -269,8 +314,11 @@ function dilate(px) {
  * and from one bake.
  *
  * The parity only works out for an ODD number of planes. At 4 the wrap lands
- * two alike at one of the eight seams. 3 is the default, so this is noted
- * rather than solved.
+ * two alike at one of the eight seams. At 2 it does not help at all -- the four
+ * apparent faces come out N M M N either way, so mirroring only moves which
+ * pair is adjacent. It is left on regardless: it costs nothing, and the case it
+ * fails on is a fern, which is a ROSETTE and therefore close to its own mirror
+ * image anyway. A pine would notice; a plant with radial symmetry does not.
  *
  * NORMALS ARE OUTWARD AND HORIZONTAL, one per plane. The bake is unlit albedo
  * (see createImpostorBakeMaterial), so all of the shading lives here, and this

@@ -1,8 +1,13 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildFern, geometryBytes, FERN_DEFAULTS } from './props/fern.js'
+import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
+import { FERN_CARD_PLANES, FERN_LAYERS, FERN_ASPECTS, fernCardLayer } from './props/fern-bank.js'
+import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
+import { createPropMaterial } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 import fernSource from './props/fern.js?raw'
+import impostorSource from './props/impostor.js?raw'
 
 // ---------------------------------------------------------------------------
 // The procedural fern previewer (gen-fern.html).
@@ -20,9 +25,15 @@ import fernSource from './props/fern.js?raw'
 // three separate, because conflating them is how a procedural asset gets
 // wrongly described as free.
 //
-// Deliberately NOT the runtime path -- same caveat as props.html. This gives
-// the fern its own material and its own texture; the game will pack fronds
-// into the shared DataArrayTexture and one BatchedMesh (DESIGN.md §5).
+// THE CARD is the third thing this page does, and it is why the material
+// changed. A fern past 26 m is four triangles wearing a photograph of itself
+// (props/impostor.js, props/fern-bank.js), and that photograph is a layer of
+// the shared DataArrayTexture -- so a bench drawing ferns through a single
+// bound `map` could not render one at all. This page now uses the REAL prop
+// material, the way gen-tree.html does: one sampler2DArray, per-vertex
+// `texLayer`, wrap diffuse chained on top. The cost is that a fern is invisible
+// rather than untextured for the few hundred milliseconds before the frond PNG
+// lands, which the swatch panel says out loud instead of hiding.
 // ---------------------------------------------------------------------------
 
 // Not in props/layers/. That directory holds baked atlas slices, and
@@ -64,12 +75,13 @@ const SLIDERS = [
   ['crozier', 0, 1, 0.05, 'fraction of fronds built as curled fiddleheads'],
   ['alphaTest', 0.05, 0.95, 0.01, 'cutout threshold. Low = lacy and aliased, high = eats the pinna tips'],
   ['brightness', 0.5, 4, 0.05, 'multiplies the frond albedo. The scan is forest-floor dark (mean RGB 28,41,4) -- this is a material property, not geometry'],
+  ['planes', 1, 4, 1, 'CARD ONLY: quads crossed about the axis. 1 is a single billboard and vanishes edge-on unless something turns it; 2 never vanishes and is what ships'],
 ]
 
 // brightness 2.0, not 1.0. The cutout is a forest-floor scan (mean RGB 28,41,4
 // over its own coverage) and at 1.0 it renders near-black against the ground.
 // This is a material setting, not geometry -- see the note in fern.js.
-const params = { ...FERN_DEFAULTS, alphaTest: 0.5, brightness: 2.0 }
+const params = { ...FERN_DEFAULTS, alphaTest: 0.5, brightness: 2.0, planes: FERN_CARD_PLANES }
 
 // --- scene ------------------------------------------------------------------
 
@@ -144,25 +156,40 @@ rule.position.set(-0.75, 0.5, -0.35)
 scene.add(rule)
 
 // --- material ---------------------------------------------------------------
+//
+// The REAL prop material, patched exactly the way the game patches it: the
+// array sampler from material.js, then wrap (half-Lambert) diffuse chained on
+// top so fronds facing away from the sun read as backlit rather than black.
+// Chained, not replaced -- assigning over onBeforeCompile would drop the
+// sampler2DArray patch and every fern would render untextured white.
+const atlas = buildTextureArray()
+const material = createPropMaterial(atlas)
+const arrayPatch = material.onBeforeCompile
+material.onBeforeCompile = (shader, r) => {
+  arrayPatch(shader, r)
+  wrapLambert(shader)
+}
+// A distinct key because this program is the array patch AND the wrap patch;
+// sharing 'prop-snow-v1' would let three hand us a cached program with only one
+// of them compiled in.
+material.customProgramCacheKey = () => 'gen-fern-array-wrap-v1'
 
-const texLoader = new THREE.TextureLoader()
-const frondTex = texLoader.load(FROND_TEX, () => {
-  drawSwatch()
-  refresh()
+// FROND_0 has no procedural stand-in in buildTextureArray(), so the layer is
+// transparent -- and therefore the fern is invisible -- until this resolves.
+// Deliberately unguarded: a failed layer throws and the page dies loudly,
+// because a silently-stubbed texture is exactly what this bench exists to not
+// show you.
+let layersLoaded = false
+const layersReady = loadImageLayers(atlas).then((n) => {
+  layersLoaded = true
+  return n
 })
-frondTex.colorSpace = THREE.SRGBColorSpace
-frondTex.anisotropy = renderer.capabilities.getMaxAnisotropy()
 
-const material = new THREE.MeshLambertMaterial({
-  map: frondTex,
-  alphaTest: params.alphaTest,
-  transparent: false,
-  side: THREE.DoubleSide,
-})
-
-// Wrap (half-Lambert) diffuse, so the fronds facing away from the sun read as
-// backlit rather than black. See preview-stage.js for the whole argument.
-material.onBeforeCompile = wrapLambert
+// One 128x128 RGBA slice out of the array, for the swatch panel.
+function layerPixels(layer) {
+  const stride = TEX_SIZE * TEX_SIZE * 4
+  return atlas.image.data.subarray(layer * stride, (layer + 1) * stride)
+}
 
 // --- the ferns --------------------------------------------------------------
 
@@ -180,6 +207,13 @@ const gallerySpacing = () => params.height * 1.9
 let galleryMode = false
 let wireframe = false
 let showGrid = true // the lattice and the metre rule; off is the "stand in it" view
+
+// Draw the impostor instead of the mesh. Deliberately NOT a view: the whole
+// question a card asks is "does this still read as a fern from where I am
+// standing", which you cannot answer if the camera jumps when you press the
+// button. Toggling swaps the geometry and leaves the camera exactly where you
+// put it, so you can flip back and forth and watch for the moment it breaks.
+let cardMode = false
 
 function clearGroup() {
   for (const child of group.children) child.geometry.dispose()
@@ -202,13 +236,74 @@ function rebuild() {
   let tris = 0
   let verts = 0
   let bytes = 0
+  let card = null
+  let measured = null
 
-  seeds.forEach((seed, i) => {
-    const geo = buildFern({ ...params, seed })
-    tris += geo.userData.fern.triangles
-    verts += geo.userData.fern.vertices
-    bytes += geometryBytes(geo)
+  const geos = seeds.map((seed) =>
+    buildFern({ ...params, seed, frondLayers: FERN_LAYERS, frondAspect: FERN_ASPECTS })
+  )
 
+  // The first fern's real extents, which the panel reports and the bake frames
+  // to. `spread` is the diameter of the enclosing cylinder about the axis, not
+  // the bounding box's span: the bake centres its frustum on x = 0 and the card
+  // crosses its planes there, so a rosette that throws more frond one way than
+  // the other has to be framed by its furthest reach in either.
+  //
+  // A rosette is as deep as it is wide, so `spread` is also the DEPTH that
+  // DESIGN.md §5's parallax rule takes -- `depth x 28.6` is the range past
+  // which a flat thing's refusal to turn stops reading as wrong, and it is the
+  // number that says whether a card is legal at 26 m at all.
+  {
+    const g = geos[0]
+    g.computeBoundingBox()
+    const bb = g.boundingBox
+    measured = {
+      height: bb.max.y - bb.min.y,
+      spread:
+        2 *
+        Math.max(
+          Math.abs(bb.min.x), Math.abs(bb.max.x),
+          Math.abs(bb.min.z), Math.abs(bb.max.z)
+        ),
+    }
+  }
+
+  // ONE bake feeds every card on screen, which is not a shortcut but the
+  // shipping arrangement: fern-bank.js keeps two impostor layers for the whole
+  // 16-variant bank, so a seed gallery at this tier really does show twenty
+  // instances of one picture. Seeing that is the point of looking.
+  //
+  // Which of the two layers gets written is whichever one THIS fern's `arch`
+  // would land in, so the bench is always photographing into the slot the
+  // shipping bank would use rather than into a scratch one.
+  let drawn = geos
+  if (cardMode) {
+    const layer = fernCardLayer(params.arch)
+    const ext = bakeImpostor(renderer, geos[0], atlas, layer, {
+      width: measured.spread,
+      height: measured.height,
+    })
+    drawn = geos.map((geo) => {
+      geo.computeBoundingBox()
+      const k = (geo.boundingBox.max.y - geo.boundingBox.min.y) / measured.height
+      const quad = buildImpostorCard(ext.width * k, ext.height * k, layer, params.planes)
+      tris += quad.userData.impostor.triangles
+      verts += quad.getAttribute('position').count
+      bytes += geometryBytes(quad)
+      return quad
+    })
+    card = { ...drawn[0].userData.impostor, layer, ...ext }
+    // clearGroup only disposes what is IN the group, and these never go in.
+    for (const geo of geos) geo.dispose()
+  } else {
+    for (const geo of geos) {
+      tris += geo.userData.fern.triangles
+      verts += geo.userData.fern.vertices
+      bytes += geometryBytes(geo)
+    }
+  }
+
+  drawn.forEach((geo, i) => {
     const mesh = new THREE.Mesh(geo, material)
     if (galleryMode) {
       mesh.position.set(
@@ -225,7 +320,7 @@ function rebuild() {
   grid.visible = showGrid && !galleryMode
   rule.visible = showGrid && !galleryMode
 
-  return { tris, verts, bytes, count: seeds.length }
+  return { tris, verts, bytes, count: seeds.length, card, measured }
 }
 
 // --- byte accounting --------------------------------------------------------
@@ -246,16 +341,21 @@ async function gzipped(bytes) {
   return (await new Response(stream).arrayBuffer()).byteLength
 }
 
-let diskBytes = null // resolved once: { png, src, srcGz, pngGz }
+let diskBytes = null // resolved once: { png, pngGz, src, srcGz, imp, impGz }
 
 async function measureDisk() {
   const png = await fetch(FROND_TEX).then((r) => r.arrayBuffer())
   const src = new TextEncoder().encode(fernSource)
+  // impostor.js is counted because the card is code too -- it is the whole of
+  // what the fourth tier ships, since its texture is baked rather than stored.
+  const imp = new TextEncoder().encode(impostorSource)
   diskBytes = {
     png: png.byteLength,
     pngGz: await gzipped(png),
     src: src.byteLength,
     srcGz: await gzipped(src),
+    imp: imp.byteLength,
+    impGz: await gzipped(imp),
   }
 }
 
@@ -265,36 +365,87 @@ function table(el, rows) {
     .join('')
 }
 
+// DESIGN.md §5's bush-class ladder, keyed by what the tier actually builds.
+// Triangles are exactly fronds x segments x 2, so `segments` IS the tier.
+const TIER_BUDGET = { 6: 84, 4: 56, 2: 28 }
+
 function refresh() {
   const s = rebuild()
+  const per = Math.round(s.tris / s.count)
 
-  const per = s.count > 1 ? ` (${Math.round(s.tris / s.count)} ea)` : ''
+  // The card has no segment count -- it is a photograph -- so its budget is the
+  // ladder's own card row rather than a mesh tier's.
+  const budget = s.card ? 4 : (TIER_BUDGET[Math.round(params.segments)] ?? 84)
+  const label = s.card
+    ? `bush-class card`
+    : `bush-class ${Math.round(params.segments)}-segment tier`
+
   table(document.getElementById('geo'), [
-    ['triangles', `<span class="big">${s.tris}</span>${per}`],
-    ['vertices', s.verts],
+    ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} total)` : ''}`],
+    ...(s.card
+      ? [
+          [`&nbsp;&nbsp;card ${s.card.planes} plane${s.card.planes > 1 ? 's' : ''}&times;2`, s.card.triangles],
+          [
+            '&nbsp;&nbsp;wearing layer',
+            s.card.layer === LAYER.IMPOSTOR_FERN_UPRIGHT ? 'FERN_UPRIGHT' : 'FERN_ARCHED',
+          ],
+          ['&nbsp;&nbsp;baked at', `${s.card.width.toFixed(2)} &times; ${s.card.height.toFixed(2)} m`],
+        ]
+      : [[`&nbsp;&nbsp;fronds &times; ${Math.round(params.segments)} seg &times; 2`, per]]),
+    ['vertices', Math.round(s.verts / s.count)],
     ['ferns drawn', s.count],
     ['geometry in RAM', fmt(s.bytes)],
-    [
-      'small-class budget',
-      `${Math.round(s.tris / s.count)} / 16 tris`,
-      s.tris / s.count <= 16 ? 'ok' : 'warn',
-    ],
+    [label, `${per} / ${budget} tris`, per <= budget ? 'ok' : 'warn'],
   ])
+
+  // The numbers that decide whether a card is legal at all. §5's rule is that a
+  // billboard's defect is PARALLAX, not detail -- the error is an angle,
+  // atan(depth / distance), and under ~2 deg it stops reading as wrong at
+  // walking pace. That gives `crossover = depth x 28.6`, and the card only has
+  // to be honest from where the mesh tiers give out, which is 26 m.
+  const m = s.measured
+  const crossover = m.spread * 28.6
+  table(document.getElementById('parallax'), [
+    ['height', `${m.height.toFixed(2)} m`],
+    ['spread (= depth)', `${m.spread.toFixed(2)} m`],
+    ['crown / height', (m.spread / m.height).toFixed(2)],
+    ['parallax crossover', `${crossover.toFixed(0)} m`, crossover <= 26 ? 'ok' : 'warn'],
+    ['mesh gives out at', '26 m'],
+    // How big the thing actually is where the card takes over, on Quest 2's
+    // default eye buffer (~16.2 px/deg). This is the number the two-layer
+    // decision in textures.js rests on, so it is worth having on screen.
+    ['card is this tall at 26 m', `${((Math.atan(m.height / 26) * 180) / Math.PI * 16.2).toFixed(0)} px`],
+  ])
+
+  drawSwatch(
+    s.card ? s.card.layer : LAYER.FROND_0,
+    s.card
+      ? s.card.layer === LAYER.IMPOSTOR_FERN_UPRIGHT
+        ? 'baked -- IMPOSTOR_FERN_UPRIGHT'
+        : 'baked -- IMPOSTOR_FERN_ARCHED'
+      : 'FROND_0 -- the scanned cutout'
+  )
 
   if (!diskBytes) return
 
-  const shipped = diskBytes.png + diskBytes.src
-  const shippedGz = diskBytes.pngGz + diskBytes.srcGz
+  const shipped = diskBytes.png + diskBytes.src + diskBytes.imp
+  const shippedGz = diskBytes.pngGz + diskBytes.srcGz + diskBytes.impGz
   table(document.getElementById('disk'), [
     ['frond_0.png (128&sup2; RGBA)', fmt(diskBytes.png)],
     ['fern.js (the generator)', fmt(diskBytes.src)],
+    ['impostor.js (the card)', fmt(diskBytes.imp)],
     ['total on disk', `<span class="big">${fmt(shipped)}</span>`],
     ['gzipped over the wire', fmt(shippedGz), 'ok'],
+    // Not a disk cost and not a download: the two impostor layers are written
+    // at load by rendering the mesh, so they are resident bytes only.
+    ['2 baked card layers, in RAM', fmt(2 * TEX_SIZE * TEX_SIZE * 4)],
   ])
   document.getElementById('disknote').innerHTML =
     `No mesh file. The shape is <em>code</em>, so every fern in the world -- every seed, ` +
     `every size -- costs the same ${fmt(shipped)}. Adding a variant costs 0 bytes; ` +
-    `adding a second frond cutout costs ~${fmt(diskBytes.png)}.`
+    `adding a second frond cutout costs ~${fmt(diskBytes.png)}. The card costs 0 bytes ` +
+    `too: it is a photograph of the mesh taken at load, so it cannot disagree with the ` +
+    `mesh and there is nothing to rebuild when the generator changes.`
 
   const srcTotal = SOURCE.baseColor + SOURCE.opacity
   table(document.getElementById('source'), [
@@ -309,33 +460,59 @@ function refresh() {
 }
 
 // --- texture swatch ---------------------------------------------------------
+//
+// Two panes of one layer: its colour and its ALPHA on its own. The alpha gets
+// its own pane because it is the load-bearing half -- a frond card is a
+// rectangle, and every bit of its shape is in that channel.
+//
+// In `card` mode the layer shown is the BAKED IMPOSTOR rather than the frond
+// cutout, which is the most useful thing on the page at that tier: the card is
+// six-hundredths of a screen at its own draw distance, and this is the only
+// place you can actually read what got photographed -- whether the silhouette
+// survived, whether the dilate pass left a sooty rim, whether the margin held.
 
-function drawSwatch() {
+function drawSwatch(layer, caption) {
   const canvas = document.getElementById('swatch')
   const ctx = canvas.getContext('2d')
-  const img = frondTex.image
-  if (!img) return
   ctx.imageSmoothingEnabled = false
-  ctx.clearRect(0, 0, 256, 128)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  // RGB on the left, over a mid grey so dark foliage stays visible.
-  ctx.fillStyle = '#3a4550'
-  ctx.fillRect(0, 0, 128, 128)
-  ctx.drawImage(img, 0, 0, 128, 128)
-
-  // Alpha on the right, read back and expanded to greyscale.
-  const tmp = document.createElement('canvas')
-  tmp.width = tmp.height = 128
-  const tctx = tmp.getContext('2d', { willReadFrequently: true })
-  tctx.drawImage(img, 0, 0, 128, 128)
-  const data = tctx.getImageData(0, 0, 128, 128)
-  for (let i = 0; i < data.data.length; i += 4) {
-    const a = data.data[i + 3]
-    data.data[i] = data.data[i + 1] = data.data[i + 2] = a
-    data.data[i + 3] = 255
+  const px = layerPixels(layer)
+  const rgb = new ImageData(TEX_SIZE, TEX_SIZE)
+  const alpha = new ImageData(TEX_SIZE, TEX_SIZE)
+  for (let i = 0; i < TEX_SIZE * TEX_SIZE; i++) {
+    const o = i * 4
+    // Row 0 of a layer is v = 0, and a canvas draws row 0 at the TOP, so flip
+    // here or every frond hangs by its tip.
+    const row = TEX_SIZE - 1 - Math.floor(i / TEX_SIZE)
+    const d = (row * TEX_SIZE + (i % TEX_SIZE)) * 4
+    // Over a mid grey, so a forest-floor-dark scan stays visible.
+    const a = px[o + 3] / 255
+    for (let c = 0; c < 3; c++) rgb.data[d + c] = px[o + c] * a + 0x3a * (1 - a)
+    rgb.data[d + 3] = 255
+    alpha.data[d] = alpha.data[d + 1] = alpha.data[d + 2] = px[o + 3]
+    alpha.data[d + 3] = 255
   }
-  tctx.putImageData(data, 0, 0)
-  ctx.drawImage(tmp, 128, 0)
+
+  const tmp = document.createElement('canvas')
+  tmp.width = tmp.height = TEX_SIZE
+  const tctx = tmp.getContext('2d')
+  const w = canvas.width / 2
+  ;[rgb, alpha].forEach((img, i) => {
+    tctx.putImageData(img, 0, 0)
+    ctx.drawImage(tmp, i * w, 0, w, canvas.height)
+  })
+
+  // Say so rather than showing an empty layer and letting it pass for the art.
+  const banner = layersLoaded ? caption : 'frond PNG still loading -- this layer is empty'
+  if (banner) {
+    ctx.fillStyle = 'rgba(8,14,26,.78)'
+    ctx.fillRect(0, canvas.height - 18, canvas.width, 18)
+    ctx.fillStyle = layersLoaded ? '#7f96b8' : '#c9a227'
+    ctx.font = '11px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText(banner, canvas.width / 2, canvas.height - 5)
+  }
 }
 
 // --- controls ---------------------------------------------------------------
@@ -401,11 +578,20 @@ toggle('gallery', () => galleryMode, (v) => {
   }
 })
 toggle('grid', () => showGrid, (v) => { showGrid = v })
+toggle('card', () => cardMode, (v) => { cardMode = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
 
 document.getElementById('reset').addEventListener('click', () => {
-  Object.assign(params, FERN_DEFAULTS, { alphaTest: 0.5, brightness: 2.0, seed: params.seed })
+  // `planes` is not a fern parameter -- FERN_DEFAULTS knows nothing about it --
+  // so reset has to name the shipping value itself or the slider would survive a
+  // reset while every other control snapped back.
+  Object.assign(params, FERN_DEFAULTS, {
+    alphaTest: 0.5,
+    brightness: 2.0,
+    planes: FERN_CARD_PLANES,
+    seed: params.seed,
+  })
   for (const [key] of SLIDERS) {
     readouts[key].input.value = params[key]
     readouts[key].out.textContent =
@@ -431,6 +617,10 @@ resize()
 // panel fills in when the measurement lands.
 refresh()
 measureDisk().then(refresh)
+// And again when the frond cutout lands in the array. Not just to repaint the
+// swatch: a card baked before the layer arrived would be a photograph of an
+// invisible fern, so this is what makes `card` correct on a cold load.
+layersReady.then(refresh)
 
 let last = performance.now()
 renderer.setAnimationLoop(() => {

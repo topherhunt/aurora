@@ -249,6 +249,11 @@ export const TREE_DEFAULTS = {
   // --- foliage ---
   sprayMetres: 0.5,    // one spray's stem-to-tip reach in WORLD METRES. Not a
                        // fraction: the art is a leaf spray at a real size
+  lod1SprayMetres: 0,  // what LOD1's card should be instead, stated outright in
+                       // metres. 0 means "derive it", which is sprayMetres x
+                       // LOD1_SPRAY_SCALE clamped to SPRAY_METRES_MAX -- see
+                       // treeLod. A species sets this when the derived value is
+                       // not the one that looks right for its cut
   leafSkyward: 0.6,    // how far foliage normals are turned toward the sky --
                        // see the canopy-normal pass at the bottom of buildTree.
                        // 0 is the card's own plane (turned outward), 1 is
@@ -340,6 +345,9 @@ export const TREE_SPECIES = {
       sprays: 4,
       cardTris: 2,
       sprayMetres: 1.5,
+      // LOD1 states its card outright rather than taking the x1.7 rule, which
+      // from 1.5 would derive 2.55.
+      lod1SprayMetres: 2,
       sprayTaper: 0.35,
       sprayLift: 0.05,
       sprayDown: 0.35,
@@ -385,6 +393,9 @@ export const TREE_SPECIES = {
       cardTris: 2,
       sprayLift: 0.45,
       sprayMetres: 1.5,
+      // LOD1 states its card outright rather than taking the x1.7 rule, which
+      // from 1.5 would derive 2.55.
+      lod1SprayMetres: 2,
       trunkRadius: 0.045,
       trunkBend: 0.07,
     },
@@ -512,7 +523,16 @@ export const BUSH_OVERRIDES = {
  *                   slider stops and where a spray stops being a spray.
  */
 export const LOD1_SPRAY_SCALE = 1.7
-export const SPRAY_METRES_MAX = 2.5
+// The ceiling on an LOD1 card, in world metres. It is here to stop a leaf card
+// quietly becoming a billboard -- past a point a "spray" is a picture of a whole
+// branch and the tier stops being a tree. But note the SECOND ceiling, which is
+// not a constant and which bites first at large values: a tree is built with its
+// trunk tip at local y = 1 and then rescaled so its BOUNDING BOX matches
+// `height`, and apex sprays poke above that tip, so bigger cards make the box
+// overshoot and the whole tree -- cards included -- gets shrunk to compensate.
+// Asking for 5 m of oak spray lands 3.13 m and fattens the crown by a quarter.
+// Anything above about 3 is fighting that loop rather than driving it.
+export const SPRAY_METRES_MAX = 4.0
 
 export function treeLod(options, tier) {
   if (tier === 0) return { ...options }
@@ -536,7 +556,10 @@ export function treeLod(options, tier) {
     branchSides: 1,
     cardTris: 1,
     sprays: Math.max(1, Math.round(p.sprays / 2)),
-    sprayMetres: Math.min(SPRAY_METRES_MAX, p.sprayMetres * LOD1_SPRAY_SCALE),
+    sprayMetres:
+      p.lod1SprayMetres > 0
+        ? p.lod1SprayMetres
+        : Math.min(SPRAY_METRES_MAX, p.sprayMetres * LOD1_SPRAY_SCALE),
   }
 }
 

@@ -4,7 +4,7 @@ import { buildTree, resolveTree, treeLod, crownProfile, TREE_DEFAULTS, TREE_SPEC
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers, IMAGE_LAYERS, TEX_SIZE } from './textures.js'
-import { createPropMaterial } from './material.js'
+import { createPropMaterial, setSnow } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 import treeSource from './props/tree.js?raw'
 
@@ -92,7 +92,7 @@ const SLIDERS = [
   ['sprays', 0, 14, 1, 'leaf cards per LIMB on AVERAGE, including one terminal card at the tip. This is the whole density knob, and at one triangle a card it is also the whole foliage budget'],
   ['sprayByLength', 0, 1, 0.01, 'how far a limb\'s share of those cards follows its own length. 0 = every limb gets the same count, which gives a conifer a square tufted top; 1 = fully proportional. The total is normalised either way, so this costs nothing'],
   ['apexSprays', 0, 6, 1, 'cards on the TRUNK\'s own tip, which no branch reaches. At 0 every tree ends in a bare spike'],
-  ['sprayMetres', 0.05, 2.5, 0.01, 'one spray\'s stem-to-tip reach in WORLD METRES. Depends on the cut: a broadleaf spray is about half a metre, the pine fan is a whole branch at 1.5'],
+  ['sprayMetres', 0.05, 4, 0.01, 'one spray\'s stem-to-tip reach in WORLD METRES. Depends on the cut: a broadleaf spray is about half a metre, the pine fan is a whole branch at 1.5'],
   ['cardTris', 1, 2, 1, '1 = a triangle with its apex at the stem, halving the cost of every card and clipping the outer corners of the art. 2 = the full quad'],
   ['sprayTaper', 0.1, 1.5, 0.01, 'spray size at the limb TIP as a fraction of its size at the base. Under 1 puts the big sprays near the trunk and fine ones at the ends'],
   ['sprayVary', 0, 0.6, 0.01, 'random +/- size variation per card, on top of the taper'],
@@ -107,6 +107,7 @@ const SLIDERS = [
   ['#', 'material'],
   ['alphaTest', 0.05, 0.95, 0.01, 'cutout threshold. Low = lacy and aliased, high = eats the leaf edges'],
   ['brightness', 0.4, 3, 0.05, 'multiplies the albedo. A material property, not geometry'],
+  ['snow', 0, 1, 0.01, 'snow on the FOLIAGE, in world-space blobs leaning toward whatever faces the sky. A global uniform on the shared material -- it costs no triangles, no layers and nothing at all at 0, and it reaches the LOD2 impostor too'],
 ]
 
 // DESIGN.md §5's per-class mesh-tier budgets, which is what the panel checks
@@ -117,7 +118,9 @@ const CLASS_BUDGET = { tree: [500, 130, 6], bush: [84, 56, 2] }
 let speciesKey = 'pine'
 let bushMode = false
 
-const params = { ...TREE_DEFAULTS, alphaTest: 0.5, brightness: 1.0 }
+// `snow` is weather, not a species property, so it deliberately sits outside
+// speciesParams() and survives switching species or pressing "species defaults".
+const params = { ...TREE_DEFAULTS, alphaTest: 0.5, brightness: 1.0, snow: 0 }
 
 // --- scene ------------------------------------------------------------------
 
@@ -268,6 +271,7 @@ function rebuild() {
   material.alphaTest = params.alphaTest
   material.wireframe = wireframe
   material.color.setScalar(params.brightness)
+  setSnow(params.snow)
   material.needsUpdate = true
 
   const sp = TREE_SPECIES[speciesKey]

@@ -83,6 +83,7 @@
       </div>
       <div id="buttons">
         <button id="gallery">gallery</button>
+        <button id="card">card</button>
         <button id="grid">grid</button>
         <button id="wire">wireframe</button>
         <button id="spin">spin</button>
@@ -96,13 +97,17 @@
       <h2>this fern</h2>
       <table id="geo"></table>
 
+      <h2>can it be a card?</h2>
+      <table id="parallax"></table>
+      <p class="note">A billboard's defect is <em>parallax</em>, not detail: it refuses to turn, and the error that leaves is an angle. Under ~2&deg; it stops reading as wrong at walking pace, which puts the crossover at <em>depth &times; 28.6</em>. The card only has to be honest from 26 m out, where the mesh tiers give out -- so crossover under 26 m is the whole test.</p>
+
       <h2>what ships</h2>
       <table id="disk"></table>
       <p class="note" id="disknote"></p>
 
-      <h2>frond texture</h2>
+      <h2>texture layer</h2>
       <canvas id="swatch" width="256" height="128"></canvas>
-      <p class="note">RGB left, alpha right. One RGBA PNG carries both -- the opacity map is its alpha channel, not a second file.</p>
+      <p class="note">RGB left, alpha right; the caption names the layer. One RGBA PNG carries both -- the opacity map is its alpha channel, not a second file. In <em>card</em> mode this shows the baked impostor instead, which is the only place you can read what was actually photographed.</p>
 
       <h2>source it came from</h2>
       <table id="source"></table>

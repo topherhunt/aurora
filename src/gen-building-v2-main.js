@@ -4,7 +4,7 @@ import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE, TILE_METRES } from
 import { createPropMaterial } from './material.js'
 import { planBuilding, KINDS, WALL_STYLES, ROOF_KINDS } from './buildings/plan.js'
 import { buildBuilding2 } from './buildings/v2/building.js'
-import { makeCharacter } from './buildings/v2/warp.js'
+import { makeCharacter, makeWarp } from './buildings/v2/warp.js'
 import { openEdges, signedVolume } from './buildings/v2/parts.js'
 import { grassTexture } from './preview-stage.js'
 import { TRI_BUDGET, CALL_BUDGET } from './budget.js'
@@ -52,10 +52,14 @@ const CHARACTER = [
   ['noise', 0, 2, 0.05, 'the two octaves of the field itself -- the coarse one bows a whole wall, the fine one takes the machine edge off a member'],
   ['lean', 0, 2, 0.05, 'the settle. Grows as height^1.35, so the eaves lean and the plinth does not'],
   ['roofSag', 0, 2, 0.05, 'how far the covering bows between ridge and eave, and how much the two buckle seams wander along their length'],
-  ['eave', 0, 2, 0.05, 'how far the eave line swells past its nominal overhang, and how much it rises and falls along it'],
+  ['ridge', 0, 2, 0.05, 'the ridge line\'s OWN droop, signed per building -- it dips in the middle on some and humps up on others'],
+  ['eave', 0, 2, 0.05, 'how far the eave line swells past its nominal overhang, and how much it rises and falls along it. The sinuous bottom roofline lives here, and only about two buildings in three get any of it'],
+  ['oversail', 0, 2, 0.05, 'how much the roof projects past its walls, as a per-building multiplier on the plan, plus how differently it projects at the ridge end of a gable and at the eave end'],
+  ['rake', 0, 2, 0.05, 'the lean of the thatch skirt hanging off the eave: outward away from the wall, or tucked back under the roof'],
   ['flare', 0, 2, 0.05, 'how much wider the chimney crown is than its base'],
-  ['openings', 0, 2, 0.05, 'how far a window corner strays from the rectangle it was planned as, and how far a shutter stands off the wall'],
+  ['openings', 0, 2, 0.05, 'how far a window flares from sill to head, how far it is rotated, and how far a shutter stands off the wall. All of it symmetric -- no corner moves without its partner'],
   ['bow', 0, 2, 0.05, 'how far a post or a rail bows off the straight line between its ends'],
+  ['smooth', 0, 180, 5, 'the crease angle for shading. Facets meeting at less than this share one averaged normal, so a five-sided log reads round; above it they each keep their own and the edge stays hard. 0 is all hard, 180 is all smooth, 78 ships'],
 ]
 
 // Scales rather than absolutes, so a slider means the same thing across a hut
@@ -75,7 +79,8 @@ const DEFAULTS = {
   overhang: 0.4, windowScale: 1, slope: 0,
 }
 const CHAR_DEFAULTS = {
-  strength: 1, noise: 1, lean: 1, roofSag: 1, eave: 1, flare: 1, openings: 1, bow: 1,
+  strength: 1, noise: 1, lean: 1, roofSag: 1, ridge: 1, eave: 1, oversail: 1,
+  rake: 1, flare: 1, openings: 1, bow: 1, smooth: 78,
 }
 
 const params = { ...DEFAULTS, seed: 1 }
@@ -85,9 +90,10 @@ const picks = { kind: 'cottage', shape: 'auto', style: 'auto', roof: 'auto', det
 /**
  * The personality this seed and this panel ask for.
  *
- * `flare` multiplies the EXCESS over 1, not the value: a flare of 1 is a
- * chimney whose crown matches its base, so scaling the whole number would make
- * the "off" position invert the taper rather than remove it.
+ * `flare` and `overhang` multiply the EXCESS over 1, not the value. A flare of 1
+ * is a chimney whose crown matches its base and an overhang of 1 is exactly what
+ * the plan asked for, so scaling the whole number would make the "off" position
+ * invert the taper and delete the eaves rather than removing the variation.
  */
 function characterFor(seed) {
   const k = makeCharacter(seed, chars.strength)
@@ -97,10 +103,15 @@ function characterFor(seed) {
   k.leanZ *= chars.lean
   k.sag *= chars.roofSag
   k.buckle *= chars.roofSag
+  k.ridgeSag *= chars.ridge
   k.reach *= chars.eave
   k.sway *= chars.eave
+  k.overhang = 1 + (k.overhang - 1) * chars.oversail
+  k.vergeSplay *= chars.oversail
+  k.rake *= chars.rake
   k.flare = 1 + (k.flare - 1) * chars.flare
   k.skew *= chars.openings
+  k.tilt *= chars.openings
   k.splay *= chars.openings
   k.bow *= chars.bow
   return k
@@ -246,7 +257,7 @@ function rebuild() {
   const hero = plans[0]
   plans.forEach((plan, i) => {
     const { geometry, triangles } = buildBuilding2(plan, {
-      detail: picks.detail, character: characterFor(plan.seed),
+      detail: picks.detail, character: characterFor(plan.seed), smoothAngle: chars.smooth,
     })
     tris += triangles
     const mesh = new THREE.Mesh(geometry, material)
@@ -328,13 +339,16 @@ function refresh() {
     `still closed. That is what the per-vertex <code>texLayer</code> buys, and it is the reason a ` +
     `village can be ~450 static pieces merged into a single draw (&sect;6).`
 
-  // What the field is actually doing to THIS building, in metres, measured
-  // against its own straight twin rather than quoted from the sliders. A number
-  // read off the parameters would still be right if the warp had silently
-  // stopped being applied.
+  // What the field is actually doing to THIS building, in metres, measured by
+  // APPLYING it rather than quoted from the sliders -- a number read off the
+  // parameters would still be right if the warp had silently stopped being
+  // applied. Measured against the straight build's own vertices rather than by
+  // differencing the two builds, because they no longer have the same vertices:
+  // a log wall stops its courses under the roof it actually stands under, so a
+  // sagged eave carries one course fewer than a straight one.
   const k = characterFor(plan.seed)
   const straight = buildBuilding2(plan, { detail: picks.detail, strength: 0 })
-  const moved = maxDisplacement(straight.geometry, heroGeo)
+  const moved = maxDisplacement(straight.geometry, makeWarp(k, plan.plinthBottom))
   straight.geometry.dispose()
 
   table(document.getElementById('charTable'), [
@@ -343,12 +357,18 @@ function refresh() {
     ['lean at the eave', `${(Math.hypot(k.leanX, k.leanZ) * Math.pow(Math.max(0, plan.stats.ridgeY - plan.plinthBottom), k.leanPow)).toFixed(3)} m`],
     ['roof sag', `${k.sag.toFixed(3)} m`],
     ['buckle seams', `${k.buckle.toFixed(3)} m`],
+    ['ridge droop', `${k.ridgeSag >= 0 ? '' : '&minus;'}${Math.abs(k.ridgeSag).toFixed(3)} m ${k.ridgeSag >= 0 ? 'dip' : 'hog'}`],
     ['eave reach', `${k.reach.toFixed(3)} m`],
-    ['eave sway', `${k.sway.toFixed(3)} m`],
+    ['eave sway', `${k.sway.toFixed(3)} m`, k.sway > 0.05 ? 'hot' : ''],
+    ['oversail', `&times; ${k.overhang.toFixed(2)}`],
+    ['verge splay', `${k.vergeSplay >= 0 ? '' : '&minus;'}${Math.abs(k.vergeSplay).toFixed(3)} m ${k.vergeSplay >= 0 ? 'at the ridge' : 'at the eave'}`],
+    ['eave rake', `${k.rake >= 0 ? '' : '&minus;'}${Math.abs(k.rake).toFixed(2)} ${k.rake >= 0 ? 'out' : 'under'}`],
     ['chimney flare', `&times; ${k.flare.toFixed(2)}`],
-    ['window skew', `${(k.skew * 100).toFixed(1)} % of the opening`],
+    ['window flare', `${(k.skew * 160).toFixed(1)} % sill to head`],
+    ['window tilt', `${((k.tilt * 180) / Math.PI).toFixed(1)}&deg;`],
     ['shutter splay', `${k.splay.toFixed(3)} m`],
     ['post bow', `${k.bow.toFixed(3)} m`],
+    ['crease angle', `${chars.smooth.toFixed(0)}&deg;`],
   ])
 
   table(document.getElementById('planTable'), [
@@ -393,13 +413,13 @@ function refresh() {
 /** How far the warp moved the furthest vertex, measured between two builds of
  *  the same plan at the same detail. Returns null if the two disagree on vertex
  *  count, which would mean the tiers had stopped being the same building. */
-function maxDisplacement(a, b) {
+function maxDisplacement(a, f) {
+  if (!f) return 0
   const pa = a.getAttribute('position').array
-  const pb = b.getAttribute('position').array
-  if (pa.length !== pb.length) return null
   let m = 0
   for (let i = 0; i < pa.length; i += 3) {
-    m = Math.max(m, Math.hypot(pb[i] - pa[i], pb[i + 1] - pa[i + 1], pb[i + 2] - pa[i + 2]))
+    const q = f(pa[i], pa[i + 1], pa[i + 2])
+    m = Math.max(m, Math.hypot(q[0] - pa[i], q[1] - pa[i + 1], q[2] - pa[i + 2]))
   }
   return m
 }
@@ -472,7 +492,11 @@ function sliderRow(host, defs, store, extraClass, onChange) {
     const input = row.querySelector('input')
     const out = row.querySelector('.v')
     readouts[key] = { input, out }
-    const show = () => { out.textContent = Number(store[key]).toFixed(2) }
+    // A step of 1 or more means the value is a count or an angle, not a
+    // multiplier, and "78.00" in a 46px column is three characters of nothing.
+    const dp = step >= 1 ? 0 : 2
+    readouts[key].dp = dp
+    const show = () => { out.textContent = Number(store[key]).toFixed(dp) }
     input.addEventListener('input', () => {
       store[key] = Number(input.value)
       show()
@@ -579,11 +603,11 @@ document.getElementById('reset').addEventListener('click', () => {
   Object.assign(chars, CHAR_DEFAULTS)
   for (const [key] of SLIDERS) {
     readouts[key].input.value = params[key]
-    readouts[key].out.textContent = Number(params[key]).toFixed(2)
+    readouts[key].out.textContent = Number(params[key]).toFixed(readouts[key].dp)
   }
   for (const [key] of CHARACTER) {
     charReadouts[key].input.value = chars[key]
-    charReadouts[key].out.textContent = Number(chars[key]).toFixed(2)
+    charReadouts[key].out.textContent = Number(chars[key]).toFixed(charReadouts[key].dp)
   }
   reshapeGround()
   refresh()

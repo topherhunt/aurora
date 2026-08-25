@@ -211,8 +211,70 @@ export const LAYER = {
   IMPOSTOR_OAK: 27,
   IMPOSTOR_BIRCH: 28,
   IMPOSTOR_ASPEN: 29,
+
+  // --- fern impostors (src/props/fern-bank.js) ------------------------------
+  //
+  // Same machinery as the four above and the same "written at load, never on
+  // disk" argument. What is different is the UNIT: a tree impostor is one per
+  // SPECIES, and there is only one fern species, so the question becomes which
+  // slice of a 16-variant bank earns a bake of its own.
+  //
+  // TWO, cut on `arch`, and the FROND_0 rule is what picks the axis. The card
+  // takes over at 26 m (DESIGN.md §5), where a 0.55 m fern is about 20 px tall
+  // -- small, but nowhere near the 3 px where everything is a smudge. At 20 px
+  // an `arch` 0.6 fern is a narrow upright shuttlecock and an `arch` 2 one is a
+  // wide flat spray, which is a silhouette apart and therefore earns a layer.
+  // The other three axes do not: `pitch` 1.0 vs 1.4 tilts fronds a few degrees,
+  // `fronds` 5 vs 9 changes coverage inside an outline that stays the same
+  // shape, and `taper` only ever touched the last centimetre of a tip. Baking
+  // all sixteen would spend 1 MB to redraw the same two outlines eight times
+  // each; baking one would put every fern in the world at one silhouette.
+  //
+  // The variety a player sees at this range is still mostly per-instance: yaw
+  // spins a crossed pair through four apparent silhouettes and `scale` is drawn
+  // from [0.75, 1.35] (props/scatter.js), both of which cost nothing.
+  //
+  // The 20 px figure -- and so this whole call -- is arithmetic, not a looked-at
+  // judgement. `gen-fern.html`'s `card` button is where it gets confirmed.
+  IMPOSTOR_FERN_UPRIGHT: 30, // baked from the low-`arch` half of the bank
+  IMPOSTOR_FERN_ARCHED: 31, // ...and the high-`arch` half
 }
-export const LAYER_COUNT = 30
+export const LAYER_COUNT = 32
+
+// --- which layers snow settles on (src/material.js, uSnow) -------------------
+//
+// Snow is a global uniform on the one shared prop material, so the shader has
+// no idea what it is drawing except the layer index it was handed -- and that
+// turns out to be exactly enough, because "is this foliage" IS a property of
+// the layer. No vertex attribute, no second material, no geometry change.
+//
+// The four IMPOSTOR layers are in the list on purpose. They are pictures of a
+// whole tree, trunk included, so snowing one whitens its trunk too -- but the
+// alternative is a green tree at 130 m standing in a white forest, which is the
+// worse error by a wide margin, and snow does sit along real branches anyway.
+// The impostor bake is unlit and snow-free, so the card stays dynamic: turning
+// snow up whitens LOD2 without rebaking.
+//
+// DELIBERATELY OUT, and each is one line to add: FROND_0, GRASS, and the two
+// fern impostors. Both plants would snow in a real winter, but the ground layer
+// is a separate argument (a snowy world wants a snow-covered TERRAIN shader,
+// not white ferns on green ground) and that argument has not been had yet.
+//
+// The fern impostors are out because FROND_0 is out, and they have to move
+// together: a mesh fern and a card fern standing next to each other at the LOD
+// boundary would otherwise be green and white. That is the same reasoning that
+// puts the four TREE impostors IN -- they match the foliage they replace.
+export const SNOW_LAYERS = [
+  LAYER.NEEDLES,
+  LAYER.LEAVES,
+  LAYER.LEAF_ASH,
+  LAYER.LEAF_ASPEN,
+  LAYER.SPRAY_PINE,
+  LAYER.IMPOSTOR_PINE,
+  LAYER.IMPOSTOR_OAK,
+  LAYER.IMPOSTOR_BIRCH,
+  LAYER.IMPOSTOR_ASPEN,
+]
 
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.

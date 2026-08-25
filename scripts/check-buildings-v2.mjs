@@ -54,8 +54,8 @@ const SEEDS = Number(process.argv[2] ?? 300)
 const STRUCTURE_BUDGET = 2600
 // Detail 1: the macro structure with the bevelling, rounding and 3D joinery
 // gone. The design target is an eighth of detail 2. Measured, the mean lands at
-// 0.157 -- close to a sixth -- and the gate is set just above that rather than
-// at the target, for a reason worth writing down.
+// 0.143 -- close to a seventh -- and the gate is set above that rather than at
+// the target, for a reason worth writing down.
 //
 // THE FLOOR IS THE WINDOWS. A detail-1 window is three flat rectangles: frame,
 // glass, and a leaf per shutter. Every one of them has to be `double: true` to
@@ -68,13 +68,21 @@ const STRUCTURE_BUDGET = 2600
 //
 // So the gate is on the MEAN, which is the number that governs what a village
 // costs, plus an absolute cap on the worst single building, which is the number
-// that governs the worst frame. Per-building ratio is deliberately NOT gated:
-// it is worst on the CHEAPEST buildings -- a 620-triangle cottage drops to 168,
-// a perfectly good absolute number that scores 0.271 only because its detail 2
-// had little ornament to lose -- and failing a hut for being simple measures the
-// wrong thing.
+// that governs the worst frame. Per-building ratio is deliberately NOT gated,
+// because it measures how many OPENINGS a building has rather than how thrifty
+// its far tier is: the worst is an inn at 0.204 whose fifteen windows are most
+// of its detail 1, and the next worst is a small cottage at 0.209 for the mirror
+// reason -- its detail 2 had little ornament to lose. Neither is a problem, and
+// failing either measures the wrong thing.
 const LOD1_MEAN = 0.18
 const LOD1_BUDGET = 460
+// Detail 0 is the village-backdrop tier: a box per mass, a four-triangle roof
+// with no overhang, and one flat rectangle for the door and each window. The
+// rectangles are the whole point -- at that range the pattern of openings is
+// the only thing that reads as a building rather than a crate -- so the cap is
+// set above the old no-openings figure of 80 rather than the openings being cut
+// to meet it. A hundred of these is 14k triangles, which the backdrop can hold.
+const LOD0_BUDGET = 140
 // How far past the shipping strength of 1 the warp has to stay sane.
 const STRENGTHS = [0, 0.5, 1, 1.6]
 
@@ -149,17 +157,17 @@ for (const [nx, nz] of NORMALS) {
 }
 for (const axis of ['x', 'z']) {
   PARTS.push(
-    [`gableRoof thatch ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.THATCH, tint: [1, 1, 1], fringe: true, seed, detail, k }), 'solid'],
-    [`gableRoof shingle ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], fringe: false, seed, detail, k }), 'solid'],
-    [`gableRoof catslide ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], vergeHi: 2.2, seed, detail, k }), 'solid'],
+    [`gableRoof thatch ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.THATCH, tint: [1, 1, 1], fringe: true, seed, detail, k }), 'sheet'],
+    [`gableRoof shingle ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], fringe: false, seed, detail, k }), 'sheet'],
+    [`gableRoof catslide ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 5, d: 4, eaveY: 2.4, rise: 1.8, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], vergeHi: 2.2, seed, detail, k }), 'sheet'],
     // A long inn range and a tiny outshut, so both ends of roofGrid()'s ladder
     // are exercised: nu = 3 and nu = 1, nv = 3 and nv = 1.
-    [`gableRoof long ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 12, d: 6, eaveY: 2.6, rise: 2.4, ridgeAxis: axis, layer: LAYER.ROOF_TILE, tint: [1, 1, 1], seed, detail, k }), 'solid'],
-    [`gableRoof tiny ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 2, d: 1.6, eaveY: 2, rise: 0.7, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], seed, detail, k }), 'solid'],
+    [`gableRoof long ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 12, d: 6, eaveY: 2.6, rise: 2.4, ridgeAxis: axis, layer: LAYER.ROOF_TILE, tint: [1, 1, 1], seed, detail, k }), 'sheet'],
+    [`gableRoof tiny ${axis}`, (b, detail, seed, k) => gableRoof2(b, { cx: 0, cz: 0, w: 2, d: 1.6, eaveY: 2, rise: 0.7, ridgeAxis: axis, layer: LAYER.SHINGLE, tint: [1, 1, 1], seed, detail, k }), 'sheet'],
   )
 }
 for (const dir of ['+x', '-x', '+z', '-z']) {
-  PARTS.push([`leanToRoof ${dir}`, (b, detail, seed, k) => leanToRoof2(b, { cx: 0, cz: 0, w: 3, d: 2.5, highY: 3.2, lowY: 2.2, dir, layer: LAYER.THATCH, tint: [1, 1, 1], seed, detail, k }), 'solid'])
+  PARTS.push([`leanToRoof ${dir}`, (b, detail, seed, k) => leanToRoof2(b, { cx: 0, cz: 0, w: 3, d: 2.5, highY: 3.2, lowY: 2.2, dir, layer: LAYER.THATCH, tint: [1, 1, 1], seed, detail, k }), 'sheet'])
 }
 PARTS.push(
   ['plinth', (b, detail, seed) => plinth(b, { cx: 0, cz: 0, w: 5, d: 4, top: 0.4, bottom: -0.3, batter: detail >= 2 ? 0.06 : 0, bevel: detail >= 2 ? 0.05 : 0, seed }), 'solid'],
@@ -205,9 +213,15 @@ for (const [name, draw, kindOf] of PARTS) {
         // Only detail 2 has to be POSITIVE: the lower tiers drop the solid parts
         // of a window or a door and keep the doubled panel, which is honestly
         // zero. No tier of anything may ever be negative.
+        // 'sheet' is the roof: a covering has no thickness at any tier now, so
+        // its planes contribute exactly zero and whatever solid trim rides on
+        // top of them -- the ridge roll, and only at detail 2 -- contributes a
+        // little. What must never happen is NEGATIVE, which is the thing this
+        // gate is really for: a plane wound the wrong way round.
         const ok = kindOf === 'flat'
           ? Math.abs(vol) < 1e-5
-          : detail === 2 ? vol > 1e-5 : vol > -1e-5
+          : kindOf === 'sheet' ? vol > -1e-5
+            : detail === 2 ? vol > 1e-5 : vol > -1e-5
         if (!ok) partBad.vol.push(`${tag} ${vol.toExponential(2)} m3, wanted ${kindOf}`)
         g.dispose()
       }
@@ -216,7 +230,7 @@ for (const [name, draw, kindOf] of PARTS) {
 }
 check(partBad.open.length === 0, 'every part is airtight on its own, warped',
   partBad.open.length ? `${partBad.open.length} bad, e.g. ${partBad.open[0]}` : `${PARTS.length} parts, ${partCases} cases`)
-check(partBad.vol.length === 0, 'every solid part is wound outwards, every flat part is flat',
+check(partBad.vol.length === 0, 'every solid part is wound outwards, every sheet is flat or better',
   partBad.vol.length ? `${partBad.vol.length} bad, e.g. ${partBad.vol[0]}` : `signed volume as declared, strengths ${STRENGTHS.join('/')}`)
 
 // ---------------------------------------------------------------------------
@@ -237,8 +251,10 @@ let worstRatioId = ''
 let sumRatio = 0
 let worstLod1 = 0
 let worstLod1Id = ''
+let worstLod0 = 0
+let worstLod0Id = ''
 const geoBad = {
-  attrs: [], finite: [], budget: [], lod: [], lod1: [], below: [],
+  attrs: [], finite: [], budget: [], lod: [], lod1: [], lod0: [], below: [],
   layer: [], open: [], inverted: [], nrm: [],
 }
 
@@ -301,6 +317,8 @@ for (const kind of Object.keys(KINDS)) {
     const ratio = tiers[1].triangles / tiers[0].triangles
     if (tiers[1].triangles > LOD1_BUDGET) geoBad.lod1.push(`${id} ${tiers[1].triangles}`)
     if (tiers[1].triangles > worstLod1) { worstLod1 = tiers[1].triangles; worstLod1Id = id }
+    if (tiers[2].triangles > LOD0_BUDGET) geoBad.lod0.push(`${id} ${tiers[2].triangles}`)
+    if (tiers[2].triangles > worstLod0) { worstLod0 = tiers[2].triangles; worstLod0Id = id }
     if (ratio > worstRatio) { worstRatio = ratio; worstRatioId = id }
     sumRatio += ratio
 
@@ -325,6 +343,8 @@ geoReport('inverted', 'every assembled tier encloses positive volume')
 geoReport('lod', 'detail 2 > detail 1 > detail 0, every seed')
 geoReport('lod1', `no detail 1 tier costs more than ${LOD1_BUDGET} tris`,
   `worst ${worstLod1} (${worstLod1Id})`)
+geoReport('lod0', `no detail 0 tier costs more than ${LOD0_BUDGET} tris`,
+  `worst ${worstLod0} (${worstLod0Id})`)
 {
   const mean = sumRatio / geoCount
   check(mean <= LOD1_MEAN, `detail 1 averages at most ${LOD1_MEAN} of detail 2`,
@@ -384,24 +404,33 @@ console.log('\nwarp')
   // case is a TALL building with a LONG eave and any single seed is very unlikely
   // to be it -- the first version of this gate tested one cottage, measured
   // 0.595, and was a hair from passing a bound the inns were already over.
+  //
+  // MEASURED BY WARPING THE STRAIGHT BUILDING'S OWN VERTICES, not by differencing
+  // a strength-0 build against a strength-1 one. Those two no longer have the
+  // same vertices to difference: a log wall stops its courses under the roof it
+  // actually stands under, so a building whose eave has sagged carries one course
+  // fewer than the same building drawn straight, and from there the two arrays
+  // are offset from each other and every subsequent comparison is between
+  // unrelated vertices. That is correct behaviour and a broken measurement. What
+  // this gate is actually about is the SIZE OF THE FIELD, so it applies the field
+  // and measures it.
   let maxD = 0
   let maxId = ''
   for (const kind of Object.keys(KINDS)) {
     for (let seed = 0; seed < 40; seed++) {
       const plan = planBuilding({ seed, kind })
       const straight = buildBuilding2(plan, { detail: 2, strength: 0 })
-      const bent = buildBuilding2(plan, { detail: 2, strength: 1 })
+      const f = makeWarp(makeCharacter(plan.seed, 1), plan.plinthBottom)
       const ps = straight.geometry.getAttribute('position').array
-      const pb2 = bent.geometry.getAttribute('position').array
       for (let i = 0; i < ps.length; i += 3) {
-        const d = Math.hypot(pb2[i] - ps[i], pb2[i + 1] - ps[i + 1], pb2[i + 2] - ps[i + 2])
+        const q = f(ps[i], ps[i + 1], ps[i + 2])
+        const d = Math.hypot(q[0] - ps[i], q[1] - ps[i + 1], q[2] - ps[i + 2])
         if (d > maxD) { maxD = d; maxId = `${kind}/${seed}` }
       }
       straight.geometry.dispose()
-      bent.geometry.dispose()
     }
   }
-  check(maxD > 0.04 && maxD < 1.2, 'strength 1 moves the building, and not by much',
+  check(maxD > 0.04 && maxD < 1.2, 'the field at strength 1 moves vertices, and not by much',
     `worst vertex moved ${maxD.toFixed(3)} m (${maxId})`)
 }
 

@@ -7,6 +7,7 @@
 // the only interesting question is which distance band pays which multiplier.
 
 import { buildFern, FERN_DEFAULTS, geometryBytes } from '../src/props/fern.js'
+import { FERN_CARD_PLANES } from '../src/props/fern-bank.js'
 import { TRI_BUDGET } from '../src/budget.js'
 
 // The proposed spec. `pitchFalloff` is spelled as the generator spells it.
@@ -46,6 +47,11 @@ const combos = []
 
 // Three mesh tiers plus one shared card.
 const TIERS = { LOD0: 6, LOD1: 4, LOD2: 2 }
+
+// Imported rather than written as 4, because this row is the only place the
+// card's cost is priced against a frame and a stale copy of it would quietly
+// halve the far band. Crossed quads, two triangles each.
+const CARD_TRIS = FERN_CARD_PLANES * 2
 
 console.log(`\n=== bank: ${combos.length} variants x ${Object.keys(TIERS).length} tiers = ${combos.length * Object.keys(TIERS).length} baked geometries ===`)
 console.log(`axes: ${Object.entries(AXES).map(([k, v]) => `${k}[${v.join(',')}]`).join('  ')}`)
@@ -93,7 +99,7 @@ const bands = [
   ['LOD0', 0, 5, tierAvg.LOD0],
   ['LOD1', 5, 10, tierAvg.LOD1],
   ['LOD2', 10, 25, tierAvg.LOD2],
-  ['card', 25, 60, 2],
+  ['card', 25, 60, CARD_TRIS],
 ]
 
 console.log('band     range      instances   tris each   total')

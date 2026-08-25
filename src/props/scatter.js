@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { mulberry32, clamp01, smoothstep } from '../sim/mathx.js'
 import { buildConifer, buildBoulder, buildGrass, buildCabin } from './shapes.js'
-import { buildFernBank } from './fern-bank.js'
+import { buildFernBank, fernCardGeometries, bakeFernImpostors } from './fern-bank.js'
 import { createPropMaterial } from '../material.js'
 
 // ---------------------------------------------------------------------------
@@ -161,7 +161,13 @@ const KINDS = [
     // over. The bands come from the previewer: 4 -> 6 segments is an obvious
     // gain in how smooth a frond reads and 6 -> 8 is close to undetectable, so
     // the finest tier only has to reach as far as a frond's curve is legible.
-    lodBands: [5, 10],
+    //
+    // The fourth band, at 26 m, is the impostor card, and on THIS kind it is
+    // dead: the disc stops at 26 m and the scale fade has already dissolved
+    // everything by 21. It is here because `fern_far` below shares this kind's
+    // geometry list, and a shared list means a shared tier count. Ferns past
+    // 26 m are that kind's job, not this one's.
+    lodBands: [5, 10, 26],
 
     // Rebuild cost, not triangles, is what bounds fern density. Every candidate
     // cell in the disc pays a hash and most survivors pay heightAndSlopeAt, and
@@ -185,6 +191,68 @@ const KINDS = [
 
     // Understory. Ferns want damp shade low down, and they give out well below
     // the grass line rather than at it -- nothing about a fern says alpine.
+    minElev: 25,
+    maxElev: 150,
+    elevFade: 35,
+    maxSlopeDeg: 24,
+    scale: [0.75, 1.35],
+    sink: 0.02,
+  },
+  {
+    // The same fern, sampled sparsely and reaching much further. This is the
+    // kind that actually draws impostor cards.
+    //
+    // WHY A SECOND KIND RATHER THAN A BIGGER RADIUS. Rebuild cost goes as
+    // (2 x radius / spacing)^2, and the near kind's 1.4 m spacing is what buys
+    // its density. Holding that spacing out to 80 m would be 19,500 candidate
+    // cells against its present 1,521 -- thirteen times the rebuild, for a band
+    // where a fern is under 7 pixels tall. So reach and density are separated:
+    // one kind is dense and short, one is sparse and long, and they overlap the
+    // whole way in rather than meeting at a seam.
+    //
+    // WHAT THE NUMBERS BELOW COST, measured rather than reasoned about. Rebuild
+    // time tracks cells x density and almost nothing else: a cell that survives
+    // the density roll goes on to pay heightAndSlopeAt, and out here most are
+    // then rejected on elevation or slope -- so the expensive call is what the
+    // cell count buys whether or not a fern comes of it. The first cut of this
+    // kind was 4.5 / 90, which is 1,513 such calls and timed at 3.8 ms median:
+    // the most expensive kind in the world, above the near fern's 3.2 and the
+    // tree's 3.5, against check-terrain.mjs's 4 ms per-call gate -- and it was
+    // the kind that matters least that was buying it. 5.0 / 80 is 980 calls and
+    // ~2.5 ms, which puts it back at the bottom of the table where it belongs.
+    //
+    // IT IS NOT AS DENSE AS THE NEAR BAND AND CANNOT BE. ~0.02 ferns/m^2 out
+    // here against ~0.46 close in. Matching them is not a tuning problem: the
+    // 26-80 m ring at near density would be ~8,000 instances against a batch
+    // cap of 1,200, so the fix is one card standing for a CLUMP of ferns rather
+    // than more instances. That is DESIGN.md §5's clump work and it is not
+    // built. What this kind buys today is that the world no longer ends in a
+    // hard fern-free ring 26 m out; what it does not buy is a lush distance.
+    //
+    // Same ladder as the near kind, deliberately. Its sparse ferns inside 26 m
+    // stand next to dense ones, so they have to be MESHES there or the player
+    // would be looking at flat cards among real plants. Only past 26 m does
+    // this kind become the card tier.
+    name: 'fern_far',
+    atlas: true,
+    geometryFrom: 'fern',
+    salt: 0x6c8f3d17,
+    lodBands: [5, 10, 26],
+    spacing: 5.0,
+    // 24 m of travel between rebuilds, against the near fern's 8. A kind whose
+    // instances are 7 px tall does not need re-placing three times as often as
+    // one you are standing in, and update() only rebuilds one kind per frame --
+    // so a cheap rebuild schedule is also how this kind stays out of the near
+    // fern's way.
+    rebuildEvery: 24,
+    radius: 80,
+    density: 0.9,
+    tailDensity: 0.4,
+    falloffFrom: 40,
+    max: 1200,
+
+    // Identical to the near fern's. These describe where a fern GROWS, and that
+    // does not change with how far away it is being drawn from.
     minElev: 25,
     maxElev: 150,
     elevFade: 35,
@@ -303,15 +371,28 @@ export class Scatter {
     // ONE extra draw call out of CALL_BUDGET's 45.
     const variants = buildVariants(seed)
     const fernBank = buildFernBank({ seed: seed + 31 })
-    // Tiers are coarsest-first, so a band index maps straight to a tier index.
-    variants.fern = fernBank.tiers.flatMap((t) => t.geometries)
-    this.fernTierCount = fernBank.tiers.length
+    // The card tier's QUADS. Its pixels are not baked here -- see bakeCards()
+    // and the note above fernCardGeometries.
+    const fernCards = fernCardGeometries()
+    // Tiers are coarsest-first, so a band index maps straight to a tier index,
+    // and nothing is coarser than a photograph. `perVariant` is 16 entries
+    // pointing at 2 geometries, which keeps every tier the same length -- the
+    // reshape below divides by tier count and placement picks a variant by
+    // indexing tier 0.
+    variants.fern = [...fernCards.perVariant, ...fernBank.tiers.flatMap((t) => t.geometries)]
+    this.fernTierCount = fernBank.tiers.length + 1
+    this.textureArray = textureArray
 
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true })
     this.atlasMaterial = createPropMaterial(textureArray)
 
+    // Two kinds can draw the same prop at different densities and reaches --
+    // `fern` and `fern_far` do -- and when they do they share ONE copy of the
+    // geometry in the arena rather than each uploading their own 121 KB.
+    const geoKeyOf = (k) => k.geometryFrom ?? k.name
+
     const makeBatch = (kinds, material, name) => {
-      const geos = kinds.flatMap((k) => variants[k.name])
+      const geos = [...new Set(kinds.map(geoKeyOf))].flatMap((key) => variants[key])
       const batch = new THREE.BatchedMesh(
         kinds.reduce((n, k) => n + k.max, 0),
         geos.reduce((n, g) => n + g.attributes.position.count, 0),
@@ -332,10 +413,15 @@ export class Scatter {
 
     // Per-kind state. Instances are allocated up front and never move between
     // kinds; placement only rewrites geometry id, matrix, colour and visibility.
+    const idsByKey = new Map()
     this.kinds = KINDS.map((k) => {
-      const geos = variants[k.name]
+      const key = geoKeyOf(k)
+      const geos = variants[key]
       const batch = k.atlas ? this.atlasBatch : this.batch
-      const geometryIds = geos.map((g) => batch.addGeometry(g))
+      // addGeometry copies into the arena, so a shared key uploads once and the
+      // second kind reuses the ids. Both kinds then read the same tier table.
+      if (!idsByKey.has(key)) idsByKey.set(key, geos.map((g) => batch.addGeometry(g)))
+      const geometryIds = idsByKey.get(key)
       const trisPer = geos.map((g) => g.index.count / 3)
 
       // A kind with LOD tiers hands us tiers x variants geometries in one flat
@@ -386,9 +472,12 @@ export class Scatter {
         batch.setVisibleAt(id, false)
         state.instances.push(id)
       }
-      for (const g of geos) g.dispose()
       return state
     })
+    // Disposed only now that every kind has claimed its ids -- a shared list
+    // would otherwise be freed by the first kind and read by the second. The
+    // Set is because the card tier holds one geometry under sixteen entries.
+    for (const geos of Object.values(variants)) for (const g of new Set(geos)) g.dispose()
     this.byName = Object.fromEntries(this.kinds.map((s) => [s.cfg.name, s]))
 
     this._m = new THREE.Matrix4()
@@ -407,6 +496,7 @@ export class Scatter {
       byKind: {},
       capped: false,
       lodSwaps: 0,
+      cardBakeMs: 0, // 0 until bakeCards() has run; see it in the HUD
     }
   }
 
@@ -424,6 +514,28 @@ export class Scatter {
   setExclusion(fn) {
     this.exclude = fn
     this.invalidate()
+  }
+
+  /**
+   * Photograph the fern into the two impostor layers its cards already point
+   * at. Call ONCE, after `loadImageLayers()` has resolved -- before that the
+   * fern has no frond texture and the picture would be of nothing.
+   *
+   * Two ortho renders at 512^2, two 1 MB readbacks and the downsample, and
+   * `readRenderTargetPixels` stalls the pipeline for each -- so this is a
+   * deliberate one-off hitch at load rather than anything the frame loop does.
+   * It is the whole reason there is no offline bake step: an impostor generated
+   * from the mesh cannot disagree with the mesh, and there is nothing to
+   * rebuild when the generator changes.
+   *
+   * Until it runs, the cards draw against an empty layer and are discarded by
+   * alphaTest, so distant ferns fade in rather than flashing.
+   */
+  bakeCards(renderer) {
+    const t0 = performance.now()
+    const baked = bakeFernImpostors(renderer, this.textureArray)
+    this.stats.cardBakeMs = performance.now() - t0
+    return baked
   }
 
   invalidate() {

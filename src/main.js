@@ -98,17 +98,24 @@ const terrain = new Terrain(scene, { seed: SEED, workers: 2 })
 // single DataArrayTexture, so they all share one material and one draw call.
 // See the header of textures.js for why an array and not a packed atlas.
 const propTextures = buildTextureArray()
+// Scale reference only -- see the header of props/scatter.js. The real
+// placement system is §6 and lands at build step 5.
+const props = new Scatter(scene, terrainHeight, propTextures, { seed: SEED })
 // Real PNG layers arrive asynchronously. The array is usable immediately --
 // unloaded layers are transparent, so alphaTest discards them and a fern is
 // briefly invisible rather than magenta. A failure here is a broken build and
 // is thrown, not swallowed.
-loadImageLayers(propTextures).catch((err) => {
-  console.error('prop textures failed to load', err)
-  throw err
-})
-// Scale reference only -- see the header of props/scatter.js. The real
-// placement system is §6 and lands at build step 5.
-const props = new Scatter(scene, terrainHeight, propTextures, { seed: SEED })
+//
+// The fern impostors are baked off the back of it, and the ORDER is the whole
+// point: the card is a photograph of the fern wearing FROND_0, so taking it
+// before that PNG lands would photograph an invisible plant. This is also why
+// there is no offline bake step -- see Scatter.bakeCards.
+loadImageLayers(propTextures)
+  .then(() => props.bakeCards(renderer))
+  .catch((err) => {
+    console.error('prop textures failed to load', err)
+    throw err
+  })
 // A village appears and disappears under the scatter's feet, so the scatter has
 // to be told to re-place -- otherwise the trees it put there before the village
 // arrived are left standing in the great hall.
@@ -746,6 +753,8 @@ function hudLines(skyState) {
     '',
     '## props (1 batched draw call)',
     `tree ${bk.tree ?? 0}  rock ${bk.rock ?? 0}  grass ${bk.grass ?? 0}  cabin ${bk.cabin ?? 0}`,
+    `fern ${bk.fern ?? 0} to 26m  + ${bk.fern_far ?? 0} to 80m (card past 26m, ` +
+      `${pr.cardBakeMs ? `baked ${pr.cardBakeMs.toFixed(1)}ms` : 'not baked yet'})`,
     `${(pr.tris / 1000).toFixed(1)}k tris   last place ${pr.lastBuildKind} ${pr.lastBuildMs.toFixed(1)}ms`,
     '',
     '## village (1 draw call + paths + fire)',

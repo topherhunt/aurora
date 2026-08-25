@@ -1,10 +1,10 @@
 import { LAYER } from '../../textures.js'
 import {
-  Builder, WALL_STYLE, TINT,
-  plinth, gableEnd, leanEnd, doorway, steps2,
-  wall2, gableRoof2, leanToRoof2, windowUnit2, chimney2, porch2,
+  Builder, WALL_STYLE, TINT, member2, gableEnd, leanEnd,
+  plinth, doorway, steps2, SMOOTH_LAYERS,
+  wall2, planGableRoof, planLeanRoof, drawRoof, windowUnit2, chimney2, porch2,
 } from './parts.js'
-import { makeCharacter, makeWarp, warpBuilder } from './warp.js'
+import { makeCharacter, makeWarp, warpBuilder, smoothNormals } from './warp.js'
 
 // ---------------------------------------------------------------------------
 // plan -> geometry, v2. DESIGN.md §19.
@@ -27,6 +27,13 @@ import { makeCharacter, makeWarp, warpBuilder } from './warp.js'
 // is to jitter each part as it is drawn -- and that is what opens seams, because
 // every junction then has to be threaded with the same jitter by hand and one of
 // them is always missed. Draw straight, warp once.
+//
+// THE ONE ORDERING RULE ON TOP OF THAT: every roof is PLANNED before any wall is
+// drawn, and drawn after. A roof is a sheet with no thickness now, so a wall can
+// only stop cleanly under it by asking it where it is, and it cannot ask a roof
+// that does not exist yet. This is also what retired gableEnd(): the triangle of
+// wall above the eave is not a separate part any more, it is the top three
+// columns of the gable-end wall, which removes a seam as well as a call.
 // ---------------------------------------------------------------------------
 
 const STYLE_OF = {
@@ -56,7 +63,7 @@ const ROOF_OF = {
  *
  * Returns { geometry, triangles, plan, character }.
  */
-export function buildBuilding2(plan, { detail = 2, strength = 1, character = null } = {}) {
+export function buildBuilding2(plan, { detail = 2, strength = 1, character = null, smoothAngle = 78 } = {}) {
   const b = new Builder()
   const style = STYLE_OF[plan.style]
   const roofSpec = ROOF_OF[plan.roofKind]
@@ -74,45 +81,81 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
     // otherwise a mass sitting 0.8 m down the hill starts its lean 0.8 m into
     // the ground and arrives at the eave with a different amount of it.
     warpBuilder(b, makeWarp(k, plan.plinthBottom))
+    // Normals were computed per face as each quad was emitted, off positions the
+    // warp has since moved, so they have to be redone. smoothNormals() does that
+    // AND does the other half of the job: it averages across the facets of the
+    // round timbers, so a five-sided log lights as a cylinder rather than as a
+    // pentagon, while leaving every masonry arris and every roof buckle seam as
+    // sharp as it was drawn. See warp.js for the rule and why it is free.
+    //
+    // Unconditional, unlike the old computeVertexNormals() call: the smoothing is
+    // wanted at strength 0 too, where it is the only thing between a log wall and
+    // a stack of prisms.
+    smoothNormals(b, { angle: smoothAngle, layers: SMOOTH_LAYERS })
     const geometry = b.toGeometry()
-    // Normals were computed per face as each quad was emitted, off positions
-    // that have since moved. Recomputing is exactly right rather than merely
-    // adequate: Builder.vertex() never dedupes across quads, so this averages
-    // only the two triangles of each quad -- correct, because a warped quad is
-    // genuinely non-planar -- and leaves every quad-to-quad crease as sharp as
-    // it was drawn.
-    if (k.strength > 0) geometry.computeVertexNormals()
     return { geometry, triangles: b.triangles, plan, character: k }
   }
 
+  /**
+   * Every mass's roof, WORKED OUT BUT NOT DRAWN, by mass id.
+   *
+   * This exists because a roof is now a sheet: the walls take their top edge
+   * from it, so it has to be a solved surface before the first wall is emitted,
+   * and it has to be drawn after them anyway so its overhang covers the joint.
+   */
+  const planRoofs = (lod, overhang, verge, fringe = roofSpec.fringe) => {
+    const R = new Map()
+    for (const m of plan.masses) {
+      const seed = plan.seed * 29 + m.id
+      R.set(m.id, m.roof.kind === 'gable'
+        ? planGableRoof({
+          cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
+          ridgeAxis: m.ridgeAxis, overhang, verge, ...wingVerge(m, main, verge),
+          layer: roofSpec.layer, tint: roofSpec.tint, seed,
+          moss: roofSpec.moss, fringe, detail: lod, k,
+        })
+        : planLeanRoof({
+          cx: m.cx, cz: m.cz, w: m.w, d: m.d,
+          highY: m.roof.highY, lowY: m.roof.lowY, dir: m.roof.dir,
+          overhang: overhang * 0.7, layer: roofSpec.layer, tint: roofSpec.tint,
+          seed, detail: lod, k,
+        }))
+    }
+    return R
+  }
+
   if (detail <= 0) {
-    // The far tier: one box, one roof prism. No plinth, no openings, nothing
-    // that survives being three pixels tall. It still gets warped, because the
-    // silhouette is all there is at this range and a straight LOD0 under a
+    // The far tier: one box per mass and a roof of four triangles over it. No
+    // plinth, no timbers, nothing with a section. It still gets warped, because
+    // the silhouette is all there is at this range and a straight LOD0 under a
     // leaning LOD1 pops on the swap.
+    //
+    // TWO DELIBERATE CHANGES TO WHAT THIS TIER SPENDS ITS TRIANGLES ON, and they
+    // pay for each other. The overhang and the verge go to ZERO: an eave is one
+    // dark pixel at this range, and with the roof landing exactly on the top of
+    // the box the whole tier stops needing an eave to have any depth at all --
+    // the roof plane and the top of the wall are the same line. What that buys is
+    // the openings, four triangles each, which stay. That is the right way round:
+    // a box with windows on it reads as a building at 80 m, and a box with a
+    // crisp overhang and a blank face reads as a crate.
+    const roofs = planRoofs(0, 0, 0, false)
     for (const m of plan.masses) {
       b.box(
         [m.cx - m.w / 2, plan.plinthBottom, m.cz - m.d / 2],
         [m.cx + m.w / 2, m.eaveY, m.cz + m.d / 2],
         { layer: LAYER.TIMBER_BEAM, color: TINT.timber }
       )
-      if (m.roof.kind === 'gable') {
-        gableRoof2(b, {
-          cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
-          ridgeAxis: m.ridgeAxis, overhang: 0.15, verge: 0.1,
-          ...wingVerge(m, main, 0.1),
-          layer: roofSpec.layer, tint: roofSpec.tint, fringe: false, detail: 0,
-        })
-        gableEnds(b, m, style, 0)
-      } else {
-        leanToRoof2(b, {
-          cx: m.cx, cz: m.cz, w: m.w, d: m.d,
-          highY: m.roof.highY, lowY: m.roof.lowY, dir: m.roof.dir,
-          overhang: 0.12, layer: roofSpec.layer, tint: roofSpec.tint, detail: 0,
-        })
-        leanEnds(b, m, style)
-      }
+      drawRoof(b, roofs.get(m.id))
+      // The one place gableEnd()/leanEnd() survive. Above detail 0 the wall
+      // itself climbs to the apex, but this tier's mass is a box with a flat top,
+      // so the triangle between it and the ridge is still a hole to be closed --
+      // and a doubled triangle is two triangles, cheaper than any wall could be.
+      if (m.roof.kind === 'gable') gableEnds(b, m, style, 0)
+      else leanEnds(b, m, style)
     }
+    doorway(b, { ...plan.door, seed: plan.seed * 53 + 3, detail: 0 })
+    plan.windows.forEach((wn, i) =>
+      windowUnit2(b, { ...wn, seed: plan.seed * 53 + 11 + i, detail: 0 }))
     return finish()
   }
 
@@ -144,38 +187,48 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   // meet at a corner, or their log ends collide; `rough` drives the hewn jitter
   // and must DIFFER everywhere, or every timber on the building is the same
   // timber. Hence two numbers rather than one.
+  const roofs = planRoofs(detail, plan.overhang ?? 0.4, 0.3)
+
   plan.walls.forEach((wl, i) => {
     if (wl.buried) return
     const m = plan.masses.find((mm) => mm.id === wl.massId)
+    const R = roofs.get(m.id)
+    // A wall that runs PERPENDICULAR to the ridge is a gable end, and that is the
+    // whole test: its top climbs to the apex and back down, so it needs a column
+    // boundary exactly at the ridge -- hence an even count -- and enough on
+    // either side to follow the sag down to the eaves. Six at detail 2, which is
+    // about what gableEnd()'s triangle plus its king post used to cost between
+    // them, and now there is no seam across the middle of the gable either.
+    const alongX = Math.abs(wl.p1[0] - wl.p0[0]) > Math.abs(wl.p1[1] - wl.p0[1])
+    const isGableEnd = m.roof.kind === 'gable' && alongX !== (m.ridgeAxis === 'x')
     wall2(b, {
       p0: wl.p0, p1: wl.p1, y0: m.floorY, y1: m.eaveY,
       style, seed: wl.massId + (wl.side === 'front' || wl.side === 'back' ? 0 : 1),
       rough: plan.seed * 131 + i * 7 + 1,
-      detail,
+      detail, k,
+      topAt: R.heightAt,
+      topCols: detail >= 2 ? (isGableEnd ? 6 : 4) : (isGableEnd ? 2 : 1),
     })
+    if (isGableEnd && detail >= 2) {
+      // The king post, which used to live inside gableEnd(). Every timber gable
+      // has one and it is what stops the tympanum reading as a blank triangle.
+      // It gets `bow` because it is the longest unbroken vertical on the
+      // building, and it reaches the sagged apex rather than a nominal one.
+      const mx = (wl.p0[0] + wl.p1[0]) / 2
+      const mz = (wl.p0[1] + wl.p1[1]) / 2
+      member2(b, [mx, m.floorY, mz], [mx, R.heightAt(mx, mz) - 0.16, mz], {
+        hu: 0.095, seed: plan.seed * 131 + i * 7 + 2, round: 0.6,
+        segments: 2, bow: k.bow,
+        layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true,
+      })
+    }
   })
 
-  // --- gables and roofs ----------------------------------------------------
-  for (const m of plan.masses) {
-    const seed = plan.seed * 29 + m.id
-    if (m.roof.kind === 'gable') {
-      gableEnds(b, m, style, detail, seed)
-      gableRoof2(b, {
-        cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
-        ridgeAxis: m.ridgeAxis, overhang: plan.overhang ?? 0.4, verge: 0.3,
-        ...wingVerge(m, main, 0.3),
-        layer: roofSpec.layer, tint: roofSpec.tint, seed,
-        moss: roofSpec.moss, fringe: roofSpec.fringe, detail, k,
-      })
-    } else {
-      leanToRoof2(b, {
-        cx: m.cx, cz: m.cz, w: m.w, d: m.d,
-        highY: m.roof.highY, lowY: m.roof.lowY, dir: m.roof.dir,
-        overhang: 0.28, layer: roofSpec.layer, tint: roofSpec.tint, seed, detail, k,
-      })
-      leanEnds(b, m, style)
-    }
-  }
+  // --- roofs ---------------------------------------------------------------
+  //
+  // After the walls, on purpose: the covering oversails the joint on all four
+  // sides, so drawing it last is what hides the 4 cm the walls stop short by.
+  for (const m of plan.masses) drawRoof(b, roofs.get(m.id))
 
   // --- openings ------------------------------------------------------------
   doorway(b, { ...plan.door, seed: plan.seed * 53 + 3, detail })

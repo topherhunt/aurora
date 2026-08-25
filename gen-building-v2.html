@@ -116,11 +116,19 @@
       <h2>the warp field</h2>
       <table id="charTable"></table>
       <p class="note">
-        One displacement field over space, applied to the finished vertex array,
-        normals recomputed after. Because it is keyed on POSITION, two vertices that
-        were coincident get the same answer and the shell stays airtight -- which is
-        why the crookedness can be this large without opening a seam. Set
-        <code>strength</code> to 0 to see the straight building underneath it.
+        One displacement field over space, applied to the finished vertex array. Because it
+        is keyed on POSITION, two vertices that were coincident get the same answer and the
+        shell stays airtight -- which is why the crookedness can be this large without opening
+        a seam. Set <code>strength</code> to 0 to see the straight building underneath it.
+      </p>
+      <p class="note">
+        Normals are rebuilt afterwards, and the same pass decides which edges are hard.
+        Smoothing is a per-VERTEX decision made in the geometry -- not per material and not
+        per object -- so it costs no triangles and no memory: every quad already owns its own
+        four corners, and the pass only overwrites numbers in the normal array. Timber gets
+        averaged normals so a five-sided log lights as a cylinder; stone, plaster and roof
+        coverings do not, because their broken arrises are the point. <code>smooth</code> is
+        the crease angle between the two.
       </p>
 
       <h2>what the plan decided</h2>
@@ -133,6 +141,9 @@
         hole, and a building is holes by construction. So the far tiers are the <em>same
         plan</em> built with less of it -- detail 1 drops the bevelling, the rounding and
         the 3D joinery, and every window, frame and shutter becomes one flat rectangle.
+        Detail 0 is a box per mass, a roof of four triangles with no overhang at all, and
+        one rectangle for each window and the door: at that range an eave is a dark pixel
+        and the pattern of openings is the only thing separating a building from a crate.
         Every tier is warped by the same field, so the silhouette does not pop on the swap.
       </p>
 
@@ -144,8 +155,12 @@
       <div id="tiles"></div>
       <p class="note">
         Shared with v1, unchanged: nine layers of one 128&sup2; array plus two decal
-        sheets. Every surface takes its UVs from <em>unwarped</em> world extents &divide;
-        TILE_METRES, so the warp bends the geometry without smearing the tile.
+        sheets. UVs are always taken from the <em>unwarped</em> geometry, so the warp bends
+        the shape without smearing the tile. Walls measure them off world extents &divide;
+        TILE_METRES -- absolute world height is what makes a log course run level round a
+        corner instead of stepping at it -- while anything that is a discrete object rather
+        than a piece of surface (a pane, a shutter leaf, a window's flat far-tier stand-in)
+        gets whole tiles fitted to its own rectangle instead.
       </p>
     </div>
 
