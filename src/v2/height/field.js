@@ -1,4 +1,9 @@
-import { Detail, calibrateRough, KNEE_TEXELS } from './detail.js'
+import { Detail, calibrateRough, KNEE_TEXELS, EXPOSURE_SWING } from './detail.js'
+import { Heightmap } from './heightmap.js'
+import { ExposureField } from './exposure.js'
+import { Crag } from './crag.js'
+import { thermalErode } from './erode.js'
+import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './relief.js'
 
 // ---------------------------------------------------------------------------
 // V2Height -- the composed height field (§18). The one function the mesher, the
@@ -68,16 +73,102 @@ const HIST_BINS = 8192
 export const WORLD_SEED = 20260824
 
 export class V2Height {
-  constructor({ heightmap, layers, seed = WORLD_SEED, rough }) {
+  constructor({ heightmap, layers, seed = WORLD_SEED, rough, relief = RELIEF_DEFAULTS }) {
     if (!heightmap) throw new Error('V2Height: heightmap is required')
     if (!layers) throw new Error('V2Height: layers is required -- pass a default Layers, not null; the carve chain is skipped by the authored flag, not by a null check')
     if (!Number.isFinite(seed)) throw new Error(`V2Height: seed must be a finite number, got ${seed}`)
 
+    // `heightmap` stays THE IMPORT, for the whole life of this object. The
+    // sculpt brush writes into it, Heightmap.toPng reads it back out, and the
+    // undo stack holds rects of it -- all three are about the field a human
+    // authored. `ground` is the field the world is actually built on, which is
+    // the same object unless erosion is on. Everything below samples `ground`.
     this.heightmap = heightmap
+    this.ground = heightmap
     this.layers = layers
     this.seed = seed
+    this._pinnedRough = Number.isFinite(rough) ? rough : null
+    this.relief = normalizeRelief(relief)
 
-    // THE DETAIL TERM IS MEASURED AGAINST THE IMPORT, NOT CONFIGURED.
+    // One scratch gradient, reused. gradientAt is called once per field
+    // evaluation on a path that runs tens of millions of times per remesh, and
+    // an object literal per call is an object literal per vertex.
+    this._grad = { dx: 0, dz: 0, slope01: 0 }
+
+    this._rebuild()
+
+    // THE EMPTY-DOCUMENT FAST PATH.
+    //
+    // An unedited v2 world is the common case and it must cost exactly one
+    // branch, not a walk through three spatial indexes per vertex. `_authored`
+    // is "does any layer change the GEOMETRY here" -- lakes and paths, not snow
+    // points, because a snow point moves vertex colours and never a vertex.
+    //
+    // Recomputed when the epoch moves rather than on every mutation, so nothing
+    // has to remember to invalidate it: Layers bumps epoch on every commit, and
+    // an integer compare per query is cheaper than the Map lookups it replaces.
+    // check-v2-field's "empty-document fast path" section counts layer calls
+    // through a spy to prove the branch is real.
+    this._epoch = -1
+    this._authored = false
+    this._syncAuthored()
+  }
+
+  /**
+   * Build (or rebuild) everything derived from the import and the relief knobs.
+   *
+   * ORDER IS FORCED and every step depends on the one above it:
+   *
+   *   1. erode      relaxes the import toward the repose angle, producing the
+   *                 field the world is actually built on
+   *   2. exposure   convexity, measured on THAT field -- measure it on the
+   *                 import instead and the crag band decorates ground the
+   *                 erosion has already moved
+   *   3. calibrate  the detail amplitude, measured on that field and THROUGH
+   *                 the sharpen curve and the exposure gain
+   *   4. detail     the octave table the calibration just sized
+   *   5. crag       the crease band, which reads exposure and the fall line
+   *
+   * Called from the constructor and from setRelief, and it is the same code
+   * both times on purpose: a relief change has to leave this object in the state
+   * it would have been constructed in, or a knob would behave differently
+   * depending on whether it was on at boot.
+   */
+  _rebuild() {
+    const seed = this.seed
+    const relief = this.relief
+    const needs = reliefNeeds(relief)
+    this.needs = needs
+
+    // 1. EROSION. A copy, never in place: the import has to survive so the
+    // brush, the PNG writer and the undo stack are all still talking about the
+    // field the human authored, and so the knob is reversible.
+    if (needs.erode) {
+      const src = this.heightmap
+      const eroded = thermalErode(src.field, src.width, src.height, src.texelSize, {
+        passes: relief.erode,
+        talusDeg: relief.talus,
+      })
+      this.ground = Heightmap.fromRaw({ width: src.width, height: src.height, data: eroded, meta: src.meta })
+    } else {
+      this.ground = this.heightmap
+    }
+
+    const ground = this.ground
+    this.exposure = needs.exposure ? new ExposureField(ground) : null
+
+    // THE SHIPPED PATH, kept as a literal branch rather than as an emergent
+    // property. `sharpen` lives inside Detail's octave loop and `erode` lives in
+    // `ground`, so neither needs the composed expression; only the two terms
+    // that read convexity do. When both are off, every sampler below runs the
+    // exact expression it ran before this file learned the word relief -- so
+    // "all knobs off is bit-identical" is something you can read rather than
+    // something you have to trust the arithmetic for. Note it is NOT keyed on
+    // `this.exposure` existing: crest and snowJag bake the grid without wanting
+    // anything from the geometry path.
+    this._plain = !(relief.exposure > 0 || relief.crag > 0)
+
+    // 2. THE DETAIL TERM IS MEASURED AGAINST THE IMPORT, NOT CONFIGURED.
     //
     // Both of its scales come from the loaded image: the knee from its texel
     // size, the amplitude from its own structure function. §18 asks for a tuned
@@ -96,32 +187,77 @@ export class V2Height {
     // `rough` may be passed to pin the calibration, which check-v2-field uses to
     // hold the octave table still while it measures something else. Nothing at
     // runtime passes it.
-    const knee = heightmap.texelSize * KNEE_TEXELS
-    if (Number.isFinite(rough)) {
-      this.calibration = { rough, pinned: true }
+    const knee = ground.texelSize * KNEE_TEXELS
+    const exposureGain = needs.exposure && relief.exposure > 0 ? (x, z) => this._exposureGain(x, z) : null
+    if (this._pinnedRough !== null) {
+      this.calibration = { rough: this._pinnedRough, pinned: true }
     } else {
-      this.calibration = calibrateRough({ heightmap, seed, knee })
+      this.calibration = calibrateRough({ heightmap: ground, seed, knee, sharpen: relief.sharpen, exposureGain })
       this.calibration.pinned = false
     }
-    this.detail = new Detail({ seed, knee, rough: this.calibration.rough })
+    this.detail = new Detail({ seed, knee, rough: this.calibration.rough, sharpen: relief.sharpen })
+    this.crag = needs.crag ? new Crag({ seed }) : null
 
+    // Invalidated rather than kept: erosion moves the texels the percentile
+    // histogram is built from, so the altitude ramp a stale `bands` describes is
+    // a ramp over a world that no longer exists.
     this._bands = null
+  }
 
-    // THE EMPTY-DOCUMENT FAST PATH.
-    //
-    // An unedited v2 world is the common case and it must cost exactly one
-    // branch, not a walk through three spatial indexes per vertex. `_authored`
-    // is "does any layer change the GEOMETRY here" -- lakes and paths, not snow
-    // points, because a snow point moves vertex colours and never a vertex.
-    //
-    // Recomputed when the epoch moves rather than on every mutation, so nothing
-    // has to remember to invalidate it: Layers bumps epoch on every commit, and
-    // an integer compare per query is cheaper than the Map lookups it replaces.
-    // check-v2-field's "empty-document fast path" section counts layer calls
-    // through a spy to prove the branch is real.
-    this._epoch = -1
-    this._authored = false
-    this._syncAuthored()
+  /**
+   * Swap the relief knobs and rebuild. Returns true if anything changed, so the
+   * caller knows whether it owes the world a remesh.
+   *
+   * THE CALLER'S OBLIGATION, and nothing here can enforce it: this object is one
+   * of THREE evaluating the same field -- the main thread's and one per terrain
+   * worker -- and they do not share memory. Set the relief on one and the ground
+   * she is drawn standing on and the ground she collides with are two different
+   * surfaces. TerrainV2.setRelief is the transport that keeps them together; see
+   * the banner in relief.js.
+   */
+  setRelief(relief) {
+    const next = normalizeRelief(relief)
+    if (sameRelief(next, this.relief)) return false
+    this.relief = next
+    this._rebuild()
+    return true
+  }
+
+  /**
+   * Tell the field that the IMPORT changed over `rect` (texel indices), because
+   * the sculpt brush wrote into it.
+   *
+   * Only erosion cares, and it cares absolutely: with erosion on, the world is
+   * built on a derived copy, and a brush stroke that updated the import and not
+   * the copy would be an invisible brush AND a player colliding with ground that
+   * is no longer drawn. Material moves one texel per pass, so re-relaxing the
+   * rect plus a `passes`-wide halo reproduces exactly what a full-field run would
+   * have put there.
+   *
+   * NEITHER `bands` NOR THE EXPOSURE GRID REFRESHES HERE, and both omissions are
+   * decisions rather than oversights.
+   *
+   * `bands` is the world's own min/max, which the snow ramp and the rock beds are
+   * expressed against. Recomputing it mid-drag would repaint the whole world off
+   * a ramp its already-meshed chunks are not using, so the chunks under the brush
+   * would come back shaded against a different scale from their neighbours -- a
+   * seam that follows the brush. The terrain worker's `height` handler carries
+   * the same note for the same reason. A stroke moves a brush-sized patch of a
+   * 1024^2 field, so the error in the extremes is at worst the depth of one
+   * stroke, and the next full rebuild picks it up.
+   *
+   * The exposure grid is stale for a different reason: see the note in
+   * exposure.js on why a stale AMPLITUDE is safe where a stale SURFACE is not.
+   */
+  coarsePatched(rect) {
+    if (!this.needs.erode) return
+    const src = this.heightmap
+    const eroded = thermalErode(src.field, src.width, src.height, src.texelSize, {
+      passes: this.relief.erode,
+      talusDeg: this.relief.talus,
+      rect,
+    })
+    this.ground = Heightmap.fromRaw({ width: src.width, height: src.height, data: eroded, meta: src.meta })
   }
 
   _syncAuthored() {
@@ -170,7 +306,7 @@ export class V2Height {
    */
   get bands() {
     if (this._bands) return this._bands
-    const hm = this.heightmap
+    const hm = this.ground
     const field = hm.field
     const min = hm.min
     const max = hm.max
@@ -219,27 +355,103 @@ export class V2Height {
    * this method is the half of it that lives here.
    */
   baseAt(x, z, cell = 0) {
-    const hm = this.heightmap
-    return hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), 0)
+    const hm = this.ground
+    if (this._plain) return hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), 0)
+    return hm.sample(x, z) + this._micro(x, z, cell, 0)
   }
 
   /** The composed field. `cell` is the sampling spacing in metres; 0 is exact and is the default, because Player and the editor call this with two arguments. */
   heightAt(x, z, cell = 0) {
     if (this.layers.epoch !== this._epoch) this._syncAuthored()
-    const hm = this.heightmap
+    const hm = this.ground
     if (!this._authored) {
       // flattenAt would be 0 everywhere and carve() the identity, so both are
       // skipped outright rather than called and thrown away.
-      return hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), 0)
+      if (this._plain) return hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), 0)
+      return hm.sample(x, z) + this._micro(x, z, cell, 0)
     }
     const layers = this.layers
-    const h = hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), layers.flattenAt(x, z))
+    const flatten = layers.flattenAt(x, z)
+    const h = this._plain
+      ? hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), flatten)
+      : hm.sample(x, z) + this._micro(x, z, cell, flatten)
     return layers.carve(x, z, h)
   }
 
-  /** Elevation at which snow starts here. Pass-through; the baked grid lives in Layers. */
+  /**
+   * THE SUB-TEXEL TERMS, as one expression: detail, exposure-modulated, plus the
+   * crag band. Reached only when some relief knob that touches geometry is on --
+   * the `_plain` branch above is the shipped path and is untouched by any of
+   * this, which is what makes an all-off relief bit-identical rather than merely
+   * equivalent.
+   *
+   * ONE gradient serves all three. Heightmap.slopeAt was already taking four
+   * bicubic taps on every evaluation and throwing the DIRECTION away;
+   * gradientAt returns the same slope from the same stencil and keeps the fall
+   * line, so the anisotropy is free and the crag's steepness gate costs nothing.
+   */
+  _micro(x, z, cell, flatten01) {
+    const g = this.ground.gradientAt(x, z, this._grad)
+    let m = this.detail.at(x, z, cell, g.slope01, flatten01)
+    if (!this.exposure) return m
+    const e = this.exposure.at(x, z)
+    const relief = this.relief
+    if (relief.exposure > 0) m *= 1 + relief.exposure * EXPOSURE_SWING * (2 * e - 1)
+    if (this.crag) {
+      // Suppressed by the same flatten weight the detail term uses, and it has
+      // to be: a road is drawn ACROSS the fall line on exactly the convex, steep
+      // ground the crag gate likes best, and an unsuppressed crag would cut a
+      // gully through the carriageway. The carve chain runs after this and would
+      // then smooth the road back over a hole it did not know was there.
+      const keep = 1 - (flatten01 < 0 ? 0 : flatten01 > 1 ? 1 : flatten01)
+      if (keep > 0) {
+        m += keep * this.crag.at(x, z, cell, relief.crag, relief.aniso, e, g.slope01, g.dx, g.dz)
+      }
+    }
+    return m
+  }
+
+  /** The exposure gain alone, for calibrateRough to measure the unit stack through. */
+  _exposureGain(x, z) {
+    return 1 + this.relief.exposure * EXPOSURE_SWING * (2 * this.exposure.at(x, z) - 1)
+  }
+
+  /**
+   * Convexity at (x, z), 0..1 -- 0 in a hollow, 1 on a rib. Null-free: returns
+   * 0.5, i.e. planar, when no knob asked for the grid to be baked, so callers
+   * can multiply by it unconditionally.
+   */
+  exposureAt(x, z) {
+    return this.exposure ? this.exposure.at(x, z) : 0.5
+  }
+
+  /**
+   * Elevation at which snow starts here. The baked grid lives in Layers and this
+   * is a pass-through unless the `snowJag` knob is up.
+   *
+   * WHY THE SERRATION LIVES HERE AND NOT IN SnowField. Exposure is a property of
+   * the HEIGHT field and the snow layer is an authored document; putting a
+   * convexity term in Layers would make a thing a human draws depend on a thing
+   * the terrain computes, and the editor would be showing a snow line it cannot
+   * account for. Putting it here instead reaches the mesher's vertex colours and
+   * all four prop layers -- trees, ferns, grass, rocks all call this -- through
+   * one function, which is the whole reason V2Height carries a pass-through in
+   * the first place.
+   *
+   * AND IT IS THE ONE ITEM ON THIS LIST THAT WORKS AT ANY DISTANCE. Everything
+   * else here is geometry, and geometry is band-limited by the mesh: past about
+   * a kilometre the cell is 32 m and there is no octave under 128 m left to
+   * carry an edge. A snow line is a COLOUR boundary, it is drawn on whatever
+   * triangles exist, and a ragged one reads as a ragged mountain from any range
+   * at all. Cheap, and it is the only thing in the set that touches a skyline.
+   */
   snowLineAt(x, z) {
-    return this.layers.snowLineAt(x, z)
+    const base = this.layers.snowLineAt(x, z)
+    if (this.relief.snowJag <= 0) return base
+    // Convex ground blows clear, so snow starts HIGHER on a rib; hollows collect
+    // drift, so it starts lower. Same rule as the crag gate, opposite sign, and
+    // that is what makes the two agree: bare rock and no snow are the same fact.
+    return base + this.relief.snowJag * (2 * this.exposureAt(x, z) - 1)
   }
 
   /**
@@ -291,7 +503,7 @@ export class V2Height {
    * class into the heightmap and pick up whichever convention they meet first.
    */
   slope01At(x, z) {
-    return this.heightmap.slopeAt(x, z)
+    return this.ground.slopeAt(x, z)
   }
 
   /**
@@ -358,15 +570,16 @@ export class V2Height {
   scatterAt(x, z, cell, out = { h: 0, tan: 0 }) {
     if (!(cell > 0)) throw new Error(`V2Height.scatterAt: cell must be a positive fixed band limit, got ${cell}`)
     if (this.layers.epoch !== this._epoch) this._syncAuthored()
-    const hm = this.heightmap
+    const hm = this.ground
     const s = hm.slopeAt(x, z)
     out.tan = s / (1 - s)
     if (!this._authored) {
-      out.h = hm.sample(x, z) + this.detail.at(x, z, cell, s, 0)
+      out.h = hm.sample(x, z) + (this._plain ? this.detail.at(x, z, cell, s, 0) : this._micro(x, z, cell, 0))
       return out
     }
     const layers = this.layers
-    const h = hm.sample(x, z) + this.detail.at(x, z, cell, s, layers.flattenAt(x, z))
+    const flatten = layers.flattenAt(x, z)
+    const h = hm.sample(x, z) + (this._plain ? this.detail.at(x, z, cell, s, flatten) : this._micro(x, z, cell, flatten))
     out.h = layers.carve(x, z, h)
     return out
   }

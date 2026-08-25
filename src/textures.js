@@ -709,16 +709,22 @@ async function decodeLayer(url) {
 // every tuft by PLACEMENT.sink scaled with the instance, which is a constant
 // 0.04 / 0.55 = 7.3% of the card's height at any size, so the terrain cuts the
 // picture at v = 0.927 and the rows below that are buried whatever we do here.
-// The fray therefore has to bite ABOVE that line to be worth anything, which is
-// what `top` is set against: it puts the deepest cut about 7 texels above the
-// ground line and the shallowest below it.
+// The fray therefore has to bite WELL above that line to be worth anything,
+// which is what `top` is set against: the deepest column is cut 25 texels clear
+// of the ground line, so that most of the band the fray works in is a band the
+// player can see. Confined to the card's own bottom eighth it was work done
+// underground, and the hem survived.
 //
-// EACH COLUMN OF THE PICTURE GETS ITS OWN CUT HEIGHT, so the foot of the card
-// becomes a row of separate stalks instead of a hem -- measured at the ground
-// row, 31 of the 58 opaque texels survive. Half the decision is the column's own
-// roll and half is THE TEXEL'S BRIGHTNESS: a dark texel is eaten before a bright
-// one at the same height, so what goes first is the shadowed mass at the base of
-// the clump and what is left standing is the lit blades running through it.
+// EACH COLUMN OF THE PICTURE GETS ITS OWN CUT HEIGHT and THE TEXEL'S OWN
+// BRIGHTNESS LIFTS IT BACK, so the foot of the card becomes a row of separate
+// stalks instead of a hem: 21.5% of the tuft's opaque texels go, and at the
+// ground row 33 of 58 survive, in clumps rather than in a line. The two terms
+// are not weighted against each other: the column
+// roll sets a floor and brightness raises the texel from there toward the foot
+// of the card, so a fully lit blade reaches the bottom of the square in ANY
+// column. That is what makes this eat the dark away rather than shorten the
+// card -- the shadowed mass at the base of the clump goes and the lit blades
+// running through it stay, standing on the ground rather than hovering over it.
 //
 // AT LOAD, NOT IN THE FRAGMENT SHADER, and the density is what settles it.
 // Grass is about 45% of the world's rasterised pixels (render/grass.js), so a
@@ -731,26 +737,35 @@ async function decodeLayer(url) {
 // WHAT THAT COSTS is that all 23,000 tufts are frayed identically. The same
 // argument grass-bank.js makes for TUFT_TWIST being a constant applies unchanged
 // -- per-instance yaw turns the pattern to a different azimuth, alternate cards
-// read their u backwards, and the 0.25-1.5 m height range puts the cut at a
+// read their u backwards, and the 0.5-1.5 m height range puts the cut at a
 // different world height on every tuft -- and unlike the shader version it is
 // free.
 const GRASS_FRAY = {
-  // Where the erosion begins, in v (0 at the top of the card, 1 at its foot).
-  // See above: the terrain's own cut is at 0.927, so this has to be well clear
-  // of it or the whole effect happens underground.
-  top: 0.87,
-  // How much of a texel's cut height is decided by its own brightness rather
-  // than by its column's roll. At 0 the foot is a ragged line drawn without
-  // regard to the art; at 1 it is the art's own shading with no raggedness. The
-  // point of the effect is the dark mass at the base, so this sits over half.
-  bright: 0.55,
-  // The brightness window the above is measured across, as a fraction of white.
-  // The band's texels run about 0.3 to 0.7, and mapping that range onto the full
-  // decision is what makes the darkness bias actually bite rather than nudge.
-  lum: [0.25, 0.7],
-  // Feather, in v. About 5 texels: enough that a cut column ends in a taper
+  // Where the DEEPEST column is cut, in v (0 at the top of the card, 1 at its
+  // foot). See above: the terrain's own cut is at 0.927, so the band between
+  // this and 1 is mostly underground unless this is well clear of it. At 0.74
+  // the deepest cut stands 25 texels above the ground line, which is 9.6 cm of
+  // daylight under the shortest tuft in the bed and 29 cm under the tallest.
+  // Deeper than this stops reading as stalks and starts reading as a tuft
+  // hovering: by 0.66 the clump has lost the mass at its own base.
+  top: 0.74,
+  // The brightness percentiles OF A ROW that map to fully-eaten and fully-kept.
+  // A texel in the 10th percentile of its own row is exposed to whatever its
+  // column rolled; one in the 80th is protected outright and reaches the foot of
+  // the card. Brightness does not SHARE the cut height with the column roll, it
+  // LIFTS it -- see `edge` in frayGrassBase.
+  //
+  // PER ROW, NOT PER PICTURE, because the band gets darker as it descends: the
+  // 90th centile of a row's luminance runs 0.71 at v = 0.8, 0.55 at 0.89 and
+  // 0.44 at 0.96. Measured against one fixed window the bottom rows are ALL
+  // below it, so nothing down there is ever bright enough to be spared and the
+  // fray shortens the card instead of opening it up -- which is the failure this
+  // replaced. Measuring each row against its own texels asks the question that
+  // was wanted all along: is this a lit blade, or is it the shadow between two?
+  pct: [0.1, 0.8],
+  // Feather, in v. About 4 texels: enough that a cut column ends in a taper
   // rather than a step, short enough that the taper is not itself a line.
-  soft: 0.04,
+  soft: 0.035,
   // Wavelength in texels and weight, per octave of the column noise. 10 texels
   // is the width of a clump of blades and 3.5 is about one blade, so the foot
   // undulates and is nibbled at the same time.
@@ -798,19 +813,53 @@ function frayColumnCut(width, seed, octaves) {
  * See GRASS_FRAY for what this is for and why it happens here. `px` is one
  * decoded TEX_SIZE^2 RGBA layer.
  */
+/**
+ * The luminance window for ONE row of the band: the `pct` percentiles of its own
+ * opaque texels. Null when the row is too sparse or too flat to rank -- a few
+ * blade tips have no shadow between them to eat, and dividing by their spread
+ * would turn rounding into a decision.
+ *
+ * Rows are independent, so it does not matter that `frayGrassBase` is mutating
+ * the rows above this one as it goes.
+ */
+function frayRowWindow(px, y, [pLo, pHi]) {
+  const lum = []
+  for (let x = 0; x < TEX_SIZE; x++) {
+    const i = (y * TEX_SIZE + x) * 4
+    if (px[i + 3] === 0) continue
+    lum.push((px[i] + px[i + 1] + px[i + 2]) / 765)
+  }
+  if (lum.length < 8) return null
+  lum.sort((a, b) => a - b)
+  const at = (p) => lum[Math.round(p * (lum.length - 1))]
+  const lo = at(pLo)
+  const hi = at(pHi)
+  return hi - lo < 0.02 ? null : [lo, hi]
+}
+
 function frayGrassBase(px) {
-  const { top, bright, lum: [lumLo, lumHi], soft, octaves, seed } = GRASS_FRAY
+  const { top, pct, soft, octaves, seed } = GRASS_FRAY
   const cut = frayColumnCut(TEX_SIZE, seed, octaves)
   for (let y = 0; y < TEX_SIZE; y++) {
     const v = (y + 0.5) / TEX_SIZE
     if (v <= top) continue
+    const win = frayRowWindow(px, y, pct)
+    if (!win) continue
+    const [lumLo, lumHi] = win
     for (let x = 0; x < TEX_SIZE; x++) {
       const i = (y * TEX_SIZE + x) * 4
       if (px[i + 3] === 0) continue
       const l = clamp01(((px[i] + px[i + 1] + px[i + 2]) / 765 - lumLo) / (lumHi - lumLo))
-      // The v this texel is cut at: its column's roll and its own brightness,
-      // both pushing the cut further down the card.
-      const edge = top + (1 - top) * ((1 - bright) * cut[x] + bright * l)
+      // The v this texel is cut at. The column's roll sets a FLOOR somewhere in
+      // top..1, and the texel's own brightness lifts it from there toward the
+      // card's foot -- so a fully lit texel lands at exactly 1 whatever column
+      // it stands in, and stays in contact with the bottom of the square. That
+      // is the difference between eating the dark away and merely shortening
+      // the card: a weighted average of the two terms (which is what this was)
+      // caps even the brightest blade below 1 in a deep column, so the whole
+      // silhouette lifts off the edge together and the hem comes back higher up.
+      const base = top + (1 - top) * cut[x]
+      const edge = base + (1 - base) * l
       px[i + 3] = Math.round(px[i + 3] * (1 - smoothstep01(edge, edge + soft, v)))
       // Flood what is now clear to white, the same rule and for the same reason
       // as tools/trees/layers.py's: mip generation averages RGB without regard

@@ -805,6 +805,27 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
     && water.uniforms.uSharp.value.x === WATER.sharpFar
     && water.uniforms.uSharp.value.y === WATER.sharpNear,
     'and the shader reads them from WATER rather than carrying its own copies')
+
+  // THE LAND MAY NOT OUT-BRIGHTEN THE LAKE.
+  //
+  // lighting.js ends its aerial in-scatter ramp at fogColor dimmed by
+  // AIR_CEILING, which exists to be the same light loss water.js puts on its own
+  // far target -- a distant water pixel is skyRadiance(horizon) * uReflTint, and
+  // fogColor is that same horizon sky. Aimed anywhere brighter, a 5 km ridge
+  // comes out lighter than the water in front of it. AIR_CEILING is a copy
+  // rather than an import because water.js imports lighting.js; this is what
+  // stops the copy drifting.
+  const { AIR_CEILING } = await import('../src/lighting.js')
+  const refl = water.uniforms.uReflTint.value
+  check(
+    Math.abs(AIR_CEILING.r - refl.r) < 1e-12
+      && Math.abs(AIR_CEILING.g - refl.g) < 1e-12
+      && Math.abs(AIR_CEILING.b - refl.b) < 1e-12,
+    'the aerial ramp ends on exactly the light a reflection loses',
+    `AIR_CEILING ${AIR_CEILING.getHexString()} vs uReflTint ${refl.getHexString()}`
+  )
+  check(AIR_CEILING.r < 1 && AIR_CEILING.g < 1 && AIR_CEILING.b < 1,
+    'so distant land lands below the sky rather than on it')
 }
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

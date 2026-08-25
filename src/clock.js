@@ -245,6 +245,46 @@ const hex = (v) => [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) /
 // near-black is the one place this fog gives an answer that is worse than no
 // fog at all.
 //
+// `haze` AND `hazeDensity` ARE A DIFFERENT QUANTITY, not a second opinion about
+// fog, and the giveaway is that they run the OPPOSITE way down the table:
+// `fogDensity` climbs as the sun sets and `hazeDensity` falls by a factor of
+// five. They are aerial perspective -- sunlight scattering out of the column of
+// air between the eye and a mountain -- which is a DAYLIGHT effect and stops
+// existing when the sun does. `fogDensity` is the night device described above,
+// the small extra contrast loss a dark-adapted eye has along the depth axis.
+// One is strongest at noon, the other after dark, and collapsing them into one
+// number is exactly how you get either a noon with no depth or a night that
+// ends at the next hill.
+//
+// The pair works with `fog` rather than replacing it: `haze` is the colour a
+// surface reaches once `hazeDensity` has eaten it -- about 1.5 km by day, and
+// DARKER than the terrain on purpose, which is what makes a ridge read as a
+// silhouette rather than as a pale smear -- and `fog` stays what it has always
+// been, the colour the very far field melts into, matched to the horizon sky so
+// there is no seam where the land meets the dome. Between the two, in-scatter
+// lifts `haze` toward `fog` over several kilometres, and that lift is the whole
+// reason a second range behind the first is a second range and not more of the
+// first one. lighting.js does the arithmetic and carries the long version.
+//
+// `haze` IS ONE HUE ALL THE WAY DOWN, and that is a look decision worth stating
+// because the obvious alternative is wrong. It would be easy to walk this column
+// through the same hues `fog` walks -- blue, peach, orange, plum -- on the theory
+// that the near air should agree with the far air. It does not: `fog` is the
+// horizon in the direction of the SUN, which is where the warm light is, while
+// `haze` is the whole rest of the sky, which stays blue right through a sunset
+// and then loses value rather than gaining hue. Following `fog` here puts a
+// purple cast across the middle distance for the entire dusk hour, which reads
+// as a screen effect rather than as air. So the column holds the daylight blue's
+// R:G:B ratio and only falls in value: day blue toward black, with G above R on
+// every row so nothing can drift magenta.
+//
+// The night rows keep the moonlit valley the paragraphs above fought for, with
+// room to spare: at 0.00021 a kilometre is 4 percent gone, which is LOOSER than
+// the 0.00032 `fogDensity` v1 uses at the same hour. That is the safe direction
+// -- the failure this file already documents is a night that ends at arm's
+// length, never one that reaches too far -- and `haze` down there is near-black
+// only because everything is.
+//
 // Ordered from high to low. `state()` walks it and smoothsteps between
 // neighbours; the check gate sweeps the whole range looking for a jump, since a
 // discontinuity here is a visible flash in the headset and nothing else in the
@@ -264,6 +304,8 @@ const KEYS = [
     hemiIntensity: 0.85,
     fog: hex(0x9db4cf),
     fogDensity: 0.00022,
+    haze: hex(0x3c5074),
+    hazeDensity: 0.00113,
     stars: 0,
     moonBright: 0.10,
     auroraMax: 0,
@@ -287,6 +329,8 @@ const KEYS = [
     hemiIntensity: 0.84,
     fog: hex(0xa8bcd0),
     fogDensity: 0.00022,
+    haze: hex(0x3f547a),
+    hazeDensity: 0.00113,
     stars: 0,
     moonBright: 0.12,
     auroraMax: 0,
@@ -311,6 +355,8 @@ const KEYS = [
     hemiIntensity: 0.72,
     fog: hex(0xd8b79a),
     fogDensity: 0.00024,
+    haze: hex(0x364868),
+    hazeDensity: 0.00107,
     stars: 0,
     moonBright: 0.18,
     auroraMax: 0,
@@ -336,6 +382,8 @@ const KEYS = [
     hemiIntensity: 0.6,
     fog: hex(0xe8a072),
     fogDensity: 0.00026,
+    haze: hex(0x2b3a54),
+    hazeDensity: 0.00093,
     stars: 0,
     moonBright: 0.3,
     auroraMax: 0,
@@ -361,6 +409,8 @@ const KEYS = [
     hemiIntensity: 0.52,
     fog: hex(0xc9764a),
     fogDensity: 0.0003,
+    haze: hex(0x212c40),
+    hazeDensity: 0.00073,
     stars: 0.04,
     moonBright: 0.55,
     auroraMax: 0,
@@ -386,6 +436,8 @@ const KEYS = [
     hemiIntensity: 0.34,
     fog: hex(0x8a5a78),
     fogDensity: 0.0003,
+    haze: hex(0x171e2c),
+    hazeDensity: 0.0005,
     stars: 0.22,
     moonBright: 0.85,
     auroraMax: 0.08,
@@ -410,6 +462,8 @@ const KEYS = [
     hemiIntensity: 0.26,
     fog: hex(0x40284c),
     fogDensity: 0.00031,
+    haze: hex(0x0e131c),
+    hazeDensity: 0.00032,
     stars: 0.42,
     moonBright: 1.0,
     auroraMax: 0.35,
@@ -435,6 +489,8 @@ const KEYS = [
     hemiIntensity: 0.28,
     fog: hex(0x16162a),
     fogDensity: 0.00032,
+    haze: hex(0x080a0f),
+    hazeDensity: 0.00024,
     stars: 0.86,
     moonBright: 1.0,
     auroraMax: 0.85,
@@ -459,6 +515,8 @@ const KEYS = [
     hemiIntensity: 0.30,
     fog: hex(0x080b14),
     fogDensity: 0.00032,
+    haze: hex(0x040608),
+    hazeDensity: 0.00021,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,
@@ -486,6 +544,8 @@ const KEYS = [
     hemiIntensity: 0.30,
     fog: hex(0x080b14),
     fogDensity: 0.00032,
+    haze: hex(0x040608),
+    hazeDensity: 0.00021,
     stars: 1,
     moonBright: 1.0,
     auroraMax: 1.0,
@@ -581,6 +641,8 @@ function paletteAt(sunElevDeg) {
     hemiIntensity: lerp(a.hemiIntensity, b.hemiIntensity, t),
     fog: lerp3(a.fog, b.fog, t),
     fogDensity: lerp(a.fogDensity, b.fogDensity, t),
+    haze: lerp3(a.haze, b.haze, t),
+    hazeDensity: lerp(a.hazeDensity, b.hazeDensity, t),
     stars: lerp(a.stars, b.stars, t),
     moonBright: lerp(a.moonBright, b.moonBright, t),
     auroraMax: lerp(a.auroraMax, b.auroraMax, t),
@@ -702,6 +764,8 @@ export class WorldClock {
       glowSharp: p.glowSharp,
       fog: p.fog,
       fogDensity: p.fogDensity,
+      haze: p.haze,
+      hazeDensity: p.hazeDensity,
       stars: p.stars,
       moonBright: p.moonBright,
 

@@ -52,10 +52,11 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 //
 // HOW THE SHADER TELLS THE TWO CARD TIERS APART, given they share a layer: by
 // the NORMAL. `upNormal` rides with `billboard`, so a quad meant to be spun has
-// a vertical normal and a fixed cross keeps its planes' horizontal ones, and
-// billboardVertex masks on `layer match AND normal.y > 0.5`. `upNormal` was
-// there for lighting reasons already (see the call site); this gets the
-// discrimination for free on top. It is why the cross tier needed no new vertex
+// an EXACTLY vertical normal, and billboardVertex masks on `layer match AND
+// normal.y > CARD_UP_MARK`. The cross wears canopy normals, which lean mostly
+// up but top out at 0.876, comfortably under the 0.99 marker; buildImpostorCard
+// asserts both sides of that rather than leaving it to be discovered when a
+// forest starts rotating. It is why the cross tier needed no new vertex
 // attribute and no duplicate impostor layer.
 //
 // KNOWN AND ACCEPTED: LOD0 AND LOD1 ARE NOT THE SAME TREE, so the swap pops.
@@ -184,18 +185,24 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
     // bakeTreeImpostors points its camera at.
     const u = g0.userData.tree
     const ext = impostorCardExtents({ width: u.crownWidth, height: u.height })
-    // The CROSS tier: three fixed planes, each keeping its own horizontal
-    // normal. That normal is doing two jobs -- it lights the plane, and it is
-    // what tells material.js's billboardVertex to leave this quad ALONE even
-    // though it wears the same impostor layer the billboard does.
-    crosses.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 3))
+    // The CROSS tier: three fixed planes wearing CANOPY normals, which fan out
+    // and up from the trunk axis so that a crown reads as a blob rather than as
+    // three slabs meeting at a line. `canopy` is what makes a crossed tree look
+    // like a tree instead of like three quads -- the long version is the normal
+    // note in impostor.js. It also keeps this quad below CARD_UP_MARK, which is
+    // what tells material.js's billboardVertex to leave it ALONE even though it
+    // wears the same impostor layer the billboard does.
+    crosses.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 3, { canopy: true }))
 
     // `upNormal` rides with `billboard` deliberately: a quad that turns toward
     // the eye must NOT also turn its normal, or N.L becomes a function of where
     // the player stands and the whole forest brightens and dims as they turn on
     // the spot. A vertical normal is stable and, for a canopy seen from 30 m
     // out, closer to true anyway. Same call and same reasoning as
-    // fernCardGeometries.
+    // fernCardGeometries. The roundness the cross gets from `canopy` this tier
+    // gets from the photograph instead -- the bake is lit, so the crown's own
+    // interior shading is in the texture. See impostor.js on why the billboard
+    // does not simply take the fan as well.
     if (billboard) {
       cards.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1, { upNormal: true }))
     }

@@ -3,6 +3,7 @@ import {
   Builder, WALL_STYLE, TINT, member2, gableEnd, leanEnd,
   plinth, doorway, steps2, SMOOTH_LAYERS,
   wall2, planGableRoof, planLeanRoof, drawRoof, windowUnit2, chimney2, porch2,
+  clearUnder,
 } from './parts.js'
 import { makeCharacter, makeWarp, warpBuilder, smoothNormals } from './warp.js'
 
@@ -154,8 +155,9 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
       else leanEnds(b, m, style)
     }
     doorway(b, { ...plan.door, seed: plan.seed * 53 + 3, detail: 0 })
-    plan.windows.forEach((wn, i) =>
-      windowUnit2(b, { ...wn, seed: plan.seed * 53 + 11 + i, detail: 0 }))
+    plan.windows.forEach((wn, i) => windowUnit2(b, {
+      ...wn, seed: plan.seed * 53 + 11 + i, detail: 0, topAt: roofs.get(wn.massId).heightAt,
+    }))
     return finish()
   }
 
@@ -195,10 +197,12 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
     const R = roofs.get(m.id)
     // A wall that runs PERPENDICULAR to the ridge is a gable end, and that is the
     // whole test: its top climbs to the apex and back down, so it needs a column
-    // boundary exactly at the ridge -- hence an even count -- and enough on
-    // either side to follow the sag down to the eaves. Six at detail 2, which is
-    // about what gableEnd()'s triangle plus its king post used to cost between
-    // them, and now there is no seam across the middle of the gable either.
+    // boundary exactly at the ridge, and enough on either side to follow the sag
+    // down to the eaves. At detail 2 it no longer has to be TOLD that: it is
+    // handed the roof's fold lines and the ridge is one of them, along with every
+    // cell boundary and every split diagonal it crosses on the way up. The count
+    // below is the fallback for detail 1, whose roof is a single quad per slope
+    // and has no folds to be handed except the ridge itself.
     const alongX = Math.abs(wl.p1[0] - wl.p0[0]) > Math.abs(wl.p1[1] - wl.p0[1])
     const isGableEnd = m.roof.kind === 'gable' && alongX !== (m.ridgeAxis === 'x')
     wall2(b, {
@@ -207,7 +211,8 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
       rough: plan.seed * 131 + i * 7 + 1,
       detail, k,
       topAt: R.heightAt,
-      topCols: detail >= 2 ? (isGableEnd ? 6 : 4) : (isGableEnd ? 2 : 1),
+      topBreaks: R.breaksAlong,
+      topCols: detail >= 2 ? 0 : (isGableEnd ? 2 : 1),
     })
     if (isGableEnd && detail >= 2) {
       // The king post, which used to live inside gableEnd(). Every timber gable
@@ -216,8 +221,8 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
       // building, and it reaches the sagged apex rather than a nominal one.
       const mx = (wl.p0[0] + wl.p1[0]) / 2
       const mz = (wl.p0[1] + wl.p1[1]) / 2
-      member2(b, [mx, m.floorY, mz], [mx, R.heightAt(mx, mz) - 0.16, mz], {
-        hu: 0.095, seed: plan.seed * 131 + i * 7 + 2, round: 0.6,
+      member2(b, [mx, m.floorY, mz], [mx, clearUnder(R.heightAt, mx, mz, 0.13), mz], {
+        hu: 0.095, sides: 6, seed: plan.seed * 131 + i * 7 + 2, round: 0.6,
         segments: 2, bow: k.bow,
         layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true,
       })
@@ -232,8 +237,11 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
 
   // --- openings ------------------------------------------------------------
   doorway(b, { ...plan.door, seed: plan.seed * 53 + 3, detail })
-  plan.windows.forEach((wn, i) =>
-    windowUnit2(b, { ...wn, seed: plan.seed * 53 + 11 + i, detail, k }))
+  // Each window ducks under the roof of the mass it is a window OF -- never the
+  // building's, which on an ell is a different roof at a different height.
+  plan.windows.forEach((wn, i) => windowUnit2(b, {
+    ...wn, seed: plan.seed * 53 + 11 + i, detail, k, topAt: roofs.get(wn.massId).heightAt,
+  }))
 
   // --- attachments ---------------------------------------------------------
   chimney2(b, { ...plan.chimney, seed: plan.seed * 53 + 5, detail, k })

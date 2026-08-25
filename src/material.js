@@ -500,9 +500,9 @@ const SNOW_APPLY = /* glsl */ `
 // LAYER AND THEN NORMAL, because a layer is no longer enough on its own. v2's
 // tree ladder draws a crossed card AND a billboard of the same species, off the
 // same baked layer, in the same batch. What separates them is that a card meant
-// to be spun is authored with a vertical normal and a fixed cross is not, so
-// the mask is `layer match AND normal.y > 0.5`. No new attribute, no duplicate
-// texture layer, no second bake -- see billboardVertex.
+// to be spun is authored with an exactly vertical normal and a fixed cross is
+// not, so the mask is `layer match AND normal.y > CARD_UP_MARK`. No new
+// attribute, no duplicate texture layer, no second bake -- see billboardVertex.
 //
 // WHAT IT COSTS: 2 triangles per instance instead of the crossed card's 4. At a
 // sparse tree scatter that is nothing and DESIGN.md §5 says so. At a 2/m^2 fern
@@ -532,6 +532,20 @@ const SNOW_APPLY = /* glsl */ `
  * lighting it like one is both stable and closer to true than lighting 18,000
  * independent vertical cards.
  */
+/**
+ * The line in `normal.y` that separates a card meant to be SPUN from one meant
+ * to stay put, when the two share a baked texture layer.
+ *
+ * It is 0.99 and not 0.5 because the cross tier's normals are no longer
+ * horizontal. buildImpostorCard's canopy fan leans them mostly UP so that three
+ * planes stop being three brightnesses (see the normal note in impostor.js),
+ * which took the marker's old 0.5 out from between the two cases. What is left
+ * is exact rather than approximate: `upNormal` authors literally (0, 1, 0), the
+ * attribute is read here before anything transforms it, and every other card
+ * this project builds tops out at 0.876. buildImpostorCard asserts both sides.
+ */
+export const CARD_UP_MARK = 0.99
+
 function billboardVertex(layerCount) {
   return /* glsl */ `
   {
@@ -542,12 +556,13 @@ function billboardVertex(layerCount) {
     // ...AND the quad has to be one that WANTS spinning. A crossed card and a
     // billboard of the same species share one baked layer, so the layer alone
     // cannot separate them -- but the normal already does, and for free. A card
-    // built to be spun is authored with a vertical normal (buildImpostorCard's
-    // 'upNormal', set exactly when 'billboard' is, see the note above); a fixed
-    // cross keeps its planes' own horizontal normals. So 'normal.y' IS the
-    // marker for "turn me", and it costs no attribute and no second layer.
-    // Grass is unaffected: its tuft tiers already live on a different layer.
-    bbMask *= step( 0.5, normal.y );
+    // built to be spun is authored with an exactly vertical normal
+    // (buildImpostorCard's 'upNormal', set exactly when 'billboard' is); a
+    // fixed cross leans its normals off vertical. So 'normal.y' IS the marker
+    // for "turn me", and it costs no attribute and no second layer. See
+    // CARD_UP_MARK for where the line sits and why it is where it is. Grass is
+    // unaffected: its tuft tiers already live on a different layer.
+    bbMask *= step( ${CARD_UP_MARK}, normal.y );
     if ( bbMask > 0.0 ) {
       // The instance's origin and its own +X axis, both in world space. The
       // origin is where we look at the camera FROM; the axis is the yaw we have
@@ -881,6 +896,219 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
   tex.needsUpdate = true
 }
 
+// ---------------------------------------------------------------------------
+// STRIP TILING: one quad that draws its cutout N times, each copy different.
+//
+// For the grass strip experiment in v2/render/grass.js. A strip is a long flat
+// rectangle whose `uvProj.x` runs 0..N instead of 0..1, so the atlas' repeat
+// wrap draws N copies of the tuft across it. That alone is a row of N IDENTICAL
+// clumps at even spacing, which is a picket fence. This block spends a handful
+// of ALU per fragment turning it into a row of clumps that are individually
+// mirrored, slid, shortened and occasionally missing.
+//
+// WHAT EACH LINE COSTS IN COVERAGE, because they are not the same and the
+// difference decides the whole economics of the strip system. A strip is TWO
+// TRIANGLES whatever this block does to it, so `discard` saves nothing on the
+// triangle bill -- it only removes grass, which then has to be bought back by
+// scattering more strips. Dropping two tiles in three costs exactly a factor of
+// three in strips, which is exactly the factor the strip system was worth in
+// the first place. So:
+//
+//   MIRROR is FREE. One compare, no coverage lost, and it is the single
+//   highest-value line here: it halves the number of distinct silhouettes the
+//   eye has to notice before it decides the row repeats.
+//   FLARE is BETTER than free -- it adds area. The top of the card is widened
+//   about its own centre, so a strip is an upside-down trapezoid and each tile's
+//   blades splay outward as they rise instead of standing in a column. It is a
+//   vertex-stage line, so it costs nothing per fragment.
+//   SHRINK costs its own square. Each tile is scaled about its FOOT so the
+//   strip's skyline is ragged rather than the same outline N times -- and it is
+//   scaled in BOTH AXES, which is the whole subtlety of this block. Scaling v
+//   alone squashes a square tuft into a wide short one; the picture has to lose
+//   width at the same rate it loses height or the grass reads as trodden.
+//   Because it shrinks in two axes it costs s^2, not s, so it is the second most
+//   expensive line here and not the near-free one it looks like.
+//   SLIDE is FREE, and it is free BECAUSE of the shrink. A tile scaled to s of
+//   its width has 1-s of slack to sit anywhere in, so consecutive tiles stop
+//   sharing a vertical seam without any wrapping. The earlier wrapped slide had
+//   to go: once a tile is inset it no longer meets its neighbours, so a wrap
+//   cuts a hard vertical edge through the middle of the tuft with nothing beside
+//   it to complete the picture.
+//   MASK is EXPENSIVE, at 1:1 against the whole point of the system. It is OFF
+//   by default (uKeep 1.0) because the variety it used to buy is now bought
+//   for nothing by the per-instance TILE COUNT -- a strip is 1 to 4 tiles long
+//   (STRIP_TILES in v2/render/grass.js), so the runs already break up, and the
+//   gaps are between strips rather than punched out of paid-for card. Left as a
+//   knob, because the first few gaps are worth more than the last few.
+//
+// HOW MANY TILES: read out of the INSTANCE MATRIX, not baked into the geometry.
+// The bank's `uvProj.x` runs 0..T where T is whatever count draws the cutout
+// square at the bank's own proportions, and the fragment stage rescales that by
+// the instance's own x/y scale ratio. So a tile is square for EVERY instance and
+// the count is whatever length JS gave the card -- one geometry, a strip of any
+// length, and no way for a matrix to stretch the picture by accident. That last
+// clause is the point: the aspect bug this replaced was invisible in every
+// per-vertex gate and obvious the moment it was on screen.
+//
+// WHY textureGrad AND NOT texture. The mirror and the slide are done on `u`
+// AFTER it has been wrapped into the tile, so the coordinate the sampler sees
+// jumps at every tile boundary. Implicit derivatives across that jump are huge,
+// the hardware picks the coarsest mip for that one pixel column, and every tile
+// boundary becomes a bright blurred vertical line -- the exact artefact this is
+// here to remove. Taking the gradients from the CONTINUOUS coordinate and
+// sampling explicitly fixes it. Note that plain tiling would NOT need this:
+// wrapping is the sampler's job and the interpolated coordinate stays smooth. It
+// is the mirror and the slide that cost the textureGrad, not the repeat.
+// textureGrad on a sampler2DArray takes vec2 gradients (the layer index is not
+// differentiated) and is core GLSL ES 3.00, which is all we target.
+// ---------------------------------------------------------------------------
+
+// Fraction of tiles that survive the mask. 1.0 is an unbroken run of grass, and
+// it is the default -- see the note above for why lowering this is not free and
+// what now does the job it used to do.
+const stripKeep = { value: 1 }
+
+// The shortest a tile may be scaled to, about its own foot. 0.5 means a tile's
+// clump ranges from half size to full, in BOTH axes, so the smallest one is a
+// quarter of a tile's area sitting somewhere along its width.
+const stripShort = { value: 0.5 }
+
+// How far the top of a card is widened, as a fraction of its own length, at the
+// top of the range -- each instance takes a uniform draw from 0 to this. The
+// foot is untouched, which is what keeps a strip sitting exactly on the line
+// between its two ground samples however hard it flares.
+const stripFlare = { value: 0.35 }
+
+/** Live knobs for the strip experiment. Held by reference, like the snow. */
+export function setStripTiling({ keep, short, flare } = {}) {
+  if (keep !== undefined) stripKeep.value = keep
+  if (short !== undefined) stripShort.value = short
+  if (flare !== undefined) stripFlare.value = flare
+}
+
+export function getStripTiling() {
+  return { keep: stripKeep.value, short: stripShort.value, flare: stripFlare.value }
+}
+
+/**
+ * What one strip actually draws, as a multiple of its own base rectangle.
+ *
+ * The mask, the shrink and the flare all change how much grass a card of a given
+ * size ends up carrying, and NONE of them are visible to a gate that measures
+ * instance matrices. Without this the strip bed's coverage would be quoted a
+ * third too high and the whole comparison against the tuft carpet would flatter
+ * itself -- so scripts/check-grass.mjs multiplies by this, and it lives here
+ * because it has to move whenever the shader above does.
+ *
+ * A tile of unit size draws its clump at scale s in both axes, and the card is
+ * widened by `flare * up` at height `up`, so that clump's area is
+ * `s^2 * (1 + flare*s/2)`. Averaged over s uniform on [short, 1]:
+ *   E[s^2] = (1 + short + short^2) / 3
+ *   E[s^3] = (1 + short + short^2 + short^3) / 4
+ * and the flare's own mean draw is half its maximum.
+ */
+export function stripCoverage() {
+  const q = stripShort.value
+  const e2 = (1 + q + q * q) / 3
+  const e3 = (1 + q + q * q + q * q * q) / 4
+  // flare/4 is (mean draw F/2) x (the /2 in the trapezoid's area).
+  return stripKeep.value * (e2 + (stripFlare.value / 4) * e3)
+}
+
+// One instance's seed, from where the strip stands. Per INSTANCE and not per
+// tile: the fragment stage folds this together with the tile index, so two
+// strips side by side get different runs out of the same geometry. Cheap enough
+// to be worth a varying rather than a second attribute -- BatchedMesh throws if
+// a geometry entering the arena lacks an attribute the arena has, so a new
+// attribute is a change to every generator in the project (see the note by
+// setPropFadeAt, which is the same argument).
+const STRIP_VERTEX = /* glsl */ `
+  {
+    mat4 stM = mat4( 1.0 );
+    #ifdef USE_BATCHING
+      stM = batchingMatrix;
+    #endif
+    #ifdef USE_INSTANCING
+      stM = instanceMatrix;
+    #endif
+    vec4 stRoot = stM * vec4( 0.0, 0.0, 0.0, 1.0 );
+    // fract() FIRST, so the sin() is fed a small number. World coordinates run
+    // to a few thousand metres here and sin(43758 * 3000) is noise about the
+    // float32 grid rather than a hash.
+    vStripSeed = fract( sin( dot( fract( stRoot.xz * 0.0371 ),
+      vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+
+    // The instance's own x/y scale ratio, which is how many of the bank's baked
+    // tiles fit across it at SQUARE proportions -- see the header. The rotation
+    // in the matrix is orthonormal, so a column's length is its scale.
+    vStripU = length( stM[ 0 ].xyz ) / max( length( stM[ 1 ].xyz ), 1e-6 );
+
+    // Flare: widen the card about its own centre, in proportion to how far up
+    // the card this vertex is. uvProj.y is 1 at the foot and 0 at the top (see
+    // buildGrassStrip), so the foot takes no displacement at all and the tilt
+    // that seated it on the ground survives untouched. xz and not x, so the
+    // crossed-plane variant widens along each plane's own chord.
+    transformed.xz *= 1.0 + uStripFlare
+      * fract( vStripSeed * 71.17 + 0.37 ) * ( 1.0 - uvProj.y );
+  }`
+
+// Four decorrelated values from one float -- Hoskins' hash. Four is what the
+// block below needs (mask, mirror, shrink, slide) and they must not correlate,
+// or the short tiles are also the mirrored ones and the row acquires a rhythm.
+const STRIP_FRAGMENT = /* glsl */ `
+  vec4 stripHash( float n ) {
+    vec4 p = fract( vec4( n ) * vec4( 0.1031, 0.1030, 0.0973, 0.1099 ) );
+    p += dot( p, p.wzxy + 33.33 );
+    return fract( ( p.xxyz + p.yzzw ) * p.zywx );
+  }`
+
+const STRIP_SAMPLE = /* glsl */ `
+  {
+    // The CONTINUOUS coordinate, before any wrapping, and rescaled so that one
+    // unit of it is one SQUARE tile however long JS made this instance.  Its
+    // derivatives are the honest footprint of this pixel on the texture and they
+    // are what the sampler has to be handed -- see the header.
+    float stTx = vUvProj.x * vStripU;
+    vec2 stDx = vec2( dFdx( stTx ), dFdx( vUvProj.y ) );
+    vec2 stDy = vec2( dFdy( stTx ), dFdy( vUvProj.y ) );
+
+    float stI = floor( stTx );
+    float stU = stTx - stI;
+    // The tile index and the instance seed, folded. The multiplier is large and
+    // odd so neighbouring tiles of neighbouring strips do not land on the same
+    // draw.
+    vec4 stH = stripHash( stI + vStripSeed * 977.0 );
+
+    if ( stH.x > uStripKeep ) discard;
+
+    // Mirror. Operates inside the tile, so the sampler sees a discontinuity at
+    // every boundary -- which is exactly what textureGrad is holding harmless.
+    if ( stH.y < 0.5 ) stU = 1.0 - stU;
+
+    // Shrink about the FOOT, IN BOTH AXES. v = 0 is the top of the tuft and
+    // v = 1 is its base (see buildGrassTuft), so the foot is the fixed point and
+    // a scale below 1 pushes the top of the picture off the top of the quad --
+    // where there is no picture, and the fragment is dropped. Doing this to v
+    // alone is what made every short tile a squashed one: the tuft is square, so
+    // it has to give up width at exactly the rate it gives up height.
+    float stS = mix( uStripShort, 1.0, stH.w );
+    float stV = 1.0 - ( 1.0 - vUvProj.y ) / stS;
+    if ( stV < 0.0 ) discard;
+
+    // ...and the width the shrink freed up is where the slide lives. A clump s
+    // wide has 1-s of slack to sit anywhere in, so no two neighbours share a
+    // vertical seam and nothing has to wrap. Outside its own clump the tile is
+    // empty, which is the gap between grass rather than a repeat of it.
+    float stUu = ( stU - ( 1.0 - stS ) * stH.z ) / stS;
+    if ( stUu < 0.0 || stUu > 1.0 ) discard;
+
+    // Both axes now, or a short tile draws a mip that is too sharp and sparkles.
+    stDx /= stS;
+    stDy /= stS;
+
+    diffuseColor *= textureGrad( uAtlas, vec3( stUu, stV, vTexLayer ), stDx, stDy );
+  }`
+
 /**
  * `vertexColors` opts into a per-vertex tint multiplied over the array sample.
  *
@@ -896,7 +1124,10 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
  * north side of a roof, grime up a plaster panel, one shared timber tile
  * reading as oak on one cottage and pine on the next.
  */
-export function createPropMaterial(textureArray, { vertexColors = false, billboardLayers = null } = {}) {
+export function createPropMaterial(
+  textureArray,
+  { vertexColors = false, billboardLayers = null, stripTiling = false } = {}
+) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
 
   const material = new THREE.MeshLambertMaterial({
@@ -926,6 +1157,11 @@ export function createPropMaterial(textureArray, { vertexColors = false, billboa
     shader.uniforms.uMossBand = mossBand
     shader.uniforms.uPropClock = propClock
     if (billboards) shader.uniforms.uBillboardLayers = { value: billboards }
+    if (stripTiling) {
+      shader.uniforms.uStripKeep = stripKeep
+      shader.uniforms.uStripShort = stripShort
+      shader.uniforms.uStripFlare = stripFlare
+    }
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -945,7 +1181,10 @@ export function createPropMaterial(textureArray, { vertexColors = false, billboa
         varying vec4 vSnowPos;
         varying float vMoss;
         varying float vPropFade;
-        ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}`
+        ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
+        ${stripTiling ? `varying float vStripSeed;
+        varying float vStripU;
+        uniform float uStripFlare;` : ''}`
       )
       // `propObjPos` is `transformed` BEFORE the billboard spins it, and the
       // snow patch below samples that rather than the live value. A billboard's
@@ -960,7 +1199,8 @@ export function createPropMaterial(textureArray, { vertexColors = false, billboa
         vUvProj = uvProj;
         vec3 propObjPos = transformed;
         ${FADE_VERTEX}
-        ${billboards ? billboardVertex(billboards.length) : ''}`
+        ${billboards ? billboardVertex(billboards.length) : ''}
+        ${stripTiling ? STRIP_VERTEX : ''}`
       )
       // Snow is placed in WORLD space so that two instances of the same tree
       // standing side by side do not wear identical drifts, and so a drift does
@@ -1005,7 +1245,12 @@ export function createPropMaterial(textureArray, { vertexColors = false, billboa
         varying float vPropFade;
         ${IGN_GLSL}
         ${SNOW_COMMON}
-        ${MOSS_COMMON}`
+        ${MOSS_COMMON}
+        ${stripTiling ? `varying float vStripSeed;
+        varying float vStripU;
+        uniform float uStripKeep;
+        uniform float uStripShort;
+        ${STRIP_FRAGMENT}` : ''}`
       )
       // BOTH SIDES OF A CUTOUT ARE THE SAME SURFACE. Three's double-sided path
       // flips the normal toward the VIEWER (`normal *= faceDirection` in
@@ -1035,7 +1280,7 @@ export function createPropMaterial(textureArray, { vertexColors = false, billboa
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
         `vec4 diffuseColor = vec4( diffuse, opacity );
-        diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );
+        ${stripTiling ? STRIP_SAMPLE : 'diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );'}
         ${FADE_FRAGMENT}`
       )
 
@@ -1047,7 +1292,7 @@ export function createPropMaterial(textureArray, { vertexColors = false, billboa
   // of the key because it is compiled INTO the shader (an array size and a loop
   // bound cannot be uniforms), so two materials differing only in which layers
   // billboard are two different programs.
-  const key = `prop-moss-v1${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}`
+  const key = `prop-moss-v1${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${stripTiling ? '-strip' : ''}`
   material.customProgramCacheKey = () => key
 
   return material
@@ -1063,17 +1308,38 @@ export function createPropMaterial(textureArray, { vertexColors = false, billboa
  * for exactly one offscreen render into a 128x128 target, after which the
  * result is bytes in a texture layer and this material is disposed.
  *
- * Basic rather than Lambert, and that is the whole point of its existing.
- * An impostor is shaded TWICE if you let it be: once when the tree is captured
- * and again when the card carrying that capture is lit. Baking unlit albedo
- * leaves all the shading to the card's own normals, which is the same choice
- * tree.js makes for its canopy -- see the canopy-normal pass at the bottom of
- * buildTree, which hands every leaf the crown shell's normal. The impostor card
- * carries an outward horizontal normal per plane for the same reason, so a tree
- * shades the same way either side of the LOD swap.
+ * LAMBERT, NOT BASIC, and it was Basic for a long time on an argument that
+ * turned out to be half right. The argument: an impostor is shaded TWICE if you
+ * let it be, once when the tree is captured and again when the card carrying
+ * that capture is lit, so bake flat albedo and leave all the shading to the
+ * card's own normals.
+ *
+ * What that misses is that a CARD HAS FOUR NORMALS AND A TREE HAS THOUSANDS.
+ * The shading a card's own normals can produce is one smooth gradient across a
+ * quad; the shading it is standing in for is a crown of ten thousand leaves,
+ * most of which are behind other leaves. Baking flat albedo does not remove the
+ * second kind of shading, it just deletes it -- and what comes back is exactly
+ * what a flat photograph of a leaf looks like: the whole canopy at full leaf
+ * albedo, no interior, no underside, LIGHTER than the grass it is standing on
+ * when a real canopy at distance is a third to a half of leaf albedo because
+ * most of what you see is in its own shadow.
+ *
+ * So the bake is lit, and the rig below is chosen so that it captures the part
+ * the card cannot: SELF-SHADOWING, not direction. There is a key light, but a
+ * modest one, and it comes from above and slightly behind the camera so it
+ * cannot carve a strong left-right terminator into a picture that will later be
+ * seen from every angle. The work is done by the hemisphere, whose ground
+ * colour is nearly black -- that is what darkens the underside of the crown,
+ * the inside of the trunk line and every leaf facing down, which is the
+ * self-shadowing a single quad has no way to express. The card's own lighting
+ * then multiplies a directional term on top, and the two compose the way a
+ * texture and a light are supposed to.
+ *
+ * `toneMapped: false` stays: the renderer applies none, and the bake must not
+ * be the one surface in the project that guesses about that.
  */
 export function createImpostorBakeMaterial(textureArray) {
-  const material = new THREE.MeshBasicMaterial({
+  const material = new THREE.MeshLambertMaterial({
     color: 0xffffff,
     alphaTest: 0.5,
     transparent: false,
@@ -1107,6 +1373,17 @@ export function createImpostorBakeMaterial(textureArray) {
         varying float vTexLayer;
         varying vec2 vUvProj;`
       )
+      // Same undo as createPropMaterial's, and for the same reason: a leaf is
+      // one cell thick and the geometry's authored normal is the truth from
+      // either side. Without this, three flips every far-side leaf's normal
+      // toward the camera and the crown's own back lights up as brightly as its
+      // front -- which would erase precisely the self-shadowing this bake is
+      // being made lit in order to capture.
+      .replace(
+        '#include <normal_fragment_begin>',
+        `#include <normal_fragment_begin>
+        normal *= faceDirection;`
+      )
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
         `vec4 diffuseColor = vec4( diffuse, opacity );
@@ -1114,6 +1391,6 @@ export function createImpostorBakeMaterial(textureArray) {
       )
   }
 
-  material.customProgramCacheKey = () => 'impostor-bake-v1'
+  material.customProgramCacheKey = () => 'impostor-bake-lit-v1'
   return material
 }

@@ -35,10 +35,22 @@ import { decodePng, encodePng, loadPng, readPng } from './png.js'
 // same registration so the round trip is exact at every texel.
 const step = (width) => WORLD_SIZE / (width - 1)
 
+// Exported so a second grid registered on the same texels -- exposure.js's
+// convexity field -- cannot drift from this one. Two copies of "WORLD_SIZE /
+// (width - 1)" would agree today and disagree the first time either is touched,
+// and the symptom would be an amplitude field offset half a texel from the
+// terrain it is supposed to be describing.
+export { step as gridStep }
+
 // Catmull-Rom through p1..p2 with p0/p3 as the tangent donors. The tangent at
 // p1 is (p2 - p0)/2, shared by the segment on either side of p1, which is
 // precisely the C1 property this class exists for.
-function catmull(p0, p1, p2, p3, t) {
+//
+// Exported for exposure.js, which samples its own grid and must interpolate it
+// the same way for the same reason: bilinear on an amplitude field puts a
+// gradient discontinuity every 8 m, and a term that MULTIPLIES the detail would
+// print that crease into the ground at 6 cm cells.
+export function catmull(p0, p1, p2, p3, t) {
   const t2 = t * t
   const t3 = t2 * t
   return 0.5 * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
@@ -336,6 +348,37 @@ export class Heightmap {
     const gz = (this.sample(x, z + e) - this.sample(x, z - e)) / (2 * e)
     const g = Math.hypot(gx, gz)
     return g / (1 + g)
+  }
+
+  /**
+   * slopeAt's four taps WITHOUT throwing the direction away.
+   *
+   * `slope01` is bit-for-bit what slopeAt returns from the same stencil, so this
+   * is a strict superset and callers that want both pay for one, not two. `dx`
+   * and `dz` are the unit DOWNHILL direction -- the fall line -- and are (0, 0)
+   * on ground flat enough that the direction is meaningless, which callers must
+   * handle rather than normalising a zero vector into a NaN.
+   *
+   * The fall line is what makes an anisotropic term possible at all. §3's
+   * conclusion, from v1's gully attempt, is that no isotropic noise contour can
+   * produce channels that run DOWN a hillside -- they wander across it, because
+   * the noise has no idea which way is down. This is the missing input, and it
+   * was already being computed and discarded on every single field evaluation.
+   */
+  gradientAt(x, z, out = { dx: 0, dz: 0, slope01: 0 }) {
+    const e = this._stepX
+    const gx = (this.sample(x + e, z) - this.sample(x - e, z)) / (2 * e)
+    const gz = (this.sample(x, z + e) - this.sample(x, z - e)) / (2 * e)
+    const g = Math.hypot(gx, gz)
+    out.slope01 = g / (1 + g)
+    if (g > 1e-6) {
+      out.dx = -gx / g
+      out.dz = -gz / g
+    } else {
+      out.dx = 0
+      out.dz = 0
+    }
+    return out
   }
 }
 

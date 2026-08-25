@@ -108,7 +108,11 @@ function gridGeometry(cells, holeCells) {
       const b = vid(i + 1, j)
       const c = vid(i + 1, j + 1)
       const d = vid(i, j + 1)
-      idx.push(a, b, c, a, c, d)
+      // WINDING: +i is +x and +j is +z, so (a,b,c) winds CW seen from above and
+      // gives a -y face normal -- the whole ground gets backface-culled and you
+      // see only the inside of distant hills. The shading normal comes from
+      // ngNormalAt, not from the geometry, so lighting looks fine and hides it.
+      idx.push(a, c, b, a, d, c)
     }
   }
 

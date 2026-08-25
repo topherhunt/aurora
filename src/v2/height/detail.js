@@ -49,6 +49,19 @@ export const HURST = 0.95
 // boost takes detail off the flats rather than piling it onto the cliffs.
 export const SLOPE_BOOST = 1.5
 
+// How far the exposure knob swings the detail amplitude between a hollow and a
+// rib, as a fraction. At 0.8 and the knob fully up, a hollow gets 0.2x the
+// detail and a rib 1.8x -- a ratio of nine, against the 2.4x crest-to-hollow
+// ratio §3 measured on v1's ground. Nine is deliberately past the measurement:
+// this is an ablation knob and the point of the ON state is to be legible.
+//
+// It lives here rather than in relief.js because calibrateRough has to measure
+// the unit stack THROUGH it, exactly as it does through SLOPE_BOOST, or turning
+// exposure up would raise the world's average roughness instead of moving it off
+// the hollows and onto the ribs. Two copies of this number would be a
+// calibration silently matched to a modulation the field does not apply.
+export const EXPOSURE_SWING = 0.8
+
 // THE FINE-END DAMPING. A dimensionless exponent, and it exists for a measured
 // reason rather than a taste.
 //
@@ -98,14 +111,16 @@ export class Detail {
    * V2Height passes heightmap.texelSize * KNEE_TEXELS. `rough` is the amplitude
    * scale and comes from calibrateRough, not from a literal.
    */
-  constructor({ seed, knee, rough, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
+  constructor({ seed, knee, rough, sharpen = 0, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
     if (!Number.isFinite(seed)) throw new Error(`Detail: seed must be a finite number, got ${seed}`)
+    if (!Number.isFinite(sharpen) || sharpen < 0 || sharpen > 1) throw new Error(`Detail: sharpen must be 0..1, got ${sharpen}`)
     if (!(knee > 0) || !Number.isFinite(knee)) throw new Error(`Detail: knee must be a finite number of metres > 0, got ${knee}`)
     if (!(rough > 0) || !Number.isFinite(rough)) throw new Error(`Detail: rough must be a finite number > 0 -- calibrateRough produces it, there is no default, got ${rough}`)
 
     this.noise = new Noise(seed)
     this.knee = knee
     this.rough = rough
+    this.sharpen = sharpen
 
     const K = Math.round(Math.log2(LAMBDA0 / LAMBDA_MIN)) + 1
     this.count = K
@@ -131,6 +146,40 @@ export class Detail {
       this._offX[k] = rand() * 4096
       this._offZ[k] = rand() * 4096
       this.table.push({ lambda, amp })
+    }
+
+    // The rectifier's mean and its rms-matching gain, which `at` subtracts and
+    // scales by so the sharpen knob changes SHAPE and not amplitude or DC.
+    //
+    // Measured rather than derived: both depend on this Noise implementation's
+    // amplitude distribution, which is not the textbook one for any simplex
+    // variant, and on SHARPEN_ROUND. Getting them wrong would not throw -- it
+    // would put a per-octave DC step into the LOD and quietly re-scale the
+    // spectrum the calibration just solved for. Only paid for when the knob is
+    // on, and only once per Detail.
+    this._creaseMean = 0
+    this._creaseGain = 0
+    if (sharpen > 0) {
+      const f = this._freq[K >> 1]
+      const r2 = SHARPEN_ROUND * SHARPEN_ROUND
+      let nSq = 0
+      let cSum = 0
+      let cSq = 0
+      for (let i = 0; i < RMS_SITES; i++) {
+        const p = calSite(i)
+        const n = this.noise.simplex2(p.x * f, p.z * f)
+        const c = Math.sqrt(n * n + r2)
+        nSq += n * n
+        cSum += c
+        cSq += c * c
+      }
+      this._creaseMean = cSum / RMS_SITES
+      // Variance about the measured mean, not the raw second moment: the mean is
+      // the largest part of a rectified signal and including it would make the
+      // gain about four times too small.
+      const cVar = cSq / RMS_SITES - this._creaseMean * this._creaseMean
+      if (!(cVar > 0)) throw new Error(`Detail: the rectified octave has no variance (${cVar}) -- simplex2 is returning constants`)
+      this._creaseGain = Math.sqrt(nSq / RMS_SITES / cVar)
     }
   }
 
@@ -173,6 +222,87 @@ export class Detail {
 
     const noise = this.noise
     let sum = 0
+    const s = this.sharpen
+    if (s > 0) {
+      // THE SHARPEN CURVE, which is a RECTIFIER and not a curve at all.
+      //
+      //   n -> (1 - s) * n + s * gain * (creaseMean - sqrt(n^2 + r^2))
+      //
+      // WHAT IT IS FOR. The imported field's curvature kurtosis is 12 to 20 --
+      // strongly non-gaussian, which is what "this rock has creases in it" reads
+      // as numerically. The fractal detail laid on top is gaussian by
+      // construction (a sum of independent octaves; the central limit theorem
+      // does the rest), so every metre of detail added is a metre of the
+      // import's creased character averaged out. A kurtosis of 3 is
+      // exactly gaussian, and gaussian ground is smooth EVERYWHERE in the
+      // specific sense that it has no rare large excursions -- no creases, no
+      // edges, no facets. The detail term is not so much adding roughness as it
+      // is averaging the import's character away.
+      //
+      // MEASURE THIS KNOB ON THE BARE DETAIL STACK, NEVER ON THE COMPOSED FIELD.
+      // The composed field's curvature kurtosis is NOT ESTIMABLE at any sample
+      // size a gate can afford: measured on the shipped world it reads 4.7 at
+      // 1500 sites and 66.8 at 20000, because ten sites out of twenty thousand
+      // carry about 86% of the fourth moment. Two of the drafts below were
+      // judged against that statistic before anyone checked it converged, and it
+      // reported both of them as doing nothing. `detail.at(x, z, 0, 0, 0)` on its
+      // own does converge, and section 14 of check-v2-field.mjs asserts there:
+      // 2.892 at s = 0, which is gaussian to within the estimator, and 3.222 at
+      // s = 0.7.
+      //
+      // WHY A RECTIFIER AND NOT A SIGNED POWER CURVE, and this is the whole
+      // lesson of the term. Two smooth-curve drafts came before this one --
+      // n * (1 - s + s|n|) applied per octave and then summed, and the same curve
+      // applied once to the octave sum -- and neither is worth keeping.
+      //
+      // The first fails because a smooth odd curve's non-gaussianity is purely
+      // DISTRIBUTIONAL -- it reshapes one octave's histogram -- and summing
+      // twelve independent reshaped histograms is precisely the situation the
+      // central limit theorem describes. Twelve loaded dice still average out.
+      // The second fails for a different reason: the sum is dominated by the
+      // longest surviving octave, so a curve applied to it is an amplitude
+      // modulation at 1024 m and leaves the curvature at every shorter lag
+      // alone. It also duplicates `exposure`, which modulates amplitude off the
+      // coarse field's real geometry rather than off a noise value.
+      //
+      // A crease survives summation because it is STRUCTURAL rather than
+      // distributional: sqrt(n^2 + r^2) has a rounded vertex along the noise's
+      // zero contour, and no amount of adding smooth things on top fills a
+      // derivative discontinuity back in. That is the same operator crag.js cuts
+      // with. The difference between the two terms is where they apply: crag is
+      // gated to convex steep ground in a 24-96 m band, this runs the whole
+      // 1-1024 m stack wherever detail runs, so it is the fine rock texture
+      // rather than the buttress.
+      //
+      // THE SIGN IS NEGATIVE, so the noise's extrema are dug out into hollows and
+      // its zero contour -- a connected curvilinear network -- stands proud as
+      // ribs. crag.js's banner has the long version.
+      //
+      // r IS THE SAME ANTI-SAW-TOOTH GUARD as crag's ROUND and is not cosmetic:
+      // |n| exactly has a derivative discontinuity, and at coarse LOD consecutive
+      // mesh rings land alternately either side of the vertex and the rib visibly
+      // saw-tooths as chunks swap. See CRAG_ROUND.
+      //
+      // MEAN-SUBTRACTED AND RMS-MATCHED PER OCTAVE, both mandatory rather than
+      // tidy. The rectified value has a large positive mean; leave it in and each
+      // octave contributes a DC offset, and since the band limit changes WHICH
+      // octaves survive with `cell`, that offset would change with viewing
+      // distance -- the whole chunk would step up or down as it split. Matching
+      // the rms keeps `s` a shape knob rather than an amplitude knob, so
+      // calibrateRough is not re-solving a different spectrum at every setting.
+      const a = 1 - s
+      const sg = s * this._creaseGain
+      const sm = s * this._creaseMean * this._creaseGain
+      const r2 = SHARPEN_ROUND * SHARPEN_ROUND
+      for (let k = 0; k < this.count; k++) {
+        const w = smoothstep(lo, hi, this._lambda[k])
+        if (w <= 0) break
+        const f = this._freq[k]
+        const n = noise.simplex2(x * f + this._offX[k], z * f + this._offZ[k])
+        sum += this._amp[k] * w * (a * n + sm - sg * Math.sqrt(n * n + r2))
+      }
+      return sum * gain
+    }
     for (let k = 0; k < this.count; k++) {
       const w = smoothstep(lo, hi, this._lambda[k])
       // Wavelengths only ever DECREASE down the table and w is monotone
@@ -193,8 +323,10 @@ export class Detail {
    * because it is the quantity the calibration matches, and the two must not be
    * able to drift apart.
    */
-  roughnessAt(lag, heightmap, sites = CAL_SITES) {
-    const f = (x, z) => this.at(x, z, 0, heightmap.slopeAt(x, z), 0)
+  roughnessAt(lag, heightmap, gain = null, sites = CAL_SITES) {
+    const f = gain
+      ? (x, z) => this.at(x, z, 0, heightmap.slopeAt(x, z), 0) * gain(x, z)
+      : (x, z) => this.at(x, z, 0, heightmap.slopeAt(x, z), 0)
     return roughnessOf(f, lag, sites)
   }
 }
@@ -218,6 +350,25 @@ const calSite = (n) => ({
   z: (((0.5 + PHI2 * (n + 1)) % 1) - 0.5) * WORLD_HALF * 1.6,
 })
 const calAngle = (n) => ((n * 2.399963229728653) % (Math.PI * 2))
+
+// Sites for the rectifier's mean and variance in the constructor. Fewer than
+// CAL_SITES because these are low moments of a bounded variable rather than a
+// spectrum, and they converge in the third digit well before 400.
+const RMS_SITES = 400
+
+// The sharpen rectifier's rounding, in noise units -- the same guard, for the
+// same reason, as CRAG_ROUND, and see that constant for the saw-tooth it exists
+// to prevent. Smaller than crag's 0.12 because these octaves go down to a 1 m
+// wavelength, where a vertex a tenth of a wavelength wide is 10 cm and the
+// rounding would eat the feature rather than protect it.
+const SHARPEN_ROUND = 0.06
+
+// Exported so anything else that has to measure a statistic OF THE WORLD --
+// crag.js normalising its crease operator, the gate reporting per-band slope --
+// measures it at the same points. Two low-discrepancy sequences would each be
+// fine and would disagree in the third digit, which is exactly enough to make a
+// before/after ablation unreadable.
+export { calSite as measureSite, calAngle as measureAngle, roughnessOf }
 
 /**
  * THE INSTRUMENT: rms of the SECOND difference, f(p + d) - 2 f(p) + f(p - d),
@@ -328,7 +479,7 @@ function roughnessOf(f, lag, sites = CAL_SITES) {
  * exaggerated shape around while keeping its unexaggerated size, which is the
  * behaviour wanted: more rock on the cliffs, not more rock in total.
  */
-export function calibrateRough({ heightmap, seed, knee, exaggeration = heightmap.exaggeration, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
+export function calibrateRough({ heightmap, seed, knee, sharpen = 0, exposureGain = null, exaggeration = heightmap.exaggeration, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
   if (!Number.isFinite(exaggeration) || !(exaggeration > 0)) {
     throw new Error(`calibrateRough: exaggeration must be a finite ratio > 0, got ${exaggeration} -- it comes from heightmap.exaggeration, i.e. from world/height.json`)
   }
@@ -357,8 +508,19 @@ export function calibrateRough({ heightmap, seed, knee, exaggeration = heightmap
   // exactly. Measured through Detail.at with the real slope modulation applied,
   // so SLOPE_BOOST redistributes roughness across the world rather than adding
   // to the world average -- change the boost and the calibration absorbs it.
-  const unit = new Detail({ seed, knee, rough: 1, hurst, slopeKnee, hurstFine, shoulder })
-  const unitAt = unit.roughnessAt(probe, heightmap)
+  //
+  // THE RELIEF KNOBS ARE MEASURED THROUGH, on exactly the same footing as
+  // SLOPE_BOOST, and that is what makes them an ABLATION rather than a volume
+  // control. `sharpen` reshapes the amplitude distribution and `exposureGain`
+  // redistributes it across the world; both change the rms this measures, and
+  // because `rough` is then scaled to hit the same `deficit`, both come out
+  // holding the composed field's measured curvature roughness CONSTANT and
+  // changing only where and in what shape it sits. Turn a knob up and the ground
+  // is differently rough, not more rough -- so a side-by-side is a comparison of
+  // two characters, not a comparison of two amplitudes, which is the only way to
+  // tell whether the idea was any good.
+  const unit = new Detail({ seed, knee, rough: 1, sharpen, hurst, slopeKnee, hurstFine, shoulder })
+  const unitAt = unit.roughnessAt(probe, heightmap, exposureGain)
   if (!(unitAt > 0)) throw new Error(`calibrateRough: unit detail has no roughness at lag ${probe} m -- the octave table is empty or the band limit is inverted`)
 
   // `continuous` is what spectral continuity alone asks for; `rough` is that

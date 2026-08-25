@@ -40,6 +40,13 @@ import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
 //   A PER-CHUNK BAND LIMIT. `cell = size / res` goes into every field query,
 //   including the ring's, so the octaves a chunk's triangles cannot resolve fade
 //   out instead of aliasing.
+//
+// And one term that is neither of those and is OFF unless a knob is up: THE
+// CREST BIAS, which lets a coarse chunk lean toward its local maximum so a
+// distant ridge keeps its edge. See CREST_CELL_LO -- it is the only thing in
+// this file that deliberately draws the ground somewhere other than where she
+// collides with it, and the only reason that is allowed is that it fades to
+// nothing before the cell gets fine enough for her to stand on.
 // ---------------------------------------------------------------------------
 
 // v1's palette, unchanged, and the values are LINEAR. The first pass had them
@@ -128,7 +135,49 @@ const CLASS_EPS = 1.0
 // box, outside which the footprint is exactly zero). What the layers cannot know
 // about is that the mesher reads one cell outside the chunk for the normal ring
 // and another CLASS_EPS outside that for the classification slope.
+//
+// A THIRD STENCIL EXISTS WHEN `crest` IS UP and it is NOT in this number, because
+// it scales with the cell rather than sitting at a fixed world distance -- see
+// CREST_CELL_LO and the call site, which adds it separately.
 const cullMargin = (step) => step + CLASS_EPS
+
+// THE CREST BIAS: the band of CELL SIZES, in metres, over which a chunk is
+// allowed to bias its samples toward the local maximum. Cell sizes and not
+// ranges, because what loses a ridge is the spacing between samples, not the
+// distance the ridge is drawn at.
+//
+// A chunk POINT-SAMPLES the field on a grid, so a crest that happens to fall
+// between two samples is not in the mesh at all: the quad cuts the corner and
+// the skyline sags below the terrain. The error runs the wrong way with
+// distance -- the coarser the cell the likelier a crest lands between samples,
+// and the coarse cells are the far ones, which are exactly the ones drawing the
+// horizon. The per-chunk band limit does not help here and cannot: it fades the
+// octaves the triangles cannot resolve, which is the right answer for aliasing,
+// but a ridge line is in the coarse IMPORT as well, and low-passing a maximum
+// does not put it back onto a vertex.
+//
+// LO IS 1 m BECAUSE A FINE CELL IS THE SURFACE SHE COLLIDES WITH. field.js's
+// banner is explicit that a chunk is a low-pass image of the cell = 0 field, and
+// that this is the reason she never falls through a coarse chunk; Detail.at
+// gives every octave weight exactly 1 at cell = 0 for the same reason.
+// smoothstep(1, 6, step) is 0 for every step at or under a metre, so a leaf
+// chunk is bit-identical to what it was before this term existed. Lift the
+// finest chunks off the collision field instead and she is drawn ankle-deep in
+// every ridge she is standing on.
+//
+// AND IT FADES RATHER THAN SWITCHING, for the same reason the band limit fades:
+// a term that appeared all at once at an LOD boundary would pop as the chunk
+// under it re-split, and a pop on a skyline is more visible than the sag this
+// is fixing.
+//
+// HI IS 6 m, so full weight starts at the 8 m cell. The split rule (refine while
+// cell > range * tan(triDeg)) holds an 8 m cell at least 8 / tan(3.0 deg) = 153 m
+// from the eye at the editor default, 91 m out in the graded 5.0 deg periphery,
+// and the 4 m cell that still carries 65% of the weight no nearer than 76 m.
+// That distance is the entire licence for the "only ever raises the mesh"
+// property at the sampler below.
+const CREST_CELL_LO = 1
+const CREST_CELL_HI = 6
 
 // Vertex colour. v1's construction -- alt ramp, then rock over it by steepness,
 // then snow over that -- with the dirt blend appended.
@@ -200,13 +249,27 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   if (total !== CHUNK_VERTS) throw new Error(`buildChunkV2: res ${res} yields ${total} vertices, config CHUNK_VERTS is ${CHUNK_VERTS}`)
   if (triCount * 3 !== CHUNK_INDICES) throw new Error(`buildChunkV2: res ${res} yields ${triCount * 3} indices, config CHUNK_INDICES is ${CHUNK_INDICES}`)
 
+  // How hard this chunk leans on its local maximum, decided by its cell alone --
+  // see CREST_CELL_LO. Computed up here, above the cull, because the crest
+  // stencil is one of the stencils the grown AABB has to cover.
+  const crestW = field.relief.crest * smoothstep(CREST_CELL_LO, CREST_CELL_HI, step)
+  const crestR = step * 0.35
+
   // THE PER-CHUNK CULL. One index query decides for all 361 samples.
   //
   // The margin covers this file's own stencils; the layers pad their own reach.
   // Conservative in the right direction: over-reporting costs one chunk a
   // pointless carve pass, under-reporting leaves a river half-carved with a hard
   // edge at the chunk boundary.
-  const m = cullMargin(step)
+  //
+  // The crest term is added rather than being folded into cullMargin because it
+  // is the one stencil that scales with the cell, and past a 2.9 m cell it
+  // reaches further out than cullMargin's fixed CLASS_EPS does. Under-report
+  // there and a chunk whose crest corners land in a river its neighbour carved
+  // would take an UNCARVED maximum from that ground while the neighbour takes a
+  // carved one, and the two would disagree about the height of a shared edge
+  // vertex -- a crack, at exactly the coarse LOD where the crest term is loudest.
+  const m = cullMargin(step) + (crestW > 0 ? crestR : 0)
   const touched = layers.overlaps(ox - m, oz - m, ox + size + m, oz + size + m)
 
   // Selected ONCE per chunk, not per vertex. The culled path never enters
@@ -218,6 +281,51 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
     ? (x, z) => field.heightAt(x, z, CLASS_EPS)
     : (x, z) => field.baseAt(x, z, CLASS_EPS)
 
+  // THE CREST SAMPLER, selected here for exactly the reason heightAtCell is:
+  // five field evaluations per sample instead of one is affordable on a coarse
+  // chunk -- the band limit's early-out leaves it few octaves, so the marginal
+  // cost is mostly the bicubic import taps -- and is not affordable as a branch
+  // inside a loop that also runs 361 times at the leaf. With `crest` at 0, which
+  // is the shipped default, this IS heightAtCell and none of the below exists.
+  //
+  // GATED ON CONVEXITY, and that is not a refinement, it is what stops the term
+  // doing the opposite of its job. A max filter over concave ground FILLS
+  // HOLLOWS: applied everywhere it would close the valleys up with distance,
+  // which is a worse artifact than the sagging skyline it was cut in to fix.
+  // exposureAt is near 0 in a hollow and near 1 on a rib, so the term cancels
+  // itself where it would hurt and reaches full strength only where a crest can
+  // actually exist. It returns a flat 0.5 when no knob asked for the grid, but
+  // `crest` is in reliefNeeds' exposure list, so a nonzero crestW means a real
+  // grid is baked.
+  //
+  // IT ONLY EVER RAISES THE MESH -- `mx` is a max that includes h0, so the bias
+  // is non-negative -- and that DOES mean a coarse chunk sits ABOVE the cell = 0
+  // field she collides with by up to crestW * (mx - h0). Measured on one
+  // mountain chunk at crest 1: mean 0.64 m and worst 2.02 m at an 8 m cell,
+  // mean 2.71 m and worst 10.50 m at 32 m, and exactly 0.000 at 1 m and below.
+  // That is a deliberate and bounded violation of the "every LOD is a low-pass
+  // image of the same surface" property field.js's banner states. It is accepted
+  // because the split rule puts a cell that coarse 150 m away and she is never
+  // standing on one, and it is refused where she IS standing by CREST_CELL_LO.
+  const sampleHeight = crestW > 0
+    ? (x, z) => {
+        const h0 = heightAtCell(x, z)
+        // The diagonals rather than the axes, at 0.35 of a cell rather than a
+        // half: this has to stay INSIDE the quads this vertex owns. A stencil
+        // reaching a full cell out would hand the same summit to the vertices
+        // on both sides of a ridge and draw it as a plateau, which trades one
+        // wrong skyline for another.
+        const mx = Math.max(
+          h0,
+          heightAtCell(x - crestR, z - crestR),
+          heightAtCell(x + crestR, z - crestR),
+          heightAtCell(x - crestR, z + crestR),
+          heightAtCell(x + crestR, z + crestR),
+        )
+        return h0 + crestW * field.exposureAt(x, z) * (mx - h0)
+      }
+    : heightAtCell
+
   // One extra ring on every side, sampled at THE SAME cell as the interior. Two
   // different band limits either side of a chunk edge would put back exactly the
   // seam the ring exists to remove, with the added insult that it would only
@@ -227,7 +335,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   for (let j = 0; j < epr; j++) {
     const wz = oz + (j - 1) * step
     for (let i = 0; i < epr; i++) {
-      H[j * epr + i] = heightAtCell(ox + (i - 1) * step, wz)
+      H[j * epr + i] = sampleHeight(ox + (i - 1) * step, wz)
     }
   }
 
@@ -241,6 +349,15 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   // Bit-identical reuse, not an approximation: when the cell equals the stencil
   // width, the ring's central difference IS the classification central
   // difference, same four samples at the same band limit.
+  //
+  // The crest bias does not break that identity, and only because of where
+  // CREST_CELL_LO sits: this branch is taken only at step === CLASS_EPS === 1 m,
+  // where smoothstep(CREST_CELL_LO, ...) is exactly 0 and the ring holds raw
+  // heightAtCell values. Moving CREST_CELL_LO above 1 would make the reused
+  // normal a normal of the BIASED surface while the stencil below measures the
+  // real one, i.e. one chunk depth shading itself by a different rule than every
+  // other -- a chunk-shaped repaint of precisely the kind CLASS_EPS exists to
+  // prevent.
   const reuseMeshNormal = step === CLASS_EPS
   const snowBand = layers.snow.band
   // Hoisted: `bands` is a lazy percentile pass over the whole texel array, and
@@ -275,6 +392,15 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
       const wx = ox + i * step
       const wz = oz + j * step
 
+      // DELIBERATELY NOT CREST-BIASED, and it is the same argument the CLASS_EPS
+      // banner makes: the classification slope is measured over a fixed world
+      // distance so that the colour of a piece of ground is a function of
+      // position alone and does not repaint when a chunk coarsens. crestW is a
+      // function of the CELL, so biasing these four taps would make the snow
+      // line move as chunks split and the world would flash white in
+      // chunk-shaped squares again -- the exact bug that stencil was written to
+      // fix. The mesh may lean toward the crest; what the crest is made of does
+      // not change with the viewer's distance.
       let nyClass = ny
       if (!reuseMeshNormal) {
         const gx = (heightAtClass(wx + CLASS_EPS, wz) - heightAtClass(wx - CLASS_EPS, wz)) / (2 * CLASS_EPS)
@@ -383,4 +509,4 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   return { positions, normals, colors, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
-export { CLASS_EPS, cullMargin, shade }
+export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, cullMargin, shade }

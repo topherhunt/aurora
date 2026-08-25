@@ -441,13 +441,23 @@ function fakeTerrain() {
   return { patches: [], patchHeight(rect, data, worldRect) { this.patches.push({ rect, data, worldRect }) } }
 }
 
+// The same for the V2Height the brush now holds. `coarsePatched` is how the
+// field learns that the import under it moved: with the `erode` relief knob on,
+// the surface the player collides with is DERIVED from the import rather than
+// being the same array, so a stroke that skips this call leaves her walking on
+// terrain that is no longer being drawn.
+function fakeField() {
+  return { rects: [], coarsePatched(rect) { this.rects.push(rect) } }
+}
+
 function sectionSculptor() {
   console.log('\nSculptor: strokes, patches, undo')
 
   const terrain = fakeTerrain()
+  const field = fakeField()
   const hm = makeField((i, j) => 100 + 30 * Math.sin(i * 0.11) * Math.cos(j * 0.09))
   const before = Float32Array.from(hm.field)
-  const s = new Sculptor({ heightmap: hm, terrain })
+  const s = new Sculptor({ heightmap: hm, field, terrain })
 
   check(s.mode === 'raise' && !s.dirty && !s.canUndo, 'a fresh Sculptor is clean and has nothing to undo')
   let threw = false
@@ -484,6 +494,20 @@ function sectionSculptor() {
     }
   }
   check(missed === 0, 'every texel the drag moved was sent to the workers', `${missed} texels never patched`)
+
+  // THE FIELD IS TOLD PER STAMP AND THE WORKERS PER FLUSH, and the asymmetry is
+  // the point: the mesh may lag the brush by a frame without anyone noticing,
+  // but the surface she is standing on this frame may not. So eight stamps are
+  // eight coarsePatched calls against at most two patches.
+  check(field.rects.length === 8, 'every stamp tells the field, unthrottled', `${field.rects.length} calls for 8 stamps`)
+  let uncovered = 0
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      if (hm.field[j * N + i] === before[j * N + i]) continue
+      if (!field.rects.some((r) => i >= r.i0 && i < r.i1 && j >= r.j0 && j < r.j1)) uncovered++
+    }
+  }
+  check(uncovered === 0, 'and between them those calls cover every texel that moved', `${uncovered} texels the field never heard about`)
   check(
     near(last.worldRect.minX, rectToWorld(hm, last.rect).minX, 1e-6) && near(last.worldRect.maxZ, rectToWorld(hm, last.rect).maxZ, 1e-6),
     'the dirty world box is the rect widened by the sampling stencil'
@@ -502,6 +526,20 @@ function sectionSculptor() {
   for (let k = 0; k < hm.field.length; k++) worst = Math.max(worst, Math.abs(hm.field[k] - before[k]))
   check(worst === 0, 'undo puts every texel of an eight-stamp drag back exactly', `worst residue ${worst.toExponential(2)} m`)
   check(!s.canUndo, 'and the entry is gone')
+  // And undo does too, over the WHOLE stroke rather than over the last stamp:
+  // the entry it restores is the union snapshot, so an undo that told the field
+  // only the tail of the drag would leave the middle of the stroke standing in
+  // the derived surface after it had been put back in the import.
+  const back = field.rects[field.rects.length - 1]
+  check(field.rects.length === 9, 'undo tells the field too', `${field.rects.length} calls after an undo of an 8-stamp drag`)
+  let unrestored = 0
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      if (!field.rects.slice(0, 8).some((r) => i >= r.i0 && i < r.i1 && j >= r.j0 && j < r.j1)) continue
+      if (!(i >= back.i0 && i < back.i1 && j >= back.j0 && j < back.j1)) unrestored++
+    }
+  }
+  check(unrestored === 0, 'and over every texel the stroke had told it about', `${unrestored} texels put back without the field hearing`)
   check(s.undo() === false, 'undoing an empty stack reports false rather than throwing')
   check(s.dirty, 'the world is STILL unsaved after an undo', 'the file on disk matches neither state')
 
@@ -517,7 +555,7 @@ function sectionSculptor() {
   // taken here, so this is the case that separates "nothing to record" from
   // "nothing changed", and only the second one is a plausible thing to get wrong.
   const capped = flat(META.maxY)
-  const s4 = new Sculptor({ heightmap: capped, terrain: fakeTerrain() })
+  const s4 = new Sculptor({ heightmap: capped, field: fakeField(), terrain: fakeTerrain() })
   s4.radius = 300
   s4.strength = 30
   s4.begin()
@@ -527,7 +565,7 @@ function sectionSculptor() {
 
   // clamped is a per-stroke readout the panel prints, so it resets on the press.
   const high = flat(META.maxY - 2)
-  const s2 = new Sculptor({ heightmap: high, terrain: fakeTerrain() })
+  const s2 = new Sculptor({ heightmap: high, field: fakeField(), terrain: fakeTerrain() })
   s2.radius = 300
   s2.strength = 60
   s2.begin()
@@ -542,7 +580,7 @@ function sectionSculptor() {
   // metres per second means nothing to a blur.
   const sp = flat()
   sp.field[128 * N + 128] = 90
-  const s3 = new Sculptor({ heightmap: sp, terrain: fakeTerrain() })
+  const s3 = new Sculptor({ heightmap: sp, field: fakeField(), terrain: fakeTerrain() })
   s3.setMode('smooth')
   s3.radius = 600
   s3.strength = 0 // would freeze the brush if smooth read this one
@@ -556,7 +594,7 @@ function sectionSculptor() {
   // at 60 Hz and at 120 Hz, or the brush digs twice as fast on a better machine.
   const dig = (steps) => {
     const f = flat()
-    const k = new Sculptor({ heightmap: f, terrain: fakeTerrain() })
+    const k = new Sculptor({ heightmap: f, field: fakeField(), terrain: fakeTerrain() })
     k.radius = 300
     k.strength = 24
     k.begin()

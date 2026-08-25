@@ -246,7 +246,11 @@ export class Editor {
     // switches. It writes `height.heightmap` -- the same decoded field the
     // player collides against and the picks raymarch -- so a stroke is under her
     // feet in the frame it is drawn, and the workers are patched separately.
-    this.sculptor = new Sculptor({ heightmap: height.heightmap, terrain })
+    // BOTH the import and the field that is derived from it. `height.heightmap`
+    // is what the brush writes and what the PNG writer saves; `height` itself is
+    // what the player collides with, and with the erode knob on those are two
+    // different surfaces. See Sculptor's constructor.
+    this.sculptor = new Sculptor({ heightmap: height.heightmap, field: height, terrain })
 
     this.gizmo = new Gizmo({ scene, camera, domElement: renderer.domElement, orbitLock })
     this.gizmo.onChange(() => this._onGizmoChange())

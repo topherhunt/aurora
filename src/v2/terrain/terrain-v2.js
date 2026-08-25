@@ -27,6 +27,7 @@ import {
   validRect,
 } from './stream-policy.js'
 import { createTerrainMaterial } from '../../terrain/terrain-material.js'
+import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.js'
 
 // ---------------------------------------------------------------------------
 // v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 13 tree, worker-fed
@@ -136,10 +137,11 @@ export class TerrainV2 {
    * @param scene         THREE.Scene to add the single BatchedMesh to.
    * @param heightmapRaw  {width, height, data: Float32Array, meta} from Heightmap.toRaw().
    * @param doc           the WorldDoc the layers bake from (Layers.serialize()).
+   * @param relief        the jaggedness knobs (height/relief.js); defaults to all off.
    * @param workers       worker count.
    * @param queueDepth    requests in flight per worker; see WORKER_QUEUE_DEPTH.
    */
-  constructor(scene, { heightmapRaw, doc, workers = 2, queueDepth = WORKER_QUEUE_DEPTH } = {}) {
+  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH } = {}) {
     if (!heightmapRaw) throw new Error('TerrainV2: no heightmapRaw -- the workers have no coarse field to sample and would mesh a flat world')
     if (!doc) throw new Error('TerrainV2: no doc -- the workers have no content layers to bake')
     const { width, height, data, meta } = heightmapRaw
@@ -159,6 +161,24 @@ export class TerrainV2 {
 
     this.scene = scene
     this.queueDepth = queueDepth
+
+    // Normalized HERE, once, and then shipped verbatim to every worker.
+    //
+    // The composed height field is evaluated in THREE places that do not share
+    // memory -- the main thread for player collision, the editor raycast and the
+    // prop scatter, and one V2Height per terrain worker for the mesher -- so the
+    // relief has to be the SAME OBJECT'S WORTH OF VALUES on all of them. If it
+    // reaches the mesher and not the main thread, the ground she is drawn
+    // standing on and the ground she collides with are two different surfaces and
+    // she hovers or sinks, silently; nothing throws anywhere. That is the same
+    // failure the WORLD_SEED banner in height/field.js describes, and it is why
+    // the knobs travel over the wire on the same footing as the layers document
+    // instead of being read out of a global on whichever thread looks.
+    //
+    // Normalizing before the postMessage rather than trusting each worker to do
+    // it means a misspelled knob throws once, here, at construction -- not N
+    // times inside N workers, or worse, on only some of them.
+    this.relief = normalizeRelief(relief)
 
     const budget = slotBudget(workers, queueDepth)
     this._inFlightCap = budget.inFlightCap
@@ -281,6 +301,7 @@ export class TerrainV2 {
       slots: 0,
       lastGenMs: 0,
       lastBakeMs: 0,
+      lastReliefMs: 0,
       bounds: 0,
       evictions: 0,
       stale: 0,
@@ -349,7 +370,7 @@ export class TerrainV2 {
       // vite.config.js does not set and which are not this file's to add.
       const copy = data.slice()
       w.postMessage(
-        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, epoch: this.epoch },
+        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, epoch: this.epoch },
         [copy.buffer]
       )
       this.workers.push(w)
@@ -403,6 +424,50 @@ export class TerrainV2 {
     else this._invalidateRect(dirtyRect)
 
     this._dirty = true
+  }
+
+  /**
+   * Apply a new set of relief knobs (height/relief.js) to every worker and remesh
+   * the world. Returns true if anything actually changed, so a HUD scrub that
+   * lands back on the value it started from costs nothing.
+   *
+   * THIS IS setLayers WITH dirtyRect === null AND IT CANNOT BE ANYTHING ELSE.
+   * setLayers exists to avoid exactly this: an authored edit moves a river bank
+   * and the ground a kilometre away is bit-identical, so it keeps its geometry. A
+   * relief knob is the other kind of change -- it is v1's retune(), a constant
+   * that moves every metre of the whole world -- and there is no rect that bounds
+   * it. So every slot is freed, the bounds table is cleared, the base layer is
+   * re-seeded so the ancestor fallback still resolves, and the world goes
+   * low-poly for a moment rather than going to sky.
+   *
+   * THE CALLER STILL OWES THE MAIN THREAD'S OWN FIELD THE SAME CALL. This posts
+   * the knobs to the workers, which mesh; it does not touch the V2Height that
+   * player collision, the editor raycast and the prop scatter read, because this
+   * object does not own it. Set one and not the other and the surface she is
+   * drawn standing on and the surface she collides with drift apart by metres,
+   * with nothing thrown -- see the constructor's note and the banner in
+   * height/relief.js. Set the field's first, if anything: it is the expensive
+   * half (V2Height.setRelief with `erode` up is a whole-field talus relaxation,
+   * about 190 ms of a 240 ms rebuild against 55 ms with erosion off), and the
+   * workers are doing the identical rebuild concurrently, so the wall-clock is
+   * one rebuild rather than three.
+   *
+   * The epoch is bumped BEFORE _invalidateAll for the same reason setLayers does
+   * it in that order: every request already in flight has to be strictly older
+   * than the invalidation it is about to be tested against.
+   */
+  setRelief(relief) {
+    const next = normalizeRelief(relief)
+    if (sameRelief(next, this.relief)) return false
+    this.relief = next
+
+    this.epoch++
+    for (const w of this.workers) w.postMessage({ type: 'relief', relief: this.relief, epoch: this.epoch })
+
+    this._invalidateAll()
+
+    this._dirty = true
+    return true
   }
 
   /**
@@ -591,6 +656,21 @@ export class TerrainV2 {
     // panel needs to explain a slow drag.
     if (msg.type === 'layered') {
       this.stats.lastBakeMs = msg.bakeMs
+      return
+    }
+
+    // The relief acknowledgement, and it is recorded separately from lastBakeMs
+    // rather than sharing it. They are far apart in cost: a layers bake is a
+    // snow grid in a few milliseconds, a relief rebuild with `erode` up is a
+    // whole-field talus relaxation at about 240 ms. Folding a 240 into the field
+    // the panel labels "bake" would read as a bug in the layer bake rather than
+    // as the cost of the knob that was just turned on.
+    //
+    // Not waited on, exactly like 'layered': the chunk requests behind it are
+    // ordered after it on the same port, so the new relief is applied before any
+    // of them is meshed.
+    if (msg.type === 'relieved') {
+      this.stats.lastReliefMs = msg.ms
       return
     }
 

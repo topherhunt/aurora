@@ -211,6 +211,165 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
   return geo
 }
 
+// ---------------------------------------------------------------------------
+// THE STRIP: an experiment in buying the same meadow with a third of the
+// triangles. Switched on by `style: 'strips'` in v2/render/grass.js; the tuft
+// ladder above is untouched and is still the default.
+//
+// A strip is ONE FLAT RECTANGLE, several metres wide and about a tuft tall,
+// whose u runs 0..tiles so the atlas' repeat wrap draws the same cutout that
+// many times across it. Scatter a thin layer of them at random yaw and the
+// aggregate is a bed of grass; the per-tile mask, mirror, slide and shrink in
+// material.js' STRIP_SAMPLE are what stop it reading as a row of identical
+// clumps.
+//
+// THE ARITHMETIC IT LIVES OR DIES BY, because "fewer triangles" is only true
+// against the right baseline. Grass' bill is 70% its BILLBOARD tier -- already
+// two triangles a tuft -- and that card spins to face the camera, so it always
+// presents its full 0.83 m width at the mean instance height. A fixed strip at
+// random yaw presents E|sin t| = 2/pi = 0.64 of its width. Facing area per
+// triangle is therefore:
+//
+//   billboard tuft   2 tri   0.83 x 1.06 = 0.88 m2      0.44 m2/tri
+//   strip, W = 4 m   2 tri   0.64 x 4 x 1.06 = 2.71 m2  1.36 m2/tri
+//
+// so a 4 m strip is worth about 3.1x, and 5x wants W ~ 6.5 m. Against the
+// 3-plane LOD0 tuft the saving is far larger, but LOD0 is 6% of the bill and it
+// is also the tier a player is standing in, where the strip's flatness is most
+// visible -- so the eventual shape of this is probably strips FAR and tufts
+// NEAR, not strips everywhere. The everywhere version is what is built here,
+// because it is the one you can look at and judge.
+//
+// IT MUST STAY AT TWO TRIANGLES, and that is the whole design constraint. The
+// obvious fix for a flat card on lumpy ground is to segment it and drop each
+// interior vertex onto the terrain -- but six segments is twelve triangles and
+// 0.23 m2/tri, WORSE than the billboard it is replacing. So the strip is one
+// quad and follows the ground by TILTING: render/grass.js samples the height at
+// its two ends and rolls it about its own long axis, which is exact on planar
+// slope and only wrong over a rise, where the middle sinks rather than floats.
+// Sinking is the forgiving direction -- the foot of the picture is frayed (see
+// GRASS_FRAY in textures.js) so grass entering the ground reads as grass.
+// ---------------------------------------------------------------------------
+
+// The strip's REFERENCE proportions, and how many copies of the cutout those
+// proportions bake into `uvProj.x`.
+//
+// `tiles` is width/height and not a free number: the tuft picture is square
+// (GRASS_BASE), so a tile as wide as the strip is tall is the one aspect that
+// draws the grass unstretched. Change `width` and this has to move with it,
+// which is why it is derived below rather than typed.
+//
+// IT IS NOT THE LENGTH OF A STRIP. The fragment stage rescales `uvProj.x` by the
+// instance's own x/y scale ratio (see the strip block in material.js), so the
+// number of clumps a strip actually draws is whatever length render/grass.js
+// gave it -- STRIP_TILES there, currently 1 to 4 -- and nothing here caps it.
+// What this geometry fixes is only the PROPORTION at which a tile comes out
+// square, which is the one thing the shader cannot work out for itself.
+export const STRIP_BASE = { width: 4, height: 1 }
+
+/** Copies of the cutout across a strip of the given proportions. */
+export function stripTiles({ width, height } = STRIP_BASE) {
+  return Math.max(1, Math.round((width / height) * (GRASS_BASE.height / GRASS_BASE.width)))
+}
+
+/**
+ * A grass strip: `planes` flat quads seated at y = 0, u running 0..tiles.
+ *
+ * NO TWIST, unlike the tuft. The twist there turns a prism so the eye cannot
+ * find three verticals; a strip has no prism to turn, and warping the top edge
+ * of a 4 m quad shears the picture across a metre of grass instead of sliding
+ * it, because the shear is spread over the whole card rather than over one
+ * card's width. The strip gets its lean from the per-tile shrink instead, which
+ * is in the fragment stage and therefore free of geometry.
+ *
+ * VERTICAL NORMALS, for exactly the reasons buildGrassTuft gives: the aggregate
+ * surface of a grass bed IS the ground, and a horizontal normal makes the whole
+ * carpet go dark when the sun is high.
+ *
+ * `planes` = 2 crosses a second strip at right angles through the middle. That
+ * is the SAME facing area per triangle as two single strips (a crossed pair
+ * presents |sin t| + |cos t|, mean 4/pi = 1.27 of W, over 4 triangles; 1.27/4 =
+ * 0.32, and a single is 0.64/2 = 0.32) but it never goes edge-on, so the bed
+ * does not thin in the directions the yaws happen to line up with. Free
+ * insurance against the one failure mode a fixed card has and a billboard does
+ * not; the cost is a visible X where the two meet.
+ */
+function buildGrassStrip(width, height, layer, planes, tiles) {
+  const n = Math.max(1, Math.round(planes))
+  const positions = []
+  const normals = []
+  const uvs = []
+  const layers = []
+  const indices = []
+
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI
+    const dx = (Math.cos(a) * width) / 2
+    const dz = (Math.sin(a) * width) / 2
+    const base = positions.length / 3
+    // v = 0 at the top, matching the tuft -- STRIP_SAMPLE shrinks about v = 1
+    // and would grow the grass downward through the ground if this were flipped.
+    const corners = [
+      [-dx, 0, -dz, 0, 1],
+      [dx, 0, dz, tiles, 1],
+      [dx, height, dz, tiles, 0],
+      [-dx, height, -dz, 0, 0],
+    ]
+    for (const [x, y, z, u, v] of corners) {
+      positions.push(x, y, z)
+      normals.push(0, 1, 0)
+      uvs.push(u, v)
+      layers.push(layer)
+    }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  }
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(uvs, 2))
+  geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(layers, 1))
+  geo.setIndex(indices)
+  geo.computeBoundingBox()
+  geo.computeBoundingSphere()
+  geo.userData.strip = { width, height, planes: n, tiles, layer, triangles: n * 2 }
+  return geo
+}
+
+/**
+ * The strip bank, in the same `{ tiers, cardTier, bytes }` shape buildGrassBank
+ * returns, so render/grass.js can hold either without knowing which.
+ *
+ * ONE TIER AND NO LADDER, which is not a simplification so much as the absence
+ * of anything to simplify. The tuft's ladder exists to spend more triangles up
+ * close, and a strip has none to spend: it is at its floor already. What that
+ * costs is the near field, where the strip is a flat wall the player can walk
+ * up to and see is flat -- which is the honest reason the eventual answer here
+ * is probably a hybrid rather than a swap.
+ *
+ * NO BILLBOARD TIER EITHER, and it must not have one: a strip that spins to
+ * face the camera is a strip whose ends sweep through the hillside, and the
+ * whole saving came from NOT spinning (see the arithmetic in the header).
+ */
+export function buildGrassStripBank({
+  width = STRIP_BASE.width,
+  height = STRIP_BASE.height,
+  planes = 1,
+} = {}) {
+  const tiles = stripTiles({ width, height })
+  const geometry = buildGrassStrip(width, height, LAYER.GRASS_TUFT, planes, tiles)
+  return {
+    tiers: [{
+      name: 'STRIP', planes, billboard: false, layer: LAYER.GRASS_TUFT,
+      geometry, triangles: planes * 2,
+    }],
+    cardLayer: LAYER.GRASS_TUFT,
+    cardTier: 0,
+    tiles,
+    bytes: geometryBytes(geometry),
+  }
+}
+
 /**
  * The mesh and card geometries, in the shared batch's attribute layout. No
  * renderer, no pixels: safe in a constructor and in node.

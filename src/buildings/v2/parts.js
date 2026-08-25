@@ -86,11 +86,6 @@ const FLAT = {
  *  their broken arrises and buckle seams are the point of them. */
 export const SMOOTH_LAYERS = [LAYER.TIMBER_BEAM, LAYER.TIMBER_PLANK, LAYER.TIMBER_HEWN]
 
-const lerp3 = (p, q, t) => [
-  p[0] + (q[0] - p[0]) * t,
-  p[1] + (q[1] - p[1]) * t,
-  p[2] + (q[2] - p[2]) * t,
-]
 const dist3 = (p, q) => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2])
 /** The XZ direction from p to q, unitised. */
 const flatDir = (p, q) => {
@@ -174,16 +169,38 @@ function roofGrid(eaveLen, slopeLen) {
   return { nu, nv }
 }
 
-/** A point at parameter u along a polyline whose points are evenly spaced in
- *  parameter (which every row of a roof grid is). */
-function polyAt(pts, u) {
-  const n = pts.length - 1
-  const x = Math.max(0, Math.min(n, u * n))
-  const i = Math.min(n - 1, Math.floor(x))
-  return lerp3(pts[i], pts[i + 1], x - i)
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v)
+
+/** Where the segment (x0,z0)-(x1,z1) crosses the segment a-b in plan, as the
+ *  parameter along the first, or null. Endpoints of the second count, endpoints
+ *  of the first do not: the caller already owns those. */
+function crossXZ(x0, z0, x1, z1, a, b) {
+  const rx = x1 - x0
+  const rz = z1 - z0
+  const sx = b[0] - a[0]
+  const sz = b[2] - a[2]
+  const den = rx * sz - rz * sx
+  if (Math.abs(den) < 1e-9) return null
+  const qx = a[0] - x0
+  const qz = a[2] - z0
+  const u = (qx * sz - qz * sx) / den
+  const v = (qx * rz - qz * rx) / den
+  if (u <= 1e-4 || u >= 1 - 1e-4 || v < -1e-9 || v > 1 + 1e-9) return null
+  return u
 }
 
-const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v)
+/** Where a vertical line through (x, z) crosses the triangle abc, or null if it
+ *  misses. Barycentric in the XZ plane, with a hair of tolerance so a point on a
+ *  shared edge belongs to one of the two triangles rather than to neither. */
+function triY(a, b, c, x, z) {
+  const det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2])
+  if (Math.abs(det) < 1e-12) return null
+  const u = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det
+  const v = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det
+  const w = 1 - u - v
+  if (u < -1e-6 || v < -1e-6 || w < -1e-6) return null
+  return u * a[1] + v * b[1] + w * c[1]
+}
 
 /**
  * ONE ROOF SLOPE, as a surface rather than as a pile of triangles.
@@ -241,24 +258,65 @@ function slopeSurface(o) {
   const vLoAt = (s) => alongHalf + vergeLo + splayLo * (s - 0.5)
   const vHiAt = (s) => alongHalf + vergeHi + splayHi * (s - 0.5)
   const tOf = (a, s) => (a + vLoAt(s)) / Math.max(0.001, vLoAt(s) + vHiAt(s))
-  const reachAt = (t) => k.reach * (0.55 + 0.45 * wobble(seed * 19 + 3, t))
-  const spanAt = (t) => runNominal + overhang + reachAt(t)
-  const eaveAt = (t) => eaveY - pitch * (overhang + reachAt(t)) + k.sway * wobble(seed * 17 + 5, t)
-  const topOf = (t) => highY - ridgeSag * Math.sin(Math.PI * t)
-  const rowBuckle = (j, t) => (j <= 0 || j >= nv ? 0 : k.buckle * wobble(seed * 13 + j, t))
-  // Piecewise linear between the seam rows, so this agrees EXACTLY with the mesh
-  // at every row and interpolates the way the mesh does between them. That is
-  // what makes heightAt() an answer about the triangles rather than about the
-  // formula the triangles were sampled from.
-  const buckleAt = (t, s) => {
-    const x = s * nv
-    const j = Math.max(0, Math.min(nv - 1, Math.floor(x)))
-    const f = x - j
-    return rowBuckle(j, t) * (1 - f) + rowBuckle(j + 1, t) * f
+
+  /**
+   * Sample a function at the n + 1 grid lines and read it back as the CHORD
+   * between them, which is what the triangles are.
+   *
+   * Every shaping term here is a smooth curve, and the sheet holds nu + 1
+   * columns by nv + 1 rows of it and nothing in between. Ask a smooth term for a
+   * point mid-cell and the answer is the curve, not the roof: a 0.3 m ridge sag
+   * read at the middle of a two-column ridge is 6 cm above the triangles, and a
+   * 0.4 m slope sag is another 3 cm on a three-row sheet. That error lands
+   * ENTIRELY on the walls, which cut themselves to `heightAt` -- they stop short
+   * of the covering by it and leave a slot you can see up through from under the
+   * eave, which is exactly where a village street looks at a roof from.
+   *
+   * So every term is wrapped at the source rather than the callers being asked
+   * to allow for it. The values AT the grid lines are untouched, so the mesh is
+   * bit-identical; only the answer between them moves, onto the surface. Both
+   * slopes of a gable share nu, so the ridge still closes exactly.
+   */
+  const chord = (n, f) => {
+    const node = []
+    for (let i = 0; i <= n; i++) node.push(f(i / n))
+    return (u) => {
+      const x = clamp01(u) * n
+      const i = Math.min(n - 1, Math.floor(x))
+      return node[i] + (node[i + 1] - node[i]) * (x - i)
+    }
   }
+  const linT = (f) => chord(nu, f)
+
+  const reachRaw = (t) => k.reach * (0.55 + 0.45 * wobble(seed * 19 + 3, t))
+  const reachAt = linT(reachRaw)
+  const spanAt = (t) => runNominal + overhang + reachAt(t)
+  const eaveAt = linT((t) => (
+    eaveY - pitch * (overhang + reachRaw(t)) + k.sway * wobble(seed * 17 + 5, t)
+  ))
+  const topOf = linT((t) => highY - ridgeSag * Math.sin(Math.PI * t))
+  const sagAt = chord(nv, (s) => -k.sag * Math.sin(Math.PI * s))
+  // The buckle is a curve along each seam row and a chord between the rows, so
+  // it is chorded in both directions too -- t inside each row, s across them.
+  const rowBuckle = []
+  for (let j = 0; j <= nv; j++) {
+    rowBuckle.push(j <= 0 || j >= nv
+      ? () => 0
+      : linT((t) => k.buckle * wobble(seed * 13 + j, t)))
+  }
+  const buckleAt = (t, s) => {
+    const x = clamp01(s) * nv
+    const j = Math.min(nv - 1, Math.floor(x))
+    const f = x - j
+    return rowBuckle[j](t) * (1 - f) + rowBuckle[j + 1](t) * f
+  }
+  // Bilinear over every cell by construction: eave and top are chords in t, the
+  // rise between them is linear in s, and both remaining terms are chorded on
+  // their own grid. What is left between this and the triangles is the twist of
+  // each quad against the diagonal it was split on, which is millimetres.
   const yAt = (t, s) => {
     const e = eaveAt(t)
-    return e + (topOf(t) - e) * s - k.sag * Math.sin(Math.PI * s) + buckleAt(t, s)
+    return e + (topOf(t) - e) * s + sagAt(s) + buckleAt(t, s)
   }
   const world = (a, c, y) => (alongAxis === 'x' ? [cx + a, y, cz + c] : [cx + c, y, cz + a])
 
@@ -283,13 +341,34 @@ function slopeSurface(o) {
   /**
    * How high this slope is above the world point (x, z).
    *
-   * Inverting (a, c) back to (t, s) is very slightly circular -- s depends on
-   * how far the eave reached at t, and t depends on how far the verge splayed at
-   * s -- so it is solved by two fixed-point sweeps from the nominal. Both
-   * couplings are a few centimetres against spans of metres, so two is not a
-   * compromise; the residual is below the tuck the walls sit under anyway.
+   * ASKED OF THE TRIANGLES, not of the formula they were sampled from: drop a
+   * plumb line and read the cell it lands in. Everything on the building that
+   * has to stop at the roof -- the top of every wall, the corner posts, the
+   * king post, a window that would otherwise poke through the covering -- asks
+   * this question, and an answer that is even 2 cm optimistic is a 2 cm slot of
+   * daylight under the eave. Each quad is split on the P[j][i] -> P[j+1][i+1]
+   * diagonal, and the two triangles of the split do not agree with the smooth
+   * surface in the middle of a cell, so the split is followed exactly here.
+   *
+   * At most nine cells, so the cell is found by scanning rather than by
+   * inverting the parameterisation, which is circular (s depends on how far the
+   * eave reached at t, t depends on how far the verge splayed at s).
+   *
+   * OFF THE SHEET the plumb line misses everything, and the fallback is the
+   * surface continued analytically: the inversion by two fixed-point sweeps,
+   * then the smooth form. That is the right answer for a point that has no
+   * covering over it -- a wall of a mass whose own roof does not reach it -- and
+   * it is continuous with the exact answer at the edge.
    */
   const heightAt = (x, z) => {
+    for (let j = 0; j < nv; j++) {
+      for (let i = 0; i < nu; i++) {
+        const p00 = P[j][i]
+        const p11 = P[j + 1][i + 1]
+        const y = triY(p00, P[j][i + 1], p11, x, z) ?? triY(p00, p11, P[j + 1][i], x, z)
+        if (y !== null) return y
+      }
+    }
     const a = alongAxis === 'x' ? x - cx : z - cz
     const c = alongAxis === 'x' ? z - cz : x - cx
     const q = (c - cHigh) * dirSign
@@ -297,6 +376,30 @@ function slopeSurface(o) {
     for (let it = 0; it < 2; it++) s = 1 - q / spanAt(clamp01(tOf(a, clamp01(s))))
     s = clamp01(s)
     return yAt(clamp01(tOf(a, s)), s)
+  }
+
+  /**
+   * Every parameter along a plan segment where this sheet's profile KINKS.
+   *
+   * `heightAt` is now exact, but a wall built from it is still a chord between
+   * wherever it happened to sample -- and the roof it is trying to meet is a
+   * fold, not a curve. Sample either side of a fold and the wall crosses it: too
+   * tall in the middle of the span or too short, by up to 6 cm, which is the slot
+   * under the eave. Hand the wall the folds instead and its top edge lands ON the
+   * covering for its whole length, because between two consecutive folds the
+   * segment stays inside ONE triangle, where the surface is a plane and a chord
+   * is the truth. The diagonals count: a quad is drawn as two triangles and the
+   * seam between them is as real a fold as the seam between two cells.
+   */
+  const breaksAlong = (x0, z0, x1, z1, out) => {
+    const add = (u) => { if (u !== null) out.push(u) }
+    for (let j = 0; j <= nv; j++) {
+      for (let i = 0; i <= nu; i++) {
+        if (i < nu) add(crossXZ(x0, z0, x1, z1, P[j][i], P[j][i + 1]))
+        if (j < nv) add(crossXZ(x0, z0, x1, z1, P[j][i], P[j + 1][i]))
+        if (i < nu && j < nv) add(crossXZ(x0, z0, x1, z1, P[j][i], P[j + 1][i + 1]))
+      }
+    }
   }
 
   const draw = (b, color) => {
@@ -311,7 +414,7 @@ function slopeSurface(o) {
   }
 
   return {
-    P, nu, nv, heightAt, draw,
+    P, nu, nv, heightAt, breaksAlong, draw,
     eave: P[0],
     top: P[nv],
     // The outward horizontal direction the eave hangs over, which the fringe
@@ -361,24 +464,6 @@ function thatchFringe(b, slope, tint, k, drop = 0.34) {
       double: true,
     })
   }
-}
-
-/** The rolled bolster along the top of a gable, following the ridge it actually
- *  has rather than the straight line it was planned as. It no longer hides a
- *  seam -- the two sheets share their ridge points exactly -- so it is pure
- *  silhouette, which is worth paying for on the topmost line of the building
- *  against the sky, and nothing at all below detail 2. */
-function ridgeRoll(b, R) {
-  const line = R.slopes[0].top
-  const t = 0.14
-  const path = (u) => {
-    const p = polyAt(line, u)
-    return [p[0], p[1] - t * 0.2, p[2]]
-  }
-  member2(b, path(0), path(1), {
-    hu: t, hv: t * 0.85, seed: R.seed * 7 + 3, sides: 5, round: 0.85, jitter: 0.1,
-    layer: R.layer, color: R.tint, uAlongAxis: false, path, segments: 2,
-  })
 }
 
 /**
@@ -435,6 +520,13 @@ export function planGableRoof(o) {
     ridgeY, eave, run: runHalf + oh, alongHalf: alongHalf + Math.max(vLo, vHi),
     heightAt: (x, z) =>
       slopes[(ridgeAxis === 'x' ? z - cz : x - cx) >= 0 ? 0 : 1].heightAt(x, z),
+    // Both slopes, because a gable-end wall walks up one of them and down the
+    // other and the ridge between them is the sharpest fold on the building.
+    breaksAlong: (x0, z0, x1, z1) => {
+      const out = []
+      for (const s of slopes) s.breaksAlong(x0, z0, x1, z1, out)
+      return out
+    },
   }
 }
 
@@ -482,13 +574,25 @@ export function planLeanRoof(o) {
     kind: 'lean', slopes: [slope], color, tint, layer, fringe: true, detail, seed, k: kk,
     eave, run: runNominal + oh, highY, runHalf, alongHalf, axis, sign, thick: 0,
     heightAt: (x, z) => slope.heightAt(x, z),
+    breaksAlong: (x0, z0, x1, z1) => {
+      const out = []
+      slope.breaksAlong(x0, z0, x1, z1, out)
+      return out
+    },
   }
 }
 
-/** Draw a planned roof. Sheets first, then the ridge roll, then the skirt. */
+/**
+ * Draw a planned roof: the sheets, then the skirt hanging off their eaves.
+ *
+ * There is no ridge capping. There was -- a swept bolster along the top line --
+ * and it went because it was never load-bearing: the two sheets share their
+ * ridge points bit for bit, so it hid no seam, and 20 triangles on the one line
+ * of the building that is already a hard silhouette against the sky is the most
+ * expensive place in the kit to buy an edge that is legible without it.
+ */
 export function drawRoof(b, R) {
   for (const s of R.slopes) s.draw(b, R.color)
-  if (R.kind === 'gable' && R.detail >= 2) ridgeRoll(b, R)
   // The fringe is kept at detail 1, unlike every other ornament, precisely
   // BECAUSE it is silhouette: dropping it at the LOD1 boundary would pop the
   // outline of the roof at 60 m.
@@ -510,6 +614,30 @@ export function leanToRoof2(b, o) {
 // ---------------------------------------------------------------------------
 // Walls
 // ---------------------------------------------------------------------------
+
+/**
+ * How high a solid of radius `r` standing at (x, z) may go and still be UNDER
+ * the covering, allowing `gap` for the warp.
+ *
+ * The distinction the naive answer misses is that a post is not a line. Ask the
+ * roof how high it is over the post's AXIS and cap the post there and the post
+ * is still through the roof, because a roof over a corner is falling away in
+ * both directions at once: at 12 cm out along a 40 degree pitch the covering is
+ * already 10 cm lower than it was over the middle of the post. So the question
+ * is asked at the four extremes of the section and the LOWEST answer wins, which
+ * is the near arris -- the one that would come through first.
+ *
+ * The post may still be cut off well below where it wants to end. That is
+ * correct and is the whole instruction: a beam may touch the roof plane, meet
+ * it, be swallowed by it, and never cross it.
+ */
+export function clearUnder(topAt, x, z, r, gap = 0.03) {
+  let y = topAt(x, z)
+  for (const [ox, oz] of [[r, 0], [-r, 0], [0, r], [0, -r]]) {
+    y = Math.min(y, topAt(x + ox, z + oz))
+  }
+  return y - gap
+}
 
 /**
  * A wall, split along its length so the warp field has something to belly out,
@@ -542,7 +670,7 @@ export function leanToRoof2(b, o) {
  */
 export function wall2(b, {
   p0, p1, y0, y1, style, seed = 0, rough = 0, sillY, detail = 2,
-  tint = TINT.timber, topAt = null, topCols = 0, k = FLAT,
+  tint = TINT.timber, topAt = null, topCols = 0, topBreaks = null, k = FLAT,
 }) {
   const dx = p1[0] - p0[0]
   const dz = p1[1] - p0[1]
@@ -554,28 +682,76 @@ export function wall2(b, {
   const nz = ux
 
   const A = (t, y) => [p0[0] + ux * len * t, y, p0[1] + uz * len * t]
-  const cols = Math.max(
+
+  // WHERE THE WALL IS SPLIT ALONG ITS LENGTH. Two independent demands, merged.
+  //
+  // The warp wants columns at roughly even spacing and does not care where. The
+  // covering wants a column boundary at every fold in the roof it crosses, and
+  // cares exactly: between two folds the top edge is a chord of a plane, which
+  // is the covering itself, and either side of one it is a chord of a crease,
+  // which is a slot or a stab. `topBreaks` is what the roof answers with. It
+  // costs 4 triangles a column and the whole point of the roof being a sheet was
+  // to be able to afford them here.
+  //
+  // `topCols` remains the FLOOR, not the answer: a lean-to whose wall crosses no
+  // fold at all still wants a couple of seams for the field to work with.
+  const evenCols = Math.max(
     detail >= 2 ? Math.max(1, Math.min(4, Math.round(len / 2.6))) : 1,
     topAt ? topCols : 0,
   )
+  const wanted = []
+  for (let i = 1; i < evenCols; i++) wanted.push(i / evenCols)
+  if (topAt && topBreaks && detail >= 2) {
+    const q0 = A(0, 0)
+    const q1 = A(1, 0)
+    wanted.push(...topBreaks(q0[0], q0[2], q1[0], q1[2]))
+  }
+  wanted.sort((a, c) => a - c)
 
-  // How far under the covering the wall stops. It is not zero because heightAt()
-  // is solved by two fixed-point sweeps rather than exactly (see slopeSurface),
-  // and because the warp field is then applied to both and moves them by slightly
-  // different amounts -- the roof's vertices and the wall's are at different
-  // places, and the field is smooth but not constant. 4 cm is comfortably more
-  // than either residual. It costs nothing to be generous here: the covering now
+  // How far under the covering the wall stops. Not zero, because the warp field
+  // is applied to the roof's vertices and to the wall's separately: they start
+  // life at the same place but the roof's are metres away at the corners of the
+  // triangle, and a field that is smooth is not a field that is linear, so the
+  // covering ends up a centimetre or so off the plane its corners promised. That
+  // residual, and nothing else, is what this is for now that the top edge is
+  // sampled on the folds. It costs nothing to be a little generous: the covering
   // oversails on all four sides AND is double-sided, so even a wall that did poke
   // through would show wall against roof rather than a hole into the building.
-  const TUCK = 0.04
-  const TOP = []
-  for (let i = 0; i <= cols; i++) {
-    if (!topAt) { TOP.push(y1); continue }
-    const q = A(i / cols, 0)
-    TOP.push(Math.max(y0 + 0.05, topAt(q[0], q[2]) - TUCK))
+  const TUCK = 0.025
+  const heightOf = (u) => {
+    if (!topAt) return y1
+    const q = A(u, 0)
+    return Math.max(y0 + 0.05, topAt(q[0], q[2]) - TUCK)
   }
+
+  // Two boundaries closer than 12 cm are a sliver: four triangles for a column
+  // nobody can see the width of. They happen constantly -- at the ridge, where
+  // both slopes fold at the same place and each brings a diagonal near it -- so
+  // the near ones collapse. WHICH ONE SURVIVES IS THE WHOLE POINT: keep the
+  // HIGHEST, because a dropped fold is a chord cut straight across whatever it
+  // was the top of, and the fold you cannot afford to lose is always the apex.
+  // First-wins loses the ridge to a diagonal 10 cm short of it and slices the
+  // peak off the gable.
+  const U = [0]
+  const TOP = [heightOf(0)]
+  const minStep = Math.min(0.12, len * 0.06) / len
+  for (const u of wanted) {
+    if (u <= minStep || u >= 1 - minStep) continue
+    const y = heightOf(u)
+    const last = U.length - 1
+    if (u - U[last] >= minStep) { U.push(u); TOP.push(y); continue }
+    if (last > 0 && y > TOP[last]) { U[last] = u; TOP[last] = y }
+  }
+  U.push(1)
+  TOP.push(heightOf(1))
+  const cols = U.length - 1
   const topMin = Math.min(...TOP)
   const level = (y) => new Array(cols + 1).fill(y)
+  // Where a post standing at a corner of this wall has to stop. Without a
+  // covering to duck under it is the wall's own top edge, which is flat.
+  const postTop = (x, z, r) => (topAt
+    ? Math.max(y0 + 0.3, clearUnder(topAt, x, z, r * 1.4))
+    : y1 + 0.04)
 
   // Double-sided, and NOT because anyone is meant to see the inside face: a wall
   // is one surface because openings are never cut out of it, and the back face is
@@ -583,8 +759,8 @@ export function wall2(b, {
   // leaves none, and that holds per column.
   const face = (lo, hi, layer, color) => {
     for (let i = 0; i < cols; i++) {
-      b.quad(A(i / cols, lo[i]), A((i + 1) / cols, lo[i + 1]),
-        A((i + 1) / cols, hi[i + 1]), A(i / cols, hi[i]), {
+      b.quad(A(U[i], lo[i]), A(U[i + 1], lo[i + 1]),
+        A(U[i + 1], hi[i + 1]), A(U[i], hi[i]), {
         layer, vWorldY: true, color, double: true, origin: A(0, y0),
       })
     }
@@ -656,11 +832,14 @@ export function wall2(b, {
     // building and a dead-straight one beside a bellied wall is the thing that
     // gives the whole trick away. `bow` is passed explicitly -- member2 defaults
     // it to nothing, and these posts are exactly what the parameter was for.
+    // Six-sided rather than the default five-to-seven: 20 triangles, and on a
+    // 23 cm post the seventh facet is not a thing anyone can see.
+    const hu = 0.115
     for (const t of [0, 1]) {
       const px = p0[0] + dx * t
       const pz = p0[1] + dz * t
-      member2(b, [px, y0, pz], [px, (t ? TOP[cols] : TOP[0]) + 0.04, pz], {
-        hu: 0.115, seed: rough * 17 + 30 + t, round: 0.5, segments: 2,
+      member2(b, [px, y0, pz], [px, postTop(px, pz, hu), pz], {
+        hu, sides: 6, seed: rough * 17 + 30 + t, round: 0.5, segments: 2,
         bow: k.bow,
         layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true,
       })
@@ -732,8 +911,8 @@ export function wall2(b, {
  * member, where a bow would be a rounding error with a price tag.
  *
  * `path` overrides the straight line entirely: hand it t -> [x, y, z] and the
- * member is swept along whatever curve that describes. The ridge roll uses it to
- * follow a ridge that now droops.
+ * member is swept along whatever curve that describes -- a timber following a
+ * line the field has already bent, rather than one drawn straight and bent after.
  *
  * WHY `bow` DID NOTHING until now, since it is a good illustration of how a
  * parameter can be live, threaded, documented and still inert. Two independent
@@ -895,14 +1074,21 @@ function fitUV(layer, w, h) {
  */
 export function windowUnit2(
   b,
-  { x, z, y0, nx, nz, width = 0.7, height = 0.85, shutters = false, seed = 0, detail = 2, k = FLAT }
+  {
+    x, z, y0, nx, nz, width = 0.7, height = 0.85, shutters = false,
+    seed = 0, detail = 2, k = FLAT, topAt = null,
+  }
 ) {
   const tx = -nz
   const tz = nx
   const hw = width / 2
   const depth = 0.14
   const frame = 0.07
-  const p = (a, v, out) => [x + tx * a + nx * out, y0 + v, z + tz * a + nz * out]
+  // Mutable, because the covering may yet push this window down the wall. Every
+  // point of the unit is placed through here, so moving it moves all of them
+  // together and the window arrives as the rigid figure it was drawn as.
+  let baseY = y0
+  const p = (a, v, out) => [x + tx * a + nx * out, baseY + v, z + tz * a + nz * out]
 
   const sk = detail >= 2 ? k.skew : 0
   // 1.6 because the whole allowance now goes into one term instead of being spent
@@ -926,6 +1112,38 @@ export function windowUnit2(
 
   const ow = hw + frame
   const leafW = width * 0.52
+
+  // DUCKING UNDER THE COVERING. A window is placed against a wall by the plan,
+  // which knows the wall's nominal height and nothing about a roof that sags 30
+  // cm between its supports, flares its eave out past the wall and tips its
+  // ridge sideways. High on a gable end that is the difference between a window
+  // and a window with a roof through it -- and a frame standing 16 cm proud of
+  // the wall crosses the covering well before its own head does, so the height
+  // is asked for at the OUTER face of the shutters, not at the wall plane.
+  //
+  // Move the whole unit down rather than trimming it: a window is a rigid figure
+  // (that is the rule the transform above exists to keep) and a trimmed one is a
+  // window with a bite out of it. If it cannot be got under the roof by less
+  // than three quarters of its own height, it is not a window on that wall at
+  // all and it is dropped -- better a blank gable than a sill at knee height.
+  if (topAt) {
+    const aMax = shutters ? ow + leafW : ow
+    const outMax = shutters ? depth + 0.05 + k.splay : depth + 0.02
+    const vTop = height + frame
+    let vMax = vTop
+    for (const s of [-1, 1]) vMax = Math.max(vMax, W(s * aMax, vTop)[1])
+    let roofY = Infinity
+    for (const s of [-1, 0, 1]) {
+      for (const out of [0, outMax]) {
+        roofY = Math.min(roofY, topAt(x + tx * s * aMax + nx * out, z + tz * s * aMax + nz * out))
+      }
+    }
+    const drop = baseY + vMax - (roofY - 0.03)
+    if (drop > 0) {
+      if (drop > height * 0.75) return
+      baseY -= drop
+    }
+  }
 
   if (detail <= 0) {
     // LOD2 KEEPS ITS WINDOWS. At the range this tier is drawn at, a cottage is a

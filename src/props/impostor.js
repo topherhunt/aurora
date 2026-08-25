@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { TEX_SIZE } from '../textures.js'
-import { createImpostorBakeMaterial } from '../material.js'
+import { createImpostorBakeMaterial, CARD_UP_MARK } from '../material.js'
 
 // ---------------------------------------------------------------------------
 // Prop impostors: a photograph of the LOD0 mesh, stood up as crossed planes.
@@ -77,6 +77,31 @@ const DILATE_PASSES = 2
 // MSAA so that the result does not depend on what the driver decided to do.
 const SUPERSAMPLE = 4
 
+// The canopy fan, in the units the header describes. 0.55 puts the top corners
+// at normal.y 0.876 and the skirt corners at 0.633 -- a lean of about 29 and 51
+// degrees off vertical, so the two edges of a quad are roughly 80 degrees apart
+// in normal. That is enough spread to read as a round crown under a low sun and
+// well short of the 90 degrees the old per-plane normals had between NEIGHBOURS.
+const CANOPY_SPREAD = 0.55
+const CANOPY_SKIRT_UP = 0.45
+
+// The bake rig's two intensities, in the same units clock.js's palette uses --
+// a daylight row there is a 2.1 sun against a 0.85 hemisphere, and these are
+// deliberately a weaker, flatter version of that. They have to be, because the
+// card gets the palette's own lighting multiplied on top at draw time: what is
+// wanted from the bake is the part the card's four normals cannot express (the
+// crown's interior and underside), not a second opinion about which way the sun
+// is. Aim: an exposed top leaf bakes near 0.8 of albedo, a leaf facing the
+// camera near 0.36, one facing straight down near 0.02.
+//
+// bakeImpostor logs the measured mean over the covered texels of every layer it
+// writes, which is the number to tune these against -- the card is meant to sit
+// at roughly a third of raw leaf albedo, because that is what a real canopy at
+// distance does and looking lighter than the grass underneath was the symptom
+// that got the flat bake replaced.
+const BAKE_KEY = 1.5
+const BAKE_SKY = 1.0
+
 /**
  * Render `geometry` side-on into one layer of the texture array, in place.
  *
@@ -138,6 +163,28 @@ export function bakeImpostor(renderer, geometry, texArray, layer, { width, heigh
   const scene = new THREE.Scene()
   scene.add(mesh)
 
+  // THE BAKE RIG. What it is for and why it is shaped this way is in the note
+  // on createImpostorBakeMaterial; the numbers are here, next to the camera
+  // they are aimed relative to.
+  //
+  // The key sits at the CAMERA'S OWN AZIMUTH and well above it. Anywhere else
+  // and the photograph gets a left-right terminator burned into it, which is
+  // fatal for a picture that will be seen from every direction on the compass
+  // -- half the time the baked bright side would be facing away from the real
+  // sun. From the camera's azimuth there is no left-right term at all: the
+  // gradient runs top to bottom, which is the one axis a card cannot fake and
+  // the one the real sun does not move along much at 65 N.
+  //
+  // The hemisphere is doing the heavier job of the two despite the lower
+  // number. Its ground colour is nearly black, so every leaf facing down or
+  // inward loses almost all of its light, and that is the interior of the crown
+  // -- the shadowed mass that makes a distant canopy read as a third of leaf
+  // albedo instead of as a flat green cutout.
+  const key = new THREE.DirectionalLight(0xffffff, BAKE_KEY)
+  key.position.set(Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
+  scene.add(key)
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x0e0f12, BAKE_SKY))
+
   const big = TEX_SIZE * SUPERSAMPLE
   const target = new THREE.WebGLRenderTarget(big, big, {
     format: THREE.RGBAFormat,
@@ -179,7 +226,31 @@ export function bakeImpostor(renderer, geometry, texArray, layer, { width, heigh
   texArray.image.data.set(pixels, layer * stride)
   texArray.needsUpdate = true
 
-  return { width: cardW, height: cardH }
+  return { width: cardW, height: cardH, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
+}
+
+// Mean luminance over the texels the prop actually COVERS, 0..1 in sRGB, and
+// the coverage fraction beside it. This is the one number that says whether the
+// bake rig is aimed right -- see BAKE_KEY. Averaging over the whole layer would
+// not: a card is mostly empty, and a picture that got darker would be
+// indistinguishable from one that got thinner. `dilate` has already pushed
+// colour into the transparent margin by the time this runs, which is exactly
+// why the alpha test is here and not a check for a non-black texel.
+function coveredLuma(px) {
+  let sum = 0
+  let n = 0
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i + 3] < 128) continue
+    sum += (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255
+    n++
+  }
+  return n > 0 ? sum / n : 0
+}
+
+function coverage(px) {
+  let n = 0
+  for (let i = 3; i < px.length; i += 4) if (px[i] >= 128) n++
+  return n / (px.length / 4)
 }
 
 // Box-filter `big` x `big` RGBA down to TEX_SIZE, resolving colour the only way
@@ -320,23 +391,54 @@ function dilate(px) {
  * fails on is a fern, which is a ROSETTE and therefore close to its own mirror
  * image anyway. A pine would notice; a plant with radial symmetry does not.
  *
- * `upNormal` REPLACES THE PER-PLANE NORMAL WITH A VERTICAL ONE, and it exists
- * for exactly one caller: a single-plane card drawn as a camera-facing
- * billboard (see billboardVertex in material.js). Everywhere else it is wrong
- * and the paragraph below is why. On a billboard the horizontal normal is worse
- * than wrong, it is UNSTABLE: the quad's facing tracks the camera but a normal
- * left in object space does not, so material.js's back-facing ramp swings as
- * the player turns on the spot and the whole bed twinkles. A vertical normal is
- * both steady and closer to true, because a fern bed seen from 14 m out is a
- * ground surface and is lit like one.
+ * NORMALS COME IN THREE KINDS, and which one a card gets is the single biggest
+ * decision about how it looks. material.js keeps whichever one is authored here
+ * even when you are looking at the back of a plane -- it undoes three's
+ * double-sided flip and applies a gentle back-facing ramp instead, which on a
+ * canopy is its shaded side.
  *
- * NORMALS ARE OUTWARD AND HORIZONTAL, one per plane. The bake is unlit albedo
- * (see createImpostorBakeMaterial), so all of the shading lives here, and this
- * is the same normal the LOD0 canopy carries -- tree.js's canopy pass gives
- * every leaf the crown shell's outward normal. The result is that a tree does
- * not change brightness when it swaps tiers. material.js keeps that authored
- * normal when you are looking at the back of a plane and applies its gentle
- * back-facing ramp instead, which here is the shaded side of a canopy.
+ *   PLANE (the default). One constant outward horizontal normal per plane. It
+ *   is the right answer for a SOLID whose planes really are facing different
+ *   ways -- a rock -- and the wrong one for a canopy, because three planes 60
+ *   degrees apart get three different constant values of dot(N, L). Under a low
+ *   sun that is one plane fully lit, one at half and one clamped to black,
+ *   meeting along the trunk axis with nothing in between: three flat slabs and
+ *   a hard line down the middle of the tree. It is the most obviously fake
+ *   thing a crossed card does.
+ *
+ *   CANOPY. Mostly UP, fanning outward from the trunk axis. A crown is a blob,
+ *   and a blob's normals point away from its middle, so the top corners lean
+ *   out and up and the skirt corners lean out and down. Two things fall out of
+ *   that. The average normal over each plane is vertical, which is the SAME
+ *   average for all three planes -- so the seam stops being a step in
+ *   brightness, because there is no longer a per-plane brightness to step
+ *   between. And what replaces it is a gradient ACROSS each quad, bright edge
+ *   to dark edge, which is what a lit sphere actually looks like. The variation
+ *   did not go away; it moved from between the planes to inside them, which is
+ *   where the eye reads it as roundness instead of as geometry.
+ *
+ *   UP (`upNormal`). Exactly (0, 1, 0), for a single-plane card drawn as a
+ *   camera-facing billboard (see billboardVertex in material.js). On a
+ *   billboard a horizontal normal is worse than wrong, it is UNSTABLE: the
+ *   quad's facing tracks the camera but a normal left in object space does not,
+ *   so the back-facing ramp swings as the player turns on the spot and the
+ *   whole bed twinkles. A vertical normal is steady and, for a fern bed seen
+ *   from 14 m out, closer to true anyway -- that bed IS a ground surface.
+ *
+ * A canopy fan would work on a billboard too, and correctly: the card's spin
+ * tracks the view, so the fan would track it as well and reproduce a sphere's
+ * terminator rather than swinging like a plane normal would. It is NOT done,
+ * because `normal.y` is the only thing separating the two card tiers that share
+ * one baked layer -- see CARD_UP_MARK below -- and because with the bake now
+ * lit (createImpostorBakeMaterial) the billboard gets its roundness from the
+ * photograph instead. If the tiers are ever given separate layers, revisit.
+ *
+ * THE TWO NUMBERS. CANOPY_SPREAD is how far the fan leans off vertical: 0 is
+ * `upNormal` and 1 is a 45-degree lean at the top corners. CANOPY_SKIRT_UP is
+ * how much of that vertical component survives at the bottom of the card, so
+ * below 1 the skirt tips outward and darkens, which is what the underside of a
+ * canopy does. Both are capped by CARD_UP_MARK, and buildImpostorCard asserts
+ * it rather than trusting it.
  *
  * ONE THING THIS DOES NOT SOLVE: mip coverage. The impostor's alpha is binary
  * out of the bake, and each mip averages it, so a canopy that is half holes
@@ -346,7 +448,16 @@ function dilate(px) {
  * until it discards the same fraction the top level does), not a lower
  * alphaTest, which is shared by every prop in the batch.
  */
-export function buildImpostorCard(width, height, layer, planes = 3, { upNormal = false } = {}) {
+export function buildImpostorCard(
+  width,
+  height,
+  layer,
+  planes = 3,
+  { upNormal = false, canopy = false } = {}
+) {
+  if (upNormal && canopy) {
+    throw new Error('buildImpostorCard: upNormal and canopy are two answers to the same question')
+  }
   const n = Math.max(1, Math.round(planes))
   const positions = []
   const normals = []
@@ -375,12 +486,39 @@ export function buildImpostorCard(width, height, layer, planes = 3, { upNormal =
     for (const [x, y, u0, v] of corners) {
       const u = flip ? 1 - u0 : u0
       positions.push(dx * x, y, dz * x)
-      if (upNormal) normals.push(0, 1, 0)
-      else normals.push(nx, 0, nz)
+      if (upNormal) {
+        normals.push(0, 1, 0)
+      } else if (canopy) {
+        // Outward and UP, fanning from the trunk axis -- see the canopy note.
+        // The horizontal half points away from the axis along this plane's own
+        // direction, so the two vertical edges of a quad lean opposite ways and
+        // the shading sweeps across the card instead of stepping at its seam.
+        const s = x < 0 ? -CANOPY_SPREAD : CANOPY_SPREAD
+        const ny = CANOPY_SKIRT_UP + (1 - CANOPY_SKIRT_UP) * (y / height)
+        const len = Math.hypot(s, ny)
+        normals.push((dx * s) / len, ny / len, (dz * s) / len)
+      } else {
+        normals.push(nx, 0, nz)
+      }
       uvs.push(u, v)
       layers.push(layer)
     }
     indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  }
+
+  // THE BILLBOARD MARKER IS A CONTRACT, so check it rather than trusting it.
+  // material.js's billboardVertex decides whether to spin a quad by testing
+  // `normal.y > CARD_UP_MARK`, and a canopy normal that drifted over that line
+  // would set a fixed three-plane cross rotating about its own trunk. Assert
+  // the two cases stay on their own sides of it, here, where the numbers are.
+  const wantUp = upNormal
+  for (let k = 1; k < normals.length; k += 3) {
+    if (wantUp !== normals[k] > CARD_UP_MARK) {
+      throw new Error(
+        `buildImpostorCard: normal.y ${normals[k].toFixed(3)} is on the wrong side of the ` +
+          `${CARD_UP_MARK} billboard marker for a card with upNormal=${upNormal}`
+      )
+    }
   }
 
   const geo = new THREE.BufferGeometry()
@@ -392,7 +530,7 @@ export function buildImpostorCard(width, height, layer, planes = 3, { upNormal =
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
   geo.userData.impostor = {
-    width, height, planes: n, layer, triangles: n * 2, mirrored: n > 1, upNormal,
+    width, height, planes: n, layer, triangles: n * 2, mirrored: n > 1, upNormal, canopy,
   }
   return geo
 }

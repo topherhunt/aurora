@@ -34,7 +34,7 @@
 //   radius, the tuft pops at the rim instead of fading. Both are one line in
 //   _growTile and both are silent.
 //
-//   THE VARIATION STOPS BEING VARIED. The brief is 0.25 m to 1.5 m and a tint
+//   THE VARIATION STOPS BEING VARIED. The range is 0.5 m to 1.5 m and a tint
 //   that moves. A stuck random, a clamp in the wrong place or a tint applied in
 //   sRGB instead of linear all produce a carpet that renders perfectly and
 //   looks like one cloned plant.
@@ -48,12 +48,14 @@ import * as THREE from 'three'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_TIERS, GRASS_BASE, TUFT_TWIST,
+  buildGrassStripBank, stripTiles, STRIP_BASE,
 } from '../src/props/grass-bank.js'
 import { Grass, GRASS_TUNING } from '../src/v2/render/grass.js'
 import {
   LAYER, LAYER_COUNT, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, buildTextureArray,
   shapeImageLayer, GRASS_FRAY_TUNING,
 } from '../src/textures.js'
+import { stripCoverage, getStripTiling } from '../src/material.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { readPng } from '../tools/props/png.mjs'
 
@@ -64,7 +66,8 @@ const check = (ok, label, detail = '') => {
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol
 
-const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, VEIL_PHASES, TILE, HEIGHT, PLACEMENT } = GRASS_TUNING
+const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, VEIL_PHASES, TILE, HEIGHT, PLACEMENT,
+  STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK } = GRASS_TUNING
 
 // --- 1. the bank ------------------------------------------------------------
 
@@ -293,12 +296,17 @@ check(png.width === TEX_SIZE && png.height === TEX_SIZE, `the tuft PNG is ${TEX_
 //   IT COLLAPSES BACK TO A LINE. The fray is only a fray because the columns
 //   are cut at DIFFERENT heights; drop the rank-normalisation in frayColumnCut
 //   and the cut heights pile up around their mean, which is a slightly fuzzy
-//   straight edge -- measured, it halves the spread of the foot and puts 49 of
-//   the 58 ground-row columns back on the ground instead of 31.
+//   straight edge -- measured, the foot goes from 12 distinct heights and 4.1
+//   texels of spread to 5 and 1.4, and 41 of the 58 ground-row columns go back
+//   on the ground instead of 33.
 //
 //   IT STOPS PREFERRING THE DARK. Eating the shadowed mass at the base is the
 //   point -- a fray that took the lit blades instead would thin the tuft
-//   without touching the line.
+//   without touching the line. Gated twice: once over the whole band, and once
+//   at the ground row on its own, because that row is the line the player sees
+//   and it is the row where a picture-wide brightness window fails (the band
+//   darkens as it descends, so nothing at the bottom clears a global threshold
+//   and the fray shortens the card rather than opening it -- see GRASS_FRAY.pct).
 
 console.log('\n-- the frayed foot --')
 
@@ -340,10 +348,10 @@ console.log('\n-- the frayed foot --')
   // The VISIBLE foot: the lowest surviving row of each column that had grass at
   // the ground row, clamped there because anything under it is buried. Before
   // the fray every one of those columns reaches the ground and the foot is a row
-  // of one number -- which is the line this whole section exists to break -- so
-  // what is gated is how many DIFFERENT heights the foot ends at. A count rather
-  // than a variance because the fray only has about ten texels of visible band
-  // to work in, so the spread is small even when the picture is right.
+  // of one number -- which is the line this whole section exists to break. Both
+  // a COUNT of distinct heights and a spread, because they fail differently: a
+  // few columns cut very deep would pass a variance while leaving the hem, and
+  // many columns cut one texel apart would pass a count while doing nothing.
   const foot = []
   for (let x = 0; x < N; x++) {
     if (!alpha(png.data, x, groundRow)) continue
@@ -354,7 +362,7 @@ console.log('\n-- the frayed foot --')
   const levels = new Set(foot).size
   const mean = foot.reduce((a, b) => a + b, 0) / foot.length
   const spread = Math.sqrt(foot.reduce((a, b) => a + (b - mean) ** 2, 0) / foot.length)
-  check(levels >= 4, 'the foot ends at a spread of heights, not one',
+  check(levels >= 8 && spread > 2.5, 'the foot ends at a spread of heights, not one',
     `${levels} levels over ${foot.length} columns, ${spread.toFixed(2)} texels of spread`)
 
   // Darkest first. Compared inside the band only, so this measures the fray's
@@ -373,6 +381,23 @@ console.log('\n-- the frayed foot --')
   check(eatenN > 0 && eatenSum / eatenN < keptSum / keptN - 5,
     'what it eats is darker than what it leaves',
     `eaten ${(eatenSum / eatenN).toFixed(0)}/255 vs kept ${(keptSum / keptN).toFixed(0)}/255`)
+
+  // And the same question asked of the ONE row that decides the look. What has
+  // to survive at the ground line is the lit blades, standing on it; what has to
+  // go is the shadow between them. A fray that took these in the other order
+  // would still pass the band-wide test above by eating dark texels higher up.
+  let gEaten = 0
+  let gEatenN = 0
+  let gKept = 0
+  let gKeptN = 0
+  for (let x = 0; x < N; x++) {
+    if (!alpha(png.data, x, groundRow)) continue
+    if (alpha(frayed, x, groundRow)) { gKept += lum(png.data, x, groundRow); gKeptN++ }
+    else { gEaten += lum(png.data, x, groundRow); gEatenN++ }
+  }
+  check(gEatenN > 0 && gKeptN > 0 && gEaten / gEatenN < gKept / gKeptN - 5,
+    'at the ground line it is the lit blades that keep their footing',
+    `kept ${(gKept / gKeptN).toFixed(0)}/255 vs eaten ${(gEaten / gEatenN).toFixed(0)}/255`)
 
   // Mip generation averages RGB without regard to alpha, so an eaten texel that
   // kept its dark colour bleeds the removed line back one mip down.
@@ -393,6 +418,9 @@ console.log('\n-- scatter --')
 
 const flat = {
   heightAndSlopeAt: () => ({ h: 60, tan: 0 }),
+  // Strips sample their two ends through this to roll onto the slope; on flat
+  // ground it is the same 60 the tufts get.
+  heightAt: () => 60,
   snowLineAt: () => 9999,
 }
 const dry = { isSubmerged: () => false }
@@ -847,6 +875,189 @@ console.log('\n-- bake --')
 check(typeof bakeGrassImpostor === 'function', 'the bake is exported')
 check(GRASS_TIERS[0].planes === 3, 'the bake subject is the 3-plane tier', `${GRASS_TIERS[0].planes} planes`)
 check(bank.cardLayer === LAYER.IMPOSTOR_GRASS, 'the bake target is the card layer')
+
+// --- 9. the strip experiment ------------------------------------------------
+//
+// `style: 'strips'` swaps the tuft ladder for one flat card, metres wide,
+// drawing the same cutout several times across itself. What is gated here is
+// the ARITHMETIC THAT DECIDES WHETHER IT IS WORTH ANYTHING, because it is easy
+// to state a saving from a comparison that is not fair and every one of these
+// numbers is a way of not doing that:
+//
+//   * against the BILLBOARD tier, not the 3-plane one. The card tier is ~83% of
+//     the drawn instances (section 6 measures it), so it is the only baseline a
+//     saving can honestly be quoted against.
+//   * at MATCHED COVERAGE, not at matched instance counts. A thinner bed is a
+//     saving anyone can have for free by turning DENSITY down.
+//   * at 0.64 of the strip's width, not its full width. A billboard always
+//     presents its whole face; a fixed card at a random yaw presents
+//     E|sin t| = 2/pi of it, and forgetting that factor overstates the strip by
+//     more than half.
+//
+// If the measured factor ever drops toward 1 -- which is what would happen if a
+// strip were segmented, or if stripKeep were turned down as though it were a
+// performance knob -- the experiment has stopped being one and this says so.
+
+console.log('\n-- strips --')
+
+const stripBank = buildGrassStripBank()
+check(stripBank.tiers.length === 1, 'a strip has no ladder to climb', `${stripBank.tiers.length} tier`)
+check(stripBank.tiers[0].triangles === 2, 'a strip is two triangles', `${stripBank.tiers[0].triangles}`)
+check(!stripBank.tiers[0].billboard && stripBank.cardLayer === LAYER.GRASS_TUFT,
+  'a strip does not spin and wears the tuft itself')
+check(stripBank.tiles === stripTiles(),
+  'the bank tiles as many times as its proportions say', `${stripBank.tiles} copies`)
+// The tile has to be as wide as the strip is tall, or the square tuft picture is
+// drawn stretched. Derived rather than typed, so this is really a gate on
+// STRIP_BASE having been changed without stripTiles() following it.
+check(near(STRIP_BASE.width / stripBank.tiles, STRIP_BASE.height * (GRASS_BASE.width / GRASS_BASE.height), 0.05),
+  'one tile is as wide as the strip is tall, so the cutout is not stretched',
+  `${(STRIP_BASE.width / stripBank.tiles).toFixed(2)} m per tile`)
+
+const stripUv = stripBank.tiers[0].geometry.attributes.uvProj
+let uMax = 0
+for (let i = 0; i < stripUv.count; i++) uMax = Math.max(uMax, stripUv.getX(i))
+check(uMax === stripBank.tiles, 'u runs 0..tiles, which is what makes the repeat draw copies',
+  `u max ${uMax}`)
+stripBank.tiers[0].geometry.dispose()
+
+const strips = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'strips' })
+strips.place(0, 0)
+for (let i = 0; i < VEIL_PHASES; i++) strips.update(0, EYE, 0)
+const ss = strips.stats
+
+// Facing area per triangle, both systems, at their own mean instance height.
+// The tuft's card is the impostor extent (inflated by the bake margin) scaled by
+// height/GRASS_BASE.height in y and its square root in xz; the strip is a
+// rectangle of STRIP_TILES square clumps, so its height is both its dimensions.
+const tuftH = (HEIGHT[0] + HEIGHT[1]) / 2
+const tuftSy = tuftH / GRASS_BASE.height
+const tuftFace = ext.width * Math.sqrt(tuftSy) * ext.height * tuftSy
+const stripH = (STRIP_HEIGHT[0] + STRIP_HEIGHT[1]) / 2
+// A tile is SQUARE, so a strip of n tiles is n x stripH metres of rectangle.
+const stripTileN = (STRIP_TILES[0] + STRIP_TILES[1]) / 2
+// 2/pi is E|sin t| over a uniform yaw: the fraction of its own width a FIXED
+// card shows, averaged over every direction the player can look at it from.
+// stripCoverage() is the other half of the honesty: the mask, the per-tile
+// shrink and the flare all decide how much of that rectangle carries grass, and
+// none of them can be seen from an instance matrix. Leaving it out was worth
+// 60% to the strip, in the strip's favour.
+const stripCover1 = stripCoverage()
+const stripFace = (2 / Math.PI) * stripTileN * stripH * stripH * stripCover1
+const perTri = (face, tri) => face / tri
+const gain = perTri(stripFace, 2) / perTri(tuftFace, 2)
+check(gain > 2.5, 'a strip carries more grass per triangle than the billboard it replaces',
+  `${gain.toFixed(2)}x (${stripFace.toFixed(2)} m2 vs ${tuftFace.toFixed(2)} m2, 2 tri each)`)
+// The shader's own contribution, stated rather than buried in the product
+// above: if this ever climbs back toward 1 it means the mask was turned off AND
+// the shrink was flattened, and the bed is a curtain again.
+check(stripCover1 > 0.35 && stripCover1 < 0.95,
+  'the shader is counted in the strip\'s coverage, not assumed away',
+  `${stripCover1.toFixed(3)} of the card drawn (keep ${getStripTiling().keep}, short ${getStripTiling().short}, flare ${getStripTiling().flare})`)
+
+// ...and the density is set so the two beds put the SAME amount of grass in
+// front of the eye, which is the only setting under which the factor above is a
+// saving rather than a thinning.
+const tuftCover = DENSITY * tuftFace
+const stripCover = STRIP_DENSITY * stripFace
+check(near(stripCover / tuftCover, 1, 0.12), 'the strip bed is tuned to the tuft bed\'s coverage',
+  `${stripCover.toFixed(2)} m2/m2 vs ${tuftCover.toFixed(2)}`)
+
+check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', `${ss.placed} strips`)
+
+// A TILE IS SQUARE AND THERE ARE A WHOLE NUMBER OF THEM. The fragment stage
+// derives its tile count from the instance's own x/y scale ratio (see the strip
+// block in material.js), so these two facts are not properties of the geometry
+// -- they are properties of what _growTile puts in the matrix, and a fractional
+// count draws a sliced clump at the far end while a non-square one draws every
+// clump stretched. The stretched case shipped once and no per-vertex gate here
+// could see it, which is why this measures the matrices.
+{
+  const m = new THREE.Matrix4()
+  const p3 = new THREE.Vector3()
+  const q3 = new THREE.Quaternion()
+  const s3 = new THREE.Vector3()
+  const seen = new Map()
+  let worstFrac = 0
+  let worstAspect = 0
+  let n = 0
+  for (const tile of strips.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      strips.batch.getMatrixAt(tile.ids[k], m)
+      m.decompose(p3, q3, s3)
+      // What the shader will compute: uvProj.x runs 0..stripTiles(), rescaled by
+      // the instance's own aspect.
+      const count = stripBank.tiles * (s3.x / s3.y)
+      worstFrac = Math.max(worstFrac, Math.abs(count - Math.round(count)))
+      // ...and one of those tiles, in metres, against the card's height.
+      const tileW = (STRIP_BASE.width * s3.x) / count
+      const tileH = STRIP_BASE.height * s3.y
+      worstAspect = Math.max(worstAspect, Math.abs(tileW / tileH - 1))
+      seen.set(Math.round(count), (seen.get(Math.round(count)) ?? 0) + 1)
+      n++
+    }
+  }
+  const counts = [...seen.keys()].sort((a, b) => a - b)
+  check(n > 100 && worstFrac < 1e-4, 'every strip is a whole number of clumps long',
+    `worst ${worstFrac.toExponential(1)} of a clump over ${n} strips`)
+  check(worstAspect < 1e-4, 'and every clump is drawn square, not stretched along the strip',
+    `worst aspect error ${worstAspect.toExponential(1)}`)
+  check(counts[0] === STRIP_TILES[0] && counts[counts.length - 1] === STRIP_TILES[1]
+    && counts.length === STRIP_TILES[1] - STRIP_TILES[0] + 1,
+    'and the whole of STRIP_TILES is drawn from, which is where the variety now comes from',
+    counts.map((c) => `${c}:${((seen.get(c) / n) * 100).toFixed(0)}%`).join(' '))
+}
+check(ss.tris === (ss.placed - ss.veiled) * 2, 'every drawn strip costs exactly two triangles',
+  `${(ss.tris / 1000).toFixed(1)}k`)
+// The whole claim, end to end and measured rather than derived: the same
+// hillside, the same coverage, fewer triangles.
+check(ss.tris < st.tris / 2, 'the strip carpet costs less than half the tuft carpet',
+  `${(ss.tris / 1000).toFixed(1)}k vs ${(st.tris / 1000).toFixed(1)}k`)
+
+// A strip spans metres of ground, so it is rolled onto the line between its two
+// ends rather than seated on one sample. On a slope that is the difference
+// between grass lying on the hill and grass standing through it -- at the 38 deg
+// placement limit a 4 m strip's ends differ by 3.1 m.
+const RISE = 0.4 // metres per metre, ~22 degrees
+const ramp = {
+  heightAt: (x) => 60 + x * RISE,
+  heightAndSlopeAt: (x) => ({ h: 60 + x * RISE, tan: RISE }),
+  snowLineAt: () => 9999,
+}
+const tilted = new Grass(new THREE.Scene(), ramp, dry, clear, texArray, { seed: 7, style: 'strips' })
+tilted.place(0, 0)
+{
+  const m = new THREE.Matrix4()
+  const p = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const s = new THREE.Vector3()
+  const axis = new THREE.Vector3()
+  let worst = 0
+  let n = 0
+  for (const tile of tilted.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      tilted.batch.getMatrixAt(id, m)
+      m.decompose(p, q, s)
+      // The strip's own long axis, in world space. Its ends are where the card
+      // actually meets the ground, so that is where the ground has to be.
+      axis.set(1, 0, 0).applyQuaternion(q).multiplyScalar((STRIP_BASE.width * s.x) / 2)
+      for (const sign of [-1, 1]) {
+        const ex = p.x + sign * axis.x
+        const ez = p.z + sign * axis.z
+        const ey = p.y + sign * axis.y
+        worst = Math.max(worst, Math.abs(ey - ramp.heightAt(ex, ez)))
+        n++
+      }
+    }
+  }
+  // The only slack is the sink, which is deliberate and constant.
+  check(n > 100 && worst < STRIP_SINK * (STRIP_HEIGHT[1] / STRIP_BASE.height) + 0.02,
+    'a strip lies on the slope rather than through it',
+    `worst end ${worst.toFixed(3)} m off over ${n} ends at ${(Math.atan(RISE) * 180 / Math.PI).toFixed(0)} deg`)
+}
+tilted.dispose()
+strips.dispose()
 
 grass.dispose()
 

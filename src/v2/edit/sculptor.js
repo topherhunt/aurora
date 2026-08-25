@@ -58,10 +58,19 @@ const SMOOTH = { min: 0.25, max: 8, step: 0.25, def: 3 }
 const UNDO_DEPTH = 32
 
 export class Sculptor {
-  constructor({ heightmap, terrain }) {
+  constructor({ heightmap, field, terrain }) {
     if (!heightmap?.field) throw new Error('Sculptor: heightmap is required -- the brush writes the decoded coarse field in place')
+    if (typeof field?.coarsePatched !== 'function') throw new Error('Sculptor: field must be a V2Height (no coarsePatched)')
     if (typeof terrain?.patchHeight !== 'function') throw new Error('Sculptor: terrain must be a TerrainV2 (no patchHeight)')
     this.heightmap = heightmap
+    // THE IMPORT AND THE FIELD ARE NOT THE SAME OBJECT once the erode relief knob
+    // is on. The brush writes `heightmap`, which is the image the human authored
+    // and the one Save writes back to the PNG; V2Height then derives the surface
+    // the world is actually built on from it. With erosion off the two are
+    // literally the same array and this call is a no-op branch. With erosion on,
+    // skipping it gives a brush that appears to do nothing and, worse, a player
+    // colliding with terrain that is no longer being drawn.
+    this.field = field
     this.terrain = terrain
 
     this.mode = 'raise'
@@ -128,6 +137,13 @@ export class Sculptor {
     this._stroke.moved = Math.max(this._stroke.moved, res.moved)
     this.clamped += res.clamped
     this.dirty = true
+    // SYNCHRONOUSLY, and not folded into the throttled _flush below. The flush
+    // is throttled because the MESH can lag the brush by a frame or two without
+    // anyone noticing; the field the player stands on cannot, because she is
+    // colliding against it this frame. `stamp` writes heightmap.field directly
+    // rather than going through Heightmap.patch, so this is the only hook the
+    // main-thread brush has.
+    this.field.coarsePatched(res.rect)
     this._pending = unionRect(this._pending, res.rect)
     this._flush(false)
   }
@@ -152,6 +168,7 @@ export class Sculptor {
     const entry = this._undo.pop()
     if (!entry) return false
     this.heightmap.patch(entry.rect, entry.data)
+    this.field.coarsePatched(entry.rect)
     this.terrain.patchHeight(entry.rect, entry.data, rectToWorld(this.heightmap, entry.rect))
     // Still dirty: the file on disk does not match this field either way, and an
     // undo back to the imported shape is exactly when Save matters most.

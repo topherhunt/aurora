@@ -45,16 +45,20 @@
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { Heightmap } from '../src/v2/height/heightmap.js'
-import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN } from '../src/v2/height/detail.js'
+import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN, measureSite, measureAngle, roughnessOf } from '../src/v2/height/detail.js'
 import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
+import { RELIEF_KNOBS, RELIEF_DEFAULTS, reliefIsOff } from '../src/v2/height/relief.js'
+import { thermalErode } from '../src/v2/height/erode.js'
+import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
-import { buildChunkV2, shade, CLASS_EPS } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 
 const PNG_PATH = new URL('../public/world/height.png', import.meta.url)
 const JSON_PATH = new URL('../public/world/height.json', import.meta.url)
 const PLAYER_PATH = new URL('../src/player.js', import.meta.url)
+const MESH_PATH = new URL('../src/v2/terrain/chunk-mesh-v2.js', import.meta.url)
 
 // A deterministic scatter of world points, used by every statistical section so
 // two sections' numbers are comparable. Confined to the inner 90% so no probe
@@ -65,6 +69,27 @@ const site = (i) => ({
 })
 
 const pct = (v) => `${(v * 100).toFixed(1)}%`
+
+// THE WALKABILITY INSTRUMENT, at module scope because two sections read it and
+// they have to read it the same way. §4's guarantee is about a rise over one
+// STRIDE, not a derivative: anything shorter averages out under a boot and a
+// real cliff does not. The "walkable fraction" section measures the detail
+// term's cost with it and the "relief knobs" section measures each knob's cost
+// with it, and the whole value of the second number is that it can be held
+// against the first -- same 3000 sites, same stride, same angle from the same
+// golden-angle sequence, so the only thing that differs between two readings is
+// the field handed in.
+const WALK_SITES = 3000
+function walkableFraction(f, maxTan, stride) {
+  let ok = 0
+  for (let i = 0; i < WALK_SITES; i++) {
+    const p = site(i)
+    const a = (i * 2.399963229728653) % (Math.PI * 2)
+    const rise = Math.abs(f(p.x + Math.cos(a) * stride, p.z + Math.sin(a) * stride) - f(p.x, p.z))
+    if (rise / stride <= maxTan) ok++
+  }
+  return ok / WALK_SITES
+}
 
 /**
  * A synthetic heightmap that is exactly a plane of known inclination, for the
@@ -319,19 +344,8 @@ export async function run({ heightmap } = {}) {
     const src = await readFile(PLAYER_PATH, 'utf8')
     const maxTan = Math.tan((Number(/maxSlopeDeg:\s*([0-9.]+)/.exec(src)[1]) * Math.PI) / 180)
     const stride = Number(/stride:\s*([0-9.]+)/.exec(src)[1])
-    const N = 3000
-    const frac = (f) => {
-      let ok = 0
-      for (let i = 0; i < N; i++) {
-        const p = site(i)
-        const a = ((i * 2.399963229728653) % (Math.PI * 2))
-        const rise = Math.abs(f(p.x + Math.cos(a) * stride, p.z + Math.sin(a) * stride) - f(p.x, p.z))
-        if (rise / stride <= maxTan) ok++
-      }
-      return ok / N
-    }
-    const bare = frac((x, z) => hm.sample(x, z))
-    const composed = frac((x, z) => field.heightAt(x, z))
+    const bare = walkableFraction((x, z) => hm.sample(x, z), maxTan, stride)
+    const composed = walkableFraction((x, z) => field.heightAt(x, z), maxTan, stride)
     console.log(`        walkable over a ${stride} m stride: coarse field alone ${pct(bare)}, composed field ${pct(composed)}  (cost ${pct(bare - composed)})`)
     // The detail term is texture, not terrain. If it were closing off the world
     // the fine octaves would need damping -- which is what SLOPE_KNEE/HURST_FINE
@@ -809,6 +823,512 @@ export async function run({ heightmap } = {}) {
     // visible pop-in no matter how the budget is scheduled.
     check(msEmpty < 13.9, 'an unauthored chunk meshes inside a frame', `${msEmpty.toFixed(2)} ms`)
     check(msAuthored < 13.9, 'an authored chunk meshes inside a frame', `${msAuthored.toFixed(2)} ms`)
+  }
+
+  // --- 14. the relief knobs -------------------------------------------------
+  //
+  // §18's opt-in jaggedness set (src/v2/height/relief.js). Last in the file
+  // because it is the only section that builds fields other than the shipped
+  // one -- eight of them, one of which runs a full-field erosion -- and because
+  // its FIRST assertion is what licenses every section above it. Everything from
+  // "detail calibration" down measures a V2Height constructed with no `relief`
+  // argument at all; if that default were not bit-for-bit the field that shipped
+  // before any of this existed, all thirteen sections above would be honest
+  // measurements of a world nobody is playing.
+  //
+  // `crest` IS A MESHER CONCERN AND CANNOT BE ASSERTED FROM HERE, deliberately.
+  // Every other knob reshapes the field, so a field-level gate can see it. crest
+  // does not: it biases a COARSE CHUNK's vertices toward the local maximum so a
+  // distant ridge keeps its edge, which lives in src/v2/terrain/chunk-mesh-v2.js
+  // and is invisible to heightAt by construction. Two consequences worth writing
+  // down rather than discovering:
+  //
+  //   IT KNOWINGLY LIFTS COARSE CHUNKS OFF THE COLLISION FIELD. Every other term
+  //   here is band-limited toward the cell = 0 field, which is what section 4
+  //   ("no LOD swap moves the surface by as much as one cell") measures and what
+  //   makes a coarse chunk a low-pass image of the ground she is standing on. A
+  //   max-bias is not a low-pass; it is a different surface, biased upward. If
+  //   crest were ever defaulted ON, section 4 would fail -- and that would be the
+  //   gate working, not the gate being wrong.
+  //
+  //   THE KNOB CAN GO DEAD WITHOUT ANY FIELD CHECK NOTICING. `relief.crest`
+  //   appears in relief.js, in the HUD, in reliefNeeds (it bakes the exposure
+  //   grid), and on the wire to the workers. All of that can stay wired up while
+  //   the one consumer that makes it mean anything quietly stops existing, and
+  //   every assertion in this file would still pass, because a dead crest and a
+  //   correct crest look identical to heightAt. That is the exact silent failure
+  //   the "every knob moves something" block below exists to catch, and crest is
+  //   out of its reach. So crest is asserted in two halves: it must leave the
+  //   FIELD alone, and the mesher source must be READ AS TEXT and shown to
+  //   consume it -- the same trick the "slope units" section uses on player.js,
+  //   and for the same reason. Importing the mesher (this file already does) only
+  //   proves the module parses; grepping it proves the coupling is still there.
+  console.log('\nrelief knobs')
+  {
+    const t0 = performance.now()
+    const mk = (r, rough) => new V2Height({ heightmap: hm, layers, seed: WORLD_SEED, relief: { ...RELIEF_DEFAULTS, ...r }, rough })
+    const knobOf = (key) => {
+      const k = RELIEF_KNOBS.find((n) => n.key === key)
+      if (!k) throw new Error(`check-v2-field: no relief knob named '${key}'`)
+      return k
+    }
+
+    // ALL KNOBS OFF IS BIT-IDENTICAL.
+    //
+    // `===` and not a tolerance, at every site, because relief.js promises
+    // exactly that: an all-zero relief skips every branch rather than evaluating
+    // a term that happens to come out near zero. A tolerance here would pass a
+    // default that moved the world by a millimetre, and a millimetre of
+    // disagreement between the main thread's field and a worker's is a player
+    // hovering or sinking -- the failure the whole module is shaped around.
+    {
+      const explicit = new V2Height({ heightmap: hm, layers, seed: WORLD_SEED, relief: RELIEF_DEFAULTS })
+      let mismatch = 0
+      let worst = 0
+      for (let i = 0; i < 400; i++) {
+        const p = site(i)
+        const a = field.heightAt(p.x, p.z)
+        const b = explicit.heightAt(p.x, p.z)
+        if (a !== b) { mismatch++; worst = Math.max(worst, Math.abs(a - b)) }
+      }
+      check(reliefIsOff(RELIEF_DEFAULTS), 'RELIEF_DEFAULTS is the off state, by its own predicate', `${RELIEF_KNOBS.length} knobs`)
+      check(mismatch === 0, 'no relief argument and RELIEF_DEFAULTS are the same field, bit for bit', `${mismatch}/400 sites differ, worst ${worst} m`)
+      check(explicit.calibration.rough === cal.rough, 'and the same calibration, bit for bit', `ROUGH ${cal.rough}`)
+      // The copy is what erosion costs; with the knob off there must not be one.
+      // A 4 MB duplicate of the import, resident on three threads, bought by a
+      // default that changes nothing.
+      check(field.ground === field.heightmap, 'with relief off the world is built on the import itself, not a copy', 'no eroded duplicate is allocated')
+      check(explicit.ground === explicit.heightmap, 'and the same through the explicit all-off relief')
+    }
+
+    // EVERY KNOB'S `on` VALUE MOVES SOMETHING.
+    //
+    // The silent failure this exists for: a knob wired to the HUD, validated by
+    // normalizeRelief, plumbed over postMessage to every worker, and read by
+    // nothing. It throws nowhere. The panel scrubs, the world remeshes, the
+    // ground does not change, and the only symptom is a person concluding the
+    // idea was no good.
+    //
+    // The table is ITERATED rather than listed, and every key must have a probe
+    // below, so adding a knob to relief.js fails here until somebody says what
+    // moving it is supposed to move.
+    //
+    //   height    the composed field. Most of them.
+    //   snowline  snowJag, which moves a COLOUR boundary and no geometry.
+    //   mesher    crest. See the banner: asserted as a non-effect on the field.
+    const PROBE = { sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', erode: 'height', talus: 'height', snowJag: 'snowline', crest: 'mesher' }
+    {
+      const unlisted = RELIEF_KNOBS.filter((k) => PROBE[k.key] === undefined).map((k) => k.key)
+      check(unlisted.length === 0, 'every knob in the table has a probe in this gate', unlisted.length ? `no probe for ${unlisted.join(', ')}` : `${RELIEF_KNOBS.length} knobs`)
+
+      // The reference scale for "a meaningful move", measured rather than
+      // written down: the composed field's own curvature roughness at the
+      // calibration's probe lag. A knob that moves the ground by a tenth of what
+      // the ground already does at that scale is doing something a person can
+      // see; one that moves it by less is indistinguishable from a rounding
+      // difference on this import and would be on any other.
+      const floor = roughnessOf((x, z) => field.heightAt(x, z), cal.probe) * 0.1
+
+      for (const knob of RELIEF_KNOBS) {
+        const kind = PROBE[knob.key]
+        // `talus` is the one knob whose `on` IS its `off` -- it is a repose
+        // angle, not an amount, and 42 deg is both the default and what the HUD
+        // toggle restores. Its min is the ablation, and it is a value from the
+        // table rather than a number invented here.
+        const value = knob.on !== knob.off ? knob.on : knob.min
+        // The two dependent knobs are measured against PARENT-ONLY, not against
+        // all-off, or `aniso` would be credited with the crag it is stretching.
+        const parent = knob.needs ? { [knob.needs]: knobOf(knob.needs).on } : {}
+        const base = knob.needs ? mk(parent) : field
+        const on = mk({ ...parent, [knob.key]: value })
+        const against = knob.needs ? `${knob.needs}=${knobOf(knob.needs).on} alone` : 'all off'
+
+        let moved = 0
+        let s2 = 0
+        const N = 400
+        for (let i = 0; i < N; i++) {
+          const p = site(i)
+          const d = kind === 'snowline'
+            ? on.snowLineAt(p.x, p.z) - base.snowLineAt(p.x, p.z)
+            : on.heightAt(p.x, p.z) - base.heightAt(p.x, p.z)
+          if (d !== 0) moved++
+          s2 += d * d
+        }
+        const frac = moved / N
+        const rms = Math.sqrt(s2 / N)
+        const what = kind === 'snowline' ? 'snowLineAt' : 'heightAt'
+        if (kind === 'mesher') {
+          // Not "does nothing" -- "does nothing HERE". The field is not where it
+          // lives, and a crest term that did reach heightAt would be a term the
+          // collision surface carries, which is precisely what it must not be.
+          check(frac === 0, `${knob.key}=${value} leaves the composed field alone -- it is a mesher term`, `${pct(frac)} of sites moved`)
+          // The other half of the assertion, and the only half that can catch the
+          // knob going dead: the mesher has to actually read it. Read as text, not
+          // inferred from the import at the top of this file, which would still
+          // succeed against a mesher that had dropped the term entirely.
+          const meshSrc = await readFile(MESH_PATH, 'utf8')
+          check(
+            /relief\.crest/.test(meshSrc),
+            `${knob.key} is consumed by src/v2/terrain/chunk-mesh-v2.js`,
+            /relief\.crest/.test(meshSrc) ? 'reads field.relief.crest' : 'NO reader -- the knob is wired to nothing and this gate cannot see it move'
+          )
+          // And the one condition that keeps a mesher term out of a collision
+          // question. Section 4's leaf identity survives the crest bias only
+          // because the finest cell sits at or below the low end of the crest
+          // ramp, where smoothstep is exactly 0 and a leaf chunk is still raw
+          // heightAtCell. Lower CREST_CELL_LO under CLASS_EPS and crest starts
+          // biasing the LOD the player collides against, silently.
+          check(
+            CREST_CELL_LO >= CLASS_EPS,
+            `the crest ramp starts at or above the finest cell, so leaf chunks are never crest-biased`,
+            `CREST_CELL_LO ${CREST_CELL_LO} m vs CLASS_EPS ${CLASS_EPS} m`
+          )
+          continue
+        }
+        check(
+          frac > 0.25 && rms > floor,
+          `${knob.key}=${value} moves ${what}, against ${against}`,
+          `${pct(frac)} of sites, rms ${rms.toFixed(4)} m (floor ${floor.toFixed(4)} m)`
+        )
+      }
+    }
+
+    // THE CALIBRATION HOLDS ROUGHNESS CONSTANT.
+    //
+    // calibrateRough measures the unit octave stack THROUGH `sharpen` and
+    // through the exposure gain, on exactly the same footing as SLOPE_BOOST, and
+    // then scales `rough` to hit the same measured deficit. The consequence is
+    // the point of the whole knob set: turning one up REDISTRIBUTES roughness
+    // rather than adding it, so a side-by-side is a comparison of two characters
+    // and not of two amplitudes. Without it every knob is a volume control and
+    // the one that looks best is just the loudest.
+    //
+    // Measured at the calibration's own probe lag, on the COMPOSED field --
+    // which is what the eye and the player's stride actually meet, and which the
+    // import contributes to as well, so this is not the calibration checking its
+    // own arithmetic. The control below is what says so.
+    {
+      const lag = cal.probe
+      const rough = (f) => roughnessOf((x, z) => f.heightAt(x, z), lag)
+      const detailRough = (f) => roughnessOf((x, z) => f.heightAt(x, z) - hm.sample(x, z), lag)
+      const sharpOn = mk({ sharpen: knobOf('sharpen').on })
+      const expoOn = mk({ exposure: knobOf('exposure').on })
+      const rOff = rough(field)
+      const rSharp = rough(sharpOn)
+      const rExpo = rough(expoOn)
+      const image = roughnessOf((x, z) => hm.sample(x, z), lag)
+      console.log(
+        `        curvature roughness at the ${lag.toFixed(3)} m probe lag: all off ${rOff.toFixed(5)} m ` +
+          `(the import supplies ${image.toFixed(5)} m of it, the detail term ${detailRough(field).toFixed(5)} m)`
+      )
+      console.log(
+        `        sharpen=${knobOf('sharpen').on} -> ${rSharp.toFixed(5)} m (${((rSharp / rOff - 1) * 100).toFixed(2)}%),  ` +
+          `exposure=${knobOf('exposure').on} -> ${rExpo.toFixed(5)} m (${((rExpo / rOff - 1) * 100).toFixed(2)}%)`
+      )
+      check(Math.abs(rSharp / rOff - 1) < 0.05, 'sharpen redistributes roughness rather than adding it', `${((rSharp / rOff - 1) * 100).toFixed(2)}% at the probe lag`)
+      check(Math.abs(rExpo / rOff - 1) < 0.05, 'exposure redistributes roughness rather than adding it', `${((rExpo / rOff - 1) * 100).toFixed(2)}% at the probe lag`)
+
+      // AND THE MEASUREMENT CAN SEE THE DIFFERENCE. Both numbers above come out
+      // near zero, which is the right answer and is also what a check that
+      // measures nothing looks like. The control is the same fields with `rough`
+      // PINNED to the all-off value -- i.e. calibrateRough NOT re-measured
+      // through the knob, which is what these two knobs would be if the
+      // `sharpen` and `exposureGain` parameters had never been threaded into it.
+      const pinnedSharp = mk({ sharpen: knobOf('sharpen').on }, cal.rough)
+      const pinnedExpo = mk({ exposure: knobOf('exposure').on }, cal.rough)
+      const dOff = detailRough(field)
+      const dSharp = detailRough(pinnedSharp)
+      const dExpo = detailRough(pinnedExpo)
+      console.log(
+        `        control, rough pinned to the all-off value: detail roughness ${dOff.toFixed(5)} m -> ` +
+          `sharpen ${dSharp.toFixed(5)} m (${((dSharp / dOff - 1) * 100).toFixed(1)}%), exposure ${dExpo.toFixed(5)} m (${((dExpo / dOff - 1) * 100).toFixed(1)}%)`
+      )
+      check(
+        Math.abs(dSharp / dOff - 1) > 0.05 || Math.abs(dExpo / dOff - 1) > 0.05,
+        'and un-calibrated, the same knobs would move it -- so the checks above are not vacuous',
+        `sharpen ${((dSharp / dOff - 1) * 100).toFixed(1)}%, exposure ${((dExpo / dOff - 1) * 100).toFixed(1)}% with the calibration held back`
+      )
+      // Held constant to five digits, because this IS the quantity calibrateRough
+      // solves for. Worth asserting anyway: it is the plumbing, not the maths --
+      // the exposureGain closure reaching the calibration at all is a thing the
+      // field has to remember to pass.
+      check(
+        Math.abs(detailRough(sharpOn) / dOff - 1) < 0.01 && Math.abs(detailRough(expoOn) / dOff - 1) < 0.01,
+        'the detail term itself lands on the same deficit through either knob',
+        `${dOff.toFixed(5)} m vs ${detailRough(sharpOn).toFixed(5)} / ${detailRough(expoOn).toFixed(5)} m`
+      )
+    }
+
+    // SHARPEN RAISES CURVATURE KURTOSIS.
+    //
+    // The claim in detail.js: a sum of twelve independent octaves is gaussian by
+    // the central limit theorem, gaussian ground has no rare large excursions --
+    // no creases, no facets, no edges -- and the sharpen curve buys those back by
+    // compressing small excursions and leaving large ones alone. Kurtosis
+    // (m4 / m2^2; 3.0 is exactly gaussian) is the statistic that says so.
+    //
+    // MEASURED ON THE DETAIL TERM AND NOT ON THE COMPOSED FIELD, and this is a
+    // correction to what §18 assumes rather than a convenience. The composed
+    // field's curvature kurtosis is not an estimable quantity at these sample
+    // sizes: the import's own curvature distribution has a tail so heavy that at
+    // a 1 m lag TEN sites out of twenty thousand carry ~86% of m4, and the
+    // estimate wanders between 4.7 and 75 depending only on how many sites you
+    // ask for. The often-quoted "the composed field collapses to 4.0" is that
+    // estimator at 1500 sites, not a property of the field. Both counts are
+    // printed below so the instability is on the record; nothing is asserted
+    // against them.
+    //
+    // The detail term alone converges by 6000 sites and stays put, which makes it
+    // the only place the knob's actual claim is checkable. Slope modulation is
+    // switched off (slope01 = 0) so the statistic is the octave sum's own shape
+    // and not the world's slope distribution leaking into it as a mixture.
+    {
+      const kurtosis = (f, lag, sites) => {
+        const d = new Float64Array(sites)
+        let mean = 0
+        for (let n = 0; n < sites; n++) {
+          const p = measureSite(n)
+          const a = measureAngle(n)
+          const cx = Math.cos(a) * lag
+          const cz = Math.sin(a) * lag
+          d[n] = f(p.x + cx, p.z + cz) - 2 * f(p.x, p.z) + f(p.x - cx, p.z - cz)
+          mean += d[n]
+        }
+        mean /= sites
+        let m2 = 0
+        let m4 = 0
+        for (let n = 0; n < sites; n++) {
+          const c = d[n] - mean
+          m2 += c * c
+          m4 += c * c * c * c
+        }
+        return (m4 / sites) / (m2 / sites) ** 2
+      }
+      const LAG = 1
+      const sharpOn = mk({ sharpen: knobOf('sharpen').on })
+      const sharpMax = mk({ sharpen: knobOf('sharpen').max })
+      console.log(
+        `        curvature kurtosis at a ${LAG} m lag (3.0 = gaussian) -- import ${kurtosis((x, z) => hm.sample(x, z), LAG, 1500).toFixed(1)} at 1500 sites, ` +
+          `${kurtosis((x, z) => hm.sample(x, z), LAG, 20000).toFixed(1)} at 20000`
+      )
+      console.log(
+        `        composed field ${kurtosis((x, z) => field.heightAt(x, z), LAG, 1500).toFixed(1)} at 1500 sites, ` +
+          `${kurtosis((x, z) => field.heightAt(x, z), LAG, 20000).toFixed(1)} at 20000 -- an unconverged estimator, reported and not asserted`
+      )
+      const bare = (f) => (x, z) => f.detail.at(x, z, 0, 0, 0)
+      const kOff = kurtosis(bare(field), LAG, 20000)
+      const kOn = kurtosis(bare(sharpOn), LAG, 20000)
+      const kMax = kurtosis(bare(sharpMax), LAG, 20000)
+      console.log(`        detail term alone: sharpen 0 -> ${kOff.toFixed(3)},  ${knobOf('sharpen').on} -> ${kOn.toFixed(3)},  ${knobOf('sharpen').max} -> ${kMax.toFixed(3)}`)
+      check(Math.abs(kOff - 3) < 0.5, 'the unsharpened octave stack is gaussian, exactly as the central limit theorem says', `kurtosis ${kOff.toFixed(3)} vs 3.0`)
+      check(kOn > kOff * 1.04, 'and sharpen pushes it off gaussian -- rare excursions kept, ordinary ground flattened', `${kOff.toFixed(3)} -> ${kOn.toFixed(3)} (${((kOn / kOff - 1) * 100).toFixed(1)}%)`)
+      // The top of the knob's range is REPORTED and not asserted against the on
+      // value. The lift saturates -- most of it is bought by the first half of
+      // the curve, and the gap between 0.7 and 1.0 is inside the estimator's own
+      // scatter at 20000 sites, so an assertion there would be a coin toss
+      // dressed up as a check.
+      if (kMax <= kOn) console.log(`          NOTE: kurtosis saturates -- sharpen ${knobOf('sharpen').max} buys nothing over ${knobOf('sharpen').on}`)
+    }
+
+    // THE CRAG BAND IS ZERO-MEAN AND GATED.
+    //
+    // Two separate promises, and both are about the knob being SAFE to turn up
+    // rather than about it looking good.
+    //
+    // ZERO-MEAN: the crease operator is a rectified sqrt(n^2 + ROUND^2), which
+    // has a large positive mean, and it is SUBTRACTED. Skip the mean correction
+    // and raising the knob lowers the entire mountain range by the mean cut,
+    // which walks the world down past the snow line and the altitude ramp -- so
+    // the A/B a person runs to judge the knob is a comparison of two different
+    // worlds and tells them nothing.
+    //
+    // GATED: convexity squared times a steepness smoothstep. §3 records v1
+    // sealing its own world off with a cliff layer that never asked whether the
+    // ground it was cragging was the only way through a pass. A pass floor is
+    // flat and concave and both gates are zero there, which is checked exactly
+    // rather than statistically: below CRAG_SLOPE_LO the term must be 0, not
+    // small.
+    {
+      const cragKnob = knobOf('crag')
+      const cragOn = mk({ crag: cragKnob.on })
+      const N = 3000
+      let sum = 0
+      let s2 = 0
+      let convex2 = 0
+      let convexN = 0
+      let concave2 = 0
+      let concaveN = 0
+      let flatN = 0
+      let flatMoved = 0
+      for (let i = 0; i < N; i++) {
+        const p = measureSite(i)
+        const d = cragOn.heightAt(p.x, p.z) - field.heightAt(p.x, p.z)
+        sum += d
+        s2 += d * d
+        if (cragOn.exposureAt(p.x, p.z) > 0.5) { convex2 += d * d; convexN++ } else { concave2 += d * d; concaveN++ }
+        if (cragOn.slope01At(p.x, p.z) <= CRAG_SLOPE_LO) { flatN++; if (d !== 0) flatMoved++ }
+      }
+      const mean = sum / N
+      const rms = Math.sqrt(s2 / N)
+      const convexRms = Math.sqrt(convex2 / convexN)
+      const concaveRms = Math.sqrt(concave2 / concaveN)
+      console.log(
+        `        crag=${cragKnob.on} m against all off, over ${N} sites: mean ${mean.toFixed(4)} m, rms ${rms.toFixed(4)} m ` +
+          `(|mean|/rms ${(Math.abs(mean) / rms).toFixed(4)})`
+      )
+      console.log(
+        `        by landform: convex (exposure > 0.5) n=${convexN} rms ${convexRms.toFixed(4)} m,  ` +
+          `concave n=${concaveN} rms ${concaveRms.toFixed(4)} m,  ratio ${(convexRms / concaveRms).toFixed(1)}x`
+      )
+      check(Math.abs(mean) < rms * 0.15, 'the crag band is zero-mean -- turning it up does not walk the range downhill', `|mean|/rms ${(Math.abs(mean) / rms).toFixed(4)}`)
+      check(convexRms > concaveRms * 10, 'and it lands on convex ground, not on the hollows between', `${(convexRms / concaveRms).toFixed(1)}x more cut on the convex half`)
+      check(flatMoved === 0, 'ground below the crag slope gate is untouched EXACTLY -- valley floors are the route network', `${flatMoved} of ${flatN} sites under slope01 ${CRAG_SLOPE_LO} moved`)
+      check(flatN > 100, 'and there is enough flat ground in the world for that to mean something', `${flatN} of ${N} sites are under the gate`)
+    }
+
+    // EROSION CONSERVES MASS AND RESPECTS THE DEAD BAND.
+    //
+    // thermalErode is the one term here that rewrites the field the world is
+    // built on rather than adding to it, so it gets asserted directly rather
+    // than through V2Height. Both properties are the ones that make it sharpen
+    // ground instead of smoothing it: mass conservation is why the faces come out
+    // PLANAR (material leaves the summit and arrives at the foot, it does not
+    // evaporate), and the dead band is why ground already at rest is left exactly
+    // alone instead of being low-passed a little more with every pass.
+    //
+    // The synthetics are 64x64 at the import's own texel size, so the dynamics
+    // scale with whatever image is loaded and the pass counts below do not.
+    {
+      const eKnob = knobOf('erode')
+      const tKnob = knobOf('talus')
+      const talus = tKnob.off
+      const n = 64
+      const tan = Math.tan((talus * Math.PI) / 180)
+
+      // DEAD BAND. A ramp at half the repose angle, run for the knob's own `on`
+      // pass count: every texel must come back with the same bits. Not "within a
+      // tolerance" -- the operator's `if (d > 0)` is what makes this an exact
+      // statement, and a version that leaked a fraction of the drop everywhere
+      // would still pass a tolerance and would round the whole world off over
+      // twenty passes.
+      const gentle = new Float32Array(n * n)
+      const gTan = Math.tan(((talus / 2) * Math.PI) / 180)
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) gentle[j * n + i] = i * texel * gTan
+      const gOut = thermalErode(gentle, n, n, texel, { passes: eKnob.on, talusDeg: talus })
+      let gMoved = 0
+      for (let i = 0; i < gentle.length; i++) if (gOut[i] !== gentle[i]) gMoved++
+      check(gMoved === 0, `ground at half the repose angle is bit-identical after ${eKnob.on} passes`, `${gMoved} of ${gentle.length} texels moved`)
+      check(gOut !== gentle, 'and the result is a copy -- the import has to survive, or the knob is not reversible', 'thermalErode returns a new Float32Array')
+
+      // A ramp ONE DEGREE under repose, which is the check that says the dead
+      // band's edge is at the repose angle and not somewhere convenient.
+      const near = new Float32Array(n * n)
+      const nTan = Math.tan((((talus - 1) * Math.PI) / 180))
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) near[j * n + i] = i * texel * nTan
+      const nOut = thermalErode(near, n, n, texel, { passes: eKnob.on, talusDeg: talus })
+      let nMoved = 0
+      for (let i = 0; i < near.length; i++) if (nOut[i] !== near[i]) nMoved++
+      check(nMoved === 0, 'and so is ground one degree under it -- the dead band edge is the repose angle itself', `${nMoved} of ${near.length} texels moved`)
+
+      // RELAXATION. A vertical step tall enough that a talus slope at the repose
+      // angle needs a quarter of the field to run out, so the relaxation has
+      // somewhere to go and the answer is not the border clamp.
+      const rise = tan * texel * (n / 4)
+      const step = new Float32Array(n * n)
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) step[j * n + i] = i < n / 2 ? 0 : rise
+      const worstDeg = (a) => {
+        let t = 0
+        for (let j = 1; j < n - 1; j++) for (let i = 1; i < n - 2; i++) t = Math.max(t, Math.abs(a[j * n + i + 1] - a[j * n + i]) / texel)
+        return (Math.atan(t) * 180) / Math.PI
+      }
+      const LADDER = [1, 25, 100, 800]
+      const rows = LADDER.map((passes) => ({ passes, out: thermalErode(step, n, n, texel, { passes, talusDeg: talus }) }))
+      console.log(
+        `        a ${rise.toFixed(0)} m vertical step at ${texel.toFixed(2)} m texels, relaxing toward ${talus} deg: ` +
+          rows.map((r) => `${r.passes}p -> ${worstDeg(r.out).toFixed(2)} deg`).join(',  ')
+      )
+      let monotone = true
+      for (let i = 1; i < rows.length; i++) if (!(worstDeg(rows[i].out) < worstDeg(rows[i - 1].out))) monotone = false
+      const finalDeg = worstDeg(rows[rows.length - 1].out)
+      check(monotone, 'a vertical step relaxes monotonically -- no overshoot, so no checkerboard', `${worstDeg(step).toFixed(1)} deg -> ${finalDeg.toFixed(2)} deg over ${LADDER[LADDER.length - 1]} passes`)
+      // Approached from ABOVE and never crossed: the operator's `move` is a
+      // fraction of the WORST excess, halved again between giver and receivers,
+      // which is a stability bound. A version that overshot would dip under the
+      // angle and oscillate, and the visible symptom is a checkerboard rather
+      // than anything that reads as wrong.
+      check(finalDeg > talus && finalDeg < talus + 0.25, 'and converges on the repose angle from above rather than through it', `${finalDeg.toFixed(3)} deg vs ${talus} deg`)
+
+      // MASS. On the real import, at the knob's own settings, because the
+      // synthetic cannot show what a million texels of accumulated Float32
+      // rounding does. Erosion is a scatter into a delta buffer and back, so the
+      // drift is bounded by the arithmetic and not by the number of passes; a
+      // leak here would lower or raise the whole world silently and the altitude
+      // ramp would follow it without complaint.
+      const t1 = performance.now()
+      const eroded = thermalErode(hm.field, hm.width, hm.height, texel, { passes: eKnob.on, talusDeg: talus })
+      const erodeMs = performance.now() - t1
+      let before = 0
+      let after = 0
+      let touched = 0
+      for (let i = 0; i < eroded.length; i++) {
+        before += hm.field[i]
+        after += eroded[i]
+        if (eroded[i] !== hm.field[i]) touched++
+      }
+      const drift = (after - before) / before
+      console.log(
+        `        full field, ${eKnob.on} passes at ${talus} deg: ${erodeMs.toFixed(0)} ms over ${hm.width}x${hm.height}, ` +
+          `${pct(touched / eroded.length)} of texels moved, mass drift ${drift.toExponential(2)}`
+      )
+      check(Math.abs(drift) < 1e-5, 'thermal erosion conserves mass to floating-point drift', `${drift.toExponential(2)} relative over ${eroded.length} texels`)
+      // Conservation is trivially true of a pass that did nothing, and how much
+      // ground is over the repose angle in the first place is a property of the
+      // import and of wherever the talus default currently sits -- at 42 deg
+      // this touches a fifth of the world and at 55 deg under a tenth of it. So
+      // the bar is "some real fraction of the world", not a number fitted to
+      // today's default.
+      check(touched / eroded.length > 0.01, 'and it really did move the world, so that is not conservation by inaction', `${pct(touched / eroded.length)} of texels changed`)
+    }
+
+    // WALKABILITY, WHICH IS WHAT THESE KNOBS COST.
+    //
+    // Reported through the same instrument as the "walkable fraction" section
+    // above -- same 3000 sites, same stride out of src/player.js -- so the
+    // numbers can be read side by side against the detail term's own cost.
+    //
+    // NO THRESHOLD ON ANY KNOB-ON NUMBER, deliberately. These are opt-in and a
+    // person turning `crag` to 30 is entitled to a world that is harder to cross;
+    // a gate that failed on that would be asserting a taste. What it must do is
+    // SURFACE the cost, because the failure mode §3 records from v1 is nobody
+    // noticing that a jaggedness layer had sealed the passes. The all-off number
+    // IS asserted, because that one is the shipped world.
+    {
+      const src = await readFile(PLAYER_PATH, 'utf8')
+      const maxTan = Math.tan((Number(/maxSlopeDeg:\s*([0-9.]+)/.exec(src)[1]) * Math.PI) / 180)
+      const stride = Number(/stride:\s*([0-9.]+)/.exec(src)[1])
+      const offWalk = walkableFraction((x, z) => field.heightAt(x, z), maxTan, stride)
+      const rows = []
+      for (const key of ['sharpen', 'exposure', 'crag', 'erode']) {
+        const k = knobOf(key)
+        const f = mk({ [key]: k.on })
+        rows.push({ key, value: k.on, frac: walkableFraction((x, z) => f.heightAt(x, z), maxTan, stride) })
+      }
+      const cragAniso = mk({ crag: knobOf('crag').on, aniso: knobOf('aniso').on })
+      rows.push({ key: 'crag+aniso', value: knobOf('aniso').on, frac: walkableFraction((x, z) => cragAniso.heightAt(x, z), maxTan, stride) })
+      const everything = {}
+      for (const k of RELIEF_KNOBS) everything[k.key] = k.on
+      const all = mk(everything)
+      rows.push({ key: 'everything', value: '', frac: walkableFraction((x, z) => all.heightAt(x, z), maxTan, stride) })
+      console.log(`        walkable over a ${stride} m stride, all knobs off: ${pct(offWalk)}`)
+      for (const r of rows) {
+        console.log(`          ${(r.key + (r.value === '' ? '' : `=${r.value}`)).padEnd(14)} ${pct(r.frac)}   (${r.frac < offWalk ? '-' : '+'}${(Math.abs(r.frac - offWalk) * 100).toFixed(1)} points)`)
+      }
+      const worst = rows.reduce((a, b) => (a.frac < b.frac ? a : b))
+      console.log(`        worst knob for the route network: ${worst.key} at ${pct(worst.frac)}, ${((offWalk - worst.frac) * 100).toFixed(1)} points below all-off`)
+      check(offWalk > 0.5, 'the shipped world is walkable with the relief off', `${pct(offWalk)} under the slope limit`)
+    }
+
+    console.log(`        section runtime ${((performance.now() - t0) / 1000).toFixed(1)} s -- the erosion knob is most of it`)
   }
 
   if (failures > 0) throw new Error(`check-v2-field: ${failures} check(s) failed`)

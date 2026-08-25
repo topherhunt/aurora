@@ -178,7 +178,7 @@ console.log('\n--- palette: continuity and shape -----------------------------')
   // Sweep the whole elevation range at a resolution far finer than the sun ever
   // moves in a frame, and look for a step. This is the check that catches a
   // keyframe typed out of order, which is otherwise a two-frame flash at dusk.
-  const CH = ['horizon', 'zenith', 'glow', 'fog', 'hemiSky', 'hemiGround']
+  const CH = ['horizon', 'zenith', 'glow', 'fog', 'haze', 'hemiSky', 'hemiGround']
   const SC = ['glowAmt', 'sunIntensity', 'hemiIntensity', 'stars', 'auroraMax', 'moonBright', 'glowSharp']
   let worst = 0
   let worstAt = ''
@@ -223,6 +223,39 @@ console.log('\n--- palette: continuity and shape -----------------------------')
   let fogMono = true
   for (let e = 20; e > -30; e -= 0.25) if (paletteAt(e - 0.25).fogDensity < paletteAt(e).fogDensity - 1e-12) fogMono = false
   check(fogMono, 'fog only thickens as it gets dark')
+
+  // And haze runs the other way, which is the whole reason it is a second
+  // number. fogDensity is the night-vision device and thickens after dark;
+  // hazeDensity is daylight scattering -- the aerial-perspective extinction
+  // coefficient -- and has to THIN, or the moonlit valley ends at the next
+  // hill. Anyone who later "fixes" the two to agree breaks one of them.
+  let hazeMono = true
+  for (let e = 20; e > -30; e -= 0.25) if (paletteAt(e - 0.25).hazeDensity > paletteAt(e).hazeDensity + 1e-12) hazeMono = false
+  check(hazeMono, 'haze only thins as it gets dark, opposite to fog')
+  check(paletteAt(45).hazeDensity > paletteAt(-18).hazeDensity * 4, 'so daylight has far more aerial perspective than night')
+
+  // The brief for the aerial ramp: a hillside is essentially untouched close in
+  // and essentially a silhouette by 1.5 km. These are the two ends of the curve
+  // lighting.js draws, keep = exp(-(d * density)^2), at the noon density. The
+  // far end was 1 km until the extinction was stretched by 1.5x on the note that
+  // it was biting too early; the near end got looser for free.
+  const noonHaze = paletteAt(45).hazeDensity
+  const keepAt = (d) => Math.exp(-((d * noonHaze) ** 2))
+  check(keepAt(200) > 0.95, 'a nearby tree keeps its own colour', `keep ${(keepAt(200) * 100).toFixed(0)}%`)
+  check(keepAt(1500) < 0.1, 'and a 1.5 km hillside is down to a silhouette', `keep ${(keepAt(1500) * 100).toFixed(0)}%`)
+  check(keepAt(700) > 0.4 && keepAt(700) < 0.75,
+    'with the mid distance still half its own colour, where the depth cue lives',
+    `keep ${(keepAt(700) * 100).toFixed(0)}% at 700 m`)
+
+  // And the column is one hue: no row may go magenta, which is what following
+  // `fog` through its sunset hues would do. See the note on the pair in clock.js.
+  let hueOk = true
+  let hueAt = ''
+  for (let e = 25; e >= -18; e -= 0.25) {
+    const h = paletteAt(e).haze
+    if (h[0] >= h[1] || h[1] >= h[2]) { hueOk = false; hueAt = `${e.toFixed(2)} deg: ${h.map((v) => v.toFixed(3)).join(', ')}` }
+  }
+  check(hueOk, 'the haze stays blue at every hour rather than drifting purple', hueAt)
 
   // The floor is duplicated at -18 and -90 on purpose so the bottom of the
   // sweep is flat; if someone edits one row and not the other this catches it.

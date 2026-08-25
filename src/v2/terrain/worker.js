@@ -13,17 +13,31 @@ import { buildChunkV2 } from './chunk-mesh-v2.js'
 //
 // THE PROTOCOL. Fixed by the renderer side; terrain-v2.js codes against it too.
 //
-//   main -> worker   { type: 'init',   heightmap: { width, height, data, meta }, doc, epoch }
+//   main -> worker   { type: 'init',   heightmap: { width, height, data, meta }, doc, relief, epoch }
 //                    { type: 'layers', doc, epoch }
+//                    { type: 'relief', relief, epoch }
 //                    { type: 'height', rect, data, epoch }
 //                    { type: 'chunk',  key, epoch, ox, oz, size, res }
 //   worker -> main   { type: 'ready' }
-//                    { type: 'layered', epoch, bakeMs }
-//                    { type: 'chunk',   key, epoch, positions, normals, colors, indices, minY, maxY, skirtDepth, ms }
+//                    { type: 'layered',  epoch, bakeMs }
+//                    { type: 'relieved', epoch, ms }
+//                    { type: 'chunk',    key, epoch, positions, normals, colors, indices, minY, maxY, skirtDepth, ms }
 //
 // `height` has no reply. Messages from one port arrive in order, so a chunk
 // request posted after a patch is meshed against the patched field by
 // construction, and there is nothing for the main thread to wait on.
+//
+// WHY `relief` IS ON THE WIRE AT ALL, when the seed deliberately is not (see
+// onInit, and WORLD_SEED in height/field.js). The seed can be a shared module
+// constant because it never changes; the relief knobs are live and authored, so
+// there is nothing for both sides to default to. The composed field is evaluated
+// in THREE places that do not share memory -- the main thread does player
+// collision, the editor raycast and the prop scatter, and each worker meshes --
+// so a relief that reaches the mesher and not the main thread makes the ground
+// she is DRAWN standing on and the ground she COLLIDES with two different
+// surfaces, and she hovers or sinks with nothing thrown anywhere. That is why it
+// travels on the same footing as the layers document, through the same epoch,
+// rather than being read out of a global on whichever thread happens to look.
 //
 // `epoch` is the whole concurrency story. A chunk is meshed against whichever
 // document the worker holds, and the reply carries the epoch it was built from,
@@ -48,7 +62,15 @@ function onInit(msg) {
   // No seed in the message, deliberately: V2Height defaults it from a shared
   // module constant so this worker's field and the main thread's collision field
   // cannot drift apart. See WORLD_SEED in height/field.js.
-  field = new V2Height({ heightmap, layers })
+  //
+  // `relief` is the mirror case and takes the opposite route for the same
+  // reason. It is authored and it moves, so there is no constant either side
+  // could default to, and the only way this field and the main thread's stay the
+  // same surface is for the value to arrive here from the one place that owns
+  // it. Passed straight through rather than defaulted: normalizeRelief throws on
+  // an unknown key, so a protocol that has drifted takes the worker down at init
+  // instead of meshing a world with one knob quietly missing.
+  field = new V2Height({ heightmap, layers, relief: msg.relief })
   // Force the lazy percentile pass now rather than inside the first chunk, where
   // it would show up as one inexplicably slow mesh in the ms/chunk numbers.
   field.bands
@@ -92,6 +114,32 @@ self.onmessage = (e) => {
     return
   }
 
+  if (msg.type === 'relief') {
+    if (!field) throw new Error('v2 terrain worker got a relief message before init')
+    // Unlike 'layers' there is nothing to deserialize and nothing to rebake here:
+    // the knobs are a plain validated object and V2Height.setRelief does the
+    // whole rebuild internally, in the same order the constructor used, so a knob
+    // cannot behave differently depending on whether it was on at boot.
+    //
+    // THIS IS THE EXPENSIVE MESSAGE ON THIS PORT, by a wide margin, and it is
+    // measured for that reason. With `erode` up the rebuild is a talus relaxation
+    // over the whole 1024^2 field -- about 240 ms, against 55 ms with erosion off
+    // -- and it blocks this worker, so every chunk request queued behind it waits
+    // it out. The main thread is doing the identical rebuild on its own copy of
+    // the field at the same time, so the wall-clock is one rebuild rather than
+    // three, and `ms` is what lets the panel say that out loud rather than
+    // leaving a quarter-second of stalled streaming looking like a hang.
+    const t0 = performance.now()
+    field.setRelief(msg.relief)
+    // Same reason onInit does it: the relief invalidated the percentile
+    // histogram (erosion moves the texels it is built from), and leaving it lazy
+    // would put the rebuild inside whichever chunk asked first and show up as one
+    // inexplicably slow mesh in the ms/chunk numbers.
+    field.bands
+    self.postMessage({ type: 'relieved', epoch: msg.epoch, ms: performance.now() - t0 })
+    return
+  }
+
   if (msg.type === 'height') {
     if (!field) throw new Error('v2 terrain worker got a height patch before init')
     // The one edit that writes the IMPORT rather than the document, so unlike
@@ -107,12 +155,31 @@ self.onmessage = (e) => {
     // ramp their unmeshed neighbours are not using. A seam that follows the brush
     // is a worse lie than a ramp that is a stroke out of date.
     //
+    // THAT IS NO LONGER TRUE OF `bands`, and it was not this file that changed
+    // it. V2Height.coarsePatched, which the erosion knob obliges the call to
+    // below, opens by setting `_bands = null` UNCONDITIONALLY -- erode off
+    // included -- so as of the relief knobs every stroke does put the 1024^2
+    // histogram back inside whichever chunk asks first, which is exactly the
+    // brush-following seam the paragraph above exists to prevent. It is not this
+    // file's to fix: the invalidation belongs to the eroded ground moving, not to
+    // the patch, so the guard belongs under the `needs.erode` return in
+    // field.js. Until it moves, this is the first thing to suspect if the sculpt
+    // brush starts leaving a colour edge trailing behind it again.
+    //
     // field.calibration.rough is the detail amplitude, fitted to the IMPORT'S
     // structure function at 2 and 4 texel lags across the whole world. It
     // describes the spectrum of the source image, not the ground under the
     // cursor. Both refresh on the next load, which is also when the sculpt
     // becomes part of the import rather than an edit on top of it.
     field.heightmap.patch(msg.rect, msg.data)
+    // The import is not what the world is sampled from once `erode` is up --
+    // `field.ground` is a relaxed COPY of it, and a stroke that updated the
+    // import and not the copy is a brush that draws nothing here while the main
+    // thread's field, which got the same patch, moves under her. She would then
+    // be colliding with ground this worker never meshed. coarsePatched re-relaxes
+    // the same rect the patch just wrote plus the halo material can travel
+    // across, so it costs the rect rather than the field.
+    field.coarsePatched(msg.rect)
     return
   }
 

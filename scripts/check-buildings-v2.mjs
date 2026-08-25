@@ -22,6 +22,11 @@
 //   the answer to "how far can it go before it breaks" should be measured
 //   rather than assumed.
 //
+//   THE ROOF PLANE. A roof is a zero-thickness sheet and everything under it is
+//   cut to fit; a wall that stops 20 cm short of it is airtight, positively wound
+//   and inside budget, and is a slot of daylight under the eave. So section 2
+//   measures parts against the covering's DRAWN TRIANGLES, in both directions.
+//
 // And one gate v1 does not have: WHAT DETAIL 1 COSTS. Detail 1 exists to be
 // cheap, v1's came out at about a third of detail 2, and a third is not cheap.
 // v2 targets an eighth, measures a sixth, and gates on the mean plus an absolute
@@ -33,7 +38,7 @@ import { buildBuilding2 } from '../src/buildings/v2/building.js'
 import {
   Builder, WALL_STYLE, openEdges, signedVolume,
   plinth, gableEnd, leanEnd, doorway, steps2, roughSlab,
-  wall2, gableRoof2, leanToRoof2, windowUnit2, chimney2, porch2, member2,
+  wall2, gableRoof2, leanToRoof2, planGableRoof, drawRoof, windowUnit2, chimney2, porch2, member2,
   boxSection,
 } from '../src/buildings/v2/parts.js'
 import { makeCharacter, makeWarp, warpBuilder } from '../src/buildings/v2/warp.js'
@@ -213,11 +218,10 @@ for (const [name, draw, kindOf] of PARTS) {
         // Only detail 2 has to be POSITIVE: the lower tiers drop the solid parts
         // of a window or a door and keep the doubled panel, which is honestly
         // zero. No tier of anything may ever be negative.
-        // 'sheet' is the roof: a covering has no thickness at any tier now, so
-        // its planes contribute exactly zero and whatever solid trim rides on
-        // top of them -- the ridge roll, and only at detail 2 -- contributes a
-        // little. What must never happen is NEGATIVE, which is the thing this
-        // gate is really for: a plane wound the wrong way round.
+        // 'sheet' is the roof: a covering has no thickness at any tier, so its
+        // planes contribute exactly zero and the fringe hanging off the eave
+        // contributes a little. What must never happen is NEGATIVE, which is the
+        // thing this gate is really for: a plane wound the wrong way round.
         const ok = kindOf === 'flat'
           ? Math.abs(vol) < 1e-5
           : kindOf === 'sheet' ? vol > -1e-5
@@ -234,7 +238,239 @@ check(partBad.vol.length === 0, 'every solid part is wound outwards, every sheet
   partBad.vol.length ? `${partBad.vol.length} bad, e.g. ${partBad.vol[0]}` : `signed volume as declared, strengths ${STRENGTHS.join('/')}`)
 
 // ---------------------------------------------------------------------------
-// 2. The geometry.
+// 2. Nothing stands through the covering, and nothing stops short of it.
+// ---------------------------------------------------------------------------
+//
+// A roof is a zero-thickness sheet and everything under it is cut to fit: wall
+// tops, corner and king posts, and a window that would otherwise wear the roof
+// through its head. Each is a separate piece of arithmetic against the same
+// surface and each fails the same two ways -- long, which is a timber coming out
+// through the thatch, or short, which is a slot of daylight under the eave.
+//
+// Neither shows up in any other gate here. A wall that stops 20 cm low is still
+// airtight (its own back face closes it), still positively wound, still inside
+// budget. So it is measured directly, and from the DRAWN TRIANGLES rather than
+// from heightAt(): asking the surface the geometry was built from would only
+// prove it agrees with itself, and both things that broke this -- a smooth
+// answer for a folded surface, and a chord laid across a fold -- are invisible
+// from there.
+//
+// The scene is deliberately ONE roof and ONE part. On a whole building the
+// question is ill-posed: an ell's wing wall stands well above the main range's
+// overhang where it passes under it, quite legitimately, and no rule stated in
+// world space tells that apart from a wall through a roof.
+//
+// Character strength is 1 throughout, because a roof at strength 0 is a flat
+// plane with nothing to align to. What varies is whether the displacement field
+// is applied. Unwarped, the arithmetic is exact and the tolerances are tight --
+// this is the run that would catch a dropped fold. Warped, only the overshoot is
+// asked about: the field moves a wall's top vertex and the three corners of the
+// roof triangle above it, metres away, by different amounts, so the covering
+// lands a centimetre or two off the plane its own corners promised. That
+// residual is what the 2.5 cm tuck in wall2() is sized against and is not
+// something any part can do arithmetic about.
+
+console.log('\nthe roof plane')
+
+const COVER_LAYERS = new Set([LAYER.THATCH, LAYER.SHINGLE, LAYER.ROOF_TILE, LAYER.THATCH_FRINGE])
+// Masonry is exempt because a chimney is SUPPOSED to come out through the roof.
+// Nothing else is.
+const UNDER_LAYERS = new Set([
+  LAYER.TIMBER_BEAM, LAYER.TIMBER_PLANK, LAYER.TIMBER_HEWN, LAYER.PLASTER, LAYER.GLASS,
+])
+
+/** Where a vertical line through (x, z) meets the triangle abc, or null. */
+const triAt = (a, b, c, x, z) => {
+  const den = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2])
+  if (Math.abs(den) < 1e-12) return null
+  const u = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / den
+  const v = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / den
+  const w = 1 - u - v
+  if (u < -1e-6 || v < -1e-6 || w < -1e-6) return null
+  return u * a[1] + v * b[1] + w * c[1]
+}
+
+/** Split a scene into the covering's triangles and everything under it. */
+function partition(g) {
+  const pos = g.getAttribute('position').array
+  const lay = g.getAttribute('texLayer').array
+  // Indexed, so the triangles are the index buffer's triples, NOT consecutive
+  // runs of the position array. Reading it the other way silently answers about
+  // triangles nobody draws.
+  const idx = g.getIndex().array
+  const at = (v) => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]
+  const cover = []
+  const under = []
+  for (let t = 0; t < idx.length; t += 3) {
+    const tri = [at(idx[t]), at(idx[t + 1]), at(idx[t + 2])]
+    if (COVER_LAYERS.has(lay[idx[t]])) cover.push(tri)
+    else if (UNDER_LAYERS.has(lay[idx[t]])) under.push(tri)
+  }
+  return { cover, under }
+}
+
+/** The highest covering above (x, z), or null where there is none. */
+const roofOver = (cover, x, z) => {
+  let top = null
+  for (const c of cover) {
+    const y = triAt(c[0], c[1], c[2], x, z)
+    if (y !== null && (top === null || y > top)) top = y
+  }
+  return top
+}
+
+/**
+ * The wall's drawn top edge, as an ordered polyline.
+ *
+ * A wall face is the only thing in these scenes drawn `double: true`, so its
+ * triangles are the ones that appear twice with opposite winding -- that is how
+ * the face is told apart from the posts and courses standing in front of it
+ * without the gate having to be told which style it asked for. Vertices that
+ * share a plan position are the two ends of a column boundary; the higher is on
+ * the top edge. Unwarped only: warped, a column's foot and head no longer share
+ * a plan position and this stops being able to tell them apart.
+ */
+function topEdge(under, p0, p1) {
+  const seen = new Map()
+  const key = (t) => t.map((v) => v.map((n) => n.toFixed(4)).join()).sort().join('|')
+  for (const t of under) seen.set(key(t), (seen.get(key(t)) ?? 0) + 1)
+  const node = new Map()
+  for (const t of under) {
+    if (seen.get(key(t)) < 2) continue
+    for (const v of t) {
+      const k = `${v[0].toFixed(3)},${v[2].toFixed(3)}`
+      if (!node.has(k) || v[1] > node.get(k)[1]) node.set(k, v)
+    }
+  }
+  const dx = p1[0] - p0[0]
+  const dz = p1[1] - p0[1]
+  const len2 = dx * dx + dz * dz
+  return [...node.values()]
+    .map((v) => ({ v, u: ((v[0] - p0[0]) * dx + (v[2] - p0[1]) * dz) / len2 }))
+    .sort((a, c) => a.u - c.u)
+    .map((e) => e.v)
+}
+
+{
+  // How far anything may stand through the covering, and how far short the wall's
+  // top edge may fall of it. `short` includes the 2.5 cm tuck by construction --
+  // the wall is deliberately built that far under -- so the slack over it is what
+  // the chord between two folds is allowed to sag.
+  const THROUGH = { warp: 0.05, flat: 0.005 }
+  const SHORT = 0.055
+
+  const ROOF = {
+    cx: 0, cz: 0, w: 6.4, d: 4.8, eaveY: 2.5, rise: 1.7,
+    ridgeAxis: 'x', overhang: 0.45, verge: 0.35,
+    layer: LAYER.SHINGLE, tint: [1, 1, 1], fringe: false, detail: 2,
+  }
+  // Both orientations, because an eaves wall crosses the roof's cell boundaries
+  // along its length while a gable end walks up one slope, over the ridge and
+  // down the other, and they fail differently.
+  const WALLS = [
+    ['eaves front', [-3.2, 2.4], [3.2, 2.4], [0, 1]],
+    ['eaves back', [3.2, -2.4], [-3.2, -2.4], [0, -1]],
+    ['gable end +x', [3.2, 2.4], [3.2, -2.4], [1, 0]],
+    ['gable end -x', [-3.2, -2.4], [-3.2, 2.4], [-1, 0]],
+  ]
+
+  const CASES = []
+  for (const [name, p0, p1, [nx, nz]] of WALLS) {
+    for (const style of Object.keys(WALL_STYLE)) {
+      CASES.push({
+        name: `${name} ${style}`, p0, p1, wall: true,
+        add: (b, R, k) => wall2(b, {
+          p0, p1, y0: 0, y1: 2.5, style: WALL_STYLE[style], seed: 3, rough: 11,
+          detail: 2, topAt: R.heightAt, topBreaks: R.breaksAlong, topCols: 0, k,
+        }),
+      })
+    }
+    // Windows placed where a plan would happily put them: one under the eave and
+    // three up where the covering is falling away over the sill.
+    const mid = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2]
+    for (const y0 of [1.4, 2.1, 2.8, 3.3]) {
+      CASES.push({
+        name: `${name} window y${y0}`, p0, p1, wall: false,
+        add: (b, R, k) => windowUnit2(b, {
+          x: mid[0], z: mid[1], y0, nx, nz, shutters: true, seed: 5, detail: 2,
+          k, topAt: R.heightAt,
+        }),
+      })
+    }
+    // And a corner post on its own, which is what ducks furthest under a slope.
+    CASES.push({
+      name: `${name} post`, p0, p1, wall: false,
+      add: (b, R, k) => wall2(b, {
+        p0, p1, y0: 0, y1: 2.5, style: WALL_STYLE.STAVE, seed: 3, rough: 11,
+        detail: 2, topAt: R.heightAt, topBreaks: R.breaksAlong, topCols: 0, k,
+      }),
+    })
+  }
+
+  const bad = []
+  const worst = { warp: [-Infinity, ''], flat: [-Infinity, ''], short: [-Infinity, ''] }
+  let cases = 0
+  for (const c of CASES) {
+    for (const seed of [0, 1, 2, 3, 4, 5]) {
+      const k = makeCharacter(seed * 29 + 7, 1)
+      for (const warped of [false, true]) {
+        const b = new Builder()
+        const R = planGableRoof({ ...ROOF, seed: seed * 7 + 3, k })
+        c.add(b, R, k)
+        drawRoof(b, R)
+        if (warped) warpBuilder(b, makeWarp(k, 0))
+        const g = b.toGeometry()
+        const { cover, under } = partition(g)
+        g.dispose()
+        cases++
+        const tag = `${c.name} s${seed}${warped ? ' warped' : ''}`
+
+        let over = -Infinity
+        for (const t of under) {
+          for (const v of t) {
+            const top = roofOver(cover, v[0], v[2])
+            if (top !== null) over = Math.max(over, v[1] - top)
+          }
+        }
+        const lim = warped ? THROUGH.warp : THROUGH.flat
+        if (over > lim) bad.push(`${tag}: ${over.toFixed(3)} m through`)
+        const w = worst[warped ? 'warp' : 'flat']
+        if (over > w[0]) { w[0] = over; w[1] = tag }
+
+        if (warped || !c.wall) continue
+        // The top edge, sampled between its nodes as well as at them: a chord
+        // laid across a fold is exactly what the fold-aligned columns exist to
+        // prevent and it is invisible at the nodes themselves.
+        const edge = topEdge(under, c.p0, c.p1)
+        let short = -Infinity
+        for (let i = 0; i + 1 < edge.length; i++) {
+          for (let n = 0; n <= 16; n++) {
+            const f = n / 16
+            const x = edge[i][0] + (edge[i + 1][0] - edge[i][0]) * f
+            const y = edge[i][1] + (edge[i + 1][1] - edge[i][1]) * f
+            const z = edge[i][2] + (edge[i + 1][2] - edge[i][2]) * f
+            const top = roofOver(cover, x, z)
+            if (top !== null) short = Math.max(short, top - y)
+          }
+        }
+        if (short > SHORT) bad.push(`${tag}: ${short.toFixed(3)} m short`)
+        if (short > worst.short[0]) { worst.short[0] = short; worst.short[1] = tag }
+      }
+    }
+  }
+  const say = (w) => `${w[0].toFixed(3)} m (${w[1]})`
+  check(bad.filter((s) => s.endsWith('through')).length === 0,
+    'nothing but masonry stands through the covering',
+    bad.some((s) => s.endsWith('through')) ? `e.g. ${bad.find((s) => s.endsWith('through'))}`
+      : `worst ${say(worst.flat)} flat, ${say(worst.warp)} warped, ${cases} scenes`)
+  check(bad.filter((s) => s.endsWith('short')).length === 0,
+    'and the wall top follows it the whole way along',
+    bad.some((s) => s.endsWith('short')) ? `e.g. ${bad.find((s) => s.endsWith('short'))}`
+      : `worst ${say(worst.short)}, tuck 0.025 included`)
+}
+
+// ---------------------------------------------------------------------------
+// 3. The geometry.
 // ---------------------------------------------------------------------------
 
 console.log('\ngeometry')
@@ -359,7 +595,7 @@ check(villageTris < 55000, '20 of the worst-case building fit the village allotm
   `${villageTris.toLocaleString()} tris for 20 visible`)
 
 // ---------------------------------------------------------------------------
-// 3. The warp itself.
+// 4. The warp itself.
 // ---------------------------------------------------------------------------
 
 console.log('\nwarp')

@@ -184,6 +184,8 @@ const NIGHT_GLSL = /* glsl */ `
   uniform vec3 uNightLift;
   uniform float uSkyFloor;
   uniform vec2 uFarLight;
+  uniform vec3 uAirNear;
+  uniform vec3 uAirFar;
 `
 
 // The two radii of the near-field envelope, in metres.
@@ -207,6 +209,106 @@ const WL_FAR_M = 75
 const NEAR_GLSL = (worldPos) =>
   `( 1.0 - smoothstep( ${WL_NEAR_M.toFixed(1)}, ${WL_FAR_M.toFixed(1)}, distance( ${worldPos}, cameraPosition ) ) )`
 
+// ---------------------------------------------------------------------------
+// AERIAL PERSPECTIVE: distance has a COLOUR, and it is not one colour.
+//
+// Three's fog is a single lerp toward a single colour, so everything past the
+// point where it saturates is the same flat wash and a range of mountains
+// three, six and twelve kilometres out is one silhouette. Real distance does
+// not do that, and neither does a painting of it: the near ridge is the DARKEST
+// thing on the skyline and each one behind it is LIGHTER, until the furthest
+// melts into the sky. That ladder is the entire cue that says "those are three
+// separate ranges" rather than "that is a wall with a bumpy top".
+//
+// It comes out of two independent terms that three collapses into one:
+//
+//   EXTINCTION  how much of the surface's own colour survives the trip. Falls
+//               off fast, saturates early, and once it is gone it is gone --
+//               past its range every surface is pure air whatever it is made
+//               of. This is what turns a hillside into a silhouette.
+//
+//   IN-SCATTER  what the air between you and the surface is glowing with, which
+//               is sunlight bounced sideways off the whole column of it. Builds
+//               SLOWLY and never saturates over any distance we draw, because
+//               there is always more air. This is what makes the far ranges
+//               lighter than the near ones.
+//
+// So: extinction picks WHEN a surface stops being itself, in-scatter picks WHAT
+// it becomes, and the two run on completely different length scales. One term
+// cannot have both, which is why one term gives a wall.
+//
+// THE ARITHMETIC IS STILL THREE'S FOG, and deliberately so. `c * keep + air *
+// (1 - keep)` is `mix( c, air, 1 - keep )`, i.e. exactly the lerp the stock
+// chunk does, with a distance-varying colour in place of the constant one. That
+// means it inherits three's colour-space handling for free: the mix happens
+// after `colorspace_fragment`, in output space, and `uAirNear` is fed as raw
+// sRGB components for the same reason `fogColor` arrives that way (see three's
+// refreshFogUniforms, which converts on upload). Set both ends of the ramp to
+// `fogColor` and this is bit-for-bit the stock chunk.
+//
+// EXTINCTION REUSES `fogDensity` rather than adding a rate of its own -- the
+// scene's FogExp2 density IS the extinction coefficient, and letting it stay
+// that keeps everything reading one number. v2 feeds that uniform the palette's
+// `hazeDensity`, which is a genuinely different quantity from `fogDensity` and
+// has to be: see the note in clock.js on why the night rows may not simply be
+// the day rows scaled.
+//
+// WHY THE FALL-OFF RATE IS A CONSTANT AND NOT A PALETTE ROW: it is the depth of
+// the atmosphere, which is the one thing in this file that does not care what
+// time it is. What time it is changes the COLOUR the air glows (both ends of the
+// ramp come from the palette) and how quickly a surface is lost behind it
+// (hazeDensity), not how many kilometres of sky are stacked over the valley.
+//
+// 1/4000 m puts the in-scatter at 22% of the way from the near haze to the far
+// one at 1 km, 39% at 2 km, 71% at 5 km and 92% at 10 km -- three distinguishable
+// depth planes inside the range anything is actually drawn at.
+const AIR_FALL = 1 / 4000
+
+// THE FAR END OF THE RAMP IS THE WATER, NOT THE SKY.
+//
+// In-scatter never saturates, so the only thing deciding how light a distant
+// ridge is allowed to get is what its far target is. Aimed at `fogColor` -- the
+// palette row tuned to match the horizon sky -- a range at 5 km comes out
+// LIGHTER than the lake in front of it, which is backwards and reads instantly
+// as wrong: water at distance is seen at a grazing angle where Fresnel is
+// essentially 1, so it is a near-perfect mirror of that same horizon sky and is
+// therefore the brightest thing on the skyline that is not the sky itself. Land
+// is never brighter than the mirror of the thing it is standing under.
+//
+// So the ramp ends where the water ends. water.js fades a distant water pixel to
+// `skyRadiance( horizon ) * uReflTint`, i.e. the horizon sky dimmed by the light
+// a reflection loses; this is that same dim applied to fogColor, which is that
+// same horizon sky. The far field then orders itself sky > water > land at every
+// distance and every hour, with land and water meeting at one colour instead of
+// crossing over.
+//
+// It is WATER.reflTint * WATER.reflDim, built the way water.js builds uReflTint
+// so the two are the same number in the same space. It is copied rather than
+// imported because water.js imports THIS file and a cycle to share one constant
+// is a bad trade; check-water-shader.mjs asserts the copy still agrees.
+export const AIR_CEILING = new THREE.Color(0xc2d4ee).multiplyScalar(0.8)
+
+// Scratch for the once-a-frame trip fogColor -> linear -> ceiling -> sRGB.
+const _airLin = new THREE.Color()
+const _airOut = { r: 0, g: 0, b: 0 }
+
+// Replaces `#include <fog_fragment>`. Guarded exactly the way the stock chunk
+// is, so a material with `fog: false` compiles to nothing here as before.
+const AERIAL_GLSL = /* glsl */ `
+  #ifdef USE_FOG
+    // fogDensity only exists on the exponential path. Rather than silently
+    // falling back to fogNear/fogFar and shipping a world whose distance is
+    // subtly the wrong shape, refuse to compile.
+    #ifndef FOG_EXP2
+      #error aerial perspective requires scene.fog to be a THREE.FogExp2
+    #endif
+    float aerialTau = vFogDepth * fogDensity;
+    float aerialKeep = exp( - aerialTau * aerialTau );
+    vec3 aerialAir = mix( uAirNear, uAirFar, 1.0 - exp( - vFogDepth * ${AIR_FALL.toExponential()} ) );
+    gl_FragColor.rgb = mix( gl_FragColor.rgb, aerialAir, 1.0 - aerialKeep );
+  #endif
+`
+
 export class WorldLighting {
   constructor() {
     this.ready = false
@@ -223,6 +325,16 @@ export class WorldLighting {
       // x scales the directional term in the far field, y the ambient ones.
       // (1, 1) is "no envelope at all", which is what daylight wants.
       uFarLight: { value: new THREE.Vector2(1, 1) },
+      // The near end of the aerial-perspective ramp -- the colour a surface has
+      // become by the time extinction has eaten it, before the in-scatter has
+      // had room to lighten it again. A Vector3 of RAW sRGB components, not a
+      // Color: the mix it feeds happens after colorspace_fragment, in output
+      // space, which is the same space three uploads fogColor in. Converting to
+      // linear here would put the two halves of one lerp in two spaces.
+      uAirNear: { value: new THREE.Vector3(0, 0, 0) },
+      // The far end of it, in the same raw-sRGB terms and for the same reason.
+      // Not fogColor but fogColor under AIR_CEILING -- see the note there.
+      uAirFar: { value: new THREE.Vector3(0, 0, 0) },
     }
 
     this.horizonTex = null
@@ -295,6 +407,16 @@ export class WorldLighting {
     lift.multiplyScalar(state.skyGlowAmt)
     this.uniforms.uSkyFloor.value = state.skyFloor
     this.uniforms.uFarLight.value.set(state.farDirect, state.farAmbient)
+    // Straight across, no colour-space trip -- see the uniform's declaration.
+    this.uniforms.uAirNear.value.set(state.haze[0], state.haze[1], state.haze[2])
+    // The far end does take the trip, because the ceiling it is multiplied by is
+    // a light loss and light losses are linear. sRGB in, linear, ceiling, sRGB
+    // back out -- the same round trip water.js's uReflTint gets, so the two land
+    // on the same colour rather than on two versions of it.
+    _airLin.setRGB(state.fog[0], state.fog[1], state.fog[2], THREE.SRGBColorSpace)
+    _airLin.multiply(AIR_CEILING)
+    _airLin.getRGB(_airOut, THREE.SRGBColorSpace)
+    this.uniforms.uAirFar.value.set(_airOut.r, _airOut.g, _airOut.b)
   }
 
   /**
@@ -338,6 +460,7 @@ export class WorldLighting {
               NEAR_GLSL(`${worldPosVarying}.xyz`)
             )}`
           )
+          .replace('#include <fog_fragment>', AERIAL_GLSL)
       } else {
         shader.vertexShader = shader.vertexShader
           .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\nvarying vec3 vWlShade;`)
@@ -355,6 +478,7 @@ export class WorldLighting {
             `#include <lights_fragment_end>
             ${APPLY('vWlShade.x', 'vWlShade.y', 'vWlShade.z')}`
           )
+          .replace('#include <fog_fragment>', AERIAL_GLSL)
       }
     }
 

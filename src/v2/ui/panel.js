@@ -1,5 +1,6 @@
 import { TRI_BUDGET, CALL_BUDGET } from '../../budget.js'
 import { TOOLS, TOOL_KEYS } from '../edit/editor.js'
+import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief.js'
 
 // ---------------------------------------------------------------------------
 // The v2 status + tools panel. Replaces v1's `#desktop-hud` on the v2 route.
@@ -28,6 +29,16 @@ import { TOOLS, TOOL_KEYS } from '../edit/editor.js'
 // the canvas, and a panel that eats a drag beginning over the fps readout feels
 // like the camera has stuck. Only buttons, inputs, rows and the header take the
 // pointer.
+//
+// THE RELIEF ZONE IS BUILT BY ITERATING RELIEF_KNOBS, never from a list kept in
+// here. It is an ablation tool -- switch one term on, look at the mountain,
+// switch it off -- and a term that exists in the height field but was forgotten
+// in this file is a term nobody ever looks at, which is the whole reason the
+// knob table lives in src/v2/height/relief.js and not next to the buttons.
+// Every commit hands the host the COMPLETE frozen relief object rather than a
+// delta, for the reason relief.js's header gives at length: the main thread and
+// every terrain worker have to end up evaluating the same expression, and a
+// partial update is how one of them quietly does not.
 //
 // REPAINT IS 4 Hz, driven by the host calling `setStats`. Same reasoning as
 // `Hud.paint`: the numbers are unreadable faster than that and innerHTML is not
@@ -61,6 +72,13 @@ function escapeHtml(s) {
 }
 
 const num = (v, d = 0) => (Number.isFinite(v) ? v.toFixed(d) : null)
+
+// A scrubbed relief value is `start + n * step` in binary floating point, and a
+// 0.05 step reaches 0.30000000000000004 after six ticks. That is the true value
+// and the field is right to hold it, but seventeen digits in a 5em box reads as
+// a broken widget, so what goes back INTO the input is rounded to four places.
+// Only the display: what was committed is what the host was handed.
+const knobText = (v) => String(Number(v.toFixed(4)))
 
 const CSS = `
 #v2-panel {
@@ -99,6 +117,10 @@ const CSS = `
 #v2-panel .p-fields { display: grid; grid-template-columns: 6em 1fr; gap: 2px 6px; align-items: center; }
 #v2-panel .p-scrub { cursor: ew-resize; }
 #v2-panel .p-scrub:hover { color: ${COLORS.head}; }
+/* A knob whose parent term is off. Dimmed, NOT disabled: talus is read only
+   while erode runs, but setting the repose angle before switching erosion on
+   saves a second remesh, and a disabled box would forbid that. */
+#v2-panel .p-dim { opacity: .45; }
 #v2-panel input.p-num { width: 100%; background: #0e1728; color: ${COLORS.body};
   border: 1px solid #2b4a72; border-radius: 2px; font: 11px ui-monospace, Menlo, monospace; padding: 1px 3px; }
 #v2-panel details { margin-top: 2px; }
@@ -130,13 +152,24 @@ const CSS = `
 `
 
 export class Panel {
-  constructor({ layers, editor, onTool, onAction }) {
+  constructor({ layers, editor, relief, onTool, onAction, onRelief }) {
     if (typeof onTool !== 'function') throw new Error('Panel: onTool(name) is required')
     if (typeof onAction !== 'function') throw new Error('Panel: onAction(name) is required')
+    // Same throw as the other two, and for a sharper reason: without a host
+    // listening, every relief widget below still lights up and still changes
+    // its own value, and the terrain does not move. A control that looks like
+    // it worked is worse than one that is missing.
+    if (typeof onRelief !== 'function') throw new Error('Panel: onRelief(relief) is required')
     this.layers = layers
     this.editor = editor
     this.onTool = onTool
     this.onAction = onAction
+    this.onRelief = onRelief
+    // normalizeRelief(undefined) is RELIEF_DEFAULTS, so an omitted `relief` is
+    // an all-off world rather than a crash -- and a relief that came from
+    // localStorage two schema versions ago is clamped, or throws on a knob that
+    // no longer exists, here at construction rather than inside a worker.
+    this.relief = normalizeRelief(relief)
 
     this.root = document.getElementById('v2-panel')
     if (!this.root) throw new Error('Panel: v2.html must contain <div id="v2-panel">')
@@ -240,6 +273,21 @@ export class Panel {
     this._err.textContent = msg ? String(msg) : ''
   }
 
+  /**
+   * Point the relief widgets at a value the panel did not produce -- the one
+   * restored from localStorage at boot, or one the host changed by some other
+   * route -- WITHOUT calling `onRelief`.
+   *
+   * The missing callback is the entire point. Echoing back a value the host
+   * just told us about is how a HUD and its host ping-pong: host sets, panel
+   * fires, host sets again, and every leg of it remeshes the world. The panel
+   * is the source of truth for nothing here; it only ever displays.
+   */
+  setRelief(relief) {
+    this.relief = normalizeRelief(relief)
+    this._syncRelief()
+  }
+
   // --- construction ---------------------------------------------------------
 
   _build() {
@@ -294,6 +342,12 @@ export class Panel {
     this._layersZone = document.createElement('div')
     this._layersZone.className = 'p-z'
 
+    this._reliefZone = document.createElement('div')
+    this._reliefZone.className = 'p-z'
+    this._reliefBtns = [] // {knob, btn}
+    this._reliefRows = [] // {knob, parent, labelEl, input}
+    this._buildRelief()
+
     const foot = document.createElement('div')
     foot.className = 'p-z p-flow'
     const act = (label, name) => {
@@ -321,7 +375,11 @@ export class Panel {
     this._err = document.createElement('div')
     this._err.className = 'p-err'
 
-    this._body.append(this._status, tools, this._ctx, this._layersZone, foot, this._err)
+    // Relief sits below the layer list and above the document buttons: it is
+    // world-shaped rather than selection-shaped, so it does not belong up with
+    // the tools, and it must not be the thing that pushes `save`/`undo` off the
+    // bottom of a 34vh body when four groups of layers are expanded.
+    this._body.append(this._status, tools, this._ctx, this._layersZone, this._reliefZone, foot, this._err)
     this.root.append(this._head, this._body)
 
     this._menu = document.createElement('div')
@@ -700,6 +758,182 @@ export class Panel {
 
     row.append(id, sum, eye, del)
     return row
+  }
+
+  // --- zone 4: relief -------------------------------------------------------
+
+  /**
+   * Built ONCE, from RELIEF_KNOBS, and never rebuilt -- `_syncRelief` pushes
+   * values into the widgets that already exist. A zone that rebuilt itself on
+   * every change would destroy the label mid-drag, and the pointer capture
+   * `_attachScrub` took goes with the element: the scrub would die one tick
+   * after it started, which is exactly what these knobs are here to be scrubbed
+   * through.
+   *
+   * Two shapes of widget, because the knobs are two kinds of thing. A term you
+   * are ablating wants a button -- on, look, off -- and a term that only makes
+   * sense inside another one (`aniso` inside `crag`, `talus` inside `erode`)
+   * wants a number, since `talus`'s "off" is 42 degrees and a button offering to
+   * toggle it to 42 means nothing. Every knob gets the number as well, so a term
+   * that reads well at 9 m can be walked to 12 without leaving the panel.
+   */
+  _buildRelief() {
+    const title = document.createElement('div')
+    title.className = 'p-t'
+    title.textContent = 'relief'
+
+    // Stated in the panel because the cost is invisible from the outside: every
+    // other knob here is a few instructions inside the noise loop and rebuilds
+    // in 55-65 ms, and `erode` runs a talus relaxation over a 1024^2 field on
+    // three threads first, which measures about 190 ms on top of the 55 and so
+    // holds the first chunk back by a rebuild of about 240 ms. Without this line
+    // the first thing anyone does is click it twice, assuming a dead button.
+    const caution = document.createElement('div')
+    caution.className = 'p-k'
+    caution.textContent = 'erode: talus relaxation over 1024^2 on 3 threads, ~190 ms per toggle'
+
+    const flow = document.createElement('div')
+    flow.className = 'p-flow'
+    for (const knob of RELIEF_KNOBS) {
+      // The dependent knobs are values, not switches -- see the class comment.
+      if (knob.needs !== undefined) continue
+      const b = document.createElement('button')
+      // p-i or nothing happens. The panel root is `pointer-events: none` so the
+      // canvas underneath keeps mouse-look, and a widget that forgets the class
+      // does not refuse the click, it never receives it -- no error, no hover,
+      // no way to tell from the outside that the wiring is fine.
+      b.className = 'p-btn p-i'
+      // The `on` value in the <small>, where the tool row puts its hotkey: the
+      // useful thing to know before pressing an ablation button is how hard it
+      // is about to push, and `crag 9` says nine metres of crease.
+      b.innerHTML = `${escapeHtml(knob.label)}<small>${escapeHtml(knobText(knob.on))}</small>`
+      b.title = knob.hint
+      b.onclick = () => {
+        // Toggles against `off`, not against `on`: a knob scrubbed to 4 is on,
+        // and the button has to switch it off rather than jump it to 9 first.
+        const next = this.relief[knob.key] === knob.off ? knob.on : knob.off
+        this._commitRelief({ ...this.relief, [knob.key]: next })
+      }
+      this._reliefBtns.push({ knob, btn: b })
+      flow.appendChild(b)
+    }
+
+    const allOff = document.createElement('button')
+    allOff.className = 'p-btn p-i'
+    allOff.textContent = 'all off'
+    // RELIEF_DEFAULTS, not a loop over the buttons: `talus` has no button and
+    // its off is 42, so anything that reset "what the buttons show" would leave
+    // it wherever it was and the world would not be the one relief.js's gate
+    // asserts is bit-identical.
+    allOff.title = 'back to RELIEF_DEFAULTS -- the world exactly as it is with no relief at all'
+    allOff.onclick = () => this._commitRelief(RELIEF_DEFAULTS)
+    flow.appendChild(allOff)
+
+    const fields = document.createElement('div')
+    fields.className = 'p-fields'
+    for (const knob of RELIEF_KNOBS) {
+      let parent = null
+      if (knob.needs !== undefined) {
+        parent = RELIEF_KNOBS.find((k) => k.key === knob.needs)
+        // A `needs` pointing at a key that is not in the table would dim this
+        // row against `undefined` forever, which looks like a disabled widget
+        // and reads as a bug in the panel. It is a bug in the knob table.
+        if (parent === undefined) throw new Error(`Panel: relief knob '${knob.key}' needs '${knob.needs}', which is not a knob`)
+      }
+
+      const input = document.createElement('input')
+      input.type = 'number'
+      input.className = 'p-num p-i'
+      input.step = String(knob.step)
+      input.title = knob.hint
+      // No min/max attribute, same as the context fields above: the range is a
+      // guess and typing past it is how you learn the guess was wrong.
+      // normalizeRelief clamps on the way through, so nothing invalid reaches
+      // the field either way.
+      input.onchange = () => {
+        const v = parseFloat(input.value)
+        // An emptied or half-typed box would otherwise sit there showing a
+        // value the world does not have. Put the live one back.
+        if (!Number.isFinite(v)) {
+          this._syncRelief()
+          return
+        }
+        this._commitRelief({ ...this.relief, [knob.key]: v })
+      }
+      input.onkeydown = (ev) => {
+        // Without this, typing `1` into the crag box arms the snowline tool and
+        // `h` folds the panel away around the number being edited. The window's
+        // H handler also ignores events whose target is an input, so this is the
+        // belt to that braces.
+        ev.stopPropagation()
+        if (ev.key === 'Enter') input.blur()
+      }
+
+      const k = document.createElement('div')
+      k.className = 'p-k p-i p-scrub'
+      k.textContent = knob.label
+      k.title = `${knob.hint} -- drag left/right to scrub`
+
+      // The row shape _attachScrub expects: step/min/max for the tick size and
+      // the clamp, and set(v, commit). `commit` is the undo-push flag for
+      // document rows and there is nothing to push here -- relief is not in the
+      // document and has no history -- so both the tick and the release commit
+      // for real. That is deliberate: watching the ridge line move under the
+      // drag is the entire reason these are scrubbable rather than typed.
+      //
+      // It is also expensive. Every tick is a full world remesh, so `erode`
+      // scrubs about as well as it toggles, i.e. badly. That is what its button
+      // is for, and why the ranges here are small enough that a 4 px tick is a
+      // real change rather than one of sixty on the way to somewhere.
+      const row = {
+        step: knob.step,
+        min: knob.min,
+        max: knob.max,
+        set: (v) => this._commitRelief({ ...this.relief, [knob.key]: v }),
+      }
+      this._attachScrub(k, row, input)
+
+      fields.append(k, input)
+      this._reliefRows.push({ knob, parent, labelEl: k, input })
+    }
+
+    this._reliefZone.append(title, caution, flow, fields)
+    this._syncRelief()
+  }
+
+  /** Push `this.relief` into the widgets. No callback: see setRelief. */
+  _syncRelief() {
+    for (const { knob, btn } of this._reliefBtns) {
+      // Lit whenever the term does something, not only at exactly `on` -- a
+      // knob scrubbed to 4 is affecting the terrain and an unlit button over a
+      // changed world is a lie about which terms are in play.
+      btn.classList.toggle('p-on', this.relief[knob.key] !== knob.off)
+    }
+    for (const { knob, parent, labelEl, input } of this._reliefRows) {
+      // Never while it has focus: the 4 Hz clock does not drive this zone, but
+      // a scrub of one knob syncs all of them, and rewriting a box someone is
+      // typing into eats the digits. Same rule as _refreshFields.
+      if (document.activeElement !== input) input.value = knobText(this.relief[knob.key])
+      if (parent === null) continue
+      const inert = this.relief[parent.key] === parent.off
+      labelEl.classList.toggle('p-dim', inert)
+      input.classList.toggle('p-dim', inert)
+    }
+  }
+
+  /**
+   * The one path by which this panel changes the relief. Normalizes first --
+   * clamping and integer rounding happen before anything is displayed, so the
+   * number in the box is the number the field will use and not a rounder one
+   * the host quietly corrected.
+   */
+  _commitRelief(next) {
+    this.relief = normalizeRelief(next)
+    this._syncRelief()
+    // The COMPLETE object, never a delta. relief.js's header has the long
+    // version: this value has to reach the main thread and every terrain worker
+    // identically or she walks on a surface she is not standing on.
+    this.onRelief(this.relief)
   }
 
   _syncUndo() {

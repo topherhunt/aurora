@@ -773,10 +773,27 @@ export class Trees {
       this._s.set(scale, scale, scale)
       this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
 
-      // Slight per-instance tint so a stand does not look cloned. Same trick
-      // and same range as v1's scatter.
-      const g = 0.86 + tintG * 0.28
-      this._c.setRGB(clamp01(g * (0.93 + tintR * 0.14)), clamp01(g), clamp01(g * 0.96))
+      // Per-instance tint, so a stand does not look cloned.
+      //
+      // WIDER AND SLIGHTLY DARKER than v1's 0.86..1.14, and both halves of that
+      // are about the far field rather than about the tree you are standing
+      // under. At LOD0 the range barely shows -- a tree is a thousand triangles
+      // of its own shading and a 6% tint is a rounding error on it. At 300 m a
+      // tree is FOUR PIXELS, tint is the only thing distinguishing it from its
+      // neighbour, and a range that reads as pleasant variety up close averages
+      // out to one flat wash at that size. 0.74..1.14 is 43% of the mean wide
+      // where 0.86..1.14 was 28%, which is enough that a hillside of cards has
+      // visible mottling instead of a single green.
+      //
+      // The 6% darker mean is a nudge, not the fix for "the billboards are too
+      // light" -- that was the flat unlit bake, and createImpostorBakeMaterial
+      // is where it got fixed. It has to be a nudge, because this channel is
+      // per INSTANCE and every tier of a tree reads the same one: there is no
+      // way to darken the card without darkening the trunk you can touch. If
+      // the far field still wants darkening after the lit bake, the honest knob
+      // is the bake rig, not this.
+      const g = 0.74 + tintG * 0.40
+      this._c.setRGB(clamp01(g * (0.88 + tintR * 0.22)), clamp01(g), clamp01(g * 0.96))
       this.batch.setColorAt(id, this._c)
 
       // The distance at which this particular tree stops existing, written into

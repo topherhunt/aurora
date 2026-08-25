@@ -1,6 +1,9 @@
 import * as THREE from 'three'
 
-import { buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE } from '../../props/grass-bank.js'
+import {
+  buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE,
+  buildGrassStripBank, STRIP_BASE,
+} from '../../props/grass-bank.js'
 import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.js'
 
 // ---------------------------------------------------------------------------
@@ -228,16 +231,84 @@ const VEIL_PHASES = 8
 const VEIL_SLACK_MIN = 0.25
 const VEIL_SPEED_DECAY = 0.9
 
-// Metres, the range of instance HEIGHTS. The brief's numbers, and they are
-// heights rather than scale factors on purpose: the bank tuft is 0.55 m, so
-// this is a scale range of 0.45x to 2.7x, which is not a thing to have to read
-// backwards out of a multiplier.
+// Metres, the range of instance HEIGHTS -- heights rather than scale factors on
+// purpose: the bank tuft is 0.55 m, so this is a scale range of 0.91x to 2.7x,
+// which is not a thing to have to read backwards out of a multiplier.
+//
+// THE FLOOR IS 0.5 AND NOT THE BRIEF'S 0.25. A quarter-metre tuft is 4 cm of
+// visible card once PLACEMENT.sink has buried its foot and the texture's own
+// fray (see GRASS_FRAY in textures.js) has eaten the base of the picture, and
+// what is left at that size is not short grass, it is a smear. Raising the floor
+// costs nothing in triangles -- the count is set by the scatter, not by the size
+// -- and only narrows the range the look is drawn from, which the note below
+// says was already doing little work at its bottom end.
 //
 // UNIFORM IN HEIGHT, which is not uniform in what you see -- screen area goes
 // as the square, so the tall end of this range dominates the look far more than
 // its share of the count. That is the right way round for a lush bed and it is
 // also the reason the range is not widened further.
-const HEIGHT = [0.25, 1.5]
+const HEIGHT = [0.5, 1.5]
+
+// ---------------------------------------------------------------------------
+// THE STRIP CARPET: `new Grass(..., { style: 'strips' })`, an experiment, and
+// everything below is only read in that mode.
+//
+// See the header of buildGrassStripBank in props/grass-bank.js for what a strip
+// is and the facing-area-per-triangle table that says what it is worth. The
+// numbers HERE are the ones that make the comparison fair rather than
+// flattering, and there is only one that matters:
+//
+// THE DENSITY IS SET TO MATCH THE TUFT BED'S COVERAGE, NOT TO BE SMALL. A bed
+// at DENSITY = 3 puts 3 x (0.83 x 1.06) = 2.64 m2 of camera-facing card over
+// every square metre of ground. A strip at the mean of STRIP_HEIGHT and the
+// mean of STRIP_TILES is a 4.5 x 1.8 m rectangle, of which 0.64 faces the eye
+// (E|sin t| over a uniform yaw) and stripCoverage() in material.js says 0.62
+// carries grass, so it presents 3.24 m2. 0.82 strips per square metre is
+// therefore the same amount of grass in front of the eye -- and 1.6 triangles a
+// square metre against the tuft carpet's 6 in its far tier. Quoting a saving
+// from a THINNER bed would be quoting the saving you can already have for free
+// by turning DENSITY down, which is the comparison this has to beat.
+//
+// THE 0.62 IS NOT SLACK, IT IS THE SHADER. The mask, the per-tile shrink and
+// the flare all change how much of a card ends up carrying grass and none of
+// them are visible to anything that measures instance matrices. Leaving them
+// out would overstate this bed by 60%.
+//
+// Every per-instance mechanism above transfers UNCHANGED, and that is most of
+// why this was cheap to try: the graded thinning, the rank dither, the veil and
+// the tiled regrow are all functions of an instance's position and rank and
+// none of them knows what geometry it is pointing at.
+const STRIP_DENSITY = 0.82
+
+// Metres, the range of strip HEIGHTS -- and a tile is SQUARE, so this is also
+// how wide one clump of grass is. Well above the tuft bed's HEIGHT, on purpose:
+// the per-tile shrink in material.js takes the average clump to 0.75 of these
+// numbers, so a bed at [0.7, 1.1] drew grass two thirds the height of the tuft
+// carpet standing next to it. Bigger grass costs NOTHING in triangles -- a
+// strip is two either way, and a bigger one is matched by fewer of them -- so
+// the only thing this trades against is how coarse the bed reads up close.
+const STRIP_HEIGHT = [1.4, 2.2]
+
+// Clumps per strip, inclusive: each instance draws a whole number of SQUARE
+// tiles, so its length in metres is this times its height.
+//
+// THIS IS WHERE THE VARIETY COMES FROM, and it is the reason the fragment mask
+// is off by default. A mask breaks a fixed-length run by throwing away card
+// that was already paid for, at 1:1 against the whole point of the system; a
+// varying tile count breaks the same run by not building it, and the gaps land
+// between strips instead of inside them. Same look, no coverage surrendered.
+// It replaced a continuous length multiplier, which stretched the picture along
+// the strip by up to 35% to get the same effect.
+const STRIP_TILES = [1, 4]
+
+// Metres of the strip's foot buried. Deeper than the tuft's 0.04, and it has to
+// be: a tuft sits on one height sample and a strip spans metres of ground, so
+// the middle of a strip crossing a rise is above the terrain by however much
+// that rise bulges. Sinking the whole card is the cheap insurance, and it is
+// cheap precisely because the foot of the picture is frayed (GRASS_FRAY in
+// textures.js) -- grass entering the ground reads as grass, where a flat cut
+// edge floating above it reads as a bug.
+const STRIP_SINK = 0.12
 
 // The tuft's own colours, sRGB, converted to linear below.
 //
@@ -296,6 +367,7 @@ export class Grass {
    * @param water         WaterSurfaces. Needs isSubmerged.
    * @param paths         PathSet. Needs nearest.
    * @param textureArray  The shared prop atlas from buildTextureArray().
+   * @param style         'tufts' (the ladder above) or 'strips' (the experiment).
    */
   constructor(
     scene,
@@ -303,10 +375,19 @@ export class Grass {
     water,
     paths,
     textureArray,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS } = {}
+    {
+      seed = 1, style = 'tufts', density = null, height = null,
+      radius = DRAW_RADIUS, fullRadius = FULL_RADIUS,
+    } = {}
   ) {
+    if (style !== 'tufts' && style !== 'strips') {
+      throw new Error(`Grass: style must be 'tufts' or 'strips', got ${style}`)
+    }
     if (!field || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Grass: needs a V2Height with heightAndSlopeAt')
+    }
+    if (style === 'strips' && typeof field.heightAt !== 'function') {
+      throw new Error('Grass: strips need a V2Height with heightAt, to tilt onto the slope')
     }
     if (typeof field.snowLineAt !== 'function') {
       throw new Error('Grass: needs a V2Height with snowLineAt')
@@ -323,7 +404,18 @@ export class Grass {
     this.paths = paths
     this.textureArray = textureArray
     this.seed = seed
-    this.density = density
+    this.style = style
+    this.strips = style === 'strips'
+    this.density = density === null ? (this.strips ? STRIP_DENSITY : DENSITY) : density
+    density = this.density
+    this.height = height ?? (this.strips ? STRIP_HEIGHT : HEIGHT)
+    // The bank geometry's own height, which every instance scale is relative to.
+    this.baseHeight = this.strips ? STRIP_BASE.height : GRASS_BASE.height
+    this.sink = this.strips ? STRIP_SINK : PLACEMENT.sink
+    // A strip has no ladder to climb -- see buildGrassStripBank. An empty band
+    // list makes the tier loop in update() fall straight through to the coarsest
+    // (and only) tier, which is what we want and costs nothing.
+    const bands = this.strips ? [] : LOD_BANDS
     this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
@@ -334,7 +426,7 @@ export class Grass {
     // Evict only once a tile is well outside the radius, so a player pacing back
     // and forth across one line does not rebuild the same row every crossing.
     this.evictSq = (radius + TILE * 1.5) ** 2
-    this.nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
+    this.nearSq = ((bands.length ? bands[bands.length - 1] : 0) + NEAR_MARGIN) ** 2
 
     // Keep-fraction per quantised level: uAt[q] = 2^(-q/QUANT), and loSq[q] is
     // the squared distance at which level q begins. The per-frame tile loop
@@ -350,22 +442,30 @@ export class Grass {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = buildGrassBank()
+    const bank = this.strips ? buildGrassStripBank() : buildGrassBank()
     this.bank = bank
     this.tierCount = bank.tiers.length
     this.cardTier = bank.cardTier
     if (this.cardTier !== this.tierCount - 1) {
-      throw new Error(`Grass: the billboard must be the coarsest tier, got ${this.cardTier} of ${this.tierCount}`)
+      throw new Error(`Grass: the coarsest tier must be last, got ${this.cardTier} of ${this.tierCount}`)
     }
-    if (LOD_BANDS.length !== this.tierCount - 1) {
-      throw new Error(`Grass: ${this.tierCount} tiers need ${this.tierCount - 1} bands, got ${LOD_BANDS.length}`)
+    if (bands.length !== this.tierCount - 1) {
+      throw new Error(`Grass: ${this.tierCount} tiers need ${this.tierCount - 1} bands, got ${bands.length}`)
     }
 
-    // The billboard list is what ties the material to LAYER.IMPOSTOR_GRASS.
-    // Every crossed quad in this batch wears GRASS_TUFT and is left alone, so
-    // the mesh tiers and the billboards share one material and therefore one
-    // draw call -- DESIGN.md §5's rule.
-    this.material = createPropMaterial(textureArray, { billboardLayers: grassBillboardLayers() })
+    // TUFTS: the billboard list is what ties the material to
+    // LAYER.IMPOSTOR_GRASS. Every crossed quad in this batch wears GRASS_TUFT
+    // and is left alone, so the mesh tiers and the billboards share one material
+    // and therefore one draw call -- DESIGN.md §5's rule.
+    //
+    // STRIPS: nothing billboards (a spinning strip sweeps its ends through the
+    // hillside, and not spinning is where the whole saving came from), and every
+    // quad in the batch is a strip -- so `stripTiling` is unconditional in the
+    // fragment stage rather than a per-layer branch, and nothing else in the
+    // project compiles it. Still one material and one draw call.
+    this.material = this.strips
+      ? createPropMaterial(textureArray, { stripTiling: true })
+      : createPropMaterial(textureArray, { billboardLayers: grassBillboardLayers() })
 
     const geos = bank.tiers.map((t) => t.geometry)
     this.batch = new THREE.BatchedMesh(
@@ -417,8 +517,8 @@ export class Grass {
     // of the veil is that it costs less than what it saves.
     this.instVis = new Uint8Array(this.maxInstances)
 
-    this.bandSq = Float32Array.from(LOD_BANDS, (b) => b * b)
-    this.bandSqOut = Float32Array.from(LOD_BANDS, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
+    this.bandSq = Float32Array.from(bands, (b) => b * b)
+    this.bandSqOut = Float32Array.from(bands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
 
     // key -> { tx, tz, ids, rank, n, q, u, near, queued }
     this.tiles = new Map()
@@ -432,6 +532,10 @@ export class Grass {
     this._s = new THREE.Vector3()
     this._c = new THREE.Color()
     this._up = new THREE.Vector3(0, 1, 0)
+    // YZX so that setFromEuler composes R_y(yaw) * R_z(tilt): the strip is
+    // yawed to its bearing and then rolled about its own long axis onto the
+    // slope. Any other order tilts about a world axis and skews the card.
+    this._e = new THREE.Euler(0, 0, 0, 'YZX')
 
     this.veilPhase = 0
     this.veiled = 0
@@ -781,7 +885,11 @@ export class Grass {
       const x = (tx + rand()) * TILE
       const z = (tz + rand()) * TILE
       const yaw = rand() * Math.PI * 2
-      const height = HEIGHT[0] + rand() * (HEIGHT[1] - HEIGHT[0])
+      const height = this.height[0] + rand() * (this.height[1] - this.height[0])
+      // The strip's tile count. Only strips draw it, so the tuft carpet's stream
+      // is byte-for-byte the one it always was and no tuft moves because the
+      // experiment exists.
+      const lenRoll = this.strips ? rand() : 0
       const tintT = rand()
       const tintV = rand()
       const u = rand()
@@ -821,26 +929,57 @@ export class Grass {
       rank[n] = u
       n++
 
-      // Height is the roll; width follows it by its SQUARE ROOT rather than
-      // linearly. A uniform scale would make a 1.5 m tuft 1.5 m across, which is
-      // a bush; sqrt keeps the short ones squat and lets the tall ones be tall
-      // and comparatively narrow, which is what long grass looks like. x and z
-      // take the same factor, so the horizontal scaling stays isotropic and the
-      // billboard's yaw-about-Y still commutes with it.
-      const sy = height / GRASS_BASE.height
-      const sxz = Math.sqrt(sy)
+      const sy = height / this.baseHeight
+      if (this.strips) {
+        // ONE EXTRA HEIGHT SAMPLE AT EACH END, and the strip is rolled onto the
+        // line between them. A flat card metres long cannot follow ground any
+        // other way and stay at two triangles (see buildGrassStripBank), and not
+        // following it at all is not an option: 4 m of run at the 38 degree
+        // slope limit is 3.1 m of rise, so one end would be underground and the
+        // other in the air. Two heightAt calls at ~0.71 us against the ~3.8 us
+        // heightAndSlopeAt above, on a third as many instances as the tuft bed
+        // places -- the boot gets cheaper, not dearer.
+        // A WHOLE NUMBER OF SQUARE TILES. The bank bakes uvProj.x 0..T where T
+        // is the count that draws the cutout unstretched at the bank's own
+        // proportions; the fragment stage rescales that by this instance's own
+        // x/y scale ratio, so setting x from a tile COUNT is the whole of what
+        // makes a strip 1 or 4 clumps long. Nothing else has to be told.
+        const nTiles = STRIP_TILES[0]
+          + Math.min(STRIP_TILES[1] - STRIP_TILES[0], Math.floor(lenRoll * (STRIP_TILES[1] - STRIP_TILES[0] + 1)))
+        const sx = (sy * nTiles * STRIP_BASE.height) / STRIP_BASE.width
+        // Local +X after a yaw about Y is (cos yaw, 0, -sin yaw).
+        const ax = Math.cos(yaw) * STRIP_BASE.width * sx * 0.5
+        const az = -Math.sin(yaw) * STRIP_BASE.width * sx * 0.5
+        const h0 = this.field.heightAt(x - ax, z - az)
+        const h1 = this.field.heightAt(x + ax, z + az)
+        // atan2 against the HORIZONTAL span, which is what makes the quad land
+        // exactly on the plane through the two samples: its ends come to rest
+        // at +-halfSpan*cos(tilt) horizontally and +-halfSpan*sin(tilt)
+        // vertically, and so does the ground.
+        this._e.set(0, yaw, Math.atan2(h1 - h0, 2 * Math.hypot(ax, az)))
+        this._q.setFromEuler(this._e)
+        this._s.set(sx, sy, sx)
+        this.instY[id] = (h0 + h1) * 0.5 - this.sink * sy
+      } else {
+        // Height is the roll; width follows it by its SQUARE ROOT rather than
+        // linearly. A uniform scale would make a 1.5 m tuft 1.5 m across, which
+        // is a bush; sqrt keeps the short ones squat and lets the tall ones be
+        // tall and comparatively narrow, which is what long grass looks like. x
+        // and z take the same factor, so the horizontal scaling stays isotropic
+        // and the billboard's yaw-about-Y still commutes with it.
+        const sxz = Math.sqrt(sy)
+        // A YAW ON A THING THAT BILLBOARDS IS NOT WASTED: up close it is what
+        // stops a bed of one geometry reading as cloned; far away the shader
+        // divides it back out, and its sign decides whether the card shows its
+        // picture mirrored. One roll, three jobs.
+        this._q.setFromAxisAngle(this._up, yaw)
+        this._s.set(sxz, sy, sxz)
+        this.instY[id] = h - this.sink * sy
+      }
 
       this.instX[id] = x
-      this.instY[id] = h - PLACEMENT.sink * sy
       this.instZ[id] = z
-
       this._p.set(x, this.instY[id], z)
-      // A YAW ON A THING THAT BILLBOARDS IS NOT WASTED: up close it is what
-      // stops a bed of one geometry reading as cloned; far away the shader
-      // divides it back out, and its sign decides whether the card shows its
-      // picture mirrored. One roll, three jobs.
-      this._q.setFromAxisAngle(this._up, yaw)
-      this._s.set(sxz, sy, sxz)
       this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
 
       // The whole colour of this tuft, not a tint over coloured art -- see
@@ -968,6 +1107,9 @@ export class Grass {
    * flashing.
    */
   bakeCards(renderer) {
+    // Strips have no impostor tier: they wear GRASS_TUFT itself, tiled. Nothing
+    // to photograph, and baking anyway would write a layer nothing samples.
+    if (this.strips) return null
     const t0 = performance.now()
     const baked = bakeGrassImpostor(renderer, this.textureArray)
     this.cardBakeMs = performance.now() - t0
@@ -981,6 +1123,7 @@ export class Grass {
 
   get stats() {
     return {
+      style: this.style,
       placed: this.placed,
       // Resident but hidden because the dither had already dissolved them --
       // see VEIL_PHASES. `placed - veiled` is what actually reaches the GPU.
@@ -995,7 +1138,7 @@ export class Grass {
       density: this.density,
       fullRadius: this.fullRadius,
       radius: this.radius,
-      heightRange: HEIGHT,
+      heightRange: this.height,
       bankKB: Math.round(this.bank.bytes / 1024),
       rejected: this.rejected,
       buildMs: this.buildMs,
@@ -1028,6 +1171,10 @@ export const GRASS_TUNING = {
   HEIGHT,
   PLACEMENT,
   GRASS_TINTS,
+  STRIP_DENSITY,
+  STRIP_HEIGHT,
+  STRIP_TILES,
+  STRIP_SINK,
 }
 
 /** sRGB transfer curve. Same one tools/trees/generate.mjs authors the tints with. */

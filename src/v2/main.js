@@ -4,6 +4,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js'
 import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, WORLD_HALF } from './config.js'
 import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
+import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
@@ -19,7 +20,7 @@ import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
 import { Rocks } from './render/rocks.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
-import { setSnow, setMoss, setPropClock } from '../material.js'
+import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -181,10 +182,98 @@ let roads = null
 let trees = null
 let ferns = null
 let grass = null
+let propTextures = null
 let rocks = null
 let editor = null
 let panel = null
 let ready = false
+
+// ---------------------------------------------------------------------------
+// THE RELIEF KNOBS. See height/relief.js for what each one is; this is only
+// where the live value lives and how it reaches the world.
+//
+// A MODULE-LEVEL let AND NOT PART OF THE DOCUMENT, deliberately. layers.json is
+// the world a human authored and is committed to the repo; relief is an
+// ablation setting for looking at that world two ways. Putting it in the
+// document would mean every experiment with a knob showed up as a diff to be
+// explained, and worse, would ship whichever setting happened to be on when the
+// file was last saved.
+//
+// localStorage AND NOT A URL PARAMETER, which was the other option. A reload
+// with the knobs still where you left them is the whole point of a session
+// spent A/B-ing them, and a query string does not survive the editor's own
+// reload-on-save.
+const RELIEF_KEY = 'v2.relief'
+let relief = RELIEF_DEFAULTS
+
+/**
+ * Read the stored relief, falling back to all-off.
+ *
+ * The catch is around normalizeRelief as much as around JSON.parse: a knob
+ * renamed or removed since the value was written makes it THROW rather than
+ * silently drop the key, which is right for a postMessage and wrong here --
+ * being unable to boot because of a stale HUD setting is not a failure mode
+ * worth having. Anything unreadable is reported once and replaced with off,
+ * which is the state the world ships in anyway.
+ */
+function loadRelief() {
+  const raw = localStorage.getItem(RELIEF_KEY)
+  if (!raw) return RELIEF_DEFAULTS
+  try {
+    return normalizeRelief(JSON.parse(raw))
+  } catch (err) {
+    console.warn(`[v2] discarding stored relief: ${err.message}`)
+    localStorage.removeItem(RELIEF_KEY)
+    return RELIEF_DEFAULTS
+  }
+}
+
+// Which grass system is standing. 'tufts' is the shipped one; 'strips' is the
+// experiment described in the header of buildGrassStripBank -- one flat card,
+// metres wide, drawing the same cutout several times across itself, at about a
+// third of the triangles for the same amount of grass facing the camera. The
+// panel swaps between them so the two can be compared in the same light on the
+// same hillside, which is the only way to judge whether the strip's flatness
+// costs more than its triangles are worth.
+let grassStyle = 'tufts'
+// Whether the prop atlas' PNGs have landed. The tuft's far tier is a photograph
+// of the tuft, so a Grass built after they land has to bake immediately rather
+// than waiting for a promise that has already resolved.
+let propLayersReady = false
+
+/**
+ * Stand up a grass system in the given style, tearing down whatever was there.
+ *
+ * Rebuilding rather than reconfiguring, because nearly everything about the two
+ * is different: the geometry bank, the material's compiled program, the density,
+ * the height range and whether there is an LOD ladder at all. The tiled scatter
+ * is a pure function of position (see render/grass.js), so the new bed is fully
+ * grown by the time this returns and there is no frame where the ground is bare.
+ */
+function buildGrass(style, cx, cz, opts = {}) {
+  if (grass) {
+    scene.remove(grass.batch)
+    grass.dispose()
+    grass = null
+  }
+  grassStyle = style
+  grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, { seed: SEED, style, ...opts })
+  // The cache key carries the style: the two materials compile DIFFERENT
+  // programs (one billboards, one tiles), and a shared key would hand the second
+  // one the first one's.
+  lighting.patch(grass.material, { mode: 'vertex', cacheKey: `v2-grass-${style}` })
+  grass.syncSnowLine(layers)
+  grass.place(cx, cz)
+  if (propLayersReady) grass.bakeCards(renderer)
+  const gs = grass.stats
+  const gr = gs.rejected
+  console.log(
+    `[v2] grass (${gs.style}) ${gs.placed} of ${gs.samples} placed over ${gs.tiles} tiles in ` +
+    `${gs.placeMs.toFixed(0)} ms (${gs.density}/m^2 to ${gs.fullRadius} m, thinning to ` +
+    `${gs.radius} m, pool ${gs.used}/${gs.pool}; dropped: ${gr.elev} elev, ${gr.slope} slope, ` +
+    `${gr.water} water, ${gr.snow} snow, ${gr.path} path)`
+  )
+}
 
 // --- boot -------------------------------------------------------------------
 
@@ -254,9 +343,15 @@ async function bootWorld() {
   bootSay(`loading <b>${HEIGHTMAP_URL}</b> ...`)
   const heightmap = await Heightmap.load({ url: HEIGHTMAP_URL, metaUrl: HEIGHTMAP_META_URL })
 
+  // BEFORE the scratch V2Height, because the relief changes what `bands` says
+  // and the snow defaults are derived from bands. Booting with the knobs off and
+  // applying them afterwards would put the snow line where the unrelieved world
+  // wanted it and then move the ground out from under it.
+  relief = loadRelief()
+
   // The scratch document. See the header: `bands` needs a V2Height and the snow
   // defaults need `bands`, so something has to be constructed first.
-  height = new V2Height({ heightmap, layers: new Layers(), seed: SEED })
+  height = new V2Height({ heightmap, layers: new Layers(), seed: SEED, relief })
   const bands = height.bands
 
   bootSay('loading <b>world/layers.json</b> ...')
@@ -271,7 +366,7 @@ async function bootWorld() {
   )
 
   bootSay('meshing ...')
-  terrain = new TerrainV2(scene, { heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), workers: 2 })
+  terrain = new TerrainV2(scene, { heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2 })
 
   lighting.patch(terrain.material, {
     mode: 'fragment',
@@ -306,7 +401,7 @@ async function bootWorld() {
   // first frame wearing whatever the procedural layers already hold. The card
   // BAKE does wait, because a photograph taken before the bark has loaded would
   // be a photograph of nothing -- see Trees.bakeCards.
-  const propTextures = buildTextureArray()
+  propTextures = buildTextureArray()
   // `ground: terrain` is what stops distant trees floating: a tree's Y comes off
   // the chunk mesh that is actually drawn under it, not off the exact field the
   // chunk's triangles are chording across. See Trees._groundFor.
@@ -367,18 +462,22 @@ async function bootWorld() {
   // dither at each tuft's own cull distance so nothing pops. A fixed disc at
   // this density would be 46,000 instances for the same horizon. See
   // render/grass.js, which lays out where its ~54k triangles go.
-  grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, { seed: SEED })
-  lighting.patch(grass.material, { mode: 'vertex', cacheKey: 'v2-grass-bb' })
-  grass.syncSnowLine(layers)
-  grass.place(spawn.x, spawn.z)
-  const gs = grass.stats
-  const gr = gs.rejected
-  console.log(
-    `[v2] grass ${gs.placed} of ${gs.samples} placed over ${gs.tiles} tiles in ` +
-    `${gs.placeMs.toFixed(0)} ms (${gs.density}/m^2 to ${gs.fullRadius} m, thinning to ` +
-    `${gs.radius} m, pool ${gs.used}/${gs.pool}; dropped: ${gr.elev} elev, ${gr.slope} slope, ` +
-    `${gr.water} water, ${gr.snow} snow, ${gr.path} path)`
-  )
+  buildGrass(grassStyle, spawn.x, spawn.z)
+  // A/B hooks for the strip experiment, from the console. `M` swaps the system;
+  // these tune it without a reload.
+  //
+  //   v2grass.tiling({ keep, short, flare })  the per-tile treatment, live --
+  //     `keep` is the fragment mask and is OFF at 1.0 by default; see the note
+  //     by stripKeep in material.js for why it is a LOOK knob and not a
+  //     performance one, since the strip is two triangles either way.
+  //   v2grass.size([lo, hi])  the height range in metres, which is also the
+  //     clump WIDTH because a tile is square. Rebuilds, because the bed's
+  //     density is tuned against it.
+  window.v2grass = {
+    style: (s) => { player.headPosition(headTmp); buildGrass(s, headTmp.x, headTmp.z) },
+    tiling: (o) => { setStripTiling(o); return getStripTiling() },
+    size: (h) => { player.headPosition(headTmp); buildGrass(grassStyle, headTmp.x, headTmp.z, { height: h }) },
+  }
 
   // Stone, in three size beds at once: pebbles underfoot, boulders through the
   // wood and across the cliffsides, and giants on the crags and the summits.
@@ -418,9 +517,18 @@ async function bootWorld() {
   // Separate calls would be separate decodes of the same PNGs into the same
   // atlas.
   loadImageLayers(propTextures).then(() => {
-    trees.bakeCards(renderer)
+    propLayersReady = true
+    const baked = trees.bakeCards(renderer)
     ferns.bakeCards(renderer)
     grass.bakeCards(renderer)
+    // The one measurement that says whether the impostor bake rig is aimed
+    // right, and there is nowhere else it can be taken: the bake needs a live
+    // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
+    // for what these numbers are supposed to be.
+    console.log(
+      'tree impostors baked:',
+      baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+    )
   })
 
   editor = new Editor({
@@ -448,7 +556,7 @@ async function bootWorld() {
   waterSurfaces.setVisibility(isVisible)
   roads.setVisibility(isVisible)
 
-  panel = new Panel({ layers, editor, onTool, onAction })
+  panel = new Panel({ layers, editor, relief, onTool, onAction, onRelief })
 
   ready = true
   bootDone()
@@ -480,6 +588,76 @@ function onDirty(rect) {
   terrain.setLayers(layers.serialize(), rect)
   waterSurfaces.rebuild()
   roads.rebuild()
+}
+
+/**
+ * A relief knob moved. This is the one call in the file that changes the SHAPE
+ * OF THE GROUND, and everything below follows from that one fact.
+ *
+ * THE ORDER IS LOAD-BEARING, and each step is here because leaving it out is a
+ * visible bug rather than a missed optimisation:
+ *
+ *   1. `height.setRelief` first, and synchronously. It is the slow half -- a
+ *      full-field erosion at the top of the erode knob -- and every step after
+ *      it reads the field it rebuilds. It is also the field the PLAYER collides
+ *      with, so until it is current she is standing on the old mountain.
+ *   2. `terrain.setRelief` posts to both workers, which rebuild their own copies
+ *      concurrently with nothing here. The workers hold SEPARATE V2Height
+ *      instances (see relief.js's banner and V2Height's WORLD_SEED comment); a
+ *      knob that reached one and not the other is the hover-or-sink failure that
+ *      module exists to prevent, and neither call can be dropped for the other.
+ *   3. `bands` is re-read, because the relief moves the world's own min and max
+ *      -- erosion alone takes metres off the summits -- and the rock beds and
+ *      the snow line are both expressed against that range.
+ *   4. Every prop layer is re-placed. Props are scattered ONTO the field: their
+ *      y comes from a heightAt taken when they were placed, so a tree placed on
+ *      the old surface stands in the air over an eroded one. Re-placing is the
+ *      only correction available, since nothing keeps the site list.
+ *   5. The player is lifted onto the new ground, for the same reason and because
+ *      the alternative -- falling through a summit that just dropped 3 m -- is
+ *      the one that is actually alarming.
+ *
+ * WHAT IS NOT HERE. No `onDirty`: the document did not change, so there is
+ * nothing to autosave, no undo entry, and no layer rebake. Water and roads are
+ * untouched for the same reason -- both are authored surfaces at authored
+ * elevations, and a lake does not move because the hillside beside it grew a
+ * crag. That is deliberate rather than an oversight: relief is gated off flat,
+ * concave ground precisely so that it cannot walk a river out of its bed.
+ */
+function onRelief(next) {
+  const want = normalizeRelief(next)
+  if (sameRelief(want, relief)) return
+  relief = want
+  localStorage.setItem(RELIEF_KEY, JSON.stringify(relief))
+
+  const t0 = performance.now()
+  height.setRelief(relief)
+  const fieldMs = performance.now() - t0
+  terrain.setRelief(relief)
+
+  const bands = height.bands
+  const cx = player.rig.position.x
+  const cz = player.rig.position.z
+
+  trees.syncSnowLine(layers)
+  trees.place(cx, cz)
+  ferns.syncSnowLine(layers)
+  ferns.place(cx, cz)
+  grass.syncSnowLine(layers)
+  grass.place(cx, cz)
+  rocks.syncBands(layers)
+  rocks.place(cx, cz)
+
+  // Re-seat her at the same x/z on the new surface. spawnAt is the only method
+  // that resolves y from the field rather than integrating toward it, and the
+  // zeroed speed it also does is wanted here: the ground moved under her, so any
+  // momentum she had was measured against terrain that no longer exists.
+  player.spawnAt(cx, cz)
+
+  console.log(
+    `[v2] relief ${JSON.stringify(relief)} -- field ${fieldMs.toFixed(0)} ms, ` +
+      `world ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, props re-placed`
+  )
 }
 
 /**
@@ -586,6 +764,7 @@ const KEY_ACTIONS = {
   u: 'unstick',
   n: 'timeSkip',
   p: 'auroraPattern',
+  m: 'grassStyle',
   '[': 'coarser',
   ']': 'finer',
 }
@@ -604,6 +783,7 @@ const CODE_ACTIONS = {
   ShiftRight: 'flyDown',
   KeyN: 'timeSkip',
   KeyP: 'auroraPattern',
+  KeyM: 'grassStyle',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
 }
@@ -694,6 +874,13 @@ addEventListener('keydown', (e) => {
 
   if (fresh.includes('timeSkip')) skipTime()
   if (fresh.includes('auroraPattern')) cycleAurora()
+  // M swaps the whole grass system under the player's feet, in place, so the
+  // two can be judged against the same hillside in the same light. Rebuilding
+  // the bed is ~100 ms of one frame; a swap is not something a player does.
+  if (fresh.includes('grassStyle')) {
+    player.headPosition(headTmp)
+    buildGrass(grassStyle === 'tufts' ? 'strips' : 'tufts', headTmp.x, headTmp.z)
+  }
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped multiplicatively
   // because the perceptual distance from 1.0 to 1.2 degrees is nothing like the
@@ -793,7 +980,16 @@ function applySky(state, head, elapsedReal) {
   hemi.intensity = state.hemiIntensity
 
   setSRGB(scene.fog.color, state.fog)
-  scene.fog.density = state.fogDensity
+  // hazeDensity, NOT fogDensity, and that is what makes v2's distance read as
+  // aerial perspective rather than as a wash. The FogExp2 density is the
+  // EXTINCTION coefficient of lighting.js's two-term aerial model -- how fast a
+  // surface stops being its own colour -- and `scene.fog.color` is only the far
+  // end of the ramp it lands on; the near end rides in a uniform of its own.
+  // See the note on the pair in clock.js for why the two densities cannot be
+  // one number, and note that this is the scene's OWN fog object, so v1 keeps
+  // fogDensity and is not touched. It also reaches the lake for free: water.js
+  // reads the same fogDensity, so v2's water and v2's land recede at one rate.
+  scene.fog.density = state.hazeDensity
   setSRGB(tmpCol, state.fog)
   scene.background.copy(tmpCol)
 
