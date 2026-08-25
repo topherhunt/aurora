@@ -155,16 +155,13 @@ self.onmessage = (e) => {
     // ramp their unmeshed neighbours are not using. A seam that follows the brush
     // is a worse lie than a ramp that is a stroke out of date.
     //
-    // THAT IS NO LONGER TRUE OF `bands`, and it was not this file that changed
-    // it. V2Height.coarsePatched, which the erosion knob obliges the call to
-    // below, opens by setting `_bands = null` UNCONDITIONALLY -- erode off
-    // included -- so as of the relief knobs every stroke does put the 1024^2
-    // histogram back inside whichever chunk asks first, which is exactly the
-    // brush-following seam the paragraph above exists to prevent. It is not this
-    // file's to fix: the invalidation belongs to the eroded ground moving, not to
-    // the patch, so the guard belongs under the `needs.erode` return in
-    // field.js. Until it moves, this is the first thing to suspect if the sculpt
-    // brush starts leaving a colour edge trailing behind it again.
+    // The relief knobs do not change that. `_bands = null` lives in V2Height's
+    // relief rebuild, where erosion has just moved every texel the histogram was
+    // built from, and NOT in coarsePatched -- which is the call the erosion knob
+    // obliges below, and which a stroke reaches on every brush tick. So a sculpt
+    // still leaves the ramp a stroke out of date on purpose, and a relief change
+    // still refits it, which is what each of them wants. If the brush ever starts
+    // trailing a colour edge again, that separation is the first thing to check.
     //
     // field.calibration.rough is the detail amplitude, fitted to the IMPORT'S
     // structure function at 2 and 4 texel lags across the whole world. It

@@ -230,9 +230,24 @@ export class V2Height {
    * Only erosion cares, and it cares absolutely: with erosion on, the world is
    * built on a derived copy, and a brush stroke that updated the import and not
    * the copy would be an invisible brush AND a player colliding with ground that
-   * is no longer drawn. Material moves one texel per pass, so re-relaxing the
-   * rect plus a `passes`-wide halo reproduces exactly what a full-field run would
-   * have put there.
+   * is no longer drawn.
+   *
+   * THE RESULT IS SPLICED INTO THE STANDING COPY, NOT SUBSTITUTED FOR IT, and
+   * that is the whole subtlety of this function. `thermalErode` returns a copy of
+   * the IMPORT with the region it was given relaxed -- so everything outside that
+   * region comes back un-eroded. Handing the return value straight to
+   * `this.ground` therefore reverted the entire eroded world to the import on the
+   * first tick of the first stroke: measured on the shipped field at 20 passes,
+   * one 200 m stamp moved 8.8% of the world's texels by up to 148 m, most of it
+   * nowhere near the brush. On screen that is the whole range visibly snapping
+   * back the instant the brush is pressed.
+   *
+   * Material moves one texel per pass, so a texel further than `passes` from a
+   * changed import texel cannot hear about the change: `rect` grown by `passes`
+   * is exactly the region whose eroded height can differ, and everything outside
+   * it is already correct in the standing copy. `thermalErode` grows what it is
+   * given by `passes + 1` before relaxing, so handing it the grown rect makes the
+   * grown rect itself exact rather than merely close.
    *
    * NEITHER `bands` NOR THE EXPOSURE GRID REFRESHES HERE, and both omissions are
    * decisions rather than oversights.
@@ -252,12 +267,23 @@ export class V2Height {
   coarsePatched(rect) {
     if (!this.needs.erode) return
     const src = this.heightmap
-    const eroded = thermalErode(src.field, src.width, src.height, src.texelSize, {
-      passes: this.relief.erode,
+    const passes = this.relief.erode
+    const w = src.width
+    const i0 = Math.max(0, rect.i0 - passes)
+    const j0 = Math.max(0, rect.j0 - passes)
+    const i1 = Math.min(w, rect.i1 + passes)
+    const j1 = Math.min(src.height, rect.j1 + passes)
+    const fresh = thermalErode(src.field, w, src.height, src.texelSize, {
+      passes,
       talusDeg: this.relief.talus,
-      rect,
+      rect: { i0, j0, i1, j1 },
     })
-    this.ground = Heightmap.fromRaw({ width: src.width, height: src.height, data: eroded, meta: src.meta })
+    const data = Float32Array.from(this.ground.field)
+    for (let j = j0; j < j1; j++) {
+      const row = j * w
+      data.set(fresh.subarray(row + i0, row + i1), row + i0)
+    }
+    this.ground = Heightmap.fromRaw({ width: w, height: src.height, data, meta: src.meta })
   }
 
   _syncAuthored() {

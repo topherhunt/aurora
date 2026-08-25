@@ -513,31 +513,62 @@ export class TerrainV2 {
   // The full reset. Everything cached is now wrong, so free it rather than
   // waiting for eviction to notice, and re-seed the base layer straight away so
   // the coarse fallback still resolves.
+  //
+  // THE PINNED BASE LAYER IS HELD RATHER THAN FREED, and that one exception is
+  // the difference between this reading as a coarsening and reading as the world
+  // switching off. Freeing all 21 of them too meant the ancestor walk had nothing
+  // to find for the length of a whole rebuild -- with `erode` up that is a worker
+  // rebuild of about 240 ms before the first base chunk is even meshed -- so
+  // every relief change flashed the entire view to sky. `setRelief` is driven off
+  // a HUD scrub that commits on every 4 px tick, so that was not one blink but a
+  // view that stayed empty for as long as the drag lasted, which defeats the
+  // point of a knob you drag in order to watch the ridge line move.
+  //
+  // Holding costs no new slots: these entries keep the ones they already own and
+  // are re-meshed in place, exactly as _invalidateRect's 'hold' does. What is on
+  // screen meanwhile is one epoch stale and 64 m per cell -- far too coarse to
+  // look at, and the right shape, which is the whole argument for pinning them.
   _invalidateAll() {
     invalidateAll(this._floors, this.epoch)
     // These bounds describe a world that no longer exists, and a stale maxY makes
     // a node look nearer than it is, which over-refines.
     this.info.clear()
 
-    for (const entry of this.cache.values()) {
+    this.stats.invalidated = this.cache.size
+    for (const [key, entry] of this.cache) {
+      // Slot, not state: a pinned entry still waiting for its first reply has
+      // nothing to hold, and holding it would leave _seedBaseLayer's re-request
+      // looking at a 'pending' entry that _send will not pick up.
+      if (entry.pinned && entry.slot) {
+        entry.state = 'queued'
+        entry.lastUsed = this.frame
+        continue
+      }
       if (entry.slot) {
         this.batch.setVisibleAt(entry.slot.instanceId, false)
         entry.visible = false
         this._free.push(entry.slot)
+        entry.slot = null
       }
+      this.cache.delete(key)
     }
-    this.stats.invalidated = this.cache.size
-    this.cache.clear()
+    // Both are recomputed from scratch by the next selection pass, and the held
+    // entries are found again there by _isDrawable, which asks for a slot rather
+    // than for a state.
     this._render.clear()
     this._standIns.clear()
     this._editPending.clear()
     this.queue.length = 0
     this._baseQueue.length = 0
     this._editQueue.length = 0
-    // Every in-flight reply is now below the global floor and will be dropped,
-    // but the counter has to come back or _pump stays throttled against requests
-    // that will never land.
-    this.inFlight = 0
+    // inFlight IS NOT ZEROED HERE, and the version that did was a slow leak. Every
+    // outstanding reply still arrives and still runs `this.inFlight--` before the
+    // staleness gate drops it, so zeroing left the counter at -K and permanently
+    // K below the truth -- one more -K per invalidation. _pump's `inFlight < cap`
+    // then never throttles, the queues go to the workers whole, and the in-flight
+    // cap that guarantees a landing reply finds a free slot stops holding: the
+    // symptom is `v2 terrain slot pool exhausted` thrown out of the render loop
+    // after a scrub, which looks nothing like its cause.
     this._seedBaseLayer()
   }
 

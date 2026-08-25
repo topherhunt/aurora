@@ -3,9 +3,10 @@ import {
   Builder, WALL_STYLE, TINT, member2, gableEnd, leanEnd,
   plinth, doorway, steps2, SMOOTH_LAYERS,
   wall2, planGableRoof, planLeanRoof, drawRoof, windowUnit2, chimney2, porch2,
-  clearUnder,
+  clearUnder, doorHeight, wallOpenings,
 } from './parts.js'
 import { makeCharacter, makeWarp, warpBuilder, smoothNormals } from './warp.js'
+import { windowHalfWidth } from '../plan.js'
 
 // ---------------------------------------------------------------------------
 // plan -> geometry, v2. DESIGN.md §19.
@@ -42,6 +43,7 @@ const STYLE_OF = {
   stave: WALL_STYLE.STAVE,
   halfTimber: WALL_STYLE.HALF_TIMBER,
   stoneBase: WALL_STYLE.STONE_BASE,
+  masonry: WALL_STYLE.MASONRY,
 }
 
 /** Roof kind -> the layer and tint that render it, as v1. `slate` is SHINGLE at
@@ -154,7 +156,10 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
       if (m.roof.kind === 'gable') gableEnds(b, m, style, 0)
       else leanEnds(b, m, style)
     }
-    doorway(b, { ...plan.door, seed: plan.seed * 53 + 3, detail: 0 })
+    doorway(b, {
+      ...plan.door, height: doorHeight(plan.door, roofs.get(plan.masses[0].id).heightAt),
+      seed: plan.seed * 53 + 3, detail: 0,
+    })
     plan.windows.forEach((wn, i) => windowUnit2(b, {
       ...wn, seed: plan.seed * 53 + 11 + i, detail: 0, topAt: roofs.get(wn.massId).heightAt,
     }))
@@ -191,6 +196,42 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   // timber. Hence two numbers rather than one.
   const roofs = planRoofs(detail, plan.overhang ?? 0.4, 0.3)
 
+  // --- what the walls have to make room for --------------------------------
+  //
+  // Computed here, before a single wall is drawn, because the door's height is
+  // an INPUT to the wall and not just to the doorway: a log course is cut around
+  // the surround, so the wall has to be told the same number the surround will
+  // eventually be built at. Working it out twice would be two chances to get a
+  // different answer and a log lying across the top of the door.
+  //
+  // The door is always on mass 0's front wall (see plan.js), which is why it can
+  // take that mass's roof without carrying a `massId` of its own.
+  const doorH = doorHeight(plan.door, roofs.get(plan.masses[0].id).heightAt)
+  // `nx`/`nz` are not decoration: `wall2` resolves each opening into a box in
+  // the wall's own frame, and without the opening's facing it has no frame to
+  // resolve it in. Leaving them off does not throw, it quietly makes every
+  // comparison a NaN one -- which is false -- so the wall dodges nothing at all.
+  const openings = [
+    {
+      x: plan.door.x, z: plan.door.z, nx: plan.door.nx, nz: plan.door.nz,
+      hw: plan.door.width / 2,
+      // The band the SURROUND fills, not the leaf: `y1` is the top of the lintel,
+      // and a course level with the lintel is as wrong as one across the opening.
+      y0: plan.door.y0, y1: plan.door.y0 + doorH + 0.2, solid: true,
+    },
+    // A window is much wider than its glass. The surround adds 7 cm a side, and
+    // an open shutter swings another leaf-width clear of that, so a shuttered
+    // 0.72 m window occupies 1.6 m of wall. Declaring only the glass is what put
+    // studs through shutters: `wall2` dodged an opening 0.48 m wide while the
+    // thing standing there was 0.80 m wide. These two numbers are read off
+    // `windowUnit2`'s `ow` and `leafW` and have to move with them.
+    ...plan.windows.map((wn) => ({
+      x: wn.x, z: wn.z, nx: wn.nx, nz: wn.nz,
+      hw: windowHalfWidth(wn),
+      y0: wn.y0, y1: wn.y0 + wn.height + 0.12, solid: false,
+    })),
+  ]
+
   plan.walls.forEach((wl, i) => {
     if (wl.buried) return
     const m = plan.masses.find((mm) => mm.id === wl.massId)
@@ -205,22 +246,49 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
     // and has no folds to be handed except the ridge itself.
     const alongX = Math.abs(wl.p1[0] - wl.p0[0]) > Math.abs(wl.p1[1] - wl.p0[1])
     const isGableEnd = m.roof.kind === 'gable' && alongX !== (m.ridgeAxis === 'x')
+    // A SLIVER is the scrap of gable standing above an abutting wing's roof: the
+    // rest of the wall really is buried, and `wl.y0` is where the neighbour's
+    // covering stops hiding it. Two things follow. It starts there rather than at
+    // the floor, or it would be metres of wall built inside next door's attic.
+    // And it is `plain`: it is the one wall on the building nobody can stand
+    // close to, so it keeps the roof-following top edge -- which is the whole
+    // reason it exists -- and gives up the quoins, studs and log ends, which at
+    // full carpentry pushed the worst inn a hundred triangles past the §5 budget.
     wall2(b, {
-      p0: wl.p0, p1: wl.p1, y0: m.floorY, y1: m.eaveY,
+      // 6 cm BELOW the plinth top, not at it. The plinth's top is one slab face
+      // spanning the whole footprint -- a single triangle 9 x 6 m on an inn --
+      // and the wall base is a chord subdivided at its own columns, so the field
+      // lifts one off the other by a few millimetres and the joint the two were
+      // planned to share opens along the ground. Overlapping it costs nothing:
+      // the wall foot is inside the plinth, which is solid.
+      p0: wl.p0, p1: wl.p1, y0: (wl.y0 ?? m.floorY) - 0.06, y1: m.eaveY,
       style, seed: wl.massId + (wl.side === 'front' || wl.side === 'back' ? 0 : 1),
       rough: plan.seed * 131 + i * 7 + 1,
-      detail, k,
+      detail, k, plain: !!wl.sliver,
       topAt: R.heightAt,
       topBreaks: R.breaksAlong,
       topCols: detail >= 2 ? 0 : (isGableEnd ? 2 : 1),
+      openings,
     })
-    if (isGableEnd && detail >= 2) {
+    if (isGableEnd && detail >= 2 && !wl.sliver) {
       // The king post, which used to live inside gableEnd(). Every timber gable
       // has one and it is what stops the tympanum reading as a blank triangle.
       // It gets `bow` because it is the longest unbroken vertical on the
       // building, and it reaches the sagged apex rather than a nominal one.
-      const mx = (wl.p0[0] + wl.p1[0]) / 2
-      const mz = (wl.p0[1] + wl.p1[1]) / 2
+      //
+      // It stands at the middle of the wall, and so does a window: an odd number
+      // of bays puts one dead centre, and this post was going through it. Same
+      // rule as a stud, and for the same reason -- the post can stand a little
+      // off centre and the window cannot move at all by the time we are here.
+      // 0.095 is its own half-section, 0.14 the clearance a timber this heavy
+      // needs to read as beside the window rather than crowding it.
+      const half = wl.len / 2
+      const a = wallOpenings({ p0: wl.p0, p1: wl.p1, openings })
+        .dodge(half, 0.095 + 0.07, 0.12, 0.14)
+      if (a === null) return
+      const t = a / wl.len
+      const mx = wl.p0[0] + (wl.p1[0] - wl.p0[0]) * t
+      const mz = wl.p0[1] + (wl.p1[1] - wl.p0[1]) * t
       member2(b, [mx, m.floorY, mz], [mx, clearUnder(R.heightAt, mx, mz, 0.13), mz], {
         hu: 0.095, sides: 6, seed: plan.seed * 131 + i * 7 + 2, round: 0.6,
         segments: 2, bow: k.bow,
@@ -236,7 +304,7 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   for (const m of plan.masses) drawRoof(b, roofs.get(m.id))
 
   // --- openings ------------------------------------------------------------
-  doorway(b, { ...plan.door, seed: plan.seed * 53 + 3, detail })
+  doorway(b, { ...plan.door, height: doorH, seed: plan.seed * 53 + 3, detail })
   // Each window ducks under the roof of the mass it is a window OF -- never the
   // building's, which on an ell is a different roof at a different height.
   plan.windows.forEach((wn, i) => windowUnit2(b, {

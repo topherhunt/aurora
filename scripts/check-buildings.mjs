@@ -42,13 +42,21 @@ import {
 import { readPng } from '../tools/props/png.mjs'
 
 const SEEDS = Number(process.argv[2] ?? 300)
-// §5, the `structure` prop class mesh tier. Raised from 1800 when the kit went
-// from boxes to hewn prisms (§19, "Rough-hewn"): the measured worst case moved
-// 1660 -> 2380 and the mean 766 -> 1064, and §5's village row moved with it.
+// §5, the `structure` prop class mesh tier, and the SAME number v2's gate
+// defends -- one budget, two kits, so a comparison between them is a comparison
+// of what they spend it on.
+//
+// Raised from 1800 when the kit went from boxes to hewn prisms (§19,
+// "Rough-hewn"): worst 1660 -> 2380, mean 766 -> 1064, and §5's village row moved
+// with it. Raised from 2500 to 2600 when a partly-covered wall stopped being
+// dropped whole: a wall that a wing hides the middle of is now two stretches
+// plus, where the wing is shorter than the wall, a sliver above its roof, and
+// the worst inn went 2380 -> 2576 buying the daylight gaps out of its interior.
 // This is a budget to be DEFENDED, not a number to raise whenever a part grows
-// -- it was raised once, deliberately, for the silhouette the whole style rests
-// on, and the next thing that wants triangles takes them from somewhere else.
-const STRUCTURE_BUDGET = 2500
+// -- both raises were deliberate and both were for correctness rather than for
+// decoration, and the next thing that wants triangles takes them from somewhere
+// else.
+const STRUCTURE_BUDGET = 2600
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -235,6 +243,11 @@ for (const [nx, nz] of NORMALS) {
     [`wall stave ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STAVE, seed, rough: seed, detail }), 'solid'],
     [`wall halfTimber ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.HALF_TIMBER, seed, rough: seed, detail }), 'solid'],
     [`wall stoneBase ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STONE_BASE, seed, rough: seed, detail }), 'solid'],
+    // 'flat', unlike the other four: v1's masonry is the texture and nothing
+    // else (the quoins are v2's), so it is one doubled quad and encloses no
+    // volume. Declaring it solid here would be asking the control kit to have a
+    // part it deliberately does not have.
+    [`wall masonry ${dir}`, (b, detail, seed) => wall(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.MASONRY, seed, rough: seed, detail }), 'flat'],
     [`gableEnd ${dir}`, (b, detail, seed) => gableEnd(b, { p0: at(-2, 0), p1: at(2, 0), y0: 2.4, apexY: 4.2, style: WALL_STYLE.LOG, seed, detail }), 'solid'],
     [`leanEnd ${dir}`, (b) => leanEnd(b, { p0: at(-1.5, 0), p1: at(1.5, 0), y0: 2, y1: 3.1, style: WALL_STYLE.LOG }), 'flat'],
   )

@@ -49,6 +49,7 @@ import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN, measureSite, measureAngle, roughnessO
 import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
 import { RELIEF_KNOBS, RELIEF_DEFAULTS, reliefIsOff } from '../src/v2/height/relief.js'
 import { thermalErode } from '../src/v2/height/erode.js'
+import { brushRect, stamp } from '../src/v2/height/sculpt.js'
 import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
@@ -1288,6 +1289,66 @@ export async function run({ heightmap } = {}) {
       // the bar is "some real fraction of the world", not a number fitted to
       // today's default.
       check(touched / eroded.length > 0.01, 'and it really did move the world, so that is not conservation by inaction', `${pct(touched / eroded.length)} of texels changed`)
+    }
+
+    // THE SCULPT PATH, WHICH IS THE ONLY PLACE THE ERODED COPY IS UPDATED
+    // INCREMENTALLY -- and the one place it went badly wrong.
+    //
+    // `thermalErode` with a rect returns a copy of the IMPORT with that rect
+    // relaxed, so everything outside the rect comes back UN-eroded. Assigning the
+    // return value straight to `field.ground` therefore threw the whole eroded
+    // world away on the first tick of the first stroke: 8.8% of the world's
+    // texels moved by up to 148 m, nearly all of them nowhere near the brush.
+    // Nothing throws when that happens; the range just snaps back to the import
+    // the instant the brush is pressed, and the player then collides with a
+    // surface that is no longer being drawn.
+    //
+    // The assertion is not "it changed less this time" -- it is EXACTNESS against
+    // a full-field re-erode of the same patched import, over a whole eight-stamp
+    // drag, because an incremental scheme that is merely close accumulates.
+    {
+      const eKnob = knobOf('erode')
+      const talus = knobOf('talus').off
+      const scratch = Heightmap.fromRaw({ width: hm.width, height: hm.height, data: Float32Array.from(hm.field), meta: hm.meta })
+      const f = new V2Height({ heightmap: scratch, layers, seed: WORLD_SEED, relief: { ...RELIEF_DEFAULTS, erode: eKnob.on, talus } })
+      const standing = Float32Array.from(f.ground.field)
+
+      let stampMs = 0
+      const RECTS = []
+      for (let k = 0; k < 8; k++) {
+        const x = 1200 + k * 90
+        const rect = brushRect(scratch, x, -800, 200)
+        stamp(scratch, { x, z: -800, radius: 200, mode: 'raise', amount: 5 })
+        RECTS.push(rect)
+        const t0 = performance.now()
+        f.coarsePatched(rect)
+        stampMs += performance.now() - t0
+      }
+
+      const truth = thermalErode(scratch.field, scratch.width, scratch.height, scratch.texelSize, { passes: eKnob.on, talusDeg: talus })
+      let differ = 0
+      let worst = 0
+      for (let i = 0; i < truth.length; i++) {
+        const d = Math.abs(f.ground.field[i] - truth[i])
+        if (d > 0) differ++
+        if (d > worst) worst = d
+      }
+      check(differ === 0, 'an eight-stamp drag leaves the eroded field bit-identical to a full re-erode', `${differ} texels differ, worst ${worst.toExponential(2)} m`)
+
+      // The half of that which is specifically the reverted-world bug: ground far
+      // outside every brush rect must not have moved at all. Stated separately
+      // because it is the half a future incremental scheme is most likely to
+      // break, and "0 texels differ" above would not say WHICH texels.
+      const far = (i, j) => RECTS.every((r) => i < r.i0 - 2 * eKnob.on || i >= r.i1 + 2 * eKnob.on || j < r.j0 - 2 * eKnob.on || j >= r.j1 + 2 * eKnob.on)
+      let moved = 0
+      for (let j = 0; j < scratch.height; j++) {
+        for (let i = 0; i < scratch.width; i++) {
+          if (!far(i, j)) continue
+          if (f.ground.field[j * scratch.width + i] !== standing[j * scratch.width + i]) moved++
+        }
+      }
+      check(moved === 0, 'and ground far from the brush is untouched -- the eroded world is spliced, not rebuilt from the import', `${moved} texels moved out of reach of any stamp`)
+      console.log(`        ${(stampMs / 8).toFixed(1)} ms per stamp incrementally, against the full-field figure above`)
     }
 
     // WALKABILITY, WHICH IS WHAT THESE KNOBS COST.

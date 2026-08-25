@@ -471,12 +471,23 @@ async function bootWorld() {
   //     by stripKeep in material.js for why it is a LOOK knob and not a
   //     performance one, since the strip is two triangles either way.
   //   v2grass.size([lo, hi])  the height range in metres, which is also the
-  //     clump WIDTH because a tile is square. Rebuilds, because the bed's
-  //     density is tuned against it.
+  //     clump WIDTH because a tile is square. Rebuilds.
+  //   v2grass.density(n)  strips per square metre at full density. Rebuilds, and
+  //     the triangle count is LINEAR in it -- the log line prints both.
+  //
+  // Those last two are the whole trade and they pull opposite ways: a strip is
+  // two triangles at any size, so halving `size` costs 4x the instances to cover
+  // the same ground. Both rebuild rather than reconfigure, because the pool, the
+  // tile candidate count and the bank all depend on them.
+  const rebuild = (opts) => {
+    player.headPosition(headTmp)
+    buildGrass(grassStyle, headTmp.x, headTmp.z, opts)
+  }
   window.v2grass = {
     style: (s) => { player.headPosition(headTmp); buildGrass(s, headTmp.x, headTmp.z) },
     tiling: (o) => { setStripTiling(o); return getStripTiling() },
-    size: (h) => { player.headPosition(headTmp); buildGrass(grassStyle, headTmp.x, headTmp.z, { height: h }) },
+    size: (h) => rebuild({ height: h }),
+    density: (d) => rebuild({ density: d }),
   }
 
   // Stone, in three size beds at once: pebbles underfoot, boulders through the

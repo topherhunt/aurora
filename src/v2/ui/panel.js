@@ -773,9 +773,10 @@ export class Panel {
    * Two shapes of widget, because the knobs are two kinds of thing. A term you
    * are ablating wants a button -- on, look, off -- and a term that only makes
    * sense inside another one (`aniso` inside `crag`, `talus` inside `erode`)
-   * wants a number, since `talus`'s "off" is 42 degrees and a button offering to
-   * toggle it to 42 means nothing. Every knob gets the number as well, so a term
-   * that reads well at 9 m can be walked to 12 without leaving the panel.
+   * wants a number, since `talus`'s "off" is 55 degrees -- the same angle as its
+   * "on" -- and a button offering to toggle 55 to 55 means nothing. Every knob
+   * gets the number as well, so a term that reads well at 12 m of crease can be
+   * walked down to 9 without leaving the panel.
    */
   _buildRelief() {
     const title = document.createElement('div')
@@ -805,7 +806,7 @@ export class Panel {
       b.className = 'p-btn p-i'
       // The `on` value in the <small>, where the tool row puts its hotkey: the
       // useful thing to know before pressing an ablation button is how hard it
-      // is about to push, and `crag 9` says nine metres of crease.
+      // is about to push, and `crag 12` says twelve metres of crease.
       b.innerHTML = `${escapeHtml(knob.label)}<small>${escapeHtml(knobText(knob.on))}</small>`
       b.title = knob.hint
       b.onclick = () => {
@@ -822,7 +823,7 @@ export class Panel {
     allOff.className = 'p-btn p-i'
     allOff.textContent = 'all off'
     // RELIEF_DEFAULTS, not a loop over the buttons: `talus` has no button and
-    // its off is 42, so anything that reset "what the buttons show" would leave
+    // its off is 55, so anything that reset "what the buttons show" would leave
     // it wherever it was and the world would not be the one relief.js's gate
     // asserts is bit-identical.
     allOff.title = 'back to RELIEF_DEFAULTS -- the world exactly as it is with no relief at all'

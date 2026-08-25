@@ -42,6 +42,7 @@ import {
   boxSection,
 } from '../src/buildings/v2/parts.js'
 import { makeCharacter, makeWarp, warpBuilder } from '../src/buildings/v2/warp.js'
+import { probeBuilding, selfCheck as probeSelfCheck, CORPUS_SEEDS, KIND_NAMES } from './probe-building-gaps.mjs'
 import { LAYER } from '../src/textures.js'
 
 const SEEDS = Number(process.argv[2] ?? 300)
@@ -153,6 +154,25 @@ for (const [nx, nz] of NORMALS) {
     [`wall stave ${dir}`, (b, detail, seed) => wall2(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STAVE, seed, rough: seed, detail }), 'solid'],
     [`wall halfTimber ${dir}`, (b, detail, seed) => wall2(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.HALF_TIMBER, seed, rough: seed, detail }), 'solid'],
     [`wall stoneBase ${dir}`, (b, detail, seed) => wall2(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.STONE_BASE, seed, rough: seed, detail }), 'solid'],
+    [`wall masonry ${dir}`, (b, detail, seed) => wall2(b, { p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.MASONRY, seed, rough: seed, detail }), 'solid'],
+    // A wall with a door cut into it. Two of them: the door on the wall's own
+    // line, which cuts every course it crosses in half, and a door on the wall
+    // AROUND THE CORNER, which cuts nothing but the interlock. Both leave log
+    // ends that the closure test has to see capped.
+    [`wall log doorway ${dir}`, (b, detail, seed) => wall2(b, {
+      p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.LOG, seed, rough: seed, detail,
+      openings: [{ x: at(0.3, 0)[0], z: at(0.3, 0)[1], nx, nz, hw: 0.5, y0: 0, y1: 2.1, solid: true }],
+    }), 'solid'],
+    [`wall log corner door ${dir}`, (b, detail, seed) => wall2(b, {
+      p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.LOG, seed, rough: seed, detail,
+      openings: [{
+        x: at(2, 0.55)[0], z: at(2, 0.55)[1], nx: -nz, nz: nx, hw: 0.5, y0: 0, y1: 2.1, solid: true,
+      }],
+    }), 'solid'],
+    [`wall halfTimber window ${dir}`, (b, detail, seed) => wall2(b, {
+      p0: at(-2, 0), p1: at(2, 0), y0: 0, y1: 2.4, style: WALL_STYLE.HALF_TIMBER, seed, rough: seed, detail,
+      openings: [{ x: at(0, 0)[0], z: at(0, 0)[1], nx, nz, hw: 0.6, y0: 1.1, y1: 2 }],
+    }), 'solid'],
     // A short wall, where the column count clamps to one and the subdivision has
     // to degrade to exactly what v1 drew rather than to a degenerate strip.
     [`wall short ${dir}`, (b, detail, seed) => wall2(b, { p0: at(-0.6, 0), p1: at(0.6, 0), y0: 0, y1: 2.4, style: WALL_STYLE.LOG, seed, rough: seed, detail }), 'solid'],
@@ -353,7 +373,7 @@ function topEdge(under, p0, p1) {
 
 {
   // How far anything may stand through the covering, and how far short the wall's
-  // top edge may fall of it. `short` includes the 2.5 cm tuck by construction --
+  // top edge may fall of it. `short` includes the 1.2 cm tuck by construction --
   // the wall is deliberately built that far under -- so the slack over it is what
   // the chord between two folds is allowed to sag.
   const THROUGH = { warp: 0.05, flat: 0.005 }
@@ -466,18 +486,182 @@ function topEdge(under, p0, p1) {
   check(bad.filter((s) => s.endsWith('short')).length === 0,
     'and the wall top follows it the whole way along',
     bad.some((s) => s.endsWith('short')) ? `e.g. ${bad.find((s) => s.endsWith('short'))}`
-      : `worst ${say(worst.short)}, tuck 0.025 included`)
+      : `worst ${say(worst.short)}, tuck 0.012 included`)
 }
 
 // ---------------------------------------------------------------------------
-// 3. The geometry.
+// 3. The doorway, and what the wall does about it.
+// ---------------------------------------------------------------------------
+//
+// A doorway is the one place in the kit where three separately-correct pieces
+// have to agree about the same volume of air. The wall wants to run its courses
+// and its studs from corner to corner. The surround wants to stand 2 m tall
+// wherever the plan put it. The roof wants to come down to whatever height the
+// eave falls to. Each is right on its own and any two of them together can be
+// wrong, in ways that only show from a standpoint nobody checks from: logs lying
+// across the opening, seen from inside; a stud framed down the middle of a
+// window; a lintel out through the thatch.
+//
+// So the door is measured on WHOLE BUILDINGS, unlike section 2. It can be: the
+// question here is not "how high is the roof over this point", which an ell
+// makes ill-posed, but "is anything inside this box", and the box is 30 cm wide
+// and belongs to exactly one wall of one mass.
+
+console.log('\nthe doorway')
+
+// Shared with section 4, which walks the same corpus: a subset of the seeds the
+// cheap checks run over, half of them on a slope.
+const GEO_SEEDS = Math.min(SEEDS, 60)
+const slopeFor = (s) => (s % 2 === 0 ? null : (x) => -x * 0.14)
+// What counts as through. Flat is arithmetic and is held to millimetres; warped
+// carries the same allowance section 2 gives everything else, because the field
+// moves the lintel and the roof triangle over it by different amounts.
+const DOOR_THROUGH = { 0: 0.005, 1: 0.05 }
+// And what counts as across it, measured from the door leaf outward. Unwarped a
+// log course is cut clear of the opening and there is nothing there at all; the
+// warped allowance is for the field moving a log and the jamb it was cut to sit
+// behind by different amounts, which no amount of cutting can pre-empt.
+const CLEAR = { 0: -0.02, 1: 0.02 }
+
+const TIMBERS = new Set([LAYER.TIMBER_BEAM, LAYER.TIMBER_PLANK, LAYER.TIMBER_HEWN])
+const doorBad = { clear: [], through: [] }
+let doorWorst = { clear: [-9, ''], through: [-9, ''] }
+let doorN = 0
+let doorClamped = 0
+
+for (const strength of [0, 1]) {
+  for (const kind of Object.keys(KINDS)) {
+    for (let s = 1; s <= GEO_SEEDS; s++) {
+      const plan = planBuilding({ seed: s, kind, groundAt: slopeFor(s) })
+      const g = buildBuilding2(plan, { detail: 2, strength }).geometry
+      const pos = g.getAttribute('position').array
+      const lay = g.getAttribute('texLayer').array
+      const idx = g.getIndex().array
+      const at = (v) => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]
+      const d = plan.door
+      const tag = `${kind}/${s}${strength ? ' warped' : ''}`
+      // The door's own frame. `a` runs across the opening, `o` out of the wall.
+      const aOf = (p) => (p[0] - d.x) * d.nz - (p[2] - d.z) * d.nx
+      const oOf = (p) => (p[0] - d.x) * d.nx + (p[2] - d.z) * d.nz
+
+      // 3a. NOTHING IN THE DOORWAY. The clear volume is inset from the opening
+      // on every side, because the point is not that a jamb touches the reveal --
+      // it is supposed to -- but that nothing lies ACROSS it. The band in `o`
+      // runs from just outside the wall plane to just inside the leaf, which is
+      // exactly the slot a log course standing 5 cm proud occupies.
+      const cover = []
+      let top = -9
+      let tx = 0
+      let tz = 0
+      for (let t = 0; t < idx.length; t += 3) {
+        const tri = [at(idx[t]), at(idx[t + 1]), at(idx[t + 2])]
+        const layer = lay[idx[t]]
+        if (COVER_LAYERS.has(layer)) { cover.push(tri); continue }
+        if (layer === LAYER.DOOR || TIMBERS.has(layer)) {
+          // The surround: everything of the door's own that stands in its footprint.
+          if (tri.every((p) => Math.abs(aOf(p)) < d.width / 2 + 0.18
+            && oOf(p) > -0.09 && oOf(p) < 0.19)) {
+            for (const p of tri) if (p[1] > top) { top = p[1]; tx = p[0]; tz = p[2] }
+          }
+        }
+        if (!TIMBERS.has(layer)) continue
+        for (const p of tri) {
+          if (Math.abs(aOf(p)) > d.width / 2 - 0.03) continue
+          if (p[1] < d.y0 + 0.06 || p[1] > d.y0 + 1.3) continue
+          // The leaf hangs at 8 cm. Anything in front of it is across the door.
+          const o = oOf(p) - 0.08
+          if (o > CLEAR[strength] && oOf(p) < 0.14) {
+            doorBad.clear.push(`${tag}: timber ${o.toFixed(3)} m past the leaf`)
+          }
+          if (o > doorWorst.clear[0] && oOf(p) < 0.14) doorWorst.clear = [o, tag]
+        }
+      }
+      if (top < -8) continue
+      doorN++
+      if (top < d.y0 + d.height + 0.14) doorClamped++
+
+      // 3b. AND THE HEAD STAYS UNDER THE COVERING. Measured at the highest point
+      // of the surround, against whatever covering is over that point -- on an
+      // ell that may be the wing's roof rather than the range's, which is why the
+      // HIGHEST answer wins rather than the mass's own.
+      let roof = null
+      for (const tri of cover) {
+        const y = triAt(tri[0], tri[1], tri[2], tx, tz)
+        if (y !== null && (roof === null || y > roof)) roof = y
+      }
+      if (roof === null) continue
+      const through = top - roof
+      if (through > DOOR_THROUGH[strength]) {
+        doorBad.through.push(`${tag}: ${through.toFixed(3)} m through`)
+      }
+      if (through > doorWorst.through[0]) doorWorst.through = [through, tag]
+    }
+  }
+}
+
+check(doorBad.clear.length === 0, 'nothing lies across a doorway',
+  doorBad.clear.length ? `${doorBad.clear.length} bad, e.g. ${doorBad.clear[0]}`
+    : `worst ${doorWorst.clear[0].toFixed(3)} m past the leaf (${doorWorst.clear[1]}), ${doorN} doors`)
+check(doorBad.through.length === 0, 'and the surround stays under the covering',
+  doorBad.through.length ? `${doorBad.through.length} bad, e.g. ${doorBad.through[0]}`
+    : `worst ${doorWorst.through[0].toFixed(3)} m (${doorWorst.through[1]}), ${doorClamped} doors shortened to fit`)
+
+// 3c. AND THE STUDS REACH THE FLOOR AND DODGE THE OPENINGS. A stud is a
+// two-ring sweep, so it has vertices at its two ends and nowhere else: its
+// bottom ring is the only thing in a half-timber wall that sits AT y0 and off
+// the wall plane, since the plaster face is a plane at z = 0 and the two rails
+// only ever put a vertex at the wall's own ends. So counting exactly that -- y0,
+// off-plane, away from the corners -- counts stud feet, and it reads zero the
+// moment a stud goes back to starting on top of the bottom rail. That is a
+// failure the eye cannot be trusted with: from straight on, a stud founded on a
+// rail looks founded on the ground.
+{
+  const feet = (openings) => {
+    const b = new Builder()
+    wall2(b, {
+      p0: [-3, 0], p1: [3, 0], y0: 0.4, y1: 2.6, style: WALL_STYLE.HALF_TIMBER,
+      seed: 3, rough: 11, detail: 2, openings,
+    })
+    const pos = b.toGeometry().getAttribute('position').array
+    const xs = []
+    for (let i = 0; i < pos.length; i += 3) {
+      // 1e-5, not 0: the buffer is float32 and 0.4 is not one of the numbers it has.
+      if (Math.abs(pos[i + 1] - 0.4) > 1e-5) continue
+      if (Math.abs(pos[i + 2]) < 0.02 || Math.abs(pos[i]) > 2.9) continue
+      xs.push(pos[i])
+    }
+    // One ring is five to seven vertices spread over the stud's own width, so
+    // they are clustered back into studs before being counted.
+    xs.sort((a, c) => a - c)
+    const studs = []
+    for (const x of xs) if (!studs.length || x - studs[studs.length - 1] > 0.3) studs.push(x)
+    return studs
+  }
+  const bare = feet([])
+  const withDoor = feet([{ x: 0, z: 0, nx: 0, nz: 1, hw: 0.55, y0: 0.4, y1: 2.4, solid: true }])
+  // 4 bays over 6 m: three studs, plus the one at the start corner that the
+  // |x| > 2.9 filter drops along with the rails' end rings.
+  check(bare.length === 3, 'every stud is founded on the wall base, not on its rail',
+    `${bare.length} studs, all of them standing on y0`)
+  // The stud that was standing in the doorway has to be somewhere ELSE, not
+  // gone: deleting it was the old answer and it left the frame visibly gappy
+  // while the window still sat hard against the next stud along. So the wall
+  // must still carry the same studs, none of them in the opening, and at least
+  // one of them not where the bay grid would have put it.
+  const across = withDoor.filter((x) => Math.abs(x) < 0.62)
+  const moved = withDoor.filter((x) => !bare.some((c) => Math.abs(c - x) < 0.02))
+  check(across.length === 0 && withDoor.length === bare.length && moved.length > 0,
+    'and no stud is framed across an opening',
+    `${moved.length} of ${bare.length} studs stepped aside, ${across.length} left in the opening`)
+}
+
+// ---------------------------------------------------------------------------
+// 4. The geometry.
 // ---------------------------------------------------------------------------
 
 console.log('\ngeometry')
 
-const GEO_SEEDS = Math.min(SEEDS, 60)
 const ATTRS = ['position', 'normal', 'uvProj', 'texLayer', 'color']
-const slopeFor = (s) => (s % 2 === 0 ? null : (x) => -x * 0.14)
 let worstTris = 0
 let worstId = ''
 let sumTris = 0
@@ -595,7 +779,7 @@ check(villageTris < 55000, '20 of the worst-case building fit the village allotm
   `${villageTris.toLocaleString()} tris for 20 visible`)
 
 // ---------------------------------------------------------------------------
-// 4. The warp itself.
+// 5. The warp itself.
 // ---------------------------------------------------------------------------
 
 console.log('\nwarp')
@@ -668,6 +852,98 @@ console.log('\nwarp')
   }
   check(maxD > 0.04 && maxD < 1.2, 'the field at strength 1 moves vertices, and not by much',
     `worst vertex moved ${maxD.toFixed(3)} m (${maxId})`)
+}
+
+// ---------------------------------------------------------------------------
+// 6. Daylight: can you see out of a building through something that is not an
+//    opening?
+// ---------------------------------------------------------------------------
+
+console.log('\ndaylight')
+
+// Section 2's airtightness gate cannot answer this and never could. It asks
+// whether every directed edge is paired, and a wall's own back face pairs the
+// wall's own edges whatever is or is not standing next to it -- so two masses
+// meeting with a 20 cm band of nothing between them are two separately closed
+// shells, and the union of two closed shells is closed. Every hole the user has
+// reported was invisible to that gate and obvious from inside the room.
+//
+// So this section stands inside the room instead. scripts/probe-building-gaps.mjs
+// puts sample points where a person's head would be, fires 512 fixed directions
+// from each, and counts the ones that reach open air without meeting a triangle;
+// rays that leave within 0.75 m of a window or a door centre are discarded,
+// because those holes are on purpose. The probe file is imported rather than
+// reimplemented so the number that gates the build and the number the report
+// prints cannot drift apart. Run it directly for per-mass detail and somewhere
+// to go and look:
+//
+//   node scripts/probe-building-gaps.mjs 54494
+//
+// 40 seeds x 4 kinds x 2 strengths is 3.5M rays and takes about a second, which
+// is why the whole corpus is swept here rather than a sample of it.
+{
+  let selfOk = true
+  let selfWhy = ''
+  let self = null
+  try {
+    self = probeSelfCheck({ log: () => {} })
+  } catch (e) {
+    selfOk = false
+    selfWhy = e.message.replace('probe-building-gaps: ', '')
+  }
+  // The instrument before the measurement. A probe that had quietly stopped
+  // seeing anything would report a clean corpus and would be the most expensive
+  // way this gate could lie, so the same three self-checks the standalone report
+  // prints run here: a sealed room leaks nothing, the same room with a 20 cm band
+  // cut out of one wall leaks, and a point 3 m outside a real hut escapes in
+  // nearly every direction.
+  check(selfOk, 'the probe sees a known hole and does not see a sealed room',
+    selfOk
+      ? `sealed 0, a 20 cm slot ${self.openOut}/${self.dirs}, ${self.cut} triangles out of hut/1's ${self.wallSide} wall ${self.holed}, outside ${self.outside}/${self.dirs}`
+      : selfWhy)
+
+  const rows = { 0: [], 1: [] }
+  for (const strength of [0, 1]) {
+    for (const kind of KIND_NAMES) {
+      for (const seed of CORPUS_SEEDS) {
+        const plan = planBuilding({ seed, kind })
+        rows[strength].push({ kind, seed, ...probeBuilding(plan, strength) })
+      }
+    }
+  }
+  const tally = (rs) => ({
+    leaky: rs.filter((r) => r.filtered > 0),
+    escaped: rs.reduce((a, r) => a + r.filtered, 0),
+    cast: rs.reduce((a, r) => a + r.cast, 0),
+  })
+  const where = (rs) => rs.filter((r) => r.filtered > 0)
+    .sort((a, b) => b.filtered - a.filtered).slice(0, 4)
+    .map((r) => `${r.kind}/${r.seed} ${r.filtered}`).join(', ')
+
+  // STRENGTH 0 IS EXACT. The straight building is arithmetic: every joint
+  // overlap in plan.js and parts.js is a number somebody wrote down, and a ray
+  // that gets out of one is a mistake in that number rather than bad luck. It
+  // measured 66 of 160 buildings leaking before the burial and joint fixes and
+  // measures 0 rays of 1.7M now, so 0 is what it is held to.
+  const s0 = tally(rows[0])
+  check(s0.escaped === 0, 'the straight building lets no daylight in anywhere but its openings',
+    s0.escaped === 0
+      ? `0 of ${s0.cast.toLocaleString()} rays, ${rows[0].length} buildings`
+      : `${s0.escaped} rays, ${s0.leaky.length} buildings: ${where(rows[0])}`)
+
+  // STRENGTH 1 HAS AN ALLOWANCE, and it is small on purpose. What ships is the
+  // straight building plus a displacement field that moves a vertex up to 0.95 m,
+  // and at a couple of mass junctions it pulls two surfaces apart fractionally
+  // faster than the overlaps can absorb -- currently 2 rays of 1.7M, one each in
+  // hut/17 and longhouse/33, both single rays grazing an outshut junction. A real
+  // hole is nothing like that: the defects the user reported scored hundreds to
+  // thousands of rays in a single building. 12 rays and 4 buildings sits far
+  // above today's pinholes and far below anything a person could see, so a
+  // regression fails here rather than in the headset.
+  const s1 = tally(rows[1])
+  const ok1 = s1.escaped <= 12 && s1.leaky.length <= 4
+  check(ok1, 'the warped building leaks no more than a few stray rays at mass junctions',
+    `${s1.escaped} rays of ${s1.cast.toLocaleString()}, ${s1.leaky.length} of ${rows[1].length} buildings${s1.leaky.length ? ` (${where(rows[1])})` : ''}`)
 }
 
 // ---------------------------------------------------------------------------

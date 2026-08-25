@@ -91,13 +91,13 @@ Treat the per-layer numbers below as a budget to be *defended*, not a floor to b
 | Fern clump cards past 80 m | \-- | 4 | not built |
 | Boulders 0-430 m | 440 | 20 | 9k |
 | Grass class 0-23 m | 1,600 | 4 | 6k |
-| Village buildings | 20 | 1,361 | 27k |
+| Village buildings | 20 | 1,510 | 30k |
 | Water surfaces | \-- | \-- | 5k |
 | Snow particles | 1 draw | \-- | 4k |
 | Sky dome + aurora | \-- | \-- | 2k |
-| **Total** | ~5,700 instances |  | **~166k** |
+| **Total** | ~5,700 instances |  | **~169k** |
 
-**~166k against a 350k ceiling is 47%**, leaving ~184k for thermal margin and for the rows that are still estimates. Terrain, the four fern/boulder rows and the village row are measured -- the fern rows come from a settled `Scatter` at 114,39, summing the two fern kinds there (`fern`, dense to 26 m: 767 instances, 27.3k triangles; `fern_far`, sparse to 80 m: 423 instances, 4.1k, of which 338 are cards costing 1.4k), the boulder row from the same run, the village row from `scripts/check-buildings-v2.mjs` over 1,200 plans (§19's v2 kit: mean 1,361, worst 2,544; the village generator is not yet migrated onto it, so this row is what the kit measures rather than what a frame currently draws). Every other row is still an estimate.
+**~169k against a 350k ceiling is 48%**, leaving ~181k for thermal margin and for the rows that are still estimates. Terrain, the four fern/boulder rows and the village row are measured -- the fern rows come from a settled `Scatter` at 114,39, summing the two fern kinds there (`fern`, dense to 26 m: 767 instances, 27.3k triangles; `fern_far`, sparse to 80 m: 423 instances, 4.1k, of which 338 are cards costing 1.4k), the boulder row from the same run, the village row from `scripts/check-buildings-v2.mjs` over 1,200 plans (§19's v2 kit: mean 1,510, worst 2,568; the village generator is not yet migrated onto it, so this row is what the kit measures rather than what a frame currently draws). Every other row is still an estimate.
 
 The boulder row prices the old `buildBoulder` in `src/props/shapes.js`, which is what the scatter still places. The rock generator that replaces it (`src/props/rock.js`, bench at `/gen-rock`, gated by `scripts/check-rocks.mjs`) is built and its ladder is four tiers rather than one flat 20, but nothing places it yet, so re-pricing this row would be pricing a frame nobody draws. The number that changes when it lands is the *tier mix*, not the per-instance cost: a T20 boulder is the same 20 triangles this row already assumes, and the 8-face LOD2 behind it is cheaper than what it replaces.
 

@@ -26,6 +26,10 @@ src/v2/height/png.js               zero-dep PNG decode AND encode, browser + nod
 src/v2/height/heightmap.js         Heightmap: bicubic sample of the imported coarse field (three-free)
 src/v2/height/detail.js            band-limited fractal detail (three-free)
 src/v2/height/sculpt.js            terrain brush kernel: falloff, dirty rects, one stamp (three-free)
+src/v2/height/relief.js            the opt-in jaggedness knob table, its validator and its transport (three-free)
+src/v2/height/exposure.js          ExposureField: baked multi-scale convexity, in sigmas (three-free)
+src/v2/height/crag.js              the 24-96 m crease band cut into convex steep ground (three-free)
+src/v2/height/erode.js             thermal (talus) relaxation of the import toward a repose angle (three-free)
 src/v2/height/field.js             V2Height: the composed field the mesher and player both read (three-free)
 src/v2/layers/doc.js               WorldDoc: schema, defaults, (de)serialise, validate (three-free)
 src/v2/layers/grid.js              UniformGrid: the shared spatial index (three-free)
@@ -81,11 +85,14 @@ The import writes `public/world/height.png` as `rg16` (16-bit height split acros
 
 `V2Height.heightAt(x, z, cell = 0)` is the one function. `cell` is the sampling spacing in metres and is used **only** to band-limit detail octaves; pass 0 (the default) for the exact, fully-detailed field, which is what collision and the editor must use. Evaluation order, and it is an order not a set:
 
-1. **coarse** -- `Heightmap.sample(x, z)`, bicubic (Catmull-Rom) over the imported image.
-2. **detail** -- `+ detailAt(x, z, cell)`, fractal, amplitude modulated by the coarse slope.
-3. **rivers** -- carve. Channels cut through whatever is there.
-4. **lakes** -- basin carve, for lakes with `carve` set.
-5. **roads** -- smooth. Last, so a road crossing a river reads as a causeway rather than dipping into it.
+1. **coarse** -- `Heightmap.sample(x, z)`, bicubic (Catmull-Rom) over the imported image, or over the eroded copy of it when `erode` is on (see Relief).
+2. **detail** -- `+ detailAt(x, z, cell)`, fractal, amplitude modulated by the coarse slope and, when `exposure` is on, by convexity.
+4. **crag** -- `+` the crease band, when `crag` is on: gated to convex, steep ground and suppressed wherever a layer has flattened the ground.
+5. **rivers** -- carve. Channels cut through whatever is there.
+6. **lakes** -- basin carve, for lakes with `carve` set.
+7. **roads** -- smooth. Last, so a road crossing a river reads as a causeway rather than dipping into it.
+
+Steps 2 and 3 are one expression (`_subTexel`) and are skipped outright when no relief knob that touches geometry is on, so a default world evaluates exactly what it evaluated before relief existed.
 
 Bicubic, not bilinear, is load-bearing: bilinear over an 8 m/texel image puts a slope discontinuity on every texel edge, which is invisible at v1's 1 m leaf and unmissable at 6 cm.
 
@@ -100,6 +107,31 @@ Octaves `k = 0..K-1` with wavelength `LAMBDA0 / 2**k`, `LAMBDA0 = 512`, down to 
 Band limit: octave weight `w_k = smoothstep(cell * 4, cell * 2, lambda_k)`, so an octave **fades** out as the sampling cell approaches its Nyquist rather than snapping off. Fading is the difference between LOD swaps that breathe and LOD swaps that pop. With `cell = 0` every weight is 1.
 
 The field is a pure function of `(x, z)` at `cell = 0`. Two chunks at different depths sampling the same point get answers that differ only by the band limit -- never by seed, never by history.
+
+### Relief -- the opt-in jaggedness knobs (`src/v2/height/relief.js`)
+
+§3 asks for jagged peaks; the composed field as first shipped could not deliver them, and the reason is spectral rather than aesthetic. The import is 8 m/texel and `detail.js`'s SHOULDER rolls the fractal off hard above its Nyquist (correctly -- uncorrelated noise over authored relief puts a hill in the author's valley), then `calibrateRough` divides by the import's 3x `exaggeration`. Between them the field carries almost nothing between 32 and 512 m, measured: rms slope stops growing below a 32 m lag. That is exactly the band crags, buttresses, ribs and couloirs occupy, and a mountain with an empty 32-512 m band is a mountain made of clay.
+
+Eight knobs, each **off by default and off means bit-identical** -- with an all-zero relief every branch is skipped and `V2Height` computes the expression it computed before any of this existed. `check-v2-field.mjs` asserts that against a field built with no relief argument at all, because a default that quietly changed the world would make every other measurement in that gate a measurement of a different terrain.
+
+| knob | what it does |
+| --- | --- |
+| `sharpen` | rectifies each detail octave into creased ribs instead of gaussian lumps |
+| `exposure` | convexity drives detail amplitude -- ribs rough, hollows smooth |
+| `crag` | metres of crease relief on convex steep ground at 24-96 m: ribs up, bowls down |
+| `aniso` | stretches the crag band down the fall line, so gullies run downhill |
+| `erode` | thermal (talus) relaxation passes over the import, producing planar faces that meet at sharp edges |
+| `talus` | the repose angle `erode` relaxes toward |
+| `snowJag` | metres the snow line follows exposure -- ribs blow clear, hollows fill in |
+| `crest` | coarse chunks bias toward the local max, so distant ridges keep their edge |
+
+`RELIEF_KNOBS` is the single table: the HUD builds itself from it, the validator clamps from it, and the gate iterates it, so a knob cannot be added to the panel and forgotten in the transport. `normalizeRelief` THROWS on an unknown key rather than dropping it.
+
+**Why this is a module and not an options bag.** The field is evaluated in three places that do not share memory: the main thread (collision, editor picking, prop scatter) and each terrain worker (the mesher). A knob that reaches one and not the others throws nothing -- the ground she is drawn standing on and the ground she collides with become two different surfaces, silently. So there is one shape, one validator, and a transport (`TerrainV2.setRelief`) that refuses anything that did not come through it. `main.js`'s `onRelief` is the only fan-out point, and its order is load-bearing: field first, then the workers, then everything that caches a height (props, snow line, the player).
+
+**Two operators, one shape.** `sharpen` and `crag` both cut with `sqrt(n^2 + r^2)`, subtracted: `|n|` is near zero along the noise's zero contour -- a connected curvilinear network -- and near 1 at its extrema, so subtracting it digs the extrema into hollows and leaves the zero contour standing as arêtes. `r` rounds the derivative discontinuity at `n = 0`, and it must **widen with the cell** (`CRAG_VERTEX_CELLS`): a fixed `r` gives a vertex whose width in metres tracks the octave's wavelength, not the mesh's, and the ridge saw-tooths as chunks swap LOD. That was measured, not guessed -- at a 4 m cell the crag term's own second difference was 126% of the whole terrain's before the fix.
+
+Two things about measuring these knobs, both learned the expensive way. The composed field's curvature **kurtosis is not estimable** at any sample size a gate can afford (4.7 at 1500 sites, 66.8 at 20000 -- ten sites carry 86% of the fourth moment); judge `sharpen` on the bare detail stack, which converges. And a smooth odd curve applied per octave is the **identity after summation** -- the central limit theorem re-gaussianizes twelve reshaped histograms. Only a crease, being structural rather than distributional, survives being summed.
 
 ## Content layers
 
@@ -214,6 +246,7 @@ A sculpted heightmap rides the same Save button through a second endpoint, `POST
 One panel, top-left, replacing v1's `#desktop-hud` block-of-lines. Two zones:
 
 - **Status**, compact: a dense two-column key/value grid rather than one fact per line -- fps, draw tris, chunks resident/drawn, triDeg, position, ground height, snow line here, mode. It is what v1's HUD said, in about a third of the height.
+- **Relief**: one row per `RELIEF_KNOBS` entry, each a toggle plus a scrubbable value, persisted to `localStorage` and applied live. It is an ablation tool rather than a settings screen: the `on` values are chosen to be clearly visible rather than tasteful, and a knob with a `needs` greys out until its dependency is up.
 - **Tools**: the tool row, the gizmo's mode buttons, the selected object's numeric fields (editable), the layer list with visibility toggles and per-item delete, and save/load. Visibility is EDITOR-LOCAL and hides the actual surface -- `mesh.visible` on the water and road meshes, not a skipped build -- so hiding costs no remesh and no undo entry, and `levelAt`/`lakeBoxes` keep answering the gameplay questions (prop scatter, spawn search, where the player is standing) about a lake you have merely stopped looking at.
 
 The XR canvas mirror keeps showing status only. Editing is a desktop activity and the gizmo has no controller binding.
@@ -224,11 +257,12 @@ Added to `npm run check`. It must be able to fail. Sections:
 
 1. **heightmap** -- decode `public/world/height.png` in node; assert the decoded metre range matches `height.json`; assert bicubic sampling is C1 across a texel boundary (finite-difference slope is continuous to 1e-3) and that bilinear is not, so the check is measuring the thing it claims.
 2. **field determinism** -- `heightAt(x, z, 0)` is stable across calls and independent of evaluation order; the band limit is monotone in `cell`; `heightAt(x, z, cell)` converges to `heightAt(x, z, 0)` as `cell -> 0`.
-3. **terrain brush** -- the falloff's derivative is ~0 at both rim and centre (a cone would leave a crease ring around every stamp, at 6.25 cm cells); the dirty rect covers every texel inside the radius plus the smoothing stencil and no more; the world box handed to the mesher is widened by the 2-texel Catmull-Rom stencil; `smooth` blurs off a snapshot, checked on the texel stamped immediately AFTER a spike (in place it comes out 9x too low); strokes clamp to the encoding's range and report how many texels hit it; a sculpted field survives `toPng` -> `decodePng` to within half a quantisation level; and, headlessly, a `Sculptor` drag of eight stamps costs at most two worker patches, sends every texel it moved, and undoes to bit-exact original heights.
-4. **snow line** -- the interpolant passes through every authored point to <1e-3 m; returns exactly `base` outside every radius; a 200-point cluster costs O(1) per query after bake; dirty-rect rebake is bit-identical to a full rebake.
-5. **paths** -- a river carve reaches `depth` at the centreline and 0 at `halfWidth * 2`; a road's surface is within 1 cm of the spline `y` inside `halfWidth`; a tight S-bend does not self-intersect (centripetal, not uniform).
-6. **slot pool** -- worst-case selection over a few hundred camera positions at `MAX_DEPTH 13`, plus pinned chunks, fits `SLOT_COUNT`.
-7. **layer culling** -- over a sampled sweep, the fraction of chunks that early-out is above 95% for a world with a dozen authored objects. This is the claim "compact and performance-efficient" reduces to, so it is the one that gets a number.
-8. **host wiring** -- `src/v2/main.js` constructs a `WebGLRenderer` on its first line, so node cannot import it and no section above can reach it. The rules its collaborators' headers state as "the host must" are asserted textually instead, comment lines stripped first: it does not call `markers.update()` (the editor owns that call and two callers race on the handle scale), it does not transform `water.group` (the shader reads world position off `modelMatrix`), it patches `roads.material` in `vertex` mode (or the road is the one surface that stays lit after dark), it calls `setVisibility` on all three surfaces that draw authored geometry (miss one and the panel's hide toggle silently does nothing to that layer), and `probe.update()` runs before `renderer.render()`. Each corresponds to a failure that is invisible in the frame it happens in, which is what makes a weak check worth more than none.
+3. **relief** -- an all-off relief is `===` the field built with no relief argument at all, at every site and in the calibration, with no eroded copy allocated; every knob's `on` value moves the field it claims to move and nothing else; the crag band is zero-mean and lands on convex ground rather than everywhere; erosion conserves mass, and an eight-stamp sculpt drag over an eroded world leaves the derived field bit-identical to a full re-erode (it is spliced into the standing copy -- substituting `thermalErode`'s return value reverted 8.8% of the world to the raw import); and `sharpen` raises the curvature kurtosis of the bare detail stack -- **not** of the composed field, whose kurtosis is not estimable at any affordable sample size. Every knob's walkability cost is PRINTED rather than asserted, since these are opt-in and a threshold would be asserting a taste; the all-off number is asserted, because that one is the shipped world.
+4. **terrain brush** -- the falloff's derivative is ~0 at both rim and centre (a cone would leave a crease ring around every stamp, at 6.25 cm cells); the dirty rect covers every texel inside the radius plus the smoothing stencil and no more; the world box handed to the mesher is widened by the 2-texel Catmull-Rom stencil; `smooth` blurs off a snapshot, checked on the texel stamped immediately AFTER a spike (in place it comes out 9x too low); strokes clamp to the encoding's range and report how many texels hit it; a sculpted field survives `toPng` -> `decodePng` to within half a quantisation level; and, headlessly, a `Sculptor` drag of eight stamps costs at most two worker patches, sends every texel it moved, and undoes to bit-exact original heights.
+5. **snow line** -- the interpolant passes through every authored point to <1e-3 m; returns exactly `base` outside every radius; a 200-point cluster costs O(1) per query after bake; dirty-rect rebake is bit-identical to a full rebake.
+6. **paths** -- a river carve reaches `depth` at the centreline and 0 at `halfWidth * 2`; a road's surface is within 1 cm of the spline `y` inside `halfWidth`; a tight S-bend does not self-intersect (centripetal, not uniform).
+7. **slot pool** -- worst-case selection over a few hundred camera positions at `MAX_DEPTH 13`, plus pinned chunks, fits `SLOT_COUNT`.
+8. **layer culling** -- over a sampled sweep, the fraction of chunks that early-out is above 95% for a world with a dozen authored objects. This is the claim "compact and performance-efficient" reduces to, so it is the one that gets a number.
+9. **host wiring** -- `src/v2/main.js` constructs a `WebGLRenderer` on its first line, so node cannot import it and no section above can reach it. The rules its collaborators' headers state as "the host must" are asserted textually instead, comment lines stripped first: it does not call `markers.update()` (the editor owns that call and two callers race on the handle scale), it does not transform `water.group` (the shader reads world position off `modelMatrix`), it patches `roads.material` in `vertex` mode (or the road is the one surface that stays lit after dark), it calls `setVisibility` on all three surfaces that draw authored geometry (miss one and the panel's hide toggle silently does nothing to that layer), and `probe.update()` runs before `renderer.render()`. Each corresponds to a failure that is invisible in the frame it happens in, which is what makes a weak check worth more than none.
 
 Everything DOM, three.js, XR and gizmo on the `/v2` route is still unexercised by any gate: node reaches none of it, and there is no browser harness. The first click through the markers -> editor -> gizmo path will be a human's.

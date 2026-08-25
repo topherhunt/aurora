@@ -2,7 +2,7 @@ import * as THREE from 'three'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE,
-  buildGrassStripBank, STRIP_BASE,
+  buildGrassStripBank, STRIP_BASE, STRIP_TILE_ASPECT,
 } from '../../props/grass-bank.js'
 import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.js'
 
@@ -258,39 +258,65 @@ const HEIGHT = [0.5, 1.5]
 // numbers HERE are the ones that make the comparison fair rather than
 // flattering, and there is only one that matters:
 //
-// THE DENSITY IS SET TO MATCH THE TUFT BED'S COVERAGE, NOT TO BE SMALL. A bed
-// at DENSITY = 3 puts 3 x (0.83 x 1.06) = 2.64 m2 of camera-facing card over
-// every square metre of ground. A strip at the mean of STRIP_HEIGHT and the
-// mean of STRIP_TILES is a 4.5 x 1.8 m rectangle, of which 0.64 faces the eye
-// (E|sin t| over a uniform yaw) and stripCoverage() in material.js says 0.62
-// carries grass, so it presents 3.24 m2. 0.82 strips per square metre is
-// therefore the same amount of grass in front of the eye -- and 1.6 triangles a
-// square metre against the tuft carpet's 6 in its far tier. Quoting a saving
-// from a THINNER bed would be quoting the saving you can already have for free
-// by turning DENSITY down, which is the comparison this has to beat.
+// FACING AREA IS NOT LUSHNESS, and finding that out is most of what this
+// experiment has been worth. The density was first solved for MATCHED COVERAGE:
+// a bed at DENSITY = 3 puts 3 x (0.83 x 1.06) = 2.64 m2 of camera-facing card
+// over every square metre, a strip at the mean of STRIP_HEIGHT and STRIP_TILES
+// presents 1.38 m2 of it, and 1.91 strips a square metre balances the books
+// exactly. It looked sparse. The books were not wrong -- they were measuring the
+// wrong thing.
 //
-// THE 0.62 IS NOT SLACK, IT IS THE SHADER. The mask, the per-tile shrink and
-// the flare all change how much of a card ends up carrying grass and none of
-// them are visible to anything that measures instance matrices. Leaving them
-// out would overstate this bed by 60%.
+// WHAT THE EYE COUNTS IS SILHOUETTES. Three tufts a square metre is three
+// INDEPENDENT positions; a strip bed puts down far fewer positions and strings
+// the rest of its grass along a line through each one, so it buys the same
+// square metres of card with a fraction of the separate plants and leaves the
+// ground between the lines bare. So the density is set BY EYE now, coverage is
+// reported rather than solved for, and check-grass.mjs gates the SILHOUETTE
+// ratio alongside it, because that is the number that predicted the complaint.
+//
+// AND THE SHADER IS PART OF THE SUM. stripCoverage() in material.js says only
+// 0.62 of a card ends up carrying grass once the mask, the per-tile shrink and
+// the flare have had it. None of that is visible to anything that measures
+// instance matrices; leaving it out overstated the bed by 60%.
+//
+// AND SILHOUETTES ARE NOT THE WHOLE OF IT EITHER. The far-field arithmetic
+// above compares a strip against the tuft's BILLBOARD, which is the right
+// baseline for two triangles -- but inside 8 m the tuft bed is running its
+// 3-plane LOD0 and a strip bed has no ladder to climb, so the bed lands at 0.62x
+// the grass in the ring the player is standing in and 1.35x out past 20 m. That
+// split is measured per ring in check-grass.mjs, and the fix for it is a near
+// tier rather than a bigger number here.
+//
+// WHAT IT COSTS AT THIS SETTING: 3.3 triangles a square metre against the tuft
+// carpet's 6 in its far tier, and 25k over the whole bed against 53k. That is
+// down from 12k, and the two settings the player asked for are where it went --
+// see the note on STRIP_HEIGHT, which is the expensive one.
 //
 // Every per-instance mechanism above transfers UNCHANGED, and that is most of
 // why this was cheap to try: the graded thinning, the rank dither, the veil and
 // the tiled regrow are all functions of an instance's position and rank and
-// none of them knows what geometry it is pointing at.
-const STRIP_DENSITY = 0.82
+// none of them knows what geometry it is pointing at. The one thing the strips
+// do NOT share is the scatter itself -- see R2_A below.
+const STRIP_DENSITY = 1.64
 
 // Metres, the range of strip HEIGHTS -- and a tile is SQUARE, so this is also
-// how wide one clump of grass is. Well above the tuft bed's HEIGHT, on purpose:
-// the per-tile shrink in material.js takes the average clump to 0.75 of these
-// numbers, so a bed at [0.7, 1.1] drew grass two thirds the height of the tuft
-// carpet standing next to it. Bigger grass costs NOTHING in triangles -- a
-// strip is two either way, and a bigger one is matched by fewer of them -- so
-// the only thing this trades against is how coarse the bed reads up close.
-const STRIP_HEIGHT = [1.4, 2.2]
+// how wide one clump of grass is. The per-tile shrink in material.js takes the
+// average clump to 0.75 of these numbers, so the bed draws grass a little under
+// a metre where the tuft carpet beside it draws one metre.
+//
+// SIZE IS THE STRIP SYSTEM'S WHOLE ECONOMY, so this is the most expensive line
+// in the file. A strip is two triangles at any size, so its area per triangle
+// goes as the SQUARE of this -- and matched coverage then needs cards in inverse
+// proportion. Cutting these by 1.5x costs 2.25x the instances for the same bed.
+// The range above was [1.4, 2.2] and drew grass that read as coarse up close;
+// what that cost is measured, not argued, by the two gain gates in
+// check-grass.mjs.
+const STRIP_HEIGHT = [0.95, 1.45]
 
-// Clumps per strip, inclusive: each instance draws a whole number of SQUARE
-// tiles, so its length in metres is this times its height.
+// Clumps per strip, inclusive: each instance draws a whole number of tiles,
+// each STRIP_TILE_ASPECT = 0.68 as wide as the strip is tall, so a strip's
+// length in metres is 0.68 x this x its height -- 2.9 m at the means, 4.9 m at
+// the longest.
 //
 // THIS IS WHERE THE VARIETY COMES FROM, and it is the reason the fragment mask
 // is off by default. A mask breaks a fixed-length run by throwing away card
@@ -299,16 +325,63 @@ const STRIP_HEIGHT = [1.4, 2.2]
 // between strips instead of inside them. Same look, no coverage surrendered.
 // It replaced a continuous length multiplier, which stretched the picture along
 // the strip by up to 35% to get the same effect.
-const STRIP_TILES = [1, 4]
+//
+// AND LENGTH IS THE ONE FREE PARAMETER IN THE SYSTEM. A strip is two triangles
+// whether it draws one clump or six, so every tile past the first is grass at
+// zero triangle cost -- the opposite of STRIP_HEIGHT above, where every metre is
+// paid for twice over. The range was [1, 4] when a tile was square; fixing the
+// aspect made each tile 32% narrower, and [1, 6] is what puts the strip back at
+// the length it used to be, so the bed keeps its coverage and gets 3.5 clumps a
+// strip instead of 2.5. What caps it is the ground: a strip follows terrain by
+// TILTING between its two end samples, so the longer it is the further its
+// middle sits from a rise it is crossing.
+const STRIP_TILES = [1, 6]
 
-// Metres of the strip's foot buried. Deeper than the tuft's 0.04, and it has to
-// be: a tuft sits on one height sample and a strip spans metres of ground, so
-// the middle of a strip crossing a rise is above the terrain by however much
-// that rise bulges. Sinking the whole card is the cheap insurance, and it is
-// cheap precisely because the foot of the picture is frayed (GRASS_FRAY in
-// textures.js) -- grass entering the ground reads as grass, where a flat cut
-// edge floating above it reads as a bug.
-const STRIP_SINK = 0.12
+// The R2 low-discrepancy sequence: successive multiples of 1/p and 1/p^2 mod 1,
+// where p is the plastic number (the 2D cousin of the golden ratio). Used for
+// the STRIP SCATTER ONLY -- the tuft carpet keeps its uniform draw.
+//
+// WHAT IT FIXES. Uniform random points clump: at 100 points in a tile some spots
+// get three on top of each other and others get a bare patch several point
+// spacings wide, and the eye reads those patches as the bed being thin. That
+// costs far more at 1.6 strips per square metre than it did at 3 tufts, because
+// there are fewer points for the clumping to average out over and each one is a
+// long line rather than a dot. R2 lays points down so that every prefix of the
+// sequence is near-evenly spread, which is exactly "random-looking but never
+// doubling up", and it costs two multiply-adds -- no neighbour search, no
+// rejection loop, no dart throwing.
+//
+// WHY NOT A JITTERED GRID, which is the usual cheap answer: it needs the count
+// per tile to be a perfect square, and this one is set from a density and a tile
+// size. R2 is as good and works at any count.
+//
+// The sequence is offset per tile and jittered per point, both of which are
+// toroidal (wrapped back into the tile) because a toroidal shift is the one
+// operation that leaves the discrepancy alone. Without the offset every tile in
+// the world would carry an identical pattern; without the jitter a long look
+// down a flat bed can find R2's own faint diagonal structure.
+const R2_A = 0.7548776662466927
+const R2_B = 0.5698402909980532
+
+// Point jitter, as a fraction of the mean point spacing. Enough to break the
+// lattice, not enough to put the clumping back -- and that trade is measured
+// rather than guessed. Against a uniform control of the same count, mean
+// nearest-neighbour distance runs 1.42x at 0.25, 1.37x here, 1.32x at 0.5 and
+// 1.24x at 0.7, where a Poisson scatter is 1.0 by definition.
+const R2_JITTER = 0.4
+
+// How deep the strip's foot is buried, in the BANK's units -- it is multiplied
+// by the instance's y scale, like PLACEMENT.sink is, so what it really sets is a
+// fraction of the strip's own height: 0.177 / STRIP_BASE.height = 0.12 of it,
+// about 14 cm on an average strip.
+//
+// Deeper than the tuft's, and it has to be: a tuft sits on one height sample and
+// a strip spans metres of ground, so the middle of a strip crossing a rise is
+// above the terrain by however much that rise bulges. Sinking the whole card is
+// the cheap insurance, and it is cheap precisely because the foot of the picture
+// is frayed (GRASS_FRAY in textures.js) -- grass entering the ground reads as
+// grass, where a flat cut edge floating above it reads as a bug.
+const STRIP_SINK = 0.12 / STRIP_TILE_ASPECT
 
 // The tuft's own colours, sRGB, converted to linear below.
 //
@@ -337,6 +410,11 @@ const GRASS_TINTS = [
 const VALUE = [0.82, 1.18]
 
 /** Deterministic 32-bit PRNG. Same one the rest of the project uses. */
+/** Fractional part, correct for negatives -- the jitter can push R2 below zero. */
+function frac(v) {
+  return v - Math.floor(v)
+}
+
 function mulberry32(a) {
   return function () {
     a |= 0
@@ -421,6 +499,9 @@ export class Grass {
     this.fullSq = fullRadius * fullRadius
 
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
+    // R2's jitter, in tile units: a fraction of the mean spacing between points,
+    // which at n points in a unit square is 1/sqrt(n).
+    this.jitter = this.strips ? R2_JITTER / Math.sqrt(this.perTile) : 0
     this.tileSpan = Math.ceil(radius / TILE) + 1
     this.radiusSq = radius * radius
     // Evict only once a tile is well outside the radius, so a player pacing back
@@ -870,6 +951,12 @@ export class Grass {
     const uOld = tile ? tile.u : 0
 
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
+    // Where this tile's R2 sequence starts. Drawn before the candidate loop, so
+    // it is two numbers a TILE rather than two a point -- and only when strips
+    // are standing, so the tuft carpet's stream is byte-for-byte the one it
+    // always was and no tuft moves because the experiment exists.
+    const r2x = this.strips ? rand() : 0
+    const r2z = this.strips ? rand() : 0
     const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
     const ids = tile ? tile.ids : new Int32Array(this.perTile)
     const rank = tile ? tile.rank : new Float32Array(this.perTile)
@@ -882,8 +969,19 @@ export class Grass {
       // be rejected, or on the level this tile was grown at. Moving any of these
       // below the tests would make the carpet change shape when a lake is edited
       // or when the player walks toward it.
-      const x = (tx + rand()) * TILE
-      const z = (tz + rand()) * TILE
+      // Two draws either way, so the two systems' streams stay the same SHAPE:
+      // for a tuft they are the position, for a strip they are the jitter on
+      // the R2 point that k already decided. `frac` twice, because both the
+      // sequence and the jitter have to wrap back into the tile rather than
+      // wander into the neighbour whose distance decided this tile's level.
+      const jx = rand()
+      const jz = rand()
+      const x = this.strips
+        ? (tx + frac(r2x + k * R2_A + (jx - 0.5) * this.jitter)) * TILE
+        : (tx + jx) * TILE
+      const z = this.strips
+        ? (tz + frac(r2z + k * R2_B + (jz - 0.5) * this.jitter)) * TILE
+        : (tz + jz) * TILE
       const yaw = rand() * Math.PI * 2
       const height = this.height[0] + rand() * (this.height[1] - this.height[0])
       // The strip's tile count. Only strips draw it, so the tuft carpet's stream
@@ -939,14 +1037,15 @@ export class Grass {
         // other in the air. Two heightAt calls at ~0.71 us against the ~3.8 us
         // heightAndSlopeAt above, on a third as many instances as the tuft bed
         // places -- the boot gets cheaper, not dearer.
-        // A WHOLE NUMBER OF SQUARE TILES. The bank bakes uvProj.x 0..T where T
-        // is the count that draws the cutout unstretched at the bank's own
-        // proportions; the fragment stage rescales that by this instance's own
-        // x/y scale ratio, so setting x from a tile COUNT is the whole of what
-        // makes a strip 1 or 4 clumps long. Nothing else has to be told.
+        // A WHOLE NUMBER OF TILES, each STRIP_TILE_ASPECT as wide as the strip
+        // is tall. The bank bakes uvProj.x 0..T where T is the count that draws
+        // the cutout unstretched at the bank's own proportions; the vertex stage
+        // rescales that by this instance's own x/y scale ratio, so setting x
+        // from a tile COUNT is the whole of what makes a strip 1 or 6 clumps
+        // long. Nothing else has to be told.
         const nTiles = STRIP_TILES[0]
           + Math.min(STRIP_TILES[1] - STRIP_TILES[0], Math.floor(lenRoll * (STRIP_TILES[1] - STRIP_TILES[0] + 1)))
-        const sx = (sy * nTiles * STRIP_BASE.height) / STRIP_BASE.width
+        const sx = (sy * nTiles * STRIP_BASE.height * STRIP_TILE_ASPECT) / STRIP_BASE.width
         // Local +X after a yaw about Y is (cos yaw, 0, -sin yaw).
         const ax = Math.cos(yaw) * STRIP_BASE.width * sx * 0.5
         const az = -Math.sin(yaw) * STRIP_BASE.width * sx * 0.5
@@ -1175,6 +1274,7 @@ export const GRASS_TUNING = {
   STRIP_HEIGHT,
   STRIP_TILES,
   STRIP_SINK,
+  R2_JITTER,
 }
 
 /** sRGB transfer curve. Same one tools/trees/generate.mjs authors the tints with. */

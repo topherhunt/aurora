@@ -561,11 +561,26 @@ export function planLeanRoof(o) {
     : { nu: 1, nv: 1 }
   const color = roofTint({ base: tint, eaveY: eave, ridgeY: highY, moss: 0.3 })
 
+  // HOW FAR THE SHEET RUNS PAST THE WALL IT LEANS ON, up-slope, on the same
+  // plane. The plan pins the top edge at the main mass's NOMINAL eave and the
+  // two sheets are then planned to meet along an exact line with no overlap --
+  // which holds while both are straight and does not once the character terms
+  // move them, because the main gable's eave can sag a third of a metre and this
+  // free edge cannot follow it. A line that two independent sheets are supposed
+  // to arrive at is a line that opens; a quarter of a metre of overlap, buried
+  // inside the mass it leans on, is a line that cannot.
+  //
+  // Extending the run and raising the top by the same pitch keeps the pitch, the
+  // eave position and the eave height bit-identical: this adds sheet at the top
+  // and changes nothing else.
+  const TOP_EXT = 0.25
+  const pitchOf = (highY - lowY) / Math.max(0.001, runNominal)
   // ridgeSag is 0 and not a choice: a lean-to's top edge is buried in the wall
   // of the mass it leans against, and drooping it there opens a gap into it.
   const slope = slopeSurface({
     cx, cz, alongAxis, dirSign: sign, alongHalf,
-    runNominal, cHigh: -sign * runHalf, eaveY: lowY, highY, overhang: oh,
+    runNominal: runNominal + TOP_EXT, cHigh: -sign * (runHalf + TOP_EXT),
+    eaveY: lowY, highY: highY + pitchOf * TOP_EXT, overhang: oh,
     vergeLo: verge, vergeHi: verge, splayLo: kk.vergeSplay, splayHi: kk.vergeSplay,
     ridgeSag: 0, seed: seed * 3 + 1, k: kk, layer, nu: grid.nu, nv: grid.nv,
   })
@@ -640,6 +655,125 @@ export function clearUnder(topAt, x, z, r, gap = 0.03) {
 }
 
 /**
+ * The tallest a doorway at `door` may be and still stay under the covering.
+ *
+ * A door is the one opening that cannot duck. A window is placed at a height
+ * somebody chose and can be slid down until it fits; a door stands ON THE FLOOR,
+ * so the only thing left to give is its head. On a small hut with a low eave --
+ * seed 44043 is the one -- the wall line is under the slope's lowest part and a
+ * nominal 1.95 m door puts its lintel straight through the thatch.
+ *
+ * What is measured is the SURROUND, not the opening: `HEAD` is the jamb width
+ * plus the lintel's own thickness above it, the part that actually comes through.
+ * And it is measured across the whole of the surround's footprint -- out to both
+ * jambs and out to the lintel's front face -- for the reason `clearUnder` gives:
+ * a roof over a doorway is falling away as it goes, and the corner nearest the
+ * eave is the one that surfaces first.
+ *
+ * The floor of 1.4 m is deliberate and is a visible squat door, not a failure:
+ * under an eave that low there is no honest full-height door to be had, and a
+ * head-ducking door in a turf-roofed hut is the right answer anyway.
+ */
+export function doorHeight({ x, z, nx, nz, y0, width, height }, topAt) {
+  if (!topAt) return height
+  const HEAD = 0.17
+  const hw = width / 2 + 0.14
+  let top = Infinity
+  for (const a of [-hw, 0, hw]) {
+    for (const o of [-0.05, 0.16]) {
+      // The wall's own frame: (nz, -nx) runs along it, (nx, nz) out of it.
+      top = Math.min(top, topAt(x + nz * a + nx * o, z - nx * a + nz * o))
+    }
+  }
+  return Math.max(1.4, Math.min(height, top - HEAD - y0))
+}
+
+/**
+ * THE OPENINGS A WALL CARRIES, as boxes in that wall's own frame.
+ *
+ * The plan states a window or a door in world space and never says which wall it
+ * belongs to, so the wall works it out. Not by asking which wall the opening was
+ * MEANT for -- by asking what volume it clears and whether this wall's timbers
+ * are in it. The two are not the same question, and the difference is the whole
+ * reason this is a box and not a span: the wall a door is cut into is not the
+ * only wall that can reach into the doorway. A log course runs 20 cm past its
+ * corner as an interlock, and a door set a hand's width from that corner has the
+ * SIDE wall's log ends standing in the opening -- at right angles to it,
+ * invisible to any test that only knows about openings lying on the line.
+ * Reduced to a box, both cases are the same arithmetic.
+ *
+ * Exported because the king post is raised in building.js, outside any wall, and
+ * it stands exactly where a gable end's middle bay window wants to be.
+ *
+ * `blocked(a, pad, half)` asks whether the point `a` along the wall is inside an
+ * opening, where `pad` is the clearance wanted either side and `half` is how far
+ * the timber in question stands either side of the wall plane -- an opening the
+ * timber never reaches into is not in its way. `dodge` answers the follow-up:
+ * the nearest point that is NOT blocked, or null if there is no such point on
+ * this wall.
+ */
+export function wallOpenings({ p0, p1, openings }) {
+  const dx = p1[0] - p0[0]
+  const dz = p1[1] - p0[1]
+  const len = Math.hypot(dx, dz)
+  const ux = dx / len
+  const uz = dz / len
+  const nx = -uz
+  const nz = ux
+  const boxes = []
+  for (const o of openings) {
+    // Loudly, because the failure mode is silent: an opening with no facing
+    // makes every box coordinate NaN, every NaN comparison false, and the wall
+    // then dodges nothing at all while reporting no error.
+    if (!Number.isFinite(o.nx) || !Number.isFinite(o.nz)) {
+      throw new Error(`wallOpenings: opening at ${o.x},${o.z} has no nx/nz facing`)
+    }
+    // The opening's own frame: `t` runs along its face, `o.n*` out of it. The
+    // depth range is the clear reveal, from a little behind the wall plane out to
+    // the front of the surround.
+    const tx = o.nz
+    const tz = -o.nx
+    let a0 = Infinity; let a1 = -Infinity; let n0 = Infinity; let n1 = -Infinity
+    for (const u of [-o.hw, o.hw]) {
+      for (const dp of [-0.06, 0.16]) {
+        const rx = o.x + tx * u + o.nx * dp - p0[0]
+        const rz = o.z + tz * u + o.nz * dp - p0[1]
+        const a = rx * ux + rz * uz
+        const n = rx * nx + rz * nz
+        a0 = Math.min(a0, a); a1 = Math.max(a1, a)
+        n0 = Math.min(n0, n); n1 = Math.max(n1, n)
+      }
+    }
+    if (a1 < -0.4 || a0 > len + 0.4) continue
+    boxes.push({ a0, a1, n0, n1, y0: o.y0, y1: o.y1, solid: !!o.solid })
+  }
+  const blocked = (a, pad, half) => boxes.some((o) =>
+    a > o.a0 - pad && a < o.a1 + pad && o.n1 > -half && o.n0 < half)
+  const dodge = (a, pad, half, clear = 0.1) => {
+    if (!blocked(a, pad, half)) return a
+    // Every opening this point is inside of, merged: two windows a stud-width
+    // apart are one obstruction, and stepping clear of the nearer of them would
+    // land inside the other.
+    let lo = Infinity
+    let hi = -Infinity
+    for (const o of boxes) {
+      if (a > o.a0 - pad && a < o.a1 + pad && o.n1 > -half && o.n0 < half) {
+        lo = Math.min(lo, o.a0)
+        hi = Math.max(hi, o.a1)
+      }
+    }
+    const left = lo - pad - clear
+    const right = hi + pad + clear
+    for (const c of Math.abs(left - a) <= Math.abs(right - a) ? [left, right] : [right, left]) {
+      if (c < 0.05 || c > len - 0.05) continue
+      if (!blocked(c, pad, half)) return c
+    }
+    return null
+  }
+  return { boxes, blocked, dodge, len }
+}
+
+/**
  * A wall, split along its length so the warp field has something to belly out,
  * and TOPPED BY THE ROOF IT STANDS UNDER rather than by a level line.
  *
@@ -670,7 +804,8 @@ export function clearUnder(topAt, x, z, r, gap = 0.03) {
  */
 export function wall2(b, {
   p0, p1, y0, y1, style, seed = 0, rough = 0, sillY, detail = 2,
-  tint = TINT.timber, topAt = null, topCols = 0, topBreaks = null, k = FLAT,
+  tint = TINT.timber, topAt = null, topCols = 0, topBreaks = null,
+  openings = [], k = FLAT, plain = false,
 }) {
   const dx = p1[0] - p0[0]
   const dz = p1[1] - p0[1]
@@ -682,6 +817,13 @@ export function wall2(b, {
   const nz = ux
 
   const A = (t, y) => [p0[0] + ux * len * t, y, p0[1] + uz * len * t]
+
+  // Two different things are done with the openings, and the difference is what
+  // each timber is FOR. A stud is a frame member and can stand a little either
+  // side of where the bay grid puts it, so it steps clear of an opening. A log
+  // course is not optional -- it IS the wall -- so it is cut at the opening
+  // instead. See wallOpenings() above for what a box is and why it is a box.
+  const { boxes: OP, blocked, dodge } = wallOpenings({ p0, p1, openings })
 
   // WHERE THE WALL IS SPLIT ALONG ITS LENGTH. Two independent demands, merged.
   //
@@ -712,12 +854,19 @@ export function wall2(b, {
   // is applied to the roof's vertices and to the wall's separately: they start
   // life at the same place but the roof's are metres away at the corners of the
   // triangle, and a field that is smooth is not a field that is linear, so the
-  // covering ends up a centimetre or so off the plane its corners promised. That
+  // covering ends up a few millimetres off the plane its corners promised. That
   // residual, and nothing else, is what this is for now that the top edge is
-  // sampled on the folds. It costs nothing to be a little generous: the covering
-  // oversails on all four sides AND is double-sided, so even a wall that did poke
-  // through would show wall against roof rather than a hole into the building.
-  const TUCK = 0.025
+  // sampled on the folds.
+  //
+  // 12 mm, not the 25 mm it was. Being generous here is NOT free, which took a
+  // ray probe to see: the slot the tuck leaves is under the overhang, where a
+  // grazing ray from inside goes out through it once the sagged eave drops to
+  // the height of the head that is looking. It is bounded at both ends, which is
+  // why it is this number and not zero -- go under about 10 mm and the worst
+  // flat wall reaches the covering exactly, with nothing left for the gate that
+  // says nothing but masonry stands through it; go back up and the daylight
+  // returns, three buildings' worth by 15 mm.
+  const TUCK = 0.012
   const heightOf = (u) => {
     if (!topAt) return y1
     const q = A(u, 0)
@@ -766,15 +915,52 @@ export function wall2(b, {
     }
   }
 
+  // `plain` is the surface without the carpentry: the face, following the roof
+  // at full resolution, and none of the quoins, studs, corner posts or log ends
+  // that stand out of it. It is NOT the same as dropping a tier -- a tier down
+  // also coarsens the top edge, and the one place this is used (the strip of
+  // gable standing above an abutting wing's roof) is a place where the top edge
+  // is the only thing that matters and the carpentry is the only thing nobody
+  // can get close enough to see.
+  const furniture = detail >= 2 && !plain
+
   const base = level(y0)
   // Kept below the lowest point of the top edge, so a wall that dies away to
   // nothing under a valley does not invert its own courses.
   const split = Math.max(y0 + 0.1, Math.min(sillY ?? y0 + (y1 - y0) * 0.38, topMin - 0.1))
 
+  if (style === WALL_STYLE.MASONRY) {
+    // Rubble the whole way up, grimed a little deeper and a little higher than a
+    // stone base is: a wall that is stone to the eaves has no timber above it to
+    // explain where the weathering stops, so it has to fade out on its own.
+    face(base, TOP, LAYER.STONE, groundGrime(y0, 1.2, 0.3))
+    if (!furniture) return
+    // QUOINS. The dressed corner stones, drawn as one square-sectioned post per
+    // corner rather than as a chain of alternating blocks -- at 8 triangles a
+    // block a real chain is 120 triangles a corner, and this is 16 for a shape
+    // the eye reads the same way, because what says "quoin" at any distance is a
+    // corner that is proud of the wall and a different stone from it.
+    //
+    // Barely bowed, unlike a stave post: timber bends and dressed stone does
+    // not, and a quoin that curves reads as rubber. It keeps the jitter, though,
+    // because the individual stones were never square either.
+    const hu = 0.125
+    for (const t of [0, 1]) {
+      const px = p0[0] + dx * t
+      const pz = p0[1] + dz * t
+      member2(b, [px, y0, pz], [px, postTop(px, pz, hu), pz], {
+        hu, hv: hu, seed: rough * 17 + 50 + t, round: 0.18, jitter: 0.14,
+        segments: 2, bow: k.bow * 0.25,
+        layer: LAYER.STONE, color: TINT.stone, vWorldY: true,
+      })
+    }
+    return
+  }
+
   if (style === WALL_STYLE.STONE_BASE) {
     face(base, level(split), LAYER.STONE, groundGrime(y0, 1.0, 0.28))
     face(level(split), TOP, LAYER.TIMBER_PLANK, tint)
-    if (detail >= 2) {
+    if (furniture) {
       // The offset course where the timber sits back on the masonry: a swept
       // member, so it has a section and a shadow. It runs 0.05 past each corner
       // so the courses of two walls meet instead of leaving a notch.
@@ -794,10 +980,14 @@ export function wall2(b, {
 
   if (style === WALL_STYLE.HALF_TIMBER) {
     face(base, TOP, LAYER.PLASTER, groundGrime(y0, topMin - y0, 0.34))
-    if (detail < 2) return
+    if (!furniture) return
     const t = 0.075 // how far the timber stands out
     const wd = 0.16 // member width
-    const beam = { layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true }
+    const beam = { layer: LAYER.TIMBER_BEAM, color: TINT.timberDark }
+    // A rail runs HORIZONTALLY, so it does not take `vWorldY`: world height is
+    // the same number at both of its ends, and a V that never changes is one
+    // column of texels stretched the length of the timber. Only the studs, which
+    // stand up, want their V measured in absolute world height.
     const rail = (ya, yb, kk) =>
       member(b, [p0[0], (ya + yb) / 2, p0[1]], [p1[0], (ya + yb) / 2, p1[1]],
         { hu: t, hv: (yb - ya) / 2, seed: rough * 17 + kk, round: 0.35, ...beam })
@@ -810,15 +1000,48 @@ export function wall2(b, {
     // `i < bays`, not `i <= bays`: a wall owns the post at its START corner and
     // leaves the one at its end to the wall that starts there.
     const bays = Math.max(1, Math.round(len / 1.5))
+    // How much daylight to leave between a stud's edge and an opening's. The
+    // bay grid here is 1.5 m and the one plan.js hangs windows on is 2.15 m, so
+    // the two are guaranteed to collide sooner or later; the question is only
+    // what happens when they do.
+    const PAD = wd / 2 + 0.07
+    const CLEAR = 0.1
+    const placed = []
     for (let i = 0; i < bays; i++) {
-      const s = i / bays
+      // Not across an opening: a stud framed over a window is the single most
+      // obviously-wrong thing a half-timber wall can do. `t + 0.02` is how far
+      // the stud stands either side of the plane, which is what keeps a door on
+      // the NEXT wall along from deleting this wall's corner stud -- that door's
+      // box is beside the plane, not on it, so the stud is not in its way.
+      //
+      // Deleting the stud used to be the whole answer, and it left the frame
+      // visibly gappy while the window still sat hard against whatever stud
+      // survived next door. So SHIFT it instead: slide it to whichever side of
+      // the obstruction is nearer and stand it a hand's width clear. Only a stud
+      // with nowhere to go at all is dropped.
+      const bay = len * i / bays
+      const a = dodge(bay, PAD, t + 0.02, CLEAR)
+      // Nowhere on this wall to stand it, or so close to a stud already up that
+      // the pair would read as one clumsy double post.
+      if (a === null) continue
+      if (a !== bay && placed.some((p) => Math.abs(p - a) < 0.5)) continue
+      placed.push(a)
+      const s = a / len
       const px = p0[0] + dx * s
       const pz = p0[1] + dz * s
+      // From y0, NOT from the top of the bottom rail. A post that starts on a
+      // rail is right in a drawing and wrong in the eye: the rail is 16 cm of
+      // timber that the plinth, the ground or a step in front of it can hide any
+      // part of, and a stud that begins wherever the rail stops being visible
+      // reads as hanging rather than as carrying. It costs nothing to run it into
+      // the sill -- the kit is a union of interpenetrating solids and this is one
+      // more overlap.
+      //
       // The section frame for a vertical sweep is (+z, +x), so which half-extent
       // is which depends on the wall's direction.
-      member(b, [px, y0 + wd, pz], [px, topMin - wd, pz], {
+      member(b, [px, y0, pz], [px, topMin - wd, pz], {
         hu: ux ? t : wd / 2, hv: ux ? wd / 2 : t,
-        seed: rough * 17 + 10 + i, round: 0.35, ...beam,
+        seed: rough * 17 + 10 + i, round: 0.35, ...beam, vWorldY: true,
       })
     }
     return
@@ -826,7 +1049,7 @@ export function wall2(b, {
 
   if (style === WALL_STYLE.STAVE) {
     face(base, TOP, LAYER.TIMBER_PLANK, tint)
-    if (detail < 2) return
+    if (!furniture) return
     // Corner posts, which is what a stave wall is actually framed by. Segmented,
     // so the field can bow them: these are the tallest single verticals on the
     // building and a dead-straight one beside a bellied wall is the thing that
@@ -863,7 +1086,7 @@ export function wall2(b, {
   // and what covers the gaps at the very top where the courses run out under a
   // sloping roof, and it costs 4 triangles a column.
   face(base, TOP, LAYER.TIMBER_BEAM, tint)
-  if (detail < 2) return
+  if (!furniture) return
 
   const course = TILE_METRES[LAYER.TIMBER_BEAM] / 2
   // 0.54 rather than 0.5 so consecutive logs OVERLAP by a couple of centimetres
@@ -874,6 +1097,11 @@ export function wall2(b, {
   // in the wall, which sit at 1 to 4 cm. Set back so it protrudes 5 cm.
   const inset = r - 0.05
   const phase = seed & 1
+  // How far past the opening the log is cut. The door's jamb is 14 cm of timber
+  // standing 14 cm proud of the wall, so an end left at 10 cm is behind it and
+  // is never seen; cutting flush with the opening instead would leave a raw log
+  // face in the doorway's own reveal.
+  const JAMB = 0.1
   for (let kk = 0; ; kk++) {
     const y = y0 + course * (kk + 0.5)
     if (y + r > topMin) break
@@ -881,13 +1109,48 @@ export function wall2(b, {
     // is the reason the phase is taken from the seed rather than being fixed --
     // two walls meeting at a corner must not both stick out on the same course.
     const stick = (kk & 1) === phase ? 0.2 : 0.02
-    member(b,
-      [p0[0] - ux * stick - nx * inset, y, p0[1] - uz * stick - nz * inset],
-      [p1[0] + ux * stick - nx * inset, y, p1[1] + uz * stick - nz * inset],
-      {
-        hu: r, sides: 5, seed: rough * 17 + 40 + kk, round: 0.95, jitter: 0.1,
-        layer: LAYER.TIMBER_BEAM, color: tint, vWorldY: true,
+    // WHERE THIS COURSE SURVIVES.
+    //
+    // A log stands 5 cm proud of the wall plane and a door leaf hangs at 3 cm, so
+    // a course crossing a doorway comes through the door -- from inside the house
+    // you can see five logs lying across the opening. Windows do not have the
+    // problem: their surround starts at 16 cm and their glass at 7 cm, both in
+    // front of the log, which is why only `solid` openings cut here.
+    //
+    // Cutting is the only option available. A stud can be moved because the bay
+    // beside it will do its job; a course IS the wall, and moving it up leaves a
+    // stripe of daylight.
+    let spans = [[-stick, len + stick]]
+    for (const o of OP) {
+      if (!o.solid || y - r >= o.y1 || y + r <= o.y0) continue
+      // The course's own slab of plan: set back by `inset` and r thick, so it
+      // reaches 5 cm out of the wall and 40 cm back into it.
+      if (o.n1 <= -inset - r || o.n0 >= -inset + r) continue
+      const c0 = o.a0 - JAMB
+      const c1 = o.a1 + JAMB
+      spans = spans.flatMap(([a, c]) => {
+        if (c <= c0 || a >= c1) return [[a, c]]
+        const out = []
+        if (c0 - a > 0.18) out.push([a, c0])
+        if (c - c1 > 0.18) out.push([c1, c])
+        return out
       })
+    }
+    for (const [a, c] of spans) {
+      member(b,
+        [p0[0] + ux * a - nx * inset, y, p0[1] + uz * a - nz * inset],
+        [p0[0] + ux * c - nx * inset, y, p0[1] + uz * c - nz * inset],
+        {
+          // No `vWorldY`. A log is horizontal, so world height is the same number
+          // at both of its ends: the coordinate the sweep measures its tiles by
+          // would be CONSTANT down the whole length, and every log would wear one
+          // column of texels stretched five metres. `vWorldY` is for the things
+          // that stand up -- the studs and the corner posts, where lining the
+          // texture up in absolute height is what makes a corner read as a corner.
+          hu: r, sides: 5, seed: rough * 17 + 40 + kk, round: 0.95, jitter: 0.1,
+          layer: LAYER.TIMBER_BEAM, color: tint,
+        })
+    }
   }
 }
 
@@ -1209,7 +1472,13 @@ export function windowUnit2(
     p,
     path: C.map(([pa, pv], i) => [pa + SIGNS[i][0] * (frame / 2), pv + SIGNS[i][1] * (frame / 2)]),
     signs: SIGNS,
-    width: frame, back: 0, front: depth + 0.02,
+    // BACK is behind the wall plane, not on it. A wall is one zero-thickness
+    // surface, so a surround that stops at it is a picture frame stuck to a
+    // sheet of paper: step to one side and you see the ring end in mid-air and
+    // the whole opening stops being an opening. Reaching 12 cm in gives the
+    // reveal a depth to be seen edge-on, and it costs nothing at all -- the ring
+    // is the same eight quads a side with a taller section.
+    width: frame, back: -0.12, front: depth + 0.02,
     seed: seed * 31 + 7, sides,
     layer: LAYER.TIMBER_PLANK, color: TINT.timberDark,
   })
@@ -1276,7 +1545,14 @@ export function windowUnit2(
  */
 export function chimney2(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, detail = 2, k = FLAT }) {
   const grime = groundGrime(baseY, 1.4, 0.22)
-  const foot = baseY - 0.35
+  // How far the stack is buried below the point the plan seats it at. 0.35 was
+  // not enough: `baseY` is where the chimney meets the roof's NOMINAL plane, and
+  // the covering under it sags, buckles and tips by more than that between its
+  // own supports, so on an unlucky seed the stack ended above the sheet with
+  // daylight under it. 0.7 is longer than any of those terms can be, and it is
+  // free -- the extra length is inside the building, and a prism's cost is in
+  // its section, not its length.
+  const foot = baseY - 0.7
   if (detail < 2) {
     b.box([x - w / 2, foot, z - d / 2], [x + w / 2, topY, z + d / 2],
       { layer: LAYER.STONE, color: grime })

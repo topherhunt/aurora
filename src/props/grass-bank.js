@@ -55,6 +55,36 @@ import { LAYER } from '../textures.js'
 // photograph and the card it lands on draw the grass back at 0.476 m.
 export const GRASS_BASE = { width: 0.55, height: 0.55 }
 
+/**
+ * The world size a tuft's own CARD is drawn at, for a tuft `height` metres tall.
+ *
+ * THE PICTURE IS SQUARE AND THE CARD IS NOT, and that gap is the whole reason
+ * this is a function rather than a constant. Two things narrow it:
+ *
+ *   - the card is a CHORD of the footprint circle, not a diameter (see
+ *     GRASS_BASE), so it is sqrt(3)/2 = 0.87 of the tuft's width at 3 planes;
+ *   - render/grass.js scales a tuft's width by the SQUARE ROOT of its height,
+ *     on purpose -- "sqrt keeps the short ones squat and lets the tall ones be
+ *     tall and comparatively narrow, which is what long grass looks like".
+ *
+ * Together they draw the square cutout at width/height = 0.64 at the bed's mean
+ * height and 0.52 at its tallest, and that -- not the square photo -- is the
+ * shape of the grass a player has been looking at. Anything else that draws the
+ * same cutout has to match it or the grass reads as stretched sideways; the
+ * strip did not, and looked 1.5-2x too wide until STRIP_TILE_ASPECT below.
+ */
+export function grassCardSize(height) {
+  return {
+    width: GRASS_BASE.width * (Math.sqrt(3) / 2) * Math.sqrt(height / GRASS_BASE.height),
+    height,
+  }
+}
+
+/** width/height of the drawn card, which is what an unstretched tile has to be. */
+export function grassCardAspect(height) {
+  return grassCardSize(height).width / height
+}
+
 // Cards per tier, finest first. 3 / 2 / 1 is the manifest's ladder and the
 // bottom of it is the interesting entry: ONE plane is only legal because the
 // vertex shader turns it (see billboardVertex in material.js). A fixed single
@@ -230,15 +260,24 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
 // random yaw presents E|sin t| = 2/pi = 0.64 of its width. Facing area per
 // triangle is therefore:
 //
-//   billboard tuft   2 tri   0.83 x 1.06 = 0.88 m2      0.44 m2/tri
-//   strip, W = 4 m   2 tri   0.64 x 4 x 1.06 = 2.71 m2  1.36 m2/tri
+//   billboard tuft         2 tri   0.83 x 1.06 = 0.88 m2   0.44 m2/tri
+//   strip, 3.5 x 1.2 m     2 tri   0.64 x 2.85 x 1.2 x
+//                                  0.62 drawn   = 1.36 m2  0.68 m2/tri
 //
-// so a 4 m strip is worth about 3.1x, and 5x wants W ~ 6.5 m. Against the
-// 3-plane LOD0 tuft the saving is far larger, but LOD0 is 6% of the bill and it
-// is also the tier a player is standing in, where the strip's flatness is most
-// visible -- so the eventual shape of this is probably strips FAR and tufts
-// NEAR, not strips everywhere. The everywhere version is what is built here,
-// because it is the one you can look at and judge.
+// so a strip at the size the bed actually uses is worth about 1.5x -- down from
+// the 3.1x this opened at, because the grass was too big at that size and the
+// range was cut by 1.5x, and a strip's area per triangle goes as the SQUARE of
+// its height. Everything else here is unchanged by that; the up-to-date numbers
+// are printed by check-grass.mjs rather than kept here.
+//
+// AND THAT IS THE FAR-FIELD COMPARISON ONLY. Inside 8 m the tuft bed is running
+// its 3-plane LOD0 and putting 3.7 m2 of card over every square metre of ground;
+// the strip bed, which has no ladder to climb, puts 2.4. That ratio -- 0.64x
+// where the player is standing, against 1.4x out past 20 m -- is what "it looks
+// sparser" was, and it is measured per distance ring in check-grass.mjs. The
+// eventual shape of this is probably strips FAR and tufts NEAR, or a crossed
+// pair up close; the everywhere version is what is built here, because it is
+// the one you can look at and judge.
 //
 // IT MUST STAY AT TWO TRIANGLES, and that is the whole design constraint. The
 // obvious fix for a flat card on lumpy ground is to segment it and drop each
@@ -251,25 +290,47 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
 // GRASS_FRAY in textures.js) so grass entering the ground reads as grass.
 // ---------------------------------------------------------------------------
 
+// Metres: the height one CLUMP is drawn at in the strip bed, which is the
+// height whose card aspect a tile has to borrow. It is the mean of STRIP_HEIGHT
+// in render/grass.js times the mean of the per-tile shrink in material.js --
+// both of which live elsewhere, so check-grass.mjs gates that this still
+// matches the bed rather than trusting the number to stay true.
+const STRIP_CLUMP_HEIGHT = 0.9
+
+// How wide a tile is drawn, per unit of its height.
+//
+// THIS WAS 1 AND THAT WAS THE STRETCH BUG. A square tile is the obvious answer
+// -- the cutout is a square photograph -- but the tuft bed never drew that photo
+// square (see grassCardSize), so switching to strips widened every clump by
+// 1/0.64 = 1.56x against what the player was used to, and by nearly 2x against
+// the tall tufts. Borrowing the tuft's own aspect is what puts it back.
+export const STRIP_TILE_ASPECT = grassCardAspect(STRIP_CLUMP_HEIGHT)
+
 // The strip's REFERENCE proportions, and how many copies of the cutout those
 // proportions bake into `uvProj.x`.
 //
-// `tiles` is width/height and not a free number: the tuft picture is square
-// (GRASS_BASE), so a tile as wide as the strip is tall is the one aspect that
-// draws the grass unstretched. Change `width` and this has to move with it,
-// which is why it is derived below rather than typed.
+// `height` IS DERIVED AND MUST STAY DERIVED. Setting it to 1/aspect is what
+// makes the baked u span come out equal to `width`, and two things downstream
+// rely on that identity:
+//
+//   - render/grass.js' sx keeps its simple form (a whole number of tiles), and
+//   - the flare in material.js can compensate its own stretch using nothing but
+//     `position.x`, because uvProj.x is then exactly position.x + width/2.
+//
+// Both are gated in check-grass.mjs. Type a height here and the second one
+// fails silently as a shear across the top of every flared card.
 //
 // IT IS NOT THE LENGTH OF A STRIP. The fragment stage rescales `uvProj.x` by the
 // instance's own x/y scale ratio (see the strip block in material.js), so the
 // number of clumps a strip actually draws is whatever length render/grass.js
-// gave it -- STRIP_TILES there, currently 1 to 4 -- and nothing here caps it.
+// gave it -- STRIP_TILES there, currently 1 to 6 -- and nothing here caps it.
 // What this geometry fixes is only the PROPORTION at which a tile comes out
-// square, which is the one thing the shader cannot work out for itself.
-export const STRIP_BASE = { width: 4, height: 1 }
+// unstretched, which is the one thing the shader cannot work out for itself.
+export const STRIP_BASE = { width: 4, height: 1 / STRIP_TILE_ASPECT }
 
 /** Copies of the cutout across a strip of the given proportions. */
 export function stripTiles({ width, height } = STRIP_BASE) {
-  return Math.max(1, Math.round((width / height) * (GRASS_BASE.height / GRASS_BASE.width)))
+  return Math.max(1, Math.round(width / (height * STRIP_TILE_ASPECT)))
 }
 
 /**

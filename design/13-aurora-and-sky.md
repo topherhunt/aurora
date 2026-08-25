@@ -1,151 +1,71 @@
 ## 13. Aurora and sky
 
-> **Covers:** the aurora shader and its 16-form parameter catalogue, the sky dome, stars, night-sky banding, and the aurora's fill-rate budget.
-> **Read this when:** touching `src/aurora.js`, `src/aurora-patterns.js`, or `scripts/check-daynight.mjs`.
+> **Covers:** both auroras -- the eleven curtain meshes the game draws today, and the raymarch lab being built to replace them -- plus the sky dome, stars, night-sky banding, and the aurora's fill-rate budget.
+> **Read this when:** touching `src/aurora.js`, `src/aurora-patterns.js`, `src/aurora-lab/*`, or `scripts/check-daynight.mjs`.
+> **There are two auroras in this tree and only one of them ships.** `src/aurora.js` is what `index.html` and `v2.html` draw. `src/aurora-lab/*`, served at `/test-aurora`, is a replacement under development; neither world imports it and nothing has been promoted out of it yet.
 > **Reverted work lives in** `design/history/aurora-rounds-4-6.md` **and is not in the tree.** Everything below is.
 
 **The aurora appears randomly at night, anywhere in the world** -- not gated on altitude. Summits simply give a better view: less terrain occlusion, less atmospheric haze, and a modest intensity boost with elevation.
 
 This is driven by the same low-frequency-noise-over-time mechanism as weather (§10), gated to night hours. Squalls of snow and curtains of aurora both come and go, which makes the world feel like it has moods.
 
-- Rendered on the sky dome or a band of geometry inside it, **not** as a fullscreen pass. Fill rate is the constraint on mobile GPUs; dome geometry bounds the cost
-- Scrolling FBM/curl noise, additive blend, vertical gradient falloff
-- Keep the fragment shader short -- this is the one place a long shader will show in frametime
-- Tint scene ambient green as it strengthens, so it affects the world rather than sitting on a separate layer
+Also on the dome: `src/sky.js` (rewritten), a slowly rotating starfield (`src/stars.js`), and the moon. The wispy drifting cloud layer -- two scrolling alpha-blended layers -- is still outstanding.
 
-Also on the dome: starfield (slowly rotating), moon, wispy drifting cloud layer (two scrolling alpha-blended layers).
+### What an aurora actually is
 
-### What shipped
-
-`src/sky.js` (rewritten), `src/stars.js`, `src/aurora.js`. The cloud layer is still outstanding.
-
-#### What the aurora actually is
-
-Worth writing down, because nearly every shortcut in the implementation is licensed by one of these facts.
+Worth writing down, because nearly every shortcut in both implementations is licensed by one of these facts.
 
 An aurora is not a light in the sky. It is the **upper atmosphere itself glowing**, along magnetic field lines, where precipitating electrons excite oxygen and nitrogen. Three consequences:
 
-1. **Colour is a function of altitude and nothing else.** Atomic oxygen at 100-150 km gives the 557.7 nm green that dominates; above ~200 km the same oxygen gives 630.0 nm red (long-lived state, only survives where collisions are rare); ionised nitrogen at 80-100 km gives the 428/470 nm blue-violet that shows as the pink-magenta lower hem. So the vertical colour ramp is not art direction -- it is a spectroscopy table, and it is the single strongest cue that what you are looking at is real.
-2. **All structure is vertical.** The rays are field lines. This is the constraint that decides the shader: the noise that generates striations must be indexed on distance *along* the arc and must **not** contain an altitude term. One character's worth of mistake there and the whole thing stops being an aurora and becomes coloured fog. The gate asserts it textually.
+1. **Colour is a function of altitude and nothing else.** Atomic oxygen at 100-150 km gives the 557.7 nm green that dominates; above ~200 km the same oxygen gives 630.0 nm red (long-lived state, only survives where collisions are rare); ionised nitrogen at 80-100 km gives the 428/470 nm blue-violet that shows as the pink-magenta lower hem. So the vertical colour ramp is not art direction -- it is a spectroscopy table, and it is the single strongest cue that what you are looking at is real. Every attempt to key aurora colour off *intensity* instead produces the same tell: the bright parts go yellow-white and the whole thing reads as fire.
+2. **All structure is vertical.** The rays are field lines. This is the constraint that decides both shaders: the noise that generates striations must be indexed on distance *along* the arc and must **not** contain an altitude term. One character's worth of mistake there and the whole thing stops being an aurora and becomes coloured fog. The gate asserts it textually.
 3. **It is optically thin.** You see straight through it, additively. That means no sorting, no transparency ordering, no depth writes -- and it means the fold-on-fold brightening where a curtain doubles back on itself is *free*, because it is just addition.
+
+### The shipped aurora: eleven parametric curtains
+
+`src/aurora.js` plus the catalogue in `src/aurora-patterns.js`. **This is the one the game draws.** It is cheap, mobile-friendly, gated in depth, and it is what the lab further down exists to replace.
 
 #### The factorisation
 
-Lawlor & Genetti (2010) is the load-bearing idea: an aurora is a **2D curtain footprint x a 1D altitude deposition profile**. There is no 3D volume to march. The shipped geometry is 5 ribbons, each a long strip that follows a horizontal path and rises through 8 altitude bands at 86, 92, 100, 112, 132, 165, 210 and 260 km. 8,040 vertices, 14,000 triangles, one draw call.
-
-#### What Skyrim does, and what was worth stealing
-
-Skyrim's auroras are **authored meshes** under `meshes\sky\`, not a shader effect. Each band is a hand-modelled ribbon carrying **three stacked layers**, each with a `BSEffectShaderProperty` -- emissive, additive, unlit, no lighting model at all -- and each layer has its own UV-scroll controller running at a different rate, plus a vertex-colour tint.
-
-**Stolen: the three-layer interference.** Three semi-transparent additive layers drifting at different rates produce a shimmer that no single layer achieves, because the *beat* between them is what reads as motion. The shipped version generalises it to 5 curtains at different distances (38 to 200 km) with drift rates from +0.077 to -0.058, deliberately opposed in sign so nearer and further curtains slide against each other and give real parallax as you walk.
-
-**Rejected: UV scroll.** Scrolling a texture across a fixed mesh slides the *pattern* through a *static silhouette*. Real curtains do the opposite -- the silhouette itself morphs while staying in place. So the folds here are generated by noise where **time is the second noise axis rather than an offset added to the first**:
-
-```glsl
-float f  = ( aurNoise( vec2( km * 0.0125, t * 0.055 ) ) - 0.5 ) * 1.0;
-      f += ( aurNoise( vec2( km * 0.0410, t * 0.130 ) ) - 0.5 ) * 0.52;
-      f += ( aurNoise( vec2( km * 0.1350, t * 0.310 ) ) - 0.5 ) * 0.34 * act;
-```
-
-That is the difference between a curtain that slides and a curtain that *writhes*. The third octave is scaled by activity, so a quiet arc is smooth and a substorm gets small-scale curl.
-
-#### The rest of the shader, and the fill-rate budget
-
-- **Edge-on brightening.** A curtain seen edge-on is far brighter than one seen face-on, because you are looking along much more emitting gas. The fold displacement already gives an analytic surface normal (one extra noise evaluation via finite difference in the *vertex* shader), so `1/|dot(view, normal)|` clamped to 4.2x gives the effect for free and it self-animates as the folds move. This is the single highest-value line in the file.
-- **Altitude deposition.** A sharp lower edge (electrons stop where the air thickens) and a long exponential tail upward, which is why real auroras have a knife-edge bottom and a soft top.
-- **Ray crispness falls with altitude.** Striations are sharp in the green band and washed out in the red, because the red-emitting state is long-lived enough for the gas to move before it radiates.
-- **Two noise evaluations** in the fragment shader, and the gate fails if a third appears. §13's "keep the fragment shader short" is the one budget in this file that is enforced numerically.
-- Curtains have staggered activity thresholds, so a quiet night shows one arc and a storm brings all five in -- the Akasofu substorm sequence (quiet arc, folds, curls and breakup, recovery) rather than a single global brightness knob.
-
-#### Depth, without any sorting
-
-Additive materials land in three.js's transparent pass, which runs *after* the opaque pass has already filled the depth buffer. So `depthTest: true, depthWrite: false` gives correct mountain occlusion for both the aurora and the stars with no `renderOrder` games at all. Across all sixteen catalogued forms the aurora geometry sits between 5.5 km and 17.6 km from the player, inside the 20 km far plane, and its lowest point is 17.9 deg above the horizon -- high enough that no mountain can occlude it anywhere it should not. Since the rewrite the vertex buffer is all zeros and every coordinate is computed in the shader, so the gate mirrors that arithmetic on the CPU rather than reading the buffer: the price of a parametric mesh, and worth paying, because it checks all sixteen forms instead of one hard-coded arrangement.
-
-#### Stars
-
-2,400 points, spectral tints weighted to a real-ish O-through-M distribution, sized and brightened by magnitude with saturation rising with brightness. The Milky Way is **rejection sampling on the CPU** -- a density gradient in the point distribution, costing exactly zero shader instructions. Twinkle is two out-of-phase sines whose amplitude rises near the horizon, because scintillation is an air-mass effect and stars overhead barely twinkle at all. The field rotates about the true celestial pole for the world's latitude.
-
-#### Night-sky banding
-
-An 8-bit framebuffer bands visibly across a dark full-screen gradient. A quarter-LSB hash dither fixes it, and it has to be applied **after** the sRGB conversion, not before: near black, one 8-bit code step is about 0.0003 in linear space, so a dither sized in linear units is either invisible or enormous depending on where in the gradient it lands.
-
-#### Cost when the sun is up
-
-Stars and aurora both set `visible = false` when their fade reaches zero, so this entire system costs **nothing at all** during the day. The gate asserts it.
-
-### Round two: twelve named forms, and fixing the curtain
-
-The first aurora was one hard-coded arrangement of five curtains. It looked right and it was wrong in four specific ways, all of which came from the same root: **the mesh's own geometry was visible in the image**.
+Lawlor & Genetti (2010) is the load-bearing idea: an aurora is a **2D curtain footprint x a 1D altitude deposition profile**. There is no 3D volume to march. What ships is eleven slots of 181 x 10 parametric grid -- **35,640 triangles, one draw call** -- carrying nothing but `(aU along, aV up, aSlot)`. The `position` attribute exists only because three.js requires one and is all zeros; every coordinate is computed in the vertex shader from the band uniforms. That is why the gate mirrors the footprint arithmetic on the CPU rather than reading the buffer, and it is worth the price, because it then checks all sixteen forms instead of one hard-coded arrangement.
 
 #### One shader, one mesh, a table of named parameter rows
 
 The brief asked for at least ten aurora patterns, and flagged the obvious worry about a procedural or combinatorial version: harder to troubleshoot. Both halves of that are correct, and they are separable.
 
-What shipped is **one** shader program, **one** BufferGeometry, and `src/aurora-patterns.js` -- a table of twelve **named parameter rows**. Every form is the same twenty numbers with different values. There is no per-pattern code path, no shader permutation, no branch that only some patterns take, and therefore exactly one program to debug. The geometry is deliberately contentless: nine identical parametric grids carrying nothing but `(aU along, aV up, aSlot)`. Everything that makes a band a *drapery* rather than a *SAR arc* lives in uniform arrays indexed by `aSlot`, which is legal because three.js compiles every non-Raw shader as `#version 300 es` and GLSL ES 3.0 allows dynamic indexing of uniform arrays. Switching the entire sky is a write of 200 floats.
+What shipped is **one** shader program, **one** BufferGeometry, and a table of sixteen **named parameter rows**. Every form is the same twenty-six numbers with different values. There is no per-pattern code path, no shader permutation, no branch that only some patterns take, and therefore exactly one program to debug. Everything that makes a band a *drapery* rather than a *SAR arc* lives in uniform arrays indexed by `aSlot` -- seven `vec4` arrays plus a `vec3` tint array -- which is legal because three.js compiles every non-Raw shader as `#version 300 es` and GLSL ES 3.0 allows dynamic indexing of uniform arrays. Switching the entire sky is a write of 341 floats.
 
-The twelve are the standard auroral morphology, going back to Stormer's classification in the 1910s: **quiet arc, multiple arcs, rayed band, drapery, corona, breakup, omega band, diffuse patches, pulsating patches, picket fence, SAR arc, STEVE**. Ten of them get their colour from the altitude ramp like everything else. The last two override it, and they are the two that are *not* electron precipitation at all -- a SAR arc is thermal excitation of oxygen and STEVE is a hot plasma stream -- so the override is a statement about physics rather than an escape hatch.
-
-The combinatorial part is confined to **which** named forms are up at once, and that is where the real work went.
-
-#### The concurrency cap took three attempts
-
-Up to three forms overlay at a time, each with up to three bands, and `MAX_CONCURRENT x MAX_BANDS == SLOTS` exactly, so overflow is impossible by construction rather than by clamping.
-
-Choosing *which* three is the hard part, and it is a continuity problem:
-
-1. **Sort by weight, keep the top three.** Pops. When the third and fourth swap rank the sky loses a whole curtain in one frame -- a step of 1.0.
-2. **Adaptive cut**: let the weight of the first *rejected* form be a floor that every accepted form fades against. Rank-invariant, so swaps are smooth -- but *worse* in practice, and the gate caught it. When forms saturate at weight 1.0, a fourth form rising from nothing does not displace the marginal one, it **dims the entire sky at once**. Measured: a 0.43 drop across all three in a single step.
-3. **Adaptive cut with no special case**, plus slower channels. The version that shipped.
-
-The subtle bug in between: skipping the crossfade entirely when fewer than four forms were in play meant that the instant a fourth candidate crossed zero, the fade switched *on* for everybody -- a 0.21 to 0.08 step on a form that was not even the one changing. Removing the `cut > 0` special case removes it, because `cut = 0` then gives the same answer on both sides of that moment.
-
-The continuity budget is arithmetic, not taste. The worst-case per-frame change in an output weight is roughly `3 x (rate of raw weight change) / CUT_WIDTH`, and a fade slower than about a second needs that under 0.02. That is *why* the pattern periods are hours rather than minutes: a fast channel and a hard cap cannot both be smooth, and the channel is the one that can give. Weights also carry the channel value as a small continuous term, so exact ties become measure-zero and rank changes become slow crossings rather than flips.
-
-The gate sweeps two in-world weeks at **one-frame resolution** -- 1.2 million samples -- and reports the worst single-frame change in any form's weight. It is **0.0021**, i.e. a fade of about eight seconds end to end. It also asserts that all twelve forms actually occur, that the slot budget is never exceeded, and that the sky is **never empty while the clock says the aurora is up**, which would otherwise leave the HUD reporting a curtain that is not there. That last one is guaranteed structurally: the diffuse form's gate is set below zero so it is always a candidate, which is both convenient and true -- the diffuse aurora really is close to continuous.
+The catalogue is the standard auroral morphology, going back to Stormer's classification in the 1910s -- **quiet arc, multiple arcs, rayed band, drapery, corona, breakup, omega band, diffuse patches, pulsating patches, picket fence, SAR arc, STEVE** -- plus the vortex family below. Fourteen of them get their colour from the altitude ramp like everything else. **SAR arc** and **STEVE** override it, and they are the two that are *not* electron precipitation at all (a SAR arc is thermal excitation of oxygen, STEVE is a hot plasma stream), so the override is a statement about physics rather than an escape hatch.
 
 `P` (or the right A button in VR) cycles auto, then each named form in turn, then back to auto. The HUD names what is up and its weight. A form you cannot summon is a form you cannot judge, and several of these are rare on purpose.
 
-#### The four shape complaints, and where each one came from
+#### The concurrency cap, and the floor that had to be reserved
 
-> *the height of the curtains is too regular*
+Up to three forms overlay at a time, each with up to three bands, plus a reserved floor of two: `MAX_CONCURRENT x MAX_BANDS + FLOOR_BANDS == SLOTS` is asserted, so overflow is impossible by construction rather than by clamping.
 
-Every column reached the same altitude, so the band was a rectangle. Now each column's top is set by along-band noise (`ragged`), and separately by an **ovality** term that shortens the band toward its ends -- so a band is a lens in silhouette rather than a rectangle with soft edges. The end taper also widened from 14% to 30%. Together these are what make overlaid forms read as separate blobs of light rather than as stacked ribbons.
+Choosing *which* three is the hard part, and it is a continuity problem. Sorting by weight and keeping the top three **pops** -- when the third and fourth swap rank the sky loses a whole curtain in one frame, a step of 1.0. An **adaptive cut** (the weight of the first *rejected* form is a floor every accepted form fades against) is rank-invariant and therefore smooth across swaps, but the first version of it was *worse* in practice and the gate caught it: with forms saturated at 1.0, a fourth form rising from nothing did not displace the marginal one, it dimmed the entire sky at once -- a measured 0.43 drop across all three in a single step. What ships is the adaptive cut **with no special case**, plus slower channels. The subtle bug in between: skipping the crossfade when fewer than four forms were in play meant that the instant a fourth candidate crossed zero, the fade switched *on* for everybody -- a 0.21 to 0.08 step on a form that was not even the one changing. Removing the `cut > 0` special case removes it, because `cut = 0` then gives the same answer on both sides of that moment.
 
-> *they feel too permanent and they need to shimmer and fade out more*
+The continuity budget is arithmetic, not taste. The worst-case per-frame change in an output weight is roughly `3 x (rate of raw weight change) / CUT_WIDTH`, and a fade slower than about a second needs that under 0.02. That is *why* the pattern periods are hours rather than minutes: a fast channel and a hard cap cannot both be smooth, and the channel is the one that can give. Weights also carry the channel value as a small continuous term, so exact ties become measure-zero and rank changes become slow crossings rather than flips.
 
-Added `flick`: individual columns fade out and back on their own schedule. A band whose every column is permanently lit reads as a painted object. A real one is continually rebuilt out of rays that live a few seconds each.
+**The floor had to be reserved, not merely likely.** The original guarantee that the sky is never empty was to set the diffuse form's gate below zero so it was always a *candidate*. Being a candidate was never the same as being admitted. The soft top-K cut is `w * smoothstep((w - cut) / CUT_WIDTH)` where `cut` is the fourth-place weight -- permutation-symmetric and continuous, which is precisely what makes rank swaps invisible -- but when four candidates **tie**, `w ~= cut` for all of them and the smoothstep drives *every* output to zero. Growing the catalogue from twelve forms to sixteen made four-way ties common where they had been rare, and the gate measured **193 empty frames in 1.2 million**. The old guarantee was statistical, and statistics is not a guarantee. The fix is structural: `SLOTS` 9 -> 11, `FLOOR_BANDS = 2`, a `floor: true` flag on diffuse patches, and `composeAuto` pulls it out *before* the cut and appends it unconditionally afterward. It never competes for a slot, so it can never be squeezed out by a tie. Empty frames: **0**. It also freed a competitive slot, which fixed a second failure in the same run (15 of 16 forms occurring, rather than 16).
 
-> *especially the bottom fringe should fade in and fade out in vertical streaks*
+The gate sweeps two in-world weeks at **one-frame resolution** -- 1.2 million samples -- and reports the worst single-frame change in any form's weight. It is **0.0021**, i.e. a fade of about eight seconds end to end.
 
-Added `fringe`: two octaves of fast, high-spatial-frequency noise, applied only to the lowest fifth of the column, so the hem breaks into short vertical streaks that come and go independently of the band above them. Higher up the rays merge, so the term is faded out there.
+#### What makes a curtain read as a curtain rather than as a ribbon
 
-> *the top fringe is just a solid line, like the top of a fabric curtain*
+Every one of these came from the same root: the mesh's own geometry being visible in the image.
 
-This one was the most instructive. The old deposition function was keyed on **absolute altitude** and was still non-zero at the top row of the mesh -- so it drew the top row, and a row of triangles is a straight line. The fix is to key on **normalised height up the column** and multiply by a term that reaches exactly zero strictly inside the mesh. That is not physics, it is honesty about geometry: the top of an aurora has no edge at all, it dissolves. Normalising also means one deposition curve serves a 30 km picket fence and a 90 km SAR arc.
+- **Height must not be regular.** Every column reaching the same altitude makes the band a rectangle. Each column's top is now set by along-band noise (`ragged`) and by an **ovality** term that shortens the band toward its ends, so a band is a lens in silhouette rather than a rectangle with soft edges. The end taper is 30%. Together these are what make overlaid forms read as separate blobs of light rather than as stacked ribbons.
+- **The top edge has to dissolve, not end.** The original deposition function was keyed on **absolute altitude** and was still non-zero at the top row of the mesh -- so it drew the top row, and a row of triangles is a straight line. It is keyed on **normalised height up the column** and multiplied by a term reaching exactly zero strictly inside the mesh. That is not physics, it is honesty about geometry: the top of an aurora has no edge at all. Normalising also means one deposition curve serves a 30 km picket fence and a 90 km SAR arc.
+- **The bottom hem needs a per-column softness.** The hem's ramp width used to be a constant, so every column's bottom edge was equally sharp and the row of them read as a line -- the same failure as the top edge, one row down. `soft = mix(0.08, 0.26, fr)` ties it to the same noise `fr` that drives the hem streaks, so a column with a strong streak has a hard bottom and a column between streaks dissolves. One extra float in an existing varying, no extra noise call.
+- **Individual columns fade out and back** (`flick`), and the lowest fifth of each column breaks into short vertical streaks that come and go independently of the band above it (`fringe`, two octaves of fast high-frequency noise, faded out higher up where the rays merge). A band whose every column is permanently lit reads as a painted object; a real one is continually rebuilt out of rays that live a few seconds each.
+- **Folds scale with altitude.** `amp = B.z * (0.55 + (alt - 90.0) * 0.0072)`, which is physically the right sign -- the same transverse displacement of a flux tube spreads wider where the field is weaker -- and visually it is what turns a fold into a *fold*, because the bottom stays put while the top swings. Fold amplitudes across the catalogue run 28-66 km.
 
-#### Everything constant up a column moved to the vertex shader
+**Everything constant up a column lives in the vertex shader.** Column height, flicker, hem streaks, lobe mask, pulse phase -- all of them are properties of a *field line*, and a field line is a column. Computing them per fragment would be both slower and wrong. They arrive as varyings, which is why the fragment noise budget is still **two** evaluations despite everything above.
 
-Column height, flicker, hem streaks, lobe mask, pulse phase -- all of them are properties of a *field line*, and a field line is a column. Computing them per fragment would be both slower and wrong. They arrive in the fragment shader as varyings, which is why the fragment noise budget is still **two** evaluations despite everything added, and why the gate's budget assertion still holds unchanged.
+#### Presence: mostly absent, rarely blazing
 
-Nine slots at 181 x 10 vertices is 29,160 triangles, and an unused slot collapses to a degenerate vertex outside the clip volume (`gl_Position = vec4(0,0,2,1)`) before a single noise call, so carrying nine slots for the sake of three costs one early return and no fill.
-
-### Round three: lower, rarer, twisting, and in more than one colour
-
-Round two got the shapes right and the *presence* wrong. Four complaints, and one of them turned out to be a bug in the concurrency maths rather than a matter of taste.
-
-#### Lowering it 30% without desaturating it
-
-> *sometimes they go so high that it's like you're looking up into a conical tower from the inside*
-
-The naive fix is to reduce `alt1`. It cannot be done that way, because **colour is a function of altitude** (§13 above) -- pulling the top of a band from 260 km to 180 km does not lower the band, it deletes its red crown. The altitudes are the physics; only the *geometry of where you stand relative to them* is free.
-
-So the transform holds `alt0` fixed, pushes `dist` outward until the band's bottom elevation `atan(alt0/dist)` falls to **0.70x** its previous value, and only then trims `alt1` where the far plane bites. That cap is `hypot(dist, alt1) <= 320` km, against a 20,000-unit far plane at 45 units/km = 444 km. Bottom elevations went from 27-76 deg to **19-49 deg**; the highest line of sight in the catalogue is 79.9 deg (corona, which is *supposed* to be overhead -- that is what a corona is). A new gate check fences it at 80.
-
-#### The presence envelope: mostly absent, rarely blazing
-
-> *they're just two stable and steady presences in the sky ... they should often be down to 20% opacity, and 100% should be rare*
-
-Round two's `flick` shimmer works at **2 km and seconds**. What was missing is a second envelope at **150 km and minutes**, so that whole *sections* of a band come and go while the band itself persists:
+`flick` shimmer works at **2 km and seconds**. A second envelope runs at **150 km and minutes**, so whole *sections* of a band come and go while the band itself persists:
 
 ```glsl
 float mac = aurNoise( vec2( km * 0.0062, t * 0.028 ) ) * 0.62
@@ -153,29 +73,15 @@ float mac = aurNoise( vec2( km * 0.0062, t * 0.028 ) ) * 0.62
 float presence = mix( 1.0, 0.10 + 2.10 * pow( smoothstep( 0.20, 0.90, mac ), 2.0 ), F.w );
 ```
 
-The `pow(..., 2.0)` is the whole request in one operator: it makes the mean about **0.15** and the peak about **2.2**. Typical is barely visible; blazing happens, and it is rare. Deliberately separating the two scales by two orders of magnitude is what keeps them from reading as one noise -- a single envelope covering both would just look like static.
+The `pow(..., 2.0)` is the whole idea in one operator: it makes the mean about **0.15** and the peak about **2.2**. Typical is barely visible; blazing happens, and it is rare. Deliberately separating the two scales by two orders of magnitude is what keeps them from reading as one noise -- a single envelope covering both would just look like static. Alpha gain is **0.80** to compensate for the lower mean, so an average moment is dim and a rare one clips toward white, which is what a substorm surge actually does. `breathe` is a per-form 0-1 depth knob on the envelope, so a SAR arc (the S is for *stable*) sits at 0.35 and a smoke plume at 1.0.
 
-Since the mean fell to ~0.3 of what it was, the alpha gain went **0.46 -> 0.80**. An average moment is now a little under half as bright as round two and a rare one is about 3x brighter than round two ever got. Additive blending clips those peaks toward white on its own, which is what a substorm surge actually does. `breathe` is a per-form 0-1 depth knob on the whole envelope, so a SAR arc (the S is for *stable*) sits at 0.35 and a smoke plume at 1.0.
-
-#### The bottom hem, and why it had to become per-column
-
-> *the bottom hem needs a gradient fade like the top and the sides*
-
-The hem's ramp width was a constant, so every column's bottom edge was equally sharp and the row of them read as a line -- the same failure as round two's top edge, one row down. It is now a **per-column** width, computed in the vertex shader and tied to the same noise that drives the hem streaks:
-
-```glsl
-float soft = mix( 0.08, 0.26, fr );   // fr is the hem-streak noise
-```
-
-so a column with a strong streak also has a hard bottom, and a column between streaks dissolves. One extra float in an existing varying, no extra noise call.
+Curtains also have staggered activity thresholds, so a quiet night shows one arc and a storm brings several in -- the Akasofu substorm sequence (quiet arc, folds, curls and breakup, recovery) rather than a single global brightness knob.
 
 #### The vortex family, and the one parameter that generates all of it
 
-> *a giant ribbon of smoke going up, electric-green mist swirling, rather than a curtain*
-
 The literature calls these **auroral vortices**, and they come in a size taxonomy: **curls** at ~15 km, **folds** at tens of km, and **spirals** from 15 to 1300 km (typically 25-75 km), all winding counterclockwise around upward field-aligned currents in the northern hemisphere. "Flaming" is a separate thing -- a wave of brightness running *up* the field lines. ([Small-Scale Dynamic Aurora](https://pmc.ncbi.nlm.nih.gov/articles/PMC8550089/), [Zhou 2025 GRL](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2025GL114714).)
 
-That taxonomy is the design: **four new forms, one mechanism, different scales.** The mechanism is a single line in the vertex shader --
+That taxonomy is the design: **four forms, one mechanism, different scales.** The mechanism is a single line in the vertex shader --
 
 ```glsl
 float shear = F.z * ( alt - baseKm );
@@ -189,80 +95,21 @@ float f0 = aurFold( km + shear, t, amp, B.w, uActivity );
 
 The four are **vapour spiral** (3 bands, shear 0.85-1.25, the big slow one), **auroral curls** (2 bands, shear ~1.0 at 2.6-3.1 Hz, the 15 km end), **flaming aurora** (2 bands, shear 2.2-2.5, drift -11 and -13), and **smoke plume** (2 bands, narrow spans of 24-30 deg, mostly invisible by design). None exceeds `ray > 0.5`, because a striated vortex reads as a curtain again; the gate asserts both the count and the softness.
 
-Crucially, **no altitude term entered any noise lookup**. The shear moves the *sample coordinate along the band*, which is the axis the noise was always indexed on. So the round-one gate assertion that guards field alignment -- the one-character mistake that turns an aurora into coloured fog -- still holds textually and unchanged.
+Crucially, **no altitude term entered any noise lookup**. The shear moves the *sample coordinate along the band*, which is the axis the noise was always indexed on, so the field-alignment assertion still holds textually and unchanged.
 
-#### Folds got much bigger, and they grow with height
+#### The meander: the arc's course, measured as an angle
 
-> *the "wrinkles" should be way larger -- currently each band feels kinda flat*
-
-Fold amplitudes roughly doubled across the catalogue (drapery 44/38/28 km, breakup 64/56/30, omega band 66/54), and amplitude now **scales with altitude**:
-
-```glsl
-float amp = B.z * ( 0.55 + ( alt - 90.0 ) * 0.0072 );
-```
-
-which is physically the right sign -- the same transverse displacement of a flux tube spreads wider where the field is weaker -- and visually it is what turns a fold into a *fold*, because the bottom stays put while the top swings.
-
-#### Colour per form, from two knobs
-
-> *each time you change up the pattern, change the colour mix too*
-
-Two per-form floats, both 0-1. `pale` slides both endpoints of the ramp together: 0 is the classic OI 557.7 green over N2+ violet, 1 is a pale alien mint over electric blue (which is the real N2+ 427.8 nm line, so this is still the spectroscopy table, just weighted differently). `crown` scales how much 630.0 nm magenta sits above ~180 km.
-
-```glsl
-vec3 violet = mix( vec3( 0.62, 0.18, 0.72 ), vec3( 0.18, 0.60, 1.00 ), vCol.x );
-vec3 green  = mix( vec3( 0.14, 1.00, 0.44 ), vec3( 0.56, 1.00, 0.84 ), vCol.x );
-vec3 col = mix( violet, green, smoothstep( 92.0, 111.0, alt ) );
-col = mix( col, vec3( 1.00, 0.20, 0.46 ),
-           clamp( smoothstep( 155.0, 235.0, alt ) * 0.85 * vCol.y, 0.0, 0.95 ) );
-```
-
-All sixteen forms now have a distinct `(pale, crown, tintAmt)` triple, and the gate requires at least eight distinct ones so a future retune cannot quietly collapse them back to one.
-
-#### The floor had to be reserved, not merely likely
-
-Round two guaranteed "the sky is never empty" by setting the diffuse form's gate below zero, so it was always a *candidate*. Going from twelve forms to sixteen broke that, and the gate caught it: **193 empty frames in 1.2 million.**
-
-Being a candidate was never the same as being admitted. The soft top-K cut is `w * smoothstep((w - cut) / CUT_WIDTH)` where `cut` is the fourth-place weight -- permutation-symmetric and continuous, which is precisely what makes rank swaps invisible. But when four candidates **tie**, `w ~= cut` for all of them and the smoothstep drives *every* output to zero. Sixteen forms made four-way ties common where twelve had made them rare. The old guarantee was statistical, and statistics is not a guarantee.
-
-The fix is structural: `SLOTS` 9 -> 11, `FLOOR_BANDS = 2`, a `floor: true` flag on diffuse patches, and `composeAuto` pulls it out *before* the cut and appends it unconditionally afterward. It never competes for a slot, so it can never be squeezed out by a tie. Empty frames: **0**. It also freed a competitive slot, which fixed a second failure in the same run (15 of 16 forms occurring, rather than 16).
-
-`MAX_CONCURRENT x MAX_BANDS + FLOOR_BANDS == SLOTS` is asserted, so the "overflow is impossible by construction" property of round two survives the change. Eleven slots is 35,640 triangles in one draw call, and the two extra ones are the only slots in the buffer that are never degenerate.
-
-#### Two gates added because of mistakes made writing this round
-
-- `minBands >= 1`**.** A python slice while retuning silently deleted both `band({...})` rows from `flaming aurora`, and **every existing check still passed**: `[].every(...)` is vacuously true, no field was non-finite, no band exceeded the radius cap. A form with no bands is invisible and nothing noticed. Now it fails loudly.
-- **HUD line width.** With a reserved floor plus up to three competing forms, the worst-case label ran to 98 characters against a 62-character panel budget (1024 px, 22 px margin, 26 px monospace at 0.60 em advance), and `fillText` does not complain -- it just draws off the edge. The label now budgets its width and appends `+N more`; the gate sweeps the composer and asserts the worst case fits. It is currently **60 of 62**.
-
-Also: a GLSL comment inside a JS template literal must not contain a backtick. Five of them did, and the resulting `SyntaxError` pointed at a line 100 lines away from any of them.
-
-### Round seven: reverted to the last thing that was actually seen, then one mechanism
-
-Two reports: *"the auroras look HORRIBLE now, restore them to the state they were in before I asked you to make them big"*, and *"I still want them to weave around in the sky, so the bottom hem traces S shapes rather than just being a slightly wiggly straight-ish line, but we need to take that step by step I guess."*
-
-**"Before X" means the last state that was seen, not the last commit before X.** Round five landed with the duplicate `mScale` in it, so it never linked and never drew a pixel; round six then re-tuned altitudes and extinction on top of a mesh nobody had ever looked at. The whole of rounds five and six is therefore work whose *appearance* was never in evidence, and the only state the user has an opinion about is the commit before round five. `src/aurora.js` and `src/aurora-patterns.js` were reverted there wholesale rather than patched forward. In practice the revert landed further back than that: the tree carries round three's catalogue (16 forms, `MAX_RADIUS_KM = 333`, round three's presence envelope at `src/aurora.js:480`) with no trace of round four's `twist`, `flame` or `retired:` rows, so round four is history too (`design/history/aurora-rounds-4-6.md`).
-
-What went out with it, and is no longer in the tree: the 14,000-unit shell, the `d^2 / 2R` curvature drop, the `swoop`, the re-siting to 94-1,180 km, `MAX_RADIUS_KM = 1,600`, the narrowed extinction window, the twist and flame terms, and the 12-form catalogue. Back in the tree: 16 forms, 35 bands, `MAX_RADIUS_KM = 333`, hems 15 to 80 degrees. What survived is what had been committed *before* the round that broke: the tangential footprint `tng * f0.y`, the quarter-wave trochoid offset and `curl` are all in the reverted commit and are still in the shader, as is the gate's JS port of the noise. Round five's own additions are the ones that went, and the boundary is the commit, not the section heading below.
-
-Then exactly **one** mechanism was re-applied, because "step by step" is a testable instruction and the last three rounds each changed five things at once.
-
-#### The meander is a substitution, and its amplitude is an angle
-
-The complaint is about the arc's *course*, not its texture, so the mechanism is a fourth term in `aurFold` that is slower and longer than the three curtain octaves: rate `0.014` against `0.055/0.130/0.310`, wavelength scale `0.0034` against `0.0125/0.0410/0.1350`. Two properties make it a course rather than more noise.
+The folds are the curtain's own pleating. Where the arc *goes* is a separate quantity, and it is a fourth term in `aurFold` that is slower and longer than the three curtain octaves: rate `0.014` against `0.055/0.130/0.310`, wavelength scale `0.0034` against `0.0125/0.0410/0.1350`. Three properties make it a course rather than more noise.
 
 It is **not multiplied by** `foldHz`, the per-form fold frequency. A form with tight folds should have tight folds on a wandering arc, not a tightly wandering arc.
 
-Its amplitude is `MEANDER_FRAC * dist`, a **fraction of the band's own distance**, and its wavelength is divided by `mScale = 250 / dist`. Both of those make it an angular quantity: a band at 86 km and a band at 295 km swing the same number of degrees of sky over the same span of azimuth. This is the one piece of round five's thinking that was worth keeping, and it is kept without the shell that motivated it.
+Its amplitude is `MEANDER_FRAC * dist`, a **fraction of the band's own distance**, and its wavelength is divided by `mScale = 250 / dist`. Both make it an angular quantity: a band at 86 km and a band at 295 km swing the same number of degrees of sky over the same span of azimuth.
 
-And it **replaces** the old first octave's `amp * 2.30` weighting rather than adding to it. That single substitution moved in both directions at once: the quiet arc's hem went from 0.72 degrees of swing to 2.3, because a quiet form's metric fold amplitude was small, and the catalogue's far radius dropped from 19,862 units to 17,492 of a 20,000-unit far plane, because a violent form's octave-1 amplitude had been +/-100 km. (17,492 is `drapery`'s band, which is now the widest-reaching one; `breakup` sits just under it.) The forms that needed more got more and the form that was against the far plane got headroom, from one change, because the term being removed scaled with the wrong thing.
+And it **replaces** the old first octave's `amp * 2.30` weighting rather than adding to it. That single substitution moved in both directions at once: the quiet arc's hem went from 0.72 degrees of swing to 2.3, because a quiet form's metric fold amplitude was small, and the catalogue's far radius dropped from 19,862 units to 17,492 of a 20,000-unit far plane, because a violent form's octave-1 amplitude had been +/-100 km. The forms that needed more got more and the form that was against the far plane got headroom, from one change, because the term being removed scaled with the wrong thing. `MEANDER_FRAC = 0.36` came out of a sweep over 0.10/0.16/0.22/0.30/0.36 against both of those numbers.
 
-`MEANDER_FRAC = 0.36` came out of a sweep over 0.10/0.16/0.22/0.30/0.36 against both of those numbers.
+**Measuring "an S" took four metrics and three wrong ones.** The complaint was qualitative and the fix has to be checkable, so the gate walks each band's footprint and reduces the hem to numbers. The failures are the useful part.
 
-#### Measuring "an S" took four metrics and three wrong ones
-
-The complaint is qualitative and the fix has to be checkable, so the gate walks each band's footprint and reduces the hem to numbers. Getting to ones that mean anything took several passes, and the failures are the useful part.
-
-- `swing`, peak-to-peak hem elevation in degrees, is the complaint made numeric: "slightly wiggly straight-ish line" was 0.72 degrees.
+- `swing`, peak-to-peak hem elevation in degrees, is the complaint made numeric.
 - `bends` counts extrema of the hem **resampled into 16 buckets**. Counting every local extremum instead measures *jitter*: the quiet arc had 24 of them while swinging 0.7 degrees, which is the ruled-line-with-fuzz being scored as maximally sinuous.
 - `path`, the swing of that same coarse resample, separates the arc's course from the curtain's texture.
 - `flat` is the identical walk with `meander = 0`, so the mechanism under test can be isolated by differencing rather than inferred from a total.
@@ -283,34 +130,162 @@ The measured catalogue, hem swing with the meander's own share in brackets:
 | diffuse patches (the always-on floor form) | 2.9 (2.7) | 3.1 | 0.0 |
 | pulsating patches | 3.0 (2.8) | 3.3 | 0.0 |
 | picket fence | 3.2 (3.0) | 4.1 | 1.1 |
-| SAR arc (declared straight) | 1.3 (1.1) | 5.5 | 0.0 |
-| STEVE (declared straight) | 2.3 (1.9) | 6.0 | 0.0 |
+| SAR arc (declared straight) | 1.1 (0.9) | 5.8 | 0.0 |
+| STEVE (declared straight) | 2.2 (1.9) | 6.5 | 0.0 |
 | vapour spiral | 3.5 (3.3) | 2.3 | 0.1 |
 | auroral curls | 4.9 (3.9) | 6.1 | 69.1 |
 | flaming aurora | 4.0 (3.4) | 6.0 | 20.7 |
 | smoke plume (24-30 deg span, not an arc) | 1.1 (1.1) | 1.1 | 0.0 |
 
-The gate's floors are 2 degrees of swing and 2 bends for anything the catalogue calls an arc, 1 degree of meander contribution for the fold-quiet bands, 0.5 degrees maximum for the declared-straight ones, `rMax < 20000` and `rMin > 4000` units, and 35,640 triangles unchanged.
+The gate's floors are 2 degrees of swing and 2 bends for anything the catalogue calls an arc, 1 degree of meander contribution for the fold-quiet bands, 0.5 degrees maximum for the declared-straight ones, and 35,640 triangles unchanged.
 
-One risk is unchanged and worth restating: **nothing in** `npm run check` **links a shader.** The vertex shader was dumped and hand-read after this change, and the redeclaration scanner from round six is what stands between here and repeating round five, but neither is a compiler.
+#### Colour per form, from two knobs
 
-### The same-scope redeclaration scanner (the one thing kept from round six)
+Two per-form floats, both 0-1. `pale` slides both endpoints of the ramp together: 0 is the classic OI 557.7 green over N2+ violet, 1 is a pale alien mint over electric blue (which is the real N2+ 427.8 nm line, so this is still the spectroscopy table, just weighted differently). `crown` scales how much 630.0 nm magenta sits above ~180 km.
 
-The auroras were not dim, not mis-sited and not badly tuned. They did not exist.
+```glsl
+vec3 violet = mix( vec3( 0.62, 0.18, 0.72 ), vec3( 0.18, 0.60, 1.00 ), vCol.x );
+vec3 green  = mix( vec3( 0.14, 1.00, 0.44 ), vec3( 0.56, 1.00, 0.84 ), vCol.x );
+vec3 col = mix( violet, green, smoothstep( 92.0, 111.0, alt ) );
+col = mix( col, vec3( 1.00, 0.20, 0.46 ),
+           clamp( smoothstep( 155.0, 235.0, alt ) * 0.85 * vCol.y, 0.0, 0.95 ) );
+```
 
-`float mScale = 250.0 / A.x;` was declared twice in the same scope of the vertex shader's `main()` -- once for the swoop and once, a hundred and ninety lines later, for the meander. GLSL ES rejects a same-scope redeclaration, so the program never linked, so the mesh drew nothing, at every hour, under every pattern, from the moment round five landed. The error was sitting in the browser console the whole time.
+All sixteen forms have a distinct `(pale, crown, tintAmt)` triple, and the gate requires at least eight distinct ones so a future retune cannot quietly collapse them back to one.
 
-Two things made it survive a full gate run and a round of re-tuning on top of that.
+#### The rest of the shader, and the fill-rate budget
 
-The first is that **this gate runs in node and cannot link a program.** Everything it knows about the shaders it knows from reading their source as text, so the entire class of "the GLSL does not compile" was invisible to it, and that class is fatal to every other check in the file at once.
+- **Edge-on brightening.** A curtain seen edge-on is far brighter than one seen face-on, because you are looking along much more emitting gas. The fold displacement already gives an analytic surface normal (one extra noise evaluation via finite difference in the *vertex* shader), so `1/|dot(view, normal)|` clamped to 4.2x gives the effect for free and it self-animates as the folds move. This is the single highest-value line in the file.
+- **Altitude deposition.** A sharp lower edge (electrons stop where the air thickens) and a long exponential tail upward, which is why real auroras have a knife-edge bottom and a soft top.
+- **Ray crispness falls with altitude.** Striations are sharp in the green band and washed out in the red, because the red-emitting state is long-lived enough for the gas to move before it radiates.
+- **Two noise evaluations** in the fragment shader against a budget of three. "Keep the fragment shader short" is the one budget in this file that is enforced numerically.
+- **Cost when the sun is up is nothing at all.** Stars and aurora both set `visible = false` when their fade reaches zero. The gate asserts it.
 
-The second is worse, and is a lesson about how to write a source assertion. The gate contained this check:
+#### Depth, without any sorting
+
+Additive materials land in three.js's transparent pass, which runs *after* the opaque pass has already filled the depth buffer. So `depthTest: true, depthWrite: false` gives correct mountain occlusion for both the aurora and the stars with no `renderOrder` games at all. Across all sixteen catalogued forms the geometry reaches 17,492 units at full fold stretch inside a 20,000-unit far plane and comes no nearer than 5,317 units, and the highest line of sight is **72.6 deg** (corona, which is *supposed* to be overhead -- that is what a corona is). The gate fences that at 80, which is the other end of the same argument that pushed the bands outward: colour is a function of altitude, so lowering a band by trimming `alt1` would not lower it, it would delete its red crown. Only the *geometry of where you stand relative to the altitudes* is free, so the transform holds `alt0` fixed and pushes `dist` outward instead. Bottom elevations run 19-49 deg; band distances 86-295 km; `MAX_RADIUS_KM = 333`.
+
+#### What was reverted, and where the boundary is
+
+**"Before X" means the last state that was seen, not the last commit before X.** One release landed with a duplicate `mScale` in it, so it never linked and never drew a pixel; the next round then re-tuned altitudes and extinction on top of a mesh nobody had ever looked at. Both rounds are therefore work whose *appearance* was never in evidence, and `src/aurora.js` and `src/aurora-patterns.js` were reverted wholesale rather than patched forward.
+
+Out of the tree, and recorded in `design/history/aurora-rounds-4-6.md`: the 14,000-unit shell, the `d^2 / 2R` curvature drop, the `swoop`, the re-siting to 94-1,180 km, `MAX_RADIUS_KM = 1,600`, the narrowed extinction window, the `twist` and `flame` terms, and the 12-form catalogue. What survived is what had been committed before the round that broke -- the tangential footprint `tng * f0.y`, the quarter-wave trochoid offset, `curl`, and the gate's JS port of the noise -- plus the meander above, which is the one piece of the shell's thinking worth keeping and is kept without the shell that motivated it.
+
+#### What the gate can see, and what it cannot
+
+**Nothing in** `npm run check` **links a shader.** The gate runs in node; everything it knows about the GLSL it knows from reading the source as text, so the entire class of "this does not compile" is invisible to it -- and that class is fatal to every other check in the file at once. That is exactly how the unlinkable release above survived a full gate run and a round of retuning on top of it. `float mScale = 250.0 / A.x;` was declared twice in the same scope of `main()`, GLSL ES rejects a same-scope redeclaration, the program never linked, and the mesh drew nothing at every hour under every pattern. The error was sitting in the browser console the whole time.
+
+Worse, the assertion guarding that very feature was reporting green *because* of the bug:
 
 ```js
 check(/float mScale = 250\.0 \/ A\.x;/.test(auroraSrc), 'and that wave is measured in degrees of sky ...')
 ```
 
-**A presence check cannot see a duplicate.** Two copies of the line satisfied it twice over, so the very assertion guarding the feature was reporting green *because* of the bug. Written as a count rather than a match, it would have failed immediately.
+**A presence check cannot see a duplicate.** Two copies satisfied it twice over. Written as a count rather than a match, it would have failed immediately.
 
-The fix is one deleted line. The check added alongside it is a same-scope redeclaration scan: pull every template literal containing a `main()` out of the shader-bearing files, strip comments, keep the first branch of each preprocessor conditional, walk the braces with one scope Set per block, and report any name declared twice in the same Set. Not a compiler and not trying to be -- it catches the one error class that is invisible to every other check here. It was verified the only way a check like this can be verified, by putting the bug back and watching it fail.
+What stands there now is a **same-scope redeclaration scan**: pull every template literal containing a `main()` out of the shader-bearing files, strip comments, keep the first branch of each preprocessor conditional, walk the braces with one scope Set per block, and report any name declared twice in the same Set. Not a compiler and not trying to be -- it catches the one error class that is invisible to every other check here, and it was verified the only way a check like this can be, by putting the bug back and watching it fail. The real fix is a headless GL context (`gl` or a Playwright page) that links each program once and fails on the info log; a type mismatch, a missing varying, an undeclared identifier or a wrong argument count would all still pass everything here and still draw nothing.
 
+Also: a GLSL comment inside a JS template literal must not contain a backtick. Five of them did, and the resulting `SyntaxError` pointed at a line 100 lines away from any of them.
+
+#### Where it stops
+
+Judged in the world: *a bunch of wiggling semi-animating polygons drifting around in the sky, limited and fake relative to a real aurora.*
+
+The ceiling is **topological**, not a matter of tuning. A curtain can fold and it can meander, but it cannot BRANCH, it cannot merge with the curtain beside it, and it cannot be anywhere the mesh is not. The sky ends up with the topology of the geometry that was authored for it, and no amount of noise on a ribbon changes that. Everything below is the answer to it.
+
+### The replacement: the raymarch lab at `/test-aurora`
+
+`src/aurora-lab/*` plus `src/test-aurora-main.js` and `test-aurora.html`, gated by `scripts/check-aurora-lab.mjs`. A separate page rather than a mode inside `v2.html`, for the reason the grass bench is separate: what it needs is an empty sky over a nominal skyline and sixty sliders, and putting that behind a terrain load, a document fetch and a walk to a vantage point would mean paying all three every time you want to see what one exponent does. It is also the only page whose whole content is one quad, which is what makes it honest about the shader's cost.
+
+**Nothing here ships yet.** The lab is where the replacement gets designed; promoting one of its algorithms into `src/aurora.js` is the open work.
+
+#### A field, not a mesh
+
+The march walks ~40 altitude slices through a **plan-space scalar field**. A field is defined everywhere, so channels split, rejoin, thin out to nothing and knot where two families cross, and none of it costs a vertex. That is the branching the polygon version is structurally incapable of, and it is the whole reason the lab exists.
+
+Three more things the march gets for free rather than faking:
+
+- **Vertical structure.** `auroraField` takes a plan position and no altitude, so a given field line has the same field value all the way up, while different altitudes along one view ray land on different plan positions. That is what makes a curtain look like a curtain -- and it is the same one-character hazard as before: an altitude term anywhere in the ray, flow or shimmer coordinates unmakes it.
+- **Edge-on brightening.** A ray that skims along a channel simply passes through more of it and accumulates more. No surface normal, no `1/|cos|`, no clamp.
+- **Perspective.** Channels converge toward the horizon and splay overhead because they are being integrated in a real plan rather than painted on a wall.
+
+#### The contract
+
+An algorithm supplies one function and nothing else:
+
+```glsl
+vec4 auroraField( vec2 p, float t )
+```
+
+`p` is the horizontal position in the aurora's plan in field units (kilometres x `u_fieldScale`), the eye at the origin, -z north. It returns `.x` raw depth inside the emitting sheet (0-1, deliberately **not** a final brightness), `.y` a coordinate running ALONG the channel, `.z` a channel id constant across a channel's width and different between neighbours, `.w` a local gate. Return 0.0 for the id and the whole sky pulses in unison, which reads as a fault in the shader rather than as weather.
+
+#### Three algorithms
+
+- **`leyline`** -- contours of a domain-warped potential field, `phi = (warped y) * frequency + (a second noise) * bend`, rendered by `tri(phi)` so the entire family is one evaluation at a cost independent of channel count, with `floor(phi + 0.5)` falling out as the id. Contours **never cross** (a point has one value, and auroral arcs never cross either), **run parallel without being parallel**, **crowd and thin** where the gradient steepens and flattens, and **split at saddle points**. That last one is the branching, and it is most of why the lab exists.
+- **`weave`** -- two ley-line families read off **one shared warp** at an angle, with one drifting past the other. Sharing the warp is the point: two independent fields read as two separate auroras in the same sky and the eye separates them instantly, whereas two families off one warp pinch where it pinches and swing where it swings. The knots where they coincide are genuine caustics, the same mechanism as a swimming-pool floor -- and the knots race along the lattice far faster than the drift itself. `wvKnot` mixes `smax(a, b)` (the union: a lattice) against `sqrt(a * b)` (the intersection: isolated blazing lozenges); nearly every good setting is in between. This is the brief's "shimmering overlaid intersectional shader similar to what water surfaces have".
+- **`filament`** -- iterated triangle-wave folding. The triangle wave's derivative flips sign at every fold, so each iteration folds the plane back on itself and lays a **crease**; fBm is a sum of smooth functions and cannot produce a crease no matter how hard it is stirred, which is why turning the ley-line warp up gives marbling rather than filaments. Brightness comes from a reciprocal rather than a threshold, so the bright curve is as thin as float precision allows with a long glow tail instead of an edge, and `filStretch` squashes one plan axis before folding so the creases come out long. This is the substorm-breakup look. Its honest limitation: folding has no notion of a channel, so `id` is a crude band index and per-channel gating is much less convincing here than under ley lines.
+
+#### Everything downstream of the field is shared
+
+Thresholding, sharpening, the scatter skirt, altitude deposition, the auroral belt, vertical rays, along-channel flow, the caustic shimmer, colour, exposure and march quality all live in `SHARED_GROUPS` and are applied once by the frame. The split is deliberate and it is worth defending: **the lab exists to COMPARE algorithms, and you cannot compare two skies whose knobs are not the same knobs.** Let each algorithm own its own sharpness and its own colour and every difference you see might be the algorithm or might be that one of them happens to be tuned brighter. An algorithm may `override` a shared param's *starting value* -- filaments want a different sharpness than ley lines do -- without owning it.
+
+Two of the shared terms are worth naming because they are what separate a procedural sky from a photographed one. The **belt** cuts the aurora to a band in *plan* space rather than in view space, so turning around genuinely puts it behind you and walking north makes it climb; without it there is glow in every direction, which is the loudest tell there is. And the **scatter skirt** is a second, far wider exponential profile on the *same* distance field, costing one `exp` and no extra field evaluation; take it to zero and the channels look cut out with scissors.
+
+#### Colour
+
+`emissionRamp` takes a normalised height and nothing else, for the reason in "What an aurora actually is" above. Its two knobs, `pale` and `crown`, are **ratios between the three emission lines** rather than free hue choices, which is what keeps the whole reachable range plausible. Transitions are fractions of whatever altitude range is currently set rather than kilometres, because the range is two draggable numbers and a colour written in km would silently drift out of it; over the default 90-260 km, `hemBand` 0.12 puts the violet-to-green crossover at 110 km and `crownStart` 0.42 starts the red at 161 km.
+
+Beside it, and **declared as invented**, is `neonRamp`: an Inigo Quilez cosine palette driven by the along-channel coordinate, so hue travels down a channel instead of sitting at an altitude. The two are exposed as a **mix, not a switch**, because the interesting sky is between them -- a physically-coloured curtain with a hue that breathes along its length reads as a real aurora doing something impossible, where full neon reads as a screensaver and full physics reads as the photograph everyone has already seen.
+
+#### Three implementation details that cost real time to arrive at
+
+These are settled. Do not re-litigate them.
+
+1. **The dither is STATIC.** Integrating an emissive volume in 24 steps leaves 24 concentric shells across the sky. Offsetting each fragment's sample positions by `hash21(gl_FragCoord.xy)` converts that coherent shell into incoherent per-pixel noise the eye integrates away, and it buys roughly **4x the step count for one hash**. There is **no time term** in it: time makes it a film grain that crawls, which is worse than the banding on a still image and much worse in a headset, where the two eyes get uncorrelated grain and the sky fizzes.
+2. **Riemann `dk` weighting.** `u_stepBias` packs samples toward the hem where the deposition curve has its knife edge, so each sample is weighted by the slice of the altitude range it actually stands for. The consequence is that **step count and step bias change the QUALITY of the sky and not its brightness** -- tune at 24 steps, judge at 80, touch nothing else. Without it every drag of the quality slider needs a compensating drag of the gain and you can no longer tell whether the sky got better or just brighter.
+3. **The global weather field is sampled ONCE PER RAY, not per step.** A ~40x saving, and also more correct: sharpness is a property of a region of sky, not of a point along a ray, and sampling it per step makes one curtain change its own sharpness halfway up. `u_gRefKm` is which slice of sky that one sample is taken from. Each of the four weather modulations (dim, fuzz, sharpen, haze) carries its own amount, precisely so five of them can be taken to zero to find out which one is doing the thing you are looking at.
+
+A fourth, smaller: the altitude-to-distance divisor is floored at 0.035 rather than zero. At full perspective a ray a hundredth of a degree above the horizon would otherwise sample the field ten thousand kilometres out, where float32 has lost enough mantissa that the hash lattice goes visibly blocky -- a band of coarse noise sitting exactly on the skyline, which reads as a bug in the mountains rather than in the sky.
+
+#### The param schema is the single source of truth
+
+A param is one object -- `{ key, label, hint, type, min, max, step, value, uniform }` -- and it is simultaneously a row in the sidebar, a uniform declaration in the shader, a field in the tuning JSON, and the default that `reset` restores. There is deliberately no second list anywhere.
+
+The uniform block is **generated** from the schema (uniform name is always `u_` + key), which closes a specific hole. Hand-written uniforms and hand-written sliders are two lists that must agree, and when they disagree the symptom is a slider that does nothing -- no error, no console line, just a control writing to a name the shader never declared. Generated, a param that exists has a uniform, and GLSL referencing a uniform no param declares is an outright compile error naming the missing identifier. `uniform: false` marks the params that drive JavaScript instead (time scale, FOV, render scale, stars, mountains), declared here anyway so there is one persistence path, one reset and one preset format.
+
+There are about sixty knobs and that is the point: this is a tuning rig, not a settings screen. What keeps sixty usable is that every param carries a `hint` saying what it does and what it looks like when it is wrong. The shipped aurora will read a handful of preset blobs out of this and expose none of them.
+
+#### Layout
+
+```
+test-aurora.html                    route
+src/test-aurora-main.js             the page: camera, clock, stars, panel wiring
+src/aurora-lab/glsl/noise.js        hash, value, gradient, fbm, warp, filament -- one GLSL string each
+src/aurora-lab/glsl/palette.js      emissionRamp (physics) + neonRamp (declared invention)
+src/aurora-lab/glsl/frame.js        the vertex shader, the raymarch, main() -- shared by every algorithm
+src/aurora-lab/algo/leyline.js      contours of a warped potential field
+src/aurora-lab/algo/weave.js        two families on one warp; the knots are caustics
+src/aurora-lab/algo/filament.js     iterated triangle-wave folding
+src/aurora-lab/algorithms.js        the param schema and the registry
+src/aurora-lab/screen.js            assembles the shader, owns the quad and the uniforms
+src/aurora-lab/backdrop.js          procedural mountain silhouette, 3 layers, one draw call
+src/aurora-lab/ui/sidebar.js        builds itself from the schema; imports nothing
+```
+
+The shader is **assembled** rather than written: three algorithms times one shared frame is three shaders, and hand-maintaining three copies of a hundred-line raymarch means fixing every bug three times and, in practice, fixing it twice and forgetting the third. Every chunk carries its own include guard, so an algorithm's `needs` list can be over-broad at no cost.
+
+The quad is **camera-facing**, which gives nothing up: `main()` uses the fragment's world position for exactly one thing -- to recover a ray direction -- and then throws it away, so the quad is a window, not a surface, and rotating a window does not move anything behind it. It sits at 5,200 units, beyond the mountains at 1,500 so they occlude it through the depth test and well inside the stars at 15,000, and it is re-sized from the camera's own FOV whenever either changes. Additive, `depthWrite: false`, `depthTest: true`, `renderOrder = -800`, same reasoning as the shipped aurora.
+
+The **backdrop is not geometry**. The lab's camera rotates and never translates, and a viewer that cannot translate cannot resolve parallax, which is the only thing a real mesh of mountains would buy. So the skyline is a 1D function of compass bearing evaluated in the fragment shader -- ridged multifractal, three distance layers at apex heights of 12 / 8 / 5 degrees measured off the reference frames in `mountain_silhouettes/` -- carried on a lat-band sphere cap of radius 1,500 that runs from +75 deg elevation to the nadir and **closes** there. A cylinder was the alternative and loses on one point: it is open at the bottom, so "tall enough" depends on how far the camera can pitch and how wide the FOV goes, and guessing low shows sky underneath the mountains. There is no hole in the cap, so no FOV and no pitch can find one. It must write depth, because the stars and the aurora both draw additively with `depthWrite: false` and rely on the buffer already being filled.
+
+#### The open question
+
+**Which algorithm wins.** All three are built and all three are tunable against the same knobs, which was the whole point of the split; nothing has been judged in a headset, and none of it has been promoted into `src/aurora.js`. See TASKS.md for the order that work goes in.
+
+### Stars
+
+2,400 points, spectral tints weighted to a real-ish O-through-M distribution, sized and brightened by magnitude with saturation rising with brightness. The Milky Way is **rejection sampling on the CPU** -- a density gradient in the point distribution, costing exactly zero shader instructions. Twinkle is two out-of-phase sines whose amplitude rises near the horizon, because scintillation is an air-mass effect and stars overhead barely twinkle at all. The field rotates about the true celestial pole for the world's latitude.
+
+### Night-sky banding
+
+An 8-bit framebuffer bands visibly across a dark full-screen gradient. A quarter-LSB hash dither fixes it, and it has to be applied **after** the sRGB conversion, not before: near black, one 8-bit code step is about 0.0003 in linear space, so a dither sized in linear units is either invisible or enormous depending on where in the gradient it lands.

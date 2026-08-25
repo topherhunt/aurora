@@ -31,6 +31,7 @@ const STYLE_OF = {
   stave: WALL_STYLE.STAVE,
   halfTimber: WALL_STYLE.HALF_TIMBER,
   stoneBase: WALL_STYLE.STONE_BASE,
+  masonry: WALL_STYLE.MASONRY,
 }
 
 /** Roof kind -> the layer and tint that render it. `slate` is not a texture:
@@ -120,10 +121,15 @@ export function buildBuilding(plan, { detail = 2 } = {}) {
     if (wl.buried) return
     const m = plan.masses.find((mm) => mm.id === wl.massId)
     wall(b, {
-      p0: wl.p0, p1: wl.p1, y0: m.floorY, y1: m.eaveY,
+      // `wl.y0` is set only on a sliver -- the strip of wall standing above an
+      // abutting wing's roof, where the rest is genuinely buried. v1's wall is
+      // flat-topped, so what it can contribute there is the band between the
+      // neighbour's covering and its own eave; a tier down is the face and
+      // nothing else, which is all that band is ever seen as.
+      p0: wl.p0, p1: wl.p1, y0: wl.y0 ?? m.floorY, y1: m.eaveY,
       style, seed: wl.massId + (wl.side === 'front' || wl.side === 'back' ? 0 : 1),
       rough: plan.seed * 131 + i * 7 + 1,
-      detail,
+      detail: wl.sliver ? Math.min(detail, 1) : detail,
     })
   })
 

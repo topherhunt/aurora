@@ -24,7 +24,7 @@ import { mulberry32 } from '../sim/mathx.js'
 //   * THE FRONT DOOR IS ON LOCAL +Z.
 // ---------------------------------------------------------------------------
 
-export const WALL_STYLES = ['log', 'stave', 'halfTimber', 'stoneBase']
+export const WALL_STYLES = ['log', 'stave', 'halfTimber', 'stoneBase', 'masonry']
 export const ROOF_KINDS = ['thatch', 'shake', 'slate', 'pantile']
 
 /**
@@ -47,7 +47,7 @@ export const KINDS = {
   cottage: {
     area: [22, 34], ratio: [1.25, 1.7], wallH: [2.4, 2.9],
     shapes: ['single', 'outshut', 'ell', 'wing'],
-    styles: ['log', 'stave', 'halfTimber', 'stoneBase'],
+    styles: ['log', 'stave', 'halfTimber', 'stoneBase', 'masonry'],
     roofs: ['thatch', 'thatch', 'shake', 'slate', 'pantile'],
     pitch: [0.6, 0.78], windows: 0.62, runes: 0.3,
   },
@@ -61,7 +61,7 @@ export const KINDS = {
   inn: {
     area: [58, 84], ratio: [1.4, 1.9], wallH: [4.4, 5.4],
     shapes: ['ell', 'tee', 'wing'],
-    styles: ['halfTimber', 'stoneBase', 'stave'],
+    styles: ['halfTimber', 'stoneBase', 'stave', 'masonry'],
     roofs: ['shake', 'slate', 'pantile', 'thatch'],
     pitch: [0.58, 0.72], windows: 0.8, runes: 0.6,
   },
@@ -79,6 +79,20 @@ const WIN_H = 0.88
 const lerp = (a, b, t) => a + (b - a) * t
 const pick = (r, arr) => arr[Math.min(arr.length - 1, Math.floor(r() * arr.length))]
 const range = (r, [lo, hi]) => lerp(lo, hi, r())
+
+/** How much wall a window occupies each side of its centre.
+ *
+ * The glass is the small part of it: the surround adds 7 cm a side and an open
+ * shutter swings a whole leaf clear of that again, so a 0.72 m shuttered window
+ * takes up 1.6 m of frontage. Anything that has to keep out of a window's way --
+ * a corner return, a half-timber stud, a gable's king post -- has to keep out of
+ * THIS number and not out of the glass, which is why it is exported rather than
+ * written out at each of those three places. The 0.07 and the 0.52 are read off
+ * `windowUnit2`'s `frame` and `leafW`; the last 9 cm is daylight.
+ */
+export function windowHalfWidth(wn) {
+  return wn.width / 2 + 0.07 + (wn.shutters ? wn.width * 0.52 : 0) + 0.09
+}
 
 /**
  * The surface height of a roof at a point, used to seat chimneys.
@@ -294,24 +308,137 @@ export function planBuilding(opts = {}) {
   // stretch of wall is another mass -- a window looking into the next room is
   // the single most generated-looking mistake this kind of system makes.
 
-  const walls = masses.flatMap(rectWalls)
-  const buried = (wall) => {
-    // A wall stretch is buried if another mass covers its midpoint just behind
-    // the face. Cheap, and exact enough for axis-aligned rectangles.
-    const mx = (wall.p0[0] + wall.p1[0]) / 2 + wall.n[0] * 0.05
-    const mz = (wall.p0[1] + wall.p1[1]) / 2 + wall.n[1] * 0.05
-    return masses.some(
-      (m) =>
-        m.id !== wall.massId &&
-        Math.abs(mx - m.cx) < m.w / 2 - 0.02 &&
-        Math.abs(mz - m.cz) < m.d / 2 - 0.02
-    )
+  // A wall is only buried where another mass actually stands behind it, and
+  // "where" is the operative word: testing the MIDPOINT alone, which this used
+  // to do, is a coin flip on any plan whose wing is narrower than the wall it
+  // covers. An outshut covering the middle 75% of a back wall answered "buried",
+  // the whole wall was dropped, and the two uncovered ends became open doorways
+  // into the room. So resolve the coverage as an interval along the wall and
+  // keep what is left over.
+  //
+  // Both the wall and the mass are axis-aligned, so a mass either misses the
+  // wall's plane entirely or covers one contiguous run of it -- no sampling, no
+  // clipper, just two slab tests.
+  const coverSpan = (wl, m) => {
+    const ux = (wl.p1[0] - wl.p0[0]) / wl.len
+    const uz = (wl.p1[1] - wl.p0[1]) / wl.len
+    // 5 cm behind the face, so a mass merely ABUTTING the wall does not hide it.
+    const bx = wl.p0[0] + wl.n[0] * 0.05
+    const bz = wl.p0[1] + wl.n[1] * 0.05
+    let lo = 0
+    let hi = wl.len
+    for (const [b, u, c, e] of [
+      [bx, ux, m.cx, m.w / 2 - 0.02],
+      [bz, uz, m.cz, m.d / 2 - 0.02],
+    ]) {
+      if (u === 0) {
+        // The wall does not move along this axis: it is either inside this slab
+        // for its whole length or outside it for its whole length.
+        if (Math.abs(b - c) >= e) return null
+      } else {
+        const r0 = (c - e - b) / u
+        const r1 = (c + e - b) / u
+        lo = Math.max(lo, Math.min(r0, r1))
+        hi = Math.min(hi, Math.max(r0, r1))
+      }
+    }
+    return hi - lo > 0.02 ? [lo, hi] : null
   }
-  for (const wl of walls) wl.buried = buried(wl)
+  // Short enough to look like a return, long enough to be worth building. A
+  // leftover sliver is grown to this rather than dropped: it is grown INTO the
+  // covering mass, where the extra length is interior and invisible, whereas
+  // dropping it would put the hole back.
+  const MIN_STRETCH = 0.55
+  const walls = []
+  for (const wl of masses.flatMap(rectWalls)) {
+    const own = masses.find((mm) => mm.id === wl.massId)
+    const ux = (wl.p1[0] - wl.p0[0]) / wl.len
+    const uz = (wl.p1[1] - wl.p0[1]) / wl.len
+    const stretch = (a0, c0, extra) => {
+      // Overlap the joint by 8 cm. The cut already lands 2 cm inside the
+      // covering mass; this is the margin that survives the warp field bellying
+      // the two surfaces apart. A leftover shorter than MIN_STRETCH is grown to
+      // it rather than dropped: it grows INTO the covering mass, where the extra
+      // length is interior and invisible, whereas dropping it puts the hole back.
+      const grow = Math.max(0.08, (MIN_STRETCH - (c0 - a0)) / 2)
+      const a = Math.max(0, a0 - grow)
+      const c = Math.min(wl.len, c0 + grow)
+      walls.push({
+        ...wl,
+        p0: [wl.p0[0] + ux * a, wl.p0[1] + uz * a],
+        p1: [wl.p0[0] + ux * c, wl.p0[1] + uz * c],
+        len: c - a,
+        buried: false,
+        clipped: true,
+        ...extra,
+      })
+    }
+    const cuts = []
+    let spans = [[0, wl.len]]
+    for (const m of masses) {
+      if (m.id === wl.massId) continue
+      const cut = coverSpan(wl, m)
+      if (!cut) continue
+      cuts.push([Math.max(0, cut[0]), Math.min(wl.len, cut[1]), m])
+      spans = spans.flatMap(([a, c]) => {
+        if (c <= cut[0] || a >= cut[1]) return [[a, c]]
+        const out = []
+        if (cut[0] - a > 0.02) out.push([a, cut[0]])
+        if (c - cut[1] > 0.02) out.push([cut[1], c])
+        return out
+      })
+    }
+
+    // WHAT THE COVERING MASS DOES NOT REACH.
+    //
+    // Being hidden in plan is not the same as being hidden. A wing two storeys
+    // shorter than the hall it abuts hides the bottom of the hall's gable end
+    // and leaves the top of it open to the sky -- and because the wall was never
+    // drawn at all, the hole is above the wing's roof, where it is invisible
+    // from outside and stares straight down into the room from inside. So for
+    // every covered run, ask how high the cover actually gets and, where the
+    // wall's own roof is higher than that, build the part above it.
+    for (const [a0, c0, cov] of cuts) {
+      if (c0 - a0 < 0.1) continue
+      let ownTop = -Infinity
+      let covTop = Infinity
+      for (let i = 0; i <= 8; i++) {
+        const a = a0 + (c0 - a0) * (i / 8)
+        const x = wl.p0[0] + ux * a
+        const z = wl.p0[1] + uz * a
+        ownTop = Math.max(ownTop, roofHeightAt(own.roof, x, z))
+        covTop = Math.min(covTop, roofHeightAt(cov.roof, x, z))
+      }
+      // 0.1 m of shortfall is the covering's own thickness and sag arguing with
+      // a nominal plane, not a hole.
+      if (ownTop <= covTop + 0.1) continue
+      // Start it a hand's width BELOW the covering surface, so the two overlap
+      // rather than meeting at a line the warp can pull apart.
+      const y0 = Math.max(own.floorY, Math.min(covTop - 0.15, ownTop - 0.3))
+      stretch(a0, c0, { y0, sliver: true })
+    }
+
+    if (!spans.length) {
+      if (!walls.some((w) => w.massId === wl.massId && w.side === wl.side)) {
+        walls.push({ ...wl, buried: true })
+      }
+      continue
+    }
+    if (spans.length === 1 && spans[0][0] === 0 && spans[0][1] === wl.len) {
+      walls.push({ ...wl, buried: false })
+      continue
+    }
+    for (const [a0, c0] of spans) stretch(a0, c0)
+  }
 
   // The door: front wall of the main mass, in a bay, nudged off centre because
   // a perfectly centred door reads as a diagram.
-  const frontWall = walls.find((wl) => wl.massId === 0 && wl.side === 'front')
+  // The longest one: a frontage clipped by a wing that steps forward is two
+  // stretches, and the door belongs on the one there is room to stand in front
+  // of. Almost always there is only one.
+  const frontWall = walls
+    .filter((wl) => wl.massId === 0 && wl.side === 'front' && !wl.buried && !wl.sliver)
+    .sort((a, c) => c.len - a.len)[0]
   const frontBays = Math.max(1, Math.round(frontWall.len / BAY))
   // Bays are numbered from p0, which is the -X end. Put the door at the end of
   // the frontage AWAY from any wing, so a wing that steps forward can never end
@@ -336,13 +463,25 @@ export function planBuilding(opts = {}) {
     bay: doorBay,
   }
 
+  const winHalf = (shutters) => windowHalfWidth({ width: WIN_W, shutters })
+  // Daylight between a window's outermost timber and the corner post at the end
+  // of the stretch it hangs on. A stave corner is 0.115 m of half-section, so
+  // this is that plus a hand's width.
+  const END_MARGIN = 0.24
+
   const windows = []
   for (const wl of walls) {
-    if (wl.buried) continue
+    // A sliver is the scrap of gable that pokes up above an abutting roof. It
+    // starts above head height by construction and it looks out over next door's
+    // shingles, so it gets no window and is not frontage.
+    if (wl.buried || wl.sliver) continue
     const m = masses.find((mm) => mm.id === wl.massId)
     const bays = Math.max(1, Math.round(wl.len / BAY))
     const headroom = m.wallH - 1.35
     if (headroom < WIN_H * 0.6) continue // an outshut is too low for a window
+    const ux = (wl.p1[0] - wl.p0[0]) / wl.len
+    const uz = (wl.p1[1] - wl.p0[1]) / wl.len
+    const onThisWall = []
     for (let i = 0; i < bays; i++) {
       if (wl === frontWall && i === doorBay) continue
       // `windows` is a per-kind density: the chance that any one bay is glazed.
@@ -352,12 +491,27 @@ export function planBuilding(opts = {}) {
       // makes a generated building read as having a front.
       const sideFactor = { front: 1, right: 0.62, left: 0.62, back: 0.4 }[wl.side]
       if (r() > windowDensity * sideFactor) continue
-      const [x, z] = bayCentre(wl, i, bays)
+      const shutters = r() < 0.45
+      // Rolled BEFORE the position, because the shutters are half of how much
+      // room the window needs and the position has to answer to that.
+      //
+      // A corner post is up to 12 cm of timber and wants a hand's width of
+      // daylight beside it, so `need` is how close to the end of this stretch
+      // the centre of the window may come. A bay centre usually clears it
+      // easily; what does not is a wall the plan has clipped down to a short
+      // return, and pulling the window in beats hanging it through the corner.
+      const need = winHalf(shutters) + END_MARGIN
+      if (wl.len < 2 * need) continue
+      const a = Math.min(Math.max((i + 0.5) / bays * wl.len, need), wl.len - need)
+      if (onThisWall.some((p) => Math.abs(p[0] - a) < winHalf(shutters) + p[1] + 0.2)) continue
+      onThisWall.push([a, winHalf(shutters)])
+      const x = wl.p0[0] + ux * a
+      const z = wl.p0[1] + uz * a
       const sillY = m.floorY + m.wallH * range(r, [0.44, 0.52])
       windows.push({
         x, z, nx: wl.n[0], nz: wl.n[1], massId: m.id, side: wl.side,
         y0: sillY, width: WIN_W, height: Math.min(WIN_H, m.wallH - (sillY - m.floorY) - 0.35),
-        shutters: r() < 0.45,
+        shutters,
       })
     }
   }
@@ -367,9 +521,16 @@ export function planBuilding(opts = {}) {
   // everything drawn after it.
   if (!windows.some((wn) => wn.side === 'front' && wn.massId === 0) && frontBays > 1) {
     const i = doorBay === 0 ? frontBays - 1 : 0
-    const [x, z] = bayCentre(frontWall, i, frontBays)
+    // Held off the corner by the same margin the rolled windows keep, or the one
+    // window a building is guaranteed to have is the one hung through its own
+    // corner post. Unshuttered, so the margin is the narrow one.
+    const need = winHalf(false) + END_MARGIN
+    const a = Math.min(Math.max((i + 0.5) / frontBays * frontWall.len, need), frontWall.len - need)
+    const t = a / frontWall.len
     windows.push({
-      x, z, nx: 0, nz: 1, massId: 0, side: 'front',
+      x: lerp(frontWall.p0[0], frontWall.p1[0], t),
+      z: lerp(frontWall.p0[1], frontWall.p1[1], t),
+      nx: 0, nz: 1, massId: 0, side: 'front',
       y0: floorY + wallH * 0.48, width: WIN_W, height: WIN_H, shutters: false,
     })
   }
@@ -422,7 +583,7 @@ export function planBuilding(opts = {}) {
       rooms,
       area: Math.round(masses.reduce((s, m) => s + m.w * m.d, 0)),
       windows: windows.length,
-      exteriorWalls: walls.filter((wl) => !wl.buried).length,
+      exteriorWalls: walls.filter((wl) => !wl.buried && !wl.sliver).length,
       ridgeY: main.roof.ridgeY,
       width: Math.max(...allCorners.map((c) => c[0])) - Math.min(...allCorners.map((c) => c[0])),
       depth: Math.max(...allCorners.map((c) => c[1])) - Math.min(...allCorners.map((c) => c[1])),

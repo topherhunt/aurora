@@ -48,7 +48,7 @@ import * as THREE from 'three'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_TIERS, GRASS_BASE, TUFT_TWIST,
-  buildGrassStripBank, stripTiles, STRIP_BASE,
+  buildGrassStripBank, stripTiles, STRIP_BASE, STRIP_TILE_ASPECT, grassCardAspect,
 } from '../src/props/grass-bank.js'
 import { Grass, GRASS_TUNING } from '../src/v2/render/grass.js'
 import {
@@ -907,18 +907,35 @@ check(!stripBank.tiers[0].billboard && stripBank.cardLayer === LAYER.GRASS_TUFT,
   'a strip does not spin and wears the tuft itself')
 check(stripBank.tiles === stripTiles(),
   'the bank tiles as many times as its proportions say', `${stripBank.tiles} copies`)
-// The tile has to be as wide as the strip is tall, or the square tuft picture is
-// drawn stretched. Derived rather than typed, so this is really a gate on
-// STRIP_BASE having been changed without stripTiles() following it.
-check(near(STRIP_BASE.width / stripBank.tiles, STRIP_BASE.height * (GRASS_BASE.width / GRASS_BASE.height), 0.05),
-  'one tile is as wide as the strip is tall, so the cutout is not stretched',
-  `${(STRIP_BASE.width / stripBank.tiles).toFixed(2)} m per tile`)
+// A TILE IS NOT SQUARE, and believing it was is what shipped the stretch. The
+// cutout is a square photograph, but the tuft bed has never drawn it square: its
+// card is a CHORD of the footprint circle and its width follows the SQUARE ROOT
+// of its height, so the grass a player is used to looking at is 0.64 wide per
+// unit tall at the bed's mean and 0.52 at its tallest. A square tile drew the
+// same picture 1.5x wider than that. So the gate is against the tuft's own card,
+// not against 1.
+check(near(STRIP_BASE.width / stripBank.tiles, STRIP_BASE.height * STRIP_TILE_ASPECT, 1e-6)
+  && near(STRIP_TILE_ASPECT, grassCardAspect(0.9), 1e-9),
+  'a tile is drawn at the aspect the tuft bed draws the same cutout at',
+  `${STRIP_TILE_ASPECT.toFixed(3)} wide per unit tall, vs the tuft card's ` +
+  `${grassCardAspect(HEIGHT[0]).toFixed(2)}-${grassCardAspect(HEIGHT[1]).toFixed(2)} over its height range`)
 
 const stripUv = stripBank.tiers[0].geometry.attributes.uvProj
 let uMax = 0
 for (let i = 0; i < stripUv.count; i++) uMax = Math.max(uMax, stripUv.getX(i))
 check(uMax === stripBank.tiles, 'u runs 0..tiles, which is what makes the repeat draw copies',
   `u max ${uMax}`)
+// THE FLARE'S STRETCH COMPENSATION RIDES ON THIS IDENTITY. STRIP_VERTEX moves
+// the tile coordinate by the same amount it moves the vertex, so that widening
+// the top of a card reveals more grass instead of pulling the grass that is
+// there sideways -- and it writes that displacement as `(stF - 1) * position.x`,
+// which is only the right number of TILES if one unit of u is one unit of
+// geometry width. STRIP_BASE.height = 1/aspect is what makes it so. Type a
+// height there instead and nothing here changes shape; the top of every flared
+// card just shears, silently.
+check(near(uMax, STRIP_BASE.width, 1e-9),
+  'and one unit of u is one unit of geometry width, which is what the flare rides on',
+  `u span ${uMax} vs width ${STRIP_BASE.width}`)
 stripBank.tiers[0].geometry.dispose()
 
 const strips = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'strips' })
@@ -934,7 +951,8 @@ const tuftH = (HEIGHT[0] + HEIGHT[1]) / 2
 const tuftSy = tuftH / GRASS_BASE.height
 const tuftFace = ext.width * Math.sqrt(tuftSy) * ext.height * tuftSy
 const stripH = (STRIP_HEIGHT[0] + STRIP_HEIGHT[1]) / 2
-// A tile is SQUARE, so a strip of n tiles is n x stripH metres of rectangle.
+// A tile is STRIP_TILE_ASPECT as wide as it is tall, so a strip of n tiles is
+// n x aspect x stripH long and stripH tall.
 const stripTileN = (STRIP_TILES[0] + STRIP_TILES[1]) / 2
 // 2/pi is E|sin t| over a uniform yaw: the fraction of its own width a FIXED
 // card shows, averaged over every direction the player can look at it from.
@@ -943,10 +961,17 @@ const stripTileN = (STRIP_TILES[0] + STRIP_TILES[1]) / 2
 // none of them can be seen from an instance matrix. Leaving it out was worth
 // 60% to the strip, in the strip's favour.
 const stripCover1 = stripCoverage()
-const stripFace = (2 / Math.PI) * stripTileN * stripH * stripH * stripCover1
+const stripFace = (2 / Math.PI) * stripTileN * STRIP_TILE_ASPECT * stripH * stripH * stripCover1
 const perTri = (face, tri) => face / tri
 const gain = perTri(stripFace, 2) / perTri(tuftFace, 2)
-check(gain > 2.5, 'a strip carries more grass per triangle than the billboard it replaces',
+// 1.4 AND NOT THE 2.5 THIS ONCE WAS, and the drop is a measurement rather than a
+// slackening. A strip is two triangles at ANY size, so its area per triangle
+// goes as the square of STRIP_HEIGHT -- the range was cut by 1.5x because the
+// bed read as coarse up close, and 1.5^2 is very nearly the whole of what this
+// number lost. The floor is set where a strip is still clearly worth more than
+// the card it replaces; below it, shrink the grass again and the honest answer
+// is to go back to tufts.
+check(gain > 1.4, 'a strip carries more grass per triangle than the billboard it replaces',
   `${gain.toFixed(2)}x (${stripFace.toFixed(2)} m2 vs ${tuftFace.toFixed(2)} m2, 2 tri each)`)
 // The shader's own contribution, stated rather than buried in the product
 // above: if this ever climbs back toward 1 it means the mask was turned off AND
@@ -955,15 +980,156 @@ check(stripCover1 > 0.35 && stripCover1 < 0.95,
   'the shader is counted in the strip\'s coverage, not assumed away',
   `${stripCover1.toFixed(3)} of the card drawn (keep ${getStripTiling().keep}, short ${getStripTiling().short}, flare ${getStripTiling().flare})`)
 
-// ...and the density is set so the two beds put the SAME amount of grass in
-// front of the eye, which is the only setting under which the factor above is a
-// saving rather than a thinning.
+// ...and the bed has to be in the same WORLD as the tuft carpet's coverage, or
+// the factor above is a thinning rather than a saving.
+//
+// THIS WAS ONCE A MATCH AND IS NOW A BOUND, because matched coverage turned out
+// not to look matched: a bed of 3 tufts/m2 puts three INDEPENDENT clumps on
+// every square metre, where a strip bed at the same square-metreage puts down
+// far fewer positions and strings the rest of its grass along a line through
+// each. What the eye counts is silhouettes, so the strip bed read as sparse at
+// exactly the coverage this used to certify. The density is set by eye now; what
+// is gated is that it did not drift somewhere absurd in either direction, and
+// the ratio is printed so a drift is visible even inside the bound.
 const tuftCover = DENSITY * tuftFace
 const stripCover = STRIP_DENSITY * stripFace
-check(near(stripCover / tuftCover, 1, 0.12), 'the strip bed is tuned to the tuft bed\'s coverage',
-  `${stripCover.toFixed(2)} m2/m2 vs ${tuftCover.toFixed(2)}`)
+check(stripCover / tuftCover > 0.7 && stripCover / tuftCover < 1.4,
+  'the strip bed is in the same world as the tuft bed\'s coverage',
+  `${stripCover.toFixed(2)} m2/m2 vs ${tuftCover.toFixed(2)} (${(stripCover / tuftCover).toFixed(2)}x)`)
+// The number that actually predicted the complaint, and the reason the one above
+// stopped being trusted on its own: how many separate things are standing there.
+check(STRIP_DENSITY / DENSITY > 0.4, 'and it puts a comparable number of separate plants on the ground',
+  `${STRIP_DENSITY}/m2 vs ${DENSITY} (${(STRIP_DENSITY / DENSITY).toFixed(2)}x the silhouettes, ` +
+  `${(STRIP_DENSITY * stripTileN).toFixed(1)} clumps/m2)`)
+
+// WHERE THE PLAYER IS STANDING, which is the ring neither gate above can see.
+//
+// Both of them compare a strip against the tuft carpet's BILLBOARD -- the right
+// baseline for "is this worth two triangles", because that is what 70% of the
+// tuft bill is spent on. But a player is not standing in the far field. Inside
+// LOD_BANDS[0] the tuft bed is running its 3-plane LOD0 and spending six
+// triangles a tuft, and a strip bed has no ladder to climb: it is flat and two
+// triangles everywhere. So the bed can be at matched coverage on the far-field
+// arithmetic and still be half the grass in the ring the player occupies, which
+// is exactly what "it looks sparser" turned out to be.
+//
+// Measured per ring off the real scatter, so the graded thinning and the veil
+// are in it. Facing area is summed from the tier geometry itself: every quad is
+// a vertical card of horizontal width w, and a FIXED card seen from a uniform
+// yaw shows 2/pi of its width, which is the same factor the far-field
+// comparison uses.
+{
+  const facingOf = (geo) => {
+    const p = geo.getAttribute('position').array
+    let sum = 0
+    // Quads, in the order buildGrassTuft/buildGrassStrip push them: foot, foot,
+    // top, top. So 0->1 is the base edge and 1->2 is the rise.
+    for (let q = 0; q < p.length / 3; q += 4) {
+      const i = q * 3
+      sum += (2 / Math.PI)
+        * Math.hypot(p[i + 3] - p[i], p[i + 5] - p[i + 2])
+        * Math.abs(p[i + 7] - p[i + 1])
+    }
+    return sum
+  }
+  const tierFace = bank.tiers.map((t) => facingOf(t.geometry) * Math.sqrt(tuftSy) * tuftSy)
+  const RINGS = [0, LOD_BANDS[0], LOD_BANDS[1], 40, DRAW_RADIUS]
+  const ringOf = (d) => {
+    for (let i = 0; i < RINGS.length - 1; i++) if (d >= RINGS[i] && d < RINGS[i + 1]) return i
+    return -1
+  }
+  const sweep = (g, per) => {
+    const f = new Array(RINGS.length - 1).fill(0)
+    for (let id = 0; id < g.maxInstances; id++) {
+      if (g.instVis[id] === 0) continue
+      const d = Math.hypot(g.instX[id], g.instZ[id])
+      const r = ringOf(d)
+      if (r >= 0) f[r] += per(d)
+    }
+    return f.map((v, i) => v / (Math.PI * (RINGS[i + 1] ** 2 - RINGS[i] ** 2)))
+  }
+  const tuftRings = sweep(grass, (d) => tierFace[d < LOD_BANDS[0] ? 0 : d < LOD_BANDS[1] ? 1 : 2])
+  const stripRings = sweep(strips, () => stripFace)
+  const ratios = stripRings.map((v, i) => v / tuftRings[i])
+  const report = ratios.map((r, i) => `${RINGS[i]}-${RINGS[i + 1]}m ${r.toFixed(2)}x`).join('  ')
+  // The floor is where it stands, not where it should be: the near ring is the
+  // known weak spot of a bed with no ladder, and the honest fix is a near tier
+  // (a crossed pair is 4 triangles and never goes edge-on) rather than more
+  // instances. What this gate is for is stopping it slide further while nobody
+  // is measuring that ring.
+  check(ratios[0] > 0.5, 'and the ring the player stands in is not half the grass it was',
+    report)
+  check(ratios[ratios.length - 1] > 1,
+    'while the far field, which is where the triangles actually are, is ahead',
+    `${stripRings[stripRings.length - 1].toFixed(2)} m2/m2 vs ${tuftRings[tuftRings.length - 1].toFixed(2)}`)
+}
 
 check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', `${ss.placed} strips`)
+
+// THE SCATTER IS BLUE NOISE, MEASURED AGAINST THE THING IT REPLACED.
+//
+// The claim behind R2 in grass.js is that it puts the same number of strips down
+// without the clumps and bare patches a uniform draw leaves, and "it looks more
+// even" is not a claim a check file can hold. Mean nearest-neighbour distance is:
+// for a Poisson (uniform) process at density L it is exactly 0.5/sqrt(L), and any
+// scatter that refuses to double up beats that. So this measures the real bed and
+// a same-count uniform control drawn over the same box, and gates on the ratio --
+// which is scale-free, so it does not move when the density does.
+//
+// Inside FULL_RADIUS every candidate is kept, which is where this has to hold:
+// past it the graded thinning takes a RANDOM subset and no low-discrepancy
+// sequence survives that. Near is also where the complaint was.
+{
+  const HALF = 10 // metres either side of the origin, well inside FULL_RADIUS
+  const pts = []
+  const m = new THREE.Matrix4()
+  for (const tile of strips.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      strips.batch.getMatrixAt(tile.ids[k], m)
+      const px = m.elements[12]
+      const pz = m.elements[14]
+      if (Math.abs(px) <= HALF && Math.abs(pz) <= HALF) pts.push(px, pz)
+    }
+  }
+  const meanNN = (a) => {
+    const n = a.length / 2
+    let sum = 0
+    for (let i = 0; i < n; i++) {
+      let best = Infinity
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue
+        const dx = a[i * 2] - a[j * 2]
+        const dz = a[i * 2 + 1] - a[j * 2 + 1]
+        const d2 = dx * dx + dz * dz
+        if (d2 < best) best = d2
+      }
+      sum += Math.sqrt(best)
+    }
+    return sum / n
+  }
+  const n = pts.length / 2
+  // The control: the same count of points over the same box, uniform. Same
+  // count and same box, so the two means are directly comparable.
+  const ctrl = new Float64Array(n * 2)
+  let cs = 0x9e3779b9
+  const cr = () => {
+    cs = (cs + 0x6d2b79f5) | 0
+    let t = Math.imul(cs ^ (cs >>> 15), 1 | cs)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  for (let i = 0; i < n * 2; i++) ctrl[i] = (cr() * 2 - 1) * HALF
+  const nnStrip = meanNN(pts)
+  const nnCtrl = meanNN(ctrl)
+  // Poisson's own answer, as a check that the control is behaving.
+  const poisson = 0.5 / Math.sqrt(n / (4 * HALF * HALF))
+  check(n > 300 && Math.abs(nnCtrl / poisson - 1) < 0.12,
+    'the uniform control scatters the way Poisson says it should',
+    `${nnCtrl.toFixed(3)} m vs 0.5/sqrt(density) = ${poisson.toFixed(3)} m, ${n} points`)
+  check(nnStrip / nnCtrl > 1.3,
+    'and the real scatter spreads further than that, which is the whole point of R2',
+    `${nnStrip.toFixed(3)} m vs ${nnCtrl.toFixed(3)} m uniform (${(nnStrip / nnCtrl).toFixed(2)}x)`)
+}
 
 // A TILE IS SQUARE AND THERE ARE A WHOLE NUMBER OF THEM. The fragment stage
 // derives its tile count from the instance's own x/y scale ratio (see the strip
@@ -992,7 +1158,7 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
       // ...and one of those tiles, in metres, against the card's height.
       const tileW = (STRIP_BASE.width * s3.x) / count
       const tileH = STRIP_BASE.height * s3.y
-      worstAspect = Math.max(worstAspect, Math.abs(tileW / tileH - 1))
+      worstAspect = Math.max(worstAspect, Math.abs(tileW / tileH / STRIP_TILE_ASPECT - 1))
       seen.set(Math.round(count), (seen.get(Math.round(count)) ?? 0) + 1)
       n++
     }
@@ -1000,7 +1166,7 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
   const counts = [...seen.keys()].sort((a, b) => a - b)
   check(n > 100 && worstFrac < 1e-4, 'every strip is a whole number of clumps long',
     `worst ${worstFrac.toExponential(1)} of a clump over ${n} strips`)
-  check(worstAspect < 1e-4, 'and every clump is drawn square, not stretched along the strip',
+  check(worstAspect < 1e-4, 'and every clump keeps the tuft card\'s aspect, not stretched along the strip',
     `worst aspect error ${worstAspect.toExponential(1)}`)
   check(counts[0] === STRIP_TILES[0] && counts[counts.length - 1] === STRIP_TILES[1]
     && counts.length === STRIP_TILES[1] - STRIP_TILES[0] + 1,

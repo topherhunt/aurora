@@ -232,12 +232,11 @@ export class Detail {
       // strongly non-gaussian, which is what "this rock has creases in it" reads
       // as numerically. The fractal detail laid on top is gaussian by
       // construction (a sum of independent octaves; the central limit theorem
-      // does the rest), so every metre of detail added is a metre of the
-      // import's creased character averaged out. A kurtosis of 3 is
-      // exactly gaussian, and gaussian ground is smooth EVERYWHERE in the
-      // specific sense that it has no rare large excursions -- no creases, no
-      // edges, no facets. The detail term is not so much adding roughness as it
-      // is averaging the import's character away.
+      // does the rest). A kurtosis of 3 is exactly gaussian, and gaussian ground
+      // is smooth EVERYWHERE in the specific sense that it has no rare large
+      // excursions -- no creases, no edges, no facets. So every metre of detail
+      // laid on is a metre of the import's own character averaged out: the term
+      // is not so much adding roughness as diluting the roughness that is there.
       //
       // MEASURE THIS KNOB ON THE BARE DETAIL STACK, NEVER ON THE COMPOSED FIELD.
       // The composed field's curvature kurtosis is NOT ESTIMABLE at any sample

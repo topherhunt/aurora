@@ -272,7 +272,7 @@ function worldHeight() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-building', 'gen-building-v2']
+const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-building', 'gen-building-v2', 'test-aurora']
 
 function bareRoutes() {
   return {
@@ -366,6 +366,15 @@ export default defineConfig({
         // beside the shipped scatter's measured numbers rather than replacing
         // it. See the header of src/newgrass/grass-field.js.
         v2NewGrass: resolve(__dirname, 'v2-new-grass.html'),
+        // The aurora shader lab, served at /test-aurora. A separate page rather
+        // than a mode inside v2 for the same reason the grass bench is: what it
+        // needs is an empty sky over a nominal skyline and sixty sliders, and
+        // putting that behind a terrain load, a document fetch and a walk to a
+        // vantage point would mean paying all three every time you want to see
+        // what one exponent does. It is also the only page whose whole content
+        // is one quad, which is what makes it honest about the shader's cost.
+        // See the header of src/aurora-lab/glsl/frame.js.
+        testAurora: resolve(__dirname, 'test-aurora.html'),
       },
     },
   },

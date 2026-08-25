@@ -639,6 +639,7 @@ export const WALL_STYLE = {
   STAVE: 'stave', // vertical planks between corner posts
   HALF_TIMBER: 'halfTimber', // plaster panels in an exposed frame
   STONE_BASE: 'stoneBase', // masonry to sill height, timber above
+  MASONRY: 'masonry', // rubble stone the whole way up, quoined at the corners
 }
 
 /**
@@ -700,6 +701,13 @@ export function wall(b, { p0, p1, y0, y1, style, seed = 0, rough = 0, sillY, det
     b.quad(A(0, ya), A(1, ya), A(1, yb), A(0, yb), { layer, vWorldY: true, color, double: true })
 
   const split = sillY ?? y0 + (y1 - y0) * 0.38
+
+  if (style === WALL_STYLE.MASONRY) {
+    // v1's control version of the style: the texture and nothing else. The
+    // quoins that make it read as built rather than as printed are v2's.
+    face(y0, y1, LAYER.STONE, groundGrime(y0, 1.2, 0.3))
+    return
+  }
 
   if (style === WALL_STYLE.STONE_BASE) {
     face(y0, split, LAYER.STONE, groundGrime(y0, 1.0, 0.28))
@@ -1170,7 +1178,11 @@ export function doorway(
     z + tz * alongT + nz * out,
   ]
 
-  // The leaf, set just proud of the wall so it never z-fights it.
+  // The leaf, set proud of the wall so it never z-fights it -- and by enough
+  // that the wall cannot BELLY through it either. 3 cm cleared the z-buffer and
+  // not the warp: a stone-base wall bows about 7 cm at its worst, which put the
+  // masonry out through the middle of the door. 8 cm is past that and is still
+  // 6 cm behind the front of the jambs, so the leaf stays recessed in its reveal.
   //
   // ONE quad, addressed 0..1 off the DOOR layer rather than tiled off
   // TIMBER_PLANK. The layer is a photograph of a whole door -- boards, straps,
@@ -1178,7 +1190,7 @@ export function doorway(
   // doubled decal quads on top of it, and a door leaf costs four triangles
   // instead of sixteen. It is also the only thing on a building that is not
   // world-scaled, which is correct: a door is a size, not a pattern.
-  const leafOut = 0.03
+  const leafOut = 0.08
   b.quad(
     p(-hw, y0, leafOut), p(hw, y0, leafOut), p(hw, y0 + height, leafOut), p(-hw, y0 + height, leafOut),
     { layer: LAYER.DOOR, island: { u0: 0, v0: 0, u1: 1, v1: 1 }, color: TINT.timber, double: true }
@@ -1207,10 +1219,12 @@ export function doorway(
   }
   jamb(-1, 1)
   jamb(1, 2)
-  // The lintel sweeps along the wall, so its section frame is (normal, up).
+  // The lintel sweeps along the wall, so its section frame is (normal, up). No
+  // `vWorldY`: it is horizontal, so world height is the same number at both ends
+  // and the tile would be one column of texels smeared down its whole length.
   const ly0 = y0 + height + jw / 2
   member(b, p(-(hw + jw), ly0, jc), p(hw + jw, ly0, jc), {
-    hu: jd / 2, hv: jw / 2 + 0.03, seed: seed * 13 + 3, vWorldY: true, ...beam,
+    hu: jd / 2, hv: jw / 2 + 0.03, seed: seed * 13 + 3, ...beam,
   })
 
   // No ironwork quads here any more. The two hinge straps and the ring pull

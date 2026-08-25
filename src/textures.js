@@ -434,7 +434,7 @@ export const TILE_METRES = {
   [LAYER.TIMBER_HEWN]: 0.9, // 3 rough boards per tile -> a 0.3 m board
   [LAYER.TIMBER_PLANK]: 0.72, // 3 sawn boards per tile -> a 0.24 m board
   [LAYER.THATCH]: 1.6, // 3 courses per tile
-  [LAYER.SHINGLE]: 1.1, // 6 x 6 shakes per tile -> a 0.18 m shake
+  [LAYER.SHINGLE]: 2.2, // 6 x 6 shakes per tile -> a 0.37 m shake
   [LAYER.ROOF_TILE]: 1.35, // 5 x 6 pantiles per tile -> a 0.27 x 0.22 m tile
   [LAYER.STONE]: 2.4, // roughly 8 rubble stones across -> a 0.3 m stone
   [LAYER.PLASTER]: 2.2, // deliberately large; the panel should read as flat

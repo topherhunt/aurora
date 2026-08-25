@@ -918,13 +918,17 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
 //   highest-value line here: it halves the number of distinct silhouettes the
 //   eye has to notice before it decides the row repeats.
 //   FLARE is BETTER than free -- it adds area. The top of the card is widened
-//   about its own centre, so a strip is an upside-down trapezoid and each tile's
-//   blades splay outward as they rise instead of standing in a column. It is a
-//   vertex-stage line, so it costs nothing per fragment.
+//   about its own centre, so a strip is an upside-down trapezoid and the row of
+//   clumps fans out as it rises instead of standing in a column. It is a
+//   vertex-stage line, so it costs nothing per fragment -- but only once the
+//   TILE GRID IS FLARED WITH IT. Widening the quad alone draws the same clumps
+//   over more metres, which is a horizontal stretch of up to uStripFlare at the
+//   top of every card; STRIP_VERTEX displaces the coordinate by the same amount
+//   the vertex moved, so the extra width is extra grass instead.
 //   SHRINK costs its own square. Each tile is scaled about its FOOT so the
 //   strip's skyline is ragged rather than the same outline N times -- and it is
 //   scaled in BOTH AXES, which is the whole subtlety of this block. Scaling v
-//   alone squashes a square tuft into a wide short one; the picture has to lose
+//   alone squashes the clump into a wide short one; the picture has to lose
 //   width at the same rate it loses height or the grass reads as trodden.
 //   Because it shrinks in two axes it costs s^2, not s, so it is the second most
 //   expensive line here and not the near-free one it looks like.
@@ -936,17 +940,22 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
 //   it to complete the picture.
 //   MASK is EXPENSIVE, at 1:1 against the whole point of the system. It is OFF
 //   by default (uKeep 1.0) because the variety it used to buy is now bought
-//   for nothing by the per-instance TILE COUNT -- a strip is 1 to 4 tiles long
+//   for nothing by the per-instance TILE COUNT -- a strip is 1 to 6 tiles long
 //   (STRIP_TILES in v2/render/grass.js), so the runs already break up, and the
 //   gaps are between strips rather than punched out of paid-for card. Left as a
 //   knob, because the first few gaps are worth more than the last few.
 //
 // HOW MANY TILES: read out of the INSTANCE MATRIX, not baked into the geometry.
 // The bank's `uvProj.x` runs 0..T where T is whatever count draws the cutout
-// square at the bank's own proportions, and the fragment stage rescales that by
-// the instance's own x/y scale ratio. So a tile is square for EVERY instance and
-// the count is whatever length JS gave the card -- one geometry, a strip of any
-// length, and no way for a matrix to stretch the picture by accident. That last
+// unstretched at the bank's own proportions, and the vertex stage rescales that
+// by the instance's own x/y scale ratio. So a tile keeps ONE aspect for every
+// instance and the count is whatever length JS gave the card -- one geometry, a
+// strip of any length, and no way for a matrix to stretch the picture by
+// accident. That aspect is NOT 1: a tile borrows the shape the tuft bed draws
+// the same cutout at, which is 0.68 wide per unit tall, because the tuft's card
+// is a chord and its width follows the square root of its height. Drawing the
+// square photo square made every clump 1.5x too wide -- see STRIP_TILE_ASPECT
+// in props/grass-bank.js. That last
 // clause is the point: the aspect bug this replaced was invisible in every
 // per-vertex gate and obvious the moment it was on screen.
 //
@@ -1000,19 +1009,19 @@ export function getStripTiling() {
  * itself -- so scripts/check-grass.mjs multiplies by this, and it lives here
  * because it has to move whenever the shader above does.
  *
- * A tile of unit size draws its clump at scale s in both axes, and the card is
- * widened by `flare * up` at height `up`, so that clump's area is
- * `s^2 * (1 + flare*s/2)`. Averaged over s uniform on [short, 1]:
- *   E[s^2] = (1 + short + short^2) / 3
- *   E[s^3] = (1 + short + short^2 + short^3) / 4
- * and the flare's own mean draw is half its maximum.
+ * A tile of unit size draws its clump at scale s in BOTH axes, so it carries
+ * `s^2` of itself, and averaged over s uniform on [short, 1] that is
+ *   E[s^2] = (1 + short + short^2) / 3.
+ * The flare then multiplies the whole card's area by `1 + F/2` (a trapezoid
+ * whose top is `1 + F` times its foot), and -- since the tile grid flares with
+ * the geometry rather than being stretched by it, see STRIP_VERTEX -- the extra
+ * area carries grass at the same rate the rest does. F's own mean draw is half
+ * its maximum, hence flare/4.
  */
 export function stripCoverage() {
   const q = stripShort.value
   const e2 = (1 + q + q * q) / 3
-  const e3 = (1 + q + q * q + q * q * q) / 4
-  // flare/4 is (mean draw F/2) x (the /2 in the trapezoid's area).
-  return stripKeep.value * (e2 + (stripFlare.value / 4) * e3)
+  return stripKeep.value * e2 * (1 + stripFlare.value / 4)
 }
 
 // One instance's seed, from where the strip stands. Per INSTANCE and not per
@@ -1039,17 +1048,35 @@ const STRIP_VERTEX = /* glsl */ `
       vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
 
     // The instance's own x/y scale ratio, which is how many of the bank's baked
-    // tiles fit across it at SQUARE proportions -- see the header. The rotation
-    // in the matrix is orthonormal, so a column's length is its scale.
-    vStripU = length( stM[ 0 ].xyz ) / max( length( stM[ 1 ].xyz ), 1e-6 );
+    // tiles fit across it -- see the header. The rotation in the matrix is
+    // orthonormal, so a column's length is its scale.
+    float stScale = length( stM[ 0 ].xyz ) / max( length( stM[ 1 ].xyz ), 1e-6 );
 
     // Flare: widen the card about its own centre, in proportion to how far up
     // the card this vertex is. uvProj.y is 1 at the foot and 0 at the top (see
     // buildGrassStrip), so the foot takes no displacement at all and the tilt
     // that seated it on the ground survives untouched. xz and not x, so the
     // crossed-plane variant widens along each plane's own chord.
-    transformed.xz *= 1.0 + uStripFlare
+    float stF = 1.0 + uStripFlare
       * fract( vStripSeed * 71.17 + 0.37 ) * ( 1.0 - uvProj.y );
+    transformed.xz *= stF;
+
+    // ...AND THE TILE GRID FLARES WITH IT, which is the whole reason this is a
+    // varying rather than a fragment-side product. Widening the quad without
+    // widening the coordinate draws the same clumps across more metres -- a
+    // horizontal stretch of up to uStripFlare at the top of every card, tapering
+    // to none at the foot, which is exactly the shear a trapezoid gives you for
+    // free if you let it. Displacing the coordinate by the same amount the
+    // vertex moved keeps a tile a fixed number of METRES wide at every height,
+    // so the flare reveals more grass at the top corners instead of pulling the
+    // grass that is there sideways.
+    //
+    // position.x is the vertex's offset from the strip's own centre (the quad is
+    // built symmetric, see buildGrassStrip), and uvProj.x is position.x + w/2
+    // exactly, because STRIP_BASE fixes the baked u span to equal the geometry
+    // width. That identity is what lets this be written without knowing either
+    // number, and check-grass.mjs gates it.
+    vStripTx = ( uvProj.x + ( stF - 1.0 ) * position.x ) * stScale;
   }`
 
 // Four decorrelated values from one float -- Hoskins' hash. Four is what the
@@ -1064,11 +1091,11 @@ const STRIP_FRAGMENT = /* glsl */ `
 
 const STRIP_SAMPLE = /* glsl */ `
   {
-    // The CONTINUOUS coordinate, before any wrapping, and rescaled so that one
-    // unit of it is one SQUARE tile however long JS made this instance.  Its
-    // derivatives are the honest footprint of this pixel on the texture and they
-    // are what the sampler has to be handed -- see the header.
-    float stTx = vUvProj.x * vStripU;
+    // The CONTINUOUS coordinate, before any wrapping: one unit of it is one
+    // tile, however long JS made this instance and however hard the vertex stage
+    // flared it. Its derivatives are the honest footprint of this pixel on the
+    // texture and they are what the sampler has to be handed -- see the header.
+    float stTx = vStripTx;
     vec2 stDx = vec2( dFdx( stTx ), dFdx( vUvProj.y ) );
     vec2 stDy = vec2( dFdy( stTx ), dFdy( vUvProj.y ) );
 
@@ -1089,8 +1116,9 @@ const STRIP_SAMPLE = /* glsl */ `
     // v = 1 is its base (see buildGrassTuft), so the foot is the fixed point and
     // a scale below 1 pushes the top of the picture off the top of the quad --
     // where there is no picture, and the fragment is dropped. Doing this to v
-    // alone is what made every short tile a squashed one: the tuft is square, so
-    // it has to give up width at exactly the rate it gives up height.
+    // alone is what made every short tile a squashed one: a clump has one right
+    // aspect, so it has to give up width at exactly the rate it gives up
+    // height.
     float stS = mix( uStripShort, 1.0, stH.w );
     float stV = 1.0 - ( 1.0 - vUvProj.y ) / stS;
     if ( stV < 0.0 ) discard;
@@ -1183,7 +1211,7 @@ export function createPropMaterial(
         varying float vPropFade;
         ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
         ${stripTiling ? `varying float vStripSeed;
-        varying float vStripU;
+        varying float vStripTx;
         uniform float uStripFlare;` : ''}`
       )
       // `propObjPos` is `transformed` BEFORE the billboard spins it, and the
@@ -1247,7 +1275,7 @@ export function createPropMaterial(
         ${SNOW_COMMON}
         ${MOSS_COMMON}
         ${stripTiling ? `varying float vStripSeed;
-        varying float vStripU;
+        varying float vStripTx;
         uniform float uStripKeep;
         uniform float uStripShort;
         ${STRIP_FRAGMENT}` : ''}`
