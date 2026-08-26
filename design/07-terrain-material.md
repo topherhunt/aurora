@@ -17,7 +17,7 @@ Weights pack into a single RGBA texture -- four layers, four channels, exactly. 
 - **Height-blend, do not linear-lerp.** Give each layer a height/roughness map and blend by `max(weight + height)` rather than a weighted average. This is the difference between snow *settling into* rock crevices and snow *fading uniformly* over rock. It is a few lines of shader and it is the single biggest quality lever on the terrain.
 - **Triplanar on steep slopes only.** Lerp toward triplanar projection as slope increases, rather than applying it everywhere. Avoids stretched cliff textures at 1/3 the average cost.
 
-The terrain uses its own material with small tiling textures -- **not** the prop atlas, since atlas tiles cannot wrap. This is a deliberate exception to the one-material rule and costs one draw call family.
+The terrain uses its own material with small tiling textures. This is a deliberate exception to the one-material rule and costs one draw call family. It is *not* an exception to the one-ATLAS rule: the array is `RepeatWrapping`, so any layer authored to tile can be sampled from the terrain too, and the rock surface already does (below).
 
 ### Interim: procedural speckle (`src/terrain/terrain-material.js`)
 
@@ -32,6 +32,20 @@ The general form is worth keeping: **a per-vertex quantity is only LOD-safe if e
 Two things this pass got wrong the first time, both worth remembering. Vertex colours and plain `THREE.Color` uniforms are **linear working space**, and the palette had been authored as if they were sRGB: linear 0.33 is sRGB 0.60, which under a 2.1-intensity sun came out as pale mint green. Dark gritty ground lives around linear 0.05. And the speckle is what makes speed legible -- on untextured ground at 29 m/s you cannot tell you are moving at all.
 
 **A second, un-faded macro layer, because the fade is what made distance look flat.** Everything past ~95 m was reading as smooth green or smooth grey, and the cause was not a thin palette -- it was that the only thing varying the palette had already faded out. So there are two independent layers with opposite requirements: the near grain (0.5-3.5 m) *must* die at range or it aliases into shimmer once it is sub-pixel; the macro layer (~110 m regions with ~38 m variation inside them) *must not*, and is safe not to because it is never close to pixel-sized from anywhere you can stand. One shared fade cannot satisfy both, which is why they are not just extra octaves on one fbm. The macro layer swings brightness on everything (damped on snow -- blotchy snow reads as dirty snow), pulls green ground toward a dry ochre or a damp deep green, and stains rock on the finer octave alone, since mineral banding follows the face rather than the valley.
+
+### The rock surface wears the boulders' own tile
+
+Everything else in this shader is noise, and noise is isotropic and self-similar -- exactly wrong for rock, which has bedding: bands, fracture lines, a direction. So the rock class samples `rocks/stone.png` (`LAYER.ROCK`, the same tile the boulders wear), triplanar, at **16 m per tile**, with a **fainter 2 m octave** added inside 130 m. The point is not detail for its own sake: a boulder resting against the crag it fell off has to be the same *material* as the crag, and while the prop was a photograph and the face behind it was procedural noise, it never was.
+
+**Divided by the tile's own linear per-channel mean (`ROCK_TILE_MEAN` in `textures.js`), which is what makes it safe to add at all.** The quotient averages `(1,1,1)`, so multiplying by it contributes the photograph's grain and mineral colour while moving the palette not one step darker or warmer -- and every colour in this file was tuned against an untextured surface, so anything that shifted the mean would have invalidated all of them at once. `check-rocks.mjs` measures that multiplier over the real tile and holds it at 1.000 per channel. It is the same inversion the per-instance rock tints use, for the same reason, off the same constant.
+
+**Triplanar is not optional here.** The whole subject is cliffs, and a cliff is exactly where a flat xz projection stretches a 16 m tile into vertical smears. Three fetches; picking the dominant axis instead costs one and draws a seam along every 45-degree edge, which on a mountain is most of the edges.
+
+**`textureGrad`, not `texture`.** Both octaves sit inside a guard that folds in distance *and* the rock/grass classification, so a quad at the foot of a crag has some lanes in and some out. An implicit-LOD fetch in non-uniform flow is undefined per the ES spec, and the way it actually fails is the sharpest mip on a fragment that wanted the blurriest: a line of sparkling pixels down every grass border. The caller takes `dFdx`/`dFdy` of the world position once, outside the branch where it is legal, and both octaves scale the same pair.
+
+The coarse octave's fade is far out past everything else here (220 m to 650 m) and it is a *cost* fade, not a pop fade -- mipping takes the tile to its own mean at distance and the divide turns that into a no-op, so the layer disappears on its own; the smoothstep only stops three fetches being paid for pixels they no longer change. That guard also folds in the rock classification, so grass and snow pay nothing.
+
+**Opt-in, via `createTerrainMaterial({ atlas })`.** Without the atlas no sampler is declared and neither block is compiled, so v1's terrain and the benches are byte-identical to what they were; the two variants carry different `customProgramCacheKey`s so they can never share a program. Only `/v2` passes it, which is why `src/v2/main.js` builds the prop texture array *before* the terrain rather than down with the trees.
 
 ### 10 cm texture is a NORMAL, not a seventh height octave
 

@@ -157,6 +157,27 @@ export const MARCH_GLSL = `
 
     float denom = max( rd.y * u_persp + ( 1.0 - u_persp ), 0.035 );
 
+    // ---- There is no belt cull here, and the reason is worth keeping.
+    //
+    // It is the obvious optimisation: the oval is a band in plan space, the
+    // ray's plan.y is monotonic in altitude, so the closest the whole ray ever
+    // gets to the belt centre is known from its two endpoints, and a ray that
+    // stays far from the belt could return before marching at all. It was
+    // written, and it never fired once.
+    //
+    // The arithmetic says why. The belt term is mix(1, exp(-d), u_beltAmt),
+    // which has a FLOOR of 1 - u_beltAmt: at the default 0.85 it bottoms out at
+    // 0.15 no matter how far the ray is, so no distance threshold can ever
+    // declare the ray dark. The belt does not switch the aurora off away from
+    // the oval, it dims it to fifteen percent, and fifteen percent of a bright
+    // sky is not nothing.
+    //
+    // What actually removes those pixels is the shape of the mesh -- see
+    // screen.js, which cuts the aurora down to a northern sector and lets the
+    // rasteriser drop the rest for free. A per-ray test cannot beat not having
+    // the fragment. Do not reintroduce this one without first checking that the
+    // bound it computes can reach the threshold it is compared against.
+
     // ---- The global field, sampled ONCE per ray.
     //
     // Not once per step, and the difference is both a 40x saving and a better
@@ -238,16 +259,37 @@ export const MARCH_GLSL = `
       float along = f.y;
       float id = f.z;
 
+      // ---- The three optional per-step terms, each behind its own amount.
+      //
+      // Every one of these used to be computed unconditionally and then folded
+      // in with a mix, so taking its slider to zero removed the EFFECT and kept
+      // the COST. That is a bad property for a tuning lab specifically: it makes
+      // the panel lie about performance, and it means the cheap presets are not
+      // actually cheap. All three tests are on uniforms, so every fragment in
+      // the draw takes the same branch -- there is no warp divergence and the
+      // cost of a disabled term is the compare, not the body.
+      //
+      // Together they are four value-noise lookups per step -- rays one, flow
+      // one, the caustic pair two -- out of the twenty-one a leyline step
+      // spends, so switching all three off is a fifth of the shader.
+
       // Vertical striations. Ridged rather than plain, because what the eye
       // picks out in a rayed band is the CREASES between rays and a plain noise
       // has none -- it gives soft lobes and reads as cloud.
-      float ray = mix( 1.0, ridge( vnoise2( vec2( along * u_rayFreq, id * 3.17 ) ) ) * 1.7, u_rays );
+      float ray = 1.0;
+      if ( u_rays > 0.0 ) {
+        ray = mix( 1.0, ridge( vnoise2( vec2( along * u_rayFreq, id * 3.17 ) ) ) * 1.7, u_rays );
+      }
 
       // Light travelling ALONG the channel. Time enters as a translation here
       // and only here, and that is deliberate: this is the one term that is
       // supposed to look like something moving through the channel rather than
-      // like the channel changing shape.
-      float flow = vnoise2( vec2( along * u_flowFreq - t * u_flowSpeed, id * 7.31 ) );
+      // like the channel changing shape. It only ever reaches the picture
+      // multiplied by u_flowHue, so that is what gates it.
+      float flow = 0.0;
+      if ( u_flowHue > 0.0 ) {
+        flow = vnoise2( vec2( along * u_flowFreq - t * u_flowSpeed, id * 7.31 ) );
+      }
 
       // ---- The shimmer, and it is the water-caustic trick.
       //
@@ -259,9 +301,15 @@ export const MARCH_GLSL = `
       // eye reads as "shimmer" is not a moving pattern, it is a pattern of
       // INTERSECTIONS between two moving patterns, which never repeats and has
       // no direction of travel of its own.
-      float ca = vnoise2( vec2( along * u_causFreq - t * u_causSpeed, id * 3.70 ) );
-      float cb = vnoise2( vec2( along * u_causFreq * 1.37 + t * u_causSpeed * 0.83, id * 3.70 + 21.0 ) );
-      float caus = pow( 1.0 - abs( ca - cb ), u_causPow );
+      //
+      // caus carries the mix, not just the raw power, so that the disabled
+      // path can be the multiplicative identity.
+      float caus = 1.0;
+      if ( u_caustic > 0.0 ) {
+        float ca = vnoise2( vec2( along * u_causFreq - t * u_causSpeed, id * 3.70 ) );
+        float cb = vnoise2( vec2( along * u_causFreq * 1.37 + t * u_causSpeed * 0.83, id * 3.70 + 21.0 ) );
+        caus = mix( 1.0, pow( 1.0 - abs( ca - cb ), u_causPow ) * 1.6, u_caustic );
+      }
 
       // ---- The auroral oval, as a band across the plan.
       //
@@ -277,11 +325,16 @@ export const MARCH_GLSL = `
       // The exponent is a knob because a Gaussian belt has no shoulders, and a
       // real oval's poleward edge is much harder than its equatorward one. Push
       // it up and the band gets a flat lit top with defined sides.
-      float belt = mix( 1.0,
-                        exp( -pow( abs( plan.y - u_beltOffset ) / max( u_beltWidth, 1.0 ), u_beltPow ) ),
-                        u_beltAmt );
+      // Gated for the same reason as the three above: an exp and a pow per step
+      // that a preset with u_beltAmt at zero should not be paying for.
+      float belt = 1.0;
+      if ( u_beltAmt > 0.0 ) {
+        belt = mix( 1.0,
+                    exp( -pow( abs( plan.y - u_beltOffset ) / max( u_beltWidth, 1.0 ), u_beltPow ) ),
+                    u_beltAmt );
+      }
 
-      float e = ( core * mix( 1.0, caus * 1.6, u_caustic ) * ray + skirt * halo ) * dep * belt * f.w;
+      float e = ( core * caus * ray + skirt * halo ) * dep * belt * f.w;
 
       acc += auroraColour( k, flow * u_flowHue + id * 0.13 ) * ( e * dk );
     }

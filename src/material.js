@@ -60,6 +60,8 @@ const mossLayers = { value: Float32Array.from(MOSS_LAYERS) }
 // /gen-rock wants, where there is no terrain and the slider means what it says.
 const mossLine = { value: 1e6 }
 const mossBand = { value: 1 }
+// 0 = every instance wears the full ceiling. See setMossVary.
+const mossVary = { value: 0 }
 
 // The snow line, in world metres, and how many metres it takes to go from bare
 // to loaded. Defaults are a deliberate NO-OP: a line at -1e6 puts every prop in
@@ -121,6 +123,31 @@ export function setMossLine(base, band) {
 
 export function getMossLine() {
   return { base: mossLine.value, band: mossBand.value }
+}
+
+/**
+ * How unevenly the moss is spread between one instance and the next. 0 = every
+ * mossable prop below the line wears the full `setMoss` ceiling; 1 = the ceiling
+ * is rolled per instance, so some rocks come out bare, most come out patchy and
+ * a few come out green all over.
+ *
+ * ZERO IS THE DEFAULT AND IT IS A NO-OP, for the same reason mossLine defaults
+ * to +1e6: /gen-rock shows one rock and its moss slider has to mean what it says.
+ * The world turns this on; the bench never does.
+ *
+ * THE ROLL IS A HASH OF THE INSTANCE ROOT'S WORLD XZ, because there is still no
+ * per-instance channel to put it in -- the colour texture's RGB is the stone
+ * tint and its alpha is the fade distance. Same routing-around the moss LINE
+ * already does, and it rides the same matrix-vector product: the root's world
+ * position was being computed anyway and only its .y was being read.
+ */
+export function setMossVary(amount) {
+  if (!Number.isFinite(amount)) throw new Error(`setMossVary: need a number, got ${amount}`)
+  mossVary.value = Math.min(1, Math.max(0, amount))
+}
+
+export function getMossVary() {
+  return mossVary.value
 }
 
 /**
@@ -899,7 +926,7 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
 // ---------------------------------------------------------------------------
 // STRIP TILING: one quad that draws its cutout N times, each copy different.
 //
-// For the grass strip experiment in v2/render/grass.js. A strip is a long flat
+// For the grass strips a region is carpeted with -- v2/render/grass.js. A strip is a long flat
 // rectangle whose `uvProj.x` runs 0..N instead of 0..1, so the atlas' repeat
 // wrap draws N copies of the tuft across it. That alone is a row of N IDENTICAL
 // clumps at even spacing, which is a picket fence. This block spends a handful
@@ -940,7 +967,7 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
 //   it to complete the picture.
 //   MASK is EXPENSIVE, at 1:1 against the whole point of the system. It is OFF
 //   by default (uKeep 1.0) because the variety it used to buy is now bought
-//   for nothing by the per-instance TILE COUNT -- a strip is 1 to 6 tiles long
+//   for nothing by the per-instance TILE COUNT -- a strip is 3 to 6 tiles long
 //   (STRIP_TILES in v2/render/grass.js), so the runs already break up, and the
 //   gaps are between strips rather than punched out of paid-for card. Left as a
 //   knob, because the first few gaps are worth more than the last few.
@@ -988,15 +1015,52 @@ const stripShort = { value: 0.5 }
 // between its two ground samples however hard it flares.
 const stripFlare = { value: 0.35 }
 
-/** Live knobs for the strip experiment. Held by reference, like the snow. */
-export function setStripTiling({ keep, short, flare } = {}) {
+// Degrees, the range a strip's far top corner leans OUT OF ITS OWN PLANE. Each
+// instance takes a uniform draw from this range and a random side, so a strip is
+// a warped ribbon rather than a flat sheet: upright at one end, leaning by up to
+// 30 degrees at the other, twisting continuously between.
+//
+// IT IS NOT A LIGHTING EFFECT. Every strip vertex carries the normal (0,1,0) --
+// grass is lit as if it were ground, which is what stops a card going black when
+// it turns away from the sun -- so the twist changes the SILHOUETTE and nothing
+// else. What it buys is that a strip no longer presents one flat plane whose
+// clumps all go edge-on at the same instant.
+const stripTwistDeg = { value: [10, 30] }
+const uStripTwist = { value: new THREE.Vector2() }
+function syncStripTwist() {
+  const [lo, hi] = stripTwistDeg.value
+  uStripTwist.value.set(Math.tan((lo * Math.PI) / 180), Math.tan((hi * Math.PI) / 180))
+}
+syncStripTwist()
+
+/** Live knobs for the grass strips. Held by reference, like the snow. */
+export function setStripTiling({ keep, short, flare, twist } = {}) {
   if (keep !== undefined) stripKeep.value = keep
   if (short !== undefined) stripShort.value = short
   if (flare !== undefined) stripFlare.value = flare
+  if (twist !== undefined) { stripTwistDeg.value = twist; syncStripTwist() }
 }
 
 export function getStripTiling() {
-  return { keep: stripKeep.value, short: stripShort.value, flare: stripFlare.value }
+  return {
+    keep: stripKeep.value,
+    short: stripShort.value,
+    flare: stripFlare.value,
+    twist: stripTwistDeg.value,
+  }
+}
+
+/**
+ * The mean per-tile scale, E[s] over s uniform on [short, 1].
+ *
+ * What a tile is scaled to is what a CLUMP's size is, so this is half of the
+ * answer to "is strip grass the same size as tuft grass" -- STRIP_HEIGHT in
+ * v2/render/grass.js is set to this number's reciprocal times the tuft bed's own
+ * mean clump height, and check-grass.mjs gates the product. Distinct from
+ * stripCoverage()'s E[s^2], which is about AREA and is a different question.
+ */
+export function stripClumpScale() {
+  return (1 + stripShort.value) / 2
 }
 
 /**
@@ -1017,11 +1081,27 @@ export function getStripTiling() {
  * the geometry rather than being stretched by it, see STRIP_VERTEX -- the extra
  * area carries grass at the same rate the rest does. F's own mean draw is half
  * its maximum, hence flare/4.
+ *
+ * The twist costs a little, and it is the one term here that is MODELLED rather
+ * than exact. Leaning a card about its own long axis turns its normal off
+ * horizontal, so a near-horizontal view sees `cos(lean)` of it; the lean ramps
+ * from 0 at one end of a strip to the drawn angle at the other, whose average is
+ * `sin(t)/t`, and that is then averaged over the angle range by Simpson. It is
+ * about 2% at the default 10-30 degrees -- small enough to ignore and cheap
+ * enough not to, and stating it is what stops the next resize inheriting a
+ * silent 2%.
  */
 export function stripCoverage() {
   const q = stripShort.value
   const e2 = (1 + q + q * q) / 3
-  return stripKeep.value * e2 * (1 + stripFlare.value / 4)
+  return stripKeep.value * e2 * (1 + stripFlare.value / 4) * stripTwistCoverage()
+}
+
+/** E[ sin(t)/t ] over the twist range: see the note above. */
+export function stripTwistCoverage() {
+  const [lo, hi] = stripTwistDeg.value.map((d) => (d * Math.PI) / 180)
+  const f = (t) => (t < 1e-6 ? 1 : Math.sin(t) / t)
+  return (f(lo) + 4 * f((lo + hi) / 2) + f(hi)) / 6
 }
 
 // One instance's seed, from where the strip stands. Per INSTANCE and not per
@@ -1077,6 +1157,31 @@ const STRIP_VERTEX = /* glsl */ `
     // width. That identity is what lets this be written without knowing either
     // number, and check-grass.mjs gates it.
     vStripTx = ( uvProj.x + ( stF - 1.0 ) * position.x ) * stScale;
+
+    // TWIST: ONE top corner out of the card's own plane, which is the cheapest
+    // way to stop a strip being a plane at all. Move both and the quad stays
+    // flat and merely leans; move one and the two triangles the quad is made of
+    // take different attitudes, so the ribbon is upright at one end and leaning
+    // at the other with a continuous twist between. Zero triangles, zero
+    // attributes, and it applies to the corner on the shared diagonal (the +x
+    // top vertex -- see the index order in buildGrassStrip) so that BOTH
+    // triangles are warped rather than just one.
+    //
+    // THE FOOT IS UNTOUCHED, for the same reason the flare leaves it alone: the
+    // strip is seated on the ground by a tilt between its two end samples, and
+    // anything that displaces a foot lifts it off that line.
+    //
+    // WHY DIVIDE BY stScale. The displacement wants to be an ANGLE against the
+    // card's own height, but local z is scaled by the instance's x scale (the
+    // long axis: render/grass.js composes (sx, sy, sx), and z is only ever 0 in
+    // this geometry so nothing before now cared). Dividing by sx/sy converts the
+    // offset into the y scale's units, and a strip then leans by the same angle
+    // whether it is three clumps long or six.
+    float stTwist = mix( uStripTwist.x, uStripTwist.y,
+      fract( vStripSeed * 113.71 + 0.61 ) )
+      * sign( fract( vStripSeed * 29.43 + 0.13 ) - 0.5 );
+    transformed.z += stTwist * transformed.y
+      * step( 0.0, position.x ) * ( 1.0 - uvProj.y ) / max( stScale, 1e-6 );
   }`
 
 // Four decorrelated values from one float -- Hoskins' hash. Four is what the
@@ -1183,12 +1288,14 @@ export function createPropMaterial(
     shader.uniforms.uMossLayers = mossLayers
     shader.uniforms.uMossLine = mossLine
     shader.uniforms.uMossBand = mossBand
+    shader.uniforms.uMossVary = mossVary
     shader.uniforms.uPropClock = propClock
     if (billboards) shader.uniforms.uBillboardLayers = { value: billboards }
     if (stripTiling) {
       shader.uniforms.uStripKeep = stripKeep
       shader.uniforms.uStripShort = stripShort
       shader.uniforms.uStripFlare = stripFlare
+      shader.uniforms.uStripTwist = uStripTwist
     }
 
     shader.vertexShader = shader.vertexShader
@@ -1205,6 +1312,7 @@ export function createPropMaterial(
         uniform float uMoss;
         uniform float uMossLine;
         uniform float uMossBand;
+        uniform float uMossVary;
         uniform float uPropClock;
         varying vec4 vSnowPos;
         varying float vMoss;
@@ -1212,7 +1320,8 @@ export function createPropMaterial(
         ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
         ${stripTiling ? `varying float vStripSeed;
         varying float vStripTx;
-        uniform float uStripFlare;` : ''}`
+        uniform float uStripFlare;
+        uniform vec2 uStripTwist;` : ''}`
       )
       // `propObjPos` is `transformed` BEFORE the billboard spins it, and the
       // snow patch below samples that rather than the live value. A billboard's
@@ -1252,14 +1361,25 @@ export function createPropMaterial(
         // .w is this INSTANCE's snow load: the season ceiling, cut down by how
         // far its own root sits above the snow line. One extra matrix-vector
         // product at vertex rate, and it rides in the varying we already had.
-        float propRootY = ( modelMatrix * snowRoot ).y;
+        vec3 propRootW = ( modelMatrix * snowRoot ).xyz;
+        float propRootY = propRootW.y;
         vSnowPos = vec4( ( modelMatrix * snowWorld ).xyz,
           uSnow * smoothstep( uSnowLine - uSnowBand * 0.5, uSnowLine + uSnowBand * 0.5,
             propRootY ) );
         // Moss runs the other way: full below its line, gone above it. Same
         // root, same one matrix-vector product, opposite smoothstep.
-        vMoss = uMoss * ( 1.0 - smoothstep( uMossLine - uMossBand * 0.5,
-          uMossLine + uMossBand * 0.5, propRootY ) );`
+        //
+        // Then rolled per instance -- see setMossVary. The hash is of the root's
+        // world XZ, which is constant across every vertex of an instance, so this
+        // is a per-instance constant and not something that can vary across a
+        // face. The ramp is shaped rather than linear: the bottom of the roll is
+        // crushed to zero so roughly a fifth of the rocks come out genuinely
+        // bare, and the top is held short of 1.0 so the rest are patchy rather
+        // than uniformly green.
+        float mossRoll = fract( sin( dot( propRootW.xz, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+        vMoss = uMoss * mix( 1.0, smoothstep( 0.2, 0.9, mossRoll ), uMossVary )
+          * ( 1.0 - smoothstep( uMossLine - uMossBand * 0.5,
+            uMossLine + uMossBand * 0.5, propRootY ) );`
       )
 
     shader.fragmentShader = shader.fragmentShader
@@ -1320,7 +1440,7 @@ export function createPropMaterial(
   // of the key because it is compiled INTO the shader (an array size and a loop
   // bound cannot be uniforms), so two materials differing only in which layers
   // billboard are two different programs.
-  const key = `prop-moss-v1${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${stripTiling ? '-strip' : ''}`
+  const key = `prop-moss-v2${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${stripTiling ? '-strip' : ''}`
   material.customProgramCacheKey = () => key
 
   return material

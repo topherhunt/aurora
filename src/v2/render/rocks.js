@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-import { buildRockBank, ENVIRONMENTS, ROCK_BAND_COUNT, TINTS } from '../../props/rock-bank.js'
+import { buildRockBank, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINT_GAIN } from '../../props/rock-bank.js'
 import { createPropMaterial, setSnowLine, setMossLine, setPropFadeAt } from '../../material.js'
 
 // ---------------------------------------------------------------------------
@@ -123,8 +123,13 @@ const BEDS = [
   {
     name: 'boulders',
     names: ['cobble', 'scree', 'slab', 'stepping', 'mosshump', 'boulder', 'erratic', 'cleft'],
-    density: 0.0025,
-    envDensity: { river: 0.7, forest: 0.5, cliff: 1, peak: 0.8 },
+    density: 0.0042,
+    // THE WOOD IS NOW AS STONY AS THE CLIFF, and that is the point of this bed.
+    // At 0.5 a forest boulder turned up about every 30 m, which is a boulder you
+    // walk past rather than a wood with rocks in it. At 1.0 of 0.0042 it is one
+    // per 240 m2 -- roughly every 15 m, and closer than that in practice because
+    // the graded thinning packs the near field.
+    envDensity: { river: 0.7, forest: 1, cliff: 1, peak: 0.8 },
     fullRadius: 95,
     radius: 460,
     tile: 28,
@@ -133,16 +138,22 @@ const BEDS = [
     maxSlopeDeg: 48,
     allowSubmerged: true,
     tilt: 0.7,
-    scale: [0.7, 1.7],
+    // Wider than the other two beds on purpose. The bed's variants already span
+    // 0.34 m to 3.4 m; times this, the wood gets everything from a knee-high
+    // cobble to a 7 m cleft, which is the size spread being asked for and it
+    // costs nothing but a wider roll.
+    scale: [0.55, 2.2],
   },
   {
     name: 'giants',
     names: ['blockhouse', 'shelf', 'buttress', 'spire', 'fang'],
     density: 0.0006,
-    // A house-sized rock in a wood is a landmark and has to stay one: 0.10 of
-    // 0.0006 is one per 17,000 m2, about one every 145 m. On a cliff face the
-    // same bed runs at full rate and the face is covered in them.
-    envDensity: { river: 0.15, forest: 0.1, cliff: 1, peak: 0.8 },
+    // A house-sized rock in a wood is a landmark and has to stay one: 0.25 of
+    // 0.0006 is one per 6,700 m2, about one every 80 m. Rare enough that you
+    // still notice one, common enough that a walk through the wood passes
+    // several. On a cliff face the same bed runs at full rate and the face is
+    // covered in them.
+    envDensity: { river: 0.15, forest: 0.25, cliff: 1, peak: 0.8 },
     fullRadius: 270,
     radius: 1250,
     tile: 70,
@@ -225,10 +236,6 @@ function tileSeed(tx, tz, seed, bed) {
   h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d)
   h = Math.imul(h ^ (h >>> 12), 0x297a2d39)
   return (h ^ (h >>> 15)) >>> 0
-}
-
-function clamp01(v) {
-  return v < 0 ? 0 : v > 1 ? 1 : v
 }
 
 /**
@@ -555,6 +562,10 @@ class RockBed {
       const scale = cfg.scale[0] + rand() * (cfg.scale[1] - cfg.scale[0])
       const tone = rand()
       const warm = rand()
+      // Drawn here and resolved against the environment below, exactly as
+      // `shapeRoll` is: which palette it indexes depends on where the rock lands,
+      // but the draw itself must not.
+      const tintRoll = rand()
       const u = rand()
 
       if (u >= uNew || u < uOld) continue
@@ -620,17 +631,29 @@ class RockBed {
       this._s.set(scale, scale, scale)
       this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
 
-      // The variant's own tint, jittered per instance so a scree slope is not
-      // one colour. Same channel and same trick as the forest's, and the whole
-      // of the variety argument on top of one 128 px granite tile.
-      const hex = TINTS[s.tint][1]
-      const v = 0.88 + tone * 0.24
-      this._c.setHex(hex, THREE.SRGBColorSpace)
-      this._c.setRGB(
-        clamp01(this._c.r * v * (0.96 + warm * 0.08)),
-        clamp01(this._c.g * v),
-        clamp01(this._c.b * v * (1.04 - warm * 0.08))
-      )
+      // A TINT PER INSTANCE, ROLLED FROM THE ENVIRONMENT'S PALETTE -- not the
+      // variant's own colour, which is only its portrait in /gen-rock. One
+      // colour per variant meant a scree slope was one grey and a wood was one
+      // green, and the eye finds that repeat faster than it finds a repeated
+      // silhouette. ENV_TINTS carries a list per environment and weights by
+      // repetition, so the common stone stays common.
+      //
+      // THE VALUES GO ABOVE 1.0 ON PURPOSE. stone.png is a real photograph of
+      // granite -- warm, and dark at a mean luma of 88/255 -- and every entry in
+      // the palette is a gain that brightens and white-balances it rather than a
+      // multiply that darkens it further (see TINT_GAIN). BatchedMesh's colour
+      // texture is FLOAT, so > 1 is storable and does what it says; the old
+      // clamp to 1 was written for a tile graded pale enough that no tint ever
+      // needed to reach past it.
+      const pal = ENV_TINTS[env]
+      const gain = TINT_GAIN[pal[Math.min(pal.length - 1, (tintRoll * pal.length) | 0)]]
+      // Jitter on top, so two rocks of the same tint standing together still
+      // differ. Centred slightly under 1 and running slightly over it: the floor
+      // of 0.86 against the palette's smallest gain of 1.39 still leaves every
+      // instance brighter than the bare tile, which is the promise this whole
+      // block is keeping.
+      const v = 0.86 + tone * 0.3
+      this._c.setRGB(gain[0] * v * (0.96 + warm * 0.08), gain[1] * v, gain[2] * v * (1.04 - warm * 0.08))
       this.batch.setColorAt(id, this._c)
 
       setPropFadeAt(this.batch, id, Math.min(this.fullRadius / u, this.radius))

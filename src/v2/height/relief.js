@@ -40,6 +40,26 @@
  */
 export const RELIEF_KNOBS = Object.freeze([
   {
+    // THE ABLATION KNOB FOR THE WHOLE PROCEDURAL TERM, and the one to reach for
+    // first when asking "what is the imported field actually shaped like".
+    //
+    // It scales the DETAIL stack only -- the crag band is a separate term with
+    // its own knob and its own amplitude, and muting both from one switch would
+    // make the answer to "what does bare macro look like" depend on a knob this
+    // one does not name. Turn crag off too (it already is, by default) for the
+    // import and nothing else.
+    //
+    // Applied OUTSIDE Detail rather than by scaling `rough`, because
+    // calibrateRough fits the stack against the import's structure function and
+    // a scale factor inside that fit would be re-measured away. Outside, `bare`
+    // is a clean fade and the calibration never moves -- so scrubbing it 0 -> 1
+    // and back lands on exactly the field you started with.
+    key: 'bare',
+    label: 'bare macro',
+    hint: 'fade out the procedural detail term and show the imported macro field alone',
+    off: 0, on: 1, min: 0, max: 1, step: 0.05,
+  },
+  {
     key: 'sharpen',
     label: 'sharpen',
     hint: 'rectify the detail octaves into creased ribs instead of gaussian lumps',
@@ -63,6 +83,55 @@ export const RELIEF_KNOBS = Object.freeze([
     hint: 'stretch the crag band down the fall line, so gullies run downhill',
     off: 0, on: 1, min: 0, max: 1, step: 0.05,
     needs: 'crag',
+  },
+  {
+    // THE ONE TERM IN THE SET THAT IS NOT A NOISE BAND. Every other knob here
+    // adds or shapes a field that is a function of (x, z) alone, and a field
+    // with no preferred direction is isotropic by construction -- which is why
+    // `crag` at full tilt reads as crumple rather than as rock no matter how far
+    // it is pushed. This one reads a ridge axis out of the coarse field's own
+    // Hessian and cuts along it, so the same crease operator gives teeth down a
+    // skyline and ribs down the faces between them. See ridge.js.
+    //
+    // Its units are metres of half-range summed over three detection scales, so
+    // it is directly comparable to `crag` and the two can be A/B'd against each
+    // other at equal amplitude. 12 to match crag's ON for exactly that reason.
+    key: 'ridge',
+    label: 'ridge',
+    hint: 'metres of teeth and ribs cut ALONG the spines the coarse field already has',
+    off: 0, on: 12, min: 0, max: 40, step: 0.5,
+  },
+  {
+    // THE SAME GATE AND THE SAME AXIS AS `ridge`, A DIFFERENT OPERATOR -- and the
+    // second half of the argument that knob started. `ridge` proved a directed
+    // term can be gated onto the spines; it also proved that smearing noise ALONG
+    // a direction is how you synthesise a fingerprint, because a function of
+    // along-crest position extruded down the faces has parallel level sets and
+    // creases at evenly spaced intervals. No amplitude fixes that.
+    //
+    // This one lays a jittered Voronoi lattice over the ground and takes the
+    // upper envelope of a tilted pyramid per cell: every point sits on some
+    // facet, facets meet at edges, and the tall cells overrun their neighbours so
+    // the spacing sets itself. It shares `ridge`'s baked structure outright, so
+    // turning it on costs no extra bake and no extra memory, and it is in fact
+    // the cheaper of the two per sample -- nine table lookups against fifteen
+    // simplex taps. See ridge.js.
+    //
+    // ITS UNITS ARE NOT `ridge`'s, despite both being metres, and the two are
+    // therefore NOT comparable at equal numbers the way `ridge` and `crag` are.
+    // `ridge` is an rms; this is a PEAK, the height a maximal shard stands proud
+    // summed over the three scales, because a field that is flat over most of its
+    // domain and spikes over the rest has an rms nowhere near its extremes. 40
+    // here is roughly 12 there.
+    //
+    // ON at 45 rather than at `ridge`'s 12 for exactly that reason: it is the
+    // value that puts the same rms displacement on saturated ground, so switching
+    // between the two knobs compares the two OPERATORS rather than comparing one
+    // of them against a quieter version of the other.
+    key: 'shatter',
+    label: 'shatter',
+    hint: 'metres of FACETED rock -- tilted pyramids meeting at crisp edges, on the same spines `ridge` finds',
+    off: 0, on: 45, min: 0, max: 90, step: 1,
   },
   {
     key: 'erode',
@@ -149,16 +218,18 @@ export function sameRelief(a, b) {
  * Which of the expensive baked structures a relief actually needs.
  *
  * ExposureField costs a handful of full-field blurs and 1 MB resident; the
- * eroded copy costs a relaxation sweep and 4 MB. Neither is built unless some
- * live knob reads it, so an all-off world pays for nothing -- and `crest` and
- * `snowJag` are in the exposure list because both are gated on convexity even
- * though the `exposure` knob itself may be 0.
+ * eroded copy costs a relaxation sweep and 4 MB; RidgeField costs a blur and a
+ * Hessian per detection scale and 9 MB, and is shared by `ridge` and `shatter`. None is built unless some live knob
+ * reads it, so an all-off world pays for nothing -- and `crest` and `snowJag`
+ * are in the exposure list because both are gated on convexity even though the
+ * `exposure` knob itself may be 0.
  */
 export function reliefNeeds(relief) {
   return {
     exposure: relief.exposure > 0 || relief.crag > 0 || relief.snowJag > 0 || relief.crest > 0,
     erode: relief.erode > 0,
     crag: relief.crag > 0,
+    ridge: relief.ridge > 0 || relief.shatter > 0,
     sharpen: relief.sharpen > 0,
   }
 }

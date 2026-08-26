@@ -21,8 +21,9 @@
 //   `uv`, so this is a boot failure for the entire grass batch.
 //
 //   THE THINNING LAW STOPS HOLDING. "Twice the distance, half the density" is
-//   what makes a 70 m carpet 23k instances instead of 46k, and it is spread
-//   across a quantised level table, a per-tile nearest-corner distance and a
+//   what makes a 70 m carpet 23k instances instead of 46k -- and the strip bed
+//   cuts further again on top of it, to 11k. The law is spread across a
+//   quantised level table, a per-tile nearest-corner distance and a
 //   per-candidate rank compared against a keep-fraction. Any of those three
 //   drifting gives a carpet that is merely thinner or merely more expensive,
 //   and neither reads as wrong. So the law is measured on the placed instances
@@ -49,13 +50,16 @@ import * as THREE from 'three'
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_TIERS, GRASS_BASE, TUFT_TWIST,
   buildGrassStripBank, stripTiles, STRIP_BASE, STRIP_TILE_ASPECT, grassCardAspect,
+  GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
 import { Grass, GRASS_TUNING } from '../src/v2/render/grass.js'
 import {
   LAYER, LAYER_COUNT, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, buildTextureArray,
   shapeImageLayer, GRASS_FRAY_TUNING,
 } from '../src/textures.js'
-import { stripCoverage, getStripTiling } from '../src/material.js'
+import {
+  stripCoverage, stripClumpScale, stripTwistCoverage, getStripTiling,
+} from '../src/material.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { readPng } from '../tools/props/png.mjs'
 
@@ -67,7 +71,8 @@ const check = (ok, label, detail = '') => {
 const near = (a, b, tol) => Math.abs(a - b) <= tol
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, VEIL_PHASES, TILE, HEIGHT, PLACEMENT,
-  STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK } = GRASS_TUNING
+  STRIP_MATCH, STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK,
+  STRIP_FULL_RADIUS, STRIP_THIN, stripThinAt } = GRASS_TUNING
 
 // --- 1. the bank ------------------------------------------------------------
 
@@ -434,7 +439,7 @@ const EYE = 60 + 1.6
 
 const scene = new THREE.Scene()
 const texArray = buildTextureArray()
-const grass = new Grass(scene, flat, dry, clear, texArray, { seed: 7 })
+const grass = new Grass(scene, flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
 grass.place(0, 0)
 // One update settles the near tiles and one phase of the far ones; VEIL_PHASES
 // of them settles every tile. The camera does not move between them, so this is
@@ -699,7 +704,7 @@ console.log('\n-- veil --')
     'a jittering camera': (f) => (((f * 2654435761) >>> 0) % 20) / 60,
   }
   for (const [name, step] of Object.entries(PROFILES)) {
-    const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7 })
+    const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
     g.place(0, 0)
     let x = 0
     for (let f = 0; f < VEIL_PHASES; f++) g.update(x, EYE, 0)
@@ -845,7 +850,7 @@ console.log('\n-- placement --')
   const sunk = { heightAndSlopeAt: () => ({ h: 1, tan: 0 }), snowLineAt: () => 9999 }
 
   const one = (field, water, paths) => {
-    const g = new Grass(new THREE.Scene(), field, water, paths, texArray, { seed: 7 })
+    const g = new Grass(new THREE.Scene(), field, water, paths, texArray, { seed: 7, style: 'tufts' })
     g.place(0, 0)
     const s = g.stats
     g.dispose()
@@ -876,10 +881,12 @@ check(typeof bakeGrassImpostor === 'function', 'the bake is exported')
 check(GRASS_TIERS[0].planes === 3, 'the bake subject is the 3-plane tier', `${GRASS_TIERS[0].planes} planes`)
 check(bank.cardLayer === LAYER.IMPOSTOR_GRASS, 'the bake target is the card layer')
 
-// --- 9. the strip experiment ------------------------------------------------
+// --- 9. the region bed ------------------------------------------------------
 //
-// `style: 'strips'` swaps the tuft ladder for one flat card, metres wide,
-// drawing the same cutout several times across itself. What is gated here is
+// `style: 'strips'` swaps the clump ladder for one flat card, metres wide,
+// drawing the same cutout several times across itself. It is the DEFAULT and
+// the canonical way to grass a region; the clump ladder is what a grassy POINT
+// gets and is kept for that. What is gated here is
 // the ARITHMETIC THAT DECIDES WHETHER IT IS WORTH ANYTHING, because it is easy
 // to state a saving from a comparison that is not fair and every one of these
 // numbers is a way of not doing that:
@@ -896,7 +903,8 @@ check(bank.cardLayer === LAYER.IMPOSTOR_GRASS, 'the bake target is the card laye
 //
 // If the measured factor ever drops toward 1 -- which is what would happen if a
 // strip were segmented, or if stripKeep were turned down as though it were a
-// performance knob -- the experiment has stopped being one and this says so.
+// performance knob -- then the reason a REGION is grassed with strips has gone
+// away, and this says so before anyone rediscovers it in a frame time.
 
 console.log('\n-- strips --')
 
@@ -915,10 +923,17 @@ check(stripBank.tiles === stripTiles(),
 // same picture 1.5x wider than that. So the gate is against the tuft's own card,
 // not against 1.
 check(near(STRIP_BASE.width / stripBank.tiles, STRIP_BASE.height * STRIP_TILE_ASPECT, 1e-6)
-  && near(STRIP_TILE_ASPECT, grassCardAspect(0.9), 1e-9),
+  && near(STRIP_TILE_ASPECT, GRASS_CLUMP.width / GRASS_CLUMP.height, 1e-9),
   'a tile is drawn at the aspect the tuft bed draws the same cutout at',
   `${STRIP_TILE_ASPECT.toFixed(3)} wide per unit tall, vs the tuft card's ` +
   `${grassCardAspect(HEIGHT[0]).toFixed(2)}-${grassCardAspect(HEIGHT[1]).toFixed(2)} over its height range`)
+// GRASS_CLUMP is computed in grass-bank.js from a COPY of the tuft bed's height
+// range, because the import only runs one way. This is the gate that stops the
+// copy going stale: raise HEIGHT here and the whole strip system resizes itself,
+// or this fails and tells you where the other number lives.
+check(near(GRASS_HEIGHT_REF[0], HEIGHT[0], 1e-9) && near(GRASS_HEIGHT_REF[1], HEIGHT[1], 1e-9),
+  'and the tuft range the strips size themselves from is the tuft range',
+  `[${GRASS_HEIGHT_REF}] vs [${HEIGHT}]`)
 
 const stripUv = stripBank.tiers[0].geometry.attributes.uvProj
 let uMax = 0
@@ -937,6 +952,25 @@ check(near(uMax, STRIP_BASE.width, 1e-9),
   'and one unit of u is one unit of geometry width, which is what the flare rides on',
   `u span ${uMax} vs width ${STRIP_BASE.width}`)
 stripBank.tiers[0].geometry.dispose()
+
+// THE TWO STRATEGIES, GATED AS A DECISION RATHER THAN LEFT AS A COMMENT. Which
+// bed you get when you do not ask for one is the whole of "strips are canonical
+// for regions", and it is one word in a default parameter. The clump ladder is
+// checked to be still THERE in the same breath, because the thing that would
+// quietly undo the other half of the decision is somebody reading a bank with no
+// caller as dead code and deleting it.
+{
+  const dflt = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7 })
+  check(dflt.style === 'strips', 'a region asked for grass without saying which gets strips',
+    `default style ${dflt.style}`)
+  dflt.dispose()
+  const clump = buildGrassBank()
+  const planes = clump.tiers[0].geometry.userData.tuft.planes
+  check(planes === 3 && clump.tiers.length === GRASS_TIERS.length,
+    'and the 3-card clump a grassy POINT wants is still built and still crossed',
+    `${planes} cards on ${clump.tiers.length} tiers`)
+  for (const t of clump.tiers) t.geometry.dispose()
+}
 
 const strips = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'strips' })
 strips.place(0, 0)
@@ -962,15 +996,38 @@ const stripTileN = (STRIP_TILES[0] + STRIP_TILES[1]) / 2
 // 60% to the strip, in the strip's favour.
 const stripCover1 = stripCoverage()
 const stripFace = (2 / Math.PI) * stripTileN * STRIP_TILE_ASPECT * stripH * stripH * stripCover1
+
+// IS A CLUMP OF STRIP GRASS THE SAME PLANT AS A CLUMP OF TUFT GRASS? Everything
+// above is about area and density, and a bed can pass all of it while drawing
+// grass that is visibly the wrong SIZE -- which is what happened: the strip bed
+// read as short, and it was short, by exactly the 0.75 the per-tile shrink takes
+// off every tile. A tile is not a clump. The clump is the tile after the shader
+// has scaled it, so the mean clump is the mean tile times stripClumpScale(), and
+// THAT is the number that has to equal the card the tuft bed draws.
+const stripClump = {
+  width: stripH * stripClumpScale() * STRIP_TILE_ASPECT,
+  height: stripH * stripClumpScale(),
+}
+check(near(stripClump.width / GRASS_CLUMP.width, 1, 0.02)
+  && near(stripClump.height / GRASS_CLUMP.height, 1, 0.02),
+  'a clump of strip grass is the same plant as a clump of tuft grass',
+  `${stripClump.width.toFixed(2)} x ${stripClump.height.toFixed(2)} m vs ` +
+  `${GRASS_CLUMP.width.toFixed(2)} x ${GRASS_CLUMP.height.toFixed(2)}`)
+// ...and no bigger at its biggest, or the bed grows a few outliers that read as
+// a different species however well the mean matches.
+check(STRIP_HEIGHT[1] * 1 <= HEIGHT[1] + 1e-9,
+  'and the tallest strip clump is no taller than the tallest tuft',
+  `${(STRIP_HEIGHT[1]).toFixed(2)} m vs ${HEIGHT[1].toFixed(2)}, shortest ` +
+  `${(STRIP_HEIGHT[0] * getStripTiling().short).toFixed(2)} vs ${HEIGHT[0].toFixed(2)}`)
 const perTri = (face, tri) => face / tri
 const gain = perTri(stripFace, 2) / perTri(tuftFace, 2)
-// 1.4 AND NOT THE 2.5 THIS ONCE WAS, and the drop is a measurement rather than a
-// slackening. A strip is two triangles at ANY size, so its area per triangle
-// goes as the square of STRIP_HEIGHT -- the range was cut by 1.5x because the
-// bed read as coarse up close, and 1.5^2 is very nearly the whole of what this
-// number lost. The floor is set where a strip is still clearly worth more than
-// the card it replaces; below it, shrink the grass again and the honest answer
-// is to go back to tufts.
+// A FLOOR AND NOT A TARGET, and it is set low deliberately. A strip is two
+// triangles at ANY size, so this goes as the SQUARE of STRIP_HEIGHT and moves
+// further than anything else in the file whenever the grass is resized -- it has
+// been 2.5 when strips were oversized, 1.4 when they were cut back too far, and
+// sits near 1.8 now that a clump is the same plant the tuft bed draws. The floor
+// is where a strip stops being clearly worth more than the card it replaces;
+// below it, the honest answer is to go back to tufts rather than to lower this.
 check(gain > 1.4, 'a strip carries more grass per triangle than the billboard it replaces',
   `${gain.toFixed(2)}x (${stripFace.toFixed(2)} m2 vs ${tuftFace.toFixed(2)} m2, 2 tri each)`)
 // The shader's own contribution, stated rather than buried in the product
@@ -979,28 +1036,52 @@ check(gain > 1.4, 'a strip carries more grass per triangle than the billboard it
 check(stripCover1 > 0.35 && stripCover1 < 0.95,
   'the shader is counted in the strip\'s coverage, not assumed away',
   `${stripCover1.toFixed(3)} of the card drawn (keep ${getStripTiling().keep}, short ${getStripTiling().short}, flare ${getStripTiling().flare})`)
+// The twist is the one part of the shader that changes a strip's SHAPE rather
+// than what it draws on it, and the only thing to gate about it is that it stays
+// an angle. At 0 the strip is a flat sheet again and every clump on it goes
+// edge-on at the same instant; past 45 the leaning end is closer to lying down
+// than standing up, and the picture on it is stretched by 1/cos, which is where
+// the twist stops being free.
+const twist = getStripTiling().twist
+check(twist[0] > 0 && twist[0] < twist[1] && twist[1] <= 45,
+  'a strip is warped out of its own plane rather than being a flat sheet',
+  `${twist[0]}-${twist[1]} deg of lean at one top corner, costing ` +
+  `${((1 - stripTwistCoverage()) * 100).toFixed(1)}% of facing area`)
+
+// THE DENSITY HITS THE INVARIANT IT CLAIMS TO, which is the gate that replaced a
+// hard-coded band, and the replacement is the point. STRIP_DENSITY was an
+// eyeballed 1.64 for a while and every comparison downstream of it needed a
+// paragraph of arithmetic before it meant anything. It is derived from
+// STRIP_MATCH now -- see the header in render/grass.js -- so what there is to
+// gate is that the derivation is right and that the other three quantities are
+// REPORTED rather than quietly floating. An instance is not the same object in
+// the two beds, so exactly one of these can be 1.00x and the gate's job is to
+// make it obvious which.
+const stripClumps = STRIP_DENSITY * stripTileN
+const want = {
+  instances: [STRIP_DENSITY / DENSITY, 'instances'],
+  clumps: [stripClumps / DENSITY, 'clumps'],
+  cards: [stripClumps / (DENSITY * GRASS_TIERS[0].planes), 'near-field cards'],
+}[STRIP_MATCH]
+check(want !== undefined && Math.abs(want[0] - 1) < 1e-9,
+  `the bed holds ${STRIP_MATCH} equal to the tuft carpet, which is what it says it does`,
+  `${want?.[1]} ${(want?.[0] ?? NaN).toFixed(4)}x`)
+check(true, 'and the other counts are reported rather than left floating',
+  `instances ${(STRIP_DENSITY / DENSITY).toFixed(2)}x  ` +
+  `clumps ${(stripClumps / DENSITY).toFixed(2)}x  ` +
+  `cards ${(stripClumps / (DENSITY * GRASS_TIERS[0].planes)).toFixed(2)}x  ` +
+  `(${STRIP_DENSITY.toFixed(2)} strips/m2, ${stripTileN.toFixed(1)} clumps each)`)
 
 // ...and the bed has to be in the same WORLD as the tuft carpet's coverage, or
-// the factor above is a thinning rather than a saving.
-//
-// THIS WAS ONCE A MATCH AND IS NOW A BOUND, because matched coverage turned out
-// not to look matched: a bed of 3 tufts/m2 puts three INDEPENDENT clumps on
-// every square metre, where a strip bed at the same square-metreage puts down
-// far fewer positions and strings the rest of its grass along a line through
-// each. What the eye counts is silhouettes, so the strip bed read as sparse at
-// exactly the coverage this used to certify. The density is set by eye now; what
-// is gated is that it did not drift somewhere absurd in either direction, and
-// the ratio is printed so a drift is visible even inside the bound.
+// the saving above is a thinning. A WIDE bound and a printed ratio, because
+// which way this lands is a consequence of STRIP_MATCH rather than a target:
+// matching instances overshoots coverage, matching clumps starves it. What it
+// still catches is an order of magnitude.
 const tuftCover = DENSITY * tuftFace
 const stripCover = STRIP_DENSITY * stripFace
-check(stripCover / tuftCover > 0.7 && stripCover / tuftCover < 1.4,
+check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
   'the strip bed is in the same world as the tuft bed\'s coverage',
   `${stripCover.toFixed(2)} m2/m2 vs ${tuftCover.toFixed(2)} (${(stripCover / tuftCover).toFixed(2)}x)`)
-// The number that actually predicted the complaint, and the reason the one above
-// stopped being trusted on its own: how many separate things are standing there.
-check(STRIP_DENSITY / DENSITY > 0.4, 'and it puts a comparable number of separate plants on the ground',
-  `${STRIP_DENSITY}/m2 vs ${DENSITY} (${(STRIP_DENSITY / DENSITY).toFixed(2)}x the silhouettes, ` +
-  `${(STRIP_DENSITY * stripTileN).toFixed(1)} clumps/m2)`)
 
 // WHERE THE PLAYER IS STANDING, which is the ring neither gate above can see.
 //
@@ -1062,6 +1143,118 @@ check(STRIP_DENSITY / DENSITY > 0.4, 'and it puts a comparable number of separat
   check(ratios[ratios.length - 1] > 1,
     'while the far field, which is where the triangles actually are, is ahead',
     `${stripRings[stripRings.length - 1].toFixed(2)} m2/m2 vs ${tuftRings[tuftRings.length - 1].toFixed(2)}`)
+}
+
+// THE STRIP BED'S EXTRA THINNING, DELIVERED AGAINST ASKED.
+//
+// STRIP_THIN is written as "from 8 m, half the grass", but each step ramps over
+// STRIP_THIN_OCTAVES, so a ring whose inner part is still climbing its ramp gets
+// LESS than the nominal cut. That gap is a property of the table, not a bug, and
+// the only failure mode worth gating is losing track of which number is which:
+// the ask ending up in a comment while the bed quietly delivers something else.
+// So this measures three separate things -- the law's own arithmetic, the bed on
+// the ground against that law, and the veil against it -- because a mismatch in
+// any one of them is silent.
+{
+  const RINGS = [0, LOD_BANDS[0], LOD_BANDS[1], 40, DRAW_RADIUS]
+  const base = (d) => Math.min(1, FULL_RADIUS / d)
+  // Area-weighted mean of f over an annulus, by the midpoint rule. 2000 steps
+  // over 8 m is finer than anything in the law by three orders of magnitude.
+  const ringMean = (f, r0, r1) => {
+    let num = 0
+    let den = 0
+    for (let k = 0; k < 2000; k++) {
+      const d = r0 + ((k + 0.5) / 2000) * (r1 - r0)
+      num += f(d) * d
+      den += d
+    }
+    return num / den
+  }
+  // What the table asks for across a ring: the last entry that has come into
+  // force by the time the ring starts.
+  const nominal = RINGS.slice(0, -1).map((r0) => {
+    let want = 1
+    for (const [r, f] of STRIP_THIN) if (r <= r0) want = f
+    return want
+  })
+  const delivered = RINGS.slice(0, -1).map((r0, i) =>
+    ringMean(base, r0, RINGS[i + 1]) / ringMean((d) => base(d) / stripThinAt(d), r0, RINGS[i + 1]))
+  const askReport = delivered
+    .map((v, i) => `${RINGS[i]}-${RINGS[i + 1]}m ${v.toFixed(2)} of ${nominal[i]}`).join('  ')
+  // Never MORE than asked -- that direction would be the table being ignored
+  // rather than ramped -- and never less than 70%, which is where a one-octave
+  // ramp lands on the tightest ring (20-40 m, half of which is inside the ramp).
+  check(delivered.every((v, i) => v <= nominal[i] * 1.001 && v >= nominal[i] * 0.7),
+    'the strip bed thins by the amounts STRIP_THIN asks for, ramps included', askReport)
+
+  // The law is one thing; what actually got scattered is another. Density here
+  // is VISIBLE instances per square metre, so it exercises the whole chain --
+  // the quantised level table, the per-tile nearest-corner distance, the rank
+  // test and the veil -- against the continuous law they are all approximating.
+  const perRing = (g) => {
+    const n = new Array(RINGS.length - 1).fill(0)
+    for (let id = 0; id < g.maxInstances; id++) {
+      if (g.instVis[id] === 0) continue
+      const d = Math.hypot(g.instX[id], g.instZ[id])
+      for (let i = 0; i < n.length; i++) if (d >= RINGS[i] && d < RINGS[i + 1]) n[i]++
+    }
+    return n.map((v, i) => v / (Math.PI * (RINGS[i + 1] ** 2 - RINGS[i] ** 2)))
+  }
+  const got = perRing(strips)
+  const want = RINGS.slice(0, -1).map((r0, i) =>
+    STRIP_DENSITY * ringMean((d) => base(d) / stripThinAt(d), r0, RINGS[i + 1]))
+  const bedReport = got
+    .map((v, i) => `${RINGS[i]}-${RINGS[i + 1]}m ${v.toFixed(2)} vs ${want[i].toFixed(2)}`).join('  ')
+  check(got.every((v, i) => Math.abs(v / want[i] - 1) < 0.1),
+    'and the bed on the ground is the bed the law describes', `${bedReport} /m2`)
+
+  // THE VEIL AND THE THINNING CANNOT BE ALLOWED TO DISAGREE. _goneFor inverts
+  // the keep law to decide where ONE instance dissolves; the level table decides
+  // where its whole TILE thins. Drift between them does not throw -- it leaves
+  // grass standing invisible, or dissolves grass the tiles still count.
+  //
+  // The invariant that matters is exact and is checked first: the distance
+  // _goneFor returns falls inside the bracket whose two keep-fractions straddle
+  // u, so the veil can never put an instance on the wrong side of a level.
+  //
+  // Against the CONTINUOUS law it is a geometric interpolation between two grid
+  // samples, exact wherever the law is a straight power -- everywhere except the
+  // two levels that straddle a STRIP_THIN radius, where the segment spans two
+  // different exponents. That is gated at one quantiser step, because 19% is the
+  // resolution the whole thinning works at: the tiles step in 19% jumps and the
+  // dither fade spans 15% of the distance either way.
+  const STEP = 2 ** (1 / GRASS_TUNING.QUANT) - 1
+  let worstTrip = 0
+  let bracketed = true
+  for (const g of [grass, strips]) {
+    for (let k = 1; k < 200; k++) {
+      const u = k / 200
+      const d = g._goneFor(u)
+      if (d >= g.radius) continue
+      worstTrip = Math.max(worstTrip, Math.abs(g._keepAt(d) / u - 1))
+      let q = 1
+      while (q <= g.maxQ && g.uAt[q] > u) q++
+      if (d * d < g.loSq[q - 1] * (1 - 1e-9) || d * d > g.loSq[q] * (1 + 1e-9)) bracketed = false
+    }
+  }
+  check(bracketed, 'and a strip dissolves on the same side of a level as its tile thins on')
+  check(worstTrip < STEP, 'and it dissolves where the thinning law says, to finer than a level',
+    `worst ${(worstTrip * 100).toFixed(1)}% vs the quantiser's own ${(STEP * 100).toFixed(0)}%`)
+
+  // The tuft carpet's law is untouched by any of the above, and the closed form
+  // it used to carry is the cheapest possible statement of that.
+  let worstTuft = 0
+  for (let k = 1; k < 200; k++) {
+    const u = k / 200
+    const want = Math.min(FULL_RADIUS / u, grass.radius)
+    worstTuft = Math.max(worstTuft, Math.abs(grass._goneFor(u) / want - 1))
+  }
+  check(worstTuft < 1e-6, 'while the tuft carpet still dissolves at exactly fullRadius / u',
+    `worst ${(worstTuft * 100).toExponential(1)}%, thinning from ${grass.thinFrom} m vs the strips' ${strips.thinFrom}`)
+
+  check(strips.thinFrom === STRIP_FULL_RADIUS && strips.thinFrom < grass.thinFrom,
+    'and the strip bed starts thinning earlier than a bed with a ladder may',
+    `${strips.thinFrom} m vs ${grass.thinFrom} m, on ${strips.bank.tiers.length} tier`)
 }
 
 check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', `${ss.placed} strips`)
@@ -1131,7 +1324,8 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
     `${nnStrip.toFixed(3)} m vs ${nnCtrl.toFixed(3)} m uniform (${(nnStrip / nnCtrl).toFixed(2)}x)`)
 }
 
-// A TILE IS SQUARE AND THERE ARE A WHOLE NUMBER OF THEM. The fragment stage
+// A TILE IS A WHOLE NUMBER OF ITS OWN ASPECT, AND THE TWIST IS AN ANGLE. The
+// fragment stage
 // derives its tile count from the instance's own x/y scale ratio (see the strip
 // block in material.js), so these two facts are not properties of the geometry
 // -- they are properties of what _growTile puts in the matrix, and a fractional
@@ -1146,6 +1340,9 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
   const seen = new Map()
   let worstFrac = 0
   let worstAspect = 0
+  let worstLean = Infinity
+  let bestLean = 0
+  const twistTan = getStripTiling().twist.map((d) => Math.tan((d * Math.PI) / 180))
   let n = 0
   for (const tile of strips.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
@@ -1159,6 +1356,21 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
       const tileW = (STRIP_BASE.width * s3.x) / count
       const tileH = STRIP_BASE.height * s3.y
       worstAspect = Math.max(worstAspect, Math.abs(tileW / tileH / STRIP_TILE_ASPECT - 1))
+      // ...and the twist, which is the same class of bug waiting to happen. The
+      // shader displaces the top corner in LOCAL z, which the matrix scales by
+      // s3.x (the long axis, because the strip's scale is (sx, sy, sx)), so the
+      // lean would run from 3 degrees on a short strip to 30 on a long one if the
+      // shader did not divide it back out by sx/sy. This replays that arithmetic
+      // against the real matrix and measures the angle IN METRES, which is the
+      // only place the mistake would ever have shown.
+      const stScale = s3.x / s3.y
+      for (const t of [twistTan[0], twistTan[1]]) {
+        const dz = ((t * STRIP_BASE.height) / stScale) * s3.x
+        const dy = STRIP_BASE.height * s3.y
+        const deg = (Math.atan2(dz, dy) * 180) / Math.PI
+        worstLean = Math.min(worstLean, deg)
+        bestLean = Math.max(bestLean, deg)
+      }
       seen.set(Math.round(count), (seen.get(Math.round(count)) ?? 0) + 1)
       n++
     }
@@ -1168,6 +1380,10 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
     `worst ${worstFrac.toExponential(1)} of a clump over ${n} strips`)
   check(worstAspect < 1e-4, 'and every clump keeps the tuft card\'s aspect, not stretched along the strip',
     `worst aspect error ${worstAspect.toExponential(1)}`)
+  const [twLo, twHi] = getStripTiling().twist
+  check(Math.abs(worstLean - twLo) < 0.01 && Math.abs(bestLean - twHi) < 0.01,
+    'and the twist is the same angle on a short strip as on a long one',
+    `${worstLean.toFixed(1)}-${bestLean.toFixed(1)} deg in metres, asked for ${twLo}-${twHi}`)
   check(counts[0] === STRIP_TILES[0] && counts[counts.length - 1] === STRIP_TILES[1]
     && counts.length === STRIP_TILES[1] - STRIP_TILES[0] + 1,
     'and the whole of STRIP_TILES is drawn from, which is where the variety now comes from',
@@ -1175,10 +1391,19 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
 }
 check(ss.tris === (ss.placed - ss.veiled) * 2, 'every drawn strip costs exactly two triangles',
   `${(ss.tris / 1000).toFixed(1)}k`)
-// The whole claim, end to end and measured rather than derived: the same
-// hillside, the same coverage, fewer triangles.
-check(ss.tris < st.tris / 2, 'the strip carpet costs less than half the tuft carpet',
-  `${(ss.tris / 1000).toFixed(1)}k vs ${(st.tris / 1000).toFixed(1)}k`)
+// The whole claim, end to end and measured rather than derived. Stated PER
+// INSTANCE, because that is the part of it that does not move when STRIP_MATCH
+// does: a strip is two triangles flat, where a tuft averages its ladder, and how
+// far apart the two BEDS end up is then a consequence of the density the
+// invariant asks for rather than a property of the system. Both are printed.
+const tuftPer = st.tris / (st.placed - st.veiled)
+const stripPer = ss.tris / (ss.placed - ss.veiled)
+check(stripPer < tuftPer, 'a strip instance costs less than a tuft instance',
+  `${stripPer.toFixed(2)} tri vs ${tuftPer.toFixed(2)} across the tuft ladder ` +
+  `(${(stripPer / tuftPer).toFixed(2)}x)`)
+check(ss.tris < st.tris, `and at STRIP_MATCH = ${STRIP_MATCH} the whole carpet is cheaper too`,
+  `${(ss.tris / 1000).toFixed(1)}k vs ${(st.tris / 1000).toFixed(1)}k ` +
+  `(${(ss.tris / st.tris).toFixed(2)}x)`)
 
 // A strip spans metres of ground, so it is rolled onto the line between its two
 // ends rather than seated on one sample. On a slope that is the difference

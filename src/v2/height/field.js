@@ -1,6 +1,7 @@
 import { Detail, calibrateRough, KNEE_TEXELS, EXPOSURE_SWING } from './detail.js'
 import { Heightmap } from './heightmap.js'
 import { ExposureField } from './exposure.js'
+import { RidgeField } from './ridge.js'
 import { Crag } from './crag.js'
 import { thermalErode } from './erode.js'
 import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './relief.js'
@@ -128,6 +129,8 @@ export class V2Height {
    *                 the sharpen curve and the exposure gain
    *   4. detail     the octave table the calibration just sized
    *   5. crag       the crease band, which reads exposure and the fall line
+   *   6. ridge      the directed crease, whose axes are the Hessian of THAT
+   *                 field -- eroded ground has different spines from the import
    *
    * Called from the constructor and from setRelief, and it is the same code
    * both times on purpose: a relief change has to leave this object in the state
@@ -166,7 +169,7 @@ export class V2Height {
     // something you have to trust the arithmetic for. Note it is NOT keyed on
     // `this.exposure` existing: crest and snowJag bake the grid without wanting
     // anything from the geometry path.
-    this._plain = !(relief.exposure > 0 || relief.crag > 0)
+    this._plain = !(relief.exposure > 0 || relief.crag > 0 || relief.bare > 0 || relief.ridge > 0 || relief.shatter > 0)
 
     // 2. THE DETAIL TERM IS MEASURED AGAINST THE IMPORT, NOT CONFIGURED.
     //
@@ -197,6 +200,10 @@ export class V2Height {
     }
     this.detail = new Detail({ seed, knee, rough: this.calibration.rough, sharpen: relief.sharpen })
     this.crag = needs.crag ? new Crag({ seed }) : null
+    // Baked against `ground` for the same reason exposure is: the spines this
+    // describes have to be the spines of the mountain the world is sampled from,
+    // and with `erode` up that is the relaxed copy and not the import.
+    this.ridge = needs.ridge ? new RidgeField(ground, { seed }) : null
 
     // Invalidated rather than kept: erosion moves the texels the percentile
     // histogram is built from, so the altitude ramp a stale `bands` describes is
@@ -418,10 +425,34 @@ export class V2Height {
    */
   _micro(x, z, cell, flatten01) {
     const g = this.ground.gradientAt(x, z, this._grad)
+    const relief = this.relief
     let m = this.detail.at(x, z, cell, g.slope01, flatten01)
+    // Ahead of the exposure gain, though both are multiplicative on `m` and so
+    // commute: at bare = 1 this is exactly 0 and the modulation below is being
+    // applied to nothing, which is the point.
+    if (relief.bare > 0) m *= 1 - relief.bare
+    if (this.ridge) {
+      // Suppressed by the carve weight, crag's argument exactly: a road crosses
+      // the fall line on precisely the convex steep ground a ridge term likes
+      // best, and the carve chain that runs after this would smooth the road
+      // back over a notch it never knew was cut.
+      //
+      // OUTSIDE the exposure gain, unlike crag, and not merely ahead of it. Its
+      // amplitude is already gated by its own ridgeness, which is a sharper and
+      // better-aimed statistic than convexity: a dome scores high on exposure
+      // and zero here, correctly, because a dome has no axis to be right about.
+      // Multiplying the two gates would only narrow the term to where they
+      // happen to agree, and convexity is the weaker of the two opinions.
+      const keep = 1 - (flatten01 < 0 ? 0 : flatten01 > 1 ? 1 : flatten01)
+      if (keep > 0) m += keep * this.ridge.at(x, z, cell, relief.ridge)
+      // Additive with `ridge` rather than exclusive with it, and gated the same
+      // way. They are different operators over one baked structure, so running
+      // both is a blend of ribbing and faceting rather than a conflict -- and
+      // either alone is the useful comparison.
+      if (keep > 0) m += keep * this.ridge.atShatter(x, z, cell, relief.shatter)
+    }
     if (!this.exposure) return m
     const e = this.exposure.at(x, z)
-    const relief = this.relief
     if (relief.exposure > 0) m *= 1 + relief.exposure * EXPOSURE_SWING * (2 * e - 1)
     if (this.crag) {
       // Suppressed by the same flatten weight the detail term uses, and it has

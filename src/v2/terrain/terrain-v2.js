@@ -141,7 +141,7 @@ export class TerrainV2 {
    * @param workers       worker count.
    * @param queueDepth    requests in flight per worker; see WORKER_QUEUE_DEPTH.
    */
-  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH } = {}) {
+  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null } = {}) {
     if (!heightmapRaw) throw new Error('TerrainV2: no heightmapRaw -- the workers have no coarse field to sample and would mesh a flat world')
     if (!doc) throw new Error('TerrainV2: no doc -- the workers have no content layers to bake')
     const { width, height, data, meta } = heightmapRaw
@@ -188,7 +188,10 @@ export class TerrainV2 {
     // stream-policy.js selectEvictions for what that cost v1.
     this.maxReady = budget.maxReady
 
-    this.material = createTerrainMaterial()
+    // The prop texture array, forwarded so the rock surface can wear the same
+    // stone tile the boulders do. Optional: without it the terrain compiles
+    // exactly as it did before, which is what /gen-* benches and v1 still get.
+    this.material = createTerrainMaterial({ atlas })
 
     this.batch = new THREE.BatchedMesh(SLOT_COUNT, SLOT_COUNT * CHUNK_VERTS, SLOT_COUNT * CHUNK_INDICES, this.material)
     this.batch.name = 'terrain-v2'

@@ -8,6 +8,7 @@ import {
   ALGORITHMS, DEFAULT_ALGORITHM, SCENE_GROUPS,
   algorithmById, groupsFor, paramsFor, defaultsFor,
 } from './aurora-lab/algorithms.js'
+import { BUILTIN_NAMES, builtinByName } from './aurora-lab/presets.js'
 
 // ---------------------------------------------------------------------------
 // The /test-aurora route: a rig for designing the aurora that replaces
@@ -266,6 +267,13 @@ function main() {
       case 'savePreset': {
         const name = window.prompt('name this tuning')
         if (!name) break
+        // A builtin is a fixed point you compare against. Letting a save shadow
+        // one would mean the reference silently became whatever was last on the
+        // panel, which is precisely the failure the builtins exist to prevent.
+        if (BUILTIN_NAMES.includes(name)) {
+          sidebar.flash('"' + name + '" is a builtin -- pick another name')
+          break
+        }
         const all = loadJSON(PRESETS) || {}
         all[name] = { algorithm: algorithmId, values: { ...values } }
         localStorage.setItem(PRESETS, JSON.stringify(all))
@@ -279,7 +287,11 @@ function main() {
         const names = Object.keys(all)
         if (names.length === 0) { sidebar.flash('no presets'); break }
         const name = window.prompt('delete which preset?', names[names.length - 1])
-        if (!name || !(name in all)) break
+        if (!name) break
+        // Builtins are not in `all` at all, so they are already undeletable --
+        // but silently doing nothing looks like a broken button, so say why.
+        if (BUILTIN_NAMES.includes(name)) { sidebar.flash('"' + name + '" is a builtin'); break }
+        if (!(name in all)) { sidebar.flash('no preset "' + name + '"'); break }
         delete all[name]
         localStorage.setItem(PRESETS, JSON.stringify(all))
         refreshPresets()
@@ -319,7 +331,16 @@ function main() {
     saveState()
   }
 
+  // Builtins first, because they are the ones checked in and the ones anything
+  // else is judged against. A saved name can never collide with one -- savePreset
+  // refuses it -- so the lookup order here is a preference, not a rule.
   function loadPreset(name) {
+    const builtin = builtinByName(name)
+    if (builtin) {
+      adopt(builtin)
+      sidebar.flash('loaded "' + name + '" -- ' + builtin.note)
+      return
+    }
     const all = loadJSON(PRESETS) || {}
     if (!all[name]) { sidebar.flash('no preset "' + name + '"'); return }
     adopt(all[name])
@@ -327,7 +348,8 @@ function main() {
   }
 
   function refreshPresets(selected) {
-    sidebar.setPresets(Object.keys(loadJSON(PRESETS) || {}), selected)
+    const saved = Object.keys(loadJSON(PRESETS) || {})
+    sidebar.setPresets([ ...BUILTIN_NAMES, ...saved ], selected)
   }
 
   function saveState() {
@@ -391,6 +413,11 @@ function main() {
     const w = stageEl.clientWidth
     const h = stageEl.clientHeight
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * s)
+    // Star point size is in FRAMEBUFFER pixels, so it has to track the
+    // framebuffer or dropping the render scale silently magnifies every star.
+    // Read it back off the renderer rather than recomputing the expression
+    // above, so the two can never drift apart.
+    stars.setPixelRatio(renderer.getPixelRatio())
     renderer.setSize(w, h, false)
     renderer.domElement.style.width = w + 'px'
     renderer.domElement.style.height = h + 'px'

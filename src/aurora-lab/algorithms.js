@@ -441,6 +441,12 @@ export const SHARED_GROUPS = [
         hint: 'Per-pixel offset of the sample positions, in fractions of a step. Take it to zero and the banding it hides appears at once: concentric shells across the sky, one per step. It is worth doing that once, because it is the clearest possible demonstration of what one hash buys.',
         type: 'float', min: 0, max: 1, step: 0.01, value: 1.00,
       },
+      {
+        key: 'warpStages',
+        label: 'warp stages',
+        hint: 'How many times the domain warp is applied, and the single most expensive number here: each stage is six gradient-noise lookups PER MARCH STEP, so going from two to one is close to a 30% saving on the whole shader. One stage still bends the channels -- that is what the first stage does -- it just loses the curdled marbling inside a bend. Take this to 1 before you touch steps.',
+        type: 'float', min: 1, max: 2, step: 1, value: 2,
+      },
     ],
   },
 ]

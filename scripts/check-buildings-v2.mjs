@@ -656,6 +656,304 @@ check(doorBad.through.length === 0, 'and the surround stays under the covering',
 }
 
 // ---------------------------------------------------------------------------
+// 3b. The window, and the two things that touch it.
+// ---------------------------------------------------------------------------
+//
+// Both of these are LOOKING faults rather than geometric ones, which is why
+// neither the airtightness gate nor the daylight probe ever saw them: a shutter
+// floating 7 cm clear of the building it is hung on is a perfectly closed mesh,
+// and so is a window with the eaves resting on its head.
+//
+// So they are measured the way you would look at them. The shutter check builds
+// ONE window on its own, picks the leaf out of the mesh by its layer and its
+// triangle count, and asks whether the leaf's hinged edge is INSIDE the timber
+// of the surround -- a crossing-parity test against the ring's own shell, which
+// is the only question that survives the warp moving both of them. The headroom
+// check walks whole buildings and fires a ray straight up off each window's
+// head, because what has to be 30 cm away is whatever is actually up there:
+// the covering, the eaves, or the wall plate lying across the top of the wall.
+
+console.log('\nthe window')
+
+/** The mesh split into welded connected components, each with its own layer,
+ *  bounding box and triangle list. A part drawn by one call is one component:
+ *  nothing in the kit welds two parts together. */
+function componentsOf(g) {
+  const pos = g.getAttribute('position').array
+  const lay = g.getAttribute('texLayer').array
+  const idx = g.getIndex().array
+  const weld = new Map()
+  const rep = new Int32Array(pos.length / 3)
+  for (let v = 0; v < rep.length; v++) {
+    const key = `${pos[v * 3].toFixed(4)},${pos[v * 3 + 1].toFixed(4)},${pos[v * 3 + 2].toFixed(4)}`
+    if (!weld.has(key)) weld.set(key, v)
+    rep[v] = weld.get(key)
+  }
+  const parent = new Int32Array(rep.length).map((_, i) => i)
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i] } return i }
+  for (let i = 0; i < idx.length; i += 3) {
+    for (const j of [1, 2]) {
+      const a = find(rep[idx[i]])
+      const b = find(rep[idx[i + j]])
+      if (a !== b) parent[a] = b
+    }
+  }
+  const out = new Map()
+  for (let i = 0; i < idx.length; i += 3) {
+    const r = find(rep[idx[i]])
+    if (!out.has(r)) out.set(r, { tris: [], layer: lay[idx[i]], lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity], verts: new Map() })
+    const c = out.get(r)
+    const tri = [0, 1, 2].map((j) => {
+      const o = idx[i + j] * 3
+      return [pos[o], pos[o + 1], pos[o + 2]]
+    })
+    c.tris.push(tri)
+    for (const v of tri) {
+      c.verts.set(v.map((q) => q.toFixed(4)).join(), v)
+      for (let a = 0; a < 3; a++) { c.lo[a] = Math.min(c.lo[a], v[a]); c.hi[a] = Math.max(c.hi[a], v[a]) }
+    }
+  }
+  return [...out.values()]
+}
+
+/** Möller-Trumbore, double sided, forward hits only. */
+function hitT(tri, o, d) {
+  const [a, b, c] = tri
+  const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+  const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]
+  const pv = [d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]]
+  const det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2]
+  if (Math.abs(det) < 1e-12) return -1
+  const inv = 1 / det
+  const tv = [o[0] - a[0], o[1] - a[1], o[2] - a[2]]
+  const u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv
+  if (u < 0 || u > 1) return -1
+  const qv = [tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]]
+  const v = (d[0] * qv[0] + d[1] * qv[1] + d[2] * qv[2]) * inv
+  if (v < 0 || u + v > 1) return -1
+  const t = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) * inv
+  return t > 1e-4 ? t : -1
+}
+
+// An odd number of crossings of a closed shell means the point is inside it.
+// Asked of ONE component rather than of the whole mesh, because a building is a
+// union of interpenetrating solids and a point inside two of them crosses an
+// even number of times.
+const PROBE_DIR = [0.31, 0.87, 0.383]
+const insideComp = (c, p) => {
+  for (let a = 0; a < 3; a++) if (p[a] < c.lo[a] || p[a] > c.hi[a]) return false
+  let n = 0
+  for (const tri of c.tris) if (hitT(tri, p, PROBE_DIR) > 0) n++
+  return n % 2 === 1
+}
+
+{
+  // The leaf hangs on the ring, seed by seed and straight and warped. Straight
+  // is the case the arithmetic can be reasoned about; warped is the one that
+  // actually ships, and it is the one that was broken before -- the field moves
+  // the surround and the leaf by nearly, but not exactly, the same amount, so a
+  // leaf that only just touches at strength 0 lets go at strength 1.
+  const WIN_SEEDS = 200
+  const bad = []
+  let leaves = 0
+  let ajar = 0
+  for (let seed = 0; seed < WIN_SEEDS; seed++) {
+    for (const strength of [0, 1]) {
+      const k = makeCharacter(seed * 7 + 3, strength)
+      const b = new Builder()
+      windowUnit2(b, {
+        x: 0, z: 0, y0: 1.2, nx: 0, nz: 1, width: 0.7, height: 0.88,
+        shutters: true, seed, detail: 2, k,
+      })
+      const warp = makeWarp(k, 0)
+      if (warp) warpBuilder(b, warp)
+      const comps = componentsOf(b.toGeometry())
+      const tag = `seed ${seed}${strength ? ' warped' : ''}`
+      // The ring is the only plank part of a window with more than one quad in
+      // it; the leaves are the plank parts with exactly one, doubled.
+      const ring = comps.find((c) => c.layer === LAYER.TIMBER_PLANK && c.tris.length > 8)
+      const leafComps = comps.filter((c) => c.layer === LAYER.TIMBER_PLANK && c.tris.length === 4)
+      if (!ring || leafComps.length !== 2) {
+        bad.push(`${tag}: found ${leafComps.length} leaves and ${ring ? 'a' : 'no'} surround`)
+        continue
+      }
+      for (const leaf of leafComps) {
+        leaves++
+        const vs = [...leaf.verts.values()]
+        const hung = vs.filter((v) => insideComp(ring, v))
+        if (hung.length !== 2) {
+          bad.push(`${tag}: ${hung.length} of ${vs.length} leaf corners in the surround`)
+          continue
+        }
+        // And the whole hinged edge, not just its ends: a leaf pinned at the
+        // corners and bowed out in the middle is still hanging in the air.
+        for (const t of [0.25, 0.5, 0.75]) {
+          const p = [0, 1, 2].map((a) => hung[0][a] + (hung[1][a] - hung[0][a]) * t)
+          if (!insideComp(ring, p)) { bad.push(`${tag}: the hinged edge leaves the surround at ${t}`); break }
+        }
+        // Ajar or shut, measured off the mesh: the free edge stands further out
+        // of the wall than the hinged one. The wall faces +z here.
+        const free = vs.filter((v) => !hung.includes(v))
+        const dz = Math.max(...free.map((v) => v[2])) - Math.max(...hung.map((v) => v[2]))
+        if (dz > 0.03) ajar++
+      }
+    }
+  }
+  check(bad.length === 0, 'every shutter is hung on the surround, not on the air',
+    bad.length ? `${bad.length} loose, e.g. ${bad[0]}` : `${leaves} leaves, straight and warped`)
+  // A kit where every leaf is shut is a kit whose shutters read as painted-on
+  // panels, and one where every leaf is open is a building nobody lives in.
+  check(ajar > leaves * 0.2 && ajar < leaves * 0.9, 'and some of them stand open',
+    `${ajar} of ${leaves} leaves ajar`)
+}
+
+{
+  // 30 CM OF WALL ABOVE THE HEAD, measured off the built building rather than
+  // off the numbers that were supposed to produce it. plan.js reserves the band,
+  // windowUnit2 ducks the unit down when the covering has come lower than the
+  // plan thought, and wall2 hands up the height of the plate lying across the
+  // top of the wall -- three pieces, any two of which can agree while the third
+  // puts a beam through the window head. What the eye measures is the gap, so
+  // that is what this measures: straight up off the head of every window in the
+  // corpus, until it hits something.
+  const WANT = 0.3
+  // WHERE THE RAY STARTS, measured out of the wall plane.
+  //
+  // A log wall's face IS its courses -- 15 cm timbers standing 5 cm proud, laid
+  // straight across the opening because the surround stands in front of them --
+  // so a course over a window is the wall, not an object jammed on its head, and
+  // measuring at the wall plane there measures the inside of a log. The only
+  // honest place to stand on those is in front of the courses, at the outer face
+  // of the frame. A plastered wall carries nothing on its face except its own
+  // framing, which stands 7.5 cm out, so there the measurement is taken close in
+  // as well -- and that near sample is the one that sees the wall plate.
+  const OUT_OF = {
+    log: [0.16], stave: [0.16],
+    halfTimber: [0.06, 0.16], stoneBase: [0.06, 0.16], masonry: [0.06, 0.16],
+  }
+  // The allowance, and what it is for. The duck reserves the band against the
+  // WARPED covering -- sheet, verge and thatch skirt alike -- and it reserves it
+  // over the whole patch of ground the head takes up rather than at a handful of
+  // samples, so what is left over is the difference between the head of the
+  // frame and the top edge of the glass this ray starts from. Two centimetres
+  // for the straight building and three for the warped one, where the transform
+  // tilts the unit in its own plane.
+  const SLACK = { 0: 0.02, 1: 0.03 }
+  // How many buildings may lose the last window on their front elevation before
+  // the reserve costs more than it buys. It measures 11 of 480; this is a
+  // ceiling on that, not a target. The fix when it is reached is to let a window
+  // that cannot get under the covering slide ALONG its wall before it is
+  // dropped -- a change to where plan.js says a window may stand, not to this
+  // band. Every one of the 11 is a front wall whose outer bays stand under the
+  // eave of the wing next door, where the alternative to a blank wall is a
+  // window with a roof through it.
+  const BLANK_FRONTS = 12
+  const bad = []
+  let worst = [Infinity, '']
+  let panes = 0
+  // WHAT THE RESERVE COSTS. A window that cannot be got under the covering by
+  // less than three quarters of its own height is not drawn at all, and the band
+  // is what decides how many of those there are -- so the drop rate is part of
+  // the same measurement and is counted here rather than guessed at. Most of
+  // them are the same shape: a window on a long wall whose outer half stands
+  // under the eave of the wing next door, two metres up. The number to watch is
+  // the second one: plan.js promises every building a window on its front, and
+  // that promise is made before any roof exists to sit on it.
+  let planned = 0
+  let drawn = 0
+  let blankFront = 0
+  for (const strength of [0, 1]) {
+    for (const kind of Object.keys(KINDS)) {
+      for (let s = 1; s <= GEO_SEEDS; s++) {
+        const plan = planBuilding({ seed: s, kind, groundAt: slopeFor(s) })
+        const g = buildBuilding2(plan, { detail: 2, strength }).geometry
+        const comps = componentsOf(g)
+        const centre = [0, 2].map((a) => {
+          let t = 0
+          for (const c of comps) t += (c.lo[a] + c.hi[a]) / 2
+          return t / comps.length
+        })
+        const panesHere = comps.filter((c) => c.layer === LAYER.GLASS && c.verts.size === 4)
+        planned += plan.windows.length
+        drawn += panesHere.length
+        // Matched in PLAN, not in space: the duck only ever moves a window down
+        // its own wall, so a pane still stands over the position it was planned
+        // at even when it has slid half a metre.
+        const fronts = plan.windows.filter((wn) => wn.side === 'front' && wn.massId === 0)
+        if (fronts.length && !fronts.some((wn) => panesHere.some((c) => {
+          const cm = [0, 2].map((a) => (c.lo[a] + c.hi[a]) / 2)
+          return Math.hypot(cm[0] - wn.x, cm[1] - wn.z) < 0.4
+        }))) blankFront++
+        for (const pane of panesHere) {
+          const vs = [...pane.verts.values()]
+          panes++
+          const mid = [0, 1, 2].map((a) => vs.reduce((t, v) => t + v[a], 0) / 4)
+          // The pane's own normal, flattened into the horizontal and turned to
+          // face away from the middle of the building. A window looking into the
+          // inner corner of an ell can take the wrong sign here, which costs
+          // nothing: the ray then starts inside the room, where the covering is
+          // higher than it is out under the eave.
+          const [a0, b0, c0] = pane.tris[0]
+          const e1 = [b0[0] - a0[0], b0[1] - a0[1], b0[2] - a0[2]]
+          const e2 = [c0[0] - a0[0], c0[1] - a0[1], c0[2] - a0[2]]
+          let n = [e1[1] * e2[2] - e1[2] * e2[1], 0, e1[0] * e2[1] - e1[1] * e2[0]]
+          const ln = Math.hypot(n[0], n[2])
+          if (ln < 1e-6) continue
+          n = [n[0] / ln, 0, n[2] / ln]
+          if (n[0] * (mid[0] - centre[0]) + n[2] * (mid[2] - centre[1]) < 0) n = [-n[0], 0, -n[2]]
+          // Everything this window is made of, which is not what has to be 30 cm
+          // away. Nothing else in the kit is plank or iron within a metre of a
+          // pane: the studs, the rails and the courses are beam or hewn, and the
+          // covering has layers of its own.
+          const own = new Set([pane])
+          for (const c of comps) {
+            if (c.layer !== LAYER.TIMBER_PLANK && c.layer !== LAYER.IRON) continue
+            const cm = [0, 1, 2].map((a) => (c.lo[a] + c.hi[a]) / 2)
+            if (Math.hypot(cm[0] - mid[0], cm[1] - mid[1], cm[2] - mid[2]) < 0.9) own.add(c)
+          }
+          // And the wall itself, which is the thing that is SUPPOSED to be above
+          // the head: plaster and masonry are the face the window is set into.
+          // (A log wall's face is its courses, which is why the samples for those
+          // styles stand in front of them instead.) Under the warp a wall bellies
+          // out, so a plumb ray started 6 cm off a leaning face walks into it
+          // half a metre up -- which measures the lean, not the window.
+          const FACE = new Set([LAYER.STONE, LAYER.PLASTER])
+          const above = comps.filter((c) => !own.has(c) && !FACE.has(c.layer) && c.hi[1] > mid[1])
+          // The head of the frame: the top edge of the glass, plus the frame it
+          // is set in. The pane is 7 cm out of the wall plane, which is what the
+          // sample distances below are measured back from.
+          const top = vs.slice().sort((p, q) => q[1] - p[1]).slice(0, 2)
+          for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+            const e = [0, 1, 2].map((a) => top[0][a] + (top[1][a] - top[0][a]) * t)
+            for (const face of OUT_OF[plan.style]) {
+              const out = face - 0.07
+              const o = [e[0] + n[0] * out, e[1] + 0.07, e[2] + n[2] * out]
+              let hit = Infinity
+              for (const c of above) {
+                if (o[0] < c.lo[0] || o[0] > c.hi[0] || o[2] < c.lo[2] || o[2] > c.hi[2]) continue
+                for (const tri of c.tris) {
+                  const d = hitT(tri, o, [0, 1, 0])
+                  if (d > 0 && d < hit) hit = d
+                }
+              }
+              const tag = `${kind}/${s}${strength ? ' warped' : ''}`
+              if (hit < worst[0]) worst = [hit, tag]
+              if (hit < WANT - SLACK[strength]) bad.push(`${tag} ${hit.toFixed(3)} m`)
+            }
+          }
+        }
+      }
+    }
+  }
+  check(bad.length === 0, 'every window keeps 30 cm of wall above its head',
+    bad.length
+      ? `${bad.length} tight, worst ${worst[0].toFixed(3)} m (${worst[1]})`
+      : `worst ${worst[0] === Infinity ? 'open sky' : `${worst[0].toFixed(3)} m (${worst[1]})`}, ${panes} windows`)
+  check(drawn > planned * 0.9 && blankFront <= BLANK_FRONTS, 'and the band costs few enough windows to be worth it',
+    `${planned - drawn} of ${planned} dropped, ${blankFront} buildings left with a blank front`)
+}
+
+// ---------------------------------------------------------------------------
 // 4. The geometry.
 // ---------------------------------------------------------------------------
 

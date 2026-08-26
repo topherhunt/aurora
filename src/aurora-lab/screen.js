@@ -32,26 +32,38 @@
 // only create a way to get it wrong.
 //
 // ===========================================================================
-// WHY THE QUAD FACES THE CAMERA
+// THE SCREEN IS A NORTHERN SECTOR, NOT A BILLBOARD
 // ===========================================================================
 //
 // The brief asked for the aurora on "a giant sky-wide rectangular screen", and
-// a literal fixed rectangle is a trap: turn ninety degrees and you are looking
-// past its edge at empty sky, and the lab becomes a rig you can only use from
-// one heading.
+// this was one for a while: a camera-facing quad, sized from the FOV, rebuilt
+// every frame. It works, and it is the wrong shape for the thing being drawn.
 //
-// A billboard fixes that without giving anything up, because of what the shader
-// actually does with the quad. `main()` uses the fragment's world position for
-// exactly one thing -- to recover a ray direction -- and then throws it away.
-// The quad is a window, not a surface. Rotating the window does not move
-// anything behind it, so a camera-facing quad and a sky-sized dome produce
-// identical pixels, and the quad is two triangles.
+// What makes either shape legal is what the shader does with the geometry.
+// `main()` uses the fragment's world position for exactly one thing -- to
+// subtract the eye from it and recover a ray direction -- and then throws it
+// away. The mesh is a WINDOW, not a surface, so any surface that covers the same
+// set of directions produces byte-identical pixels. A billboard covers the
+// directions you are looking at. A sector covers the directions the aurora is
+// in. Those are different sets, and the second one is much smaller.
+//
+// The aurora lives in a belt to the north (u_beltOffset is negative by default,
+// -z is north), so a quad that follows the camera spends most of its fragments
+// marching rays that the belt term is going to multiply to nothing -- and pays
+// full price for them, because a fragment that integrates to black costs exactly
+// what a bright one does. Locking the mesh to the world and cutting it down to
+// the northern sector deletes those fragments at the rasteriser instead, which
+// is free. Turn south now and there is nothing drawn at all, which is also what
+// standing under a real auroral oval looks like.
+//
+// The second win is the one the pixels came from: the fragments that remain are
+// the ones worth spending on, so the same frame budget buys a higher render
+// scale over the part of the sky that has an aurora in it.
 //
 // It sits at 5200 units: beyond the mountains at 1500 so they occlude it
 // through the depth test, and well inside the stars at 15000 so it does not
-// fight them for depth. It is sized from the camera's own FOV each time either
-// changes, with margin, because a quad sized once for a 60-degree view develops
-// visible corners the moment the FOV widens.
+// fight them for depth. Being world-locked, it is built once -- there is no FOV
+// to track, because it is not sized to the view any more.
 //
 // ===========================================================================
 // ADDITIVE, AND WHY NO SORTING IS NEEDED
@@ -75,9 +87,33 @@ import { algorithmById, paramsFor, defaultsFor } from './algorithms.js'
 // Beyond the mountains (1500), well inside the stars (15000).
 const DIST = 5200
 
-// How much wider than the frustum the quad is cut. Covers a FOV drag and the
-// couple of degrees of slop a billboard has when the camera rolls.
-const MARGIN = 1.7
+// ---- The sector, in the sky the mesh is cut out of.
+//
+// Azimuth is a touch over half the compass rather than exactly half. A hard 180
+// would put the sector's two vertical edges due east and due west, which are
+// headings you look along, and `u_edgeFade` needs a few degrees of sky on the
+// far side of the belt to fade across or the boundary reads as a wall. 200
+// degrees puts each edge ten degrees behind you at those headings.
+const AZIMUTH_DEG = 200
+
+// Elevation runs from a little under the horizon -- the march's own horizon cut
+// wants to be the thing that ends the sky, not the geometry -- up to 78, which
+// is above anything the deposition profile still has brightness in at any
+// sensible u_persp. The last twelve degrees to the zenith are the most expensive
+// per-solid-angle part of a sphere's tessellation and there has never been an
+// aurora in them.
+const ELEV_LOW_DEG = -6
+const ELEV_HIGH_DEG = 78
+
+// Enough that the linear interpolation of world position across a face is a
+// good sphere: 200 degrees over 64 segments is about three degrees a face. The
+// vertex cost of 4k triangles is nothing next to one fragment of this shader.
+const SEG_AZ = 64
+const SEG_EL = 32
+
+// three's SphereGeometry puts phi = 0 at -x (west) and winds toward +z (south),
+// so north (-z) is at -PI/2. Everything else here is measured off that.
+const NORTH_PHI = -Math.PI / 2
 
 const CHUNKS = {
   util: UTIL_GLSL,
@@ -154,10 +190,23 @@ export class AuroraScreen {
     this.values = defaultsFor( this.algorithmId )
     if ( opts.values ) this.setValues( opts.values )
 
-    this.geometry = new THREE.PlaneGeometry( 1, 1 )
+    // theta is measured DOWN from the zenith, so the high elevation is the low
+    // theta and the band is entered from the top.
+    const az = THREE.MathUtils.degToRad( AZIMUTH_DEG )
+    const thetaStart = THREE.MathUtils.degToRad( 90 - ELEV_HIGH_DEG )
+    const thetaEnd = THREE.MathUtils.degToRad( 90 - ELEV_LOW_DEG )
+    this.geometry = new THREE.SphereGeometry(
+      DIST, SEG_AZ, SEG_EL,
+      NORTH_PHI - az * 0.5, az,
+      thetaStart, thetaEnd - thetaStart
+    )
     this.material = null
     this.mesh = new THREE.Mesh( this.geometry, new THREE.MeshBasicMaterial() )
-    this.mesh.frustumCulled = false
+    // Culling is worth having now that the mesh is a fixed piece of the world
+    // rather than a quad pinned to the near plane: face south and the sector is
+    // outside the frustum, three drops the draw, and the aurora costs nothing at
+    // all. The billboard could never be culled because it was always in view.
+    this.mesh.frustumCulled = true
     this.mesh.renderOrder = -800
     this.scene.add( this.mesh )
 
@@ -293,19 +342,15 @@ export class AuroraScreen {
 
   // -------------------------------------------------------------------------
 
-  // Called every frame. The quad is a window onto the raymarch, so keeping it
-  // square to the camera costs two copies and removes the whole class of "the
-  // aurora ends over there" bugs a fixed rectangle has.
+  // Called every frame, and it now does one thing: keep the sector centred on
+  // the eye. It is NOT rotated with the camera -- that is the whole point, the
+  // sector is a piece of the world's northern sky and turning your head has to
+  // move you across it. Recentring it on the camera is not parallax either: the
+  // shader marches from a fixed origin regardless, so this only keeps the mesh
+  // from sliding out from under a walking player.
   update( camera, elapsed ) {
     this.material.uniforms.uTime.value = elapsed
-
-    const halfH = Math.tan( THREE.MathUtils.degToRad( camera.fov ) * 0.5 ) * DIST * MARGIN
-    const halfW = halfH * camera.aspect
-    this.mesh.scale.set( halfW * 2, halfH * 2, 1 )
-
-    this.mesh.quaternion.copy( camera.quaternion )
-    camera.getWorldDirection( _fwd )
-    this.mesh.position.copy( camera.position ).addScaledVector( _fwd, DIST )
+    this.mesh.position.copy( camera.position )
   }
 
   dispose() {
@@ -314,5 +359,3 @@ export class AuroraScreen {
     this.material.dispose()
   }
 }
-
-const _fwd = new THREE.Vector3()

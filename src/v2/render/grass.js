@@ -2,9 +2,12 @@ import * as THREE from 'three'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE,
-  buildGrassStripBank, STRIP_BASE, STRIP_TILE_ASPECT,
+  buildGrassStripBank, STRIP_BASE, STRIP_TILE_ASPECT, GRASS_CLUMP, GRASS_HEIGHT_REF,
+  GRASS_TIERS,
 } from '../../props/grass-bank.js'
-import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.js'
+import {
+  createPropMaterial, setSnowLine, setPropFadeAt, stripClumpScale,
+} from '../../material.js'
 
 // ---------------------------------------------------------------------------
 // The grass undercarpet on the /v2 route.
@@ -16,30 +19,59 @@ import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.j
 // keep-or-drop placement rule, where a candidate rejected by a lake or a road
 // leaves a hole rather than being re-rolled onto its neighbour's patch.
 //
-// WHAT 3 TUFTS PER SQUARE METRE ACTUALLY COSTS. That is 60 times a fern bed and
-// 12,000 times a forest, and at that multiplier nothing survives being done per
-// instance per frame. The graded thinning is what makes it a scatter rather
+// THE TWO STRATEGIES, AND WHICH ONE YOU WANT. Grass is asked for in two shapes
+// and they are not the same problem, so this file builds two beds and `style`
+// picks between them:
+//
+//   A GRASSY REGION -- a field, a meadow, a hillside -- IS SCATTERED STRIPS.
+//   One instance is a single flat card several metres long that draws the grass
+//   cutout 3 to 6 times across its own length, so it costs two triangles and
+//   stands up four and a half clumps of grass. This is the default and it is
+//   what you should reach for. See buildGrassStripBank in props/grass-bank.js
+//   for the geometry and STRIP_MATCH below for what it is held equal to.
+//
+//   A GRASSY POINT -- a clump by a road, at a doorway, at the foot of a wall --
+//   IS THE 3-CARD CLUMP. Three quads crossed at 60 degrees, so the clump reads
+//   solid from whatever angle it is walked past at, on a ladder that drops to
+//   two cards and then to a baked billboard. That is `style: 'tufts'`, and it is
+//   KEPT ON PURPOSE rather than left lying around: a strip is a line of grass
+//   and cannot be one plant in one place. Nothing places it at a point yet --
+//   today it is stood up as a whole carpet, which is what check-grass measures
+//   the strip bed against and what the M key swaps to.
+//
+// WHAT 3 INSTANCES PER SQUARE METRE ACTUALLY COSTS. That is 60 times a fern bed
+// and 12,000 times a forest, and at that multiplier nothing survives being done
+// per instance per frame. The graded thinning is what makes it a scatter rather
 // than an impossibility -- a hard-edged 70 m disc at this density would be
-// 46,200 instances. Measured at a flat site by scripts/check-grass.mjs, which
-// is where every number in this header comes from:
+// 46,200 instances. The region bed, measured at a flat site by
+// scripts/check-grass.mjs, which is where every number in this header comes
+// from:
 //
-//   0-8 m     tier 0  triangle, 3 cards    576 x 6 tri  =  3.5k
-//   8-20 m    tier 1  2 crossed cards    3,197 x 4 tri  = 12.8k
-//   20-70 m   tier 2  billboard         22,874 x 2 tri  = 45.7k
-//                                       26,647            62.0k tri
-//   less the veil (see VEIL_PHASES)      -4,294           -8.6k tri
-//                                       22,353            53.4k tri
+//   0-8 m      602 strips x 2 tri =  1.2k    2.99/m2, full density
+//   8-20 m   1,917               =  3.8k    1.82/m2, thinned 1.7x (STRIP_THIN)
+//   20-40 m  2,815               =  5.6k    0.75/m2, thinned 2.7x
+//   40-70 m  3,166               =  6.3k    0.31/m2, thinned 3.5x
+//            8,500 drawn           17.0k
+//   resident but veiled  +2,680             (see VEIL_PHASES)
 //
-// The shape of that table is the same one ferns.js found and the same
-// conclusion follows: 86% of the instances are in the last row, so whatever the
-// FAR tier costs is what grass costs, and tuning the two near bands is
-// rearranging 26% of a third of the total. If this has to come down, the knobs
-// in order are DRAW_RADIUS (cost is linear in it), DENSITY, and only then the
-// bands. Dropping the billboard for a second 2-plane tier would be 108k.
+// The clump carpet over the same ground is 22,353 drawn and 53.4k triangles, on
+// a 6/4/2-triangle ladder, so THE REGION BED IS 32% OF THE COST OF THE MEADOW IT
+// REPLACES -- and about 38,000 clumps of grass against the carpet's 22,353,
+// because length is the one free parameter in the system.
 //
-// THE CONTINUOUS INTEGRAL SAYS 22,619 AND THE SCATTER PLACES 26,647, and the
-// 18% between them is not slop -- it is the tile grid, and it is worth knowing
-// where it goes. A tile is thinned ONCE, from its nearest corner, so a tuft on
+// AND THE COST IS NO LONGER ALL IN THE FAR FIELD, which is the thing to know
+// before reaching for a knob. The clump carpet put 86% of its instances past
+// 20 m and ferns.js found the same shape, so for both of them DRAW_RADIUS was
+// the only lever that mattered. STRIP_THIN cuts exactly there, and what is left
+// is nearly flat: 1.2k / 3.8k / 5.6k / 6.3k across the four rings. Halving the
+// draw radius now saves 6.3k rather than three quarters of the bed, and the
+// remaining levers -- DENSITY, STRIP_THIN, DRAW_RADIUS -- are all worth roughly
+// what they cost.
+//
+// THE CONTINUOUS INTEGRAL SAYS 22,619 AND THE SCATTER PLACES 26,647 -- the
+// clump carpet's figures, because the tile grid below it is shared and its
+// numbers are the ones this was first measured on. The 18% between them is not
+// slop, it is the tile grid, and it is worth knowing where it goes. A tile is thinned ONCE, from its nearest corner, so a tuft on
 // its far edge is kept as though it stood a tile-diagonal closer than it does.
 // The per-instance fade then dissolves it anyway, because that distance is
 // exact and per tuft: 4,294 instances are resident and already fully dithered
@@ -54,19 +86,23 @@ import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.j
 // was left, and the veil is what makes leaving it there cheap.
 //
 // AGAINST THE BUDGET. DESIGN.md §5 gives the scene 350k triangles. Terrain is
-// ~45k, trees ~137k, ferns ~31k, and this is 53k: ~266k, or 76% of the ceiling.
-// That is a real margin rather than a comfortable-sounding one, but it is worth
-// noticing WHERE it came from -- the fern bed was 99k until it was converted to
-// this same thinned scatter and its density halved twice, which is what left
-// room for a carpet at six times its density. The remaining 84k is what the next
-// layer has to fit in, and DENSITY here is the largest single lever over it.
+// ~45k, trees ~137k, ferns ~31k, and the region bed is 17k: ~230k, or 66% of the
+// ceiling, where the clump carpet left 76%. It is worth noticing WHERE that
+// margin came from -- the fern bed was 99k until it was converted to this same
+// thinned scatter and its density halved twice, which is what left room for a
+// carpet at six times its density. The remaining 120k is what the next layer has
+// to fit in, and DENSITY here is still the largest single lever over it, because
+// it scales the whole bed where the other knobs each move one ring.
 //
 // PER-INSTANCE CPU. §5 prices BatchedMesh at ~37 ns per instance per frame, so
-// 22,353 drawn tufts is ~0.83 ms before a triangle is drawn -- the same order
-// as the fern carpet's, which is what set the radius. Grass's own update() is
-// 0.096 ms on top of that, veil included. Neither pass walks everything:
-// re-tiering only touches tiles inside NEAR_MARGIN of the last mesh band, ~50
-// tiles and ~9,600 instances, and the veil only touches an eighth of the rest.
+// 8,500 drawn strips is ~0.31 ms before a triangle is drawn, against the clump
+// carpet's 22,353 and ~0.83 ms -- which was the same order as the fern carpet's,
+// and is what set the radius. Grass's own update() measured 0.096 ms on the
+// clump carpet, veil included, and the region bed can only be under that: it
+// walks 2.6x fewer instances and its re-tiering pass has nothing to do at all,
+// since a strip bed has no ladder and the tier loop falls straight through.
+// Neither pass walks everything anyway -- re-tiering only touches tiles inside
+// NEAR_MARGIN of the last mesh band, and the veil only an eighth of the rest.
 //
 // WHY THE FULL-DENSITY RADIUS IS ONLY 20 m. Trees hold full density to 80,
 // comfortably past their last mesh band at 45, so the forest you walk through is
@@ -75,7 +111,9 @@ import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.j
 // number that still clears the last mesh band (20 m) -- so thinning only ever
 // removes things that are already two-triangle billboards -- and past it the
 // bed is 1.5 tufts/m2 at 40 m and 0.4 at 70, where a tuft is about 8 screen
-// pixels and the thinning is not something an eye can find.
+// pixels and the thinning is not something an eye can find. THE REGION BED
+// STARTS AT 8 -- the constraint above is a constraint on a bed with a ladder,
+// and a strip has none. See STRIP_FULL_RADIUS.
 //
 // TILES ARE 8 m, NOT trees' 25. Two reasons, and they pull the same way. The
 // keep-fraction is evaluated once per tile from its NEAREST corner, so a tile
@@ -97,7 +135,8 @@ const DENSITY = 3
 
 // Metres. Inside this every tuft stands; past it the density is scaled by
 // FULL_RADIUS / d, so every doubling of distance halves it. See the header for
-// why this is 20 and not trees' 80.
+// why this is 20 and not trees' 80. The strip bed keeps this law and cuts
+// further on top of it -- STRIP_FULL_RADIUS and STRIP_THIN.
 const FULL_RADIUS = 20
 
 // Metres. Tier 0 inside 8, tier 1 to 20, billboard out to the draw radius.
@@ -105,6 +144,8 @@ const FULL_RADIUS = 20
 // The last mesh band and FULL_RADIUS are the same number by construction, not
 // by coincidence: thinning must never remove a tuft that is still carrying real
 // geometry, or a hole opens in the part of the bed the player is walking on.
+// That is a constraint on a bed WITH a ladder, which is why the strip bed is
+// free to thin from the FIRST band instead -- see STRIP_FULL_RADIUS.
 const LOD_BANDS = [8, 20]
 
 // Metres. Where the carpet ends -- but nothing stops there, because the rank
@@ -250,29 +291,30 @@ const VEIL_SPEED_DECAY = 0.9
 const HEIGHT = [0.5, 1.5]
 
 // ---------------------------------------------------------------------------
-// THE STRIP CARPET: `new Grass(..., { style: 'strips' })`, an experiment, and
+// THE REGION BED: `new Grass(...)` with no style, or `{ style: 'strips' }`, and
 // everything below is only read in that mode.
 //
 // See the header of buildGrassStripBank in props/grass-bank.js for what a strip
 // is and the facing-area-per-triangle table that says what it is worth. The
-// numbers HERE are the ones that make the comparison fair rather than
-// flattering, and there is only one that matters:
+// numbers HERE are the ones that make the comparison against a carpet of clumps
+// fair rather than flattering, and there is only one that matters:
 //
-// FACING AREA IS NOT LUSHNESS, and finding that out is most of what this
-// experiment has been worth. The density was first solved for MATCHED COVERAGE:
+// FACING AREA IS NOT LUSHNESS, and finding that out is most of what building
+// this bed taught. The density was first solved for MATCHED COVERAGE:
 // a bed at DENSITY = 3 puts 3 x (0.83 x 1.06) = 2.64 m2 of camera-facing card
 // over every square metre, a strip at the mean of STRIP_HEIGHT and STRIP_TILES
-// presents 1.38 m2 of it, and 1.91 strips a square metre balances the books
-// exactly. It looked sparse. The books were not wrong -- they were measuring the
+// presents 2.01 m2 of it, and a density of 1.31 balances the books exactly. It
+// looked sparse anyway. The books were not wrong -- they were measuring the
 // wrong thing.
 //
 // WHAT THE EYE COUNTS IS SILHOUETTES. Three tufts a square metre is three
 // INDEPENDENT positions; a strip bed puts down far fewer positions and strings
 // the rest of its grass along a line through each one, so it buys the same
 // square metres of card with a fraction of the separate plants and leaves the
-// ground between the lines bare. So the density is set BY EYE now, coverage is
-// reported rather than solved for, and check-grass.mjs gates the SILHOUETTE
-// ratio alongside it, because that is the number that predicted the complaint.
+// ground between the lines bare. So coverage is REPORTED rather than solved for,
+// the density is derived from a NAMED invariant instead (STRIP_MATCH below), and
+// check-grass.mjs gates the silhouette ratio alongside the coverage, because
+// that is the number that predicted the complaint.
 //
 // AND THE SHADER IS PART OF THE SUM. stripCoverage() in material.js says only
 // 0.62 of a card ends up carrying grass once the mask, the per-tile shrink and
@@ -282,10 +324,12 @@ const HEIGHT = [0.5, 1.5]
 // AND SILHOUETTES ARE NOT THE WHOLE OF IT EITHER. The far-field arithmetic
 // above compares a strip against the tuft's BILLBOARD, which is the right
 // baseline for two triangles -- but inside 8 m the tuft bed is running its
-// 3-plane LOD0 and a strip bed has no ladder to climb, so the bed lands at 0.62x
-// the grass in the ring the player is standing in and 1.35x out past 20 m. That
-// split is measured per ring in check-grass.mjs, and the fix for it is a near
-// tier rather than a bigger number here.
+// 3-plane LOD0 and a strip bed has no ladder to climb, so the bed lands at 0.71x
+// the grass in the ring the player is standing in and 1.56x out past 20 m. That
+// split is measured per ring in check-grass.mjs, and the fix for the near end is
+// a crossed near tier rather than a bigger number here: no density will buy back
+// a card that never goes edge-on, and raising this one pays for the near ring in
+// far-field triangles, which is where the whole saving lives.
 //
 // WHAT IT COSTS AT THIS SETTING: 3.3 triangles a square metre against the tuft
 // carpet's 6 in its far tier, and 25k over the whole bed against 53k. That is
@@ -297,26 +341,43 @@ const HEIGHT = [0.5, 1.5]
 // the tiled regrow are all functions of an instance's position and rank and
 // none of them knows what geometry it is pointing at. The one thing the strips
 // do NOT share is the scatter itself -- see R2_A below.
-const STRIP_DENSITY = 1.64
 
-// Metres, the range of strip HEIGHTS -- and a tile is SQUARE, so this is also
-// how wide one clump of grass is. The per-tile shrink in material.js takes the
-// average clump to 0.75 of these numbers, so the bed draws grass a little under
-// a metre where the tuft carpet beside it draws one metre.
+// Metres, the range of TILE heights -- not clump heights, and the gap between
+// those two is what made the strip bed read as short.
+//
+// A CLUMP IS A TILE SCALED BY THE SHRINK, which is uniform on [stripShort, 1] in
+// material.js and averages 0.75. So the grass a player sees is three quarters of
+// these numbers, and matching the tuft bed means solving for that: the tuft bed
+// draws a 0.635 x 1.00 m card on average (GRASS_CLUMP, derived from its own
+// HEIGHT range and its sqrt width law), so the mean tile has to be 1/0.75 =
+// 1.33 m tall and STRIP_TILE_ASPECT as wide. The top of the range is pinned to
+// the tuft bed's own tallest so nothing in the strip bed is bigger than anything
+// in the carpet it replaces; the bottom follows from the mean. Clumps then run
+// 0.58 to 1.5 m against the tuft's 0.5 to 1.5, and check-grass.mjs gates the
+// means against each other rather than against numbers typed here.
 //
 // SIZE IS THE STRIP SYSTEM'S WHOLE ECONOMY, so this is the most expensive line
 // in the file. A strip is two triangles at any size, so its area per triangle
-// goes as the SQUARE of this -- and matched coverage then needs cards in inverse
-// proportion. Cutting these by 1.5x costs 2.25x the instances for the same bed.
-// The range above was [1.4, 2.2] and drew grass that read as coarse up close;
-// what that cost is measured, not argued, by the two gain gates in
-// check-grass.mjs.
-const STRIP_HEIGHT = [0.95, 1.45]
+// goes as the SQUARE of this. Every change here is measured, not argued, by the
+// gain gate in check-grass.mjs.
+const STRIP_HEIGHT = [
+  (GRASS_CLUMP.height / stripClumpScale()) * 2 - GRASS_HEIGHT_REF[1],
+  GRASS_HEIGHT_REF[1],
+]
 
 // Clumps per strip, inclusive: each instance draws a whole number of tiles,
-// each STRIP_TILE_ASPECT = 0.68 as wide as the strip is tall, so a strip's
-// length in metres is 0.68 x this x its height -- 2.9 m at the means, 4.9 m at
-// the longest.
+// each STRIP_TILE_ASPECT = 0.64 as wide as the strip is tall, so a strip's
+// length in metres is 0.64 x this x its height -- 3.8 m at the means, 5.7 m at
+// the longest, and 4.5 clumps on an average strip.
+//
+// THE FLOOR IS 3 AND NOT 1, and it is the cheapest coverage in the file: every
+// tile past the first is a whole clump of grass for no triangle at all, so
+// raising the floor bought 29% more grass at exactly zero cost. What it does NOT
+// buy is silhouettes -- the extra clumps land on the SAME 1.64 positions per
+// square metre, strung further along the same lines -- so it makes each line of
+// grass denser without putting anything in the gaps between lines. That is the
+// honest limit of this parameter, and it is why the near-field ratio moves less
+// than the coverage does.
 //
 // THIS IS WHERE THE VARIETY COMES FROM, and it is the reason the fragment mask
 // is off by default. A mask breaks a fixed-length run by throwing away card
@@ -327,15 +388,101 @@ const STRIP_HEIGHT = [0.95, 1.45]
 // the strip by up to 35% to get the same effect.
 //
 // AND LENGTH IS THE ONE FREE PARAMETER IN THE SYSTEM. A strip is two triangles
-// whether it draws one clump or six, so every tile past the first is grass at
-// zero triangle cost -- the opposite of STRIP_HEIGHT above, where every metre is
-// paid for twice over. The range was [1, 4] when a tile was square; fixing the
-// aspect made each tile 32% narrower, and [1, 6] is what puts the strip back at
-// the length it used to be, so the bed keeps its coverage and gets 3.5 clumps a
-// strip instead of 2.5. What caps it is the ground: a strip follows terrain by
-// TILTING between its two end samples, so the longer it is the further its
-// middle sits from a rise it is crossing.
-const STRIP_TILES = [1, 6]
+// whether it draws three clumps or six, so this is the opposite of STRIP_HEIGHT
+// above, where every metre is paid for twice over. What caps it is the ground: a
+// strip follows terrain by TILTING between its two end samples, so the longer it
+// is the further its middle sits from a rise it is crossing -- and the variety,
+// since a narrow range makes every strip the same length.
+const STRIP_TILES = [3, 6]
+
+// WHICH QUANTITY THE TWO BEDS ARE HELD EQUAL ON, and it is a switch rather than
+// a number because there is no setting that makes the comparison fair on every
+// count at once. An INSTANCE is not the same object in the two systems -- one
+// tuft instance is one clump, one strip instance is STRIP_TILES clumps in a row
+// -- so any density you pick is holding SOMETHING equal and letting the rest
+// float, and the only dishonest option is to leave it as an eyeballed constant
+// and not say which:
+//
+//   'instances'  same number of scattered objects. 4.5x the clumps, 1.6x the
+//                facing area, 0.85x the triangles. Not a control -- it is the
+//                setting for judging whether a strip LOOKS right with sparseness
+//                taken off the table.
+//   'clumps'     same number of separate plants. The strictest reading of "the
+//                same meadow", and much the thinnest, because a strip's clumps
+//                are strung along a line instead of scattered.
+//   'cards'      same number of quads in the near field, where the tuft bed
+//                runs its 3-plane tier. The closest thing to a like-for-like
+//                picture, since a strip clump and a near tuft card are the same
+//                size (GRASS_CLUMP) and present the same area.
+//
+// AND NO SETTING SATISFIES TWO RINGS AT ONCE, which is the structural fact under
+// all of this: the tuft bed has an LOD LADDER and the strip bed does not. Tuft
+// cards per square metre run 9.1 / 6.0 / 2.4 / 1.2 across the four rings while a
+// strip bed is flat, so matching the near field overshoots the far by 2.5x and
+// matching the far field starves the near. Until strips grow a ladder of their
+// own, every number here is a choice about which ring to be right in.
+const STRIP_MATCH = 'instances'
+
+const STRIP_DENSITY = {
+  instances: DENSITY,
+  clumps: DENSITY / ((STRIP_TILES[0] + STRIP_TILES[1]) / 2),
+  cards: (DENSITY * GRASS_TIERS[0].planes) / ((STRIP_TILES[0] + STRIP_TILES[1]) / 2),
+}[STRIP_MATCH]
+
+// WHERE THE STRIP BED STARTS THINNING. FULL_RADIUS is 20 for tufts because
+// thinning must never take a tuft that is still carrying a mesh tier, and 20 is
+// the last band -- see LOD_BANDS. A STRIP HAS NO LADDER: one tier, billboard
+// cheap at every distance, nothing to be caught half-built. So the constraint
+// that pins the tuft bed's number simply does not apply, and the strip bed can
+// start thinning at the FIRST band instead of the last.
+const STRIP_FULL_RADIUS = LOD_BANDS[0]
+
+// ...and, on top of the FULL_RADIUS / d law, an explicit divisor from each named
+// radius outward. These are the edges of the rings check-grass reports on, so
+// the table reads the way the ask does: from 8 m, half the grass; from 20 m,
+// 3.5x less than the law alone would leave. It stacks with the law rather than
+// replacing it, so past 20 m the bed thins as 1/d AND by 3.5.
+//
+// EACH STEP RAMPS rather than landing all at once -- see STRIP_THIN_OCTAVES.
+const STRIP_THIN = [[8, 2], [20, 3.5]]
+
+// How far above its radius each STRIP_THIN step takes to arrive, in octaves of
+// distance. THIS IS THE ONE REAL TRADE IN THE TABLE ABOVE, and it is a knob
+// rather than a constant because neither end of it is obviously right.
+//
+// A 2x cliff at a single distance is a visible ring of thinner meadow drawn
+// around the player, and at 8 m that ring is close enough to read as a bug. At 1
+// octave the step is spread over QUANT levels and becomes four steps of 1.19x --
+// exactly the step the quantiser already takes everywhere else, and which the
+// header calls too fine to see.
+//
+// WHAT IT COSTS is that a ring's MEASURED divisor lands under its nominal one,
+// because the inner part of the ring is still climbing the ramp: at 1 octave,
+// [8, 2] delivers 1.66x over 8-20 m and [20, 3.5] delivers 2.7x over 20-40 m,
+// against 3.5x over 40-70 where the ramp has long finished. At 0.5 those become
+// 1.86x and 3.1x for a 1.41x step, and cost another 1.1k triangles' worth of
+// grass. check-grass prints delivered against nominal, so the gap is never a
+// thing you have to remember.
+const STRIP_THIN_OCTAVES = 1
+
+for (let i = 1; i < STRIP_THIN.length; i++) {
+  if (STRIP_THIN[i][0] < STRIP_THIN[i - 1][0] * 2 ** STRIP_THIN_OCTAVES) {
+    throw new Error('Grass: STRIP_THIN radii are closer than STRIP_THIN_OCTAVES -- ramps overlap')
+  }
+}
+
+/**
+ * The strip bed's extra density divisor at distance d. 1 inside the first entry,
+ * then geometric to each entry's value over the octaves above its radius.
+ */
+function stripThinAt(d) {
+  let f = 1
+  for (const [r, want] of STRIP_THIN) {
+    if (d <= r) break
+    f *= Math.pow(want / f, Math.min(1, Math.log2(d / r) / STRIP_THIN_OCTAVES))
+  }
+  return f
+}
 
 // The R2 low-discrepancy sequence: successive multiples of 1/p and 1/p^2 mod 1,
 // where p is the plastic number (the 2D cousin of the golden ratio). Used for
@@ -445,7 +592,9 @@ export class Grass {
    * @param water         WaterSurfaces. Needs isSubmerged.
    * @param paths         PathSet. Needs nearest.
    * @param textureArray  The shared prop atlas from buildTextureArray().
-   * @param style         'tufts' (the ladder above) or 'strips' (the experiment).
+   * @param style         'strips' to carpet a REGION, 'tufts' for the clump
+   *                      ladder. See THE TWO STRATEGIES in the header -- the
+   *                      default is the one to reach for.
    */
   constructor(
     scene,
@@ -454,7 +603,7 @@ export class Grass {
     paths,
     textureArray,
     {
-      seed = 1, style = 'tufts', density = null, height = null,
+      seed = 1, style = 'strips', density = null, height = null,
       radius = DRAW_RADIUS, fullRadius = FULL_RADIUS,
     } = {}
   ) {
@@ -495,8 +644,16 @@ export class Grass {
     // (and only) tier, which is what we want and costs nothing.
     const bands = this.strips ? [] : LOD_BANDS
     this.radius = radius
+    // TWO RADII, because for a strip bed they are not the same number.
+    // `fullRadius` is the DENSITY LAW's flat zone: inside it the law asks for
+    // every candidate, outside it the law is fullRadius / d. `thinFrom` is where
+    // the QUANTISER's grid starts -- level 0 is everything inside it, so a cut
+    // can only be made at or beyond it. They coincide for tufts because the tuft
+    // law is flat to exactly there; STRIP_THIN starts cutting at 8, so a strip
+    // bed needs grid lines from 8 while its law still flattens out at 20.
     this.fullRadius = fullRadius
-    this.fullSq = fullRadius * fullRadius
+    this.thinFrom = this.strips ? STRIP_FULL_RADIUS : fullRadius
+    this.fullSq = this.thinFrom * this.thinFrom
 
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
     // R2's jitter, in tile units: a fraction of the mean spacing between points,
@@ -509,16 +666,26 @@ export class Grass {
     this.evictSq = (radius + TILE * 1.5) ** 2
     this.nearSq = ((bands.length ? bands[bands.length - 1] : 0) + NEAR_MARGIN) ** 2
 
-    // Keep-fraction per quantised level: uAt[q] = 2^(-q/QUANT), and loSq[q] is
-    // the squared distance at which level q begins. The per-frame tile loop
-    // compares against two entries of that table rather than calling _levelFor,
-    // which costs a sqrt and a log2 for an answer that is almost always
-    // "unchanged".
-    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / fullRadius) * QUANT))
+    // Keep-fraction per quantised level: loSq[q] is the squared distance at
+    // which level q begins, and uAt[q] is _keepAt sampled there. The per-frame
+    // tile loop compares against two entries of that table rather than calling
+    // _levelFor, which costs a sqrt and a log2 for an answer that is almost
+    // always "unchanged". SAMPLED AT THE LEVEL'S NEAR EDGE, so a level never
+    // thins ground that the law says is still full.
+    //
+    // THIS TABLE IS THE ONLY DEFINITION OF THE THINNING. _growTile grows from
+    // it, _thin cuts to it, _poolBound sizes the pool from it and _goneFor
+    // inverts it -- so the strip bed's law can be anything monotone without a
+    // second place needing to agree about what it is.
+    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / this.thinFrom) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
     this.loSq = new Float32Array(this.maxQ + 2)
-    for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
-    for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (fullRadius * Math.pow(2, q / QUANT)) ** 2
+    for (let q = 0; q <= this.maxQ + 1; q++) {
+      this.loSq[q] = (this.thinFrom * Math.pow(2, q / QUANT)) ** 2
+    }
+    for (let q = 0; q <= this.maxQ; q++) {
+      this.uAt[q] = this._keepAt(this.thinFrom * Math.pow(2, q / QUANT))
+    }
 
     this.maxInstances = this._poolBound()
 
@@ -667,8 +834,49 @@ export class Grass {
   /** The quantised thinning level for a tile whose nearest point is at d2. */
   _levelFor(d2) {
     if (d2 <= this.fullSq) return 0
-    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.fullRadius) * QUANT)
+    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.thinFrom) * QUANT)
     return q < 0 ? 0 : q > this.maxQ ? this.maxQ : q
+  }
+
+  /**
+   * The share of a tile's candidates that stand at distance d: 1 at the player's
+   * feet, falling to about 0.08 at the rim. Monotone non-increasing, which every
+   * caller of uAt relies on.
+   *
+   * The base law is FULL_RADIUS / d -- flat inside it, halving every octave
+   * outside -- and for the tuft carpet that is the whole story, so uAt comes out
+   * as exactly the 2^(-q/QUANT) it has always been. A strip bed divides it again
+   * by STRIP_THIN, which is why this is a function and not a power.
+   */
+  _keepAt(d) {
+    const base = Math.min(1, this.fullRadius / d)
+    return this.strips ? base / stripThinAt(d) : base
+  }
+
+  /**
+   * The distance at which a candidate of rank `u` stops standing -- the point
+   * where the local keep-fraction falls to u -- clamped to the draw radius.
+   *
+   * READ OFF THE SAME TABLE THE TILES GROW FROM, interpolated geometrically
+   * between the two levels that bracket u. Both the distance grid and the law
+   * are powers of two, so on the straight stretches this is exact: for the tuft
+   * carpet it returns fullRadius / u to the last bit, the closed form it
+   * replaces. That closed form was only ever correct while the law WAS
+   * fullRadius / d, and the strip bed's is not -- and a veil that disagrees with
+   * the thinning does not fail loudly, it just leaves grass standing invisible
+   * or dissolves grass that is still on the books.
+   */
+  _goneFor(u) {
+    for (let q = 1; q <= this.maxQ; q++) {
+      // uAt[q-1] > u >= uAt[q] at the first hit, so the log below is never 0/0
+      // even where the law runs flat across a level.
+      if (this.uAt[q] <= u) {
+        const t = Math.log(this.uAt[q - 1] / u) / Math.log(this.uAt[q - 1] / this.uAt[q])
+        const lo = Math.sqrt(this.loSq[q - 1])
+        return Math.min(lo * Math.pow(Math.sqrt(this.loSq[q]) / lo, t), this.radius)
+      }
+    }
+    return this.radius
   }
 
   /**
@@ -793,10 +1001,12 @@ export class Grass {
         // The veil, exact and free: this loop has already paid for the distance.
         // A near tile reaches past the last mesh band at its far corners, so it
         // does hold dissolved instances -- always CARDS, though, never a mesh
-        // tier: the smallest dissolve distance any tuft can be given is
-        // fullRadius (rank u < 1, so fullRadius / u > fullRadius), and
-        // fullRadius is also the last band, so anything past its own dissolve
-        // distance is past the last band too.
+        // tier: the smallest dissolve distance a TUFT can be given is fullRadius
+        // (rank u < 1, so fullRadius / u > fullRadius), and fullRadius is also
+        // the last band, so anything past its own dissolve distance is past the
+        // last band too. A STRIP dissolves as early as thinFrom = 8 m, well
+        // inside that -- which is safe for the same reason it is allowed to: a
+        // strip bed has one tier, so there is no mesh for the veil to take.
         const gone = this.instGone[i] + slack
         const vis = d2 < gone * gone ? 1 : 0
         if (vis !== this.instVis[i]) {
@@ -954,7 +1164,7 @@ export class Grass {
     // Where this tile's R2 sequence starts. Drawn before the candidate loop, so
     // it is two numbers a TILE rather than two a point -- and only when strips
     // are standing, so the tuft carpet's stream is byte-for-byte the one it
-    // always was and no tuft moves because the experiment exists.
+    // always was and no tuft moves because the region bed exists.
     const r2x = this.strips ? rand() : 0
     const r2z = this.strips ? rand() : 0
     const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
@@ -986,7 +1196,7 @@ export class Grass {
       const height = this.height[0] + rand() * (this.height[1] - this.height[0])
       // The strip's tile count. Only strips draw it, so the tuft carpet's stream
       // is byte-for-byte the one it always was and no tuft moves because the
-      // experiment exists.
+      // region bed exists.
       const lenRoll = this.strips ? rand() : 0
       const tintT = rand()
       const tintV = rand()
@@ -1091,12 +1301,13 @@ export class Grass {
 
       // The distance at which this particular tuft stops existing, written into
       // the unused alpha of the same colour texel (see setPropFadeAt). A tuft of
-      // rank u survives while the local keep-fraction fullRadius/d exceeds u, so
-      // it goes at fullRadius/u -- or at the draw radius, whichever comes first
-      // for the densest ranks. The shader dissolves it over the last 15% of that
-      // distance with an ordered dither, so nothing pops at the rim and nothing
-      // pops as the carpet thins; no CPU per frame, one write per instance ever.
-      const gone = Math.min(this.fullRadius / u, this.radius)
+      // rank u survives while the local keep-fraction exceeds u, so _goneFor
+      // inverts the keep law to find where that stops being true -- or the draw
+      // radius, whichever comes first for the densest ranks. The shader dissolves
+      // it over the last 15% of that distance with an ordered dither, so nothing
+      // pops at the rim and nothing pops as the carpet thins; no CPU per frame,
+      // one write per instance ever.
+      const gone = this._goneFor(u)
       setPropFadeAt(this.batch, id, gone)
       this.instGone[id] = gone
 
@@ -1235,7 +1446,9 @@ export class Grass {
       pool: this.maxInstances,
       used: this.maxInstances - this.freeCount,
       density: this.density,
-      fullRadius: this.fullRadius,
+      // thinFrom, not fullRadius: the HUD sentence is "N/m2 to X m, thinning to
+      // Y", and what it wants is the distance full density actually holds to.
+      fullRadius: this.thinFrom,
       radius: this.radius,
       heightRange: this.height,
       bankKB: Math.round(this.bank.bytes / 1024),
@@ -1270,10 +1483,15 @@ export const GRASS_TUNING = {
   HEIGHT,
   PLACEMENT,
   GRASS_TINTS,
+  STRIP_MATCH,
   STRIP_DENSITY,
   STRIP_HEIGHT,
   STRIP_TILES,
   STRIP_SINK,
+  STRIP_FULL_RADIUS,
+  STRIP_THIN,
+  STRIP_THIN_OCTAVES,
+  stripThinAt,
   R2_JITTER,
 }
 

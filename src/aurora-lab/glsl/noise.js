@@ -282,9 +282,25 @@ export const WARP_GLSL = `
   #ifndef AURLAB_WARP
   #define AURLAB_WARP
 
-  vec2 warp2( vec2 p, float t, float amp, float freq ) {
+  // stages is a COST knob, and it is the most expensive single number in the
+  // whole shader. Each stage is two gfbm2 calls at three octaves, so it is six
+  // gradient-noise lookups, and this function runs once per march step: at two
+  // stages it is twelve of the twenty-one lookups a step costs, which is more
+  // than the rest of the sky put together.
+  //
+  // What the second stage buys is warp applied to warp -- the fine, curdled,
+  // marbled detail inside a meander, as opposed to the meander itself. Dropping
+  // it does not straighten the channels, because the first stage is what bends
+  // them; it makes their edges smoother. On anything mobile that is the first
+  // trade to take, and it is close to a 30% saving for it.
+  vec2 warp2( vec2 p, float t, float amp, float freq, float stages ) {
     vec2 q = vec2( gfbm2( p * freq + vec2( 0.0, t * 0.11 ) ),
                    gfbm2( p * freq + vec2( 5.2, 1.3 + t * 0.09 ) ) ) - 0.5;
+
+    // Uniform-valued branch: every fragment in the draw takes the same side, so
+    // there is no divergence and the cost is the test, not both paths.
+    if ( stages < 1.5 ) return p + amp * q * 2.0;
+
     vec2 r = vec2( gfbm2( p * freq * 2.1 + 3.4 * q + vec2( 1.7, t * 0.15 ) ),
                    gfbm2( p * freq * 2.1 + 3.4 * q + vec2( 8.3, 2.8 - t * 0.13 ) ) ) - 0.5;
     return p + amp * ( q * 2.0 + r * 0.9 );

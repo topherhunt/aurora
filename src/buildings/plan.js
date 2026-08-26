@@ -464,13 +464,30 @@ export function planBuilding(opts = {}) {
   }
 
   const winHalf = (shutters) => windowHalfWidth({ width: WIN_W, shutters })
+  // HOW MUCH WALL IS LEFT ABOVE A WINDOW, and what has to fit in it. The frame
+  // stands 7 cm above the glass; a half-timber wall plate is 16 cm of timber
+  // lying directly under the eaves; and 30 cm of daylight between the two is
+  // what stops a window reading as jammed up under the roof.
+  //
+  // It was 0.35, measured to the top of the GLASS, which is 0.28 to the top of
+  // the frame and 0.12 to the underside of the plate -- so on the tightest walls
+  // the frame stopped exactly on the plate with nothing between them, and the
+  // windows whose height that rule clipped ended up 12 cm INSIDE it. A window
+  // with a beam laid across its head is the same defect as a window with a stud
+  // through it, seen from the other axis.
+  const HEAD_RESERVE = 0.55
+  // A sill lower than this is a hatch, not a window. Nothing in the corpus
+  // reaches it -- the shortest wall that carries a window is 2.13 m and slides
+  // its sill to 0.70 -- so it is a bound rather than a working number.
+  const MIN_SILL = 0.62
   // Daylight between a window's outermost timber and the corner post at the end
   // of the stretch it hangs on. A stave corner is 0.115 m of half-section, so
   // this is that plus a hand's width.
   const END_MARGIN = 0.24
 
   const windows = []
-  for (const wl of walls) {
+  for (let wi = 0; wi < walls.length; wi++) {
+    const wl = walls[wi]
     // A sliver is the scrap of gable that pokes up above an abutting roof. It
     // starts above head height by construction and it looks out over next door's
     // shingles, so it gets no window and is not frontage.
@@ -507,10 +524,24 @@ export function planBuilding(opts = {}) {
       onThisWall.push([a, winHalf(shutters)])
       const x = wl.p0[0] + ux * a
       const z = wl.p0[1] + uz * a
-      const sillY = m.floorY + m.wallH * range(r, [0.44, 0.52])
+      // SLID DOWN, NOT CUT SHORT. The old rule kept the rolled sill and took the
+      // height off the top, which is the wrong end: it made exactly the windows
+      // that were closest to the eaves into the squat ones, and it is the head
+      // that has somewhere else to be. Sliding the whole opening down instead
+      // costs nothing anywhere in the corpus -- 300 of 834 windows move, none
+      // loses a millimetre of height -- and the shrink is kept only as the bound
+      // for a wall too short to slide in.
+      const headMax = m.floorY + m.wallH - HEAD_RESERVE
+      const sillY = Math.max(
+        m.floorY + MIN_SILL,
+        Math.min(m.floorY + m.wallH * range(r, [0.44, 0.52]), headMax - WIN_H))
       windows.push({
         x, z, nx: wl.n[0], nz: wl.n[1], massId: m.id, side: wl.side,
-        y0: sillY, width: WIN_W, height: Math.min(WIN_H, m.wallH - (sillY - m.floorY) - 0.35),
+        // Which wall it hangs on, so the kit can ask that wall how low the
+        // timber above it came out. The index is into `walls`, which is the
+        // array this loop is walking and the one the plan hands back.
+        wallIndex: wi,
+        y0: sillY, width: WIN_W, height: Math.min(WIN_H, headMax - sillY),
         shutters,
       })
     }
@@ -527,11 +558,17 @@ export function planBuilding(opts = {}) {
     const need = winHalf(false) + END_MARGIN
     const a = Math.min(Math.max((i + 0.5) / frontBays * frontWall.len, need), frontWall.len - need)
     const t = a / frontWall.len
+    // Same head reserve as a rolled window: this one is forced onto the frontage
+    // and gets no say in whether it fits, so it is the one most likely to end up
+    // under a wall plate if it is not slid down with the rest of them.
+    const headMax = floorY + wallH - HEAD_RESERVE
+    const y0 = Math.max(floorY + MIN_SILL, Math.min(floorY + wallH * 0.48, headMax - WIN_H))
     windows.push({
       x: lerp(frontWall.p0[0], frontWall.p1[0], t),
       z: lerp(frontWall.p0[1], frontWall.p1[1], t),
       nx: 0, nz: 1, massId: 0, side: 'front',
-      y0: floorY + wallH * 0.48, width: WIN_W, height: WIN_H, shutters: false,
+      wallIndex: walls.indexOf(frontWall),
+      y0, width: WIN_W, height: Math.min(WIN_H, headMax - y0), shutters: false,
     })
   }
 

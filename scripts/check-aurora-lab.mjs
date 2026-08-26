@@ -131,6 +131,7 @@ let LAB_MODULES = null
 try {
   LAB_MODULES = {
     ...(await import('../src/aurora-lab/algorithms.js')),
+    ...(await import('../src/aurora-lab/presets.js')),
     ...(await import('../src/aurora-lab/glsl/noise.js')),
     ...(await import('../src/aurora-lab/glsl/palette.js')),
     ...(await import('../src/aurora-lab/glsl/frame.js')),
@@ -142,6 +143,7 @@ try {
 }
 
 const { ALGORITHMS, algorithmById, paramsFor, defaultsFor } = LAB_MODULES
+const { BUILTIN_PRESETS } = LAB_MODULES
 const { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAMENT_GLSL } = LAB_MODULES
 const { PALETTE_GLSL, MARCH_GLSL, MAIN_GLSL } = LAB_MODULES
 
@@ -292,14 +294,22 @@ for (const algo of ALGORITHMS) {
 
 // The frame's own per-sample terms, which is where the mistake is easiest to
 // make because `altKm` and `k` are both in scope three lines above them.
+// Matched on ASSIGNMENTS rather than on declarations, because these terms are
+// now declared with a neutral default and then computed inside a uniform-valued
+// `if` that switches the cost off with the effect. Anchoring on `float ray =`
+// would read `float ray = 1.0;` and pass without ever seeing the expression the
+// assertion exists to police.
 const march = stripComments(MARCH_GLSL)
-for (const term of ['float ray =', 'float flow =', 'float ca =', 'float cb =']) {
-  const at = march.indexOf(term)
-  const line = at < 0 ? '' : march.slice(at, march.indexOf('\n', at + term.length))
+const HEIGHT = /\baltKm\b|\bu_altLow\b|\bu_altHigh\b|\bh01\b/
+for (const term of ['ray', 'flow', 'ca', 'cb']) {
+  const lines = march
+    .split('\n')
+    .filter((l) => new RegExp(`(^|[^\\w.])${term}\\s*=[^=]`).test(l))
+  const bad = lines.filter((l) => HEIGHT.test(l))
   check(
-    at >= 0 && !/\baltKm\b|\bu_altLow\b|\bu_altHigh\b|\bh01\b/.test(line),
-    `the march's \`${term.slice(6, -2)}\` term is indexed on the channel, not on height`,
-    at < 0 ? 'term not found' : ''
+    lines.length > 0 && bad.length === 0,
+    `the march's \`${term}\` term is indexed on the channel, not on height`,
+    lines.length === 0 ? 'term never assigned' : bad.join(' / ').trim()
   )
 }
 
@@ -401,6 +411,124 @@ for (const algo of ALGORITHMS) {
   check(strayOverride.length === 0, `${algo.id}: and every override lands on one of them`,
     strayOverride.join(', '))
 }
+
+// ===========================================================================
+console.log('\n--- the builtin presets still load ----------------------------')
+// ===========================================================================
+//
+// A builtin is a tuning that is checked in rather than saved into
+// localStorage, because a reference you cannot get back on another machine, in
+// another browser, or after clearing a profile is not a reference. The one that
+// matters most is reference-v1, which is the sky every later performance
+// change is measured against.
+//
+// The failure mode here is quiet and it arrives late. Someone adds a knob to
+// SHARED_GROUPS; the panel is fine, because it starts from defaultsFor; a
+// preset out of localStorage is fine, because whatever it does not state falls
+// back to the default. reference-v1 is then one knob short of the sky that was
+// pinned, and it still looks very nearly right, which is the worst possible
+// version of this to discover halfway through an optimisation pass.
+//
+// So the covering check below is exact in BOTH directions, and it is the
+// assertion in this section with teeth. A key defaultsFor has that the preset
+// does not is a knob the preset silently stopped stating. A key the preset has
+// that defaultsFor does not is a knob renamed or deleted out from under it,
+// which is the same drift arriving from the other side.
+
+const ALGO_IDS = new Set(ALGORITHMS.map((a) => a.id))
+
+check(BUILTIN_PRESETS.length > 0, 'there is at least one builtin preset',
+  `${BUILTIN_PRESETS.length} builtin(s)`)
+
+// Names are the only handle the panel has on a builtin -- they are what the
+// preset list shows, what the load path looks up, and what savePreset refuses.
+// Two builtins sharing one means the second is unreachable.
+const builtinNames = BUILTIN_PRESETS.map((p) => p.name)
+const dupeName = builtinNames.filter((n, i) => builtinNames.indexOf(n) !== i)
+check(dupeName.length === 0, 'no two builtins answer to the same name', dupeName.join(', '))
+
+for (const preset of BUILTIN_PRESETS) {
+  const id = preset.name || '(unnamed)'
+
+  check(typeof preset.name === 'string' && preset.name.trim().length > 0,
+    `${id}: has a name the panel can list it under`)
+
+  // The note is the only place a builtin says what it is FOR, and the two here
+  // are for very different things -- one is a reference, one is a cheap tier.
+  // A builtin nobody can tell apart from the next one is a builtin nobody
+  // reaches for.
+  check(typeof preset.note === 'string' && preset.note.trim().length > 0,
+    `${id}: says in a note what it is for`)
+
+  check(ALGO_IDS.has(preset.algorithm), `${id}: names an algorithm that exists`,
+    String(preset.algorithm))
+
+  const values = preset.values
+  const hasValues = !!values && typeof values === 'object' && !Array.isArray(values)
+  check(hasValues, `${id}: carries a values object`)
+
+  if (!hasValues || !ALGO_IDS.has(preset.algorithm)) continue
+
+  const defs = defaultsFor(preset.algorithm)
+  const missing = Object.keys(defs).filter((k) => !(k in values)).sort()
+  check(missing.length === 0, `${id}: states a value for every knob the algorithm has`,
+    missing.join(', '))
+
+  const stray = Object.keys(values).filter((k) => !(k in defs)).sort()
+  check(stray.length === 0, `${id}: and no value for a knob the schema no longer has`,
+    stray.join(', '))
+
+  // In range as well as present. A preset value outside its own slider range is
+  // failure mode 4 arriving by a different route: the panel loads it, the first
+  // touch of the slider clamps it, and the tuning quietly is not the tuning any
+  // more.
+  const bad = []
+  for (const p of paramsFor(preset.algorithm)) {
+    if (!(p.key in values)) continue
+    const v = values[p.key]
+    if (p.type === 'float') {
+      if (!Number.isFinite(v) || v < p.min || v > p.max) {
+        bad.push(`${p.key} ${JSON.stringify(v)} not in [${p.min}, ${p.max}]`)
+      }
+    } else if (p.type === 'color') {
+      if (!Array.isArray(v) || v.length !== 3 || !v.every((c) => Number.isFinite(c))) {
+        bad.push(`${p.key} ${JSON.stringify(v)} is not three numbers`)
+      }
+    } else if (p.type === 'enum') {
+      // The sidebar accepts the option's own name as well as its index, because
+      // a hand-written preset reads better that way, so both are in range here.
+      const opts = p.options || []
+      const i = typeof v === 'string' ? opts.indexOf(v) : v
+      if (!Number.isInteger(i) || i < 0 || i >= opts.length) {
+        bad.push(`${p.key} ${JSON.stringify(v)} is not one of ${opts.join(', ')}`)
+      }
+    }
+  }
+  check(bad.length === 0, `${id}: and every value is one the panel can take`, bad.join('; '))
+}
+
+// A builtin the page never imports is not a builtin, it is a comment with
+// commas in it. Read as text rather than by importing test-aurora-main.js,
+// which touches the DOM on load.
+const mainRel = 'src/test-aurora-main.js'
+const mainPath = path.join(ROOT, mainRel)
+const mainSrc = fs.existsSync(mainPath) ? fs.readFileSync(mainPath, 'utf8') : ''
+
+check(/from\s+['"]\.\/aurora-lab\/presets\.js['"]/.test(mainSrc),
+  'the page imports the builtins from presets.js')
+check(mainSrc.includes('BUILTIN_NAMES'),
+  'and lists them by name, so every builtin can be selected')
+
+// Lenient on purpose -- what matters is that the save path consults the builtin
+// names at all, not the wording of the message it flashes. Letting a save
+// shadow a builtin would mean reference-v1 quietly becoming whatever was last
+// on the panel, which is the one thing the builtins exist to prevent.
+const saveAt = mainSrc.indexOf("case 'savePreset'")
+const saveEnd = mainSrc.indexOf("case '", saveAt + 1)
+const saveCase = saveAt < 0 ? '' : mainSrc.slice(saveAt, saveEnd < 0 ? mainSrc.length : saveEnd)
+check(saveAt >= 0, 'the page has a savePreset handler to guard')
+check(/BUILTIN_NAMES/.test(saveCase),
+  'and it refuses to save over a name a builtin already holds')
 
 // ===========================================================================
 console.log('\n--- every chunk carries its include guard ----------------------')

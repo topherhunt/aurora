@@ -78,12 +78,19 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   // per building is a caller that can make two copies of the same seed differ.
   const k = character ?? makeCharacter(plan.seed, strength)
 
+  // The field, built once here rather than in finish(): a window has to know
+  // where the covering will END UP before it can reserve a band of wall under
+  // it, and that is the same field the whole vertex array goes through below.
+  // The identity of this object matters as well as its values -- the roof sheets
+  // cache their warped selves against it.
+  const warp = makeWarp(k, plan.plinthBottom)
+
   const finish = () => {
     // The lean is measured from the bottom of the plinth, so a building on a
     // deep footing leans from its footing rather than from the world origin --
     // otherwise a mass sitting 0.8 m down the hill starts its lean 0.8 m into
     // the ground and arrives at the eave with a different amount of it.
-    warpBuilder(b, makeWarp(k, plan.plinthBottom))
+    warpBuilder(b, warp)
     // Normals were computed per face as each quad was emitted, off positions the
     // warp has since moved, so they have to be redone. smoothNormals() does that
     // AND does the other half of the job: it averages across the facets of the
@@ -232,6 +239,11 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
     })),
   ]
 
+  // What each wall reported about its own top edge, indexed the way plan.walls
+  // is -- which is the index every window carries. A window ducks under the
+  // timber lying across its wall as well as under the roof above it, and this is
+  // the only place that height is known.
+  const wallInfo = new Map()
   plan.walls.forEach((wl, i) => {
     if (wl.buried) return
     const m = plan.masses.find((mm) => mm.id === wl.massId)
@@ -254,7 +266,7 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
     // close to, so it keeps the roof-following top edge -- which is the whole
     // reason it exists -- and gives up the quoins, studs and log ends, which at
     // full carpentry pushed the worst inn a hundred triangles past the §5 budget.
-    wall2(b, {
+    wallInfo.set(i, wall2(b, {
       // 6 cm BELOW the plinth top, not at it. The plinth's top is one slab face
       // spanning the whole footprint -- a single triangle 9 x 6 m on an inn --
       // and the wall base is a chord subdivided at its own columns, so the field
@@ -269,7 +281,7 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
       topBreaks: R.breaksAlong,
       topCols: detail >= 2 ? 0 : (isGableEnd ? 2 : 1),
       openings,
-    })
+    }))
     if (isGableEnd && detail >= 2 && !wl.sliver) {
       // The king post, which used to live inside gableEnd(). Every timber gable
       // has one and it is what stops the tympanum reading as a blank triangle.
@@ -303,24 +315,63 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   // sides, so drawing it last is what hides the 4 cm the walls stop short by.
   for (const m of plan.masses) drawRoof(b, roofs.get(m.id))
 
+  // --- attachments ---------------------------------------------------------
+  chimney2(b, { ...plan.chimney, seed: plan.seed * 53 + 5, detail, k })
+  // The porch keeps its roof at detail 1 (it changes the outline against the
+  // sky) and loses its posts and rails, which do not.
+  //
+  // Before the windows, not after, only so its canopy can be one of the things
+  // they duck under: it is a shingle sheet at head height a metre from the door,
+  // and the window beside the door is the one it lands on.
+  const porchRoof = plan.porch
+    ? porch2(b, { ...plan.porch, groundY: plan.plinthBottom, seed: plan.seed * 53 + 7, detail, k })
+    : null
+  if (plan.steps) steps2(b, { ...plan.steps, seed: plan.seed * 53 + 9, detail })
+
   // --- openings ------------------------------------------------------------
   doorway(b, { ...plan.door, height: doorH, seed: plan.seed * 53 + 3, detail })
   // Each window ducks under the roof of the mass it is a window OF -- never the
   // building's, which on an ell is a different roof at a different height.
   plan.windows.forEach((wn, i) => windowUnit2(b, {
-    ...wn, seed: plan.seed * 53 + 11 + i, detail, k, topAt: roofs.get(wn.massId).heightAt,
+    ...wn, seed: plan.seed * 53 + 11 + i, detail, k,
+    // EVERY roof over this window, not just its own mass's. A window near the
+    // inner corner of an ell has its own wing's covering metres above it and the
+    // other wing's eave coming down to head height a metre away, and asking only
+    // its own mass is how a window ends up with the neighbouring roof resting on
+    // it. `coverAt` returns null off the sheet, so a roof that does not actually
+    // overhang this point does not get a vote -- which is also what lets the
+    // porch canopy, a sheet a couple of metres wide, be asked at all.
+    topAt: (x, z) => {
+      let y = roofs.get(wn.massId).heightAt(x, z)
+      for (const [id, r] of roofs) {
+        if (id === wn.massId) continue
+        const over = r.coverAt(x, z)
+        if (over !== null && over < y) y = over
+      }
+      if (porchRoof) {
+        const over = porchRoof.coverAt(x, z)
+        if (over !== null && over < y) y = over
+      }
+      return y
+    },
+    // The same question asked of a PATCH instead of a point, which is the only
+    // way to see a sheet that ends over the window: the answer at the last
+    // covered millimetre before a verge is lower than the answer anywhere the
+    // window thought to sample, and that sliver is what a wing's roof presents
+    // to the window round the corner from it. Infinity means no sheet reaches
+    // the patch at all.
+    lowAt: (x0, z0, x1, z1, w) => {
+      let y = Infinity
+      for (const [, r] of roofs) y = Math.min(y, r.lowIn(x0, z0, x1, z1, w))
+      if (porchRoof) y = Math.min(y, porchRoof.lowIn(x0, z0, x1, z1, w))
+      return y
+    },
+    warp,
+    // The underside of its own wall's plate, where that wall has one. Null on
+    // every style but half-timber, and null at detail 1, where the carpentry is
+    // not drawn and there is nothing up there to duck under.
+    capY: wallInfo.get(wn.wallIndex)?.plateY ?? Infinity,
   }))
-
-  // --- attachments ---------------------------------------------------------
-  chimney2(b, { ...plan.chimney, seed: plan.seed * 53 + 5, detail, k })
-  // The porch keeps its roof at detail 1 (it changes the outline against the
-  // sky) and loses its posts and rails, which do not.
-  if (plan.porch) {
-    porch2(b, {
-      ...plan.porch, groundY: plan.plinthBottom, seed: plan.seed * 53 + 7, detail, k,
-    })
-  }
-  if (plan.steps) steps2(b, { ...plan.steps, seed: plan.seed * 53 + 9, detail })
 
   return finish()
 }

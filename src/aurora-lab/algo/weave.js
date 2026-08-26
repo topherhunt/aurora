@@ -193,7 +193,7 @@ export const WEAVE = {
       p += vec2( u_fieldSeed * 23.4, u_fieldSeed * 55.1 );
 
       // ONE warp, read twice. Sharing it is what correlates the two families.
-      vec2 w = warp2( p, t * u_wvMorph, u_wvWarp, u_wvWarpFreq );
+      vec2 w = warp2( p, t * u_wvMorph, u_wvWarp, u_wvWarpFreq, u_warpStages );
       vec2 v = rot2( u_wvCross ) * w;
 
       float phiA = w.y * u_wvFreqA + ( gfbm2( w * 0.14 ) - 0.5 ) * u_wvBend;

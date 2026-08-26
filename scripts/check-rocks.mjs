@@ -49,13 +49,16 @@ import * as THREE from 'three'
 
 import { buildRock, rockClass, ROCK_TIERS, ROCK_LADDERS, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
 import {
-  buildRockBank, rockParams, ENVIRONMENTS, ROCK_BAND_COUNT, ROCK_NAMES, ROCK_VARIANTS, TINTS,
+  buildRockBank, rockParams, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, ROCK_NAMES, ROCK_VARIANTS,
+  TINTS, TINT_GAIN,
 } from '../src/props/rock-bank.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import {
-  LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, MOSS_LAYERS, buildTextureArray,
+  LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, MOSS_LAYERS, ROCK_TILE_MEAN,
+  buildTextureArray,
 } from '../src/textures.js'
-import { SNOW_ROCK, MOSS, getSnowLine, getMossLine } from '../src/material.js'
+import { SNOW_ROCK, MOSS, getSnowLine, getMossLine, setMossVary, getMossVary } from '../src/material.js'
+import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { readPng } from '../tools/props/png.mjs'
 
 const SEEDS = Number(process.argv[2] ?? 200)
@@ -438,10 +441,25 @@ const uvSpan = (geo) => {
 }
 
 // ---------------------------------------------------------------------------
-// 4. The shipped tile is still tintable.
+// 4. The shipped tile, and the palette that is derived from it.
+//
+// This section used to assert that stone.png was graded PALE and NEUTRAL, on the
+// grounds that a tint was a multiply and a multiply can only take a tile down.
+// The tile is now a real photograph of granite -- warm, and dark at a mean of
+// 85/255 -- and TINTS was inverted to match: a tint names the colour the rock is
+// supposed to end up, and the multiplier that gets there is TINT_GAIN, derived
+// by dividing out the tile's own linear mean.
+//
+// So what is worth asserting has moved. Not "the tile is bright" -- it is not,
+// and it does not need to be -- but "the derivation still matches the file it
+// was derived from", "no entry darkens", and "the brightening does not blow the
+// highlights out". Those three are what would actually break if someone dropped
+// in a new photograph and forgot the palette existed.
 // ---------------------------------------------------------------------------
 
 console.log('\nstone.png')
+
+const srgbToLinear = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
 
 {
   const path = `public/${IMAGE_LAYERS[LAYER.ROCK]}`
@@ -453,31 +471,60 @@ console.log('\nstone.png')
   check(png.channels === 4, 'RGBA, 4 channels', `${png.channels} channels`)
 
   let mean = 0
-  let sat = 0
   let opaque = 0
+  const lin = [0, 0, 0]
   const N = png.width * png.height
   for (let i = 0; i < N; i++) {
-    const r = png.data[i * 4]
-    const g = png.data[i * 4 + 1]
-    const b = png.data[i * 4 + 2]
     if (png.data[i * 4 + 3] === 255) opaque++
-    mean += (r + g + b) / 3
-    const mx = Math.max(r, g, b)
-    sat += mx === 0 ? 0 : (mx - Math.min(r, g, b)) / mx
+    mean += (png.data[i * 4] + png.data[i * 4 + 1] + png.data[i * 4 + 2]) / 3
+    for (let c = 0; c < 3; c++) lin[c] += srgbToLinear(png.data[i * 4 + c] / 255)
   }
   mean /= N
-  sat /= N
+  for (let c = 0; c < 3; c++) lin[c] /= N
 
-  // A tint is a MULTIPLY, so the tile's mean is the ceiling every environment is
-  // measured down from. Graded to granite-on-screen (~100) there would be
-  // nowhere for wet shale or basalt to go but black.
-  check(mean > 120 && mean < 175, 'graded bright enough for a tint to have headroom', `mean ${mean.toFixed(0)}/255`)
-  // A warm cast left in the tile fights every cold tint laid over it and turns
-  // basalt into mud. cut-rock.mjs desaturates 0.62 for exactly this.
-  check(sat < 0.09, 'desaturated enough that the TINT decides the hue', `mean saturation ${sat.toFixed(3)}`)
+  // THE ONE NUMBER THE PALETTE IS BUILT ON. Every gain in TINT_GAIN is an
+  // authored colour divided by these three, so a new tile dropped in without a
+  // matching edit to ROCK_TILE_MEAN silently moves the whole world's stone.
+  // 2% is tight enough to catch a swapped file and loose enough to survive
+  // somebody rounding the constants to four places, which is what they are.
+  const drift = Math.max(...lin.map((v, c) => Math.abs(v - ROCK_TILE_MEAN[c]) / ROCK_TILE_MEAN[c]))
+  check(drift < 0.02, 'ROCK_TILE_MEAN still describes the shipped tile',
+    `${lin.map((v) => v.toFixed(4)).join(' ')} vs ${ROCK_TILE_MEAN.join(' ')}, ${(drift * 100).toFixed(1)}% off`)
+
+  // NOTHING DARKENS. The whole complaint that produced this rework was that
+  // multiplying an already-dark tile down made mud, so the floor is the promise:
+  // every channel of every tint is a gain of at least 1.
+  const minGain = Math.min(...TINT_GAIN.flat())
+  check(minGain >= 1, 'no tint darkens the tile in any channel', `smallest gain ${minGain.toFixed(2)}`)
+
+  // And the ceiling is highlight clipping, which is the real cost of a gain and
+  // the reason there is no white marble in the palette. Measured, not guessed:
+  // how many of the tile's own texels are pushed past 1.0 in linear by each tint.
+  let worst = { name: '', frac: 0 }
+  TINT_GAIN.forEach((gain, i) => {
+    let clipped = 0
+    for (let p = 0; p < N; p++) {
+      for (let c = 0; c < 3; c++) {
+        if (srgbToLinear(png.data[p * 4 + c] / 255) * gain[c] > 1) { clipped++; break }
+      }
+    }
+    if (clipped / N > worst.frac) worst = { name: TINTS[i][0], frac: clipped / N }
+  })
+  check(worst.frac < 0.02, 'the brightest tint still holds its highlights',
+    `${TINTS.length} tints, worst is ${worst.name} at ${(worst.frac * 100).toFixed(2)}% clipped`)
+
+  // A palette of eight greys is not a palette. Measured as the spread of the
+  // authored destinations in hue terms: the largest gap between any tint's
+  // red/blue ratio and any other's, which is what separates sandstone from slate.
+  const warmth = TINTS.map(([, hex]) => srgbToLinear(((hex >> 16) & 255) / 255) / srgbToLinear((hex & 255) / 255))
+  const spread = Math.max(...warmth) / Math.min(...warmth)
+  check(spread > 2.5, 'the palette spans warm to cold, not eight greys',
+    `warmest / coldest red-to-blue ratio is ${spread.toFixed(1)}x`)
+
   // A rock is opaque. An alpha channel with holes in it means the cut picked up
   // a transparent border somewhere.
   check(opaque === N, 'fully opaque -- a rock is not a cutout', `${N - opaque} non-opaque texels`)
+  check(mean > 40 && mean < 200, 'the tile is a photograph, not a flat fill', `mean ${mean.toFixed(0)}/255`)
 
   // The wrap seam, on the same metric check-buildings.mjs uses: how the step
   // across the wrap edge compares with the largest step anywhere inside.
@@ -485,6 +532,102 @@ console.log('\nstone.png')
     const s = seamScore(png.data, png.width, axis)
     check(s < 1.35, `no visible wrap seam in ${axis}`, `seam ${s.toFixed(2)}x the worst interior step`)
   }
+}
+
+// ---------------------------------------------------------------------------
+// 4b. The cliff wears the same tile.
+//
+// A boulder resting against the crag it fell off has to be the same MATERIAL as
+// the crag, and until now it was not: the rock was a photograph and the cliff
+// behind it was procedural noise. terrain-material.js now samples LAYER.ROCK
+// too, so the tile measured above has a second consumer -- and the same rule
+// applies to it, for the same reason. It may add grain to the rock surface. It
+// may not darken it.
+//
+// Compiled here rather than in check-terrain.mjs because everything this section
+// asserts is about the TILE, and the tile is measured thirty lines up.
+// ---------------------------------------------------------------------------
+
+console.log('\nstone on the cliff')
+
+{
+  const atlas = new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1)
+
+  const compile = (mat) => {
+    const src = {
+      vertexShader: THREE.ShaderLib.lambert.vertexShader,
+      fragmentShader: THREE.ShaderLib.lambert.fragmentShader,
+      uniforms: {},
+    }
+    mat.onBeforeCompile(src)
+    return src
+  }
+
+  const plain = createTerrainMaterial()
+  const stone = createTerrainMaterial({ atlas })
+  const plainSrc = compile(plain)
+  const stoneSrc = compile(stone)
+
+  // OPT-IN, and this is the whole safety argument for touching a material three
+  // other worlds share: with no atlas the source must not mention the sampler at
+  // all, so v1's terrain and the /gen benches compile what they always did.
+  check(!plainSrc.fragmentShader.includes('uAtlas') && !plainSrc.uniforms.uStone,
+    'without an atlas the terrain compiles no stone layer at all',
+    plainSrc.fragmentShader.includes('uAtlas') ? 'sampler leaked in' : 'clean')
+  check(plain.customProgramCacheKey() !== stone.customProgramCacheKey(),
+    'the two variants cannot share a compiled program',
+    `${plain.customProgramCacheKey()} vs ${stone.customProgramCacheKey()}`)
+
+  // ONE TILE, TWO CONSUMERS. The layer index is the whole point of the section:
+  // if this ever stops being LAYER.ROCK the boulders and the cliff are two
+  // different rocks again and nothing else here would notice.
+  const fetches = stoneSrc.fragmentShader.match(/textureGrad\( uAtlas, vec3\([^)]*\), /g) || []
+  check(fetches.length === 3, 'the cliff samples the rock tile triplanar, three fetches',
+    `${fetches.length} fetches`)
+  check(fetches.every((f) => f.includes(`, ${LAYER.ROCK}.0 )`)),
+    'and it is LAYER.ROCK -- the same tile the boulders wear',
+    `layer ${LAYER.ROCK}`)
+
+  // IMPLICIT LOD WOULD BE UNDEFINED HERE. Both call sites sit inside a guard
+  // that folds in distance and the rock/grass classification, so a quad at the
+  // foot of a crag has some lanes in and some out. A bare texture() there is
+  // undefined per the ES spec and fails as the sharpest mip on a fragment that
+  // wanted the blurriest -- sparkling pixels along every grass border.
+  check(!/[^d]texture\( uAtlas/.test(stoneSrc.fragmentShader),
+    'every stone fetch passes explicit gradients', 'no implicit-LOD texture( uAtlas ) left')
+
+  // THE TWO OCTAVES THE ASK NAMED: 16 m per tile, and a fainter 2 m one up close.
+  // Asserted as the reciprocals the shader actually carries, because that is
+  // where a units mistake would land.
+  const scales = [...stoneSrc.fragmentShader.matchAll(/auroraTri, ([0-9.]+) \)/g)].map((m) => 1 / Number(m[1]))
+  check(scales.length === 2 && Math.abs(scales[0] - 16) < 1e-6 && Math.abs(scales[1] - 2) < 1e-6,
+    'one square of cliff stone is 16 m, with a 2 m octave under it',
+    scales.map((v) => `${v.toFixed(0)} m`).join(' and '))
+  check(stoneSrc.uniforms.uStoneFine.value < stoneSrc.uniforms.uStone.value,
+    'and the near octave is the fainter of the two',
+    `${stoneSrc.uniforms.uStoneFine.value} vs ${stoneSrc.uniforms.uStone.value}`)
+
+  // NEUTRAL BY CONSTRUCTION, which is the same promise section 4 makes for the
+  // boulders and the reason the terrain palette above it did not have to be
+  // retuned. The shader multiplies the surface by texel / uStoneMean, so this
+  // measures what that multiplier averages to over the real tile: 1.0 per
+  // channel means the layer adds contrast and takes away no light. The failure
+  // this catches is a plausible one -- an sRGB mean, or a luma, in place of the
+  // linear per-channel mean would land near 0.7 and quietly darken every cliff
+  // in the world by a third.
+  const path = `public/${IMAGE_LAYERS[LAYER.ROCK]}`
+  const png = readPng(path)
+  const N = png.width * png.height
+  const srgbToLin = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+  const mean = stoneSrc.uniforms.uStoneMean.value.toArray()
+  const gain = [0, 0, 0]
+  for (let i = 0; i < N; i++) {
+    for (let c = 0; c < 3; c++) gain[c] += srgbToLin(png.data[i * 4 + c] / 255) / mean[c]
+  }
+  for (let c = 0; c < 3; c++) gain[c] /= N
+  const off = Math.max(...gain.map((v) => Math.abs(v - 1)))
+  check(off < 0.02, 'the cliff stone layer neither darkens nor tints the terrain',
+    `mean multiplier ${gain.map((v) => v.toFixed(3)).join(' ')}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -856,9 +999,12 @@ console.log('\nscatter')
   check(near[1] > 0 && byBed.giants.placed > 0, 'the wood still gets boulders AND the odd giant',
     `${byBed.boulders.placed} boulders, ${byBed.giants.placed} giants across the whole disc`)
   // A house-sized block every forty metres is a boulder field, not a wood. The
-  // forest multiplier in BEDS is what holds this, and it is easy to lose.
-  check(within(forestRocks, 'giants', 200) < 12, 'a giant in a wood is a landmark',
-    `${within(forestRocks, 'giants', 200)} inside 200 m`)
+  // forest multiplier in BEDS is what holds this, and it is easy to lose. The
+  // bound sits at one per 4,000 m2 of the disc -- about one every 65 m, which is
+  // rare enough that you still stop and look at one.
+  check(within(forestRocks, 'giants', 200) < 32, 'a giant in a wood is a landmark',
+    `${within(forestRocks, 'giants', 200)} inside 200 m, one every ` +
+    `${Math.round(Math.sqrt((Math.PI * 200 * 200) / Math.max(1, within(forestRocks, 'giants', 200))))} m`)
   const cliffTest = build(cliff)
   check(within(cliffTest, 'giants', 200) > within(forestRocks, 'giants', 200) * 3,
     'the cliff is littered where the wood is not',
@@ -981,6 +1127,58 @@ console.log('\nscatter')
     check(moss.base < snow.base - snow.band, 'moss has given out well before the snow starts',
       `moss ${moss.base} m, snow ${snow.base} m`)
     check(moss.band > layers.snow.band, 'the moss line is a gradient, not a contour', `${moss.band} m band`)
+  }
+
+  // --- the per-instance tint ------------------------------------------------
+  //
+  // The promise is that a wood is not one colour. Read the colours the scatter
+  // actually wrote rather than trusting the roll: quantise each instance's
+  // linear RGB coarsely and count how many distinct buckets a single bed puts
+  // down, and separately check that nothing was written below the bare tile.
+  {
+    const bed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
+    const c = new THREE.Color()
+    const buckets = new Set()
+    let n = 0
+    let dimmest = Infinity
+    for (const t of bed.tiles.values()) {
+      for (let k = 0; k < t.n; k++) {
+        bed.batch.getColorAt(t.ids[k], c)
+        buckets.add(`${Math.round(c.r * 6)},${Math.round(c.g * 6)},${Math.round(c.b * 6)}`)
+        dimmest = Math.min(dimmest, c.r, c.g, c.b)
+        n++
+      }
+    }
+    check(buckets.size >= 8, 'a wood of boulders is not one colour',
+      `${buckets.size} distinct tints across ${n} instances`)
+    // The whole point of the rework: a per-instance colour is a GAIN. The jitter
+    // floor is 0.86 and the palette's smallest gain is 1.39, so the dimmest thing
+    // the scatter may legally write is about 1.15 -- comfortably over 1, which
+    // means no rock in the world comes out darker than the tile it is made of.
+    check(dimmest > 1, 'no instance darkens the tile', `dimmest channel written is ${dimmest.toFixed(2)}`)
+    // ENV_TINTS is what makes that true per environment, so it has to name all
+    // four and index nothing that does not exist.
+    for (const env of ENVIRONMENTS) {
+      const pal = ENV_TINTS[env]
+      check(Array.isArray(pal) && pal.length >= 4 && pal.every((i) => i >= 0 && i < TINTS.length),
+        `${env} cycles a real palette`, `${pal.length} entries`)
+    }
+  }
+
+  // --- the per-instance moss ------------------------------------------------
+  //
+  // setMossVary defaults OFF, and that default is load bearing rather than
+  // incidental: /gen-rock shows exactly one rock, at the origin, and if the
+  // variation were always on that one rock would wear whatever the hash of (0,0)
+  // happened to be and the bench's moss slider would stop meaning what it says.
+  {
+    check(getMossVary() === 0, 'moss variation is off until something turns it on',
+      `default ${getMossVary()}`)
+    setMossVary(0.5)
+    check(getMossVary() === 0.5, 'and it is a real knob', `${getMossVary()}`)
+    setMossVary(4)
+    check(getMossVary() === 1, 'clamped to a fraction like every other ceiling here', `${getMossVary()}`)
+    setMossVary(0)
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

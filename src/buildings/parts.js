@@ -1331,17 +1331,48 @@ export function windowUnit(
   })
 
   if (shutters) {
-    const sd = depth + 0.03
+    // WHERE THE LEAF IS HUNG, which used to be nowhere. The leaf stood at
+    // `depth + 0.03` with its inboard edge on the plane of the surround's outer
+    // face -- 1 cm in FRONT of that face, so the two never met: the shutter was a
+    // rectangle floating clear of the building with daylight all round it. A
+    // shutter is the one piece of a window that is obviously hung on something,
+    // and it has to touch the thing it is hung on.
+    //
+    // So the hinged edge is BURIED IN THE SURROUND. It laps `LAP` onto the ring
+    // in plan and stands at `HANG` out, which is inside the ring's section --
+    // the ring reaches from the wall plane out to `depth + 0.02` -- and stays
+    // inside it however the rough section jitters. `HANG` also clears a log
+    // course, which stands 5 cm proud of the wall plane.
+    const LAP = 0.02
+    const HANG = 0.08
+    const leafW = width * 0.52
     for (const s of [-1, 1]) {
-      const a0 = s < 0 ? -ow - width * 0.52 : ow
+      // AND SOMETIMES AJAR. A leaf lying flat on the wall is a painted
+      // rectangle; what says shutter is the wedge of shadow behind a leaf that
+      // has been pushed open. About a third of them get one, per leaf rather
+      // than per window, so a window can stand with one leaf back against the
+      // wall and the other swung out -- which is what shutters actually look
+      // like on a building somebody lives in.
+      //
+      // A ROTATION about the hinge, not a shear: the free edge swings out and
+      // comes in along the wall by the cosine, so the leaf keeps its width. That
+      // matters beyond looks -- plan.js reserves `width * 0.52` of frontage for
+      // this leaf, and a rotation can only ever need less of it.
+      const th = hash(seed * 61, s + 2) < 0.34 ? 0.22 + hash(seed * 61, s + 8) * 0.4 : 0
+      const aIn = s * (ow - LAP)
+      const aOut = s * (ow - LAP + leafW * Math.cos(th))
+      const oOut = HANG + leafW * Math.sin(th)
       b.quad(
-        p(a0, y0, sd), p(a0 + width * 0.52, y0, sd),
-        p(a0 + width * 0.52, y0 + height, sd), p(a0, y0 + height, sd),
+        p(aIn, y0, HANG), p(aOut, y0, oOut),
+        p(aOut, y0 + height, oOut), p(aIn, y0 + height, HANG),
         { layer: LAYER.TIMBER_PLANK, vWorldY: true, color: TINT.timberDark, double: true }
       )
+      // The strap, laid ON the leaf rather than on a plane of its own, or a
+      // swung leaf leaves its ironwork hanging in the air behind it.
+      const mix = (t, y) => p(aIn + (aOut - aIn) * t, y, HANG + (oOut - HANG) * t + 0.006)
+      const sv = y0 + height * 0.62
       b.quad(
-        p(a0 + 0.02, y0 + height * 0.62, sd + 0.006), p(a0 + width * 0.5, y0 + height * 0.62, sd + 0.006),
-        p(a0 + width * 0.5, y0 + height * 0.62 + 0.1, sd + 0.006), p(a0 + 0.02, y0 + height * 0.62 + 0.1, sd + 0.006),
+        mix(0.04, sv), mix(0.96, sv), mix(0.96, sv + 0.1), mix(0.04, sv + 0.1),
         { layer: LAYER.IRON, island: IRON_ISLANDS.shutterStrap, color: TINT.iron, double: true }
       )
     }

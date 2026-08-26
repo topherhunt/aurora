@@ -51,6 +51,7 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, reliefIsOff } from '../src/v2/height/rel
 import { thermalErode } from '../src/v2/height/erode.js'
 import { brushRect, stamp } from '../src/v2/height/sculpt.js'
 import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
+import { RidgeField } from '../src/v2/height/ridge.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
 import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO } from '../src/v2/terrain/chunk-mesh-v2.js'
@@ -917,7 +918,7 @@ export async function run({ heightmap } = {}) {
     //   height    the composed field. Most of them.
     //   snowline  snowJag, which moves a COLOUR boundary and no geometry.
     //   mesher    crest. See the banner: asserted as a non-effect on the field.
-    const PROBE = { sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', erode: 'height', talus: 'height', snowJag: 'snowline', crest: 'mesher' }
+    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', erode: 'height', talus: 'height', snowJag: 'snowline', crest: 'mesher' }
     {
       const unlisted = RELIEF_KNOBS.filter((k) => PROBE[k.key] === undefined).map((k) => k.key)
       check(unlisted.length === 0, 'every knob in the table has a probe in this gate', unlisted.length ? `no probe for ${unlisted.join(', ')}` : `${RELIEF_KNOBS.length} knobs`)
@@ -990,6 +991,117 @@ export async function run({ heightmap } = {}) {
           frac > 0.25 && rms > floor,
           `${knob.key}=${value} moves ${what}, against ${against}`,
           `${pct(frac)} of sites, rms ${rms.toFixed(4)} m (floor ${floor.toFixed(4)} m)`
+        )
+      }
+    }
+
+    // `bare` IS AN EXACT FADE ON THE DETAIL TERM, AT BOTH ENDS AND IN BETWEEN.
+    //
+    // The knob exists to answer one question -- what is the imported field
+    // actually shaped like -- and the answer is only worth having if the fade is
+    // arithmetic rather than approximate. So all three statements below are
+    // exact rather than tolerant:
+    //
+    //   0    the shipped field, bit for bit. Asserted separately from the all-off
+    //        block above because `bare` is the one knob whose branch sits in the
+    //        composed expression itself -- `_plain` is keyed on it -- so a `> 0`
+    //        written as `>= 0` would route the DEFAULT world down _micro, and
+    //        every measurement in this file would be reading the other path.
+    //   1    exactly heightmap.sample, with no epsilon of detail left underneath.
+    //        A knob that got to 99.9% of the way there would still be showing the
+    //        import through a film of the thing it was asked to remove.
+    //   0.5  exactly half the detail term, which is a claim about WHERE the fade
+    //        is applied. It multiplies Detail's output from outside, so
+    //        calibrateRough never sees it and the octave table does not move;
+    //        fold it into `rough` instead and the calibration re-fits the deficit
+    //        against the import's structure function, 0.5 buys something other
+    //        than half, and scrubbing the knob up and back no longer lands on the
+    //        field you started from.
+    //
+    // The carve chain is out of the way throughout: `layers` is the empty
+    // document every section above shares, so heightAt IS coarse plus detail and
+    // the macro field can be named exactly rather than approached.
+    {
+      const bareKnob = knobOf('bare')
+      const bareOff = mk({ bare: bareKnob.off })
+      const bareOn = mk({ bare: bareKnob.on })
+      const bareHalf = mk({ bare: 0.5 })
+
+      const N = 400
+      let offDiff = 0
+      let onDiff = 0
+      let worstOn = 0
+      let worstHalf = 0
+      let maxDetail = 0
+      let s2 = 0
+      for (let i = 0; i < N; i++) {
+        const p = site(i)
+        const macro = hm.sample(p.x, p.z)
+        const full = field.heightAt(p.x, p.z)
+        if (bareOff.heightAt(p.x, p.z) !== full) offDiff++
+        const stripped = bareOn.heightAt(p.x, p.z)
+        if (stripped !== macro) { onDiff++; worstOn = Math.max(worstOn, Math.abs(stripped - macro)) }
+        // The detail term, recovered the only way a black-box probe can: the
+        // composed field less the macro field it was added to. That subtraction
+        // is where the half-fade check's tolerance comes from and nowhere else --
+        // (macro + d) - macro loses the bits of d that fell off the bottom of a
+        // sum with a few hundred metres, which on this import is about 1e-13 m.
+        const d = full - macro
+        const h = bareHalf.heightAt(p.x, p.z) - macro
+        worstHalf = Math.max(worstHalf, Math.abs(h - d / 2))
+        maxDetail = Math.max(maxDetail, Math.abs(d))
+        s2 += d * d
+      }
+      // THE NUMBER THIS BLOCK IS FOR. Everything else here is an exactness claim;
+      // this is the only line that says how much ground the knob is actually
+      // moving, and it is small on purpose -- the detail term is texture over an
+      // authored landscape, so fading all of it out must cost centimetres against
+      // hundreds of metres of imported relief. A max in the metres would mean the
+      // fractal had become the terrain.
+      console.log(
+        `        detail amplitude bare fades out, over ${N} sites: max ${maxDetail.toFixed(4)} m, rms ${Math.sqrt(s2 / N).toFixed(4)} m ` +
+          `-- against ${(hm.max - hm.min).toFixed(0)} m of imported relief`
+      )
+
+      check(offDiff === 0, 'bare=0 is the field built with no relief argument at all, bit for bit', `${offDiff}/${N} sites differ`)
+      check(onDiff === 0, 'bare=1 is EXACTLY the imported macro field -- no detail left under it', `${onDiff}/${N} sites differ, worst ${worstOn} m`)
+      check(worstHalf < 1e-9, 'and bare=0.5 removes exactly half the detail term', `worst departure from half ${worstHalf.toExponential(2)} m against a ${maxDetail.toFixed(4)} m term`)
+      // The calibration is the reason 0.5 can mean half at all, so it is asserted
+      // as bits and not as a comment: the same ROUGH at every point of the scrub.
+      check(
+        bareOn.calibration.rough === cal.rough && bareHalf.calibration.rough === cal.rough,
+        'the octave table does not move as the knob scrubs -- the fade sits outside calibrateRough',
+        `ROUGH ${cal.rough} at bare 0, 0.5 and 1`
+      )
+
+      // AND IT LEAVES THE CRAG BAND ALONE.
+      //
+      // The half of the semantics a future simplification is most likely to lose,
+      // and it cannot be seen from any check above: `bare` scales the detail
+      // stack and the crease band is added to the result afterwards, so bare=1
+      // with crag on is the macro field plus the crag cut and nothing else. Wrap
+      // the fade around the whole of _micro's return instead -- one plausible
+      // tidy-up -- and the knob quietly becomes a master mute, at which point
+      // "what does the bare macro look like" depends on a knob it does not name.
+      {
+        const cragOn = knobOf('crag').on
+        const withCrag = mk({ crag: cragOn })
+        const withCragBare = mk({ crag: cragOn, bare: bareKnob.on })
+        let band2 = 0
+        let through2 = 0
+        for (let i = 0; i < N; i++) {
+          const p = site(i)
+          const band = withCrag.heightAt(p.x, p.z) - field.heightAt(p.x, p.z)
+          const through = withCragBare.heightAt(p.x, p.z) - hm.sample(p.x, p.z)
+          band2 += band * band
+          through2 += through * through
+        }
+        const bandRms = Math.sqrt(band2 / N)
+        const throughRms = Math.sqrt(through2 / N)
+        check(
+          Math.abs(throughRms / bandRms - 1) < 0.01,
+          `bare=${bareKnob.on} fades the detail term and not the crag band`,
+          `crag=${cragOn} cuts ${bandRms.toFixed(4)} m rms at bare 0 and ${throughRms.toFixed(4)} m rms at bare ${bareKnob.on} (${((throughRms / bandRms - 1) * 100).toFixed(2)}%)`
         )
       }
     }
@@ -1187,6 +1299,694 @@ export async function run({ heightmap } = {}) {
       check(flatN > 100, 'and there is enough flat ground in the world for that to mean something', `${flatN} of ${N} sites are under the gate`)
     }
 
+    // THE RIDGE TERM IS ZERO-MEAN, LINEAR, BAND-LIMITED, AND FREE WHEN IT IS OFF.
+    //
+    // Five promises, and every one of them is a way for the knob to be quietly
+    // wrong rather than a way for it to look bad:
+    //
+    // OFF IS OFF, AND IT IS OFF TWICE OVER. `ridge` is the second knob after
+    // `bare` whose branch sits in `_plain` itself, so a `> 0` written as `>= 0`
+    // would route the DEFAULT world down _micro and every measurement in this file
+    // would be reading the other path. And the structure is not free to have
+    // around: three Hessian scales over the whole import is ~260 ms of bake and
+    // 9 MB resident, PER THREAD, which a `needs.ridge` that was true at zero would
+    // buy on every boot for a term that then adds nothing.
+    //
+    // ZERO-MEAN, which is crag.js's argument and bites harder here. The crease
+    // operator has a large positive mean and it is SUBTRACTED, and what scales it
+    // is a gate that is highest on exactly the spines the term is aimed at. Skip
+    // the subtraction and raising the knob walks the ridges up relative to their
+    // own valleys -- so the A/B against `crag` at matched amplitude, which is the
+    // whole reason both knobs are in metres and both `on` at 12, would be a
+    // comparison of two elevations instead of two shapes.
+    //
+    // LINEAR IN THE KNOB. `amount` multiplies the whole sum, so a HUD scrub is an
+    // amplitude and not a redesign of the field at every tick. Asserted EXACTLY on
+    // the term and to floating point through the composed field, for the reason
+    // the `bare` block records: recovering a term by subtracting two composed
+    // heights loses the bits that fall off the bottom of a sum with a few hundred
+    // metres, which on this import is about 1e-13 m.
+    //
+    // BAND-LIMITED ON ITS OWN WAVELENGTHS. Each detection scale cuts teeth at a
+    // wavelength of its own and fades on that wavelength, so the term dies with
+    // the mesh instead of outliving the terms beside it and changing the character
+    // of the ground with viewing distance. The cell that kills it is COMPUTED from
+    // the baked lambdas rather than written down, because those follow the
+    // import's texel size and a literal would silently stop testing anything the
+    // next time the image is rebaked at another resolution.
+    //
+    // AND IT SHARPENS RATHER THAN MERELY DISPLACING, which is the only one of the
+    // five that says the change of parameterisation bought anything at all. A term
+    // that moved peak ground by metres without raising its curvature would be a
+    // second macro layer, not teeth. Measured as rms second difference at a 2 m
+    // lag -- the instrument the calibration itself rests on, see roughnessOf -- on
+    // peak ground only, because that is where a directed operator claims to be
+    // able to tell a spine from a lump and everywhere else it is gated off.
+    {
+      const ridgeKnob = knobOf('ridge')
+      const ridgeOff = mk({ ridge: ridgeKnob.off })
+      const ridgeOn = mk({ ridge: ridgeKnob.on })
+      const ridgeTwice = mk({ ridge: ridgeKnob.on * 2 })
+
+      let mismatch = 0
+      let worstOff = 0
+      for (let i = 0; i < 400; i++) {
+        const p = site(i)
+        const a = ridgeOff.heightAt(p.x, p.z)
+        const b = field.heightAt(p.x, p.z)
+        if (a !== b) { mismatch++; worstOff = Math.max(worstOff, Math.abs(a - b)) }
+      }
+
+      // The cell at which every scale is dead: `at` fades each scale over
+      // smoothstep(2 * cell, 4 * cell, lambda), which is exactly 0 at and below
+      // the low edge, so the longest lambda halved silences all three.
+      const dead = Math.max(...ridgeOn.ridge.lambda) / 2
+
+      const N = 3000
+      let sum = 0
+      let s2 = 0
+      let worstLin = 0
+      let termLin = 0
+      let live = 0
+      let deadAlive = 0
+      for (let i = 0; i < N; i++) {
+        const p = measureSite(i)
+        const base = field.heightAt(p.x, p.z)
+        const d = ridgeOn.heightAt(p.x, p.z) - base
+        const d2 = ridgeTwice.heightAt(p.x, p.z) - base
+        sum += d
+        s2 += d * d
+        worstLin = Math.max(worstLin, Math.abs(d2 - 2 * d))
+        // The same claim on the term itself, where it IS exact: `amount` is one
+        // multiply on the finished sum, so doubling the knob doubles the metres
+        // with no rounding at all, and any amplitude that had crept inside the
+        // scale loop -- a gate raised to a power of the knob, a wavelength that
+        // moved with it -- would break this and leave the tolerant check above
+        // still passing.
+        if (ridgeOn.ridge.at(p.x, p.z, 0, ridgeKnob.on * 2) !== 2 * ridgeOn.ridge.at(p.x, p.z, 0, ridgeKnob.on)) termLin++
+        if (ridgeOn.ridge.at(p.x, p.z, 0, ridgeKnob.on) !== 0) live++
+        if (ridgeOn.ridge.at(p.x, p.z, dead, ridgeKnob.on) !== 0) deadAlive++
+      }
+      const mean = sum / N
+      const rms = Math.sqrt(s2 / N)
+
+      // PEAK GROUND, defined off the world rather than off a number: the top tenth
+      // of the same scatter these sections all share, and steep with it. 0.30 is
+      // Heightmap.slopeAt's 0..1 convention (see slope01At) and is a 23 degree
+      // hillside, well clear of the summit plateaus where there is no face for a
+      // rib to run down.
+      const PEAK_SITES = 6000
+      const PEAK_SLOPE = 0.30
+      const LAG = 2
+      const heights = new Float64Array(PEAK_SITES)
+      for (let i = 0; i < PEAK_SITES; i++) {
+        const p = measureSite(i)
+        heights[i] = field.heightAt(p.x, p.z)
+      }
+      const sorted = Float64Array.from(heights).sort()
+      const p90 = sorted[Math.floor(0.90 * (PEAK_SITES - 1))]
+      const curve = (f, i, p) => {
+        const a = measureAngle(i)
+        const cx = Math.cos(a) * LAG
+        const cz = Math.sin(a) * LAG
+        return f.heightAt(p.x + cx, p.z + cz) - 2 * f.heightAt(p.x, p.z) + f.heightAt(p.x - cx, p.z - cz)
+      }
+      let peakN = 0
+      let curveOff2 = 0
+      let curveOn2 = 0
+      for (let i = 0; i < PEAK_SITES; i++) {
+        if (heights[i] < p90) continue
+        const p = measureSite(i)
+        if (field.slope01At(p.x, p.z) <= PEAK_SLOPE) continue
+        const c0 = curve(field, i, p)
+        const c1 = curve(ridgeOn, i, p)
+        curveOff2 += c0 * c0
+        curveOn2 += c1 * c1
+        peakN++
+      }
+      const curveOff = Math.sqrt(curveOff2 / peakN)
+      const curveOn = Math.sqrt(curveOn2 / peakN)
+
+      console.log(
+        `        ridge=${ridgeKnob.on} m against all off, over ${N} sites: rms ${rms.toFixed(4)} m, mean ${mean.toFixed(4)} m ` +
+          `(|mean|/rms ${(Math.abs(mean) / rms).toFixed(4)}), and ${(curveOn / curveOff).toFixed(1)}x the ${LAG} m curvature on peak ground ` +
+          `(${curveOff.toFixed(4)} m -> ${curveOn.toFixed(4)} m over ${peakN} sites)`
+      )
+
+      check(mismatch === 0, 'ridge=0 is the field built with no relief argument at all, bit for bit', `${mismatch}/400 sites differ, worst ${worstOff} m`)
+      check(
+        ridgeOff.ridge === null && ridgeOn.ridge !== null,
+        'and ridge=0 does not bake the structure at all -- off pays for nothing',
+        `off: no RidgeField;  on: ${ridgeOn.ridge.count} scales of ${ridgeOn.ridge.width}x${ridgeOn.ridge.height}`
+      )
+      check(Math.abs(mean) < rms * 0.1, 'the ridge term is zero-mean -- turning it up does not walk the spines off their own valleys', `|mean|/rms ${(Math.abs(mean) / rms).toFixed(4)}`)
+      check(termLin === 0, `ridge=${ridgeKnob.on * 2} is EXACTLY twice ridge=${ridgeKnob.on} in the term itself -- the knob is one multiply on the sum`, `${termLin}/${N} sites differ`)
+      check(
+        worstLin < 1e-9,
+        'and twice as far through the composed field, to the last bit a few hundred metres of macro leaves',
+        `worst departure from double ${worstLin.toExponential(2)} m against a ${rms.toFixed(4)} m rms term`
+      )
+      check(deadAlive === 0, `every scale is band-limited away by a ${dead.toFixed(1)} m cell -- the term is EXACTLY 0, not small`, `${deadAlive}/${N} sites still moving at cell ${dead.toFixed(1)} m`)
+      check(live > N * 0.25, 'and it is emphatically alive at cell 0, so that is not zero by inaction', `${pct(live / N)} of sites cut at the exact field`)
+      check(curveOn > curveOff * 3, 'ridge SHARPENS peak ground rather than displacing it -- teeth, not a second macro layer', `${(curveOn / curveOff).toFixed(1)}x the rms ${LAG} m curvature`)
+      check(peakN > 100, 'and there are enough peaks in the world for that to mean something', `${peakN} of ${PEAK_SITES} sites are over p90 and steeper than slope01 ${PEAK_SLOPE}`)
+
+      // A DOME SCORES NOTHING, which is the claim ridge.js's header rests the
+      // whole detector on and the one the shipped world cannot be asked about,
+      // because there is no clean dome anywhere in it. So both landforms are
+      // built here: the SAME Gaussian, once extruded along a line and once spun
+      // about a point, at the same amplitude and the same width, and each given
+      // its own RidgeField. Everything that could flatter the ridge is held
+      // equal, and the only difference left is whether the shape has an axis.
+      //
+      // What separates them is the `flat` factor -- 1 - |kBig| / convex -- and
+      // nothing else. Drop it and both score their convexity, which the dome has
+      // in full measure; a detector that fired on domes would put teeth on every
+      // knoll and hummock in the world and read as noise rather than structure.
+      //
+      // MEASURED ON THE GATE, so this is also a test of the percentile
+      // normalisation: each synthetic world is calibrated against ITSELF, so the
+      // dome world's own most ridge-like ground sets its 255. A dome that still
+      // comes out near zero at its summit under its own calibration is a dome
+      // that has nothing ridge-like at its summit at all.
+      //
+      // Sigma is five times the coarsest detection radius so the shape is
+      // resolved by every stencil in the table rather than read as a spike by
+      // the widest one, and the grid is the world's own registration at a
+      // quarter of the import's resolution -- big enough that a landform of that
+      // width is not mostly border clamp.
+      {
+        const SYN = 256
+        const synTexel = WORLD_SIZE / (SYN - 1)
+        const SIGMA = Math.max(...ridgeOn.ridge.scales) * 5 * synTexel
+        const AMP = 400
+        const TILT = 0.7
+        const ca = Math.cos(TILT)
+        const sa = Math.sin(TILT)
+        const gauss = (d) => AMP * Math.exp(-(d * d) / (2 * SIGMA * SIGMA))
+        const synth = (fn) => {
+          const data = new Float32Array(SYN * SYN)
+          for (let j = 0; j < SYN; j++) {
+            for (let i = 0; i < SYN; i++) data[j * SYN + i] = fn(-WORLD_HALF + i * synTexel, -WORLD_HALF + j * synTexel)
+          }
+          return Heightmap.fromRaw({ width: SYN, height: SYN, data, meta: { world: WORLD_SIZE, minY: 0, maxY: AMP, encoding: 'raw' } })
+        }
+        const bake = (hmap) => new V2Height({ heightmap: hmap, layers, seed: WORLD_SEED, relief: { ...RELIEF_DEFAULTS, ridge: ridgeKnob.on }, rough: 1e-6 }).ridge
+        const spine = bake(synth((x, z) => gauss(-x * sa + z * ca)))
+        const dome = bake(synth((x, z) => gauss(Math.hypot(x, z))))
+
+        // The same offsets on both, run along the spine's crest and along a
+        // diameter of the dome -- which by symmetry is every diameter, so this is
+        // the dome's best case and not a corner of it. Averaged over all three
+        // scales, since a detector that only rejected domes at one radius would
+        // still be putting teeth on them at the other two.
+        const CREST = 64
+        const HALF = SIGMA * 0.25
+        const crestMean = (rf) => {
+          let acc = 0
+          for (let k = 0; k < CREST; k++) {
+            const t = ((k + 0.5) / CREST - 0.5) * 2 * HALF
+            const u = (ca * t + WORLD_HALF) * rf._invX
+            const v = (sa * t + WORLD_HALF) * rf._invZ
+            for (let si = 0; si < rf.count; si++) acc += rf._cubic(rf.ridge[si], u, v)
+          }
+          return acc / (CREST * rf.count)
+        }
+        const onSpine = crestMean(spine)
+        const onDome = crestMean(dome)
+        check(
+          onSpine >= onDome * 5,
+          'ridgeness fires on a spine and not on a dome -- a dome has no axis to be right about, so it must not get one',
+          `crest ${onSpine.toFixed(1)}/255 against summit ${onDome.toFixed(1)}/255 over ${CREST} sites x ${spine.count} scales, ${onDome > 0 ? `${(onSpine / onDome).toFixed(0)}x` : 'the dome scores exactly nothing'}`
+        )
+      }
+
+      // THE DIRECTOR SURVIVES THE 0/PI WRAP, which is the reason the axis is
+      // stored as the DOUBLE ANGLE rather than as the angle. theta and theta + pi
+      // are the same ridge, so a grid holding theta has a seam wherever the axis
+      // crosses the wrap, and averaging across that seam gives an axis at RIGHT
+      // ANGLES to both its neighbours -- ribbing cut across the crest instead of
+      // down it, along a line of grid texels, on ground that is otherwise a
+      // perfectly good spine. Nothing else in this file would notice: the term
+      // would still be zero-mean, still linear, still band-limited, and still
+      // sharpen peak ground, because a rib at 90 degrees is exactly as sharp as a
+      // rib at 0.
+      //
+      // Asserted against the Hessian itself rather than against a second copy of
+      // the module's own arithmetic. The blur is ridge.js's blur, texel for texel
+      // -- two box passes per axis with the border clamped -- and the angle is
+      // recomputed on the nearest texel from scratch, then held against what the
+      // shipped read path returns for the same place: bytes, bilinear, atan2,
+      // halved. Compared as DIRECTORS, mod pi, because that is what the two
+      // things claim to be.
+      //
+      // The coarsest scale, because that is where the claim is strongest and the
+      // tolerance therefore means something -- the axis at a 288 m detection
+      // width turns slowly enough that a texel of interpolation is a fraction of
+      // a degree, so a median error of 2 degrees is a wide gate that only a
+      // structurally wrong director can walk through.
+      {
+        const si = ridgeOn.ridge.count - 1
+        const r = ridgeOn.ridge.scales[si]
+        const gw = ridgeOn.ridge.width
+        const gh = ridgeOn.ridge.height
+        const gn = gw * gh
+        const src = ridgeOn.ground.field
+        const boxU = (a, b) => {
+          const norm = 1 / (2 * r + 1)
+          for (let j = 0; j < gh; j++) {
+            const row = j * gw
+            let acc = 0
+            for (let i = -r; i <= r; i++) acc += a[row + (i < 0 ? 0 : i >= gw ? gw - 1 : i)]
+            for (let i = 0; i < gw; i++) {
+              b[row + i] = acc * norm
+              const out = i - r
+              const inn = i + r + 1
+              acc += a[row + (inn >= gw ? gw - 1 : inn)] - a[row + (out < 0 ? 0 : out)]
+            }
+          }
+        }
+        const boxV = (a, b) => {
+          const norm = 1 / (2 * r + 1)
+          for (let i = 0; i < gw; i++) {
+            let acc = 0
+            for (let j = -r; j <= r; j++) acc += a[(j < 0 ? 0 : j >= gh ? gh - 1 : j) * gw + i]
+            for (let j = 0; j < gh; j++) {
+              b[j * gw + i] = acc * norm
+              const out = j - r
+              const inn = j + r + 1
+              acc += a[(inn >= gh ? gh - 1 : inn) * gw + i] - a[(out < 0 ? 0 : out) * gw + i]
+            }
+          }
+        }
+        const blurred = new Float32Array(gn)
+        const scratch = new Float32Array(gn)
+        boxU(src, scratch)
+        boxV(scratch, blurred)
+        boxU(blurred, scratch)
+        boxV(scratch, blurred)
+
+        const hx = r * (WORLD_SIZE / (gw - 1))
+        const hz = r * (WORLD_SIZE / (gh - 1))
+        const invXX = 1 / (hx * hx)
+        const invZZ = 1 / (hz * hz)
+        const invXZ = 1 / (4 * hx * hz)
+
+        const DIRS = 400
+        const errs = []
+        for (let i = 0; errs.length < DIRS && i < 200000; i++) {
+          const p = measureSite(i)
+          const u = (p.x + WORLD_HALF) * ridgeOn.ridge._invX
+          const v = (p.z + WORLD_HALF) * ridgeOn.ridge._invZ
+          const ti = Math.round(u)
+          const tj = Math.round(v)
+          if (ti < 0 || tj < 0 || ti >= gw || tj >= gh) continue
+          // Gated ground only. On flat or concave ground the axis is arbitrary by
+          // construction and comparing two arbitrary numbers proves nothing.
+          if (ridgeOn.ridge.ridge[si][tj * gw + ti] <= 128) continue
+          const im = ti - r < 0 ? 0 : ti - r
+          const ip = ti + r >= gw ? gw - 1 : ti + r
+          const jm = (tj - r < 0 ? 0 : tj - r) * gw
+          const jp = (tj + r >= gh ? gh - 1 : tj + r) * gw
+          const j0 = tj * gw
+          const c = blurred[j0 + ti]
+          const hxx = (blurred[j0 + ip] - 2 * c + blurred[j0 + im]) * invXX
+          const hzz = (blurred[jp + ti] - 2 * c + blurred[jm + ti]) * invZZ
+          const hxz = (blurred[jp + ip] - blurred[jm + ip] - blurred[jp + im] + blurred[jm + im]) * invXZ
+          const direct = 0.5 * Math.atan2(2 * hxz, hxx - hzz)
+          const read = 0.5 * Math.atan2(ridgeOn.ridge._linear(ridgeOn.ridge.s2[si], u, v) - 127.5, ridgeOn.ridge._linear(ridgeOn.ridge.c2[si], u, v) - 127.5)
+          const wrapped = Math.abs(direct - read) % Math.PI
+          errs.push((Math.min(wrapped, Math.PI - wrapped) * 180) / Math.PI)
+        }
+        errs.sort((a, b) => a - b)
+        const qAt = (q) => errs[Math.min(errs.length - 1, Math.floor(q * errs.length))]
+        check(
+          errs.length === DIRS && qAt(0.5) < 2,
+          "the baked director is the Hessian's own axis, mod pi -- the double angle carries it across the 0/pi wrap intact",
+          `median ${qAt(0.5).toFixed(3)} deg, p95 ${qAt(0.95).toFixed(3)} deg over ${errs.length} gated sites at the ${r}-texel scale`
+        )
+      }
+
+      // SHATTER IS THE OTHER OPERATOR OVER THE SAME BAKE, AND EVERY ASSERTION
+      // BELOW IS AIMED AT A FAILURE MODE `ridge` ACTUALLY HAS.
+      //
+      // Same gate, same three scales, same band limit, same units of metres --
+      // ridge.js builds ONE RidgeField and both knobs read it, which is why the
+      // probes here reuse `ridgeOn.ridge` rather than baking a second copy. Only
+      // the operator differs, so this section is a controlled comparison and not
+      // a description of a new term.
+      //
+      // IT MUST NOT STRIPE, and that is the assertion the operator exists for.
+      // `ridge` filters noise ACROSS the crest, so what survives is a function of
+      // along-crest position alone; the level sets of a function of one variable
+      // are parallel lines, and |N| creases at every zero crossing. That is
+      // corduroy at a fixed spacing -- the standard recipe for a fingerprint
+      // texture -- and no amplitude fixes it. Measured as an autocorrelation
+      // revival along transects: ridge's correlation comes back up after its first
+      // zero crossing, which is what periodic spacing MEANS, and shatter's does
+      // not because a tall shard overruns its neighbours and the spacing sets
+      // itself. Both are measured in the same run on the same transects so the
+      // comparison is one number against another and not against a remembered one.
+      //
+      // IT MUST BE FACETED. Within a facet the surface is a plane and the second
+      // difference is near zero; all the curvature is at the edges between facets.
+      // A noise band spreads the same curvature evenly instead. So the statistic
+      // is the CONCENTRATION of local curvature, p95 over median, and it is a
+      // ratio of two quantiles of one distribution -- invariant under the knob, so
+      // three terms carrying different metres can be compared without matching
+      // their amplitudes first. Measured on each term ALONE rather than on the
+      // composed field, for the reason the sharpen block records at length: the
+      // import's own curvature tail is so heavy that nothing estimated through it
+      // converges.
+      //
+      // IT MUST HAVE NO LATTICE SEAM. `_shatterRaw` searches the 3x3 cell
+      // neighbourhood only, which is sufficient exactly while no shard can reach
+      // out of its own cell. Violate that and the flank is truncated at a straight
+      // line one cell out -- a faint square grid pressed over the whole world, and
+      // silent. Asserted from both ends: walk fine steps and find no cliff, and
+      // hand the constructor a pair that breaks the bound and watch it refuse.
+      {
+        const shatterKnob = knobOf('shatter')
+        const shatterOff = mk({ shatter: shatterKnob.off })
+        const shatterOn = mk({ shatter: shatterKnob.on })
+        const cragRef = mk({ crag: knobOf('crag').on })
+        const shatterAt = (x, z, cell) => ridgeOn.ridge.atShatter(x, z, cell, shatterKnob.on)
+        const ridgeAt = (x, z, cell) => ridgeOn.ridge.at(x, z, cell, ridgeKnob.on)
+
+        // OFF IS OFF, on the same terms as every other knob: `===` at every site,
+        // because relief.js promises the branch is skipped and not that the term
+        // evaluates near zero.
+        const SN = 3000
+        let sMismatch = 0
+        let sWorstOff = 0
+        for (let i = 0; i < SN; i++) {
+          const p = measureSite(i)
+          const a = shatterOff.heightAt(p.x, p.z)
+          const b = field.heightAt(p.x, p.z)
+          if (a !== b) { sMismatch++; sWorstOff = Math.max(sWorstOff, Math.abs(a - b)) }
+        }
+        check(sMismatch === 0, 'shatter=0 is the field built with no relief argument at all, bit for bit', `${sMismatch}/${SN} sites differ, worst ${sWorstOff} m`)
+        // And the bake is keyed on this knob too. reliefNeeds folds `shatter` into
+        // the same `ridge` flag, so a miss there would either cost 9 MB and a
+        // Hessian sweep per thread for a term nobody asked for, or -- the other
+        // way round -- leave field.ridge null and make `shatter` alone do nothing
+        // at all while `ridge` plus `shatter` worked fine.
+        check(
+          shatterOff.ridge === null && shatterOn.ridge !== null,
+          'and shatter=0 does not bake the shared structure -- a knob that borrows another one still pays for nothing when it is off',
+          `off: no RidgeField;  on: ${shatterOn.ridge.count} scales of ${shatterOn.ridge.width}x${shatterOn.ridge.height}`
+        )
+
+        // The peak population the block above already defined, kept this time:
+        // high ground, steep with it, which is where both operators are gated on
+        // and the only place a comparison between them means anything.
+        const peaks = []
+        for (let i = 0; i < PEAK_SITES; i++) {
+          if (heights[i] < p90) continue
+          const p = measureSite(i)
+          if (field.slope01At(p.x, p.z) <= PEAK_SLOPE) continue
+          peaks.push({ i, p })
+        }
+
+        // --- no stripes ------------------------------------------------------
+        //
+        // The revival, and the one trap in measuring it: the maximum of r(k) over
+        // all lags is r at one sample, ~0.99, off the monotone decay every
+        // continuous field has near zero. That number says nothing about spacing.
+        // So the search starts at the FIRST ZERO CROSSING -- the correlation has
+        // to have died before it is allowed to come back -- and stops at the
+        // coarsest teeth wavelength, which is read out of the bake rather than
+        // written down because it follows the import's texel size.
+        const STRIPE_T = 120
+        const STRIPE_STEP = 0.5
+        const STRIPE_N = 600
+        const STRIPE_MAXLAG = Math.max(...ridgeOn.ridge.lambda)
+        const revival = (f, x0, z0, dx, dz) => {
+          const v = new Float64Array(STRIPE_N)
+          let m = 0
+          for (let k = 0; k < STRIPE_N; k++) {
+            v[k] = f(x0 + dx * k * STRIPE_STEP, z0 + dz * k * STRIPE_STEP)
+            m += v[k]
+          }
+          m /= STRIPE_N
+          let var0 = 0
+          for (let k = 0; k < STRIPE_N; k++) { v[k] -= m; var0 += v[k] * v[k] }
+          if (!(var0 > 0)) return null
+          const maxLag = Math.min(Math.floor(STRIPE_N / 3), Math.floor(STRIPE_MAXLAG / STRIPE_STEP))
+          let zero = -1
+          const r = new Float64Array(maxLag + 1)
+          for (let k = 0; k <= maxLag; k++) {
+            let s = 0
+            for (let n = 0; n + k < STRIPE_N; n++) s += v[n] * v[n + k]
+            r[k] = s / var0
+            if (zero < 0 && k > 0 && r[k] <= 0) zero = k
+          }
+          if (zero < 0) return null
+          let best = -1
+          let bestK = 0
+          for (let k = zero; k <= maxLag; k++) if (r[k] > best) { best = r[k]; bestK = k }
+          return { best, lag: bestK * STRIPE_STEP, zero: zero * STRIPE_STEP }
+        }
+        const midOf = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)]
+        const rRev = []
+        const sRev = []
+        const rLag = []
+        const sLag = []
+        const rZero = []
+        for (const { i, p } of peaks) {
+          if (rRev.length >= STRIPE_T) break
+          const a = measureAngle(i)
+          const dx = Math.cos(a)
+          const dz = Math.sin(a)
+          const rr = revival((x, z) => ridgeAt(x, z, 0), p.x, p.z, dx, dz)
+          const rs = revival((x, z) => shatterAt(x, z, 0), p.x, p.z, dx, dz)
+          if (!rr || !rs) continue
+          rRev.push(rr.best); rLag.push(rr.lag); rZero.push(rr.zero)
+          sRev.push(rs.best); sLag.push(rs.lag)
+        }
+        // The MEDIAN transect and not the mean one. A revival is a maximum over
+        // lags, so its estimator is biased upward by however noisy any individual
+        // transect happens to be, and a handful of unlucky ones drag a mean around
+        // -- shatter's mean is 0.07 against a median of 0.00, entirely on the
+        // strength of the tail. The median says what the typical transect does,
+        // which is the question.
+        const rMid = midOf(rRev)
+        const sMid = midOf(sRev)
+        console.log(
+          `        autocorrelation over ${rRev.length} ${(STRIPE_STEP * STRIPE_N).toFixed(0)} m transects on peak ground, searched past the first zero crossing ` +
+            `(median ${midOf(rZero).toFixed(0)} m) out to the ${STRIPE_MAXLAG.toFixed(0)} m coarse teeth wavelength:`
+        )
+        console.log(
+          `        ridge=${ridgeKnob.on} revives to ${rMid.toFixed(3)} at a median lag of ${midOf(rLag).toFixed(0)} m,  ` +
+            `shatter=${shatterKnob.on} to ${sMid.toFixed(3)} at ${midOf(sLag).toFixed(0)} m`
+        )
+        check(
+          sMid < rMid * 0.35,
+          'shatter does not stripe -- its correlation dies at the first zero crossing and never comes back',
+          `median revival ${sMid.toFixed(3)} against ridge's ${rMid.toFixed(3)} on the same transects`
+        )
+        check(
+          rMid > 0.05,
+          'and the instrument can see corduroy, because ridge really does have it -- this is the failure the operator was written to answer',
+          `ridge revives to ${rMid.toFixed(3)} at a median lag of ${midOf(rLag).toFixed(0)} m, about half its ${STRIPE_MAXLAG.toFixed(0)} m coarse teeth wavelength`
+        )
+
+        // --- faceted, not merely displaced -----------------------------------
+        const concentration = (on) => {
+          const c = []
+          let d2 = 0
+          for (const { i, p } of peaks) {
+            const term = (x, z) => on.heightAt(x, z) - field.heightAt(x, z)
+            const a = measureAngle(i)
+            const cx = Math.cos(a) * LAG
+            const cz = Math.sin(a) * LAG
+            c.push(Math.abs(term(p.x + cx, p.z + cz) - 2 * term(p.x, p.z) + term(p.x - cx, p.z - cz)))
+            const d = term(p.x, p.z)
+            d2 += d * d
+          }
+          c.sort((a, b) => a - b)
+          const q = (t) => c[Math.min(c.length - 1, Math.floor(t * c.length))]
+          return { ratio: q(0.95) / q(0.5), med: q(0.5), p95: q(0.95), disp: Math.sqrt(d2 / c.length) }
+        }
+        const cCrag = concentration(cragRef)
+        const cRidge = concentration(ridgeOn)
+        const cShatter = concentration(shatterOn)
+        console.log(
+          `        ${LAG} m curvature of each term alone over ${peaks.length} peak sites, p95 / median:  ` +
+            `crag=${knobOf('crag').on} ${cCrag.ratio.toFixed(1)}x,  ridge=${ridgeKnob.on} ${cRidge.ratio.toFixed(1)}x,  shatter=${shatterKnob.on} ${cShatter.ratio.toFixed(1)}x`
+        )
+        console.log(
+          `        (median ${cCrag.med.toFixed(4)} / ${cRidge.med.toFixed(4)} / ${cShatter.med.toFixed(4)} m against p95 ${cCrag.p95.toFixed(4)} / ${cRidge.p95.toFixed(4)} / ${cShatter.p95.toFixed(4)} m, ` +
+            `displacing ${cCrag.disp.toFixed(2)} / ${cRidge.disp.toFixed(2)} / ${cShatter.disp.toFixed(2)} m rms)`
+        )
+        check(
+          cShatter.ratio > Math.max(cCrag.ratio, cRidge.ratio) * 1.5,
+          'shatter puts its curvature on edges and leaves the facets between them flat -- crisper than either noise band',
+          `${cShatter.ratio.toFixed(1)}x against crag ${cCrag.ratio.toFixed(1)}x and ridge ${cRidge.ratio.toFixed(1)}x`
+        )
+
+        // --- continuous everywhere, with no lattice seam ---------------------
+        //
+        // A 1 cm step is two orders of magnitude below the finest shard, so a
+        // truncated flank cannot hide inside one: the reach failure is a step in
+        // the VALUE, and a value step of any size shows up here as a slope no
+        // face has. Measured on the term alone at cell 0, where the pyramid edges
+        // are perfectly sharp and there is no rounding to soften anything.
+        const SEAM_T = 16
+        const SEAM_STEP = 0.01
+        const SEAM_N = 20000
+        let worstJump = 0
+        let liveTerm = 0
+        for (let t = 0; t < SEAM_T; t++) {
+          const { i, p } = peaks[(t * 7) % peaks.length]
+          const a = measureAngle(i)
+          const dx = Math.cos(a)
+          const dz = Math.sin(a)
+          let prev = shatterAt(p.x, p.z, 0)
+          for (let k = 1; k < SEAM_N; k++) {
+            const v = shatterAt(p.x + dx * k * SEAM_STEP, p.z + dz * k * SEAM_STEP, 0)
+            const jump = Math.abs(v - prev)
+            if (jump > worstJump) worstJump = jump
+            if (Math.abs(v) > liveTerm) liveTerm = Math.abs(v)
+            prev = v
+          }
+        }
+        console.log(
+          `        ${SEAM_T} transects of ${(SEAM_N * SEAM_STEP).toFixed(0)} m walked at ${(SEAM_STEP * 100).toFixed(0)} cm: worst step ${worstJump.toFixed(4)} m, ` +
+            `a slope of ${(worstJump / SEAM_STEP).toFixed(2)}, over a term reaching ${liveTerm.toFixed(1)} m`
+        )
+        check(
+          worstJump < 0.05,
+          'the shatter surface is continuous -- the steepest 1 cm step is a face, not a cliff, so no shard is truncated at a cell wall',
+          `worst ${worstJump.toFixed(4)} m over ${SEAM_STEP * 100} cm (slope ${(worstJump / SEAM_STEP).toFixed(2)}) against a 0.05 m limit`
+        )
+        check(
+          liveTerm > 1,
+          'and the transects ran over real shards, so that is not continuity by inaction',
+          `the term reaches ${liveTerm.toFixed(1)} m along them`
+        )
+        // THE GUARD ITSELF, because the check above can only see the parameters
+        // that shipped. taper 1.8 with tilt 0.6 is the pair the constant carried
+        // until the reach bound was corrected: 1/(taper - tilt) is 0.83 cells and
+        // reads legal, but a Chebyshev level set is a SQUARE and its corners stand
+        // at sqrt(2) times its inradius, so the true reach is 1.18 cells and the
+        // 3x3 evaluator was clipping flanks. A guard that only refuses the
+        // obviously broken pairs would not have caught it.
+        let guardThrew = false
+        let guardMsg = ''
+        try {
+          new RidgeField(hm, { seed: WORLD_SEED, taper: 1.8, tilt: 0.6 })
+        } catch (e) {
+          guardThrew = true
+          guardMsg = e.message
+        }
+        check(
+          guardThrew && /shard/.test(guardMsg),
+          'and a taper/tilt pair whose shards would leave their own cell is REFUSED at construction rather than drawing a square grid over the world',
+          guardThrew ? guardMsg.replace(/^RidgeField: /, '') : 'taper 1.8, tilt 0.6 was accepted'
+        )
+
+        // --- it lands on the spines ------------------------------------------
+        //
+        // Held against ridge and crag on the same sites, and the honest reading is
+        // that neither directed term is anywhere near crag's selectivity: crag has
+        // a hard slope gate and is EXACTLY zero on valley floors, while the
+        // ridgeness gate is a smoothstep over a percentile and leaves both of
+        // these terms with something to say on gentle ground. The claim being
+        // checked is therefore the modest one -- more on the spines than off them
+        // -- and the number is printed so it stays modest.
+        const GENTLE = CRAG_SLOPE_LO
+        const selectivity = (on) => {
+          let p2 = 0
+          let pn = 0
+          let g2 = 0
+          let gn = 0
+          for (let i = 0; i < PEAK_SITES; i++) {
+            const p = measureSite(i)
+            const d = on.heightAt(p.x, p.z) - field.heightAt(p.x, p.z)
+            const s = field.slope01At(p.x, p.z)
+            if (heights[i] >= p90 && s > PEAK_SLOPE) { p2 += d * d; pn++ }
+            else if (s <= GENTLE) { g2 += d * d; gn++ }
+          }
+          return { peak: Math.sqrt(p2 / pn), gentle: Math.sqrt(g2 / gn), pn, gn }
+        }
+        const selShatter = selectivity(shatterOn)
+        const selRidge = selectivity(ridgeOn)
+        const selCrag = selectivity(cragRef)
+        console.log(
+          `        rms on ${selShatter.pn} peak sites against ${selShatter.gn} sites under slope01 ${GENTLE}:  ` +
+            `shatter ${selShatter.peak.toFixed(3)} / ${selShatter.gentle.toFixed(3)} m (${(selShatter.peak / selShatter.gentle).toFixed(1)}x),  ` +
+            `ridge ${selRidge.peak.toFixed(3)} / ${selRidge.gentle.toFixed(3)} m (${(selRidge.peak / selRidge.gentle).toFixed(1)}x),  ` +
+            `crag ${selCrag.peak.toFixed(3)} / ${selCrag.gentle.toFixed(3)} m (gated off exactly)`
+        )
+        check(
+          selShatter.peak > selShatter.gentle * 1.5,
+          'shatter cuts harder on the spines than on gentle ground',
+          `${(selShatter.peak / selShatter.gentle).toFixed(1)}x, against the ${(selRidge.peak / selRidge.gentle).toFixed(1)}x ridge manages on the same sites`
+        )
+
+        // --- and it fades with the mesh --------------------------------------
+        //
+        // Same smoothstep on the same baked wavelengths as `ridge`, so the same
+        // `dead` cell silences it, and for the same reason: a term that outlived
+        // the terms beside it would change the character of the ground with
+        // viewing distance.
+        //
+        // The ladder is HALF EACH BAKED WAVELENGTH rather than an even split of
+        // the range, because those are the cells where the weights are exactly 0
+        // or exactly 1 and nothing is caught halfway. Each rung therefore holds
+        // one scale fewer than the one above it, and the term should step down as
+        // each one goes.
+        const ladder = [0, ...ridgeOn.ridge.lambda.map((l) => l / 2)]
+        const cellStats = (cell) => {
+          let s = 0
+          let s2 = 0
+          let alive = 0
+          for (let i = 0; i < SN; i++) {
+            const p = measureSite(i)
+            const v = shatterAt(p.x, p.z, cell)
+            if (v !== 0) alive++
+            s += v
+            s2 += v * v
+          }
+          return { rms: Math.sqrt(s2 / SN), mean: s / SN, alive }
+        }
+        const rungs = ladder.map(cellStats)
+        const last = rungs[rungs.length - 1]
+        console.log(
+          `        shatter=${shatterKnob.on} against cell size, over ${SN} sites: ` +
+            ladder.map((c, k) => `${c.toFixed(1)} m -> ${rungs[k].rms.toFixed(3)} m (${rungs[k].alive} alive)`).join(',  ')
+        )
+        let fades = true
+        for (let k = 1; k < rungs.length; k++) if (!(rungs[k].rms < rungs[k - 1].rms)) fades = false
+        check(
+          fades,
+          'each baked scale drops out of the shatter term at exactly half its own wavelength, and the term steps down as each one goes',
+          `${rungs.map((r) => r.rms.toFixed(3)).join(' -> ')} m over ${ladder.length} rungs`
+        )
+        check(
+          last.alive === 0,
+          `every scale is band-limited away by a ${dead.toFixed(1)} m cell -- the term is EXACTLY 0, not small`,
+          `${last.alive}/${SN} sites still moving`
+        )
+        // WHAT IS NOT ASSERTED, because it is not true: the fade is not monotone
+        // BETWEEN those rungs, and the term does not stay zero-mean across them.
+        // `_shatterRaw`'s soft max widens the pyramid edges by the cell, which
+        // shaves every shard, while `_sMean` is measured once at round 0 and never
+        // tracks it -- so coarsening pushes the whole term down by a constant that
+        // grows to over a metre, and rms picks that constant back up as mean^2
+        // after the shards themselves have thinned. ridge.js names this
+        // approximation and calls it second-order; the numbers below are what
+        // second-order is worth here, and they are printed so that a later reader
+        // finding the bump does not take it for a band-limit fault.
+        const mid = cellStats(dead / 2)
+        console.log(
+          `        (not monotone in between: a ${(dead / 2).toFixed(1)} m cell reads ${mid.rms.toFixed(3)} m rms against ${rungs[rungs.length - 2].rms.toFixed(3)} m at ` +
+            `${ladder[ladder.length - 2].toFixed(1)} m, and the mean sinks from ${rungs[0].mean.toFixed(3)} m at cell 0 to ${mid.mean.toFixed(3)} m -- the rounding shaves the shards, the mean table does not follow)`
+        )
+      }
+    }
+
     // EROSION CONSERVES MASS AND RESPECTS THE DEAD BAND.
     //
     // thermalErode is the one term here that rewrites the field the world is
@@ -1369,7 +2169,11 @@ export async function run({ heightmap } = {}) {
       const stride = Number(/stride:\s*([0-9.]+)/.exec(src)[1])
       const offWalk = walkableFraction((x, z) => field.heightAt(x, z), maxTan, stride)
       const rows = []
-      for (const key of ['sharpen', 'exposure', 'crag', 'erode']) {
+      // `shatter` earns its own row rather than riding in `everything`: it
+      // displaces roughly twice what `ridge` does on peak ground, so it is the
+      // knob most likely to seal a pass, and burying it in the all-on figure is
+      // exactly the not-noticing this table exists to prevent.
+      for (const key of ['sharpen', 'exposure', 'crag', 'ridge', 'shatter', 'erode']) {
         const k = knobOf(key)
         const f = mk({ [key]: k.on })
         rows.push({ key, value: k.on, frac: walkableFraction((x, z) => f.heightAt(x, z), maxTan, stride) })

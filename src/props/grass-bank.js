@@ -4,15 +4,22 @@ import { geometryBytes } from './fern.js' // generic; it lives there for histori
 import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
-// The grass tuft bank: every blade of grass in the world, built at load.
+// The grass bank: every blade of grass in the world, built at load.
+//
+// TWO BANKS FOR TWO JOBS, and v2/render/grass.js' header is where the choice
+// between them is argued. buildGrassBank below is the CLUMP -- what a grassy
+// POINT gets, three quads crossed on a footprint, on a ladder down to a baked
+// billboard. buildGrassStripBank, further down, is the STRIP -- what a grassy
+// REGION gets, and the default, because scattering lines of grass covers ground
+// at a third of the triangles a carpet of clumps costs.
 //
 // This is the smallest bank in the project by a wide margin and that is the
 // point. A grass tuft is N QUADS STANDING ON A FOOTPRINT, all wearing the same
-// greyscale cutout -- there is nothing else to it -- so the whole ladder is
-// three geometries totalling 12 triangles, and every scrap of variety a player
-// sees comes from per-instance yaw, scale and tint. See LAYER.GRASS_TUFT in
-// textures.js for why one greyscale slice serves every colour of grass we will
-// ever want.
+// greyscale cutout -- there is nothing else to it -- so the whole clump ladder
+// is three geometries totalling 12 triangles, and every scrap of variety a
+// player sees comes from per-instance yaw, scale and tint. See LAYER.GRASS_TUFT
+// in textures.js for why one greyscale slice serves every colour of grass we
+// will ever want.
 //
 // IT IS THE SAME ASSET AS /props gen_grass_tall, rebuilt rather than loaded.
 // `tools/trees/generate.mjs` authors that GLB out of exactly this construction
@@ -84,6 +91,34 @@ export function grassCardSize(height) {
 export function grassCardAspect(height) {
   return grassCardSize(height).width / height
 }
+
+// The tuft bed's own height range -- HEIGHT in v2/render/grass.js. Repeated here
+// because the dependency only runs one way (render/grass.js imports this file,
+// never the reverse), and gated against the real one in check-grass.mjs so the
+// copy cannot go stale silently.
+export const GRASS_HEIGHT_REF = [0.5, 1.5]
+
+/**
+ * The AVERAGE card the tuft bed draws, which is the clump any other grass system
+ * has to match if the two are to look like the same meadow.
+ *
+ * Averaged properly rather than evaluated at the mean height, because the width
+ * law is a square root and E[sqrt(h)] is not sqrt(E[h]) -- close here (1% at
+ * this range) but wrong in principle, and this is the number two other files
+ * size themselves from.
+ *
+ *   E[sqrt(h)] over h uniform on [lo, hi] = (2/3)(hi^1.5 - lo^1.5)/(hi - lo)
+ */
+export function grassCardMean([lo, hi] = GRASS_HEIGHT_REF) {
+  const eSqrt = (2 / 3) * (hi ** 1.5 - lo ** 1.5) / (hi - lo)
+  return {
+    width: (GRASS_BASE.width * (Math.sqrt(3) / 2) / Math.sqrt(GRASS_BASE.height)) * eSqrt,
+    height: (lo + hi) / 2,
+  }
+}
+
+/** 0.635 m wide by 1.0 m tall. What one clump of grass IS in this world. */
+export const GRASS_CLUMP = grassCardMean()
 
 // Cards per tier, finest first. 3 / 2 / 1 is the manifest's ladder and the
 // bottom of it is the interesting entry: ONE plane is only legal because the
@@ -242,9 +277,11 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// THE STRIP: an experiment in buying the same meadow with a third of the
-// triangles. Switched on by `style: 'strips'` in v2/render/grass.js; the tuft
-// ladder above is untouched and is still the default.
+// THE STRIP: HOW A REGION IS GRASSED, and it buys the same meadow for a third
+// of the triangles. This is the default -- `style: 'strips'` in
+// v2/render/grass.js, which is where the two strategies are laid out. The clump
+// ladder above is untouched and is what a grassy POINT gets, because a strip is
+// a LINE of grass and cannot be one plant standing in one place.
 //
 // A strip is ONE FLAT RECTANGLE, several metres wide and about a tuft tall,
 // whose u runs 0..tiles so the atlas' repeat wrap draws the same cutout that
@@ -261,23 +298,24 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
 // triangle is therefore:
 //
 //   billboard tuft         2 tri   0.83 x 1.06 = 0.88 m2   0.44 m2/tri
-//   strip, 3.5 x 1.2 m     2 tri   0.64 x 2.85 x 1.2 x
-//                                  0.62 drawn   = 1.36 m2  0.68 m2/tri
+//   strip, 3.0 x 1.33 m    2 tri   0.64 x 2.96 x 1.33 x
+//                                  0.63 drawn   = 1.60 m2  0.80 m2/tri
 //
-// so a strip at the size the bed actually uses is worth about 1.5x -- down from
-// the 3.1x this opened at, because the grass was too big at that size and the
-// range was cut by 1.5x, and a strip's area per triangle goes as the SQUARE of
-// its height. Everything else here is unchanged by that; the up-to-date numbers
-// are printed by check-grass.mjs rather than kept here.
+// so a strip at the size the bed actually uses is worth about 1.8x. It has been
+// as high as 3.1 and as low as 1.4 across the resizings, because a strip's area
+// per triangle goes as the SQUARE of its height and nothing else here moves that
+// far; the live numbers are printed by check-grass.mjs rather than kept here.
 //
 // AND THAT IS THE FAR-FIELD COMPARISON ONLY. Inside 8 m the tuft bed is running
 // its 3-plane LOD0 and putting 3.7 m2 of card over every square metre of ground;
-// the strip bed, which has no ladder to climb, puts 2.4. That ratio -- 0.64x
-// where the player is standing, against 1.4x out past 20 m -- is what "it looks
-// sparser" was, and it is measured per distance ring in check-grass.mjs. The
-// eventual shape of this is probably strips FAR and tufts NEAR, or a crossed
-// pair up close; the everywhere version is what is built here, because it is
-// the one you can look at and judge.
+// the strip bed, which has no ladder to climb, puts 2.6. That ratio -- 0.71x
+// where the player is standing, against 1.6x out past 20 m -- is what "it looks
+// sparser" was, and it is measured per distance ring in check-grass.mjs. NO
+// AMOUNT OF DENSITY CLOSES IT: a near tuft is three cards at 60 degrees that
+// never all go edge-on, a strip clump is one card at a fixed yaw, and the gap is
+// in the geometry rather than the count. The eventual shape of this is probably
+// strips FAR and tufts NEAR, or a crossed pair up close; the everywhere version
+// is what is built here, because it is the one you can look at and judge.
 //
 // IT MUST STAY AT TWO TRIANGLES, and that is the whole design constraint. The
 // obvious fix for a flat card on lumpy ground is to segment it and drop each
@@ -290,21 +328,18 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
 // GRASS_FRAY in textures.js) so grass entering the ground reads as grass.
 // ---------------------------------------------------------------------------
 
-// Metres: the height one CLUMP is drawn at in the strip bed, which is the
-// height whose card aspect a tile has to borrow. It is the mean of STRIP_HEIGHT
-// in render/grass.js times the mean of the per-tile shrink in material.js --
-// both of which live elsewhere, so check-grass.mjs gates that this still
-// matches the bed rather than trusting the number to stay true.
-const STRIP_CLUMP_HEIGHT = 0.9
-
-// How wide a tile is drawn, per unit of its height.
+// How wide a tile is drawn, per unit of its height: the AVERAGE TUFT CARD's own
+// aspect, so that a strip's clump and a tuft's clump are the same piece of
+// grass. STRIP_HEIGHT in render/grass.js sizes the other axis to match, and
+// check-grass.mjs gates the pair of them against GRASS_CLUMP rather than trusting
+// either file to have been updated with the other.
 //
 // THIS WAS 1 AND THAT WAS THE STRETCH BUG. A square tile is the obvious answer
 // -- the cutout is a square photograph -- but the tuft bed never drew that photo
 // square (see grassCardSize), so switching to strips widened every clump by
 // 1/0.64 = 1.56x against what the player was used to, and by nearly 2x against
-// the tall tufts. Borrowing the tuft's own aspect is what puts it back.
-export const STRIP_TILE_ASPECT = grassCardAspect(STRIP_CLUMP_HEIGHT)
+// the tall tufts.
+export const STRIP_TILE_ASPECT = GRASS_CLUMP.width / GRASS_CLUMP.height
 
 // The strip's REFERENCE proportions, and how many copies of the cutout those
 // proportions bake into `uvProj.x`.
@@ -323,7 +358,7 @@ export const STRIP_TILE_ASPECT = grassCardAspect(STRIP_CLUMP_HEIGHT)
 // IT IS NOT THE LENGTH OF A STRIP. The fragment stage rescales `uvProj.x` by the
 // instance's own x/y scale ratio (see the strip block in material.js), so the
 // number of clumps a strip actually draws is whatever length render/grass.js
-// gave it -- STRIP_TILES there, currently 1 to 6 -- and nothing here caps it.
+// gave it -- STRIP_TILES there, currently 3 to 6 -- and nothing here caps it.
 // What this geometry fixes is only the PROPORTION at which a tile comes out
 // unstretched, which is the one thing the shader cannot work out for itself.
 export const STRIP_BASE = { width: 4, height: 1 / STRIP_TILE_ASPECT }

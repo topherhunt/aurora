@@ -241,6 +241,18 @@ export class Stars {
     ).normalize()
   }
 
+  // Call this whenever the renderer's pixel ratio changes -- a render-scale
+  // slider, a monitor swap, anything that resizes the drawing buffer.
+  // gl_PointSize is a count of FRAMEBUFFER pixels, so a star's size on screen is
+  // fixed only as long as the framebuffer is. Halve the render scale without
+  // telling the field and every star keeps its pixel count while the buffer it
+  // sits in shrinks: it covers twice the fraction of the screen, the upscale to
+  // CSS size blows it up again, and additive blending turns the result into
+  // burned-in blobs rather than stars.
+  setPixelRatio(r) {
+    this.material.uniforms.uPixel.value = r
+  }
+
   // `hour` is the clock's monotonic elapsed hours, so the field keeps turning
   // across a time skip instead of snapping back.
   update(head, state, hour, elapsedReal) {

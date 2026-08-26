@@ -173,11 +173,19 @@ export const LEYLINE = {
     vec4 auroraField( vec2 p, float t ) {
       p += vec2( u_fieldSeed * 37.13, u_fieldSeed * 91.7 );
 
-      vec2 w = warp2( p, t * u_leyMorph, u_leyWarp, u_leyWarpFreq );
+      vec2 w = warp2( p, t * u_leyMorph, u_leyWarp, u_leyWarpFreq, u_warpStages );
 
       // The potential. Read y off the warped plane, then add an independent
       // field so the contours are not a function of one axis.
-      float phi = w.y * u_leyFreq + ( gfbm2( w * u_leyBendFreq ) - 0.5 ) * u_leyBend;
+      //
+      // The bend is a three-octave gradient fBm, which makes it the second most
+      // expensive term in this function after the warp itself, so it is gated
+      // on its own amount like the frame's optional terms are. Uniform-valued
+      // test, so the branch is coherent across the whole draw.
+      float phi = w.y * u_leyFreq;
+      if ( u_leyBend > 0.0 ) {
+        phi += ( gfbm2( w * u_leyBendFreq ) - 0.5 ) * u_leyBend;
+      }
 
       // 1 on a contour, 0 midway between two of them -- the whole family in one
       // triangle wave, at a cost independent of how many channels there are.
@@ -186,17 +194,23 @@ export const LEYLINE = {
       float along = w.x * u_leyAlong;
       float id = floor( phi + 0.5 );
 
-      // Which channels are lit at all, on a slow beat of their own.
-      float gate = mix( 1.0,
-                        smoothstep( u_leyGate, u_leyGate + 0.30,
-                                    vnoise2( vec2( id * 13.71, t * 0.045 ) ) ),
-                        u_leyGateAmt );
-
-      // ...and where along its length a lit one is actually burning.
-      gate *= mix( 1.0,
-                   smoothstep( 0.22, 0.72,
-                               vnoise2( vec2( along * u_leyPatch, id * 5.13 + 40.0 ) ) ),
-                   u_leyPatchAmt );
+      // Which channels are lit at all, on a slow beat of their own -- and where
+      // along its length a lit one is actually burning. One value-noise lookup
+      // each, both gated on their own amount so that a preset which turns them
+      // off stops paying for them.
+      float gate = 1.0;
+      if ( u_leyGateAmt > 0.0 ) {
+        gate *= mix( 1.0,
+                     smoothstep( u_leyGate, u_leyGate + 0.30,
+                                 vnoise2( vec2( id * 13.71, t * 0.045 ) ) ),
+                     u_leyGateAmt );
+      }
+      if ( u_leyPatchAmt > 0.0 ) {
+        gate *= mix( 1.0,
+                     smoothstep( 0.22, 0.72,
+                                 vnoise2( vec2( along * u_leyPatch, id * 5.13 + 40.0 ) ) ),
+                     u_leyPatchAmt );
+      }
 
       return vec4( raw, along, id, gate );
     }

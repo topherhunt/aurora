@@ -405,6 +405,23 @@ export const SNOW_ROCK_LAYERS = [LAYER.ROCK]
 // baked, the moss is already in the picture. Mossing it again would double it.
 export const MOSS_LAYERS = [LAYER.ROCK]
 
+// --- what LAYER.ROCK actually looks like -------------------------------------
+//
+// The mean of rocks/stone.png in LINEAR space, per channel. Measured off the
+// shipped file (scripts/check-rocks.mjs re-measures it and fails if these drift
+// more than 2%), and it lives here rather than beside either of its two callers
+// because it is a property of the TILE and both of them need it for the same
+// reason: to divide the photograph's own brightness and warmth back out.
+//
+// stone.png is a photograph of granite -- warm, and dark at a mean luma of
+// 88/255. Anything that multiplies it by an authored colour has to know that, or
+// it is not tinting the tile, it is tinting the tile AND darkening it AND
+// pushing it further orange. rock-bank.js divides by this to turn a tint into a
+// destination rather than a reduction; terrain-material.js divides by it to turn
+// the tile into a neutral contrast field it can lay over a cliff without moving
+// the terrain palette.
+export const ROCK_TILE_MEAN = [0.1148, 0.0933, 0.077]
+
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
 //

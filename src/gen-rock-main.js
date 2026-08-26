@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildRock, rockClass, ROCK_DEFAULTS, ROCK_TIERS, ROCK_LADDERS } from './props/rock.js'
-import { ROCK_VARIANTS, TINTS, rockParams } from './props/rock-bank.js'
+import { ROCK_VARIANTS, TINTS, TINT_GAIN, rockParams } from './props/rock-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
@@ -195,9 +195,15 @@ function syncMaterials() {
   // boulders a hundred metres apart in elevation wear different amounts.
   setSnow(params.snow)
   setMoss(params.moss)
-  TINTS.forEach(([, hex], i) => {
+  // TINT_GAIN, not the hex. A tint is a DESTINATION now (see rock-bank.js) and
+  // the gain that reaches it is a linear-space multiplier that mostly runs ABOVE
+  // 1.0, because stone.png is a dark warm photograph rather than the pale
+  // near-neutral tile the old palette was cut against. setRGB with no colour
+  // space argument writes into the working space, which is linear, which is
+  // where the shader's multiply happens.
+  TINT_GAIN.forEach((gain, i) => {
     const m = materials[i]
-    m.color.setHex(hex, THREE.SRGBColorSpace).multiplyScalar(params.brightness)
+    m.color.setRGB(gain[0], gain[1], gain[2]).multiplyScalar(params.brightness)
     m.wireframe = wireframe
     m.needsUpdate = true
   })
@@ -531,13 +537,16 @@ function drawSwatch(stats) {
   const px = layerPixels(layer)
   const rgb = new ImageData(TEX_SIZE, TEX_SIZE)
   const tinted = new ImageData(TEX_SIZE, TEX_SIZE)
-  const tint = new THREE.Color().setHex(TINTS[tintIndex][1], THREE.SRGBColorSpace)
   // Multiply in sRGB for the swatch. The shader does it in linear and this is a
   // preview of a colour decision, not of a pixel -- but say so rather than let
-  // someone match a number off it.
-  const tr = Math.sqrt(tint.r)
-  const tg = Math.sqrt(tint.g)
-  const tb = Math.sqrt(tint.b)
+  // someone match a number off it. The gain runs above 1, so the right-hand
+  // patch can and should clip in its highlights: that is the real cost of
+  // brightening a dark tile and it should be visible here rather than only in
+  // the world.
+  const gain = TINT_GAIN[tintIndex]
+  const tr = Math.sqrt(gain[0])
+  const tg = Math.sqrt(gain[1])
+  const tb = Math.sqrt(gain[2])
 
   for (let i = 0; i < TEX_SIZE * TEX_SIZE; i++) {
     const o = i * 4
@@ -576,13 +585,14 @@ function drawSwatch(stats) {
 
   document.getElementById('swatchnote').innerHTML = cardMode
     ? `The baked card. This is the only place you can read what was actually photographed -- whether the silhouette survived, whether the dilate pass left a sooty rim.`
-    : `Left: the tile as shipped, graded bright (mean 142/255) and hard-desaturated so a tint decides the hue. Right: the same tile under <em>${TINTS[tintIndex][0]}</em>. ` +
+    : `Left: the tile as shipped -- a photograph of granite, warm and dark at a mean luma of 88/255. Right: the same tile taken to <em>${TINTS[tintIndex][0]}</em>. ` +
+      `A tint is a destination, not a multiply: the gain divides the tile's own mean out of the way, so it brightens and white-balances rather than darkens. ` +
       `This rock covers its widest plan axis with <em>${stats.texRepeat.toFixed(2)}</em> repeats, which is ${stats.texMetres.toFixed(2)} m per tile and a ` +
       `${((stats.texMetres * 1000) / TEX_SIZE).toFixed(0)} mm texel -- but only at THIS size. The tile scales with the rock, so the mm figure moves with <em>size</em> ` +
       `and the repeat count does not. That is the trade: a shape is one picture at every scale, and two rocks of different sizes no longer agree on how big a crystal is.`
 }
 
-// The palette as six patches of the tile under six tints, which is the only
+// The palette as one patch of the tile per tint, which is the only
 // honest way to look at them: a tint swatch on its own says nothing about what
 // the multiply does to a mid-grey speckle.
 function drawPalette() {
@@ -596,11 +606,11 @@ function drawPalette() {
   tmp.width = tmp.height = N
   const tctx = tmp.getContext('2d')
 
-  TINTS.forEach(([name, hex], i) => {
-    const c = new THREE.Color().setHex(hex, THREE.SRGBColorSpace)
-    const tr = Math.sqrt(c.r)
-    const tg = Math.sqrt(c.g)
-    const tb = Math.sqrt(c.b)
+  TINTS.forEach(([name], i) => {
+    const g = TINT_GAIN[i]
+    const tr = Math.sqrt(g[0])
+    const tg = Math.sqrt(g[1])
+    const tb = Math.sqrt(g[2])
     const img = new ImageData(N, N)
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {

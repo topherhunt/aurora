@@ -20,7 +20,7 @@ import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
 import { Rocks } from './render/rocks.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
-import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling } from '../material.js'
+import { setSnow, setMoss, setMossVary, setPropClock, setStripTiling, getStripTiling } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -65,13 +65,15 @@ import { Input } from '../input.js'
 //
 //   The prop scatter is TREES, GRASS, FERNS AND ROCKS, and all of them are TILED,
 //   camera-following scatters that THIN WITH DISTANCE -- full density inside
-//   80 m for trees, 20 m for grass and 35 m for ferns, then halving every time
+//   80 m for trees, 8 m for grass and 35 m for ferns, then halving every time
 //   the distance doubles, out to 1.5 km, 70 m and 90 m respectively. All three
 //   are pure functions of position, so they cover the whole map and the same
 //   plants come back when you walk away and return, and the thinning is what
 //   makes a 1.5 km forest cost ~41k instances instead of the 350k a uniform disc
-//   would need, a 3/m^2 grass carpet 27k instead of 46k, and a 0.5/m^2 fern bed
-//   ~9k instead of the 13k a 90 m disc would need. Each instance also carries
+//   would need, a 3/m^2 grass bed 11k instead of 46k, and a 0.5/m^2 fern bed
+//   ~9k instead of the 13k a 90 m disc would need. Grass thins hardest of the
+//   three, and earliest, because it is the only one whose bed is made of STRIPS
+//   -- see THE TWO STRATEGIES in render/grass.js. Each instance also carries
 //   the distance at which it stops existing, and the prop shader dissolves it
 //   over the last 15% of that, so the rim and the thinning bands fade rather
 //   than pop. The plants' far tiers are camera-facing billboards spun in the
@@ -228,14 +230,14 @@ function loadRelief() {
   }
 }
 
-// Which grass system is standing. 'tufts' is the shipped one; 'strips' is the
-// experiment described in the header of buildGrassStripBank -- one flat card,
-// metres wide, drawing the same cutout several times across itself, at about a
-// third of the triangles for the same amount of grass facing the camera. The
-// panel swaps between them so the two can be compared in the same light on the
-// same hillside, which is the only way to judge whether the strip's flatness
-// costs more than its triangles are worth.
-let grassStyle = 'tufts'
+// Which grass system is standing. 'strips' is how a REGION is grassed and is
+// what stands here -- one flat card, metres wide, drawing the same cutout
+// several times across itself, at a third of the triangles for more grass facing
+// the camera. 'tufts' is the 3-card clump, which is the right answer for a
+// grassy POINT and is stood up here as a whole carpet only so the two can be
+// judged against the same hillside in the same light. See THE TWO STRATEGIES in
+// the header of render/grass.js.
+let grassStyle = 'strips'
 // Whether the prop atlas' PNGs have landed. The tuft's far tier is a photograph
 // of the tuft, so a Grass built after they land has to bake immediately rather
 // than waiting for a promise that has already resolved.
@@ -366,11 +368,25 @@ async function bootWorld() {
   )
 
   bootSay('meshing ...')
-  terrain = new TerrainV2(scene, { heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2 })
+  // The atlas is built HERE, ahead of the terrain, and not down with the trees
+  // where it used to live: the terrain's rock surface wears LAYER.ROCK too, and
+  // createTerrainMaterial decides at compile time whether to declare a sampler
+  // at all, so it has to have the array in hand before the material exists.
+  //
+  // Building it early costs nothing. It is built empty and its image layers land
+  // asynchronously (loadImageLayers, below); the bank and the batches do not wait
+  // on them, so the world has trees and stone from the first frame wearing
+  // whatever the procedural layers already hold.
+  propTextures = buildTextureArray()
+  terrain = new TerrainV2(scene, {
+    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures,
+  })
 
   lighting.patch(terrain.material, {
     mode: 'fragment',
-    cacheKey: 'v2-terrain-shadow',
+    // Bumped with the stone layer: the atlas variant compiles different source
+    // and three keys its program cache on this string alone.
+    cacheKey: 'v2-terrain-shadow-stone',
     // terrain-material.js has carried this varying since v1's surface grain was
     // written and v2 shares the material, so reusing it saves declaring a second
     // varying holding the same value.
@@ -396,12 +412,10 @@ async function bootWorld() {
   player.spawnAt(spawn.x, spawn.z)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
-  // Trees. The atlas is built empty and its image layers land asynchronously;
-  // the bank and the batch do not wait on them, so the world has trees from the
-  // first frame wearing whatever the procedural layers already hold. The card
-  // BAKE does wait, because a photograph taken before the bark has loaded would
+  // Trees. The atlas was built up at the terrain, above, because the terrain
+  // needs it at material-compile time. The card BAKE does wait on the image
+  // layers landing, because a photograph taken before the bark has loaded would
   // be a photograph of nothing -- see Trees.bakeCards.
-  propTextures = buildTextureArray()
   // `ground: terrain` is what stops distant trees floating: a tree's Y comes off
   // the chunk mesh that is actually drawn under it, not off the exact field the
   // chunk's triangles are chording across. See Trees._groundFor.
@@ -463,7 +477,7 @@ async function bootWorld() {
   // this density would be 46,000 instances for the same horizon. See
   // render/grass.js, which lays out where its ~54k triangles go.
   buildGrass(grassStyle, spawn.x, spawn.z)
-  // A/B hooks for the strip experiment, from the console. `M` swaps the system;
+  // A/B hooks for the two grass strategies, from the console. `M` swaps the bed;
   // these tune it without a reload.
   //
   //   v2grass.tiling({ keep, short, flare })  the per-tile treatment, live --
@@ -522,7 +536,12 @@ async function bootWorld() {
   // against its line, which is what rocks.syncBands set from the terrain's own
   // snow band a few lines up.
   setSnow(1)
-  setMoss(0.8)
+  setMoss(0.85)
+  // And spread unevenly from one rock to the next, which is the difference
+  // between a wood that has moss in it and a wood where every stone has been
+  // dipped in the same green. Off by default so /gen-rock's slider still means
+  // what it says; the world is the only thing that turns it on.
+  setMossVary(1)
 
   // ONE loadImageLayers for all three, and the bakes hang off the same promise.
   // Separate calls would be separate decodes of the same PNGs into the same
@@ -885,12 +904,13 @@ addEventListener('keydown', (e) => {
 
   if (fresh.includes('timeSkip')) skipTime()
   if (fresh.includes('auroraPattern')) cycleAurora()
-  // M swaps the whole grass system under the player's feet, in place, so the
-  // two can be judged against the same hillside in the same light. Rebuilding
-  // the bed is ~100 ms of one frame; a swap is not something a player does.
+  // M swaps the region bed for a carpet of the point clump under the player's
+  // feet, in place, so the two can be judged against the same hillside in the
+  // same light. Rebuilding the bed is ~100 ms of one frame; a swap is not
+  // something a player does.
   if (fresh.includes('grassStyle')) {
     player.headPosition(headTmp)
-    buildGrass(grassStyle === 'tufts' ? 'strips' : 'tufts', headTmp.x, headTmp.z)
+    buildGrass(grassStyle === 'strips' ? 'tufts' : 'strips', headTmp.x, headTmp.z)
   }
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped multiplicatively

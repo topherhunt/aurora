@@ -464,14 +464,14 @@ export class Panel {
     kv('queued', Number.isFinite(s.queued) ? String(s.queued) : null, s.queued > 64 ? 'c-bad' : '')
     kv('triDeg', num(s.triDeg, 2))
     // The three prop layers get a row each: count, then what that count is
-    // actually costing in triangles. DESIGN.md §5 allots trees 37k, and the
-    // grass row is the one to watch -- it is the newest and by far the densest,
-    // and at 3 tufts/m^2 it is a fifth of the §5 budget on its own, so `tris`
-    // above going red is most likely to be this line's doing. Grass shows
-    // drawn/resident, because the two differ: the veil (render/grass.js) sets
-    // the already-dithered-away tufts invisible without releasing them, so a
-    // bare resident count would overstate what the triangle figure beside it is
-    // counting.
+    // actually costing in triangles. DESIGN.md §5 allots trees 37k, and grass
+    // is the layer whose row moves most: the region bed is 3/m^2 of scattered
+    // strips and lands around 17k, but the same meadow drawn as 3-card clumps
+    // (M toggles it) is 53k, and that swing alone is enough to send `tris`
+    // above red. Grass shows drawn/resident, because the two differ: the veil
+    // (render/grass.js) sets the already-dithered-away instances invisible
+    // without releasing them, so a bare resident count would overstate what the
+    // triangle figure beside it is counting.
     kv('trees', Number.isFinite(s.treeCount) ? `${s.treeCount} ${(s.treeTris / 1000).toFixed(0)}k` : null)
     kv('grass', Number.isFinite(s.grassCount)
       ? `${s.grassCount - s.grassVeiled}/${s.grassCount} ${(s.grassTris / 1000).toFixed(0)}k`

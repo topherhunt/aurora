@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 
 // ---------------------------------------------------------------------------
 // The terrain material: Lambert + vertex colours + a procedural surface grain.
@@ -80,6 +81,37 @@ const FADE_FAR = 95
 const MICRO_NEAR = 10
 const MICRO_FAR = 40
 
+// ---- The stone layer, and the one place a photograph gets into the terrain.
+//
+// Everything else in this shader is noise. Noise is isotropic and self-similar,
+// which is exactly wrong for a cliff: real rock has BEDDING -- bands, fracture
+// lines, a direction. So the rock surface gets rocks/stone.png, the same tile
+// the boulders wear, so that a boulder sitting against the cliff it fell off
+// reads as the same material rather than as a prop parked on a noise field.
+//
+// TWO OCTAVES, because one cannot cover the range. STONE_METRES is the coarse
+// one at 16 m per tile: that is the bedding, and its features are metres across,
+// so it stays legible from most of the way across a valley and has to fade out
+// far later than anything else here. FINE_METRES is 2 m, added only up close,
+// where the coarse tile has gone soft and there is nothing left to look at.
+//
+// TRIPLANAR, and not optional: the whole point is cliffs, and a cliff is where a
+// flat xz projection stretches a 16 m tile into vertical smears.
+const STONE_METRES = 16
+const FINE_METRES = 2
+// The coarse tile's own fade. Far out past everything else in this file --
+// mipping takes the tile to its own mean at distance, and since the shader
+// divides by that mean the layer converges to a no-op on its own. The fade is
+// therefore about not PAYING for three texture fetches once they stop changing
+// any pixels, rather than about hiding a pop.
+const STONE_NEAR = 220
+const STONE_FAR = 650
+// The fine octave's. A 2 m feature is still ~40 px at 90 m, so it earns a range
+// well past the 10 cm micro layer's 40 m, but it is three more fetches and the
+// coarse layer is carrying the surface by then.
+const FINE_NEAR = 30
+const FINE_FAR = 130
+
 // Values are LINEAR, not sRGB -- three treats vertex colours and plain Color
 // uniforms as working-space. Roughly: linear 0.05 reads as sRGB 0.25.
 const DIRT = new THREE.Color(0.075, 0.052, 0.028) // exposed soil and grit
@@ -135,7 +167,16 @@ export function luminance(c) {
   return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
 }
 
-export function createTerrainMaterial() {
+/**
+ * @param {object} [opts]
+ * @param {THREE.DataArrayTexture} [opts.atlas] The prop texture array, for the
+ *   stone layer. OPT-IN: without it no sampler is declared and the two stone
+ *   blocks are not compiled at all, so v1's terrain and check-daynight's
+ *   standalone material are byte-identical to what they were. Pass the SAME
+ *   array the props use -- the point is that a cliff and the boulders on it are
+ *   sampling one tile.
+ */
+export function createTerrainMaterial({ atlas = null } = {}) {
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
 
   material.userData.uniforms = {
@@ -229,6 +270,28 @@ export function createTerrainMaterial() {
     uShade: { value: SHADE },
   }
 
+  if (atlas) {
+    material.userData.uniforms.uAtlas = { value: atlas }
+    // How far each stone octave is allowed to swing the surface, as a fraction
+    // of the fully-applied tile. The tile is a photograph with a lot of contrast
+    // in it -- divided by its own mean it ranges roughly 0.2x to 2.3x -- so 1.0
+    // here would make the terrain read as wallpaper. 0.55 lands it as rock that
+    // has grain in it; the fine octave is deliberately about a third of that
+    // because the user's ask for it was "fainter", and because it is layered on
+    // top of the coarse one rather than instead of it.
+    material.userData.uniforms.uStone = { value: 0.55 }
+    material.userData.uniforms.uStoneFine = { value: 0.2 }
+    // The tile's own linear mean, per channel. Dividing by it is what turns a
+    // photograph into a CONTRAST FIELD: the result averages (1,1,1), so
+    // multiplying by it adds the tile's grain and its mineral colour variation
+    // without moving the terrain palette a single step darker or warmer. Every
+    // colour in this file was tuned against a surface with no texture on it, and
+    // this is the only way to add one without invalidating all of them.
+    material.userData.uniforms.uStoneMean = {
+      value: new THREE.Vector3(ROCK_TILE_MEAN[0], ROCK_TILE_MEAN[1], ROCK_TILE_MEAN[2]),
+    }
+  }
+
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, material.userData.uniforms)
 
@@ -274,7 +337,34 @@ export function createTerrainMaterial() {
         uniform vec3 uSoot;
         uniform vec3 uFrost;
         uniform vec3 uShade;
+${atlas ? `        precision highp sampler2DArray;
+        uniform sampler2DArray uAtlas;
+        uniform float uStone;
+        uniform float uStoneFine;
+        uniform vec3 uStoneMean;
 
+        // One triplanar sample of LAYER.ROCK at 1/\`k\` metres per tile, blended
+        // by pre-normalised world-axis weights. Three fetches, and there is no
+        // cheaper honest version: picking the dominant axis instead costs one
+        // fetch and draws a visible seam along every 45-degree edge, which on a
+        // mountain is most of the edges.
+        //
+        // textureGrad, and the gradients are passed in rather than taken here,
+        // because every call site is inside a branch that is NOT quad-uniform
+        // -- the guard folds in distance and the rock/grass classification, so
+        // a quad straddling the foot of a crag has some lanes in and some out.
+        // An implicit-LOD fetch there is undefined, and the way it actually
+        // fails is the sharpest mip on a fragment that should have had the
+        // blurriest: a line of sparkling pixels down every grass border. The
+        // caller takes dFdx/dFdy of the world position ONCE, outside the
+        // branch where it is legal, and both octaves scale the same pair --
+        // the uv is a plain multiple of position, so its derivative is too.
+        vec3 auroraStone( vec3 p, vec3 dx, vec3 dy, vec3 w, float k ) {
+          return textureGrad( uAtlas, vec3( p.zy * k, ${LAYER.ROCK}.0 ), dx.zy * k, dy.zy * k ).rgb * w.x
+               + textureGrad( uAtlas, vec3( p.xz * k, ${LAYER.ROCK}.0 ), dx.xz * k, dy.xz * k ).rgb * w.y
+               + textureGrad( uAtlas, vec3( p.xy * k, ${LAYER.ROCK}.0 ), dx.xy * k, dy.xy * k ).rgb * w.z;
+        }
+` : ''}
         // Shared between the colour pass and the normal pass, which are two
         // different chunk includes -- hence file scope rather than a block.
         float auroraNear;
@@ -448,6 +538,49 @@ export function createTerrainMaterial() {
           // normal_fragment_begin reads it too, and it runs whether or not the
           // near block was entered.
           auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
+${atlas ? `
+          // ---- Stone. See the header block above STONE_METRES.
+          //
+          // BEFORE the grain and micro layers rather than after, so those keep
+          // the last word: they are the layers that were tuned to sit on top of
+          // whatever the surface is, and speckle over stone reads as stone,
+          // where stone over speckle reads as a decal.
+          //
+          // The fade folds auroraRockBase in, so the guard skips the fetches
+          // entirely on grass and on snow -- which, below the snow line and
+          // outside the crags, is nearly every fragment.
+          float auroraStoneK = ( 1.0 - smoothstep( ${STONE_NEAR.toFixed(1)}, ${STONE_FAR.toFixed(1)}, auroraDist ) ) * auroraRockBase;
+          // Outside the guard because a derivative is only defined in
+          // quad-uniform flow, and this guard is not. See auroraStone.
+          vec3 auroraDPx = dFdx( vWorldPos );
+          vec3 auroraDPy = dFdy( vWorldPos );
+          if ( auroraStoneK > 0.004 ) {
+            // The GEOMETRIC normal, deliberately: this runs before
+            // normal_fragment_begin, so the relief pass has not perturbed
+            // anything yet, and a triplanar blend keyed off bump normals would
+            // make the projection swim over a surface that is not moving.
+            vec3 auroraWN = normalize( inverseTransformDirection( normalize( vNormal ), viewMatrix ) );
+            vec3 auroraTri = pow( abs( auroraWN ), vec3( 4.0 ) );
+            auroraTri /= ( auroraTri.x + auroraTri.y + auroraTri.z );
+
+            vec3 auroraRockTex = auroraStone( vWorldPos, auroraDPx, auroraDPy, auroraTri, ${(1 / STONE_METRES).toFixed(6)} ) / uStoneMean;
+            diffuseColor.rgb *= mix( vec3( 1.0 ), auroraRockTex, uStone * auroraStoneK );
+
+            float auroraFineK = ( 1.0 - smoothstep( ${FINE_NEAR.toFixed(1)}, ${FINE_FAR.toFixed(1)}, auroraDist ) ) * auroraStoneK;
+            if ( auroraFineK > 0.004 ) {
+              // LUMINANCE only, where the coarse octave keeps its colour. Two
+              // decorrelated copies of the same tile's mineral tinting stacked
+              // on one fragment reads as chromatic noise rather than as more
+              // rock, and dropping the chroma here also means the near octave
+              // cannot push the palette anywhere the coarse one has not
+              // already been allowed to.
+              vec3 auroraFineTex = auroraStone( vWorldPos, auroraDPx, auroraDPy, auroraTri, ${(1 / FINE_METRES).toFixed(6)} );
+              float auroraFineL = dot( auroraFineTex, vec3( 0.2126, 0.7152, 0.0722 ) )
+                / dot( uStoneMean, vec3( 0.2126, 0.7152, 0.0722 ) );
+              diffuseColor.rgb *= mix( 1.0, auroraFineL, uStoneFine * auroraFineK );
+            }
+          }
+` : ''}
           if ( auroraNear > 0.004 ) {
             vec2 auroraP = vWorldPos.xz;
             // Two scales: ~0.5 m grit for the speed cue, ~3.5 m patches so the
@@ -595,8 +728,11 @@ export function createTerrainMaterial() {
       )
   }
 
-  // Distinct cache key so this never gets conflated with an unpatched Lambert.
-  material.customProgramCacheKey = () => 'aurora-terrain-v6'
+  // Distinct cache key so this never gets conflated with an unpatched Lambert,
+  // and distinct BETWEEN the two variants: whether the atlas was passed changes
+  // the compiled source, so the two must never share a program.
+  const key = `aurora-terrain-v7${atlas ? '-stone' : ''}`
+  material.customProgramCacheKey = () => key
 
   return material
 }

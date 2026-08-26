@@ -359,16 +359,53 @@ function slopeSurface(o) {
    * then the smooth form. That is the right answer for a point that has no
    * covering over it -- a wall of a mass whose own roof does not reach it -- and
    * it is continuous with the exact answer at the edge.
+   *
+   * `coverAt` is the same question WITHOUT that continuation: the height of the
+   * covering over this point, or null where this sheet does not reach. A wall
+   * wants the extrapolation, because it has to keep rising to meet a roof that
+   * starts further along. Anything asking "is there a roof over my head" wants
+   * the null -- a window in one wing must duck under the OTHER wing's eave where
+   * it actually overhangs it, and must ignore that roof entirely everywhere else.
    */
-  const heightAt = (x, z) => {
-    for (let j = 0; j < nv; j++) {
-      for (let i = 0; i < nu; i++) {
-        const p00 = P[j][i]
-        const p11 = P[j + 1][i + 1]
-        const y = triY(p00, P[j][i + 1], p11, x, z) ?? triY(p00, p11, P[j + 1][i], x, z)
+  const coverOn = (G, x, z) => {
+    for (let j = 0; j < G.length - 1; j++) {
+      for (let i = 0; i < G[0].length - 1; i++) {
+        const p00 = G[j][i]
+        const p11 = G[j + 1][i + 1]
+        const y = triY(p00, G[j][i + 1], p11, x, z) ?? triY(p00, p11, G[j + 1][i], x, z)
         if (y !== null) return y
       }
     }
+    return null
+  }
+  const coverAt = (x, z) => coverOn(P, x, z)
+
+  /**
+   * The same sheet with the building's warp already applied to it, cached.
+   *
+   * Everything else in this file works in the space the building is DRAWN in,
+   * because the warp is a post-pass and two parts that meet before it still meet
+   * after it. A window head is the one thing that has to know better: the band of
+   * wall it reserves under the covering is a looking number, and the field slides
+   * a steep sheet sideways by half a metre -- which brings a metre of pitch over
+   * a window that the unwarped sheet says is nowhere near it. So that one
+   * question is asked of the warped grid. One cache line per slope, because the
+   * same field object is handed to every window on the building.
+   */
+  let warpedFor = null
+  let warpedGrid = null
+  const gridFor = (warp) => {
+    if (!warp) return P
+    if (warpedFor !== warp) {
+      warpedFor = warp
+      warpedGrid = P.map((row) => row.map((q) => warp(q[0], q[1], q[2])))
+    }
+    return warpedGrid
+  }
+
+  const heightAt = (x, z) => {
+    const on = coverAt(x, z)
+    if (on !== null) return on
     const a = alongAxis === 'x' ? x - cx : z - cz
     const c = alongAxis === 'x' ? z - cz : x - cx
     const q = (c - cHigh) * dirSign
@@ -376,6 +413,88 @@ function slopeSurface(o) {
     for (let it = 0; it < 2; it++) s = 1 - q / spanAt(clamp01(tOf(a, clamp01(s))))
     s = clamp01(s)
     return yAt(clamp01(tOf(a, s)), s)
+  }
+
+  /**
+   * The LOWEST this sheet gets anywhere over an axis-aligned patch of ground,
+   * or Infinity where it does not reach the patch at all.
+   *
+   * Asking `coverAt` at a handful of points across a window head is not the same
+   * question and gets a different answer, because the thing that comes down over
+   * a window is usually a sheet EDGE -- the verge of the next wing, ending in
+   * mid-air -- and the lowest covered point is the last millimetre before the
+   * edge, which no fixed set of samples lands on. Sample either side of it and
+   * the answer is either the sheet 10 cm back up the slope or null, and the
+   * window is set 10 cm too high.
+   *
+   * A piecewise-linear surface takes its minimum over a rectangle at a vertex of
+   * the arrangement, so all three kinds of vertex are checked and nothing is
+   * approximated: the patch corners that the sheet covers, the sheet's own grid
+   * points standing inside the patch, and every crossing of a triangle edge --
+   * the split diagonals included -- with a side of the patch.
+   *
+   * `warp` asks it of the WARPED sheet instead: patch and answer both in the
+   * space the player sees, which is the only space in which a clearance under an
+   * eave means anything.
+   */
+  const lowOver = (G, xa, za, xb, zb) => {
+    const rows = G.length - 1
+    const cols = G[0].length - 1
+    let lo = Infinity
+    for (const x of [xa, xb]) {
+      for (const z of [za, zb]) {
+        const y = coverOn(G, x, z)
+        if (y !== null && y < lo) lo = y
+      }
+    }
+    const sides = [
+      [[xa, 0, za], [xb, 0, za]], [[xb, 0, za], [xb, 0, zb]],
+      [[xb, 0, zb], [xa, 0, zb]], [[xa, 0, zb], [xa, 0, za]],
+    ]
+    const cut = (A, B) => {
+      for (const [c, d] of sides) {
+        const u = crossXZ(A[0], A[2], B[0], B[2], c, d)
+        if (u === null) continue
+        const y = A[1] + (B[1] - A[1]) * u
+        if (y < lo) lo = y
+      }
+    }
+    for (let j = 0; j <= rows; j++) {
+      for (let i = 0; i <= cols; i++) {
+        const p = G[j][i]
+        if (p[0] >= xa && p[0] <= xb && p[2] >= za && p[2] <= zb && p[1] < lo) lo = p[1]
+        if (i < cols) cut(p, G[j][i + 1])
+        if (j < rows) cut(p, G[j + 1][i])
+        if (i < cols && j < rows) cut(p, G[j + 1][i + 1])
+      }
+    }
+    return lo
+  }
+
+  /** The fringe as a two-row sheet of its own: the eave line, and the same line
+   *  hanging `drop` below it and leaning `lean` out. Built the same way
+   *  thatchFringe() draws it, from the same eave and the same rake, because
+   *  half a metre of straw over a window is as much in the way as the covering
+   *  it hangs off -- and it hangs BELOW the sheet, so it is what a head under an
+   *  eave actually has to clear. */
+  const skirtOf = (drop, warp) => {
+    const out = alongAxis === 'x' ? [0, dirSign] : [dirSign, 0]
+    const lean = 0.02 + (k.rake ?? 0) * drop
+    const G = [
+      P[0].map((q) => [q[0] + out[0] * lean, q[1] - drop, q[2] + out[1] * lean]),
+      P[0],
+    ]
+    return warp ? G.map((row) => row.map((q) => warp(q[0], q[1], q[2]))) : G
+  }
+
+  const lowIn = (x0, z0, x1, z1, warp = null, skirt = 0) => {
+    const xa = Math.min(x0, x1)
+    const xb = Math.max(x0, x1)
+    const za = Math.min(z0, z1)
+    const zb = Math.max(z0, z1)
+    let lo = lowOver(gridFor(warp), xa, za, xb, zb)
+    if (skirt > 0) lo = Math.min(lo, lowOver(skirtOf(skirt, warp), xa, za, xb, zb))
+    return lo
   }
 
   /**
@@ -414,7 +533,7 @@ function slopeSurface(o) {
   }
 
   return {
-    P, nu, nv, heightAt, breaksAlong, draw,
+    P, nu, nv, heightAt, coverAt, lowIn, breaksAlong, draw,
     eave: P[0],
     top: P[nv],
     // The outward horizontal direction the eave hangs over, which the fringe
@@ -440,6 +559,13 @@ function slopeSurface(o) {
  * rake throws the fringe outward away from the wall, negative tucks it back
  * under the roof, and zero hangs it plumb. Drawn signed per building.
  */
+/** How far the straw hangs below the eave on a roof that has any -- 0 on one
+ *  that has not. The condition is drawRoof()'s, kept in one place so that what a
+ *  window ducks under and what is actually drawn cannot drift apart. */
+function fringeDrop(fringe, layer, detail, drop) {
+  return fringe && detail >= 1 && layer === LAYER.THATCH ? drop : 0
+}
+
 function thatchFringe(b, slope, tint, k, drop = 0.34) {
   const eave = slope.eave
   const out = slope.outXZ
@@ -520,6 +646,21 @@ export function planGableRoof(o) {
     ridgeY, eave, run: runHalf + oh, alongHalf: alongHalf + Math.max(vLo, vHi),
     heightAt: (x, z) =>
       slopes[(ridgeAxis === 'x' ? z - cz : x - cx) >= 0 ? 0 : 1].heightAt(x, z),
+    // Both slopes asked, not the one the point falls on: an overhanging eave
+    // reaches past the ridge line of the OTHER slope's half of the plan when the
+    // verge splays, and a point under it is covered by whichever sheet is over
+    // it, not by whichever half of the footprint it stands in.
+    coverAt: (x, z) => {
+      for (const s of slopes) {
+        const y = s.coverAt(x, z)
+        if (y !== null) return y
+      }
+      return null
+    },
+    // Both slopes again, and for the same reason: the patch a window head takes
+    // up can straddle the ridge line in plan when a verge splays out over it.
+    lowIn: (x0, z0, x1, z1, warp) =>
+      Math.min(...slopes.map((s) => s.lowIn(x0, z0, x1, z1, warp, fringeDrop(fringe, layer, detail, 0.34)))),
     // Both slopes, because a gable-end wall walks up one of them and down the
     // other and the ridge between them is the sharpest fold on the building.
     breaksAlong: (x0, z0, x1, z1) => {
@@ -589,6 +730,8 @@ export function planLeanRoof(o) {
     kind: 'lean', slopes: [slope], color, tint, layer, fringe: true, detail, seed, k: kk,
     eave, run: runNominal + oh, highY, runHalf, alongHalf, axis, sign, thick: 0,
     heightAt: (x, z) => slope.heightAt(x, z),
+    coverAt: (x, z) => slope.coverAt(x, z),
+    lowIn: (x0, z0, x1, z1, warp) => slope.lowIn(x0, z0, x1, z1, warp, fringeDrop(true, layer, detail, 0.3)),
     breaksAlong: (x0, z0, x1, z1) => {
       const out = []
       slope.breaksAlong(x0, z0, x1, z1, out)
@@ -810,7 +953,9 @@ export function wall2(b, {
   const dx = p1[0] - p0[0]
   const dz = p1[1] - p0[1]
   const len = Math.hypot(dx, dz)
-  if (len < 0.01 || y1 <= y0) return
+  // Nothing drawn and nothing to report: there is no top edge to have found and
+  // no plate to have laid on it.
+  if (len < 0.01 || y1 <= y0) return null
   const ux = dx / len
   const uz = dz / len
   const nx = -uz
@@ -895,6 +1040,14 @@ export function wall2(b, {
   TOP.push(heightOf(1))
   const cols = U.length - 1
   const topMin = Math.min(...TOP)
+  // WHAT THE WALL HANDS BACK. A window has to duck under the timber lying across
+  // the top of this wall as well as under the roof above it, and the only place
+  // the wall plate's height is known is here -- it follows `topMin`, which comes
+  // out of the column sampling above and out of nothing else. Working it out a
+  // second time in building.js would be a second chance to get a different
+  // answer and a beam laid across a window head.
+  const info = { topMin, plateY: null }
+
   const level = (y) => new Array(cols + 1).fill(y)
   // Where a post standing at a corner of this wall has to stop. Without a
   // covering to duck under it is the wall's own top edge, which is flat.
@@ -934,7 +1087,7 @@ export function wall2(b, {
     // stone base is: a wall that is stone to the eaves has no timber above it to
     // explain where the weathering stops, so it has to fade out on its own.
     face(base, TOP, LAYER.STONE, groundGrime(y0, 1.2, 0.3))
-    if (!furniture) return
+    if (!furniture) return info
     // QUOINS. The dressed corner stones, drawn as one square-sectioned post per
     // corner rather than as a chain of alternating blocks -- at 8 triangles a
     // block a real chain is 120 triangles a corner, and this is 16 for a shape
@@ -954,7 +1107,7 @@ export function wall2(b, {
         layer: LAYER.STONE, color: TINT.stone, vWorldY: true,
       })
     }
-    return
+    return info
   }
 
   if (style === WALL_STYLE.STONE_BASE) {
@@ -975,12 +1128,12 @@ export function wall2(b, {
           round: 0.3, jitter: 0.2, layer: LAYER.STONE, color: TINT.stone,
         })
     }
-    return
+    return info
   }
 
   if (style === WALL_STYLE.HALF_TIMBER) {
     face(base, TOP, LAYER.PLASTER, groundGrime(y0, topMin - y0, 0.34))
-    if (!furniture) return
+    if (!furniture) return info
     const t = 0.075 // how far the timber stands out
     const wd = 0.16 // member width
     const beam = { layer: LAYER.TIMBER_BEAM, color: TINT.timberDark }
@@ -996,7 +1149,13 @@ export function wall2(b, {
     // it is one straight timber and it has to stay under the roof for its whole
     // length, so on a gable end it sits at the eaves and the plaster carries on
     // up past it into the tympanum, which is what a real one does.
+    //
+    // Which also makes it the lowest thing on the building that a window can end
+    // up jammed against, and the reason `info.plateY` exists: on a gable end the
+    // covering runs metres above the plate, so a window that has cleared the
+    // ROOF by 30 cm can still have this beam lying across its head.
     rail(topMin - wd, topMin, 2)
+    info.plateY = topMin - wd
     // `i < bays`, not `i <= bays`: a wall owns the post at its START corner and
     // leaves the one at its end to the wall that starts there.
     const bays = Math.max(1, Math.round(len / 1.5))
@@ -1044,12 +1203,12 @@ export function wall2(b, {
         seed: rough * 17 + 10 + i, round: 0.35, ...beam, vWorldY: true,
       })
     }
-    return
+    return info
   }
 
   if (style === WALL_STYLE.STAVE) {
     face(base, TOP, LAYER.TIMBER_PLANK, tint)
-    if (!furniture) return
+    if (!furniture) return info
     // Corner posts, which is what a stave wall is actually framed by. Segmented,
     // so the field can bow them: these are the tallest single verticals on the
     // building and a dead-straight one beside a bellied wall is the thing that
@@ -1067,7 +1226,7 @@ export function wall2(b, {
         layer: LAYER.TIMBER_BEAM, color: TINT.timberDark, vWorldY: true,
       })
     }
-    return
+    return info
   }
 
   // WALL_STYLE.LOG
@@ -1086,7 +1245,7 @@ export function wall2(b, {
   // and what covers the gaps at the very top where the courses run out under a
   // sloping roof, and it costs 4 triangles a column.
   face(base, TOP, LAYER.TIMBER_BEAM, tint)
-  if (!furniture) return
+  if (!furniture) return info
 
   const course = TILE_METRES[LAYER.TIMBER_BEAM] / 2
   // 0.54 rather than 0.5 so consecutive logs OVERLAP by a couple of centimetres
@@ -1152,6 +1311,7 @@ export function wall2(b, {
         })
     }
   }
+  return info
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,21 +1422,31 @@ export function member2(b, a, bEnd, o) {
  * WINDING IS DERIVED, NOT EYEBALLED. (a, v, out) is a LEFT handed frame -- p()'s
  * tangent is (-nz, 0, nx) and t x up = -n -- so for this corner order the sweep
  * tangent T satisfies T = e_r x e_o, a side quad's normal is T x S, and that
- * points outward only when S turns CLOCKWISE in (r, o). roughSection() winds
+ * points outward only when S turns CLOCKWISE in (r, o). boxSection() winds
  * anticlockwise, hence the reverse().
+ *
+ * A BOX SECTION, not a roughSection. This swept a roughSection(4 or 5) until a
+ * shutter hung off it turned out to be hanging off nothing: a surround is a
+ * 7 x 28 cm timber, a 1-to-4 rectangle, and roughSection spaces its corners by
+ * ANGLE -- so four of them land near the diagonals, where the rectangle's own
+ * boundary is only 5 cm out, and the section collapses to a diamond a quarter
+ * of the depth it was asked for. The reveal it cut was a different depth on
+ * every window for no reason anybody chose, and nothing outside the sliver could
+ * be relied on to be inside the timber. boxSection puts the corners AT the
+ * corners and jitters each one independently, which is the same variety, an
+ * honest 7 x 28 section, and (at a flat 4 sides) never more triangles than
+ * before.
  */
-function frameRing2(b, { p, path, signs, width, back, front, seed = 0, sides = 5, layer, color }) {
+function frameRing2(b, { p, path, signs, width, back, front, seed = 0, layer, color }) {
   const oc = (back + front) / 2
-  const sec = roughSection(sides, width / 2, (front - back) / 2, seed, {
-    jitter: 0.15, round: 0.3,
-  }).reverse()
+  const sec = boxSection(width / 2, (front - back) / 2, seed, 0.18).reverse()
   const P = path.map(([pa, pv], c) =>
     sec.map(([r, o]) => p(pa + signs[c][0] * r, pv + signs[c][1] * r, oc + o)))
   const o = { layer, color }
   for (let c = 0; c < 4; c++) {
     const cn = (c + 1) % 4
-    for (let s = 0; s < sides; s++) {
-      const sn = (s + 1) % sides
+    for (let s = 0; s < sec.length; s++) {
+      const sn = (s + 1) % sec.length
       b.quad(P[c][s], P[cn][s], P[cn][sn], P[c][sn], o)
     }
   }
@@ -1339,7 +1509,8 @@ export function windowUnit2(
   b,
   {
     x, z, y0, nx, nz, width = 0.7, height = 0.85, shutters = false,
-    seed = 0, detail = 2, k = FLAT, topAt = null,
+    seed = 0, detail = 2, k = FLAT, topAt = null, lowAt = null, capY = Infinity,
+    warp = null,
   }
 ) {
   const tx = -nz
@@ -1376,32 +1547,136 @@ export function windowUnit2(
   const ow = hw + frame
   const leafW = width * 0.52
 
-  // DUCKING UNDER THE COVERING. A window is placed against a wall by the plan,
-  // which knows the wall's nominal height and nothing about a roof that sags 30
-  // cm between its supports, flares its eave out past the wall and tips its
-  // ridge sideways. High on a gable end that is the difference between a window
-  // and a window with a roof through it -- and a frame standing 16 cm proud of
-  // the wall crosses the covering well before its own head does, so the height
-  // is asked for at the OUTER face of the shutters, not at the wall plane.
+  // WHERE A LEAF IS HUNG, which used to be nowhere. The leaf stood at
+  // `depth + 0.03` with its inboard edge on the plane of the surround's outer
+  // face -- 1 cm in FRONT of that face, so the two never met: the shutter was a
+  // rectangle floating clear of the building with daylight all round it. A
+  // shutter is the one piece of a window that is visibly hung on something, and
+  // it has to touch the thing it is hung on.
+  //
+  // So the hinged edge is BURIED IN THE SURROUND: it laps `LAP` onto the ring in
+  // plan and hangs at `HANG` out, which is inside the ring's section -- the ring
+  // reaches from 12 cm behind the wall plane out to `depth + 0.02` -- and stays
+  // inside it however the rough section jitters and however the field moves the
+  // two of them. `HANG` also clears a log course, which stands 5 cm proud.
+  const LAP = 0.02
+  const HANG = 0.1
+  // HOW FAR OPEN, per leaf rather than per window, so a window can stand with
+  // one leaf back against the wall and the other swung out -- which is what
+  // shutters look like on a building somebody lives in. About a third are ajar.
+  //
+  // A ROTATION about the hinge, not a shear: the free edge swings out and comes
+  // back in along the wall by the cosine, so the leaf keeps its width. That
+  // matters beyond looks -- plan.js reserves `width * 0.52` of frontage for this
+  // leaf, and a leaf that rotates can only ever need less of it than a leaf
+  // lying flat.
+  //
+  // The warp's own `splay` rides on top as a further angle rather than as the
+  // sideways push it used to be, so a crooked building's shutters hang crooked
+  // and a straight one's still sometimes stand open. Drawn HERE, above the duck
+  // below, because how far a leaf reaches off the wall decides where the
+  // covering has to be sampled.
+  const swing = [-1, 1].map((s) => (hash(seed * 61, s + 6) < 0.34 ? 0.22 + hash(seed * 61, s + 8) * 0.4 : 0)
+    + Math.atan2(k.splay * (0.6 + hash(seed * 61, s + 2)), leafW))
+  const outReach = shutters
+    ? Math.max(...swing.map((th) => HANG + leafW * Math.sin(th)))
+    : 0
+
+  // DUCKING UNDER WHATEVER IS ABOVE IT. A window is placed against a wall by the
+  // plan, which knows the wall's nominal height and nothing about a roof that
+  // sags 30 cm between its supports, flares its eave out past the wall and tips
+  // its ridge sideways. High on a gable end that is the difference between a
+  // window and a window with a roof through it -- and a frame standing 16 cm
+  // proud of the wall crosses the covering well before its own head does, so the
+  // height is asked for at the OUTER face of the unit, not at the wall plane.
+  //
+  // `capY` is the other thing above a window, and it is not the roof: on a
+  // half-timber wall a plate 16 cm deep lies under the eaves for the whole
+  // length of the wall, and on a gable end the covering is metres above it. A
+  // window that has cleared the ROOF by a comfortable margin can still have that
+  // beam across its head, which is the same defect as a stud through its jamb
+  // seen from the other axis. wall2() hands the height back; Infinity means
+  // there is no such beam on this wall.
+  //
+  // HEAD_CLEAR is a looking number, not a structural one. A window whose frame
+  // stops a centimetre under the eaves reads as jammed up into the roof however
+  // correct the geometry is, and 30 cm is about the band of wall that has to
+  // show above a window for it to sit on the elevation rather than be squeezed
+  // into it. plan.js reserves enough for it nominally; this is what enforces it
+  // once the field has moved the roof.
   //
   // Move the whole unit down rather than trimming it: a window is a rigid figure
   // (that is the rule the transform above exists to keep) and a trimmed one is a
-  // window with a bite out of it. If it cannot be got under the roof by less
-  // than three quarters of its own height, it is not a window on that wall at
-  // all and it is dropped -- better a blank gable than a sill at knee height.
+  // window with a bite out of it. If it cannot be got under by less than three
+  // quarters of its own height, it is not a window on that wall at all and it is
+  // dropped -- better a blank gable than a sill at knee height.
+  const HEAD_CLEAR = 0.3
+  const W3 = warp ?? ((px, py, pz) => [px, py, pz])
   if (topAt) {
-    const aMax = shutters ? ow + leafW : ow
-    const outMax = shutters ? depth + 0.05 + k.splay : depth + 0.02
-    const vTop = height + frame
-    let vMax = vTop
-    for (const s of [-1, 1]) vMax = Math.max(vMax, W(s * aMax, vTop)[1])
-    let roofY = Infinity
-    for (const s of [-1, 0, 1]) {
-      for (const out of [0, outMax]) {
-        roofY = Math.min(roofY, topAt(x + tx * s * aMax + nx * out, z + tz * s * aMax + nz * out))
+    // TWO FIGURES DUCK, and they are different shapes. The frame is tall and
+    // shallow: it reaches `height + frame` up and 16 cm out. An open leaf is
+    // short and deep: it stops at the head of the glass and can stand 40 cm off
+    // the wall, out under an overhang where the covering has come down to meet
+    // it. Sampling one box around both would drop every shuttered window by the
+    // difference, so each asks its own question and the deeper drop wins.
+    //
+    // MEASURED WARPED, both sides of the comparison. Everything here is drawn
+    // straight and bent afterwards, and the field is noise at a scale of a few
+    // metres: it slides the covering sideways over the window and moves the two
+    // vertically by different amounts. A 30 cm band reserved before the bend can
+    // be 3 cm of band after it, and the bent one is the only one anybody sees.
+    // So every point is put through the field -- the head of the frame, the
+    // covering, the beam -- and the patch the covering is asked about is the
+    // WARPED footprint of the warped head. `warp` is null at strength 0, where
+    // all of this collapses back to the identity.
+    const clearance = (aMax, outMax, vTop) => {
+      let vMax = vTop
+      for (const sg of [-1, 1]) vMax = Math.max(vMax, W(sg * aMax, vTop)[1])
+      const headY = baseY + vMax
+      let head = -Infinity
+      let over = Infinity
+      let xa = Infinity
+      let xb = -Infinity
+      let za = Infinity
+      let zb = -Infinity
+      for (const sg of [-1, 0, 1]) {
+        for (const out of [0, outMax]) {
+          const px = x + tx * sg * aMax + nx * out
+          const pz = z + tz * sg * aMax + nz * out
+          const q = W3(px, headY, pz)
+          if (q[1] > head) head = q[1]
+          if (q[0] < xa) xa = q[0]
+          if (q[0] > xb) xb = q[0]
+          if (q[2] < za) za = q[2]
+          if (q[2] > zb) zb = q[2]
+          over = Math.min(over, W3(px, Math.min(topAt(px, pz), capY), pz)[1])
+        }
       }
+      // Point samples cannot see a sheet that ENDS over the window: the lowest
+      // covered point of a verge dying in mid-air is the last millimetre of it,
+      // between any two samples. `lowAt` reads the whole patch at once and is
+      // exact, but only over sheet that is really there -- so it is a floor on
+      // the answer above rather than a replacement for it, which still has to
+      // supply the continued surface where no sheet reaches at all.
+      if (lowAt) over = Math.min(over, lowAt(xa, za, xb, zb, warp))
+      return head - (over - HEAD_CLEAR)
     }
-    const drop = baseY + vMax - (roofY - 0.03)
+    // Twice, because the field is a function of height as well as of plan: drop
+    // the window 20 cm and it is standing in a slightly different piece of noise
+    // than the one the drop was worked out in. The second pass is centimetres
+    // and the third would be tenths of a millimetre.
+    let total = 0
+    for (let it = 0; it < 2; it++) {
+      let drop = clearance(ow, depth + 0.02, height + frame)
+      if (shutters) drop = Math.max(drop, clearance(ow + leafW, outReach, height))
+      if (drop <= 0.002) break
+      total += drop
+      if (total > height * 0.75) return
+      baseY -= drop
+    }
+  } else if (capY < Infinity) {
+    // No covering to sample, but the beam is still there.
+    const drop = W3(x, baseY + height + frame, z)[1] - (W3(x, capY, z)[1] - HEAD_CLEAR)
     if (drop > 0) {
       if (drop > height * 0.75) return
       baseY -= drop
@@ -1467,7 +1742,6 @@ export function windowUnit2(
     { layer: LAYER.GLASS, color: TINT.glass, double: true, uvs: fitUV(LAYER.GLASS, width, height) }
   )
 
-  const sides = 4 + Math.floor(hash(seed, 21) * 2)
   frameRing2(b, {
     p,
     path: C.map(([pa, pv], i) => [pa + SIGNS[i][0] * (frame / 2), pv + SIGNS[i][1] * (frame / 2)]),
@@ -1479,19 +1753,21 @@ export function windowUnit2(
     // reveal a depth to be seen edge-on, and it costs nothing at all -- the ring
     // is the same eight quads a side with a taller section.
     width: frame, back: -0.12, front: depth + 0.02,
-    seed: seed * 31 + 7, sides,
+    seed: seed * 31 + 7,
     layer: LAYER.TIMBER_PLANK, color: TINT.timberDark,
   })
 
   if (shutters) {
-    const sd = depth + 0.03
-    for (const s of [-1, 1]) {
-      // The hinged edge stays against the frame; the free edge stands off the
-      // wall. A shutter flat on the wall is a painted rectangle -- the whole
-      // reason a shutter reads as a shutter is that you can see behind it.
-      const splay = k.splay * (0.6 + hash(seed * 61, s + 2))
-      const aIn = s * ow
-      const aOut = s * (ow + leafW)
+    for (let i = 0; i < 2; i++) {
+      const s = i === 0 ? -1 : 1
+      // The hinged edge is inside the surround (see LAP/HANG above); the free
+      // edge swings out on `swing`. A shutter flat on the wall is a painted
+      // rectangle -- the whole reason a shutter reads as a shutter is that you
+      // can see behind it.
+      const th = swing[i]
+      const aIn = s * (ow - LAP)
+      const aOut = s * (ow - LAP + leafW * Math.cos(th))
+      const oOut = HANG + leafW * Math.sin(th)
       // The leaf goes through the SAME transform the opening did, so it stays
       // parallel to the jamb it hangs off and square in itself. This is the
       // difference between a shutter that has been hung on a settled building and
@@ -1502,8 +1778,8 @@ export function windowUnit2(
         return p(wa, wv, out)
       }
       const q = [
-        L(aIn, 0, sd), L(aOut, 0, sd + splay),
-        L(aOut, height, sd + splay), L(aIn, height, sd),
+        L(aIn, 0, HANG), L(aOut, 0, oOut),
+        L(aOut, height, oOut), L(aIn, height, HANG),
       ]
       const lo = { layer: LAYER.TIMBER_PLANK, color: TINT.timberDark, double: true }
       const luv = fitUV(LAYER.TIMBER_PLANK, leafW, height)
@@ -1513,10 +1789,11 @@ export function windowUnit2(
       if (s < 0) b.quad(q[1], q[0], q[3], q[2], { ...lo, uvs: luv })
       else b.quad(q[0], q[1], q[2], q[3], { ...lo, uvs: luv })
 
-      // The strap, laid on the splayed leaf rather than on the wall behind it.
+      // The strap, laid ON the swung leaf rather than on a plane of its own, or
+      // an open shutter leaves its ironwork hanging in the air behind it.
       const mix = (t, v) => {
         const [wa, wv] = W(aIn + (aOut - aIn) * t, v)
-        return p(wa, wv, sd + splay * t + 0.006)
+        return p(wa, wv, HANG + (oOut - HANG) * t + 0.006)
       }
       const sv = height * 0.62
       b.quad(
