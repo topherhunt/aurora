@@ -124,7 +124,16 @@ import { LAYER } from '../textures.js'
 // What it gives up is the two BOTTOM CORNERS of the square, which on a spray
 // cut are nearly all transparent: gen-layers.mjs measures the opaque fraction
 // each cut keeps and prints it (82% ash, 72% aspen, 71% oak, 64% pine spray).
-// A quad is still one slider away for a cut that cannot afford it.
+// A quad is still one slider away for a cut that cannot afford it -- and every
+// LOD0 species now takes it, because the second triangle buys back the whole cut
+// AND buys the fold below, which the triangle cannot have.
+//
+// A CARD IS NOT FLAT. The quad's two triangles are bent 10 to 50 degrees about
+// the seam they already share, so a spray keeps a silhouette from the one family
+// of angles where a sheet has none -- the great circle of directions lying in
+// its own plane, which every card in a crown crosses as the player walks round
+// the tree. It costs no triangles, no texels and no surface area, and the whole
+// argument is at addCard.
 //
 // A limb's sprays are BIG AT THE TRUNK AND SMALL AT THE TIP (`sprayTaper`),
 // spaced at stratified-random points along it (never evenly), rolled to
@@ -262,6 +271,16 @@ export const TREE_DEFAULTS = {
                        // See addCard: 1 halves the cost of the whole card path
                        // and clips the outer corners of the spray. How much it
                        // clips per cut is printed by gen-layers.mjs
+  // How far each half of a QUAD card is bent about the seam the two triangles
+  // already share, in radians. Only cardTris 2 has a seam to bend, so this does
+  // nothing at 1 -- which is also why LOD1 cards stay flat, see treeLod. Each
+  // half draws its own angle in this range and both go the same way, so a card
+  // is a shallow asymmetric taco. Zero triangles, zero texels, zero surface
+  // area: it trades flat projection for a silhouette that survives being looked
+  // at edge-on. The full argument is at addCard. Past ~1.0 the two halves close
+  // far enough to shade each other and the spray reads as folded paper.
+  cardFoldMin: 0.17,   // 10 degrees
+  cardFoldMax: 0.87,   // 50 degrees
   sprays: 6,           // leaf cards per limb, INCLUDING one terminal card. This
                        // is the AVERAGE over the crown; see sprayByLength
   sprayByLength: 0.8,  // how far a limb's share of those cards follows its own
@@ -422,7 +441,15 @@ export const TREE_SPECIES = {
       branchRise: 0.35,
       branchDroop: 0.95, // birch twigs hang; this is most of what says "birch"
       branchCurve: 2.2,
-      sprays: 6,
+      // FOUR QUADS RATHER THAN SIX TRIANGLES, and the trade is deliberate: two
+      // fewer cards a limb, each keeping the whole of its cut instead of the
+      // ~82% the stem-apex triangle leaves of the ash spray, and each able to
+      // FOLD -- a triangle has no seam to fold on. Comparable leaf area, a
+      // silhouette that does not wink edge-on, and 212 spray triangles against
+      // the 158 the six triangles cost. Birch was the last species still on the
+      // TREE_DEFAULTS card; pine, oak and aspen were already quads.
+      sprays: 4,
+      cardTris: 2,
       sprayLift: 0.2,
       sprayMetres: 2.0,
       trunkRadius: 0.018,
@@ -511,7 +538,12 @@ export const BUSH_OVERRIDES = {
  *                   addFin for why one triangle is enough to keep them.
  *   cardTris 1      The triangular card crops the two bottom corners of its
  *                   cut, which is why LOD0 broadleaves refuse it. At 30 m that
- *                   relic is about two pixels.
+ *                   relic is about two pixels. It also has no seam, so LOD1
+ *                   cards do not FOLD -- see cardFoldMin in TREE_DEFAULTS. That
+ *                   is a real loss at this tier and it is not the one to fix
+ *                   here: a flat card winking edge-on is the least of what LOD1
+ *                   currently gets wrong, and buying the fold back would double
+ *                   the tier's whole foliage cost.
  *   sprays / 2      Halved per LIMB rather than by dropping branches: the two
  *                   cost the same triangles (cards = limbs x sprays) and are
  *                   perceptually opposite. Fewer branches removes crown
@@ -726,23 +758,90 @@ const PATH_N = 8
 //      lossless and tapers the spray toward its stem, which is the shape it
 //      wants anyway. See tools/trees/gen-layers.mjs.
 //
+// A FLAT CARD VANISHES EDGE-ON, AND A QUAD DOES NOT HAVE TO BE FLAT. A spray is
+// a whole branch's worth of foliage riding on one quad, so the one view where
+// that quad goes to zero width is not a missing leaf, it is a missing branch --
+// and it is not a rare view either: it is the entire great circle of directions
+// lying in the card's own plane, which every card in the crown crosses as the
+// player walks round the tree. The canopy visibly winks.
+//
+// `foldA` and `foldB` fix it by BENDING the quad along the seam it is already
+// cut on. The two triangles share the c0-c2 edge -- stem-left corner to
+// tip-right corner -- and each is rotated about that edge, both toward the same
+// face, so the card comes out as a shallow taco rather than a sheet. The seam is
+// a diagonal rather than the card's long axis, and that is fine and slightly
+// better than fine: it makes the two halves different shapes, so a folded card
+// is asymmetric and a crown of them does not read as a crown of one repeated
+// part. Angling them in OPPOSITE senses instead would give a propeller, which is
+// what grass-bank.js does to a tuft -- pass foldA and foldB with unlike signs
+// for it.
+//
+// THREE THINGS THIS DELIBERATELY DOES NOT COST.
+//
+//   Triangles. It is the same 4 vertices and the same 2 triangles; resolveTree's
+//     law is untouched, and so is every budget the previewer prints.
+//   Texels. The alternative was a KITE -- stem, tip and one corner either side,
+//     which puts the seam on the long axis properly -- and it throws away half
+//     the square to do it, on art that was cut to fill the square.
+//   Area. Each half turns RIGIDLY about the seam: a corner keeps its distance
+//     from the seam axis and its position along it, and only trades in-plane
+//     offset for out-of-plane offset. So the card loses none of its surface,
+//     only some of its FLAT PROJECTION, which is exactly the trade being bought.
+//
+// What it does not buy on its own is shading contrast between the two halves.
+// Both faces still share one stored normal here, and the canopy-normal pass at
+// the bottom of buildTree would overwrite per-face normals anyway; splitting the
+// seam vertices to carry two of them is a separate change and costs 2 vertices a
+// card. The stored normal stays correct as an AVERAGE either way -- the two
+// folded faces tilt away from it symmetrically, so it is still their bisector.
+//
 // The face normal falls out of right x up, and the material draws double-sided
 // so the winding costs nothing -- but foliage does not KEEP this normal. See
 // the canopy-normal pass at the bottom of buildTree.
-function addCard(out, centre, right, up, w, h, texLayer, tris) {
+function addCard(out, centre, right, up, w, h, texLayer, tris, foldA = 0, foldB = 0) {
   const base = out.positions.length / 3
   const n = new THREE.Vector3().crossVectors(right, up).normalize()
   const hw = w / 2
   const hh = h / 2
+
+  // One corner turned about the c0-c2 diagonal by `a`, as [x, y, outOfPlane] in
+  // the card's own (right, up, n) frame. c0 and c2 sit ON the axis, so their
+  // perpendicular offset is zero and this returns them untouched -- which is
+  // what keeps the seam a seam.
+  const L = Math.hypot(hw, hh)
+  const foldCorner = (cx, cy, a) => {
+    if (L < 1e-12 || a === 0) return [cx, cy, 0]
+    const dx = hw / L // the seam direction, from c0 = (-hw, -hh) to c2 = (hw, hh)
+    const dy = hh / L
+    const vx = cx + hw // the corner's offset from c0
+    const vy = cy + hh
+    const along = vx * dx + vy * dy
+    const perp = vx * -dy + vy * dx
+    const c = Math.cos(a)
+    return [
+      -hw + dx * along + -dy * (perp * c),
+      -hh + dy * along + dx * (perp * c),
+      // Magnitude, not the signed offset: the two free corners straddle the
+      // seam, so taking |perp| is what sends them BOTH to the same face and
+      // makes this a fold rather than a twist.
+      Math.abs(perp) * Math.sin(a),
+    ]
+  }
+
   const corners =
     tris === 1
-      ? [[0, -hh, 0.5, 0], [hw, hh, 1, 1], [-hw, hh, 0, 1]]
-      : [[-hw, -hh, 0, 0], [hw, -hh, 1, 0], [hw, hh, 1, 1], [-hw, hh, 0, 1]]
-  for (const [cx, cy, u, v] of corners) {
+      ? [[0, -hh, 0, 0.5, 0], [hw, hh, 0, 1, 1], [-hw, hh, 0, 0, 1]]
+      : [
+          [-hw, -hh, 0, 0, 0],
+          [...foldCorner(hw, -hh, foldA), 1, 0],
+          [hw, hh, 0, 1, 1],
+          [...foldCorner(-hw, hh, foldB), 0, 1],
+        ]
+  for (const [cx, cy, cz, u, v] of corners) {
     out.positions.push(
-      centre.x + right.x * cx + up.x * cy,
-      centre.y + right.y * cx + up.y * cy,
-      centre.z + right.z * cx + up.z * cy
+      centre.x + right.x * cx + up.x * cy + n.x * cz,
+      centre.y + right.y * cx + up.y * cy + n.y * cz,
+      centre.z + right.z * cx + up.z * cy + n.z * cz
     )
     out.normals.push(n.x, n.y, n.z)
     out.uvs.push(u, v)
@@ -890,6 +989,37 @@ function chordAt(samples, s) {
 export function buildTree(options = {}) {
   const p = { ...TREE_DEFAULTS, ...options }
   const rand = mulberry32(p.seed)
+
+  // A SECOND STREAM, AND IT HAS TO BE SECOND. The card fold wants three random
+  // numbers per card, and drawing them from `rand` would shift every subsequent
+  // draw in the tree -- so adding a purely cosmetic bend would have moved every
+  // branch azimuth, every spray seat and every limb length in the project, and
+  // the pine preset is marked LOD0 LOCKED precisely so that does not happen. On
+  // its own stream the fold is additive: the same seed lays out the same tree it
+  // laid out before, wearing folded cards. It is the same argument tree-bank.js
+  // makes for seeding each limb independently, applied one knob early.
+  //
+  // ADDITIVE IN THE PRE-SCALE FRAME, which is not quite the same as identical.
+  // A tree is built at height 1 and then divided by its own bounding box (see
+  // the rescale at the bottom), so if the vertex that HAPPENS to be highest is a
+  // folded corner, bending it moves the box and the whole tree -- wood included
+  // -- takes a uniform scale with it. Measured at seed 7: pine, oak and birch
+  // move 0.000%, aspen 1.45%, because only aspen's top vertex is a free corner.
+  // That is the same loop SPRAY_METRES_MAX warns about and it is left alone for
+  // the same reason: a second build to recover a percent is not a trade worth
+  // making, and no crown proportion changes, only the overall size.
+  const foldRand = mulberry32((p.seed ^ 0x9e3779b9) >>> 0)
+  const foldMin = Math.max(0, p.cardFoldMin)
+  const foldSpan = Math.max(0, p.cardFoldMax - foldMin)
+  // Both halves of one card bend the SAME way (a fold) at a sign that varies
+  // card to card, and each half draws its own angle so no card is symmetric.
+  const foldPair = () => {
+    const sign = foldRand() < 0.5 ? -1 : 1
+    return [
+      sign * (foldMin + foldRand() * foldSpan),
+      sign * (foldMin + foldRand() * foldSpan),
+    ]
+  }
 
   // `leaf` is one flag per VERTEX, not per triangle: the canopy-normal pass at
   // the bottom needs to know which vertices are foliage, and it cannot ask the
@@ -1089,7 +1219,9 @@ export function buildTree(options = {}) {
       // the shoot leaves the limb. Centring on the seat buries half of every
       // card inside the branch it grows from.
       const centre = seat.addScaledVector(up, h / 2)
-      sprayTris += addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer, cardTris)
+      const [fa, fb] = foldPair()
+      sprayTris += addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer, cardTris,
+        fa, fb)
       sprayCards += 1
     }
 
@@ -1256,7 +1388,9 @@ export function buildTree(options = {}) {
       const h = sprayH * (1 + (rand() - 0.5) * 2 * p.sprayVary)
       // Stem on the apex, same as every other card -- see the note in growLimb.
       const centre = apex.clone().addScaledVector(up, h / 2)
-      sprayTris += addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer, cardTris)
+      const [fa, fb] = foldPair()
+      sprayTris += addCard(out, centre, right, up, h * p.sprayAspect, h, p.leafLayer, cardTris,
+        fa, fb)
       sprayCards += 1
     }
   }

@@ -48,7 +48,8 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 //
 // `setStats` takes a flat object; the host fills what it can and anything
 // missing prints as `??` in the warn colour rather than as a plausible zero:
-//   { fps, ms, tris, calls, resident, drawn, queued, triDeg, treeCount,
+//   { fps, ms, tris, calls, resident, drawn, terrainTris, queued,
+//     triDeg, profileDeg, treeCount,
 //     treeTris, grassCount, grassVeiled, grassTris, fernCount, fernTris,
 //     rockCount, rockTris,
 //     x, y, z, ground, cell, snowHere, snowBase, mode }
@@ -460,9 +461,20 @@ export class Panel {
     kv('ms', num(s.ms, 1))
     kv('tris', triPct === null ? null : `${(s.tris / 1000).toFixed(0)}k ${triPct}%`, triPct > 100 ? 'c-bad' : triPct > 75 ? '' : 'c-good')
     kv('calls', Number.isFinite(s.calls) ? String(s.calls) : null, s.calls > CALL_BUDGET ? 'c-bad' : '')
-    kv('chunks', Number.isFinite(s.resident) ? `${s.resident}/${s.drawn}` : null)
+    // Resident chunks / drawn chunks / the triangles those drawn chunks cost.
+    // The third number is the one the LOD knobs move and it was missing: `tris`
+    // above is the whole frame, and every OTHER layer on this row prints its own
+    // share, so terrain was the only thing whose cost had to be inferred by
+    // subtraction. It is drawnTris, not tris -- the eye-cone subset, matching
+    // what the prop rows count and what the budget is actually spent on.
+    kv('terrain', Number.isFinite(s.resident) && Number.isFinite(s.terrainTris) ? `${s.resident}/${s.drawn} ${(s.terrainTris / 1000).toFixed(0)}k` : null)
     kv('queued', Number.isFinite(s.queued) ? String(s.queued) : null, s.queued > 64 ? 'c-bad' : '')
-    kv('triDeg', num(s.triDeg, 2))
+    // Two targets on one row because they are read against each other -- the
+    // profile figure means nothing except as a ratio to the default beside it,
+    // and the gap between them IS how many depth levels a silhouette is worth.
+    // "off" rather than a blank when K has turned the term off, so the A/B has a
+    // legible state on both sides of the keypress. See terrain/skyline.js.
+    kv('triDeg', num(s.triDeg, 2) === null ? null : `${num(s.triDeg, 2)}/${Number.isFinite(s.profileDeg) ? s.profileDeg.toFixed(2) : 'off'}`)
     // The three prop layers get a row each: count, then what that count is
     // actually costing in triangles. DESIGN.md §5 allots trees 37k, and grass
     // is the layer whose row moves most: the region bed is 3/m^2 of scattered

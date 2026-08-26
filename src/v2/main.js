@@ -9,6 +9,7 @@ import { Layers } from './layers/layers.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
+import { SKYLINE } from './terrain/skyline.js'
 import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
 import { RoadSurfaces } from './render/road-surfaces.js'
@@ -797,6 +798,7 @@ const KEY_ACTIONS = {
   m: 'grassStyle',
   '[': 'coarser',
   ']': 'finer',
+  k: 'skyline',
 }
 
 const CODE_ACTIONS = {
@@ -816,6 +818,7 @@ const CODE_ACTIONS = {
   KeyM: 'grassStyle',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
+  KeyK: 'skyline',
 }
 
 const actionsFor = (e) => {
@@ -918,6 +921,16 @@ addEventListener('keydown', (e) => {
   // distance from 0.4 to 0.6.
   if (fresh.includes('coarser')) LOD.triDeg = Math.min(MAX_TRI_DEG, LOD.triDeg * 1.25)
   if (fresh.includes('finer')) LOD.triDeg = Math.max(MIN_TRI_DEG, LOD.triDeg / 1.25)
+  // K turns the profile target off and on, and it invalidates rather than
+  // letting the change ride out SELECT_EVERY_FRAMES the way the bracket keys do.
+  // The whole value of this key is A/B on the SAME skyline in the SAME light --
+  // a hundred milliseconds of lag is enough to make the two halves of the
+  // comparison land on different frames, which is exactly what an eye judging a
+  // silhouette edge will latch onto instead of the edge.
+  if (fresh.includes('skyline')) {
+    SKYLINE.on = !SKYLINE.on
+    terrain.invalidate()
+  }
 })
 
 addEventListener('keyup', (e) => {
@@ -1081,8 +1094,10 @@ function panelStats() {
     // watching.
     resident: st.slots,
     drawn: st.rendered,
+    terrainTris: st.drawnTris,
     queued: st.queued,
     triDeg: st.triDeg,
+    profileDeg: st.profileDeg,
     // `tris` above is the whole frame as the GPU sees it; these three say how
     // much of it is the prop scatter, which is the layer currently being tuned.
     treeCount: trees.stats.placed,

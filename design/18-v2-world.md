@@ -40,6 +40,7 @@ src/v2/layers/water-bodies.js      LakeSet: footprint test + basin carve (three-
 src/v2/layers/paths.js             PathSet: rivers and roads -- index, distance query, carve (three-free)
 src/v2/layers/layers.js            Layers: owns the doc + all four bakes, one epoch, one carve entry point (three-free)
 src/v2/terrain/quadtree-v2.js      LOD selection, MAX_DEPTH 13
+src/v2/terrain/skyline.js          the profile LOD target: max pyramid + horizon table (three-free)
 src/v2/terrain/chunk-mesh-v2.js    mesher (three-free, but lives here because only the renderer calls it)
 src/v2/terrain/worker.js           worker shell
 src/v2/terrain/terrain-v2.js       BatchedMesh chunk manager + epoch invalidation
@@ -72,6 +73,14 @@ At 1024 px across 8192 m the imported field is **8 m/texel**, and that -- not `W
 One near-agreement is worth recording rather than rediscovering. `scripts/heightmap-png.mjs` has described the same reference image as "~4 miles (6437 m) across at 1024 px, i.e. 6.29 m/px" since build step 2, and every §3 terrain-character comparison made against it used that scale. 8 km is the number this build uses, and it is within 27% of that older reading, so those §3 comparisons stay roughly meaningful rather than being off by half.
 
 `MAX_DEPTH 13` is what "down to 10 cm" means in this file's units. The split rule is v1's, unchanged -- refine while `cell > range * tan(triDeg)` -- so the depth actually reached is a function of range, not of the cap: at eye height (1.65 m) and `triDeg 3.0`, the target cell is 8.6 cm and selection lands on depth 12 (12.5 cm) or 13 (6.25 cm). The cap exists so it *can* get there; the angular rule decides when.
+
+**A third target for ground that draws a silhouette edge** (`src/v2/terrain/skyline.js`, `K` toggles it). The angular rule is right for a surface and wrong for an edge: a 3-degree facet in the middle of a hillside is hidden by its own shading, and the same facet on a ridge crest is a 3-degree corner cut out of the sky. So a node whose top stands above the ground *behind* it -- out to `backdropX` times its own range, which is why a near ridge crossing a far mountain counts and not only ground against sky -- is graded toward `profileDeg 1.2` instead. Graded, not switched: a binary flip puts its discontinuity exactly on the silhouette, the one place in the frame guaranteed to be looked at.
+
+It is a **refinement only** and never a veto, which is the invariant v1's elevation bias broke by gating descent. The detector reads a max-mipmap over the imported field and a camera-centred horizon table (256 azimuths x 40 log-spaced range buckets, rebuilt when the eye moves 4 m, 3.6 ms), never the mesher's lazily-learned `info` table -- classifying on what has been meshed would make refinement depend on meshing and meshing depend on refinement.
+
+It reaches about 6% of the leaves past 600 m and costs 14k triangles on top of a flat `triDeg 3.0`, against the 206k that buying the same silhouette by refining everything would cost. The corollary is the interesting one: `triDeg 5.72` *plus* the profile target draws 70k where a flat 3.0 draws 95k, so a coarser default with a fine silhouette is both cheaper and better-looking, and that is the pair to reach for on the XR route. `scripts/check-v2-skyline.mjs` prints the whole ladder.
+
+This does **not** fix summit truncation, and the two are easy to confuse. A summit landing between coarse vertices is simply missed -- 17 m at the median for a 64 m cell over the 150 highest summits, 6-7x what typical ground loses -- and that is a one-sided bias removable by a shifted sample at zero triangle cost (`chunk-mesh-v2.js`'s crest term, `RELIEF_KNOBS` `crest`). Refining removes it only the slow way. The profile target is for the residual: the polygonal edge that remains once the peak height is right.
 
 ### The import, and what a JPEG costs
 
@@ -258,7 +267,7 @@ A sculpted heightmap rides the same Save button through a second endpoint, `POST
 
 One panel, top-left, replacing v1's `#desktop-hud` block-of-lines. Two zones:
 
-- **Status**, compact: a dense two-column key/value grid rather than one fact per line -- fps, draw tris, chunks resident/drawn, triDeg, position, ground height, snow line here, mode. It is what v1's HUD said, in about a third of the height.
+- **Status**, compact: a dense two-column key/value grid rather than one fact per line -- fps, draw tris, terrain (chunks resident/drawn plus the triangles those drawn chunks cost), `triDeg/profileDeg`, position, ground height, snow line here, mode. It is what v1's HUD said, in about a third of the height. Every layer prints its own triangle share, terrain included, so no layer's cost has to be inferred by subtraction.
 - **Relief**: one row per `RELIEF_KNOBS` entry, each a toggle plus a scrubbable value, persisted to `localStorage` and applied live. It is an ablation tool rather than a settings screen: the `on` values are chosen to be clearly visible rather than tasteful, and a knob with a `needs` greys out until its dependency is up.
 - **Tools**: the tool row, the gizmo's mode buttons, the selected object's numeric fields (editable), the layer list with visibility toggles and per-item delete, and save/load. Visibility is EDITOR-LOCAL and hides the actual surface -- `mesh.visible` on the water and road meshes, not a skipped build -- so hiding costs no remesh and no undo entry, and `levelAt`/`lakeBoxes` keep answering the gameplay questions (prop scatter, spawn search, where the player is standing) about a lake you have merely stopped looking at.
 

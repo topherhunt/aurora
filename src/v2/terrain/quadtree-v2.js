@@ -1,4 +1,5 @@
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, MAX_DEPTH, SLOT_COUNT, PINNED_CHUNKS } from '../config.js'
+import { SKYLINE } from './skyline.js'
 
 // ---------------------------------------------------------------------------
 // v2 quadtree LOD selection (DESIGN.md §18). Three-free, so scripts/check-v2-quadtree.mjs can gate it in node.
@@ -207,6 +208,8 @@ const inView = (cam, x, z, size) => inCone(cam, x, z, size, VIEW_HALF_ANGLE)
  *
  * `cam` is {x, z} at minimum; add `y` to enable the 3D range term and `yaw` to enable view-cone culling. Both degrade to the conservative answer when absent, which keeps this callable from the node checks with a bare position.
  *
+ * `skyline` is an optional skyline.js HorizonTable, already built for THIS camera position. Present, it adds a third target for ground on a silhouette edge; absent -- which is every node check that is not about it, and every caller written before it existed -- selection is bit-identical to the two-target rule. That equivalence is asserted rather than assumed, in check-v2-skyline.mjs.
+ *
  * `info` is terrain-v2.js's table of per-node vertical bounds, `key -> {minY, maxY}`, learned as chunks are meshed. It only sharpens the range term; the split decision itself needs nothing that has to be built first, so selection never waits on the worker. Omit it and every node falls back to its horizontal distance, which under-estimates range and therefore over-refines -- the safe direction.
  *
  * STILL RECURSIVE, and that was checked rather than assumed. Thirteen levels of four-way recursion is a call stack 13 deep and roughly n/3 interior frames for n leaves, which is nothing; the cost is in the arithmetic per node, not the frames. Measured over the 2424-selection sweep:
@@ -224,6 +227,7 @@ export function selectNodes(
     periphDeg = LOD.periphDeg,
     info = null,
     cull = LOD.cull,
+    skyline = null,
   } = {}
 ) {
   const out = []
@@ -231,6 +235,8 @@ export function selectNodes(
   const tanTri = Math.tan((triDeg * Math.PI) / 180)
   // The periphery is a COARSER target, never a finer one. Without this clamp the pair inverts as soon as triDeg passes periphDeg -- ground behind the player refined harder than ground in front of her. Unlike v1's shipped default the clamp does not bind at 3.0, so this is live grading rather than a no-op.
   const tanPeriph = Math.tan((Math.max(periphDeg, triDeg) * Math.PI) / 180)
+  // The profile is a FINER target or it is nothing -- see skyline.js SKYLINE.profileDeg. Clamped here rather than at the interpolation so a profileDeg above triDeg makes the whole term a no-op instead of an inversion.
+  const profileDeg = skyline ? Math.min(SKYLINE.profileDeg, triDeg) : triDeg
   const culling = cull && cam.yaw !== undefined
 
   const visit = (depth, ix, iz) => {
@@ -239,12 +245,22 @@ export function selectNodes(
     const z = -WORLD_HALF + iz * size
 
     // One rule, two targets. Being outside the cone changes how fine the ground gets, never whether it descends at all -- see LOD.periphDeg.
-    const tan = !culling || inView(cam, x, z, size) ? tanTri : tanPeriph
+    const seen = !culling || inView(cam, x, z, size)
+    let tan = seen ? tanTri : tanPeriph
 
     if (depth < maxDepth) {
       // Range is floored at the node's own half-size: inside the box the distance is zero and every node would split to maxDepth regardless of how flat it is. At v1's depth 10 that was a spike of triangles under her feet; here the leaf is 1 m rather than v1's 16 m, so the spike would be 256x larger in leaf count, and it is the one place those leaves buy nothing. This `Math.max` is the invariant the gate was verified against by deliberately deleting it: check-v2-quadtree.mjs's "one step past the cliff the whole world is a single chunk" goes from 1 leaf to 124 and fails. Worth knowing that it is the ONLY check that fails -- the pool ladder and the tiling invariants do not notice, because the staircase under the camera is only about three leaves per level. The ceiling section is load-bearing for this specific bug precisely because atan(2/CHUNK_RES) is derived FROM the floor.
       const bounds = info ? info.get(nodeKey(depth, ix, iz)) : null
       const range = Math.max(nodeRange(cam, x, z, size, bounds), size * 0.5)
+
+      // THE THIRD TARGET. Ground that draws a silhouette edge is graded toward profileDeg; everything else keeps the target it already had. Only inside the streaming cone, because a ridge behind her is not a profile line she can see, and only ever FINER, which is what makes this a refinement bonus rather than v1's hierarchical gate. See skyline.js for the whole argument, including why it is graded rather than switched and why it does NOT substitute for the crest sampler.
+      //
+      // Two costs are deliberately paid only when the term is live: the gain call, and the Math.tan. Interpolating in DEGREES and taking the tangent, rather than the cheaper lerp between tanTri and tanProfile, because the knob is written in degrees and this file's whole claim is that it means what it says -- the two differ by 3% at the midpoint of the 1.2..3.0 band, which is a third of a depth level.
+      if (skyline && seen) {
+        const g = skyline.gain(cam, x, z, size, range)
+        if (g > 0) tan = Math.tan(((triDeg + (profileDeg - triDeg) * g) * Math.PI) / 180)
+      }
+
       if (size / CHUNK_RES > range * tan) {
         const cd = depth + 1
         visit(cd, ix * 2, iz * 2)

@@ -10,6 +10,7 @@ import {
   PINNED_CHUNKS,
 } from '../config.js'
 import { selectNodes, nodeKey, unpackKey, inCone, EYE_HALF_ANGLE, LOD } from './quadtree-v2.js'
+import { SKYLINE, MaxPyramid, HorizonTable } from './skyline.js'
 import {
   acceptsReply,
   cellSize,
@@ -158,6 +159,23 @@ export class TerrainV2 {
           `(${width * height} expected) -- a detached or truncated buffer meshes a flat world silently`
       )
     }
+
+    // The two halves of the silhouette target, built once because both are pure
+    // functions of the import: the pyramid answers "how high does the ground get
+    // anywhere in this box" at any box size, and the table folds that into one
+    // running-max angle per (azimuth, range) whenever the eye moves. See skyline.js
+    // for why this cannot be built out of the `info` table instead.
+    //
+    // FROM A SLICE, and the 4 MB is bought deliberately. MaxPyramid ALIASES level 0
+    // rather than copying it, and `data` here is heightmap.js's own field -- toRaw()
+    // hands out the instance's buffer and documents it as a thing to transfer. Any
+    // future caller taking it up on that would detach the pyramid's base out from
+    // under it, and a detached level reads as undefined per texel, so maxIn returns
+    // -Infinity, so every node tests as fully occluded: the profile target would
+    // switch ITSELF off with nothing thrown and no symptom but coarser ridges. That
+    // is the same trade, for the same reason, as the per-worker `copy` below.
+    this._pyramid = new MaxPyramid({ width, height, data: data.slice() })
+    this._horizon = new HorizonTable(this._pyramid)
 
     this.scene = scene
     this.queueDepth = queueDepth
@@ -315,6 +333,10 @@ export class TerrainV2 {
       finestCell: 0,
       cellUnderfoot: null,
       triDeg: LOD.triDeg,
+      // null rather than the knob's value while the target is off, so nothing
+      // reading this can print a profileDeg that no selection is honouring.
+      profileDeg: SKYLINE.on ? SKYLINE.profileDeg : null,
+      horizonMs: this._horizon.lastMs,
     }
 
     // What the mesher has taught us about the world, key -> {minY, maxY}. It is
@@ -914,6 +936,11 @@ export class TerrainV2 {
     // wants to show as "the workers are the bound right now".
     this.stats.workerBusy01 = this.inFlight / this._inFlightCap
     this.stats.triDeg = LOD.triDeg
+    this.stats.profileDeg = SKYLINE.on ? SKYLINE.profileDeg : null
+    // The last REBUILD, not the last selection: build() returns early when she has
+    // not moved, so this holding still while she turns is the cache working rather
+    // than the number going stale.
+    this.stats.horizonMs = this._horizon.lastMs
   }
 
   /**
@@ -928,7 +955,15 @@ export class TerrainV2 {
   _select(cam) {
     if (!cam) throw new Error('TerrainV2.update: no camera')
     this._cam = cam
-    const desired = selectNodes(cam, { maxDepth: MAX_DEPTH, info: this.info })
+    // The horizon table is a function of the eye POSITION and selection is its only
+    // reader, so it is rebuilt here rather than per frame -- and build() no-ops
+    // under 4 m of movement, which is what makes standing still or turning on the
+    // spot free. Left null without a y: an elevation-angle table cannot be built
+    // from a ground position and build() throws on one, so a caller holding only
+    // x/z keeps the two-target rule instead of taking the whole frame down.
+    const skyline = SKYLINE.on && cam.y !== undefined ? this._horizon : null
+    if (skyline) skyline.build(cam)
+    const desired = selectNodes(cam, { maxDepth: MAX_DEPTH, info: this.info, skyline })
     const render = new Set()
     const standIns = new Set()
     const queue = []
