@@ -272,7 +272,7 @@ function worldHeight() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-building', 'gen-building-v2', 'test-aurora']
+const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'gen-building-v2', 'test-aurora']
 
 function bareRoutes() {
   return {
@@ -306,10 +306,10 @@ function bareRoutes() {
 // inspected whole, and the "eye" that every "tune it by eye" constant in
 // phase-a.js refers to -- and props.html is the same kind of eye for the §9
 // asset library: 160 built props that check-props.mjs can assert are correct and
-// nothing could actually show you. gen-fern.html, gen-tree.html, gen-rock.html
-// and gen-building.html (with gen-building-v2.html beside it) are the tuning
-// benches for the procedural content
-// (src/props/fern.js, tree.js, rock.js, src/buildings/), which has no built asset to
+// nothing could actually show you. gen-fern.html, gen-tree.html, gen-rock.html,
+// gen-deadwood.html and gen-building.html (with gen-building-v2.html beside it)
+// are the tuning benches for the procedural content
+// (src/props/fern.js, tree.js, rock.js, deadwood.js, src/buildings/), which has no built asset to
 // inspect -- the "library" for a generated asset is the range its parameters
 // cover, and the only way to see a range is to put twenty seeds side by side.
 export default defineConfig({
@@ -349,6 +349,15 @@ export default defineConfig({
         // still choosing which variants the world gets, and PRESETS in
         // src/gen-rock-main.js is where that choice is being written down.
         genRock: resolve(__dirname, 'gen-rock.html'),
+        // The deadwood bench, served at /gen-deadwood. The two props that are
+        // not trees and not rocks: a broken-off snag and a fallen log. It is
+        // also where the moss and snow recipe on WOOD gets judged, since dead
+        // wood is the first thing in the world that wears both.
+        genDeadwood: resolve(__dirname, 'gen-deadwood.html'),
+        // The mushroom bench, served at /gen-mushroom. The only generator whose
+        // texture is code rather than a photograph (src/props/mushroom-texture.js),
+        // so the bench is also the only place the sheets can be looked at.
+        genMushroom: resolve(__dirname, 'gen-mushroom.html'),
         genBuilding: resolve(__dirname, 'gen-building.html'),
         // v2 of the same bench. Kept alongside v1 rather than replacing it: the
         // question v2 asks is "how crooked is too crooked", and the only honest

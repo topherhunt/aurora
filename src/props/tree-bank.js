@@ -18,11 +18,20 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // FOUR TIERS, FINEST FIRST -- tier 0 is the one you stand under:
 //
 //   0  LOD0   the full tree, resolveTree's own numbers
-//   1  LOD1   treeLod(p, 1): trunkSides 3, branchSides 1, cardTris 1, half the
-//             sprays. Roughly a quarter of LOD0's triangles.
+//   1  LOD1   treeLod(p, 1): trunkSides 3, branchSides 1, and the crown drawn
+//             as a BUNDLE of twenty big tiled triangles thrown through it
+//             instead of as cards. Every foliage count and size is inherited
+//             from LOD0 untouched. Seven to twelve times cheaper than LOD0 --
+//             pine 792 -> 83, oak 516 -> 47, birch 350 -> 49, aspen 432 -> 51
+//             at the base size, each of them exactly trunk 3 + limbs x 1 +
+//             bundle 20. The ratio only widens with the size variants, since
+//             the bundle is a flat twenty however big the crown gets.
 //   2  cross  the impostor as THREE fixed planes. Six triangles.
-//   3  card   the same impostor as ONE spun plane. Two triangles. Only built
-//             when `billboard` is set; without it tier 2 is the last tier.
+//   3  card   the same impostor as ONE spun plane, and that plane is ONE
+//             triangle: apex up for the pine, apex down for the three
+//             broadleaves, which is the shape each species already is. Only
+//             built when `billboard` is set; without it tier 2 is the last
+//             tier.
 //
 // BOTH CARD TIERS ARE THE SAME PHOTOGRAPH, one baked texture layer per SPECIES,
 // so the second tier costs geometry and nothing else -- no second bake, no
@@ -36,49 +45,46 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // distance. So the cross goes where a tree is still big enough for that to
 // matter, and the billboard takes the far field where it is not.
 //
-// The billboard is three times cheaper and that is why it cannot be the middle
+// The billboard is SIX times cheaper and that is why it cannot be the middle
 // band's answer OR the far band's loss. At a forest -- tens of thousands of
-// cards past the mid band -- the far tier IS the triangle budget, and 6 vs 2
+// cards past the mid band -- the far tier IS the triangle budget, and 6 vs 1
 // triangles there is the difference between a forest that fits and one that
 // does not. In the mid band there are only a thousand or so trees, so the cross
 // costs a few thousand triangles and buys back the depth.
 //
+// WHAT THE FAR CARD GIVES UP FOR THAT SIXTH is two corners of its photograph,
+// and the argument for why a triangle is the right shape for a tree -- with the
+// measured fraction of each species' silhouette it keeps -- is the `tri` note in
+// impostor.js. `billboardTri` on each species record is where the up-or-down
+// choice is made; it is a fact about the species' outline, not a taste knob.
+//
 // A ONE-PLANE CARD IS ONLY LEGAL IF SOMETHING TURNS IT, and material.js's
-// billboardVertex is that something -- it spins the quad about its own trunk in
+// billboardVertex is that something -- it spins the card about its own trunk in
 // the VERTEX SHADER, so the turning costs no CPU, no second material and no
 // per-frame matrix write, and the batch stays one draw call. It also looks
 // better than a fixed cross seen from far away: it always presents the
 // silhouette the photograph was actually taken from.
 //
 // HOW THE SHADER TELLS THE TWO CARD TIERS APART, given they share a layer: by
-// the NORMAL. `upNormal` rides with `billboard`, so a quad meant to be spun has
-// an EXACTLY vertical normal, and billboardVertex masks on `layer match AND
+// the NORMAL, not by the vertex count -- billboardVertex never sees how many
+// corners a geometry has. `upNormal` rides with `billboard`, so a card meant to
+// be spun has an EXACTLY vertical normal, and it masks on `layer match AND
 // normal.y > CARD_UP_MARK`. The cross wears canopy normals, which lean mostly
 // up but top out at 0.876, comfortably under the 0.99 marker; buildImpostorCard
 // asserts both sides of that rather than leaving it to be discovered when a
 // forest starts rotating. It is why the cross tier needed no new vertex
 // attribute and no duplicate impostor layer.
 //
-// KNOWN AND ACCEPTED: LOD0 AND LOD1 ARE NOT THE SAME TREE, so the swap pops.
-// tree.js draws every random number from one stream (`mulberry32(p.seed)`), and
-// LOD1 halves `sprays`, which changes how many draws the spray loop consumes
-// before branch azimuths are drawn. Every limb after the first therefore lands
-// somewhere else. Measured crown extents, seed 7:
-//
-//   pine   LOD0 5.32 x 4.92    LOD1 5.28 x 5.06
-//   oak    LOD0 6.96 x 6.45    LOD1 6.75 x 6.64
-//   birch  LOD0 4.53 x 4.20    LOD1 5.38 x 5.17
-//   aspen  LOD0 3.41 x 4.10    LOD1 4.96 x 4.54   <- 45% wider, the worst case
-//
-// THE FIX, when it is worth doing: seed each limb independently rather than
-// sharing one stream, so a limb's draws cannot depend on what earlier limbs
-// consumed. In buildTree, replace the single `rand` with a per-limb generator
-// keyed off the limb index -- `mulberry32(p.seed * 0x9e3779b1 + limbIndex)` --
-// and give the trunk and the apex sprays their own fixed keys. Then LOD1 is
-// LOD0 with sprays removed rather than a different tree, tiers nest, and the
-// band swap stops popping. It is contained to tree.js and needs no change here
-// beyond re-measuring the table above. See also `crownWidth` below, which is
-// read off tier 0 and would then be the same for every tier.
+// THE TWO MESH TIERS NEST BY CONSTRUCTION, so the swap does not resize the
+// tree. treeLod changes only the REPRESENTATION and leaves every count and size
+// alone, so buildTree walks an IDENTICAL rng stream at both tiers and lays out
+// the identical tree; LOD1's blades are then hung on the very cards LOD0 draws.
+// Height is identical to 0.00%, both tiers standing exactly `height` tall by
+// construction, and crown width over 24 seeds x 3 sizes runs NARROW rather than
+// wide: pine -5.5%, oak -1.3%, birch -1.5%, aspen -0.9%, worst case about -10%
+// and -19% on small pines, whose crowns hold the most sprays and are the
+// hardest for sixty blade corners to sample. That is why `crownWidth` below can
+// be read off tier 0 and used for every tier.
 // ---------------------------------------------------------------------------
 
 // Height multipliers on each species' own default. Not a scale: the tree is
@@ -101,6 +107,7 @@ export function treeVariants() {
         impostorLayer: sp.impostorLayer,
         leafLayer: sp.leafLayer,
         barkLayer: sp.barkLayer,
+        billboardTri: sp.billboardTri,
       })
     }
   }
@@ -180,9 +187,9 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
     lod1.push(buildTree(treeLod(p, 1)))
 
     // The card is framed on tier 0's measured crown, which is the tree the
-    // impostor is a photograph OF. See the LOD-nesting note above for why tier
-    // 1's crown does not match; the card follows tier 0 because that is what
-    // bakeTreeImpostors points its camera at.
+    // impostor is a photograph OF and what bakeTreeImpostors points its camera
+    // at. Tier 1 measures the same crown to within a few percent (the nesting
+    // note above), so one framing serves both mesh tiers.
     const u = g0.userData.tree
     const ext = impostorCardExtents({ width: u.crownWidth, height: u.height })
     // The CROSS tier: three fixed planes wearing CANOPY normals, which fan out
@@ -203,8 +210,20 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
     // gets from the photograph instead -- the bake is lit, so the crown's own
     // interior shading is in the texture. See impostor.js on why the billboard
     // does not simply take the fan as well.
+    //
+    // `tri` is what makes this tier one triangle rather than two, and the
+    // species picks which way up. It is asked for by name rather than defaulted
+    // on, because the same function builds the fern billboard, which is a
+    // ROSETTE and has no corner it can spare.
     if (billboard) {
-      cards.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1, { upNormal: true }))
+      // A missing `billboardTri` would quietly fall back to a quad and double
+      // the far band's bill, which is the one number nobody would notice going
+      // wrong. A new species has to say which way up its outline is.
+      if (!v.billboardTri) {
+        throw new Error(`buildTreeBank: ${v.species} has no billboardTri`)
+      }
+      cards.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1,
+        { upNormal: true, tri: v.billboardTri }))
     }
   })
 

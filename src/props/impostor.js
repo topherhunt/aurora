@@ -440,6 +440,48 @@ function dilate(px) {
  * canopy does. Both are capped by CARD_UP_MARK, and buildImpostorCard asserts
  * it rather than trusting it.
  *
+ * A BILLBOARD CAN BE ONE TRIANGLE (`tri`), and at a forest that is the single
+ * biggest saving on the whole ladder: the far band holds tens of thousands of
+ * instances, so halving its card halves the tree budget's largest line. What it
+ * spends is two CORNERS of the photograph, and which two is the species'
+ * choice. `tri: 'up'` is apex at the top, base across the ground, and drops the
+ * two top corners; `tri: 'down'` is the inverse and drops the two at the foot.
+ *
+ * THE FIT IS A SPECIES FACT, not a taste one. A conifer IS a triangle apex-up,
+ * and a lollipop -- a round crown over a bare trunk -- is close to one apex-down,
+ * because the ground corners either side of a trunk hold nothing. Rasterized
+ * against the real LOD0 silhouette over 4 species x 3 sizes x 6 seeds, the
+ * fraction of foliage the card keeps is:
+ *
+ *            apex-up   apex-down
+ *   pine       89.2%      60.8%
+ *   oak        60.7%      83.8%
+ *   birch      66.6%      73.9%
+ *   aspen      65.9%      85.2%
+ *
+ * Wood is a non-issue at either: the trunk stands on u = 0.5, which both
+ * triangles contain at every height, and the worst case is 84%.
+ *
+ * WHAT IT COSTS AND WHY IT IS PAID. The clip is not diffuse -- it is a straight
+ * slice off each lower shoulder of a round crown, which at the 100 m band edge
+ * is a wedge about 12 px wide and 18 px deep on an oak. It is affordable
+ * because the swap into this tier is a CROSS-DISSOLVE, not a cut: trees.js
+ * dithers the outgoing cross against the incoming card over half a second, so
+ * the shoulder thins out rather than vanishing between two frames. Past 300 m
+ * the same wedge is 4-7 px and the mip chain has eaten it.
+ *
+ * THE OTHER TRIANGLE IS NOT WORTH LOOKING FOR. The world triangle and the uv
+ * triangle are joined by one affine map, so overhanging the square samples a
+ * smaller part of the same picture rather than reaching a bigger one -- every
+ * proposal reduces to "which triangle inside [0,1]^2". Searched exhaustively
+ * against the same silhouettes and restricted to the u-symmetric shapes the
+ * mirror trick allows, the best found is within a few points of the inscribed
+ * one everywhere (pine 90.2, oak 87.2, birch 77.9, aspen 88.6). The lever that
+ * DOES move is the bake's margin: widening it shrinks the tree inside the same
+ * square, and at +0.20 a pine's apex-up card keeps 99.8%. It is not taken,
+ * because the margin is shared with the CROSS tier, which at 45 m is already
+ * only about one texel per pixel and would go soft to buy it.
+ *
  * ONE THING THIS DOES NOT SOLVE: mip coverage. The impostor's alpha is binary
  * out of the bake, and each mip averages it, so a canopy that is half holes
  * drops toward alpha 0.5 as it shrinks and alphaTest 0.5 starts eating it --
@@ -453,10 +495,20 @@ export function buildImpostorCard(
   height,
   layer,
   planes = 3,
-  { upNormal = false, canopy = false } = {}
+  { upNormal = false, canopy = false, tri = false } = {}
 ) {
   if (upNormal && canopy) {
     throw new Error('buildImpostorCard: upNormal and canopy are two answers to the same question')
+  }
+  if (tri && tri !== 'up' && tri !== 'down') {
+    throw new Error(`buildImpostorCard: tri must be 'up', 'down' or false, not ${tri}`)
+  }
+  // A canopy fan signs its outward lean off `x < 0 ? -SPREAD : SPREAD`, and a
+  // triangle has a corner sitting exactly ON x = 0 where that sign is not
+  // defined. The two are never wanted together anyway -- `tri` is the billboard
+  // tier and `canopy` is the cross -- so refuse rather than pick a sign.
+  if (tri && canopy) {
+    throw new Error('buildImpostorCard: a canopy fan has no sign at a triangle apex')
   }
   const n = Math.max(1, Math.round(planes))
   const positions = []
@@ -477,12 +529,23 @@ export function buildImpostorCard(
     // Every other plane reads its u backwards -- see the mirroring note above.
     const flip = i % 2 === 1
     // v = 0 at the top -- see the note by flipY in bakeImpostor.
-    const corners = [
-      [-hw, 0, 0, 1],
-      [hw, 0, 1, 1],
-      [hw, height, 1, 0],
-      [-hw, height, 0, 0],
-    ]
+    //
+    // A `tri` card is the same rectangle with one corner pair collapsed to a
+    // point on the trunk line: HALF the triangles for the corners of the
+    // picture the tree was never in. Wound the same way round as the quad, and
+    // still symmetric about u = 0.5, which billboardVertex's per-instance u-flip
+    // requires -- an asymmetric uv triple would show half the forest a sheared
+    // photograph. See the triangle note above for what each species gives up.
+    const corners = tri === 'up'
+      ? [[-hw, 0, 0, 1], [hw, 0, 1, 1], [0, height, 0.5, 0]]
+      : tri === 'down'
+        ? [[0, 0, 0.5, 1], [hw, height, 1, 0], [-hw, height, 0, 0]]
+        : [
+          [-hw, 0, 0, 1],
+          [hw, 0, 1, 1],
+          [hw, height, 1, 0],
+          [-hw, height, 0, 0],
+        ]
     for (const [x, y, u0, v] of corners) {
       const u = flip ? 1 - u0 : u0
       positions.push(dx * x, y, dz * x)
@@ -503,7 +566,8 @@ export function buildImpostorCard(
       uvs.push(u, v)
       layers.push(layer)
     }
-    indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    if (tri) indices.push(base, base + 1, base + 2)
+    else indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
   }
 
   // THE BILLBOARD MARKER IS A CONTRACT, so check it rather than trusting it.
@@ -530,7 +594,8 @@ export function buildImpostorCard(
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
   geo.userData.impostor = {
-    width, height, planes: n, layer, triangles: n * 2, mirrored: n > 1, upNormal, canopy,
+    width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
+    upNormal, canopy, tri,
   }
   return geo
 }

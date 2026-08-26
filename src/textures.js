@@ -11,6 +11,7 @@ import {
   sheetIron,
   sheetRunes,
 } from './buildings/tiles.js'
+import { mushroomCapSheet, mushroomCaveSheet, mushroomFleshSheet } from './props/mushroom-texture.js'
 
 // ---------------------------------------------------------------------------
 // The one prop texture. Every prop texture in the world is a layer of this.
@@ -309,19 +310,53 @@ export const LAYER = {
   // already is, wherever MOSS_LAYERS says moss grows.
   //
   // That is what makes it worth a slot under §9's earns-its-layer rule, and the
-  // arithmetic is unusually good: ONE layer puts moss on every rock in the world
-  // and, when the bark layers join MOSS_LAYERS, on every trunk too, at no
-  // triangles, no second material and no per-prop authoring. The alternative --
-  // mossy VARIANTS of the tiles that want moss -- costs a layer per tile and
-  // still cannot vary within one surface.
+  // arithmetic is unusually good: ONE layer puts moss on every rock in the
+  // world, and on every trunk, snag, fallen log and building member with them,
+  // at no triangles, no second material and no per-prop authoring. The
+  // alternative -- mossy VARIANTS of the tiles that want moss -- costs a layer
+  // per tile and still cannot vary within one surface.
   //
   // It is also the first layer that is deliberately NOT tintable. stone.png is
   // graded bright and neutral so a per-instance tint decides its hue; moss is
   // graded to its final colour, because moss on basalt and moss on sandstone are
   // the same green.
   MOSS: 35,
+
+  // --- mushrooms (src/props/mushroom-texture.js) -----------------------------
+  //
+  // Three SHEETS, not three textures: each is a 2x2 grid of 64 px cells, and a
+  // mushroom picks its cell by UV offset. So these three slots carry eight cap
+  // colours and four fleshes -- twelve materials' worth of variety inside the
+  // one shared prop material, at no extra draw call and no extra vertex
+  // attribute. That is the whole reason mushrooms went this way instead of
+  // getting a material of their own: they will be the most numerous and the
+  // smallest prop in the world, and the smallest prop is the worst possible
+  // thing to spend a draw call on.
+  //
+  // They are also the first layers with NO photograph behind them and none
+  // coming. Everything else here that looks generated is a stand-in waiting for
+  // loadImageLayers(); these are the shipping art, because a cap is a flat
+  // colour, a rim shade and one pattern, and storing a photo of that would be
+  // storing the output of a function. Zero bytes on disk, no `npm run props`,
+  // and a new colour is an edit to an array rather than a trip through Blender.
+  //
+  // Split forest/cave by WHERE rather than by hue because that is the decision
+  // the scatter makes, and because it keeps a cave's palette from bleeding into
+  // a forest one across a mip boundary. FLESH is shared: gills and stalks are
+  // the same picture at different contrast, argued in mushroom-texture.js.
+  MUSHROOM_CAP: 36,
+  MUSHROOM_CAP_CAVE: 37,
+  MUSHROOM_FLESH: 38,
+
+  // The mushroom's card tier. Written at load by photographing the mesh, like
+  // the fern and grass impostors, so it is 64 KB of RAM and zero bytes of disk
+  // and it cannot disagree with the geometry it stands in for. Allocated now
+  // rather than when a scatter wants it because §5's grass-clump row already
+  // says a prop this size takes a card at 20 m, and gen-mushroom.html cannot
+  // answer whether that card is honest without somewhere to bake one.
+  IMPOSTOR_MUSHROOM: 39,
 }
-export const LAYER_COUNT = 36
+export const LAYER_COUNT = 40
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -331,11 +366,13 @@ export const LAYER_COUNT = 36
 // the layer. No vertex attribute, no second material, no geometry change.
 //
 // The four IMPOSTOR layers are in the list on purpose. They are pictures of a
-// whole tree, trunk included, so snowing one whitens its trunk too -- but the
-// alternative is a green tree at 130 m standing in a white forest, which is the
-// worse error by a wide margin, and snow does sit along real branches anyway.
-// The impostor bake is unlit and snow-free, so the card stays dynamic: turning
-// snow up whitens LOD2 without rebaking.
+// whole tree, trunk included, so snowing one whitens its trunk too -- which is
+// now what the mesh tiers do as well, because the bark layers snow as wood (see
+// SNOW_WOOD_LAYERS below). It was the right call even when they did not: a green
+// tree at 130 m standing in a white forest is the worse error by a wide margin,
+// and snow does sit along real branches anyway. The impostor bake is unlit and
+// snow-free, so the card stays dynamic: turning snow up whitens LOD2 without
+// rebaking.
 //
 // DELIBERATELY OUT, and each is one line to add: FROND_0, GRASS, GRASS_TUFT,
 // and the fern and grass impostors. All of them would snow in a real winter,
@@ -386,6 +423,36 @@ export const SNOW_LAYERS = [
 // bake its snow in.
 export const SNOW_ROCK_LAYERS = [LAYER.ROCK]
 
+// --- and the same recipe again, on WOOD --------------------------------------
+//
+// Wood fills in from the top down exactly as stone does, and the brief stone was
+// written against fits a log word for word: a fallen log's upper surface
+// whitens first, its flanks are about half covered by the time that top is
+// solid, and its underside is the last thing to go. So this list takes the SAME
+// weight as stone -- SNOW_ROCK_UP, in src/material.js -- and it is a separate
+// NAME rather than a separate recipe. material.js concatenates the two into one
+// uniform because "surfaces that fill in from the top down" is ONE family; they
+// are two lists here because "stone" and "wood" are two facts, and the day one
+// of them wants its own weight the split is already made.
+//
+// THIS IS A REAL CHANGE TO WHAT SHIPS, and the honest way to put it is that tree
+// TRUNKS now snow. What a winter forest looked like before was white canopies
+// standing on bare brown trunks -- while the LOD2 impostor of the same tree,
+// which is a photograph of the WHOLE tree, trunk included, whitened as one
+// picture. So the mesh tiers and the card tier disagreed with each other across
+// an LOD boundary, and this removes an inconsistency that was already shipping
+// rather than inventing a look.
+//
+// TIMBER_BEAM carries the change onto buildings as well, because it is what
+// every raw member of one wears -- log courses, posts, rails, jambs. That is the
+// same answer for the same reason: a log wall is a stack of logs, and snow on a
+// log is snow on a log whether somebody built with it or it fell over.
+//
+// Must stay DISJOINT from SNOW_LAYERS, on exactly the terms the stone list is: a
+// layer in both is counted by both masks and then silently takes the foliage
+// weight, which is a wrong picture rather than an error.
+export const SNOW_WOOD_LAYERS = [LAYER.BARK, LAYER.BARK_BIRCH, LAYER.BARK_PINE, LAYER.TIMBER_BEAM]
+
 // --- and which layers moss grows on ------------------------------------------
 //
 // A third list, and unlike the two above it does not select weights -- it
@@ -393,17 +460,22 @@ export const SNOW_ROCK_LAYERS = [LAYER.ROCK]
 // moss lays a SECOND TEXTURE over it, so this list is the set of surfaces that
 // pay an extra atlas fetch, and that is a reason to keep it short.
 //
-// ROCK only, for now. Bark is the obvious next entry and the shader needs
-// nothing new for it -- moss is projected from world position and tiled off
-// whatever UV the surface already has, so a trunk would work the day a bark
-// layer is added here. It is out because moss up a trunk wants a HEIGHT cue (it
-// stops a metre or two up) that the rock recipe has no notion of, and adding
-// that before anybody has looked at moss on a rock is guessing twice.
+// STONE AND WOOD. Bark was out of this list for one stated reason -- moss up a
+// trunk wants a HEIGHT cue, because it grows at the foot and gives out a metre
+// or two up, and the rock recipe had no notion of one -- and that reason is now
+// answered: MOSS_RISE in src/material.js is the cue, measured from the
+// instance's OWN root rather than from sea level, so a standing trunk is green
+// at the foot and clean at the break.
+//
+// A FALLEN LOG then needs no special case at all, which is what makes the cue
+// worth having rather than a thing bolted on for snags: every part of a log
+// lying on the ground is within a diameter of its own root height, so the cue
+// reads ~1 down the log's whole length and it is mossy end to end.
 //
 // IMPOSTOR_ROCK is out for a duller reason than it is out of the snow lists: a
 // card is photographed from the mesh, so if the mesh was mossy when it was
 // baked, the moss is already in the picture. Mossing it again would double it.
-export const MOSS_LAYERS = [LAYER.ROCK]
+export const MOSS_LAYERS = [LAYER.ROCK, LAYER.BARK, LAYER.BARK_BIRCH, LAYER.BARK_PINE, LAYER.TIMBER_BEAM]
 
 // --- what LAYER.ROCK actually looks like -------------------------------------
 //
@@ -649,6 +721,12 @@ export function buildTextureArray() {
   layers[LAYER.ROOF_TILE] = tileShingles(n)
   layers[LAYER.DOOR] = tilePlanks(n)
   layers[LAYER.TIMBER_BEAM] = tileLogs(n)
+
+  // Mushroom sheets. Unlike every generator above these are not stand-ins for a
+  // PNG that is coming -- they are the art. See the LAYER entries.
+  layers[LAYER.MUSHROOM_CAP] = mushroomCapSheet()
+  layers[LAYER.MUSHROOM_CAP_CAVE] = mushroomCaveSheet()
+  layers[LAYER.MUSHROOM_FLESH] = mushroomFleshSheet()
 
   // DataArrayTexture wants one contiguous buffer, layers back to back. Image
   // layers are left at zero -- fully transparent, so alphaTest discards them --

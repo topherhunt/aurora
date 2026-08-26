@@ -3,6 +3,7 @@ import { Heightmap } from './heightmap.js'
 import { ExposureField } from './exposure.js'
 import { RidgeField } from './ridge.js'
 import { Crag } from './crag.js'
+import { CreaseField } from './crease.js'
 import { thermalErode } from './erode.js'
 import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './relief.js'
 
@@ -205,10 +206,67 @@ export class V2Height {
     // and with `erode` up that is the relaxed copy and not the import.
     this.ridge = needs.ridge ? new RidgeField(ground, { seed }) : null
 
+    // 3. CREASE, and it goes LAST on purpose.
+    //
+    // It is not a term in `_micro` -- it replaces the coarse reconstruction
+    // itself, inside Heightmap.sample, so it reaches the mesher, the collision,
+    // the scatter and the raycast through the one call they all already make.
+    // That also means it works in the `_plain` path above without appearing in
+    // it: `_plain` is about the micro stack, and this knob does not touch the
+    // micro stack.
+    //
+    // ATTACHED AFTER EVERYTHING BAKED FROM `ground` IS BUILT, which is the whole
+    // reason this sits at the bottom of the function. calibrateRough fits the
+    // detail amplitude to the ground's own structure function; a creased surface
+    // has more energy at texel scale, so calibrating against it would pull
+    // `rough` down and change the detail term over the ENTIRE world -- flat
+    // valley floors included -- in response to a knob whose whole claim is that
+    // it only touches crests. Exposure and ridge bake from `ground` for their
+    // own reasons and get the same treatment. Built last, the knob does exactly
+    // what it says and nothing at a distance.
+    //
+    // AND IT IS ATTACHED TO A VIEW, NEVER TO THE IMPORT. With `erode` off
+    // `ground === this.heightmap`, and that object is shared by reference with
+    // every other V2Height reading the same import -- the gate builds a dozen,
+    // and the editor holds one beside the live world. Attaching here directly
+    // means the last field constructed decides what all the others are standing
+    // on: measured, three fields built in a row all came out creased and a
+    // sibling's calibrateRough was fitted to a surface its own knob had switched
+    // off. `view()` shares the texels and owns the operator, so a knob can only
+    // ever change the field it was set on.
+    this._attachCrease()
+
     // Invalidated rather than kept: erosion moves the texels the percentile
     // histogram is built from, so the altitude ramp a stale `bands` describes is
     // a ramp over a world that no longer exists.
     this._bands = null
+  }
+
+  /**
+   * Point the crease operator at whatever `this.ground` currently is, or clear
+   * it when the knob is off. Idempotent, and safe to call on a ground that
+   * already carries one.
+   *
+   * IT IS A METHOD BECAUSE TWO PATHS REPLACE `this.ground` AND BOTH MUST DO
+   * THIS. `_rebuild` makes it from the import or the eroded copy; coarsePatched
+   * makes a fresh one on every tick of a brush stroke while `erode` is up. The
+   * first draft attached only in `_rebuild`, so with both knobs on the first
+   * brush tick handed the world a Heightmap with no operator on it and the
+   * terrain quietly un-creased itself mid-stroke, staying that way until
+   * something forced a full rebuild. Three lines that two call sites had to keep
+   * agreeing on is the shape of bug this whole file is careful about.
+   */
+  _attachCrease() {
+    this.crease = null
+    if (this.relief.crease <= 0) return
+    // A VIEW, NEVER THE OBJECT ITSELF. With `erode` off `this.ground` is the
+    // import, shared by reference with every other V2Height reading it, and
+    // attaching to that lets one field's knob decide what the others stand on.
+    // See Heightmap.view.
+    this.ground = this.ground.view()
+    this.crease = new CreaseField(this.ground, this.seed)
+    this.crease.lift = this.relief.crease
+    this.ground.attachCrease(this.crease)
   }
 
   /**
@@ -291,6 +349,12 @@ export class V2Height {
       data.set(fresh.subarray(row + i0, row + i1), row + i0)
     }
     this.ground = Heightmap.fromRaw({ width: w, height: src.height, data, meta: src.meta })
+    // The line above hands back a Heightmap with nothing attached to it, so the
+    // operator has to be re-pointed at it or the stroke un-creases the world.
+    // Unlike `bands` and the exposure grid above, this is not a stale-but-safe
+    // omission: those keep describing a slightly older surface, whereas dropping
+    // this changes which surface the player is standing on, mid-drag.
+    this._attachCrease()
   }
 
   _syncAuthored() {

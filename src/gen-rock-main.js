@@ -15,7 +15,7 @@ import impostorSource from './props/impostor.js?raw'
 //
 // This bench exists to ANSWER A QUESTION, not to show off a generator: which
 // rock variants is the world actually going to ship? The question has been
-// answered -- the sixteen in src/props/rock-bank.js -- and the PRESET dropdown
+// answered -- the twenty-five in src/props/rock-bank.js -- and the PRESET dropdown
 // is that bank, so picking an entry previews exactly the rock the scatter will
 // place. The sliders are still here because the answer is not final: drag them,
 // find a better shape, and write the numbers back into the bank.
@@ -49,7 +49,7 @@ const STONE_TEX = 'rocks/stone.png'
 // ROCK_VARIANTS and TINTS come from src/props/rock-bank.js, because THE WORLD
 // READS THEM TOO. A preset table only this page could see would let the shape
 // signed off here and the shape that ships drift apart, which is the one
-// failure a bench exists to prevent. Edit the sixteen over there; this page
+// failure a bench exists to prevent. Edit the twenty-five over there; this page
 // previews them and nothing else.
 //
 // `tint` is a default, not a property of the shape -- any of these can wear any
@@ -80,6 +80,7 @@ const SLIDERS = [
   ['strata', 0, 8, 1, 'bedding bands up the height, as a count. 0 = none'],
   ['strataAmp', 0, 0.2, 0.005, 'how proud those bands stand'],
   ['sit', 0, 0.6, 0.01, 'fraction of the height cut away at the bottom, so the rock is BEDDED IN rather than resting on a point'],
+  ['openBottom', 0, 1, 1, '0/1. `sit` flattens the buried belly ONTO the bed plane, which leaves a real horizontal disc down there; this throws those faces away and ships an open shell. A cap protruding from a riverbed for a fraction of a closed rock\'s triangles -- and, the moment the ground moves out from under it, a view of its inside through backfaces. Only ever on something bedded'],
   ['shards', 1, 5, 1, 'masses in the cluster. Costs its multiple in triangles -- the most expensive slider on this page'],
   ['shardSpread', 0.1, 1.1, 0.01, 'how far satellites sit from the main mass. Past ~0.9 they stop overlapping and read as separate rocks'],
   ['shardDrop', 0, 0.8, 0.01, 'how much smaller satellites get'],

@@ -133,12 +133,22 @@ export function makeCharacter(seed, strength = 1) {
     // for: some buildings wear a deep sheltering overhang and some are cut back
     // close to the wall, and the plan has no opinion about which.
     overhang: 1 + sym(13) * 0.38 * s,
-    // The gable-end (verge) overhang, in metres, MORE at the ridge than at the
-    // eave when positive and the other way round when negative. A splayed verge
-    // is why a Nordic gable reads as a wedge driven out of the wall rather than
-    // as a rectangle cut off flush, and either direction looks deliberate:
-    // ridge-heavy flares toward the sky, eave-heavy bows out at the bottom.
-    vergeSplay: sym(14) * (0.1 + r(15) * 0.26) * s,
+    // THE RAKE LINE'S DIVERGENCE FROM THE WALL BELOW IT, as a fraction of the
+    // slope's run: how much further the roof oversails the gable end at the
+    // RIDGE than it does at the EAVE. Positive flares toward the sky, negative
+    // bows out at the bottom, and either reads as deliberate -- what reads as
+    // nothing is a rake cut parallel to the wall, which is what the whole
+    // village had.
+    //
+    // SIGN AND SIZE ARE DRAWN SEPARATELY, and that is the fix. It used to be one
+    // symmetric draw, `sym(14) * (0.1 + r(15) * 0.26)`, which puts HALF the
+    // village within 0.13 m of parallel by construction -- the sign coming out
+    // near zero takes the size down with it. Now a quarter of buildings are
+    // ruled flush on purpose and the rest get 11--30% of their run, which on a
+    // cottage is a third of a metre to over three quarters, off a verge only
+    // 0.3 m deep. It is anchored rather than centred in slopeSurface(), so this
+    // can be large without any part of the sheet retreating inside the wall.
+    vergeSplay: (r(18) < 0.24 ? 0.02 : (r(14) < 0.5 ? -1 : 1) * (0.11 + r(15) * 0.19)) * s,
     // The RAKE of the eave skirt: how far off plumb the thatch fringe hangs.
     // Positive throws the tip outward, away from the wall; negative tucks it
     // back under the roof. See thatchFringe().

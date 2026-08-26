@@ -181,7 +181,7 @@ export const ROCK_DEFAULTS = {
   // Two octaves and no more. A third costs a slider and reads as noise rather
   // than as rock, because below `grain`'s scale the 128px speckle is doing the
   // work and geometry cannot compete with it.
-  lumps: 0.55, // large-scale radial displacement -- the mass of the rock
+  lumps: 0.7, // large-scale radial displacement -- the mass of the rock
   lumpFreq: 1.6,
   grain: 0.25, // small-scale -- the bumps that catch light along an edge
   grainFreq: 5.0,
@@ -216,6 +216,22 @@ export const ROCK_DEFAULTS = {
   // A rock resting exactly on its lowest point looks like it was placed. Real
   // ones are bedded in: cut the bottom off and stand the cut face on y = 0.
   sit: 0.12, // fraction of total height cut away at the bottom
+
+  // AND OPTIONALLY, THROW THE BURIED BELLY AWAY. `sit` flattens everything below
+  // the bed plane ONTO it, which leaves a real horizontal disc down there --
+  // triangles that face straight down at ground level and are never once seen.
+  // With this on, any face all three of whose vertices landed on the plane is
+  // dropped, and what ships is an open shell: a cap that protrudes from a
+  // riverbed or a cliff face for a fraction of a closed rock's triangles. It
+  // costs nothing but the faces, because the rim vertices are shared with the
+  // sides and survive there.
+  //
+  // ONLY EVER USE IT ON SOMETHING BEDDED. An open shell has no bottom, so the
+  // moment the ground moves out from under it -- a terrain re-split, a rock on a
+  // steeper slope than it was placed for -- you are looking into the inside of
+  // it through backfaces. The saving scales with `sit`: on a T80 it is about a
+  // tenth of the faces at 0.3, a quarter at 0.4, half at 0.6.
+  openBottom: 0, // 0 = closed, 1 = drop the faces lying flat on the bed plane
 
   // --- material ------------------------------------------------------------
   // The tile is sized RELATIVE TO THE ROCK, not to the world -- see point 3 in
@@ -624,18 +640,52 @@ export function buildRock(options = {}) {
   const aux = { shells: [], facets: [] }
   emitShards(p, ax, ay, az, solidDirections(tier.solid, tier.detail), positions, aux)
 
-  const vertexCount = positions.length / 3
   const shells = aux.shells
   const facets = aux.facets
 
   // A vertical clamp, not a radial one: the ground is a plane in the ROCK's
   // frame, and satellite shards are offset away from the origin, so the radial
   // trick used for cuts would slice each shard off at a different height.
-  // Faces entirely below the plane collapse to zero area -- at most a couple of
-  // triangles at these counts, and they rasterise to nothing.
+  //
+  // WHAT THIS LEAVES BEHIND is a flat disc on the bed plane, not nothing: three
+  // vertices clamped to the same y but different x and z still span real area.
+  // For a closed rock that is fine -- it is buried -- and for an open one
+  // `openBottom` drops it below.
+  const pinned = new Uint8Array(positions.length / 3)
   for (let i = 1; i < positions.length; i += 3) {
-    if (positions[i] < cutY) positions[i] = cutY
+    if (positions[i] < cutY) {
+      positions[i] = cutY
+      pinned[(i - 1) / 3] = 1
+    }
   }
+
+  if (p.openBottom) {
+    let w = 0
+    for (let f = 0; f < pinned.length; f += 3) {
+      if (pinned[f] && pinned[f + 1] && pinned[f + 2]) continue
+      // Three parallel arrays, one stride each, compacted in lockstep: the face
+      // loop further down indexes all three by the same vertex number and would
+      // read someone else's normal if they ever fell out of step.
+      for (let j = 0; j < 3; j++) {
+        const src = f + j
+        const dst = w + j
+        positions[dst * 3] = positions[src * 3]
+        positions[dst * 3 + 1] = positions[src * 3 + 1]
+        positions[dst * 3 + 2] = positions[src * 3 + 2]
+        shells[dst * 3] = shells[src * 3]
+        shells[dst * 3 + 1] = shells[src * 3 + 1]
+        shells[dst * 3 + 2] = shells[src * 3 + 2]
+        facets[dst] = facets[src]
+      }
+      w += 3
+    }
+    if (w === 0) throw new Error(`buildRock: openBottom left nothing of ${tier.name} at sit ${p.sit}`)
+    positions.length = w * 3
+    shells.length = w * 3
+    facets.length = w
+  }
+
+  const vertexCount = positions.length / 3
 
   // This tier's own extents, on exactly the terms the reference was measured on.
   const bounds = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]
@@ -792,6 +842,11 @@ export function buildRock(options = {}) {
     vertices: vertexCount,
     shards: Math.max(1, Math.round(p.shards)),
     cuts: Math.max(0, Math.round(p.cuts)),
+    // Whether the underside was thrown away, and how many faces that cost. A
+    // closed rock reports 0 and `triangles` is then exactly tier faces x shards;
+    // an open one is short by this much and nothing should expect otherwise.
+    openBottom: p.openBottom ? 1 : 0,
+    dropped: tier.faces * Math.max(1, Math.round(p.shards)) - vertexCount / 3,
     tier: tier.name,
     // How much this tier had to be inflated to read the same size as the dense
     // reference. 1.00 means the sampling lost nothing; the coarser the solid,

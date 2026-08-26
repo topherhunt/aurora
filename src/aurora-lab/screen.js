@@ -82,6 +82,8 @@ import * as THREE from 'three'
 import { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAMENT_GLSL } from './glsl/noise.js'
 import { PALETTE_GLSL } from './glsl/palette.js'
 import { VERTEX_GLSL, MARCH_GLSL, MAIN_GLSL } from './glsl/frame.js'
+import { LUT_GLSL } from './glsl/lut.js'
+import { noiseLutTexture } from './lut-texture.js'
 import { algorithmById, paramsFor, defaultsFor } from './algorithms.js'
 
 // Beyond the mountains (1500), well inside the stars (15000).
@@ -123,6 +125,14 @@ const CHUNKS = {
   fbm: FBM_GLSL,
   warp: WARP_GLSL,
   filament: FILAMENT_GLSL,
+  lut: LUT_GLSL,
+}
+
+// The one uniform in this subsystem that is NOT generated from the param schema, because the schema has four types and none of them is a sampler -- and giving it one would mean a panel row for a texture, which is a control with nothing to control.
+//
+// A chunk that needs a sampler names it here instead, and it is declared and bound only when that chunk is actually in the assembly, so the algorithms that do not use it are untouched. The texture is a module singleton in lut-texture.js: _buildMaterial runs again on every algorithm switch and must not re-bake a 128 KB table each time.
+const CHUNK_SAMPLERS = {
+  lut: { uniform: 'u_noiseLut', texture: noiseLutTexture },
 }
 
 // Emitted for every algorithm whether it asks or not, because the FRAME uses
@@ -146,8 +156,12 @@ const GLSL_TYPE = {
 
 // ---------------------------------------------------------------------------
 
-function declarationsFor( params ) {
+function declarationsFor( params, chunks ) {
   const lines = [ 'uniform float uTime;' ]
+  for ( const name of chunks ) {
+    const s = CHUNK_SAMPLERS[ name ]
+    if ( s ) lines.push( 'uniform sampler2D ' + s.uniform + ';' )
+  }
   for ( const p of params ) {
     if ( p.uniform === false ) continue
     const t = GLSL_TYPE[ p.type ]
@@ -240,7 +254,7 @@ export class AuroraScreen {
     const ordered = Object.keys( CHUNKS ).filter( n => wanted.includes( n ) )
 
     const fragment = [
-      declarationsFor( params ),
+      declarationsFor( params, ordered ),
       'varying vec3 vWorld;',
       'varying vec2 vUv;',
       ...ordered.map( n => CHUNKS[ n ] ),
@@ -251,6 +265,10 @@ export class AuroraScreen {
     ].join( '\n' )
 
     const uniforms = { uTime: { value: 0 } }
+    for ( const name of ordered ) {
+      const s = CHUNK_SAMPLERS[ name ]
+      if ( s ) uniforms[ s.uniform ] = { value: s.texture() }
+    }
     for ( const p of params ) {
       if ( p.uniform === false ) continue
       uniforms[ 'u_' + p.key ] = { value: toUniformValue( p, this.values[ p.key ] ) }

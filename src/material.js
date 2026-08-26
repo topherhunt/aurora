@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { LAYER, SNOW_LAYERS, SNOW_ROCK_LAYERS, MOSS_LAYERS } from './textures.js'
+import { LAYER, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS } from './textures.js'
 
 // ---------------------------------------------------------------------------
 // Snow, and moss, which is snow upside down.
@@ -32,8 +32,12 @@ import { LAYER, SNOW_LAYERS, SNOW_ROCK_LAYERS, MOSS_LAYERS } from './textures.js
 // DataTexture indexed by batchId. Worth it only if painted deltas get large.
 //
 // It lands only on the layers textures.js lists, and it lands DIFFERENTLY on the
-// two lists it keeps: SNOW_LAYERS is foliage and wears clumps, SNOW_ROCK_LAYERS
-// is stone and wears a cap with a wandering rim (SNOW_ROCK_UP and friends). Both
+// two FAMILIES those lists make up: SNOW_LAYERS is foliage and wears clumps,
+// while SNOW_ROCK_LAYERS and SNOW_WOOD_LAYERS together are the hard surfaces --
+// stone, bark, heartwood -- and wear a cap with a wandering rim (SNOW_ROCK_UP
+// and friends). Two lists there and one uniform here, because "which layers are
+// stone" and "which layers are wood" are two facts while "fills in from the top
+// down" is one recipe. See SNOW_HARD_LAYERS. Both families
 // are tested with a fixed loop rather than by indexing a mask array with
 // vTexLayer. Note that three emits `#version 300 es` for every non-raw material
 // and shims the ES 1.00 spelling with #defines (WebGLProgram.js), so the compiled
@@ -48,7 +52,17 @@ import { LAYER, SNOW_LAYERS, SNOW_ROCK_LAYERS, MOSS_LAYERS } from './textures.js
 
 const snowAmount = { value: 0 }
 const snowLayers = { value: Float32Array.from(SNOW_LAYERS) }
-const snowRockLayers = { value: Float32Array.from(SNOW_ROCK_LAYERS) }
+// ONE FAMILY, one uniform: the surfaces that fill in from the top down. Stone
+// and wood are two lists in textures.js because they are two facts about the
+// world, and they arrive here concatenated because they are one recipe -- a log
+// takes exactly the weight a boulder does (SNOW_ROCK_UP), so a second list in
+// the shader would buy a third loop and a second branch and spend them on
+// nothing. Everything that reads a length reads THIS one.
+//
+// The uniform keeps its rock name because stone was the whole of the family when
+// it was named, and because scripts/check-rocks.mjs matches the string.
+const SNOW_HARD_LAYERS = [...SNOW_ROCK_LAYERS, ...SNOW_WOOD_LAYERS]
+const snowRockLayers = { value: Float32Array.from(SNOW_HARD_LAYERS) }
 
 const mossAmount = { value: 0 }
 const mossLayers = { value: Float32Array.from(MOSS_LAYERS) }
@@ -60,8 +74,9 @@ const mossLayers = { value: Float32Array.from(MOSS_LAYERS) }
 // /gen-rock wants, where there is no terrain and the slider means what it says.
 const mossLine = { value: 1e6 }
 const mossBand = { value: 1 }
-// 0 = every instance wears the full ceiling. See setMossVary.
-const mossVary = { value: 0 }
+// The range of the ceiling an instance can roll. (1,1) = every instance wears
+// the full ceiling, which is a no-op. See setMossVary.
+const mossVary = { value: new THREE.Vector2(1, 1) }
 
 // The snow line, in world metres, and how many metres it takes to go from bare
 // to loaded. Defaults are a deliberate NO-OP: a line at -1e6 puts every prop in
@@ -69,6 +84,8 @@ const mossVary = { value: 0 }
 // calls setSnowLine. That is what /gen-tree wants, where there is no terrain.
 const snowLine = { value: -1e6 }
 const snowBand = { value: 1 }
+// Snow's mirror of mossVary, same no-op default. See setSnowVary.
+const snowVary = { value: new THREE.Vector2(1, 1) }
 
 /**
  * Season, 0 = bare, 1 = nearly all white. This is a CEILING, not the value each
@@ -126,14 +143,14 @@ export function getMossLine() {
 }
 
 /**
- * How unevenly the moss is spread between one instance and the next. 0 = every
- * mossable prop below the line wears the full `setMoss` ceiling; 1 = the ceiling
- * is rolled per instance, so some rocks come out bare, most come out patchy and
- * a few come out green all over.
+ * The RANGE of the moss ceiling, as a fraction of what `setMoss` asks for. Each
+ * instance rolls its own number in [lo, hi] and wears `setMoss() * that`, so
+ * (0, 0.5) means the greenest rock in the wood is half mossed and plenty are
+ * bare, while (1, 1) means every mossable prop wears the full ceiling.
  *
- * ZERO IS THE DEFAULT AND IT IS A NO-OP, for the same reason mossLine defaults
+ * (1, 1) IS THE DEFAULT AND IT IS A NO-OP, for the same reason mossLine defaults
  * to +1e6: /gen-rock shows one rock and its moss slider has to mean what it says.
- * The world turns this on; the bench never does.
+ * The world narrows this; the bench never does.
  *
  * THE ROLL IS A HASH OF THE INSTANCE ROOT'S WORLD XZ, because there is still no
  * per-instance channel to put it in -- the colour texture's RGB is the stone
@@ -141,13 +158,16 @@ export function getMossLine() {
  * already does, and it rides the same matrix-vector product: the root's world
  * position was being computed anyway and only its .y was being read.
  */
-export function setMossVary(amount) {
-  if (!Number.isFinite(amount)) throw new Error(`setMossVary: need a number, got ${amount}`)
-  mossVary.value = Math.min(1, Math.max(0, amount))
+export function setMossVary(lo, hi) {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    throw new Error(`setMossVary: need two numbers, got ${lo} and ${hi}`)
+  }
+  if (hi < lo) throw new Error(`setMossVary: hi ${hi} is below lo ${lo}`)
+  mossVary.value.set(Math.min(1, Math.max(0, lo)), Math.min(1, Math.max(0, hi)))
 }
 
 export function getMossVary() {
-  return mossVary.value
+  return { lo: mossVary.value.x, hi: mossVary.value.y }
 }
 
 /**
@@ -166,10 +186,71 @@ export function getSnowLine() {
   return { base: snowLine.value, band: snowBand.value }
 }
 
+/**
+ * The RANGE of the snow ceiling, per instance, exactly as setMossVary is for
+ * moss and rolled off the same hash of the root's world XZ.
+ *
+ * HARD SURFACES ONLY -- stone and wood. Snow falls on foliage too and this must
+ * not touch it: the vertex shader gates the roll on SNOW_HARD_LAYERS, the same
+ * list the fragment shader picks the stone recipe from, so a boulder and a
+ * fallen log roll a ceiling and a leaf keeps the full one. Moss has no such gate
+ * and wants none -- every layer it grows on is a surface whose mossiness is
+ * meant to vary from neighbour to neighbour.
+ *
+ * WHAT IT IS FOR is the one thing a scene-wide `setSnow` cannot express: a rock
+ * at full load is not a snowy rock, it is a WHITE rock. Stone leans on `up`
+ * twice as hard as foliage does (SNOW_ROCK_UP), so by the time the mask has
+ * covered the top it is already well down the sides, and a load of 1.0 takes the
+ * undersides too and throws the stone away. A narrow band up around a third --
+ * (0.3, 0.5) -- caps every rock somewhere between a dusted crown and a loaded
+ * one, and the variation between neighbours is what stops a snowfield of
+ * boulders reading as one material.
+ *
+ * The roll is INDEPENDENT of moss's: same hash, different constants, so a rock
+ * that rolled bare of moss has no tendency to roll bare of snow.
+ */
+export function setSnowVary(lo, hi) {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    throw new Error(`setSnowVary: need two numbers, got ${lo} and ${hi}`)
+  }
+  if (hi < lo) throw new Error(`setSnowVary: hi ${hi} is below lo ${lo}`)
+  snowVary.value.set(Math.min(1, Math.max(0, lo)), Math.min(1, Math.max(0, hi)))
+}
+
+export function getSnowVary() {
+  return { lo: snowVary.value.x, hi: snowVary.value.y }
+}
+
 // Blob size, in cycles per world metre. At 12.8 a clump is roughly 7.5 cm
 // across, so a 2 m spray card carries a couple of dozen and the snow reads as
 // settled crystals rather than as paint.
 const SNOW_FREQ = 12.8
+
+// The three numbers that shape the blob field both masks are cut out of. What
+// they DO is argued at blobField() in SNOW_COMMON, which is where the mechanism
+// is; what each one is worth is here.
+//
+// All three are in units of the CALLER's own frequency, never in metres, so they
+// mean the same thing to the snow at 12.8 and the moss at 24.0 and neither has
+// to be re-tuned when the other moves.
+//
+// The warp is sampled at 0.46 of the caller's frequency -- a bit over twice the
+// blob size. It has to be COARSER than the blobs it is bending, or it displaces
+// each blob's rim by roughly the same amount everywhere along that rim and the
+// blob merely moves; at half the frequency the displacement varies over a scale
+// larger than a blob, which is what makes rims wander and neighbours merge.
+const BLOB_WARP_FREQ = 0.46
+// How far the sample point is dragged, in lattice cells. Around two cells, which
+// is deliberately much further than the half-cell that shaped this field before:
+// under about one cell the lattice survives the bend and the eye still finds the
+// rows, and it is the long drag that now supplies the ragged rim a second octave
+// used to buy.
+const BLOB_WARP = 1.9
+// How hard the field is stretched about its midpoint. 1.55 is the most that can
+// be spent before the clamp starts flattening real area to 0 and 1 -- past about
+// 1.8 the patches acquire hard shoulders and the cut has nothing left to feather
+// against.
+const BLOB_CONTRAST = 1.55
 
 // Where the world-space blobs stop being resolvable and start shimmering.
 // Procedural noise has NO MIP CHAIN: at 7.5 cm a blob is under a pixel past ten
@@ -200,11 +281,14 @@ const SNOW_EDGE_MAX = 0.06
 const SNOW_CUT_BIAS = 1.08
 const SNOW_CUT_SPAN = 1.16
 
-// --- and the ONE number that differs for stone ------------------------------
+// --- and the ONE number that differs for a hard surface ---------------------
 //
-// Everything above serves a boulder as written. The only thing SNOW_ROCK_LAYERS
+// Everything above serves a boulder as written. The only thing SNOW_HARD_LAYERS
 // changes is how hard the drift leans on `up`: 0.5, against 0.25 for foliage.
-// Same blob size, same cutover rim, same span, same linear ramp.
+// Same blob size, same cutover rim, same span, same linear ramp. It is named for
+// stone because stone is what it was argued against, and a log wears it
+// unchanged -- the brief in the paragraph below is a fallen log's brief word for
+// word.
 //
 // It is deliberately not more than that, and two earlier attempts at this
 // section were the same mistake twice. Lean `up` to 0.8 and you get a clean
@@ -240,6 +324,8 @@ export const SNOW_ROCK = Object.freeze({
   up: SNOW_ROCK_UP,
   foliageUp: 0.25,
   freq: SNOW_FREQ,
+  blobWarp: BLOB_WARP,
+  blobContrast: BLOB_CONTRAST,
   cutBias: SNOW_CUT_BIAS,
   cutSpan: SNOW_CUT_SPAN,
   edgeMax: SNOW_EDGE_MAX,
@@ -289,10 +375,27 @@ const SNOW_LUM_HI = 0.45
 // what the noise is standing in for, so the noise gets the larger share.
 const MOSS_DOWN = 0.35
 
-// Patches around 17 cm, against snow's 8 cm. Moss grows in colonies and a colony
-// is a bigger thing than a drift of crystals; run it at snow's frequency and it
-// reads as green speckle rather than as something alive.
-const MOSS_FREQ = 6.0
+// Patches around 4 cm, against snow's 8 cm -- so moss is the FINER of the two
+// fields, which is the opposite of what it was and the opposite of what the
+// obvious argument suggests.
+//
+// The obvious argument, and it was the old comment here, is that moss grows in
+// colonies and a colony is a bigger thing than a drift of crystals, so moss
+// wants the lower frequency. What that misses is that the two fields are not
+// doing the same job. Snow's blobs ARE the snow -- there is nothing under them
+// but a tint. Moss's blobs are only the SHAPE OF THE STAIN; the thing that
+// reads as moss is the photograph inside it, tiled at MOSS_TILE. So the blob
+// field is competing with the texture for the same spatial frequency band, and
+// at 6.0 it lost: a handful of colony-sized lobes on a boulder read as a
+// paint job with the grain buried inside it.
+//
+// At 24.0 there are dozens of small patches instead, they run into each other
+// where the noise is high and break into flecks at the edges, and the texture
+// is the only thing carrying detail below the patch size. That is what moss on
+// a rock actually looks like, and it is what the wide MOSS_BLEND below depends
+// on -- a soft-edged patch only reads as growth rather than as blur if the
+// patch is small enough that its rim is a fraction of the rock.
+const MOSS_FREQ = 24.0
 
 // Offset so the moss field and the snow field are not the same picture at two
 // scales. Value noise at two frequencies is close to uncorrelated already, but
@@ -309,18 +412,146 @@ const MOSS_TILE = 2.0
 
 // Fade the noise to its mean at distance, exactly as snow does and for the same
 // reason -- procedural noise has no mip chain and undersampled noise crawls.
-// Further out than snow's 12-40 because the patches are twice the size.
-const MOSS_FADE_NEAR = 20.0
-const MOSS_FADE_FAR = 70.0
+// NEARER than snow's 12-40, in proportion to the patches now being under half
+// the size: what decides this is the distance at which a patch stops covering a
+// pixel, and that scales with the patch and not with anything else.
+const MOSS_FADE_NEAR = 10.0
+const MOSS_FADE_FAR = 34.0
 
-// Same two promises as SNOW_CUT_BIAS, and the reasoning there covers these: at 0
-// the cut minus a full-width edge clears the mask's ceiling of 1.0, so no moss
-// means no moss; at 1 the cut plus a full-width edge is under its floor of 0.0,
-// so a fully mossed rock is fully mossed. Its own pair rather than the snow's
-// because moss is new and nobody has looked at it yet -- if the ramp wants
-// shaping, it should not drag the trees' snow with it.
-const MOSS_CUT_BIAS = 1.08
-const MOSS_CUT_SPAN = 1.16
+// Half-width of the moss's edge, and unlike snow's it is a FIXED width in mask
+// units rather than one screen pixel of fwidth().
+//
+// Snow has a rim you can put your hand on -- a drift ends, and a feathered
+// drift reads as airbrush -- so its edge is deliberately the narrowest thing
+// that will not crawl. MOSS HAS NO RIM. It thins out: the colony gets sparser
+// toward its margin until what is left is flecks in the pits of the stone, and
+// there is no line anywhere on a real mossy boulder where moss stops. A
+// one-pixel cutover renders that as a green shape stamped on grey, which is
+// exactly the hard cutover line this replaces.
+//
+// 0.14 against a mask that spans 0 to 1 means the transition occupies better
+// than a quarter of the field's range, so a typical patch spends more of its
+// area blending than solid. Fixed rather than fwidth() because the width wanted
+// here is a property of the MOSS -- how gradually a colony gives out -- and not
+// of the screen: a boulder ten metres off should show the same soft margin it
+// does at two, and fwidth() would sharpen it as you back away.
+const MOSS_BLEND = 0.14
+
+// AND THE BLEND IS NOT SYMMETRIC ABOUT THE CUT. The ramp runs from
+// `cut - MOSS_BLEND` up to `cut + MOSS_BLEND * MOSS_BLEND_SKEW`, so at 0.3 it
+// is a bit over three times as long on the way in as on the way out.
+//
+// A symmetric ramp spends half its width above the cut, which is the side where
+// there is already more than enough moss -- all that width buys is a softer
+// CORE, and a colony's core is the one part of it that does have a definite
+// look. The margin is where the interesting behaviour is, so nearly all of the
+// blend is spent below the cut, thinning out. The visible consequence is that
+// the patch keeps a recognisable body and grows a long ragged skirt, rather
+// than reading as one evenly blurred lobe.
+const MOSS_BLEND_SKEW = 0.3
+
+// The thin margin is DARKER moss, not merely less of it.
+//
+// Coverage alone says a fragment at the edge of a colony is 20% moss and 80%
+// stone, and blending the two at those weights gives a pale minty wash -- which
+// is not what sparse moss looks like. What is actually there is flecks of moss
+// down in the pits and pores of the stone, and a pit is in shadow: the moss you
+// can see at a colony's margin is the moss that is sheltered, so it reads
+// darker and wetter than the sheet of it in the middle, not lighter.
+//
+// So the moss colour is scaled by MOSS_FRINGE where coverage is 0 and by 1.0
+// where it is full, before the coverage blend. At 0.78 the margin is a shade
+// over a fifth darker, which is enough to kill the wash without turning the rim
+// into a black outline. Note the two ends of the ramp are unaffected by
+// construction -- at coverage 0 nothing of the moss is mixed in at all -- so
+// this only ever acts on the transition band, which is the point.
+const MOSS_FRINGE = 0.78
+
+// MOSS DOES NOT CLIMB. Height above the instance's own root, in world metres,
+// at which the moss starts giving out, and the band over which it goes.
+//
+// Every other term in this file is about which WAY a surface faces, which was
+// enough while moss only grew on boulders, because a boulder is roughly as tall
+// as it is wide and every part of it is near the ground. Bark broke that: a
+// pine is twenty metres of trunk and moss belongs on the bottom two of it. With
+// no height term the whole trunk mosses evenly and the tree reads as painted.
+//
+// 1.6 m with a 2.2 m band puts the moss thick around the foot of a snag, fading
+// out by shoulder height and gone by just under four metres, which is where it
+// sits on a real trunk -- the damp comes from the ground and from the litter
+// against the base, and it does not get up the tree.
+//
+// A FALLEN LOG NEEDS NO SPECIAL CASE, which is the reason this is measured from
+// the instance root and not from the world's terrain height. A log lies down,
+// so every part of it is within a trunk diameter of its own root, the rise term
+// is ~1 the whole length of it, and the log mosses end to end -- which is
+// exactly right, and is what a windfall in a wet forest actually looks like. An
+// ordinary boulder gets the same treatment for the same reason: at 0.8 to 3 m
+// tall it is inside the band or barely into it, so the cue costs it nothing.
+const MOSS_RISE = 1.6
+const MOSS_RISE_BAND = 2.2
+
+// MOSS LOAD IS A COVERAGE FRACTION, AND THE CUT HAS TO EARN THAT.
+//
+// A linear cut -- `bias - load * span`, which is what snow still uses and what
+// this used to be -- does NOT give you a load that means anything. Sweeping the
+// cut linearly assumes `creep` is spread evenly over its range, and it is not:
+// creep is blob*0.65 + down*0.35 with blob a smoothed value noise, so it piles
+// up around its median and thins out fast at both tails. Measured over a
+// boulder's surface it reaches both ends of [0,1] but sits between 0.23 and
+// 0.77 for eight tenths of that surface. A linear sweep therefore spends its
+// travel outside the range where creep actually lives: a load of 0.2 covered
+// 0.2% of the rock and a load of 0.5 jumped to 50%. Setting the world's range
+// to a plausible-sounding 0 - 0.5 bought a forest full of bare stone, which is
+// exactly what it looked like.
+//
+// What we want is coverage(load) = load. Coverage at a given cut IS the
+// complementary CDF of creep, so the cut that yields coverage c is creep's
+// (1 - c) quantile -- and creep's CDF turns out to be very nearly LOGISTIC.
+// Sampled at 200k points its quantiles fit `MOSS_CUT_MID - MOSS_CUT_WIDTH *
+// log(c / (1 - c))` to within 0.01 across the whole usable range, so that is
+// what the shader evaluates: one log and one divide.
+//
+// The logit also hands us both end promises for free, which the linear pair had
+// to be hand-sized to keep, and it keeps them against the far end of the BLEND
+// rather than against the cut itself -- what has to clear creep's range is the
+// place the ramp starts, not its midpoint. As load -> 0 the cut runs away above
+// every creep there is: 1.679 at the guard, and the ramp starts a further
+// MOSS_BLEND below that at 1.539, against a ceiling of 1.0. So no moss means no
+// moss. As load -> 1 it runs away below the floor: -0.679, and the ramp ENDS at
+// -0.679 + MOSS_BLEND * MOSS_BLEND_SKEW = -0.637, against a floor of 0.0. So a
+// fully mossed rock is fully mossed. The guard is what keeps log() off its
+// asymptote; it is not a fudge factor and moving it moves both ends.
+//
+// The height cue folds in HERE, by multiplying the load rather than by shifting
+// the cut -- see MOSS_RISE. That is the only place it can go and still keep the
+// promises above: coverage is load * rise, so a fragment above the band has an
+// effective load of 0, which is the same bare stone that a world moss setting
+// of 0 gives, through the same arithmetic.
+//
+// BOTH NUMBERS ARE MEASURED, NOT CHOSEN, AND THEY ARE TIED TO TWO OTHER THINGS.
+//
+// THE WIDTH IS creep's logistic scale, so it belongs to blobField rather than to
+// moss: anything that changes the SPREAD of that field -- BLOB_CONTRAST, the
+// warp, adding or dropping an octave -- invalidates it. The 0.082 this replaced
+// was fitted to a narrower two-octave field, and left behind on the current one
+// it overshot badly (a load of 0.1 painted 22% of the rock, and 0.2 painted 32%).
+//
+// THE MID BELONGS TO THE MASK'S EDGE, because the edge is ASYMMETRIC. The cover
+// term is smoothstep( cut - MOSS_BLEND, cut + MOSS_BLEND * MOSS_BLEND_SKEW ),
+// whose transition midpoint sits MOSS_BLEND * (1 - SKEW) / 2 = 0.049 BELOW the
+// cut. The mask therefore turns on earlier than the cut nominally says, and a
+// mid of 0.50 -- correct for a symmetric edge -- ran coverage a third high
+// through the middle of the range (a load of 0.3 painted 0.40). Raising the mid
+// by exactly that offset puts it back. Change MOSS_BLEND or MOSS_BLEND_SKEW and
+// this has to move with them.
+//
+// Solved against the real mask rather than the hard-threshold approximation:
+// rms error 0.007 over loads 0.1 to 0.85, and the two end promises still clear
+// with room (see above). scratchpad/moss-refit.mjs does the fit.
+const MOSS_CUT_MID = 0.550
+const MOSS_CUT_WIDTH = 0.134
+const MOSS_CUT_GUARD = 1e-4
 
 // Exported for scripts/check-rocks.mjs, on the same terms as SNOW_ROCK: nothing
 // reads it at runtime.
@@ -328,15 +559,36 @@ export const MOSS = Object.freeze({
   down: MOSS_DOWN,
   freq: MOSS_FREQ,
   tile: MOSS_TILE,
-  cutBias: MOSS_CUT_BIAS,
-  cutSpan: MOSS_CUT_SPAN,
-  edgeMax: SNOW_EDGE_MAX,
+  cutMid: MOSS_CUT_MID,
+  cutWidth: MOSS_CUT_WIDTH,
+  cutGuard: MOSS_CUT_GUARD,
+  blend: MOSS_BLEND,
+  blendSkew: MOSS_BLEND_SKEW,
+  fringe: MOSS_FRINGE,
+  rise: MOSS_RISE,
+  riseBand: MOSS_RISE_BAND,
+  fadeNear: MOSS_FADE_NEAR,
+  fadeFar: MOSS_FADE_FAR,
 })
+
+/**
+ * The cut a given moss load asks for. Exported so the gate can assert the two
+ * end promises and the coverage-tracks-load claim without transliterating the
+ * shader; the shader evaluates the same expression inline.
+ */
+export function mossCutFor(load) {
+  if (!Number.isFinite(load)) throw new Error(`mossCutFor: need a number, got ${load}`)
+  const c = Math.min(1 - MOSS_CUT_GUARD, Math.max(MOSS_CUT_GUARD, load))
+  return MOSS_CUT_MID - MOSS_CUT_WIDTH * Math.log(c / (1 - c))
+}
 
 const MOSS_COMMON = /* glsl */ `
   uniform float uMoss;
   uniform float uMossLayers[ ${MOSS_LAYERS.length} ];
-  varying float vMoss;
+  // .x is the per-instance load, .y is height above this instance's own root in
+  // world metres -- see MOSS_RISE. The vertex shader has both to hand and the
+  // fragment shader has no other way to get the second, so they travel together.
+  varying vec2 vMoss;
 `
 
 const MOSS_APPLY = /* glsl */ `
@@ -356,26 +608,62 @@ const MOSS_APPLY = /* glsl */ `
       // vSnowPos.xyz is world position -- it carries the snow's per-instance
       // load in .w and is named for that, but the xyz is just where this
       // fragment is, and moss wants the same thing.
-      float blob = mix( 0.5,
-        snowNoise( vSnowPos.xyz * ${MOSS_FREQ.toFixed(2)} + ${MOSS_NOISE_OFFSET} ), mossNear );
+      // Gated on the fade for the same reason snow's is, and safe for the same
+      // reason: blobField is pure ALU. The texture() further down is NOT inside
+      // this branch, and must not be moved into one.
+      float blob = 0.5;
+      if ( mossNear > 0.004 ) {
+        blob = mix( 0.5,
+          blobField( vSnowPos.xyz * ${MOSS_FREQ.toFixed(2)} + ${MOSS_NOISE_OFFSET} ), mossNear );
+      }
       float creep = blob * ( 1.0 - ${MOSS_DOWN} ) + down * ${MOSS_DOWN};
       // THE BRANCH STAYS ON THE UNIFORM and only the cut moves to the
       // per-instance load. That split is load bearing: uMoss > 0.0 is
       // quad-uniform, which is what makes the texture() fetch below legal, and
-      // vMoss > 0.0 is not -- a varying can differ across a quad in principle,
-      // and putting a fetch behind it would make the derivatives undefined. An
-      // instance whose vMoss is 0 still enters the branch and pays for it; the
-      // cut then sits above the mask's ceiling, so it comes out bare.
-      float cut = ${MOSS_CUT_BIAS} - vMoss * ${MOSS_CUT_SPAN};
-      float edge = clamp( fwidth( creep ), ${SNOW_EDGE_MIN}, ${SNOW_EDGE_MAX} );
+      // vMoss.x > 0.0 is not -- a varying can differ across a quad in
+      // principle, and putting a fetch behind it would make the derivatives
+      // undefined. An instance whose vMoss.x is 0 still enters the branch and
+      // pays for it; the cut then sits above the mask's ceiling, so it comes
+      // out bare.
+      // See MOSS_CUT_MID: a logit, so vMoss.x reads as the FRACTION of the rock
+      // that comes out green rather than as a position on an arbitrary sweep.
+      // The clamp keeps log() off both asymptotes and is what makes the two end
+      // promises exact -- do not drop it, and do not widen it.
+      // MOSS DOES NOT CLIMB -- see MOSS_RISE. vMoss.y is metres above THIS
+      // INSTANCE'S OWN ROOT, not above the terrain, which is what lets one
+      // expression cover both cases: a standing snag goes bare above the litter
+      // line, and a fallen log is within a trunk diameter of its root along its
+      // whole length so it stays at rise ~1 and mosses end to end.
+      float rise = 1.0 - smoothstep( ${MOSS_RISE}, ${(MOSS_RISE + MOSS_RISE_BAND).toFixed(1)}, vMoss.y );
+      // Folded into the LOAD rather than into the cut, so coverage is load *
+      // rise and a fragment out of the band goes bare through exactly the same
+      // arithmetic as a world moss setting of 0.
+      float mossLoad = clamp( vMoss.x * rise, ${MOSS_CUT_GUARD}, 1.0 - ${MOSS_CUT_GUARD} );
+      float cut = ${MOSS_CUT_MID} - ${MOSS_CUT_WIDTH} * log( mossLoad / ( 1.0 - mossLoad ) );
+      // A fixed soft margin rather than snow's one-pixel cutover -- see
+      // MOSS_BLEND. Moss thins out; it does not stop. No fwidth() term here,
+      // deliberately: a max( MOSS_BLEND, clamp( fwidth( creep ), SNOW_EDGE_MIN,
+      // SNOW_EDGE_MAX ) ) floor would be arithmetically inert, because the
+      // clamp's ceiling of 0.06 is well under MOSS_BLEND and the max() could
+      // therefore never pick the fwidth. It would cost a derivative per fragment
+      // to compute a number that can never win. If MOSS_BLEND is ever taken
+      // below SNOW_EDGE_MAX the floor starts to matter and should come back.
+      float w = ${MOSS_BLEND};
       // Straight over the top of the rock's own diffuse, tint and all. Reached
       // here AFTER color_fragment, so diffuseColor already carries the
       // per-instance stone tint -- which moss deliberately does not inherit,
       // because moss on basalt and moss on sandstone are the same green.
+      // Long on the way in, short on the way out -- see MOSS_BLEND_SKEW. The
+      // patch keeps a body and grows a ragged skirt instead of blurring evenly.
+      float cover = smoothstep( cut - w, cut + w * ${MOSS_BLEND_SKEW}, creep );
       vec3 moss = texture( uAtlas,
         vec3( vUvProj * ${MOSS_TILE.toFixed(1)}, ${LAYER.MOSS}.0 ) ).rgb;
-      diffuseColor.rgb = mix( diffuseColor.rgb, moss,
-        smoothstep( cut - edge, cut + edge, creep ) );
+      // BLENDED, not cut over, and the thin end is darker as well as thinner --
+      // see MOSS_FRINGE. Sparse moss is flecks down in the pits of the stone,
+      // and a pit is in shadow, so the margin has to darken or it reads as a
+      // pale wash of green sitting on top of the rock.
+      diffuseColor.rgb = mix( diffuseColor.rgb,
+        moss * mix( ${MOSS_FRINGE}, 1.0, cover ), cover );
     }
   }
 `
@@ -383,7 +671,7 @@ const MOSS_APPLY = /* glsl */ `
 const SNOW_COMMON = /* glsl */ `
   uniform float uSnow;
   uniform float uSnowLayers[ ${SNOW_LAYERS.length} ];
-  uniform float uSnowRockLayers[ ${SNOW_ROCK_LAYERS.length} ];
+  uniform float uSnowRockLayers[ ${SNOW_HARD_LAYERS.length} ];
   varying vec4 vSnowPos;
 
   float snowHash( vec3 p ) {
@@ -392,8 +680,7 @@ const SNOW_COMMON = /* glsl */ `
     return fract( p.x * p.y * p.z * ( p.x + p.y + p.z ) );
   }
 
-  // One octave of value noise. Blobs want a single low frequency; a second
-  // octave only adds per-pixel fizz that the mip chain then eats anyway.
+  // One octave of value noise, on a cubic lattice.
   float snowNoise( vec3 x ) {
     vec3 i = floor( x );
     vec3 f = fract( x );
@@ -403,6 +690,49 @@ const SNOW_COMMON = /* glsl */ `
            mix( snowHash( i + vec3( 0.0, 1.0, 0.0 ) ), snowHash( i + vec3( 1.0, 1.0, 0.0 ) ), f.x ), f.y ),
       mix( mix( snowHash( i + vec3( 0.0, 0.0, 1.0 ) ), snowHash( i + vec3( 1.0, 0.0, 1.0 ) ), f.x ),
            mix( snowHash( i + vec3( 0.0, 1.0, 1.0 ) ), snowHash( i + vec3( 1.0, 1.0, 1.0 ) ), f.x ), f.y ), f.z );
+  }
+
+  // Domain warp, then contrast. Two things this fixes about a single octave of
+  // value noise, and neither is fixed by changing its frequency.
+  //
+  // A raw value-noise blob is ROUND and all its blobs are the same size, because
+  // the field is an interpolation over one lattice -- so snow reads as spots and
+  // moss reads as green polka dots. Warping the SAMPLE POINT by a coarser copy
+  // of the same field drags each blob's rim sideways by an amount that varies
+  // over a scale LARGER than the blob itself, so rims wander, neighbouring
+  // patches reach for each other and merge, and a run of them stretches. That is
+  // what a drift and a colony actually look like.
+  //
+  // Then contrast, symmetric about 0.5. Value noise spends most of its range
+  // near its mean, so a threshold anywhere in the middle cuts through a soft
+  // gradient and gives a lot of half-covered surface. Stretching about the
+  // midpoint puts more of the field at the extremes, which is what makes a patch
+  // read as a PATCH with an interior rather than as a smear.
+  //
+  // SYMMETRIC IS LOAD BEARING. The mean is preserved exactly, which two things
+  // downstream depend on: the distance fade mixes toward 0.5 as its stand-in for
+  // the mip a procedural field does not have, and every end promise below is
+  // sized against a field that spans [0,1]. A reshape that moved the mean would
+  // quietly break both.
+  //
+  // WHAT IT REPLACED, because the trade is not all one way. The field here used
+  // to be a half-cell warp plus a SECOND OCTAVE at 2.07x and 28% weight, and the
+  // octave was there to perturb the contour -- a blob's ragged rim. The long
+  // warp buys that back, because at nearly two cells the displacement varies
+  // enough along a rim to break it up on its own; what the octave cost was a
+  // third noise evaluation and, worse, a NARROWER field, since a weighted sum of
+  // two near-independent samples pulls in toward the mean exactly where the cut
+  // has to live.
+  //
+  // The cost is honest and worth naming: TWO noise evaluations, at ~145 ALU
+  // each, so a scene that is both snowy and mossy pays four. It is still inside
+  // the uSnow > 0.0 / uMoss > 0.0 uniform branches, so a bare season and a
+  // mossless world both cost nothing at all, and both call sites gate it again
+  // on the distance fade being worth anything -- see snowNear.
+  float blobField( vec3 p ) {
+    float w = snowNoise( p * ${BLOB_WARP_FREQ.toFixed(2)} + vec3( 23.1, 5.7, 61.3 ) );
+    float f = snowNoise( p + vec3( w, w * 1.7, -w ) * ${BLOB_WARP.toFixed(2)} );
+    return clamp( ( f - 0.5 ) * ${BLOB_CONTRAST.toFixed(2)} + 0.5, 0.0, 1.0 );
   }
 `
 
@@ -436,13 +766,14 @@ const SNOW_APPLY = /* glsl */ `
     for ( int i = 0; i < ${SNOW_LAYERS.length}; i++ ) {
       snowMask += step( abs( vTexLayer - uSnowLayers[ i ] ), 0.5 );
     }
-    // The second list is stone rather than foliage (textures.js). It selects a
+    // The second list is the HARD surfaces -- stone and wood, concatenated into
+    // one uniform (SNOW_HARD_LAYERS) -- rather than foliage. It selects a
     // different weight below, not a different branch: the noise is the expensive
     // part and both kinds of snow want the same noise at the same size, so the
     // two recipes ride the same instructions and differ in exactly one mix().
-    // The lists are disjoint, so 'rock' is 0 or 1 and never both.
+    // The families are disjoint, so 'rock' is 0 or 1 and never both.
     float rockMask = 0.0;
-    for ( int i = 0; i < ${SNOW_ROCK_LAYERS.length}; i++ ) {
+    for ( int i = 0; i < ${SNOW_HARD_LAYERS.length}; i++ ) {
       rockMask += step( abs( vTexLayer - uSnowRockLayers[ i ] ), 0.5 );
     }
     if ( snowMask + rockMask > 0.0 ) {
@@ -465,7 +796,14 @@ const SNOW_APPLY = /* glsl */ `
         inverseTransformDirection( normal, viewMatrix ).y * 0.5 + 0.5, 0.0, 1.0 );
       float snowNear = smoothstep( ${SNOW_FADE_FAR.toFixed(1)}, ${SNOW_FADE_NEAR.toFixed(1)},
         length( vViewPosition ) );
-      float blob = mix( 0.5, snowNoise( vSnowPos.xyz * ${SNOW_FREQ.toFixed(2)} ), snowNear );
+      // Past the fade the mix would return 0.5 to within a thousandth anyway, so
+      // skipping it there is exact to the eye and free. Legal ONLY because
+      // blobField is pure ALU: a texture() with an implicit LOD inside
+      // non-quad-uniform control flow would be undefined, and there is none here.
+      float blob = 0.5;
+      if ( snowNear > 0.004 ) {
+        blob = mix( 0.5, blobField( vSnowPos.xyz * ${SNOW_FREQ.toFixed(2)} ), snowNear );
+      }
       // The one number stone changes. Everything else below is shared.
       float upWeight = mix( 0.25, ${SNOW_ROCK_UP}, rock );
       float drift = blob * ( 1.0 - upWeight ) + up * upWeight;
@@ -1284,6 +1622,7 @@ export function createPropMaterial(
     shader.uniforms.uSnowRockLayers = snowRockLayers
     shader.uniforms.uSnowLine = snowLine
     shader.uniforms.uSnowBand = snowBand
+    shader.uniforms.uSnowVary = snowVary
     shader.uniforms.uMoss = mossAmount
     shader.uniforms.uMossLayers = mossLayers
     shader.uniforms.uMossLine = mossLine
@@ -1309,13 +1648,15 @@ export function createPropMaterial(
         uniform float uSnow;
         uniform float uSnowLine;
         uniform float uSnowBand;
+        uniform vec2 uSnowVary;
+        uniform float uSnowRockLayers[ ${SNOW_HARD_LAYERS.length} ];
         uniform float uMoss;
         uniform float uMossLine;
         uniform float uMossBand;
-        uniform float uMossVary;
+        uniform vec2 uMossVary;
         uniform float uPropClock;
         varying vec4 vSnowPos;
-        varying float vMoss;
+        varying vec2 vMoss;
         varying float vPropFade;
         ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
         ${stripTiling ? `varying float vStripSeed;
@@ -1358,28 +1699,101 @@ export function createPropMaterial(
           snowWorld = instanceMatrix * snowWorld;
           snowRoot = instanceMatrix * snowRoot;
         #endif
-        // .w is this INSTANCE's snow load: the season ceiling, cut down by how
-        // far its own root sits above the snow line. One extra matrix-vector
-        // product at vertex rate, and it rides in the varying we already had.
+        // Where this vertex is and where its instance stands, both in world
+        // space, both computed ONCE. Three things read them: the noise fields
+        // sample propWorld, the two season lines test propRootY, and the moss
+        // height cue is the difference (see MOSS_RISE) -- so hoisting the product
+        // out is one matrix-vector product saved at vertex rate and, more to the
+        // point, the guarantee that the cue is measured against the same root the
+        // lines are.
+        vec3 propWorld = ( modelMatrix * snowWorld ).xyz;
         vec3 propRootW = ( modelMatrix * snowRoot ).xyz;
         float propRootY = propRootW.y;
-        vSnowPos = vec4( ( modelMatrix * snowWorld ).xyz,
-          uSnow * smoothstep( uSnowLine - uSnowBand * 0.5, uSnowLine + uSnowBand * 0.5,
-            propRootY ) );
+        // TWO ROLLS OFF THE ROOT'S WORLD XZ, one per season. Both are constant
+        // across every vertex of an instance, because the root is, so neither
+        // can vary across a face -- which is the whole reason this is a hash and
+        // not a per-instance attribute: there is no channel left (see
+        // setMossVary). Different constants in each so a rock that rolled bare of
+        // moss has no tendency to roll bare of snow.
+        float mossRoll = fract( sin( dot( propRootW.xz, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+        float snowRoll = fract( sin( dot( propRootW.xz, vec2( 39.3467, 11.135 ) ) ) * 24634.6345 );
+        // NEITHER ROLL IS FOR FOLIAGE, and the two gates below are the tests.
+        // uSnowVary and uMossVary are global uniforms like everything else here,
+        // but each exists to fix a problem that belongs to a particular kind of
+        // surface, so each has to ask its own question:
+        //
+        //   rockV -- "does this wear the ROCK RECIPE", which since wood joined
+        //   SNOW_HARD_LAYERS means stone AND wood. That is the right gate for
+        //   snow, because the problem is the recipe's: a surface leaning on 'up'
+        //   twice as hard as foliage takes its own undersides at a full load and
+        //   stops being stone, or being wood (see setSnowVary). A canopy at a
+        //   full load is a loaded tree and correct, so foliage keeps the ceiling.
+        //
+        //   stoneV -- "is this actually STONE", which is narrower, and it is what
+        //   the moss roll wants. uMossVary is driven from Rocks.syncBands with a
+        //   range chosen for boulders; MOSS_LAYERS used to be the stone layer
+        //   alone so there was nothing else for that range to reach, and it now
+        //   carries the three barks and TIMBER_BEAM as well. Gating moss on the
+        //   wider list would quietly halve the moss on every trunk and beam in
+        //   the world to suit a decision about rocks, so bark and timber keep the
+        //   full moss ceiling.
+        //
+        // Both read the SAME uniform, which is legal because SNOW_HARD_LAYERS is
+        // built stone-first (see its definition) -- the first SNOW_ROCK_LAYERS
+        // entries of the array are exactly the stone ones. Two loops of one and
+        // five iterations at vertex rate, against the matrix-vector product
+        // already here. Neither is MOSS_LAYERS: that list says where moss may
+        // grow at all, and these ask which surfaces a per-instance RANGE was
+        // chosen for.
+        float rockV = 0.0;
+        for ( int i = 0; i < ${SNOW_HARD_LAYERS.length}; i++ ) {
+          rockV += step( abs( texLayer - uSnowRockLayers[ i ] ), 0.5 );
+        }
+        float stoneV = 0.0;
+        for ( int i = 0; i < ${SNOW_ROCK_LAYERS.length}; i++ ) {
+          stoneV += step( abs( texLayer - uSnowRockLayers[ i ] ), 0.5 );
+        }
+        // .w is this INSTANCE's snow load: the season ceiling, rolled into
+        // [uSnowVary.x, uSnowVary.y] if this is stone, and cut down by how far
+        // its own root sits above the snow line. Linear in the roll, unlike moss
+        // below: the band this is meant to be driven with is narrow, and shaping
+        // a narrow band only pushes instances onto its two ends.
+        vSnowPos = vec4( propWorld,
+          uSnow * mix( 1.0, mix( uSnowVary.x, uSnowVary.y, snowRoll ), min( rockV, 1.0 ) )
+            * smoothstep( uSnowLine - uSnowBand * 0.5, uSnowLine + uSnowBand * 0.5,
+              propRootY ) );
         // Moss runs the other way: full below its line, gone above it. Same
         // root, same one matrix-vector product, opposite smoothstep.
         //
-        // Then rolled per instance -- see setMossVary. The hash is of the root's
-        // world XZ, which is constant across every vertex of an instance, so this
-        // is a per-instance constant and not something that can vary across a
-        // face. The ramp is shaped rather than linear: the bottom of the roll is
-        // crushed to zero so roughly a fifth of the rocks come out genuinely
-        // bare, and the top is held short of 1.0 so the rest are patchy rather
-        // than uniformly green.
-        float mossRoll = fract( sin( dot( propRootW.xz, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
-        vMoss = uMoss * mix( 1.0, smoothstep( 0.2, 0.9, mossRoll ), uMossVary )
-          * ( 1.0 - smoothstep( uMossLine - uMossBand * 0.5,
-            uMossLine + uMossBand * 0.5, propRootY ) );`
+        // Its roll IS shaped, because the range it is driven with is wide and
+        // both of its ends are meant to be reachable: crushing the bottom of the
+        // roll parks roughly a sixth of the rocks exactly on uMossVary.x -- and
+        // when that is 0, genuinely bare stone is the point -- while holding the
+        // top short of 1.0 keeps a few at the full ceiling instead of everything
+        // landing in the middle.
+        //
+        // AND IT IS GATED ON STONE, narrowly -- see stoneV above for why that is
+        // a different question from the one the snow roll asks.
+        //
+        // .y IS THIS FRAGMENT'S HEIGHT ABOVE ITS OWN INSTANCE ROOT, in world
+        // metres, and it is the whole reason vMoss became a vec2. Moss lives on
+        // damp, damp on wood is the foot of a standing trunk and the underside of
+        // a fallen log, and neither is four metres up a snag -- so the fragment
+        // stage needs to know where up the object it is, which the load alone
+        // cannot tell it. See MOSS_RISE for what is done with it.
+        //
+        // Measured from the INSTANCE ROOT and not from sea level, so it is a fact
+        // about the object rather than about the mountain; the altitude question
+        // is uMossLine's and is answered on the line below. It costs one subtract
+        // and one float of interpolator, both of which ride terms that were
+        // already here.
+        vMoss = vec2(
+          uMoss
+            * mix( 1.0, mix( uMossVary.x, uMossVary.y, smoothstep( 0.15, 0.95, mossRoll ) ),
+              min( stoneV, 1.0 ) )
+            * ( 1.0 - smoothstep( uMossLine - uMossBand * 0.5,
+              uMossLine + uMossBand * 0.5, propRootY ) ),
+          propWorld.y - propRootY );`
       )
 
     shader.fragmentShader = shader.fragmentShader
@@ -1440,7 +1854,7 @@ export function createPropMaterial(
   // of the key because it is compiled INTO the shader (an array size and a loop
   // bound cannot be uniforms), so two materials differing only in which layers
   // billboard are two different programs.
-  const key = `prop-moss-v2${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${stripTiling ? '-strip' : ''}`
+  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${stripTiling ? '-strip' : ''}`
   material.customProgramCacheKey = () => key
 
   return material

@@ -133,6 +133,7 @@ try {
     ...(await import('../src/aurora-lab/algorithms.js')),
     ...(await import('../src/aurora-lab/presets.js')),
     ...(await import('../src/aurora-lab/glsl/noise.js')),
+    ...(await import('../src/aurora-lab/glsl/lut.js')),
     ...(await import('../src/aurora-lab/glsl/palette.js')),
     ...(await import('../src/aurora-lab/glsl/frame.js')),
   }
@@ -146,6 +147,7 @@ const { ALGORITHMS, algorithmById, paramsFor, defaultsFor } = LAB_MODULES
 const { BUILTIN_PRESETS } = LAB_MODULES
 const { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAMENT_GLSL } = LAB_MODULES
 const { PALETTE_GLSL, MARCH_GLSL, MAIN_GLSL } = LAB_MODULES
+const { LUT_GLSL } = LAB_MODULES
 
 // ---------------------------------------------------------------------------
 // The shader assembly, DUPLICATED FROM screen.js ON PURPOSE.
@@ -171,14 +173,21 @@ const CHUNKS = {
   fbm: FBM_GLSL,
   warp: WARP_GLSL,
   filament: FILAMENT_GLSL,
+  lut: LUT_GLSL,
 }
 
 const BASE_CHUNKS = ['util', 'hash', 'value', 'fbm']
 
 const GLSL_TYPE = { float: 'float', color: 'vec3', bool: 'float', enum: 'int' }
 
-function declarationsFor(params) {
+// Mirrors screen.js's CHUNK_SAMPLERS. A sampler is the one uniform the param schema cannot express, so a chunk that needs one names it and it is declared only when that chunk is in the assembly. Without this the uniform-count check below fails by exactly one for `lut`, reporting u_noiseLut as an undeclared reference.
+const CHUNK_SAMPLERS = { lut: 'u_noiseLut' }
+
+function declarationsFor(params, chunks) {
   const lines = ['uniform float uTime;']
+  for (const name of chunks) {
+    if (CHUNK_SAMPLERS[name]) lines.push(`uniform sampler2D ${CHUNK_SAMPLERS[name]};`)
+  }
   for (const p of params) {
     if (p.uniform === false) continue
     lines.push(`uniform ${GLSL_TYPE[p.type]} u_${p.key};`)
@@ -210,7 +219,8 @@ function assemble(id) {
     MAIN_GLSL,
   ].join('\n')
 
-  return { algo, params, unknown, decls: declarationsFor(params), body }
+  const samplers = ordered.filter((n) => CHUNK_SAMPLERS[n]).map((n) => CHUNK_SAMPLERS[n])
+  return { algo, params, unknown, samplers, decls: declarationsFor(params, ordered), body }
 }
 
 // Comments are stripped before any reference scan. Without this, a comment that
@@ -224,7 +234,7 @@ console.log('\n--- every uniform the GLSL references is declared --------------'
 // ===========================================================================
 
 for (const algo of ALGORITHMS) {
-  const { params, unknown, decls, body } = assemble(algo.id)
+  const { params, unknown, samplers, decls, body } = assemble(algo.id)
 
   check(unknown.length === 0, `${algo.id}: every chunk in \`needs\` exists`, unknown.join(', '))
 
@@ -253,11 +263,13 @@ for (const algo of ALGORITHMS) {
 
   // The generated block has to actually be generated from the schema, or the
   // check above is comparing the shader against a list that is not the panel's.
+  // Samplers are added because they are the one declaration with no param behind it, and they are added as a COUNT rather than by exempting the u_ prefix, so a sampler that is declared without its chunk being in the assembly still fails.
   const uniformParams = params.filter((p) => p.uniform !== false)
+  const expected = uniformParams.length + samplers.length
   check(
-    declared.size === uniformParams.length,
+    declared.size === expected,
     `${algo.id}: one declaration per shader-facing param, and no more`,
-    `${declared.size} declarations, ${uniformParams.length} params`
+    `${declared.size} declarations, ${uniformParams.length} params + ${samplers.length} sampler(s)`
   )
 }
 
@@ -546,6 +558,7 @@ const GUARDED = [
   ['FBM_GLSL', FBM_GLSL, 'AURLAB_FBM'],
   ['WARP_GLSL', WARP_GLSL, 'AURLAB_WARP'],
   ['FILAMENT_GLSL', FILAMENT_GLSL, 'AURLAB_FILAMENT'],
+  ['LUT_GLSL', LUT_GLSL, 'AURLAB_LUT'],
   ['PALETTE_GLSL', PALETTE_GLSL, 'AURLAB_PALETTE'],
   ['MARCH_GLSL', MARCH_GLSL, 'AURLAB_MARCH'],
 ]
@@ -553,10 +566,13 @@ const GUARDED = [
 // The list above is written out rather than derived, so a new chunk added to
 // noise.js is not silently exempt -- it fails the count below until someone
 // puts it here.
-const noiseSrc = fs.readFileSync(path.join(LAB, 'glsl', 'noise.js'), 'utf8')
-const noiseExports = (noiseSrc.match(/^export const (\w+_GLSL)\b/gm) || []).map((m) => m.split(' ')[2])
-const ungated = noiseExports.filter((n) => !GUARDED.some(([name]) => name === n))
-check(ungated.length === 0, 'every chunk noise.js exports is in the guarded list', ungated.join(', '))
+const chunkExports = []
+for (const file of ['noise.js', 'lut.js']) {
+  const src = fs.readFileSync(path.join(LAB, 'glsl', file), 'utf8')
+  for (const m of src.match(/^export const (\w+_GLSL)\b/gm) || []) chunkExports.push(m.split(' ')[2])
+}
+const ungated = chunkExports.filter((n) => !GUARDED.some(([name]) => name === n))
+check(ungated.length === 0, 'every chunk the basis files export is in the guarded list', ungated.join(', '))
 
 for (const [name, src, token] of GUARDED) {
   const ifndef = (src.match(new RegExp(`#ifndef\\s+${token}\\b`, 'g')) || []).length

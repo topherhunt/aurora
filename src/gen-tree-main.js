@@ -106,6 +106,11 @@ const SLIDERS = [
   ['sprayAspect', 0.3, 2.5, 0.01, 'card width/height. Set from the art\'s alpha bounds -- move it and the leaves stretch'],
   ['leafSkyward', 0, 1, 0.01, 'how far foliage normals turn toward the sky. This is the black-underside knob: 0 shades each card by its own plane, 1 shades the whole canopy as if lit from above'],
 
+  ['#', 'crown bundle'],
+  ['bundleTris', 0, 48, 1, 'blades through the crown, one big triangle each, and the whole switch: 0 draws the cards, which is LOD0 and the only thing LOD0 may ever be. Anything above 0 walks the very same cards and throws this many triangles through the crown instead, corners landing on the outer points those cards reached -- which is what the LOD1 button turns on, at 20'],
+  ['bundleSpread', 0, 2.5, 0.05, 'how far each corner is pushed out from the crown centre, past the spray seat it was taken from, as a multiple of that spray\'s own reach. 1 stops at the leaf tip, and the default is past it: 60 corners sample a crown of hundreds of sprays, so they almost never land on the outermost one and the bundle comes out a size small'],
+  ['bundleTilt', 0, 1.2, 0.05, 'the vertical span each blade is made to cover, as a multiple of the crown\'s DIAMETER, clamped to its height. Not a taste knob: at 0 half the blades come out near-HORIZONTAL, which is area paid for and never seen, because the camera at this tier is level with the crown. The top of the range is where it is because the clamp is real -- a blade cannot span more than the crown is tall, and measured over 4 species x 3 sizes x 4 seeds the geometry stops moving between 1.2 and 1.35, so a slider running past that would advertise travel that does nothing'],
+
   ['#', 'material'],
   ['alphaTest', 0.05, 0.95, 0.01, 'cutout threshold. Low = lacy and aliased, high = eats the leaf edges'],
   ['brightness', 0.4, 3, 0.05, 'multiplies the albedo. A material property, not geometry'],

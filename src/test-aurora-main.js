@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { Stars } from './stars.js'
 import { Backdrop } from './aurora-lab/backdrop.js'
 import { AuroraScreen } from './aurora-lab/screen.js'
+import { LowResAurora } from './aurora-lab/lowres.js'
 import { Sidebar } from './aurora-lab/ui/sidebar.js'
 import {
   ALGORITHMS, DEFAULT_ALGORITHM, SCENE_GROUPS,
@@ -135,6 +136,10 @@ function main() {
   const backdrop = new Backdrop(scene, backdropOptsFrom(values))
   const screen = new AuroraScreen(scene, { algorithm: algorithmId, values })
 
+  // The aurora, optionally drawn small and blurred back up. It borrows the screen's geometry and material rather than owning any of its own, so the composite covers the same sector in the same place and the mountains go on occluding it -- see the header of lowres.js. Constructed here, above the sidebar, because applyAll() below routes lowRes/lowBlur straight into it.
+  const lowres = new LowResAurora(renderer, screen)
+  scene.add(lowres.mesh)
+
   // ---- param routing -------------------------------------------------------
 
   const backdropKeys = new Set(SCENE_GROUPS
@@ -148,6 +153,9 @@ function main() {
     timeScale: () => {},
     fov: (v) => { camera.fov = v; camera.updateProjectionMatrix() },
     resScale: (v) => resize(v),
+    // Routed HERE and not left to fall through to the screen. Both are `uniform: false` params, so screen.setParam would accept them and then return without writing anything -- a slider that moves and does nothing, which is the precise failure the schema exists to prevent.
+    lowRes: (v) => lowres.setDiv(v),
+    lowBlur: (v) => lowres.setBlur(v),
     stars: () => {},
   }
 
@@ -423,6 +431,8 @@ function main() {
     renderer.domElement.style.height = h + 'px'
     camera.aspect = w / h
     camera.updateProjectionMatrix()
+    // DRAWING-BUFFER pixels, which already carry the render scale applied via setPixelRatio above. The divisor therefore COMPOSES with `render scale`: the aurora is drawn at resScale / lowRes of native in each axis, so the fast preset's 0.7 with a divisor of 4 is 0.175, or 1/33 of the fragments. Read off the canvas rather than recomputed, for the same reason the star point size is: two expressions for one number drift.
+    lowres.setSize(renderer.domElement.width, renderer.domElement.height)
   }
   window.addEventListener('resize', () => resize())
   resize()
@@ -454,6 +464,9 @@ function main() {
     stars.update(head, { stars: values.stars }, shaderTime * HOURS_PER_SECOND, shaderTime)
     screen.update(camera, shaderTime)
 
+    // Pass 1: the expensive shader into the small target, in a scene that contains nothing else. A no-op at a divisor of 1, where the real mesh in the main scene below is doing the drawing instead.
+    lowres.render(camera)
+
     renderer.render(scene, camera)
 
     fpsAccum += dt
@@ -470,9 +483,10 @@ function main() {
         ms: 1000 / fps,
         // The one number that predicts the cost of this shader anywhere else.
         // At 40 steps a full-screen 1080p quad is ~83 million field evaluations
-        // a frame, and the headset has to do it twice.
+        // a frame, and the headset has to do it twice. Divided by the low-res divisor SQUARED, because a buffer smaller in both axes is what makes this quadratic; without it the stat goes on reporting the reference's cost for a sky that is costing a sixteenth of it.
         'field evals/frame': Math.round(
-          renderer.domElement.width * renderer.domElement.height * values.steps / 1e6
+          renderer.domElement.width * renderer.domElement.height * values.steps
+          / (values.lowRes * values.lowRes) / 1e6
         ) + 'M',
         steps: values.steps,
         calls: info.calls,

@@ -52,6 +52,7 @@ import { thermalErode } from '../src/v2/height/erode.js'
 import { brushRect, stamp } from '../src/v2/height/sculpt.js'
 import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
 import { RidgeField } from '../src/v2/height/ridge.js'
+import { CreaseField, CREASE_CELL, CREASE_REACH, CREASE_JITTER, CREASE_CAP, CREASE_SILL, CREASE_ANISO, CREASE_FLOOR } from '../src/v2/height/crease.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
 import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO } from '../src/v2/terrain/chunk-mesh-v2.js'
@@ -885,22 +886,36 @@ export async function run({ heightmap } = {}) {
     // hovering or sinking -- the failure the whole module is shaped around.
     {
       const explicit = new V2Height({ heightmap: hm, layers, seed: WORLD_SEED, relief: RELIEF_DEFAULTS })
+      const N = 3000
       let mismatch = 0
       let worst = 0
-      for (let i = 0; i < 400; i++) {
+      for (let i = 0; i < N; i++) {
         const p = site(i)
         const a = field.heightAt(p.x, p.z)
         const b = explicit.heightAt(p.x, p.z)
         if (a !== b) { mismatch++; worst = Math.max(worst, Math.abs(a - b)) }
       }
       check(reliefIsOff(RELIEF_DEFAULTS), 'RELIEF_DEFAULTS is the off state, by its own predicate', `${RELIEF_KNOBS.length} knobs`)
-      check(mismatch === 0, 'no relief argument and RELIEF_DEFAULTS are the same field, bit for bit', `${mismatch}/400 sites differ, worst ${worst} m`)
+      check(mismatch === 0, 'no relief argument and RELIEF_DEFAULTS are the same field, bit for bit', `${mismatch}/${N} sites differ, worst ${worst} m`)
       check(explicit.calibration.rough === cal.rough, 'and the same calibration, bit for bit', `ROUGH ${cal.rough}`)
       // The copy is what erosion costs; with the knob off there must not be one.
       // A 4 MB duplicate of the import, resident on three threads, bought by a
       // default that changes nothing.
       check(field.ground === field.heightmap, 'with relief off the world is built on the import itself, not a copy', 'no eroded duplicate is allocated')
       check(explicit.ground === explicit.heightmap, 'and the same through the explicit all-off relief')
+      // AND NOTHING IS HOOKED INTO Heightmap.sample. `crease` is the one knob
+      // that does not add a term: it replaces the coarse reconstruction from
+      // inside sample() itself, so with it off the assertion is not "the term
+      // evaluates to zero" but "the branch does not exist" -- sample() is
+      // literally the Catmull-Rom expression it has always been, and the
+      // `_crease !== null` test in front of it is the only cost the default
+      // pays. Reached into deliberately: `field.crease === null` alone would
+      // still pass over an import somebody else had left an operator on.
+      check(
+        field.crease === null && explicit.crease === null && hm._crease === null,
+        'and no crease operator is attached -- with the knob off sample() IS the plain bicubic, not a branch that returns it',
+        'Heightmap._crease null on the import and on both fields'
+      )
     }
 
     // EVERY KNOB'S `on` VALUE MOVES SOMETHING.
@@ -918,7 +933,7 @@ export async function run({ heightmap } = {}) {
     //   height    the composed field. Most of them.
     //   snowline  snowJag, which moves a COLOUR boundary and no geometry.
     //   mesher    crest. See the banner: asserted as a non-effect on the field.
-    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', erode: 'height', talus: 'height', snowJag: 'snowline', crest: 'mesher' }
+    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', erode: 'height', talus: 'height', snowJag: 'snowline', crest: 'mesher' }
     {
       const unlisted = RELIEF_KNOBS.filter((k) => PROBE[k.key] === undefined).map((k) => k.key)
       check(unlisted.length === 0, 'every knob in the table has a probe in this gate', unlisted.length ? `no probe for ${unlisted.join(', ')}` : `${RELIEF_KNOBS.length} knobs`)
@@ -1987,6 +2002,528 @@ export async function run({ heightmap } = {}) {
       }
     }
 
+    // CREASE, WHICH IS THE ONLY KNOB THAT CHANGES HOW THE IMPORT IS READ RATHER
+    // THAN WHAT IS ADDED TO IT.
+    //
+    // ALMOST EVERYTHING BELOW IS ASSERTED AGAINST A BARE CreaseField AND NOT
+    // AGAINST TWO V2Height INSTANCES, and that is the distinction the whole
+    // section is built on rather than a convenience. `crease.at - hm.sample` is
+    // the operator's own departure, and it obeys exactly the three things the
+    // construction guarantees: it only raises, it saturates at the cap, and it
+    // is continuous. `heightAt(crease=on) - heightAt(crease=off)` obeys none of
+    // them exactly, and correctly so -- the detail term's amplitude is
+    // slope-dependent and the coarse slope now comes off the creased surface, so
+    // the micro stack legitimately moves DOWN by a few centimetres on ground the
+    // operator raised. An assertion of non-negativity through the composed field
+    // would fail, and it would be the assertion that was wrong.
+    //
+    // ITS UNITS ARE NOT METRES and it is not comparable to `crag`, `ridge` or
+    // `shatter` at equal numbers, so there is no matched-amplitude A/B here the
+    // way there is between those three. The knob is an exaggeration of a corner
+    // the geometry already implies: 1 restores it and nothing more, 3 overdraws
+    // it 3x, and the metres that come out are the terrain's own curvature.
+    {
+      const creaseKnob = knobOf('crease')
+      const ON = creaseKnob.on
+      console.log(
+        `        crease constants: cell ${CREASE_CELL} m, reach ${CREASE_REACH} m, cap ${CREASE_CAP} m, sill ${CREASE_SILL} m, ` +
+          `aniso ${CREASE_ANISO}, floor ${CREASE_FLOOR}, jitter ${CREASE_JITTER} rad -- knob ${creaseKnob.min}..${creaseKnob.max}, on at ${ON}, DIMENSIONLESS`
+      )
+
+      // --- off is off, and a sibling with the knob on cannot change that -----
+      //
+      // The operator hangs off the Heightmap rather than off its callers,
+      // because sample() is the one choke point the mesher, the collision, the
+      // scatter and the raycast all already go through. What that buys is shared
+      // state: one import is read by several V2Height instances at once -- this
+      // file builds a dozen of them, and the editor holds one beside the live
+      // world -- so attaching the operator to the import ITSELF lets the last
+      // field constructed decide what all the others are standing on. That is
+      // not a hypothetical. It was the first version of this knob, and under it
+      // three fields built in a row came out identical because all three were
+      // creased, and a sibling's calibrateRough was fitted to a surface its own
+      // knob had switched off. Heightmap.view() is the fix: same texel buffer,
+      // own operator.
+      //
+      // THE CONTROL IS READ BEFORE THE CREASED FIELD EXISTS, and that ordering
+      // is the only one that can see the failure. Read afterwards, a
+      // contaminated control moves with the very thing it is controlling for and
+      // the check passes on broken code -- which is exactly what the first
+      // version of this test did.
+      const CN = 3000
+      const beforeH = new Float64Array(CN)
+      for (let i = 0; i < CN; i++) { const p = measureSite(i); beforeH[i] = field.heightAt(p.x, p.z) }
+      const creaseOn = mk({ crease: ON })
+      let drifted = 0
+      let worstDrift = 0
+      for (let i = 0; i < CN; i++) {
+        const p = measureSite(i)
+        const a = field.heightAt(p.x, p.z)
+        if (a !== beforeH[i]) { drifted++; worstDrift = Math.max(worstDrift, Math.abs(a - beforeH[i])) }
+      }
+      check(
+        drifted === 0,
+        `building a field with crease=${ON} over the same import leaves the plain field bit-identical`,
+        `${drifted}/${CN} sites moved under a sibling, worst ${worstDrift} m`
+      )
+      check(
+        hm._crease === null && creaseOn.ground !== hm && creaseOn.ground.field === hm.field,
+        'because the operator attaches to a VIEW of the import -- same texels, own operator, nothing copied and nothing mutated',
+        `import carries no operator; the creased field's ground is a distinct Heightmap over the same ${hm.width}x${hm.height} buffer`
+      )
+
+      // --- the corner is really in the imported texels ------------------------
+      //
+      // THE MEASUREMENT THAT JUSTIFIES THE OPERATOR EXISTING AT ALL, which is
+      // why it is in the gate rather than in a scratch file. Every other knob in
+      // this table invents relief and has only to be judged on whether it looks
+      // like rock. This one claims to RECOVER something the interpolant threw
+      // away, and that claim is either true of the imported data or it is not.
+      //
+      // For every texel that is a strict local maximum along an axis, take the
+      // 7-texel cross-section and fit two models with a free apex:
+      //
+      //     TENT   y = A - sL*|x - x0|      kinked apex
+      //     DOME   y = A - cL*(x - x0)^2    smooth apex
+      //
+      // FOUR PARAMETERS EACH, same points, same apex search, so the residual
+      // comparison is fair and neither model can win on flexibility. Run on the
+      // RAW TEXELS and never through sample(), because sample() IS the
+      // Catmull-Rom whose behaviour is the thing in question -- ask the question
+      // through it and the answer is a dome by construction.
+      //
+      // AND BOTH CONTROLS STAY, because without them the instrument is
+      // unfalsifiable: a fitter that preferred tents for everything would give
+      // the same headline. The same field blurred 3x3 is known-smooth and must
+      // come out doming; a synthetic field of pure tents is known-kinked and
+      // must come out strongly creased. The import has to land between them and
+      // on the kinked side of the blur.
+      {
+        const solve3 = (M, b) => {
+          const A = [[M[0][0], M[0][1], M[0][2], b[0]], [M[1][0], M[1][1], M[1][2], b[1]], [M[2][0], M[2][1], M[2][2], b[2]]]
+          for (let c = 0; c < 3; c++) {
+            let piv = c
+            for (let r = c + 1; r < 3; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r
+            if (Math.abs(A[piv][c]) < 1e-12) return null
+            const t = A[c]; A[c] = A[piv]; A[piv] = t
+            for (let r = 0; r < 3; r++) {
+              if (r === c) continue
+              const f = A[r][c] / A[c][c]
+              for (let k = c; k < 4; k++) A[r][k] -= f * A[c][k]
+            }
+          }
+          return [A[0][3] / A[0][0], A[1][3] / A[1][1], A[2][3] / A[2][2]]
+        }
+        // y = A - pL*|d|^power (left) - pR*d^power (right), with the apex x0
+        // searched on a grid across the middle texel. The two sides get their
+        // own slope so an asymmetric crest -- which is what a real arete is --
+        // is not scored as a bad fit by either model.
+        const fitApex = (xs, ys, power) => {
+          let best = null
+          for (let t = 0; t <= 40; t++) {
+            const x0 = -0.5 + t / 40
+            const M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+            const rhs = [0, 0, 0]
+            for (let k = 0; k < xs.length; k++) {
+              const d = xs[k] - x0
+              const b = [1, -(d < 0 ? Math.pow(-d, power) : 0), -(d > 0 ? Math.pow(d, power) : 0)]
+              for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 3; j++) M[i][j] += b[i] * b[j]
+                rhs[i] += b[i] * ys[k]
+              }
+            }
+            const p = solve3(M, rhs)
+            if (!p) continue
+            let ss = 0
+            for (let k = 0; k < xs.length; k++) {
+              const d = xs[k] - x0
+              const r = p[0] - p[1] * (d < 0 ? Math.pow(-d, power) : 0) - p[2] * (d > 0 ? Math.pow(d, power) : 0) - ys[k]
+              ss += r * r
+            }
+            const rms = Math.sqrt(ss / xs.length)
+            if (!best || rms < best.rms) best = { rms, A: p[0], sL: p[1], sR: p[2] }
+          }
+          return best
+        }
+        const XS = [-3, -2, -1, 0, 1, 2, 3]
+        const survey = (data, w, h) => {
+          const wins = []
+          const ratios = []
+          const clips = []
+          const relief = []
+          for (let axis = 0; axis < 2; axis++) {
+            for (let j = 4; j < h - 4; j += 3) {
+              for (let i = 4; i < w - 4; i += 3) {
+                const at = (k) => (axis === 0 ? data[j * w + i + k] : data[(j + k) * w + i])
+                const c = at(0)
+                if (!(at(-1) < c && c > at(1))) continue
+                const ys = XS.map(at)
+                // A 2 m bump at 8 m texels is the import's own quantisation, not
+                // a landform, and there are tens of thousands of them.
+                const span = c - Math.min(...ys)
+                if (span < 2) continue
+                const tent = fitApex(XS, ys, 1)
+                const dome = fitApex(XS, ys, 2)
+                if (!tent || !dome) continue
+                // Both flanks must actually fall away, or it is a shoulder
+                // rather than a crest and neither model is being asked anything.
+                if (!(tent.sL > 0 && tent.sR > 0)) continue
+                wins.push(tent.rms < dome.rms ? 1 : 0)
+                ratios.push(tent.rms / (dome.rms + 1e-9))
+                // How far above the interpolated texel the tent's own apex sits:
+                // the corner Catmull-Rom cannot draw, in metres, measured.
+                clips.push(tent.A - c)
+                relief.push(span)
+              }
+            }
+          }
+          const med = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)]
+          const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length
+          const pick = (a, idx) => idx.map((k) => a[k])
+          const band = (lo, hi) => {
+            const idx = []
+            for (let k = 0; k < relief.length; k++) if (relief[k] >= lo && relief[k] < hi) idx.push(k)
+            return idx.length < 40 ? null : { n: idx.length, tent: 100 * mean(pick(wins, idx)), ratio: med(pick(ratios, idx)), clip: med(pick(clips, idx)) }
+          }
+          return { n: wins.length, tent: 100 * mean(wins), ratio: med(ratios), clip: med(clips), relief: med(relief), band }
+        }
+
+        const w = hm.width
+        const h = hm.height
+        const blurred = new Float32Array(w * h)
+        for (let j = 0; j < h; j++) {
+          for (let i = 0; i < w; i++) {
+            let s = 0
+            let acc = 0
+            for (let b = -1; b <= 1; b++) {
+              for (let a = -1; a <= 1; a++) {
+                const x = i + a
+                const y = j + b
+                if (x < 0 || y < 0 || x >= w || y >= h) continue
+                const k = (a === 0 ? 2 : 1) * (b === 0 ? 2 : 1)
+                s += k * hm.field[y * w + x]
+                acc += k
+              }
+            }
+            blurred[j * w + i] = s / acc
+          }
+        }
+        // Two interfering triangle waves at an angle to the texel grid, so the
+        // crests are genuine tents but do not run along rows or columns and
+        // cannot be found by the axis scan for free.
+        const tents = new Float32Array(w * h)
+        for (let j = 0; j < h; j++) {
+          for (let i = 0; i < w; i++) {
+            const u = ((i * 0.37 + j * 0.21) % 11) - 5.5
+            const v = ((i * 0.11 - j * 0.43 + 1000) % 13) - 6.5
+            tents[j * w + i] = 40 - 6 * Math.abs(u) - 4 * Math.abs(v)
+          }
+        }
+
+        const imp = survey(hm.field, w, h)
+        const blur = survey(blurred, w, h)
+        const syn = survey(tents, w, h)
+        const line = (label, s) =>
+          console.log(
+            `        ${label.padEnd(26)} tent beats dome at ${s.tent.toFixed(1).padStart(5)}% of ${s.n.toLocaleString().padStart(6)} crests,  ` +
+              `residual ratio ${s.ratio.toFixed(3)} (below 1 = kinked),  apex clipped by ${s.clip.toFixed(2)} m over ${s.relief.toFixed(1)} m of relief`
+          )
+        console.log(`        tent vs dome on the RAW texels, 7-texel cross-sections, 4 parameters each with a free apex:`)
+        line('the shipped import', imp)
+        line('CONTROL 3x3 blurred', blur)
+        line('CONTROL synthetic tents', syn)
+        // STRATIFIED BY LANDFORM, because the question is not whether 5 m
+        // hummocks are kinked -- nobody looks at those -- but whether the aretes
+        // are. This is the row crease.js's header quotes: on the biggest
+        // landforms the import stays kinked while the blurred control goes
+        // sharply the other way, so the gap WIDENS exactly where the operator
+        // is aimed.
+        for (const [lo, hi] of [[2, 8], [8, 20], [20, 50], [50, 1e9]]) {
+          const a = imp.band(lo, hi)
+          const b = blur.band(lo, hi)
+          if (!a || !b) continue
+          console.log(
+            `          relief ${String(lo).padStart(2)}-${hi > 1e8 ? '  +' : String(hi).padStart(3)} m:  import n=${String(a.n).padStart(5)} tent ${a.tent.toFixed(1)}% ratio ${a.ratio.toFixed(3)} clipped ${a.clip.toFixed(2)} m   ` +
+              `|  blurred n=${String(b.n).padStart(5)} tent ${b.tent.toFixed(1)}% ratio ${b.ratio.toFixed(3)}`
+          )
+        }
+        check(
+          imp.tent > blur.tent + 10 && imp.ratio < blur.ratio * 0.9,
+          'the imported texels prefer a KINKED crest, and by a wide margin over the same field blurred -- the corner is in the data',
+          `import ${imp.tent.toFixed(1)}% / ratio ${imp.ratio.toFixed(3)} against the blur's ${blur.tent.toFixed(1)}% / ${blur.ratio.toFixed(3)}`
+        )
+        // AND THE INSTRUMENT LANDS BOTH CONTROLS ON THEIR KNOWN SIDES. Without
+        // these two lines the check above is a fitter's bias reported as a
+        // finding: a tent fits any noisy 7 points better than a parabola does,
+        // and nothing so far would tell the difference.
+        check(
+          blur.ratio > 0.9 && blur.tent < 60,
+          'and a known-SMOOTH field comes out doming under the same fit -- the tent does not simply win everywhere',
+          `3x3 blurred: ${blur.tent.toFixed(1)}% of crests, ratio ${blur.ratio.toFixed(3)}`
+        )
+        check(
+          syn.ratio < 0.2 && syn.tent > 90,
+          'and a known-KINKED field comes out emphatically creased -- the fit can see a corner when there is one',
+          `synthetic tents: ${syn.tent.toFixed(1)}% of crests, ratio ${syn.ratio.toFixed(3)}`
+        )
+      }
+
+      // --- the operator only ever raises, and it saturates at the cap --------
+      //
+      // ONLY EVER RAISES is a real invariant of the construction and not a
+      // statistic: the tooth is the two straight faces extended until they meet
+      // ABOVE the rounded cap, so the corner is grafted ON TOP of the bicubic
+      // and the departure is 0.5 * k * d^2 with k > 0. A sign error anywhere in
+      // the axis, the curvature or the graft turns teeth into notches, and a
+      // notch on a crest reads as erosion rather than as a bug. Asserted as
+      // `>= 0` at every site, exactly, because there is no tolerance in which
+      // this is allowed to be nearly true.
+      //
+      // SATURATES because k is the terrain's own curvature and an unbounded k is
+      // an unbounded spike -- Catmull-Rom's overshoot beside a cliff produced
+      // 114 m ones before the cap. The bound is analytic: the tooth is at most
+      // 0.5 * kmax * reach^2 = CREASE_CAP, times the cell's draw (at most 1) and
+      // the lift, so no departure may exceed CREASE_CAP * lift at any lift.
+      //
+      // AND IT IS EXACTLY LINEAR IN THE LIFT, which is what makes the knob an
+      // exaggeration rather than a redesign of the field at every tick: `lift`
+      // enters once, as one multiply on the cell weight, and every branch above
+      // it is taken on quantities that do not contain it. So a HUD scrub is an
+      // amplitude, and the value at 3 is the value at 1 tripled to the last bit
+      // the arithmetic keeps.
+      const probe = new CreaseField(hm, WORLD_SEED)
+      const DN = 20000
+      {
+        const rows = []
+        for (const lift of [1, 2, ON]) {
+          probe.lift = lift
+          let s2 = 0
+          let mn = Infinity
+          let mx = -Infinity
+          let zero = 0
+          for (let i = 0; i < DN; i++) {
+            const p = measureSite(i)
+            const d = probe.at(p.x, p.z) - hm.sample(p.x, p.z)
+            s2 += d * d
+            if (d < mn) mn = d
+            if (d > mx) mx = d
+            if (d === 0) zero++
+          }
+          rows.push({ lift, rms: Math.sqrt(s2 / DN), mn, mx, zero: zero / DN })
+        }
+        console.log(
+          `        departure from the plain bicubic over ${DN.toLocaleString()} sites: ` +
+            rows.map((r) => `lift ${r.lift} -> rms ${r.rms.toFixed(4)} m, max +${r.mx.toFixed(2)} m, min ${r.mn.toFixed(4)} m`).join(',  ')
+        )
+        const on = rows[rows.length - 1]
+        check(
+          rows.every((r) => r.mn >= 0),
+          'the crease only ever RAISES the surface -- the corner is grafted on top of the cap, never cut into it',
+          `min departure ${rows.map((r) => `${r.mn.toFixed(4)}`).join(' / ')} m at lift ${rows.map((r) => r.lift).join(' / ')}`
+        )
+        check(
+          rows.every((r) => r.mx <= CREASE_CAP * r.lift),
+          `no tooth exceeds CREASE_CAP times the lift -- k saturates, so an overshooting bicubic cannot make a spike`,
+          `max +${on.mx.toFixed(2)} m at lift ${on.lift} against the ${(CREASE_CAP * on.lift).toFixed(0)} m bound (${(CREASE_CAP * on.lift / on.mx).toFixed(1)}x of headroom)`
+        )
+        // The other half of "it only touches crests", and the one a person can
+        // check by eye: most of the world is left EXACTLY alone. There is no
+        // crest detector anywhere in the operator -- the amplitude is the
+        // terrain's own curvature and the sill is what keeps it off broad
+        // ground -- so this fraction is a measurement of that gate and not of a
+        // threshold somebody chose.
+        check(
+          on.zero > 0.3 && on.mx > 1,
+          'and it is silent over most of the world, EXACTLY 0 rather than small -- teeth where there is a crest, nothing where there is not',
+          `${pct(on.zero)} of sites untouched, and the rest reaches +${on.mx.toFixed(2)} m, so that is not silence by inaction`
+        )
+
+        probe.lift = 1
+        const unit = new Float64Array(3000)
+        for (let i = 0; i < 3000; i++) { const p = measureSite(i); unit[i] = probe.at(p.x, p.z) - hm.sample(p.x, p.z) }
+        probe.lift = ON
+        let worstLin = 0
+        for (let i = 0; i < 3000; i++) {
+          const p = measureSite(i)
+          worstLin = Math.max(worstLin, Math.abs(probe.at(p.x, p.z) - hm.sample(p.x, p.z) - ON * unit[i]))
+        }
+        // NOT bit-exact, and the reason is the one the `bare` and `ridge` blocks
+        // record: the departure is recovered by subtracting two sums that each
+        // carry a few hundred metres of macro, which costs about 1e-13 m. The
+        // arithmetic inside the operator is one multiply.
+        check(
+          worstLin < 1e-9,
+          `crease=${ON} is exactly ${ON}x crease=1 -- the lift is one multiply on the cell weight, so a scrub is an amplitude`,
+          `worst departure from ${ON}x ${worstLin.toExponential(2)} m against a ${rows[rows.length - 1].rms.toFixed(4)} m rms term`
+        )
+      }
+
+      // --- the departure field is continuous ---------------------------------
+      //
+      // THE LOAD-BEARING PROBE IN THIS SECTION, and the one that has already
+      // earned its place: it caught a 26 m TEAR across one millimetre, at every
+      // probe step, when the curvature was read off Catmull-Rom. Catmull-Rom is
+      // C1 and not C2 -- its second derivative jumps at every knot -- and a
+      // tooth is k/2 * reach^2 tall, so a discontinuous k is a discontinuous
+      // SURFACE. The uniform cubic B-spline over the same 4x4 block is C2 and
+      // that is why it is there. Nothing else in this file would have noticed:
+      // the term would still only raise, still be capped, still be linear in the
+      // lift, and still land on crests.
+      //
+      // MEASURED ON THE DEPARTURE AND NOT ON THE FINISHED SURFACE, which is the
+      // only way to make the number mean anything. The plain bicubic already has
+      // an 87.8 degree face on this import and it is not crease's doing; walk
+      // the composed field and the worst step you find is the import's, with the
+      // operator contributing nothing to it. Subtracting the bicubic leaves the
+      // operator's own contribution alone.
+      //
+      // A 1 cm step is two orders of magnitude below the 13 m reach, so no tooth
+      // can hide between two samples: a break of any size shows up here as a
+      // slope no face has.
+      {
+        probe.lift = ON
+        const dep = (x, z) => probe.at(x, z) - hm.sample(x, z)
+        // Seeded where the operator is actually doing something, or 200 m of
+        // untouched valley floor would report a worst step of exactly zero and
+        // pass by measuring nothing.
+        const SEAM_T = 64
+        const SEAM_STEP = 0.01
+        const SEAM_N = 20000
+        const hot = []
+        for (let i = 0; hot.length < SEAM_T && i < 900000; i++) {
+          const p = measureSite(i)
+          if (dep(p.x, p.z) > 1) hot.push({ i, p })
+        }
+        const steps = []
+        let worstJump = 0
+        let liveTerm = 0
+        for (const { i, p } of hot) {
+          const a = measureAngle(i)
+          const dx = Math.cos(a)
+          const dz = Math.sin(a)
+          let prev = dep(p.x, p.z)
+          for (let k = 1; k < SEAM_N; k++) {
+            const v = dep(p.x + dx * k * SEAM_STEP, p.z + dz * k * SEAM_STEP)
+            const jump = Math.abs(v - prev)
+            steps.push(jump)
+            if (jump > worstJump) worstJump = jump
+            if (v > liveTerm) liveTerm = v
+            prev = v
+          }
+        }
+        steps.sort((a, b) => a - b)
+        const q = (t) => steps[Math.floor(t * (steps.length - 1))]
+        console.log(
+          `        ${hot.length} transects of ${(SEAM_N * SEAM_STEP).toFixed(0)} m across live teeth, walked at ${(SEAM_STEP * 100).toFixed(0)} cm: ` +
+            `p99 step ${q(0.99).toFixed(4)} m, p99.9 ${q(0.999).toFixed(4)} m, worst ${worstJump.toFixed(4)} m (a slope of ${(worstJump / SEAM_STEP).toFixed(1)}), over a term reaching ${liveTerm.toFixed(1)} m`
+        )
+        check(
+          worstJump < 1,
+          'the crease departure is continuous -- the corner is a break in the SLOPE and nowhere a break in the surface',
+          `worst ${worstJump.toFixed(4)} m over ${SEAM_STEP * 100} cm against a 1 m limit, and against the 26 m tear this probe caught off a C1 basis`
+        )
+        check(
+          q(0.99) < 0.05,
+          'and the typical step is centimetres, so the worst one is a steep face and not a population of them',
+          `p99 ${q(0.99).toFixed(4)} m over ${steps.length.toLocaleString()} steps`
+        )
+        check(
+          liveTerm > 1,
+          'and the transects ran over real teeth, so that is not continuity by inaction',
+          `the departure reaches ${liveTerm.toFixed(1)} m along them`
+        )
+      }
+
+      // --- the 3x3 Voronoi neighbourhood really is the whole neighbourhood ---
+      //
+      // VERIFIED AGAINST A 5x5 REFERENCE RATHER THAN ARGUED, because the same
+      // assertion on `shatter` was once wrong BY A FACTOR OF SQRT(2): a
+      // Chebyshev level set is a square and its corners stand at sqrt(2) times
+      // its inradius, so a reach that read as 0.83 cells was really 1.18 and the
+      // 3x3 evaluator was clipping flanks. The argument here is a different one
+      // -- jitter is confined to the middle half of each cell, so a far site
+      // cannot get closer than 1.25 cells while the home site is never further
+      // than 1.06 -- and it is a better argument, but "better argument" is what
+      // the shatter bound had too.
+      //
+      // ALL THREE RETURNED VALUES, not just the nearest distance. `h` is the
+      // permutation byte the cell's amplitude and rotation are drawn from, so a
+      // d1 that agreed while h did not would still flip the tooth's height and
+      // lean between two adjacent samples -- a tear, from a search that looked
+      // correct on distances alone.
+      {
+        const VN = 200000
+        let bad1 = 0
+        let bad2 = 0
+        let badH = 0
+        for (let i = 0; i < VN; i++) {
+          const p = site(i * 7 + 3)
+          const near = probe._site(p.x, p.z, 1)
+          const wide = probe._site(p.x, p.z, 2)
+          if (near.d1 !== wide.d1) bad1++
+          if (near.d2 !== wide.d2) bad2++
+          if (near.h !== wide.h) badH++
+        }
+        check(
+          bad1 === 0 && bad2 === 0 && badH === 0,
+          `a 3x3 cell search returns the same site as a 5x5 one, at every point -- the ${CREASE_CELL} m lattice cannot reach past its neighbours`,
+          `${VN.toLocaleString()} points: ${bad1} disagreements on d1, ${bad2} on d2, ${badH} on the drawn byte`
+        )
+      }
+
+      // --- what it costs the route network -----------------------------------
+      //
+      // Through the same instrument as the walkability table below -- same 3000
+      // sites, same stride out of src/player.js -- and this knob gets a
+      // THRESHOLD where the others deliberately do not. The difference is that
+      // `crag` at 30 making the world harder to cross is a taste, whereas crease
+      // sealing a pass would mean the operator is acting on valley floors, and
+      // "it only touches crests" is the claim the whole design rests on. It only
+      // ever raises, so it can only ever steepen; if the gate on curvature were
+      // leaking onto flat ground this is where it would show.
+      {
+        const src = await readFile(PLAYER_PATH, 'utf8')
+        const maxTan = Math.tan((Number(/maxSlopeDeg:\s*([0-9.]+)/.exec(src)[1]) * Math.PI) / 180)
+        const stride = Number(/stride:\s*([0-9.]+)/.exec(src)[1])
+        const offWalk = walkableFraction((x, z) => field.heightAt(x, z), maxTan, stride)
+        const onWalk = walkableFraction((x, z) => creaseOn.heightAt(x, z), maxTan, stride)
+        // Hoisted out of the callback deliberately: walkableFraction evaluates it
+        // 6000 times, and building the field inside the arrow rebuilt and
+        // recalibrated it at every one of them -- 380 s of the gate.
+        const cragF = mk({ crag: knobOf('crag').on })
+        const cragWalk = walkableFraction((x, z) => cragF.heightAt(x, z), maxTan, stride)
+        console.log(
+          `        walkable over a ${stride} m stride: all off ${pct(offWalk)}, crease=${ON} ${pct(onWalk)} ` +
+            `(${((onWalk - offWalk) * 100).toFixed(1)} points), against crag=${knobOf('crag').on}'s ${((cragWalk - offWalk) * 100).toFixed(1)}`
+        )
+        check(
+          offWalk - onWalk < 0.01 && onWalk < offWalk,
+          'crease costs the route network under a point, an order of magnitude less than the ungated bands -- it is on the crests, not in the passes',
+          `${((offWalk - onWalk) * 100).toFixed(1)} points against crag's ${((offWalk - cragWalk) * 100).toFixed(1)}`
+        )
+      }
+
+      // --- what it costs per sample ------------------------------------------
+      //
+      // Reported and not asserted, on the same footing as the empty-document
+      // timing above: it is a number worth having on the record, and a threshold
+      // on it would be a threshold on this machine. Every consumer of the coarse
+      // field pays it -- the mesher, the collision, the scatter, the raycast --
+      // because sample() is where the operator lives, which is the same property
+      // that makes the knob reach all of them from one line.
+      {
+        const timed = (f) => {
+          for (let i = 0; i < 20000; i++) { const p = site(i); f(p.x, p.z) }
+          const t0 = performance.now()
+          for (let i = 0; i < 200000; i++) { const p = site(i); f(p.x, p.z) }
+          return ((performance.now() - t0) / 200000) * 1e3
+        }
+        const tPlain = timed((x, z) => hm.sample(x, z))
+        const tCrease = timed((x, z) => probe.at(x, z))
+        console.log(`        cost per coarse sample: plain bicubic ${tPlain.toFixed(3)} us, creased ${tCrease.toFixed(3)} us (${(tCrease / tPlain).toFixed(1)}x)`)
+      }
+    }
+
     // EROSION CONSERVES MASS AND RESPECTS THE DEAD BAND.
     //
     // thermalErode is the one term here that rewrites the field the world is
@@ -2173,7 +2710,7 @@ export async function run({ heightmap } = {}) {
       // displaces roughly twice what `ridge` does on peak ground, so it is the
       // knob most likely to seal a pass, and burying it in the all-on figure is
       // exactly the not-noticing this table exists to prevent.
-      for (const key of ['sharpen', 'exposure', 'crag', 'ridge', 'shatter', 'erode']) {
+      for (const key of ['sharpen', 'exposure', 'crag', 'ridge', 'shatter', 'crease', 'erode']) {
         const k = knobOf(key)
         const f = mk({ [key]: k.on })
         rows.push({ key, value: k.on, frac: walkableFraction((x, z) => f.heightAt(x, z), maxTan, stride) })

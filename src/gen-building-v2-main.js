@@ -254,12 +254,15 @@ function rebuild() {
   const spacing = Math.max(...plans.map((p) => Math.max(p.stats.width, p.stats.depth))) + 5
 
   let tris = 0
+  let dormers = 0
   const hero = plans[0]
   plans.forEach((plan, i) => {
-    const { geometry, triangles } = buildBuilding2(plan, {
+    const built = buildBuilding2(plan, {
       detail: picks.detail, character: characterFor(plan.seed), smoothAngle: chars.smooth,
     })
+    const { geometry, triangles } = built
     tris += triangles
+    if (i === 0) dormers = built.dormers.length
     const mesh = new THREE.Mesh(geometry, material)
     if (galleryMode) {
       mesh.position.set(
@@ -290,7 +293,7 @@ function rebuild() {
   grid.visible = showGrid && !galleryMode
   grid.position.y = 0.01
 
-  return { tris, plans, hero, spacing }
+  return { tris, plans, hero, spacing, dormers }
 }
 
 // --- panels -----------------------------------------------------------------
@@ -304,8 +307,10 @@ function table(el, rows) {
 // §5's `structure` prop class mesh tier, re-priced for v2 and kept in step with
 // scripts/check-buildings-v2.mjs, which is the one that actually fails the
 // build. v2 spends triangles on the roof grid and buys most of them back on the
-// chimney and the window surrounds; 2600 is where that nets out with margin.
-const STRUCTURE_BUDGET = 2600
+// chimney and the window surrounds; 2700 is where that nets out with margin,
+// the last 100 of it bought for the dormer, which is a new part rather than an
+// old one that swelled and is capped at two a building.
+const STRUCTURE_BUDGET = 2700
 // The detail-1 cap, absolute rather than a ratio -- see the gate for why.
 const LOD1_BUDGET = 460
 // §5's budget table allots 20 visible buildings to a village.
@@ -361,7 +366,14 @@ function refresh() {
     ['eave reach', `${k.reach.toFixed(3)} m`],
     ['eave sway', `${k.sway.toFixed(3)} m`, k.sway > 0.05 ? 'hot' : ''],
     ['oversail', `&times; ${k.overhang.toFixed(2)}`],
-    ['verge splay', `${k.vergeSplay >= 0 ? '' : '&minus;'}${Math.abs(k.vergeSplay).toFixed(3)} m ${k.vergeSplay >= 0 ? 'at the ridge' : 'at the eave'}`],
+    // A FRACTION OF THE SLOPE RUN, not a distance, which is why it reads as a
+    // percentage here: the term fixes the ANGLE the rake makes with the gable
+    // wall, so the same number puts the same amount of character on a hut and on
+    // an inn. planGableRoof turns it into metres by multiplying by that mass's
+    // run, and the sign says which end of the rake gets thrown out -- it is
+    // anchored on the other end rather than centred, so the nominal verge is
+    // always the floor.
+    ['verge splay', `${k.vergeSplay >= 0 ? '' : '&minus;'}${(Math.abs(k.vergeSplay) * 100).toFixed(1)} % of the run, ${k.vergeSplay >= 0 ? 'at the ridge' : 'at the eave'}`],
     ['eave rake', `${k.rake >= 0 ? '' : '&minus;'}${Math.abs(k.rake).toFixed(2)} ${k.rake >= 0 ? 'out' : 'under'}`],
     ['chimney flare', `&times; ${k.flare.toFixed(2)}`],
     ['window flare', `${(k.skew * 160).toFixed(1)} % sill to head`],
@@ -381,6 +393,12 @@ function refresh() {
     ['footprint', `${plan.stats.width.toFixed(1)} &times; ${plan.stats.depth.toFixed(1)} m`],
     ['ridge height', `${plan.stats.ridgeY.toFixed(2)} m`],
     ['windows', plan.stats.windows],
+    // Not a plan number like the rest of this table: a dormer is decided while
+    // the roof is being drawn, by asking the covering whether it can close over
+    // the back of one, so the only place the answer exists is the finished
+    // building. It reads here anyway because this is the panel you look at when
+    // you are wondering what you are looking at.
+    ['dormers', s.dormers],
     ['ground fall', `${(plan.groundMax - plan.groundMin).toFixed(2)} m`],
     ['plinth', `${(plan.floorY - plan.plinthBottom).toFixed(2)} m`],
     ['porch / steps', `${plan.porch ? 'porch' : '--'} / ${plan.steps ? `${Math.round((plan.floorY - plan.steps.groundY) / 0.19)} steps` : '--'}`],

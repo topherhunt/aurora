@@ -51,10 +51,21 @@ import {
 // quantised in steps of 2^(1/4) so a tile only regrows when its level actually
 // moves. Two consequences, both deliberate:
 //
-//   The scatter is slightly DENSER than the law just past F -- a tile's far
+//   The scatter PLACES slightly denser than the law just past F -- a tile's far
 //   corner is thinned as though it were at the tile's near corner, and the
 //   quantisation always rounds toward keeping. Erring dense is the safe
-//   direction: too few trees reads as a hole, too many reads as forest.
+//   direction, because too few trees reads as a hole.
+//
+//   But the over-keep never reaches the picture, and it took a gate to notice:
+//   the rim dissolve below is per tree and per distance, so it cuts the surplus
+//   back out again. Measured at boot, 40,972 instances are PLACED against an
+//   ideal 36,694 (1.117x), and 36,367 are DRAWN -- within 1% of the law, at
+//   0.0201 / 0.0098 / 0.0051 / 0.0034 per m^2 against 0.0200 / 0.0100 / 0.0050 /
+//   0.0033 at 200, 400, 800 and 1200 m. So about 4,600 instances, 11% of the
+//   scatter, are fully dithered out at any moment. That is a cost in POOL and in
+//   placement work, not in what the forest looks like, which is the opposite way
+//   round from how it reads -- the quantisation buys its safety margin out of
+//   headroom rather than out of density.
 //
 //   Regrowing is INCREMENTAL, not a rebuild. Replaying a tile's stream is
 //   deterministic, so a tile moving from keep 0.25 to keep 0.30 only has to
@@ -122,27 +133,37 @@ import {
 // THE FAR TIER IS A REAL CAMERA-FACING BILLBOARD, spun about its own trunk in
 // the vertex shader (material.js, billboardVertex), so it costs no CPU, no
 // second material and no per-frame matrix write, and the whole forest stays ONE
-// DRAW CALL. Two triangles instead of the crossed card's six.
+// DRAW CALL. ONE triangle against the crossed card's six -- apex up for a
+// conifer, apex down for a crown on a bare trunk, which is the shape each
+// species already is. What it gives up is two corners of its photograph; the
+// measured cost per species is the `tri` note in props/impostor.js.
 //
-// THE LADDER. Four tiers, and the far one carries almost every instance:
+// THE LADDER. Four tiers, and the far one carries almost every instance.
+// Measured on a flat headless world at the standing eye height, 40,972 trees
+// placed inside 1500 m:
 //
-//   tier 0   LOD0 mesh    < 10 m      ~15 instances    522 tris each
-//   tier 1   LOD1 mesh    10 - 45 m   ~310             135 tris each
-//   tier 2   crossed card 45 - 100 m  ~1,300           6 tris each
-//   tier 3   billboard    to 1500 m   ~40,000          2 tris each
+//   tier 0   LOD0 mesh    < 10 m          10 instances    440 tris each
+//   tier 1   LOD1 mesh    10 - 45 m      313              60 tris each
+//   tier 2   crossed card 45 - 100 m   1,237               6 tris each
+//   tier 3   billboard    to 1500 m    39,412               1 tri  each
 //
-// 133-142k triangles measured across the walk, against DESIGN.md §5's 350k
-// ceiling with terrain taking 45k.
-// Tier 1 is the expensive band -- 135 triangles over an annulus twenty times
-// tier 0's area -- so its outer edge is the first knob to turn if this has to
-// come down, well before the density is.
+// 70k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. It was 131k
+// before two changes this session, and both of them are visible in that table:
+// the crown bundle took tier 1 from ~130 triangles a tree to 60 (-22k), and the
+// one-triangle card halved the far band (-39k).
+//
+// THE FAR BAND IS NOW 56% OF THE FOREST and there is no third halving in it --
+// one triangle is the floor for one tree. What takes it further is a clump card,
+// one picture per patch of canopy rather than per tree, which is the named next
+// piece below. Tier 1 is second at 27%, and its outer edge is the knob to turn
+// before the density is, the annulus being twenty times tier 0's area.
 //
 // THE CROSS TIER IS FREE IN EVERYTHING BUT TRIANGLES, and cheap in those. Both
 // card tiers hang on the SAME baked impostor layer -- one photograph per species
 // -- so the cross costs no second bake, no duplicate texture layer and no
-// texture memory. It costs ~7k triangles, because the 45-100 m annulus holds
+// texture memory. It costs 7.4k triangles, because the 45-100 m annulus holds
 // about a thousand trees where the far field holds forty thousand; putting the
-// cross at 1500 m instead would cost 80k. That asymmetry is the whole reason
+// cross at 1500 m instead would cost 240k. That asymmetry is the whole reason
 // the ladder splits here rather than anywhere else.
 //
 // WHAT THE CROSS BUYS is depth, and it matters most in the headset. A billboard
@@ -151,9 +172,10 @@ import {
 // the eye to notice. Three planes carry real disparity between them. Past 100 m
 // the tree is small enough that it stops reading and the triangle count starts.
 //
-// HOW THE SHADER TELLS THEM APART on one layer: by the vertex normal. A card
-// meant to be spun is authored with a vertical normal, a fixed cross keeps its
-// planes' horizontal ones, and billboardVertex masks on both. See tree-bank.js.
+// HOW THE SHADER TELLS THEM APART on one layer: by the vertex normal, and not
+// by the corner count -- billboardVertex never sees how many vertices a geometry
+// has. A card meant to be spun is authored with a vertical normal, a fixed cross
+// keeps its planes' horizontal ones, and it masks on both. See tree-bank.js.
 //
 // WHAT IS STILL NOT BUILT: forest clump cards (DESIGN.md §5 has a row for them
 // which reads "not built"). One card depicting a patch of canopy instead of one
@@ -175,7 +197,7 @@ const DENSITY = 0.05
 // Metres. Inside this every tree stands. Past it the density is scaled by
 // FULL_RADIUS / d. It wants to be comfortably past the last mesh band, so the
 // forest you walk through and look across is uniform and the thinning only
-// starts where a tree is already a two-triangle card.
+// starts where a tree is already a one-triangle card.
 const FULL_RADIUS = 80
 
 // Metres. Tier 0 inside 10, LOD1 mesh to 45, crossed card to 100, billboard out
@@ -185,6 +207,44 @@ const FULL_RADIUS = 80
 // no disparity across its own surface. Past 100 m it stops mattering and the
 // billboard's 2 triangles against the cross's 6 start to.
 const LOD_BANDS = [10, 45, 100]
+
+// The band test measures to a tree's ROOT, and a tree is not at its root -- it
+// is nine metres of canopy standing on it. So the sphere is centred low, and
+// height reads as distance: step onto a ledge level with a nearby crown and the
+// vertical leg alone eats most of the 10 m budget. You can be closer to the tree
+// than a player standing at its foot and still be handed the coarser tier, while
+// your face is in the leaves. On foot this never comes up, which is why the
+// bands measured fine when they were tuned; on a ledge or in the air it is the
+// first thing you see.
+//
+// So squash the vertical leg before it is squared, which stretches every band
+// into an ellipsoid 1/Y_SQUASH times as tall as it is wide. Half means you may
+// be twice as far up. It costs ONE MULTIPLY per near instance per frame, stays
+// in squared space with no sqrt, and is a strictly shrinking map on d2 -- it can
+// only ever promote an instance to a finer tier, so no tile can be pulled out of
+// the near set by it and no other test in this file has to learn about it.
+//
+// AT GROUND LEVEL IT DOES ALMOST NOTHING, which is the property that makes it
+// safe to land without re-tuning the bands: eye height over a tree's root is a
+// metre or two, and at 2 m the tightest band widens from a 9.80 m disc to a
+// 9.95 m one, 1.6%. At 45 and 100 m it is under a tenth of a percent. The
+// ellipsoid meets the ground plane in very nearly the same disc the sphere did.
+// It only opens up where the sphere was wrong.
+//
+// IT CANNOT COST MORE THAN THE GROUND CASE, which is what makes it safe to ship
+// without re-deriving the ladder's instance counts. A band's population is the
+// area of its horizontal cross-section through the ellipsoid, and that section
+// is WIDEST AT ZERO ALTITUDE and shrinks from there: at height y the tier-0 disc
+// has radius sqrt(10^2 - (y/2)^2), which is 10 m on the ground, 8.7 m at 10 m
+// up, and gone by 20 m. So the 10 / 313 instance counts in the ladder above are
+// the maximum, not a typical case, and climbing only ever moves trees to
+// coarser tiers. The stretch buys back a tier the old test wrongly took away; it
+// never hands out a tier the old test would have refused on the ground.
+//
+// TREES ONLY. Grass and rocks are ankle-high and sit at their own root, so their
+// spheres are centred on the thing they measure and there is nothing to correct;
+// this constant is deliberately local to this file rather than shared out.
+const Y_SQUASH = 0.5
 
 // Ceilings on the cross-dissolve, in instances. FADE_MAX_INFLIGHT bounds the
 // work `_sweepFades` does per frame and the extra geometry the batch draws;
@@ -594,7 +654,9 @@ export class Trees {
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
         const ex = this.instX[i] - camX
-        const ey = this.instY[i] - camY
+        // Y_SQUASH is the whole vertical correction: the bands are ellipsoids,
+        // not spheres, because instY is the tree's root and the tree is not.
+        const ey = (this.instY[i] - camY) * Y_SQUASH
         const ez = this.instZ[i] - camZ
         const d2 = ex * ex + ey * ey + ez * ez
         const cur = this.tierAt[i]
@@ -1051,4 +1113,24 @@ export class Trees {
 
 function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v
+}
+
+/**
+ * The tuning, in one object, so scripts/check-trees.mjs gates THESE NUMBERS
+ * rather than a copy of them that drifts the first time one is changed. Nothing
+ * in the render path reads it -- the class uses the module constants directly.
+ * Same arrangement, and for the same reason, as grass.js's GRASS_TUNING.
+ */
+export const TREE_TUNING = {
+  DENSITY,
+  FULL_RADIUS,
+  DRAW_RADIUS,
+  LOD_BANDS,
+  LOD_HYSTERESIS,
+  Y_SQUASH,
+  TILE,
+  QUANT,
+  NEAR_MARGIN,
+  PLACEMENT,
+  PLACEMENT_CELL,
 }

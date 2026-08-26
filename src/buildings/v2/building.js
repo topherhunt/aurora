@@ -3,7 +3,7 @@ import {
   Builder, WALL_STYLE, TINT, member2, gableEnd, leanEnd,
   plinth, doorway, steps2, SMOOTH_LAYERS,
   wall2, planGableRoof, planLeanRoof, drawRoof, windowUnit2, chimney2, porch2,
-  clearUnder, doorHeight, wallOpenings,
+  clearUnder, doorHeight, wallOpenings, dormer2, hash,
 } from './parts.js'
 import { makeCharacter, makeWarp, warpBuilder, smoothNormals } from './warp.js'
 import { windowHalfWidth } from '../plan.js'
@@ -64,7 +64,7 @@ const ROOF_OF = {
  * shipping default, and the previewer's slider runs past it so a value can be
  * chosen by looking rather than by arguing.
  *
- * Returns { geometry, triangles, plan, character }.
+ * Returns { geometry, triangles, plan, character, dormers }.
  */
 export function buildBuilding2(plan, { detail = 2, strength = 1, character = null, smoothAngle = 78 } = {}) {
   const b = new Builder()
@@ -85,6 +85,11 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   // cache their warped selves against it.
   const warp = makeWarp(k, plan.plinthBottom)
 
+  // Where each dormer ended up seated, filled in below and handed back unwarped:
+  // the gate needs to walk up to a dormer and measure it, and finding one in a
+  // finished vertex array means looking for a shape rather than for a thing.
+  const dormerSeats = []
+
   const finish = () => {
     // The lean is measured from the bottom of the plinth, so a building on a
     // deep footing leans from its footing rather than from the world origin --
@@ -103,7 +108,7 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
     // a stack of prisms.
     smoothNormals(b, { angle: smoothAngle, layers: SMOOTH_LAYERS })
     const geometry = b.toGeometry()
-    return { geometry, triangles: b.triangles, plan, character: k }
+    return { geometry, triangles: b.triangles, plan, character: k, dormers: dormerSeats }
   }
 
   /**
@@ -314,6 +319,70 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   // After the walls, on purpose: the covering oversails the joint on all four
   // sides, so drawing it last is what hides the 4 cm the walls stop short by.
   for (const m of plan.masses) drawRoof(b, roofs.get(m.id))
+
+  // --- dormers -------------------------------------------------------------
+  //
+  // MOST ROOFS HAVE NONE, and that is the whole design of the term. A dormer is
+  // a strong, specific thing to say about a building -- there is a room up
+  // there, and somebody wanted to see out of it -- and a village where every
+  // roof says it has said nothing. Five sides in six draw a blank, so about a
+  // third of buildings end up with at least one and a few carry two on one
+  // pitch.
+  //
+  // Everything that could already be standing in that piece of roof gets a
+  // veto, and each veto is asked of the geometry rather than of the plan:
+  // the chimney by distance, and any OTHER mass's covering by asking it how low
+  // it hangs over the seat. That second one is what keeps a dormer from growing
+  // straight into the valley where a wing dies into the main range.
+  //
+  // TWO PER BUILDING, whatever the dice say. An inn has three masses and six
+  // pitches to roll on, and its worst case without a cap is twelve of these --
+  // which is 600 triangles on the largest kind in the kit, and stops reading as
+  // a house with a room in the roof long before that.
+  for (const m of plan.masses) {
+    if (m.roof.kind !== 'gable') continue
+    const alongX = m.ridgeAxis === 'x'
+    const alongHalf = (alongX ? m.w : m.d) / 2
+    const runHalf = (alongX ? m.d : m.w) / 2
+    // A stub 1.1 m wide needs a wall to stand on either side of it, and it has
+    // to get far enough up the slope for the covering to close over its back.
+    if (alongHalf < 1.6 || runHalf < 1.7) continue
+    const R = roofs.get(m.id)
+    const dSeed = plan.seed * 71 + m.id * 13
+    for (const side of [-1, 1]) {
+      const u = hash(dSeed, side > 0 ? 1 : 2)
+      const n = u < 0.833 ? 0 : (u < 0.945 ? 1 : 2)
+      for (let i = 0; i < n && dormerSeats.length < 2; i++) {
+        // Two of them stand either side of the middle; one stands where the
+        // seed puts it. Never within a stub's width of a gable end, where the
+        // verge is and where the roof is busiest.
+        const room = alongHalf - 0.95
+        const jit = (hash(dSeed, side * 7 + i * 3 + 20) - 0.5) * 2
+        const a = n === 2 ? (i === 0 ? -1 : 1) * room * (0.5 + jit * 0.18) : jit * room * 0.75
+        // Set back from the wall plane so the eave of the main roof, its fringe
+        // and its verge all stay clear in front of the stub.
+        const c = side * (runHalf - 0.3)
+        const x = alongX ? m.cx + a : m.cx + c
+        const z = alongX ? m.cz + c : m.cz + a
+        const nx = alongX ? 0 : side
+        const nz = alongX ? side : 0
+        if (Math.hypot(x - plan.chimney.x, z - plan.chimney.z) < 1.15) continue
+        let blocked = false
+        for (const [id, other] of roofs) {
+          if (id === m.id) continue
+          const over = other.coverAt(x, z)
+          if (over !== null && over < R.heightAt(x, z) + 2) blocked = true
+        }
+        if (blocked) continue
+        const seat = dormer2(b, {
+          x, z, nx, nz, sheetAt: R.heightAt, ridgeLimit: runHalf - 0.6,
+          layer: roofSpec.layer, color: R.color, detail, k,
+          seed: plan.seed * 31 + m.id * 5 + (side > 0 ? 1 : 2) * 3 + i,
+        })
+        if (seat) dormerSeats.push({ ...seat, massId: m.id, sheetAt: R.heightAt })
+      }
+    }
+  }
 
   // --- attachments ---------------------------------------------------------
   chimney2(b, { ...plan.chimney, seed: plan.seed * 53 + 5, detail, k })

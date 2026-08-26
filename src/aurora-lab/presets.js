@@ -95,6 +95,11 @@ const REFERENCE_V1 = {
     seed: 1,
     visible: true,
     warpStages: 2,
+    // Neither of these existed when the sky was pinned, because the aurora was
+    // drawn straight to the canvas. 1 is therefore what it WAS -- a true bypass
+    // -- and not a new opinion, exactly as with warpStages above.
+    lowRes: 1,
+    lowBlur: 1.0,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +129,18 @@ const REFERENCE_V1 = {
 //     cost; below 12 the hem's knife edge starts to crawl as you turn, which is
 //     a different and much worse artefact than grain.
 //
+//     Grain is not the whole of it, and this preset shipped before the rest was
+//     measured. Where a channel is thin the variance is large enough that a
+//     pixel can miss the channel altogether while its neighbour hits it three
+//     times, which reads as DARK SPECKLE on bright ground rather than as
+//     symmetric noise -- the "littered with black pixels" complaint. Counted as
+//     pixels below half the mean of their own eight neighbours, per thousand
+//     bright pixels: 0.0 at 40 steps, 0.4 at 20, 3.5 at 16, 17.7 at 12. It
+//     quadruples per halving, and setting dither to 0 takes it to 0.0 at every
+//     step count, which is the proof that it is variance and not a bug -- there
+//     is no NaN path in the shader, since every pow() base is a sat() or an abs()
+//     and vnoise2 is a mix of hash21 values so it cannot leave 0..1.
+//
 //   warpStages 2 -> 1. Six gradient-noise lookups per step, about 30% of what
 //     remains. Costs the curdled marbling INSIDE a meander; keeps the meander,
 //     because the first stage is what bends the channels.
@@ -139,9 +156,19 @@ const REFERENCE_V1 = {
 //     They are compensation: one stage of warp displaces less than two, and a
 //     smoother field needs a harder threshold to keep its edges.
 //
-//   resScale 0.7 is a starting point for a headset, not a measurement. It is
-//     the knob to move first if this is still short of frame rate, because it
-//     is the only one that scales the whole shader linearly.
+//   lowRes 4 is the largest single saving in this file and the one to reach for
+//     first, because it is the only lever that costs no structure at all. The
+//     aurora is drawn into a buffer a quarter the size on each axis and blurred
+//     back up, which is a sixteenth of the fragments; measured drift from the
+//     reference frame across divisors 1, 2, 4, 6 and 10 stays flat at about 5.7
+//     levels of green -- all of which is this preset's PARAMETER cuts and none
+//     of which is the resolution. It also takes the speckle above to zero at
+//     every divisor, so the two complaints have one answer.
+//
+//   resScale 0.7 composes with the divisor rather than competing with it: the
+//     aurora ends up drawn at 0.7/4 of native in each axis, about a thirty-third
+//     of the fragments, while the stars and the ridge stay at 0.7. It is a
+//     starting point for a headset, not a measurement.
 const FAST = {
   ...REFERENCE_V1,
   steps: 20,
@@ -150,6 +177,41 @@ const FAST = {
   leyWarp: 1.85,
   sharp: 1.95,
   resScale: 0.7,
+  lowRes: 4,
+}
+
+// ---------------------------------------------------------------------------
+// What the measurement actually recommends, which is not what `fast` does.
+//
+// `fast` was built before the offscreen buffer existed, so every saving in it
+// had to come out of the shader, and all of them cost something visible. Once
+// the aurora can be drawn small the arithmetic inverts: fill rate is so much
+// cheaper that the right move is to spend it back on the one thing that removes
+// the artefact rather than hides it. This preset is therefore the PINNED sky,
+// untouched -- two warp stages, patchiness on, every optional term where the
+// reference put it -- with the step count raised well above the reference's and
+// the whole thing drawn into a sixth-size buffer.
+//
+// Measured against the reference frame, at 480x300:
+//
+//                                speckle   grain   drift   fill
+//   reference-v1                   0.0      0.67     --     1.000
+//   fast (20 steps, full res)      0.4      2.59    5.89    1.000
+//   this (64 steps, 1/6 buffer)    0.0      0.31    0.80    0.044
+//
+// Cleaner than the reference on both artefact measures, 0.8 levels of green
+// away from it in structure, at 4.4% of its cost.
+//
+// The divisor is the number to be careful with, and 6 is not a universal
+// answer: what governs whether the rays survive is the buffer's ABSOLUTE size,
+// not the ratio, so a sixth of a 480-wide probe canvas is 80 px and loses them
+// while a sixth of a 2560-wide display is 427 px and does not. Aim to keep the
+// buffer somewhere around 250-400 px wide and set the divisor from that.
+const LOWRES = {
+  ...REFERENCE_V1,
+  steps: 64,
+  lowRes: 6,
+  lowBlur: 1.0,
 }
 
 export const BUILTIN_PRESETS = [
@@ -164,6 +226,12 @@ export const BUILTIN_PRESETS = [
     note: 'the same sky at about a third of the noise lookups, for a headset',
     algorithm: 'leyline',
     values: FAST,
+  },
+  {
+    name: 'lowres',
+    note: 'the pinned sky at 4.4% of its cost, and cleaner than the original',
+    algorithm: 'leyline',
+    values: LOWRES,
   },
 ]
 

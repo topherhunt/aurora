@@ -71,9 +71,23 @@
 import { LEYLINE } from './algo/leyline.js'
 import { FILAMENT } from './algo/filament.js'
 import { WEAVE } from './algo/weave.js'
+import { SINE } from './algo/sine.js'
+import { RIBBON } from './algo/ribbon.js'
+import { LUT } from './algo/lut.js'
 import { BACKDROP_PARAMS } from './backdrop.js'
 
-export const ALGORITHMS = [ LEYLINE, WEAVE, FILAMENT ]
+// Ordered cheapest-looking-first is tempting and wrong: the list is the order
+// they appear in the dropdown, and `leyline` has to stay at the head of it
+// because it is the reference the others are judged against. The cheap
+// candidates sit next to it so an A/B is one click rather than a scroll.
+//
+// The three after it are the three different answers to "make this cheaper",
+// and they are next to each other because the interesting comparison is between
+// THEM rather than each against the reference: `sine` replaces the noise basis
+// with sums of sines, `ribbon` replaces the infinite contour family with six
+// explicit curves, and `lut` keeps leyline exactly and reads its noise out of a
+// texture. They fail in different directions and on different hardware.
+export const ALGORITHMS = [ LEYLINE, SINE, RIBBON, LUT, WEAVE, FILAMENT ]
 
 export const DEFAULT_ALGORITHM = 'leyline'
 
@@ -446,6 +460,18 @@ export const SHARED_GROUPS = [
         label: 'warp stages',
         hint: 'How many times the domain warp is applied, and the single most expensive number here: each stage is six gradient-noise lookups PER MARCH STEP, so going from two to one is close to a 30% saving on the whole shader. One stage still bends the channels -- that is what the first stage does -- it just loses the curdled marbling inside a bend. Take this to 1 before you touch steps.',
         type: 'float', min: 1, max: 2, step: 1, value: 2,
+      },
+      {
+        key: 'lowRes',
+        label: 'low-res divisor',
+        hint: 'Renders the aurora into an offscreen buffer this many times smaller in each axis and blurs it back up, so fragment cost falls as the SQUARE of it: 2 is a quarter of the work, 4 a sixteenth, 6 a thirty-sixth. It is the only knob on this panel that changes how finely the sky is sampled without changing what is drawn, and on a sky made of soft gradients that is very nearly free -- measured drift from the pinned reference at a divisor of 6 with 64 steps is 0.8 levels out of 255. 1 is a true bypass, straight to the canvas with no buffer at all, so put it back to 1 before judging anything else here.',
+        type: 'float', min: 1, max: 10, step: 1, value: 1, uniform: false,
+      },
+      {
+        key: 'lowBlur',
+        label: 'upscale blur',
+        hint: 'Radius of the tent filter applied on the way back up, measured in TEXELS OF THE LOW-RES BUFFER rather than screen pixels, so the amount of softening stays put as the divisor moves. Together with the hardware bilinear this is what removes the speckle the march dither leaves behind: the count of pixels darker than half their own neighbourhood goes from 0.4 per thousand to zero. Past about 1.5 it starts eating channel edges as well as noise.',
+        type: 'float', min: 0, max: 3, step: 0.05, value: 1.00, uniform: false,
       },
     ],
   },

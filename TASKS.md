@@ -7,7 +7,13 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - <https://polyhaven.com/>
   - https://www.opensource3dassets.com/en
   - [Stone textures](https://seamless-pixels.blogspot.com/2012/09/free-seamless-stone-textures.html)
-- Itnernal links
+- Internal tools
+  - https://192.168.178.75:5173/gen-tree
+  - https://192.168.178.75:5173/gen-fern
+  - https://192.168.178.75:5173/gen-rock
+  - https://192.168.178.75:5173/gen-deadwood
+  - https://192.168.178.75:5173/gen-mushroom
+  - https://192.168.178.75:5173/gen-building-v2
   - <https://192.168.178.75:5173/test-aurora>
 - Process for setting up a procedural asset:
   - Find a good basic texture asset
@@ -20,13 +26,17 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Procedural trees:
 
   - [ ] Mossy trunks (shader slider like on rock)
+
   - [ ] different sizes heights, populated into the world, incl bushes. And randomly vary the height more -- currently the forest reads as pretty uniform.
+
   - [ ] let's bake variants!! I'm thinking of these combinatorial variations (and as with ferns, each variant should be a different seed\
     roll):
+
     - 3 heights (default, 2/3 default young, 1/3 default sapling)
     - firstBranch: \[default, or default / 2\]
 
     Bushes also need variants: 2 sizes x 2 random seed rolls each.
+
   - [ ] Angle each leaf card by 20-70 deg up or down so no card is flat?
 
 - [ ] Leaf atlas and lichen atlas - scatter onto boulders & forest floor. (Moss is done for boulders -- see the moss bullet under nature props; trunks are the next entry in `MOSS_LAYERS` and need a height cue first.)
@@ -70,7 +80,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 - [ ] Wild creatures roaming around, walking or running or flying (songbirds, eagles, deer, mythic creatures). They pause and turn to look at you when you get close
 
-- [ ] 
+- \[ \]
 
 - [ ] Fog
 

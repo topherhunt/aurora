@@ -16,6 +16,7 @@
 <script type="module">
 import * as THREE from 'three'
 import { AuroraScreen } from '/src/aurora-lab/screen.js'
+import { LowResAurora } from '/src/aurora-lab/lowres.js'
 import { ALGORITHMS, defaultsFor } from '/src/aurora-lab/algorithms.js'
 import { BUILTIN_PRESETS } from '/src/aurora-lab/presets.js'
 
@@ -139,19 +140,34 @@ trial('belt far out (offset -1500)', 'leyline', { beltOffset: -1500, beltWidth: 
   }
 }
 
-// ---- the shipped presets, and a picture of each
 const shots = document.getElementById('shots')
+function capture(name) {
+  const d = document.createElement('div')
+  d.className = 'shot'
+  d.dataset.algo = name
+  d.textContent = canvas.toDataURL('image/png')
+  shots.appendChild(d)
+}
+
+// ---- a picture of every algorithm at its own defaults. The cheap candidates
+// are only worth having if they still read as an aurora, and that is not a
+// question any assertion in this file can answer -- so the probe's job is to
+// produce the frames and get out of the way.
+for (const a of ALGORITHMS) {
+  screen.setAlgorithm(a.id)
+  screen.setValues(defaultsFor(a.id))
+  frame(6.0)
+  capture('algo-' + a.id)
+}
+
+// ---- the shipped presets, and a picture of each
 for (const p of BUILTIN_PRESETS) {
   const before = shaderErrors
   screen.setAlgorithm(p.algorithm)
   screen.setValues(p.values)
   frame(6.0)
   say((shaderErrors === before ? '  ok   ' : ' FAIL  ') + 'preset ' + p.name)
-  const d = document.createElement('div')
-  d.className = 'shot'
-  d.dataset.algo = p.name
-  d.textContent = canvas.toDataURL('image/png')
-  shots.appendChild(d)
+  capture(p.name)
 }
 
 // ---- how much of the sky the northern sector removes. Counted over
@@ -172,6 +188,58 @@ for (const p of BUILTIN_PRESETS) {
   say('')
   say('sky directions above the horizon: ' + total)
   say('  inside the northern sector:     ' + inSector + '  (' + (100 * inSector / total).toFixed(1) + '%)')
+}
+
+// ---- the low-res composite, which is the one shader in the lab that nothing
+// else here ever links. It is a different program from the raymarch -- its own
+// material, its own colorspace_fragment include, a loop whose bounds come from
+// a `defines` constant -- so a typo in it would otherwise surface as a black
+// sky the first time somebody moved the divisor off 1.
+{
+  const lowres = new LowResAurora(renderer, screen)
+  scene.add(lowres.mesh)
+  lowres.setSize(480, 300)
+  screen.setAlgorithm('leyline')
+  screen.setValues(defaultsFor('leyline'))
+  say('')
+  const gl = renderer.getContext()
+  const px = new Uint8Array(480 * 300 * 4)
+  for (const [div, blur] of [[1, 1.0], [2, 1.0], [4, 1.0], [4, 0.0], [6, 1.5], [10, 3.0]]) {
+    const before = shaderErrors
+    lowres.setDiv(div)
+    lowres.setBlur(blur)
+    screen.update(camera, 6.0)
+    lowres.render(camera)
+    renderer.render(scene, camera)
+    gl.readPixels(0, 0, 480, 300, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    let lit = 0
+    for (let i = 0; i < px.length; i += 4) if (px[i] + px[i + 1] + px[i + 2] > 6) lit++
+    // A divisor that links but draws nothing is the failure this is really
+    // looking for: a wrong viewport rect or a stale material gives a clean
+    // compile and an empty sky, and only a lit-pixel count catches it.
+    const ok = shaderErrors === before && lit > 2000
+    say((ok ? '  ok   ' : ' FAIL  ') + 'lowres div ' + div + ', blur ' + blur.toFixed(1), lit + ' lit px')
+  }
+  // Changing algorithm disposes the screen's material, so anything holding a
+  // reference from construction time is now pointing at a disposed program.
+  // This is the regression test for that, and it must come after a div > 1 run.
+  {
+    const before = shaderErrors
+    lowres.setDiv(4)
+    screen.setAlgorithm('weave')
+    screen.setValues(defaultsFor('weave'))
+    screen.update(camera, 6.0)
+    lowres.render(camera)
+    renderer.render(scene, camera)
+    gl.readPixels(0, 0, 480, 300, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    let lit = 0
+    for (let i = 0; i < px.length; i += 4) if (px[i] + px[i + 1] + px[i + 2] > 6) lit++
+    say((shaderErrors === before && lit > 2000 ? '  ok   ' : ' FAIL  ') +
+        'lowres survives setAlgorithm disposing the material', lit + ' lit px')
+  }
+  lowres.setDiv(1)
+  lowres.dispose()
+  scene.remove(lowres.mesh)
 }
 
 say('')

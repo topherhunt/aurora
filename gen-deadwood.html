@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- procedural deadwood</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+
+      /* --- left: the controls ------------------------------------------ */
+      #panel {
+        flex: 0 0 310px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      .row { display: grid; grid-template-columns: 88px 1fr 46px; gap: 6px; align-items: center; margin-bottom: 3px; }
+      .row label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+      .row input[type=range] { width: 100%; padding: 0; background: none; border: none; }
+      .row .v { text-align: right; font-variant-numeric: tabular-nums; }
+
+      .pick { display: flex; gap: 6px; margin-bottom: 6px; }
+      .pick select { flex: 1 1 auto; }
+      #seedrow { display: flex; gap: 6px; margin-bottom: 8px; }
+      #seedrow input { flex: 1 1 auto; }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
+      #buttons button { flex: 1 1 auto; padding: 4px 6px; }
+
+      /* --- centre: viewport -------------------------------------------- */
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
+
+      /* --- right: the budget ------------------------------------------- */
+      /* overflow-y:auto computes overflow-x to `auto` as well, so ANY content
+         wider than 290px puts a horizontal scrollbar under the whole panel.
+         overflow-x:clip is the backstop; the table rules below are the fix. */
+      #budget {
+        flex: 0 0 310px; overflow-y: auto; overflow-x: clip; padding: 8px 10px;
+        border-left: 1px solid var(--edge); background: var(--panel);
+      }
+      /* auto layout, deliberately: the value column is nowrap numbers and should
+         take exactly what it needs, and the key column absorbs the rest. */
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 1px 0; vertical-align: baseline; overflow-wrap: break-word; }
+      td.k { color: var(--dim); }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      /* for value cells that are a sentence rather than a number */
+      td.n.wrap { white-space: normal; }
+      tr.here td { color: #eaf3ff; }
+      tr.here td.k::before { content: '\25B8\00a0'; }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .big { font-size: 15px; color: #eaf3ff; }
+      .ok { color: var(--good); } .warn { color: var(--warn); }
+      #swatch, #palette { width: 100%; image-rendering: pixelated; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">PROCEDURAL DEADWOOD</div>
+        <div class="s">snags and fallen logs; bark, rot, moss and snow</div>
+      </header>
+      <div id="controls">
+        <h2>variant</h2>
+        <div class="pick">
+          <button id="kindSnag" class="on" style="flex: 1 1 0">snag</button>
+          <button id="kindLog" style="flex: 1 1 0">fallen log</button>
+        </div>
+        <div class="pick"><select id="preset"></select></div>
+        <div class="pick"><select id="species"></select></div>
+        <div id="seedrow">
+          <input type="number" id="seed" value="1" min="0" step="1" />
+          <button id="reroll">reroll</button>
+        </div>
+        <div id="sliders"></div>
+      </div>
+      <div id="buttons">
+        <button id="gallery">gallery</button>
+        <button id="ladder">LOD ladder</button>
+        <button id="seasons">seasons</button>
+        <button id="pair">snag+log</button>
+        <button id="grid">grid</button>
+        <button id="wire">wireframe</button>
+        <button id="spin">spin</button>
+        <button id="reset">defaults</button>
+      </div>
+    </div>
+
+    <div id="stage"><div id="hint">drag to orbit &middot; scroll to zoom</div></div>
+
+    <div id="budget">
+      <h2>this piece</h2>
+      <table id="geo"></table>
+      <p class="note" id="geonote"></p>
+
+      <h2>the LOD ladder</h2>
+      <table id="ladderTable"></table>
+      <p class="note">Every tier is the <em>same swept surface</em> sampled on fewer sides and fewer rings. The radius is a pure function of (distance along the spine, angle around it), so a coarser tier asks that function for less and gets a plainer answer -- a tier change loses facets, it does not swap in a different log. That is why a snag is a far better LOD candidate than a rock: its silhouette is a near-cylinder, and a cylinder simplifies gracefully -- drop a rock from 12 sides to 6 and the outline develops corners nothing in nature has, drop a trunk and it stays a trunk. Switch distance assumes each triangle should stay above ~3&nbsp;px on a Quest 2 eye buffer (16.2&nbsp;px/&deg;), the same model the rock bench uses.</p>
+
+      <h2>the &sect;5 budget</h2>
+      <table id="budgetTable"></table>
+      <p class="note">DESIGN.md &sect;5's prop table has no row for dead wood; it files stumps and logs under <em>bush</em>, at <em>84 / 56 / 28</em> triangles for LOD0/1/2. This table holds the three tiers against those numbers. The row was written before this generator existed -- it was a guess at what a prop of this size costs, not a measurement of this one -- so a tier that runs over is a <em>conversation</em>, not automatically a bug. What it cannot be is an accident: if LOD0 wants 96 triangles because the break needs its jagged ring, that is a case somebody made, and &sect;5 gets edited to say so.</p>
+
+      <h2>bark, and what is left when it goes</h2>
+      <table id="rotTable"></table>
+      <p class="note" id="rotnote"></p>
+
+      <h2>moss and snow</h2>
+      <table id="weatherTable"></table>
+      <p class="note">Neither costs a triangle, and neither is a texture this page ships. Both are the one shared prop material's global uniforms (<em>src/material.js</em>), selected by TEXTURE LAYER -- so dead wood grows moss and catches snow because its bark and heartwood layers are named in <em>MOSS_LAYERS</em> and <em>SNOW_WOOD_LAYERS</em>, and for no other reason. Moss is a real second atlas fetch (LAYER.MOSS) because moss is nothing but grain: tint the bark green and you get green bark. It also <em>blends</em> rather than cutting over -- a colony thins into the wood across several centimetres, where snow has a genuine one-pixel rim and is drawn with one. Snow leans on which way a surface faces about twice as hard here as it does on foliage, which is the whole reason a fallen log whitens along its top first instead of frosting evenly. And moss carries a height cue measured from the <em>instance's own root</em>, not from world Y -- which is why a snag is green at the foot and clean at the break, while a log, whose whole length sits at root height, is mossy end to end.</p>
+
+      <h2>the wood layers</h2>
+      <canvas id="swatch" width="256" height="128"></canvas>
+      <p class="note" id="swatchnote"></p>
+
+      <h2>what ships</h2>
+      <table id="disk"></table>
+      <p class="note" id="disknote"></p>
+    </div>
+
+    <script type="module" src="/src/gen-deadwood-main.js"></script>
+  </body>
+</html>

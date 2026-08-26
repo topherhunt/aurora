@@ -21,7 +21,7 @@ import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
 import { Rocks } from './render/rocks.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
-import { setSnow, setMoss, setMossVary, setPropClock, setStripTiling, getStripTiling } from '../material.js'
+import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -515,7 +515,10 @@ async function bootWorld() {
   // is classified river / forest / cliff / peak off the field sample the
   // placement test already pays for, and both WHICH variants may stand there and
   // HOW MANY of them follow from that.
-  rocks = new Rocks(scene, height, waterSurfaces, propTextures, { seed: SEED, ground: terrain })
+  // The whole Layers again, and for the ferns' reason: a rock takes a hue cue
+  // from the terrain colour underfoot, which needs the snow band and the road
+  // flattening to reproduce what the chunk mesher painted.
+  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
@@ -538,11 +541,10 @@ async function bootWorld() {
   // snow band a few lines up.
   setSnow(1)
   setMoss(0.85)
-  // And spread unevenly from one rock to the next, which is the difference
-  // between a wood that has moss in it and a wood where every stone has been
-  // dipped in the same green. Off by default so /gen-rock's slider still means
-  // what it says; the world is the only thing that turns it on.
-  setMossVary(1)
+  // How unevenly each of the two is spread from one rock to the next is NOT set
+  // here: both ranges are stone-only knobs and Rocks.syncBands owns them, a few
+  // lines up. Setting them here as well would just be a second place to forget
+  // to change.
 
   // ONE loadImageLayers for all three, and the bakes hang off the same promise.
   // Separate calls would be separate decodes of the same PNGs into the same

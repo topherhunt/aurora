@@ -57,10 +57,19 @@ const SEEDS = Number(process.argv[2] ?? 300)
 // nets out to, measured, with the same margin v1's carried.
 //
 // A budget to be DEFENDED, not a number to raise whenever a part grows.
-const STRUCTURE_BUDGET = 2600
+//
+// IT MOVED ONCE, from 2600 to 2700, and this is the defence. Dormers are a new
+// PART, not an old one that swelled: a five-sided stub swept into the slope, 16
+// triangles, plus a shutterless window at 36. Fifty-two apiece, and a building
+// draws at most two whatever its dice say -- so the ceiling this raises is
+// bounded at 104 and cannot creep. The worst building in the corpus measures
+// 2608 with both of them on it; everything else has room already. The constraint
+// this number is a proxy for is the village allotment at the bottom of §4, which
+// is 2,750 a building, and that still passes with 142 to spare.
+const STRUCTURE_BUDGET = 2700
 // Detail 1: the macro structure with the bevelling, rounding and 3D joinery
 // gone. The design target is an eighth of detail 2. Measured, the mean lands at
-// 0.143 -- close to a seventh -- and the gate is set above that rather than at
+// 0.134 -- close to a seventh -- and the gate is set above that rather than at
 // the target, for a reason worth writing down.
 //
 // THE FLOOR IS THE WINDOWS. A detail-1 window is three flat rectangles: frame,
@@ -558,9 +567,17 @@ for (const strength of [0, 1]) {
         const layer = lay[idx[t]]
         if (COVER_LAYERS.has(layer)) { cover.push(tri); continue }
         if (layer === LAYER.DOOR || TIMBERS.has(layer)) {
-          // The surround: everything of the door's own that stands in its footprint.
+          // The surround: everything of the door's own that stands in its
+          // footprint. BOUNDED IN HEIGHT as well as in plan, because the
+          // footprint is a column that runs to the sky and other things stand in
+          // it -- a dormer's window frame sits a couple of metres above the door
+          // and half a metre back, and the warp is enough to swing it into the
+          // band. The drawn surround never reaches past the head of the planned
+          // opening plus its own frame; anything above that belongs to something
+          // else and answers to its own gate.
           if (tri.every((p) => Math.abs(aOf(p)) < d.width / 2 + 0.18
-            && oOf(p) > -0.09 && oOf(p) < 0.19)) {
+            && oOf(p) > -0.09 && oOf(p) < 0.19
+            && p[1] < d.y0 + d.height + 0.45)) {
             for (const p of tri) if (p[1] > top) { top = p[1]; tx = p[0]; tz = p[2] }
           }
         }
@@ -717,6 +734,19 @@ function componentsOf(g) {
 }
 
 /** Möller-Trumbore, double sided, forward hits only. */
+/** A triangle's unit normal, either way up. */
+function triNormal([a, b, c]) {
+  const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+  const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]
+  const n = [
+    e1[1] * e2[2] - e1[2] * e2[1],
+    e1[2] * e2[0] - e1[0] * e2[2],
+    e1[0] * e2[1] - e1[1] * e2[0],
+  ]
+  const l = Math.hypot(n[0], n[1], n[2]) || 1
+  return [n[0] / l, n[1] / l, n[2] / l]
+}
+
 function hitT(tri, o, d) {
   const [a, b, c] = tri
   const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
@@ -874,11 +904,21 @@ const insideComp = (c, p) => {
           return t / comps.length
         })
         const panesHere = comps.filter((c) => c.layer === LAYER.GLASS && c.verts.size === 4)
-        planned += plan.windows.length
-        drawn += panesHere.length
         // Matched in PLAN, not in space: the duck only ever moves a window down
         // its own wall, so a pane still stands over the position it was planned
         // at even when it has slid half a metre.
+        //
+        // COUNTED THROUGH THE MATCH rather than by counting panes, because not
+        // every pane on the building is a planned window: a dormer carries one
+        // that plan.js has never heard of, and counting glass would let a
+        // building that dropped a window off its wall and grew one in its roof
+        // report as having lost nothing.
+        const near = (wn) => panesHere.some((c) => {
+          const cm = [0, 2].map((a) => (c.lo[a] + c.hi[a]) / 2)
+          return Math.hypot(cm[0] - wn.x, cm[1] - wn.z) < 0.4
+        })
+        planned += plan.windows.length
+        drawn += plan.windows.filter(near).length
         const fronts = plan.windows.filter((wn) => wn.side === 'front' && wn.massId === 0)
         if (fronts.length && !fronts.some((wn) => panesHere.some((c) => {
           const cm = [0, 2].map((a) => (c.lo[a] + c.hi[a]) / 2)
@@ -932,6 +972,18 @@ const insideComp = (c, p) => {
               for (const c of above) {
                 if (o[0] < c.lo[0] || o[0] > c.hi[0] || o[2] < c.lo[2] || o[2] > c.hi[2]) continue
                 for (const tri of c.tris) {
+                  // ONLY FACES THAT ACTUALLY LIE OVER THE WINDOW. A plumb ray
+                  // started 9 cm off the glass grazes any near-vertical face
+                  // standing in front of it -- the neighbouring wing's end wall
+                  // on an ell, six centimetres away and leaning a couple of
+                  // degrees out of plumb under the warp -- and reads a
+                  // centimetre of headroom off it. That measures how far the
+                  // window stands from a WALL, which is a different complaint
+                  // from this one and would be answered by moving the window
+                  // sideways, not down. Everything this gate is actually about
+                  // is roughly horizontal: a roof sheet at a 50 degree pitch has
+                  // |ny| 0.64, a plate soffit or a log course 1.0.
+                  if (Math.abs(triNormal(tri)[1]) < 0.2) continue
                   const d = hitT(tri, o, [0, 1, 0])
                   if (d > 0 && d < hit) hit = d
                 }
@@ -951,6 +1003,246 @@ const insideComp = (c, p) => {
       : `worst ${worst[0] === Infinity ? 'open sky' : `${worst[0].toFixed(3)} m (${worst[1]})`}, ${panes} windows`)
   check(drawn > planned * 0.9 && blankFront <= BLANK_FRONTS, 'and the band costs few enough windows to be worth it',
     `${planned - drawn} of ${planned} dropped, ${blankFront} buildings left with a blank front`)
+}
+
+// ---------------------------------------------------------------------------
+// 3c. The rake, and how far it diverges from the wall under it.
+// ---------------------------------------------------------------------------
+//
+// THE THING BEING GATED IS A LOOK, and it is the one warp term whose absence is
+// completely invisible to everything else here. A rake cut exactly parallel to
+// the gable wall under it is a perfectly good roof: airtight, positively wound,
+// inside budget, letting no daylight in, and it is what the whole village had
+// before `vergeSplay` existed. Not one gate above would notice it coming back.
+// So the divergence is measured over the corpus, and BOTH halves of the
+// intended distribution are held -- most buildings splay, a few do not, and the
+// few are on purpose.
+//
+// MEASURED OFF THE SURFACE, NOT OFF THE FORMULA. A gate that recomputed
+// warp.js's `vergeSplay` draw and checked that planGableRoof had multiplied it
+// by the run would prove that two copies of one expression agree, which is
+// worth nothing at all. What is asked here instead is the question the eye asks
+// from the street: how far does the sheet hang past the gable end wall at the
+// TOP of the rake, and how far at the BOTTOM. Both numbers are read off
+// `slopeSurface`'s own grid, which is the array `drawRoof` turns straight into
+// quads, so what is measured is the roof that gets drawn.
+//
+// THE MAIN MASS ONLY, and that is a deliberate scope rather than a shortcut. A
+// wing's verge is not free: building.js's wingVerge() works out how far a
+// cross-wing has to oversail to die into the range's slope, hands planGableRoof
+// an explicit `vergeLo`/`vergeHi`, and planGableRoof zeroes the splay on that
+// end because a character term that shortened a functional verge would open the
+// valley. A wing's rake is therefore parallel BY DESIGN, and averaging wings in
+// would measure how many ells the corpus happens to contain rather than how
+// much splay the term produces. Mass 0 is the one every building has and the
+// one whose verges are always the free ones.
+//
+// THE ANCHOR IS THE INVARIANT. `splayAt` in parts.js is anchored on whichever
+// end of the rake keeps the nominal verge rather than centred on it, precisely
+// so that half of a large splay is never subtracted from a verge only 0.3 m
+// deep. Centred, it would end the sheet INSIDE the gable wall on the seeds
+// where the term is doing the most work, and a covering that stops short of the
+// wall it covers is a slot of daylight rather than a look -- the same failure
+// section 2 is built around, arriving from the other direction. That is a claim
+// about arithmetic nobody can see, so the whole rake is walked and the closest
+// it ever comes to the wall plane is reported. Sampling its vertices is EXACT
+// rather than a sample: the rake is a polyline through those points and the
+// wall plane is a constant, so the minimum over the polyline is the minimum
+// over its vertices.
+
+console.log('\nthe rake')
+
+{
+  // What counts as READABLE, in metres of difference between the two ends of
+  // one rake. The corpus turns out to be sharply bimodal with an empty gap in
+  // the middle of it: the ruled group runs from 0.036 to 0.083 m and the
+  // splayed group starts at 0.250 and reaches 1.211, so this is set mid-gap,
+  // where any cut from 0.09 to 0.24 would sort the corpus identically and the
+  // classification cannot be turned over by one unlucky hut landing near the
+  // line. 0.15 m of divergence off a verge only 0.3 m deep is half again as
+  // much oversail at one end of the rake as at the other, which is well past
+  // what the eye needs to see that the line is not parallel to the wall under
+  // it.
+  const READABLE = 0.15
+  // And how much of the village has to have it. Measured: 192 of 240 splay, 48
+  // are ruled. The gate is the INTENT -- most, and some -- with both bands set
+  // well clear of what was measured, because these are draws from a die and 240
+  // buildings is not a large sample of it. What should fail here is a change to
+  // the odds or to the anchoring, not an unlucky seed.
+  //
+  // The ruled share has a FLOOR as well as a ceiling, because it is a feature
+  // rather than a residue. warp.js draws it deliberately at about one building
+  // in four, and a village where every single roof flares reads as a mannerism
+  // instead of as character -- which is the same argument the eave `sway` term
+  // makes for itself, and the reason the sign and the size of the splay are
+  // drawn separately.
+  const MOST = 0.6
+  const RULED = [0.05, 0.4]
+
+  const rows = []
+  let closest = [Infinity, '']
+  for (const kind of Object.keys(KINDS)) {
+    for (let s = 1; s <= GEO_SEEDS; s++) {
+      const plan = planBuilding({ seed: s, kind, groundAt: slopeFor(s) })
+      const m = plan.masses[0]
+      if (m.roof.kind !== 'gable') continue
+      // Exactly the call building.js makes for mass 0. planRoofs() passes the
+      // plan's own overhang and a 0.3 verge, and wingVerge() returns an empty
+      // object for the main mass, so there is no spread argument to reproduce
+      // and nothing here restates a decision made over there. The covering's
+      // LAYER is the one argument not taken from the plan, and it cannot move a
+      // vertex: slopeSurface reads it for the tile size the UVs are divided by
+      // and for nothing else, and the grid it is sampled on comes from
+      // roofGrid(), which is handed a width and a run.
+      const k = makeCharacter(plan.seed, 1)
+      const R = planGableRoof({
+        cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
+        ridgeAxis: m.ridgeAxis, overhang: plan.overhang ?? 0.4, verge: 0.3,
+        layer: LAYER.THATCH, seed: plan.seed * 29 + m.id, detail: 2, k,
+      })
+      const alongX = m.ridgeAxis === 'x'
+      const alongHalf = (alongX ? m.w : m.d) / 2
+      const mid = alongX ? m.cx : m.cz
+      // How far past the gable end wall this sheet vertex hangs, positive
+      // outward. `sign` is which end of the roof the rake is, so both ends of
+      // both slopes answer one question with one sign and a retreat is always
+      // negative whichever gable it happens on.
+      const over = (p, sign) => sign * ((alongX ? p[0] : p[2]) - mid) - alongHalf
+      const tag = `${kind}/${s}`
+      let diverge = 0
+      for (const sl of R.slopes) {
+        const nv = sl.P.length - 1
+        const nu = sl.P[0].length - 1
+        for (const [i, sign] of [[0, -1], [nu, 1]]) {
+          // The two ends of the rake: row 0 is the eave tip, row nv is the top
+          // edge at the ridge. The MAX over the four rakes rather than any one
+          // of them, so a change that splayed only one gable of a roof would
+          // still be seen.
+          diverge = Math.max(diverge, Math.abs(over(sl.P[nv][i], sign) - over(sl.P[0][i], sign)))
+          for (let j = 0; j <= nv; j++) {
+            const o = over(sl.P[j][i], sign)
+            if (o < closest[0]) closest = [o, tag]
+          }
+        }
+      }
+      rows.push({ tag, diverge })
+    }
+  }
+
+  const splayed = rows.filter((r) => r.diverge >= READABLE)
+  const ruled = rows.length - splayed.length
+  const sorted = rows.map((r) => r.diverge).sort((a, b) => a - b)
+  const widest = rows.reduce((a, r) => (r.diverge > a.diverge ? r : a), rows[0])
+  check(splayed.length >= rows.length * MOST,
+    `most rakes diverge from the wall under them by ${READABLE} m or more`,
+    `${splayed.length} of ${rows.length}, median ${sorted[rows.length >> 1].toFixed(2)} m, widest ${widest.diverge.toFixed(2)} m (${widest.tag})`)
+  check(ruled >= rows.length * RULED[0] && ruled <= rows.length * RULED[1],
+    'and a few are ruled nearly flush, on purpose',
+    `${ruled} of ${rows.length} within ${READABLE} m of parallel, tightest ${sorted[0].toFixed(3)} m`)
+  check(closest[0] > 0, 'and no rake ever retreats inside the gable end wall',
+    `closest approach ${closest[0].toFixed(3)} m outside it (${closest[1]})`)
+}
+
+// ---------------------------------------------------------------------------
+// 3d. The dormer.
+// ---------------------------------------------------------------------------
+//
+// A dormer is a closed five-sided prism driven THROUGH the covering, which is
+// the same trick the chimney uses, and it fails the same silent way: the main
+// sheet has to climb and close over the BACK of the stub, and where it does
+// not, the back gablet stands out of the roof behind the dormer and is visible
+// from anywhere uphill of the building. Nothing else in this file can see that.
+// The stub is closed, the sheet is closed, the union of two closed shells is
+// closed, the winding is positive, the triangle budget has room, and the
+// daylight probe stands inside the room and never looks into the attic.
+//
+// dormer2() guarantees the clearance BY MARCHING rather than by arithmetic: it
+// walks `sheetAt` back into the slope in 12 cm steps until the covering has
+// climbed 0.22 m clear over the stub's apex, and draws nothing at all where
+// that never happens before the ridge. The pitch alone would be the wrong
+// judge, because the sag can be 40 cm and the buckle wanders. That march is
+// exact in the space the building is DRAWN in, so the only question left is
+// whether the WARP then erodes it -- and it can, because the field moves the
+// stub's back apex and the piece of sheet a metre above it by different
+// amounts. So both points go through the same displacement field the building
+// itself goes through, rebuilt from the character the build handed back, and
+// the clearance is measured on the far side of it.
+//
+// MEASURED FROM THE SEATS THE BUILD RETURNED, not from the vertex array.
+// buildBuilding2 hands back where it put every dormer, in unwarped plan
+// coordinates, along with the covering's own height function for that mass.
+// That is the difference between measuring the thing and hunting for a
+// five-sided shape among 2,600 triangles and hoping the one found is the one
+// meant.
+//
+// AND THE DISTRIBUTION, because a dormer is a strong and specific statement --
+// there is a room up there and somebody wanted to see out of it -- and a
+// village that makes it about every building has not made it. building.js rolls
+// a blank five sides in six per pitch and caps the building at two however the
+// dice fall. That cap is what the structure budget at the top of this file was
+// raised against, and a budget defended against a bound nobody measures is a
+// budget waiting to be surprised, so the bound is held here.
+
+console.log('\nthe dormer')
+
+{
+  // Measured over the corpus: 169 buildings with none, 44 with one, 27 with
+  // two, which is 71 of 240 carrying at least one. The band is deliberately
+  // wide for the same reason the rake's is: this is a die, not an invariant,
+  // and what should fail here is a change to the odds or to the vetoes rather
+  // than an unlucky corner of the seed space.
+  const CARRY = [0.18, 0.45]
+  // How much of dormer2's 0.22 m the warp is allowed to eat. It eats almost
+  // none of it: the worst seat in the corpus keeps 0.218 m, two millimetres
+  // under the unwarped guarantee, and the median keeps 0.30 m because the march
+  // overshoots by up to a step wherever the sheet is climbing fast. So the
+  // failure this is set against is not today's field getting slightly
+  // unluckier, it is the field getting STRONGER or the march getting coarser,
+  // and half the guarantee is far enough below the measurement to say that and
+  // still fail long before anything surfaces.
+  const KEEP = 0.12
+
+  const hist = new Map()
+  let buildings = 0
+  let carriers = 0
+  let seats = 0
+  let overCap = 0
+  let worst = [Infinity, '']
+  for (const kind of Object.keys(KINDS)) {
+    for (let s = 1; s <= GEO_SEEDS; s++) {
+      const plan = planBuilding({ seed: s, kind, groundAt: slopeFor(s) })
+      const built = buildBuilding2(plan, { detail: 2, strength: 1 })
+      const ds = built.dormers
+      buildings++
+      hist.set(ds.length, (hist.get(ds.length) ?? 0) + 1)
+      if (ds.length > 0) carriers++
+      if (ds.length > 2) overCap++
+      const warp = makeWarp(built.character, plan.plinthBottom)
+      for (const dm of ds) {
+        seats++
+        // The far end of the sweep, which is where the back gablet stands: the
+        // apex of the stub's section, and the point on the main covering
+        // directly over it. Warped as a PAIR and differenced afterwards,
+        // because each of them lands somewhere the other did not and the gap
+        // between the two is the entire question.
+        const bx = dm.x - dm.nx * dm.depth
+        const bz = dm.z - dm.nz * dm.depth
+        const apex = warp(bx, dm.faceY + dm.apexH, bz)
+        const sheet = warp(bx, dm.sheetAt(bx, bz), bz)
+        const clear = sheet[1] - apex[1]
+        if (clear < worst[0]) worst = [clear, `${kind}/${s}`]
+      }
+      built.geometry.dispose()
+    }
+  }
+
+  const spread = [...hist.entries()].sort((a, c) => a[0] - c[0]).map(([n, c]) => `${c} with ${n}`).join(', ')
+  check(carriers >= buildings * CARRY[0] && carriers <= buildings * CARRY[1] && overCap === 0,
+    'about a third of buildings carry a dormer, and none carries more than two',
+    `${carriers} of ${buildings} (${spread})`)
+  check(worst[0] > KEEP, 'and the covering closes over the back of every stub, warped',
+    worst[0] === Infinity ? 'no dormers drawn at all'
+      : `worst ${worst[0].toFixed(3)} m clear (${worst[1]}), ${seats} dormers`)
 }
 
 // ---------------------------------------------------------------------------

@@ -86,6 +86,46 @@ export class Heightmap {
     }
     this._min = lo
     this._max = hi
+    // The crease operator, or null. See attachCrease.
+    this._crease = null
+  }
+
+  /**
+   * A second Heightmap over the SAME texels, sharing the buffer rather than
+   * copying it -- so a sculpt through either is immediately visible in both, and
+   * the 4 MB stays one allocation.
+   *
+   * This exists so attachCrease below can never be a mutation of somebody else's
+   * object. One import is commonly read by several V2Height instances at once
+   * (the gate builds a dozen; the editor holds one beside the live world), and
+   * they share this by reference. Attaching an operator to it directly means the
+   * last field constructed silently decides what all the others are standing on
+   * -- which is exactly what happened, and it also fed a creased surface to a
+   * sibling's calibrateRough, so the knob changed a field that had it switched
+   * off. A view costs one min/max rescan and makes that unrepresentable.
+   */
+  view() {
+    return Heightmap.fromRaw({ width: this.width, height: this.height, data: this.field, meta: this.meta })
+  }
+
+  /**
+   * Swap in a reconstruction that KINKS at crests instead of doming over them,
+   * or null for the plain bicubic. See crease.js for what it does and why.
+   *
+   * IT HANGS OFF THE HEIGHTMAP RATHER THAN OFF ITS CALLERS because sample() is
+   * the one choke point: slopeAt and gradientAt below are four sample() calls
+   * each, detail.js takes its `coarse` from it, and field.js reads it at seven
+   * sites. Hooking any of those individually would give the mesher one surface
+   * and the collision, the scatter and the amplitude gate another -- and the
+   * symptom of that is a player standing on ground that is not where she is
+   * drawn, which is the exact failure relief.js exists to prevent.
+   *
+   * Null-checked rather than swapped in as a function, so an unattached
+   * heightmap pays one predictable branch and the shipped bicubic below stays
+   * the literal expression it has always been.
+   */
+  attachCrease(op) {
+    this._crease = op ?? null
   }
 
   /** Metres per texel on X. Square images make this the same on both axes. */
@@ -297,6 +337,7 @@ export class Heightmap {
 
   /** Bicubic (Catmull-Rom). World metres in, metres out. This is the coarse term of V2Height. */
   sample(x, z) {
+    if (this._crease !== null) return this._crease.at(x, z)
     const u = (x + WORLD_HALF) * this._invX
     const v = (z + WORLD_HALF) * this._invZ
     const i = Math.floor(u)

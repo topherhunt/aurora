@@ -134,6 +134,44 @@ export const RELIEF_KNOBS = Object.freeze([
     off: 0, on: 45, min: 0, max: 90, step: 1,
   },
   {
+    // THE ONLY KNOB HERE THAT CHANGES HOW THE IMPORTED FIELD IS READ, rather
+    // than adding a term on top of it or scaling one that is already there. See
+    // crease.js.
+    //
+    // The macro layer is 1024 texels over 8 km and Catmull-Rom draws the curve
+    // between them. On a crest it CANNOT draw anything but a dome: the tangent
+    // it uses at texel k is (h[k+1] - h[k-1]) / 2, and on a crest both
+    // neighbours are lower, so the tangent goes to zero and the cubic leaves
+    // flat and falls away both sides. `crag`, `ridge` and `shatter` are all
+    // attempts to put an edge back on top of that dome. This one declines to
+    // round it off in the first place, by extending the two straight faces
+    // either side until they meet and restoring the corner between them.
+    //
+    // AND THE CORNER IS REALLY IN THE DATA. check-v2-field.mjs fits a tent and a
+    // dome to every crest cross-section in the RAW texels: the import prefers
+    // the tent at 75% of crests, the same field blurred prefers it at 49%, and
+    // over 50 m of relief the gap widens to 0.77 against 1.95. So the interpolant
+    // is discarding a crease that the imported texels have, and this is a
+    // recovery rather than an invention -- which is also why it needs no crest
+    // detector: the amplitude is the terrain's own curvature, so a broad hilltop
+    // gets a few centimetres and an arete gets metres.
+    //
+    // ITS UNITS ARE NOT METRES, unlike `crag`, `ridge` and `shatter`, and it is
+    // NOT comparable to them at equal numbers. It is an EXAGGERATION: 1 restores
+    // exactly the corner the geometry implies and nothing more, 3 overdraws it
+    // 3x. There is no metre value to state because there is no fixed amplitude
+    // -- a 10 m tooth and a 10 cm one come out of the same knob on different
+    // ground, which is the point of it.
+    //
+    // ON at 3 rather than at a faithful 1 because this table is an ablation
+    // tool: at 1 the operator moves the surface by an rms of 0.13 m and you have
+    // to hunt for it, at 3 it is 0.38 m and the skyline visibly grows teeth.
+    key: 'crease',
+    label: 'crease',
+    hint: 'reconstruct the macro field so crests KINK instead of doming -- an exaggeration, not metres',
+    off: 0, on: 3, min: 0, max: 6, step: 0.25,
+  },
+  {
     key: 'erode',
     label: 'erode',
     hint: 'thermal (talus) relaxation passes over the imported field -- ~190 ms to toggle',

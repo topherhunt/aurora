@@ -1,4 +1,5 @@
-// Compile every shader on /v2-new-grass with a real GLSL ES 3.00 front end.
+// Compile every shader on /v2-new-grass -- plus the one shared prop material --
+// with a real GLSL ES 3.00 front end.
 //
 // There is no WebGL in node, so this reconstructs what three actually hands the
 // driver: the shader source with the prologue WebGLProgram.js prepends for a
@@ -6,11 +7,17 @@
 // a RawShaderMaterial beyond the #version line. Get that prologue wrong in the
 // permissive direction and the harness passes shaders the browser rejects, so
 // it is copied from three's source rather than remembered.
+//
+// The prop material (src/material.js) is a different problem and is handled
+// separately below: its GLSL does not exist as a literal anywhere, so it has to
+// be ASSEMBLED by actually running the onBeforeCompile hook.
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import * as THREE from 'three'
+import { createPropMaterial, createImpostorBakeMaterial } from '../src/material.js'
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
@@ -117,32 +124,413 @@ const SHADERS = [
 const pv = /vertexShader: (?:\/\* glsl \*\/ )?`([\s\S]*?)`/.exec(heightSrc)
 if (pv) SHADERS.unshift(['gpu-height.js  PROBE_VERT', 'vert', RAW_PRE, bake(pv[1]), true])
 
-let bad = 0
-for (const [name, stage, pre, body, raw] of SHADERS) {
-  // The shader may carry its own #version (raw materials must not, but check
-  // rather than assume) -- strip it so the prologue's is the only one.
-  const cleaned = body.replace(/^\s*#version[^\n]*\n/, '')
-  const full = pre + cleaned
-  const file = join(tmp, `s.${stage}`)
-  writeFileSync(file, full)
-  try {
-    execFileSync(VALIDATOR, ['-S', stage, file], { stdio: 'pipe' })
-    console.log(`  ok    ${name}${raw ? '   (raw)' : ''}`)
-  } catch (e) {
-    bad++
-    const out = (e.stdout?.toString() || '') + (e.stderr?.toString() || '')
-    console.log(`  FAIL  ${name}`)
-    const lines = full.split('\n')
-    for (const line of out.split('\n')) {
-      if (!/^ERROR: \d+:(\d+)/.test(line)) continue
-      const n = Number(/^ERROR: \d+:(\d+)/.exec(line)[1])
-      // Report the line in the ORIGINAL shader, not the concatenated one, so
-      // the number is something you can go and edit.
-      const own = n - pre.split('\n').length + 1
-      console.log(`        ${line.trim()}`)
-      if (lines[n - 1] !== undefined) console.log(`          line ${own} of the literal: ${lines[n - 1].trim()}`)
+// --- src/material.js: the one shared prop material --------------------------
+// Nothing above can reach this shader. It is not a template literal: it is
+// three's MeshLambertMaterial program with our chunks string-replaced into it by
+// an onBeforeCompile hook. So run the hook, then do by hand the four source
+// transforms WebGLProgram.js does between the hook and the driver -- resolve
+// #include, substitute the light counts, substitute the clipping-plane counts,
+// unroll the #pragma loops -- and prepend the BUILT-IN-material prologue, which
+// is a different and much longer thing than the ShaderMaterial one above.
+
+const CHUNK = THREE.ShaderChunk
+const resolveIncludes = (src, depth = 0) => {
+  if (depth > 16) throw new Error('#include recursion')
+  return src.replace(/^[ \t]*#include +<([\w\d./]+)>/gm, (_, name) => {
+    const c = CHUNK[name]
+    if (c === undefined) throw new Error(`unknown chunk <${name}>`)
+    return resolveIncludes(c, depth + 1)
+  })
+}
+
+// The scene the props actually render in: one directional sun, one hemisphere
+// fill, no spots, no points, no clipping planes, and NO SHADOW MAP -- nothing in
+// src/ ever sets renderer.shadowMap.enabled, so three never defines
+// USE_SHADOWMAP and the shadow declarations must stay out of the prologue too.
+// Order copied from WebGLProgram.js replaceLightNums: SHADOWS_WITH_MAPS has to
+// be substituted before SHADOWS or the longer name never matches.
+const LIGHT_NUMS = [
+  ['NUM_DIR_LIGHTS', 1],
+  ['NUM_SPOT_LIGHTS', 0],
+  ['NUM_SPOT_LIGHT_MAPS', 0],
+  ['NUM_SPOT_LIGHT_COORDS', 0],
+  ['NUM_RECT_AREA_LIGHTS', 0],
+  ['NUM_POINT_LIGHTS', 0],
+  ['NUM_HEMI_LIGHTS', 1],
+  ['NUM_DIR_LIGHT_SHADOWS', 0],
+  ['NUM_SPOT_LIGHT_SHADOWS_WITH_MAPS', 0],
+  ['NUM_SPOT_LIGHT_SHADOWS', 0],
+  ['NUM_POINT_LIGHT_SHADOWS', 0],
+  ['NUM_CLIPPING_PLANES', 0],
+  ['UNION_CLIPPING_PLANES', 0],
+]
+
+const unrollLoops = (src) =>
+  src.replace(
+    /#pragma unroll_loop_start\s+for\s*\(\s*int\s+i\s*=\s*(\d+)\s*;\s*i\s*<\s*(\d+)\s*;\s*i\s*\+\+\s*\)\s*{([\s\S]+?)}\s+#pragma unroll_loop_end/g,
+    (_, start, end, snippet) => {
+      let out = ''
+      for (let i = Number(start); i < Number(end); i++) {
+        out += snippet.replace(/\[\s*i\s*\]/g, `[ ${i} ]`).replace(/UNROLLED_LOOP_INDEX/g, i)
+      }
+      return out
+    }
+  )
+
+// glslang 11/16.5 carries built-in ESSL 3.x symbols that ESSL 3.00 itself does
+// not define, and `average` -- which three declares in its <common> chunk, in
+// every material, in every browser -- is one of them. `--glsl-version 330` and
+// `100` accept the identical declaration; only the `es` profiles reject it. So
+// this is the validator's symbol table being wrong, not the shader.
+//
+// The dodge is a UNIFORM rename of the identifier across the whole source, not a
+// deletion: every declaration and every call still has to agree, so a genuine
+// arity, type or undeclared-identifier error at that call site still fails. Add
+// to this list only after confirming, as above, that plain desktop GLSL accepts
+// the same line.
+const GLSLANG_PHANTOM_BUILTINS = ['average']
+const dodgePhantomBuiltins = (src) => {
+  let s = src
+  for (const n of GLSLANG_PHANTOM_BUILTINS) s = s.replace(new RegExp(`\\b${n}\\b`, 'g'), `three_${n}`)
+  return s
+}
+
+const finish = (src) => {
+  let s = resolveIncludes(src)
+  for (const [name, n] of LIGHT_NUMS) s = s.replaceAll(name, String(n))
+  return dodgePhantomBuiltins(unrollLoops(s))
+}
+
+// WebGLProgram.js generatePrecision(), with precision 'highp'.
+const PRECISION = [
+  'float', 'int', 'sampler2D', 'samplerCube', 'sampler3D', 'sampler2DArray',
+  'sampler2DShadow', 'samplerCubeShadow', 'sampler2DArrayShadow',
+  'isampler2D', 'isampler3D', 'isamplerCube', 'isampler2DArray',
+  'usampler2D', 'usampler3D', 'usamplerCube', 'usampler2DArray',
+].map((t) => `precision highp ${t};`).join('\n') + '\n#define HIGH_PRECISION'
+
+// SHORTCUT, stated plainly: three builds the two colour-management helpers by
+// baking the working-colour-space matrix and the luminance weights into the
+// source at compile time (getTexelEncodingFunction / getLuminanceFunction). The
+// NUMBERS in them cannot affect whether anything compiles, so identity and the
+// Rec.709 weights stand in for whatever ColorManagement is configured to. Every
+// other line of both prologues is transcribed from WebGLProgram.js.
+const COLOR_FNS = [
+  CHUNK.colorspace_pars_fragment,
+  'vec4 linearToOutputTexel( vec4 value ) {',
+  '\treturn sRGBTransferOETF( vec4( value.rgb * mat3( 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0 ), value.a ) );',
+  '}',
+  'float luminance( const in vec3 rgb ) {',
+  '\tconst vec3 weights = vec3( 0.2126, 0.7152, 0.0722 );',
+  '\treturn dot( weights, rgb );',
+  '}',
+].join('\n')
+
+// NO TONE MAPPING, deliberately. Nothing in src/ assigns renderer.toneMapping,
+// so it is NoToneMapping, so three emits neither `#define TONE_MAPPING` nor the
+// tonemapping_pars_fragment chunk nor a toneMapping() function -- and
+// <tonemapping_fragment> is `#ifdef TONE_MAPPING`-guarded, so nothing wants
+// them. Declaring them anyway would be the permissive direction. Add them the
+// day someone sets renderer.toneMapping, and not before.
+
+// A built-in material is NOT a RawShaderMaterial, so under GLSL3 three rewrites
+// `attribute`/`varying` into `in`/`out`, aliases texture2D, and injects the
+// built-in matrices and vertex attributes. Straight from WebGLProgram.js lines
+// 536-700 (vertex), 719-846 (fragment) and 866-889 (the GLSL3 rewrite).
+const builtinPrologue = (stage, defines) => {
+  const d = defines.filter(Boolean).join('\n')
+  if (stage === 'vert') {
+    return `#version 300 es
+#define attribute in
+#define varying out
+#define texture2D texture
+${PRECISION}
+#define SHADER_TYPE MeshLambertMaterial
+#define SHADER_NAME lambert
+${d}
+uniform mat4 modelMatrix;
+uniform mat4 modelViewMatrix;
+uniform mat4 projectionMatrix;
+uniform mat4 viewMatrix;
+uniform mat3 normalMatrix;
+uniform vec3 cameraPosition;
+uniform bool isOrthographic;
+#ifdef USE_INSTANCING
+	attribute mat4 instanceMatrix;
+#endif
+#ifdef USE_INSTANCING_COLOR
+	attribute vec3 instanceColor;
+#endif
+attribute vec3 position;
+attribute vec3 normal;
+attribute vec2 uv;
+#ifdef USE_TANGENT
+	attribute vec4 tangent;
+#endif
+#if defined( USE_COLOR_ALPHA )
+	attribute vec4 color;
+#elif defined( USE_COLOR )
+	attribute vec3 color;
+#endif
+`
+  }
+  return `#version 300 es
+#define varying in
+layout(location = 0) out highp vec4 pc_fragColor;
+#define gl_FragColor pc_fragColor
+#define gl_FragDepthEXT gl_FragDepth
+#define texture2D texture
+#define textureCube texture
+#define texture2DProj textureProj
+#define texture2DLodEXT textureLod
+#define texture2DProjLodEXT textureProjLod
+#define textureCubeLodEXT textureLod
+#define texture2DGradEXT textureGrad
+#define texture2DProjGradEXT textureProjGrad
+#define textureCubeGradEXT textureGrad
+${PRECISION}
+#define SHADER_TYPE MeshLambertMaterial
+#define SHADER_NAME lambert
+${d}
+uniform mat4 viewMatrix;
+uniform vec3 cameraPosition;
+uniform bool isOrthographic;
+
+${COLOR_FNS}
+`
+}
+
+// The prop geometry: a BatchedMesh with a texture-layer attribute, lit by a sun
+// and a hemisphere, in the scene's FogExp2, cut out (alphaTest 0.5) rather than
+// blended, DoubleSide. Deliberately NOTHING beyond that -- every extra #define
+// declares more built-ins, and a prologue that declares more than three does is
+// the one failure mode worth fearing here: it would compile a superset of the
+// real source and pass shaders the browser rejects. `batched: false` covers the
+// gen-*.html editors, which put the same material on a plain Mesh -- a real
+// second path, because the snow patch branches on USE_BATCHING.
+const propDefines = ({ batched = true, vertexColors = false } = {}) => {
+  const shared = [
+    '#define USE_FOG',
+    '#define FOG_EXP2',
+    vertexColors ? '#define USE_COLOR' : '',
+    '#define DOUBLE_SIDED',
+  ]
+  return {
+    vert: [batched ? '#define USE_BATCHING' : '', ...shared],
+    frag: ['#define USE_ALPHATEST', ...shared],
+  }
+}
+
+// A DataArrayTexture is all createPropMaterial wants of its atlas -- it never
+// reads it, it only hands it to a uniform -- so a 1x1x1 stand-in is exact.
+const atlas = new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1)
+
+// A CLEAN COMPILE IS NOT EVIDENCE THE PATCHES LANDED. Every one of them is a
+// plain string .replace() against three's shader; when the pattern does not
+// match -- three renames a chunk, someone edits the anchor -- the replace is
+// silent, the unpatched lambert shader compiles perfectly, and the check goes
+// green on a shader containing none of our code. So each variant names the text
+// it MUST contain, and a missing marker fails as loudly as a syntax error.
+const PROP_MARKS = {
+  vert: ['attribute float texLayer;', 'varying vec2 vMoss;', 'vMoss = vec2(', 'snowRoll', 'mossRoll'],
+  frag: [
+    'uniform sampler2DArray uAtlas;',
+    'float blobField( vec3 p )',
+    'log( mossLoad',
+    'snowNear > 0.004',
+    'mossNear > 0.004',
+    'normal *= faceDirection;',
+  ],
+}
+
+// Every distinct program src/material.js can emit. The options are not cosmetic:
+// billboardLayers and stripTiling each splice in a chunk that appears under NO
+// other option, which is exactly where a bug hides unseen.
+const PROP_VARIANTS = [
+  ['plain, batched', createPropMaterial(atlas), { batched: true }, PROP_MARKS],
+  ['plain, unbatched', createPropMaterial(atlas), { batched: false }, PROP_MARKS],
+  ['vertexColors', createPropMaterial(atlas, { vertexColors: true }), { vertexColors: true }, PROP_MARKS],
+  [
+    'billboardLayers',
+    createPropMaterial(atlas, { billboardLayers: [0, 1, 2] }),
+    {},
+    { vert: [...PROP_MARKS.vert, 'uBillboardLayers'], frag: PROP_MARKS.frag },
+  ],
+  [
+    'stripTiling',
+    createPropMaterial(atlas, { stripTiling: true }),
+    {},
+    { vert: [...PROP_MARKS.vert, 'vStripSeed'], frag: PROP_MARKS.frag },
+  ],
+  [
+    'impostor bake',
+    createImpostorBakeMaterial(atlas),
+    { batched: false },
+    {
+      vert: ['attribute float texLayer;', 'vUvProj = uvProj;'],
+      frag: ['uniform sampler2DArray uAtlas;', 'texture( uAtlas', 'normal *= faceDirection;'],
+    },
+  ],
+]
+
+// Collected here and checked after the compile loop: glslangValidator takes one
+// stage at a time, so a varying declared `vec2` in the vertex stage and `float`
+// in the fragment stage compiles TWICE and fails only when the driver links the
+// two together. Nothing a single-stage front end does can see it.
+const CROSS_STAGE = []
+const MISSING_MARKS = []
+
+for (const [label, material, opts, marks] of PROP_VARIANTS) {
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+
+  const defines = propDefines(opts)
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  const pad = `material.js    ${label}`.padEnd(38)
+  SHADERS.push([`${pad}vert`, 'vert', builtinPrologue('vert', defines.vert), vert])
+  SHADERS.push([`${pad}frag`, 'frag', builtinPrologue('frag', defines.frag), frag])
+  CROSS_STAGE.push([label, vert, frag])
+  for (const [stage, src] of [['vert', vert], ['frag', frag]]) {
+    for (const mark of marks[stage]) {
+      if (!src.includes(mark)) MISSING_MARKS.push(`${label} ${stage}: ${mark}`)
     }
   }
 }
-console.log(bad ? `\n${bad} shader(s) failed to compile` : `\nall ${SHADERS.length} shaders compile`)
-process.exit(bad ? 1 : 0)
+
+// Returns null when the shader compiled, or the validator's output when it did
+// not. Also hands back the file it wrote, which for the assembled prop programs
+// is the only copy of that text that exists anywhere.
+function compile(name, stage, pre, body) {
+  // The shader may carry its own #version (raw materials must not, but check
+  // rather than assume) -- strip it so the prologue's is the only one.
+  const full = pre + body.replace(/^\s*#version[^\n]*\n/, '')
+  const file = join(tmp, `${name.trim().replace(/\W+/g, '-')}.${stage}`)
+  writeFileSync(file, full)
+  try {
+    execFileSync(VALIDATOR, ['-S', stage, file], { stdio: 'pipe' })
+    return { file, full, out: null }
+  } catch (e) {
+    return { file, full, out: (e.stdout?.toString() || '') + (e.stderr?.toString() || '') }
+  }
+}
+
+let bad = 0
+for (const [name, stage, pre, body, raw] of SHADERS) {
+  const { file, full, out } = compile(name, stage, pre, body)
+  if (out === null) {
+    console.log(`  ok    ${name}${raw ? '   (raw)' : ''}`)
+    continue
+  }
+  bad++
+  console.log(`  FAIL  ${name}`)
+  console.log(`        source: ${file}`)
+  const lines = full.split('\n')
+  for (const line of out.split('\n')) {
+    if (!/^ERROR: \d+:(\d+)/.test(line)) continue
+    const n = Number(/^ERROR: \d+:(\d+)/.exec(line)[1])
+    // Report the line in the ORIGINAL shader, not the concatenated one, so
+    // the number is something you can go and edit.
+    const own = n - pre.split('\n').length + 1
+    console.log(`        ${line.trim()}`)
+    if (lines[n - 1] !== undefined) console.log(`          line ${own} of the literal: ${lines[n - 1].trim()}`)
+  }
+}
+// --- the cross-stage contract -----------------------------------------------
+// A varying declared with two different types is a LINK error. Each stage
+// compiled clean above, because each stage declares the name it uses; the
+// mismatch only exists in the pair. This is what a half-landed float -> vec2
+// migration looks like, and it is invisible to `node --check`, to `vite build`,
+// and to the compile loop above.
+const varyingTypes = (src) => {
+  const m = new Map()
+  for (const d of src.matchAll(/\b(?:varying|in|out)\s+(\w+)\s+(v[A-Z]\w*)/g)) m.set(d[2], d[1])
+  return m
+}
+let clashes = 0
+for (const [label, vert, frag] of CROSS_STAGE) {
+  const vt = varyingTypes(vert)
+  const ft = varyingTypes(frag)
+  const clash = []
+  for (const [name, type] of ft) {
+    if (vt.has(name) && vt.get(name) !== type) clash.push(`${name}: vertex ${vt.get(name)} vs fragment ${type}`)
+  }
+  if (clash.length === 0) {
+    console.log(`  ok    material.js    ${label.padEnd(23)}varyings agree across stages`)
+  } else {
+    clashes += clash.length
+    console.log(`  FAIL  material.js    ${label.padEnd(23)}varyings disagree across stages`)
+    for (const c of clash) console.log(`        ${c}`)
+  }
+}
+
+// --- did our code actually get into the shader ------------------------------
+if (MISSING_MARKS.length === 0) {
+  console.log(`  ok    material.js    every onBeforeCompile patch landed in the assembled source`)
+} else {
+  console.log(`  FAIL  material.js    an onBeforeCompile replace silently did not match`)
+  for (const m of MISSING_MARKS) console.log(`        missing: ${m}`)
+}
+
+// --- does the harness itself work -------------------------------------------
+// Everything above reports success by printing ' ok '. A harness that is not
+// really running -- a validator invocation that never sees the file, a
+// cross-stage regex that matches nothing -- prints exactly the same thing. So
+// give both of them a case whose answer is already known and make them get it
+// right. These hack COPIES of the assembled source; nothing here touches
+// src/material.js.
+let selfTest = 0
+{
+  const [, vert, frag] = CROSS_STAGE[0]
+  const defines = propDefines({ batched: true })
+
+  // 1. The validator must REJECT source it should reject. If this compiles, the
+  //    compile loop above is not compiling anything.
+  const broken = vert.replace('void main() {', 'void main() {\n\tvec3 harnessSelfTest = ;')
+  if (broken === vert) {
+    selfTest++
+    console.log('  FAIL  self-test      could not inject a syntax error (no `void main() {` found)')
+  } else if (compile('self-test broken', 'vert', builtinPrologue('vert', defines.vert), broken).out === null) {
+    selfTest++
+    console.log('  FAIL  self-test      the validator ACCEPTED a shader with `vec3 x = ;` in it')
+  } else {
+    console.log('  ok    self-test      the validator rejects a deliberately broken shader')
+  }
+
+  // 2. The cross-stage check must CATCH a type it should catch. vMoss is the one
+  //    that shipped broken -- vec2 in the vertex stage, float in the fragment --
+  //    so retype it here, in a copy, and require the check to see it.
+  const clashed = frag.replace(/\bvarying vec2 vMoss;/, 'varying float vMoss;')
+  if (clashed === frag) {
+    selfTest++
+    console.log('  FAIL  self-test      no `varying vec2 vMoss;` in the fragment stage to retype')
+  } else {
+    const vt = varyingTypes(vert)
+    const ft = varyingTypes(clashed)
+    const caught = [...ft].some(([n, t]) => vt.has(n) && vt.get(n) !== t)
+    if (!caught) {
+      selfTest++
+      console.log('  FAIL  self-test      the cross-stage check MISSED a planted vMoss vec2/float clash')
+    } else {
+      console.log('  ok    self-test      the cross-stage check catches a planted vMoss vec2/float clash')
+    }
+  }
+}
+
+const lines = []
+if (bad) lines.push(`${bad} shader(s) failed to compile`)
+if (clashes) lines.push(`${clashes} varying type mismatch(es) across stages`)
+if (MISSING_MARKS.length) lines.push(`${MISSING_MARKS.length} onBeforeCompile patch(es) did not land`)
+if (selfTest) lines.push(`${selfTest} harness self-test(s) failed -- do not trust the rest of this run`)
+console.log(
+  lines.length
+    ? `\n${lines.join('\n')}`
+    : `\nall ${SHADERS.length} shaders compile, ${CROSS_STAGE.length} prop programs link, and the harness self-test passes`
+)
+process.exit(bad || clashes || MISSING_MARKS.length || selfTest ? 1 : 0)

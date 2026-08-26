@@ -45,19 +45,24 @@
 //   other in public/rocks/ is exactly how somebody would come to "fix" it.
 //   Section 5 states the bounds and why each one is where it is.
 
+import { readFileSync } from 'node:fs'
+
 import * as THREE from 'three'
 
 import { buildRock, rockClass, ROCK_TIERS, ROCK_LADDERS, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
 import {
   buildRockBank, rockParams, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, ROCK_NAMES, ROCK_VARIANTS,
-  TINTS, TINT_GAIN,
+  SITES, TINTS, TINT_GAIN,
 } from '../src/props/rock-bank.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import {
-  LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, MOSS_LAYERS, ROCK_TILE_MEAN,
-  buildTextureArray,
+  LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
+  ROCK_TILE_MEAN, buildTextureArray,
 } from '../src/textures.js'
-import { SNOW_ROCK, MOSS, getSnowLine, getMossLine, setMossVary, getMossVary } from '../src/material.js'
+import {
+  SNOW_ROCK, MOSS, mossCutFor, createPropMaterial, getSnowLine, getMossLine,
+  setMossVary, getMossVary, setSnowVary, getSnowVary,
+} from '../src/material.js'
 import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { readPng } from '../tools/props/png.mjs'
 
@@ -68,6 +73,19 @@ const check = (ok, label, detail = '') => {
   if (!ok) failures++
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
+
+// CLUMP_GAIN is module-private in rocks.js and section 8 needs its VALUE, not
+// its effect: the promise there is that the clump multiplier still has room to
+// spend under the accept-rate cap, which is arithmetic on the constant itself.
+// Lifted out of the source rather than copied into this file, so that a re-tune
+// moves the check with it and a rename fails here loudly instead of leaving the
+// gate quietly asserting 2.2 against a constant that no longer exists.
+const constantFrom = (file, name) => {
+  const m = readFileSync(file, 'utf8').match(new RegExp(`^const ${name} = (-?[0-9.]+)$`, 'm'))
+  if (!m) throw new Error(`${file} no longer declares ${name} on a line of its own`)
+  return Number(m[1])
+}
+const CLUMP_GAIN = constantFrom('src/v2/render/rocks.js', 'CLUMP_GAIN')
 
 // A spread of shapes rather than a spread of seeds alone: the interesting bugs
 // live in the corners of the parameter space, not in the noise field.
@@ -82,6 +100,13 @@ const SHAPES = [
   // an inverted rock rather than as a slightly wrong one.
   { name: 'mushroom', over: { size: 2.4, taper: -0.55, taperPow: 1.4, foot: 0, sit: 0.2 } },
   { name: 'pebble', over: { size: 0.09, sit: 0.05, cuts: 2 } },
+  // An open shell, which is the one preset here whose triangle count is NOT the
+  // tier's face count: `sit` past a half puts most of the solid under the bed
+  // plane and `openBottom` then throws away every face that landed flat on it.
+  // It is in this list rather than tested on its own because everything else
+  // section 1 asserts -- the layout, the identity index, the unit normals, the
+  // bed plane at y = 0 -- has to survive the compaction that does the throwing.
+  { name: 'open cap', over: { size: 0.8, squash: 0.5, cuts: 3, cutDepth: 0.5, cutBias: -0.3, sit: 0.52, openBottom: 1 } },
   { name: 'no cuts', over: { cuts: 0, smooth: 1 } },
   { name: 'max cuts', over: { cuts: 10, cutDepth: 1, smooth: 0 } },
   { name: '5 shards', over: { shards: 5, shardSpread: 1.1, shardTilt: 1.1 } },
@@ -97,7 +122,7 @@ console.log('geometry')
 
 const LAYOUT = ['position', 'normal', 'uvProj', 'texLayer']
 const bad = {
-  attrs: 0, unindexed: 0, nonIdentity: 0, nan: 0, triCount: 0,
+  attrs: 0, unindexed: 0, nonIdentity: 0, nan: 0, triCount: 0, closedDropped: 0,
   offGround: 0, wrongSize: 0, badNormal: 0, wrongLayer: 0, degenerate: 0,
 }
 const worst = { ground: 0, size: 0, overSize: 0, normal: 0, degenFrac: 0 }
@@ -133,9 +158,18 @@ for (let seed = 1; seed <= SEEDS; seed++) {
       for (const v of uv) if (!Number.isFinite(v)) nan++
       if (nan) bad.nan++
 
+      // THE TRIANGLE COUNT IS THE TIER'S, LESS WHATEVER THE OPEN BOTTOM TOOK.
+      // For a closed rock the count is exact and `dropped` is 0, which is the
+      // promise the arena sizing in rock-bank.js and every triangle budget in
+      // the scatter is written against. For an `openBottom` rock the shortfall
+      // is real and it has to be EXACTLY what the geometry reports it to be:
+      // `dropped` is the only account anybody downstream has of where those
+      // faces went, so a count that drifts from it is worse than a wrong count.
       const stats = geo.userData.rock
       const shards = Math.max(1, Math.round(shape.over.shards ?? ROCK_DEFAULTS.shards))
-      if (stats.triangles !== ROCK_TIERS[t].faces * shards) bad.triCount++
+      const full = ROCK_TIERS[t].faces * shards
+      if (stats.triangles !== full - stats.dropped) bad.triCount++
+      if (!stats.openBottom && stats.dropped !== 0) bad.closedDropped++
       totalTris += stats.triangles
 
       for (const v of lay) if (v !== LAYER.ROCK) { bad.wrongLayer++; break }
@@ -202,7 +236,8 @@ check(bad.attrs === 0, 'every geometry is exactly { position, normal, uvProj, te
 check(bad.unindexed === 0, 'every geometry is indexed (BatchedMesh refuses otherwise)', `${bad.unindexed} not`)
 check(bad.nonIdentity === 0, 'the index is an identity -- no welding, so facets stay flat', `${bad.nonIdentity} not`)
 check(bad.nan === 0, 'no NaN in position, normal or uvProj', `${bad.nan} builds with NaN`)
-check(bad.triCount === 0, 'triangles = tier faces x shards, exactly', `${bad.triCount} off`)
+check(bad.triCount === 0, 'triangles = tier faces x shards, less exactly the faces `dropped` reports', `${bad.triCount} off`)
+check(bad.closedDropped === 0, 'and a closed rock drops none of them at all', `${bad.closedDropped} closed builds short`)
 check(bad.wrongLayer === 0, 'every vertex wears LAYER.ROCK', `${bad.wrongLayer} builds off-layer`)
 check(bad.offGround === 0, 'the bed plane sits on y = 0', `worst ${(worst.ground * 100).toFixed(4)}% of size`)
 check(bad.wrongSize === 0, 'every tier measures `size`, give or take a coarse corner', `worst -${(worst.size * 100).toFixed(0)}% / +${(worst.overSize * 100).toFixed(0)}%, cap +${((BOX_MARGIN - 1) * 100).toFixed(0)}%`)
@@ -696,22 +731,97 @@ console.log('\nmoss.png')
 {
   // The mask, on the same terms as the snow arithmetic in section 6.
   const creep = (down, blob) => blob * (1 - MOSS.down) + down * MOSS.down
-  const cut = (amt) => MOSS.cutBias - amt * MOSS.cutSpan
 
-  check(MOSS_LAYERS.includes(LAYER.ROCK), 'rock is what moss grows on so far')
+  check(MOSS_LAYERS.includes(LAYER.ROCK), 'stone is on the list of things moss grows on',
+    `MOSS_LAYERS = ${MOSS_LAYERS.join(' ')}`)
   check(!MOSS_LAYERS.includes(LAYER.IMPOSTOR_ROCK),
     'the rock card is out -- a card is photographed from the mesh, moss and all')
   // MOSS is sampled by the shader, never worn as a texLayer, so it must not be
   // in TILE_METRES either -- it is tiled off whatever UV the host surface has.
   check(TILE_METRES[LAYER.MOSS] === undefined, 'LAYER.MOSS is out of TILE_METRES -- it borrows its host UV')
 
+  // WHAT THE FIELD ACTUALLY DOES ON A BOULDER, measured rather than reasoned
+  // about, because every promise below is a statement about the DISTRIBUTION of
+  // `creep` and there is no closed form for it. See mossCreepOnBoulder: it ports
+  // blobField out of material.js, which is a real duplication and the same one
+  // section 6 owns up to -- if the GLSL field changes and the port does not,
+  // these numbers go on passing while the picture is wrong. What it does catch
+  // is every constant AROUND the field drifting away from the field, which is
+  // exactly the failure this section shipped once already.
+  const field = mossCreepOnBoulder()
+  const smoothstep = (e0, e1, x) => {
+    const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)))
+    return t * t * (3 - 2 * t)
+  }
+
   // OFF IS OFF and FULL IS FULL, the same two promises the snow cut makes, and
   // for the same reason: a slider whose ends do not mean anything is a slider
   // nobody can trust.
-  check(creep(1, 1) < cut(0) - MOSS.edgeMax, 'moss at 0 leaves the rock bare',
-    `ceiling ${creep(1, 1).toFixed(2)} vs cut ${(cut(0) - MOSS.edgeMax).toFixed(2)}`)
-  check(creep(0, 0) > cut(1) + MOSS.edgeMax, 'moss at 1 reaches every face',
-    `floor ${creep(0, 0).toFixed(2)} vs cut ${(cut(1) + MOSS.edgeMax).toFixed(2)}`)
+  //
+  // Held against the far side of the BLEND rather than against the cut itself,
+  // because what has to clear creep's range is where the ramp starts and ends,
+  // and the ramp is deliberately lopsided: MOSS_BLEND below the cut and only
+  // MOSS_BLEND * MOSS_BLEND_SKEW above it, so that a patch fades in over a wide
+  // soft edge and fills in over a short one. That fixed half-width is also why
+  // MOSS_CUT_WIDTH has to be as generous as it is -- unlike snow's fwidth() edge
+  // it is a real slice of the mask's range, and it is spent at both ends.
+  //
+  // Both bounds come off the measured field rather than from creep(1, 1) and
+  // creep(0, 0), which is the change that matters here. The old check compared
+  // the cut against the ARITHMETIC extremes of the mask, so it went on passing
+  // when the noise underneath was rebuilt wider; the ends are only safe if the
+  // ends of the SAMPLES clear them.
+  const rampStart = mossCutFor(0) - MOSS.blend
+  const rampEnd = mossCutFor(1) + MOSS.blend * MOSS.blendSkew
+  check(rampStart > field.max, 'moss at 0 leaves the rock bare',
+    `ramp starts at ${rampStart.toFixed(2)}, creep tops out at ${field.max.toFixed(2)}`)
+  check(rampEnd < field.min, 'moss at 1 reaches every face',
+    `ramp ends at ${rampEnd.toFixed(2)}, creep bottoms out at ${field.min.toFixed(2)}`)
+
+  // AND THE LOAD IN BETWEEN MEANS SOMETHING, which is the promise the logit
+  // exists to create and the reason MOSS_CUT_MID and MOSS_CUT_WIDTH are a FIT
+  // rather than a choice. `creep` is very nearly logistic, so subtracting
+  // width * log( v / (1 - v) ) from the midpoint puts the cut where the field's
+  // complementary CDF equals v -- and a moss load of 0.3 paints three tenths of
+  // the rock instead of some unknowable fraction of it. Every caller reads it
+  // that way: Rocks.syncBands drives uMossVary as coverage, and the /gen bench
+  // slider is labelled as coverage.
+  //
+  // Measured through the MASK and not through the cut, which is a distinction
+  // the constants themselves depend on: `cover` is the smoothstep, so what a
+  // fragment contributes is a weight between 0 and 1 rather than a yes, and the
+  // ramp's own midpoint sits MOSS_BLEND * (1 - MOSS_BLEND_SKEW) / 2 BELOW the
+  // cut because the ramp is lopsided. Averaging the weight is the only figure
+  // that is actually the painted fraction -- counting samples past the cut says
+  // a load of 0.3 paints 0.23, and the rock on screen says otherwise.
+  //
+  // The tolerance is deliberately loose. The point is that coverage TRACKS the
+  // load, monotonically and roughly identically, not that it hits three
+  // decimals; a tight bound would fail every time somebody legitimately retuned
+  // the noise. A refit is a two-constant edit, and this check is what tells them
+  // it is needed -- when the field was last rebuilt, the stale width put 0.85 on
+  // screen as 0.73 and nothing said a word.
+  const LOADS = [0.1, 0.2, 0.3, 0.5, 0.7, 0.85]
+  const covers = LOADS.map((v) => {
+    const cut = mossCutFor(v)
+    let sum = 0
+    for (const c of field.creeps) sum += smoothstep(cut - MOSS.blend, cut + MOSS.blend * MOSS.blendSkew, c)
+    return sum / field.creeps.length
+  })
+  const worst = Math.max(...covers.map((c, i) => Math.abs(c - LOADS[i])))
+  check(worst < 0.04, 'and a moss load of v paints v of the rock, which is what the logit is for',
+    `${LOADS.map((v, i) => `${v}->${covers[i].toFixed(3)}`).join(' ')}, worst off by ${worst.toFixed(3)}`)
+
+  // AND THAT FIGURE IS THE WHOLE STORY FOR A ROCK, which is what makes the
+  // sample above a boulder rather than a trunk. MOSS_RISE scales the load by how
+  // far up its own instance the fragment sits -- moss lives on damp, and damp is
+  // the foot of a trunk and not four metres up a snag -- so the coverages above
+  // are only what a boulder wears if a boulder is inside the band from bottom to
+  // top. A 2 m one is, with a few percent to spare.
+  const rise = (y) => 1 - smoothstep(MOSS.rise, MOSS.rise + MOSS.riseBand, y)
+  check(rise(2) > 0.85 && rise(6) < 0.01,
+    'and a boulder keeps essentially all of that load over its own height, where a snag would not',
+    `${rise(2).toFixed(2)} at 2 m, ${rise(6).toFixed(2)} at 6 m`)
 
   // AND IT LEANS THE OTHER WAY FROM SNOW. If these ever agree, one of them is
   // wrong: snow settles on the crown, moss creeps up the shaded flanks, and a
@@ -719,10 +829,44 @@ console.log('\nmoss.png')
   check(creep(1, 0.5) > creep(0, 0.5), 'moss favours the down-facing half',
     `${creep(1, 0.5).toFixed(2)} under vs ${creep(0, 0.5).toFixed(2)} on top`)
 
-  // Colonies, not speckle: coarser patches than the snow's, and coarse enough to
-  // read as a patch of something growing rather than as green noise.
+  // FINER THAN SNOW, WHICH IS THE OPPOSITE OF WHAT THIS CHECK USED TO SAY. The
+  // old promise was "colonies, not flecks" -- patches 12 to 40 cm, coarser than
+  // snow's -- on the reasoning that a colony of moss is a bigger thing than a
+  // drift of crystals. What that misses is that the two fields are not doing the
+  // same job, and the note above MOSS_FREQ in material.js is the argument:
+  // snow's blobs ARE the snow, while moss's blobs are only the shape of the
+  // stain and the photograph inside them is what reads as moss. So the blob
+  // field competes with the tile for the same band of detail, and at 6.0 it won
+  // -- a handful of lobes on a boulder with the grain buried inside them, which
+  // is a paint job.
+  //
+  // The bound that replaces it is the one the new arithmetic actually depends
+  // on. The blend is a FIXED width against a mask spanning 0..1 -- MOSS_BLEND
+  // below the cut and MOSS_BLEND * MOSS_BLEND_SKEW above it -- so getting on for
+  // a fifth of the field's range is transition; a patch only reads as growth
+  // thinning out rather than as a blurred blob if the patch is small relative to
+  // the rock carrying it. Dozens across a 2 m boulder is what that costs, and it
+  // has to stay under snow's or the two fields read as one.
   const patchCm = (1 / MOSS.freq) * 100
-  check(patchCm > 12 && patchCm < 40, 'moss grows in colonies, not in flecks', `${patchCm.toFixed(0)} cm patches`)
+  const snowCm = (1 / SNOW_ROCK.freq) * 100
+  const across = 2 * MOSS.freq
+  const rampWidth = MOSS.blend * (1 + MOSS.blendSkew)
+  check(patchCm < snowCm && patchCm > 2 && across > 24 && rampWidth < 0.25,
+    'moss patches are finer than snow and small enough for a soft rim to read as growth',
+    `${patchCm.toFixed(1)} cm vs snow's ${snowCm.toFixed(1)}, ~${across.toFixed(0)} across a 2 m boulder, ramp ${rampWidth.toFixed(2)} wide`)
+
+  // The fade has to have come with them. Procedural noise has no mip chain, so
+  // the range at which it must be blended to its mean is the range at which one
+  // patch stops covering a pixel -- which scales with the PATCH and with nothing
+  // else. A re-tune of MOSS_FREQ that leaves the fade where it was hands back
+  // exactly the crawl the fade exists to prevent, so the two are held together
+  // here, and the bound is two-sided so it catches the drift in either
+  // direction: the far end has to stay a few hundred patch widths out, and the
+  // near end has to be nearer than it.
+  const patchesToFade = MOSS.fadeFar * MOSS.freq
+  check(MOSS.fadeNear < MOSS.fadeFar && patchesToFade > 400 && patchesToFade < 1200,
+    "moss's fade is set in patch widths, so it moved when the patches did",
+    `${MOSS.fadeNear}-${MOSS.fadeFar} m, ~${patchesToFade.toFixed(0)} patches out`)
 }
 
 // ---------------------------------------------------------------------------
@@ -745,7 +889,12 @@ console.log('\nmoss.png')
 //
 // `blob` is noise, so a promise about coverage has to hold for the whole range
 // of blob rather than for its average, and a fragment is only settled where it
-// clears the cut by a full edge width in one direction or the other.
+// clears the cut by a full edge width in one direction or the other. That range
+// is still 0..1 now that the mask is shaped by blobField rather than by a bare
+// snowNoise: a domain warp does not change a field's range, and the contrast
+// stretch under it is symmetric about 0.5 and clamped. Everything
+// below is written against 0..1 and would go quietly wrong if that stopped
+// holding, so it is worth saying out loud rather than re-deriving.
 // ---------------------------------------------------------------------------
 
 console.log('\nsnow on stone')
@@ -835,46 +984,103 @@ console.log('\nsnow on stone')
   const perFacet = 0.5 / patchM
   check(perFacet > 4, 'several snow patches fit across one cut facet',
     `${(patchM * 100).toFixed(0)} cm patches, ~${perFacet.toFixed(0)} across a facet`)
+
+  // AND THE PATCHES ARE NOT SQUARES. A single octave of value noise on a cubic
+  // lattice thresholds into a grid of rounded cubes -- the eye finds the lattice
+  // long before it finds the noise -- and the domain warp is the whole of what
+  // breaks it. The warp is quoted in LATTICE CELLS, which is why one number
+  // serves both the snow at 12.8 and the moss at 24.0.
+  //
+  // A FULL CELL IS THE FLOOR, and it used to be a third of one. The field under
+  // this cut was two octaves and the fine one supplied the ragged rim; it is one
+  // octave now, the long drag is what supplies the rim instead, and a bend
+  // smaller than the cell it is bending leaves the rows perfectly visible. There
+  // is no matching ceiling worth asserting: the warp is sampled at 0.46 of the
+  // blob frequency, so dragging further makes rims wander further and does not
+  // fold anything, and the real ceiling is the coarse field's own wavelength.
+  check(SNOW_ROCK.blobWarp > 1,
+    'the domain warp drags the sample well past one cell, so the lattice rows are gone',
+    `${SNOW_ROCK.blobWarp} cells, ${(SNOW_ROCK.blobWarp * patchM * 100).toFixed(1)} cm at the snow's size`)
+
+  // AND THE STRETCH STOPS SHORT OF SHOULDERS. Value noise spends most of its
+  // range near its mean, so the contrast stretch about 0.5 is what turns a smear
+  // into a patch with an interior. It is also the one knob here that can destroy
+  // the cut: every sample it pushes outside 0..1 is clamped, and clamped area is
+  // area the cut can no longer feather through. Under about 1.2 the patches go
+  // back to being gradients; past about 1.8 they acquire hard shoulders and the
+  // soft rim the moss blend is paying for has nothing to sit on.
+  check(SNOW_ROCK.blobContrast > 1.2 && SNOW_ROCK.blobContrast < 1.8,
+    'and the contrast stretch shapes the patches without flattening them against the clamp',
+    `${SNOW_ROCK.blobContrast}x about the midpoint`)
 }
 
 // ---------------------------------------------------------------------------
 // 7. The shipping bank is a bank and not a list.
 //
 // Sections 1-6 test the GENERATOR, which will happily build anything. This one
-// tests the sixteen shapes that actually ship: that they still build, that each
-// one sits and is the size it claims, and that the four environments each have
-// a real choice rather than one variant standing in for a whole hillside.
+// tests the twenty-five shapes that actually ship: that they still build, that
+// each one sits and is the size it claims, that the four environments each have
+// a real choice rather than one variant standing in for a whole hillside, and
+// that the bank is not a bag of spikes.
+//
+// THAT LAST ONE IS WHY THE TABLE WAS REBUILT. It used to hold sixteen variants
+// and the `peak` tag had been handed to three tapered towers -- buttress, spire
+// and a 10.7 m `fang` -- plus a chip of scree, so above the treeline the whole
+// world was teeth. The fang is gone, the towers were blunted, and the count went
+// to twenty-five; the checks below are what stop it drifting back.
 // ---------------------------------------------------------------------------
 
-console.log('\nthe sixteen')
+console.log('\nthe twenty-five')
 
 {
-  check(ROCK_NAMES.length === 16, 'sixteen variants ship', ROCK_NAMES.join(' '))
+  check(ROCK_NAMES.length === 25, 'twenty-five variants ship', ROCK_NAMES.join(' '))
 
+  // The census counts UNTAGGED variants only. A variant carrying a `site` is
+  // held out of the ordinary pool entirely (variantsFor), so counting talus
+  // toward what a cliff has to offer would say the cliff is furnished by shapes
+  // that only ever appear at the foot of one.
   const counts = Object.fromEntries(ENVIRONMENTS.map((e) => [e, 0]))
+  const sited = Object.fromEntries(SITES.map((s) => [s, 0]))
   let untagged = 0
   let badTint = 0
   for (const name of ROCK_NAMES) {
     const v = ROCK_VARIANTS[name]
     if (!v.envs.length) untagged++
     if (!(v.tint >= 0 && v.tint < TINTS.length)) badTint++
+    if (v.site !== undefined) sited[v.site]++
     for (const e of v.envs) {
       if (counts[e] === undefined) throw new Error(`${name} claims unknown environment ${e}`)
-      counts[e]++
+      if (v.site === undefined) counts[e]++
     }
   }
   check(untagged === 0, 'every variant belongs somewhere')
   check(badTint === 0, 'every variant points at a real tint')
   check(
     ENVIRONMENTS.every((e) => counts[e] >= 3),
-    'no environment is furnished by one or two shapes',
+    'no environment is furnished by one or two untagged shapes',
     ENVIRONMENTS.map((e) => `${e} ${counts[e]}`).join('  ')
   )
+  // A site nobody claims is a relief probe paid for and never used, and the
+  // scatter would throw the moment something asked for it -- variantsFor has no
+  // empty answer, only an exception.
+  check(SITES.every((s) => sited[s] > 0), 'every site in SITES is claimed by at least one variant',
+    SITES.map((s) => `${s} ${sited[s]}`).join('  '))
+
+  // NOT A BAG OF SPIKES, which is the defect the whole rebuild exists to fix.
+  // Pointiness is `taper` -- how much of its own width a shape has lost by the
+  // time it reaches its crown -- and the bank's own note draws the pinnacle line
+  // at 0.65 with a taperPow past 1.5. The bound is on the FRACTION rather than
+  // on a count, so it keeps meaning the same thing as the table grows: past
+  // about one in eight, a hillside reads as a stage set rather than as rock.
+  const pointy = ROCK_NAMES.filter((n) => (ROCK_VARIANTS[n].taper ?? 0) > 0.5)
+  check(pointy.length / ROCK_NAMES.length < 0.125,
+    'at most one variant in eight comes to a point',
+    `${pointy.length} of ${ROCK_NAMES.length}: ${pointy.join(' ') || 'none'}`)
 
   // The bank is the thing both /gen-rock and the world read, so a variant that
   // fails to build is a boot failure for the route, not a missing rock.
   const bank = buildRockBank({ seed: 7, seeds: 3 })
-  check(bank.shapes.length === 16 * 3, 'three shapes per variant', `${bank.shapes.length} rocks`)
+  check(bank.shapes.length === 25 * 3, 'three shapes per variant', `${bank.shapes.length} rocks`)
   check(
     bank.shapes.every((s) => s.tiers.length === ROCK_BAND_COUNT),
     'every shape has a rectangular tier table'
@@ -892,36 +1098,83 @@ console.log('\nthe sixteen')
   check(span('pebble').height < 0.1, 'a pebble is pebble-sized', `${span('pebble').height.toFixed(2)} m tall`)
   check(span('boulder').height > 0.6 && span('boulder').height < 1.5, 'a boulder is about waist to chest', `${span('boulder').height.toFixed(2)} m`)
   check(span('blockhouse').width > 4, 'a blockhouse is house-sized', `${span('blockhouse').width.toFixed(1)} m across`)
-  check(span('fang').height > 8, 'a fang is a landmark', `${span('fang').height.toFixed(1)} m tall`)
+  check(span('buttress').height > 6, 'a buttress is a landmark', `${span('buttress').height.toFixed(1)} m tall`)
 
-  // The spire the user sent back: tapered hard, toothy at the top, sturdy at the
-  // bottom. Measured as the silhouette radius in the top and bottom tenth of the
-  // height, normalised to the widest -- which is exactly what "too rounded" and
-  // "too pointy at the base" mean when you put a number on them.
+  // FLAT IS THE POINT OF AN OPEN BOTTOM. A variant only sets `openBottom` when
+  // it is meant to lie on the ground like a slab or sit on it like a cap, and
+  // the faces the compaction throws away are the ones that landed flat on the
+  // bed plane -- which only happens if the shape is mostly bed. Set it on a
+  // boulder and you get a hollow shell you can walk into and see the sky
+  // through, so the promise here is that nobody has done that: every open
+  // variant is measurably a flat thing, well under half as tall as it is wide.
+  const open = ROCK_NAMES.filter((n) => ROCK_VARIANTS[n].openBottom === 1)
+  const flat = open.map((n) => span(n).height / span(n).width)
+  check(open.length >= 4 && Math.max(...flat) < 0.35,
+    'the open-bottomed variants are the flat ones',
+    open.map((n, i) => `${n} ${flat[i].toFixed(2)}`).join('  '))
+
+  // And it saves real triangles, which is the other half of why it exists. Each
+  // open variant is measured at the FINEST tier it ships, because that is where
+  // the faces are: a T8 shell has so few faces left that hardly any of them can
+  // land flat, and holding the coarse end to a fraction would be asking the
+  // compaction for something the tier cannot give.
+  const drops = open.map((n) => {
+    const p = rockParams(n, 31)
+    const g = buildRock({ ...p, tier: ROCK_LADDERS[rockClass(ROCK_VARIANTS[n].size)][0] })
+    const u = g.userData.rock
+    g.dispose()
+    return u.dropped / (u.triangles + u.dropped)
+  })
+  const meanDrop = drops.reduce((a, b) => a + b, 0) / drops.length
+  check(Math.min(...drops) > 0.08 && meanDrop > 0.2,
+    'and an open bottom pays for itself, dropping a fifth of the faces on average',
+    open.map((n, i) => `${n} ${(drops[i] * 100).toFixed(0)}%`).join('  '))
+
+  // THE SPIRE, WHICH IS THE ONE SHAPE ALLOWED TO BE A TOOTH. It was blunted
+  // when the bank was rebuilt (taper 0.85 -> 0.68, taperPow 2.2 -> 1.7) and
+  // penned into `peak`, and the promise that survives that is comparative: it
+  // is still the pointiest thing in the bank, and nothing else has crept up
+  // behind it. Pointiness is the silhouette radius in the top tenth of the
+  // height over the widest radius anywhere -- "comes to a point" with a number
+  // on it -- and it is averaged over twelve seeds because a single rock's crown
+  // is one lump of noise and the default `lumps` went 0.55 -> 0.7 with the
+  // rebuild. Per-seed, the profile now genuinely wanders; the mean does not.
   {
-    const g = buildRock({ ...rockParams('spire', 31), tier: 0 })
-    const pos = g.attributes.position.array
-    let ymin = Infinity
-    let ymax = -Infinity
-    for (let i = 1; i < pos.length; i += 3) {
-      if (pos[i] < ymin) ymin = pos[i]
-      if (pos[i] > ymax) ymax = pos[i]
+    const SEEDS_HERE = 12
+    const profile = (name) => {
+      const mean = new Float64Array(10)
+      for (let s = 1; s <= SEEDS_HERE; s++) {
+        const g = buildRock({ ...rockParams(name, s * 37 + 3), tier: 0 })
+        const pos = g.attributes.position.array
+        let ymin = Infinity
+        let ymax = -Infinity
+        for (let i = 1; i < pos.length; i += 3) {
+          if (pos[i] < ymin) ymin = pos[i]
+          if (pos[i] > ymax) ymax = pos[i]
+        }
+        const bins = new Float64Array(10)
+        for (let i = 0; i < pos.length; i += 3) {
+          const b = Math.min(9, Math.floor(((pos[i + 1] - ymin) / (ymax - ymin)) * 10))
+          const r = Math.hypot(pos[i], pos[i + 2])
+          if (r > bins[b]) bins[b] = r
+        }
+        const w = Math.max(...bins)
+        for (let i = 0; i < 10; i++) mean[i] += bins[i] / w / SEEDS_HERE
+        g.dispose()
+      }
+      return mean
     }
-    const bins = new Float64Array(10)
-    for (let i = 0; i < pos.length; i += 3) {
-      const b = Math.min(9, Math.floor(((pos[i + 1] - ymin) / (ymax - ymin)) * 10))
-      const r = Math.hypot(pos[i], pos[i + 2])
-      if (r > bins[b]) bins[b] = r
-    }
-    const w = Math.max(...bins)
-    check(bins[9] / w < 0.45, 'the spire comes to a tooth, not a dome', `top tenth is ${(bins[9] / w).toFixed(2)} of the widest`)
-    check(bins[0] / w > 0.9, 'the spire stands on a foot, not on a point', `bottom tenth is ${(bins[0] / w).toFixed(2)}`)
+    const crowns = ROCK_NAMES.map((n) => ({ name: n, crown: profile(n)[9] })).sort((a, b) => a.crown - b.crown)
+    check(crowns[0].name === 'spire' && crowns[0].crown < 0.4,
+      'the spire is the pointiest thing in the bank and still a tooth, not a dome',
+      `crown ${crowns[0].crown.toFixed(2)} of the widest, next is ${crowns[1].name} at ${crowns[1].crown.toFixed(2)}`)
+    const sp = profile('spire')
+    check(sp[0] > 0.9, 'the spire stands on a foot, not on a point', `bottom tenth is ${sp[0].toFixed(2)}`)
     // Monotone, near enough: a mid-height bulge is what the old isotropic taper
     // produced, and it is what made the thing read as a rounded lump.
     let rises = 0
-    for (let i = 1; i < 10; i++) if (bins[i] > bins[i - 1] + 0.02 * w) rises++
-    check(rises <= 1, 'the spire narrows all the way up', `${rises} widening steps`)
-    g.dispose()
+    for (let i = 1; i < 10; i++) if (sp[i] > sp[i - 1] + 0.02) rises++
+    check(rises <= 1, 'the spire narrows all the way up', `${rises} widening steps in ${[...sp].map((v) => v.toFixed(2)).join(' ')}`)
   }
 
   for (const g of bank.geometries) g.dispose()
@@ -931,7 +1184,7 @@ console.log('\nthe sixteen')
 // 8. The world scatter: three beds, one material, and stone where stone belongs.
 //
 // The scatter's own machinery -- tiles, ranks, graded thinning, the build budget
-// -- is render/trees.js's and is gated by check-v2.mjs there. What is new here
+// -- is render/trees.js's and is gated by check-trees.mjs there. What is new here
 // and what this section holds is the part that is ROCK: that a size class is
 // scattered at its own density over its own radius, that the environment gate
 // actually gates, that a rock is bedded rather than balanced, and that the pool
@@ -941,6 +1194,11 @@ console.log('\nthe sixteen')
 console.log('\nscatter')
 
 {
+  // `bands` is the altitude ramp the chunk mesher shades against, and the scatter
+  // reads it because every rock's tint is pulled toward the colour the ground
+  // under it is painted -- see GROUND_CUE. 0..900 m is the world's own span, so
+  // the flat worlds below sit low on the ramp and the peak world sits at the top
+  // of it, which is what makes the tints they produce comparable to the real ones.
   const world = (h, tan, snowLine, level) => ({
     field: {
       scatterAt: (x, z, cell, out) => {
@@ -951,6 +1209,7 @@ console.log('\nscatter')
       },
       heightAt: () => h,
       snowLineAt: () => snowLine,
+      bands: { altLo: 0, altSpan: 900 },
     },
     water: {
       levelAt: () => level,
@@ -958,14 +1217,52 @@ console.log('\nscatter')
     },
   })
 
+  // A world with actual RELIEF in it, which the flat stubs above cannot have.
+  // `_relief` is a SECOND difference along the fall line, so constant ground
+  // scores zero at both ends by construction and no rock in any flat world is
+  // ever at the foot or on the brow of anything -- which is correct, and which
+  // also means the site machinery would go entirely untested on flat stubs.
+  //
+  // A sine ridge in x, and the numbers are chosen against _relief's own: the
+  // amplitude and wavelength put the peak second difference over RELIEF_PROBE at
+  // 8.9 m, clear of the 7 m FOOT_RISE and BROW_DROP, and about 7% of the ground
+  // ends up a foot and another 7% a brow -- benches, not a world of them. `tan`
+  // is the field's real gradient rather than a constant, because a stub that
+  // told the slope test one thing and the relief probe another would be testing
+  // a world that cannot exist. It tops out at 1.10 (48 deg), which the boulders
+  // and giants beds allow and the underfoot bed's 42 deg does not, so the small
+  // stones thin out on the steep flanks exactly as they would on a real ridge.
+  const RIDGE_A = 22
+  const RIDGE_L = 20
+  const ridge = {
+    field: {
+      scatterAt: (x, z, cell, out) => {
+        if (!(cell > 0)) throw new Error('scatterAt needs a positive cell')
+        out.h = 900 + RIDGE_A * Math.sin(x / RIDGE_L)
+        out.tan = Math.abs((RIDGE_A / RIDGE_L) * Math.cos(x / RIDGE_L))
+        return out
+      },
+      heightAt: (x) => 900 + RIDGE_A * Math.sin(x / RIDGE_L),
+      snowLineAt: () => 880,
+      bands: { altLo: 0, altSpan: 900 },
+    },
+    water: { levelAt: () => null, isSubmerged: () => false },
+  }
+
   const texArray = buildTextureArray()
   const forest = world(60, 0, 9999, null)
   const cliff = world(60, 0.8, 9999, null) // 38.7 deg: past CLIFF_SLOPE_DEG, inside every bed's limit
   const peak = world(900, 0.5, 880, null)
   const river = world(60, 0, 9999, 60.8)
 
+  // One Layers stub for every world here. Rocks needs it for two things and both
+  // are the terrain's: `snow.band` and `flattenAt` feed the ground cue, and
+  // syncBands reads the snow line off it. flattenAt returns 0 -- no road under
+  // any of these rocks -- which is the case the cue has to be right in anyway.
+  const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 } }
+
   const build = (w) => {
-    const r = new Rocks(new THREE.Scene(), w.field, w.water, texArray, { seed: 7, seeds: 2 })
+    const r = new Rocks(new THREE.Scene(), w.field, w.water, layers, texArray, { seed: 7, seeds: 2 })
     r.place(0, 0)
     return r
   }
@@ -1005,20 +1302,93 @@ console.log('\nscatter')
   check(within(forestRocks, 'giants', 200) < 32, 'a giant in a wood is a landmark',
     `${within(forestRocks, 'giants', 200)} inside 200 m, one every ` +
     `${Math.round(Math.sqrt((Math.PI * 200 * 200) / Math.max(1, within(forestRocks, 'giants', 200))))} m`)
+  // The same bed on the two grounds, at the ratio BEDS asks for: giants run at
+  // 0.25 through a wood and 1.0 on a cliff, so the cliff should carry four times
+  // as many. Counted over 600 m rather than the 200 the check above uses, and
+  // that is not a wider bound but a quieter measurement -- a wood only holds
+  // about twenty giants inside 200 m and a count of twenty is +/- 20% on the
+  // seed alone, which is most of the margin between 3x and 4x. Over 600 m both
+  // counts are in the hundreds and the ratio sits on 4 across seeds. The graded
+  // thinning past fullRadius applies to both worlds identically, so it cancels.
   const cliffTest = build(cliff)
-  check(within(cliffTest, 'giants', 200) > within(forestRocks, 'giants', 200) * 3,
+  check(within(cliffTest, 'giants', 600) > within(forestRocks, 'giants', 600) * 3,
     'the cliff is littered where the wood is not',
-    `${within(cliffTest, 'giants', 200)} vs ${within(forestRocks, 'giants', 200)} inside 200 m`)
+    `${within(cliffTest, 'giants', 600)} vs ${within(forestRocks, 'giants', 600)} inside 600 m`)
   cliffTest.dispose()
 
-  // Every bed can furnish every environment. Without this a whole size class
-  // silently vanishes on one kind of ground -- the failure mode where a cliff
-  // has pebbles and spires on it and nothing in between.
-  let holes = 0
+  // --- the twelve pools ------------------------------------------------------
+  //
+  // Three beds crossed with four environments, and every one of the twelve has
+  // to be furnished. Without this a whole size class silently vanishes on one
+  // kind of ground -- the failure mode where a cliff has pebbles and spires on
+  // it and nothing in between -- and nothing throws, because a bed with an empty
+  // pool just places nothing.
+  //
+  // A FLOOR, NOT "NON-EMPTY", and the floor is two everywhere and three at the
+  // peak. One shape per pool is not a pool: it is the same rock rotated, and at
+  // the density the giants bed runs on a cliff you would be looking at a hundred
+  // copies of it at once. The peak gets the higher floor because it is the
+  // ground the rebuild was FOR: above the treeline the old table had three
+  // tapered towers and a chip of scree, and "furnished" there has to mean a
+  // choice rather than a family resemblance.
+  //
+  // COUNTED IN VARIANTS, not in pool entries. A pool holds one entry per seed, so
+  // at three seeds a bed furnished by a single variant would score three, and a
+  // floor measured on entries would call that a choice.
+  const POOL_FLOOR = { river: 2, forest: 2, cliff: 2, peak: 3 }
+  let thin = 0
+  const census = []
   for (const bed of forestRocks.beds) {
-    for (const env of ENVIRONMENTS) if (!bed.byEnv.get(env).length) holes++
+    for (const env of ENVIRONMENTS) {
+      const plain = new Set(bed.byEnv.get(env).map((i) => bed.shapes[i].name)).size
+      const site = new Set(SITES.flatMap((s) => bed.bySite.get(`${env}|${s}`).map((i) => bed.shapes[i].name))).size
+      if (plain < POOL_FLOOR[env]) thin++
+      census.push(`${bed.cfg.name[0]}/${env} ${plain}${site ? `+${site}` : ''}`)
+    }
   }
-  check(holes === 0, 'every bed has shapes for every environment')
+  check(thin === 0, 'every bed offers every environment a real choice, and the peak the widest',
+    census.join('  '))
+
+  // And every variant in the bank is placed by SOMEBODY. A shape nobody's `names`
+  // list mentions is a rock that builds, ships in the arena, costs its share of
+  // the bank's triangles and is never once seen -- the quietest way for the table
+  // to rot, since nothing about it fails.
+  const rostered = new Set(forestRocks.beds.flatMap((b) => b.cfg.names))
+  const orphans = ROCK_NAMES.filter((n) => !rostered.has(n))
+  check(orphans.length === 0, 'every variant in the bank is on some bed roster',
+    orphans.length ? `never placed: ${orphans.join(' ')}` : `${rostered.size} rostered`)
+
+  // THE SITE POOLS ARE HELD OUT OF THE ORDINARY ONES. `site` is the whole reason
+  // talus and lip exist: a talus cone is what lies at the FOOT of a face and a
+  // lip is what juts off its BROW, and either one strewn at random across open
+  // hillside is worse than not having it, because the eye reads scree as a sign
+  // that something steep is above it. RockBed keeps two indexes so the ordinary
+  // draw can never reach a tagged shape; this is that split, asserted.
+  let leaked = 0
+  for (const bed of forestRocks.beds) {
+    for (const env of ENVIRONMENTS) for (const i of bed.byEnv.get(env)) if (bed.shapes[i].site !== null) leaked++
+  }
+  check(leaked === 0, 'a sited shape is never in the pool the ordinary draw reads',
+    `${leaked} tagged shapes loose in byEnv`)
+  // The other half: the tagged pools are actually reachable, and the `siteEnvs`
+  // fast-path gate agrees with them. A bed whose siteEnvs missed an environment
+  // it has shapes for would never take the relief probe there, so the shapes
+  // would be indexed and never drawn.
+  let gate = 0
+  for (const bed of forestRocks.beds) {
+    for (const env of ENVIRONMENTS) {
+      const any = SITES.some((s) => bed.bySite.get(`${env}|${s}`).length > 0)
+      if (any !== bed.siteEnvs.has(env)) gate++
+    }
+  }
+  check(gate === 0, 'siteEnvs names exactly the environments a bed has tagged shapes for')
+  const boulderBed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
+  const giantBed = forestRocks.beds.find((b) => b.cfg.name === 'giants')
+  const poolNames = (bed, key) => [...new Set(bed.bySite.get(key).map((i) => bed.shapes[i].name))].join(' ')
+  check(boulderBed.bySite.get('cliff|foot').length > 0 && boulderBed.bySite.get('peak|foot').length > 0 &&
+    giantBed.bySite.get('cliff|brow').length > 0 && giantBed.bySite.get('peak|brow').length > 0,
+    'scree lies at the foot of both a cliff and a peak, and a lip juts off the brow of each',
+    `foot ${poolNames(boulderBed, 'cliff|foot')}  brow ${poolNames(giantBed, 'cliff|brow')}`)
 
   // The gate, tested where it matters: the four grounds get four different sets
   // of shapes, and the ones that must not appear do not.
@@ -1034,10 +1404,32 @@ console.log('\nscatter')
 
   const cliffGiants = named(cliffRocks, 'giants')
   check(cliffGiants.size > 0, 'the cliff is littered with giants', [...cliffGiants].join(' '))
-  check(!cliffGiants.has('fang'), 'a summit fang does not grow out of a cliff face')
+  // The spire is the one variant tagged `peak` and nothing else, which is half of
+  // what the rebuild did about the teeth: the other half was blunting it. A
+  // summit needle sprouting out of the side of a valley wall is the shape of the
+  // original complaint, so this is the check that says it cannot come back.
+  check(!cliffGiants.has('spire'), 'a summit spire does not grow out of a cliff face')
 
+  // A SPIRE IS A DROP, NOT AN ELEVATION, and this pair is what says so. Height
+  // alone was the wrong test for a pinnacle: an elevation gate spreads spires
+  // evenly over every high slope, which is a field of fangs however few of them
+  // there are. The spire is now tagged `site: 'brow'`, so it is out of the
+  // ordinary peak pool entirely and only stands where the ground falls away
+  // below it -- which means the peak's OPEN slopes have to come out blunt and
+  // the peak's BROW pool has to be where the tooth went. Both halves are the
+  // promise, because either one on its own is satisfied by deleting the spire.
+  //
+  // `peakRocks` is a uniform slope and so is nobody's brow (see the sites block
+  // below), which is exactly why it is the right world to read the ordinary
+  // pool off: nothing tagged can reach the ground here at all.
   const peakGiants = named(peakRocks, 'giants')
-  check(peakGiants.has('spire') || peakGiants.has('fang'), 'the peak gets spires', [...peakGiants].join(' '))
+  const peakPointy = [...peakGiants].filter((n) => (ROCK_VARIANTS[n].taper ?? 0) > 0.5)
+  check(peakGiants.size > 0 && peakPointy.length === 0,
+    'an open peak slope is furnished, and not one of its giants comes to a point',
+    `${[...peakGiants].join(' ')}${peakPointy.length ? ` -- pointed: ${peakPointy.join(' ')}` : ''}`)
+  const peakBrow = new Set(giantBed.bySite.get('peak|brow').map((i) => giantBed.shapes[i].name))
+  check(peakBrow.has('spire'), 'and the spire is what stands on the peak\'s brow, where the ground drops away',
+    [...peakBrow].join(' '))
   check(!peakGiants.has('blockhouse'), 'no forest blockhouse above the treeline')
 
   const riverBoulders = named(riverRocks, 'boulders')
@@ -1049,27 +1441,224 @@ console.log('\nscatter')
   check(riverRocks.stats.beds.find((b) => b.name === 'underfoot').placed > 0,
     'pebbles are allowed to be underwater')
 
-  // Bedded, not balanced -- and deeper on a slope, which is what makes a cliff
-  // rock read as protruding from the face.
+  // --- the sites, on ground that has any ------------------------------------
+  //
+  // Everything above stands on a plane, and a plane is nobody's foot and nobody's
+  // brow: _relief is a second difference, so uniform ground scores zero at both
+  // ends however steep it is. That is the first promise here, and it is the one
+  // that costs nothing to keep and everything to lose -- if flat ground started
+  // reading as a cliff base, scree would appear in the middle of open hillside
+  // and the cue would stop meaning anything.
+  const sitedIn = (rocks) => rocks.stats.beds.reduce(
+    (n, b) => n + b.sited.foot + b.sited.brow, 0)
+  check(sitedIn(cliffRocks) === 0 && sitedIn(peakRocks) === 0,
+    'a uniform slope is not the foot of anything, however steep',
+    `${sitedIn(cliffRocks)} on the cliff, ${sitedIn(peakRocks)} on the peak`)
+
+  // And then the same beds on the ridge, where there ARE feet and brows. What is
+  // being held is that the tagged shapes reach the ground at all: they are
+  // reachable only through _relief, so a bed indexing them correctly and never
+  // probing would look identical from every angle except this one.
   {
-    const flatBed = forestRocks.beds[1]
-    const steepBed = cliffRocks.beds[1]
-    const mean = (bed) => {
-      let s = 0
-      let n = 0
+    const r = build(ridge)
+    const bedsBySite = Object.fromEntries(r.stats.beds.map((b) => [b.name, b.sited]))
+    check(bedsBySite.boulders.foot > 0 && bedsBySite.giants.brow > 0,
+      'a ridge gets scree at its feet and lips off its brows',
+      `${bedsBySite.boulders.foot} foot in the boulders, ${bedsBySite.giants.brow} brow in the giants`)
+    // Each bed only carries tags for one site, so the other stays zero -- and
+    // the underfoot bed carries none at all, which is why its roster has no
+    // tagged shape on it. A count appearing here means a roster changed without
+    // the pools being thought about.
+    check(bedsBySite.underfoot.foot === 0 && bedsBySite.underfoot.brow === 0 &&
+      bedsBySite.boulders.brow === 0 && bedsBySite.giants.foot === 0,
+      'and a bed only places the sites it actually rosters shapes for',
+      Object.entries(bedsBySite).map(([n, s]) => `${n} ${s.foot}/${s.brow}`).join('  '))
+    // SITE_SHARE is 0.75, so even standing at the foot of something a quarter of
+    // the rocks are ordinary ones. A talus cone made entirely of talus chips is
+    // a texture, not a pile; the ordinary boulders mixed through it are what give
+    // it a size range.
+    const bed = r.beds.find((b) => b.cfg.name === 'boulders')
+    const tally = new Map()
+    for (const t of bed.tiles.values()) {
+      for (let k = 0; k < t.n; k++) {
+        const n = bed.shapes[bed.shapeAt[t.ids[k]]].name
+        tally.set(n, (tally.get(n) ?? 0) + 1)
+      }
+    }
+    const tagged = ['talus', 'rubble'].reduce((n, k) => n + (tally.get(k) ?? 0), 0)
+    const total = [...tally.values()].reduce((a, b) => a + b, 0)
+    check(tagged > 0 && tagged / total < 0.25, 'scree is a minority even on a ridge full of feet',
+      `${tagged} of ${total} boulders are talus or rubble`)
+
+    // MORE CANDIDATES AT A LOWER RATE, which is the shape of the boulders bed's
+    // density change and the reason it needs three checks of its own: read
+    // either number alone and it looks like somebody multiplied the boulders in
+    // the world or divided them, and it is neither.
+    //
+    // `envDensity` is an ACCEPT RATE, tested as `envRoll >= dens`, and at a foot
+    // site `dens` is `envDensity * (1 + CLUMP_GAIN * clump)`. That product is
+    // capped at 1 by construction, so every candidate it pushes past 1.0 has the
+    // rest of its multiplier silently thrown away -- and the thrown-away part IS
+    // the clumping. At the old cliff and peak rate of 1.0 the cap ate all of it
+    // and CLUMP_GAIN was a dead knob: turning it up did nothing at all, which is
+    // the kind of failure that never shows up as an error. So the rates came
+    // down by 2.5x and `density` went up by the same factor to pay for them.
+    //
+    // Held as three separate promises, because each one fails on its own:
+    // nothing moved in absolute terms, the cap is no longer eating the gain, and
+    // a foot really does end up about twice as dense as the ground beside it.
+    const rate = bed.cfg.envDensity
+    const perM2 = Object.fromEntries(Object.entries(rate).map(([e, v]) => [e, bed.cfg.density * v]))
+    // The shipped rocks per square metre of open ground, which is what a player
+    // sees and the only figure the retune was not allowed to move. Pinned here
+    // so that a later "simplification" folding `density` and `envDensity` back
+    // together cannot quietly re-scatter every environment in the game.
+    const WANT = { river: 0.00294, forest: 0.0042, cliff: 0.0042, peak: 0.00336 }
+    const drift = Object.entries(WANT).map(([e, w]) => Math.abs(perM2[e] - w) / w)
+    check(Math.max(...drift) < 0.02,
+      'raising the candidate count and lowering the accept rate left every environment exactly as dense as it was',
+      Object.entries(perM2).map(([e, v]) => `${e} ${v.toFixed(5)}`).join('  '))
+
+    // AND THE CAP IS NOT EATING THE CLUMPING. This is the invariant the two
+    // numbers above exist to satisfy, and the one that failed silently before:
+    // if `envDensity * (1 + CLUMP_GAIN * clump)` is at or past 1.0 for most of
+    // the field, most feet are saturated, CLUMP_GAIN is inert, and no future
+    // attempt to tune the piles will do anything. Sampled against the bed's own
+    // `_clump` -- the real field, not a uniform stand-in, because it is bilinear
+    // value noise and piles up around 0.5 -- and against the highest rate any
+    // environment asks for, since that is the one that saturates first.
+    const clumps = []
+    for (let i = 0; i < 20000; i++) clumps.push(bed._clump(i * 19.03, i * 7.71 + (i % 89) * 1.61))
+    const worstRate = Math.max(...Object.values(rate))
+    const saturated = clumps.filter((c) => worstRate * (1 + CLUMP_GAIN * c) >= 1).length / clumps.length
+    check(saturated < 0.35, 'and a cliff foot is not so densely offered that the clump field stops mattering',
+      `${(saturated * 100).toFixed(0)}% of the field saturates at the top rate ${worstRate}`)
+
+    // Then the thing itself, measured on the ridge so it does not depend on
+    // which environment the ridge lands in. The ceiling is 1 + CLUMP_GAIN / 2 =
+    // 2.10x, reached only when nothing is truncated; at the rates above the
+    // untruncated prediction is 2.05x and this disc measures a little under it,
+    // which is where a couple of hundred rocks of counting noise puts it. At the
+    // old rates it was 1.85x and falling. The bound sits below the noise and
+    // above the saturated case on purpose: it is not measuring 2.0, it is
+    // catching a return to the regime where the cap is in charge.
+    //
+    // Counted over the WHOLE bed rather than the near disc: the graded thinning
+    // outside `fullRadius` is a function of distance alone and applies to foot
+    // and open candidates alike, so it leaves the ratio untouched while giving
+    // it ten times the sample.
+    {
+      const R = bed.cfg.radius
+      const isFoot = (x, z) => bed._relief(x, z, ridge.field.heightAt(x)) === 'foot'
+      let footN = 0
+      let openN = 0
       for (const t of bed.tiles.values()) {
         for (let k = 0; k < t.n; k++) {
           const id = t.ids[k]
-          s += bed.instSink[id] / (bed.shapes[bed.shapeAt[id]].measured.height || 1)
-          n++
+          const x = bed.instX[id]
+          const z = bed.instZ[id]
+          if (x * x + z * z > R * R) continue
+          if (isFoot(x, z)) footN++
+          else openN++
         }
       }
-      return s / n
+      // How much of the disc is foot, by sampling the same predicate the scatter
+      // asked. A count without an area is not a density.
+      let footA = 0
+      let openA = 0
+      for (let x = -R; x <= R; x += 2) {
+        for (let z = -R; z <= R; z += 2) {
+          if (x * x + z * z > R * R) continue
+          if (isFoot(x, z)) footA++
+          else openA++
+        }
+      }
+      const ratio = (footN / footA) / (openN / openA)
+      check(ratio > 1.85, 'a cliff foot carries close to twice the scree of the open ground beside it',
+        `${footN} foot and ${openN} open rocks, ${ratio.toFixed(2)}x the density`)
     }
-    const flatSink = mean(flatBed)
-    const steepSink = mean(steepBed)
-    check(flatSink > 0.02, 'a rock on the flat is bedded into the ground', `${(flatSink * 100).toFixed(0)}% of its height`)
-    check(steepSink > flatSink * 1.5, 'a rock on a cliff is bedded deeper', `${(steepSink * 100).toFixed(0)}% vs ${(flatSink * 100).toFixed(0)}%`)
+    r.dispose()
+  }
+
+  // Bedded, not balanced -- and deeper on a slope, which is what makes a cliff
+  // rock read as protruding from the face.
+  //
+  // THE SLOPE TERM IS A FLOOR AND NOT THE ANSWER, which is what this block used
+  // to get wrong. The two large beds now set `sinkVary` and roll each instance's
+  // burial between that floor and SINK_DEEP, because a scatter where every rock
+  // is bedded the same fraction reads as props standing ON the hill rather than
+  // as stone coming OUT of it. So "a cliff rock is bedded deeper" stopped being
+  // true instance for instance -- one steep rock can absolutely be shallower
+  // than one flat rock -- and what survives is the FLOOR and the MEAN. Both are
+  // asserted, because the mean alone would be kept by a roll that reached down
+  // past the floor on a cliff and the floor alone says nothing about what the
+  // ground actually looks like.
+  //
+  // Measured as a fraction of the instance's OWN height, which means dividing
+  // out its scale: `instSink` is metres and the roll is a fraction, so a bed
+  // whose scale spans 0.55 to 2.2 would otherwise report the scale roll rather
+  // than the burial roll. The scale comes back off the instance matrix, and the
+  // open-bottomed variants are skipped because OPEN_BURY adds a term measured in
+  // WIDTH on top of theirs (rocks.js) and it is not part of this promise.
+  {
+    const mat = new THREE.Matrix4()
+    const fracs = (rocks, bedName) => {
+      const bed = rocks.beds.find((b) => b.cfg.name === bedName)
+      const out = []
+      for (const t of bed.tiles.values()) {
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          const s = bed.shapes[bed.shapeAt[id]]
+          if (s.openBottom) continue
+          bed.batch.getMatrixAt(id, mat)
+          const e = mat.elements
+          out.push(bed.instSink[id] / (s.measured.height * Math.hypot(e[0], e[1], e[2])))
+        }
+      }
+      if (!out.length) throw new Error(`no closed-bottomed ${bedName} to measure`)
+      return out
+    }
+    const stat = (a) => ({
+      min: Math.min(...a), max: Math.max(...a), mean: a.reduce((x, y) => x + y, 0) / a.length, n: a.length,
+    })
+    const flat = stat(fracs(forestRocks, 'boulders'))
+    const steep = stat(fracs(cliffRocks, 'boulders'))
+
+    check(flat.mean > 0.02, 'a rock on the flat is bedded into the ground',
+      `${(flat.mean * 100).toFixed(0)}% of its height on average, over ${flat.n}`)
+    // 1.25x rather than the 1.5 this held before the roll went in, and the
+    // slack is where the roll went: on flat ground the floor is 6% and the roll
+    // runs to 50%, so the mean is already most of the way up the range and a
+    // cliff cannot move it as far as it used to move a fixed fraction.
+    check(steep.mean > flat.mean * 1.25, 'and averaged over a hillside, a rock on a cliff is bedded deeper',
+      `${(steep.mean * 100).toFixed(0)}% vs ${(flat.mean * 100).toFixed(0)}%`)
+    // The floor, which is the half of the promise that is still exact. Nothing
+    // on the cliff may be as shallow as the shallowest thing on the flat -- that
+    // is what stops a steep rock's downhill side hanging in the air, and it is
+    // the one thing the per-instance roll must not be allowed to undo.
+    check(steep.min > flat.min * 2, 'and the shallowest cliff rock is still deeper than the shallowest flat one',
+      `floors ${(steep.min * 100).toFixed(0)}% vs ${(flat.min * 100).toFixed(0)}%`)
+
+    // AND THE ROLL ACTUALLY SPANS ITS RANGE. A `sinkVary` bed on flat ground is
+    // the widest case there is -- floor at SINK_MIN, roll to SINK_DEEP -- so
+    // both ends should turn up in a wood, and if they stop turning up the bed
+    // has quietly gone back to one burial fraction for everything, which is the
+    // look the roll exists to break. Stated as the 5-50% that SINK_MIN and
+    // SINK_DEEP promise, with a hair of slack at each end for the sample.
+    check(flat.min < 0.08 && flat.max > 0.46,
+      'a wood buries its boulders anywhere from a twentieth to half of themselves',
+      `${(flat.min * 100).toFixed(0)}% .. ${(flat.max * 100).toFixed(0)}%`)
+    // And the bed WITHOUT `sinkVary` stays a pure function of slope, because a
+    // pebble is too small for the difference to read and its open-shell variants
+    // have a burial rule of their own already. One slope, one fraction, exactly.
+    const under = stat(fracs(forestRocks, 'underfoot'))
+    const underSteep = stat(fracs(cliffRocks, 'underfoot'))
+    check(under.max - under.min < 1e-6 && underSteep.max - underSteep.min < 1e-6 &&
+      underSteep.min > under.max,
+      'the underfoot bed takes no roll at all -- one slope, one burial fraction',
+      `${(under.min * 100).toFixed(1)}% flat, ${(underSteep.min * 100).toFixed(1)}% on the cliff`)
+
+    const flatBed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
     check(
       flatBed.instY[flatBed.tiles.values().next().value.ids[0]] < 60,
       'the instance sits below the ground line, not on it'
@@ -1119,7 +1708,6 @@ console.log('\nscatter')
   // directions: white above, green below, with clear air between the two lines
   // so no rock is both at once.
   {
-    const layers = { snow: { base: 780, band: 90 } }
     forestRocks.syncBands(layers)
     const snow = getSnowLine()
     const moss = getMossLine()
@@ -1127,6 +1715,18 @@ console.log('\nscatter')
     check(moss.base < snow.base - snow.band, 'moss has given out well before the snow starts',
       `moss ${moss.base} m, snow ${snow.base} m`)
     check(moss.band > layers.snow.band, 'the moss line is a gradient, not a contour', `${moss.band} m band`)
+    // syncBands ALSO narrows both ceilings, and that is the half of it that is
+    // easy to lose, because nothing about the lines depends on it. A rock at a
+    // full snow load is not a snowy rock, it is a white one -- stone leans on the
+    // surface normal twice as hard as foliage does -- so the world caps it at a
+    // third to a half and the granite keeps showing through. Moss's cap starts at
+    // ZERO on purpose: a wood wants bare boulders in it as much as green ones.
+    const sv = getSnowVary()
+    const mv = getMossVary()
+    check(sv.lo > 0 && sv.hi <= 0.5 && sv.hi > sv.lo, 'the world caps a rock at a dusted crown, not a white one',
+      `snow load ${sv.lo}-${sv.hi} of full`)
+    check(mv.lo === 0 && mv.hi <= 0.5, 'and lets a share of the wood stay bare stone',
+      `moss ${mv.lo}-${mv.hi} of full`)
   }
 
   // --- the per-instance tint ------------------------------------------------
@@ -1141,21 +1741,44 @@ console.log('\nscatter')
     const buckets = new Set()
     let n = 0
     let dimmest = Infinity
+    let dimmestLuma = Infinity
+    let underOne = 0
     for (const t of bed.tiles.values()) {
       for (let k = 0; k < t.n; k++) {
         bed.batch.getColorAt(t.ids[k], c)
         buckets.add(`${Math.round(c.r * 6)},${Math.round(c.g * 6)},${Math.round(c.b * 6)}`)
         dimmest = Math.min(dimmest, c.r, c.g, c.b)
+        dimmestLuma = Math.min(dimmestLuma, 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b)
+        if (Math.min(c.r, c.g, c.b) < 1) underOne++
         n++
       }
     }
     check(buckets.size >= 8, 'a wood of boulders is not one colour',
       `${buckets.size} distinct tints across ${n} instances`)
     // The whole point of the rework: a per-instance colour is a GAIN. The jitter
-    // floor is 0.86 and the palette's smallest gain is 1.39, so the dimmest thing
-    // the scatter may legally write is about 1.15 -- comfortably over 1, which
-    // means no rock in the world comes out darker than the tile it is made of.
-    check(dimmest > 1, 'no instance darkens the tile', `dimmest channel written is ${dimmest.toFixed(2)}`)
+    // floor is 0.86 and the palette's smallest gain is 1.39, so before the ground
+    // cue the dimmest thing the scatter could write was about 1.15, and the
+    // promise was stated per channel: nothing below 1, so no rock in the world
+    // comes out darker than the tile it is made of.
+    //
+    // THE GROUND CUE MADE THAT THE WRONG WAY TO SAY IT, and the promise itself is
+    // unchanged. The cue is renormalised to unit LUMINANCE on purpose -- a rock's
+    // tint is an absolute destination and the terrain palette is near black, so
+    // taking its magnitude would delete the rock rather than seat it -- which
+    // means what it applies is a hue rotation at constant brightness. A rotation
+    // toward forest green necessarily pulls some channel down; stone.png is warm
+    // granite whose weakest channel is already blue, and blue is the one it pulls.
+    // So brightness is the promise and it is asserted on brightness, at the
+    // luminance the cue is normalised against and nothing else.
+    check(dimmestLuma > 1, 'no instance darkens the tile',
+      `dimmest instance is ${dimmestLuma.toFixed(2)}x the bare tile`)
+    // And the hue swing that buys is small and rare, which is the other half of
+    // what "seated, not repainted" has to mean. A wood is the worst case in the
+    // world for it -- the greenest ground and the lowest gains -- and there it
+    // takes a handful of instances a few percent under on blue alone.
+    check(dimmest > 0.9 && underOne / n < 0.02,
+      'and the hue the cue borrows off the ground never amounts to a repaint',
+      `${underOne} of ${n} dip a channel below the tile, lowest ${dimmest.toFixed(2)}`)
     // ENV_TINTS is what makes that true per environment, so it has to name all
     // four and index nothing that does not exist.
     for (const env of ENVIRONMENTS) {
@@ -1165,20 +1788,123 @@ console.log('\nscatter')
     }
   }
 
-  // --- the per-instance moss ------------------------------------------------
+  // --- the per-instance moss and snow ---------------------------------------
   //
-  // setMossVary defaults OFF, and that default is load bearing rather than
-  // incidental: /gen-rock shows exactly one rock, at the origin, and if the
-  // variation were always on that one rock would wear whatever the hash of (0,0)
-  // happened to be and the bench's moss slider would stop meaning what it says.
+  // Both ceilings are RANGES now, not amounts: each instance rolls its own
+  // number in [lo, hi] off a hash of its root's world XZ and wears the scene
+  // ceiling times that. What was one scalar "how much variation" is two numbers
+  // saying what the least and the most mossed rock in the wood look like, which
+  // is the thing that was actually wanted -- a wood is not one colour and it is
+  // not one greenness either.
+  //
+  // (1, 1) IS THE DEFAULT AND IT IS THE NO-OP, and that default is load bearing
+  // rather than incidental: /gen-rock shows exactly one rock, at the origin, and
+  // if the variation were always on, that one rock would wear whatever the hash
+  // of (0,0) happened to be and the bench's slider would stop meaning what it
+  // says. The world narrows it in syncBands; the bench never does.
   {
-    check(getMossVary() === 0, 'moss variation is off until something turns it on',
-      `default ${getMossVary()}`)
-    setMossVary(0.5)
-    check(getMossVary() === 0.5, 'and it is a real knob', `${getMossVary()}`)
-    setMossVary(4)
-    check(getMossVary() === 1, 'clamped to a fraction like every other ceiling here', `${getMossVary()}`)
-    setMossVary(0)
+    // syncBands ran above, so put both back where a fresh module leaves them
+    // before asserting what a fresh module leaves them at.
+    setMossVary(1, 1)
+    setSnowVary(1, 1)
+    const m0 = getMossVary()
+    const s0 = getSnowVary()
+    check(m0.lo === 1 && m0.hi === 1 && s0.lo === 1 && s0.hi === 1,
+      'the full ceiling for everything is the no-op both ranges default to',
+      `moss ${m0.lo}-${m0.hi}, snow ${s0.lo}-${s0.hi}`)
+    setMossVary(0.2, 0.6)
+    setSnowVary(0.3, 0.5)
+    const m1 = getMossVary()
+    const s1 = getSnowVary()
+    check(m1.lo === 0.2 && m1.hi === 0.6 && s1.lo === 0.3 && s1.hi === 0.5,
+      'and they are real knobs, both ends of both',
+      `moss ${m1.lo}-${m1.hi}, snow ${s1.lo}-${s1.hi}`)
+    // Each end clamps to a fraction like every other ceiling here, because both
+    // are multipliers on setMoss/setSnow and a gain above 1 would put a rock
+    // past the season the scene asked for.
+    setMossVary(-3, 4)
+    setSnowVary(-3, 4)
+    const m2 = getMossVary()
+    const s2 = getSnowVary()
+    check(m2.lo === 0 && m2.hi === 1 && s2.lo === 0 && s2.hi === 1,
+      'each end clamps to a fraction, like every other ceiling here',
+      `moss ${m2.lo}-${m2.hi}, snow ${s2.lo}-${s2.hi}`)
+    // AN INVERTED RANGE THROWS rather than quietly sorting itself, because there
+    // is no sane reading of it: mix( hi, lo, roll ) is a range that runs
+    // backwards and looks identical from the outside, so the caller who wrote
+    // the arguments in the wrong order would never find out.
+    const throws = (f) => { try { f(); return false } catch { return true } }
+    check(throws(() => setMossVary(0.6, 0.2)) && throws(() => setSnowVary(0.6, 0.2)),
+      'a range whose top is below its bottom throws instead of silently inverting')
+    check(throws(() => setMossVary(0, NaN)) && throws(() => setSnowVary(Infinity, 1)),
+      'and so does a range that is not two numbers')
+
+    // BOTH ROLLS ARE GATED, and each on a DIFFERENT list -- which is the whole
+    // content of this block, and which used to be one sentence saying moss
+    // needed no gate at all. That was true only while MOSS_LAYERS was the stone
+    // layer alone; moss now grows on three barks and on TIMBER_BEAM as well, so
+    // an ungated roll would reach every trunk in the world.
+    //
+    // Asserted in the SHADER because that is where both gates live: the JS
+    // setters are two global uniforms and know nothing about layers.
+    //
+    // Snow's question is about the RECIPE. Any surface leaning on 'up' as hard
+    // as stone does -- which since wood joined SNOW_HARD_LAYERS means bark and
+    // timber too -- takes its own undersides at a full load and stops reading as
+    // itself, while a canopy at a full load is a loaded tree and correct. So the
+    // snow roll runs on the wide list and foliage keeps the ceiling.
+    //
+    // Moss's question is narrower: uMossVary is driven from Rocks.syncBands with
+    // a range chosen for BOULDERS, so it may only reach STONE. Gating it on the
+    // list of things moss grows on would halve the moss on every trunk and beam
+    // in the world to suit a decision about rocks -- so the third check below is
+    // the one that matters, and it says the gate is NOT MOSS_LAYERS.
+    const src = {
+      vertexShader: THREE.ShaderLib.lambert.vertexShader,
+      fragmentShader: THREE.ShaderLib.lambert.fragmentShader,
+      uniforms: {},
+    }
+    createPropMaterial(texArray).onBeforeCompile(src)
+    const vs = src.vertexShader
+    const snowAt = vs.indexOf('vSnowPos = vec4(')
+    const mossAt = vs.indexOf('vMoss =')
+    // Loudly, rather than slicing from -1 and quietly asserting against the
+    // wrong half of the shader: if either write has been renamed, this section
+    // is reading something it does not understand and should say so.
+    if (snowAt < 0 || mossAt <= snowAt) throw new Error('the prop vertex shader no longer writes vSnowPos then vMoss')
+    const snowSlice = vs.slice(snowAt, mossAt)
+    const mossSlice = vs.slice(mossAt)
+    // Both accumulators are read out of the emitted source by their LOOP BOUND
+    // rather than by matching a block of it verbatim, because the bound is the
+    // part that carries the meaning: each says how many of uSnowRockLayers --
+    // one array, built stone-first -- that gate is willing to look at.
+    const loopLen = (name) => {
+      const m = vs.match(new RegExp(`i < (\\d+); i\\+\\+ \\) \\{\\s*${name} \\+= step\\( abs\\( texLayer - uSnowRockLayers`))
+      if (!m) throw new Error(`the prop vertex shader no longer builds ${name} from uSnowRockLayers`)
+      return Number(m[1])
+    }
+    const hardLayers = [...SNOW_ROCK_LAYERS, ...SNOW_WOOD_LAYERS]
+    check(snowSlice.includes('uSnowVary.x') && snowSlice.includes('min( rockV, 1.0 )') &&
+      loopLen('rockV') === hardLayers.length,
+      'the snow roll reaches an instance only through the hard-surface layer list',
+      `gated on ${hardLayers.length} layers: ${SNOW_ROCK_LAYERS.length} stone, ${SNOW_WOOD_LAYERS.length} wood`)
+    check(mossSlice.includes('uMossVary.x') && mossSlice.includes('min( stoneV, 1.0 )') &&
+      loopLen('stoneV') === SNOW_ROCK_LAYERS.length &&
+      SNOW_ROCK_LAYERS.length === 1 && SNOW_ROCK_LAYERS[0] === LAYER.ROCK,
+      'and the moss roll reaches one only through the narrower stone list, which is still stone alone',
+      `SNOW_ROCK_LAYERS = [${SNOW_ROCK_LAYERS.join(' ')}], LAYER.ROCK = ${LAYER.ROCK}`)
+    // THE OBVIOUS WRONG GATE, named so that writing it cannot pass. MOSS_LAYERS
+    // is a fragment-stage question -- may this surface show moss at all -- and
+    // it is longer than the stone list by every bark on it. Re-keying the roll
+    // to it would look like a tidy-up and would be a silent halving of the moss
+    // on every trunk in the world.
+    check(!mossSlice.includes('uMossLayers') && MOSS_LAYERS.length > SNOW_ROCK_LAYERS.length &&
+      src.fragmentShader.includes('mossMask += step( abs( vTexLayer - uMossLayers[ i ] ), 0.5 )'),
+      'and MOSS_LAYERS stays out of it -- that list says where moss may grow, not whose range this is',
+      `MOSS_LAYERS = [${MOSS_LAYERS.join(' ')}] against a gate of [${SNOW_ROCK_LAYERS.join(' ')}]`)
+
+    setMossVary(1, 1)
+    setSnowVary(1, 1)
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()
@@ -1190,6 +1916,83 @@ console.log(`\n${failures === 0 ? 'all rock checks passed' : `${failures} FAILED
 process.exit(failures === 0 ? 0 : 1)
 
 // --- helpers ----------------------------------------------------------------
+
+// The moss mask's `creep`, sampled all round a boulder and sorted, plus the one
+// query section 5 asks of it: what fraction of the rock sits above a given cut.
+// Coverage is the field's complementary CDF, and there is no closed form for it
+// -- MOSS_CUT_MID and MOSS_CUT_WIDTH are a FIT to this distribution, so the only
+// way to check the fit is to have the distribution.
+//
+// A PORT, and the honest cost of it is stated where it is used: snowNoise and
+// blobField are transliterated from the GLSL in material.js and could drift
+// from it silently. Everything that can be imported is -- MOSS.freq, MOSS.down,
+// SNOW_ROCK.blobWarp, SNOW_ROCK.blobContrast -- so the only literals here are
+// the two noise offsets and the warp frequency, which material.js keeps
+// module-private.
+//
+// A SPHERE OF RADIUS 0.9, and the radius matters: the field is sampled in WORLD
+// space, so the size of the rock decides how many patches are wrapped around it
+// and therefore how the samples are distributed. 0.9 m is an ordinary boulder,
+// which is what the moss constants were fitted against and what a player mostly
+// sees wearing moss. Fibonacci rather than a lattice or a random spray, because
+// it is the even sphere sampling with no seam and no clustering at the poles --
+// and the poles are exactly where `down` is at its extremes.
+function mossCreepOnBoulder() {
+  const N = 20000
+  const R = 0.9
+  const BLOB_WARP_FREQ = 0.46 // material.js, not exported: the coarse copy that drags the rims about
+  const fract = (v) => v - Math.floor(v)
+  const hash = (x, y, z) => {
+    const px = fract(x * 0.3183099 + 0.71) * 17
+    const py = fract(y * 0.3183099 + 0.113) * 17
+    const pz = fract(z * 0.3183099 + 0.419) * 17
+    return fract(px * py * pz * (px + py + pz))
+  }
+  const mix = (a, b, t) => a + (b - a) * t
+  const noise = (x, y, z) => {
+    const ix = Math.floor(x)
+    const iy = Math.floor(y)
+    const iz = Math.floor(z)
+    let fx = x - ix
+    let fy = y - iy
+    let fz = z - iz
+    fx = fx * fx * (3 - 2 * fx)
+    fy = fy * fy * (3 - 2 * fy)
+    fz = fz * fz * (3 - 2 * fz)
+    return mix(
+      mix(mix(hash(ix, iy, iz), hash(ix + 1, iy, iz), fx),
+        mix(hash(ix, iy + 1, iz), hash(ix + 1, iy + 1, iz), fx), fy),
+      mix(mix(hash(ix, iy, iz + 1), hash(ix + 1, iy, iz + 1), fx),
+        mix(hash(ix, iy + 1, iz + 1), hash(ix + 1, iy + 1, iz + 1), fx), fy),
+      fz)
+  }
+  const blobField = (x, y, z) => {
+    const w = noise(x * BLOB_WARP_FREQ + 23.1, y * BLOB_WARP_FREQ + 5.7, z * BLOB_WARP_FREQ + 61.3)
+    const warp = SNOW_ROCK.blobWarp
+    const f = noise(x + w * warp, y + w * 1.7 * warp, z - w * warp)
+    return Math.min(1, Math.max(0, (f - 0.5) * SNOW_ROCK.blobContrast + 0.5))
+  }
+
+  const creeps = new Float64Array(N)
+  const GOLDEN = Math.PI * (3 - Math.sqrt(5))
+  for (let i = 0; i < N; i++) {
+    const ny = 1 - (2 * (i + 0.5)) / N
+    const ring = Math.sqrt(Math.max(0, 1 - ny * ny))
+    const a = i * GOLDEN
+    const nx = Math.cos(a) * ring
+    const nz = Math.sin(a) * ring
+    // Position and normal are the same vector on a sphere, which is why this is
+    // a sphere: the shader's `down` comes off the normal and its blob off the
+    // world position, and a boulder is round enough that the two agree.
+    const blob = blobField(
+      nx * R * MOSS.freq + 31.7, ny * R * MOSS.freq + 12.3, nz * R * MOSS.freq + 47.1)
+    const down = Math.min(1, Math.max(0, 0.5 - ny * 0.5))
+    creeps[i] = blob * (1 - MOSS.down) + down * MOSS.down
+  }
+  creeps.sort()
+
+  return { creeps, min: creeps[0], max: creeps[N - 1] }
+}
 
 // Lifted from check-buildings.mjs, and the reasoning there is worth repeating:
 // the absolute step across the wrap edge says nothing on its own, because a

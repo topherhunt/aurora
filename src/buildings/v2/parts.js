@@ -255,8 +255,16 @@ function slopeSurface(o) {
   const pitch = (highY - eaveY) / Math.max(0.001, runNominal)
   const hyp = Math.hypot(1, pitch)
 
-  const vLoAt = (s) => alongHalf + vergeLo + splayLo * (s - 0.5)
-  const vHiAt = (s) => alongHalf + vergeHi + splayHi * (s - 0.5)
+  // The splay is ANCHORED on whichever end of the rake gets the nominal verge,
+  // not centred on it: a positive splay leaves the eave alone and throws the
+  // ridge out, a negative one leaves the ridge alone and throws the eave out.
+  // Centred, half of any splay big enough to read from the street would be
+  // subtracted from a verge only 0.3 m deep and the sheet would end INSIDE the
+  // gable wall, which is a slot of daylight rather than a look. Anchored, the
+  // verge is the floor and the splay only ever adds.
+  const splayAt = (sp, s) => (sp >= 0 ? sp * s : -sp * (1 - s))
+  const vLoAt = (s) => alongHalf + vergeLo + splayAt(splayLo, s)
+  const vHiAt = (s) => alongHalf + vergeHi + splayAt(splayHi, s)
   const tOf = (a, s) => (a + vLoAt(s)) / Math.max(0.001, vLoAt(s) + vHiAt(s))
 
   /**
@@ -612,7 +620,20 @@ export function planGableRoof(o) {
     layer = LAYER.THATCH, tint = TINT.thatchNew, moss = 0.35, fringe = true,
     detail = 2, k = FLAT,
   } = o
-  const kk = detail >= 2 ? k : FLAT
+  // CHARACTER SURVIVES DOWN TO DETAIL 1, and it is free there. It used to stop
+  // at detail 2 and the middle tier read as a different, straighter village --
+  // the one thing a LOD is not allowed to be. What a 1x1 sheet can carry is
+  // whatever moves its CORNERS: the overhang multiplier, the verge splay, the
+  // eave's reach and its sway. What it cannot carry cancels itself here with no
+  // help -- sag, buckle and ridgeSag are all sin(pi * u) terms sampled only at
+  // the ends of their span, where they are zero -- so this passes the whole
+  // character and lets the grid decide what of it survives.
+  //
+  // Detail 0 stays dead straight on purpose: it is drawn with no overhang and no
+  // verge at all, and its gable triangle is filled against the flat top of a box
+  // rather than against a sheet, so an eave that reached or swayed there would
+  // open that joint rather than shape anything.
+  const kk = detail >= 1 ? k : FLAT
   const ridgeY = eaveY + rise
   const alongHalf = (ridgeAxis === 'x' ? w : d) / 2
   const runHalf = (ridgeAxis === 'x' ? d : w) / 2
@@ -623,11 +644,21 @@ export function planGableRoof(o) {
   // the per-building multiplier and the splay are spent on the free ends only.
   const vLo = vergeLo ?? verge * kk.overhang
   const vHi = vergeHi ?? verge * kk.overhang
-  const splayLo = vergeLo == null ? kk.vergeSplay : 0
-  const splayHi = vergeHi == null ? kk.vergeSplay : 0
+  // AS A FRACTION OF THE SLOPE'S RUN, not as metres, so what the character fixes
+  // is the ANGLE the rake makes with the wall below it -- the thing you actually
+  // read from the street -- and a hut and an inn get the same amount of it.
+  const splay = kk.vergeSplay * (runHalf + oh)
+  const splayLo = vergeLo == null ? splay : 0
+  const splayHi = vergeHi == null ? splay : 0
 
   const drop = (rise / Math.max(0.001, runHalf)) * oh
   const eave = eaveY - drop
+  // The SPLAY is deliberately not in that width. roofGrid's columns exist to
+  // resolve the terms that shape the sheet -- the sag across it, the buckle and
+  // the wobble along it -- and all of those live on the part of it that spans
+  // the building. What the splay adds is oversail hanging past the gable end
+  // over open air, carrying nothing but a straight rake line, and a column
+  // spent there costs 2 * nv triangles on each slope and buys nothing.
   const grid = detail >= 2
     ? roofGrid(2 * alongHalf + vLo + vHi, Math.hypot(runHalf + oh, rise + drop))
     : { nu: 1, nv: 1 }
@@ -643,7 +674,8 @@ export function planGableRoof(o) {
 
   return {
     kind: 'gable', slopes, color, tint, layer, fringe, detail, seed, k: kk,
-    ridgeY, eave, run: runHalf + oh, alongHalf: alongHalf + Math.max(vLo, vHi),
+    ridgeY, eave, run: runHalf + oh,
+    alongHalf: alongHalf + Math.max(vLo + Math.abs(splayLo), vHi + Math.abs(splayHi)),
     heightAt: (x, z) =>
       slopes[(ridgeAxis === 'x' ? z - cz : x - cx) >= 0 ? 0 : 1].heightAt(x, z),
     // Both slopes asked, not the one the point falls on: an overhanging eave
@@ -684,7 +716,8 @@ export function planLeanRoof(o) {
     cx, cz, w, d, highY, lowY, dir = '+z', seed = 0, overhang = 0.3,
     layer = LAYER.THATCH, tint = TINT.thatchNew, detail = 2, k = FLAT,
   } = o
-  const kk = detail >= 2 ? k : FLAT
+  // Detail 1 keeps the character, for the reasons planGableRoof() gives.
+  const kk = detail >= 1 ? k : FLAT
   const axis = dir[1]
   const sign = dir[0] === '+' ? 1 : -1
   const alongAxis = axis === 'x' ? 'z' : 'x'
@@ -722,7 +755,12 @@ export function planLeanRoof(o) {
     cx, cz, alongAxis, dirSign: sign, alongHalf,
     runNominal: runNominal + TOP_EXT, cHigh: -sign * (runHalf + TOP_EXT),
     eaveY: lowY, highY: highY + pitchOf * TOP_EXT, overhang: oh,
-    vergeLo: verge, vergeHi: verge, splayLo: kk.vergeSplay, splayHi: kk.vergeSplay,
+    // Same fraction of the run as the gable's rake, so an outshut's verge
+    // diverges from its end wall at the same ANGLE the main roof does and the
+    // two read as one hand's work. A porch canopy has a short run and gets
+    // correspondingly little of it, which is the point of scaling by the run.
+    vergeLo: verge, vergeHi: verge,
+    splayLo: kk.vergeSplay * (runNominal + oh), splayHi: kk.vergeSplay * (runNominal + oh),
     ridgeSag: 0, seed: seed * 3 + 1, k: kk, layer, nu: grid.nu, nv: grid.nv,
   })
 
@@ -767,6 +805,84 @@ export function gableRoof2(b, o) {
 
 export function leanToRoof2(b, o) {
   return drawRoof(b, planLeanRoof(o))
+}
+
+/**
+ * A DORMER: a stub of roof driven out through the main slope, with a window in
+ * the gablet it presents.
+ *
+ * IT IS ONE SOLID PUSHED THROUGH A SHEET, exactly as the chimney is, and for the
+ * same reason: a building here is a union of interpenetrating closed solids and
+ * nothing is ever cut, so the way to make a roof grow something is to drive a
+ * closed thing through it and let the sheet pass in one side and out the other.
+ * A five-sided section swept horizontally into the slope IS the dormer -- two
+ * roof planes, two cheeks and a floor from the sides of the sweep, the gablet
+ * and its buried twin from the two caps -- and it costs sixteen triangles, which
+ * is four more than the chimney.
+ *
+ * WHAT KEEPS IT WATERTIGHT is the same pair of tricks:
+ *
+ *  - The section drops `SINK` BELOW the sheet at the face. Everything under that
+ *    line is behind the covering from every angle outside, because the sheet
+ *    falls away from the face on the only side you can see it from.
+ *  - The sweep runs in until the sheet has climbed clear over the ridge of the
+ *    stub, which is asked of `sheetAt` step by step rather than worked out from
+ *    the pitch. The pitch is not the whole story: the sag can be 40 cm and the
+ *    buckle wanders, and a depth computed from the nominal plane puts the back
+ *    gablet out through the covering on exactly the seeds where the roof is most
+ *    interesting. Where the sheet never gets clear before the ridge, there is no
+ *    dormer -- which is what happens on a shallow-pitched hut, and correctly so.
+ *
+ * The whole stub is drawn in the COVERING's layer and colour rather than in
+ * boards. A thatched gablet is what a thatched roof actually does when it has to
+ * grow a window, and it also means the thing reads as a piece of the roof pushed
+ * out rather than as a shed nailed onto it.
+ *
+ * Returns the SEAT it drew -- where the stub met the sheet and how far back it
+ * had to run to get under it -- or null if it drew nothing. The caller keeps
+ * those so the gate can walk up to each one and measure it, rather than having
+ * to find dormers in a finished vertex array by looking for shapes.
+ */
+export function dormer2(b, {
+  x, z, nx, nz, sheetAt, ridgeLimit, layer, color, seed = 0, detail = 2, k = FLAT,
+}) {
+  if (detail < 1) return null
+  const faceY = sheetAt(x, z)
+  if (!Number.isFinite(faceY)) return null
+
+  // The stub, measured up from where the main sheet crosses its face. The window
+  // is what sets these: sill, glass, head, and then enough gablet above the head
+  // that the window sits in the little roof instead of being jammed under it --
+  // the same band every other window on the building keeps.
+  const SINK = 0.55
+  const SILL = 0.18
+  const winH = 0.6
+  const winW = 0.62
+  const eaveH = SILL + winH + 0.07 + 0.26
+  const apexH = eaveH + 0.42
+  const hw = 0.54
+
+  // HOW FAR IN THE SWEEP HAS TO RUN before the covering is clear over the top of
+  // it. Marched, not solved: `sheetAt` is the triangles, and the triangles are
+  // where the sag and the buckle are.
+  const CLEAR = 0.22
+  let depth = 0
+  for (let t = 0.4; t <= ridgeLimit; t += 0.12) {
+    if (sheetAt(x - nx * t, z - nz * t) >= faceY + apexH + CLEAR) { depth = t; break }
+  }
+  if (depth <= 0) return null
+
+  const sec = [
+    [0, apexH], [-hw, eaveH], [-hw, -SINK], [hw, -SINK], [hw, eaveH],
+  ]
+  b.prism([x, faceY, z], [x - nx * depth, faceY, z - nz * depth], sec,
+    { layer, color, vWorldY: true })
+
+  windowUnit2(b, {
+    x, z, y0: faceY + SILL, nx, nz, width: winW, height: winH,
+    shutters: false, seed: seed * 29 + 7, detail, k,
+  })
+  return { x, z, nx, nz, faceY, depth, apexH, eaveH, hw, sink: SINK }
 }
 
 // ---------------------------------------------------------------------------
@@ -1524,12 +1640,18 @@ export function windowUnit2(
   let baseY = y0
   const p = (a, v, out) => [x + tx * a + nx * out, baseY + v, z + tz * a + nz * out]
 
-  const sk = detail >= 2 ? k.skew : 0
+  // THE TRANSFORM SURVIVES EVERY TIER. It moves the four corners the opening is
+  // drawn from and adds not one triangle, at any detail -- the frame is still a
+  // rect and the glass is still a rect, they are just no longer axis-aligned
+  // rects. A village whose windows go square at the LOD line is a village that
+  // visibly changes shape as you walk toward it, which is the one thing the
+  // tiers exist to avoid, and it was being paid for with nothing.
+  const sk = k.skew
   // 1.6 because the whole allowance now goes into one term instead of being spent
   // four ways, and a trapezoid needs a visible difference between its parallel
   // sides before it stops looking like a rectangle drawn slightly wrong.
   const taper = (hash(seed * 41 + 3, 1) - 0.5) * 2 * sk * 1.6
-  const rot = detail >= 2 ? k.tilt * (hash(seed * 41 + 3, 2) - 0.5) * 2 : 0
+  const rot = k.tilt * (hash(seed * 41 + 3, 2) - 0.5) * 2
   const cs = Math.cos(rot)
   const sn = Math.sin(rot)
   const cv = height / 2
@@ -1692,10 +1814,12 @@ export function windowUnit2(
     // One doubled rect, four triangles, and it is GLASS across the whole opening
     // including where the frame would be: a dark border drawn half a pixel wide
     // does not read as a frame, it just reads as a smaller window. The shutters
-    // are gone at this tier and so is every trace of the transform, which is
-    // sub-pixel here.
+    // are gone at this tier. The transform is NOT -- it moves the four corners
+    // this rect is drawn from and costs nothing, and a lit pane leaning a couple
+    // of degrees out of square is most of what says "hand-built" at the range
+    // where it is the only ornament left.
     const q = [[-ow, -frame], [ow, -frame], [ow, height + frame], [-ow, height + frame]]
-      .map(([a, v]) => p(a, v, 0.02))
+      .map(([a, v]) => { const [wa, wv] = W(a, v); return p(wa, wv, 0.02) })
     b.quad(q[0], q[1], q[2], q[3], {
       layer: LAYER.GLASS, color: TINT.glass, double: true,
       uvs: fitUV(LAYER.GLASS, 2 * ow, height + 2 * frame),
@@ -1820,7 +1944,7 @@ export function windowUnit2(
  * the whole village is identified by from across the valley. The 36 triangles it
  * gives back are most of what pays for the roof grid.
  */
-export function chimney2(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, detail = 2, k = FLAT }) {
+export function chimney2(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, k = FLAT }) {
   const grime = groundGrime(baseY, 1.4, 0.22)
   // How far the stack is buried below the point the plan seats it at. 0.35 was
   // not enough: `baseY` is where the chimney meets the roof's NOMINAL plane, and
@@ -1830,11 +1954,14 @@ export function chimney2(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, d
   // free -- the extra length is inside the building, and a prism's cost is in
   // its section, not its length.
   const foot = baseY - 0.7
-  if (detail < 2) {
-    b.box([x - w / 2, foot, z - d / 2], [x + w / 2, topY, z + d / 2],
-      { layer: LAYER.STONE, color: grime })
-    return
-  }
+  // THE FLARE IS KEPT AT EVERY TIER, and it costs nothing to keep. The lower
+  // tiers used to fall back to b.box() here, which is TWELVE triangles for six
+  // square faces -- exactly what this prism costs for a four-sided section, so
+  // the flare and the corner jitter were being given up for no saving at all.
+  // The chimney is the tallest thing on the building and the flare is the whole
+  // reason its silhouette reads as somewhere else; the tiers that most need to
+  // read from a distance are precisely the far ones.
+  //
   // For a VERTICAL sweep prism()'s section frame is (+z, +x), so the section's u
   // is the world z half-extent and its v is the world x one.
   const sec = boxSection(d / 2, w / 2, seed * 7 + 1, 0.24)
