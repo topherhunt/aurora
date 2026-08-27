@@ -202,10 +202,15 @@ check(
   frag.includes('mix( skyRadiance( horizonDir, 0.0 ) * uReflTint, uMurk, uSubmerged )'),
   "water's fog exemption is itself switched off underwater"
 )
+// Exactly two mentions: the definition, and the ONE call on the top-face path.
+// Not three. The underside used to take a share of the same fade and does not
+// any more -- see the ceiling checks below for why -- and this count is what
+// notices if a third call appears, on either side, without that argument being
+// revisited.
 check(
-  (frag.match(/waterFogAmt\(\)/g) || []).length >= 3,
-  'and both sides of the surface fade at one rate, from one expression',
-  'expected the definition plus a call on each path'
+  (frag.match(/waterFogAmt\(\)/g) || []).length === 2,
+  'and it is the only place the surface fades, from one expression',
+  `${(frag.match(/waterFogAmt\(\)/g) || []).length} mentions; expected the definition plus the top face`
 )
 
 // The underside must not be reachable while she is dry: a back face is also
@@ -287,40 +292,54 @@ check(
   check(UNDERWATER.distort > 1, 'and the waves bend the view by more than their own slope', `distort ${UNDERWATER.distort}`)
 }
 
-// THE CEILING IS NOT TWENTY METRES OF WATER AWAY.
+// THE CEILING IS NOT IN THE WATER, IT IS THE EDGE OF IT -- so it takes no
+// distance fade at all, and this pair of checks is what stops the fade coming
+// back the next time someone reasons that a far surface ought to recede.
 //
-// The murk fade is calibrated so that anything at UNDERWATER.visibility is gone,
-// and at a grazing angle the far end of the surface overhead is exactly that far.
-// Applying it whole erased the window, the ridges and the ripple in one go and
-// gave back the flat blue plane this whole section exists to prevent -- so the
-// underside takes only a share of it. Partial rather than zero, because a
-// surface that does not recede at all reads as painted on.
+// The murk is calibrated so that anything at UNDERWATER.visibility is gone, and
+// at a grazing angle the far end of the surface overhead is exactly that far.
+// Applying any of it shades the whole rim of the ceiling into the same blue-grey
+// as the water hanging in front of it, which is precisely where a real surface
+// goes hard and silver -- and the ceiling stops reading as a boundary and starts
+// reading as more fog with ripples in it.
 {
-  check(
-    UNDERWATER.underFog > 0 && UNDERWATER.underFog < 1,
-    'the underside takes only part of the murk fade, so the window survives at range',
-    `underFog ${UNDERWATER.underFog}`
-  )
-  const f = water.uniforms.uUnderFog.value
-  check(
-    f.x === UNDERWATER.underFog && f.y === UNDERWATER.tir,
-    'and the uniform carries both underside knobs'
-  )
-  // Past the critical angle the surface is a mirror of uniform murk, which is a
-  // wall of one colour -- the sheen is what puts a ripple back into it, so it has
-  // to LIGHTEN. Below 1 would darken, and 1 exactly is the flat wall again.
-  check(
-    UNDERWATER.tir > 1,
-    'and the mirror outside the window brightens with the facets rather than sitting flat',
-    `tir ${UNDERWATER.tir}`
-  )
+  const under = frag.slice(frag.indexOf('! gl_FrontFacing'), frag.indexOf('vec3 R = reflect'))
+  check(!/waterFogAmt/.test(under), 'the underside takes no murk fade -- fog is for what is IN the water')
+  check(/vec4\( underside\( V, N \), 1\.0 \)/.test(under), 'and it stays fully opaque whatever WATER.clarity says')
 }
 
-// The underside's fog and mirror, wired into the source. Asserted on the text
-// because a shader that quietly stopped doing either looks like a slightly
-// different shade of blue rather than like a failure.
-check(/waterFogAmt\(\) \* uUnderFog\.x/.test(frag), 'the underside takes only its share of the murk fade')
-check(/mix\( 1\.0, uUnderFog\.y, lean \)/.test(frag), 'and the mirror outside the window ripples with the facet lean')
+// THE MIRROR OUTSIDE SNELL'S WINDOW, which has to be two things at once.
+//
+// It has to RIPPLE: a mirror of uniform murk is a wall of one colour, and the
+// sheen is what puts the wave field back into it, so it has to LIGHTEN. Below 1
+// would darken, and 1 exactly is the flat wall again.
+//
+// And it has to be LIT. Painted uMurk flat it came out the exact colour of the
+// water in front of it and vanished into its own medium -- the "grayscale murky
+// mist" the ceiling used to read as. tirLit is the share of downwelling light
+// that puts it back, and both ends are excluded: 0 is the flat fog colour again,
+// 1 is the sky itself, which reads as the window never closing.
+{
+  check(
+    UNDERWATER.tir > 1,
+    'the mirror outside the window brightens with the facets rather than sitting flat',
+    `tir ${UNDERWATER.tir}`
+  )
+  check(
+    UNDERWATER.tirLit > 0 && UNDERWATER.tirLit < 1,
+    'and it carries some of the downwelling light, so it is not the fog colour',
+    `tirLit ${UNDERWATER.tirLit}`
+  )
+  const t = water.uniforms.uTir.value
+  check(t.x === UNDERWATER.tir && t.y === UNDERWATER.tirLit, 'and the uniform carries both mirror knobs')
+  // Wired into the source. Asserted on the text because a shader that quietly
+  // stopped doing either looks like a slightly different shade of blue rather
+  // than like a failure.
+  check(/mix\( uMurk, through, uTir\.y \) \* mix\( 1\.0, uTir\.x, lean \)/.test(frag), 'and the sheen is both at once')
+  // The veil over the window is made of the same sheen as the mirror around it.
+  // Raw murk there draws the boundary between the two as a visible edge.
+  check(/mix\( sheen, mix\( through, sheen, uUnder\.z \), window \)/.test(frag), 'and the window is veiled with that same sheen')
+}
 
 // THE WORLD PROBE, which is what finally puts the trees behind the surface.
 //
@@ -336,14 +355,28 @@ check(/mix\( 1\.0, uUnderFog\.y, lean \)/.test(frag), 'and the mirror outside th
 //   single surface and cannot be allowed to disagree about where the land is.
 {
   check(
-    water.uniforms.uWorld.value === worldProbe.texture,
-    "the water samples the probe's own texture, by reference, rather than a copy of it"
+    water.uniforms.uWorldA.value === worldProbe.textureA
+      && water.uniforms.uWorldB.value === worldProbe.textureB
+      && worldProbe.textureA !== worldProbe.textureB,
+    "the water samples the probe's own two cubes, by reference, and they are two"
   )
   // Alpha is half the payload -- it is what "no land along this ray" means -- so
-  // an RGB format would silently make every direction land.
-  check(worldProbe.target.texture.format === THREE.RGBAFormat, 'and that texture has the alpha channel the coverage lives in')
+  // an RGB format would silently make every direction land. Both cubes, because
+  // the ping-pong means either one can be the one being displayed.
+  check(
+    worldProbe.a.texture.format === THREE.RGBAFormat && worldProbe.b.texture.format === THREE.RGBAFormat,
+    'and both carry the alpha channel the coverage lives in'
+  )
   // A hillside in front of a tree has to win, which the sky probe never needed.
-  check(worldProbe.target.depthBuffer === true, 'and a depth buffer, unlike the sky probe, because this capture occludes itself')
+  check(
+    worldProbe.a.depthBuffer === true && worldProbe.b.depthBuffer === true,
+    'and a depth buffer, unlike the sky probe, because this capture occludes itself'
+  )
+  check(
+    /uWorldFade <= 0\.0 \? texture\( uWorldA, dir \)/.test(frag)
+      && /mix\( texture\( uWorldA, dir \), texture\( uWorldB, dir \), uWorldFade \)/.test(frag),
+    'and the shader mixes between them rather than cutting, with both ends branched out'
+  )
   check(
     water.uniforms.uWorldMix.value === WORLD_PROBE.mix,
     'and the knob that fades it back toward the flat silhouette reaches the shader',
@@ -382,6 +415,124 @@ check(/mix\( 1\.0, uUnderFog\.y, lean \)/.test(frag), 'and the mirror outside th
     WORLD_PROBE.moveRefresh > 0 && WORLD_PROBE.moveRefresh < 50,
     'but re-anchors once she has walked far enough for the parallax to show',
     `${WORLD_PROBE.moveRefresh} m`
+  )
+}
+
+// --- the anchor floor and the cross-fade, driven for real -------------------
+//
+// Both of these are scheduling, and scheduling is where this file's silent
+// failures live: a probe that captures from inside a hillside renders perfectly
+// and returns grey, and a fade that never starts is indistinguishable from a
+// fade that is not implemented. So drive the real update() against a stub
+// renderer rather than reading the constants back.
+{
+  const scene2 = new THREE.Scene()
+  const written = []
+  const stub = {
+    coordinateSystem: THREE.WebGLCoordinateSystem,
+    xr: { enabled: true },
+    getRenderTarget: () => null,
+    getClearColor: (c) => c.setHex(0),
+    getClearAlpha: () => 1,
+    setClearColor: () => {},
+    setRenderTarget: (t, face) => written.push({ t, face }),
+    clear: () => {},
+    render: () => {},
+  }
+  const DT = 1 / 72
+  const head = new THREE.Vector3()
+
+  // SHE IS STANDING ON A BANK 5 m ABOVE A LAKE, and the lake's dilated polygon
+  // reaches under her feet, so levelAt answers with the lake's still level. The
+  // old code anchored there and buried the camera in the bank.
+  const p1 = new WorldProbe()
+  head.set(0, 105, 0)          // eye 5 m over a lake surface at 100
+  p1.update(stub, scene2, head, 100, DT)
+  check(
+    p1.anchor.y >= head.y - WORLD_PROBE.duck - 1e-6,
+    'standing on a bank, the capture stays near her rather than dropping to the lake surface',
+    `anchor y ${p1.anchor.y.toFixed(2)} against her eye at ${head.y} and the lake at 100`
+  )
+
+  // AND THE FLICKER IS GONE. Walking the shoreline, that same polygon test flips
+  // between the lake level and null with every step. Both must now land on the
+  // same anchor, or the probe re-anchors on a proxy for her position -- which is
+  // exactly what "it jumps around a little bit randomly" was.
+  const onLake = new WorldProbe()
+  const onLand = new WorldProbe()
+  onLake.update(stub, scene2, head, 100, DT)
+  onLand.update(stub, scene2, head, null, DT)
+  check(
+    Math.abs(onLake.anchor.y - onLand.anchor.y) < 1e-6,
+    'and the in-polygon and out-of-polygon answers agree above the water, so a shoreline step cannot re-anchor',
+    `${onLake.anchor.y.toFixed(2)} either way`
+  )
+
+  // UNDER THE WATER the floor must get out of the way -- this is the case the
+  // surface offset was written for and the one the shader actually samples.
+  const p2 = new WorldProbe()
+  head.set(0, 96, 0)           // her eye 4 m down
+  p2.update(stub, scene2, head, 100, DT)
+  check(
+    Math.abs(p2.anchor.y - (100 + WORLD_PROBE.height)) < 1e-6,
+    'but swimming under it, the capture still sits just above the surface',
+    `anchor y ${p2.anchor.y.toFixed(2)}`
+  )
+
+  // THE FIRST CUBE SNAPS. There is nothing to fade from at load, and fading in
+  // from an empty target would show a second of flat silhouette every reload.
+  const p3 = new WorldProbe()
+  head.set(0, 105, 0)
+  for (let k = 0; k < 5; k++) p3.update(stub, scene2, head, null, DT)
+  check(
+    p3.blend === p3.live && p3.filling < 0,
+    'the first cube snaps in rather than fading up from an empty one',
+    `blend ${p3.blend}, live ${p3.live}`
+  )
+
+  // NOW MOVE HER. Past moveRefresh, so the second cube fills -- and the shader's
+  // blend must WALK rather than jump, taking about fadeSeconds to get there.
+  head.set(0, 105, WORLD_PROBE.moveRefresh + 5)
+  const wasLive = p3.live
+  const walk = []
+  for (let k = 0; k < 5; k++) p3.update(stub, scene2, head, null, DT)   // fill the spare
+  // Parity-agnostic on purpose: which of the two cubes is live alternates, and
+  // pinning it to a number would make this a test of the ping-pong's phase
+  // rather than of the invariant, which is that the fill lands in the cube that
+  // was NOT being shown and the blend has not started moving yet.
+  check(
+    p3.live === wasLive ^ 1 && p3.blend === wasLive && p3.filling < 0,
+    'a re-anchor fills the OTHER cube and only then starts the fade',
+    `live ${wasLive} -> ${p3.live}, blend still at ${p3.blend}`
+  )
+  for (let k = 0; k < Math.ceil(WORLD_PROBE.fadeSeconds / DT) + 4; k++) {
+    p3.update(stub, scene2, head, null, DT)
+    walk.push(p3.blend)
+  }
+  const biggestStep = Math.max(...walk.map((v, i) => (i ? Math.abs(v - walk[i - 1]) : 0)))
+  check(
+    p3.blend === p3.live && biggestStep < 0.06,
+    'and it arrives, one small step at a time, rather than cutting',
+    `${walk.length} frames, biggest single step ${biggestStep.toFixed(3)}`
+  )
+
+  // FLYING. Crossing moveRefresh every frame must not queue a burst per crossing
+  // -- there is one spare cube, so honouring them all would mean every handover
+  // ending in the snap this exists to remove. Deferring is the whole policy.
+  const p4 = new WorldProbe()
+  head.set(0, 105, 0)
+  for (let k = 0; k < 5; k++) p4.update(stub, scene2, head, null, DT)
+  const before = p4.captures
+  for (let k = 0; k < 200; k++) {
+    head.set(0, 105, k * (WORLD_PROBE.moveRefresh + 1))
+    p4.update(stub, scene2, head, null, DT)
+  }
+  const bursts = (p4.captures - before) / 5
+  const ceiling = 200 * DT / WORLD_PROBE.fadeSeconds + 1
+  check(
+    bursts <= ceiling,
+    'and flying past the re-anchor distance every frame is rate-limited to one handover per fade',
+    `${bursts} bursts in 200 frames, ceiling ${ceiling.toFixed(1)}`
   )
 }
 

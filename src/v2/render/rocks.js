@@ -784,7 +784,7 @@ const PLACEMENT_CELL = 4.0
 const GROUND_SWEEP = 16
 
 // ROCK_LOD_AT is in metres of camera distance per metre of ladder size, so what
-// `update` wants is the square of it: compare d2 against span-squared times
+// `update` wants is the square of it: compare d2 against size-squared times
 // these and no square root is ever taken. The OUT copy is the same ladder with
 // the hysteresis slack already multiplied in -- a rock only leaves a tier it is
 // already on 12% further out than it entered, so a camera parked on a threshold
@@ -1214,6 +1214,51 @@ class RockBed {
       this.batch.setVisibleAt(id, false)
       this.free[this.maxInstances - 1 - i] = id
     }
+
+    // FORCE THE COLOURS TEXTURE INTO EXISTENCE NOW, EVEN FOR A BED THAT NEVER
+    // PLACES A ROCK. This is not a tidiness thing. It is the fix for rocks
+    // blinking furiously at particular camera angles, and the reason is worth
+    // writing down because nothing about the symptom points at this line.
+    //
+    // `setColorAt` is otherwise the FIRST thing to allocate `_colorsTexture`,
+    // and it only runs when an instance is actually placed. A bed that places
+    // nothing anywhere near the camera -- `scree` on most terrain -- therefore
+    // had no colours texture while its four siblings did.
+    //
+    // All five beds share ONE material instance, so they share one program and
+    // one set of sampler assignments. Per object, three assigns texture units in
+    // this order: the batching block first (batchingTexture, batchingIdTexture,
+    // and batchingColorTexture ONLY `if (object._colorsTexture !== null)`), then
+    // the material's own uniforms, but that second half is gated on
+    // `refreshMaterial`, which is false once the same material has already been
+    // set up for an earlier object in the same frame.
+    //
+    // So a bed with no colours texture took units 0 and 1 where its siblings
+    // took 0, 1 and 2. When it happened to be the first rock bed in the draw
+    // order -- which three decides by depth-sorting opaque objects, hence the
+    // dependence on camera ANGLE and the frame-to-frame flip when two beds sit
+    // at nearly equal depth -- `refreshMaterial` was true and the material's
+    // samplers were handed units 2, 3, 4. `uAtlas` (sampler2DArray) then landed
+    // on unit 2, still bound by the program's `batchingColorTexture`
+    // (sampler2D), because the program had been compiled WITH USE_BATCHING_COLOR
+    // for a sibling that does have the texture. Two textures of different types
+    // on one sampler location is a hard GL error: ANGLE rejects the draw with
+    // `GL_INVALID_OPERATION: glMultiDrawElementsANGLE`, and the driver drops it
+    // while the CPU still counts it as submitted. Every rock sharing that
+    // program vanished for the frame, which is why ALL of them blinked at once
+    // and why the draw counts looked perfectly healthy throughout.
+    //
+    // three has a guard meant to force a program change for exactly this case,
+    // but it tests `object.colorTexture`, and BatchedMesh only ever defines
+    // `_colorsTexture`. `undefined === null` is false, so the guard is dead and
+    // the mismatched program is reused. We cannot rely on it.
+    //
+    // Giving every bed the texture makes all five consume the same three
+    // batching units, so the shared material's samplers always start at 3 and
+    // the collision cannot arise whatever order the depth sort picks. The white
+    // this writes is the same white `_initColorsTexture` fills the whole texture
+    // with, and instance 0 is invisible until placement overwrites it anyway.
+    this.batch.setColorAt(0, new THREE.Color(1, 1, 1))
 
     this.shapeAt = new Uint16Array(this.maxInstances)
     this.tierAt = new Int8Array(this.maxInstances).fill(-1)
@@ -2483,6 +2528,249 @@ export class Rocks {
     }
     rows.sort((a, b) => a.d - b.d)
     return rows
+  }
+
+  /**
+   * WHAT THE FIVE BATCHES ACTUALLY SUBMIT, FRAME BY FRAME, and what the ground
+   * under one rock is doing while they do it. `window.v2rocks.watch()` from the
+   * console, then click back into the game and turn until they blink: it waits
+   * five seconds before sampling, because the console takes pointer lock and a
+   * watch that starts the instant it is called can only ever record a player
+   * standing still.
+   *
+   * This exists because the blink is not reproducible outside a browser and
+   * every mechanism that can be argued about from Node has now been argued
+   * about. What is left needs a number per frame rather than another theory, and
+   * there are only two branches worth telling apart:
+   *
+   *   THE DRAW LIST COLLAPSES. `n` for a bed halves or goes to zero on alternate
+   *   frames. Then the rocks really are not being submitted, and the cause is in
+   *   the per-instance frustum cull that BatchedMesh.onBeforeRender runs -- the
+   *   only thing in the entire rock pipeline that reads the camera's
+   *   ORIENTATION. Nothing in RockBed.update does: it takes x, y, z and no gaze,
+   *   so standing still and turning cannot change a tier, a matrix, a fade slot
+   *   or a visible flag, which is what makes a steady `n` so informative.
+   *
+   *   THE DRAW LIST IS STEADY AND THE ROCK MOVES. Then the rocks are being drawn
+   *   and something is swallowing them, and `y` and `ground` say which: rocks are
+   *   BEDDED, so a drawn surface that steps up by a fraction of a metre buries
+   *   one and a surface that steps back down returns it. That is the one way a
+   *   half-buried prop can blink while a tree standing beside it does not, and
+   *   the terrain's own selection is gaze-dependent (see quadtree-v2.js inCone)
+   *   where this file is not.
+   *
+   * `passes` is how many times each bed was culled that frame, which is three on
+   * a frame where both probes fire and one on a frame where neither does. The
+   * MAIN render is always the last of them -- main.js runs both probes first --
+   * so `n` is the last pass's count, which is the one the screen got.
+   */
+  watch(seconds = 6, delay = 5) {
+    if (typeof requestAnimationFrame !== 'function') {
+      throw new Error('Rocks.watch is a browser instrument: there is no frame loop here to sample')
+    }
+    if (this._watching) throw new Error('Rocks.watch is already running')
+    this._watching = true
+
+    const beds = this.beds
+    const saved = beds.map((b) => b.batch.onBeforeRender)
+    const passes = []
+    let lastCam = null
+    let lastRenderer = null
+    const install = () => {
+      beds.forEach((bed, i) => {
+        bed.batch.onBeforeRender = function watched(renderer, scene, camera, geometry, material) {
+          saved[i].call(this, renderer, scene, camera, geometry, material)
+          passes.push({ bed: i, n: this._multiDrawCount })
+          lastCam = camera
+          lastRenderer = renderer
+        }
+      })
+    }
+
+    // The nearest rock when the watch starts, followed by ID rather than by
+    // position, so that a tier swap, a thinning or a re-grounding under it all
+    // show up on the same row instead of silently changing which rock is being
+    // reported.
+    let tracked = null
+    const rows = []
+    let t0 = 0
+    const camPos = new THREE.Vector3()
+    const ndc = new THREE.Vector3()
+    const block = new Uint8Array(3 * 3 * 4)
+
+    // A 3x3 average of the real framebuffer, as one luminance digit 0-9. Reading
+    // the screen is the only measurement that does not depend on believing the
+    // draw list: if the pixels alternate while the counts hold still, the rocks
+    // are being submitted every frame and something downstream is eating them.
+    // readPixels stalls the pipeline, which is why this is an instrument and not
+    // something that ships.
+    const lumAt = (px, py) => {
+      const gl = lastRenderer.getContext()
+      const w = gl.drawingBufferWidth
+      const h = gl.drawingBufferHeight
+      if (px < 1 || py < 1 || px >= w - 1 || py >= h - 1) return -1
+      gl.readPixels(px - 1, py - 1, 3, 3, gl.RGBA, gl.UNSIGNED_BYTE, block)
+      let r = 0
+      let g = 0
+      let b = 0
+      for (let i = 0; i < 9; i++) {
+        r += block[i * 4]
+        g += block[i * 4 + 1]
+        b += block[i * 4 + 2]
+      }
+      return (0.299 * r + 0.587 * g + 0.114 * b) / 9
+    }
+
+    const sample = () => {
+      const row = { ms: +(performance.now() - t0).toFixed(0) }
+      for (let i = 0; i < beds.length; i++) {
+        let n = -1
+        let count = 0
+        for (const p of passes) {
+          if (p.bed !== i) continue
+          n = p.n
+          count++
+        }
+        row[beds[i].cfg.name] = n
+        if (i === 0) row.passes = count
+      }
+      passes.length = 0
+
+      if (lastCam) {
+        // The camera's OWN position goes on every row: the previous run reported a
+        // nearest rock 457 m away, and without this there is no way to tell a bug
+        // in the search from a player who was simply standing somewhere else.
+        const p = lastCam.getWorldPosition(camPos)
+        row.cx = +p.x.toFixed(1)
+        row.cz = +p.z.toFixed(1)
+        row.yaw = +((Math.atan2(-lastCam.matrixWorld.elements[8], -lastCam.matrixWorld.elements[10]) * 180) / Math.PI).toFixed(0)
+        if (!tracked) {
+          let best = Infinity
+          let near = 0
+          for (const bed of beds) {
+            for (const t of bed.tiles.values()) {
+              for (let k = 0; k < t.n; k++) {
+                const id = t.ids[k]
+                const d = Math.hypot(bed.instX[id] - p.x, bed.instY[id] - p.y, bed.instZ[id] - p.z)
+                if (d < 12) near++
+                if (d < best) {
+                  best = d
+                  tracked = { bed, id }
+                }
+              }
+            }
+          }
+          if (!tracked) throw new Error('Rocks.watch: no resident rock instance anywhere to track')
+          const { bed, id } = tracked
+          console.log(`[rocks.watch] camera at (${row.cx}, ${row.cz}); ${near} rock instances within 12 m; ` +
+            `tracking ${bed.cfg.name}#${id} at (${bed.instX[id].toFixed(1)}, ${bed.instZ[id].toFixed(1)}), ${best.toFixed(1)} m away`)
+        }
+        if (tracked) {
+          const { bed, id } = tracked
+          row.d = +Math.hypot(bed.instX[id] - p.x, bed.instY[id] - p.y, bed.instZ[id] - p.z).toFixed(2)
+          row.y = +bed.instY[id].toFixed(3)
+          row.tier = bed.tierAt[id]
+          row.vis = bed.batch.getVisibleAt(id)
+          row.ground = bed.ground ? bed.ground.groundAt(bed.instX[id], bed.instZ[id]) : null
+          if (row.ground !== null) row.ground = +row.ground.toFixed(3)
+
+          if (lastRenderer) {
+            const gl = lastRenderer.getContext()
+            // The crosshair, because the report is "turn to look straight at them
+            // and they blink" -- whatever is blinking is what she is aiming at.
+            row.mid = +lumAt(gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1).toFixed(1)
+            ndc.set(bed.instX[id], bed.instY[id], bed.instZ[id]).project(lastCam)
+            row.rock = Math.abs(ndc.x) < 1 && Math.abs(ndc.y) < 1 && ndc.z < 1
+              ? +lumAt(Math.round((ndc.x * 0.5 + 0.5) * gl.drawingBufferWidth), Math.round((ndc.y * 0.5 + 0.5) * gl.drawingBufferHeight)).toFixed(1)
+              : -1
+          }
+        }
+      }
+      rows.push(row)
+
+      if (performance.now() - t0 < seconds * 1000) {
+        requestAnimationFrame(sample)
+        return
+      }
+
+      beds.forEach((bed, i) => { bed.batch.onBeforeRender = saved[i] })
+      this._watching = false
+
+      // The verdict, so that reading it does not depend on reading the table.
+      // A "steps" count is how often a number changed between adjacent frames,
+      // which is what separates a blink from a slow drift.
+      const steps = (key, tol) => rows.filter((r, i) => i > 0 && Math.abs(r[key] - rows[i - 1][key]) > tol).length
+      const span = (key) => {
+        const v = rows.map((r) => r[key]).filter((x) => typeof x === 'number')
+        return `${Math.min(...v)}..${Math.max(...v)}`
+      }
+      if (!tracked) throw new Error('Rocks.watch: no frame ever reached a rock batch, so there is nothing to report')
+      const names = beds.map((b) => b.cfg.name)
+      const out = [`[rocks.watch] ${rows.length} frames over ${seconds}s, camera ${span('cx')} x ${span('cz')}, yaw ${span('yaw')} deg`]
+      if (steps('yaw', 1) === 0) {
+        out.push('  THE CAMERA NEVER TURNED. Nothing here can say anything about the blink -- re-run and turn during the sample.')
+      }
+      for (const bed of beds) out.push(`  ${bed.cfg.name} drawn ${span(bed.cfg.name)}, changed on ${steps(bed.cfg.name, 2)}/${rows.length} frames`)
+      out.push(`  tracked ${tracked.bed.cfg.name}#${tracked.id} at ${span('d')} m: y ${span('y')} (moved on ${steps('y', 1e-3)}), ` +
+        `ground ${span('ground')} (moved on ${steps('ground', 1e-3)}), tier ${span('tier')}, visible on ${rows.filter((r) => r.vis).length}/${rows.length}`)
+
+      // Only the frames where something MOVED, as text rather than 180 JSON
+      // objects: a furious blink prints every frame and a steady scene prints
+      // almost none, so the shape of the paste is itself the answer.
+      const keys = ['yaw', 'passes', ...names, 'd', 'y', 'ground', 'tier', 'vis']
+      const changed = rows.filter((r, i) => i === 0 || keys.some((k) => r[k] !== rows[i - 1][k]))
+      out.push(`  ${changed.length} of ${rows.length} frames differ from the one before them`)
+      out.push(`  ms  yaw pass ${names.map((n) => n.slice(0, 5).padStart(6)).join('')}      d       y  ground tier vis`)
+      for (const r of changed.slice(0, 80)) {
+        out.push(`  ${String(r.ms).padStart(4)} ${String(r.yaw).padStart(4)} ${String(r.passes).padStart(4)} ` +
+          `${names.map((n) => String(r[n]).padStart(6)).join('')} ${String(r.d).padStart(7)} ${String(r.y).padStart(8)} ` +
+          `${String(r.ground).padStart(7)} ${String(r.tier).padStart(4)} ${r.vis ? '  y' : '  n'}`)
+      }
+      if (changed.length > 80) out.push(`  ...${changed.length - 80} more changed frames not printed`)
+
+      // The screen itself, one digit of brightness per frame. A blink is an
+      // A-B-A-B stripe and nothing else in this world produces one: turning
+      // sweeps the digits smoothly, and standing still holds them flat.
+      const strip = (key) => {
+        const s = rows.map((r) => {
+          const l = r[key]
+          if (typeof l !== 'number') return '?'
+          if (l < 0) return '.'
+          return String(Math.min(9, Math.max(0, Math.round(l / 28))))
+        }).join('')
+        const lines = []
+        for (let i = 0; i < s.length; i += 90) lines.push(`    ${s.slice(i, i + 90)}`)
+        return lines
+      }
+      const flickers = (key) => rows.filter((r, i) => {
+        if (i < 2) return false
+        const a = rows[i - 2][key]
+        const b = rows[i - 1][key]
+        const c = r[key]
+        if (!(a >= 0 && b >= 0 && c >= 0)) return false
+        return Math.abs(c - b) > 12 && Math.abs(c - a) < 6
+      }).length
+      // A readback that never moved at all is a broken readback, not a still
+      // scene -- say so rather than letting a flat strip read as evidence.
+      out.push(`  crosshair pixel: ${flickers('mid')}/${rows.length} frames are an A-B-A-B flicker, brightness ${span('mid')}` +
+        (steps('mid', 0.5) === 0 ? '  <-- NEVER CHANGED AT ALL: the pixel readback is not seeing the canvas, ignore both strips' : ''))
+      out.push(...strip('mid'))
+      out.push(`  tracked rock pixel: ${flickers('rock')}/${rows.length} frames are an A-B-A-B flicker ('.' = off screen)`)
+      out.push(...strip('rock'))
+      console.log(out.join('\n'))
+      this._lastWatch = rows
+    }
+
+    // The console steals pointer lock, so a watch that starts the instant it is
+    // called can only ever sample a player standing still -- which is exactly
+    // what the first run did. Start late, so the window belongs to the game.
+    console.log(`[rocks.watch] click back into the game and turn until they blink -- sampling starts in ${delay}s and runs for ${seconds}s`)
+    setTimeout(() => {
+      install()
+      t0 = performance.now()
+      requestAnimationFrame(sample)
+    }, delay * 1000)
+    return `watching in ${delay}s`
   }
 
   get stats() {

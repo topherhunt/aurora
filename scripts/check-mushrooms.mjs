@@ -50,30 +50,31 @@
 //   chart's u axis is an ANGLE, so a cell whose left and right columns disagree
 //   paints a seam down every cap that wears it.
 //
-// Sections 11 to 16 gate the BANK instead of the generator, and the failures
+// Sections 11 to 15 gate the BANK instead of the generator, and the failures
 // there are a different family -- nothing about one mushroom is wrong, and the
 // ladder around it is:
 //
-//   THE TWO CARD TIERS STOP BEING TELLABLE APART. Both wear the same five baked
-//   layers, so the layer list `createPropMaterial({ billboardLayers })` keys on
-//   selects BOTH of them. The only thing left holding the fixed LOD1 cross
-//   still while the LOD2 billboard spins is the vertex NORMAL against
-//   CARD_UP_MARK, and there is no room for a second flag: BatchedMesh fixes its
-//   attribute set from the first geometry it is handed, so a per-vertex
+//   THE BILLBOARD STOPS SPINNING. The ladder is two mesh tiers and one card, and
+//   the card is a single triangle that only works because the vertex shader
+//   turns it toward the eye. It does that when the geometry's texLayer is in
+//   `createPropMaterial({ billboardLayers })` AND its vertex normal is at or over
+//   CARD_UP_MARK, and there is no room for a third condition: BatchedMesh fixes
+//   its attribute set from the first geometry it is handed, so a per-vertex
 //   `isBillboard` on this one prop would be a change to every generator in the
-//   project. Section 13 is that whole mechanism, written down.
+//   project. A card that fell off either test is a plane seen edge-on, which
+//   covers no pixels at all -- every distant mushroom vanishing for a quarter of
+//   the compass. Sections 12 and 13 are those two tests, written down.
 //
-//   THE CARD STOPS BEING SHARED. One card geometry per SPECIES stands in all
-//   eighteen of that species' variant slots, and render/mushrooms.js dedupes on
-//   object identity before it fills the arena. Break the sharing and nothing
-//   throws -- the arena just quietly holds eighteen copies of each of ten cards
-//   instead of ten, and the byte count the bank reports goes on being right
-//   about a bank that is no longer the one in the batch.
+//   THE CARD STOPS BEING PER VARIANT. The photograph is shared five ways, one
+//   per species, but the triangle it is stretched over is built at each
+//   variant's own measured height. Hoist that out of the variant loop and
+//   nothing throws -- every size-0.8 instance simply grows 25% at the swap, and
+//   the arena quietly holds eighteen copies of each of five cards.
 //
 //   THE MEASURED NUMBERS IN THE COMMENTS GO STALE. mushroom-bank.js quotes a
 //   silhouette table for the apex-down billboard and render/mushrooms.js quotes
 //   a per-species parallax crossover, and both say THIS SCRIPT gates them.
-//   Sections 15 and 16 are what makes that true -- not by pinning the decimals,
+//   Sections 14 and 15 are what makes that true -- not by pinning the decimals,
 //   which move with the seed, but by asserting the CLAIMS the numbers were
 //   quoted to support.
 
@@ -84,7 +85,7 @@ import {
 } from '../src/props/mushroom-texture.js'
 import {
   MUSHROOM_NAMES, MUSHROOM_SPECIES, MUSHROOM_VARIANTS, MUSHROOM_SIZES,
-  MUSHROOM_CARD_PLANES, MUSHROOM_BILLBOARD_TRI,
+  MUSHROOM_BILLBOARD_TRI,
   MUSHROOM_MESH_RADIAL, MUSHROOM_LOD_SPANS,
   mushroomVariants, mushroomImpostorLayers, mushroomParams,
   buildMushroomBank, mushroomBankTriangles,
@@ -1126,8 +1127,8 @@ console.log('\nlayers')
 }
 
 // ---------------------------------------------------------------------------
-// 11. The bank is three tiers of ninety, in one attribute layout, over a
-// hundred distinct buffers.
+// 11. The bank is three tiers of ninety, in one attribute layout, over two
+// hundred and seventy distinct buffers.
 //
 // Everything above this line is about ONE mushroom. From here down it is about
 // the BANK -- the whole distance ladder, built once at load by
@@ -1135,7 +1136,7 @@ console.log('\nlayers')
 // change character with it.
 //
 // THE ATTRIBUTE SET IS THE SAME HARD REQUIREMENT SECTION 1 STATES, asserted a
-// second time because the card tiers do not come from addMushroom. They come
+// second time because the card tier does not come from addMushroom. It comes
 // from buildImpostorCard, which is shared with the trees and the ferns, so a
 // tree-driven edit there lands in the mushroom batch without anybody looking at
 // this prop. BatchedMesh fixes its attribute set from the FIRST geometry it is
@@ -1143,29 +1144,28 @@ console.log('\nlayers')
 // single stray attribute on a single card does not degrade the cards -- it
 // takes the whole prop layer down at construction.
 //
-// THE HUNDRED IS 90 + 5 + 5 AND THE ARITHMETIC IS THE POINT. Every tier is 90
-// slots long so that a band index and a variant id stay independent lookups,
-// but the two card tiers hold ONE geometry per species repeated across that
-// species' eighteen variants. render/mushrooms.js dedupes on object identity
-// before it sizes the arena, so if the sharing ever broke -- a card built
-// inside the variant loop instead of outside it -- nothing would throw and
-// nothing would look wrong. The arena would simply hold 18 copies of each of
-// the 10 cards, and the `bytes` the bank reports would go on describing a bank
-// that is no longer the one in the batch.
+// THREE TIERS OF NINETY AND NOTHING SHARED. Every tier is 90 slots long so that
+// a band index and a variant id stay independent lookups, and every slot holds
+// its OWN buffer -- the card included, because it is sized to the variant it
+// stands in for rather than to the species' middle size. render/mushrooms.js
+// dedupes on object identity before it sizes the arena, which is defensive
+// against exactly the edit this section would otherwise miss: hoist the card
+// build out of the variant loop and nothing throws and nothing looks wrong, but
+// the size-0.8 instances grow 25% at the swap and the `bytes` the bank reports
+// stop describing the bank in the batch.
 // ---------------------------------------------------------------------------
 
 console.log('\nbank')
 
 const BANK_SEED = 1
-const BANK = buildMushroomBank({ seed: BANK_SEED, billboard: true })
+const BANK = buildMushroomBank({ seed: BANK_SEED })
 const VARIANTS = mushroomVariants()
 
-// The two card tiers sit after the mesh tiers, however many of those there are.
-// Named rather than written as 1 and 2, because adding the radial-6 mesh tier
-// shifted them and every hard-coded index in sections 12 to 14 went on pointing
-// at a tier that still existed and was no longer a card.
-const CROSS_TIER = MUSHROOM_MESH_RADIAL.length
-const CARD_TIER = CROSS_TIER + 1
+// The card tier sits after the mesh tiers, however many of those there are.
+// Named rather than written as 2, because the mesh tiers have been added to and
+// taken from before now and a hard-coded index went on pointing at a tier that
+// still existed and was no longer a card.
+const CARD_TIER = MUSHROOM_MESH_RADIAL.length
 
 // The distinct geometry objects behind the tier arrays, in first-seen order --
 // the same identity dedupe render/mushrooms.js does before it sizes the arena.
@@ -1184,8 +1184,8 @@ const DISTINCT = []
 {
   const lens = BANK.tiers.map((t) => t.geometries.length)
   const want = VARIANTS.length
-  check(BANK.tiers.length === MUSHROOM_MESH_RADIAL.length + 2 && lens.every((n) => n === want),
-    `the bank is ${MUSHROOM_MESH_RADIAL.length + 2} tiers deep -- ${MUSHROOM_MESH_RADIAL.length} mesh, cross, billboard -- and every tier holds one slot per variant`,
+  check(BANK.tiers.length === MUSHROOM_MESH_RADIAL.length + 1 && lens.every((n) => n === want),
+    `the bank is ${MUSHROOM_MESH_RADIAL.length + 1} tiers deep -- ${MUSHROOM_MESH_RADIAL.length} mesh and the billboard -- and every tier holds one slot per variant`,
     `${BANK.tiers.length} tiers of ${lens.join('/')}; mushroomVariants() is ${want} = ${MUSHROOM_NAMES.length} species x ${MUSHROOM_VARIANTS.length} shapes x ${MUSHROOM_SIZES.length} sizes`)
 
   let wrongAttrs = ''
@@ -1244,24 +1244,20 @@ const DISTINCT = []
     'and mushroomBankTriangles() prices those same mesh tiers without building them',
     `priced ${priced.mesh.join(' + ')} over ${priced.variants} variants, built ${meshTris.join(' + ')} over ${VARIANTS.length}`)
 
-  // The card tiers are fixed counts by construction -- 2 planes is 4 triangles,
-  // a billboard is 1 -- but they are the numbers render/mushrooms.js multiplies
-  // a whole far tile by in one go (`tris += tile.n * farTris[0]`), so a tier
-  // that stopped being uniform would make the reported triangle count fiction.
-  const crossTris = new Set(BANK.tiers[CROSS_TIER].geometries.map((g) => g.index.count / 3))
+  // The card tier is a fixed count by construction -- one plane is one triangle
+  // -- but it is the number render/mushrooms.js multiplies a whole far tile by
+  // in one go (`tris += tile.n * farTris[0]`), so a tier that stopped being
+  // uniform would make the reported triangle count fiction.
   const cardTris = new Set(BANK.tiers[CARD_TIER].geometries.map((g) => g.index.count / 3))
-  check(crossTris.size === 1 && crossTris.has(MUSHROOM_CARD_PLANES * 2),
-    `tier ${CROSS_TIER} is ${MUSHROOM_CARD_PLANES * 2} triangles in all ${VARIANTS.length} slots -- ${MUSHROOM_CARD_PLANES} crossed planes`,
-    `counts seen: ${[...crossTris].join(', ')}`)
   check(cardTris.size === 1 && cardTris.has(1),
     `tier ${CARD_TIER} is 1 triangle in all ${VARIANTS.length} slots -- the apex-${MUSHROOM_BILLBOARD_TRI} billboard`,
     `counts seen: ${[...cardTris].join(', ')}`)
 
   // THE SHARING IS OF PHOTOGRAPHS, NOT OF BUFFERS, and section 12 is where that
-  // is gated. The quad is per variant on purpose: it is four triangles, and one
+  // is gated. The card is per variant on purpose: it is one triangle, and one
   // sized for the middle variant made a size-0.8 instance grow 25% at the
-  // instant it crossed the LOD band, with no cross-dissolve to hide it. What the
-  // user capped was the texture budget, and that is atlas layers -- still five.
+  // instant it crossed the LOD band, with nothing to hide it. What the user
+  // capped was the texture budget, and that is atlas layers -- still five.
   const wantDistinct = VARIANTS.length * BANK.tiers.length
   check(DISTINCT.length === wantDistinct,
     `every slot has its own buffer -- ${BANK.tiers.length} tiers x ${VARIANTS.length} variants, so a card is sized for the variant it stands in for`,
@@ -1269,9 +1265,9 @@ const DISTINCT = []
 
   // The reason that costs nothing anybody budgeted: bytes and triangles are both
   // summed over distinct geometries, so this is the whole arena.
-  check(BANK.triangles === priced.meshTotal + priced.cross + priced.card,
+  check(BANK.triangles === priced.meshTotal + priced.card,
     'and buildMushroomBank() and mushroomBankTriangles() agree on what that arena costs',
-    `built ${BANK.triangles}, priced ${priced.meshTotal} + ${priced.cross} + ${priced.card} = ${priced.meshTotal + priced.cross + priced.card}`)
+    `built ${BANK.triangles}, priced ${priced.meshTotal} + ${priced.card} = ${priced.meshTotal + priced.card}`)
 
   // The pop the per-variant quad exists to remove. Each card must stand as tall
   // as the mesh it replaces, within the margin impostorCardExtents adds around
@@ -1288,7 +1284,7 @@ const DISTINCT = []
       const g = BANK.tiers[t].geometries[i]
       g.computeBoundingBox()
       const err = Math.abs((g.boundingBox.max.y - g.boundingBox.min.y) / mh - 1)
-      const card = t >= CROSS_TIER
+      const card = t >= CARD_TIER
       if (card && err > worstPop) {
         worstPop = err
         worstPopAt = `${v.species} size ${v.size} tier ${t}`
@@ -1313,9 +1309,9 @@ const DISTINCT = []
 }
 
 // ---------------------------------------------------------------------------
-// 12. One photograph per species, and both card tiers wearing it.
+// 12. One photograph per species, and every card in the tier wearing it.
 //
-// Five layers for ninety variants. That is the whole economy of the card tiers
+// Five layers for ninety variants. That is the whole economy of the card tier
 // -- a card gives up shape and keeps hue, and hue is what still separates a
 // scarlet cap from an ink cap at 8 m -- and it means the layer a card addresses
 // is a SPECIES fact. A card that addressed its variant's layer instead would
@@ -1362,93 +1358,107 @@ const IMPOSTOR_NAMES = [
   check(clash.length === 0, 'and none of them collides with a mushroom sheet layer -- a card is not a cap texture',
     clash.length === 0 ? `impostors ${layers.join(' ')} vs sheets ${sheets.join(' ')}` : `${clash.join(', ')} in both`)
 
-  // Both card tiers, every slot: the geometry in slot i must wear the layer
+  // Every slot of the card tier: the geometry in slot i must wear the layer
   // that slot's SPECIES declared, and wear it on every vertex.
   let wrongLayer = null
   let varying = null
   let cardsChecked = 0
-  for (const t of [CROSS_TIER, CARD_TIER]) {
+  VARIANTS.forEach((v, i) => {
+    const arr = BANK.tiers[CARD_TIER].geometries[i].attributes.texLayer.array
+    const want = MUSHROOM_SPECIES[v.species].impostorLayer
+    cardsChecked++
+    for (let k = 0; k < arr.length; k++) {
+      if (arr[k] !== arr[0] && varying === null) {
+        varying = `slot ${i} (${v.species}): vertex 0 is layer ${arr[0]}, vertex ${k} is ${arr[k]}`
+      }
+      if (arr[k] !== want && wrongLayer === null) {
+        wrongLayer = `slot ${i} (${v.species}): layer ${arr[k]}, species declares ${want}`
+      }
+    }
+  })
+  check(varying === null, 'every card geometry addresses ONE layer across all its vertices',
+    varying === null ? `${cardsChecked} tier-${CARD_TIER} slots` : varying)
+  check(wrongLayer === null, 'and it is its own species\' layer',
+    wrongLayer === null ? `${MUSHROOM_NAMES.length} photographs for ${VARIANTS.length} variants` : wrongLayer)
+
+  // AND NO MESH TIER WEARS ONE, which is the other half of the same fact and
+  // the thing section 13 leans on. `billboardLayers` selects by texLayer, so a
+  // mesh that addressed an impostor slice would be spun toward the eye by the
+  // vertex shader the moment its normal came up -- and a cap's apex normal IS
+  // (0, 1, 0). The mesh tiers wear the cap and flesh sheets and nothing else.
+  const impostors = new Set(mushroomImpostorLayers())
+  let meshWearsCard = null
+  for (let t = 0; t < CARD_TIER; t++) {
     VARIANTS.forEach((v, i) => {
       const arr = BANK.tiers[t].geometries[i].attributes.texLayer.array
-      const want = MUSHROOM_SPECIES[v.species].impostorLayer
-      cardsChecked++
       for (let k = 0; k < arr.length; k++) {
-        if (arr[k] !== arr[0] && varying === null) {
-          varying = `tier ${t} slot ${i} (${v.species}): vertex 0 is layer ${arr[0]}, vertex ${k} is ${arr[k]}`
-        }
-        if (arr[k] !== want && wrongLayer === null) {
-          wrongLayer = `tier ${t} slot ${i} (${v.species}): layer ${arr[k]}, species declares ${want}`
+        if (impostors.has(arr[k]) && meshWearsCard === null) {
+          meshWearsCard = `tier ${t} slot ${i} (${v.species}) vertex ${k}: layer ${arr[k]} is an impostor slice`
         }
       }
     })
   }
-  check(varying === null, 'every card geometry addresses ONE layer across all its vertices',
-    varying === null ? `${cardsChecked} tier-${CROSS_TIER} and tier-${CARD_TIER} slots` : varying)
-  check(wrongLayer === null, 'and it is its own species\' layer, on both the cross tier and the billboard tier',
-    wrongLayer === null ? `${MUSHROOM_NAMES.length} photographs for ${VARIANTS.length} variants` : wrongLayer)
+  check(meshWearsCard === null,
+    'and no MESH tier wears an impostor layer, so the card tier is the only thing billboardLayers can select',
+    meshWearsCard === null ? `${CARD_TIER} mesh tiers x ${VARIANTS.length} slots against impostors ${[...impostors].join(' ')}` : meshWearsCard)
 }
 
 // ---------------------------------------------------------------------------
-// 13. THE CARD_UP_MARK SPLIT. This is the one that has no second line of
+// 13. THE CARD_UP_MARK CONDITION. This is the one that has no second line of
 // defence.
 //
-// Section 12 has just asserted that both card tiers wear the SAME five layers.
-// createPropMaterial is handed those five as `billboardLayers`, and its vertex
-// shader spins a quad toward the eye when
+// createPropMaterial is handed the five impostor layers as `billboardLayers`,
+// and its vertex shader spins a card toward the eye when
 //
 //     texLayer is in the billboard list   AND   normal.y > CARD_UP_MARK
 //
-// so the layer test alone selects both tiers. The NORMAL is the entire
-// mechanism keeping the fixed LOD1 cross from being spun like the LOD2
-// billboard, and there is no flag beside it and cannot be one: BatchedMesh
-// fixes its attribute set from the first geometry into the arena, so adding a
-// per-vertex `isBillboard` for this one prop means adding it to every generator
-// in the project. That is why the split rides on a value that already exists.
+// Section 12 asserted both halves of the first test -- the card tier wears those
+// layers and no mesh tier does. This is the second half, and between them they
+// are the whole mechanism. There is no flag beside it and cannot be one:
+// BatchedMesh fixes its attribute set from the first geometry into the arena, so
+// a per-vertex `isBillboard` for this one prop means adding it to every
+// generator in the project. That is why the spin rides on a value that already
+// exists.
 //
-// WHAT EACH SIDE FAILING LOOKS LIKE, because they are different bugs:
+// WHAT FAILING LOOKS LIKE. A billboard that drops below the mark stops spinning,
+// and a single fixed plane seen along its own plane covers no pixels at all.
+// Every mushroom past 40 spans vanishes for a quarter of the compass and comes
+// back -- and because the card band runs from there to the draw radius, that is
+// most of the layer flickering as the player turns.
 //
-//   A BILLBOARD THAT DROPS BELOW THE MARK stops spinning, and a single fixed
-//   quad seen along its own plane covers no pixels at all. Every mushroom past
-//   20 m vanishes for a quarter of the compass and comes back -- and because
-//   the far band is where nearly all of them are, that is most of the layer
-//   flickering as the player turns.
+// THE MARK IS 0.99, a thin gap, and the thinness is inherited rather than needed
+// here: the shared buildImpostorCard also authors CANOPY normals, which lean
+// mostly up and top out around 0.88, and a TREE's fixed crossed tier wears the
+// same impostor layer its billboard does with nothing but that gap holding it
+// still. The mushroom ladder has no crossed tier, so nothing here leans on the
+// gap -- but the mark is shared, and a mushroom card that wandered under it
+// would be the failure above.
 //
-//   A CROSS THAT RISES ABOVE IT starts rotating about its own stem. Two crossed
-//   planes turning together are still two crossed planes, so nothing disappears
-//   -- the 10-to-20 m band just quietly stops having any depth in it, and the
-//   thing the cross tier exists for is gone with no symptom to chase.
+// (0,1,0) EXACTLY, not merely over the line. `upNormal` authors literal
+// (0, 1, 0) and the attribute is read in the shader before anything transforms
+// it, so exact is what is available and exact is what is asserted. 1e-5 is
+// float32 slack on a value that is stored as 1.0.
 //
-// buildImpostorCard asserts this too, at the moment it authors the normals.
-// That assert is on the SHARED helper and phrased in terms of the flags it was
+// buildImpostorCard asserts this too, at the moment it authors the normals. That
+// assert is on the SHARED helper and phrased in terms of the flags it was
 // passed; this one is on the mushroom bank's own output and phrased in terms of
-// the tiers. They fail on different edits: dropping `upNormal: true` from the
-// billboard call trips both, but handing the billboard tier's geometry to the
-// cross tier's slot trips only this one.
+// the tier. They fail on different edits: dropping `upNormal: true` trips both,
+// but handing a mesh tier's geometry to the card tier's slot trips only this
+// one.
 //
-// (0,1,0) EXACTLY, not merely over the line. CARD_UP_MARK is 0.99 and not 0.5
-// precisely because the cross's canopy fan tops out at 0.876, so the gap is
-// thin; `upNormal` authors literal (0, 1, 0) and the attribute is read in the
-// shader before anything transforms it, so exact is what is available and exact
-// is what is asserted. 1e-5 is float32 slack on a value that is stored as 1.0.
-//
-// CALIBRATED BY BREAKING IT: with `upNormal: true` dropped from the LOD2 call
-// in mushroom-bank.js -- which buildImpostorCard accepts without complaint,
-// since a plane normal's y is 0 and 0 is on the correct side of the mark for a
-// card that claims not to be a billboard -- the first assertion reports
-// `tier 2 slot 0 (fly agaric) vertex 0: normal (0.00000, 0.00000, 1.00000),
-// 1.41e+0 off (0,1,0)`, and every mushroom past 20 m stops turning. The second
-// assertion and the whole of section 14 pass unchanged. Restored byte for byte
-// afterwards.
+// CALIBRATED BY BREAKING IT: with `upNormal: true` dropped from the card call in
+// mushroom-bank.js -- which buildImpostorCard accepts without complaint, since a
+// plane normal's y is 0 and 0 is on the correct side of the mark for a card that
+// claims not to be a billboard -- this reports `tier 2 slot 0 (fly agaric)
+// vertex 0: normal (0.00000, 0.00000, 1.00000), 1.41e+0 off (0,1,0)`, and every
+// distant mushroom stops turning. Restored byte for byte afterwards.
 // ---------------------------------------------------------------------------
 
 console.log('\nbillboard marker')
 
 {
   let notUp = null
-  let spinnable = null
   let upVerts = 0
-  let crossVerts = 0
-  let highestCross = -1
 
   VARIANTS.forEach((v, i) => {
     const nb = BANK.tiers[CARD_TIER].geometries[i].attributes.normal.array
@@ -1459,120 +1469,16 @@ console.log('\nbillboard marker')
         notUp = `tier ${CARD_TIER} slot ${i} (${v.species}) vertex ${k / 3}: normal (${nb[k].toFixed(5)}, ${nb[k + 1].toFixed(5)}, ${nb[k + 2].toFixed(5)}), ${off.toExponential(2)} off (0,1,0) and CARD_UP_MARK is ${CARD_UP_MARK}`
       }
     }
-    const nc = BANK.tiers[CROSS_TIER].geometries[i].attributes.normal.array
-    for (let k = 1; k < nc.length; k += 3) {
-      crossVerts++
-      if (nc[k] > highestCross) highestCross = nc[k]
-      if (nc[k] >= CARD_UP_MARK && spinnable === null) {
-        spinnable = `tier ${CROSS_TIER} slot ${i} (${v.species}) vertex ${(k - 1) / 3}: normal.y ${nc[k].toFixed(5)} is at or over the ${CARD_UP_MARK} mark, so the shader would spin a fixed cross`
-      }
-    }
   })
 
   check(notUp === null, `every tier-${CARD_TIER} vertex normal is exactly (0,1,0), so the shader spins the billboard`,
     notUp === null ? `${upVerts} normals over ${VARIANTS.length} slots, all within 1e-5 of up` : notUp)
-  check(spinnable === null, `and every tier-${CROSS_TIER} vertex normal is under CARD_UP_MARK, so the fixed cross is left alone`,
-    spinnable === null ? `${crossVerts} normals, highest normal.y ${highestCross.toFixed(3)} against the ${CARD_UP_MARK} mark` : spinnable)
-}
-
-// ---------------------------------------------------------------------------
-// 14. The LOD1 cross is smooth-shaded, and that is not the same claim as
-// section 13's.
-//
-// Section 13 only says the cross's normals are BELOW the mark. Plane normals
-// are below it too -- they are horizontal, normal.y is 0 -- so section 13 would
-// pass unchanged if `canopy: true` were dropped from the cross's
-// buildImpostorCard call. That edit is the one this section exists for.
-//
-// WHAT CANOPY AUTHORS, read out of buildImpostorCard rather than guessed at:
-// each corner's normal is `(dx * s, ny, dz * s)` normalised, where `(dx, 0, dz)`
-// is the plane's own horizontal direction, `s` is `±CANOPY_SPREAD` signed off
-// the corner's x, and `ny` ramps from CANOPY_SKIRT_UP at the foot to 1 at the
-// top. Two things follow, and both are asserted here:
-//
-//   THE NORMALS ARE NOT CONSTANT WITHIN A PLANE. A quad's four corners get four
-//   different normals -- two signs of lean crossed with two heights. With PLANE
-//   normals a quad has exactly ONE, and then the two planes of the cross each
-//   have a single constant dot(N, L): under a low sun that is one bright slab
-//   and one dark slab meeting along the stem, which is the most obviously fake
-//   thing a crossed card does. The fan moves that variation from BETWEEN the
-//   planes to ACROSS each one, where a cap is a dome and the eye reads it as
-//   roundness.
-//
-//   THEY LEAN OUTWARD. `s` is signed off the corner's own x, so a corner on the
-//   left of the plane leans left and one on the right leans right. Stated
-//   without needing to know which plane a vertex belongs to: the horizontal part
-//   of a vertex's normal must point the same way as the horizontal part of its
-//   own position, since both are the plane's `(dx, 0, dz)` times a scalar of the
-//   same sign. Dot them and it must be positive. A sign flip here is a card lit
-//   inside out -- the fan would darken exactly the edge the sun is on.
-//
-// CALIBRATED BY BREAKING IT: with `canopy: true` deleted from the LOD1 call in
-// mushroom-bank.js, this section fails both ways at once and section 13 goes on
-// passing -- "each plane of a tier-1 cross carries more than one normal" reports
-// `fly agaric plane 0: 1 distinct normal over 4 vertices`, and the outward test
-// reports a dot of 0.00000 on the first vertex it looks at. Restored byte for
-// byte afterwards.
-// ---------------------------------------------------------------------------
-
-console.log('\ncross shading')
-
-{
-  let flat = null
-  let inward = null
-  let planesChecked = 0
-  let fanned = 0
-  let worstDot = Infinity
-
-  for (const species of MUSHROOM_NAMES) {
-    const i = VARIANTS.findIndex((v) => v.species === species)
-    const geo = BANK.tiers[CROSS_TIER].geometries[i]
-    const pos = geo.attributes.position.array
-    const nrm = geo.attributes.normal.array
-    const verts = geo.attributes.position.count
-    const per = verts / MUSHROOM_CARD_PLANES
-
-    // A quad is four corners; the block arithmetic below assumes it, and a card
-    // that stopped being quads would silently measure the wrong vertices.
-    if (per !== 4 && flat === null) {
-      flat = `${species}: ${verts} vertices over ${MUSHROOM_CARD_PLANES} planes is ${per} per plane, not the 4 corners of a quad`
-    }
-
-    for (let p = 0; p < MUSHROOM_CARD_PLANES; p++) {
-      planesChecked++
-      const seen = new Set()
-      for (let k = 0; k < per; k++) {
-        const j = p * per + k
-        seen.add([nrm[j * 3], nrm[j * 3 + 1], nrm[j * 3 + 2]].map((n) => n.toFixed(5)).join(','))
-        // The horizontal halves of the position and the normal, dotted. Both are
-        // this plane's own (dx, 0, dz) times a scalar, so the sign of the dot IS
-        // the sign of the lean relative to the corner's own side of the axis.
-        const hx = pos[j * 3]
-        const hz = pos[j * 3 + 2]
-        if (Math.hypot(hx, hz) < 1e-9) continue
-        const d = (nrm[j * 3] * hx + nrm[j * 3 + 2] * hz) / Math.hypot(hx, hz)
-        fanned++
-        if (d < worstDot) worstDot = d
-        if (!(d > 1e-6) && inward === null) {
-          inward = `${species} plane ${p} vertex ${k}: the normal's horizontal part dotted with its own x offset is ${d.toFixed(5)}, so the fan does not lean outward`
-        }
-      }
-      if (seen.size < 2 && flat === null) {
-        flat = `${species} plane ${p}: ${seen.size} distinct normal over ${per} vertices -- this is a PLANE-normal card, not a canopy fan`
-      }
-    }
-  }
-
-  check(flat === null, `each plane of a tier-${CROSS_TIER} cross carries more than one normal, so shading varies across the quad`,
-    flat === null ? `${planesChecked} planes over ${MUSHROOM_NAMES.length} species, 4 distinct normals each` : flat)
-  check(inward === null, 'and the fan leans OUTWARD -- every normal agrees in sign with its own offset from the card axis',
-    inward === null ? `${fanned} corners, weakest outward component ${worstDot.toFixed(3)}` : inward)
 }
 
 for (const g of DISTINCT) g.dispose()
 
 // ---------------------------------------------------------------------------
-// 15. The apex-down billboard really is the better triangle.
+// 14. The apex-down billboard really is the better triangle.
 //
 // MUSHROOM_BILLBOARD_TRI is 'down', and the comment on it in mushroom-bank.js
 // quotes a measured table and says THIS SCRIPT gates it. So it has to.
@@ -1701,7 +1607,7 @@ const TRI_FLOOR = 70
 }
 
 // ---------------------------------------------------------------------------
-// 16. The card comes in later than the parallax rule allows, for EVERY variant.
+// 15. The card comes in later than the parallax rule allows, for EVERY variant.
 //
 // DESIGN.md §5's rule is `crossover = depth x 28.6` -- the range past which a
 // flat card's failure to turn stays under 2 degrees -- and for a mushroom the
@@ -1725,7 +1631,7 @@ const TRI_FLOOR = 70
 //     honest range. The per-variant ratio is measured here and printed, and the
 //     assertion is that the max covers the worst of them.
 //
-// The metre distances are printed rather than asserted, for section 15's
+// The metre distances are printed rather than asserted, for section 14's
 // reason: `spread` comes off a seeded build and moves with the seed.
 // ---------------------------------------------------------------------------
 

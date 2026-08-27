@@ -306,7 +306,14 @@ export class Ferns {
     // left alone, so the mesh tiers and the billboards share one material and
     // therefore one draw call -- which is DESIGN.md §5's rule and the reason
     // this is a shader trick rather than a second mesh with a second material.
-    this.material = createPropMaterial(textureArray, { billboardLayers: cards.layers })
+    // The whole bed is inside DRAW_RADIUS 90, which is inside the wind's own
+    // 100 m reach, so every fern sways -- billboards included. A spun card takes
+    // the screen-parallel cheat (material.js's windVertex explains why it is the
+    // right one on a 0.5 m plant at 14 m and out).
+    this.material = createPropMaterial(textureArray, {
+      billboardLayers: cards.layers,
+      wind: 'fern',
+    })
 
     // Finest first, so tier index lines up with LOD_BANDS. FERN_TIERS is
     // authored coarsest-first (it reads as a cost curve there), so this

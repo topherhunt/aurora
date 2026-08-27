@@ -15,7 +15,7 @@
 //
 // `sky rows` and `azimuth texels` size the output map, and they are the surprise: the map may be roughly TEN TIMES COARSER THAN THE SCREEN along both axes before it costs anything visible. Sweeping rows against a screen that would want about 490 of them: 384 rows 1.32, 192 rows 1.32, 96 rows 1.33, 48 rows 1.35, 32 rows 1.47, 24 rows 1.66, 16 rows 2.08. Sweeping azimuth against a sector about 1340 pixels wide: 512 texels 1.45, 256 texels 1.49, 128 texels 1.77, 64 texels 2.77. Both are flat and then fall off a cliff, and the defaults sit at the last flat point with one step of margin.
 //
-// `top elevation` is not a quality knob at all. It says how much sky the map covers, and it must cover everything the sector's mesh draws or the top of the sky clamps to a stripe. It is on the panel because the sector's own extent is a scene parameter and this has to be able to follow it.
+// `top elevation` is not a quality knob at all. It says how much sky the map covers, and it must cover everything the mesh draws or the top of the sky clamps to a stripe. Now that the mesh is a full dome it sits at its maximum of 88 degrees, and the last two degrees are handled by the zenith dissolve in the frame rather than by the map: the dissolve is read per pixel, so it keeps falling through the clamped cap instead of freezing at the top row with it.
 //
 // The weather sliders -- gFuzz, gSharp, gScatter, gDim -- are the ones this scheme has the least right to. They vary the shaping PER RAY, which is exactly what a shared kernel cannot express, and the answer is to store the emission at three fixed values of the weather scalar and lerp at the output texel. Measured, at 40 taps: a per-ray oracle scores 0.333, one slice scores 1.392, two slices 0.393, three slices 0.330, five slices 0.332. Three slices is converged, and it is converged because the weather is a smooth function of a scalar rather than because the error is being hidden. Turning the sliders off entirely instead would score 4.10.
 // ---------------------------------------------------------------------------
@@ -36,8 +36,8 @@ const SKYMAP_GROUP = {
     {
       key: 'smTopDeg',
       label: 'top elevation (deg)',
-      hint: 'How far up the sky the map reaches, in degrees above the horizon. It must cover everything the sky sector actually draws: set it below the sector and the top of the sky clamps to a smeared stripe, because the map has run out and the reader is holding its last row. Raising it past the sector only spends texels on sky nobody sees.',
-      type: 'float', min: 60, max: 88, step: 1, value: 80,
+      hint: 'How far up the sky the map reaches, in degrees above the horizon. It must cover everything the sky mesh actually draws: set it below the mesh and the top of the sky clamps to a smeared stripe, because the map has run out and the reader is holding its last row. The mesh is a full dome now, so the default sits at the maximum: 90 is unreachable because the plan radius goes to zero there and its log to minus infinity, and the 2 degrees of cap left over are inside the zenith dissolve, which has already taken the emission to near nothing before the clamp begins.',
+      type: 'float', min: 60, max: 88, step: 1, value: 88,
     },
     {
       key: 'smRows',

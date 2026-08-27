@@ -143,24 +143,25 @@ import {
 // Measured on a flat headless world at the standing eye height, 40,972 trees
 // placed inside 1500 m:
 //
-//   tier 0   LOD0 mesh    < 8 m             8 instances    2.7k
+//   tier 0   LOD0 mesh    < 8 m             8 instances    2.8k
 //   tier 1   LOD1 mesh    8 - 15 m         25              8.3k
 //   tier 2   crossed card 15 - 100 m    1,527              9.2k
 //   tier 3   billboard    to 1500 m     39,412             39.4k
 //
-// 59.6k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. Five
+// 59.7k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. Five
 // other camera spots on the same flat world give 58 to 61k. The mesh tiers cost
-// 470 and 338 triangles a tree averaged over the bank; what a given spot pays
+// 480 and 338 triangles a tree averaged over the bank; what a given spot pays
 // is which variants happen to be standing near it, which is why those two rows
 // wander by a third between spots and the card rows do not.
 //
-// THE TWO MESH TIERS DIFFER ONLY IN WOOD. LOD1 is LOD0 with `trunkSides` 3 and
-// `branchSides` 1 -- a three-sided trunk and one flat fin per limb -- and its
+// THE TWO MESH TIERS DIFFER ONLY IN WOOD. LOD1 is LOD0 with `trunkSides` 3,
+// `branchSides` 1 -- a three-sided trunk and one flat fin per limb -- and
+// `roots` 0, dropping the root crown that only reads when you stand on it. Its
 // FOLIAGE IS THE SAME CARDS IN THE SAME SEATS, not a coarser crown that happens
 // to measure the same. So the 8 m boundary is the cheapest swap in the project:
 // nothing about the canopy changes, and what pops is limbs losing their barrel
 // at a range where a limb is about 15 px wide and mostly behind its own leaves.
-// The 28% it saves is all sticks, which is why it can be spent this close in.
+// The 30% it saves is all sticks, which is why it can be spent this close in.
 //
 // WHY THE MESH STOPS AT 15 m rather than being pushed further. The next saving
 // after the wood is the crown, and there is no honest cut in a crown: a card is
@@ -225,7 +226,7 @@ const FULL_RADIUS = 80
 //
 // THE FIRST TWO NUMBERS ARE THE NEAR FIELD'S QUALITY KNOBS and they are priced
 // very differently. Both bands grow as the SQUARE of their reach, but a tree in
-// the first costs 470 triangles and one in the second 338, so widening the
+// the first costs 480 triangles and one in the second 338, so widening the
 // SECOND is what buys geometry cheaply: 15 m holds 32 mesh trees for 11k
 // between the two tiers, where putting LOD0 alone out to 15 m cost 14k for the
 // same trees. Measured on the flat world, tier by tier: 8 m holds 8 LOD0 trees,
@@ -466,7 +467,15 @@ export class Trees {
     // so the mesh tiers and the billboards share one material and therefore one
     // draw call -- DESIGN.md §5's rule, and the whole reason this is a shader
     // trick rather than a second mesh with a second material.
-    this.material = createPropMaterial(textureArray, { billboardLayers: treeImpostorLayers() })
+    this.material = createPropMaterial(textureArray, {
+      billboardLayers: treeImpostorLayers(),
+      // Sway ramps out by 100 m, which is exactly LOD_BANDS[2] -- so in practice
+      // only the mesh tiers and the crossed cards move, and the 39,000 far
+      // billboards evaluate the bend and multiply it by zero. That is on
+      // purpose: it is a DISTANCE ramp and not a tier test, so the two halves of
+      // a tier cross-dissolve always agree. See the wind header in material.js.
+      wind: 'tree',
+    })
 
     const geos = bank.tiers.flatMap((t) => t.geometries)
     this.batch = new THREE.BatchedMesh(

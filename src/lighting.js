@@ -343,16 +343,22 @@ const CAUSTIC_DEFS = /* glsl */ `
 
   // THE DRIFT RATES ARE IN CELLS PER SECOND, not metres per second, because p
   // arrives already divided by uCaustic.y -- so at a 1.6 m cell the first layer
-  // crosses about 57 cm of bed a second. Four times the first pass, which read
+  // crosses about 115 cm of bed a second. Eight times the first pass, which read
   // as a slow slide rather than as waves: the eye reads a caustic net as MOVING
   // WATER only when the threads reorganise at roughly the rate ripples cross,
   // and a net that drifts more slowly than that reads as a projected texture on
   // a floor. The two layers stay at their own rates and their own headings --
   // what makes it look alive is them shearing past each other, and scaling both
   // by one number keeps that shear intact while speeding it up.
+  //
+  // The ceiling on this is the noise field's own cell, not taste: once a layer
+  // crosses more than about one cell per second the net stops reorganising and
+  // starts SLIDING as a rigid pattern, because the eye can follow an individual
+  // thread across the screen. The first layer is at 0.72 of a cell a second, so
+  // there is one more doubling in this before it goes.
   float wlCaustic( vec2 p, float t ) {
-    vec2 a = p + vec2( 0.36, 0.20 ) * t;
-    vec2 b = p * 1.63 - vec2( 0.28, 0.44 ) * t;
+    vec2 a = p + vec2( 0.72, 0.40 ) * t;
+    vec2 b = p * 1.63 - vec2( 0.56, 0.88 ) * t;
     float ra = 1.0 - abs( wlCNoise( a ) * 2.0 - 1.0 );
     float rb = 1.0 - abs( wlCNoise( b ) * 2.0 - 1.0 );
     float net = ra * rb;

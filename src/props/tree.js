@@ -16,6 +16,8 @@ import { LAYER } from '../textures.js'
 //            `limbs = branches x (1 + forks)`.
 //   FOLIAGE  leaf-spray cutouts off the texture array, one card per spray --
 //            see FOLIAGE IS MANY SMALL SPRAYS below.
+//   ROOTS    solid cones a third time, launched DOWN and OUT from the trunk's
+//            foot and mostly buried. LOD0 only -- see THE ROOT CROWN below.
 //
 // A CONE THAT ENDS IN A POINT IS THE CHEAP SOLID. A tube of `sides` x `rings`
 // quads costs `sides x rings x 2` triangles and ends in a flat cap that is a
@@ -30,12 +32,13 @@ import { LAYER } from '../textures.js'
 //   limb(sides, rings) = 1 if sides == 1, else cone(sides, rings)
 //   limbs              = branches x (1 + forks)
 //   tris = cone(trunkSides, trunkRings)
+//        + roots x 2
 //        + limbs x limb(branchSides, branchRings)
 //        + (limbs x sprays + apexSprays) x cardTris
 //
 // which is `resolveTree` below -- the one place that arithmetic is written, and
 // the number the previewer (gen-tree.html) puts at the top of its budget
-// panel. DESIGN.md §5 gives the tree class 470 and 340 triangles for its
+// panel. DESIGN.md §5 gives the tree class 490 and 338 triangles for its
 // two mesh tiers and the bush class 84 / 56 / 28; both are reachable by moving
 // the counts above and nothing else, which is what makes an LOD tier a
 // re-generation rather than a decimation. See §9 bugs 10-11 for why decimating
@@ -171,6 +174,40 @@ import { LAYER } from '../textures.js'
 // problem for the same reason (`trunkBend` curves the path, one ring draws a
 // straight cone) and takes the same fix.
 //
+// THE ROOT CROWN IS LOD0 ONLY, AND MOST OF IT IS NEVER SEEN. A trunk is a cone
+// that stops dead at y = 0, and the scatter buries only 15 cm of it
+// (PLACEMENT.sink in v2/render/trees.js), so a tree standing on anything but
+// flat ground meets the terrain along a hard circle -- a dowel pushed into the
+// floor. Real trees flare: the trunk widens into spurs that dive into the soil,
+// and on a slope, a bank or an eroded path the uphill spurs are buried while the
+// downhill ones stand clear in the air. That is what these are, and it is why
+// they are allowed to go BELOW y = 0 rather than being lifted to sit on it: the
+// buried part is the point. The rescale at the bottom of buildTree divides by
+// `boundingBox.max.y`, so nothing hanging below the root changes the tree's
+// height or its scale -- `belowGround` in userData reports how far down they go.
+//
+// A SPUR IS TWO TRIANGLES AND HAS NO UNDERSIDE, which follows from where it is
+// seen from. It is a tent: a ridge running from the flare down to the tip, two
+// flanks falling away either side of it, and nothing closing the bottom -- the
+// face that would close it points into the soil, and the only eye that could
+// ever reach it is one below the terrain. `branchPath` still runs, because the
+// tip has to land where `rootDroop` puts it, but the wedge between flare and tip
+// is straight: at five spurs a tree, an arc is not worth the ring that draws it.
+// `rootWidth` sizes the wedge off the TRUNK's radius rather than off its own
+// length, which is the rule branchOfTrunk had to be added to enforce for
+// branches: a spur is the trunk's foot spreading, so it is anchored to that foot.
+//
+// LOD0 ONLY, and that is a range argument rather than a budget one. The flare is
+// centimetres of silhouette at the very bottom of the tree, which is exactly the
+// detail that is worth its 10 triangles when the player is standing next to the
+// trunk and worth nothing at all at the 8 m where LOD1 takes over -- by then the
+// whole root crown is a few pixels tall and half of it is behind the terrain.
+// treeLod sets `roots: 0` for that reason, which makes this the third number the
+// coarse tier moves and the only one that removes a part rather than cheapening
+// it. It costs the tiers nothing in nesting: roots are wood, they carry no
+// cards, and they do not reach past the crown, so LOD1 is still the same tree
+// wide and tall with the identical foliage in the identical seats.
+//
 // ATTRIBUTES: one layout, always `{ position, normal, uvProj, texLayer }` --
 // the shared prop material's (src/material.js). fern.js carries two layouts
 // because a fern is one texture and can be previewed through `material.map`; a
@@ -210,6 +247,44 @@ export const TREE_DEFAULTS = {
   barkRepeat: 8,       // bark tiles UP the trunk this many times; the tiling
                        // AROUND it is derived so a tile stays roughly square in
                        // world space -- see the note where the UVs are written
+
+  // --- roots: the flare at the foot, LOD0 only. See THE ROOT CROWN above ---
+  roots: 5,            // spurs around the trunk's foot. 0 draws none, which is
+                       // what treeLod hands the coarse tier. NOT scaled by the
+                       // height-density law: a sapling has a root crown too, and
+                       // it is the same handful of spurs at a smaller size --
+                       // what changes with age is their thickness, which
+                       // `rootWidth` already takes off the trunk. There is no
+                       // `rootSides`: a spur is two triangles, fixed -- see
+                       // addRootSpur
+  rootRise: 0.05,      // where up the trunk a spur leaves, as a fraction of
+                       // height. Deliberately ABOVE the 15 cm the scatter sinks
+                       // a tree by (0.05 x 9 m = 45 cm on a pine), so the flare
+                       // itself stands clear of the ground and only what dives
+                       // off it is buried.
+                       //
+                       // A FRACTION, so a SAPLING barely clears: the flare tops
+                       // out 2 cm above the soil line on a 3 m pine and 5 cm
+                       // UNDER it on a 2 m birch, so a sapling's crown reads at
+                       // the ground rather than above it and shows only where
+                       // terrain falls away. The alternative is to state this in
+                       // world metres like `sprayMetres`, and it is worse: a
+                       // flare 45 cm up a 3 m trunk that is 8 cm thick there
+                       // reads as stilts
+  rootLength: 0.18,    // spur length as a fraction of height
+  rootAngle: 0.7,      // radians BELOW horizontal at the launch, so a spur
+                       // leaves the trunk already heading for the soil
+  rootDroop: 0.5,      // and bends this much further down along its own length,
+                       // the way branchDroop bends a limb up over into a sag.
+                       // Only the TIP moves: a two-triangle wedge is straight,
+                       // so the droop decides where the spur ends rather than
+                       // showing as an arc
+  rootWidth: 1.1,      // spur half-width and ridge height at the flare, as a
+                       // fraction of the TRUNK's radius where it leaves. Off the
+                       // trunk rather than off its own length -- see the note
+                       // above. Over 1 on purpose: a buttress is WIDER than the
+                       // trunk at the soil line, which is what makes it read as
+                       // the trunk spreading rather than as a stick nailed on
 
   // --- crown ---
   branches: 13,
@@ -455,7 +530,8 @@ export const TREE_SPECIES = {
   // without re-checking the tree AND the bush, since the bush is this preset
   // with BUSH_OVERRIDES on top and the two share every number below.
   //
-  //   tree   9.0 m,  792 tris,  30 branches / 60 limbs, 242 cards, 5.5 m crown
+  //   tree   9.0 m,  802 tris,  30 branches / 60 limbs, 242 cards, 5 root
+  //                              spurs, 5.5 m crown
   //   bush   1.1 m,  138 tris,  10 branches / 10 limbs,  42 cards, 1.9 m crown
   //
   // Both crowns are wider than they were before `apexScale` and `sprayTipBack`,
@@ -665,6 +741,10 @@ export const BUSH_OVERRIDES = {
   barkRepeat: 1,
   forks: 0,            // a bush already branches from the ground; forking it as
                        // well triples the limb count against a 84-triangle budget
+  roots: 0,            // and a bush has no trunk to flare: `firstBranch` 0.04
+                       // puts branches at the soil already, so a root crown
+                       // would be spurs poking out between them -- for an
+                       // eighth of an 84-triangle budget
 }
 
 /**
@@ -679,7 +759,7 @@ export const BUSH_OVERRIDES = {
  * tier is a re-run of the generator with different numbers, the way the fern
  * bank's three tiers are 6, 4 and 2 segments per frond.
  *
- * TWO NUMBERS MOVE AND NOTHING ELSE DOES. The tier covers 8-15 m (LOD_BANDS in
+ * THREE NUMBERS MOVE AND NOTHING ELSE DOES. The tier covers 8-15 m (LOD_BANDS in
  * v2/render/trees.js) -- close enough that the tree is still a tree and not a
  * picture of one -- so the only cuts it can afford are ones that take triangles
  * out of the parts you are not looking at. That is the wood, and only the wood:
@@ -690,15 +770,21 @@ export const BUSH_OVERRIDES = {
  *                   because the ones poking out past the crown are skyline and
  *                   skyline is the silhouette; what goes is the barrel they
  *                   were drawn as. This is where nearly all the saving is: a
- *                   pine spends 300 of its 792 triangles on limb cones and 60
+ *                   pine spends 300 of its 802 triangles on limb cones and 60
  *                   on the same limbs as fins.
  *   trunkSides 3    The floor resolveTree clamps to anyway, and a three-sided
  *                   trunk has the same silhouette width as an eight-sided one.
  *                   What it loses is the shading gradient round the barrel.
+ *   roots 0         The root crown goes entirely, and it is the one cut here
+ *                   that DELETES a part rather than drawing it cheaper. It can
+ *                   be, because the flare is centimetres of silhouette at the
+ *                   foot of the tree and this tier starts at 8 m, where that is
+ *                   a few pixels tall with terrain across half of it. See THE
+ *                   ROOT CROWN at the top of this file.
  *
- * Measured over the bank: 470 triangles a tree becomes 338, a 28% cut, and all
+ * Measured over the bank: 480 triangles a tree becomes 338, a 30% cut, and all
  * of it comes out of wood. Per species at the base size, LOD0 -> LOD1: pine
- * 792 -> 547, oak 516 -> 415, birch 350 -> 241, aspen 432 -> 315.
+ * 802 -> 547, oak 526 -> 415, birch 360 -> 241, aspen 442 -> 315.
  *
  * THE FOLIAGE IS NOT TOUCHED AND THAT IS THE DESIGN, not an omission. Sprays
  * are most of a broadleaf's bill -- oak spends 472 of 610 on cards -- so the
@@ -741,6 +827,7 @@ export function treeLod(options, tier) {
     ...p,
     trunkSides: 3,
     branchSides: 1,
+    roots: 0,
     // NOTHING ELSE MOVES -- including bundleTris, which is inherited rather
     // than forced on. A caller that asks for a bundled crown still gets one at
     // this tier; the tier itself no longer asks.
@@ -761,6 +848,7 @@ export function treeLod(options, tier) {
  *   limb(sides, rings) = 1 if sides == 1, else cone(sides, rings)
  *   limbs              = branches x (1 + forks)
  *   tris = cone(trunkSides, trunkRings)
+ *        + roots x 2
  *        + limbs x limb(branchSides, branchRings)
  *        + foliage
  *
@@ -802,6 +890,15 @@ export function resolveTree(options = {}) {
   const limb = (n, r) => (Math.round(n) === 1 ? 1 : cone(Math.round(n), r))
   const trunkTris =
     p.trunkRadius > 0 ? cone(Math.max(3, Math.round(p.trunkSides)), p.trunkRings) : 0
+  // The root crown, and it is NOT height-scaled: `countPower` says how much of a
+  // height change goes into counts rather than size, and the answer for the
+  // flare at the foot is none of it -- a sapling has the same handful of spurs a
+  // grown tree does, thinner. A spur is a fixed two-face wedge with its
+  // underside left open (addRootSpur), so there is no law to apply here and no
+  // cheaper form to fall back to: the tier that would have wanted one draws no
+  // roots at all.
+  const roots = p.trunkRadius > 0 && p.rootWidth > 0 ? Math.max(0, Math.round(p.roots)) : 0
+  const rootTris = roots * 2
   const branchTris = limbs * limb(p.branchSides, p.branchRings)
   // The bundle is the one part of the tree whose bill is not derived from
   // anything: blades are disconnected, so the count IS the count. That is worth
@@ -825,11 +922,13 @@ export function resolveTree(options = {}) {
     // the blades rather than a card's height -- which is the whole reason the
     // bundle can keep the rule that a spray is a fixed size in the world.
     sprayMetres: p.sprayMetres * Math.pow(k, Math.max(0, p.sprayPower)),
+    roots,
     trunkTris,
+    rootTris,
     branchTris,
     // The foliage bill, whichever form it took. `bundleTris` says which.
     sprayTris,
-    triangles: trunkTris + branchTris + sprayTris,
+    triangles: trunkTris + rootTris + branchTris + sprayTris,
   }
 }
 
@@ -1079,6 +1178,69 @@ function addFin(out, base, tip, radius, vRepeat, texLayer) {
   }
   out.indices.push(i, i + 1, i + 2)
   return 1
+}
+
+// A ROOT SPUR IN TWO TRIANGLES: a tent with the bottom left open.
+//
+// It is `addCone` with three sides, one ring and the underside face never
+// emitted -- a ridge vertex above the flare, one either side of it, and all
+// three closing to the tip. The dropped face is the one whose normal points into
+// the soil, and it runs from the flare's base edge down to a tip most of a metre
+// under: nearly all of it is buried, and the hand's width that is not sits
+// tucked under the flare against the bark, where you would have to crouch beside
+// the trunk and look up to find it. Every angle anyone actually stands at sees
+// two flanks and a ridge, which is the whole silhouette a buttress has -- so two
+// triangles is not a compromise on a cone, it IS the shape.
+//
+// FLAT NORMALS, one per face, for the reason addFin authors its own: a flare is
+// faceted where it leaves the trunk, and interpolating the ridge round to the
+// flanks would light it as a tube half-buried in the ground.
+//
+// `up` and `side` are handed in rather than derived, because the caller already
+// has the spur's azimuth and the two must agree with it -- `up` is UP with the
+// along-spur component removed, so the ridge leans out over the flanks the way
+// the spur dives.
+function addRootSpur(out, base, tip, up, side, radius, vRepeat, texLayer) {
+  // Ring order runs ridge -> left -> right, which is the direction that leaves
+  // the two kept faces wound outward; the face that would close left back round
+  // to the ridge is the underside, and is simply never pushed.
+  const ring = [
+    { p: new THREE.Vector3().copy(base).addScaledVector(up, radius), u: 0 },
+    { p: new THREE.Vector3().copy(base).addScaledVector(side, radius), u: 1 / 3 },
+    { p: new THREE.Vector3().copy(base).addScaledVector(side, -radius), u: 2 / 3 },
+    // the ridge again, at the far end of u: addCone's duplicated seam vertex,
+    // free here because flat shading duplicates every corner anyway.
+    { p: new THREE.Vector3().copy(base).addScaledVector(up, radius), u: 1 },
+  ]
+  const n = new THREE.Vector3()
+  const e1 = new THREE.Vector3()
+  const e2 = new THREE.Vector3()
+  let tris = 0
+  for (const [a, b] of [[0, 1], [2, 3]]) {
+    e1.subVectors(ring[b].p, ring[a].p)
+    e2.subVectors(tip, ring[a].p)
+    // No degenerate-face bail here on purpose: resolveTree prices a spur at two
+    // triangles flat, so this loop has to emit two or the law and the builder
+    // part company. The caller guarantees a positive radius and a tip a real
+    // distance from the flare, which is what makes that safe.
+    n.crossVectors(e1, e2).normalize()
+    const i = out.positions.length / 3
+    const corners = [
+      [ring[a].p, ring[a].u, 0],
+      [ring[b].p, ring[b].u, 0],
+      [tip, (ring[a].u + ring[b].u) * 0.5, vRepeat],
+    ]
+    for (const [p, u, v] of corners) {
+      out.positions.push(p.x, p.y, p.z)
+      out.normals.push(n.x, n.y, n.z)
+      out.uvs.push(u, v)
+      out.layers.push(texLayer)
+      out.leaf.push(0) // wood: the canopy-normal pass must not touch these
+    }
+    out.indices.push(i, i + 1, i + 2)
+    tris++
+  }
+  return tris
 }
 
 // A tapered solid closing to a POINT: `rings` rings of `sides` vertices each,
@@ -1353,21 +1515,99 @@ export function buildTree(options = {}) {
     trunkTris = addCone(out, list, trunkAt(1), sides, uRepeat, p.barkRepeat, p.barkLayer)
   }
 
-  // --- limbs and their foliage ----------------------------------------------
-  const whorls = Math.max(1, Math.ceil(nBranch / Math.max(1, whorl)))
-  let branchTris = 0
-  let limbs = 0
+  // --- the root crown --------------------------------------------------------
+  //
+  // Spurs off the trunk's foot, diving into the soil. A spur takes a limb's
+  // path -- branchPath, launched below the horizontal instead of above it, no
+  // foliage and no forks -- and then draws it as a two-triangle open-bottomed
+  // wedge rather than a cone. The long version, including why it is LOD0 only,
+  // why it has no underside and why it is allowed below y = 0, is THE ROOT
+  // CROWN at the top of this file.
+  //
+  // ITS OWN RNG STREAM, on the same argument the card fold makes: drawing from
+  // `rand` here would shift every branch azimuth, every limb length and every
+  // spray seat in the project, and the pine preset is marked LOD0 LOCKED
+  // precisely so that cannot happen. On a stream of its own the root crown is
+  // additive -- the same seed lays out the same tree it laid out before, now
+  // standing on roots -- and LOD1, which draws none, still walks the identical
+  // crown.
+  const nRoot = R.roots
+  let rootTris = 0
+  // `R.roots` is already zero unless the trunk and `rootWidth` are both drawn,
+  // so this one test is the whole clamp -- and it has to be the same test
+  // resolveTree makes, or the law and the builder part company, which is the
+  // failure check-trees.mjs exists for.
+  if (nRoot > 0) {
+    const rootRand = mulberry32((p.seed ^ 0xc2b2ae35) >>> 0)
+    const f = Math.min(0.9, Math.max(0, p.rootRise))
+    const rootR = radiusAt(f)
+    const ridge = new THREE.Vector3()
+    const flank = new THREE.Vector3()
+    // Evenly around the foot with a jitter of up to `yawJitter` of one spacing,
+    // and the whole ring rolled to a random start. Even rather than golden-angle
+    // because five spurs at the golden angle leave two of them nearly on top of
+    // each other, and a doubled-up buttress with a bare quarter opposite it is
+    // the one arrangement a flare must not have.
+    const roll = rootRand() * TAU
+    for (let i = 0; i < nRoot; i++) {
+      const az = roll + ((i + (rootRand() - 0.5) * p.yawJitter) / nRoot) * TAU
+      const outward = new THREE.Vector3(Math.cos(az), 0, Math.sin(az))
+      const side = new THREE.Vector3(-Math.sin(az), 0, Math.cos(az))
+      const dir = new THREE.Vector3()
+        .copy(outward)
+        .multiplyScalar(Math.cos(p.rootAngle))
+        .addScaledVector(UP, -Math.sin(p.rootAngle))
+        .normalize()
+      // Length varies per spur by a quarter either way: a flare of five
+      // identical prongs reads as a stand rather than as a root.
+      const length = Math.max(1e-4, p.rootLength * (0.75 + rootRand() * 0.5))
+      // Seated INSIDE the drawn trunk, half a radius in, for the reason a
+      // branch is -- see chordAt. A spur launched off the trunk's skin is a
+      // stick leaning against it, and this one is meant to be the trunk
+      // widening.
+      const start = chordAt(trunkAxis, f).addScaledVector(outward, rootR * 0.5)
+      const pts = branchPath(start, dir, side, {
+        droop: p.rootDroop * (0.85 + rootRand() * 0.3),
+        curve: 1, // even along the spur: a buttress bends from the flare down,
+                  // where a limb (branchCurve 1.5) holds stiff and sags at the tip
+        sway: 0,
+        length,
+      }, PATH_N)
+      // Bark along the spur at the trunk's own metres-per-tile, and once around,
+      // exactly as a limb does it.
+      const vRepeat = Math.max(1, Math.round(length * p.barkRepeat))
+      // The wedge is straight from flare to tip, so the droop shows only in
+      // where the path ENDS -- which is the whole of what the droop is for at
+      // this size. `ridge` is UP with the along-spur part taken out, so it
+      // leans out over the flanks by exactly the angle the spur dives at, and
+      // `flank` is the horizontal perpendicular the two sides sit on.
+      const tip = samplePath(pts, 1).pos
+      ridge.subVectors(tip, start).normalize()
+      flank.crossVectors(ridge, UP)
+      if (flank.lengthSq() < 1e-8) flank.set(1, 0, 0)
+      flank.normalize()
+      ridge.crossVectors(flank, ridge).normalize()
+      rootTris += addRootSpur(
+        out, start, tip, ridge, flank, rootR * p.rootWidth, vRepeat, p.barkLayer)
+    }
+  }
 
   // An orthonormal pair spanning the plane perpendicular to `tan`, written into
   // b1/b2. Everything that leaves a limb sideways -- a leaf shoot, a fork --
   // picks an azimuth in this frame, which is what stops them all sharing one
-  // plane the way they did when they were rolled about a fixed yaw.
+  // plane the way they did when they were rolled about a fixed yaw. It is also
+  // what turns a cone's rings with its path.
   const frame = (tan, b1, b2) => {
     b1.crossVectors(tan, UP)
     if (b1.lengthSq() < 1e-8) b1.set(1, 0, 0)
     b1.normalize()
     b2.crossVectors(tan, b1).normalize()
   }
+
+  // --- limbs and their foliage ----------------------------------------------
+  const whorls = Math.max(1, Math.ceil(nBranch / Math.max(1, whorl)))
+  let branchTris = 0
+  let limbs = 0
 
   /**
    * One limb: its solid cone, the foliage along it, and -- only at depth 0 --
@@ -1871,11 +2111,12 @@ export function buildTree(options = {}) {
   // Left as a loop in both cases: a second build to recover a percent is not a
   // trade worth making, and what it would buy is not visible.
   // This is the one place a tree deliberately differs from a fern: the fern is
-  // translated so its bounding box sits on y = 0, but a low branch here can
-  // droop below the root, and lifting the whole tree to clear it would leave
-  // the trunk hanging in the air. The trunk base is at y = 0 by construction,
-  // so it is already right and the drooping foliage is allowed to pass through
-  // the ground -- which is what real low branches do.
+  // translated so its bounding box sits on y = 0, but a root crown dives half a
+  // metre under it and a low branch can droop below that, and lifting the whole
+  // tree to clear either would leave the trunk hanging in the air. The trunk
+  // base is at y = 0 by construction, so it is already right and everything
+  // below is allowed to pass through the ground -- which is what real roots and
+  // real low branches do.
   geo.computeBoundingBox()
   // Held, because computeBoundingBox() reuses the same Box3 in place -- reading
   // the "before" box after the rescale would silently give the after one.
@@ -1892,9 +2133,11 @@ export function buildTree(options = {}) {
     triangles: out.indices.length / 3,
     vertices: out.positions.length / 3,
     trunkTris,
+    rootTris,
     branchTris,
     sprayTris,
     branches: nBranch,
+    roots: nRoot,
     limbs,
     // The sprays the crown HAS, which under `bundleTris` is not the same as
     // the sprays it DRAWS -- there they are only what the blades were hung on.
@@ -1907,9 +2150,11 @@ export function buildTree(options = {}) {
     // rather than corrected -- see the note where sprayH is computed.
     sprayMetres: R.sprayMetres * (scale / p.height),
     // Above ground, which is what `height` asked for: the tip is at exactly
-    // p.height by construction. Foliage that droops through the ground is
-    // reported separately rather than folded in, because on a slope that is
-    // the difference between a low branch and a buried one.
+    // p.height by construction. What hangs BELOW y = 0 -- the root crown, and
+    // foliage drooping through the ground on a low-branched species -- is
+    // reported separately rather than folded in, because on a slope that is the
+    // difference between a low branch and a buried one. The root crown alone is
+    // 0.6 to 1.0 m of it at the base sizes.
     height: b.max.y,
     belowGround: -Math.min(0, b.min.y),
     // The two numbers that decide whether a size looks right, in metres rather

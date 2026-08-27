@@ -729,8 +729,8 @@ function tick() {
   // Phase A has no submersion query, so there is no "the surface she is at" to
   // hand over -- the capture is taken at her head instead. That is off by
   // however tall she is, which at these grazing angles moves the horizon by well
-  // under a degree.
-  worldProbe.update(renderer, scene, headTmp, null)
+  // under a degree. `dt` drives the cross-fade and nothing else.
+  worldProbe.update(renderer, scene, headTmp, null, dt)
 
   renderer.render(scene, camera)
 }

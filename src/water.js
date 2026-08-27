@@ -182,6 +182,36 @@ export const WATER = {
   reflTint: 0xc2d4ee,
   reflDim: 0.8,
 
+  // HOW FAR YOU CAN SEE INTO IT, 0..1, and 0 reproduces the pinned look exactly
+  // -- the material goes back into the opaque pass and not one line of the
+  // composite below runs differently. That is the point of the knob: it is a
+  // whole rendering decision on a dimmer switch.
+  //
+  // It is CONDITIONAL ON ANGLE AND DISTANCE, which is not a trick, it is the
+  // same Fresnel that decides everything else about this surface. Looking
+  // straight down at water near your feet, most of what arrives at the eye came
+  // up out of the water and only a little bounced off it -- so the bed should be
+  // there. Looking along a lake a hundred metres off, essentially all of it
+  // bounced, and the surface is a mirror with nothing behind it. The ramp
+  // between reuses `near`, the term that already decides where the ripples fade,
+  // so "close enough to resolve the waves" and "close enough to see the bottom"
+  // are one number rather than two that can disagree.
+  //
+  // A NOTE ON HONESTY: this transmits more than Fresnel says it should. The
+  // physically exact version is `1 - mirror`, which caps at 1 - mirrorDown =
+  // 0.28 and is barely visible; that gap is not this knob's fault, it is
+  // `mirrorDown` being an artistic 0.72 where real water is nearer 0.02. Shaped
+  // by the Fresnel term but not bounded by it, so the two knobs stay
+  // independent. See the composite at the foot of the fragment shader.
+  //
+  // COSTS: the material becomes `transparent`, so it moves to the sorted pass
+  // and blends against the finished frame. That is XR-safe -- blending is the
+  // one way to read the destination that works per-eye, unlike anything built
+  // on a second framebuffer -- and it is free, because there is no new pass.
+  // What it does NOT get is refraction: bending the background sample means
+  // reading the frame as a texture, which is exactly the thing that does not
+  // survive the headset.
+  clarity: 0.5,
 }
 
 // ---------------------------------------------------------------------------
@@ -275,21 +305,21 @@ export const UNDERWATER = {
   // window and the water around it stay one medium.
   veil: 0.18,
 
-  // How much of the murk fade the UNDERSIDE takes, 0..1.
+  // THE UNDERSIDE TAKES NO DISTANCE FADE AT ALL, and there is no knob for it
+  // any more. It had one -- a partial share, on the argument that you are
+  // looking at the ceiling through however many metres of water and it ought to
+  // recede -- and the argument is sound and the picture it gave was wrong.
   //
-  // The surface was taking the full fade, which is physically defensible -- you
-  // are looking at it through however many metres of water -- and visually
-  // wrong, because at grazing angles that is twenty-plus metres and the whole
-  // rim of the world went flat murk. A surface has to keep reading as a surface
-  // even when it is far away and even when it is dim; a lake ceiling that
-  // dissolves into the same colour as the water under it is the one shape that
-  // says "this is a polygon that gave up".
+  // The reason is that the ceiling is not a thing IN the medium, it is the
+  // medium's boundary, and the eye reads it that way: what says "there is a
+  // surface up there" is that it stays lighter and more structured than the
+  // water, everywhere, all the way to the rim. Fading it toward `murk` with
+  // distance shades it into blue-grey exactly where it meets the horizon --
+  // which is precisely where a real surface goes hard and silver -- and the
+  // ceiling stops being a ceiling and becomes more fog with ripples in it.
   //
-  // A fraction rather than an exemption, and the difference matters: at 0 a
-  // distant ceiling stays fully bright and reads as a hole in the murk, which
-  // is the failure in the other direction. Half means a far surface composites
-  // to half murk and keeps half its ripple.
-  underFog: 0.45,
+  // So: fog is for what is IN the water. The bed, the rocks, the weeds, the far
+  // bank all fade at `visibility`. The surface does not fade at all.
 
   // How much brighter the surface gets, outside the window, where the wave
   // tilts toward the vertical -- as a multiple of the murk it is modulating.
@@ -301,6 +331,25 @@ export const UNDERWATER = {
   // which is most of what "it barely looks like anything" meant. It costs one
   // multiply, because the bent direction it reads is already in hand.
   tir: 1.4,
+
+  // HOW MUCH DOWNWELLING LIGHT THE MIRROR CARRIES, 0..1, and this is the knob
+  // that stops the ceiling reading as fog.
+  //
+  // The mirror outside the window used to be `murk` exactly -- the same colour,
+  // from the same uniform, as the water hanging in front of it. That is a
+  // defensible answer to the physics question (past the critical angle you see
+  // the underwater world bounced back, and at a grazing angle that world is
+  // twenty metres of murk) and it is the reason the whole ceiling read as
+  // "grayscale murky mist": a surface painted in the fog colour cannot be seen
+  // through the fog.
+  //
+  // What the physics leaves out is that the water being mirrored is LIT, from
+  // above, by the same sky the window is showing. So the mirror is tinted toward
+  // that sky rather than being pure murk -- silver at noon, near-black at night,
+  // tracking the scene for free because the sky value is already in hand two
+  // lines up. Not the sky ITSELF, which would read as the window never closing;
+  // a fraction of it, mixed into the murk's own hue.
+  tirLit: 0.4,
 
   // THE CAUSTIC NET on the bed -- the moving threads of focused sunlight. Three
   // knobs, and the pattern itself lives in lighting.js because it is applied by
@@ -431,7 +480,7 @@ export const murkAir = (() => {
 // around by the water under it would read as a texture painted on the surface,
 // which is exactly the thing the whole noise field exists to avoid.
 export const WAVE_LAYERS = [
-  { wavelength: 52.0, slope: 0.055, rotate: 13, offset: [148.2, 402.7], heading: 17, speed: 27.0, detail: false },
+  { wavelength: 52.0, slope: 0.055, rotate: 13, offset: [148.2, 402.7], heading: 17, speed: 6.75, detail: false },
   { wavelength: 21.0, slope: 0.05, rotate: 41, offset: [317.4, -88.1], heading: 74, speed: 21.0, detail: false },
   { wavelength: 7.5, slope: 0.052, rotate: 97, offset: [-604.9, 251.3], heading: 131, speed: 12.0, detail: true },
   { wavelength: 2.6, slope: 0.042, rotate: 152, offset: [72.6, 933.8], heading: 168, speed: 7.0, detail: true },
@@ -560,7 +609,9 @@ export class Water {
     if (!sky?.uniforms) throw new Error('Water needs the Sky, for the reflection')
     if (!lighting?.uniforms) throw new Error('Water needs WorldLighting, for the horizon map')
     if (!probe?.texture) throw new Error('Water needs the SkyProbe, for the aurora')
-    if (!world?.texture) throw new Error('Water needs the WorldProbe, for the trees and the bank')
+    if (!world?.textureA || !world?.textureB) throw new Error('Water needs the WorldProbe, for the trees and the bank')
+    // Kept so update() can read the cross-fade off it every frame. See there.
+    this.world = world
 
     this.scene = scene
     this.group = new THREE.Group()
@@ -641,7 +692,17 @@ export class Water {
       uProbeGain: { value: PROBE.gain },
       // The land, which the horizon map can only answer as a height and only for
       // terrain. rgb is its colour and ALPHA is its coverage. See world-probe.js.
-      uWorld: { value: world.texture },
+      //
+      // TWO of them, and they are bound once and never reassigned. The probe
+      // ping-pongs between the pair so that a cube taken from a new vantage
+      // point can be mixed in over the one it replaces instead of cutting to it;
+      // what moves per frame is uWorldFade, a single float. Handing the shader
+      // one sampler and swapping which texture it points at would work too, and
+      // would recompile nothing -- but it also could not blend, which is the
+      // whole feature.
+      uWorldA: { value: world.textureA },
+      uWorldB: { value: world.textureB },
+      uWorldFade: { value: world.blend },
       uWorldMix: { value: WORLD_PROBE.mix },
       // 0 or 1, written by setSubmerged. A float rather than a bool so that
       // softening the switch into a blend later is a change to one line here
@@ -656,19 +717,33 @@ export class Water {
       // x: windowShut, y: windowOpen -- the smoothstep edges of Snell's window,
       // kept apart from uUnder because they are a pair that is read as a pair.
       uWindow: { value: new THREE.Vector2(UNDERWATER.windowShut, UNDERWATER.windowOpen) },
-      // x: how much of the murk fade the underside takes, y: the mirror sheen
-      // outside the window. Both belong to the underside and neither is read
-      // without the other being relevant.
-      uUnderFog: { value: new THREE.Vector2(UNDERWATER.underFog, UNDERWATER.tir) },
+      // x: the mirror sheen outside the window, y: how much downwelling light
+      // that mirror carries. Both belong to the underside's mirror and neither
+      // is read without the other being relevant.
+      uTir: { value: new THREE.Vector2(UNDERWATER.tir, UNDERWATER.tirLit) },
+      // How far you can see into the surface at its clearest. See WATER.clarity.
+      uClarity: { value: WATER.clarity },
     }
 
     this.material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
-      // Opaque, and that is a decision rather than a default. Real water this
-      // deep is not see-through, and translucency would cost the depth sort, let
-      // a submerged boulder show through as a smear, and hand the renderer a
-      // back-to-front ordering problem across 90-odd tiles for no gain.
-      transparent: false,
+      // SEE-THROUGH ONLY IF WATER.clarity ASKS FOR IT, and at 0 this is the
+      // opaque material it has always been -- same pass, same sort, same cost.
+      //
+      // What `transparent` buys is the destination: blending is the one way a
+      // fragment can read the frame that has already been drawn, and crucially
+      // the ONE way that survives WebXR, because the blend unit runs per-eye
+      // inside the layer. Anything built on sampling the framebuffer instead --
+      // refraction, screen-space anything -- exists on the desktop canvas and is
+      // missing in the headset, which is why this file has no such thing in it.
+      //
+      // depthWrite STAYS ON, which is unusual for a transparent material and is
+      // deliberate. This is not a cloud of particles, it is a sheet: exactly one
+      // water fragment normally covers any given pixel, and the ordering problem
+      // transparency usually brings does not arise. Keeping the depth write also
+      // keeps everything drawn after it -- the aurora, the stars, the markers --
+      // occluded by the lake exactly as they were before this knob existed.
+      transparent: WATER.clarity > 0,
       depthWrite: true,
       fog: true,
       // DOUBLE-SIDED, so that the surface exists when you are under it. The
@@ -706,14 +781,17 @@ export class Water {
         uniform vec2 uGlint;
         uniform vec2 uSharp;
         uniform samplerCube uProbe;
-        uniform samplerCube uWorld;
+        uniform samplerCube uWorldA;
+        uniform samplerCube uWorldB;
+        uniform float uWorldFade;
         uniform float uWorldMix;
         uniform float uProbeGain;
         uniform float uSubmerged;
         uniform vec3 uMurk;
         uniform vec3 uUnder;
         uniform vec2 uWindow;
-        uniform vec2 uUnderFog;
+        uniform vec2 uTir;
+        uniform float uClarity;
         ${SKY_GLSL}
         ${SAMPLE_GLSL}
         ${WAVE_GLSL}
@@ -760,8 +838,26 @@ export class Water {
         // the darkest terrain the world can currently draw -- where it does not.
         // So a distant peak the cube resolves poorly still comes out as land,
         // and the near bank comes out as itself.
+        // THE CROSS-FADE lives here, in the one place both faces of the surface
+        // already agree to ask their question, so the top and the underside
+        // cannot end up mid-fade by different amounts.
+        //
+        // Both ends are branched out rather than mixed unconditionally, and the
+        // branch is safe as well as free: uWorldFade is a UNIFORM, so every
+        // fragment in the draw call takes the same side and the warp never
+        // diverges. Free matters because the fade runs for about a second out of
+        // every several, and the other several would otherwise pay for a second
+        // cube fetch per water pixel to mix by exactly 0 or 1. Safe matters
+        // because a texture fetch under non-uniform flow has undefined
+        // derivatives -- moot here, since these targets carry no mipmaps, but
+        // the habit is worth keeping in a file this size.
+        //
+        // Alpha is mixed along with the colour, which is what makes a treeline
+        // appear by growing solid rather than by sliding in as a hard edge.
         vec4 worldSilhouette( vec3 dir ) {
-          vec4 wc = texture( uWorld, dir );
+          vec4 wc = uWorldFade <= 0.0 ? texture( uWorldA, dir )
+                  : uWorldFade >= 1.0 ? texture( uWorldB, dir )
+                  : mix( texture( uWorldA, dir ), texture( uWorldB, dir ), uWorldFade );
           float cover = clamp( wc.a * uWorldMix, 0.0, 1.0 );
           float ridge = wlBlocked( vWorldPos.xz, dir );
           return vec4( mix( uSilTint, wc.rgb, cover ), max( ridge, cover ) );
@@ -832,23 +928,41 @@ export class Water {
           // around straight up, murk outside it.
           float window = smoothstep( uWindow.x, uWindow.y, clamp( V.y, 0.0, 1.0 ) );
 
+          // How much of the sky survives the trip down through the surface.
+          // Named because it is now wanted twice -- once as the window itself,
+          // and once as the light that falls on the water the mirror below is
+          // made of.
+          vec3 through = sky * uUnder.x;
+
           // OUTSIDE the window, where the surface is a mirror.
           //
           // Past the critical angle the real surface is totally internally
           // reflecting, so what is there is the underwater world bounced back at
-          // you -- and that world is uniform murk, which is why this used to be
-          // a flat wall of one colour. Physics gets us no further, so the ripple
-          // here is manufactured: how much each facet leans INTO the look,
-          // ( N.xz . V.xz ), stepped and used to lighten the murk. Wave tilts
-          // are ~0.1 so it is scaled hard; it falls off to nothing as the view
-          // tips up, which is exactly where the window is taking over anyway.
+          // you. TWO THINGS ABOUT THAT WORLD, and the second one is what this
+          // used to get wrong.
+          //
+          // It ripples: how much each facet leans INTO the look, ( N.xz . V.xz ),
+          // stepped and used to lighten. Wave tilts are ~0.1 so it is scaled
+          // hard; it falls off to nothing as the view tips up, which is exactly
+          // where the window is taking over anyway.
+          //
+          // And IT IS LIT. The mirrored water is not the fog colour -- it is the
+          // fog colour with the sky falling on it, which is silver at noon and
+          // near-black at three in the morning. Painting it uMurk flat made
+          // the ceiling exactly the colour of the water in front of it, so it
+          // disappeared into its own medium; uTir.y of the downwelling light is
+          // what puts it back. the value is already in hand, so this is a mix
+          // and a multiply.
           float lean = clamp( 0.5 + dot( N.xz, V.xz ) * 6.0, 0.0, 1.0 );
-          vec3 murk = uMurk * mix( 1.0, uUnderFog.y, lean );
+          vec3 sheen = mix( uMurk, through, uTir.y ) * mix( 1.0, uTir.x, lean );
 
-          // uUnder.z of murk left over even at the window's clearest, so that
-          // what you are looking through still reads as a surface rather than a
-          // hole punched to the sky.
-          return mix( murk, mix( sky * uUnder.x, murk, uUnder.z ), window );
+          // uUnder.z of that same sheen left over even at the window's clearest,
+          // so that what you are looking through still reads as a surface rather
+          // than a hole punched to the sky. The sheen rather than raw murk, for
+          // the reason above: one medium, one colour, and the window's veil has
+          // to be made of the same stuff as the mirror around it or the boundary
+          // between them draws itself.
+          return mix( sheen, mix( through, sheen, uUnder.z ), window );
         }
 
         // Sun and moon glitter, and it is a THRESHOLD rather than a falloff.
@@ -900,18 +1014,20 @@ export class Water {
           // An early return rather than an else-branch around the eighty lines
           // below: the underside shares the wave normal and nothing after it.
           if ( uSubmerged > 0.5 && ! gl_FrontFacing ) {
-            vec3 color = underside( V, N );
-            #ifdef USE_FOG
-              // Only uUnderFog.x of the murk fade, and the reason is that this
-              // surface is not IN the water the way the riverbed is. Twenty
-              // metres of murk at a grazing angle is a 98% fade, which is right
-              // for a rock that far off and wrong for the ceiling -- it erased
-              // the window, the ridges and the ripple all at once and left the
-              // flat blue wall. Kept partial rather than dropped so the surface
-              // still recedes with distance.
-              color = mix( color, uMurk, waterFogAmt() * uUnderFog.x );
-            #endif
-            gl_FragColor = vec4( color, 1.0 );
+            // AND NO FOG ON IT AT ALL -- deliberately, and it is the one surface
+            // in the world that is exempt. The murk fade is calibrated so that
+            // anything at UNDERWATER.visibility is gone, and at a grazing angle the far
+            // end of the ceiling is exactly that far; applying it shaded the
+            // whole rim of the surface into the same blue-grey as the water
+            // hanging in front of it. That is right for a rock twenty metres off
+            // and wrong for the boundary of the medium doing the fading. See the
+            // note where UNDERWATER.underFog used to be.
+            //
+            // Alpha 1 whatever WATER.clarity says. Seen from below this is the
+            // ceiling of the world -- there is no bed behind it to show through,
+            // only scene.background, and blending against that punches a hole to
+            // the clear colour.
+            gl_FragColor = vec4( underside( V, N ), 1.0 );
             #include <tonemapping_fragment>
             #include <colorspace_fragment>
             return;
@@ -1069,7 +1185,37 @@ export class Water {
             color = mix( color, fogTarget, waterFogAmt() );
           #endif
 
-          gl_FragColor = vec4( color, 1.0 );
+          // SEEING INTO IT. See WATER.clarity for what the knob means and what
+          // it costs; this is the three lines that spend it.
+          //
+          // 1 - f is the Fresnel term upside down: 1 looking straight down,
+          // falling to 0 as the view goes grazing. near is the same distance
+          // ramp the ripples fade on. Multiplied, they are "close enough and
+          // steep enough to see the bottom", and both of them are already
+          // computed for other reasons, so the whole feature costs a multiply
+          // and a divide.
+          //
+          // THE DIVIDE is what keeps the surface's own light intact. Blending
+          // gives back src * a + dst * ( 1 - a ), so an alpha of 0.6 would dim
+          // the reflection by 40% as well as letting the bed through -- the lake
+          // would go dark exactly where it went clear. Pre-dividing cancels
+          // that: what lands is the full reflection PLUS ( 1 - a ) of whatever
+          // was behind, which is the composite actually wanted. Alpha cannot
+          // approach zero -- clarity is a fraction and the floor is 1 - clarity
+          // -- so there is no blowup to guard against.
+          //
+          // It compensates MOST of it rather than all of it, and the missing
+          // part is not fixable from here: the divide happens in linear and the
+          // blend happens after the colorspace conversion, so the hardware is
+          // mixing sRGB-encoded numbers. That is true of every transparent
+          // material on the web and this one is not going to be the exception.
+          float alpha = 1.0;
+          if ( uClarity > 0.0 ) {
+            alpha = 1.0 - uClarity * ( 1.0 - f ) * near;
+            color /= alpha;
+          }
+
+          gl_FragColor = vec4( color, alpha );
 
           // tonemapping is a no-op today -- the renderer sets none -- and is
           // here so that turning it on does not leave the water as the one
@@ -1091,6 +1237,10 @@ export class Water {
    *  thing here that runs on the wall clock rather than on the world clock. */
   update(elapsed, hemi) {
     this.uniforms.uTime.value = elapsed
+    // Pulled rather than pushed: the probe owns the schedule and has no business
+    // knowing a water material exists. One frame stale, because this runs before
+    // the probe does -- which against a one-second fade is 1.4% of it.
+    this.uniforms.uWorldFade.value = this.world.blend
     this.syncShading(hemi)
   }
 

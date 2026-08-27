@@ -38,7 +38,11 @@ import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling } from '
 import { Player, LOCOMOTION } from '../player.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
-import { Aurora } from '../aurora.js'
+// v2's own aurora, not v1's band mesh. See the header of render/aurora.js: the
+// field is integrated as a convolution on a 512x64 map once per frame instead of
+// per pixel, which is what pays for a full sky dome. index.html still draws
+// src/aurora.js and is untouched.
+import { SkyAurora } from './render/aurora.js'
 import { Water, UNDERWATER, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
@@ -187,7 +191,7 @@ const probe = new SkyProbe()
 const worldProbe = new WorldProbe()
 const water = new Water(scene, { sky, lighting, probe, world: worldProbe })
 const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio() })
-const aurora = new Aurora(scene, { seed: SEED })
+const aurora = new SkyAurora(scene, { renderer, seed: SEED })
 // The aurora only. The stars are POINTS, and gl_PointSize counts framebuffer
 // pixels rather than angle -- so the 1.1-4.5 px speck that is right on a 1500 px
 // screen spans 1.5 to 6.3 degrees of a 64 px cube face, against the ~0.05 degrees
@@ -1681,10 +1685,10 @@ function tick() {
   // through. See sky-probe.js.
   probe.update(renderer, scene, headTmp)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
-  // earlier this same frame, and it is what puts the capture 20 cm above the
-  // water rather than at her eye. Null where there is no water under her, in
-  // which case nothing samples the result anyway.
-  worldProbe.update(renderer, scene, headTmp, waterY)
+  // earlier this same frame. It is a FLOOR on how low the capture may sit, not
+  // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
+  // capturing from inside the bank. `dt` drives the cross-fade and nothing else.
+  worldProbe.update(renderer, scene, headTmp, waterY, dt)
 
   renderer.render(scene, camera)
 }

@@ -17,7 +17,8 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 //
 // FOUR TIERS, FINEST FIRST -- tier 0 is the one you stand under:
 //
-//   0  LOD0   the full tree, resolveTree's own numbers. 470 triangles mean.
+//   0  LOD0   the full tree, resolveTree's own numbers, root crown included.
+//             480 triangles mean.
 //   1  LOD1   the same tree with cheap wood: a 3-sided trunk and one flat fin
 //             per limb, and FOLIAGE THAT IS BIT-IDENTICAL TO TIER 0's. 338
 //             triangles mean, a 28% cut, all of it out of sticks.
@@ -30,9 +31,11 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 //
 // THE TWO MESH TIERS ARE THE SAME TREE AND THAT IS LITERAL HERE, not a claim
 // about silhouettes. They are built from one seed through one rng stream, and
-// tier 1 changes only `trunkSides` and `branchSides`, so every card in the
-// crown is the same card in the same seat at the same size. Measured over all
-// 16 variants, the two tiers agree on height and crown width to every digit
+// tier 1 changes only `trunkSides`, `branchSides` and `roots`, so every card in
+// the crown is the same card in the same seat at the same size. The root crown
+// tier 1 drops is wood at the foot, drawn from its own rng stream and reaching
+// nowhere near the crown, so dropping it moves no other part of the tree.
+// Measured over all 16 variants, the two tiers agree on height and crown width to every digit
 // printed. Nothing pops at the boundary except branches losing their barrel.
 //
 // A CHEAPER LOD1 EXISTED AND WAS WITHDRAWN. The same two wood cuts, but with
@@ -94,7 +97,9 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // fewer branches and sprays rather than shrunken ones. That law is the whole
 // reason a multiplier this small is allowed: 0.33 does not build a 12 m pine
 // shrunk to 3 m, which would read as a toy, it builds a sapling with a
-// sapling's number of whorls on it (pine 792 triangles -> 452, oak 516 -> 252).
+// sapling's number of whorls on it (pine 802 triangles -> 462, oak 526 -> 262,
+// the last 10 of each being the root crown, which is the same five spurs at
+// every size).
 //
 // THE SAPLING IS A QUARTER OF THE FOREST, because trees.js picks a variant
 // uniformly and there are four sizes. That is the one number to turn if it

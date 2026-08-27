@@ -63,6 +63,14 @@ const SLIDERS = [
   ['trunkBend', 0, 0.3, 0.005, 'sideways offset of the top, as a fraction of height'],
   ['barkRepeat', 0.5, 16, 0.5, 'bark tiles UP the trunk this many times. The tiling AROUND it is derived so a tile stays roughly square in world space'],
 
+  ['#', 'roots'],
+  ['roots', 0, 10, 1, 'spurs off the trunk\'s foot, diving into the soil, two triangles each -- a ridge and two flanks with no underside, because the face that would close one points into the soil. LOD0 ONLY -- treeLod sets this to 0, because the flare is centimetres of silhouette at the bottom of the tree and the coarse tier starts at 8 m, where it is a few pixels tall with terrain across half of it. The scatter buries only 15 cm of trunk, so without these a tree meets a slope along a hard circle, like a dowel pushed into the floor'],
+  ['rootRise', 0, 0.12, 0.005, 'where up the trunk a spur leaves, as a fraction of height. Keep it above the 15 cm the scatter sinks a tree by (0.05 x 9 m = 45 cm on a pine) or the flare is buried and only the dive shows'],
+  ['rootLength', 0, 0.4, 0.005, 'spur length as a fraction of height. The panel prints how far below ground the crown ends up'],
+  ['rootAngle', 0, 1.5, 0.01, 'radians BELOW horizontal at the launch. Near 0 the spurs run along the surface like a mangrove; past ~1 they dive straight down and almost nothing of them is visible'],
+  ['rootDroop', 0, 1.5, 0.01, 'and how much further down the spur bends along its own length, as branchDroop bends a limb. A spur is a straight two-triangle wedge, so this moves only where the tip lands -- the bend itself never shows'],
+  ['rootWidth', 0, 2, 0.05, 'spur half-width and ridge height at the flare, as a fraction of the TRUNK\'s radius where it leaves -- off the trunk rather than off its own length, because a spur is the foot spreading. Over 1 is deliberate: a buttress is wider than the trunk at the soil line. 0 draws no crown at all'],
+
   ['#', 'crown'],
   ['branches', 0, 40, 1, 'branches off the trunk. Each one also carries `forks` children -- see the budget panel'],
   ['firstBranch', 0, 0.9, 0.01, 'height of the LOWEST branch, as a fraction of the tree'],
@@ -127,9 +135,11 @@ const SLIDERS = [
 
 // DESIGN.md §5's prop ladder, per class and per mesh tier, which is what the
 // panel checks against. Two mesh numbers for trees, three for bushes. The tree
-// pair is the shipped bank's MEAN over all sixteen variants, so a big pine (792
-// / 547) reads warn and a sapling (452 / 287) reads ok, which is the honest way
-// round: the bank averages to these and the forest is budgeted on the average.
+// pair is what the bank was budgeted at and very nearly its MEAN over all
+// sixteen variants -- 480 / 338 since the LOD0-only root crown, which costs its
+// 10 triangles at every size -- so a big pine (802 / 547) reads warn and a
+// sapling (462 / 287) reads ok, which is the honest way round: the bank
+// averages to about these and the forest is budgeted on the average.
 const CLASS_BUDGET = { tree: [470, 340, 6], bush: [84, 56, 2] }
 
 let speciesKey = 'pine'
@@ -311,7 +321,8 @@ function rebuild() {
     jobs.push({ seed: Number(params.seed), height: params.height })
   }
 
-  const agg = { tris: 0, verts: 0, bytes: 0, trunk: 0, branch: 0, spray: 0, count: jobs.length }
+  const agg = { tris: 0, verts: 0, bytes: 0, trunk: 0, root: 0, branch: 0, spray: 0,
+    count: jobs.length }
   // The metre readouts describe ONE tree, and in the size ladder it has to be
   // the one at the height on the slider -- otherwise dragging `height` moves
   // every number in the panel except the one it is named after.
@@ -325,6 +336,7 @@ function rebuild() {
     agg.tris += u.triangles
     agg.verts += u.vertices
     agg.trunk += u.trunkTris
+    agg.root += u.rootTris
     agg.branch += u.branchTris
     agg.spray += u.sprayTris
     agg.bytes += geometryBytes(geo)
@@ -531,6 +543,10 @@ function refresh() {
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} total)` : ''}`],
     [`&nbsp;&nbsp;trunk ${cone(sides, rings)}`, Math.round(s.trunk / s.count)],
+    // LOD0 only, so at LOD1 this row prints 0 x its own law rather than
+    // disappearing: the tier REMOVED a part, which is a thing worth seeing in
+    // the same place the other tier showed it.
+    [`&nbsp;&nbsp;roots ${res.roots}&times;2`, Math.round(s.root / s.count)],
     [`&nbsp;&nbsp;limbs ${nb}&times;(1+${nf})`, nl],
     [`&nbsp;&nbsp;branches ${nl}&times;${limb(bs, br)}`, Math.round(s.branch / s.count)],
     [`&nbsp;&nbsp;sprays (${nl}&times;${ns}+${na})&times;${ct}`, Math.round(s.spray / s.count)],
@@ -591,8 +607,12 @@ function refresh() {
       `${f.sprays} @ ${(f.triangles / Math.max(1, f.sprays)).toFixed(1)} tris each`,
     ],
     ['crown / height', (f.crownWidth / f.height).toFixed(2)],
+    // Roots are most of this now and are SUPPOSED to be under the soil -- see
+    // THE ROOT CROWN in tree.js. The warn is still worth having, because past a
+    // tenth of the tree's height what is buried is a low branch rather than a
+    // flare.
     [
-      'foliage below ground',
+      'below ground',
       f.belowGround > 0.005 ? `${(f.belowGround * 100).toFixed(0)} cm` : 'none',
       f.belowGround > f.height * 0.1 ? 'warn' : 'ok',
     ],

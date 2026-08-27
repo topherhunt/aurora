@@ -2328,6 +2328,34 @@ console.log('\nscatter')
           : `${bad} of ${n}: worst ${worst.bed}/${worst.shape} at ${worst.scale.toFixed(2)}x (${worst.world}) ` +
             `cards at ${worst.cardAt.toFixed(0)} m but starts going at ${worst.dissolveFrom.toFixed(0)} m`)
     }
+    // THE CONSOLE READOUT IS THE ONLY INSTRUMENT THE BLINK HAS, so it is gated
+    // like anything else: it reaches across five typed arrays, a private texture
+    // and the tile map by hand, and a renamed field would leave it returning
+    // `undefined` in every column at exactly the moment it is being relied on.
+    // Asserted against the same numbers the gate above computes independently.
+    {
+      const cam = { x: 12 * 37, y: 61.6, z: 12 * 91 }
+      const rows = worlds.cliff.describeNear(cam.x, cam.y, cam.z, 60)
+      const LAST = ROCK_LOD_AT[ROCK_LOD_AT.length - 1]
+      const sane = rows.every((r) =>
+        Number.isFinite(r.d) && Number.isFinite(r.size) && Number.isFinite(r.cardsAt) &&
+        Number.isFinite(r.goneAt) && typeof r.bed === 'string' && typeof r.shape === 'string' &&
+        // Both columns are rounded for the console, so the identity is
+        // checked to the rounding and not past it: 0.005 m of size is 0.125 m
+        // of card distance.
+        Math.abs(r.cardsAt - r.size * LAST) < 0.2 &&
+        // The band the hysteresis leaves: a mesh holds on 12% past its card
+        // distance, and a card gives way again at the distance itself.
+        (r.tier === 'card' ? r.d >= r.cardsAt - 0.2 : r.d < r.cardsAt * 1.12 + 0.2))
+      check(rows.length > 0 && sane,
+        'describeNear reports every nearby rock\'s tier, card distance and dissolve distance',
+        `${rows.length} rocks within 60 m, nearest ${rows[0].bed}/${rows[0].shape} at ${rows[0].d} m ` +
+          `on ${rows[0].tier}, cards at ${rows[0].cardsAt} m, dissolves from ${rows[0].dissolveFrom} m`)
+      check(rows.every((r) => r.dissolveFrom >= r.cardsAt - 1e-3),
+        'and none of them is set to dissolve before it cards',
+        'the same promise as above, read through the readout the browser will use')
+    }
+
     // BOTH WORLDS, because the two carry different beds and design/05-rendering
     // quotes the ridge figure: the cliff is the three ordinary beds flat out and
     // the ridge is the only one that loads scree at all.
@@ -2637,6 +2665,38 @@ console.log('\nscatter')
 
     setMossVary(1, 1)
     setSnowVary(1, 1)
+  }
+
+  // AND EVERY BED OWNS A COLOURS TEXTURE, INCLUDING THE ONES THAT PLACED
+  // NOTHING. This is the assertion behind rocks blinking furiously at some
+  // camera angles and not others, and the whole chain is in the comment at the
+  // `setColorAt` in RockBed's constructor. The short version: three assigns
+  // `batchingColorTexture` a texture unit only when `_colorsTexture` is
+  // non-null, so a bed without one consumes one unit fewer than its siblings --
+  // and because all five share ONE material, whose samplers are only reassigned
+  // for the first bed drawn in a frame, that shortfall puts `uAtlas`
+  // (sampler2DArray) on the unit the program still holds `batchingColorTexture`
+  // (sampler2D) on. ANGLE rejects the multi-draw and silently drops it, so every
+  // rock on screen vanishes for that frame while the draw counts look perfect.
+  //
+  // The texture is created lazily by the first `setColorAt`, which only happens
+  // on placement, so this is a property of an EMPTY bed and nothing else. It
+  // cannot be asserted by looking at a bed full of rocks, and the live counts
+  // are reported so it is visible whether this run exercised an empty one.
+  {
+    const missing = []
+    const counts = []
+    for (const [name, r] of [['forest', forestRocks], ['cliff', cliffRocks], ['peak', peakRocks], ['river', riverRocks]]) {
+      for (const bed of r.beds) {
+        let live = 0
+        for (const info of bed.batch._instanceInfo) if (info.visible && info.active) live++
+        counts.push(`${name}/${bed.cfg.name} ${live}`)
+        if (bed.batch._colorsTexture === null) missing.push(`${name}/${bed.cfg.name} (${live} live)`)
+      }
+    }
+    check(missing.length === 0,
+      'every rock bed owns a colours texture even when it placed nothing, so all five take the same texture units',
+      missing.length ? `no texture on ${missing.join(', ')}` : `live per bed: ${counts.join(', ')}`)
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

@@ -446,15 +446,23 @@ export class AuroraScreen {
 
   // -------------------------------------------------------------------------
 
-  // Called every frame, and it now does one thing: keep the sector centred on
-  // the eye. It is NOT rotated with the camera -- that is the whole point, the
-  // sector is a piece of the world's northern sky and turning your head has to
-  // move you across it. Recentring it on the camera is not parallax either: the
-  // shader marches from a fixed origin regardless, so this only keeps the mesh
-  // from sliding out from under a walking player.
-  update( camera, elapsed ) {
+  // Called every frame, and it now does one thing: keep the dome centred on the
+  // eye. It is NOT rotated with the camera -- that is the whole point, the dome
+  // is a piece of the world's sky and turning your head has to move you across
+  // it. Recentring it on the eye is not parallax either: the shader marches from
+  // a fixed origin regardless, so this only keeps the mesh from sliding out from
+  // under a walking player.
+  //
+  // Takes either a camera or a bare position. The lab has a camera in hand and
+  // /v2 has the player's head as a Vector3, and accepting both is two lines
+  // where converting at every call site is a Vector3 allocated per frame. The
+  // else-branch THROWS rather than silently copying undefined -- Vector3.copy on
+  // an object with no .x writes NaN, the dome vanishes, and nothing says why.
+  update( eye, elapsed ) {
     this.material.uniforms.uTime.value = elapsed
-    this.mesh.position.copy( camera.position )
+    if ( eye.isVector3 ) this.mesh.position.copy( eye )
+    else if ( eye.position ) this.mesh.position.copy( eye.position )
+    else throw new Error( 'AuroraScreen.update: needs a Vector3 or an Object3D, got ' + eye )
   }
 
   dispose() {

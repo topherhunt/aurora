@@ -140,7 +140,7 @@ const paramsFor = (s, seed, size = 1) => {
 // triangle counts pine, oak, birch and aspen actually build at seed 7 and their
 // own heights, so a harness that has stopped measuring the species says so here
 // rather than passing three sections later.
-const LOD0_TRIS = { pine: 792, oak: 516, birch: 350, aspen: 432 }
+const LOD0_TRIS = { pine: 802, oak: 526, birch: 360, aspen: 442 }
 
 // --- 1. the triangle law ----------------------------------------------------
 //
@@ -155,11 +155,18 @@ console.log('\n-- the triangle law --')
   const limb = (n, r) => (Math.round(n) === 1 ? 1 : cone(Math.round(n), r))
   const lawTris = (p, r) => {
     const trunk = p.trunkRadius > 0 ? cone(Math.max(3, Math.round(p.trunkSides)), p.trunkRings) : 0
+    // A spur is a fixed two-face wedge, not a cone -- its underside is never
+    // drawn, so no `cone` term applies. LOD0 only: treeLod sets `roots` to 0, so
+    // this is the whole of what the coarse tier DELETES rather than draws
+    // cheaper.
+    const root = p.trunkRadius > 0 && p.rootWidth > 0
+      ? Math.max(0, Math.round(p.roots)) * 2
+      : 0
     const branch = r.limbs * limb(p.branchSides, p.branchRings)
     const foliage = r.bundleTris > 0
       ? r.bundleTris
       : (r.limbs * r.sprays + r.apexSprays) * r.cardTris
-    return trunk + branch + foliage
+    return trunk + root + branch + foliage
   }
 
   for (const s of species) {
@@ -191,9 +198,16 @@ console.log('\n-- the triangle law --')
     // that is deliberate -- the cards are the tree's silhouette at 8 to 15 m and
     // there is no cheaper way to draw them that is still the same plant.
     check(r1.triangles === r1.trunkTris + r1.limbs + r1.sprayTris
-      && r1.trunkTris === 3 && r1.sprayTris === r0.sprayTris,
-      `${s} LOD1 costs trunk 3 + one fin per limb + LOD0's own crown`,
-      `3 + ${r1.limbs} + ${r1.sprayTris} = ${r1.triangles}`)
+      && r1.trunkTris === 3 && r1.sprayTris === r0.sprayTris && r1.rootTris === 0,
+      `${s} LOD1 costs trunk 3 + one fin per limb + LOD0's own crown, and no roots`,
+      `3 + ${r1.limbs} + ${r1.sprayTris} = ${r1.triangles}, roots ${r1.rootTris}`)
+    // The root crown, which only LOD0 has: a flare the player stands next to,
+    // gone by the 8 m where the coarse tier takes over. Gated as a real cost
+    // rather than a free one -- 10 triangles is 1.2% of a pine and 2.8% of a
+    // birch, and it is the only part of the tree that is mostly under the soil.
+    check(r0.rootTris > 0 && r0.rootTris === r0.roots * 2 && a0 - a1 > r0.rootTris,
+      `${s} grows a LOD0-only root crown for ${r0.rootTris} triangles`,
+      `${r0.roots} spurs x 2, the wedge's two flanks with no underside`)
     // A wood-only saving is a MODEST saving, and the band is set from what the
     // bank actually measures: 1.22x on a big oak, which carries few fat limbs,
     // to 1.58x on a sapling, whose trunk is most of its bill. A ratio under 1.15

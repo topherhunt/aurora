@@ -712,8 +712,8 @@ export class Grass {
     // fragment stage rather than a per-layer branch, and nothing else in the
     // project compiles it. Still one material and one draw call.
     this.material = this.strips
-      ? createPropMaterial(textureArray, { stripTiling: true })
-      : createPropMaterial(textureArray, { billboardLayers: grassBillboardLayers() })
+      ? createPropMaterial(textureArray, { stripTiling: true, wind: 'grass' })
+      : createPropMaterial(textureArray, { billboardLayers: grassBillboardLayers(), wind: 'grass' })
 
     const geos = bank.tiers.map((t) => t.geometry)
     this.batch = new THREE.BatchedMesh(

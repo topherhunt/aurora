@@ -4,7 +4,7 @@ import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
 // The mushroom variant bank: every mushroom mesh in the world, baked once at
-// load, plus the two card tiers that stand in for it past a few metres.
+// load, plus the one spun card that stands in for it past a few metres.
 //
 // Same shape as fern-bank.js and tree-bank.js and for the same reasons -- no
 // offline step, no asset file, a cross product small enough that the variety a
@@ -14,24 +14,33 @@ import { LAYER } from '../textures.js'
 //
 //   LOD0   the mesh at radial 16. 60 to 66 triangles.
 //   LOD1   the same mesh at radial 6. 30 to 36 triangles.
-//   LOD2   two crossed planes wearing the species' photograph, 4 triangles.
-//   LOD3   one plane, spun toward the eye, 1 triangle.
+//   LOD2   one plane, spun toward the eye, 1 triangle.
 //   gone   under 2 px, which for a 13 cm mushroom is 60 m.
 //
-// TWO MESH TIERS AND TWO CARD TIERS IS THE WHOLE ARGUMENT ABOUT SIZE. §5's bush
-// class hands out 84 / 56 / 28 and puts the card at 26 m, and every one of those
+// TWO MESH TIERS AND ONE CARD IS THE WHOLE ARGUMENT ABOUT SIZE. §5's bush class
+// hands out 84 / 56 / 28 and puts the card at 26 m, and every one of those
 // numbers is wrong for this prop in the same direction: 26 m is where a 13 cm
 // mushroom is 3 px tall. gen-mushroom.html prints both figures live (its
 // parallax and LOD panels) and they are what the bands below are set from -- the
 // card comes in at a few metres, not at 26, and the whole prop is culled before
 // a fern's card would have started.
 //
-// The second mesh tier is new and it is worth saying what made it possible: the
-// cap's texture used to be a POLAR chart, which a coarse cap sliced into wedges
-// (see capUV in props/mushroom.js), so dropping columns cost silhouette AND
-// texture and there was nothing worth dropping to. The cap wears a planar decal
-// now. Column count is purely a silhouette question, so the near tier can afford
-// 16 and the far one can fall to 6.
+// The second mesh tier is affordable only because of what the cap's texture is:
+// it used to be a POLAR chart, which a coarse cap sliced into wedges (see capUV
+// in props/mushroom.js), so dropping columns cost silhouette AND texture and
+// there was nothing worth dropping to. The cap wears a planar decal now. Column
+// count is purely a silhouette question, so the near tier can afford 16 and the
+// far one can fall to 6.
+//
+// AND NOTHING BETWEEN THE COARSE MESH AND THE BILLBOARD. A tree and a fern each
+// card to a CROSSED PAIR of planes before they card to one, because a crown is
+// metres deep and a single flat plane through it shows its own parallax error
+// while the prop is still large on screen. A mushroom never gets that window:
+// the coarse mesh already runs to 40 spans, which is past §5's `spread x 28.6`
+// and is where the whole prop is 23 px across at 16.2 px/deg. A second plane at
+// that size is two more triangles spent on a picture nobody can resolve, so the
+// tier after the coarse mesh is the spun billboard, and the billboard runs until
+// the scatter's rim dissolve takes it.
 //
 // THE CARD IS PER SPECIES, NOT PER VARIANT -- five photographs for ninety
 // meshes. The long version is on LAYER.IMPOSTOR_MUSHROOM_AGARIC in textures.js;
@@ -180,18 +189,18 @@ export const MUSHROOM_SIZES = [0.8, 1.0, 1.25]
 export const MUSHROOM_MESH_RADIAL = [16, 6]
 
 // The distance ladder, in MULTIPLES OF THE PROP'S OWN SPAN rather than metres:
-// tier 0 inside 20 spans, tier 1 to 40, the crossed card to 80, the spun
-// billboard from there to the scatter's draw radius. A variant's `span` is
-// measured by buildMushroomBank below, and it is max(height, spread) -- the
-// larger of how tall the thing is and how wide.
+// tier 0 inside 20 spans, tier 1 to 40, the spun billboard from there to the
+// scatter's draw radius. A variant's `span` is measured by buildMushroomBank
+// below, and it is max(height, spread) -- the larger of how tall the thing is
+// and how wide.
 //
 // RELATIVE AND NOT ABSOLUTE, because this generator spans two orders of
 // magnitude. The same five presets build a 9 cm forest-floor mushroom and a 3 m
 // cave one, and a fixed 10 m band means the small one is a mesh until it is 15
 // px tall while the big one has been carded since it was 26 px. Hanging the
 // ladder off the prop's own size makes the swap happen at the same APPARENT SIZE
-// for every one of them -- at 16.2 px/deg that is 46 px, 23 px and 12 px -- which
-// is the thing the tier is actually chosen by. It costs one multiply per
+// for every one of them -- at 16.2 px/deg that is 46 px and 23 px -- which is
+// the thing the tier is actually chosen by. It costs one multiply per
 // instance per frame in the scatter's band test, which is why it is worth doing
 // rather than merely correct.
 //
@@ -209,21 +218,7 @@ export const MUSHROOM_MESH_RADIAL = [16, 6]
 // 1.8 m, where it is still 86 px tall. Carding an 86 px prop is visible. Taking
 // the larger of the two lets the thin species be governed by its height and the
 // flat species by its width, which is what "apparent size" meant all along.
-export const MUSHROOM_LOD_SPANS = [20, 40, 80]
-
-// TWO PLANES, and this is the tier the user asked for by name. impostor.js's
-// table prices the choice: 2 planes is 4 triangles and a 45-degree worst case,
-// 3 is 6 triangles and 30 degrees. A tree pays for the third plane because a
-// crown is 6 m deep and parallax at 45 degrees off shows; a mushroom's card
-// starts at 40 spans, which is 1.40 of the `spread x 28.6` the rule demands, and
-// by then the whole prop is 23 px across at 16.2 px/deg. There is not enough
-// picture left for a third plane to be telling anyone anything.
-//
-// Two is also the count buildImpostorCard's u-mirroring does NOT help at (its
-// parity argument only closes for an odd number of planes), and that is fine
-// here for the same reason it is fine on a fern: the mirror only matters on a
-// subject that is not close to its own reflection, and a cap is a disc.
-export const MUSHROOM_CARD_PLANES = 2
+export const MUSHROOM_LOD_SPANS = [20, 40]
 
 // The LOD2 billboard is a TRIANGLE, apex down.
 //
@@ -284,11 +279,13 @@ export function mushroomVariants() {
  * The impostor texture layers, one per species.
  *
  * This is the list `createPropMaterial({ billboardLayers })` keys on to decide
- * which geometries in the batch its vertex shader spins toward the eye. Both
- * card tiers wear these layers and only the LOD2 one is meant to spin, so the
- * layer list is necessary and not sufficient -- the shader's second condition is
- * the vertex normal, which is vertical only on the billboard. See
- * treeImpostorLayers, which carries the same caveat for the same reason.
+ * which geometries in the batch its vertex shader spins toward the eye. The LOD2
+ * billboard is the ONLY tier that wears these layers -- the two mesh tiers wear
+ * MUSHROOM_CAP and MUSHROOM_FLESH -- so unlike treeImpostorLayers, whose crossed
+ * tier shares the layer with the tree's billboard and is held fixed by its
+ * normals alone, the list is sufficient here. The shader's second condition, a
+ * vertex normal at or over CARD_UP_MARK, still has to hold and does:
+ * buildImpostorCard's `upNormal` writes literal (0, 1, 0).
  */
 export function mushroomImpostorLayers() {
   return MUSHROOM_NAMES.map((s) => MUSHROOM_SPECIES[s].impostorLayer)
@@ -348,25 +345,25 @@ function cardFrame(species, seed) {
  * Returns `{ tiers, variants, bytes, triangles }`, where `tiers[t].geometries[v]`
  * is the geometry for tier `t` and variant `v`, and each entry of `variants` has
  * picked up a measured `span` -- max(height, spread) -- that mushroomVariants()
- * on its own cannot supply. Every tier is the same length,
- * so a band index and a variant id are independent lookups -- the two card tiers
- * repeat one geometry per species across that species' eighteen variants, which
- * costs an array slot each and no vertices.
+ * on its own cannot supply. Every tier is the same length, so a band index and a
+ * variant id are independent lookups. What is SHARED five ways is the
+ * photograph, not the geometry: the card tier still holds a triangle of its own
+ * per variant, sized to that variant's measured height, because a card cut for
+ * the middle size makes a size-0.8 instance grow 25% at the swap.
  *
  * The caller owns the geometries and MUST dispose them once they are in the
  * batch -- BatchedMesh copies the vertex data into its arena, so holding the
  * originals just doubles the memory.
  *
- * The CARD tiers arrive as quads with no pixels behind them. Their layers cannot
- * be photographed here because the bake needs a live renderer and this runs in a
+ * The CARD tier arrives with no pixels behind it. Its layers cannot be
+ * photographed here because the bake needs a live renderer and this runs in a
  * constructor and in node -- see bakeMushroomImpostors. Until that runs the
  * cards sample an empty layer and alphaTest discards them, so distant mushrooms
  * fade in rather than flashing.
  */
-export function buildMushroomBank({ seed = 1, billboard = true } = {}) {
+export function buildMushroomBank({ seed = 1 } = {}) {
   const variants = mushroomVariants()
   const meshes = MUSHROOM_MESH_RADIAL.map(() => [])
-  const crosses = []
   const cards = []
 
   // ONE PHOTOGRAPH PER SPECIES, but one QUAD PER VARIANT, and those are two
@@ -422,30 +419,18 @@ export function buildMushroomBank({ seed = 1, billboard = true } = {}) {
     // exists to remove, and it costs no atlas layers to remove it.
     const k = mesh.userData.mushroom.height / s.frameHeight
 
-    // The crossed pair, wearing CANOPY normals. Same call the tree cross
-    // makes and for the same reason -- plane normals would give the two quads
-    // two different constant values of dot(N, L), which under a low sun is one
-    // bright slab and one dark one meeting along the stem. The fan puts that
-    // variation ACROSS each quad instead, where a cap is a dome and the eye
-    // reads it as roundness. It also keeps the quad below CARD_UP_MARK, which
-    // is what stops billboardVertex spinning a tier that must not spin.
-    crosses.push(buildImpostorCard(
-      s.ext.width * k, s.ext.height * k, s.layer, MUSHROOM_CARD_PLANES, { canopy: true }))
-
-    // The billboard: one triangle with a vertical normal, spun toward the eye by the
-    // shader. `upNormal` rides with the spin deliberately -- a quad that turns
-    // toward the player must not turn its normal too, or N.L becomes a
+    // The billboard: one triangle with a vertical normal, spun toward the eye by
+    // the shader. `upNormal` rides with the spin deliberately -- a card that
+    // turns toward the player must not turn its normal too, or N.L becomes a
     // function of where they are standing and the whole bed twinkles as they
-    // turn on the spot.
-    if (billboard) {
-      cards.push(buildImpostorCard(
-        s.ext.width * k, s.ext.height * k, s.layer, 1,
-        { upNormal: true, tri: MUSHROOM_BILLBOARD_TRI }))
-    }
+    // turn on the spot. It is also what selects this tier and no other for the
+    // spin; see mushroomImpostorLayers.
+    cards.push(buildImpostorCard(
+      s.ext.width * k, s.ext.height * k, s.layer, 1,
+      { upNormal: true, tri: MUSHROOM_BILLBOARD_TRI }))
   })
 
-  const tiers = [...meshes.map((g) => ({ geometries: g })), { geometries: crosses }]
-  if (billboard) tiers.push({ geometries: cards })
+  const tiers = [...meshes.map((g) => ({ geometries: g })), { geometries: cards }]
 
   // `t.triangles` is per SLOT, because that is what the scatter indexes when it
   // prices one instance. The TOTALS are per DISTINCT geometry, which is what the
@@ -501,16 +486,15 @@ export function mushroomBankTriangles({ seed = 1 } = {}) {
   const variants = mushroomVariants()
   const mesh = MUSHROOM_MESH_RADIAL.map((_, t) =>
     variants.reduce((n, v, i) => n + mushroomTriangles(mushroomParams(v, seed + i * 101, t)), 0))
-  // The card tiers are priced per VARIANT, not per species: the photograph is
-  // shared five ways but the quad is built at each variant's own size, so the
-  // arena holds ninety of each. See buildMushroomBank on why those two counts
-  // differ.
+  // The card tier is priced per VARIANT, not per species: the photograph is
+  // shared five ways but the triangle is built at each variant's own size, so
+  // the arena holds ninety of them. See buildMushroomBank on why those two
+  // counts differ.
   return {
     // Per MESH TIER, finest first, because the two are separate bands in the
     // arena and a caller pricing "the mesh" has to say which one it means.
     mesh,
     meshTotal: mesh.reduce((a, b) => a + b, 0),
-    cross: variants.length * MUSHROOM_CARD_PLANES * 2,
     card: variants.length,
     variants: variants.length,
   }

@@ -1056,7 +1056,48 @@ export const CARD_UP_MARK = 0.99
 // COST: it replaces a 2D rotation with a 3x3, which is about a dozen more
 // vertex ops on a two-triangle card -- four vertices per rock, at the range
 // where a rock is four vertices. It is not measurable.
-function billboardVertex(layerCount, spherical) {
+/**
+ * The two questions about a vertex that both the billboard spin and the wind
+ * want answered, computed ONCE ahead of either.
+ *
+ * `propCard` -- is this vertex on a baked impostor card at all, as opposed to
+ * mesh geometry? That is exactly the billboard layer list, and it is what tells
+ * the wind whether `uvProj.y` is a height fraction it can trust or a bark
+ * repeat it cannot.
+ *
+ * `propSpun` -- is it a card that WANTS SPINNING? A crossed card and a
+ * billboard of the same species share one baked layer, so the layer alone
+ * cannot separate them -- but the normal already does, and for free. A card
+ * built to be spun is authored with an exactly vertical normal
+ * (buildImpostorCard's `upNormal`, set exactly when `billboard` is); a fixed
+ * cross leans its normals off vertical. So `normal.y` IS the marker for "turn
+ * me", and it costs no attribute and no second layer. See CARD_UP_MARK for
+ * where the line sits and why. Grass is unaffected: its tuft tiers already live
+ * on a different layer.
+ *
+ * Hoisting these out of billboardVertex is what keeps the wind from paying for
+ * a second copy of the layer loop. A material with no billboard layers gets the
+ * constants and the compiler folds every use away.
+ */
+function propCardMask(layerCount) {
+  if (!layerCount) {
+    return /* glsl */ `
+    float propCard = 0.0;
+    float propSpun = 0.0;`
+  }
+  // min() and not the raw sum: the spin only ever tested this against zero, but
+  // the wind uses both as a mix() factor, and a layer listed twice would push the
+  // factor past 1 and extrapolate instead of blending.
+  return /* glsl */ `
+    float propCard = 0.0;
+    for ( int i = 0; i < ${layerCount}; i++ ) {
+      propCard += step( abs( texLayer - uBillboardLayers[ i ] ), 0.5 );
+    }
+    propCard = min( propCard, 1.0 );
+    float propSpun = propCard * step( ${CARD_UP_MARK}, normal.y );`
+}
+
+function billboardVertex(spherical) {
   // Screen right and screen up, in world space: rows 0 and 1 of the view
   // matrix's rotation. VIEW-PLANE aligned rather than a true look-at, which is
   // both cheaper and steadier -- a look-at billboard swings as the card crosses
@@ -1114,21 +1155,7 @@ function billboardVertex(layerCount, spherical) {
 
   return /* glsl */ `
   {
-    float bbMask = 0.0;
-    for ( int i = 0; i < ${layerCount}; i++ ) {
-      bbMask += step( abs( texLayer - uBillboardLayers[ i ] ), 0.5 );
-    }
-    // ...AND the quad has to be one that WANTS spinning. A crossed card and a
-    // billboard of the same species share one baked layer, so the layer alone
-    // cannot separate them -- but the normal already does, and for free. A card
-    // built to be spun is authored with an exactly vertical normal
-    // (buildImpostorCard's 'upNormal', set exactly when 'billboard' is); a
-    // fixed cross leans its normals off vertical. So 'normal.y' IS the marker
-    // for "turn me", and it costs no attribute and no second layer. See
-    // CARD_UP_MARK for where the line sits and why it is where it is. Grass is
-    // unaffected: its tuft tiers already live on a different layer.
-    bbMask *= step( ${CARD_UP_MARK}, normal.y );
-    if ( bbMask > 0.0 ) {
+    if ( propSpun > 0.0 ) {
       // The instance's origin and its own +X axis, both in world space. The
       // origin is where we look at the camera FROM; the axis is the yaw we have
       // to divide out. Both go through modelMatrix so this stays correct if the
@@ -1771,6 +1798,278 @@ const STRIP_SAMPLE = /* glsl */ `
     diffuseColor *= textureGrad( uAtlas, vec3( stUu, stV, vTexLayer ), stDx, stDy );
   }`
 
+// ---------------------------------------------------------------------------
+// WIND: foliage bends, and the bend is a pure function of where the plant
+// stands, how far up it you are, and the clock. No attribute, no CPU, no state.
+//
+// EVERY INPUT THIS NEEDS WAS ALREADY IN THE VERTEX STAGE. `uPropClock` is bound
+// into every program here and advanced once a frame by v2/main.js; the instance
+// root falls out of `batchingMatrix`; the height fraction is `1 - uvProj.y` on
+// any card (buildImpostorCard authors v = 0 at the top) and object-space y on a
+// mesh. So the whole effect is arithmetic on values that were being computed or
+// carried anyway, which is the reason it is affordable at 50,000 instances.
+//
+// AND IT HAD TO BE. A per-vertex stiffness weight is how you would normally do
+// this, and it is unavailable: BatchedMesh throws if a geometry entering the
+// arena lacks an attribute the arena has, so one new attribute is a change to
+// every generator in the project. Same constraint that shaped billboardVertex's
+// layer mask and setPropFadeAt's packing, and it pushes to the same answer --
+// derive it from what is already there.
+//
+// BEND AS AN ANGLE, NOT A DISTANCE. The displacement is `amp * y`, so it is
+// dimensionless: the instance matrix scales it afterwards along with everything
+// else, and a 12 m spruce and a 0.3 m tuft lean by the same ANGLE with no
+// per-instance height uniform. src/props-main.js's preview sway needs `uHeight`
+// only because it builds one material per asset; a batch cannot, and does not
+// have to.
+//
+// A TRAVELLING WAVE, NOT A PER-INSTANCE PHASE. The phase is
+// `dot(rootXZ, windDir) * k - t * w`, so a gust crosses the meadow instead of
+// every plant twitching on its own schedule. Worth saying that this is the CHEAP
+// option as well as the better-looking one: it is a dot and a multiply-add,
+// where the per-instance hash it replaces would be the 5-6 ops of the mossRoll /
+// snowRoll pattern one screen up. There was no trade to make.
+//
+// THE DISTANCE RAMP IS THE WHOLE COST CONTROL, and it is deliberately a ramp
+// rather than a tier test. Sway is not meant to read past ~100 m, and for the
+// forest that line falls exactly on trees.js LOD_BANDS[2] where the billboard
+// tier starts -- so gating on the tier is the obvious move and it is wrong. A
+// tier swap is CROSS-DISSOLVED over PROP_FADE_SECONDS with both tiers standing
+// at the same matrix; gate on tier and the departing crossed card sways while
+// the arriving billboard stands still, as a double image, every time a tree
+// crosses 100 m. Amplitude off the root's DISTANCE gives both halves the same
+// number from the same root, so the dissolve stays coherent for free.
+//
+// It also generalises where a tier test would not: ferns draw to 90 m and grass
+// to 70, so their beds are entirely inside the ramp and every one of them sways,
+// billboards included. One rule, three classes, no special cases.
+//
+// WHAT IT DOES NOT BUY: inertia (a trunk still swinging after the gust has
+// passed), branches whipping independently of the canopy, anything parting
+// around the player. All three want per-vertex data or CPU state, which is where
+// the price stops being near-zero.
+// ---------------------------------------------------------------------------
+
+// Wind direction as a unit vector in world XZ, and a global strength multiplier.
+// Shared BY REFERENCE into every program compiled here, exactly as snowAmount
+// is, so one setWind call moves the forest, the ferns and the grass together and
+// no registry of materials is needed. Strength 0 is a true off switch: the
+// arithmetic still runs, but nothing moves.
+const windDir = { value: new THREE.Vector2(0.8660254, 0.5) }
+const windStrength = { value: 1 }
+const windDirDeg = { value: 30 }
+
+/**
+ * Live knobs for the wind. `strength` scales every class at once (0 is off,
+ * 1 is the tuned look); `degrees` turns the direction in world XZ.
+ *
+ * This is the seam §10 weather plugs into when it exists -- a gust front is this
+ * pair animated, and nothing else in the pipeline has to learn about it.
+ */
+export function setWind({ strength, degrees } = {}) {
+  if (strength !== undefined) {
+    if (!Number.isFinite(strength)) throw new Error(`setWind: strength must be a number, got ${strength}`)
+    windStrength.value = strength
+  }
+  if (degrees !== undefined) {
+    if (!Number.isFinite(degrees)) throw new Error(`setWind: degrees must be a number, got ${degrees}`)
+    windDirDeg.value = degrees
+    const r = (degrees * Math.PI) / 180
+    windDir.value.set(Math.cos(r), Math.sin(r))
+  }
+}
+
+export function getWind() {
+  return { strength: windStrength.value, degrees: windDirDeg.value }
+}
+
+/**
+ * Snap an angular frequency to the nearest whole number of cycles per clock
+ * wrap, so `sin( uPropClock * w )` is CONTINUOUS across the wrap.
+ *
+ * setPropClock wraps at PROP_CLOCK_WRAP seconds because the fade packing needs
+ * the float32 resolution (see the packing note). Anything reading that clock
+ * through a sine inherits the wrap, and an unsnapped frequency puts a phase step
+ * in every plant in the world once every 17 minutes -- rare enough to survive
+ * every play session you would debug it in, and instantly obvious once you are
+ * told it is there. One round() at build time removes it.
+ */
+function windFreq(hzPerSecond) {
+  const quantum = (2 * Math.PI) / PROP_CLOCK_WRAP
+  return Math.max(1, Math.round(hzPerSecond / quantum)) * quantum
+}
+
+/**
+ * Per-class wind constants, folded into the GLSL at compile time.
+ *
+ * Compile-time and not uniforms because each of the three scatters builds its
+ * OWN material (trees.js, ferns.js, grass.js each call createPropMaterial), so
+ * the numbers never have to vary within a program -- and this shader is already
+ * carrying fifteen uniforms. Only the two things that are genuinely global, the
+ * direction and the strength, are uniforms.
+ *
+ *   amp    the tip's lean as a fraction of the plant's own height, so a
+ *          dimensionless angle. Starting values are src/props-main.js's SWAY
+ *          table, which was tuned by eye against these same assets on the props
+ *          preview page.
+ *   stiff  exponent on the height fraction. High pins the trunk and moves the
+ *          canopy; low bends the whole plant from the ground.
+ *   pin    METRES of the plant, measured up from its foot, over which the mesh
+ *          weight ramps in. Only meshes read it -- cards get the exact fraction
+ *          out of their uv. It is a length and not a fraction on purpose: tree
+ *          variants run from a 2.0 m birch sapling to a ~12 m pine, so a shared
+ *          height fraction would leave the saplings frozen solid. "The lowest
+ *          3 m of trunk is stiff" is true of both and needs nothing per variant.
+ *   carrier / envelope   the fast sway and the slow gust, rad/s, both snapped.
+ *   waveK / gustK        how fast phase advances across the ground, rad/m. The
+ *          gust's is much smaller, so a gust is a broad front crossing the
+ *          meadow while the carrier ripples inside it.
+ *   branch how much the phase varies with the vertex's own object-space XZ. On a
+ *          mesh this is what stops two branches of one tree moving in lockstep,
+ *          for one dot; on a card the same term varies across the quad and reads
+ *          as the foliage rippling rather than the card shearing, which is why
+ *          it stays small.
+ */
+export const WIND_PRESETS = {
+  // pin MUST stay under the SHORTEST variant the bank builds, and for trees that
+  // is not the 9 m default -- treeVariants crosses four species with TREE_SIZES,
+  // so the floor is a 6 m birch at 0.33, or 1.98 m. An earlier 3.0 m pin was
+  // longer than that whole tree: its tip weight capped at (1.98/3)^2.6 = 0.35 and
+  // it swayed 8 mm while the 12 m pine beside it swayed 140 mm, which does not
+  // read as a stiff sapling, it reads as a sapling nailed to the ground. See
+  // check-wind, which asserts this against the bank rather than against a
+  // remembered number. 1.2 m buys less trunk stiffness on the tall end than 3.0,
+  // and that is the cheaper thing to give up -- on a 12 m pine the eye is on the
+  // canopy either way, and pow( wH, stiff ) still carries the motion upward.
+  tree: { amp: 0.012, stiff: 2.6, pin: 1.2, carrier: 1.7, envelope: 0.31, waveK: 0.06, gustK: 0.012, branch: 0.55 },
+  fern: { amp: 0.075, stiff: 1.3, pin: 0.35, carrier: 2.3, envelope: 0.37, waveK: 0.22, gustK: 0.02, branch: 0.8 },
+  grass: { amp: 0.075, stiff: 1.3, pin: 0.3, carrier: 2.6, envelope: 0.41, waveK: 0.3, gustK: 0.025, branch: 0.5 },
+}
+
+// Where the amplitude ramps out, in metres from the camera. Shared by all three
+// classes: it is a statement about what an eye can resolve, not about the plant.
+const WIND_NEAR = 60
+const WIND_FAR = 100
+
+/**
+ * The bend, appended to `begin_vertex` AFTER `propObjPos` has been captured and
+ * BEFORE the billboard spin. Both halves of that sentence are load-bearing.
+ *
+ * AFTER propObjPos: the snow and moss fields sample the vertex's UNSWAYED
+ * position, so a drift stays put on a moving branch instead of swimming along
+ * it. That is the same reason the billboard spin is excluded from it, and it
+ * costs nothing to inherit -- the capture already happens one line up.
+ *
+ * BEFORE the spin: a spun card's local +X is mapped onto screen-right by
+ * billboardVertex, so a displacement written into `transformed.x` here comes out
+ * as sway across the screen no matter which way the card ends up facing. That is
+ * the cheat, and it is the right one -- a billboard has no depth to give it
+ * away, and the alternative is an inverse rotation to put an honest world
+ * direction into a card that will be turned to face you regardless. Fixed
+ * geometry (meshes, the crossed-card tier, grass strips) does NOT take the
+ * cheat: it gets the true world direction, rotated into object space by
+ * dividing out the instance's own yaw the way billboardVertex divides it out.
+ */
+function windVertex(w, { strip = false, cards = false } = {}) {
+  const carrier = windFreq(w.carrier).toFixed(6)
+  const envelope = windFreq(w.envelope).toFixed(6)
+  // A strip is the one class whose instances are NOT uniformly scaled --
+  // grass.js composes (sx, sy, sx) -- and local x and z are both scaled by sx
+  // while the lever arm y is scaled by sy. Dividing by sx/sy turns the
+  // displacement back into an angle against the card's own height, so a six-
+  // clump strip leans by the same angle as a three-clump one. Exactly the
+  // correction STRIP_VERTEX's twist makes, for exactly the same reason.
+  const scaleFix = strip
+    ? /* glsl */ `
+      float wSx = length( wM[ 0 ].xyz );
+      float wSy = max( length( wM[ 1 ].xyz ), 1e-6 );
+      float wAspect = max( wSx / wSy, 1e-6 );`
+    : /* glsl */ `
+      float wAspect = 1.0;`
+  // A strip is several metres of grass on one card, so bending it as a unit
+  // reads as a waving plank -- the one place this could look worse than
+  // nothing. uvProj.x is the vertex's distance along the strip (STRIP_BASE
+  // fixes the baked u span to equal the geometry width, see buildGrassStrip), so
+  // scaling it by the instance's aspect gives metres along the strip and feeding
+  // that into the phase makes each clump lag its neighbour. The flare correction
+  // STRIP_VERTEX applies to vStripTx is not wanted here and not needed: this is
+  // a phase offset, not a texture coordinate.
+  const along = strip ? /* glsl */ `+ uvProj.x * wAspect * ${w.waveK.toFixed(6)}` : ''
+  // Cards carry an EXACT height fraction and meshes do not. v = 0 is the top of
+  // any card buildImpostorCard makes and v = 1 is its foot, so `1 - uvProj.y` is
+  // the fraction with no constant to get wrong and no per-variant height to
+  // know. A mesh's uvProj is a bark repeat or a spray projection (tree.js), so
+  // it falls back to object y over the pin length.
+  const height = strip
+    ? /* glsl */ `float wH = 1.0 - uvProj.y;`
+    : cards
+      ? /* glsl */ `float wH = mix( clamp( transformed.y * ${(1 / w.pin).toFixed(6)}, 0.0, 1.0 ),
+          1.0 - uvProj.y, propCard );`
+      : /* glsl */ `float wH = clamp( transformed.y * ${(1 / w.pin).toFixed(6)}, 0.0, 1.0 );`
+  return /* glsl */ `
+  {
+    mat4 wM = mat4( 1.0 );
+    #ifdef USE_BATCHING
+      wM = batchingMatrix;
+    #endif
+    #ifdef USE_INSTANCING
+      wM = instanceMatrix;
+    #endif
+    // Where this plant stands, in world space. The phase is taken from the ROOT
+    // and not from the vertex, which is what makes a plant move as one object:
+    // sample the vertex instead and the wave runs THROUGH each tree as well as
+    // across the wood, and a canopy shears.
+    vec3 wRoot = ( modelMatrix * wM * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+${scaleFix}
+
+    // Off past WIND_FAR, and the same value for both halves of a cross-dissolve
+    // because both halves share this root. See the header.
+    float wReach = 1.0 - smoothstep( ${WIND_NEAR}.0, ${WIND_FAR}.0,
+      distance( cameraPosition, wRoot ) );
+
+    float wRun = dot( wRoot.xz, uWindDir );
+    // Slow envelope over fast carrier: what makes it read as gusting rather than
+    // as a metronome. The envelope never reaches zero -- foliage in a breeze is
+    // never quite still -- and never exceeds 1, so amp stays the honest
+    // maximum lean rather than a number the gust can overshoot.
+    float wGust = 0.65 + 0.35 * sin( wRun * ${w.gustK.toFixed(6)} - uPropClock * ${envelope} );
+    float wPhase = wRun * ${w.waveK.toFixed(6)} - uPropClock * ${carrier}
+      + dot( transformed.xz, vec2( 0.7, 1.3 ) ) * ${w.branch.toFixed(6)} ${along};
+
+${height}
+    // Multiplying by transformed.y is what makes this an angle: the foot is
+    // pinned because y is zero there, and the tip leans by amp times its own
+    // height whatever
+    // the instance was scaled to.
+    float wLean = pow( wH, ${w.stiff.toFixed(3)} ) * transformed.y
+      * ${w.amp.toFixed(6)} * uWindStrength * wReach * wGust * sin( wPhase ) / wAspect;
+
+    // The instance's own +X in world XZ, as a unit complex number -- the same
+    // quantity billboardVertex calls bbA, and needed here for the same reason:
+    // a scatter yaws its instances at random, so an object-space displacement
+    // would send every plant a different way and the wood would stir rather
+    // than blow. The 2x2 is orthonormal, so world-to-object is its transpose:
+    // object +X is wA and object +Z is perp(wA).
+    vec3 wAxisW = ( modelMatrix * wM * vec4( 1.0, 0.0, 0.0, 0.0 ) ).xyz;
+    // GUARDED, where billboardVertex's identical normalize is not, and the
+    // difference is which geometry reaches it. A billboard is always Y-up, so
+    // its +X can never be vertical; this block also runs on grass strips, which
+    // are TILTED to sit on the ground (up to about 22 degrees, see
+    // check-grass). That is nowhere near vertical, so the guard should never
+    // fire -- but a NaN here would not be a subtle error, it would fling one
+    // strip's vertices across the screen, so it is worth three instructions.
+    vec2 wAxisXZ = vec2( wAxisW.x, wAxisW.z );
+    float wAxisLen = length( wAxisXZ );
+    vec2 wA = wAxisLen > 1e-4 ? wAxisXZ / wAxisLen : vec2( 1.0, 0.0 );
+    vec2 wDirObj = vec2( dot( uWindDir, wA ), dot( uWindDir, vec2( -wA.y, wA.x ) ) );
+
+    // Branchless pick between the honest direction and the screen-parallel
+    // cheat. propSpun is 0 for everything that is not a card about to be turned
+    // to face the camera, and vec2(1, 0) is that card's own width axis.
+    transformed.xz += mix( wDirObj, vec2( 1.0, 0.0 ), propSpun ) * wLean;
+  }`
+}
+
 /**
  * `vertexColors` opts into a per-vertex tint multiplied over the array sample.
  *
@@ -1788,13 +2087,23 @@ const STRIP_SAMPLE = /* glsl */ `
  */
 export function createPropMaterial(
   textureArray,
-  { vertexColors = false, billboardLayers = null, sphericalBillboard = false, stripTiling = false } = {}
+  {
+    vertexColors = false, billboardLayers = null, sphericalBillboard = false, stripTiling = false,
+    wind = null,
+  } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
   // A flag with nothing to act on is a caller who thinks their cards are being
   // spun differently and is looking at unchanged pixels. Say so instead.
   if (sphericalBillboard && !billboards) {
     throw new Error('createPropMaterial: sphericalBillboard needs billboardLayers to spin')
+  }
+  // A preset NAME is the normal way to ask; an object is for a caller tuning one
+  // off the presets. A typo in the name would otherwise compile a material that
+  // silently never moves, so fail on it here where the list is.
+  const windSpec = typeof wind === 'string' ? WIND_PRESETS[wind] : wind
+  if (wind && !windSpec) {
+    throw new Error(`createPropMaterial: unknown wind preset '${wind}' (have ${Object.keys(WIND_PRESETS).join(', ')})`)
   }
 
   const material = new THREE.MeshLambertMaterial({
@@ -1828,6 +2137,10 @@ export function createPropMaterial(
     shader.uniforms.uMossVary = mossVary
     shader.uniforms.uPropClock = propClock
     if (billboards) shader.uniforms.uBillboardLayers = { value: billboards }
+    if (windSpec) {
+      shader.uniforms.uWindDir = windDir
+      shader.uniforms.uWindStrength = windStrength
+    }
     if (stripTiling) {
       shader.uniforms.uStripKeep = stripKeep
       shader.uniforms.uStripShort = stripShort
@@ -1867,6 +2180,8 @@ export function createPropMaterial(
         varying vec2 vMoss;
         varying float vPropFade;
         ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
+        ${windSpec ? `uniform vec2 uWindDir;
+        uniform float uWindStrength;` : ''}
         ${stripTiling ? `varying float vStripSeed;
         varying float vStripTx;
         uniform float uStripFlare;
@@ -1884,8 +2199,10 @@ export function createPropMaterial(
         vTexLayer = texLayer;
         vUvProj = uvProj;
         vec3 propObjPos = transformed;
+        ${propCardMask(billboards ? billboards.length : 0)}
         ${FADE_VERTEX}
-        ${billboards ? billboardVertex(billboards.length, sphericalBillboard) : ''}
+        ${windSpec ? windVertex(windSpec, { strip: stripTiling, cards: !!billboards }) : ''}
+        ${billboards ? billboardVertex(sphericalBillboard) : ''}
         ${stripTiling ? STRIP_VERTEX : ''}`
       )
       // Snow is placed in WORLD space so that two instances of the same tree

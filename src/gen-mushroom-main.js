@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildMushroom, mushroomTriangles, MUSHROOM_DEFAULTS } from './props/mushroom.js'
 import {
   MUSHROOM_SPECIES, MUSHROOM_NAMES, MUSHROOM_VARIANTS,
-  MUSHROOM_LOD_SPANS, MUSHROOM_MESH_RADIAL, MUSHROOM_CARD_PLANES,
+  MUSHROOM_LOD_SPANS, MUSHROOM_MESH_RADIAL,
 } from './props/mushroom-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
@@ -174,7 +174,11 @@ const UNDERSIDE_0_1 = MUSHROOM_DEFAULTS.underside ? 1 : 0
 const params = {
   ...MUSHROOM_DEFAULTS,
   underside: UNDERSIDE_0_1,
-  planes: 2,
+  // 1, because that is what the world draws: the shipped ladder's only card is
+  // the single spun billboard (see MUSHROOM_LOD_SPANS). The slider still reaches
+  // 4 so a crossed pair can be looked at, but the page must open on the card the
+  // game has rather than on one it dropped.
+  planes: 1,
   brightness: 1.0,
 }
 
@@ -771,8 +775,7 @@ function refresh() {
   }))
   const ladder = [
     ...meshRows,
-    { name: `LOD${MUSHROOM_MESH_RADIAL.length} &middot; ${MUSHROOM_CARD_PLANES} crossed cards`, tris: MUSHROOM_CARD_PLANES * 2 },
-    { name: `LOD${MUSHROOM_MESH_RADIAL.length + 1} &middot; spun triangle`, tris: 1 },
+    { name: `LOD${MUSHROOM_MESH_RADIAL.length} &middot; spun triangle`, tris: 1 },
   ]
   table(document.getElementById('lod'), [
     ['span = max(height, spread)', size(span)],
@@ -1155,7 +1158,7 @@ toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
 document.getElementById('reset').addEventListener('click', () => {
   Object.assign(params, MUSHROOM_DEFAULTS, {
     underside: UNDERSIDE_0_1,
-    planes: 2,
+    planes: 1,
     seed: params.seed,
   })
   // Reset puts the page back where it opened, and it opened on no species at

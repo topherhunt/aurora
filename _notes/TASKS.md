@@ -24,6 +24,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - Cliffsides, riverbeds, lake beds: include larger sized rock caps, as well as whole giant boulders underwater.
+- Rivers should sit into the hillside (node needs to be placed deep enough that the river wall  bites in
+- 2x ground variation at the 0.5m-2m level. This should help riverbanks feel broken up rather than smooth splines.
 - [ ] Deadwood: currently it's always placed in the same places as trees. Scatter it randomly, NOT under trees, though it's OK if it occasionally intersects. Also it needs to be browner, less red. Also vary size randomly from (current size) to 4x current size.
 - [ ] Mushrooms: double current default size? and randomly vary sizes obvi
 - [ ] Procedural bushes - Scattered throguhout the forest like trees, but with different LOD thresholds. 2 sizes x 2 random seed rolls x species.

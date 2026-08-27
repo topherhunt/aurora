@@ -47,18 +47,24 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //
 // THE LADDER, and it is shorter than a fern's on purpose:
 //
-//   tier 0   the mesh at radial 16, 60 to 66 tris.     inside 20 spans
-//   tier 1   the mesh at radial 6, 30 to 36 tris.       20 to 40 spans
-//   tier 2   two crossed planes, smooth-shaded, 4 tris. 40 to 80 spans
-//   tier 3   one triangle, spun toward the eye, 1 tri.  80 spans to the draw radius
+//   tier 0   the mesh at radial 16, 60 to 66 tris.    inside 20 spans
+//   tier 1   the mesh at radial 6, 30 to 36 tris.      20 to 40 spans
+//   tier 2   one triangle, spun toward the eye, 1 tri. 40 spans to the draw radius
+//
+// There is no crossed-planes tier between the coarse mesh and the billboard,
+// which is where a tree and a fern both have one. The argument is on
+// MUSHROOM_LOD_SPANS in the bank: by 40 spans the whole prop is 23 px across,
+// past §5's parallax range and past the size at which a second plane's
+// silhouette is legible. So the billboard takes over at the end of the mesh and
+// runs to the rim dissolve, exactly as a distant tree, tuft or fern does.
 //
 // THE BANDS ARE MULTIPLES OF THE PROP'S OWN SPAN, not metres, which is the one
 // place this scatter departs from its siblings. A fern is a fern; a mushroom is
 // 8 cm on the forest floor and metres in a cave, off the same five presets, and
 // a fixed band would card the small one while it was still 15 px tall and hold
 // the big one as a mesh long after 26. Hanging the ladder off the prop's own
-// size puts every swap at the same apparent size instead -- 46 px, 23 px, 12 px
-// at 16.2 px/deg -- and costs one multiply per instance in the band test below.
+// size puts every swap at the same apparent size instead -- 46 px and 23 px at
+// 16.2 px/deg -- and costs one multiply per instance in the band test below.
 // A span is max(height, spread); MUSHROOM_LOD_SPANS carries the numbers, the
 // argument for the max, and the §5 parallax check on them.
 //
@@ -317,7 +323,7 @@ export class Mushrooms {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = buildMushroomBank({ seed, billboard: true })
+    const bank = buildMushroomBank({ seed })
     this.bank = bank
     this.variantCount = bank.variants.length
 
@@ -364,25 +370,30 @@ export class Mushrooms {
     })
 
     // How far out a tile has to be before NOTHING in it can want a mesh, in
-    // units of one span. Every band beyond it resolves to the card tier, which
-    // is what lets a far tile be priced with one multiply instead of a walk.
-    // The margin is the tile's own reach: the test is run against the tile
-    // CENTRE and a member can sit a diagonal half-tile nearer than that.
+    // units of one span. Past that everything resolves to the spun
+    // billboard, which is what lets a far tile be priced with one multiply
+    // instead of a walk. NEAR_MARGIN covers the two ways the tile-centre test
+    // can be optimistic about a member: a diagonal half-tile of position (7.1 m)
+    // and LOD_HYSTERESIS holding a sticky instance one band longer.
     this.nearSpans = MUSHROOM_LOD_SPANS[MUSHROOM_LOD_SPANS.length - 1]
 
     // Five impostor layers, one per species, and passing them here is what lets
-    // the vertex shader spin the LOD2 triangles. It is deliberately NOT
-    // sufficient on its own: both card tiers wear these same layers, and the
-    // shader's second test is the vertex normal, which is vertical only on the
-    // billboard. See CARD_UP_MARK in material.js.
+    // the vertex shader spin the LOD2 triangles. Only that tier wears these
+    // layers -- the two mesh tiers wear the cap and flesh sheets -- so unlike
+    // the tree layer, where a fixed crossed tier shares the impostor layer with
+    // the billboard, nothing here relies on the shader's second test to be held
+    // still. That test, a vertex normal at or over CARD_UP_MARK in material.js,
+    // still has to pass for the spin to happen at all.
     this.material = createPropMaterial(textureArray, { billboardLayers: mushroomImpostorLayers() })
 
     // Unlike the fern and tree banks this one hands back its tiers ALREADY
     // finest-first and already expanded per variant, so there is no reverse and
-    // no perVariant indirection. What there is instead is repetition: a
-    // species' card geometry is the same object in eighteen slots of the card
-    // tiers, so the arena must be told about it once. Adding it per slot would
-    // put eighteen copies of the same four triangles in the buffer.
+    // no perVariant indirection. The identity dedupe below is still done, and it
+    // is defensive rather than load-bearing: nothing in the bank shares a buffer
+    // today -- the card is per variant so a size-0.8 instance does not wear a
+    // size-1.0 picture -- but a bank that ever hoisted a per-species card out of
+    // the variant loop would otherwise land eighteen copies of one triangle in
+    // the arena, silently and with nothing to see.
     const unique = []
     const idOf = new Map()
     for (const tier of bank.tiers) {
@@ -415,8 +426,8 @@ export class Mushrooms {
     this.farMeshIds = this.tierIds[0].slice()
     this.farMeshTris = this.tierTris[0].slice()
     // A far tile can be priced with one multiply only when every slot in the
-    // tier costs the same. That holds for the card tier -- a quad is a quad --
-    // and NOT for the mesh tier, whose slots run 39 to 45. Derived rather than
+    // tier costs the same. That holds for the card tier -- one spun triangle is
+    // one spun triangle -- and NOT for a mesh tier. Derived rather than
     // assumed, so that a card tier which ever stops being uniform prices itself
     // per instance instead of quietly billing the whole world as variant 0.
     const cardTris = this.tierTris[this.tierIds.length - 1]

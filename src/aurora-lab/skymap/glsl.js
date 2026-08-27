@@ -144,8 +144,9 @@ export const SKYMAP_GLSL = `
   // ---- The reader. One bilinear fetch, and the extinction, in place of forty steps of anything.
   //
   // The extinction is the one per-ray term left on the screen side. It is a function of rd.y, so it could be folded into the convolution like the gain was -- but that would need s inverted back to an elevation, which has no closed form, where evaluating it here is a smoothstep and a mix. The gain could not be left here for the same reason in reverse: it is a function of the weather fbm, and recomputing that per pixel would put four value-noise lookups back into the shader this file exists to empty.
-  vec3 smRead( vec3 rd ) {
-    float s = smLogScale( rd.y );
+  //
+  // Takes s rather than recomputing it, because the zenith dissolve below needs the same number and smLogScale is a sqrt, a divide and a log.
+  vec3 smRead( vec3 rd, float s ) {
     return texture2D( u_skyMap, smOutUv( s, smAz( rd.xz ) ) ).rgb;
   }
 
@@ -317,10 +318,18 @@ export const SKYMAP_FRAME_GLSL = `
   vec3 auroraRadiance( vec3 ro, vec3 rd, vec2 uv, float t ) {
     if ( rd.y < u_horizonCut ) return vec3( 0.0 );
 
+    float s = smLogScale( rd.y );
+
     // Atmospheric extinction, the same term and the same reasoning as glsl/frame.js: the far channels' feet sit low and their light crosses a great deal of air, and cutting them off at exactly the horizon instead would draw a hard line of aurora on the mountains.
     float ext = mix( 1.0, smoothstep( u_horizonCut, u_horizonCut + 0.14, rd.y ), u_extinct );
 
-    return smRead( rd ) * ext;
+    // ---- The zenith dissolve, the same term glsl/frame.js applies for the same reason, and it is EXACTLY the march's rather than an analogue of it: the march fades on length( pSp ) = |rd.xz| * ( altHigh - altLow ) / denom * fieldScale, and exp( s ) is |rd.xz| * fieldScale / denom by the identity this whole file rests on, so one multiply reproduces the number the march computes with a vector length.
+    //
+    // It is applied HERE, per pixel, and not inside smConvolve where the rest of the per-ray terms went. The reason is the clamp at the top of the output map: above u_smTopDeg the reader runs off the end of x and repeats the top row, so a dissolve baked into the texels would stop dissolving at exactly the elevation where the crush is worst and freeze at that row's value. Read per pixel it keeps falling all the way to the pole, which is what lets the dome reach 90 degrees at all. The cost is one smoothstep and one mix on a value already in a register.
+    float planTravel = exp( s ) * max( u_altHigh - u_altLow, 0.0 );
+    float zen = mix( 1.0, smoothstep( 0.0, max( u_zenReach, 1e-3 ), planTravel ), u_zenFade );
+
+    return smRead( rd, s ) * ( ext * zen );
   }
 
   #endif

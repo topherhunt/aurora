@@ -272,7 +272,7 @@ function worldHeight() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'gen-building-v2', 'test-aurora', 'test-aurora-v2']
+const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'gen-building-v2', 'test-aurora']
 
 function bareRoutes() {
   return {
@@ -384,7 +384,6 @@ export default defineConfig({
         // is one quad, which is what makes it honest about the shader's cost.
         // See the header of src/aurora-lab/glsl/frame.js.
         testAurora: resolve(__dirname, 'test-aurora.html'),
-        testAuroraV2: resolve(__dirname, 'test-aurora-v2.html'),
       },
     },
   },

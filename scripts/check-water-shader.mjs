@@ -317,21 +317,54 @@ check(
   `offsets ${rotSpread.join(', ')} deg`
 )
 
-// Every layer must actually move, and the slowest must not be so slow it reads
-// as frozen. A 52 m feature drifting at 27 m/s crosses its own wavelength in
-// under two seconds; the first pass had it taking 27, which is what "the large
-// ripples appear to not move at all" was.
-const slowest = Math.min(...WAVE_LAYERS.map((L) => L.wavelength / (L.speed * WATER.flow)))
-const laziest = Math.max(...WAVE_LAYERS.map((L) => L.wavelength / (L.speed * WATER.flow)))
-check(laziest < 4, 'even the largest layer crosses its own wavelength in a few seconds', `${laziest.toFixed(1)} s slowest, ${slowest.toFixed(1)} s fastest`)
+// Every layer must actually move, and the bound is on the layers that carry the
+// VISIBLE motion rather than on all five.
+//
+// The original rule was "no layer takes more than 4 s to cross its own
+// wavelength", written when a uniformly physical `flow` had the whole surface
+// frozen and the note back was "the large octave ripples appear to not move at
+// all!?". That reading was about the surface, and the surface was stationary in
+// every octave at once.
+//
+// The swell is deliberately exempt now. Long waves genuinely do travel slowly
+// relative to their own length -- 52 m at 3.4 m/s is 15 s a wavelength -- and
+// the surface still reads as moving because the four shorter layers underneath
+// it have not changed, so there is no way for this to drift back into the
+// failure the rule was written for without the OTHER four also going slack.
+// Hence: the largest layer is excused, and every layer that is not the largest
+// is held to the original bound. Slowing a second one trips this.
+const period = (L) => L.wavelength / (L.speed * WATER.flow)
+const swell = WAVE_LAYERS.reduce((a, b) => (a.wavelength > b.wavelength ? a : b))
+const carriers = WAVE_LAYERS.filter((L) => L !== swell)
+const slowest = Math.min(...carriers.map(period))
+const laziest = Math.max(...carriers.map(period))
+check(laziest < 4, 'every layer but the swell crosses its own wavelength in a few seconds', `${laziest.toFixed(1)} s slowest, ${slowest.toFixed(1)} s fastest`)
+// And the swell must still move at all -- slow is the point, stopped is the bug.
+check(period(swell) < 30, 'and the swell itself is slow rather than stopped', `${period(swell).toFixed(1)} s for its 52 m`)
 
 // The noise budget is checked further down, against the ASSEMBLED shader
 // rather than against this file: the per-layer terms are emitted at build time
 // from WAVE_LAYERS, so none of them appears in the source text here.
 
-// --- opaque, and reflecting rather than lit -----------------------------------
+// --- see-through only on purpose, and reflecting rather than lit --------------
 
-check(waterSrc.includes('transparent: false'), 'the surface is opaque -- you cannot see into it')
+// TRANSPARENCY IS A KNOB AND ZERO MUST COST NOTHING.
+//
+// `transparent` is derived from WATER.clarity rather than written as a literal,
+// which is the whole guarantee: at 0 the material goes back into the opaque pass
+// and the shader's alpha branch does not run, so the pinned look
+// (2026-0827-badass-cubemap-v1, design/11-water.md) is reproducible by setting
+// one number. A literal `true` here would strand that.
+check(waterSrc.includes('transparent: WATER.clarity > 0'), 'seeing into the surface is a knob, and 0 restores the opaque pass')
+check(WATER.clarity >= 0 && WATER.clarity < 1, 'and it is a fraction -- 1 would be a hole in the world', `clarity ${WATER.clarity}`)
+// depthWrite stays on. This is a sheet, not a cloud: one water fragment per
+// pixel, and everything drawn after it -- aurora, stars, markers -- must still be
+// occluded by the lake the way it was before the knob existed.
+check(waterSrc.includes('depthWrite: true'), 'and the surface still writes depth, so what is behind it stays behind it')
+// The divide is what stops the water going dark exactly where it goes clear:
+// blending returns src * a, so the reflection has to be pre-scaled back up.
+check(/alpha = 1\.0 - uClarity \* \( 1\.0 - f \) \* near/.test(waterSrc), 'clarity is conditioned on both angle and distance')
+check(/color \/= alpha/.test(waterSrc), 'and the surface light is pre-divided so transparency does not dim the reflection')
 check(
   !/MeshStandardMaterial|MeshLambertMaterial/.test(waterSrc),
   'the surface is not a lit PBR material pretending to be water'

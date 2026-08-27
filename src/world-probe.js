@@ -76,6 +76,34 @@ export const WORLD_PROBE = {
   // faces see the water plane edge-on and the numerically-flat cases live.
   height: 0.2,
 
+  // THE FLOOR UNDER THAT, in metres below her eye, and it is what stops the
+  // capture being taken from INSIDE A HILLSIDE.
+  //
+  // `levelAt` is a yes/no test on the water POLYGON, not a nearest-water query:
+  // standing at the edge of a lake it answers with the lake's still level while
+  // the ground under her feet is metres higher, because the lake mask is
+  // dilated a cell so its polygon edge can be buried under the bank. Anchoring
+  // at `lakeLevel + height` there puts the camera underground with a 0.3 m near
+  // plane, and every face it captures is filled by whatever card, strip or rock
+  // happens to be within arm's reach -- the "giant grey blobs" a lake shore was
+  // reflecting, which a river never showed because a river's level sits close to
+  // the ground beside it.
+  //
+  // Her eye is the one point in the world guaranteed to be above the ground, so
+  // the anchor is never allowed further below it than this. 1.2 m against a
+  // 1.65 m eye leaves the capture around knee height when she is out of the
+  // water -- well clear of the ground and still 1.2 m nearer the water than her
+  // head. Whenever she is IN the water her eye is at or below the surface, so
+  // this floor is under `surfaceY + height` and the max picks the surface, which
+  // is the case the surface offset was written for in the first place.
+  //
+  // It also removes the bigger half of the jumping. Walking a shoreline, that
+  // polygon test flickers in and out with every step, swinging the anchor by the
+  // whole height of the bank and tripping a re-anchor on a proxy for her
+  // position rather than her position. Above the water both branches now give
+  // the same answer and the flicker is simply gone.
+  duck: 1.2,
+
   // Frames between faces while she is standing still. Five faces to go round, so
   // a full refresh is this times five: 150 frames, about 2 s at 72 Hz. Slow on
   // purpose -- what changes on that timescale is the light, not the land.
@@ -87,6 +115,24 @@ export const WORLD_PROBE = {
   // this exists for is walking along a river bank, where the whole reflection is
   // wrong until it catches up.
   moveRefresh: 12,
+
+  // Seconds to cross-fade a freshly-taken cube over the one it replaces.
+  //
+  // The slow one-face-every-30-frames refresh is invisible: same anchor, and
+  // only the light has moved. A RE-ANCHOR is not, because five faces change at
+  // once and the whole reflection cuts to a different vantage point in a single
+  // frame. So the probe keeps two cubes and ping-pongs: the new one is filled
+  // into the target that is not currently being displayed, and only once all
+  // five faces are in does the shader begin mixing toward it.
+  //
+  // A re-anchor is REFUSED while a fill or a fade is still running, which is
+  // what keeps this from degenerating during fast flight. Crossing 12 m every
+  // half second would otherwise queue transitions faster than they can finish
+  // and every one of them would end in a snap; deferring instead rate-limits
+  // the whole thing to one smooth handover per ~1.1 s and lets the cube go
+  // staler in between. That is the trade this feature was given permission to
+  // make -- a stale reflection that slides is better than a fresh one that cuts.
+  fadeSeconds: 1.0,
 
   // Scales the captured coverage before the water uses it. 1.0 trusts the
   // capture completely; lower fades it back toward the flat slate silhouette the
@@ -103,9 +149,10 @@ export const WORLD_PROBE = {
 // is already standing in for.
 const FACES = [0, 1, 2, 4, 5]
 
-export class WorldProbe {
-  constructor() {
-    this.target = new THREE.WebGLCubeRenderTarget(WORLD_PROBE.size, {
+/** One cube target. Two of these exist so a new capture can be faded in over
+ *  the one it replaces rather than cutting to it. */
+function makeTarget() {
+  return new THREE.WebGLCubeRenderTarget(WORLD_PROBE.size, {
       // Half float rather than a byte, and the reason is the same one that put
       // the terrain in linear space: what is written here is LINEAR light, not
       // display-encoded colour, so the bottom of the range is where all the
@@ -117,14 +164,40 @@ export class WorldProbe {
       magFilter: THREE.LinearFilter,
       generateMipmaps: false,
       // Unlike the sky probe: a hill in front of a tree has to win.
-      depthBuffer: true,
-    })
-    this.texture = this.target.texture
+    depthBuffer: true,
+  })
+}
+
+export class WorldProbe {
+  constructor() {
+    // TWO cubes, ping-ponged. `a` and `b` are handed to the shader once at
+    // construction and never reassigned -- what moves is `fade`, a single float,
+    // which is the whole reason this is a ping-pong rather than a swap of which
+    // texture the uniform points at.
+    this.a = makeTarget()
+    this.b = makeTarget()
+    this.textureA = this.a.texture
+    this.textureB = this.b.texture
+
+    // 0 means the shader is showing A, 1 means B, in between is a cross-fade.
+    this.fade = 0
+    // Which cube is fully live, and therefore which one the slow same-anchor
+    // refresh is allowed to touch. Equals `fade` whenever nothing is in flight.
+    this.live = 0
+    // The cube being burst-filled, or -1 when nothing is. Never equals `live`.
+    this.filling = -1
+    // Whether each cube has ever held a complete capture. The first one in has
+    // nothing to fade FROM, so it snaps.
+    this.everFilled = [false, false]
 
     // near is 30 cm rather than the sky probe's 1 m: the capture point is 20 cm
     // off the water and a bank can come right up to it. far is the sky probe's,
     // which brackets the furthest terrain the world can draw.
-    this.rig = new THREE.CubeCamera(0.3, 30000, this.target)
+    //
+    // The rig carries no render target of its own -- every render here names the
+    // target and the face explicitly, because which of the two cubes is being
+    // written changes from one burst to the next.
+    this.rig = new THREE.CubeCamera(0.3, 30000, this.a)
 
     // Left on layer 0 -- the ordinary scene, which is the entire point. What is
     // excluded is excluded by visibility, below, not by layer.
@@ -137,7 +210,7 @@ export class WorldProbe {
     // against. Starts absurd so the first update always anchors.
     this.anchor = new THREE.Vector3(Infinity, Infinity, Infinity)
 
-    // Faces still owed after a re-anchor. Counted down one per frame.
+    // Faces still owed on the cube being filled. Counted down one per frame.
     this.burst = 0
 
     // Objects hidden for the duration of every capture. See the header.
@@ -155,31 +228,71 @@ export class WorldProbe {
   }
 
   /**
-   * One face, or nothing. Call once per frame BEFORE the main render, for the
-   * same reason the sky probe insists on it: this binds a render target and
-   * leaves it unbound, and doing that after the XR framebuffer is set up draws
-   * the frame into the wrong buffer.
+   * One face, or nothing, plus a step of the cross-fade. Call once per frame
+   * BEFORE the main render, for the same reason the sky probe insists on it:
+   * this binds a render target and leaves it unbound, and doing that after the
+   * XR framebuffer is set up draws the frame into the wrong buffer.
    *
-   * `surfaceY` is the level of the water she is at or nearest to. Pass null
-   * where there is none, and the capture is taken at her feet instead -- which
-   * is not used by anything, but keeps the cube from being taken from inside a
-   * hillside two hundred metres up.
+   * `surfaceY` is the level of the water she is at or nearest to, or null where
+   * there is none. See WORLD_PROBE.duck for why it is a floor rather than the
+   * answer: the polygon test that produces it says the lake's level while she
+   * stands on a bank metres above it, and taking that literally buries the
+   * camera in the hillside.
+   *
+   * `dt` is real seconds, already clamped by the caller, and drives the fade
+   * only. Everything else here counts frames, because everything else here is
+   * rationing GPU work rather than animating.
    */
-  update(renderer, scene, head, surfaceY) {
-    const y = surfaceY === null ? head.y : surfaceY + WORLD_PROBE.height
+  update(renderer, scene, head, surfaceY, dt) {
+    if (!(dt >= 0)) throw new Error(`WorldProbe.update: needs a real dt, got ${dt}`)
+
+    // The duck floor applies on BOTH branches, and that is what actually kills
+    // the shoreline flicker rather than merely shrinking it. Anchoring at her
+    // eye when there is no water under her and at eye-minus-duck when there is
+    // still leaves the two answers `duck` apart, so a step across the polygon
+    // edge still moves the capture point -- just by 1.2 m instead of the height
+    // of the bank. Taking the floor unconditionally makes the two branches give
+    // the same number everywhere above the water, and the surface offset wins
+    // only where it is genuinely higher, which is only ever when she is in it.
+    const floor = head.y - WORLD_PROBE.duck
+    const y = surfaceY === null ? floor : Math.max(surfaceY + WORLD_PROBE.height, floor)
+
+    // THE CROSS-FADE, stepped first so a fade that finishes this frame frees the
+    // probe to start the next burst in the same frame rather than the one after.
+    if (this.filling < 0 && this.fade !== this.live) {
+      const step = dt / WORLD_PROBE.fadeSeconds
+      this.fade = this.live === 1 ? Math.min(1, this.fade + step) : Math.max(0, this.fade - step)
+    }
+
+    const busy = this.filling >= 0 || this.fade !== this.live
 
     // RE-ANCHOR. Squared distance, and deliberately including y: swimming down
     // through ten metres of water changes what the surface overhead reflects as
     // surely as walking does.
+    //
+    // REFUSED WHILE BUSY. There is only one spare cube, so a second burst would
+    // have to overwrite the one mid-fade -- and at flying speed 12 m comes round
+    // faster than a second, so honouring every crossing would mean every
+    // handover ending in the snap this exists to remove. Deferring lets the
+    // reflection go staler and keeps every transition smooth, which is the way
+    // round this feature was asked for.
     const dx = head.x - this.anchor.x
     const dy = y - this.anchor.y
     const dz = head.z - this.anchor.z
-    if (dx * dx + dy * dy + dz * dz > WORLD_PROBE.moveRefresh * WORLD_PROBE.moveRefresh) {
+    if (!busy && dx * dx + dy * dy + dz * dz > WORLD_PROBE.moveRefresh * WORLD_PROBE.moveRefresh) {
       this.anchor.set(head.x, y, head.z)
+      this.filling = 1 - this.live
       this.burst = FACES.length
+      this.face = 0
     }
 
+    // Which cube this frame writes to: the spare one during a burst, otherwise
+    // the live one, whose faces are only ever being topped up for the light.
+    const writing = this.filling >= 0 ? this.filling : this.live
+    const target = writing === 0 ? this.a : this.b
+
     if (this.burst > 0) this.burst--
+    else if (this.filling >= 0 || this.fade !== this.live) return
     else if (this.frame++ % WORLD_PROBE.everyNFrames !== 0) return
 
     // The six cameras have no orientation until updateCoordinateSystem runs, and
@@ -217,7 +330,7 @@ export class WorldProbe {
     }
 
     const cam = this.rig.children[FACES[this.face]]
-    renderer.setRenderTarget(this.target, FACES[this.face])
+    renderer.setRenderTarget(target, FACES[this.face])
     renderer.clear(true, true, false)
     renderer.render(scene, cam)
 
@@ -230,5 +343,29 @@ export class WorldProbe {
 
     this.face = (this.face + 1) % FACES.length
     this.captures++
+
+    // BURST COMPLETE: hand the finished cube to the shader. `live` is what the
+    // fade walks toward, so moving it is the entire handover -- and it is set
+    // only here, after the fifth face has actually landed, so a half-filled cube
+    // can never be the thing being mixed in.
+    if (this.filling >= 0 && this.burst === 0) {
+      const first = !this.everFilled[this.filling]
+      this.everFilled[this.filling] = true
+      this.live = this.filling
+      this.filling = -1
+      // Nothing to fade FROM on the very first cube: the other target has never
+      // been drawn into and is transparent black everywhere, which would fade
+      // the world in from a flat silhouette over a second every time the page
+      // loads. Snap instead.
+      if (first && !this.everFilled[1 - this.live]) this.fade = this.live
+    }
+  }
+
+  /** The fade with its ends eased, which is what the shader actually mixes by.
+   *  A linear cross-fade starts and stops abruptly enough to read as two small
+   *  jumps at the ends of the smooth part, which is the artefact this is for. */
+  get blend() {
+    const t = this.fade
+    return t * t * (3 - 2 * t)
   }
 }

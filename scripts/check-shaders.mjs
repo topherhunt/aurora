@@ -379,6 +379,34 @@ const PROP_VARIANTS = [
     {},
     { vert: [...PROP_MARKS.vert, 'vStripSeed'], frag: PROP_MARKS.frag },
   ],
+  // THE WIND EMITS THREE DIFFERENT BODIES and all three have to be compiled
+  // here, because the height weight is chosen at build time from the same two
+  // flags: a strip reads its fraction straight out of uvProj, a bed that bakes
+  // cards mixes the card fraction against the mesh ramp, and a bed with neither
+  // takes the mesh ramp alone. Only the middle one has ever shipped in two
+  // classes, so the outer two are exactly where an unseen bug would sit.
+  //
+  // Batched, because windVertex's yaw division and its root both go through
+  // batchingMatrix and USE_BATCHING is what selects those lines -- an unbatched
+  // compile would type-check the arithmetic and skip the part that can be wrong.
+  [
+    'wind, cards',
+    createPropMaterial(atlas, { billboardLayers: [0, 1, 2], wind: 'tree' }),
+    { batched: true },
+    { vert: [...PROP_MARKS.vert, 'uWindDir', 'propSpun', 'wDirObj'], frag: PROP_MARKS.frag },
+  ],
+  [
+    'wind, strips',
+    createPropMaterial(atlas, { stripTiling: true, wind: 'grass' }),
+    { batched: true },
+    { vert: [...PROP_MARKS.vert, 'uWindDir', 'wAspect', 'vStripSeed'], frag: PROP_MARKS.frag },
+  ],
+  [
+    'wind, meshes only',
+    createPropMaterial(atlas, { wind: 'fern' }),
+    { batched: true },
+    { vert: [...PROP_MARKS.vert, 'uWindDir', 'uWindStrength'], frag: PROP_MARKS.frag },
+  ],
   [
     'impostor bake',
     createImpostorBakeMaterial(atlas),
