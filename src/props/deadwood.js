@@ -82,6 +82,22 @@ import { LAYER } from '../textures.js'
 
 const TAU = Math.PI * 2
 
+// The most of its own length either broken end may eat. See `endT`.
+export const MAX_JAG = 0.4
+
+// The three numbers that turn `jag0`/`jag1` from a ceiling into an amount; all of
+// the argument for them is in `jagComb`, which is the only place they are used.
+export const JAG_FULL = 3.5 // the slider value that means "eat the whole of MAX_JAG"
+const JAG_WIDTH = 0.4 // how unevenly the splinters are spaced: widths run 1 +/- this
+const JAG_SHALLOW = 0.3 // the shallowest rung of the notch-depth ladder, the deepest being 1
+// How broad the splinters get, as the exponent on each notch flank. The notch
+// floor is at the same depth either way -- the exponent moves the SHOULDER, so a
+// high one holds the rim up further either side of the splinter before falling
+// away. 2.0 is the number that lands two adjacent vertices at the rim on about
+// half of seeds, which is what was asked for; see the note above `jagComb`.
+const JAG_SLAB_LO = 0.6 // the narrowest a splinter gets: a spike, one vertex wide
+const JAG_SLAB_HI = 2.0 // ...and the broadest: a slab with a shoulder either side
+
 // The mesh tiers, finest first. Unlike the rock ladder these are not different
 // SOLIDS, they are the same swept surface at different sampling rates, so there
 // is nothing to measure and nothing to correct: `sides` is how many facets go
@@ -95,30 +111,111 @@ const TAU = Math.PI * 2
 // crookedness that is most of what separates dead wood from a fence post; on a
 // fallen log it is also most of the silhouette, because an 8.5 m log's bend
 // wanders further sideways than the log is thick. Cut the rings and a bowed log
-// straightens into dowel: measured on `log-long`, dropping to one ring took its
+// straightens into dowel: measured on a 3 m log, dropping to one ring took its
 // plan width from 1.03 m to 0.63 m, which is not the same object at any
-// distance. So T1 keeps every ring and T2 keeps half of them.
+// distance. So EVERY mesh tier keeps every ring, and five sides is the floor:
+// it is the fewest that can still express `jag`, because a jagged rim needs
+// enough facets round the circumference to hold more than one splinter.
 //
-// T2 keeps three sides on purpose. A two-sided tube is a folded card and reads
-// as one; three is the smallest section that still has a lit face, a shaded face
-// and a silhouette that turns with the camera, which is exactly the argument
-// ROCK_TIERS makes for keeping an octahedron rather than a tetrahedron.
+// TWO MESH TIERS AND THEN A CARD. There used to be a three-sided T2 and the
+// argument for it was the one ROCK_TIERS makes for keeping an octahedron -- a
+// lit face, a shaded face and a turning silhouette. It is a good argument for a
+// boulder and a bad one for a stump, because a boulder's LOD ladder has to reach
+// out past where an impostor is affordable and a stump's does not: DEADWOOD_BANDS
+// puts the card at 20 m and the cull at 100, so the span a T2 would have covered
+// is a photograph instead. A photograph of the real LOD0 beats a 3-gon of it at
+// any distance, and costs one triangle rather than eighteen.
 //
-// Stubs go first, at T1, and that is the one place a tier deliberately loses
-// something rather than coarsening it. A 15 cm stub on a 4 m snag is under two
-// pixels at the distance T1 starts at, and it costs three triangles each -- a
-// sixth of the whole budget for something nobody can resolve.
+// STUBS SURVIVE TO T1, as one triangle each rather than a cone. A stub is the
+// one feature that reads at distance out of proportion to its size, because it
+// breaks the silhouette OUTWARD -- a bare trunk with three spikes off it is not
+// the same object as a bare trunk. What it does not need past 10 m is thickness,
+// so T1 draws each one as a single vertical triangle standing in the plane the
+// stub leans in: two-thirds of the cost, all of the silhouette. See the stub
+// loop for how the plane is chosen.
+// FIFTEEN SIDES AT T0, and the count is not a taste call -- it is the least
+// common multiple of the two angular features the stump now carries.
+//
+// `roots` puts 5 buttresses round the base and `jagCount` puts 5 splinters round
+// the broken top. Both are periodic in `a`, and a periodic feature sampled at a
+// side count it does not divide ALIASES: the samples land at a different phase in
+// each lobe, so five identical roots come out as five different-looking bulges
+// wandering round the trunk, and five identical splinters come out as a rim that
+// is savage on one side and conical on the other. That second one is exactly the
+// complaint this tier count was raised to answer, and it does not throw, does not
+// change the triangle count, and cannot be seen in any number the bench prints.
+//
+// Fifteen gives each lobe THREE samples: one on the fin, two in the gap; one at
+// the splinter tip, two down in the notch. Three is also the floor -- two is
+// Nyquist exactly, where the sampled amplitude depends on where the random phase
+// happened to land, which is the aliasing back again wearing a different hat.
+//
+// T1 stays at five. Both features are 0-10 m features -- past that a fin is under
+// a pixel wide and all it would cost is triangles.
 export const DEADWOOD_TIERS = [
-  { name: 'T0', sides: 8, ringMul: 1.0, stubMul: 1.0 },
-  { name: 'T1', sides: 5, ringMul: 1.0, stubMul: 0.0 },
-  { name: 'T2', sides: 3, ringMul: 0.5, stubMul: 0.0 },
+  { name: 'T0', sides: 15, ringMul: 1.0, stubMul: 1.0, stubFlat: false },
+  { name: 'T1', sides: 5, ringMul: 1.0, stubMul: 1.0, stubFlat: true },
 ]
 
 // DESIGN.md §5's prop table puts stumps and logs in the `bush` row. The row
 // predates this generator, so it is a target and not a law -- but it is the
 // number the world was budgeted against, and a tier that runs over has to do it
 // on purpose. The bench prints this beside what was actually built.
-export const BUDGET_TRIS = [84, 56, 28]
+//
+// T0 WENT OVER ON PURPOSE, and this is the record of it. Fifteen sides and a
+// fourth ring take a stump from 76 triangles to 162, so the target moves with it
+// rather than the bench printing a permanent red number nobody reads. What makes
+// it affordable is the band, not the count: DEADWOOD_BANDS ends T0 at 10 m, so the
+// pieces paying 162 are the handful within a few strides of the player, and a log
+// -- which keeps three rings and two stubs -- pays 126 of it. Everything past 10 m
+// is already on the 5-sided T1 at 54, or on one triangle of card.
+export const BUDGET_TRIS = [168, 56]
+
+// Where each tier ends, in metres, and where the prop stops being drawn at all.
+// The user set these against the bench's own distance readout: T0 to 10 m, T1 to
+// 20, the billboard from there to the cull.
+//
+// The cull is the number worth defending. 100 m on a 2 m log is 1.6 px of card,
+// which is under the threshold at which anything can be recognised -- but a
+// SCATTER of them is not one log, and a field of dead wood thinning out at the
+// same radius the trees do is what stops the deadwood layer reading as a ring
+// painted round the player.
+export const DEADWOOD_BANDS = [10, 20, 100]
+
+// The whole family is drawn through a material tinted by this, and nothing else
+// in the world wears it.
+//
+// AGE IS A TINT, NOT A TEXTURE, and that is the choice worth recording because
+// the obvious alternative was four more atlas layers -- a darkened copy of each
+// bark PNG plus the timber. Dead wood does not have DIFFERENT bark from live
+// wood, it has the same bark greyed and browned by a few years of weather, so a
+// per-family multiply says the true thing in one number and leaves the atlas
+// alone. It also lands in the right place in the shader: `diffuse` multiplies
+// the atlas sample BEFORE moss and snow mix over the top of it (material.js's
+// MOSS_APPLY / SNOW_APPLY), so the wood ages and the moss stays green and the
+// snow stays white, which is what would have to be hand-maintained if the tint
+// were baked into the tiles.
+//
+// The one thing it cannot do is age two species differently -- birch bark going
+// grey is a different journey from pine going red-brown. Both get the same
+// multiply here. If that ever reads wrong the fix is a per-variant tint through
+// the batch's instance colour, not a return to baked layers.
+// The value itself is a GREY-BROWN and not an orange one: wood rotting under a
+// canopy goes toward mud and ash, and the red end of the bark tiles is the first
+// thing weather takes out of it. Its red-green gap is a third of the bark's own,
+// which is what stops a fallen log reading as a freshly cut one.
+//
+// AND IT IS A LIGHT MULTIPLY, which is the correction the user asked for after
+// seeing the first one in the world: a strong brown multiply reads as a DIFFERENT
+// MATERIAL rather than as weathered wood, and a piece of it lying on the forest
+// floor stands out as a dark stain instead of settling into the ground. This
+// value is the old 0x8f7c5c pulled 28% of the way to white -- luminance 0.50 to
+// 0.61, saturation 0.36 to 0.20 -- so it still greys and darkens the bark but
+// leaves the tile's own contrast doing most of the work. The other half of the
+// correction is not here at all: GROUND_CUE in v2/render/deadwood.js bends each
+// instance toward the terrain hue it is actually standing on, which is the part
+// that can follow the ground from a riverbank to a burn and this constant cannot.
+export const DEADWOOD_TINT = 0xab9d88
 
 export const DEADWOOD_DEFAULTS = {
   seed: 1,
@@ -136,67 +233,143 @@ export const DEADWOOD_DEFAULTS = {
   // authored in relative units and fitted to the scenery; EVERYBODY knows how
   // big a log is, and a 0.9 m trunk lying across a path is a different object
   // from a 0.3 m one rather than the same object closer up.
-  length: 3.2, // along the spine: a snag's height, a log's length
-  butt: 0.42, // DIAMETER at the base, in metres
-  taper: 0.34, // fraction of the butt diameter lost by the far end. Never 1: dead wood is broken off, not sharpened
+  length: 0.95, // along the spine: a snag's height, a log's length
+  butt: 0.43, // DIAMETER at the base, in metres
+  taper: 0.42, // fraction of the butt diameter lost by the far end. Never 1: dead wood is broken off, not sharpened
 
   // --- the spine -------------------------------------------------------------
-  bend: 0.05, // quadratic lean in one azimuth, as a fraction of length -- tree.js's trunkBend
-  kink: 0.035, // two harmonics on top of it, so the thing is crooked rather than merely leaning
-  kinkFreq: 3.1, // cycles of the first harmonic over the whole length
+  // OFF FOR A STUMP, on for a log (see LOG_DEFAULTS). A lean is a length feature,
+  // and a 1.5 m stump is not long enough to show one -- what it shows instead is a
+  // base that no longer sits square on the ground it was seated against, and a
+  // root crown whose fins are at different heights on the two sides. A log has
+  // four to seventeen metres to lean over and needs the bend to not read as dowel.
+  bend: 0, // quadratic lean in one azimuth, as a fraction of length -- tree.js's trunkBend
+  kink: 0.07, // two harmonics on top of it, so the thing is crooked rather than merely leaning
+  // Cycles of the first harmonic over the whole length. Higher on a stump than on
+  // a log for the same reason bend is zero there: over 1.5 m, 3.6 cycles is most of
+  // one wobble and reads as a lean, and 5 is three wobbles and reads as gnarled.
+  kinkFreq: 5,
 
   // --- the cross-section -----------------------------------------------------
   // A live trunk can be a circle because its canopy hides it. These are what
   // stop a dead one reading as a fence post; see note 2 in the header.
-  ovality: 0.12, // 2-lobe: the section is an ellipse, rolled to a per-seed azimuth
+  ovality: 0.08, // 2-lobe: the section is an ellipse, rolled to a per-seed azimuth
   lobes: 0.07, // 3- and 5-lobe on top of that, so it is an irregular polygon rather than an ellipse
-  swell: 0.09, // burls and waists ALONG the length
+  swell: 0, // burls and waists ALONG the length
   swellFreq: 2.2,
 
   // --- rot -------------------------------------------------------------------
-  bark: 0.62, // fraction of the surface still wearing bark. 0 = stripped to the wood, 1 = intact
-  barkPatch: 2.6, // how large the sheets are that come away. Higher = smaller patches
-  barkThick: 0.022, // metres the surface drops where the bark has gone -- the step that reads in silhouette
-  checks: 3, // long radial splits running the length, as a count. 0 = none
-  checkDepth: 0.09, // how far they bite, as a fraction of the radius
+  bark: 1.0, // fraction of the surface still wearing bark. 0 = stripped to the wood, 1 = intact
+  barkPatch: 2.7, // how large the sheets are that come away. Higher = smaller patches
+  barkThick: 0.02, // metres the surface drops where the bark has gone -- the step that reads in silhouette
+  checks: 0, // long radial splits running the length, as a count. 0 = none
+  checkDepth: 0, // how far they bite, as a fraction of the radius
 
   // --- the broken ends -------------------------------------------------------
   // `0` is the butt, `1` is the far end. A standing snag wants a flat bedded
   // butt and a savage top; a log broken out of the middle of a trunk wants both
   // ends ragged; a log that fell with its root plate wants a huge flared butt
   // and a clean break at the other end.
-  jag0: 0.0, // how far the rim wanders along the spine, as a fraction of length
-  jag1: 0.16,
-  jagCount: 5, // how many splinters go round
-  cup0: 0.0, // how far the end face is pulled INTO the piece, as a fraction of its own radius
-  cup1: 0.45, // a rotten heart is dished; a sound break is flat
+  // How savagely the rim is broken, on a scale where JAG_FULL (3.5) is the most
+  // either end may eat and everything below it is a proportional fraction of that
+  // -- NOT a ceiling the seed may or may not reach. Half of it really is half as
+  // deep a rim, on every seed. `endT` is where that is built and argued.
+  jag0: 0.0,
+  jag1: 3.5,
+  // How many splinters go round. FIVE, matched to `roots` and to T0's fifteen
+  // sides: three samples per splinter, one on the tip and two down in the notch,
+  // which is the sampling the rim's guarantees are stated against. See the
+  // DEADWOOD_TIERS note.
+  jagCount: 5,
+  // How far the end face is pulled INTO the piece, as a multiple of its own
+  // radius. Below 1 this is a dish -- a rotten heart, where a sound break is
+  // flat. ABOVE 1 it stops being a dish and becomes a HOLLOW: the fan turns into
+  // a funnel bored along the spine, deep enough to see down, which is what a
+  // rotted-out stump actually is. See buildCap for what that costs (nothing) and
+  // where it is clamped.
+  //
+  // A STUMP ONLY CARES ABOUT `cup1`, which is its broken top and the thing you
+  // look down into. `cup0` is its butt, which is in the ground -- a funnel bored
+  // up into a face nobody can see buys nothing, and boring it deep is what puts
+  // the base ring's own geometry where the root crown wants to be. So 0.5, a
+  // shallow dish. A log keeps 1.6 at both ends: both of a log's ends are visible
+  // and both are breaks.
+  cup0: 0.5,
+  cup1: 1.6,
 
   // --- the root flare --------------------------------------------------------
   // tree.js has none of this, and can afford not to: the bottom half metre of a
   // living trunk is behind ferns. A snag IS its bottom half metre.
-  flare: 0.55, // extra radius at the very base, as a fraction of the butt
+  flare: 0.38, // extra radius at the very base, as a fraction of the butt
   flareRun: 0.22, // over what fraction of the length it dies away
+  // How many BUTTRESSES the flare is broken into. 0 or 1 leaves it the smooth
+  // collar it used to be; anything from 3 up turns it into roots.
+  //
+  // A real stump does not meet the ground along a circle. It meets it along a
+  // star: a handful of major roots run out from the butt and dive, and between
+  // them the trunk is pinched IN, hollow enough to hold leaf litter. That in-and-
+  // out is the whole feature, and it is why this is an angular modulation of the
+  // flare rather than a separate mesh -- it costs no triangles at all, only the
+  // sides needed to sample it, which is what took T0 to fifteen.
+  //
+  // FIVE, matched to those fifteen sides so each root gets three: one on the fin
+  // and two in its gap. Change one of the two and change the other, or the crown
+  // aliases and wanders round the trunk, which reads as a modelling mistake
+  // rather than as a tree.
+  roots: 5,
+  // How hard the flare is pulled into the fins, as a fraction of itself. At 1.0
+  // the fins carry twice the collar's radius and the gaps carry none. ABOVE 1 the
+  // gaps go NEGATIVE -- they cut inside the taper radius -- which is the pinch
+  // between two roots and the reason the default is over one. The product is
+  // floored with the rest of the radius at the bottom of radiusAt, so a big value
+  // makes a deeper notch rather than an inside-out trunk.
+  rootBite: 1.05,
 
   // --- branch stubs ----------------------------------------------------------
-  stubs: 2,
-  stubStart: 0.35, // fraction of the length below which no stub grows
-  stubLength: 0.9, // as a multiple of the local DIAMETER
-  stubRadius: 0.3, // as a fraction of the local trunk radius
-  stubRise: 0.35, // radians above horizontal. Dead stubs droop toward horizontal; live branches rise
+  stubs: 4,
+  stubStart: 0, // fraction of the length below which no stub grows
+  // ...and above which none does. This exists because `jag` and `stubs` are
+  // computed independently and the rim is the one that moves: a stub placed at
+  // 0.95 of the length on a piece whose top has been eaten back to 0.6 by a big
+  // `jag1` grows out of thin air, several centimetres clear of any wood.
+  //
+  // It is a BAND CAP AND NOT THE FIX. The rim is a function of angle, so no single
+  // number is under all of it -- a stub at 0.64 under a notch that bit to 0.6 still
+  // floats. The fix is in the stub loop, which pulls each stub down to the rim at
+  // its OWN azimuth; this stays because it also controls where stubs look right,
+  // which is the lower two thirds of a snag, not because it is load-bearing.
+  stubEnd: 0.64,
+  stubLength: 4, // as a multiple of the local DIAMETER
+  stubRadius: 0.32, // as a fraction of the local trunk radius
+  stubRise: 0.28, // radians above horizontal. Dead stubs droop toward horizontal; live branches rise
   stubSides: 3,
 
   // --- how it meets the ground -----------------------------------------------
-  sink: 0.18, // fraction of the butt RADIUS pushed below y = 0 and clamped back up
+  sink: 0.22, // fraction of the butt RADIUS pushed below y = 0 and clamped back up
   roll: 0, // LOG ONLY: spin about the log's own axis, so the flare and the checks land somewhere
-  pitch: 0.06, // LOG ONLY: radians off horizontal -- one end resting on something
+  // LOG ONLY: radians off horizontal -- one end propped up on something.
+  //
+  // DEFAULTS TO ZERO, and it is worth saying why a knob defaults to off. A log
+  // beds by sinking until its whole underside is under the plane and letting the
+  // clamp flatten it (see the bedding block), and the amount it has to sink to
+  // get there is the vertical wander of its own spine. Pitch is wander. So every
+  // radian dialled in here is a radian the piece gets buried by, and the visible
+  // result of a small pitch is not a propped log, it is a level log sunk deeper
+  // at one end. A log that should genuinely be propped wants a bigger number
+  // than that -- past DEEPEST_BED it stops being absorbed and starts to lift.
+  pitch: 0,
 
   // --- surface and skin ------------------------------------------------------
-  smooth: 0.8, // 0 = every face flat, 1 = one smooth shell. End faces stay flat at any setting
-  texMetres: 0.62, // world metres one tile covers ALONG the piece
+  smooth: 1.0, // 0 = every face flat, 1 = one smooth shell. End faces stay flat at any setting
+  texMetres: 0.86, // world metres one tile covers ALONG the piece
   barkLayer: LAYER.BARK,
   woodLayer: LAYER.TIMBER_BEAM,
 
-  rings: 3, // ring count along the spine at T0
+  // Ring count along the spine at T0. FOUR on a stump, three on a log: the extra
+  // band goes where the stump needs it, which is the run between the root crown
+  // dying away at flareRun and the broken rim starting to bite. A log spends its
+  // rings over four to seventeen metres of straight trunk and does not miss one.
+  rings: 4,
 }
 
 // --- the bank ---------------------------------------------------------------
@@ -206,51 +379,125 @@ export const DEADWOOD_DEFAULTS = {
 // off and the shape placed drift apart, which is the one failure a bench exists
 // to prevent. rock-bank.js makes the same argument at greater length.
 //
-// Eight entries, and they are chosen to span the two things that decide how a
-// piece READS rather than to span the parameter space: how much of it is left
-// (a whole trunk, a broken section, a stump) and how far gone it is (bark on,
-// bark off, heart dished out).
-export const DEADWOOD_VARIANTS = {
-  'snag-tall': {
-    envs: ['pine forest', 'burn'],
-    p: { kind: 'snag', length: 5.4, butt: 0.38, taper: 0.42, bark: 0.5, jag1: 0.2, cup1: 0.3, flare: 0.4, stubs: 3, checks: 4, barkLayer: LAYER.BARK_PINE },
-  },
-  'snag-stout': {
-    envs: ['old growth', 'wood'],
-    p: { kind: 'snag', length: 2.4, butt: 0.68, taper: 0.22, bark: 0.4, jag1: 0.22, cup1: 0.6, flare: 0.7, swell: 0.14, stubs: 2 },
-  },
-  'snag-spike': {
-    envs: ['burn', 'ridge'],
-    p: { kind: 'snag', length: 3.8, butt: 0.3, taper: 0.55, bark: 0.12, jag1: 0.3, jagCount: 7, cup1: 0.2, flare: 0.35, checks: 5, checkDepth: 0.14, stubs: 1 },
-  },
-  stump: {
-    envs: ['wood', 'clearing', 'path side'],
-    // The one entry that is NOT broken off high. A stump is what is left when
-    // something took the tree away, so it is wide, short, heavily flared, and the
-    // moss reaches all of it -- the height cue in material.js never bites.
-    p: { kind: 'snag', length: 0.7, butt: 0.72, taper: 0.1, bark: 0.55, jag1: 0.1, cup1: 0.5, flare: 0.85, flareRun: 0.5, stubs: 0, sink: 0.3 },
-  },
-  'log-long': {
-    envs: ['wood', 'path side'],
-    p: { kind: 'log', length: 8.5, butt: 0.5, taper: 0.4, bark: 0.6, jag0: 0.05, jag1: 0.09, cup0: 0.2, cup1: 0.25, flare: 0.3, bend: 0.03, kink: 0.045, stubs: 3, pitch: 0.04 },
-  },
-  'log-mossy': {
-    envs: ['old growth', 'stream bank'],
-    p: { kind: 'log', length: 4.6, butt: 0.62, taper: 0.18, bark: 0.18, barkPatch: 1.9, jag0: 0.08, jag1: 0.12, cup0: 0.35, cup1: 0.4, flare: 0.25, swell: 0.15, sink: 0.34, stubs: 1 },
-  },
-  'log-broken': {
-    envs: ['wood', 'burn'],
-    // A section out of the middle of a trunk: both ends are breaks, neither is a
-    // root and neither is a top, so jag and cup are symmetric.
-    p: { kind: 'log', length: 3.0, butt: 0.44, taper: 0.08, bark: 0.45, jag0: 0.2, jag1: 0.2, cup0: 0.45, cup1: 0.45, flare: 0, flareRun: 0.1, checks: 4, stubs: 1, pitch: 0.1 },
-  },
-  'log-root': {
-    envs: ['blowdown', 'stream bank'],
-    // Blown over rather than broken: the root plate came up with it, so the butt
-    // is enormous and ragged and the far end is a clean snap.
-    p: { kind: 'log', length: 6.2, butt: 0.52, taper: 0.46, bark: 0.66, jag0: 0.26, jagCount: 7, cup0: 0.1, jag1: 0.06, cup1: 0.3, flare: 1.1, flareRun: 0.16, stubs: 2, roll: 0.7 },
-  },
+// COMBINATORIAL, NOT HAND-AUTHORED, which is the opposite of what rock-bank.js
+// does and the reason for the difference is worth stating. A rock's twenty-five
+// entries each answer a question about a PLACE -- a riverbed rock and a summit
+// rock are different objects with different silhouettes, and no product of axes
+// would have produced either. Dead wood has no such spread: every piece here is
+// the same swept surface, and the three things that actually distinguish two of
+// them in a forest are how long it is, what species it was, and how badly the
+// broken end is chewed. Those are axes, so they are written as axes, and the
+// remaining variation comes from the SEED -- buildDeadwoodBank rolls several per
+// entry, and the bend, the kink, the bark patches, the checks and every stub's
+// angle and length are all seeded.
+//
+// The two families do not share axes because they are not the same object seen
+// twice. A stump is what is left in the ground after something took the tree; a
+// log is the tree. See the two tables.
+
+/** The three bark tiles a dead piece can wear, and the name the bench shows. */
+export const DEADWOOD_SPECIES = [
+  ['oak', LAYER.BARK],
+  ['birch', LAYER.BARK_BIRCH],
+  ['pine', LAYER.BARK_PINE],
+]
+
+// What changes when the piece is lying down rather than standing up.
+//
+// This is a SECOND DEFAULTS BLOCK and not a variant, because it is not a shape
+// choice -- it is the handful of dials whose right value genuinely depends on
+// the attitude. DEADWOOD_DEFAULTS is authored for a standing stump (that is what
+// the bench opens on), and four of its numbers are wrong for a log:
+//
+//   length  a stump is what is left of a trunk; a log IS one. 2 m is the piece a
+//           forest floor is actually littered with -- a whole fallen tree is a
+//           landmark and gets placed by hand, not scattered.
+//   flare   a root flare belongs to the end still in the ground. A log that
+//           broke off above the roots has almost none, so 0.1 rather than 0.38.
+//   roots   and what little flare it has is a SWELL, not a crown. Buttresses are
+//           the shape a trunk makes where it dives into soil; a log broken out of
+//           the middle of one never had them, and putting six fins on the end of
+//           a piece lying on its side reads as a cog rather than as wood.
+//   jag1    3.5 is a rotted-out stump top. Both ends of a log are SNAPS, which
+//           are ragged but not eaten, so the far end goes back to a modest bite
+//           and `jag0` carries the variation instead.
+//   stubs   fewer, because the branches on the underside broke off in the fall
+//           and the ones on top are what is left.
+//   bend    a log is the only one of the two long enough for a lean to read as a
+//   kinkFreq  lean rather than as a base that will not sit flat, so it keeps the
+//           crooked spine the stump gave up. Without it a 3 m log is a dowel.
+//   rings   three, because those metres are straight trunk. The stump spends its
+//           fourth ring on the run between the root crown and the broken rim.
+//   cup0    both of a log's ends are visible and both are breaks, so it keeps the
+//           bored hollow at each. A stump's butt is underground; see cup0's note.
+export const LOG_DEFAULTS = {
+  kind: 'log',
+  length: 2,
+  flare: 0.1,
+  roots: 0,
+  jag1: 0.16,
+  stubs: 2,
+  cup0: 1.6,
+  bend: 0.06,
+  kinkFreq: 3.6,
+  rings: 3,
 }
+
+// LOGS: length x species x how chewed the butt is.
+//
+// `jag0` is the axis rather than `jag1` because the butt is the end you see. A
+// log lies with one end toward you more often than not, and the difference
+// between a 0.35 butt (blown out, splintered, a hole you can see into) and a
+// 0.15 one (snapped clean) is the difference between two objects at ten metres.
+const LOG_LENGTHS = [2, 3]
+const LOG_BUTTS = [['blown', 0.35], ['snapped', 0.15]]
+
+// STUMPS: species x length.
+//
+// A metre and a half is a stump somebody cut; two is a trunk that snapped in a
+// storm and left a standing spar. Both are stumps in the sense that matters here
+// -- rooted, rotting, hollow at the top -- and they read very differently at
+// range, which is the only test a variant axis has to pass.
+//
+// The floor is 1.5 and not 1 because the top of a stump is where all its detail
+// is, and `jag1` eats up to MAX_JAG of the LENGTH getting there: a 1 m stump gives
+// up 40 cm of itself to its own broken rim and has 60 cm left to be a trunk in.
+const STUMP_LENGTHS = [1.5, 2]
+
+function buildVariantTable() {
+  const out = {}
+  for (const len of LOG_LENGTHS) {
+    for (const [species, layer] of DEADWOOD_SPECIES) {
+      for (const [butt, jag0] of LOG_BUTTS) {
+        out[`log-${len}m-${species}-${butt}`] = {
+          envs: ['wood', 'old growth', 'path side'],
+          p: { ...LOG_DEFAULTS, length: len, barkLayer: layer, jag0 },
+        }
+      }
+    }
+  }
+  for (const len of STUMP_LENGTHS) {
+    for (const [species, layer] of DEADWOOD_SPECIES) {
+      out[`stump-${len}m-${species}`] = {
+        envs: ['wood', 'clearing', 'burn'],
+        p: { kind: 'snag', length: len, barkLayer: layer },
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Every shipping deadwood shape, by name.
+ *
+ * Twelve logs and six stumps. The bench reads this as its preset list and the
+ * world's scatter reads the same object, so a shape signed off on /gen-deadwood
+ * is bit-identical to the one that ships.
+ */
+export const DEADWOOD_VARIANTS = buildVariantTable()
+
+/** The names, in the order the table declares them. A variant id indexes this. */
+export const DEADWOOD_NAMES = Object.keys(DEADWOOD_VARIANTS)
 
 /**
  * A full parameter set for a named variant, on a given seed.
@@ -298,19 +545,94 @@ function cylLattice(rand, na, nt) {
   }
 }
 
-// The same thing in one dimension, for the splinters around a broken end. Wraps,
-// for the same reason.
-function ringLattice(rand, n) {
-  const v = new Float32Array(n)
-  for (let i = 0; i < n; i++) v[i] = rand()
+// --- the broken rim ----------------------------------------------------------
+//
+// How deep the rim is bitten at each angle, as a fraction of the deepest bite the
+// slider allows. `n` splinters go round; between each pair of them the wood is
+// eaten away and comes back.
+//
+// This is NOT a noise field, and the two attempts before it were, which is worth
+// recording because both failed in ways that look opposite and are the same fault.
+//
+//   A LATTICE SCALED BY THE SLIDER made the slider a ceiling: the field is redrawn
+//   per seed, so one stump's peaks saturated the clamp into a shattered top while
+//   the next stump's never got near it and came out a smooth cone. Same setting,
+//   two different objects.
+//
+//   A COSINE COMB TIMED BY A LATTICE fixed that and overshot. Evenly spaced teeth
+//   of near-equal depth do not read as a break at all -- they read as a machined
+//   crown, because nothing in a rotting trunk has a period.
+//
+// The fault both share is asking one field to carry HOW MUCH and HOW UNEVEN at
+// once. So they are separated here. How much is a fixed ladder of notch depths --
+// the same multiset on every seed, so the total bite barely moves and the deepest
+// notch is always exactly the maximum the slider asked for. How uneven is the
+// DEAL: which tooth gets which rung, how wide each tooth is, and where the ring
+// starts, all drawn fresh. A deck of depths dealt in a random order.
+//
+// Splinter tips sit at the cell boundaries and notch floors at the centres, and
+// the profile is a smoothstep in between, so the curve meets its neighbour with
+// zero slope at every boundary -- the rim is C1 all the way round including the
+// seam at TAU, which is what lets it be sampled at any number of sides.
+//
+// `dealt` is the mechanism the comb is built out of: a fixed ladder of `n` values
+// from `lo` to `hi`, shuffled. Every seed gets the SAME multiset -- one of the
+// deepest notch, one of the shallowest, the rest evenly spread -- and differs only
+// in which splinter draws which. That is what separates how much from how uneven.
+// Drawing `n` independent uniforms instead would put a coin flip back into how
+// broken the seed looks overall, which is the first failure above by another route.
+function dealt(rand, n, lo, hi) {
+  const v = new Float64Array(n)
+  for (let k = 0; k < n; k++) v[k] = n < 2 ? hi : lo + (hi - lo) * (k / (n - 1))
+  for (let k = n - 1; k > 0; k--) {
+    const j = Math.floor(rand() * (k + 1))
+    const t = v[k]
+    v[k] = v[j]
+    v[j] = t
+  }
+  return v
+}
+
+function jagComb(rand, n) {
+  // Uneven cells, normalised back to a full turn. This is most of what stops the
+  // rim reading as machined: a splinter every 72 degrees is a cog.
+  const w = new Float64Array(n)
+  let sum = 0
+  for (let i = 0; i < n; i++) { w[i] = 1 - JAG_WIDTH + rand() * 2 * JAG_WIDTH; sum += w[i] }
+  const edge = new Float64Array(n + 1)
+  for (let i = 0; i < n; i++) edge[i + 1] = edge[i] + (w[i] / sum) * TAU
+  edge[n] = TAU
+
+  // How deep each notch goes, as a fraction of the deepest the slider allows.
+  const amp = dealt(rand, n, JAG_SHALLOW, 1)
+
+  // How BROAD each splinter is. One exponent per splinter rather than per tooth,
+  // because a splinter is shared by the two notches either side of it and has one
+  // width, not two.
+  //
+  // This is the term that decides whether two neighbouring vertices can both stay
+  // up at the rim, which is the readable form of "does this look broken or does it
+  // look cut". A spike is narrower than the angle between two sides, so a ring of
+  // spikes puts exactly one vertex on each and the top is a machined crown however
+  // uneven the notches are. A slab is wider than that and catches two, which on a
+  // dealt ladder happens on about half of seeds.
+  const slab = dealt(rand, n, JAG_SLAB_LO, JAG_SLAB_HI)
+
+  const roll = rand() * TAU
   const smooth = (x) => x * x * (3 - 2 * x)
+
   return (a) => {
-    const f = (a / TAU) * n
-    const i = Math.floor(f)
-    const i0 = ((i % n) + n) % n
-    const i1 = (i0 + 1) % n
-    const t = smooth(f - i)
-    return v[i0] + (v[i1] - v[i0]) * t
+    const x = (((a - roll) % TAU) + TAU) % TAU
+    let i = 0
+    while (i < n - 1 && x >= edge[i + 1]) i++
+    const u = (x - edge[i]) / (edge[i + 1] - edge[i])
+    // Each half of the notch runs from its own splinter down to the floor at the
+    // centre, so a wide splinter and a narrow one can share a notch. Both halves
+    // meet the floor with zero slope and leave their splinter with zero slope,
+    // which is what keeps the whole rim C1 across every boundary and the seam.
+    const gl = Math.pow(smooth(Math.min(1, 2 * u)), slab[i])
+    const gr = Math.pow(smooth(Math.min(1, 2 * (1 - u))), slab[(i + 1) % n])
+    return amp[i] * gl * gr
   }
 }
 
@@ -345,6 +667,12 @@ function shapeOf(p) {
   const sp0 = rand() * TAU
   const sp1 = rand() * TAU
   const checkPhase = rand() * TAU
+  // LAST IN THE STREAM ON PURPOSE. Every draw above feeds a knob that already
+  // existed, and this file's own rule is that adding a cosmetic knob must not
+  // reshuffle them -- so the root crown's roll goes on the END, where nothing is
+  // downstream of it to shift. Without it every stump in a species would put its
+  // roots at the same six compass points.
+  const rootPhase = rand() * TAU
 
   // Bark sheets. The lattice is sized so the patches are roughly square on the
   // surface: `barkPatch` cells per metre of circumference, and the same density
@@ -354,8 +682,8 @@ function shapeOf(p) {
   const nt = Math.max(2, Math.round(L * p.barkPatch))
   const barkField = cylLattice(barkRand, na, nt)
 
-  const jagField0 = ringLattice(jagRand, Math.max(3, Math.round(p.jagCount)))
-  const jagField1 = ringLattice(jagRand, Math.max(3, Math.round(p.jagCount)))
+  const jagComb0 = jagComb(jagRand, Math.max(3, Math.round(p.jagCount)))
+  const jagComb1 = jagComb(jagRand, Math.max(3, Math.round(p.jagCount)))
 
   // The spine, in the LOCAL frame: +Y along the piece, t running 0 -> 1. The
   // kink harmonics are anchored at t = 0 by subtracting their own value there,
@@ -388,7 +716,21 @@ function shapeOf(p) {
     // arrives fast at the very bottom rather than swelling the whole butt.
     if (p.flare > 0 && p.flareRun > 1e-4) {
       const f = Math.max(0, 1 - t / p.flareRun)
-      r += r0 * p.flare * f * f
+      let flare = p.flare * f * f
+      // ...and broken into ROOTS rather than left as a collar. `fin` runs 1 at a
+      // root's centre to 0 in the gap between two, and the remap takes the flare
+      // from (1 + bite) of itself down to (1 - bite) -- so past a bite of 1 the
+      // gaps subtract and the trunk is pinched in between its own roots.
+      //
+      // An INTEGER period in `a`, like every other angular term here, which is
+      // what closes the seam exactly at a = TAU. See note 2 in the header: the
+      // whole radius field has to be samplable at any number of sides.
+      const nR = Math.round(p.roots)
+      if (nR >= 2 && p.rootBite > 0) {
+        const fin = 0.5 + 0.5 * Math.cos(nR * (a + rootPhase))
+        flare *= 1 + p.rootBite * (2 * fin - 1)
+      }
+      r += r0 * flare
     }
 
     // Not a circle: a rolled ellipse, plus 3- and 5-lobe on top of it. The
@@ -445,14 +787,19 @@ function shapeOf(p) {
   // Where the tube actually ends, per angle. The rim of a break is ragged, so
   // the LAST RING itself wanders along the spine rather than the cap being stuck
   // on to a clean edge -- which is the only construction that leaves no gap and
-  // no doubled rim. Cubed, because a break has a few long splinters and a lot of
-  // low rim, and a raw lattice value gives an evenly scalloped edge that reads
-  // as decorative.
+  // no doubled rim.
+  //
+  // The rim's SHAPE is `jagComb`, which is where that is argued. All this adds is
+  // the slider: `bite` reads `jag` against JAG_FULL, so the setting is a fraction
+  // of the deepest bite a rim may take rather than a free multiplier that may or
+  // may not reach it -- half the slider really is half the rim, on every seed. The
+  // MAX_JAG clamp stays as belt and braces; the comb cannot exceed 1 by
+  // construction, so it no longer does any work.
   const endT = (a, which) => {
     const jag = which ? p.jag1 : p.jag0
     if (jag <= 0) return which ? 1 : 0
-    const f = which ? jagField1(a) : jagField0(a)
-    const d = jag * Math.pow(f, 3)
+    const bite = Math.min(1, jag / JAG_FULL)
+    const d = Math.min(MAX_JAG, MAX_JAG * bite * (which ? jagComb1(a) : jagComb0(a)))
     return which ? 1 - d : d
   }
 
@@ -527,6 +874,11 @@ function vert() {
 // That is the same reason rock.js is non-indexed (per-face projection axis), and
 // it carries the same bonus: per-face flat shading is free, so the end cuts can
 // stay hard while the barrel stays round.
+// cos(80 deg). Ten degrees of margin before a vertex normal reaches its own
+// face's horizon, which is enough that interpolation across the face cannot
+// reach the horizon either.
+const MAX_LEAN = 0.1736
+
 function emitTri(out, a, b, c, layer, smooth) {
   const tri = [a, b, c]
 
@@ -560,6 +912,51 @@ function emitTri(out, a, b, c, layer, smooth) {
       nx = fx + (nx - fx) * smooth
       ny = fy + (ny - fy) * smooth
       nz = fz + (nz - fz) * smooth
+
+      // AND NEVER PAST THE HORIZON OF ITS OWN FACE. The analytic normal is the
+      // ideal surface's, and the ideal surface has features the tessellation
+      // cannot hold: a drying check is a groove eight degrees wide whose walls
+      // turn the true normal sixty degrees off radial, and at eight sides the
+      // vertex that lands on a wall sits on a facet that spans forty-five. Where
+      // that gap opens past ninety degrees the vertex normal points away from
+      // the face it belongs to and Lambert lights the whole triangle as though
+      // it were facing away -- one black facet in the middle of a lit trunk.
+      //
+      // So the lean is capped at MAX_LEAN off the face. Below the cap nothing
+      // moves, which is every face on every variant except the few that straddle
+      // a deep check: the grooves and burls still catch light, which is the whole
+      // reason the normal is analytic rather than radial. It is a clamp on the
+      // TESSELLATION's honesty, not on the shape's -- raise the side count and
+      // the clamp stops biting on its own.
+      //
+      // ONE PLACE IT DOES NOT REACH: the ground clamp at the end of
+      // buildDeadwood moves positions after every face has been emitted, so a
+      // face on the buried belly ribbon gets a face normal these were never
+      // measured against and can lean past the cap again. That ribbon is the
+      // surface the piece is standing ON. It is left alone rather than bought a
+      // second pass.
+      const dot = nx * fx + ny * fy + nz * fz
+      const nlen = Math.hypot(nx, ny, nz)
+      if (nlen > 1e-9 && dot < MAX_LEAN * nlen) {
+        // Re-aim: keep the sideways part, rebuild the along-face part so the
+        // angle is exactly MAX_LEAN. Rotating rather than blending toward the
+        // face normal keeps the direction the check was leaning in.
+        const d = dot / nlen
+        let sx = nx / nlen - fx * d
+        let sy = ny / nlen - fy * d
+        let sz = nz / nlen - fz * d
+        const sl = Math.hypot(sx, sy, sz)
+        if (sl > 1e-9) {
+          const k = Math.sqrt(1 - MAX_LEAN * MAX_LEAN) / sl
+          nx = fx * MAX_LEAN + sx * k
+          ny = fy * MAX_LEAN + sy * k
+          nz = fz * MAX_LEAN + sz * k
+        } else {
+          nx = fx
+          ny = fy
+          nz = fz
+        }
+      }
     }
     const nl = Math.hypot(nx, ny, nz) || 1
     out.nor.push(nx / nl, ny / nl, nz / nl)
@@ -572,6 +969,20 @@ function emitTri(out, a, b, c, layer, smooth) {
 // ---------------------------------------------------------------------------
 // buildDeadwood
 // ---------------------------------------------------------------------------
+// One broken end's rim, sampled at `n` angles, as fractions of the piece's length
+// measured from the butt. Same `endT` the build's own end rings ride, so this is
+// the rim rather than a model of it.
+//
+// It exists because the rim CANNOT BE RECOVERED FROM THE MESH: a stub tip and the
+// funnel bored down the middle both put vertices at heights that have nothing to
+// do with where the wood ends, so anything measuring the break off the geometry
+// is really measuring whichever of the three happened to reach highest. The gate
+// needs the curve to assert that `jag` means the same thing on every seed.
+export function deadwoodRim(options = {}, which = 1, n = 64) {
+  const s = shapeOf({ ...DEADWOOD_DEFAULTS, ...options })
+  return Array.from({ length: n }, (_, k) => s.endT((k / n) * TAU, which))
+}
+
 export function buildDeadwood(options = {}) {
   const p = { ...DEADWOOD_DEFAULTS, ...options }
   const tier = DEADWOOD_TIERS[Math.min(DEADWOOD_TIERS.length - 1, Math.max(0, Math.round(p.tier)))]
@@ -653,24 +1064,42 @@ export function buildDeadwood(options = {}) {
   //
   // A fan from the ragged rim to a centre pulled `cup` radii INTO the piece.
   // That dish is what a rotten heart looks like and it costs nothing -- the fan
-  // has the same triangle count whether the centre is proud, flat or sunk.
+  // has the same triangle count whether the centre is proud, flat, dished or
+  // bored a metre down. Which is why `cup` is allowed past 1: at a dish it reads
+  // as a rotten heart, and at two or three radii the same fan is a HOLLOW STUMP
+  // you can see down into, for the same sixteen triangles.
   //
   // ALWAYS FLAT SHADED, whatever `smooth` says. §19 records the same rule for
   // the buildings' log ends and gives the reason in one line: an all-smooth log
   // has ends that look like melted wax. The end grain of a break meets the
-  // barrel at a right angle and has to keep that arris.
+  // barrel at a right angle and has to keep that arris. It matters more once the
+  // fan is a funnel: a smoothed funnel wall has no rim, and the rim is the whole
+  // reason you read it as an opening rather than as a dark smudge.
   //
   // UVs are a planar projection across the axis -- end grain, not bark running
-  // round a corner -- and the layer is the WOOD layer at both ends however much
-  // bark is left, because a break face is by definition where the bark is not.
+  // round a corner.
+  //
+  // THE LAYER IS THE SAME QUESTION THE BARREL ASKS, not a fixed answer, and this
+  // one is a JUDGEMENT rather than a fact. It used to be the wood layer at both
+  // ends unconditionally, on the reasoning that a break face is by definition
+  // where the bark is not -- which is sound for a snapped trunk and says nothing
+  // about a top that rotted away, where the crumbling rim carries on out of the
+  // bark on the sides. Running `faceLayer` keeps both readings available from one
+  // dial: at `bark` 1 the whole piece including its top is still skinned, at 0 it
+  // is end grain everywhere, and in between the top is patched like the sides.
+  //
+  // A HOLLOW'S WALL IS THE ONE PLACE THIS IS ARGUABLY WRONG. Punky rotted
+  // heartwood is what you actually see down a hollow stump, never bark, but the
+  // wall is drawn by the same fan as the rim and cannot take a different layer
+  // without splitting the fan in two. Left as is, deliberately: a hollow deep
+  // enough to look down is dark enough that its wall reads as depth rather than
+  // as a material, and paying triangles to say otherwise is not worth it at 84.
   const endRing = Array.from({ length: sides + 1 }, vert)
   const capCentre = vert()
 
   const buildCap = (which) => {
     const cup = which ? p.cup1 : p.cup0
-    let cx = 0
-    let cy = 0
-    let cz = 0
+    let tRim = 0
     let cr = 0
     for (let k = 0; k <= sides; k++) {
       const a = (k / sides) * TAU
@@ -680,35 +1109,93 @@ export function buildDeadwood(options = {}) {
       v.u = (v.pos.x - 0) / p.texMetres
       v.v = (v.pos.z - 0) / p.texMetres
       if (k < sides) {
-        cx += v.pos.x
-        cy += v.pos.y
-        cz += v.pos.z
+        tRim += t
         cr += v.r
       }
     }
-    cx /= sides
-    cy /= sides
-    cz /= sides
+    tRim /= sides
     cr /= sides
 
-    // The centre sits on the SPINE's x/z rather than on the rim's average, so a
-    // cup on a heavily lobed section dishes straight down the pith instead of
-    // leaning toward whichever side had the fatter lobe.
-    s.spineAt(which ? 1 : 0, _p)
-    const dir = which ? -1 : 1
-    capCentre.pos.set(_p.x, cy + dir * cup * cr, _p.z)
+    // A hollow cannot bore further than there is piece to bore. Past that the
+    // centre comes out of the far end and the fan turns inside out -- and on a
+    // snag it would take the top face below y = 0, where the bedding contract
+    // (min y is exactly 0, gated in check-deadwood.mjs) stops being true. 0.8
+    // leaves a floor in the hollow at any setting, which is also what stops it
+    // reading as a hole punched clean through.
+    const depth = Math.min(cup * cr, s.L * 0.8)
+
+    // THE APEX IS A POINT ON THE SPINE, at the depth the bore reaches. Not a
+    // point offset from the end along the end's TANGENT, which is what this used
+    // to be and is only the same thing on a straight piece.
+    //
+    // The difference is the whole of `bend` and `kink`, and it is a bug and not a
+    // subtlety: the spine of a 2 m log wanders 10-15 cm sideways over its length,
+    // so a funnel bored 60 cm along the tangent ends up that far OFF the pith,
+    // and its wall -- which is a straight line from the rim to the apex -- cuts
+    // out through the barrel on the side it drifted toward. What you see is a
+    // triangle of the inside of the log poking through the outside of it, lit
+    // from the wrong side, moving as you walk round. Aiming at the centre of the
+    // ring section at the bored depth cannot do that, because every point of the
+    // funnel wall is then a chord of a section the barrel also passes through.
+    //
+    // `t` is arc length to within a percent (spineAt puts y at exactly t * L and
+    // the lateral terms are a few percent of L), so depth / L is the parameter
+    // step, and it is measured from the MEAN RIM rather than from t = 0 or 1 --
+    // otherwise `jag` and `cup` fight, and a rim eaten 40% down the piece gets a
+    // bore measured from where the piece would have ended if it had not broken.
+    const tStar = Math.min(1, Math.max(0, which ? tRim - depth / s.L : tRim + depth / s.L))
+    s.spineAt(tStar, capCentre.pos)
     capCentre.nor.set(0, which ? 1 : -1, 0)
     capCentre.u = capCentre.pos.x / p.texMetres
     capCentre.v = capCentre.pos.z / p.texMetres
-    void cx
-    void cz
 
     for (let k = 0; k < sides; k++) {
       const v0 = endRing[k]
       const v1 = endRing[k + 1]
+      // The layer is asked at the face's own mid-angle, on the rim, so a cap
+      // whose piece is half stripped is half stripped the same way round.
+      const am = ((k + 0.5) / sides) * TAU
+      const layer = faceLayer(s.endT(am, which), am)
       // Winding flips between the two ends: the far cap faces +Y, the butt -Y.
-      if (which) emitTri(out, v0, v1, capCentre, p.woodLayer, 0)
-      else emitTri(out, v1, v0, capCentre, p.woodLayer, 0)
+      //
+      // IT USED TO BE THE OTHER WAY ROUND, and both caps were inside out. The
+      // top of every snag was a backface, which is what the user reported as
+      // "the top face is just black".
+      //
+      // NOT BY BEING CULLED, AND NOT BY BEING BACKLIT EITHER, and the actual
+      // route matters because it says which faces are at risk. The prop material
+      // is DoubleSide, so nothing is culled; it also applies
+      // `normal *= faceDirection` a second time over three's own
+      // (material.js:1959), and twice is the identity, so the lit normal is the
+      // AUTHORED normal on both sides and lighting there is winding-independent.
+      // Neither of those saved this cap, because on a FLAT-EMITTED face the
+      // authored normal is not independent of the winding -- emitTri derives it
+      // from the vertex order, so reversing the order reversed the normal. The
+      // stored normal measured (0, -1, 0) on the top of every snag. That is a
+      // face lit by a normal aimed at the ground: dotNL 0 from the sun, the
+      // hemisphere's ground colour underneath, and the back-of-normal darkening
+      // on top of it. Black.
+      //
+      // The lesson generalises the other way round from how it looks: on this
+      // material a winding error is invisible ANYWHERE the normals are authored
+      // independently (a smooth barrel, a radial limb cone, a leaf card given
+      // the canopy shell's normal), and visible ONLY where a face's normal comes
+      // from its own winding. Flat shading is what couples them.
+      //
+      // It survived the winding gate because that gate compares each face's normal
+      // against its own stored vertex normals, and a cap is emitted flat
+      // (smooth = 0), which makes the stored normal a COPY of the face normal.
+      // The assertion was comparing the value to itself on precisely the faces
+      // that were wrong. check-deadwood.mjs now also asks a snag's caps which
+      // way they point in the WORLD, which is a question the geometry cannot
+      // answer with a tautology.
+      //
+      // A funnel needs no second case: as `cup` drives the centre through the
+      // rim plane the face normal swings continuously from straight up to
+      // up-and-inward, which is the correct outward side of a bored hollow, and
+      // its Y component never reaches zero however deep the bore goes.
+      if (which) emitTri(out, v1, v0, capCentre, layer, 0)
+      else emitTri(out, v0, v1, capCentre, layer, 0)
     }
   }
 
@@ -732,12 +1219,37 @@ export function buildDeadwood(options = {}) {
   const stubRing = Array.from({ length: stubSides + 1 }, vert)
   const stubTip = vert()
 
+  // The band a stub may emit from. `stubEnd` is a ceiling and not just a scale,
+  // so the jitter is clamped back inside it rather than allowed to overshoot --
+  // the whole point of the ceiling is that nothing sits above the deepest notch
+  // `jag1` can cut, and one jittered outlier is exactly the stub that hangs in
+  // the air. Ordered defensively because a bench can be left with end below
+  // start, and a negative span would mirror the stubs below the butt.
+  const stubLo = Math.min(p.stubStart, p.stubEnd)
+  const stubHi = Math.max(p.stubStart, p.stubEnd)
+
   for (let i = 0; i < nStubs; i++) {
-    const t = p.stubStart + (1 - p.stubStart) * ((i + 0.5) / Math.max(1, nStubs) + (stubRand() - 0.5) * 0.2)
-    const tc = Math.min(0.97, Math.max(0.03, t))
+    const t = stubLo + (stubHi - stubLo) * ((i + 0.5) / Math.max(1, nStubs) + (stubRand() - 0.5) * 0.2)
+    let tc = Math.min(Math.min(0.97, stubHi), Math.max(Math.max(0.03, stubLo), t))
     // Spread round the trunk by the golden angle plus a jitter, so two stubs
     // never stack up the same side however few there are.
     const a = stubRand() * TAU + i * 2.399963
+
+    // AND THEN PULLED UNDER THE RIM AT ITS OWN AZIMUTH, which is the actual fix
+    // for stubs hanging in the air. `stubEnd` caps the whole band against the
+    // deepest notch `jag1` might cut, but the rim is a function of ANGLE: a stub
+    // at 0.64 standing under a notch that bit down to 0.60 is still growing out
+    // of nothing. `endT` is the same function the end rings ride, so this asks
+    // the wood itself where it stops instead of guessing with a constant.
+    //
+    // The margin is the stub's own radius in `t` units -- clearing the rim by a
+    // hair still leaves the upper half of the cone outside the trunk. Taken at
+    // the pre-clamp `tc` because the radius varies slowly along the piece and the
+    // margin only has to be the right size, not exact.
+    const margin = Math.max(0.012, s.radiusAt(tc, a) * p.stubRadius) / s.L
+    tc = Math.max(s.endT(a, 0) + margin, tc)
+    tc = Math.min(s.endT(a, 1) - margin, tc)
+
     const r = s.radiusAt(tc, a)
     const c = Math.cos(a)
     const sn = Math.sin(a)
@@ -755,6 +1267,56 @@ export function buildDeadwood(options = {}) {
     const rad = Math.max(0.012, r * p.stubRadius)
     const len = rad * 2 * p.stubLength * (0.7 + stubRand() * 0.6)
     const layer = s.barkAt(tc, a) >= 0.5 ? p.barkLayer : p.woodLayer
+
+    // T1 DRAWS THE STUB AS ONE VERTICAL TRIANGLE. Not a thinner cone and not a
+    // cross: a single card standing in the plane that holds both the stub's own
+    // axis and world up, which is the plane a drooping stub is already leaning
+    // in. That is the plane whose silhouette is the stub -- rotate the card 90
+    // degrees about the axis and the same three vertices project to a line.
+    //
+    // Two base corners either side of the axis within that plane, one tip, and
+    // the normal is the plane's own (horizontal, across the stub) rather than a
+    // radial fan. A card has one normal by construction and this is the only
+    // choice that is not a lie about some part of it.
+    if (tier.stubFlat) {
+      // The in-plane perpendicular: up, with the axial part taken out. A stub
+      // pointing straight up has no such direction, so fall back to the ring
+      // frame -- which is the correct answer there, since any plane through a
+      // vertical axis is as vertical as any other.
+      let wx = -stubAxis.x * stubAxis.y
+      let wy = 1 - stubAxis.y * stubAxis.y
+      let wz = -stubAxis.z * stubAxis.y
+      let wl = Math.hypot(wx, wy, wz)
+      if (wl < 1e-6) {
+        wx = stubE1.x
+        wy = stubE1.y
+        wz = stubE1.z
+        wl = 1
+      }
+      wx /= wl
+      wy /= wl
+      wz /= wl
+      const nxs = stubAxis.y * wz - stubAxis.z * wy
+      const nys = stubAxis.z * wx - stubAxis.x * wz
+      const nzs = stubAxis.x * wy - stubAxis.y * wx
+      const uRep = Math.max(1, Math.round((TAU * rad) / p.texMetres))
+      for (let k = 0; k < 2; k++) {
+        const sgn = k === 0 ? 1 : -1
+        const v = stubRing[k]
+        v.pos.set(base.x + wx * rad * sgn, base.y + wy * rad * sgn, base.z + wz * rad * sgn)
+        v.nor.set(nxs, nys, nzs)
+        v.u = k * uRep
+        v.v = 0
+      }
+      stubTip.pos.copy(base).addScaledVector(stubAxis, len)
+      stubTip.nor.set(nxs, nys, nzs)
+      stubTip.u = uRep * 0.5
+      stubTip.v = len / p.texMetres
+      // Flat, whatever `smooth` says: a one-triangle card has nothing to blend
+      // toward and the authored normal above is already the answer.
+      emitTri(out, stubRing[0], stubRing[1], stubTip, layer, 0)
+      continue
+    }
 
     for (let k = 0; k <= stubSides; k++) {
       const ang = (k / stubSides) * TAU
@@ -807,10 +1369,77 @@ export function buildDeadwood(options = {}) {
 
   let minY = Infinity
   for (let i = 1; i < positions.length; i += 3) if (positions[i] < minY) minY = positions[i]
-  const drop = minY + p.sink * s.r0
-  for (let i = 1; i < positions.length; i += 3) {
-    const y = positions[i] - drop
-    positions[i] = y < 0 ? 0 : y
+
+  // A LOG LIES IN THE GROUND, NOT ON A TANGENT TO IT.
+  //
+  // `sink` alone drops the piece until its single lowest vertex is a fraction of
+  // a radius under the plane, and on a snag that is the whole answer, because a
+  // snag's underside is one flat butt. On a log it is not: the underside is a
+  // 2-8 m line following a spine that bends and kinks, so sinking the lowest
+  // point buries that point and leaves everything either side of it in the air.
+  // A 3 m log at the default bend and kink floats its ends by about 10 cm, and a
+  // gap under a fallen log reads as a bug from every angle -- it is the one
+  // artefact that says "this object was placed" rather than "this object fell".
+  //
+  // So a log ALSO sinks by the full vertical wander of its own spine, which is
+  // exactly the amount that puts every point of the underside at or below the
+  // plane and lets the clamp below flatten the lot into one continuous belly
+  // ribbon. Measured on the spine rather than on the vertices because the
+  // vertices carry the barrel's radius, which is not wander and would bury the
+  // log by its own thickness.
+  //
+  // A BUTT DIAMETER caps it, and the cap is what keeps `pitch` usable: a
+  // deliberately propped log has metres of wander and must not be swallowed
+  // whole. Past that much burial the piece stops sinking and is allowed to show
+  // a gap, which at that angle is what a propped log actually does.
+  //
+  // The spine is walked once for both of the numbers below, in the piece's FINAL
+  // attitude. Thirty-two steps rather than the ring count because this is a
+  // property of the shape and not of the tier: every tier has to bed at the same
+  // depth and stand at the same place, or the LOD switch nudges the log.
+  let spineLoY = Infinity
+  let spineHiY = -Infinity
+  let spineLoX = Infinity
+  let spineHiX = -Infinity
+  let spineLoZ = Infinity
+  let spineHiZ = -Infinity
+  for (let i = 0; i <= 32; i++) {
+    s.spineAt(i / 32, v3)
+    v3.applyMatrix4(m)
+    if (v3.y < spineLoY) spineLoY = v3.y
+    if (v3.y > spineHiY) spineHiY = v3.y
+    if (v3.x < spineLoX) spineLoX = v3.x
+    if (v3.x > spineHiX) spineHiX = v3.x
+    if (v3.z < spineLoZ) spineLoZ = v3.z
+    if (v3.z > spineHiZ) spineHiZ = v3.z
+  }
+
+  const bed = p.kind === 'log' ? Math.min(spineHiY - spineLoY, s.r0 * 2) : 0
+  const drop = minY + p.sink * s.r0 + bed
+
+  // THE ORIGIN IS THE MIDDLE OF THE FOOTPRINT, not the butt.
+  //
+  // Everything above builds from the butt outward because that is where the
+  // spine starts, which is fine for a standing snag (the butt IS the middle) and
+  // useless for a log: a 3 m log built that way hangs three metres off its own
+  // origin, so a scatter that places it at a point puts it anywhere but there,
+  // its bounding sphere is twice the radius it needs to be, and -- the one that
+  // shows -- the billboard card, which is built centred on the origin by
+  // construction, stands a metre and a half away from the mesh it replaces. That
+  // is a prop that jumps sideways at the LOD switch.
+  //
+  // Centred on the SPINE's own range rather than on the vertex bounding box,
+  // because the bounding box is a property of the tier -- an 8-gon and a 5-gon
+  // catch different lobes -- and a centre that moved between tiers would put the
+  // nudge back in a smaller form. The spine is the same curve at every tier.
+  const midX = (spineLoX + spineHiX) * 0.5
+  const midZ = (spineLoZ + spineHiZ) * 0.5
+
+  for (let i = 0; i < positions.length; i += 3) {
+    positions[i] -= midX
+    const y = positions[i + 1] - drop
+    positions[i + 1] = y < 0 ? 0 : y
+    positions[i + 2] -= midZ
   }
 
   // --- measure what was actually built --------------------------------------
@@ -868,7 +1497,7 @@ export function buildDeadwood(options = {}) {
     // the stubs cost their own count x sides.
     barrelTris: sides * rings * 2,
     capTris: sides * 2,
-    stubTris: nStubs * stubSides,
+    stubTris: nStubs * (tier.stubFlat ? 1 : stubSides),
     barkFraction: covered / (SAMPLES * SAMPLES),
     uRepeat,
     texMetres: p.texMetres,
@@ -881,7 +1510,26 @@ export function buildDeadwood(options = {}) {
       // The spine's own length, which is what `length` asked for -- the box
       // above is what the bend, the flare and the lie-down made of it.
       span: s.L,
-      buttDiameter: s.r0 * 2,
+      // THE WIDEST THE BASE ACTUALLY GETS, not the nominal `butt`, and the
+      // difference is the flare -- which since `roots` is a crown of buttresses
+      // reaching nearly twice the trunk's own radius rather than a collar a
+      // third wider than it.
+      //
+      // It matters because of who reads it. render/deadwood.js seats a piece by
+      // this number: it samples the ground at this radius round the butt and
+      // sinks by `tan * radius` on a slope, so a value that understates the
+      // footprint leaves the downhill fin hanging in the air -- which is the one
+      // artefact the user asked this family not to have. Sampled rather than
+      // solved because radiusAt carries ovality, lobes, checks and the bark step
+      // as well as the flare, and there is no closed form for the maximum of the
+      // sum. Sampling at four times the finest tier's side count costs 48 calls
+      // once per built geometry.
+      buttDiameter: (() => {
+        let r = 0
+        const n = DEADWOOD_TIERS[0].sides * 4
+        for (let k = 0; k < n; k++) r = Math.max(r, s.radiusAt(0, (k / n) * TAU))
+        return r * 2
+      })(),
     },
   }
   return geo
@@ -914,6 +1562,6 @@ export function deadwoodCost(options = {}, tierIndex = 0) {
   const stubSides = Math.max(3, Math.round(p.stubSides))
   const barrel = sides * rings * 2
   const caps = sides * 2
-  const stubTris = stubs * stubSides
+  const stubTris = stubs * (tier.stubFlat ? 1 : stubSides)
   return { tier: tier.name, sides, rings, stubs, barrel, caps, stubTris, triangles: barrel + caps + stubTris }
 }

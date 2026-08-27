@@ -1,9 +1,11 @@
-import { buildRock, rockClass, ROCK_LADDERS, ROCK_DEFAULTS } from './rock.js'
-import { ROCK_TILE_MEAN } from '../textures.js'
+import { buildRock, ROCK_TIERS, ROCK_DEFAULTS } from './rock.js'
+import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'
+import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 
 // ---------------------------------------------------------------------------
-// The shipping rock bank: twenty-five named shapes, the tints they wear, and
-// the baked geometry for every tier of every one of them.
+// The shipping rock bank: twenty-five named shapes, the tints they wear, the
+// baked geometry for every mesh tier of every one of them, and the billboard
+// card that stands in for all of them past the last mesh band.
 //
 // This file is the SINGLE SOURCE OF TRUTH for what a rock in this world can
 // look like. /gen-rock imports ROCK_VARIANTS as its preset list and TINTS as
@@ -14,6 +16,9 @@ import { ROCK_TILE_MEAN } from '../textures.js'
 //
 // Same policy as tree-bank.js and fern-bank.js: NO OFFLINE BAKE STEP. The bank
 // is built at construction, handed to BatchedMesh.addGeometry(), and disposed.
+// The CARD tier is the one thing here that arrives in two pieces -- quads at
+// construction, pixels once the renderer exists -- for the reason fern-bank.js
+// gives at length above its own `fernCardGeometries`. See THE CARD below.
 //
 // WHERE A SHAPE MAY STAND. Four environments make demands a generator can
 // answer, and the table below is grouped by SHAPE FAMILY while these decide
@@ -43,11 +48,13 @@ import { ROCK_TILE_MEAN } from '../textures.js'
 // entirely -- see RockBed._relief and SITES below.
 //
 // SIZE IS AUTHORED, NOT SCATTERED. `size` is the largest horizontal extent in
-// metres and it decides the LOD ladder (see rockClass), so it is part of the
-// variant rather than something the scatter rolls. The scatter varies rocks by
-// yaw, by a modest non-uniform scale and by tint; a rock that needed to be four
-// times bigger is a different variant, because at four times the size it needs
-// a different ladder anyway.
+// metres, so it is part of the variant rather than something the scatter rolls.
+// The scatter varies rocks by yaw, by a modest non-uniform scale and by tint; a
+// rock that needed to be four times bigger is a different variant, because the
+// proportions that read at 30 cm are not the ones that read at 1.2 m. What it
+// no longer decides is which LOD tiers the shape owns: every rock ships all
+// three, and how big it ends up in the world sets only the DISTANCES at which
+// it steps between them (props/rock.js, ROCK_LOD_AT).
 // ---------------------------------------------------------------------------
 
 // --- the environment palette ------------------------------------------------
@@ -197,13 +204,44 @@ export const ENV_TINTS = {
 export const ROCK_VARIANTS = {
   // --- A. rounded: glacial and water-worn -----------------------------------
 
-  // The smallest thing in the world with its own geometry. One T8 octahedron,
-  // eight triangles, no LOD at all -- which is the entire reason it is allowed
-  // to exist in the numbers it does.
-  pebble: { size: 0.11, squash: 0.68, elongate: 1.4, lumps: 0.55, lumpFreq: 1.9, grain: 0.12, smooth: 0.96, cuts: 2, cutDepth: 0.5, cutBias: 0, sit: 0.3, texRepeat: 1.4, tint: 0, envs: ['river', 'forest', 'cliff', 'peak'] },
+  // A river stone, and NOT a speck any longer. It was authored at 0.11 m, and at
+  // that size a riverbed read as bare gravel with dust on it: the shapes were
+  // there in the numbers the bed asks for, and not one of them was big enough to
+  // see. It is 0.55 m now, five times over, and the underfoot bed's own scale
+  // roll of 0.7-1.6 puts what actually ships between 0.39 m and 0.88 m -- a stone
+  // you step around rather than one you cannot resolve.
+  //
+  // THE FIVE TIMES IS AUTHORED HERE RATHER THAN APPLIED AT THE INSTANCE, and
+  // the reason has outlived the mechanism it was written about. It used to be
+  // the LOD ladder: at 0.11 m this variant fell in a `pebble` class that shipped
+  // one 8-face octahedron in every band, so scaling the instance matrix by five
+  // would have given a half-metre rock drawn as a die at arm's length. Size no
+  // longer picks the geometry at all -- every rock ships T180/T80/T20 and the
+  // thresholds scale with it -- so what is left is the plainer half: `texRepeat`
+  // and the proportions below are authored against THIS number, and an instance
+  // multiplier moves neither.
+  //
+  // `texRepeat` MOVES WITH IT, 1.4 -> 1.9. The tile is sized relative to the rock
+  // rather than to the world (rock.js, point 3), so leaving the repeat alone
+  // would hand the new stone the old picture stretched five times over: one
+  // granite grain the size of a fist. 1.9 is where the bank's own size-to-repeat
+  // curve already sits at half a metre -- `shingle` at 0.5 m is 2.0, `cobble` at
+  // 0.34 m and `scree` at 0.62 m are both 1.8. `sit` needs no such correction,
+  // because it is a fraction of the rock's OWN height and rescales itself.
+  //
+  // RIVER ONLY, and that argument is untouched by the resize. A stone this small
+  // still costs a whole instance, which is per-frame CPU that does not care how
+  // few triangles are in it; scattered over forest, cliff and peak it put one
+  // every 1.7 m and crowded out the rocks you can actually see, 41 of them for
+  // every boulder. A stream bed is the one place a carpet of small stones is the
+  // real thing rather than litter, so that is the one place it stays. Everywhere
+  // else the ground gets LAYER.LITTER -- one texture, no instances -- see
+  // textures.js.
+  pebble: { size: 0.55, squash: 0.68, elongate: 1.4, lumps: 0.55, lumpFreq: 1.9, grain: 0.12, smooth: 0.96, cuts: 2, cutDepth: 0.5, cutBias: 0, sit: 0.3, texRepeat: 1.9, tint: 0, envs: ['river'] },
 
-  // The river cobble: rounded on every axis because it has been rolled. Two
-  // tiers, T20 and T8, and it is culled while the T8 is still readable.
+  // The river cobble: rounded on every axis because it has been rolled. At a
+  // third of a metre across it is on its billboard from 27 m, so the mesh tiers
+  // it ships are all spent inside arm's reach and the card carries the rest.
   cobble: { size: 0.34, squash: 0.66, elongate: 1.35, lumps: 0.6, lumpFreq: 1.7, grain: 0.1, smooth: 0.95, cuts: 3, cutDepth: 0.5, cutBias: 0, sit: 0.26, texRepeat: 1.8, tint: 0, envs: ['river', 'forest'] },
 
   // A low mossy dome. Almost no cuts, almost all smoothing: this is the shape
@@ -257,7 +295,21 @@ export const ROCK_VARIANTS = {
 
   // Shingle: a flake lying flat, half buried. The `sit` is the point -- at 0.44
   // most of the rock is under the gravel and what shows is a worn edge.
-  shingle: { size: 0.5, squash: 0.3, elongate: 1.8, lumps: 0.45, lumpFreq: 1.9, grain: 0.06, smooth: 0.94, cuts: 4, cutDepth: 0.78, cutBias: -0.9, sit: 0.44, openBottom: 1, texRepeat: 2.0, tint: 3, envs: ['river'] },
+  //
+  // TAGGED FOR THREE GROUNDS, and the two beyond the shore were added when
+  // `pebble` and `grit` went river-only: that left the underfoot bed with a
+  // single untagged shape in a wood and a single one above the treeline, which
+  // is the "same rock rotated" failure check-rocks' POOL_FLOOR exists to catch.
+  // A flake needs no water to explain it. In a wood it is a bit of bedrock
+  // showing through the leaf litter, and at the peak it is the characteristic
+  // shape up there -- frost splits rock along its bedding into flat plates, so
+  // a felsenmeer is mostly shingle. The one ground it stays off is `cliff`,
+  // where a loose flake would be lying on the face itself rather than on soil.
+  // Size is a LADDER choice here and not a world size, for the same reason as
+  // `cap` below: both beds that place a shingle size it in metres. Over the
+  // 0.8 m boulder line so a shell standing 3 m across a lake floor has a middle
+  // tier to fall to instead of dropping straight from T20 to a card.
+  shingle: { size: 1.2, squash: 0.3, elongate: 1.8, lumps: 0.45, lumpFreq: 1.9, grain: 0.06, smooth: 0.94, cuts: 4, cutDepth: 0.78, cutBias: -0.9, sit: 0.44, openBottom: 1, texRepeat: 2.0, tint: 3, envs: ['river', 'forest', 'peak'] },
 
   // Riverbed and shore: flat, wide, sunk halfway, worn smooth. The one shape
   // that has to tile in a crowd without every rock reading as a separate
@@ -282,8 +334,21 @@ export const ROCK_VARIANTS = {
   // The old `scree` carried taper 0.2 and squash 0.55, which is a miniature
   // spire, and it was the ONLY mid-size shape the peak had.
 
-  // Angular chips: the fines that collect at the foot of anything that breaks.
-  grit: { size: 0.14, squash: 0.52, elongate: 1.6, lumps: 0.4, lumpFreq: 2.4, grain: 0.06, smooth: 0.88, cuts: 5, cutDepth: 0.9, cutBias: 0.2, sit: 0.24, texRepeat: 1.2, tint: 2, envs: ['cliff', 'peak', 'river'] },
+  // Angular chips, and the other half of the riverbed resize: 0.14 m to 0.7 m,
+  // five times over on exactly the argument the `pebble` note makes at length.
+  // It changes class with it, from the `pebble` ladder to the `cobble` one, so
+  // what used to be an eight-triangle chip is a T20 with its cut faces actually
+  // visible -- which matters more here than it does on a pebble, because being
+  // freshly broken IS this variant's whole signature and eight faces cannot show
+  // it. `texRepeat` follows for the same reason, 1.2 -> 1.7, landing between
+  // `scree` (0.62 m, 1.8) and `cap` (0.75 m, 1.6) rather than where a 14 cm chip
+  // sat. `sit` is a fraction of its own height and needs nothing.
+  //
+  // At 0.7 m these are no longer the FINES, so the name now describes the shape
+  // rather than the grade: angular, equidimensional, freshly split. River only,
+  // for the same reason `pebble` is, and it keeps `river` because a gravel bar is
+  // made of this at every size.
+  grit: { size: 0.7, squash: 0.52, elongate: 1.6, lumps: 0.4, lumpFreq: 2.4, grain: 0.06, smooth: 0.88, cuts: 5, cutDepth: 0.9, cutBias: 0.2, sit: 0.24, texRepeat: 1.7, tint: 2, envs: ['river'] },
 
   // Freshly broken and sharp, sitting nearly on the surface (`sit` 0.12) because
   // talus rests on talus rather than in soil.
@@ -363,13 +428,30 @@ export const ROCK_VARIANTS = {
   // face for a third of the triangles a closed rock costs: `sit` past 0.5 buries
   // most of the shape and `openBottom` then throws the buried half away.
 
-  // The small one, at T20/T8: about a dozen triangles of rock breaking the
-  // surface of a gravel bed.
-  cap: { size: 0.75, squash: 0.5, elongate: 1.35, lumps: 0.62, lumpFreq: 1.8, grain: 0.08, smooth: 0.95, cuts: 3, cutDepth: 0.5, cutBias: -0.3, sit: 0.52, openBottom: 1, texRepeat: 1.6, tint: 0, envs: ['river', 'cliff'] },
+  // BOTH OF THESE ARE TAGGED `peak`, for the same reason as `shingle`: bedrock
+  // breaking a thin skin of soil is if anything MORE of a peak thing than a
+  // riverbed thing. The argument does not depend on the size of the plate, which
+  // is why it covers the pair rather than just the small one -- a scoured slab
+  // lying on a summit is one of the most characteristic things up there, and the
+  // `crust` bed in rocks.js places exactly these two, so leaving `capslab` off
+  // `peak` left that bed with a single shape above the treeline and the world
+  // stamping one rock out over a whole environment.
+
+  // THIS SIZE NO LONGER SETS HOW BIG A CAP IS IN THE WORLD, and that is worth
+  // saying plainly because it is true of only a handful of entries in this file.
+  // Both beds that place a cap -- `crust` and `underfoot` in v2/render/rocks.js
+  // -- ask for a size in METRES per environment and divide it back through the
+  // shape's measured width, so the number here cancels out of the placement
+  // entirely. It is not dead: `texRepeat` and the proportions below are authored
+  // against it, and it is what /gen-rock draws. It used to pick the LOD ladder
+  // as well, which is why it was raised from 0.75 to clear a class boundary that
+  // no longer exists -- a cap on a cliff face is 1 to 10 m of rock, and the
+  // tiers now step at distances read off THAT rather than off this.
+  cap: { size: 1.6, squash: 0.5, elongate: 1.35, lumps: 0.62, lumpFreq: 1.8, grain: 0.08, smooth: 0.95, cuts: 3, cutDepth: 0.5, cutBias: -0.3, sit: 0.52, openBottom: 1, texRepeat: 1.6, tint: 0, envs: ['river', 'cliff', 'peak'] },
 
   // The larger one: a flat plate of bedrock showing through, for the middle
   // distance where a `cap` has already been culled.
-  capslab: { size: 2.0, squash: 0.34, elongate: 1.55, lumps: 0.55, lumpFreq: 1.6, grain: 0.07, smooth: 0.93, cuts: 5, cutDepth: 0.72, cutBias: -0.85, taper: -0.12, taperPow: 1.2, sit: 0.5, openBottom: 1, texRepeat: 2.4, tint: 3, envs: ['river', 'cliff'] },
+  capslab: { size: 2.0, squash: 0.34, elongate: 1.55, lumps: 0.55, lumpFreq: 1.6, grain: 0.07, smooth: 0.93, cuts: 5, cutDepth: 0.72, cutBias: -0.85, taper: -0.12, taperPow: 1.2, sit: 0.5, openBottom: 1, texRepeat: 2.4, tint: 3, envs: ['river', 'cliff', 'peak'] },
 }
 
 /** Variant names, in table order. An index into this is a variant id. */
@@ -426,12 +508,299 @@ function geometryBytes(geo) {
   return n
 }
 
-/** How many tiers every variant reports, whatever its size class actually ships. */
-export const ROCK_BAND_COUNT = 3
+// ---------------------------------------------------------------------------
+// THE CARD: what a rock is past the last mesh band.
+//
+// A FOURTH TIER, AND IT IS A REVERSAL. This file, textures.js and the /gen-rock
+// bench all argued for a while that a rock's ladder ends at an 8-triangle
+// octahedron and then culls: a rock is an opaque lump whose whole read is the
+// way its facets catch a moving light, and a photograph has no facets to catch
+// anything with. That is still true about what a card LOOKS like, and it is no
+// longer the argument that decides. What decides is that a coarse solid costs
+// an instance, a matrix, a draw range and a scan slot exactly as a T180 does,
+// and the outermost band of a scree slope or a river bar holds tens of
+// thousands of them. Two triangles that keep a grey lump on the hillside beat
+// twenty that do, and both beat the hole that culling leaves in a talus field.
+// The octahedron itself is gone -- it was a generic diamond at any size, and
+// once the card existed there was nothing left for it to be better than.
+//
+// IT IS A BILLBOARD: ONE QUAD, SPUN, AND SPUN IN EVERY DIRECTION. The pinned
+// call is `buildImpostorCard(w, h, LAYER.IMPOSTOR_ROCK, 1, { upNormal: true,
+// spherical: true })`, and every one of those arguments is load-bearing. A rock
+// is looked DOWN on as often as across, so rocks.js is the only bed that builds
+// its material with `sphericalBillboard`, and `spherical` here is how the card
+// is told which spin it will meet: the shape is the same either way, but the
+// bounding sphere a spherical spin needs is the one centred on the foot rather
+// than the one around the vertices. Getting that wrong does not misdraw the
+// card, it makes the renderer cull a card that is still on screen. One plane is
+// normally the illegal
+// row of that function's own table -- a FIXED single quad seen along its own
+// plane covers no pixels at all -- and `upNormal` is what makes it legal, because
+// a vertical normal is the mark material.js's billboardVertex tests to decide
+// whether to yaw a quad toward the eye. Spun, one plane never goes edge-on, and
+// two triangles is the floor. A rock is the prop that can least afford anything
+// above the floor, because its far band is the largest population in the world.
+//
+// `tri` IS DELIBERATELY NOT PASSED, which would have halved it again. A conifer
+// can spend two corners of its photograph because a conifer IS a triangle and
+// the corners it drops hold no needles. A rock silhouette is convex and close
+// to filling its own box in every direction -- that is what "opaque closed lump"
+// means -- so every corner a triangle throws away is stone. Neither orientation
+// is survivable: `tri: 'down'` eats the two corners at the FOOT of the card,
+// which is where the rock meets the ground and the one part a distant rock needs
+// in order to read as sitting there rather than floating, and `tri: 'up'` eats
+// the two at the crown, which on a bedded shape is most of what is above ground
+// at all.
+//
+// ONE LAYER, ONE PHOTOGRAPH, TWENTY-FIVE SHAPES -- AND THE LAYER DOES NOT FIT
+// THE BANK. This has to be said plainly rather than discovered later. The card
+// stretches one 128x128 slice across whatever quad it is put on, so the picture
+// only lands undistorted on a shape with the SUBJECT'S ASPECT. Measured over the
+// bank (height against the larger horizontal extent, over the three shipped
+// seeds of all twenty-five variants), that aspect runs from 0.089 on a `shingle`
+// flake to 1.929 on a `spire`, a spread of 21.7x, with a median of 0.439 and a
+// mean of 0.504. No single photograph covers that. The subject below is aimed at
+// 0.415, the GEOMETRIC middle of that range rather than the arithmetic one,
+// because the geometric middle is what balances the two worst cases against each
+// other: 4.7x vertically squashed on the flake, 4.6x stretched on the spire.
+//
+// THAT IS ACCEPTED, AND ONLY BECAUSE THE SUBJECT IS A ROCK. The same stretch on
+// a fern would bend every frond and on a pine would fatten the trunk, because
+// those silhouettes carry structure the eye can measure against. A rock card is
+// a grey blob of granite speckle with a lumpy outline: squash it and it is a
+// flatter grey blob, which is what a shingle flake is, and stretch it and it is
+// a taller one, which is what a spire is. The card's WORLD EXTENTS are each
+// shape's own, so the silhouette a distant rock occupies is right even where
+// the picture inside it has been reproportioned. Silhouette is what reads at
+// this range; interior texel density is not.
+//
+// If this ever stops being good enough, the fix is the one fern-bank.js already
+// runs -- cut the bank into two or three aspect classes and give each its own
+// layer, the way `arch` cuts the ferns -- NOT a fatter card. Allocating layers
+// is textures.js's call, so it is written down here rather than done here.
+//
+// WHAT CANCELS AND WHAT DOES NOT. The card GEOMETRY is built when the bank is,
+// and the PIXELS cannot exist until there is a renderer, so the two halves can
+// never check each other. Both go through `impostorCardExtents`, and neither
+// does the margin arithmetic itself (`bakeImpostor` applies it internally, which
+// is why the bake is handed a frame and the quad is handed the extents), so the
+// transparent border cancels exactly, for every shape, forever.
+//
+// THE TWO FRAMES ARE NOT THE SAME NUMBER, and that is deliberate. The
+// PHOTOGRAPH is framed to the subject at its WIDEST -- `rockBakeFrame`, taken at
+// `widestAzimuth` -- because a photograph that clips has thrown away silhouette
+// it can never get back. The QUAD is sized to each shape's MEAN silhouette --
+// `rockCardFrame` -- because the quad spins to face you, so whatever it is sized
+// to is what the rock looks like from EVERY bearing, and sizing it to the widest
+// view made a rock swell by up to 1.7x at the moment it swapped to its card.
+// Framing wide and drawing average is not a contradiction: the bake normalises
+// the subject to its own frame, so the picture spans the quad's frame whatever
+// that is. What does not cancel is the aspect difference argued above.
+// ---------------------------------------------------------------------------
 
 /**
- * Bake the whole bank: every variant, at `seeds` shapes each, at every tier its
- * size class ships.
+ * The world extents the card QUAD is drawn at, from `userData.rock.measured`.
+ *
+ * WIDTH IS THE MEAN SILHOUETTE and not the box. A billboard spins to face the
+ * eye, so its width is what the rock looks like from every bearing at once, and
+ * there is exactly one width that makes the swap from mesh to card free on
+ * average: the mean of the mesh's own silhouette over the compass. See
+ * `meanPlanWidth` in rock.js, which measures it, and `rockBakeFrame` below,
+ * which is the OTHER framing and is deliberately wider.
+ *
+ * Sizing to `max(width, depth)` -- the widest the rock can ever look -- is the
+ * obvious thing and is what this used to do. Measured over the bank it put the
+ * card at 1.23x to 1.71x the mesh's silhouette, worst on the slabs, so distant
+ * stone was systematically too big and the swap was a visible swell.
+ */
+export function rockCardFrame(measured) {
+  if (!(measured.planMean > 0) || !(measured.height > 0)) {
+    throw new Error(`rockCardFrame: need a measured rock, got ${JSON.stringify(measured)}`)
+  }
+  return { width: measured.planMean, height: measured.height }
+}
+
+/**
+ * The world extents the PHOTOGRAPH is framed to, which is the widest the subject
+ * can present.
+ *
+ * WIDTH IS THE LARGER HORIZONTAL EXTENT, not the one on the x axis, and not the
+ * mean either. The bake camera is put at `widestAzimuth` precisely so the
+ * silhouette it captures is the fullest one the rock has; framing that shot to
+ * anything narrower than `max(width, depth)` would clip the very thing the
+ * azimuth search went looking for.
+ */
+export function rockBakeFrame(measured) {
+  if (!(measured.width > 0) || !(measured.height > 0)) {
+    throw new Error(`rockBakeFrame: need a measured rock, got ${JSON.stringify(measured)}`)
+  }
+  return { width: Math.max(measured.width, measured.depth), height: measured.height }
+}
+
+/**
+ * Which rock gets photographed for the one impostor layer, and at which seed.
+ *
+ * `boulder`, and the choice is made on the same grounds fern-bank.js picks the
+ * MIDDLE of its axes rather than variant 0. Four things had to be true at once
+ * and only this variant manages all four:
+ *
+ *   MIDDLE ASPECT. `boulder`'s own mean over the shipped seeds is 0.478, which
+ *   is the nearest any single variant gets to the middle of the bank without
+ *   also having a signature silhouette. Photographing the first entry in the
+ *   table instead would make every distant rock in the world a flattened river
+ *   stone.
+ *
+ *   ONE MASS, NO SIGNATURE. A stand-in for twenty-five shapes must be the one
+ *   nobody notices. That rules out everything whose silhouette says something
+ *   specific: `cleft` sits at almost exactly the median aspect and is useless
+ *   here, because it is two masses with a gap between them and the gap would be
+ *   photographed into every rock on the far hillside. Same for `spire`'s point,
+ *   `blockstack`'s step, and `shelf`'s overhang.
+ *
+ *   CLOSED. Every open-bottomed variant is a shell with no underside, so its
+ *   photograph is thin along its own bed plane -- exactly the edge of the card
+ *   that meets the ground, and exactly where a missing row of texels reads as a
+ *   rock hovering.
+ *
+ *   BIG ENOUGH TO GET THERE. The card is the LAST band, so the shapes that
+ *   actually wear it at any size on screen are the large ones; a cobble is culled
+ *   long before. At 1.9 m across, tagged for three of the four environments and
+ *   for no `site` at all, `boulder` is the shape most likely to BE the rock the
+ *   card is standing in for.
+ *
+ * THE SEED IS A FIXED CONSTANT, not the bank's, and it is CHOSEN rather than
+ * arbitrary. `buildRockBank`'s seed is a dial someone may turn, and the
+ * photograph must not change under the world when they do -- the card geometry
+ * is sized from each shape's own measurement and only the picture inside it
+ * comes from here, so a drifting subject would silently reproportion every
+ * distant rock. Fixing it also means the bench and the world photograph the
+ * identical rock.
+ *
+ * 1978 is the seed whose boulder measures an aspect of 0.4150, which is the
+ * bank's geometric middle to four places -- the value argued for in THE CARD
+ * above, and the reason to prefer it over the variant's own mean of 0.478. Seeds
+ * 1..4000 were searched for it. Re-derive it if the bank's extremes move: it is
+ * sqrt(min aspect x max aspect) over every shipped shape.
+ */
+export const ROCK_CARD_SUBJECT = 'boulder'
+export const ROCK_CARD_SEED = 1978
+
+/**
+ * Build the subject and hand back the geometry beside the framing it was
+ * measured at, so the bake photographs the very thing that was measured rather
+ * than a second build of it. Caller disposes.
+ *
+ * Photographed at the FINEST tier. The bake resolves to 128 px either way, so a
+ * coarse subject would only donate its own faceting to a picture that is meant
+ * to stand in for the fine one.
+ */
+function rockCardSubject() {
+  const v = ROCK_VARIANTS[ROCK_CARD_SUBJECT]
+  if (!v) throw new Error(`rockCardSubject: no rock variant named ${ROCK_CARD_SUBJECT}`)
+  if (v.openBottom === 1) {
+    throw new Error(`rockCardSubject: ${ROCK_CARD_SUBJECT} is an open shell -- see the note on ROCK_CARD_SUBJECT`)
+  }
+  const geo = buildRock({ ...rockParams(ROCK_CARD_SUBJECT, ROCK_CARD_SEED), tier: 0 })
+  return { geo, frame: rockBakeFrame(geo.userData.rock.measured) }
+}
+
+/**
+ * Photograph the bank into LAYER.IMPOSTOR_ROCK, in place.
+ *
+ * Call ONCE, after `loadImageLayers()` has resolved -- the subject wears
+ * LAYER.ROCK, and LAYER.ROCK is a PNG that arrives some hundreds of
+ * milliseconds into the session. Bake before it lands and the card is a
+ * photograph of an untextured lump. Until then the far band draws an empty
+ * layer, which is fully transparent and so discarded by alphaTest, exactly as
+ * the tree, fern and grass cards do.
+ *
+ * Needs the live renderer, so it cannot live in `buildRockBank` -- that runs in
+ * a constructor and in node. Returns what `bakeImpostor` measured, with the
+ * layer beside it, for the caller to log.
+ */
+export function bakeRockImpostors(renderer, texArray) {
+  const { geo, frame } = rockCardSubject()
+  const azimuth = widestAzimuth(geo)
+  const baked = bakeImpostor(renderer, geo, texArray, LAYER.IMPOSTOR_ROCK, { ...frame, azimuth })
+  geo.dispose()
+  return { layer: LAYER.IMPOSTOR_ROCK, subject: ROCK_CARD_SUBJECT, azimuth, ...baked }
+}
+
+/**
+ * The compass bearing that sees the most of a rock, in radians.
+ *
+ * PHOTOGRAPH THE SUBJECT AT ITS LARGEST, NEVER FLAT-ON. The shot is framed to
+ * `rockBakeFrame`, which is `max(width, depth)` across -- the widest the rock
+ * can ever look -- so a bake taken along the rock's SHORT axis prints a narrow
+ * silhouette into a wide frame and every distant rock in the world is drawn with
+ * transparent margins down both sides. It does not misplace anything; it just
+ * makes the far band quietly smaller than the mesh it replaced, which is one
+ * half of the size mismatch a spun card can have.
+ *
+ * Azimuth 0 used to be hardcoded, and on the shipped subject and seed it happens
+ * to land 4 degrees off the widest bearing -- 1.896 m photographed into a 1.900 m
+ * frame, which is why the fault stayed invisible. It is luck and not a property:
+ * the same subject at azimuth 113 degrees measures 1.399 m, so a new seed or a
+ * new ROCK_CARD_SUBJECT could silently print a card 26% narrow. Searching costs
+ * one pass over the subject's vertices, once, at boot.
+ *
+ * Half a turn is the whole search space -- a silhouette width at bearing `a` is
+ * the same as at `a + pi`, since the projection is onto a line and direction
+ * along it does not matter.
+ */
+function widestAzimuth(geo, steps = 180) {
+  const pos = geo.attributes.position.array
+  let best = 0
+  let bestWidth = -Infinity
+  for (let s = 0; s < steps; s++) {
+    const a = (s / steps) * Math.PI
+    // Screen right for a camera at azimuth `a`, which is the axis the
+    // silhouette's width is measured along.
+    const rx = Math.cos(a)
+    const rz = -Math.sin(a)
+    let lo = Infinity
+    let hi = -Infinity
+    for (let i = 0; i < pos.length; i += 3) {
+      const u = pos[i] * rx + pos[i + 2] * rz
+      if (u < lo) lo = u
+      if (u > hi) hi = u
+    }
+    if (hi - lo > bestWidth) {
+      bestWidth = hi - lo
+      best = a
+    }
+  }
+  return best
+}
+
+/**
+ * The layers `createPropMaterial({ billboardLayers })` has to be told to spin,
+ * exported the way tree-bank, mushroom-bank and grass-bank export theirs so the
+ * bank stays the single place that knows which of its geometry is a billboard.
+ *
+ * A ROCK BATCH THAT DOES NOT PASS THIS IS BROKEN, not merely unspun. The card is
+ * ONE plane, and material.js's billboardVertex needs BOTH conditions -- the
+ * layer in `uBillboardLayers` and `normal.y` over CARD_UP_MARK -- before it turns
+ * a quad. The normal is authored here and always passes; the layer list is the
+ * caller's half. Miss it and every distant rock is a fixed single quad with a
+ * vertical normal, which is the one row of buildImpostorCard's table where the
+ * card VANISHES edge-on rather than just flattening.
+ */
+export function rockImpostorLayers() {
+  return [LAYER.IMPOSTOR_ROCK]
+}
+
+/**
+ * How many tiers every variant reports. The last one is ALWAYS the card, so the
+ * mesh ladder gets ROCK_BAND_COUNT - 1 of these -- exactly ROCK_TIERS.
+ */
+export const ROCK_BAND_COUNT = ROCK_TIERS.length + 1
+
+/** How many of those bands are real meshes. The rest -- one -- is the card. */
+export const ROCK_MESH_BAND_COUNT = ROCK_BAND_COUNT - 1
+
+/**
+ * Bake the whole bank: every variant, at `seeds` shapes each, at every tier.
  *
  * Returns `{ shapes, geometries, triangles, bytes }`.
  *
@@ -443,13 +812,29 @@ export const ROCK_BAND_COUNT = 3
  *   the order they should enter the batch. The caller owns them and MUST
  *   dispose them once BatchedMesh has copied them into its arena.
  *
- * WHY THE TIER LIST IS PADDED BY REPEATING RATHER THAN BY BUILDING. A pebble's
- * ladder is one entry long (ROCK_LADDERS.pebble is [3]) and a crag's is three.
- * Padding the short ones with a SECOND COPY of the coarsest geometry would cost
- * arena space for a mesh that is already there, so the padding repeats the same
- * OBJECT REFERENCE -- `geometries` de-duplicates by identity, the caller's
- * geometry-id map does too, and all three of a pebble's bands resolve to one id
- * and one arena entry. The scatter still gets a rectangular table for free.
+ * EVERY SHAPE SHIPS EVERY TIER. There used to be a per-size-class ladder here
+ * and short ones were padded by repeating the coarsest geometry REFERENCE, so a
+ * cobble's two coarse bands were one arena entry. That is gone with the classes
+ * (props/rock.js): the table is rectangular because it is built rectangular,
+ * and it costs the bank about 1.6x its geometry -- 25 variants x 3 seeds x 3
+ * tiers rather than the 2.4 tiers the classes averaged. What it buys is that a
+ * band index means the same thing for every rock in the world, which is what
+ * lets ROCK_LOD_AT be one rule instead of a table per bed.
+ *
+ * THE CARD IS APPENDED LAST, so `tiers[ROCK_BAND_COUNT - 1]` is the card for
+ * every shape without exception. Note the two are different kinds of object: a
+ * mesh tier carries `userData.rock` and the card carries `userData.impostor`, so
+ * anything walking a whole tier table has to ask which it is holding rather than
+ * reaching straight for `userData.rock.triangles`.
+ *
+ * THE CARD IS PER SHAPE, NOT SHARED, and that is forced by world units rather
+ * than chosen. A card is a quad measured in metres and the scatter's instance
+ * scale is uniform on top of geometry already built at the variant's authored
+ * `size`, so one shared quad would draw a `pebble` and a `lip` at the same size
+ * on the hillside. Every shape therefore gets its own two triangles, sized from
+ * its own `measured` -- which is `ROCK_NAMES.length * seeds` extra arena entries
+ * of 4 vertices each, about 150 bytes apiece. The PICTURE on them is still one
+ * shared bake into one layer; see THE CARD above for what that costs.
  *
  * SEEDS ARE PER (VARIANT, INDEX), not global: adding a seed to the bank must
  * not reshape the rocks already in it, for the same reason tree-bank.js gives
@@ -465,21 +850,30 @@ export function buildRockBank({ seed = 1, seeds = 3 } = {}) {
 
   ROCK_NAMES.forEach((name, variant) => {
     const v = ROCK_VARIANTS[name]
-    const ladder = ROCK_LADDERS[rockClass(v.size)]
-    if (!ladder) throw new Error(`buildRockBank: ${name} has no ladder for size ${v.size}`)
 
     for (let s = 0; s < seeds; s++) {
       const rockSeed = seed + variant * 9173 + s * 101
-      const built = ladder.map((tier) => {
+      const tiers = ROCK_TIERS.map((_, tier) => {
         const g = buildRock({ ...rockParams(name, rockSeed), tier })
         geometries.push(g)
         triangles += g.userData.rock.triangles
         bytes += geometryBytes(g)
         return g
       })
-      // Pad by REFERENCE, never by building -- see the note above.
-      const tiers = built.slice(0, ROCK_BAND_COUNT)
-      while (tiers.length < ROCK_BAND_COUNT) tiers.push(built[built.length - 1])
+
+      // ...and only then the card, so the last band is the card for every shape.
+      // Sized through `rockCardFrame` + `impostorCardExtents` so it agrees with
+      // `bakeRockImpostors` about the framing by construction -- see THE CARD.
+      const measured = tiers[0].userData.rock.measured
+      const ext = impostorCardExtents(rockCardFrame(measured))
+      const card = buildImpostorCard(ext.width, ext.height, LAYER.IMPOSTOR_ROCK, 1, {
+        upNormal: true,
+        spherical: true,
+      })
+      geometries.push(card)
+      triangles += card.userData.impostor.triangles
+      bytes += geometryBytes(card)
+      tiers.push(card)
 
       shapes.push({
         variant,
@@ -494,7 +888,7 @@ export function buildRockBank({ seed = 1, seeds = 3 } = {}) {
         // ground -- see rock.js's `openBottom` for what you are looking into
         // otherwise.
         openBottom: v.openBottom === 1,
-        measured: built[0].userData.rock.measured,
+        measured,
         tiers,
       })
     }

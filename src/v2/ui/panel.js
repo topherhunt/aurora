@@ -51,10 +51,15 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 //   { fps, ms, tris, calls, resident, drawn, terrainTris, queued,
 //     triDeg, profileDeg, treeCount,
 //     treeTris, grassCount, grassVeiled, grassTris, fernCount, fernTris,
-//     rockCount, rockTris,
-//     x, y, z, ground, cell, snowHere, snowBase, mode }
-// `cell` is the sampling spacing of the chunk under the cursor -- the "am I
-// actually seeing 10 cm" readout -- and gets a row of its own.
+//     mushroomCount, mushroomTris, deadwoodCount, deadwoodTris,
+//     rockCount, rockTris, litterCount, litterTris,
+//     x, y, z, ground, cell, cursorDist, cursorLabel, cursorVariant,
+//     snowHere, snowBase, mode, eyeToWater }
+// `cell` is the sampling spacing of the chunk she is standing on -- the "am I
+// actually seeing 10 cm" readout. The three `cursor*` fields share the one row
+// that gets a line of its own: `cursorDist` is metres from the eye to the GROUND
+// under the mouse, while `cursorLabel`/`cursorVariant` name the prop in front of
+// that ground, or are null where there is none.
 // ---------------------------------------------------------------------------
 
 const COLORS = {
@@ -65,6 +70,11 @@ const COLORS = {
   body: '#cfe3ff',
   dim: '#7f95b4',
 }
+
+// x/y/z in the axis colours every 3D tool uses, lightened until they are legible
+// on this background -- pure #f00 on #0b1220 is a smear rather than a colour.
+// Blue is pushed well past the head blue so `z=` cannot be mistaken for a label.
+const AXIS = { x: '#ff8f8f', y: '#9dffb0', z: '#8fbcff' }
 
 // Same one line as src/hud.js. Ids come out of a document that may have been
 // imported from a file, so every interpolated string goes through it.
@@ -103,6 +113,12 @@ const CSS = `
 #v2-panel .p-cell { grid-column: 1 / 5; display: flex; justify-content: space-between;
   margin-top: 2px; padding-top: 2px; border-top: 1px dashed #1e3253; }
 #v2-panel .p-cell b { color: ${COLORS.meas}; font-size: 13px; font-weight: 600; }
+/* What the cursor is on, riding alongside the range it shares a row with.
+   Deliberately quieter and smaller than the range: the range is watched
+   continuously while tuning band tables, the name is read once when something
+   needs reporting, and the row must not start looking like two headline
+   numbers. */
+#v2-panel .p-obj { color: ${COLORS.dim}; font-size: 10px; margin-right: 6px; }
 #v2-panel .c-head { color: ${COLORS.head}; }
 #v2-panel .c-bad { color: ${COLORS.bad}; }
 #v2-panel .c-good { color: ${COLORS.good}; }
@@ -150,10 +166,27 @@ const CSS = `
 #v2-menu button { display: block; width: 100%; text-align: left; background: none; border: 0;
   color: inherit; font: inherit; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
 #v2-menu button:hover { background: #1f4570; color: #eaf4ff; }
+
+/* The hotkey list is on <body> for the same reason as the menu, plus one: the
+   panel body is 34vh with its own scrollbar, and the full key table is taller
+   than that. It sits beside the panel rather than over it, so a key can be read
+   while the readout it moves is still on screen. */
+#v2-keys {
+  position: fixed; z-index: 40; top: 0; left: 341px; width: 430px; max-height: 96vh; overflow-y: auto;
+  padding: 4px 8px 8px;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: ${COLORS.body};
+  background: rgba(8,14,26,.96); border: 1px solid #2b4a72; border-radius: 3px;
+  box-shadow: 0 2px 10px rgba(0,0,0,.5); user-select: none;
+}
+#v2-keys[hidden] { display: none; }
+#v2-keys .k-h { color: ${COLORS.head}; padding-bottom: 2px; border-bottom: 1px solid #1e3253; }
+#v2-keys .k-t { color: ${COLORS.dim}; margin: 6px 0 2px; }
+#v2-keys .k-g { display: grid; grid-template-columns: 11em 1fr; gap: 1px 8px; }
+#v2-keys .k-k { color: ${COLORS.head}; }
 `
 
 export class Panel {
-  constructor({ layers, editor, relief, onTool, onAction, onRelief }) {
+  constructor({ layers, editor, relief, hotkeys, onTool, onAction, onRelief }) {
     if (typeof onTool !== 'function') throw new Error('Panel: onTool(name) is required')
     if (typeof onAction !== 'function') throw new Error('Panel: onAction(name) is required')
     // Same throw as the other two, and for a sharper reason: without a host
@@ -161,6 +194,13 @@ export class Panel {
     // its own value, and the terrain does not move. A control that looks like
     // it worked is worse than one that is missing.
     if (typeof onRelief !== 'function') throw new Error('Panel: onRelief(relief) is required')
+    // The host's key table (HOTKEYS in main.js). Thrown on rather than defaulted
+    // to an empty list: an empty popup is indistinguishable from a panel whose
+    // wiring was dropped, and the button would still open and still say nothing.
+    if (!Array.isArray(hotkeys) || hotkeys.length === 0) {
+      throw new Error('Panel: hotkeys must be the host key table, [{group, rows: [{keys, what}]}]')
+    }
+    this.hotkeys = hotkeys
     this.layers = layers
     this.editor = editor
     this.onTool = onTool
@@ -186,7 +226,8 @@ export class Panel {
     this._gizmoSig = ''
     this._rows = [] // {row, input, valueEl}
     this._scrubbing = false
-    this._openGroups = new Set(['snow', 'lake', 'river', 'road'])
+    // Every layer group starts folded, so the list zone opens as four one-line headers with their counts rather than as a wall of rows. Clicks are remembered here for the session; nothing persists across a reload.
+    this._openGroups = new Set()
 
     this._build()
     this.syncSelection()
@@ -325,6 +366,18 @@ export class Panel {
       this._tools.appendChild(b)
       return b
     })
+    // In the mode row and not the footer: the footer is what the DOCUMENT can be
+    // done to (save, undo, export) and this is not a document action. It is
+    // built exactly like the buttons beside it -- same class, same flow -- and
+    // carries no <small> hint because, unlike every tool here, nothing opens it
+    // from the keyboard. `_paintTools` indexes `_toolBtns`, not this row's
+    // children, so an extra button in the flow cannot desynchronise it.
+    this._keysBtn = document.createElement('button')
+    this._keysBtn.className = 'p-btn p-i'
+    this._keysBtn.textContent = 'hotkeys'
+    this._keysBtn.title = 'every key /v2 binds'
+    this._keysBtn.onclick = () => this.toggleHotkeys()
+    this._tools.appendChild(this._keysBtn)
     tools.appendChild(this._tools)
 
     this._ctx = document.createElement('div')
@@ -387,15 +440,30 @@ export class Panel {
     this._menu.id = 'v2-menu'
     this._menu.hidden = true
     document.body.appendChild(this._menu)
+
+    this._keys = document.createElement('div')
+    this._keys.id = 'v2-keys'
+    this._keys.hidden = true
+    // Built once. The table is a constant of the build, so a rebuild per open
+    // would only be a way for the two to drift.
+    this._buildHotkeys()
+    document.body.appendChild(this._keys)
+
     // Capture phase, so the press that dismisses the menu is also the press that
     // does whatever it was going to do in the viewport. A menu you have to close
-    // before you can click anything is a modal, and this is not one.
+    // before you can click anything is a modal, and this is not one. The hotkey
+    // list dismisses the same way, except over its own button: that click is a
+    // toggle, and closing here first would close and immediately reopen.
     window.addEventListener('pointerdown', (ev) => {
-      if (this._menu.hidden || this._menu.contains(ev.target)) return
-      this.hideMenu()
+      if (!this._menu.hidden && !this._menu.contains(ev.target)) this.hideMenu()
+      if (!this._keys.hidden && !this._keys.contains(ev.target) && !this._keysBtn.contains(ev.target)) {
+        this.hideHotkeys()
+      }
     }, true)
     window.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape') this.hideMenu()
+      if (ev.key !== 'Escape') return
+      this.hideMenu()
+      this.hideHotkeys()
     })
   }
 
@@ -444,6 +512,46 @@ export class Panel {
     this._menu.innerHTML = ''
   }
 
+  // --- the hotkey list ------------------------------------------------------
+
+  /**
+   * Render the host's key table. The panel decides nothing about what is in it:
+   * which keys exist is main.js's answer, for the reason its HOTKEYS banner
+   * gives, and a malformed row throws here rather than printing `undefined` at
+   * someone looking for a key they have not found.
+   */
+  _buildHotkeys() {
+    const html = ['<div class="k-h">hotkeys</div>']
+    for (const group of this.hotkeys) {
+      if (typeof group.group !== 'string' || !Array.isArray(group.rows)) {
+        throw new Error('Panel: each hotkey group must be {group, rows: [{keys, what}]}')
+      }
+      html.push(`<div class="k-t">${escapeHtml(group.group)}</div><div class="k-g">`)
+      for (const row of group.rows) {
+        if (typeof row.keys !== 'string' || typeof row.what !== 'string') {
+          throw new Error(`Panel: hotkey row in '${group.group}' needs a keys and a what string`)
+        }
+        html.push(`<span class="k-k">${escapeHtml(row.keys)}</span><span>${escapeHtml(row.what)}</span>`)
+      }
+      html.push('</div>')
+    }
+    this._keys.innerHTML = html.join('')
+  }
+
+  toggleHotkeys() {
+    if (this._keys.hidden) {
+      this._keys.hidden = false
+      this._keysBtn.classList.add('p-on')
+    } else {
+      this.hideHotkeys()
+    }
+  }
+
+  hideHotkeys() {
+    this._keys.hidden = true
+    this._keysBtn.classList.remove('p-on')
+  }
+
   // --- zone 1: status -------------------------------------------------------
 
   _paintStatus(s) {
@@ -489,39 +597,103 @@ export class Panel {
       ? `${s.grassCount - s.grassVeiled}/${s.grassCount} ${(s.grassTris / 1000).toFixed(0)}k`
       : null)
     kv('ferns', Number.isFinite(s.fernCount) ? `${s.fernCount} ${(s.fernTris / 1000).toFixed(0)}k` : null)
+    // ONE DECIMAL on this row alone, and it is not an inconsistency. Every other
+    // prop layer costs tens of thousands of triangles, where a whole `k` is the
+    // smallest step worth reading; the mushrooms cost a few hundred to a few
+    // thousand, so the neighbours' toFixed(0) would print a flat `0k` almost
+    // every frame and the row would say nothing. Keeping the `k` suffix rather
+    // than switching to a raw count keeps the column reading as one scale.
+    kv('mushrooms', Number.isFinite(s.mushroomCount) ? `${s.mushroomCount} ${(s.mushroomTris / 1000).toFixed(1)}k` : null)
+    // Deadfall: logs and rotten stumps. One decimal for the mushrooms' reason,
+    // and more so -- this is the cheapest scatter in the world at a few hundred
+    // triangles, so a toFixed(0) here would print `0k` and never move.
+    kv('deadwood', Number.isFinite(s.deadwoodCount) ? `${s.deadwoodCount} ${(s.deadwoodTris / 1000).toFixed(1)}k` : null)
     // All three rock beds summed. They reach 55 m, 460 m and 1250 m, so the
     // count moves with the terrain rather than with the player's speed.
     kv('rocks', Number.isFinite(s.rockCount) ? `${s.rockCount} ${(s.rockTris / 1000).toFixed(0)}k` : null)
+    // The strewn-pebble stamps, which are the row worth watching next to the
+    // rocks': two triangles each, so a count that dwarfs the rock count while
+    // the tris column stays tiny is the trade working. Reaches 64 m only.
+    kv('litter', Number.isFinite(s.litterCount) ? `${s.litterCount} ${(s.litterTris / 1000).toFixed(1)}k` : null)
     kv('mode', s.mode ? String(s.mode) : null, 'c-head')
+    // Signed metres from the eye to the water standing over it, blank on dry
+    // ground. Two decimals, because the thing it exists to settle -- does the
+    // murk switch AT the waterline -- is argued in centimetres, and a row
+    // rounded to 0.1 m cannot answer it. Sign is the reading: this and `mode`
+    // must change together, and a `mode` of `under` alongside a positive number
+    // here is the whole bug, on one screen.
+    kv('eye-water', Number.isFinite(s.eyeToWater) ? `${s.eyeToWater >= 0 ? '+' : ''}${s.eyeToWater.toFixed(2)}` : null)
     kv('ground', num(s.ground, 1))
     kv('snow', Number.isFinite(s.snowHere) ? `${s.snowHere.toFixed(0)} (${s.snowBase.toFixed(0)})` : null)
-
-    const pos =
-      Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.z)
-        ? `${s.x.toFixed(1)}  ${s.y.toFixed(1)}  ${s.z.toFixed(1)}`
-        : null
-    cells.push(
-      `<span class="p-wide"><span class="p-k">pos </span>${
-        pos === null ? '<span class="c-bad">??</span>' : escapeHtml(pos)
-      }</span>`
-    )
-
-    // The one number this whole world exists to make true: the sampling spacing
-    // of the ground she is standing on. §18's "down to 10 cm" is a claim about
-    // THIS value, so it is the only readout with its own row and its own size.
+    // The sampling spacing of the chunk she is STANDING on, and §18's "down to
+    // 10 cm" is a claim about this exact value -- which makes this the only live
+    // check on it, and the reason it is still here at all. It held the big row
+    // below until it was pointed out that "50 cm" answers a question about the
+    // mesher rather than about the view: true, load-bearing, and of no use to
+    // anyone standing in the world. So it keeps its measurement and loses its
+    // billing.
     //
     // "underfoot" and not "under cursor", which is what this said while it was
     // showing terrain.stats.finestCell -- the finest chunk ANYWHERE on screen,
     // which is pinned at the depth cap by whatever the camera is nearest to and
     // therefore read 6.3 cm in every situation anyone ever looked at it in. It
     // now reads terrain.stats.cellUnderfoot and it moves.
-    const cell =
-      s.cell === null || s.cell === undefined || !Number.isFinite(s.cell)
-        ? '??'
-        : s.cell < 1
-          ? `${(s.cell * 100).toFixed(1)} cm`
-          : `${s.cell.toFixed(2)} m`
-    cells.push(`<span class="p-cell"><span class="p-k">cell underfoot</span><b>${escapeHtml(cell)}</b></span>`)
+    kv(
+      'cell underfoot',
+      Number.isFinite(s.cell) ? (s.cell < 1 ? `${(s.cell * 100).toFixed(1)} cm` : `${s.cell.toFixed(2)} m`) : null
+    )
+
+    // THREE COORDINATES ARE THREE NUMBERS AND THE EYE CANNOT TELL WHICH IS
+    // WHICH. `311.5 527.4 936.8` has to be counted along every time it is read,
+    // and the middle one -- the only one that is not a map coordinate -- is the
+    // easiest to mistake for one. So each is named and each is coloured, and the
+    // colours are the axis colours every 3D tool uses: x red, y green, z blue.
+    // Pulled off the panel's own palette rather than pure rgb, which is
+    // unreadable on this background.
+    const axis = (k, v, col) =>
+      `<span class="p-k" style="color:${col}">${k}=</span>` +
+      `<span style="color:${col}">${escapeHtml(v.toFixed(1))}</span>`
+    const posOk = Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.z)
+    cells.push(
+      `<span class="p-wide"><span class="p-k">pos </span>${
+        posOk
+          ? `${axis('x', s.x, AXIS.x)} ${axis('y', s.y, AXIS.y)} ${axis('z', s.z, AXIS.z)}`
+          : '<span class="c-bad">??</span>'
+      }</span>`
+    )
+
+    // WHAT IS THE THING I AM POINTING AT, AND HOW FAR. The big row used to hold
+    // the terrain's sampling spacing underfoot, which is a number this world
+    // exists to make true and a number nobody standing in the world has any use
+    // for -- "50 cm" answers a question about the mesher, not about the view. It
+    // is still measured, one row down among the counters, because §18's "down to
+    // 10 cm" is a claim about that value and this is the only live check on it.
+    //
+    // The prominent slot goes to range instead, which is the readout that makes
+    // every OTHER number here legible: the band tables in rocks.js and trees.js
+    // are all written in metres, so "is that ridge inside 40 m" is the question
+    // being asked over and over while any of this is being tuned, and until now
+    // it was being answered by walking towards things.
+    //
+    // THE RANGE IS GROUND ONLY -- see cursorPick in main.js. Point at a tree and
+    // the number is the ground behind it, which is why the row also carries the
+    // NAME of whatever prop is in front of that ground. The two answer different
+    // halves of the same question and the name is the half that can be quoted:
+    // "tree 11 is too tall" names a bank entry, and a bank entry can be edited.
+    const dist =
+      s.cursorDist === null || s.cursorDist === undefined || !Number.isFinite(s.cursorDist)
+        ? '--'
+        : s.cursorDist < 10
+          ? `${s.cursorDist.toFixed(2)} m`
+          : `${s.cursorDist.toFixed(1)} m`
+    // Blank rather than a placeholder when the ray finds no prop: an empty patch
+    // of ground is the common case, and a '--' sitting there permanently would
+    // read as a readout that is broken rather than one with nothing to say.
+    const obj = s.cursorLabel ? `${s.cursorLabel} ${s.cursorVariant}` : ''
+    cells.push(
+      `<span class="p-cell"><span class="p-k">cursor:</span>` +
+      `<span><span class="p-obj">${escapeHtml(obj)}</span><b>${escapeHtml(dist)}</b></span></span>`
+    )
 
     this._status.innerHTML = cells.join('')
   }

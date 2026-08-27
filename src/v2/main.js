@@ -14,13 +14,19 @@ import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
 import { RoadSurfaces } from './render/road-surfaces.js'
 import { Editor, TOOL_KEYS, TOOLS } from './edit/editor.js'
+import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { Trees } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
 import { Rocks } from './render/rocks.js'
+import { Mushrooms } from './render/mushrooms.js'
+import { Deadwood } from './render/deadwood.js'
+import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
+import { bakeLitterSet } from '../props/litter.js'
+import { bakeRockImpostors } from '../props/rock-bank.js'
 import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
@@ -33,10 +39,11 @@ import { Player, LOCOMOTION } from '../player.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
 import { Aurora } from '../aurora.js'
-import { Water } from '../water.js'
+import { Water, UNDERWATER, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { SkyProbe } from '../sky-probe.js'
+import { WorldProbe } from '../world-probe.js'
 import { Input } from '../input.js'
 
 // ---------------------------------------------------------------------------
@@ -64,23 +71,24 @@ import { Input } from '../input.js'
 //   WaterSurfaces onto the same shared water material, so they wave and reflect
 //   exactly like v1's does.
 //
-//   The prop scatter is TREES, GRASS, FERNS AND ROCKS, and all of them are TILED,
-//   camera-following scatters that THIN WITH DISTANCE -- full density inside
-//   80 m for trees, 8 m for grass and 35 m for ferns, then halving every time
-//   the distance doubles, out to 1.5 km, 70 m and 90 m respectively. All three
-//   are pure functions of position, so they cover the whole map and the same
-//   plants come back when you walk away and return, and the thinning is what
-//   makes a 1.5 km forest cost ~41k instances instead of the 350k a uniform disc
-//   would need, a 3/m^2 grass bed 11k instead of 46k, and a 0.5/m^2 fern bed
-//   ~9k instead of the 13k a 90 m disc would need. Grass thins hardest of the
-//   three, and earliest, because it is the only one whose bed is made of STRIPS
-//   -- see THE TWO STRATEGIES in render/grass.js. Each instance also carries
-//   the distance at which it stops existing, and the prop shader dissolves it
-//   over the last 15% of that, so the rim and the thinning bands fade rather
-//   than pop. The plants' far tiers are camera-facing billboards spun in the
-//   vertex shader; the rocks' is real geometry, because a boulder photographed
-//   from the side has nothing to lean into. See the headers of render/trees.js,
-//   render/grass.js, render/ferns.js and render/rocks.js.
+//   The prop scatter is TREES, GRASS, FERNS, ROCKS AND MUSHROOMS. The first
+//   four are TILED, camera-following scatters that THIN WITH DISTANCE -- full
+//   density inside 80 m for trees, 8 m for grass and 35 m for ferns, then
+//   halving every time the distance doubles, out to 1.5 km, 70 m and 90 m
+//   respectively. Those three are pure functions of position, so they cover the
+//   whole map and the same plants come back when you walk away and return, and
+//   the thinning is what makes a 1.5 km forest cost ~41k instances instead of
+//   the 350k a uniform disc would need, a 3/m^2 grass bed 11k instead of 46k,
+//   and a 0.5/m^2 fern bed ~9k instead of the 13k a 90 m disc would need. Grass
+//   thins hardest of the three, and earliest, because it is the only one whose
+//   bed is made of STRIPS -- see THE TWO STRATEGIES in render/grass.js. Each
+//   instance also carries the distance at which it stops existing, and the prop
+//   shader dissolves it over the last 15% of that, so the rim and the thinning
+//   bands fade rather than pop. The plants' far tiers are camera-facing
+//   billboards spun in the vertex shader; the rocks' is real geometry, because
+//   a boulder photographed from the side has nothing to lean into. See the
+//   headers of render/trees.js, render/grass.js, render/ferns.js and
+//   render/rocks.js.
 //
 //   ROCKS RUN THREE OF THAT SAME SCATTER AT ONCE, because a pebble is 11 cm and
 //   a summit fang is 7.5 m and no one density-and-radius pair can carry both:
@@ -92,6 +100,14 @@ import { Input } from '../input.js'
 //   the same rock in a damp wood is green, and neither costs a byte per
 //   instance. See props/rock-bank.js for the sixteen and material.js for the
 //   two lines.
+//
+//   MUSHROOMS ARE THE ONE LAYER THAT IS NOT A SCATTER OVER OPEN GROUND. A clump
+//   grows at the foot of something, so where it goes is read back out of the
+//   trees and the rocks that are ALREADY standing rather than rolled from
+//   position alone. That is the whole reason this file builds, re-places and
+//   steps them LAST everywhere -- see the note at their construction. They are
+//   the cheapest layer in the world by a wide margin, a few thousand triangles
+//   against the forest's 37k. See render/mushrooms.js.
 //
 // BOOT IS ASYNCHRONOUS AND ORDERED, and the order is forced by a real
 // dependency, not by taste:
@@ -166,11 +182,29 @@ const sky = new Sky(scene)
 const probe = new SkyProbe()
 // AFTER those three, by reference: the water reflects the dome by calling its
 // shading function, asks the (here always-empty) horizon map where the mountains
-// are, and adds the probe's aurora on top. See water.js.
-const water = new Water(scene, { sky, lighting, probe })
+// are, adds the sky probe's aurora on top, and reads the world probe's capture
+// of the bank for everything the horizon map cannot hold. See water.js.
+const worldProbe = new WorldProbe()
+const water = new Water(scene, { sky, lighting, probe, world: worldProbe })
 const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio() })
 const aurora = new Aurora(scene, { seed: SEED })
-SkyProbe.include(aurora.mesh, stars.points)
+// The aurora only. The stars are POINTS, and gl_PointSize counts framebuffer
+// pixels rather than angle -- so the 1.1-4.5 px speck that is right on a 1500 px
+// screen spans 1.5 to 6.3 degrees of a 64 px cube face, against the ~0.05 degrees
+// a real star has. All 2400 of them, blown up 30 to 100 times, is what the
+// reflection was showing. There is no size that fixes it either: a star under one
+// pixel is what stars.js exists to keep, and the probe's bilinear filter would
+// smear it to nothing. See the header there.
+SkyProbe.include(aurora.mesh)
+
+// ...and the world probe's exclusion list, which is the mirror image of that
+// call: it captures layer 0 wholesale, so what it must NOT see is named here
+// rather than what it must. The water, or the reflection contains a 128 px
+// reflection. The dome and the two additive meshes, because the water already
+// has all three by other routes -- analytically for the sky, from the sky probe
+// for the aurora -- and because a dome fills every face with alpha 1, which
+// turns "is there land along this ray" into "yes, always". See world-probe.js.
+worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 
 const input = new Input(renderer)
 
@@ -187,6 +221,9 @@ let ferns = null
 let grass = null
 let propTextures = null
 let rocks = null
+let litter = null
+let mushrooms = null
+let deadwood = null
 let editor = null
 let panel = null
 let ready = false
@@ -528,6 +565,103 @@ async function bootWorld() {
     `${rs.bankTris} tris / ${rs.bankKB} KB in ${rs.buildMs.toFixed(0)} ms; ` +
     rs.beds.map((b) => `${b.name} ${b.placed} (${b.used}/${b.pool}) to ${b.radius} m`).join(', ')
   )
+  // Same console hook the ferns, mushrooms and dead wood keep, and here it earns
+  // itself twice over: `describeNear` is the only way to see what a rock that
+  // misbehaves in the browser is actually doing, since a blink does not survive
+  // into a headless traverse. See render/rocks.js.
+  window.v2rocks = rocks
+
+  // Strewn litter: the small stones, as four baked photographs stamped flat on
+  // the ground instead of as tens of thousands of modelled pebbles. It is a
+  // sibling of the rock beds rather than a fifth bed of them because it shares
+  // none of their machinery -- no bank, no tier ladder, no anchors -- and it is
+  // constructed AFTER them only for reading order. See render/litter.js.
+  //
+  // ITS FOUR ATLAS LAYERS ARE STILL BLANK AT THIS POINT and that is fine: the
+  // bake needs the renderer and hangs off the same loadImageLayers promise the
+  // impostor bakes do, a few screens down. The atlas is one texture object, so
+  // the stamps pick the pictures up the frame they land in it. What would NOT
+  // be fine is placing litter before the atlas exists at all, which is why this
+  // sits below `propTextures` like everything else that samples it.
+  litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
+  lighting.patch(litter.material, { mode: 'vertex', cacheKey: 'v2-litter' })
+  litter.place(spawn.x, spawn.z)
+  const ls = litter.stats
+  console.log(
+    `[v2] litter ${ls.placed} stamps (${ls.pool} pool) over ${ls.tiles} tiles in ` +
+    `${ls.placeMs.toFixed(0)} ms, ${ls.tris} tris`
+  )
+
+  // Mushrooms, in clumps at the foot of what is already standing. THIS BLOCK
+  // MUST STAY BELOW BOTH `trees` AND `rocks`, and that is a real dependency
+  // rather than a tidy reading order: it is handed the live trees and rocks
+  // instances and asks them, through anchorsInto, where their PLACED instances
+  // actually are, because a clump grows against a trunk or a boulder and not on
+  // open ground. Move this above the rocks block and nothing throws -- Rocks
+  // would simply be an object with an empty scatter in it, every anchor query
+  // would come back with nothing, and the world would silently have no
+  // mushrooms in it. A missing layer with no error is the expensive kind of
+  // bug, so leave the order alone.
+  //
+  // The array order is load-bearing too: [trees, rocks] is the order the
+  // constructor documents, and the layer weights its anchor kinds by it.
+  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed: SEED })
+  // A FOURTH cacheKey, distinct for the reason spelled out at the trees above:
+  // three keys its program cache on this string, and this material's
+  // uBillboardLayers is its own length, so reusing the ferns' 'v2-prop-bb'
+  // would hand one of the two layers the other's compiled program.
+  lighting.patch(mushrooms.material, { mode: 'vertex', cacheKey: 'v2-mushroom-bb' })
+  // So a clump and the ground it stands on cross the snow line together, and so
+  // that nothing sprouts above the line -- same contract as the trees and ferns.
+  mushrooms.syncSnowLine(layers)
+  mushrooms.place(spawn.x, spawn.z)
+  const ms = mushrooms.stats
+  // The rejection breakdown is printed by walking the object rather than by
+  // naming its keys, because WHICH tests a site can fail is the mushroom
+  // layer's own business and a key added there should show up here without a
+  // second edit in this file.
+  const mr = Object.entries(ms.rejected).map(([why, n]) => `${n} ${why}`).join(', ')
+  console.log(
+    `[v2] mushrooms ${ms.placed} in ${ms.clumps} clumps over ${ms.tiles} tiles in ` +
+    `${ms.placeMs.toFixed(0)} ms (pool ${ms.used}/${ms.pool}) (dropped: ${mr})`
+  )
+  // The console hook lives here rather than beside window.v2ferns, because the
+  // layer does not exist until this line has run.
+  window.v2mushrooms = mushrooms
+
+  // Fallen logs and rotten stumps on the forest floor. A PLAIN GROUND SCATTER,
+  // unlike the mushrooms directly above -- it asks the height field where the
+  // wood may lie and nothing else -- so it carries none of that block's ordering
+  // dependency and could sit anywhere below `layers`. It is here because this is
+  // where the forest floor is assembled, and it reads in the order the player
+  // sees it: trees, ferns, grass, rocks, litter, mushrooms, deadfall.
+  // `trees` is passed for the keep-out, not for anchoring: dead wood is scattered
+  // on its own grid and then refuses any candidate lying on a trunk. That reads
+  // the forest's PLACED instances, so this must stay after trees.place above and
+  // deadwood.update must stay after trees.update in the frame loop.
+  deadwood = new Deadwood(scene, height, waterSurfaces, layers, propTextures, trees, { seed: SEED })
+  // A FIFTH cacheKey, for the reason spelled out at the trees: the key is what
+  // the program cache is keyed on, and this material's uBillboardLayers is its
+  // own list, so sharing a neighbour's key would hand one layer the other's
+  // compiled program.
+  lighting.patch(deadwood.material, { mode: 'vertex', cacheKey: 'v2-deadwood-bb' })
+  // So a log and the ground under it cross the snow line together, and so that
+  // nothing lies above the line -- same contract as the trees and ferns.
+  deadwood.syncSnowLine(layers)
+  deadwood.place(spawn.x, spawn.z)
+  const ds = deadwood.stats
+  const dr = Object.entries(ds.rejected).map(([why, n]) => `${n} ${why}`).join(', ')
+  console.log(
+    `[v2] deadwood ${ds.logs} logs + ${ds.snags} stumps over ${ds.tiles} tiles in ` +
+    `${ds.placeMs.toFixed(0)} ms (pool ${ds.used}/${ds.pool}, bank ${ds.bankKB} KB) (dropped: ${dr})`
+  )
+  window.v2deadwood = deadwood
+
+  // Last of the five, so the cursor readout can be bound now. Deliberately here
+  // rather than lazily inside the readout: a missing scatter should be a boot
+  // error next to the thing that failed to build, not a readout that silently
+  // stops naming ferns.
+  bindCursorPicks()
 
   // The weather, which until now nothing in v2 ever turned on: the props have
   // carried a snow shader and a moss shader since they were written, and both
@@ -554,6 +688,28 @@ async function bootWorld() {
     const baked = trees.bakeCards(renderer)
     ferns.bakeCards(renderer)
     grass.bakeCards(renderer)
+    mushrooms.bakeCards(renderer)
+    // Dead wood wears the TREES' bark PNGs, so this bake genuinely has to be
+    // inside this promise and not merely conventionally: run before the decode
+    // and it would photograph the procedural fallback bark into the two cards.
+    deadwood.bakeCards(renderer)
+    // The rock card. Unlike the four above it is not a method on the scatter,
+    // because there is nothing per-bed about it: one photograph of one boulder
+    // serves all five beds and every shape in the bank, so it lives on the bank
+    // and is baked once. See ROCK_CARD_SEED in props/rock-bank.js for which
+    // rock is photographed and why that choice is not arbitrary.
+    const rockCard = bakeRockImpostors(renderer, propTextures)
+    // The four strewn-pebble patches. Same rig as the impostors above and the
+    // same reason for being here rather than on disk -- see props/litter.js.
+    const lit = bakeLitterSet(renderer, propTextures)
+    // Printed with the band they are supposed to land in, because a number with
+    // nothing to be read against is not a measurement. Over the band means
+    // something is lighting the stones twice; under it means the patch is dark
+    // grit rather than stones. See LITTER_KEY in props/litter.js.
+    console.log(
+      'litter patches baked (luma want 0.50-0.56, cover want ~0.45):',
+      lit.map((b, i) => `#${i} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+    )
     // The one measurement that says whether the impostor bake rig is aimed
     // right, and there is nowhere else it can be taken: the bake needs a live
     // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
@@ -561,6 +717,14 @@ async function bootWorld() {
     console.log(
       'tree impostors baked:',
       baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+    )
+    // Same instrument, same reason. A rock card is a grey blob, which makes
+    // coverage the number that matters more than luma here: it says how much of
+    // the quad is stone rather than hole, and a card whose coverage collapses is
+    // a distant boulder that has become a rectangle of sky.
+    console.log(
+      `rock impostor baked: ${rockCard.subject} luma ${rockCard.meanLuma.toFixed(3)} ` +
+        `cover ${rockCard.coverage.toFixed(3)}`
     )
   })
 
@@ -589,7 +753,7 @@ async function bootWorld() {
   waterSurfaces.setVisibility(isVisible)
   roads.setVisibility(isVisible)
 
-  panel = new Panel({ layers, editor, relief, onTool, onAction, onRelief })
+  panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
 
   ready = true
   bootDone()
@@ -680,6 +844,15 @@ function onRelief(next) {
   grass.place(cx, cz)
   rocks.syncBands(layers)
   rocks.place(cx, cz)
+  litter.place(cx, cz)
+  // LAST, and after rocks specifically, for the reason given where mushrooms
+  // are constructed: a clump is placed against the trees and rocks that are
+  // already standing, so re-placing it before they have moved onto the new
+  // relief would anchor it to the old world.
+  mushrooms.syncSnowLine(layers)
+  mushrooms.place(cx, cz)
+  deadwood.syncSnowLine(layers)
+  deadwood.place(cx, cz)
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
   // that resolves y from the field rather than integrating toward it, and the
@@ -822,6 +995,73 @@ const CODE_ACTIONS = {
   BracketRight: 'finer',
   KeyK: 'skyline',
 }
+
+// ---------------------------------------------------------------------------
+// EVERY HOTKEY IN /v2 MUST BE LISTED HERE. This is the table the panel's
+// `hotkeys` button prints, and it is the only place a player can find out that a
+// key exists: an unlisted binding is, from the outside, a key that does nothing.
+// Adding a binding anywhere under src/v2/ -- here, in the panel, in the editor
+// -- means adding its row in the same change.
+//
+// It lives beside KEY_ACTIONS/CODE_ACTIONS rather than in the panel because the
+// panel is a leaf: main.js drives it and it never imports the host. So the list
+// is defined where the key map already is and handed to the Panel constructor.
+//
+// The rows the editor and the panel own are here too, deliberately duplicated
+// from editor.js and panel.js. One list the reader can scan beats three that are
+// each locally correct, and the alternative -- every module exporting its own
+// fragment -- makes the panel import the editor's private key table to render a
+// help screen.
+// ---------------------------------------------------------------------------
+const HOTKEYS = [
+  {
+    group: 'movement',
+    rows: [
+      // `,aoe` are the characters the physical WASD keys produce on Dvorak; both
+      // bindings are live at once, which is what actionsFor resolves.
+      { keys: 'W A S D  /  , a o e', what: 'walk forward, strafe left, back, strafe right' },
+      { keys: 'up / down', what: 'walk forward and back' },
+      { keys: 'left / right', what: 'turn on the spot' },
+      { keys: 'space', what: 'start flying, and hold to climb' },
+      { keys: 'space space', what: 'double-tap to stop flying and land' },
+      { keys: 'shift', what: 'fly down while flying' },
+      { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
+    ],
+  },
+  {
+    group: 'world',
+    rows: [
+      { keys: 'n', what: `skip time forward ${CLOCK.skipHours} hours` },
+      { keys: 'p', what: 'cycle the aurora pattern' },
+      { keys: 'm', what: 'swap the grass bed between scattered strips and card clumps' },
+      { keys: 'h', what: 'hide and show this panel' },
+    ],
+  },
+  {
+    group: 'terrain LOD',
+    rows: [
+      { keys: '[', what: 'coarser terrain: triDeg up one step of 1.25x' },
+      { keys: ']', what: 'finer terrain: triDeg down one step of 1.25x' },
+      { keys: 'k', what: 'skyline target on and off: extra detail on ground that draws a silhouette edge' },
+    ],
+  },
+  {
+    group: 'editor',
+    rows: [
+      { keys: 'tab', what: 'arm and disarm the editor' },
+      { keys: `${TOOL_KEYS.join(' ')}`, what: `arm a tool: ${TOOLS.join(', ')}` },
+      // G/R/S are the editor's only while a gizmo is attached -- see the
+      // key-conflict note at the top of editor.js. With nothing selected, S is
+      // still walk-backward.
+      { keys: 'g r s', what: 'gizmo move, rotate, scale -- only with something selected' },
+      { keys: 'x y z', what: 'constrain the gizmo to one axis, same key again to release' },
+      { keys: 'enter', what: 'finish the river or road being drawn' },
+      { keys: 'esc', what: 'cancel the path being drawn, else deselect; also closes this list' },
+      { keys: 'delete / backspace', what: 'delete the selected point or object' },
+      { keys: 'ctrl/cmd Z', what: 'undo, and shift-Z or Y to redo' },
+    ],
+  },
+]
 
 const actionsFor = (e) => {
   const a = KEY_ACTIONS[e.key.length === 1 ? e.key.toLowerCase() : e.key]
@@ -992,6 +1232,14 @@ addEventListener('pointermove', (e) => {
   // readout and for the placement preview, both of which have to follow the
   // cursor while nothing is pressed.
   editor.onPointerMove(e)
+  // And the host keeps its own copy for the panel's range readout. The editor
+  // already tracks this, but only while it is ARMED -- the readout is wanted in
+  // walk mode too, which is most of when anyone is looking at the panel. Two
+  // floats and no work: the march happens at the panel's 4 Hz, not here.
+  const ndc = pointerNdc(e, renderer.domElement)
+  cursorNdc.x = ndc.x
+  cursorNdc.y = ndc.y
+  cursorNdc.seen = true
   if (!dragging || orbitLocked || renderer.xr.isPresenting) return
   camera.rotation.y -= e.movementX * 0.0026
   camera.rotation.x = THREE.MathUtils.clamp(
@@ -1044,6 +1292,140 @@ function applySky(state, head, elapsedReal) {
   stars.update(head, state, clock.elapsed, elapsedReal)
   aurora.update(head, state, elapsedReal)
   water.update(elapsedReal, hemi)
+
+  // LAST, and that is the whole of its plumbing. Everything above writes the
+  // world as seen through air, straight from the palette; this overwrites the
+  // half-dozen values that are not true underwater. Being the later writer
+  // rather than a branch inside each of them is what keeps it to one function:
+  // there is no mode for anything above to know about, no flag to leave set,
+  // and surfacing is simply the frame where it stops overwriting.
+  applySubmersion(head, elapsedReal, state)
+}
+
+// --- underwater (§11) --------------------------------------------------------
+//
+// The extinction coefficient for UNDERWATER.visibility, computed once here
+// rather than per frame -- it is a constant of a constant.
+const MURK_DENSITY = murkDensity(UNDERWATER.visibility)
+
+/**
+ * True while her head is under a water surface. Read by the panel; the rest of
+ * the effect is uniforms.
+ */
+let submerged = false
+// The two numbers the submersion rule compares, held for the panel. Not state
+// anything reads back -- a readout, and the only one there is for a decision
+// taken every frame inside a headset where a console is no use.
+let eyeY = 0
+let waterY = null
+
+/**
+ * Everything that changes when her head goes under, and it is deliberately all
+ * in one place and all on the JS side.
+ *
+ * WHY THIS IS NOT A POST-PROCESS. The obvious way to tint and darken a whole
+ * scene is a full-screen pass, and this project has no composer -- deliberately
+ * (§5). It would also not survive the headset: three's post-processing renders
+ * to its own framebuffer rather than the XR layer, so the effect would exist on
+ * the desktop canvas and be missing in VR, which is the one place this world is
+ * actually looked at (§17). What is used instead is the aerial-perspective
+ * chunk lighting.js already patches into every material in the scene -- the
+ * same tint, applied per surface at no cost at all, and identical in both eyes
+ * because it is not a screen-space effect in the first place.
+ */
+function applySubmersion(head, elapsedReal, state) {
+  // `drawn`, because the question here is not the scatter's. The scatter asks
+  // where the ground is wet and wants the authored footprint; the eye asks
+  // whether it is under the POLYGON, and a river's polygon is widened past its
+  // footprint to bury its edge under the bank. Same 3x3 block and same scan
+  // either way -- the cost that made levelAt careful was one call per scatter
+  // candidate, and this is one call a frame.
+  const level = waterSurfaces === null ? null : waterSurfaces.levelAt(head.x, head.z, true)
+  submerged = level !== null && head.y < level
+  // Kept for the panel, which is the only way to see the two numbers this rule
+  // compares from inside a headset. The surfaces are drawn flat at exactly the
+  // y this returns -- there is no vertex displacement in the water shader -- so
+  // eye and level meeting anywhere other than at the visible waterline is a
+  // disagreement worth reading off rather than guessing at.
+  eyeY = head.y
+  waterY = level
+
+  water.setSubmerged(submerged)
+
+  // THE CAUSTICS, and they are set on both paths rather than only the wet one.
+  // A gain of zero is the off switch, so writing it every frame is what makes
+  // this the same kind of later-writer setAir is -- there is no state to leave
+  // behind and surfacing cannot strand a net on a dry hillside. `level` and not
+  // `head.y`: the shader is asking how much water stands over the GROUND it is
+  // shading, which does not change when she swims up.
+  //
+  // DAYNESS is the sun's own elevation on the ramp the moonlight uses in
+  // reverse, and it is the sun's rather than `state.lightIntensity` because
+  // that number swaps bodies at -6 degrees: read it instead and the net would
+  // brighten at nightfall as the moon took over. -6 to +4 puts the whole
+  // handover inside civil twilight, where the light is visibly changing anyway.
+  const dayness = Math.max(0, Math.min(1, (state.sun.elevDeg + 6) / 10))
+  const causticGain = UNDERWATER.caustic * (UNDERWATER.causticNight + (1 - UNDERWATER.causticNight) * dayness)
+  lighting.setCaustic(
+    submerged ? causticGain : 0,
+    UNDERWATER.causticScale,
+    level === null ? 0 : level,
+    UNDERWATER.causticFade,
+    // Wrapped at the props' 1024 s for the props' reason: a seconds-since-load
+    // float run through a noise hash loses its low bits inside an hour, and the
+    // net stops moving without ever stopping.
+    elapsedReal % 1024
+  )
+
+  if (!submerged) {
+    // Nothing to restore but the dome, and only the dome because it is the one
+    // of the three that does not decide its own visibility every frame.
+    sky.mesh.visible = true
+    return
+  }
+
+  // THE FOG, and it reaches everything. scene.fog.density is the extinction
+  // coefficient of lighting.js's aerial model, so one number here is what puts
+  // the 20 m ceiling on terrain, trees, rocks, grass, litter, mushrooms and
+  // buildings at once. The water's own fog term reads the same fogDensity, so
+  // a lake surface across the way recedes at exactly the rate the land does --
+  // which is the arrangement §11 already went to some trouble to arrive at in
+  // air, kept rather than special-cased.
+  scene.fog.density = MURK_DENSITY
+  lighting.setAir(murkAir)
+
+  // What the frame is cleared to, for the pixels no geometry covers. Without
+  // it those come out the palette's horizon colour and read as bright gaps
+  // torn in the murk, which is worse than any amount of wrong blue.
+  scene.background.copy(murkLinear)
+
+  // THE LIGHTS. The fog above handles anything more than a couple of metres
+  // out; this is what stops her own hands, the lake bed under her and the
+  // boulder she is standing beside being lit as though the water were not
+  // there. Colours are lerped as well as intensities scaled, because water
+  // takes red out of what passes through it -- turning white light down gives
+  // grey water rather than blue-gray.
+  sun.intensity *= UNDERWATER.light
+  hemi.intensity *= UNDERWATER.ambient
+  sun.color.lerp(murkLinear, UNDERWATER.tint)
+  hemi.color.lerp(murkLinear, UNDERWATER.tint)
+  hemi.groundColor.lerp(murkLinear, UNDERWATER.tint)
+
+  // THE SKY, THE STARS AND THE AURORA, none of which are seen directly from
+  // down here. The dome carries fog: false -- correctly, since it IS the
+  // distance -- so it is the one thing in the scene the murk cannot reach, and
+  // left drawing it would ring every lake with bright sky exactly where the
+  // surface mesh runs out. The water shader is unaffected: it gets the sky from
+  // uniforms and the aurora from the probe's cubemap, neither of which cares
+  // whether the meshes are drawn.
+  //
+  // Asymmetric on purpose. The dome is restored above because nothing else
+  // sets it; these two are not, because their own update() decides their
+  // visibility from the hour every frame and forcing them true here would
+  // hang stars in a midday sky.
+  sky.mesh.visible = false
+  stars.points.visible = false
+  aurora.mesh.visible = false
 }
 
 // --- frame loop -------------------------------------------------------------
@@ -1081,10 +1463,91 @@ function readInput() {
   moveInput.unstick = on('unstick')
 }
 
+// Where the mouse last was, in NDC. `seen` stays false until the pointer has
+// actually moved over the canvas once, because (0,0) is the centre of the
+// screen and defaulting to it would print a confident range to whatever the
+// camera happens to be aimed at before anyone has pointed at anything.
+const cursorNdc = { x: 0, y: 0, seen: false }
+
+// The pick volumes, in metres at instance scale 1. See PickSource in pick.js:
+// these are per-SPECIES capsules for naming things, not collision hulls, and
+// they are sized to be easy to aim at rather than to be tight.
+//
+// The radii come from what the banks actually build -- a tree crown runs 3 to
+// 6 m across, a fern about 1 m, a cap-and-stem mushroom 20 cm -- rounded toward
+// the generous side. The rises are the drawn height of the tallest variant in
+// each bank, so a capsule covers a trunk from root to crown rather than
+// stopping at chest height, which is where a naive radius-only volume would
+// leave everything above unnameable.
+//
+// Grass and litter are absent on purpose. Litter is centimetre-scale debris
+// nobody is going to name, and grass is not a model with variants at all -- it
+// is a strip texture, so there is no id to print.
+const CURSOR_PICKS = [
+  { label: 'mushroom', sys: null, idKey: 'variantAt', radius: 0.18, rise: 0.3 },
+  { label: 'fern', sys: null, idKey: 'variantAt', radius: 0.6, rise: 1.2 },
+  { label: 'deadwood', sys: null, idKey: 'variantAt', radius: 0.9, rise: 1.5 },
+  { label: 'rock', sys: null, idKey: 'shapeAt', radius: 1.2, rise: 1.2, scaleKey: 'instScale' },
+  { label: 'tree', sys: null, idKey: 'variantAt', radius: 3, rise: 26, scaleKey: 'instScale' },
+]
+
+/** Filled once the scatters exist; nearest-first, so the cheap sources prune for the dear ones. */
+function bindCursorPicks() {
+  const bySys = { mushroom: mushrooms, fern: ferns, deadwood: deadwood, rock: rocks, tree: trees }
+  for (const p of CURSOR_PICKS) {
+    p.sys = bySys[p.label]
+    if (!p.sys) throw new Error(`bindCursorPicks: no scatter built for ${p.label}`)
+  }
+}
+
+// What is under the cursor: the range to the ground, and the prop in front of
+// it if there is one.
+//
+// THE RANGE IS GROUND, and only ground. The march in pick.js walks the height
+// FIELD, which is the exact surface rather than whatever LOD the streamer has
+// meshed there -- so the number does not jump when a chunk swaps tier, which is
+// the whole reason the editor picks this way too. Raycasting the prop batches
+// for a range instead would be both far more expensive at this rate and WRONG
+// for the far tiers, whose cards are spun into place by a vertex shader that a
+// CPU-side raycast knows nothing about.
+//
+// THE PROP IS A NAME, and only a name. pickProp walks the scatters' instance
+// arrays against a capsule per species; it is there so that "that tree needs to
+// be shorter" can be said as "tree 11 needs to be shorter". The ground range is
+// its ceiling, so a hill in front of a tree hides the tree, but nothing else
+// occludes: point through a near trunk at a far rock and you get the trunk,
+// which is the answer wanted anyway.
+//
+// Called at the panel's 4 Hz. One march is a few hundred heightAt calls at the
+// step schedule in pick.js, which is the same order as one frame of scatter
+// placement and a quarter-second apart; the prop pass is a few tens of
+// thousands of multiply-adds on top.
+const cursorOut = { dist: null, label: null, variant: null }
+function cursorPick() {
+  cursorOut.dist = null
+  cursorOut.label = null
+  cursorOut.variant = null
+  if (!cursorNdc.seen) return cursorOut
+
+  const { origin, dir } = screenRay(camera, cursorNdc.x, cursorNdc.y)
+  const hit = raymarchGround(height, origin, dir)
+  if (hit) cursorOut.dist = Math.hypot(hit.x - origin.x, hit.y - origin.y, hit.z - origin.z)
+
+  // Infinity rather than the ground range when the ray reaches the horizon:
+  // there is no hill to hide behind, so every prop along it is fair game.
+  const prop = pickProp(CURSOR_PICKS, origin, dir, cursorOut.dist === null ? Infinity : cursorOut.dist)
+  if (prop) {
+    cursorOut.label = prop.label
+    cursorOut.variant = prop.variant
+  }
+  return cursorOut
+}
+
 function panelStats() {
   const info = renderer.info
   const st = terrain.stats
   const h = height.heightAt(headTmp.x, headTmp.z)
+  const cursor = cursorPick()
   return {
     fps: avgMs > 0 ? 1000 / avgMs : null,
     ms: avgMs,
@@ -1106,11 +1569,17 @@ function panelStats() {
     treeTris: trees.stats.tris,
     fernCount: ferns.stats.placed,
     fernTris: ferns.stats.tris,
+    mushroomCount: mushrooms.stats.placed,
+    mushroomTris: mushrooms.stats.tris,
+    deadwoodCount: deadwood.stats.placed,
+    deadwoodTris: deadwood.stats.tris,
     grassCount: grass.stats.placed,
     grassVeiled: grass.stats.veiled,
     grassTris: grass.stats.tris,
     rockCount: rocks.stats.placed,
     rockTris: rocks.stats.tris,
+    litterCount: litter.stats.placed,
+    litterTris: litter.stats.tris,
     x: headTmp.x,
     y: headTmp.y,
     z: headTmp.z,
@@ -1118,9 +1587,27 @@ function panelStats() {
     // The chunk under HER, not the finest one on screen -- see the note on
     // cellUnderfoot in terrain-v2.js for why those are different readouts.
     cell: st.cellUnderfoot,
+    cursorDist: cursor.dist,
+    cursorLabel: cursor.label,
+    cursorVariant: cursor.variant,
     snowHere: layers.snowLineAt(headTmp.x, headTmp.z),
     snowBase: layers.snow.base,
-    mode: editor.active ? `edit:${editor.tool}` : player.flying ? 'fly' : 'walk',
+    // 'under' beats 'fly' and 'walk' because it is the one of the three that
+    // is not obvious from the view -- once everything is murk, the readout is
+    // how you tell "she is submerged" from "the shader broke".
+    mode: editor.active
+      ? `edit:${editor.tool}`
+      : submerged
+        ? 'under'
+        : player.flying
+          ? 'fly'
+          : 'walk',
+    // Signed metres from the eye to the water over it: negative under, positive
+    // above, null on dry ground. The one reading that says whether the murk
+    // switches at the waterline or beside it, which is not a judgement the view
+    // can be trusted for -- an eye a hand's breadth over a flat mirror looks a
+    // great deal like an eye a hand's breadth under one.
+    eyeToWater: waterY === null ? null : eyeY - waterY,
   }
 }
 
@@ -1161,6 +1648,11 @@ function tick() {
   ferns.update(headTmp.x, headTmp.y, headTmp.z)
   grass.update(headTmp.x, headTmp.y, headTmp.z)
   rocks.update(headTmp.x, headTmp.y, headTmp.z)
+  litter.update(headTmp.x, headTmp.y, headTmp.z)
+  // After rocks, and for the same reason the construction and the relief
+  // re-place are: a clump follows the anchors, so it wants them stepped first.
+  mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
+  deadwood.update(headTmp.x, headTmp.y, headTmp.z)
 
   clock.advance(dt)
   applySky(clock.state(), headTmp, now / 1000)
@@ -1184,10 +1676,15 @@ function tick() {
     }
   }
 
-  // BEFORE the main render, and that ordering is load-bearing: the probe binds a
-  // render target and toggles renderer.xr off to get its own camera looked
+  // BEFORE the main render, and that ordering is load-bearing: both probes bind
+  // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
   probe.update(renderer, scene, headTmp)
+  // `waterY` is the surface she is at or nearest to, written by applySubmersion
+  // earlier this same frame, and it is what puts the capture 20 cm above the
+  // water rather than at her eye. Null where there is no water under her, in
+  // which case nothing samples the result anyway.
+  worldProbe.update(renderer, scene, headTmp, waterY)
 
   renderer.render(scene, camera)
 }

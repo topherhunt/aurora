@@ -51,6 +51,19 @@
 //      legitimately arrive twice and the include guards are the only reason
 //      that is free.
 //
+//   8. A RESERVED WORD USED AS A LOCAL VARIABLE. This one shipped. A vertex
+//      shader named a local `patch`, and `patch` is reserved for future use in
+//      the ESSL grammar -- it is a tessellation keyword -- which ANGLE enforces
+//      to the letter. ANGLE is the GL layer under Chrome, Edge, Safari and the
+//      Quest browser, so this was not one machine being fussy: the vertex
+//      shader failed to compile EVERYWHERE WebGL runs, the material never
+//      linked, the mesh never drew, and the frame was black with nothing in the
+//      console anyone was reading. It took a full headless-GL probe to find,
+//      for a fault whose entire signature is one identifier appearing in a
+//      string. That is exactly the shape of thing a textual gate is for, and
+//      the reserved list is short, published and fixed, so there is no excuse
+//      for finding this one with a GPU.
+//
 // What this can NOT check: whether the sky looks like an aurora. That needs
 // eyes, and on a headset (§17).
 // ---------------------------------------------------------------------------
@@ -134,8 +147,18 @@ try {
     ...(await import('../src/aurora-lab/presets.js')),
     ...(await import('../src/aurora-lab/glsl/noise.js')),
     ...(await import('../src/aurora-lab/glsl/lut.js')),
+    ...(await import('../src/aurora-lab/planmap/glsl.js')),
+    ...(await import('../src/aurora-lab/skymap/glsl.js')),
+    ...(await import('../src/aurora-lab/glsl/slab.js')),
     ...(await import('../src/aurora-lab/glsl/palette.js')),
     ...(await import('../src/aurora-lab/glsl/frame.js')),
+    // The curtain's two shaders live OUTSIDE the algorithm registry -- they are
+    // a geometry aurora, not a raymarched one, so nothing in `assemble` reaches
+    // them and every check above this line is blind to them. They are also
+    // where failure mode 8 actually shipped. glsl.js is safe to import in node
+    // for the same reason every other file here is: it holds strings and pulls
+    // in params.js, and neither touches three.js.
+    ...(await import('../src/aurora-lab/curtain/glsl.js')),
   }
 } catch (e) {
   console.log(`\n FAIL  the lab modules do not load, so nothing below can be checked   ${e.message.split('\n')[0]}`)
@@ -146,8 +169,10 @@ try {
 const { ALGORITHMS, algorithmById, paramsFor, defaultsFor } = LAB_MODULES
 const { BUILTIN_PRESETS } = LAB_MODULES
 const { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAMENT_GLSL } = LAB_MODULES
-const { PALETTE_GLSL, MARCH_GLSL, MAIN_GLSL } = LAB_MODULES
-const { LUT_GLSL } = LAB_MODULES
+const { PALETTE_GLSL, MARCH_GLSL, MAIN_GLSL, VERTEX_GLSL, SLAB_MARCH_GLSL } = LAB_MODULES
+const { LUT_GLSL, PLANMAP_GLSL } = LAB_MODULES
+const { SKYMAP_GLSL, SKYMAP_FRAME_GLSL } = LAB_MODULES
+const { CURTAIN_VERTEX, CURTAIN_FRAGMENT } = LAB_MODULES
 
 // ---------------------------------------------------------------------------
 // The shader assembly, DUPLICATED FROM screen.js ON PURPOSE.
@@ -174,19 +199,33 @@ const CHUNKS = {
   warp: WARP_GLSL,
   filament: FILAMENT_GLSL,
   lut: LUT_GLSL,
+  planmap: PLANMAP_GLSL,
+  skymap: SKYMAP_GLSL,
 }
 
-const BASE_CHUNKS = ['util', 'hash', 'value', 'fbm']
+// Must match screen.js's list exactly, `grad` included. It drifted once, and the drift made this gate LAXER than the runtime rather than noisier: the gate assembled a smaller chunk set, so a uniform referenced only by GRAD_GLSL would have been reported as undeclared here while compiling perfectly on the page, and a dead slider in that chunk would have gone unseen.
+const BASE_CHUNKS = ['util', 'hash', 'value', 'grad', 'fbm']
 
 const GLSL_TYPE = { float: 'float', color: 'vec3', bool: 'float', enum: 'int' }
 
-// Mirrors screen.js's CHUNK_SAMPLERS. A sampler is the one uniform the param schema cannot express, so a chunk that needs one names it and it is declared only when that chunk is in the assembly. Without this the uniform-count check below fails by exactly one for `lut`, reporting u_noiseLut as an undeclared reference.
-const CHUNK_SAMPLERS = { lut: 'u_noiseLut' }
+// Mirrors screen.js's CHUNK_SAMPLERS, holding bare uniform NAMES rather than the texture accessors the runtime binds. A sampler is the one uniform the param schema cannot express, so a chunk that needs one names it and it is declared only when that chunk is in the assembly -- and the value is an ARRAY because a chunk can need several. Without this the uniform-count check below fails by exactly one for `lut`, reporting u_noiseLut as an undeclared reference.
+const CHUNK_SAMPLERS = {
+  lut: ['u_noiseLut'],
+  planmap: ['u_planMap'],
+  skymap: ['u_skyMap', 'u_skyLanes', 'u_skyHue', 'u_skyKernel'],
+}
+
+// Mirrors screen.js's FRAMES. Hardcoding MARCH_GLSL here would leave an
+// alternative integrator's GLSL entirely unscanned: its uniform references
+// would never be checked against the schema, and the params only IT reads
+// would be reported as dead sliders on the algorithm that uses it.
+const FRAMES = { slab: SLAB_MARCH_GLSL, skymap: SKYMAP_FRAME_GLSL }
 
 function declarationsFor(params, chunks) {
-  const lines = ['uniform float uTime;']
+  const lines = ['uniform float uTime;', 'uniform float uDitherScale;']
   for (const name of chunks) {
-    if (CHUNK_SAMPLERS[name]) lines.push(`uniform sampler2D ${CHUNK_SAMPLERS[name]};`)
+    if (!CHUNK_SAMPLERS[name]) continue
+    for (const uniform of CHUNK_SAMPLERS[name]) lines.push(`uniform sampler2D ${uniform};`)
   }
   for (const p of params) {
     if (p.uniform === false) continue
@@ -215,11 +254,12 @@ function assemble(id) {
     ...ordered.map((n) => CHUNKS[n]),
     PALETTE_GLSL,
     algo.glsl,
-    MARCH_GLSL,
+    algo.frame ? FRAMES[algo.frame] : MARCH_GLSL,
     MAIN_GLSL,
   ].join('\n')
 
-  const samplers = ordered.filter((n) => CHUNK_SAMPLERS[n]).map((n) => CHUNK_SAMPLERS[n])
+  // Flattened to one entry per sampler NAME, not per chunk, because the count check downstream expects one declaration per element of this list.
+  const samplers = ordered.filter((n) => CHUNK_SAMPLERS[n]).flatMap((n) => CHUNK_SAMPLERS[n])
   return { algo, params, unknown, samplers, decls: declarationsFor(params, ordered), body }
 }
 
@@ -559,16 +599,20 @@ const GUARDED = [
   ['WARP_GLSL', WARP_GLSL, 'AURLAB_WARP'],
   ['FILAMENT_GLSL', FILAMENT_GLSL, 'AURLAB_FILAMENT'],
   ['LUT_GLSL', LUT_GLSL, 'AURLAB_LUT'],
+  ['PLANMAP_GLSL', PLANMAP_GLSL, 'AURLAB_PLANMAP'],
+  ['SKYMAP_GLSL', SKYMAP_GLSL, 'AURLAB_SKYMAP'],
+  ['SKYMAP_FRAME_GLSL', SKYMAP_FRAME_GLSL, 'AURLAB_SKYMAP_FRAME'],
   ['PALETTE_GLSL', PALETTE_GLSL, 'AURLAB_PALETTE'],
   ['MARCH_GLSL', MARCH_GLSL, 'AURLAB_MARCH'],
+  ['SLAB_MARCH_GLSL', SLAB_MARCH_GLSL, 'AURLAB_SLAB'],
 ]
 
 // The list above is written out rather than derived, so a new chunk added to
 // noise.js is not silently exempt -- it fails the count below until someone
 // puts it here.
 const chunkExports = []
-for (const file of ['noise.js', 'lut.js']) {
-  const src = fs.readFileSync(path.join(LAB, 'glsl', file), 'utf8')
+for (const file of ['glsl/noise.js', 'glsl/lut.js', 'planmap/glsl.js', 'skymap/glsl.js']) {
+  const src = fs.readFileSync(path.join(LAB, file), 'utf8')
   for (const m of src.match(/^export const (\w+_GLSL)\b/gm) || []) chunkExports.push(m.split(' ')[2])
 }
 const ungated = chunkExports.filter((n) => !GUARDED.some(([name]) => name === n))
@@ -582,6 +626,190 @@ for (const [name, src, token] of GUARDED) {
   check(ifndef === 1 && define === 1, `${name}: guarded by ${token}`, `${ifndef} ifndef, ${define} define`)
   check(opens === closes, `${name}: and every #ifndef is closed`, `${opens} open, ${closes} #endif`)
 }
+
+// ===========================================================================
+console.log('\n--- no ESSL reserved word is used as an identifier -------------')
+// ===========================================================================
+//
+// See failure mode 8. The list below is not a guess and it is not just `patch`:
+// it is the RESERVED-FOR-FUTURE-USE list from §3.7 of the OpenGL ES Shading
+// Language 3.00 specification, unioned with the one from §3.6 of the 1.00
+// specification, because a chunk written for one dialect can end up assembled
+// into the other and the two lists differ in both directions. Words that are
+// live KEYWORDS in one dialect and reserved in the other (`switch`, `default`,
+// `flat`, `sampler3D`) are kept, because they are illegal as an identifier
+// either way, which is the only question this gate asks.
+//
+// Two words that belong on the spec's 3.00 reserved list are deliberately NOT
+// here: `attribute` and `varying`. They are reserved in 3.00 only because 3.00
+// removed them, and they are required vocabulary in 1.00 -- CURTAIN_VERTEX
+// declares four attributes and three varyings, and every chunk in this lab is
+// 1.00. Including them would fail the gate on correct code, and a gate that
+// cries wolf over legitimate GLSL gets switched off, which leaves you worse off
+// than the bug it was added for. Any word added here later has to clear the
+// same bar: it must be illegal as an identifier in BOTH dialects.
+//
+// Matched on word boundaries rather than as substrings, which is not a detail:
+// `u_cuPatchAmt`, `u_cuPatchKm` and `dispatch` all contain the letters of the
+// word that broke the build and all three are perfectly legal identifiers.
+
+const ESSL_RESERVED = [
+  // Storage, memory and interpolation qualifiers held back for a later version.
+  'coherent', 'volatile', 'restrict', 'readonly', 'writeonly',
+  'noperspective', 'flat', 'patch', 'sample', 'subroutine',
+  'common', 'partition', 'active', 'resource', 'packed',
+  // Words held back because a C or C++ programmer will reach for them.
+  'asm', 'class', 'union', 'enum', 'typedef', 'template', 'this',
+  'goto', 'switch', 'default', 'inline', 'noinline', 'public', 'static',
+  'extern', 'external', 'interface', 'sizeof', 'cast', 'namespace', 'using',
+  // Numeric types the language does not have yet.
+  'long', 'short', 'double', 'half', 'fixed', 'unsigned', 'superp',
+  'input', 'output', 'filter', 'atomic_uint',
+  'hvec2', 'hvec3', 'hvec4', 'fvec2', 'fvec3', 'fvec4',
+  'dvec2', 'dvec3', 'dvec4',
+  // Sampler types that exist in desktop GL and not here.
+  'sampler1D', 'sampler1DShadow', 'sampler1DArray', 'sampler1DArrayShadow',
+  'isampler1D', 'isampler1DArray', 'usampler1D', 'usampler1DArray',
+  'sampler3D', 'sampler3DRect',
+  'sampler2DRect', 'sampler2DRectShadow', 'isampler2DRect', 'usampler2DRect',
+  'samplerBuffer', 'isamplerBuffer', 'usamplerBuffer',
+  'sampler2DMS', 'isampler2DMS', 'usampler2DMS',
+  'sampler2DMSArray', 'isampler2DMSArray', 'usampler2DMSArray',
+  // Image types, the whole family.
+  'image1D', 'image2D', 'image3D', 'imageCube',
+  'iimage1D', 'iimage2D', 'iimage3D', 'iimageCube',
+  'uimage1D', 'uimage2D', 'uimage3D', 'uimageCube',
+  'image1DArray', 'image2DArray',
+  'iimage1DArray', 'iimage2DArray', 'uimage1DArray', 'uimage2DArray',
+  'image1DShadow', 'image2DShadow', 'image1DArrayShadow', 'image2DArrayShadow',
+  'imageBuffer', 'iimageBuffer', 'uimageBuffer',
+]
+
+const RESERVED_RE = new RegExp(`\\b(?:${ESSL_RESERVED.join('|')})\\b`, 'g')
+
+// stripComments is the right tool here and the wrong shape by one detail: it
+// collapses a block comment to a single space, and that takes the newlines with
+// it, so every line number after a /* */ would be reported short. A line number
+// the reader cannot find in the file is worse than no line number at all, so
+// block comments are blanked IN PLACE first -- same length, same newlines --
+// and stripComments is left to do the `//` form, which is already line-safe.
+const blankBlockComments = (src) =>
+  src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+
+// Reported with the word AND the line, both, because the two answer different
+// questions and you need both to fix it: the word is what you rename, the line
+// is where. A gate that only says "reserved word found" over four thousand
+// lines of GLSL costs the afternoon it was written to save.
+//
+// `base` is what the caller adds to turn a line number WITHIN THE STRING into a
+// line number in a file. The named pass below leaves it at zero, because a chunk
+// like MARCH_GLSL is a string that gets concatenated with others and its own
+// first line is the only origin that means anything there; the source sweep sets
+// it, because it knows where in the file the literal started and a file line is
+// what you can jump to.
+const reservedIn = (src, base = 0) => {
+  const hits = []
+  stripComments(blankBlockComments(src)).split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(RESERVED_RE)) hits.push(`\`${m[0]}\` on line ${i + 1 + base}`)
+  })
+  return hits
+}
+
+// The matcher is checked against a fixture before it is pointed at anything
+// real, because the two ways this gate can be wrong are both silent. Too loose
+// and it fails on correct code, which gets it deleted; too tight and it passes
+// on the exact line that shipped black, which is the same as not having it. The
+// fixture holds one genuine offence and three near misses that must NOT fire:
+// two live uniform names from the shader that broke, and the word that contains
+// the reserved one. It also holds a comment, because prose about `patch` is
+// what most of this repo's mentions of the word are and none of them are bugs.
+{
+  const fixture = [
+    'float a = u_cuPatchAmt * u_cuPatchKm;',   // 1: substrings, both legal
+    'float dispatch = a;',                     // 2: contains it, still legal
+    '// patch is reserved, says this comment', // 3: prose, must be invisible
+    '/* and so',                               // 4: a block comment that
+    '   does patch here */ float b = a;',      // 5: spans two lines
+    'float patch = b;',                        // 6: the real thing
+  ].join('\n')
+  const hits = reservedIn(fixture)
+  check(hits.length === 1 && hits[0] === '`patch` on line 6',
+    'the matcher finds the one real offence and none of the near misses',
+    hits.length ? hits.join(', ') : 'nothing matched at all')
+}
+
+// Every GLSL string the lab can hand to a compiler. GUARDED is reused rather
+// than restated -- it is already the file's canonical "here is every chunk"
+// list, and it is checked for completeness against the basis files' exports a
+// few lines above -- and the four strings that are NOT chunks are added by
+// name: the two ends of the raymarched material, and the curtain's own pair,
+// which no other check in this file touches.
+const RESERVED_SCAN = [
+  ...GUARDED.map(([name, src]) => [name, src]),
+  ['VERTEX_GLSL', VERTEX_GLSL],
+  ['MAIN_GLSL', MAIN_GLSL],
+  ['CURTAIN_VERTEX', CURTAIN_VERTEX],
+  ['CURTAIN_FRAGMENT', CURTAIN_FRAGMENT],
+  ...ALGORITHMS.map((a) => [`${a.id}: auroraField`, a.glsl]),
+]
+
+check(RESERVED_SCAN.every(([, src]) => typeof src === 'string' && src.length > 0),
+  'every GLSL string in the scan list actually arrived as a string',
+  `${RESERVED_SCAN.length} strings`)
+
+for (const [name, src] of RESERVED_SCAN) {
+  // Lines are counted from the top of the chunk, not of the file it lives in.
+  // The sweep below reports the same fault against a real file line, so between
+  // the two you get the name of the chunk and somewhere to jump to.
+  const hits = typeof src === 'string' ? reservedIn(src) : []
+  check(hits.length === 0, `${name}: uses no ESSL reserved word as an identifier`, hits.join(', '))
+}
+
+// The sweep that stops the list above going stale. The three GLSL strings the
+// lab keeps for its own use -- the backdrop's sky, the low-res composite, and
+// the plan-map's blit -- are module-private consts in files that construct a
+// three.js material at import, so they cannot be reached by name the way the
+// chunks above can. They are read off the filesystem instead, and read
+// GENERICALLY: every template literal in every lab file that looks like GLSL is
+// scanned, so a new shader added anywhere under src/aurora-lab is covered the
+// moment it is written rather than the moment someone remembers this gate.
+//
+// Splitting on backticks and taking the odd pieces is only sound because the
+// very first section of this file has already established that every lab file's
+// backticks pair up and none are adjacent. It is the payoff for running that
+// check first.
+
+const LOOKS_LIKE_GLSL = /\bvoid\s+main\s*\(|\bgl_(?:Position|FragColor)\b|\bvec[234]\s+[A-Za-z_]/
+
+let sweptLiterals = 0
+for (const file of labFiles) {
+  const rel = path.relative(ROOT, file)
+  const pieces = fs.readFileSync(file, 'utf8').split('`')
+  const hits = []
+  let n = 0
+  // Walked with a running line count rather than by searching for the literal
+  // again, so what gets reported is the line you can jump to in the editor.
+  // Every piece advances the count, literal and non-literal alike; the
+  // backticks that split them are dropped by the split and carry no newline of
+  // their own, so nothing is lost by not counting them.
+  let line = 1
+  for (let i = 0; i < pieces.length; i++) {
+    if (i % 2 === 1 && LOOKS_LIKE_GLSL.test(pieces[i])) {
+      n++
+      hits.push(...reservedIn(pieces[i], line - 1))
+    }
+    line += (pieces[i].match(/\n/g) || []).length
+  }
+  sweptLiterals += n
+  if (!n) continue
+  check(hits.length === 0, `${rel}: no reserved word in its ${n} GLSL literal(s)`, hits.join(', '))
+}
+
+// A sweep that matched nothing would pass silently forever, which is the one
+// way a derived check is worse than a written-out one.
+check(sweptLiterals >= RESERVED_SCAN.length,
+  'the source sweep found at least as many GLSL literals as the scan list names',
+  `${sweptLiterals} literals swept, ${RESERVED_SCAN.length} named`)
 
 // ===========================================================================
 console.log('\n--- the page is wired -----------------------------------------')

@@ -9,23 +9,42 @@
 // is invisible in a screenshot of one tree and ruinous across a hillside of
 // them. In the order they cost the most:
 //
-//   THE TWO MESH TIERS STOP BEING THE SAME TREE. treeLod(p, 1) changes only how
-//   the crown is DRAWN -- trunkSides, branchSides, a bundle of blades thrown
-//   through the crown instead of a card per spray -- and leaves every count and
-//   size alone, so buildTree walks an identical rng stream and lays out an
-//   identical tree. That is what makes the 10 m swap invisible. The moment a
-//   count moves, the crown moves with it: the note this replaced records aspen's
-//   LOD1 crown coming out 45% wider than its LOD0 one, which reads as every
-//   distant tree inflating as you walk away from it. Nothing throws. So the
-//   tiers are compared VERTEX BY VERTEX here rather than argued from the
-//   parameters.
+//   THE COARSE MESH STOPS BEING THE SAME TREE. treeLod(p, 1) is the tier the
+//   world draws between 8 and 15 m, and it is LOD0 with cheaper WOOD and nothing
+//   else: a 3-sided trunk, one fin per limb, the same card per spray. Two
+//   parameters move and no count does, so buildTree walks an identical rng
+//   stream and lays out an identical tree, which is what makes the swap at 8 m
+//   invisible. The moment a count moves, the crown moves with it: the note this
+//   replaced records a bundled coarse crown coming out 45% wider than its LOD0
+//   one on aspen, which reads as every distant tree inflating as you walk away
+//   from it. Nothing throws. So the two are compared VERTEX BY VERTEX here
+//   rather than argued from the parameters.
 //
 //   THE TRIANGLE LAW DRIFTS AWAY FROM THE BUILDER. resolveTree is the one place
 //   the law lives, the previewer's budget panel prints it, and the bank sizes
 //   itself from it -- so if it disagrees with what buildTree actually emits, the
 //   forest costs a different number of triangles than every report about it
 //   says. The law is re-derived here from its own docblock and checked against
-//   the INDEX COUNT of the built geometry, at both tiers, for every species.
+//   the INDEX COUNT of the built geometry, for every species, at LOD0 and at the
+//   coarse mesh alike.
+//
+//   THE PASTED-IN ART MEASUREMENTS DRIFT AWAY FROM THE ART. `sprayStemU` and
+//   `sprayStemV` are where a leaf cut grows from, measured off the shipped PNG
+//   and typed into the species table, and they are what puts a card's stem on
+//   its twig. Re-cut the art and they still describe the old cut: every spray in
+//   the forest hangs a few centimetres off its own branch, nothing throws, and
+//   one tree up close looks fine. So they are re-derived from public/trees/*.png
+//   at the alpha test's own threshold rather than trusted.
+//
+//   THE CROWN'S PROPORTIONS STOP BEING PROPORTIONS. Three rules that are
+//   arithmetic on the parameters and hold at every seed -- a branch is never
+//   fatter than the trunk it leaves (`branchOfTrunk`), a terminal spray seats on
+//   wood with a radius rather than on the point of a cone (`sprayTipBack`), and
+//   the leader cards are smaller than the crown under them (`apexScale`). Each
+//   was a visible wrongness before its knob existed, and each would come back
+//   silently, so the branch plan is walked here the way buildTree walks it and
+//   the count of branches the cap BITES on is gated -- a walk that has drifted
+//   from the generator finds a cap that is satisfied on a tree nobody builds.
 //
 //   THE THINNING LAW STOPS HOLDING. FULL_RADIUS / d is what buys the 1.5 km
 //   horizon: it makes the instance count linear in the radius instead of
@@ -47,10 +66,14 @@
 //   which is the whole of what tells the shader to spin it. All four are checked
 //   on the built geometry rather than on the species table.
 //
-//   THE BANDS STOP NESTING IN THE BANK. LOD_BANDS has to have exactly one entry
-//   per tier boundary; one too few and the last tier is unreachable, one too
-//   many and update() indexes past the ladder. Same shape of check as the
-//   grass's, and the same silent failure.
+//   THE LADDER STOPS BEING THE SHAPE BOTH FILES THINK IT IS. tree-bank.js
+//   decides how many tiers there are and trees.js LOD_BANDS decides where their
+//   boundaries sit, and neither file imports the other. LOD_BANDS has to have
+//   exactly one entry per tier boundary: one too few and the last tier is
+//   unreachable -- the coarsest and by far the most numerous tier in the forest
+//   simply never draws -- one too many and update() indexes past the ladder. So
+//   the tier count, the band count and each tier's triangle cost are all pinned
+//   here. Same shape of check as the grass's, and the same silent failure.
 //
 //   Y_SQUASH STOPS BEING A SQUASH. The bands are ellipsoids because instY is the
 //   tree's ROOT and the tree is not: without it a player on a ledge 9 m above a
@@ -66,14 +89,15 @@
 import * as THREE from 'three'
 
 import {
-  TREE_DEFAULTS, TREE_SPECIES, treeLod, resolveTree, buildTree,
+  TREE_DEFAULTS, TREE_SPECIES, treeLod, resolveTree, buildTree, crownProfile,
 } from '../src/props/tree.js'
 import { TREE_SIZES, buildTreeBank, treeVariants, treeImpostorLayers } from '../src/props/tree-bank.js'
 import { buildImpostorCard } from '../src/props/impostor.js'
 import { CARD_UP_MARK } from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
-import { LAYER_COUNT, buildTextureArray } from '../src/textures.js'
+import { LAYER_COUNT, IMAGE_LAYERS, buildTextureArray } from '../src/textures.js'
+import { readPng } from '../tools/props/png.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -108,6 +132,16 @@ const paramsFor = (s, seed, size = 1) => {
   }
 }
 
+// WHAT EVERY PROBE BELOW IS CHECKED AGAINST BEFORE IT IS BELIEVED. The failure
+// paramsFor's note describes does not throw: a harness that spread `sp` instead
+// of `sp.params` builds four copies of the DEFAULT tree, and every number it
+// then prints is a plausible measurement of the wrong plant, sitting comfortably
+// inside whatever tolerance was written for the right one. These are the
+// triangle counts pine, oak, birch and aspen actually build at seed 7 and their
+// own heights, so a harness that has stopped measuring the species says so here
+// rather than passing three sections later.
+const LOD0_TRIS = { pine: 792, oak: 516, birch: 350, aspen: 432 }
+
 // --- 1. the triangle law ----------------------------------------------------
 //
 // Re-derived from resolveTree's docblock rather than imported from it, so this
@@ -138,10 +172,14 @@ console.log('\n-- the triangle law --')
     const a0 = g0.index.count / 3
     const a1 = g1.index.count / 3
 
+    check(a0 === LOD0_TRIS[s],
+      `${s} still builds the ${LOD0_TRIS[s]} LOD0 triangles every probe here is measured at`,
+      `built ${a0} at seed 7 and ${p0.height} m`)
     check(r0.bundleTris === 0, `${s} LOD0 draws its crown as one card per spray`,
       `bundleTris ${r0.bundleTris}, ${r0.sprayTris} card triangles`)
-    check(r1.bundleTris === 20, `${s} LOD1 draws its crown as twenty blades`,
-      `bundleTris ${r1.bundleTris}`)
+    check(r1.bundleTris === 0 && r1.sprayTris === r0.sprayTris,
+      `${s} LOD1 draws the same card per spray LOD0 does`,
+      `bundleTris ${r1.bundleTris}, ${r1.sprayTris} card triangles against LOD0's ${r0.sprayTris}`)
     check(lawTris(p0, r0) === r0.triangles && r0.triangles === a0,
       `${s} LOD0 builds exactly the triangles the law predicts`,
       `law ${lawTris(p0, r0)}, resolveTree ${r0.triangles}, built ${a0}`)
@@ -149,24 +187,26 @@ console.log('\n-- the triangle law --')
       `${s} LOD1 builds exactly the triangles the law predicts`,
       `law ${lawTris(p1, r1)}, resolveTree ${r1.triangles}, built ${a1}`)
     // The shape of the LOD1 bill, spelled out: a 3-sided trunk, one fin per
-    // limb, and the bundle -- which is a flat budget rather than a count derived
-    // from the crown, so it is the same 20 on every species and every size. If
-    // any of the three grows a term the tier has stopped being the cheap one.
+    // limb, and the crown LOD0 draws, untouched. The whole saving is wood, and
+    // that is deliberate -- the cards are the tree's silhouette at 8 to 15 m and
+    // there is no cheaper way to draw them that is still the same plant.
     check(r1.triangles === r1.trunkTris + r1.limbs + r1.sprayTris
-      && r1.trunkTris === 3 && r1.sprayTris === 20,
-      `${s} LOD1 costs trunk 3 + one fin per limb + a 20-blade bundle`,
+      && r1.trunkTris === 3 && r1.sprayTris === r0.sprayTris,
+      `${s} LOD1 costs trunk 3 + one fin per limb + LOD0's own crown`,
       `3 + ${r1.limbs} + ${r1.sprayTris} = ${r1.triangles}`)
-    // The bundle is a fixed 20 while LOD0 grows with the crown, so the ratio is
-    // not one number -- it runs 6.9x on a small birch to 12.5x on a big oak.
-    // Gated as a band wide enough to hold that and narrow enough that a tier
-    // which stopped being the cheap one falls out of it.
-    check(a0 / a1 > 6 && a0 / a1 < 14, `${s} LOD1 is between six and fourteen times cheaper than LOD0`,
+    // A wood-only saving is a MODEST saving, and the band is set from what the
+    // bank actually measures: 1.22x on a big oak, which carries few fat limbs,
+    // to 1.58x on a sapling, whose trunk is most of its bill. A ratio under 1.15
+    // is a tier not worth its own draw; over 1.75 is foliage that has started
+    // going missing, which is the failure this pairs with the foliage check
+    // above to catch.
+    check(a0 / a1 > 1.15 && a0 / a1 < 1.75, `${s} LOD1 is between 1.15x and 1.75x cheaper than LOD0`,
       `${a0} -> ${a1}, ${(a0 / a1).toFixed(2)}x`)
 
-    // Same number at both tiers by construction: at LOD1 it is the TILE size on
-    // the blades rather than a card's height, which is what lets the bundle keep
-    // the rule that a spray is a fixed size in the world.
-    check(r0.sprayMetres === r1.sprayMetres, `${s} asks for the same spray size at both tiers`,
+    // Same number at both levels, and here that is not merely by construction:
+    // the two tiers draw the same cards, so a spray that changed size between
+    // them would be the same leaf growing as the player walks towards it.
+    check(r0.sprayMetres === r1.sprayMetres, `${s} asks for the same spray size at LOD0 and LOD1`,
       `${r0.sprayMetres} m, built ${g0.userData.tree.sprayMetres.toFixed(4)} / ` +
       `${g1.userData.tree.sprayMetres.toFixed(4)} m after the rescale`)
 
@@ -175,21 +215,22 @@ console.log('\n-- the triangle law --')
   }
 }
 
-// --- 2. the two mesh tiers nest ---------------------------------------------
+// --- 2. the coarse mesh nests inside LOD0 -----------------------------------
 //
-// The strong form of the claim in tree-bank.js's header. LOD1 with its bundle
-// switched back off must be the SAME TREE as LOD0 -- not a similar one, not one
-// within a tolerance -- because treeLod moves nothing that feeds the layout and
-// buildTree is deterministic in its seed. Foliage only: the trunk and branches
-// legitimately differ, since that is the whole of what the tier changes.
+// The strong form of the nesting claim tree-bank.js's header makes about the two
+// mesh tiers, and the reason the 8 m swap is not a pop: LOD1 must be the SAME
+// TREE as LOD0 -- not a similar one, not one within a tolerance -- because
+// treeLod moves nothing that feeds the layout and buildTree is deterministic in
+// its seed. Foliage only: the trunk and branches legitimately differ, since that
+// is the whole of what the level changes.
 //
 // Positions are divided by userData.tree.height before they are compared. The
 // rescale loop drives both builds to the requested height so the ratio is 1 in
-// practice, but a tier that quietly came out at a different size would show up
+// practice, but a build that quietly came out at a different size would show up
 // as a shape difference rather than as an offset, which is the harder failure
 // to see.
 
-console.log('\n-- the two mesh tiers nest --')
+console.log('\n-- the coarse mesh nests inside LOD0 --')
 
 {
   const foliage = (geo, leafLayer) => {
@@ -211,9 +252,9 @@ console.log('\n-- the two mesh tiers nest --')
     for (let k = 0; k < 8; k++) {
       const p = paramsFor(s, 1 + k * 101)
       const g0 = buildTree(p)
-      // treeLod's ONLY foliage change, undone. What is left is the trunk and
-      // branch coarsening, which cannot touch a leaf.
-      const g1 = buildTree({ ...treeLod(p, 1), bundleTris: 0 })
+      // Nothing to undo: treeLod makes no foliage change at all, so what is
+      // left is the trunk and branch coarsening, which cannot touch a leaf.
+      const g1 = buildTree(treeLod(p, 1))
       const a = foliage(g0, p.leafLayer)
       const b = foliage(g1, p.leafLayer)
       verts = a.length / 3
@@ -223,35 +264,27 @@ console.log('\n-- the two mesh tiers nest --')
       g1.dispose()
     }
     check(counts && verts > 0 && worst === 0,
-      `${s} lays out an identical crown at both tiers, over 8 seeds`,
+      `${s} lays out an identical crown at LOD0 and at LOD1, over 8 seeds`,
       `${verts} foliage vertices, worst drift ${worst.toExponential(1)} of a tree height`)
   }
 }
 
 // --- 3. crown and height parity ---------------------------------------------
 //
-// What the nesting buys, measured the way the bank consumes it: tree-bank.js
-// frames BOTH card tiers on tier 0's crownWidth and tier 0's height and never
-// measures tier 1, so the two have to agree or a tree changes size at the 45 m
-// band. HEIGHT is exact and gated as exact -- both tiers are driven to the
-// requested height by the same rescale loop, so anything but zero there is a
-// tier that stopped nesting. WIDTH cannot be exact, because the bundle does not
-// wrap the crown, it samples it: 20 blades are 60 corners against a crown of
-// hundreds of sprays, so the outermost spray is usually not one of the 60 and
-// LOD1 comes out slightly NARROW. That is the honest direction to miss in --
-// a distant tree a touch small reads as distance, one inflating as you walk
-// away reads as a bug.
+// What the nesting buys, measured as a size rather than as a vertex list. LOD1
+// has to be the same tree WIDE and TALL as LOD0, because the bank frames every
+// tier on tier 0's crownWidth and tier 0's height and never measures the others,
+// and a swap that changes a tree's size is the one an eye catches instantly.
 //
-// THE TOLERANCE, and why it is two numbers rather than one. The mean is gated
-// and the spread is printed, because a single seed can disagree by a good deal
-// more than the mean. Broadleaves are held to 4%: they sit at -1.1% (oak),
-// -2.6% (birch) and -0.1% (aspen) today, and the regressions that actually move
-// this number blow straight through it -- dropping bundleSpread to 0, so each
-// corner stops at the card seat instead of being pushed past it, takes birch to
-// -12% and aspen to -9%, and halving the blade count takes every broadleaf past
-// -9%. Pine is held to 8% and sits at -6.1%: its crown carries by far the most
-// sprays, so 60 corners sample it worst, and that is a fact about the species
-// rather than a slack allowance -- see bundleSpread's own note in tree.js.
+// BOTH ARE GATED AS EXACT, and that is a stronger promise than it looks. Height
+// is exact because the same rescale loop drives both builds to the requested
+// metre. Width is exact because the crown is not resampled at this tier -- it is
+// the identical card list, so its bounding box is the identical box. This is
+// what the tier that was withdrawn could not do: a bundled crown SAMPLES the
+// sprays (60 corners against hundreds of cards), so it came out 1% narrow on
+// oak, 6% narrow on pine, and needed a 4-to-8% tolerance and a paragraph
+// defending it. Zero needs neither. If either number ever comes off zero, some
+// count has started moving inside treeLod and the rng streams have parted.
 
 console.log('\n-- crown and height parity --')
 
@@ -270,16 +303,191 @@ for (const s of species) {
       g1.dispose()
     }
   }
-  const mean = d.reduce((a, b) => a + b, 0) / d.length
-  const sd = Math.sqrt(d.reduce((a, b) => a + (b - mean) ** 2, 0) / d.length)
-  const tol = s === 'pine' ? 0.08 : 0.04
-  check(Math.abs(mean) < tol, `${s} LOD1 crowns average within ${tol * 100}% of LOD0's`,
-    `mean ${mean >= 0 ? '+' : ''}${pct(mean)}, sd ${pct(sd)}, n=${d.length}`)
+  const worstWidth = d.reduce((a, b) => Math.max(a, Math.abs(b)), 0)
+  check(worstWidth === 0, `${s} LOD1 crowns are exactly as wide as LOD0's`,
+    `worst ${pct(worstWidth)} over ${d.length} builds`)
   check(worstHeight === 0, `${s} stands exactly as tall at LOD1 as at LOD0`,
     `worst ${pct(worstHeight)} over ${d.length} builds`)
 }
 
-// --- 4. the bank ------------------------------------------------------------
+// --- 4. the stem numbers match the art they were measured from --------------
+//
+// `sprayStemU` and `sprayStemV` say where in a leaf cut the spray actually grows
+// from, and they are the whole of what hangs a card on its twig rather than a
+// few centimetres off to one side of it and above it -- the long version is at
+// sprayStemU in tree.js. They are MEASURED off the shipped PNGs and pasted into
+// the species table, which makes them the one kind of number that goes wrong
+// without anything going wrong: re-cut the art and the params still describe the
+// old cut, and every spray on every tree in the forest slides off its branch by
+// however far the stem moved. Nothing throws, nothing looks broken up close, and
+// a hillside reads as slightly loose.
+//
+// So they are re-derived here from public/trees/*.png and compared with what
+// tree.js ships. Each half of the derivation, and why it is that and not the
+// obvious alternative:
+//
+//   THRESHOLD 128, because the prop material's alphaTest is 0.5 and a texel the
+//     alpha test discards is not part of the art. That is most of the reason ash
+//     lands as far up as v 0.203: its bottom fifth is a stalk two texels wide,
+//     which is opaque and is nowhere near a tenth of a full row.
+//   ROW 0 IS v = 0, AND IT IS THE STEM END, because textures.js writes file rows
+//     straight into the layer with no flip. Reading the image the other way up
+//     yields four perfectly plausible numbers measured off the TIP of each cut.
+//   stemV is the first row (from the stem up) carrying a tenth of the widest
+//     row: where the cut stops being a stalk and starts being a spray.
+//   stemU is the opaque-count-weighted mean u of the rows BELOW the first one
+//     carrying a quarter of the widest -- the stalk and the first leaves, which
+//     is the part that has to meet the wood. Weighting the whole cut instead
+//     would measure where the spray's mass ended up, which is a different
+//     question and would move with a leaf on one side.
+
+console.log('\n-- the stem numbers match the art --')
+
+{
+  // Rows of the cut, at the alpha test's own threshold: how many texels each row
+  // keeps and where across the card they sit.
+  const stemOf = (file) => {
+    const png = readPng(new URL(`../public/${file}`, import.meta.url).pathname)
+    if (png.channels !== 4) throw new Error(`${file}: ${png.channels} channels, expected RGBA`)
+    const { width, height, data } = png
+    const n = new Array(height).fill(0)
+    const meanU = new Array(height).fill(0)
+    for (let y = 0; y < height; y++) {
+      let opaque = 0
+      let sumU = 0
+      for (let x = 0; x < width; x++) {
+        if (data[(y * width + x) * 4 + 3] < 128) continue
+        opaque++
+        sumU += (x + 0.5) / width
+      }
+      n[y] = opaque
+      meanU[y] = opaque > 0 ? sumU / opaque : 0
+    }
+    const max = Math.max(...n)
+    let v = 0
+    for (let y = 0; y < height; y++) if (n[y] >= 0.10 * max) { v = y / height; break }
+    let body = height
+    for (let y = 0; y < height; y++) if (n[y] >= 0.25 * max) { body = y; break }
+    let weighted = 0
+    let weight = 0
+    for (let y = 0; y < body; y++) { weighted += meanU[y] * n[y]; weight += n[y] }
+    return { u: weight > 0 ? weighted / weight : 0.5, v, width, height, max, body }
+  }
+
+  for (const s of species) {
+    const p = paramsFor(s, 7)
+    const file = IMAGE_LAYERS[p.leafLayer]
+    check(!!file, `${s} hangs its foliage on a layer that comes from a PNG`, `layer ${p.leafLayer}`)
+    const m = stemOf(file)
+    check(near(m.u, p.sprayStemU, 0.02) && near(m.v, p.sprayStemV, 0.02),
+      `${s} ships the stem the art has, within 0.02 of both`,
+      `${file} ${m.width}x${m.height}: art u ${m.u.toFixed(3)} v ${m.v.toFixed(3)}, ` +
+      `param u ${p.sprayStemU} v ${p.sprayStemV}, widest row ${m.max} texels, ` +
+      `body from row ${m.body}`)
+  }
+}
+
+// --- 5. the crown's proportions ---------------------------------------------
+//
+// Three shape rules that hold at every seed and every size because they are
+// arithmetic on the parameters rather than anything the rng touches, and three
+// failures that are invisible in a screenshot of one tree.
+//
+//   A BRANCH THICKER THAN ITS TRUNK. `branchWidth` sizes a limb off its own
+//     length, which is the right instinct and the wrong shape: the trunk is a
+//     cone closing to a point while `crownProfile` puts the LONGEST branches
+//     around the middle, so the two curves cross. `branchOfTrunk` is the cap,
+//     and the count of branches it BITES on is the number with teeth here -- if
+//     the plan walk below drifts away from buildTree's, the cap still looks
+//     satisfied while measuring a tree nobody builds. Those counts are tree.js's
+//     own, recorded at branchOfTrunk before the cap went in.
+//   A TERMINAL SPRAY ON A POINT. `sprayTipBack` seats the end card short of the
+//     tip because the apex of a cone has no radius, and a card hung there has
+//     nothing but a point to touch and reads as floating in front of the branch.
+//     What matters is that the wood it backs up to has a real radius on the
+//     thinnest species too, not just on a pine.
+//   A LEADER SHOOT THAT DWARFS THE CROWN. The apex cards are the only ones that
+//     skip `sprayTaper`, so at `apexScale` 1 they come out full size against
+//     limb tips already cut to a third of it -- on a pine roughly three times
+//     its tips, which is the case that put the knob there.
+//
+// The plan walk is buildTree's, with the ONE substitution its own comment allows:
+// a scattered crown (whorlSize 0) draws its height from the rng, and the
+// half-step of the even cases is used instead so this is a statement about the
+// species rather than about seed 7. Pine is the only species that scatters, and
+// the profile is smooth in t, so the bite count is the same either way.
+
+console.log('\n-- the crown\'s proportions --')
+
+// tree.js's branchOfTrunk note, which recorded what each species did BEFORE the
+// cap existed. A different number here means this walk and buildTree's have
+// parted company -- fix the walk, not the number.
+const CAP_BITES = { pine: 3, oak: 6, birch: 11, aspen: 11 }
+
+{
+  const branchPlan = (p) => {
+    const R = resolveTree(p)
+    const n = R.branches
+    const whorl = Math.max(0, Math.round(p.whorlSize))
+    const whorls = Math.max(1, Math.ceil(n / Math.max(1, whorl)))
+    const plan = []
+    for (let i = 0; i < n; i++) {
+      const wi = Math.floor(i / Math.max(1, whorl))
+      const t = whorl > 1 ? (wi + 0.5) / whorls : (i + 0.5) / n
+      const f = p.firstBranch + t * (1 - p.firstBranch)
+      const prof = crownProfile(t, p.crownPeak, p.crownFullness)
+      const length = p.branchLength * (p.branchMin + (1 - p.branchMin) * prof)
+      // Sized off its own length, capped at its share of the trunk radius where
+      // it leaves it -- buildTree's own line, and `radiusAt` is linear to zero.
+      const own = length * p.branchWidth
+      const cap = p.trunkRadius * (1 - f) * p.branchOfTrunk
+      plan.push({ t, f, length, own, cap, baseRadius: Math.min(own, cap) })
+    }
+    return plan
+  }
+
+  check(TREE_DEFAULTS.sprayTipBack > 0 && TREE_DEFAULTS.sprayTipBack < 1,
+    'a terminal card is seated short of the tip and still on its own limb',
+    `sprayTipBack ${TREE_DEFAULTS.sprayTipBack}`)
+
+  for (const s of species) {
+    const p = paramsFor(s, 7)
+    const plan = branchPlan(p)
+    const over = plan.filter((b) => b.baseRadius > b.cap + 1e-12).length
+    const bites = plan.filter((b) => b.own > b.cap).length
+
+    check(over === 0, `${s} grows no branch thicker than its share of the trunk it leaves`,
+      `${plan.length} branches, ${over} over ${p.branchOfTrunk} of the trunk radius at their own height`)
+    check(bites === CAP_BITES[s],
+      `${s} has the cap bite on the ${CAP_BITES[s]} of ${plan.length} branches tree.js measured`,
+      `${bites}/${plan.length} sized off their own length would be fatter than the wood`)
+
+    // The longest branch is the one carrying the most foliage and the one whose
+    // terminal card is furthest from anything else, so it is where a spray
+    // hanging off a point would show first.
+    const longest = plan.reduce((m, b) => (b.length > m.length ? b : m), plan[0])
+    const seatMm = longest.baseRadius * p.sprayTipBack * p.height * 1000
+    check(seatMm > 5, `${s} seats its terminal spray on wood at least 5 mm thick`,
+      `longest branch ${(longest.length * p.height).toFixed(2)} m, ` +
+      `base radius ${(longest.baseRadius * p.height * 1000).toFixed(1)} mm, ` +
+      `${seatMm.toFixed(1)} mm at the seat ${p.sprayTipBack} back from the tip`)
+
+    // The apex cards skip the taper, so the size to beat is a limb spray at
+    // grade 1 -- its size where the limb leaves the trunk, which is the biggest
+    // card the crown carries.
+    const R = resolveTree(p)
+    const apex = R.sprayMetres * p.apexScale
+    const atBase = R.sprayMetres
+    const atTip = R.sprayMetres * p.sprayTaper
+    check(p.apexScale < 1 && apex < atBase,
+      `${s} gives its leader cards less reach than the biggest spray under them`,
+      `apexScale ${p.apexScale}: ${apex.toFixed(2)} m against ${atBase.toFixed(2)} m at a limb's base ` +
+      `and ${atTip.toFixed(2)} m at its tip, so ${(apex / atTip).toFixed(2)}x a tip ` +
+      `where full size was ${(atBase / atTip).toFixed(2)}x`)
+  }
+}
+
+// --- 6. the bank ------------------------------------------------------------
 
 console.log('\n-- bank --')
 
@@ -293,22 +501,27 @@ const variants = treeVariants()
     'every tier holds one geometry per variant',
     bank.tiers.map((t) => t.geometries.length).join(' / '))
 
-  // The same relationship the grass gate holds, and the same failure: one band
-  // too few leaves the last tier unreachable, one too many walks off the end of
-  // the ladder in update().
-  check(LOD_BANDS.length === bank.tiers.length - 1,
-    'one band per tier boundary',
-    `${LOD_BANDS.length} bands, ${bank.tiers.length} tiers`)
-
-  // Strictly cheaper at every step, across the WHOLE variant set rather than
-  // per variant: a ladder whose rungs overlap has a band that costs more the
-  // further away it is drawn.
+  // Strictly cheaper at every step, PER VARIANT -- the only form of the claim
+  // that survives a bank spanning saplings to big oaks. Across the whole set the
+  // ranges overlap by construction (a big pine's LOD1 is 601 triangles against a
+  // birch sapling's 210 at LOD0), and that is not a ladder fault: no instance is
+  // ever both. What would be a fault is one tree getting dearer as it recedes,
+  // so each variant is walked down its own rungs.
   const lo = bank.tiers.map((t) => Math.min(...t.triangles))
   const hi = bank.tiers.map((t) => Math.max(...t.triangles))
   let descends = true
-  for (let t = 1; t < bank.tiers.length; t++) if (hi[t] >= lo[t - 1]) descends = false
-  check(descends, 'every tier is cheaper than every variant of the tier before it',
-    bank.tiers.map((t, i) => `${lo[i]}-${hi[i]}`).join(' | '))
+  let worstStep = ''
+  for (let t = 1; t < bank.tiers.length; t++) {
+    for (let v = 0; v < bank.variants.length; v++) {
+      if (bank.tiers[t].triangles[v] >= bank.tiers[t - 1].triangles[v]) {
+        descends = false
+        worstStep = ` -- ${bank.variants[v].species} ${bank.variants[v].size} tier ${t - 1}->${t}: ` +
+          `${bank.tiers[t - 1].triangles[v]} -> ${bank.tiers[t].triangles[v]}`
+      }
+    }
+  }
+  check(descends, 'every variant gets cheaper at every rung of its own ladder',
+    bank.tiers.map((t, i) => `${lo[i]}-${hi[i]}`).join(' | ') + worstStep)
   // The one assertion that pins the far bill. Both ends of each range, because
   // "every variant" is the claim: the cross is three quads for all twelve and
   // the billboard is one triangle for all twelve, whatever the species or size.
@@ -439,7 +652,67 @@ const variants = treeVariants()
   note('bank size', `${Math.round(bank.bytes / 1024)} KB, ${bank.triangles} triangles across all tiers`)
 }
 
-// --- 5. the bands -----------------------------------------------------------
+// --- 7. the shipped ladder --------------------------------------------------
+//
+// THE TWO FILES THAT HAVE TO AGREE ABOUT HOW MANY TIERS THERE ARE, and neither
+// imports the other. tree-bank.js builds the rungs and trees.js LOD_BANDS says
+// where they change hands; LOD_BANDS is exported on TREE_TUNING, so this reads
+// the real constant rather than a copy of it. One band too few and the last
+// tier is unreachable, which is the expensive direction -- the coarsest tier
+// holds tens of thousands of instances, so stranding it means the whole far
+// field draws at the tier above and the triangle bill multiplies with nothing
+// looking wrong. One too many and update() indexes past the end of the ladder.
+//
+// The tiers are pinned BY INDEX and by absolute count here, not relative to the
+// end of the ladder the way the bank section's checks are. "The last tier is one
+// triangle" stays true when a tier is inserted or dropped, and a tier appearing
+// or disappearing is the exact change this section exists to catch. So: four
+// tiers with a billboard and three without, tier 2 six triangles for every
+// variant, tier 3 one, and tiers 0 and 1 the only rungs that cost more than six.
+
+console.log('\n-- the shipped ladder --')
+
+{
+  const noBillboard = buildTreeBank({ seed: 1, billboard: false })
+
+  check(bank.tiers.length === 4,
+    'the shipped bank is four tiers: the LOD0 mesh, the LOD1 mesh, the cross, the billboard',
+    `${bank.tiers.length} tiers of ${bank.variants.length} variants each`)
+  check(noBillboard.tiers.length === 3,
+    'without a billboard the bank is three tiers and the cross is the last one',
+    `${noBillboard.tiers.length} tiers`)
+  // The same relationship the grass gate holds, and the same two failures: one
+  // band too few leaves the last tier unreachable, one too many walks off the
+  // end of the ladder in update().
+  check(LOD_BANDS.length + 1 === bank.tiers.length,
+    'LOD_BANDS carries exactly one boundary fewer than the bank has tiers, so no tier is stranded',
+    `${LOD_BANDS.length} bands [${LOD_BANDS.join(', ')}] against ${bank.tiers.length} tiers`)
+
+  // Both ends of both card tiers, over every variant: the cross is three quads
+  // and the billboard is one triangle whatever the species or the size.
+  const crossTris = bank.tiers[2].triangles
+  check(crossTris.every((t) => t === 6),
+    'every tier-2 geometry is exactly six triangles, the three-plane cross',
+    `${Math.min(...crossTris)}-${Math.max(...crossTris)} over ${crossTris.length} variants`)
+  const cardTris = bank.tiers[3].triangles
+  check(cardTris.every((t) => t === 1),
+    'every tier-3 geometry is exactly one triangle, the spun billboard',
+    `${Math.min(...cardTris)}-${Math.max(...cardTris)} over ${cardTris.length} variants`)
+
+  // The other half of the same statement: exactly two rungs are real trees, so a
+  // third mesh tier appearing on the ladder fails here rather than passing as a
+  // slightly dearer forest -- and a mesh tier quietly becoming cards fails too,
+  // which is the direction that costs the near field its silhouettes.
+  const overSix = bank.tiers.map((t) => t.triangles.filter((n) => n > 6).length)
+  check(overSix[0] === bank.variants.length && overSix[1] === bank.variants.length
+    && overSix.slice(2).every((n) => n === 0),
+    'tiers 0 and 1 are the only tiers that cost more than six triangles, so the near field is the only mesh',
+    `variants over six triangles per tier: ${overSix.join(' / ')}`)
+
+  for (const t of noBillboard.tiers) for (const g of t.geometries) g.dispose()
+}
+
+// --- 8. the bands -----------------------------------------------------------
 
 console.log('\n-- lod --')
 
@@ -465,13 +738,13 @@ console.log('\n-- lod --')
   // Grass gates the opposite of this and is right to: a carpet whose last band
   // sits outside the full-density radius is spending its finest tier on
   // instances that have already been thinned away. A forest is not a carpet --
-  // the mesh tiers have to reach past the thinning or a tree at 90 m is a
-  // billboard while its neighbour at 79 m is a mesh -- so the violation is
-  // recorded rather than gated.
+  // the near ladder has to reach past the thinning or a tree at 90 m is a flat
+  // billboard while its neighbour at 79 m still carries three silhouettes -- so
+  // the violation is recorded rather than gated.
   const last = LOD_BANDS[LOD_BANDS.length - 1]
   if (last > FULL_RADIUS) {
     note('the last LOD band reaches PAST the full-density radius, unlike grass',
-      `${last} m band, ${FULL_RADIUS} m full -- trees between them are thinned but still meshes`)
+      `${last} m band, ${FULL_RADIUS} m full -- trees between them are thinned but still crosses`)
   } else {
     check(true, 'the last LOD band does not reach past the full-density radius',
       `${last} m band, ${FULL_RADIUS} m full`)
@@ -481,7 +754,7 @@ console.log('\n-- lod --')
     `${DRAW_RADIUS} m against a ${last} m last band`)
 }
 
-// --- 6. the vertical squash -------------------------------------------------
+// --- 9. the vertical squash -------------------------------------------------
 //
 // Y_SQUASH turns each band sphere into an ellipsoid twice as tall as it is
 // wide, because instY is the tree's ROOT and the tree is not -- a player on a
@@ -524,6 +797,14 @@ console.log('\n-- the vertical squash --')
   // whole cost of the near field is how many instances fall inside the first
   // one. Measured as the change in each band's horizontal cross-section, which
   // is what actually decides the count.
+  //
+  // THE BOUND IS 3% OF RADIUS, and it is loose because it is a percentage of the
+  // wrong quantity: a fixed 2 m of eye height is a larger fraction of an 8 m
+  // band than of a 15 m one, so the tightest band is always the worst case here
+  // and shrinking it makes this number grow with nothing having gone wrong. At
+  // 8 m it is +2.5%, which is +5% of AREA, and at 0.05 trees per square metre
+  // that is half a tree. Half a tree is the honest size of the effect; the 2%
+  // this replaced was chosen against a 10 m band and would fail a 7 m one.
   const EYE_OVER_ROOT = 2
   let inert = true
   const perBand = []
@@ -531,21 +812,36 @@ console.log('\n-- the vertical squash --')
     const plain = Math.sqrt(Math.max(0, b * b - EYE_OVER_ROOT ** 2))
     const squashed = Math.sqrt(Math.max(0, b * b - (EYE_OVER_ROOT * Y_SQUASH) ** 2))
     const grew = squashed / plain - 1
-    if (grew >= 0.02) inert = false
-    perBand.push(`${b} m: ${plain.toFixed(3)} -> ${squashed.toFixed(3)} m, +${pct(grew)}`)
+    if (grew >= 0.03) inert = false
+    perBand.push(`${b} m: ${plain.toFixed(3)} -> ${squashed.toFixed(3)} m, +${pct(grew)}` +
+      ` (${pct((squashed / plain) ** 2 - 1)} of area)`)
   }
-  check(inert, `at ${EYE_OVER_ROOT} m of eye height the squash widens every band by under 2%`,
+  check(inert, `at ${EYE_OVER_ROOT} m of eye height the squash widens every band by under 3%`,
     perBand.join('; '))
 
-  // (c) WHAT IT IS FOR. A canopy 9 m up, seen from 8 m out along the ground, is
-  // an arm's length away and has to be a mesh. Without the squash it is not.
-  const CANOPY = 9
-  const OUT = 8
-  check(tierOf(OUT, CANOPY, true) === 0 && tierOf(OUT, CANOPY, false) > 0,
-    `a canopy ${CANOPY} m up and ${OUT} m out resolves to the finest tier only under the squash`,
-    `tier ${tierOf(OUT, CANOPY, false)} -> ${tierOf(OUT, CANOPY, true)}`)
-  const reach = (squash) => Math.sqrt(Math.max(0, bandSq[0] - (CANOPY * (squash ? Y_SQUASH : 1)) ** 2))
-  note(`tier-0 horizontal reach at ${CANOPY} m of height`,
+  // (c) WHAT IT IS FOR. Stand on a ledge level with a crown, just past the
+  // horizontal reach the plain sphere allows at that height, and you are nearer
+  // the LEAVES than a player at the trunk's foot the same distance out -- who
+  // gets a mesh. Measured to the root you are outside the band and get a card.
+  //
+  // Demonstrated at the LAST MESH BOUNDARY rather than the first, because that
+  // is the crossing worth arguing about: the first one swaps one mesh for
+  // another and this one swaps a tree for three quads. Both the height and the
+  // distance are derived from that band, so this stays a real demonstration when
+  // the band moves -- OUT is a metre past the plain reach, and the canopy is
+  // held under the band so a plain reach exists at all.
+  const meshTiers = bank.tiers.filter((t) => t.triangles.some((n) => n > 6)).length
+  const MESH = meshTiers - 1
+  const MESH_BAND = LOD_BANDS[MESH]
+  const CANOPY = Math.min(9, Math.floor(MESH_BAND * 0.6))
+  const OUT = Math.ceil(Math.sqrt(MESH_BAND ** 2 - CANOPY ** 2)) + 1
+  check(tierOf(OUT, CANOPY, true) <= MESH && tierOf(OUT, CANOPY, false) > MESH,
+    `a canopy ${CANOPY} m up and ${OUT} m out is still a mesh only under the squash`,
+    `tier ${tierOf(OUT, CANOPY, false)} -> ${tierOf(OUT, CANOPY, true)}, ` +
+    `mesh to tier ${MESH} and its ${MESH_BAND} m band`)
+  const reach = (squash) =>
+    Math.sqrt(Math.max(0, MESH_BAND ** 2 - (CANOPY * (squash ? Y_SQUASH : 1)) ** 2))
+  note(`the mesh's horizontal reach at ${CANOPY} m of height`,
     `${reach(false).toFixed(2)} m -> ${reach(true).toFixed(2)} m`)
 
   // The instance counts a band is budgeted for are a MAXIMUM, which is only
@@ -565,7 +861,7 @@ console.log('\n-- the vertical squash --')
     LOD_BANDS.map((b) => `${b} m: ${Math.round(Math.PI * b * b * DENSITY)} at ground, 0 by ${(b / Y_SQUASH).toFixed(0)} m up`).join('; '))
 }
 
-// --- 7. the scatter ---------------------------------------------------------
+// --- 10. the scatter --------------------------------------------------------
 //
 // A headless world -- flat ground, no water, no snow -- so the only thing that
 // varies is the thinning law itself.
@@ -733,7 +1029,7 @@ trees.place(0, 0)
 
 trees.dispose()
 
-// --- 8. placement -----------------------------------------------------------
+// --- 11. placement ----------------------------------------------------------
 
 console.log('\n-- placement --')
 

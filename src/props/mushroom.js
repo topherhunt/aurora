@@ -128,9 +128,18 @@ export const MUSHROOM_DEFAULTS = {
   sweep: TAU,      // arc of the cap. < TAU with no stem is a BRACKET fungus
 
   // --- underside ------------------------------------------------------------
-  underside: true, // false drops the whole ring of triangles. Correct for the
-                   // smallest tier of a forest mushroom, which is never seen
-                   // from below; wrong for anything you can walk under
+  underside: false, // build the gilled underside at all. OFF by default, and it
+                   // is worth being clear that this is a DEFAULT rather than a
+                   // tier setting: a forest-floor mushroom is a thing you look
+                   // down on, so its gills are a third of its triangles spent
+                   // on the one face nobody sees. Turn it on for anything you
+                   // can walk under. What "off" actually leaves behind is a cap
+                   // that is a single sheet, and since the prop material is
+                   // DoubleSide and re-flips the normal (src/material.js), that
+                   // sheet's far side is lit by the cap's own UPWARD normal --
+                   // so from below the cap reads as lit rather than shadowed,
+                   // which is exactly the trade and is fine right up until you
+                   // are standing under it
   gillDrop: 0.06,  // how far the underside hangs below the rim before running
                    // back up to the stem. 0 = a flat disc, which reads as paper
   gillBlades: 0,   // ACTUAL radial gill geometry, 0 = texture only. 2 triangles
@@ -144,9 +153,11 @@ export const MUSHROOM_DEFAULTS = {
   bulb: 0.0,         // abrupt swelling in the lowest fifth -- amanita's volva.
                      // Separate from taper because a bulb is a STEP, not a slope
   lean: 0.0,         // stem tilt off vertical at the base, radians
-  stemCurve: 0.0,    // additional bend accumulated up the stem, radians.
+  stemCurve: 0.3,    // additional bend accumulated up the stem, radians.
                      // Positive curves back toward upright, which is what a
-                     // mushroom on a slope actually does
+                     // mushroom on a slope actually does. Non-zero by default
+                     // because a dead-straight stalk is the single loudest tell
+                     // that a prop was generated rather than grown
   ring: 0.0,         // annulus skirt, 0..1 as a fraction of cap radius. 0 = none
   ringHeight: 0.72,  // where up the stem it sits
   ringDroop: 0.35,   // how far the skirt hangs, relative to its own width
@@ -161,18 +172,35 @@ export const MUSHROOM_DEFAULTS = {
   // --- tiers ----------------------------------------------------------------
   // The LOD knobs, and they are re-generations rather than decimations -- the
   // same argument DESIGN.md §5 makes for the bush class. Triangles are exactly
-  //   cluster x ( radial x (2*capRings - 1)          <- cap top
-  //             + radial x 2 x underRings            <- underside, if any
-  //             + radial x 2 x stemRings             <- stem, if any
-  //             + radial x 2                         <- ring, if any
+  //   cluster x ( radial     x (2*capRings - 1)      <- cap top
+  //             + radial     x 2 x underRings        <- underside, if any
+  //             + stemRadial x 2 x stemRings         <- stem, if any
+  //             + stemRadial x 2                     <- ring, if any
   //             + gillBlades x 2 )
   // The cap top is the odd one out because its innermost ring collapses to a
   // point, so half of that row's quads are degenerate and never emitted. The
   // underside does the same, but only on a STEMLESS mushroom: given a stalk its
   // inner edge is trimmed to the stalk's radius and never reaches the axis, so
   // subtract another `radial` from the underside row when stemHeight is 0.
-  radial: 8,     // columns around the axis. 5 is the floor at which a cap still
-                 // reads as round; 12 is a cave mushroom you stand next to
+  radial: 16,    // columns around the CAP. 5 is the floor at which a cap still
+                 // reads as round and 6 is what the coarse mesh tier drops to;
+                 // 16 is the near tier, where the rim is the silhouette you are
+                 // looking straight at. This went from 9 to 16 once the cap's
+                 // UV became a planar decal (see capUV): under the old polar
+                 // chart a coarse cap SLICED its own texture, so column count
+                 // and texture quality were the same knob and 9 was a
+                 // compromise between them. They are independent now, which is
+                 // what makes both a finer near tier and a coarser far tier
+                 // worth having
+  stemRadial: 3, // columns around the STEM and its ring, and deliberately not
+                 // the same number as the cap's. The two surfaces are looked at
+                 // completely differently: a cap is a broad silhouette against
+                 // the ground and every facet on it shows, while a stalk is a
+                 // few millimetres wide and mostly in its own cap's shadow, so
+                 // a triangular prism reads as a stalk at any distance you will
+                 // ever see one from. Splitting the knob is worth more than it
+                 // sounds -- at radial 9 the stem was two thirds of the whole
+                 // mushroom's triangles, and it is now a fifth
   capRings: 2,   // rings from apex to rim. 1 is a faceted cone, 2 carries the
                  // profile curve, 3 is only visible above about 1 m of cap
   underRings: 1, // rings from rim back to the stem
@@ -181,14 +209,14 @@ export const MUSHROOM_DEFAULTS = {
   // --- material -------------------------------------------------------------
   capLayer: LAYER.MUSHROOM_CAP,
   fleshLayer: LAYER.MUSHROOM_FLESH,
-  capCell: 0,   // which 2x2 cell of the cap sheet this cap wears (0..3)
+  capCell: 0,   // which cell of the cap sheet this cap wears (0..3)
   fleshCell: 0, // ...and of the flesh sheet, for underside + stem + ring
 }
 
-// The sheets are 2x2 grids of 64 px cells. UVs are inset by one texel on every
-// side: without it the bilinear tap at a cell edge reaches into its neighbour,
-// and a white-gilled mushroom gets a hairline of the brown one next door all
-// the way round its rim.
+// The flesh sheet is a 2x2 grid of 64 px cells. UVs are inset by one texel on
+// every side: without it the bilinear tap at a cell edge reaches into its
+// neighbour, and a white-gilled mushroom gets a hairline of the brown one next
+// door all the way round its rim.
 const SHEET_GRID = 2
 const CELL = 1 / SHEET_GRID
 const INSET = 1 / 128 // one texel of a 128 px sheet
@@ -198,6 +226,39 @@ function cellUV(cell, u, v) {
   const cy = Math.floor(cell / SHEET_GRID) * CELL
   const span = CELL - 2 * INSET
   return [cx + INSET + u * span, cy + INSET + v * span]
+}
+
+// The cap top does NOT use cellUV's polar mapping. It is projected along the
+// cap's own axis instead -- a decal laid on the cap from above -- and the
+// reason is triangulation rather than art.
+//
+// A polar mapping hands each of the `radial` apex triangles a WEDGE of the
+// chart and lets the GPU interpolate the angle linearly across it, which the
+// true angle does not do. On the fly agaric's 9-gon that slices any wart wider
+// than 40 degrees of arc (an inner-ring wart is 1.02 wedges wide, so all of
+// them) and runs the radius 6% long inside every wedge. Both artefacts grow
+// toward the middle, where the wedges converge and a cap is most visible.
+//
+// A planar projection has neither, and not by being finer -- by being AFFINE. u
+// and v come out linear in the cap's local x and z; a triangle's x and z are
+// already linear in its barycentrics; so the hardware's linear interpolation is
+// EXACT and the texture stops caring how many triangles the cap has. It also
+// collapses the apex fan to a single point in UV instead of `cols + 1`
+// different ones, which is the same statement read the other way round.
+//
+// `rN` is the vertex's radius as a fraction of the cap's widest radius and
+// `theta` its angle, so this is the disc of props/mushroom-texture.js addressed
+// in its own coordinates. Inset on all four sides like any other cell -- the
+// disc has no wrap to protect, and the rim touches the cell edge at four points
+// without it.
+function capUV(cell, rN, theta) {
+  const cx = (cell % SHEET_GRID) * CELL
+  const cy = Math.floor(cell / SHEET_GRID) * CELL
+  const half = (CELL - 2 * INSET) * 0.5
+  return [
+    cx + CELL * 0.5 + rN * half * Math.cos(theta),
+    cy + CELL * 0.5 + rN * half * Math.sin(theta),
+  ]
 }
 
 // The stalk and the gills share one flesh cell, which sounds like a compromise
@@ -404,6 +465,7 @@ function stitchGrid(out, base, rings, cols, up, skipDegenerateFirstRow) {
 // positioned and scaled by `place`.
 function addMushroom(out, p, place) {
   const cols = Math.max(3, Math.round(p.radial))
+  const stemCols = Math.max(3, Math.round(p.stemRadial))
   const closed = p.sweep >= TAU - 1e-6
   const arc = Math.min(TAU, Math.max(0.15, p.sweep))
   const theta0 = place.yaw
@@ -430,6 +492,49 @@ function addMushroom(out, p, place) {
     capFwd.crossVectors(capSide, capAxis).normalize()
   }
 
+  // The stalk's radius WHERE THE CAP MEETS IT, which is the top frame's own
+  // radius and not `stemRadius`. `stemRadius` is the radius at HALF height by
+  // definition (see stemProfile), so on anything with real taper the two differ
+  // by tens of percent, and every "is this inside the stalk" test below wants
+  // the one at the top.
+  const stalkR = top ? top.radius : 0
+
+  // --- the cap must not be impaled on its own stalk --------------------------
+  //
+  // A dome sits above the stem tip and needs nothing done to it. A FUNNEL does:
+  // with `capRise` negative the profile's low point is the axis, which is
+  // exactly where the stalk is, so a chanterelle built naively has its stem
+  // standing up through the middle of its own cap.
+  //
+  // The fix is to raise the cap until its surface meets the stalk AT THE
+  // STALK'S RADIUS rather than at the axis, and aligning there is the whole of
+  // it: the cap then closes onto the top rim of the tube with no slit, and the
+  // bowl carries on falling away INSIDE the tube where the tube's own walls
+  // hide it. That is also what the real thing does, since a chanterelle's
+  // funnel is continuous with its stalk rather than resting on top of one.
+  //
+  // "The stalk's radius" is its INSCRIBED radius, not `stalkR`. A stem drawn
+  // with `stemRadial` columns is a prism, and the middle of a prism's flat face
+  // is only stalkR * cos(pi/stemCols) from the axis -- at the default 3 columns
+  // that is HALF the circumradius. Align to the circumradius instead and the
+  // three flat faces each poke a corner up through the cap, which is the exact
+  // bug this block exists to remove. Aligning to the inscribed radius leaves
+  // the opposite error, a sub-millimetre slit at the three vertices, and a slit
+  // you cannot see beats a spike you can.
+  //
+  // Sampled around theta rather than solved because `wavy` and `umbo` both
+  // perturb the height and neither inverts. Clamped at zero, so nothing whose
+  // cap already sheds water moves at all.
+  let capLift = 0
+  if (stem) {
+    const tStalk = Math.min(1, (stalkR * Math.cos(Math.PI / stemCols)) / Math.max(1e-4, p.capRadius))
+    let lowest = Infinity
+    for (let j = 0; j < 8; j++) {
+      lowest = Math.min(lowest, capHeightAt(tStalk, theta0 + (j / 8) * TAU, p))
+    }
+    capLift = Math.max(0, -lowest)
+  }
+
   // Map a local (radius, height) about the cap axis into world space.
   const toWorld = (r, y, theta, target) => {
     const c = Math.cos(theta)
@@ -438,13 +543,12 @@ function addMushroom(out, p, place) {
       .copy(capOrigin)
       .addScaledVector(capSide, r * c)
       .addScaledVector(capFwd, r * s)
-      .addScaledVector(capAxis, y)
+      .addScaledVector(capAxis, y + capLift)
   }
 
   const capPoint = (t, theta, target) =>
     toWorld(capRadiusAt(t, theta, p), capHeightAt(t, theta, p), theta, target)
 
-  const stemR = p.stemRadius
   // The underside's inner edge is the STALK, not the axis. Everything inside
   // `tFloor` is cap narrower than the stem it lands on -- triangles buried in
   // the stalk, invisible and paid for anyway.
@@ -455,7 +559,7 @@ function addMushroom(out, p, place) {
   // therefore grew an inside-out collar while every dome came out right.
   // Trimming the domain removes the degenerate band rather than orienting it.
   const tFloor = p.stemHeight > 1e-4
-    ? Math.min(0.6, (stemR * 0.98) / Math.max(1e-4, p.capRadius))
+    ? Math.min(0.6, (stalkR * 0.98) / Math.max(1e-4, p.capRadius))
     : 0
   const underPoint = (t, theta, target) =>
     toWorld(
@@ -473,16 +577,30 @@ function addMushroom(out, p, place) {
   // --- cap top --------------------------------------------------------------
   const capRings = Math.max(1, Math.round(p.capRings))
   const capBase = out.positions.length / 3
+  // The disc's normalising radius, measured over the grid that is about to be
+  // emitted rather than taken as `p.capRadius`. `wavy` and `inroll` both bend
+  // the radius by theta, and `inroll` makes it non-monotonic in t, so the
+  // widest point of a lobed cap is neither at t = 1 nor the same at every
+  // angle. Measuring it is 3 lines and guarantees the projected disc lands
+  // inside its cell instead of near enough.
+  let capMaxR = 1e-4
+  for (let k = 0; k <= capRings; k++) {
+    for (let j = 0; j < cols; j++) {
+      const th = theta0 + (closed ? (j / cols) * TAU : (j / cols) * arc - arc / 2)
+      capMaxR = Math.max(capMaxR, capRadiusAt(k / capRings, th, p))
+    }
+  }
   for (let k = 0; k <= capRings; k++) {
     const t = k / capRings
     for (let j = 0; j <= cols; j++) {
       const theta = theta0 + (closed ? (j / cols) * TAU : (j / cols) * arc - arc / 2)
       capPoint(t, theta, tmp)
       const n = surfaceNormal(capPoint, t, theta, false)
-      // Polar UV: u around, v out from the axis. The cap sheet is drawn as a
-      // polar chart to match (props/mushroom-texture.js), so a radial streak in
-      // the art is a radial streak on the cap at any cap size.
-      const [u, v] = cellUV(p.capCell, closed ? j / cols : j / cols, t)
+      // Planar UV, projected along the cap axis. `capRadiusAt` is the same
+      // radius `capPoint` just used, so this is literally the vertex's own
+      // (x, z) in the cap's frame -- which is what makes the mapping affine and
+      // the interpolation exact. See capUV.
+      const [u, v] = capUV(p.capCell, capRadiusAt(t, theta, p) / capMaxR, theta)
       vert(out, tmp.x, tmp.y, tmp.z, n.x, n.y, n.z, u, v, p.capLayer)
     }
   }
@@ -535,7 +653,7 @@ function addMushroom(out, p, place) {
     const drop = p.gillDrop * p.capRadius * p.gillDepth
     for (let g = 0; g < blades; g++) {
       const theta = theta0 + (closed ? (g / blades) * TAU : (g / blades) * arc - arc / 2)
-      const tIn = Math.min(0.98, Math.max(0.05, stemR / Math.max(1e-4, p.capRadius)) * 1.1)
+      const tIn = Math.min(0.98, Math.max(0.05, stalkR / Math.max(1e-4, p.capRadius)) * 1.1)
       underPoint(tIn, theta, inner)
       underPoint(0.995, theta, outer)
       innerLow.copy(inner).addScaledVector(capAxis, -drop * 0.45)
@@ -568,8 +686,8 @@ function addMushroom(out, p, place) {
   if (stem) {
     const stemBase = out.positions.length / 3
     for (const f of stem) {
-      for (let j = 0; j <= cols; j++) {
-        const theta = (j / cols) * TAU
+      for (let j = 0; j <= stemCols; j++) {
+        const theta = (j / stemCols) * TAU
         const c = Math.cos(theta)
         const s = Math.sin(theta)
         tmp.copy(f.pos).addScaledVector(f.side, f.radius * c).addScaledVector(f.fwd, f.radius * s)
@@ -584,17 +702,17 @@ function addMushroom(out, p, place) {
           .addScaledVector(f.fwd, s)
           .addScaledVector(f.tangent, -dR)
           .normalize()
-        const [u, v] = cellUV(p.fleshCell, j / cols, stemV(f.s))
+        const [u, v] = cellUV(p.fleshCell, j / stemCols, stemV(f.s))
         vert(out, tmp.x, tmp.y, tmp.z, n.x, n.y, n.z, u, v, p.fleshLayer)
       }
     }
     // A tube's outward face is the opposite winding from a cap's upward face --
     // derived alongside it in the header.
     for (let k = 0; k < stem.length - 1; k++) {
-      for (let j = 0; j < cols; j++) {
-        const a = stemBase + k * (cols + 1) + j
+      for (let j = 0; j < stemCols; j++) {
+        const a = stemBase + k * (stemCols + 1) + j
         const b = a + 1
-        const c = a + (cols + 1)
+        const c = a + (stemCols + 1)
         const d = c + 1
         out.indices.push(a, d, b, a, c, d)
       }
@@ -619,11 +737,17 @@ function addMushroom(out, p, place) {
     const rOut = p.ring * p.capRadius
     const droop = -p.ringDroop * rOut
 
+    // `stemCols`, not `cols`, and it is not a stylistic choice. The skirt's
+    // inner edge has to land ON the stalk, and the stalk is a prism: give the
+    // ring the cap's nine columns and its inner polygon crosses the stem's
+    // three flat faces, sinking inside the stalk at the vertices and floating
+    // clear of it in between. Sharing the column count makes the two polygons
+    // share their vertices' angles, so the join is exact at every one.
     for (let ring = 0; ring < 2; ring++) {
       const r = ring === 0 ? rIn : rOut
       const dy = ring === 0 ? 0 : droop
-      for (let j = 0; j <= cols; j++) {
-        const theta = (j / cols) * TAU
+      for (let j = 0; j <= stemCols; j++) {
+        const theta = (j / stemCols) * TAU
         tmp.copy(centre)
           .addScaledVector(side, r * Math.cos(theta))
           .addScaledVector(fwd, r * Math.sin(theta))
@@ -638,11 +762,11 @@ function addMushroom(out, p, place) {
         // The skirt is stalk, not gill, so it samples the stem band -- and its
         // outer edge takes the shaded end, because the underside of a drooping
         // ring never sees the sky.
-        const [u, v] = cellUV(p.fleshCell, j / cols, ring === 0 ? STEM_V_BASE : STEM_V_TOP)
+        const [u, v] = cellUV(p.fleshCell, j / stemCols, ring === 0 ? STEM_V_BASE : STEM_V_TOP)
         vert(out, tmp.x, tmp.y, tmp.z, n.x, n.y, n.z, u, v, p.fleshLayer)
       }
     }
-    stitchGrid(out, ringBase, 1, cols, true, false)
+    stitchGrid(out, ringBase, 1, stemCols, true, false)
   }
 
   // Move the finished mushroom into its slot in the clump. Done here rather
@@ -742,6 +866,7 @@ export function buildMushroom(options = {}) {
 export function mushroomTriangles(options = {}) {
   const p = { ...MUSHROOM_DEFAULTS, ...options }
   const cols = Math.max(3, Math.round(p.radial))
+  const stemCols = Math.max(3, Math.round(p.stemRadial))
   const capRings = Math.max(1, Math.round(p.capRings))
   const underRings = Math.max(1, Math.round(p.underRings))
   const stemRings = Math.max(1, Math.round(p.stemRings))
@@ -754,7 +879,7 @@ export function mushroomTriangles(options = {}) {
   // does, but only when there is no stalk to trim its inner edge against.
   if (p.underside) per += cols * (stemmed ? 2 * underRings : 2 * underRings - 1)
   if (blades > 0 && p.underside) per += blades * 2
-  if (stemmed) per += cols * 2 * stemRings
-  if (stemmed && p.ring > 1e-4) per += cols * 2
+  if (stemmed) per += stemCols * 2 * stemRings
+  if (stemmed && p.ring > 1e-4) per += stemCols * 2
   return per * Math.max(1, Math.round(p.cluster))
 }

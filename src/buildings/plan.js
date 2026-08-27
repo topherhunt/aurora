@@ -585,7 +585,11 @@ export function planBuilding(opts = {}) {
   const chimney = {
     x: chX, z: chZ, baseY: chBase,
     topY: main.roof.ridgeY + range(r, [0.55, 1.0]),
-    w: range(r, [0.55, 0.75]), d: range(r, [0.55, 0.75]),
+    // The bottom of the range is half the top's, so a stack can come out a
+    // slender flue as well as a broad one. Independent draws on w and d, so the
+    // narrow ones are mostly narrow on ONE axis -- a stack that is thin both
+    // ways is rare, which is right: it is the oddity, not the type.
+    w: range(r, [0.275, 0.75]), d: range(r, [0.275, 0.75]),
   }
 
   const stepRise = floorY - doorGroundY

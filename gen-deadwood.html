@@ -5,7 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aurora -- procedural deadwood</title>
     <style>
-      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; }
+      /* --changed is the ONE colour on this page that means "you moved this".
+         Deliberately not --warn: --warn is a yellow-gold and says the budget
+         table is over §5's number, which is a judgement about the mesh. A
+         changed slider is a judgement about nothing at all -- it is bookkeeping
+         -- and the two must not be confusable at a glance down a panel that
+         shows both. Orange also holds up against #05080f far better than a red
+         would; at 12px monospace on near-black, red goes muddy. */
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; --changed: #e08a3c; }
       * { box-sizing: border-box; }
       html, body { height: 100%; }
       body {
@@ -40,6 +47,12 @@
 
       .row { display: grid; grid-template-columns: 88px 1fr 46px; gap: 6px; align-items: center; margin-bottom: 3px; }
       .row label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+      /* Thirty-four sliders is more than anybody holds in their head, so the
+         panel has to be able to answer "what did I actually change" without
+         being read line by line. The label is the right carrier: it is already
+         the row's identity, and colouring the readout instead would fight the
+         number for attention. */
+      .row label.changed { color: var(--changed); }
       .row input[type=range] { width: 100%; padding: 0; background: none; border: none; }
       .row .v { text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -107,6 +120,12 @@
         <button id="wire">wireframe</button>
         <button id="spin">spin</button>
         <button id="reset">defaults</button>
+        <!-- Not a view, unlike everything to its left: this one takes the shape
+             OFF the page and into the source. It is last because it is what you
+             press when you have finished, and it is here rather than beside the
+             preset dropdown because it copies the state of every control on the
+             panel, not the state of that one. -->
+        <button id="copy">copy</button>
       </div>
     </div>
 

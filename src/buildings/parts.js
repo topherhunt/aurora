@@ -446,7 +446,19 @@ export function signedVolume(geometry) {
 export const TINT = {
   thatchNew: [1.06, 0.98, 0.78],
   thatchOld: [0.66, 0.66, 0.62],
-  slate: [0.52, 0.56, 0.64], // SHINGLE, tinted cold -- this is the whole "slate roof"
+  // SHINGLE, tinted to NEUTRAL -- this is the whole "slate roof", and the
+  // numbers are measured rather than picked. A vertex colour multiplies; it
+  // cannot desaturate. Grey in means brown out, because shingle.png's own mean
+  // is linear [0.117, 0.089, 0.069] -- half again as much red as blue -- and a
+  // neutral multiply carries all of that straight through. That is why the old
+  // cold tint still read as wood: it took the mean to [0.061, 0.050, 0.044],
+  // which is still 1.4:1 red to blue and still a plank.
+  //
+  // So the tint is the INVERSE of the tile's own chroma, scaled to the value
+  // wanted: 0.0385 / [0.117, 0.089, 0.069] lands the mean on a neutral grey a
+  // quarter darker in luminance than the old tint left it. Per-texel chroma
+  // survives, which is right -- slate is not one colour either.
+  slate: [0.33, 0.43, 0.56],
   shake: [1, 1, 1],
   pantile: [1, 1, 1], // the fired clay is already in the tile; do not tint it twice
   timber: [1, 1, 1],

@@ -348,15 +348,114 @@ export const LAYER = {
   MUSHROOM_CAP_CAVE: 37,
   MUSHROOM_FLESH: 38,
 
-  // The mushroom's card tier. Written at load by photographing the mesh, like
-  // the fern and grass impostors, so it is 64 KB of RAM and zero bytes of disk
-  // and it cannot disagree with the geometry it stands in for. Allocated now
-  // rather than when a scatter wants it because §5's grass-clump row already
-  // says a prop this size takes a card at 20 m, and gen-mushroom.html cannot
-  // answer whether that card is honest without somewhere to bake one.
-  IMPOSTOR_MUSHROOM: 39,
+  // The mushroom's card tiers, ONE PHOTOGRAPH PER SPECIES. Written at load by
+  // photographing the mesh, like the fern and grass impostors, so they are RAM
+  // and zero bytes of disk and they cannot disagree with the geometry they stand
+  // in for.
+  //
+  // Per SPECIES and not per variant, which is the whole reason there are five of
+  // these and not thirty. mushroom-bank.js builds six shape variants of each
+  // species and every one of them wears its species' single card at its own
+  // width and height -- the same trade tree-bank makes for four sizes of pine,
+  // and it costs less here, because a mushroom's variants differ by stem length
+  // and cap dish rather than by having a different number of parts.
+  //
+  // Per species and not one for ALL of them, though, and that is the line worth
+  // holding: at the range the card comes in these five are still five COLOURS --
+  // a scarlet cap, a chestnut one, an amber funnel, a pale parasol and a dark
+  // ink cap -- and colour is the last thing to survive as a prop shrinks. Shape
+  // is what a card gives up; hue is what it is for. Five layers is 320 KB of the
+  // array against 256 KB saved by sharing one, and sharing would put one hue on
+  // the whole forest floor.
+  //
+  // Both card tiers of a species share its layer -- the two-plane cross at LOD1
+  // and the spun billboard at LOD2 -- exactly as the four tree impostors do, and
+  // for the same reason: they are the same photograph seen two ways, and
+  // material.js's billboardVertex tells them apart by their vertex NORMAL rather
+  // than by their layer. See the note on treeImpostorLayers.
+  IMPOSTOR_MUSHROOM_AGARIC: 39,
+  IMPOSTOR_MUSHROOM_PORCINI: 40,
+  IMPOSTOR_MUSHROOM_CHANTERELLE: 41,
+  IMPOSTOR_MUSHROOM_PARASOL: 42,
+  IMPOSTOR_MUSHROOM_INKCAP: 43,
+
+  // --- strewn litter (src/props/litter.js) ----------------------------------
+  //
+  // Written at load like the impostors above, and by the same argument, but
+  // photographing something that never exists as a mesh at all: a few dozen
+  // small stones dropped at random on a patch of ground, shot from STRAIGHT
+  // ABOVE. The result is stamped on the terrain as a flat quad, so one layer
+  // buys a whole square metre of stony ground for two triangles.
+  //
+  // WHY THIS EXISTS AT ALL: the scatter used to draw that look as geometry, at
+  // a stone every 1.7 m across every cliff and every wood, and the stones were
+  // 11 cm across. Forty-one of them for every rock big enough to read as a
+  // rock, each costing a full BatchedMesh instance whatever its triangle count,
+  // and the whole budget going to things too small to see. The look is worth
+  // having and the geometry was not, which is exactly the trade a texture is
+  // for. See the underfoot bed in v2/render/rocks.js for the other half.
+  //
+  // FOUR AND NOT ONE, because a single patch stamped over a hillside is a
+  // repeat the eye finds immediately -- the same argument the mushroom cards
+  // make for five layers over one, and it is cheaper here: the scatter gives
+  // each stamp a yaw as well, so four layers times four right-angle turns is
+  // sixteen apparent patches before mirroring. 256 KB for the set.
+  //
+  // NOT IN ANY SNOW LIST, and that is a decision rather than an oversight. The
+  // ground under a litter patch is terrain, and terrain does its own snow in
+  // its own shader; whitening the patch as well would put a second, differently
+  // shaped snow line on top of the first one at the exact place they are
+  // guaranteed to be compared. Bare stone showing through the ground's snow is
+  // both the cheaper answer and the one that looks like wind-scoured scree.
+  LITTER_0: 44,
+  LITTER_1: 45,
+  LITTER_2: 46,
+  LITTER_3: 47,
+
+  // --- dead wood (src/props/deadwood.js) ------------------------------------
+  //
+  // Written at load, like every other IMPOSTOR_* above. Two layers for eighteen
+  // variants, and the split is by ATTITUDE rather than by species: a standing
+  // stump and a fallen log have nothing in common in silhouette, which is the
+  // only thing a billboard carries, while an oak log and a pine log have the
+  // same outline and differ only in a bark tile the card is too far away to
+  // resolve.
+  //
+  // THE SPECIES ARE THEREFORE APPROXIMATED, and birch is the case that pays for
+  // it -- a dead birch is pale where oak and pine are dark, and one photograph
+  // cannot be both. Two arguments for wearing it anyway: the deadwood family is
+  // tinted as a whole (DEADWOOD_TINT) so the three are already closer than their
+  // tiles are, and the card does not start until 20 m, where a 2 m log is under
+  // 100 px and its colour is doing the work its shape cannot. If it ever reads
+  // wrong the fix is a third layer for birch, not six.
+  IMPOSTOR_DEADWOOD_SNAG: 48,
+  IMPOSTOR_DEADWOOD_LOG: 49,
+
+  // --- building impostors (src/buildings/v2/card.js) ------------------------
+  //
+  // A BLOCK OF 20, NOT ONE PER VARIANT, and the block is indexed by MATERIAL
+  // rather than by building: one photograph per wall style x roof kind, and
+  // every building wearing that pair borrows it. `IMPOSTOR_BUILDING` is the
+  // base of the run and `IMPOSTOR_BUILDING + CARD_COMBOS.length - 1` is the top;
+  // card.js owns the order and `LAYER_COUNT` below has to leave room for all of
+  // it.
+  //
+  // The arithmetic is the whole argument. A photograph per variant is 148
+  // slices of 64 KB -- 9.3 MB of texture to put 4-triangle specks on a
+  // hillside, and 19 MB back when a card took two. Per material pair it is 20
+  // slices, 1.25 MB, and it is complete: the four kinds' legal style x roof
+  // grids union to exactly 20 and a cottage can be built for every one of them,
+  // so a cottage is what gets photographed. What a distant building then wears
+  // is the right WALL and the right ROOF at the wrong proportions, which is the
+  // trade named in card.js and is worth about three pixels at the range the
+  // card comes in.
+  //
+  // The cross still stands its two planes at the real building's own TRUE
+  // widths and height, so the silhouette is the building's; only the picture
+  // inside it is borrowed, and stretched to fit.
+  IMPOSTOR_BUILDING: 50, // base of a 20-layer run, one per wall style x roof kind
 }
-export const LAYER_COUNT = 40
+export const LAYER_COUNT = 70
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -372,7 +471,8 @@ export const LAYER_COUNT = 40
 // tree at 130 m standing in a white forest is the worse error by a wide margin,
 // and snow does sit along real branches anyway. The impostor bake is unlit and
 // snow-free, so the card stays dynamic: turning snow up whitens LOD2 without
-// rebaking.
+// rebaking. How MUCH it whitens them is SNOW_CARD_LAYERS' business, below --
+// being in this list buys a card the foliage recipe, not the mesh's threshold.
 //
 // DELIBERATELY OUT, and each is one line to add: FROND_0, GRASS, GRASS_TUFT,
 // and the fern and grass impostors. All of them would snow in a real winter,
@@ -396,6 +496,60 @@ export const SNOW_LAYERS = [
   LAYER.IMPOSTOR_OAK,
   LAYER.IMPOSTOR_BIRCH,
   LAYER.IMPOSTOR_ASPEN,
+  // The two dead-wood cards, and they are here rather than with the wood they
+  // replace because of what a card IS, not what it is a picture of. Wood snows
+  // through the HARD-SURFACE recipe, which leans hard on which way the surface
+  // faces -- and a billboard's normal is vertical by construction, so the hard
+  // recipe would read the whole quad as a horizontal top face and paint it
+  // solid white. The card recipe below takes the instance's own snow load as a
+  // coverage fraction instead, which is the only one of the three that says
+  // anything sensible about a flat photograph. See SNOW_CARD_LAYERS.
+  //
+  // Out of the lists entirely was the other option and it is worse: a fallen log
+  // white at 19 m and bare at 21 is a pop at a boundary the player walks across
+  // constantly.
+  LAYER.IMPOSTOR_DEADWOOD_SNAG,
+  LAYER.IMPOSTOR_DEADWOOD_LOG,
+]
+
+// --- and which of those are FLAT PHOTOGRAPHS rather than cut foliage ----------
+//
+// A subset of SNOW_LAYERS, not a rival to it: everything here is foliage and
+// snows as foliage. What this list changes is HOW the snow is applied, and it
+// exists because the ordinary recipe has a failure mode that only a card can
+// hit.
+//
+// SNOW ON FOLIAGE IS A THRESHOLD, not a blend -- `drift > cut`, with a
+// one-pixel rim. That works because drift VARIES across a real canopy: every
+// leaf card faces its own way, and the blob field varies over the crown. A
+// flat card has neither. Past SNOW_FADE_FAR the blob field is switched off for
+// a constant 0.5 (it is invisible at that range and costs ~145 ALU), and an
+// impostor's normal is uniform over the whole quad by construction -- exactly
+// vertical on the spun billboard. So both terms of drift are constant, the
+// quad crosses the threshold as ONE UNIT, and a tree is either pure white or
+// pure green with nothing between. At the shipping constants that flips at a
+// load of 0.306, so with the foliage cap at 0.25-0.6 it whitens about five
+// trees in six.
+//
+// SO A CARD TAKES ITS OWN INSTANCE'S SNOW LOAD AS A COVERAGE FRACTION instead,
+// once the noise that would have broken it up is gone. That load already
+// carries the per-tree roll, so the far forest varies tree to tree the way it
+// did up close, and it is free: the shader has the number in hand either way.
+// Near enough for the blob field to still be running, the threshold is still
+// the better picture and still what draws -- the two are crossfaded on the
+// same `snowNear` that fades the noise, so nothing pops at the boundary.
+//
+// This is the one thing the SNOW_LAYERS note above got wrong when it said a
+// noise-dominated recipe survives being flattened onto a card. It survives
+// while there is noise. The recipe and the fade were tuned against meshes, and
+// past 40 m there is no noise left to dominate.
+export const SNOW_CARD_LAYERS = [
+  LAYER.IMPOSTOR_PINE,
+  LAYER.IMPOSTOR_OAK,
+  LAYER.IMPOSTOR_BIRCH,
+  LAYER.IMPOSTOR_ASPEN,
+  LAYER.IMPOSTOR_DEADWOOD_SNAG,
+  LAYER.IMPOSTOR_DEADWOOD_LOG,
 ]
 
 // --- and which layers snow settles on AS STONE rather than as foliage --------

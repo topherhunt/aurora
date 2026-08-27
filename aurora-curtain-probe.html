@@ -1,0 +1,490 @@
+<!doctype html>
+<!--
+  Throwaway verification probe for src/aurora-lab/curtain/. Driven under headless
+  Chrome + SwiftShader the same way aurora-probe.html is:
+
+    npx vite --port 5201 --strictPort &
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless=new --no-sandbox --disable-gpu-sandbox \
+      --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader \
+      --ignore-certificate-errors --allow-insecure-localhost \
+      --user-data-dir=/tmp/cu-profile \
+      --dump-dom https://localhost:5201/aurora-curtain-probe.html > dom.html
+
+  then pull #out and every div.shot dataURL out of dom.html.
+
+  It answers, in order: does the mesh aurora LINK, does it DRAW, how many layers
+  deep is it really, does the vertex-shader cull actually save fill, is there any
+  NaN in the placement math, and what does it look like.
+
+  Section 1b renames a reserved word at RUNTIME, leaving the source file
+  untouched, so the rest of the probe can measure something even when the stock
+  vertex shader will not compile. It is a no-op on a source that links: the
+  identifier it rewrites (`patch`, a tessellation keyword ANGLE rejects in every
+  shader version) has since been renamed in glsl.js, and section 1 now reports
+  whether the stock source links on its own. Left in place because it is the
+  section that FOUND that bug and it costs nothing when there is nothing to fix.
+
+  Not part of the app. Delete it when the lab is done.
+-->
+<meta charset="utf-8">
+<title>aurora curtain probe</title>
+<style>body{background:#000;color:#ccc;font:12px monospace}canvas{display:none}</style>
+<div id="out">running</div>
+<div id="shots"></div>
+<script type="module">
+import * as THREE from 'three'
+import { AuroraCurtains } from '/src/aurora-lab/curtain/curtains.js'
+import { curtainDefaults } from '/src/aurora-lab/curtain/params.js'
+import { WORLD_PER_KM } from '/src/aurora-lab/curtain/geometry.js'
+
+// Set before anything can throw, so a driver polling it sees `running` rather than undefined and cannot mistake a page that died during import for a page that has not started.
+window.BENCH_STATE = 'running'
+
+const lines = []
+const say = (s, extra) => {
+  lines.push(extra ? s + '   ' + extra : s)
+  document.getElementById('out').textContent = lines.join('\n')
+}
+
+const W = 900, H = 560
+
+const canvas = document.createElement('canvas')
+canvas.width = W; canvas.height = H
+document.body.appendChild(canvas)
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true })
+renderer.setPixelRatio(1)
+renderer.setSize(W, H, false)
+
+let shaderErrors = 0
+renderer.debug.onShaderError = (gl, prog, vs, fs) => {
+  shaderErrors++
+  say('SHADER ERROR: ' + gl.getProgramInfoLog(prog))
+  say('  vs log: ' + (gl.getShaderInfoLog(vs) || '(empty)'))
+  say('  fs log: ' + (gl.getShaderInfoLog(fs) || '(empty)'))
+}
+
+const scene = new THREE.Scene()
+// Same framing convention as aurora-probe.html: three looks down -z with no
+// rotation, and -z is north, so this already faces the belt.
+const camera = new THREE.PerspectiveCamera(62, W / H, 0.1, 40000)
+camera.position.set(0, 2, 0)
+camera.rotation.order = 'YXZ'
+camera.rotation.y = 0
+camera.rotation.x = 0.30
+
+let curtains, ctorError = null
+try { curtains = new AuroraCurtains(scene, {}) }
+catch (e) { ctorError = e; say('CONSTRUCTOR THREW: ' + (e && e.message)) }
+
+const gl = renderer.getContext()
+const px = new Uint8Array(W * H * 4)
+
+function frame(t) { curtains.update(camera, t); renderer.render(scene, camera) }
+
+function stats() {
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px)
+  let lit = 0, clipped = 0, sum = 0, over96 = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const m = Math.max(px[i], px[i + 1], px[i + 2])
+    sum += m
+    if (m > 6) lit++
+    if (m > 96) over96++
+    if (m === 255) clipped++
+  }
+  return { lit, clipped, over96, mean: sum / (W * H) }
+}
+
+const shots = document.getElementById('shots')
+function capture(name) {
+  const d = document.createElement('div')
+  d.className = 'shot'; d.dataset.algo = name
+  d.textContent = canvas.toDataURL('image/png')
+  shots.appendChild(d)
+}
+function captureCanvas(name, c) {
+  const d = document.createElement('div')
+  d.className = 'shot'; d.dataset.algo = name
+  d.textContent = c.toDataURL('image/png')
+  shots.appendChild(d)
+}
+
+if (!ctorError) {
+
+  // =========================================================================
+  // 1. LINK AND DRAW
+  // =========================================================================
+  say('=== 1. link and draw, stock source ===')
+  {
+    const before = shaderErrors
+    frame(6.0)
+    const s = stats()
+    say((shaderErrors === before ? '  ok   ' : ' FAIL  ') + 'program links')
+    say((s.lit > 2000 ? '  ok   ' : ' FAIL  ') + 'facing north draws pixels',
+        s.lit + ' lit px  (' + (100 * s.lit / (W * H)).toFixed(1) + '% of frame)')
+    capture('stock-north')
+  }
+
+  // -------------------------------------------------------------------------
+  // 1b. RUNTIME WORKAROUND, so the rest of the probe has something to measure.
+  // -------------------------------------------------------------------------
+  let patched = false
+  if (shaderErrors > 0) {
+    say('')
+    say('  --> stock vertex shader failed. RUNTIME rename `patch` -> `pch`')
+    say('      (glsl.js on disk is untouched)')
+    curtains.material.vertexShader = curtains.vertexSource().replace(/\bpatch\b/g, 'pch')
+    curtains.material.needsUpdate = true
+    const before = shaderErrors
+    frame(6.0)
+    const s = stats()
+    patched = shaderErrors === before
+    say((patched ? '  ok   ' : ' FAIL  ') + 'patched program links')
+    say((s.lit > 2000 ? '  ok   ' : ' FAIL  ') + 'patched: facing north draws pixels',
+        s.lit + ' lit px  (' + (100 * s.lit / (W * H)).toFixed(1) + '% of frame)')
+    say('  patched brightness: mean max-channel ' + s.mean.toFixed(1) +
+        ', px>96 ' + s.over96 + ', CLIPPED TO WHITE ' + s.clipped +
+        '  (' + (100 * s.clipped / (W * H)).toFixed(1) + '% of frame)')
+    capture('patched-north')
+    say('')
+  }
+  const VS = patched ? curtains.material.vertexShader : curtains.vertexSource()
+
+  { // facing south must draw nothing: the belt is northern
+    camera.rotation.y = Math.PI
+    frame(6.0)
+    const s = stats()
+    say((s.lit === 0 ? '  ok   ' : ' FAIL  ') + 'facing south draws nothing', s.lit + ' lit px')
+    camera.rotation.y = 0
+  }
+
+  // =========================================================================
+  // 2. VERTEX / TRIANGLE COUNTS, READ OFF THE REAL BUFFERS
+  // =========================================================================
+  say('')
+  say('=== 2. geometry counts (read from the built BufferGeometry) ===')
+  {
+    const g = curtains.geometry
+    const verts = g.attributes.position.count
+    const tris = g.index.count / 3
+    say('  position.count ' + verts + '   index.count ' + g.index.count + '   triangles ' + tris)
+    say('  index array type ' + g.index.array.constructor.name)
+    say('  userData.curtainStats ' + JSON.stringify(curtains.stats()))
+    say((verts === 4050 && tris === 6336 ? '  ok   ' : ' NOTE  ') + 'claimed 4050 verts / 6336 tris')
+    let bytes = 0
+    for (const k of Object.keys(g.attributes)) {
+      const a = g.attributes[k]
+      bytes += a.array.byteLength
+      say('    ' + k.padEnd(9) + ' itemSize ' + a.itemSize + '  count ' + a.count + '  ' + a.array.byteLength + ' B')
+    }
+    say('  attribute bytes ' + bytes + '   index bytes ' + g.index.array.byteLength)
+  }
+
+  // =========================================================================
+  // 3. OVERDRAW, MEASURED
+  // =========================================================================
+  //
+  // A second material over the SAME vertex shader and the SAME uniforms object,
+  // whose fragment writes exactly one 8-bit unit, blended src=ONE dst=ONE with
+  // the depth test off. The red channel of the readback IS the number of
+  // fragments that reached that pixel. Zero-area triangles never rasterise, so
+  // the vertex cull shows up here as a smaller number, not a darker one.
+  const countMat = new THREE.ShaderMaterial({
+    uniforms: curtains.material.uniforms,
+    vertexShader: VS,
+    fragmentShader: 'precision highp float;\nvoid main(){ gl_FragColor = vec4( 1.0 / 255.0 ); }',
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+    blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
+    depthTest: false, depthWrite: false, side: THREE.DoubleSide, fog: false, transparent: true,
+  })
+
+  let lastCounts = null
+  function overdraw(t) {
+    const real = curtains.mesh.material
+    curtains.mesh.material = countMat
+    curtains.update(camera, t)
+    renderer.render(scene, camera)
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    curtains.mesh.material = real
+    let max = 0, sum = 0, covered = 0, coveredSum = 0, sat = 0
+    const counts = new Uint8Array(W * H)
+    for (let i = 0, p = 0; i < px.length; i += 4, p++) {
+      const n = px[i]
+      counts[p] = n; sum += n
+      if (n > max) max = n
+      if (n > 0) { covered++; coveredSum += n }
+      if (n >= 255) sat++
+    }
+    lastCounts = counts
+    return { max, sat, mean: sum / (W * H), meanCovered: covered ? coveredSum / covered : 0, cover: covered / (W * H) }
+  }
+
+  say('')
+  say('=== 3. overdraw calibration ===')
+  {
+    // One flat unfolded sheet: every covered pixel must be hit exactly once.
+    // If the accumulator is lying, it lies here.
+    curtains.setValues({ ...curtainDefaults(),
+      cuCurtains: 1, cuLeaves: 1, cuRows: 2, cuSegs: 44,
+      cuMeander: 0, cuWander: 0, cuCurl: 0, cuSplay: 0, cuLean: 0,
+      cuRagged: 0, cuGateAmt: 0, cuPatchAmt: 0, cuCull: 0 })
+    const o = overdraw(6.0)
+    say((o.max === 1 ? '  ok   ' : ' FAIL  ') + 'one flat sheet reads exactly 1 layer',
+        'max ' + o.max + ', mean over covered ' + o.meanCovered.toFixed(3))
+  }
+
+  say('')
+  say('=== 3b. overdraw at the defaults, facing north ===')
+  say('  max = deepest pixel; mean = screen-equivalents over the WHOLE frame;')
+  say('  meanCov = mean depth where anything drew; cover = fraction of frame touched')
+  const TIMES = [0, 3, 6, 12, 24, 48, 96]
+  const SWEEP = [0, 6, 24, 96]
+  {
+    curtains.setValues(curtainDefaults())
+    let mSum = 0, mcSum = 0, cSum = 0, maxMax = 0
+    for (const t of TIMES) {
+      const o = overdraw(t)
+      mSum += o.mean; mcSum += o.meanCovered; cSum += o.cover
+      if (o.max > maxMax) maxMax = o.max
+      say('  t=' + String(t).padStart(3) + '   max ' + String(o.max).padStart(3) +
+          '   mean ' + o.mean.toFixed(2).padStart(6) +
+          '   meanCov ' + o.meanCovered.toFixed(2).padStart(6) +
+          '   cover ' + (100 * o.cover).toFixed(1).padStart(5) + '%' +
+          (o.sat ? '   SATURATED ' + o.sat + ' px' : ''))
+    }
+    const n = TIMES.length
+    say('  ---- over ' + n + ' frames:  worst max ' + maxMax +
+        ',  mean ' + (mSum / n).toFixed(2) +
+        ',  meanCov ' + (mcSum / n).toFixed(2) +
+        ',  cover ' + (100 * cSum / n).toFixed(1) + '%')
+    say('  CLAIMED in curtains.js: ~9 worst case, ~4.2 frame-average facing north')
+  }
+
+  { // heat map, so the SHAPE of the cost is visible and not just its mean
+    curtains.setValues(curtainDefaults())
+    const o = overdraw(6.0)
+    const hc = document.createElement('canvas')
+    hc.width = W; hc.height = H
+    const ctx = hc.getContext('2d')
+    const img = ctx.createImageData(W, H)
+    const stops = [[0,0,0],[30,40,150],[20,170,90],[240,220,40],[230,40,30]]
+    const ramp = v => {
+      const f = Math.min(0.9999, Math.max(0, v)) * (stops.length - 1)
+      const i = Math.floor(f), k = f - i, a = stops[i], b = stops[i + 1]
+      return [a[0]+(b[0]-a[0])*k, a[1]+(b[1]-a[1])*k, a[2]+(b[2]-a[2])*k]
+    }
+    const scale = Math.max(1, o.max)
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const c = ramp(lastCounts[(H - 1 - y) * W + x] / scale)   // readPixels is bottom-up
+      const d = (y * W + x) * 4
+      img.data[d] = c[0]; img.data[d+1] = c[1]; img.data[d+2] = c[2]; img.data[d+3] = 255
+    }
+    ctx.putImageData(img, 0, 0)
+    ctx.font = '13px monospace'
+    for (let i = 0; i <= 10; i++) {
+      const c = ramp(i / 10)
+      ctx.fillStyle = 'rgb(' + c.map(Math.round).join(',') + ')'
+      ctx.fillRect(10 + i * 26, H - 26, 26, 16)
+    }
+    ctx.fillStyle = '#fff'
+    ctx.fillText('0', 12, H - 30)
+    ctx.fillText(String(o.max) + ' layers', 10 + 11 * 26, H - 12)
+    captureCanvas('overdraw-heat', hc)
+    say('  heat map captured (max ' + o.max + ' layers)')
+  }
+
+  // =========================================================================
+  // 4. DOES THE CULL ACTUALLY SAVE FILL?
+  // =========================================================================
+  say('')
+  say('=== 4. cuCull sweep -- does gating collapse geometry? ===')
+  {
+    const base = curtainDefaults()
+    const run = (label, values) => {
+      curtains.setValues({ ...base, ...values })
+      let mSum = 0, maxMax = 0, cSum = 0
+      for (const t of SWEEP) {
+        const o = overdraw(t)
+        mSum += o.mean; cSum += o.cover
+        if (o.max > maxMax) maxMax = o.max
+      }
+      say('    ' + label.padEnd(24) +
+          ' mean ' + (mSum / SWEEP.length).toFixed(2).padStart(6) +
+          '  worst max ' + String(maxMax).padStart(3) +
+          '  cover ' + (100 * cSum / SWEEP.length).toFixed(1).padStart(5) + '%')
+    }
+    say('  at the DEFAULT gate (cuGateAmt ' + base.cuGateAmt + ', cuPatchAmt ' + base.cuPatchAmt + '):')
+    for (const cull of [0, 0.005, 0.02, 0.05, 0.12]) run('cuCull ' + cull, { cuCull: cull })
+    say('  at a FULL gate (cuGateAmt 1, cuPatchAmt 1), where vis can actually reach 0:')
+    for (const cull of [0, 0.02, 0.12]) run('cuCull ' + cull, { cuGateAmt: 1, cuPatchAmt: 1, cuCull: cull })
+    say('  gate amount sweep at the default cuCull 0.02:')
+    for (const ga of [0, 0.5, 0.72, 0.9, 1.0]) run('cuGateAmt ' + ga, { cuGateAmt: ga })
+    say('  leaves sweep (should multiply the mean almost exactly):')
+    for (const lv of [1, 2, 3]) run('cuLeaves ' + lv, { cuLeaves: lv })
+    curtains.setValues(base)
+  }
+
+  // =========================================================================
+  // 5. NaN / DEGENERACY IN THE PLACEMENT MATH
+  // =========================================================================
+  //
+  // The position ATTRIBUTE is parameter space and never changes, so it cannot go
+  // NaN. The risk is entirely in the vertex shader, which is mirrored here line
+  // for line from glsl.js so every vertex can be checked at several times t.
+  say('')
+  say('=== 5. NaN / degeneracy ===')
+  {
+    const g = curtains.geometry
+    const pa = g.attributes.position.array
+    let bad = 0
+    for (let i = 0; i < pa.length; i++) if (!Number.isFinite(pa[i])) bad++
+    say((bad === 0 ? '  ok   ' : ' FAIL  ') + 'position attribute finite after update()', bad + ' non-finite')
+
+    const V = curtains.values
+    const TAU = 6.28318530718
+    const wob = (a, b) => (Math.sin(a) + Math.sin(a * 1.618 + b + 1.7) + Math.sin(a * 2.414 - b * 1.3 + 4.2)) * 0.16666667 + 0.5
+    const ss = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t) }
+    const mixf = (a, b, k) => a + (b - a) * k
+
+    function vertexMirror(t, fi, u, w, leaf) {
+      const f01 = fi / Math.max(V.cuCurtains - 1, 1)
+      const j = (fi * 0.6180339 + V.cuSeed * 0.07) % 1
+      const ph = fi * 2.3999632 + V.cuSeed * 1.7
+      const sgn = (fi % 2) < 0.5 ? 1 : -1
+      const dist = mixf(V.cuNear, V.cuFar, Math.pow(f01, Math.max(V.cuStack, 0.05)))
+      const x0 = dist * Math.tan((u - 0.5) * 2 * (V.cuSpan * Math.PI / 180))
+      const rag = wob(x0 / Math.max(V.cuRaggedKm, 1) + ph * 3.1, t * 0.03)
+      const colH = Math.max(V.cuAltHigh - V.cuAltLow, 1) * mixf(1, 0.30 + 0.70 * rag, V.cuRagged)
+      const gsig = wob(fi * 3.77 + V.cuSeed * 2.3, t * V.cuGateRate * TAU)
+      const gate = mixf(1, ss(V.cuGate, V.cuGate + 0.20, gsig), V.cuGateAmt)
+      const psig = wob(x0 / Math.max(V.cuPatchKm, 1) + ph, t * V.cuPatchRate * TAU)
+      const burn = mixf(1, ss(0.18, 0.72, psig), V.cuPatchAmt)
+      const ends = ss(0, 0.24, u) * (1 - ss(0.76, 1.0, u))
+      const vis = gate * burn * ends
+      const hgt = colH * ss(0, Math.max(V.cuCull, 1e-4), vis)
+      const alt = V.cuAltLow + hgt * w
+      const xe = x0 + V.cuLean * (alt - V.cuAltLow)
+      const splay = 1 + V.cuSplay * w
+      const mk = TAU / Math.max(V.cuMeanderKm, 1)
+      const ms = (xe + V.cuDrift * t * V.cuMeanderKm) * mk
+      const M = (Math.sin(ms) + 0.5 * Math.sin(ms * 1.73 + 1.3)) * V.cuMeander
+      const dM = (Math.cos(ms) + 0.865 * Math.cos(ms * 1.73 + 1.3)) * V.cuMeander * mk
+      const shear = 1 + V.cuShear * (f01 * 2 - 1)
+      const wk = TAU / Math.max(V.cuWanderKm, 1)
+      const wamp = V.cuWander * (0.55 + 0.9 * j) * splay
+      const w1 = xe * wk + ph + sgn * V.cuWanderDrift * t * (0.7 + 0.6 * j)
+      const dW = Math.cos(w1) * wamp * wk
+      const dT = -Math.sin(w1) * wamp * wk * V.cuCurl
+      let pxx = xe + Math.cos(w1) * wamp * V.cuCurl
+      let pyy = dist + M * shear + Math.sin(w1) * wamp
+      const tx = 1 + dT, ty = dM * shear + dW
+      const tl = Math.hypot(tx, ty)
+      const off = (leaf - (V.cuLeaves - 1) * 0.5) * V.cuThickKm
+      pxx += -(ty / tl) * off
+      pyy += (tx / tl) * off
+      return { wx: pxx * WORLD_PER_KM, wy: alt * WORLD_PER_KM, wz: -pyy * WORLD_PER_KM, tl, hgt, vis }
+    }
+
+    curtains.setValues(curtainDefaults())
+    const aU = g.attributes.aU.array, aV = g.attributes.aV.array
+    const aC = g.attributes.aCurtain.array, aL = g.attributes.aLeaf.array
+    let worstTan = Infinity, nan = 0, huge = 0, total = 0
+    const colSeen = new Map()
+    for (const t of [0, 1, 3, 6, 12, 24, 48, 96, 300, 1200]) {
+      for (let i = 0; i < aU.length; i++) {
+        const r = vertexMirror(t, aC[i], aU[i], aV[i], aL[i])
+        total++
+        if (!Number.isFinite(r.wx) || !Number.isFinite(r.wy) || !Number.isFinite(r.wz)) nan++
+        if (Math.abs(r.wx) > 60000 || Math.abs(r.wy) > 60000 || Math.abs(r.wz) > 60000) huge++
+        if (r.tl < worstTan) worstTan = r.tl
+        const key = t + '|' + aC[i] + '|' + aU[i]
+        if (!colSeen.has(key)) colSeen.set(key, r.hgt === 0)
+      }
+    }
+    let colsTotal = 0, colsCollapsed = 0
+    for (const v of colSeen.values()) { colsTotal++; if (v) colsCollapsed++ }
+    say((nan === 0 ? '  ok   ' : ' FAIL  ') + 'vertex-shader mirror produced no NaN/Inf',
+        nan + ' of ' + total + ' vertices over 10 times t')
+    say((huge === 0 ? '  ok   ' : ' NOTE  ') + 'every vertex inside the 60000-unit bounding sphere', huge + ' outside')
+    say('  smallest |tangent| before normalize(): ' + worstTan.toFixed(4) +
+        '   -- 0 here would be a NaN normal and a garbage graze term')
+    say('  columns collapsed to zero height: ' + colsCollapsed + ' of ' + colsTotal +
+        '  (' + (100 * colsCollapsed / colsTotal).toFixed(1) + '%)')
+    {
+      let minAny = Infinity, minMid = Infinity
+      for (const t of TIMES) for (let i = 0; i < aU.length; i++) {
+        if (aV[i] !== 0) continue
+        const r = vertexMirror(t, aC[i], aU[i], aV[i], aL[i])
+        if (r.vis < minAny) minAny = r.vis
+        if (aU[i] > 0.3 && aU[i] < 0.7 && r.vis < minMid) minMid = r.vis
+      }
+      say('  min vis anywhere: ' + minAny.toFixed(4) +
+          ';  min vis in the middle 40% of azimuth: ' + minMid.toFixed(4) +
+          ';  cuCull = ' + curtains.values.cuCull)
+    }
+  }
+
+  // =========================================================================
+  // 6. PICTURES
+  // =========================================================================
+  //
+  // At the shipped exposure a third of the frame clips to pure white, so the
+  // ladder exists to find a frame in which the SHAPE can be judged at all.
+  say('')
+  say('=== 6. pictures ===')
+  {
+    const shoot = (name, values, pitch, t) => {
+      camera.rotation.x = pitch === undefined ? 0.30 : pitch
+      curtains.setValues({ ...curtainDefaults(), ...values })
+      curtains.update(camera, t === undefined ? 6.0 : t)
+      renderer.render(scene, camera)
+      const s = stats()
+      capture(name)
+      say('  ' + name.padEnd(22) +
+          ' lit ' + (100 * s.lit / (W * H)).toFixed(1).padStart(5) + '%' +
+          '  clipped ' + (100 * s.clipped / (W * H)).toFixed(1).padStart(5) + '%' +
+          '  mean ' + s.mean.toFixed(1))
+    }
+    for (const e of [1.00, 0.30, 0.12, 0.05]) shoot('exp-' + e.toFixed(2), { cuExposure: e })
+    shoot('exp012-t40', { cuExposure: 0.12 }, 0.30, 40)
+    shoot('exp012-t140', { cuExposure: 0.12 }, 0.30, 140)
+    shoot('exp012-up', { cuExposure: 0.12 }, 0.62)
+    shoot('exp012-flat', { cuExposure: 0.12 }, 0.10)
+    // Isolating the hard bright vertical wedges: they survive cuCull 0 and die
+    // with cuCurl 0, so they are the trochoid's fold-back cusp seen edge-on
+    // through the graze term, not the geometry cull.
+    shoot('wedge-cull0', { cuExposure: 0.12, cuCull: 0 })
+    shoot('wedge-nocurl', { cuExposure: 0.12, cuCurl: 0 })
+    shoot('wedge-nograze', { cuExposure: 0.30, cuGraze: 0 })
+    shoot('wedge-gate1', { cuExposure: 0.12, cuGateAmt: 1, cuPatchAmt: 1 })
+    camera.rotation.x = 0.30
+    curtains.setValues(curtainDefaults())
+  }
+
+  // =========================================================================
+  // 7. SURFACE PARITY WITH AuroraScreen
+  // =========================================================================
+  say('')
+  say('=== 7. surface ===')
+  {
+    for (const m of ['setValues', 'setParam', 'getParam', 'snapshot', 'fragmentSource', 'update', 'dispose', 'groups', 'stats']) {
+      if (typeof curtains[m] !== 'function') say(' FAIL  missing method ' + m)
+    }
+    const snap = curtains.snapshot()
+    say('  snapshot().algorithm = ' + snap.algorithm + ', ' + Object.keys(snap.values).length + ' values')
+    curtains.setValues({ notAKnob: 1 })
+    say('  ok   setValues ignored an unknown key without throwing')
+    say('  ok   surface matches AuroraScreen (no setAlgorithm, by design)')
+  }
+
+  say('')
+  say(shaderErrors === 0 ? 'NO SHADER FAILURES'
+      : shaderErrors + ' SHADER FAILURE(S) -- see section 1; the rest ran on the runtime rename')
+}
+
+// The same two globals tmp/bench-drive.mjs polls, and the same three values, so one driver can wait on either page. This exists because --dump-dom captures at load completion and this probe renders for a minute or more under SwiftShader: the first run of it came back as `<div id="out">running</div>` and was read as a result. A scrape that silently returns half the answer is worse than one that fails.
+window.BENCH_STATE = ctorError ? 'error' : 'done'
+window.BENCH_PROGRESS = 'sections complete'
+</script>

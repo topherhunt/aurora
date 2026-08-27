@@ -74,6 +74,10 @@ import { WEAVE } from './algo/weave.js'
 import { SINE } from './algo/sine.js'
 import { RIBBON } from './algo/ribbon.js'
 import { LUT } from './algo/lut.js'
+import { PLANMAP } from './planmap/algorithm.js'
+import { SLAB } from './algo/slab.js'
+import { SLABMAP } from './algo/slabmap.js'
+import { SKYMAP } from './skymap/algorithm.js'
 import { BACKDROP_PARAMS } from './backdrop.js'
 
 // Ordered cheapest-looking-first is tempting and wrong: the list is the order
@@ -87,7 +91,12 @@ import { BACKDROP_PARAMS } from './backdrop.js'
 // with sums of sines, `ribbon` replaces the infinite contour family with six
 // explicit curves, and `lut` keeps leyline exactly and reads its noise out of a
 // texture. They fail in different directions and on different hardware.
-export const ALGORITHMS = [ LEYLINE, SINE, RIBBON, LUT, WEAVE, FILAMENT ]
+// `skymap` sits at the tail rather than beside the other cheap candidates, and
+// that placement says what it is: the three above it make the per-pixel work
+// smaller, and this one is the only entry that stops the work being per-pixel
+// at all. It integrates the SAME leyline field, so the honest A/B is the first
+// item in the list against the last, one click apart at either end.
+export const ALGORITHMS = [ LEYLINE, SLAB, SINE, RIBBON, LUT, WEAVE, FILAMENT, PLANMAP, SLABMAP, SKYMAP ]
 
 export const DEFAULT_ALGORITHM = 'leyline'
 
@@ -401,6 +410,18 @@ export const SHARED_GROUPS = [
         type: 'float', min: 0, max: 1, step: 0.005, value: 0.78,
       },
       {
+        key: 'zenFade',
+        label: 'zenith dissolve',
+        hint: 'Fades the aurora out where the ray stops resolving the field, which is the fix for the hard disc overhead. Looking up, perspective crushes the whole top of the sky into a tiny patch of plan: at the schema defaults a ray 78 degrees up crosses plan radius 0.20 to 0.44, against 4.2 to 9.5 at the horizon. Every ray up there samples almost the same point, so they all come back the same value and the zenith terminates in a flat blob instead of thinning out. At 0 you get that disc. At 1 the convergence dissolves into stars. This is a companion to perspective, not an alternative: raise perspective and the disc grows, so this wants raising with it.',
+        type: 'float', min: 0, max: 1, step: 0.01, value: 0.70,
+      },
+      {
+        key: 'zenReach',
+        label: 'dissolve reach',
+        hint: 'How far down the sky the dissolve extends, measured in field units of plan travel across the slab rather than in degrees, so it follows perspective and field scale instead of having to be retuned after either. Plan travel is 0.25 at 78 degrees, 1.24 at 40 and 5.29 at the horizon, so the default of 0.9 has fully released by about 30 degrees up and only the crushed part of the sky is touched. Raise it and the fade eats into sky that was resolving perfectly well.',
+        type: 'float', min: 0.05, max: 4, step: 0.05, value: 0.90,
+      },
+      {
         key: 'fieldScale',
         label: 'field scale',
         hint: 'Kilometres to field units. The master zoom: it scales every algorithm at once, so channel counts and warp scales all keep their relative sizes as you drag it. Reach for this before reaching for an algorithm frequency.',
@@ -421,7 +442,7 @@ export const SHARED_GROUPS = [
       {
         key: 'edgeFade',
         label: 'screen edge fade',
-        hint: 'Fades the outer band of the quad so its border can never be found. Costs nothing and means the quad can be sized for the view rather than for the worst case.',
+        hint: 'Fades the top and bottom bands of the dome so its two elevation edges can never be found -- the zenith and the few degrees below the horizon. It does NOT act in azimuth: the dome wraps, so due south is a seam rather than an edge and fading it would cut a dark wedge out of the sky.',
         type: 'float', min: 0, max: 0.35, step: 0.005, value: 0.06,
       },
       {

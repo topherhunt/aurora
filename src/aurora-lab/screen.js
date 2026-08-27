@@ -32,33 +32,34 @@
 // only create a way to get it wrong.
 //
 // ===========================================================================
-// THE SCREEN IS A NORTHERN SECTOR, NOT A BILLBOARD
+// THE SCREEN IS A WORLD-LOCKED DOME, NOT A BILLBOARD
 // ===========================================================================
 //
 // The brief asked for the aurora on "a giant sky-wide rectangular screen", and
 // this was one for a while: a camera-facing quad, sized from the FOV, rebuilt
 // every frame. It works, and it is the wrong shape for the thing being drawn.
 //
-// What makes either shape legal is what the shader does with the geometry.
+// What makes any shape legal is what the shader does with the geometry.
 // `main()` uses the fragment's world position for exactly one thing -- to
 // subtract the eye from it and recover a ray direction -- and then throws it
 // away. The mesh is a WINDOW, not a surface, so any surface that covers the same
-// set of directions produces byte-identical pixels. A billboard covers the
-// directions you are looking at. A sector covers the directions the aurora is
-// in. Those are different sets, and the second one is much smaller.
+// set of directions produces byte-identical pixels. That is what let the screen
+// go from a billboard to a northern sector to a dome without a single pixel of
+// the shader changing: only the SET OF DIRECTIONS covered moves.
 //
-// The aurora lives in a belt to the north (u_beltOffset is negative by default,
-// -z is north), so a quad that follows the camera spends most of its fragments
-// marching rays that the belt term is going to multiply to nothing -- and pays
-// full price for them, because a fragment that integrates to black costs exactly
-// what a bright one does. Locking the mesh to the world and cutting it down to
-// the northern sector deletes those fragments at the rasteriser instead, which
-// is free. Turn south now and there is nothing drawn at all, which is also what
-// standing under a real auroral oval looks like.
+// The dome covers all of them, and where the aurora is bright inside that set is
+// the belt's decision rather than the mesh's -- u_beltOffset is negative because
+// -z is north, and u_beltAmt says how far the sky falls away from the oval. The
+// mesh no longer encodes an opinion about where the aurora lives, which is the
+// point: an edge in the geometry is a heading at which the sky stops, and there
+// is no such heading outdoors.
 //
-// The second win is the one the pixels came from: the fragments that remain are
-// the ones worth spending on, so the same frame budget buys a higher render
-// scale over the part of the sky that has an aurora in it.
+// The cost of that is real and worth stating plainly. A sector could leave the
+// frustum, so facing south used to cost nothing at all; a dome is always in view
+// and every fragment it covers is paid for at every heading. Under the skymap
+// frame that is a fetch and does not matter. Under the per-pixel algorithms it
+// is a full march, and the belt cannot win the cost back -- see the note in
+// glsl/frame.js explaining why there is no belt cull.
 //
 // It sits at 5200 units: beyond the mountains at 1500 so they occlude it
 // through the depth test, and well inside the stars at 15000 so it does not
@@ -83,35 +84,83 @@ import { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAM
 import { PALETTE_GLSL } from './glsl/palette.js'
 import { VERTEX_GLSL, MARCH_GLSL, MAIN_GLSL } from './glsl/frame.js'
 import { LUT_GLSL } from './glsl/lut.js'
+import { SLAB_MARCH_GLSL } from './glsl/slab.js'
 import { noiseLutTexture } from './lut-texture.js'
+import { PLANMAP_GLSL } from './planmap/glsl.js'
+import { planMapTexture } from './planmap/target.js'
+import { SKYMAP_GLSL, SKYMAP_FRAME_GLSL } from './skymap/glsl.js'
+import { skyMapTexture, skyLanesTexture, skyHueTexture, skyKernelTexture } from './skymap/target.js'
 import { algorithmById, paramsFor, defaultsFor } from './algorithms.js'
 
 // Beyond the mountains (1500), well inside the stars (15000).
 const DIST = 5200
 
-// ---- The sector, in the sky the mesh is cut out of.
+// ---- The dome, which used to be a 200-degree northern sector.
 //
-// Azimuth is a touch over half the compass rather than exactly half. A hard 180
-// would put the sector's two vertical edges due east and due west, which are
-// headings you look along, and `u_edgeFade` needs a few degrees of sky on the
-// far side of the belt to fade across or the boundary reads as a wall. 200
-// degrees puts each edge ten degrees behind you at those headings.
-const AZIMUTH_DEG = 200
+// The sector was the right call while the aurora cost a forty-step raymarch per
+// fragment: it deleted two thirds of the fragments at the rasteriser, and facing
+// south cost literally nothing because the whole mesh left the frustum. What it
+// also did was put a hard boundary in the sky, and `u_edgeFade` could only blur
+// that boundary, never remove it -- turn far enough east or west and the aurora
+// ends at a heading rather than at a horizon.
+//
+// The full dome gives that boundary up, and the reason it is now affordable is
+// the skymap frame: its map is built over the whole compass (smAz in
+// skymap/glsl.js wraps atan over 0..1, not over a sector) and a screen fragment
+// costs one bilinear fetch, so covering four times the solid angle costs four
+// times almost nothing. Under the per-pixel algorithms it is NOT free -- the
+// march runs on every fragment the dome covers, at every heading, and there is
+// no cull to win the cost back, because the belt term floors at 1 - u_beltAmt
+// rather than at zero. See the long note in glsl/frame.js at the belt cull that
+// is deliberately not there.
+//
+// The northward bias is the belt's job, not the mesh's: u_beltOffset is negative
+// (-z is north) and u_beltAmt sets how dark the sky gets away from the oval --
+// 0.85 leaves the southern sky at fifteen percent, 1.0 extinguishes it.
+const AZIMUTH_DEG = 360
 
 // Elevation runs from a little under the horizon -- the march's own horizon cut
-// wants to be the thing that ends the sky, not the geometry -- up to 78, which
-// is above anything the deposition profile still has brightness in at any
-// sensible u_persp. The last twelve degrees to the zenith are the most expensive
-// per-solid-angle part of a sphere's tessellation and there has never been an
-// aurora in them.
+// wants to be the thing that ends the sky, not the geometry -- to the zenith.
+// The last twelve degrees used to be cut off as the most expensive
+// per-solid-angle part of a sphere's tessellation with no aurora in them; that
+// was true of the geometry and false of the picture, because cutting them left a
+// disc of missing sky overhead. The zenith dissolve (u_zenFade) is what handles
+// them now, and it fades brightness rather than removing the surface.
 const ELEV_LOW_DEG = -6
-const ELEV_HIGH_DEG = 78
+const ELEV_HIGH_DEG = 90
 
-// Enough that the linear interpolation of world position across a face is a
-// good sphere: 200 degrees over 64 segments is about three degrees a face. The
-// vertex cost of 4k triangles is nothing next to one fragment of this shader.
-const SEG_AZ = 64
-const SEG_EL = 32
+// The mesh is a SCREEN, not the aurora: the shader recovers a ray direction per
+// fragment and never consults the geometry's shape, so tessellation buys exactly
+// one thing -- how closely linear interpolation across a face tracks the arc it
+// is standing in for.
+//
+// That error is computable rather than a matter of taste. Interpolating across a
+// chord of angle T gives a worst-case direction error of atan(s*tan(T/2)) - s*T/2
+// maximised over s, which is zero at both ends and at the midpoint and peaks near
+// s = 0.577. Against a Quest 2 panel at 1832 px over 90 degrees:
+//
+//   deg/face   max err   px
+//    3.1       0.0001    0.00
+//   12.5       0.0096    0.19
+//   20.0       0.0393    0.80
+//   25.0       0.0771    1.57
+//   33.3       0.1841    3.75
+//   50.0       0.6350   12.93
+//
+// Twenty degrees per face is where the error goes under one headset pixel, so the
+// dome is tessellated to roughly that in both axes: 360/18 is exactly 20, and the
+// 96 degrees of elevation over 5 rows is 19.2. The pole row degenerates to one
+// triangle per segment rather than two, so the whole sky is 18*5*2 - 18 = 162
+// triangles. That is a fifth of a percent of the 200k the landscape spends, and
+// it will not move the frame rate in either direction -- this shader is
+// fragment-bound to about three decimal places -- but the triangle budget is
+// shared and there is no reason to spend more of it than the panel can resolve.
+//
+// Do not push this much lower. Under about 12 degrees per face nothing improves;
+// over about 30 the sky visibly warps, because the error is quartic in the face
+// angle and 33 degrees is already 3.75 px.
+const SEG_AZ = 18
+const SEG_EL = 5
 
 // three's SphereGeometry puts phi = 0 at -x (west) and winds toward +z (south),
 // so north (-z) is at -PI/2. Everything else here is measured off that.
@@ -126,13 +175,28 @@ const CHUNKS = {
   warp: WARP_GLSL,
   filament: FILAMENT_GLSL,
   lut: LUT_GLSL,
+  planmap: PLANMAP_GLSL,
+  skymap: SKYMAP_GLSL,
 }
 
-// The one uniform in this subsystem that is NOT generated from the param schema, because the schema has four types and none of them is a sampler -- and giving it one would mean a panel row for a texture, which is a control with nothing to control.
+// The uniforms in this subsystem that are NOT generated from the param schema, because the schema has four types and none of them is a sampler -- and giving it one would mean a panel row for a texture, which is a control with nothing to control.
 //
-// A chunk that needs a sampler names it here instead, and it is declared and bound only when that chunk is actually in the assembly, so the algorithms that do not use it are untouched. The texture is a module singleton in lut-texture.js: _buildMaterial runs again on every algorithm switch and must not re-bake a 128 KB table each time.
+// A chunk that needs samplers names them here instead, and they are declared and bound only when that chunk is actually in the assembly, so the algorithms that do not use them are untouched. The value is a LIST because one chunk can need several: the sky map's reader needs the output map, while its generator and convolution halves -- which are compiled into the same program as dead code -- need the three intermediate maps. The textures are module singletons in lut-texture.js and the subsystems' own target.js: _buildMaterial runs again on every algorithm switch and must not re-bake a 128 KB table each time.
 const CHUNK_SAMPLERS = {
-  lut: { uniform: 'u_noiseLut', texture: noiseLutTexture },
+  lut: [ { uniform: 'u_noiseLut', texture: noiseLutTexture } ],
+  planmap: [ { uniform: 'u_planMap', texture: planMapTexture } ],
+  skymap: [
+    { uniform: 'u_skyMap', texture: skyMapTexture },
+    { uniform: 'u_skyLanes', texture: skyLanesTexture },
+    { uniform: 'u_skyHue', texture: skyHueTexture },
+    { uniform: 'u_skyKernel', texture: skyKernelTexture },
+  ],
+}
+
+// An algorithm's optional `frame` marker picks an alternative integrator in place of the shared march. EXCLUSIVE by construction: every entry here defines auroraRadiance, so emitting two is a redefinition error -- and the include guards deliberately do NOT protect against that, because a guard that silently dropped the second definition would make which frame you got depend on concatenation order.
+const FRAMES = {
+  slab: SLAB_MARCH_GLSL,
+  skymap: SKYMAP_FRAME_GLSL,
 }
 
 // Emitted for every algorithm whether it asks or not, because the FRAME uses
@@ -147,7 +211,8 @@ const CHUNK_SAMPLERS = {
 // and the two are not the same thing.
 const BASE_CHUNKS = [ 'util', 'hash', 'value', 'grad', 'fbm' ]
 
-const GLSL_TYPE = {
+// The one mapping from a schema type to a GLSL type. Exported because the prepass classes compile the SAME chunks this file compiles and so must declare the same uniforms with the same types -- a second copy of this table would be four lines that agree today and a link error the day somebody adds a type.
+export const GLSL_TYPE = {
   float: 'float',
   color: 'vec3',
   bool: 'float',
@@ -156,11 +221,12 @@ const GLSL_TYPE = {
 
 // ---------------------------------------------------------------------------
 
+// `uDitherScale` sits outside the u_ namespace alongside uTime for the same reason uTime does: it is not a knob. There is no slider for it and no preset records it, because it is not an opinion about the sky -- it is the low-res divisor, which the panel already owns, arriving in the one place that needs to know the size of a texel. See the dither in glsl/frame.js for what it does with it.
 function declarationsFor( params, chunks ) {
-  const lines = [ 'uniform float uTime;' ]
+  const lines = [ 'uniform float uTime;', 'uniform float uDitherScale;' ]
   for ( const name of chunks ) {
-    const s = CHUNK_SAMPLERS[ name ]
-    if ( s ) lines.push( 'uniform sampler2D ' + s.uniform + ';' )
+    if ( !CHUNK_SAMPLERS[ name ] ) continue
+    for ( const s of CHUNK_SAMPLERS[ name ] ) lines.push( 'uniform sampler2D ' + s.uniform + ';' )
   }
   for ( const p of params ) {
     if ( p.uniform === false ) continue
@@ -175,14 +241,16 @@ function declarationsFor( params, chunks ) {
 // the panel as a linear triple, not as a hex string, because everything the
 // palette does with a colour is arithmetic and a THREE.Color would invite a
 // second gamma conversion nobody asked for.
-function toUniformValue( param, value ) {
+//
+// Exported alongside writeUniformValue for the prepass classes, whose uniform blocks are generated from the same schema and whose values come out of the same panel state. PlanMapAurora predates this and refuses any non-float param outright, with a comment saying the fix is to share the marshalling rather than to copy it; SkyMapAurora needs u_tint, which is a colour, so this is that fix. The refusal in PlanMapAurora is left alone -- it is still true that the planmap generator reads only scalars, and a throw that has never fired is not worth relaxing on speculation.
+export function toUniformValue( param, value ) {
   if ( param.type === 'color' ) return new THREE.Vector3( value[ 0 ], value[ 1 ], value[ 2 ] )
   if ( param.type === 'bool' ) return value ? 1 : 0
   if ( param.type === 'enum' ) return value | 0
   return value
 }
 
-function writeUniformValue( param, slot, value ) {
+export function writeUniformValue( param, slot, value ) {
   if ( param.type === 'color' ) {
     slot.value.set( value[ 0 ], value[ 1 ], value[ 2 ] )
     return
@@ -202,6 +270,10 @@ export class AuroraScreen {
     // round -- which is what makes switching algorithms and restoring a preset
     // the same operation.
     this.values = defaultsFor( this.algorithmId )
+    // Read by _buildMaterial, which runs again on every algorithm switch, so it
+    // has to live on the instance rather than in the uniform it initialises --
+    // otherwise changing algorithm silently resets the dither to full-res.
+    this._ditherScale = 1
     if ( opts.values ) this.setValues( opts.values )
 
     // theta is measured DOWN from the zenith, so the high elevation is the low
@@ -216,10 +288,10 @@ export class AuroraScreen {
     )
     this.material = null
     this.mesh = new THREE.Mesh( this.geometry, new THREE.MeshBasicMaterial() )
-    // Culling is worth having now that the mesh is a fixed piece of the world
-    // rather than a quad pinned to the near plane: face south and the sector is
-    // outside the frustum, three drops the draw, and the aurora costs nothing at
-    // all. The billboard could never be culled because it was always in view.
+    // Left on, though a dome centred on the eye can never actually be culled --
+    // the test costs one bounding-sphere check per frame and turning it off
+    // would only be a claim about the geometry that stops being true the moment
+    // somebody narrows AZIMUTH_DEG again.
     this.mesh.frustumCulled = true
     this.mesh.renderOrder = -800
     this.scene.add( this.mesh )
@@ -253,6 +325,9 @@ export class AuroraScreen {
     // rather than in the order the algorithm happened to list them.
     const ordered = Object.keys( CHUNKS ).filter( n => wanted.includes( n ) )
 
+    const march = algo.frame ? FRAMES[ algo.frame ] : MARCH_GLSL
+    if ( !march ) throw new Error( 'AuroraScreen: algorithm "' + algo.id + '" names unknown frame "' + algo.frame + '"' )
+
     const fragment = [
       declarationsFor( params, ordered ),
       'varying vec3 vWorld;',
@@ -260,14 +335,14 @@ export class AuroraScreen {
       ...ordered.map( n => CHUNKS[ n ] ),
       PALETTE_GLSL,
       algo.glsl,
-      MARCH_GLSL,
+      march,
       MAIN_GLSL,
     ].join( '\n' )
 
-    const uniforms = { uTime: { value: 0 } }
+    const uniforms = { uTime: { value: 0 }, uDitherScale: { value: this._ditherScale } }
     for ( const name of ordered ) {
-      const s = CHUNK_SAMPLERS[ name ]
-      if ( s ) uniforms[ s.uniform ] = { value: s.texture() }
+      if ( !CHUNK_SAMPLERS[ name ] ) continue
+      for ( const s of CHUNK_SAMPLERS[ name ] ) uniforms[ s.uniform ] = { value: s.texture() }
     }
     for ( const p of params ) {
       if ( p.uniform === false ) continue
@@ -332,6 +407,17 @@ export class AuroraScreen {
   getParam( key ) {
     this._param( key )
     return this.values[ key ]
+  }
+
+  // The low-res divisor, handed to the march because its dither is measured in
+  // TEXELS OF THE BUFFER IT IS DRAWING INTO and has to stay measured in pixels of
+  // the finished frame. Passed raw rather than clamped: the shader needs the true
+  // divisor, because at 3.5 and above it switches the dither from a lattice to a
+  // per-texel hash rather than scaling the lattice further. See the dither in
+  // glsl/frame.js for why that crossover is the same intent and not a downgrade.
+  setDitherScale( div ) {
+    this._ditherScale = Math.max( div, 1 )
+    this.material.uniforms.uDitherScale.value = this._ditherScale
   }
 
   setValues( values ) {

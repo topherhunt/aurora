@@ -18,6 +18,11 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
 import { createPropMaterial, createImpostorBakeMaterial } from '../src/material.js'
+import { Water } from '../src/water.js'
+import { Sky } from '../src/sky.js'
+import { WorldLighting } from '../src/lighting.js'
+import { SkyProbe } from '../src/sky-probe.js'
+import { WorldProbe } from '../src/world-probe.js'
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
@@ -356,6 +361,18 @@ const PROP_VARIANTS = [
     {},
     { vert: [...PROP_MARKS.vert, 'uBillboardLayers'], frag: PROP_MARKS.frag },
   ],
+  // The spherical spin is a SECOND body for the same branch, not an extra one
+  // spliced on top -- so the variant above cannot cover it, and it is the only
+  // GLSL in the file that touches the batching matrix as a mat3 or indexes
+  // viewMatrix by hand. Both are easy to get wrong in a way that compiles
+  // everywhere except a real driver, which is what this harness is for. Batched,
+  // because that is how rocks draw and USE_BATCHING is what selects the line.
+  [
+    'billboardLayers, spherical',
+    createPropMaterial(atlas, { billboardLayers: [0, 1, 2], sphericalBillboard: true }),
+    { batched: true },
+    { vert: [...PROP_MARKS.vert, 'uBillboardLayers', 'mat3( batchingMatrix )'], frag: PROP_MARKS.frag },
+  ],
   [
     'stripTiling',
     createPropMaterial(atlas, { stripTiling: true }),
@@ -396,11 +413,96 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
   const pad = `material.js    ${label}`.padEnd(38)
   SHADERS.push([`${pad}vert`, 'vert', builtinPrologue('vert', defines.vert), vert])
   SHADERS.push([`${pad}frag`, 'frag', builtinPrologue('frag', defines.frag), frag])
-  CROSS_STAGE.push([label, vert, frag])
+  // The file name goes IN the label rather than being printed in front of it,
+  // because this list is no longer all one file -- water.js joins it below.
+  CROSS_STAGE.push([`material.js    ${label}`, vert, frag])
   for (const [stage, src] of [['vert', vert], ['frag', frag]]) {
     for (const mark of marks[stage]) {
       if (!src.includes(mark)) MISSING_MARKS.push(`${label} ${stage}: ${mark}`)
     }
+  }
+}
+
+// --- src/water.js: the shared water material --------------------------------
+//
+// The lake surface, and the one ShaderMaterial in the world that `literal`
+// cannot reach: its source is assembled in a constructor out of four imported
+// GLSL blocks rather than living in one named const. So it is BUILT, from the
+// same three stubs check-water-shader.mjs uses, and the finished strings are
+// taken off the material.
+//
+// It earns the ten lines twice over. water.js says it in its own comments: a
+// ShaderMaterial that fails to compile does not draw a dimmer lake, it draws
+// nothing at all. And §11's underside path is a branch that nobody exercises
+// by looking at the world -- you have to be standing in a river.
+//
+// THE TWO DEFINES ARE LOAD-BEARING. Without USE_FOG the fog chunks, the whole
+// distance-fade block and the underside's own fade all compile to nothing and
+// this check passes vacuously. Both worlds set scene.fog to a FogExp2, so both
+// are what three would actually emit. COLOR_FNS is in the prologue because the
+// shader ends on <colorspace_fragment>, which calls linearToOutputTexel -- a
+// function three generates into the prologue rather than into a chunk.
+{
+  const waterScene = new THREE.Scene()
+  const water = new Water(waterScene, {
+    sky: new Sky(waterScene),
+    lighting: new WorldLighting(),
+    probe: new SkyProbe(),
+    world: new WorldProbe(),
+  })
+  // AND ONE MORE PROLOGUE LINE THAN F_PRE CARRIES, because this material is a
+  // different KIND of ShaderMaterial from the four at the top of the table.
+  // Those set `glslVersion: THREE.GLSL3` and declare their own `out vec4
+  // fragColor`; water.js does not, so it is authored as GLSL1 and three
+  // upgrades it -- and the upgrade is exactly this pair, which is what lets a
+  // shader written against gl_FragColor keep working under ES 3.00. F_PRE
+  // cannot simply grow it: handing a second output to a shader that already
+  // declares one is a different error, not a fix.
+  const GLSL1_OUT = 'out highp vec4 pc_fragColor;\n#define gl_FragColor pc_fragColor\n'
+  const FOG = '#define USE_FOG\n#define FOG_EXP2\n'
+  const vert = finish(water.material.vertexShader)
+  const frag = finish(water.material.fragmentShader)
+  SHADERS.push(['water.js       VERT', 'vert', V_PRE + FOG, vert])
+  SHADERS.push(['water.js       FRAG', 'frag', F_PRE + GLSL1_OUT + FOG + COLOR_FNS + '\n', frag])
+  CROSS_STAGE.push(['water.js', vert, frag])
+}
+
+// --- src/lighting.js: the terrain's fragment patch ---------------------------
+//
+// THE ONE PATCH NOTHING ELSE HERE COVERS, and the gap was worth closing the day
+// something went into it. `mode: 'vertex'` reaches this table already -- every
+// prop variant above is patched by it -- but `mode: 'fragment'` has exactly one
+// caller in the whole project, v2's terrain, and its extra code was until now
+// compiled for the first time by whichever headset was pointed at a lake.
+//
+// It is also the branch that carries the most: the shadow and occlusion sample,
+// the night lift, the aerial ramp AND the caustic net, none of which the vertex
+// path emits. A ShaderMaterial that fails here does not draw a dimmer world; it
+// drops the terrain.
+//
+// `vWorldPos` is declared into the stub rather than patched in, because that is
+// where it comes from in the real thing -- terrain-material.js has carried the
+// varying since v1's surface grain, which is why the patch takes its name as an
+// argument instead of declaring one of its own.
+{
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: `varying vec3 vWorldPos;\n${lib.fragmentShader}`,
+    defines: {},
+  }
+  const mat = new THREE.MeshLambertMaterial()
+  new WorldLighting().patch(mat, { mode: 'fragment', cacheKey: 'check', worldPosVarying: 'vWorldPos' })
+  mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push(['lighting.js    fragment patch     frag', 'frag', builtinPrologue('frag', ['#define USE_FOG', '#define FOG_EXP2']), frag])
+  // Three replaces, three markers. The aerial mix and the caustic net share the
+  // fog slot, so one anchor going stale takes both out at once and neither
+  // absence is visible from anywhere but a lake bed.
+  for (const mark of ['float wlCaustic( vec2 p, float t )', 'uCaustic.x > 0.0', 'aerialKeep', 'wlSun( vWorldPos.xz )']) {
+    if (!frag.includes(mark)) MISSING_MARKS.push(`lighting.js fragment patch frag: ${mark}`)
   }
 }
 
@@ -462,7 +564,7 @@ for (const [label, vert, frag] of CROSS_STAGE) {
     if (vt.has(name) && vt.get(name) !== type) clash.push(`${name}: vertex ${vt.get(name)} vs fragment ${type}`)
   }
   if (clash.length === 0) {
-    console.log(`  ok    material.js    ${label.padEnd(23)}varyings agree across stages`)
+    console.log(`  ok    ${label.padEnd(38)}varyings agree across stages`)
   } else {
     clashes += clash.length
     console.log(`  FAIL  material.js    ${label.padEnd(23)}varyings disagree across stages`)
@@ -531,6 +633,6 @@ if (selfTest) lines.push(`${selfTest} harness self-test(s) failed -- do not trus
 console.log(
   lines.length
     ? `\n${lines.join('\n')}`
-    : `\nall ${SHADERS.length} shaders compile, ${CROSS_STAGE.length} prop programs link, and the harness self-test passes`
+    : `\nall ${SHADERS.length} shaders compile, ${CROSS_STAGE.length} programs link, and the harness self-test passes`
 )
 process.exit(bad || clashes || MISSING_MARKS.length || selfTest ? 1 : 0)

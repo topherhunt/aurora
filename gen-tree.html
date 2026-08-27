@@ -63,6 +63,9 @@
       td { padding: 1px 0; vertical-align: baseline; }
       td.k { color: var(--dim); }
       td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      td.band { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; padding-right: 8px; }
+      tr.here td { color: #eaf3ff; }
+      #lod .s { font-size: 11px; opacity: .7; }
       .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
       .big { font-size: 15px; color: #eaf3ff; }
       .ok { color: var(--good); } .warn { color: var(--warn); }
@@ -107,20 +110,17 @@
     <div id="budget">
       <h2>this tree</h2>
       <table id="geo"></table>
+      <h2>the ladder, for this tree</h2>
+      <table id="lod"></table>
       <p class="note">
-        Trunk and limbs are <em>cones</em>: rings of quads closed by a fan of single triangles at a
-        point, so one ring plus an apex costs <em>sides</em> triangles rather than the
-        <em>sides&times;2</em> a flat-capped tube would. At <em>branchSides</em> 1 -- which is what
-        <em>LOD1</em> builds, along with a three-sided trunk -- a limb is instead ONE triangle,
-        that same cone sliced down its vertical plane, so it keeps its full thickness from every
-        view you can have of it standing on the ground. <em>LOD2</em> drops the mesh entirely and
-        swaps in the three-plane impostor, a side-on photograph of LOD0 baked into one texture
-        layer per species: six triangles, and the camera stays where you left it so you can flip
-        between the tiers and watch for the moment it stops being convincing. Foliage is N cards per limb plus
-        <em>apexSprays</em> on the trunk's own tip, at <em>cardTris</em> apiece, and the default
-        card is ONE triangle with its apex at the stem --
-        the shape a spray already is. There is no tiled surface anywhere in the tree: a repeating
-        strip of sprays down a branch reads as corduroy, and no amount of UV cleverness fixes it.
+        Ranges are <em>LOD_BANDS</em> in <em>src/v2/render/trees.js</em>, read live, and the
+        triangles are this tree at this height rather than a class average. The two mesh tiers are
+        the SAME tree: LOD1 only drops the trunk to three sides and each limb to one upright fin,
+        so every leaf card stays in its seat and the swap at the first boundary moves nothing you
+        can see. LOD2 is a side-on photograph of LOD0 on three crossed planes, one bake and one
+        texture layer per species; the far card is that same photograph on one triangle that turns
+        to face you. The camera stays where you left it when you flip tiers, so you can watch for
+        the moment one stops being convincing.
       </p>
 
       <h2>measured, in metres</h2>

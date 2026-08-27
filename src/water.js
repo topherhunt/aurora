@@ -3,6 +3,7 @@ import { WORLD_HALF } from './sim/terrain-height.js'
 import { SKY_GLSL } from './sky-glsl.js'
 import { SAMPLE_GLSL } from './lighting.js'
 import { PROBE } from './sky-probe.js'
+import { WORLD_PROBE } from './world-probe.js'
 import { TERRAIN_DARKEST, luminance } from './terrain/terrain-material.js'
 import { paletteAt } from './clock.js'
 
@@ -180,9 +181,209 @@ export const WATER = {
   // `reflDim` how much light is lost -- but they multiply into one uniform.
   reflTint: 0xc2d4ee,
   reflDim: 0.8,
+
 }
 
-// Four layers of gradient noise, drifting.
+// ---------------------------------------------------------------------------
+// UNDERWATER (§11).
+//
+// What changes when her head goes under, and the striking thing about this
+// block is how little of it is shader work. The world already fades every
+// surface it draws toward `uAirNear`/`uAirFar` at a rate of `scene.fog.density`
+// -- that is lighting.js's aerial-perspective chunk, which replaces three's fog
+// on EVERY material in the scene. Underwater is that same machinery told a
+// different story: one colour at both ends of the ramp instead of two, and an
+// extinction two orders of magnitude faster. Terrain, trees, rocks, grass,
+// litter, mushrooms and buildings all follow without knowing anything happened.
+//
+// So the only shader that needed a new path is this one, because the water
+// surface is the one thing you can be on the far side of.
+// ---------------------------------------------------------------------------
+export const UNDERWATER = {
+  // The colour everything is eventually lost in, and the colour the light down
+  // here is filtered to. One hex, three consumers, three colour spaces -- see
+  // `murkAir` below, which is the trap this comment exists to mark.
+  murk: 0x24414d,
+
+  // How far you can see, in metres. NOT a fog density: densities are unreadable
+  // and the thing actually being decided is a distance. `murkDensity` turns it
+  // into the extinction coefficient the aerial chunk wants, and the gate checks
+  // the round trip rather than trusting this comment.
+  visibility: 20,
+
+  // What is left of the two lights once they have come down through the water.
+  // Two numbers because they are two quantities: the directional loses more,
+  // since it arrives from one direction and has the longest path through the
+  // surface, while the hemisphere is already the whole sky averaged.
+  //
+  // These matter for a narrower band than you would think. At 20 m visibility
+  // almost everything on screen is most of the way to `murk` already, so what
+  // these two actually decide is the look of the metre or two in front of her
+  // face -- her own hands, a boulder she is standing beside, the lake bed.
+  light: 0.3,
+  ambient: 0.45,
+
+  // How far the light COLOURS are pulled toward the murk, 0..1. Dimming alone
+  // gives grey water, not blue-gray: water swallows red first, so what reaches
+  // a rock down here is not white light turned down, it is the murk's own hue.
+  tint: 0.75,
+
+  // The underside of the surface, seen from below -- five knobs, below.
+  //
+  // How much of the sky survives the trip down through the surface. Well under
+  // 1 because a good deal of what hits the surface from above bounces off it
+  // instead of coming through.
+  skyGain: 0.6,
+
+  // How hard the waves bend where you are looking, as a multiple of the wave
+  // normal's own tilt. This is the "with distortion" of the request and it is
+  // nearly free -- the wave normal is already computed one line above, for the
+  // top face.
+  //
+  // IT IS WELL OVER 1 AND HAS TO BE. The tilt of this water runs about 0.1, so
+  // the first pass's 0.4 bent the view by four HUNDREDTHS of a radian -- two
+  // degrees, which is not a ripple, it is a surface that looks like a pane of
+  // glass and reads as a flat plane. Physics is on the side of the bigger
+  // number: going water to air, Snell's law AMPLIFIES angles by about 1.33, and
+  // the amplification runs away as the view approaches the critical angle,
+  // which is exactly where most of this surface is seen from. 2.5 puts the
+  // wobble at fifteen degrees or so at the middle of the window.
+  distort: 2.5,
+
+  // How far the window opens, as the cosine of the angle from straight up: full
+  // sky above `windowOpen`, nothing below `windowShut`, smooth between.
+  //
+  // The real number here is Snell's window -- everything above the surface,
+  // squeezed into a cone 48.6 degrees off vertical, mirror outside it -- which
+  // is cos 48.6 = 0.66. THE FIRST PASS USED A SQUARED COSINE and that is the
+  // whole reason the surface read as a blue plane: a squared cosine is already
+  // down to 0.44 at the edge of a window that should still be wide open, and it
+  // is essentially zero across the entire band you actually look through when
+  // you are a metre or two under. The window is not subtle in real water and it
+  // must not be subtle here.
+  //
+  // Still soft rather than the hard edge the physics has, and still for the
+  // original reason: a crisp boundary inside a rippling surface crawls.
+  windowOpen: 0.78,
+  windowShut: 0.3,
+
+  // How much murk is left over the window even at its clearest, 0..1. The one
+  // knob here that is not chasing realism: without it the middle of the window
+  // is a clean hole punched through to the sky, and a hole does not read as a
+  // surface. This is the "semi opaque with a slight blue-gray tint" of the
+  // request, and it is the murk rather than a colour of its own so that the
+  // window and the water around it stay one medium.
+  veil: 0.18,
+
+  // How much of the murk fade the UNDERSIDE takes, 0..1.
+  //
+  // The surface was taking the full fade, which is physically defensible -- you
+  // are looking at it through however many metres of water -- and visually
+  // wrong, because at grazing angles that is twenty-plus metres and the whole
+  // rim of the world went flat murk. A surface has to keep reading as a surface
+  // even when it is far away and even when it is dim; a lake ceiling that
+  // dissolves into the same colour as the water under it is the one shape that
+  // says "this is a polygon that gave up".
+  //
+  // A fraction rather than an exemption, and the difference matters: at 0 a
+  // distant ceiling stays fully bright and reads as a hole in the murk, which
+  // is the failure in the other direction. Half means a far surface composites
+  // to half murk and keeps half its ripple.
+  underFog: 0.45,
+
+  // How much brighter the surface gets, outside the window, where the wave
+  // tilts toward the vertical -- as a multiple of the murk it is modulating.
+  //
+  // OUTSIDE THE WINDOW IS NOT NOTHING. Past the critical angle a water surface
+  // stops transmitting and becomes a total internal MIRROR, and a mirror of the
+  // murk is not a flat sheet of murk: it is murk with the wave field's own
+  // brightness moving across it. With this at 0 the grazing surface was flat,
+  // which is most of what "it barely looks like anything" meant. It costs one
+  // multiply, because the bent direction it reads is already in hand.
+  tir: 1.4,
+
+  // THE CAUSTIC NET on the bed -- the moving threads of focused sunlight. Three
+  // knobs, and the pattern itself lives in lighting.js because it is applied by
+  // the chunk that lights the terrain rather than by this shader; these are here
+  // because they are underwater's numbers and belong beside the rest of them.
+  //
+  // `caustic` is the peak added brightness in output space. It is added on top
+  // of a surface that has already been darkened to a third by `light`, so it can
+  // afford to be assertive -- the whole point of caustics is that they are the
+  // brightest thing down there.
+  //
+  // `causticScale` is the size of one cell of the net in metres. Roughly the
+  // wavelength of the ripples doing the focusing, which is why it is metres and
+  // not a frequency: a net whose cells are a foot across reads as sand in a
+  // stream and one whose cells are ten metres across reads as weather.
+  //
+  // `causticFade` is the depth over which the net dissolves, in metres. Not the
+  // same idea as `visibility`: that is about light lost between the bed and her
+  // EYE, this is about light lost between the SURFACE and the bed, and a deep
+  // pool has a dark floor however close she swims to it.
+  caustic: 0.42,
+  causticScale: 1.6,
+  causticFade: 6,
+
+  // What is left of the net once the sun is down, as a fraction of `caustic`.
+  //
+  // NOT zero, and the fifth is doing real work rather than hedging. Caustics
+  // need a source small enough in the sky to cast a sharp beam, and at night
+  // there is one: the moon, which this world keeps up for most of the dark on
+  // purpose (§13). A moonlit net is a real thing to have seen, and it is one of
+  // the few cues down here that says the surface is still up there at all --
+  // switching it off entirely trades a slightly wrong picture for a flat one.
+  //
+  // It rides the sun's elevation on a ramp rather than on `isNight`, because
+  // `isNight` is a threshold at -6 degrees and a fifth of the brightest thing in
+  // the view appearing in one frame is a pop you cannot unsee.
+  causticNight: 0.2,
+}
+
+// Visibility in metres -> the extinction coefficient lighting.js's aerial chunk
+// wants, which is also the FogExp2 density the water's own fog term reads.
+//
+// The chunk keeps a surface's own colour by `exp( -(d * density)^2 )`, so
+// "visible" has to be given a threshold: RESIDUE is how much of a surface is
+// still itself at exactly `visibility` metres. 2% is comfortably past the point
+// where anything reads as anything, which is what "you cannot see further than
+// 20 m" means in a medium that never truly cuts off.
+//
+// The relation is 1/d, not 1/d^2 -- the square is already inside the exponent
+// -- so halving the visibility exactly doubles the density. The gate asserts
+// that, because it is the line that would silently be wrong if this were ever
+// rewritten as a lerp between two authored densities.
+const RESIDUE = 0.02
+export function murkDensity(visibility) {
+  if (!(visibility > 0)) throw new Error(`murkDensity: visibility must be > 0, got ${visibility}`)
+  return Math.sqrt(-Math.log(RESIDUE)) / visibility
+}
+
+// THE MURK IN ITS THREE SPACES, and getting this wrong is the single most
+// likely bug in the whole feature, because every version of it looks plausible.
+//
+//   murkLinear  a THREE.Color in the renderer's working space. This is what the
+//               water shader's uMurk gets, because that shader does its fog mix
+//               in LINEAR, before colorspace_fragment (see the fog note below).
+//               It is also what the lights are lerped toward, since light
+//               colours are linear.
+//   murkAir     the same colour as RAW sRGB COMPONENTS. This is what uAirNear
+//               and uAirFar get, because lighting.js's aerial mix happens AFTER
+//               colorspace_fragment, in output space -- the same reason three
+//               uploads fogColor unconverted. Handing the linear numbers to
+//               those two gives a murk that is visibly too dark, and handing
+//               the sRGB ones to uMurk gives one that is visibly too light.
+//
+// Both are derived from the one hex above rather than authored twice, so
+// editing the colour cannot leave one of them behind.
+export const murkLinear = new THREE.Color(UNDERWATER.murk)
+export const murkAir = (() => {
+  const c = { r: 0, g: 0, b: 0 }
+  murkLinear.getRGB(c, THREE.SRGBColorSpace)
+  return new THREE.Vector3(c.r, c.g, c.b)
+})()
+
+// Five layers of gradient noise, drifting.
 //
 // This started as six summed sine trains, which is the textbook answer and is
 // wrong for the same reason it is textbook: a sum of periodic functions is
@@ -199,9 +400,9 @@ export const WATER = {
 //   slope       how hard it tilts the surface. A SLOPE, not an amplitude: the
 //               plane is never displaced, so height never appears anywhere, and
 //               the implied wave height is slope * wavelength if you want it
-//               (2.9 m of swell down to 11 cm of ripple). The chain-rule factor
+//               (2.9 m of swell down to 2 cm of catspaw). The chain-rule factor
 //               of 1/wavelength is folded into this number rather than emitted,
-//               which is what keeps the four comparable to each other.
+//               which is what keeps the five comparable to each other.
 //   rotate      the angle its noise lattice is turned to, so no two layers
 //               share an axis and nothing lines up with the quads the mesher
 //               emits or with the axes the noise hash is built on
@@ -218,12 +419,23 @@ export const WATER = {
 // The speeds are twenty times what the first pass used, which was asked for
 // and is worth saying out loud: 27 m/s is not what a 52 m ocean swell does, it
 // is roughly what a 52 m patch of river surface does. The look is deliberate;
-// WATER.flow scales all four if it turns out to be too much.
+// WATER.flow scales all five if it turns out to be too much.
+//
+// THE FIFTH LAYER, at 65 cm, is a quarter the size of what used to be the
+// smallest and it is the one that gives the surface grain rather than shape.
+// Two things about it are deliberate. Its slope is the smallest of the five:
+// slope is a TILT, so holding the others' number here would make a 65 cm feature
+// as steep-sided as a 52 m swell, which is a rasp rather than water. And it is a
+// detail layer, so it lives inside the distance branch and is domain-warped by
+// the swell along with the other two -- a catspaw that did not get dragged
+// around by the water under it would read as a texture painted on the surface,
+// which is exactly the thing the whole noise field exists to avoid.
 export const WAVE_LAYERS = [
   { wavelength: 52.0, slope: 0.055, rotate: 13, offset: [148.2, 402.7], heading: 17, speed: 27.0, detail: false },
   { wavelength: 21.0, slope: 0.05, rotate: 41, offset: [317.4, -88.1], heading: 74, speed: 21.0, detail: false },
   { wavelength: 7.5, slope: 0.052, rotate: 97, offset: [-604.9, 251.3], heading: 131, speed: 12.0, detail: true },
   { wavelength: 2.6, slope: 0.042, rotate: 152, offset: [72.6, 933.8], heading: 168, speed: 7.0, detail: true },
+  { wavelength: 0.65, slope: 0.03, rotate: 206, offset: [-441.5, -170.2], heading: 214, speed: 3.5, detail: true },
 ]
 
 // Unrolled at build time rather than looped, so the constants are visible in
@@ -344,10 +556,11 @@ export class Water {
    * the same sampler the terrain's shadows do (see lighting.js). Both must
    * therefore be constructed before the water.
    */
-  constructor(scene, { sky, lighting, probe }) {
+  constructor(scene, { sky, lighting, probe, world }) {
     if (!sky?.uniforms) throw new Error('Water needs the Sky, for the reflection')
     if (!lighting?.uniforms) throw new Error('Water needs WorldLighting, for the horizon map')
-    if (!probe?.texture) throw new Error('Water needs the SkyProbe, for the aurora and stars')
+    if (!probe?.texture) throw new Error('Water needs the SkyProbe, for the aurora')
+    if (!world?.texture) throw new Error('Water needs the WorldProbe, for the trees and the bank')
 
     this.scene = scene
     this.group = new THREE.Group()
@@ -426,6 +639,27 @@ export class Water {
       // direction and so cannot be answered analytically. See sky-probe.js.
       uProbe: { value: probe.texture },
       uProbeGain: { value: PROBE.gain },
+      // The land, which the horizon map can only answer as a height and only for
+      // terrain. rgb is its colour and ALPHA is its coverage. See world-probe.js.
+      uWorld: { value: world.texture },
+      uWorldMix: { value: WORLD_PROBE.mix },
+      // 0 or 1, written by setSubmerged. A float rather than a bool so that
+      // softening the switch into a blend later is a change to one line here
+      // and none in the shader; today nothing between the two is drawn.
+      uSubmerged: { value: 0 },
+      // Linear, unlike the uAirNear/uAirFar that carry the same colour to every
+      // other material in the world. See the note on murkLinear.
+      uMurk: { value: murkLinear.clone() },
+      // x: skyGain, y: distort, z: veil. Three of the underside's decisions,
+      // packed because nothing downstream wants them apart.
+      uUnder: { value: new THREE.Vector3(UNDERWATER.skyGain, UNDERWATER.distort, UNDERWATER.veil) },
+      // x: windowShut, y: windowOpen -- the smoothstep edges of Snell's window,
+      // kept apart from uUnder because they are a pair that is read as a pair.
+      uWindow: { value: new THREE.Vector2(UNDERWATER.windowShut, UNDERWATER.windowOpen) },
+      // x: how much of the murk fade the underside takes, y: the mirror sheen
+      // outside the window. Both belong to the underside and neither is read
+      // without the other being relevant.
+      uUnderFog: { value: new THREE.Vector2(UNDERWATER.underFog, UNDERWATER.tir) },
     }
 
     this.material = new THREE.ShaderMaterial({
@@ -437,6 +671,20 @@ export class Water {
       transparent: false,
       depthWrite: true,
       fog: true,
+      // DOUBLE-SIDED, so that the surface exists when you are under it. The
+      // default FrontSide culls back-facing triangles before they are shaded,
+      // and a lake plane seen from below is nothing but back-facing triangles
+      // -- you would swim up and see straight through to the sky, with the
+      // surface simply absent.
+      //
+      // It costs approximately nothing, and it is worth saying why rather than
+      // trusting that it does. Culling only saves work when there is something
+      // to cull, and a flat lake seen from above presents no back faces at all
+      // -- the cull stage was rejecting zero triangles. The bill for turning it
+      // off is therefore zero triangles' worth of fragment shading, plus the
+      // rivers, where a channel dipping steeply away from the eye currently
+      // drops a triangle and leaves a hole. Those come back, which is a fix.
+      side: THREE.DoubleSide,
       vertexShader: /* glsl */ `
         varying vec3 vWorldPos;
         #include <fog_pars_vertex>
@@ -458,11 +706,150 @@ export class Water {
         uniform vec2 uGlint;
         uniform vec2 uSharp;
         uniform samplerCube uProbe;
+        uniform samplerCube uWorld;
+        uniform float uWorldMix;
         uniform float uProbeGain;
+        uniform float uSubmerged;
+        uniform vec3 uMurk;
+        uniform vec3 uUnder;
+        uniform vec2 uWindow;
+        uniform vec2 uUnderFog;
         ${SKY_GLSL}
         ${SAMPLE_GLSL}
         ${WAVE_GLSL}
         #include <fog_pars_fragment>
+
+        #ifdef USE_FOG
+          // Pulled out of the fog block below because the underside path needs
+          // the same number, and a second copy of this expression is exactly
+          // the kind of duplicate that stays right for a week. One caller fades
+          // toward the sky, the other toward the murk; how MUCH they fade is
+          // one decision and lives here.
+          float waterFogAmt() {
+            #ifdef FOG_EXP2
+              return 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+            #else
+              return smoothstep( fogNear, fogFar, vFogDepth );
+            #endif
+          }
+        #endif
+
+        // THE LAND ALONG A RAY, as an rgb and a coverage, from two sources that
+        // answer different halves of the question.
+        //
+        // wlBlocked is the terrain horizon map: 16 azimuths of "how high does
+        // the ground rise this way", baked for terrain shadows and already paid
+        // for. It reaches to the far mountains and it knows nothing whatever
+        // about trees, because a spruce is not terrain.
+        //
+        // uWorld is a 128 px cube capture of the actual scene taken from just
+        // above the water -- trees, rocks, buildings, bank and all. Its alpha is
+        // the payload as much as its colour: the target clears to transparent
+        // black, so alpha is 1 where geometry covered the texel, 0 where the ray
+        // went out to sky, and a leaf's own alpha at the soft edge of a card.
+        //
+        // MAX rather than a sum or a mix, because both are answering the same
+        // yes/no question and neither is a fraction of the other. Adding them
+        // would double-count a tree standing on a ridge; mixing would let the
+        // capture's zero ARGUE AWAY a mountain the horizon map is certain about,
+        // which is the failure mode that matters -- the capture only has 128
+        // pixels and a far ridge occupies very few of them.
+        //
+        // The colour comes from the capture where the capture has one, and falls
+        // back to uSilTint -- the mountain's own deep blue at the brightness of
+        // the darkest terrain the world can currently draw -- where it does not.
+        // So a distant peak the cube resolves poorly still comes out as land,
+        // and the near bank comes out as itself.
+        vec4 worldSilhouette( vec3 dir ) {
+          vec4 wc = texture( uWorld, dir );
+          float cover = clamp( wc.a * uWorldMix, 0.0, 1.0 );
+          float ridge = wlBlocked( vWorldPos.xz, dir );
+          return vec4( mix( uSilTint, wc.rgb, cover ), max( ridge, cover ) );
+        }
+
+        // THE UNDERSIDE OF THE SURFACE, which is a different question from the
+        // top and not merely the top seen backwards.
+        //
+        // Looking straight up, you see the sky through the surface, wobbling.
+        // Looking along the horizontal you see none of it: at grazing angles a
+        // water surface stops transmitting and starts mirroring, and since
+        // there are no screen-space reflections here to mirror WITH, what that
+        // fade lands on instead is the murk -- which is what the water in
+        // between you and it looks like anyway, and is therefore very nearly
+        // the right answer for free.
+        //
+        // A SMOOTHSTEPPED SNELL WINDOW rather than a Fresnel term or the hard
+        // cone the physics actually has. Sharpness is not wanted -- a crisp
+        // edge in the middle of a rippling surface crawls -- but the previous
+        // answer here, a squared cosine, was not soft, it was CLOSED: a squared
+        // cosine is already down to 0.44 at 48 degrees, where the real window
+        // is still wide open, and near zero across the whole band you look
+        // through from a metre or two under. That is what made this read as a
+        // flat blue plane. The edges are knobs now (see UNDERWATER.windowOpen)
+        // and they sit either side of the real 48.6 degrees.
+        vec3 underside( vec3 V, vec3 N ) {
+          // The waves bend where you are looking. N is the surface's own
+          // normal, so ( N - up ) is its TILT -- zero on flat water, and
+          // roughly horizontal otherwise, which is the direction the wobble
+          // wants to push in. Nearly free: the caller already has N.
+          vec3 tilt = N - vec3( 0.0, 1.0, 0.0 );
+          vec3 dir = normalize( V + tilt * uUnder.y );
+
+          // A steep enough facet aims the look back DOWN through the surface,
+          // which has no meaning. Folded up rather than clamped, for the same
+          // reason the reflection above is folded rather than clamped: clamping
+          // piles every such facet onto the horizontal at once and draws a
+          // bright seam there.
+          if ( dir.y < 0.0 ) dir.y = -dir.y;
+
+          // 0.0: still no hard sun or moon disc, and now for two reasons. The
+          // first is the top face's -- a disc sampled through a rippling normal
+          // lands somewhere different every pixel, which is static rather than
+          // glitter. The second is that a disc seen from underneath would be
+          // sharper than anything else down here, in a view whose whole point
+          // is that you cannot see well.
+          //
+          vec3 sky = skyRadiance( dir, 0.0 );
+
+          // THE WORLD BEHIND THE SURFACE. The SAME call the top face makes, and
+          // that is the point of it being a function: the two sides of one
+          // surface cannot disagree about where the land is, because there is
+          // only one answer being computed. The bank, its trees and the ridge
+          // behind them all come through Snell's window, wobbling with the waves
+          // because they are looked up through the same bent direction as the
+          // sky. See worldSilhouette.
+          vec4 land = worldSilhouette( dir );
+          float blocked = land.a;
+          sky = mix( sky, land.rgb, blocked );
+
+          // The aurora and the stars come down through the surface too, and
+          // through the same distorted direction, so they wobble with the sky
+          // they sit in rather than sliding across it. Scaled by what the ridge
+          // left unblocked, or the aurora shines through the mountain.
+          sky += texture( uProbe, dir ).rgb * ( uProbeGain * ( 1.0 - blocked ) );
+
+          // Snell's window: everything above the water, squeezed into a cone
+          // around straight up, murk outside it.
+          float window = smoothstep( uWindow.x, uWindow.y, clamp( V.y, 0.0, 1.0 ) );
+
+          // OUTSIDE the window, where the surface is a mirror.
+          //
+          // Past the critical angle the real surface is totally internally
+          // reflecting, so what is there is the underwater world bounced back at
+          // you -- and that world is uniform murk, which is why this used to be
+          // a flat wall of one colour. Physics gets us no further, so the ripple
+          // here is manufactured: how much each facet leans INTO the look,
+          // ( N.xz . V.xz ), stepped and used to lighten the murk. Wave tilts
+          // are ~0.1 so it is scaled hard; it falls off to nothing as the view
+          // tips up, which is exactly where the window is taking over anyway.
+          float lean = clamp( 0.5 + dot( N.xz, V.xz ) * 6.0, 0.0, 1.0 );
+          vec3 murk = uMurk * mix( 1.0, uUnderFog.y, lean );
+
+          // uUnder.z of murk left over even at the window's clearest, so that
+          // what you are looking through still reads as a surface rather than a
+          // hole punched to the sky.
+          return mix( murk, mix( sky * uUnder.x, murk, uUnder.z ), window );
+        }
 
         // Sun and moon glitter, and it is a THRESHOLD rather than a falloff.
         //
@@ -501,6 +888,35 @@ export class Water {
           float near = ( 1.0 - smoothstep( uDetail.x, uDetail.y, dist ) ) * far;
 
           vec3 N = waveNormal( vWorldPos.xz, near, far );
+
+          // SEEN FROM UNDERNEATH. gl_FrontFacing is what makes this one
+          // material rather than two: the same meshes, the same draw calls and
+          // the same shared uniforms, with the side of the surface you are on
+          // decided per fragment. uSubmerged is in the test as well as the
+          // facing, because a back face is also what you get looking up at a
+          // lake from inside a cave, and down there the answer is still the
+          // ordinary one.
+          //
+          // An early return rather than an else-branch around the eighty lines
+          // below: the underside shares the wave normal and nothing after it.
+          if ( uSubmerged > 0.5 && ! gl_FrontFacing ) {
+            vec3 color = underside( V, N );
+            #ifdef USE_FOG
+              // Only uUnderFog.x of the murk fade, and the reason is that this
+              // surface is not IN the water the way the riverbed is. Twenty
+              // metres of murk at a grazing angle is a 98% fade, which is right
+              // for a rock that far off and wrong for the ceiling -- it erased
+              // the window, the ridges and the ripple all at once and left the
+              // flat blue wall. Kept partial rather than dropped so the surface
+              // still recedes with distance.
+              color = mix( color, uMurk, waterFogAmt() * uUnderFog.x );
+            #endif
+            gl_FragColor = vec4( color, 1.0 );
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
+            return;
+          }
+
           vec3 R = reflect( V, N );
 
           // A steep enough facet points the reflection into the ground. Fold it
@@ -538,7 +954,13 @@ export class Water {
           // for a mountain kilometres off and approximate for a bank a few metres
           // away. Sixteen azimuths make it a soft, rounded silhouette rather than
           // a crisp ridgeline. Both are the intended lo-fi, not a compromise.
-          float blocked = wlBlocked( vWorldPos.xz, R );
+          //
+          // AND THE TREES, which the horizon map structurally cannot hold: it is
+          // baked from the terrain and a spruce is not terrain. worldSilhouette
+          // combines the two -- see it for what the alpha channel is doing and
+          // why the two are combined with a max rather than added.
+          vec4 land = worldSilhouette( R );
+          float blocked = land.a;
 
           // Declared here, next to what it is derived from, and used twice
           // below -- by the probe and by the glitter. It lived down with the
@@ -548,14 +970,14 @@ export class Water {
           // dimmer lake, it draws nothing at all.
           float lit = 1.0 - blocked;
 
-          // The mountain's own deep blue, at the brightness of the darkest
-          // terrain the world can currently draw. Arrived at whole on the CPU
-          // once a frame -- see syncShading -- rather than being derived
-          // here from the horizon's luminance, which was the previous answer
-          // and was consistently too bright: the sky at the horizon is the
-          // brightest part of the sky, and a fraction of it is not the same
-          // quantity as a shadowed hillside no matter what the fraction is.
-          refl = mix( refl, uSilTint, blocked );
+          // Where there is land, the reflection is that land. Its fallback
+          // colour, uSilTint, is arrived at whole on the CPU once a frame -- see
+          // syncShading -- rather than being derived here from the horizon's
+          // luminance, which was the previous answer and was consistently too
+          // bright: the sky at the horizon is the brightest part of the sky, and
+          // a fraction of it is not the same quantity as a shadowed hillside no
+          // matter what the fraction is.
+          refl = mix( refl, land.rgb, blocked );
 
           // The aurora and the stars, which no function can answer -- both are
           // meshes, so they are captured instead (sky-probe.js) and ADDED here.
@@ -600,7 +1022,7 @@ export class Water {
           // With both sides taken to uSilTint, a fully blocked patch composites
           // to uSilTint whatever the Fresnel does, which is the promise made in
           // syncShading kept.
-          vec3 body = mix( uTint, uSilTint, blocked );
+          vec3 body = mix( uTint, land.rgb, blocked );
 
           vec3 color = mix( body, refl, mirror );
 
@@ -629,16 +1051,22 @@ export class Water {
           // fogColor is authored in output space. The sky value here is linear,
           // so the mix belongs on this side of the conversion. The dome does
           // the same thing in the same order, which is the whole point.
+          //
+          // AND THE EXEMPTION IS ITSELF EXEMPT WHEN SHE IS UNDER. Everything
+          // above is an argument about what a distant lake is a mirror OF, and
+          // it holds only while the air between her and it is air. Under the
+          // surface the far target is the murk like everything else's -- a
+          // second lake seen across twenty metres of lake water is not a
+          // brighter thing than the water in front of it, it is gone. Left
+          // fading to the horizon sky, a top face across the lake reads as a
+          // lit hole in the murk, which is the one shape that says "this is a
+          // sheet of polygons" louder than a painted surface does.
           #ifdef USE_FOG
             vec2 flatV = V.xz;
             float flatLen = max( length( flatV ), 1e-4 );
             vec3 horizonDir = vec3( flatV.x / flatLen, 0.0, flatV.y / flatLen );
-            #ifdef FOG_EXP2
-              float fogAmt = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
-            #else
-              float fogAmt = smoothstep( fogNear, fogFar, vFogDepth );
-            #endif
-            color = mix( color, skyRadiance( horizonDir, 0.0 ) * uReflTint, fogAmt );
+            vec3 fogTarget = mix( skyRadiance( horizonDir, 0.0 ) * uReflTint, uMurk, uSubmerged );
+            color = mix( color, fogTarget, waterFogAmt() );
           #endif
 
           gl_FragColor = vec4( color, 1.0 );
@@ -664,6 +1092,21 @@ export class Water {
   update(elapsed, hemi) {
     this.uniforms.uTime.value = elapsed
     this.syncShading(hemi)
+  }
+
+  /**
+   * Which side of the surface her head is on. Two things change in the shader:
+   * back faces stop being ignored and start being drawn as the underside, and
+   * the distance fade stops aiming at the horizon sky and starts aiming at the
+   * murk.
+   *
+   * Deliberately NOT worked out here. Whether she is under is a question about
+   * where the water bodies are, which is WaterSurfaces' job and not the
+   * material's, and this class has no access to and no business knowing about
+   * either the player or the layer document. So the host decides and tells it.
+   */
+  setSubmerged(on) {
+    this.uniforms.uSubmerged.value = on ? 1 : 0
   }
 
   /**

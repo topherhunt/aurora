@@ -23,35 +23,18 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- [ ] Procedural trees:
+- Cliffsides, riverbeds, lake beds: include larger sized rock caps, as well as whole giant boulders underwater.
+- [ ] Deadwood: currently it's always placed in the same places as trees. Scatter it randomly, NOT under trees, though it's OK if it occasionally intersects. Also it needs to be browner, less red. Also vary size randomly from (current size) to 4x current size.
+- [ ] Mushrooms: double current default size? and randomly vary sizes obvi
+- [ ] Procedural bushes - Scattered throguhout the forest like trees, but with different LOD thresholds. 2 sizes x 2 random seed rolls x species.
 
-  - [ ] Mossy trunks (shader slider like on rock)
-
-  - [ ] different sizes heights, populated into the world, incl bushes. And randomly vary the height more -- currently the forest reads as pretty uniform.
-
-  - [ ] let's bake variants!! I'm thinking of these combinatorial variations (and as with ferns, each variant should be a different seed\
-    roll):
-
-    - 3 heights (default, 2/3 default young, 1/3 default sapling)
-    - firstBranch: \[default, or default / 2\]
-
-    Bushes also need variants: 2 sizes x 2 random seed rolls each.
-
-  - [ ] Angle each leaf card by 20-70 deg up or down so no card is flat?
-
+- [ ] Pebbles on ground: can they be atlassed so they bend following the existing triangles, ratehr than being new separate triangles? Perf implications of that? (if doable, it would be very useful)
 - [ ] Leaf atlas and lichen atlas - scatter onto boulders & forest floor. (Moss is done for boulders -- see the moss bullet under nature props; trunks are the next entry in `MOSS_LAYERS` and need a height cue first.)
 
 - [ ] **Redo the Aurora as a raymarched field instead of eleven curtain meshes.**
 
   - Gorgeous starting point, but unworkable perf-wise. Leylines and Weave looked gorgeous, the 3rd algo (filament) was nothing.
   - [ ] Get data on, how is the new aurora structured? Is it a dome mesh, a plane, or sth else? It should be as few tris as possible ideally.
-
-- [ ] Procedural other nature props
-
-  - \[ \]
-  - [ ] Giant fallen logs, broken stumps
-  - Placed to hem off paths & create a sense of verticality & obstacle clutters
-  - [ ] Procedural rock CLIFFSIDES -- the face itself built out of stone rather than dressed with it. The crags are placed now (the giants bed puts `shelf`/`buttress`/`blockhouse` on anything past 34° and `spire`/`fang` in peak country, at full density on a cliff and a tenth of it in a wood), and the terrain's rock surface now wears the boulders' own `rocks/stone.png` triplanar at 16 m per tile with a fainter 2 m octave inside 130 m (`src/terrain/terrain-material.js`, opt-in via `createTerrainMaterial({ atlas })` so v1 is untouched), so a boulder and the face behind it are one material. What is left is GEOMETRY: a cliff is still a steep triangle, and no albedo layer gives it a ledge to stand on.
 
 - [ ] Clear out the scanned 3D assets that are bad-quality & not worth keeping
 
@@ -87,6 +70,16 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] River water renderer
 
   - Shader for flowing water. Narrower = faster, wider = shallower. Steeper = faster. beyond 45deg = waterfall, with emitted spray clouds.
+
+### Later
+
+- 
+- Underwater shader
+- Lakebed seaweed!!! Some very tall
+- Lakebed boulders
+- Terrain LOD: How to preserve toothy peaks while minimizing triangles used in terrain rendering?
+  - Idea 1: define billboard triangles for distant peaks (1 "layer" that provides 1 "resolution" more of terrain than what the actual LOD allows for at that distance, created only when the lower LOD loses a hill/protrusion that's added when you get closer)
+  - Idea 2: "skyline backdrop" ???
 
 ## Props -- follow-ups
 

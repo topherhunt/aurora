@@ -59,17 +59,18 @@ const SEEDS = Number(process.argv[2] ?? 300)
 // A budget to be DEFENDED, not a number to raise whenever a part grows.
 //
 // IT MOVED ONCE, from 2600 to 2700, and this is the defence. Dormers are a new
-// PART, not an old one that swelled: a five-sided stub swept into the slope, 16
-// triangles, plus a shutterless window at 36. Fifty-two apiece, and a building
-// draws at most two whatever its dice say -- so the ceiling this raises is
-// bounded at 104 and cannot creep. The worst building in the corpus measures
-// 2608 with both of them on it; everything else has room already. The constraint
-// this number is a proxy for is the village allotment at the bottom of §4, which
-// is 2,750 a building, and that still passes with 142 to spare.
+// PART, not an old one that swelled: a five-sided stub swept into the slope with
+// its own covering laid over it, 24 triangles, plus a shutterless window at 36.
+// Sixty apiece, and a building draws at most two whatever its dice say -- so the
+// ceiling this raises is bounded at 120 and cannot creep. The worst building in
+// the corpus measures 2624 with both of them on it; everything else has room
+// already. The constraint this number is a proxy for is the village allotment at
+// the bottom of §4, which is 2,750 a building, and that still passes with 126 to
+// spare.
 const STRUCTURE_BUDGET = 2700
 // Detail 1: the macro structure with the bevelling, rounding and 3D joinery
 // gone. The design target is an eighth of detail 2. Measured, the mean lands at
-// 0.134 -- close to a seventh -- and the gate is set above that rather than at
+// 0.136 -- close to a seventh -- and the gate is set above that rather than at
 // the target, for a reason worth writing down.
 //
 // THE FLOOR IS THE WINDOWS. A detail-1 window is three flat rectangles: frame,
@@ -85,9 +86,9 @@ const STRUCTURE_BUDGET = 2700
 // costs, plus an absolute cap on the worst single building, which is the number
 // that governs the worst frame. Per-building ratio is deliberately NOT gated,
 // because it measures how many OPENINGS a building has rather than how thrifty
-// its far tier is: the worst is an inn at 0.204 whose fifteen windows are most
-// of its detail 1, and the next worst is a small cottage at 0.209 for the mirror
-// reason -- its detail 2 had little ornament to lose. Neither is a problem, and
+// its far tier is: the worst is a small cottage at 0.242, whose detail 2 had
+// little ornament to lose, and the ones behind it are inns whose fifteen windows
+// are most of their detail 1. Neither is a problem, and
 // failing either measures the wrong thing.
 const LOD1_MEAN = 0.18
 const LOD1_BUDGET = 460
@@ -551,7 +552,32 @@ for (const strength of [0, 1]) {
       const tag = `${kind}/${s}${strength ? ' warped' : ''}`
       // The door's own frame. `a` runs across the opening, `o` out of the wall.
       const aOf = (p) => (p[0] - d.x) * d.nz - (p[2] - d.z) * d.nx
-      const oOf = (p) => (p[0] - d.x) * d.nx + (p[2] - d.z) * d.nz
+      const rawO = (p) => (p[0] - d.x) * d.nx + (p[2] - d.z) * d.nz
+
+      // AND `o` IS MEASURED FROM THE WALL WHERE THE FIELD LEFT IT, not from the
+      // plane the door was planned in. The wall is not plumb: it leans as it
+      // settles and it is battered off square when it is raised, so by the time
+      // it reaches the head of a doorway its face can stand 7 cm outside the
+      // plane through the sill. Against a fixed plane every timber in the wall
+      // drifts into the door's slot as it rises, and the check reads a leaning
+      // wall as an obstruction and a lintel as if it were a metre lower than it
+      // is. So the reference is the field's own answer for the door plane at
+      // this point's height, and what is left is the standoff that was built.
+      //
+      // The field is asked at the point's WARPED height rather than at the
+      // height it was drawn at, which is out by however far the field lifted it
+      // -- a couple of centimetres, against a term that varies by a few
+      // millimetres over that. Inverting the field to do better would be
+      // measuring the measurement.
+      const wall = strength
+        ? makeWarp(makeCharacter(plan.seed, strength), plan.plinthBottom, plan.footprint)
+        : null
+      const oOf = (p) => {
+        if (!wall) return rawO(p)
+        const a = aOf(p)
+        const q = wall(d.x + d.nz * a, p[1], d.z - d.nx * a)
+        return rawO(p) - ((q[0] - d.x) * d.nx + (q[2] - d.z) * d.nz)
+      }
 
       // 3a. NOTHING IN THE DOORWAY. The clear volume is inset from the opening
       // on every side, because the point is not that a jamb touches the reveal --
@@ -1186,16 +1212,17 @@ console.log('\nthe rake')
 console.log('\nthe dormer')
 
 {
-  // Measured over the corpus: 169 buildings with none, 44 with one, 27 with
-  // two, which is 71 of 240 carrying at least one. The band is deliberately
+  // Measured over the corpus: 171 buildings with none, 42 with one, 27 with
+  // two, which is 69 of 240 carrying at least one. The band is deliberately
   // wide for the same reason the rake's is: this is a die, not an invariant,
   // and what should fail here is a change to the odds or to the vetoes rather
   // than an unlucky corner of the seed space.
   const CARRY = [0.18, 0.45]
   // How much of dormer2's 0.22 m the warp is allowed to eat. It eats almost
-  // none of it: the worst seat in the corpus keeps 0.218 m, two millimetres
-  // under the unwarped guarantee, and the median keeps 0.30 m because the march
-  // overshoots by up to a step wherever the sheet is climbing fast. So the
+  // none of it: the worst seat in the corpus keeps 0.224 m, which is ABOVE the
+  // unwarped guarantee of 0.22 rather than under it, because the march
+  // overshoots by up to one of its 12 cm steps wherever the sheet is climbing
+  // fast and that is worth more than the field takes back. So the
   // failure this is set against is not today's field getting slightly
   // unluckier, it is the field getting STRONGER or the march getting coarser,
   // and half the guarantee is far enough below the measurement to say that and
@@ -1217,17 +1244,21 @@ console.log('\nthe dormer')
       hist.set(ds.length, (hist.get(ds.length) ?? 0) + 1)
       if (ds.length > 0) carriers++
       if (ds.length > 2) overCap++
-      const warp = makeWarp(built.character, plan.plinthBottom)
+      const warp = makeWarp(built.character, plan.plinthBottom, plan.footprint)
       for (const dm of ds) {
         seats++
         // The far end of the sweep, which is where the back gablet stands: the
-        // apex of the stub's section, and the point on the main covering
-        // directly over it. Warped as a PAIR and differenced afterwards,
+        // ridge of the stub's own covering -- which is `lift` above the section
+        // apex, that sheet being laid over the solid rather than being a face of
+        // it -- and the point on the main covering directly over it. The lift is
+        // millimetres and the clearance is centimetres, but a check that
+        // measures the second-highest thing drawn is not measuring the thing.
+        // Warped as a PAIR and differenced afterwards,
         // because each of them lands somewhere the other did not and the gap
         // between the two is the entire question.
         const bx = dm.x - dm.nx * dm.depth
         const bz = dm.z - dm.nz * dm.depth
-        const apex = warp(bx, dm.faceY + dm.apexH, bz)
+        const apex = warp(bx, dm.faceY + dm.apexH + dm.lift, bz)
         const sheet = warp(bx, dm.sheetAt(bx, bz), bz)
         const clear = sheet[1] - apex[1]
         if (clear < worst[0]) worst = [clear, `${kind}/${s}`]
@@ -1430,7 +1461,7 @@ console.log('\nwarp')
     for (let seed = 0; seed < 40; seed++) {
       const plan = planBuilding({ seed, kind })
       const straight = buildBuilding2(plan, { detail: 2, strength: 0 })
-      const f = makeWarp(makeCharacter(plan.seed, 1), plan.plinthBottom)
+      const f = makeWarp(makeCharacter(plan.seed, 1), plan.plinthBottom, plan.footprint)
       const ps = straight.geometry.getAttribute('position').array
       for (let i = 0; i < ps.length; i += 3) {
         const q = f(ps[i], ps[i + 1], ps[i + 2])

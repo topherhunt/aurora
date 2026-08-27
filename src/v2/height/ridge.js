@@ -311,11 +311,26 @@ export const SHATTER_HURST = 1.0
 // Mesh cells a pyramid's four ridge edges must span before they are allowed to
 // stay perfectly sharp. crag.js's `_setCell` argument exactly, and for the same
 // reason: a crease narrower than the triangles carrying it does not get sharper
-// as chunks coarsen, it ALIASES, and the edge crawls as LOD swaps. Note that the
-// apex and the ground crease are NOT widened -- both are continuous in value and
-// break only in the derivative, so a coarse mesh simply cuts the corner off and
-// the shard shrinks with distance, which is what it should do.
-export const SHATTER_VERTEX_CELLS = 3
+// as chunks coarsen, it ALIASES, and the edge crawls as LOD swaps.
+//
+// ONE CELL, NOT THREE, AND THE SHARD MUST NOT SHRINK WITH DISTANCE. Widening an
+// edge to three cells does not soften a shard, it dissolves it: the rounding is
+// `SHATTER_VERTEX_CELLS * cell / lambda`, so at a 16 m cell the coarsest scale
+// was being rounded by about half a Voronoi cell -- some 48 m of apex taken off
+// a 98.8 m shard that a 16 m mesh can resolve to 32 m perfectly well. The band
+// limit was not doing this; at that cell it is still fully on. Measured, a
+// summit read 701.5 m on the 16 m tier and 723.1 m up close, and it climbed
+// smoothly through every rung between, so a hill visibly grew as the camera
+// approached it. At one cell the same summit moves 10.5 m instead of 19.6, and
+// the term surviving at a 16 m cell goes from 0.46 m to 1.81 m.
+//
+// So an edge spanning a single triangle is the floor, which is the actual
+// anti-aliasing requirement -- three was buying nothing the mesh needed. The
+// apex and the ground crease are still NOT widened: both are continuous in value
+// and break only in the derivative, so a coarse mesh cuts the corner off on its
+// own. What is left of the growth is the band limit retiring whole scales, which
+// this constant cannot reach.
+export const SHATTER_VERTEX_CELLS = 1
 
 // Sites sampled to estimate those percentiles. A full sort of 1024^2 floats to
 // read two order statistics is wasteful; a 64k subsample puts both within a few
@@ -331,6 +346,16 @@ const PCTL_SITES = 65536
 // spacing is a fixed fraction of a wavelength but the axis coherence over that
 // distance is not.
 const MEAN_SITES = 4096
+
+// The shatter mean is tabulated against the apex rounding rather than measured
+// once, because the rounding drives it to zero (see the bake). Knots are spaced
+// in `round` units -- the argument _shatterRaw takes, which is
+// SHATTER_VERTEX_CELLS * cell / lambda and so is already scale-free. The
+// envelope is flat zero by round ~0.9 at every scale, and 1.2 leaves margin
+// while keeping the bake to 13 passes; past the last knot the lookup reads 0,
+// which the bake asserts is true.
+const SHATTER_MEAN_KNOTS = 13
+const SHATTER_MEAN_STEP = 0.1
 
 /** One running-sum box pass along X. */
 function boxX(src, dst, w, h, r) {
@@ -675,13 +700,33 @@ export class RidgeField {
     // bigger ridge with teeth on top. That is both the geologically right way
     // round and the reason the knob does not raise the summit line.
     //
-    // Measured at round 0, i.e. at cell 0. A coarser cell rounds the pyramid
-    // edges and shifts the distribution slightly; that is the same approximation
-    // crag.js makes by interpolating one mean table over its rounding radius, and
-    // it is second-order against a term whose amplitude is already fading out
-    // under the band limit by the time the cell is wide enough to matter.
+    // THE MEAN IS A FUNCTION OF THE ROUNDING, and it has to be measured as one
+    // rather than once at round 0. This is the whole reason a distant hill used
+    // to sit metres below where it stood when you walked up to it.
+    //
+    // `atShatter` rounds the pyramid apexes by SHATTER_VERTEX_CELLS * cell / λ so
+    // a shard's edges are never narrower than the triangles carrying them. That
+    // rounding does not merely soften the distribution, it COLLAPSES it: scale 0
+    // has mean raw 0.186 at cell 0, 0.033 at cell 2 m, and exactly 0.000 by cell
+    // 4 m. Subtract a round-0 mean from that and the term is not a fading
+    // envelope, it is `r * (0 - 0.186) * gain` -- a negative constant scaled by
+    // the ridgeness gate, cutting every crest down by a fixed amount that only
+    // lifts as you approach. Measured on peak ground, that put the mesh 2.1 m low
+    // on average at a 64 m range and 16 m low at the worst point.
+    //
+    // The band limit does not rescue it, which is the part that makes this easy
+    // to miss. `bw` is smoothstep(2*cell, 4*cell, λ), so at cell 4 m scale 0 is
+    // still 74% present -- the rounding annihilates the signal a good deal faster
+    // than the band limit retires the scale, and what survives in between is pure
+    // offset. So the mean is tabulated against `round` and interpolated, which is
+    // what crag.js does over its own rounding radius.
+    //
+    // SUBTRACTING THE RIGHT ONE PRESERVES BOTH PROPERTIES ABOVE. At every cell
+    // the term stays zero-mean, so it still carves rather than inflates, and it
+    // now fades to nothing instead of to a trench.
     this._sMean = new Float64Array(this.count)
     this._sGain = new Float64Array(this.count)
+    this._sMeanTab = new Float64Array(this.count * SHATTER_MEAN_KNOTS)
     for (let si = 0; si < this.count; si++) {
       let sum = 0
       let sq = 0
@@ -695,6 +740,24 @@ export class RidgeField {
       const varr = sq / MEAN_SITES - mean * mean
       if (!(varr > 0)) throw new Error(`RidgeField: the shatter field has zero variance at scale ${si} -- no cell in the sample carried a shard, which means SHATTER_FLOOR is at or below zero AND the lattice is degenerate at this wavelength`)
       this._sMean[si] = mean
+
+      // Knot 0 is that same round-0 mean, so the close-up surface is bit-identical
+      // to what it was before this table existed.
+      this._sMeanTab[si * SHATTER_MEAN_KNOTS] = mean
+      for (let k = 1; k < SHATTER_MEAN_KNOTS; k++) {
+        let s = 0
+        for (let i = 0; i < MEAN_SITES; i++) {
+          const p = measureSite(i)
+          s += this._shatterRaw(p.x, p.z, si, k * SHATTER_MEAN_STEP)
+        }
+        this._sMeanTab[si * SHATTER_MEAN_KNOTS + k] = s / MEAN_SITES
+      }
+      // The lookup returns a flat 0 past the last knot, so the table has to reach
+      // far enough that the envelope really is gone by then. If a future
+      // SHATTER_TAPER or SPARSE stretches the tail past this, that is a silent
+      // return to the trench above -- so it fails here instead.
+      const tail = this._sMeanTab[si * SHATTER_MEAN_KNOTS + SHATTER_MEAN_KNOTS - 1]
+      if (tail > 1e-6) throw new Error(`RidgeField: the shatter envelope at scale ${si} still means ${tail} at round ${(SHATTER_MEAN_KNOTS - 1) * SHATTER_MEAN_STEP} -- SHATTER_MEAN_KNOTS does not span the rounding, and past the table the mean reads 0`)
 
       // SCALED BY THE PEAK AND NOT BY THE RMS, which is the difference between a
       // knob that means something and one that does not. `ridge`'s field is
@@ -806,6 +869,20 @@ export class RidgeField {
    * and the three would agree there, which is a seam through the middle of the
    * map.
    */
+  /**
+   * The mean of scale `s`'s shard envelope at apex rounding `round`, linearly
+   * interpolated off the bake's table. Zero past the last knot, which the bake
+   * verifies is where the envelope has actually gone.
+   */
+  _shatterMean(s, round) {
+    const t = round / SHATTER_MEAN_STEP
+    if (t >= SHATTER_MEAN_KNOTS - 1) return 0
+    const k = t | 0
+    const f = t - k
+    const b = s * SHATTER_MEAN_KNOTS + k
+    return this._sMeanTab[b] * (1 - f) + this._sMeanTab[b + 1] * f
+  }
+
   _shatterRaw(x, z, s, round) {
     const f = this._freq[s]
     const px = x * f + this._offX[s]
@@ -903,8 +980,12 @@ export class RidgeField {
       // A pyramid's ridge edges may not be narrower than the triangles that have
       // to carry them. In cell units, because that is the frame the Chebyshev
       // distance is measured in.
-      const raw = this._shatterRaw(x, z, s, SHATTER_VERTEX_CELLS * cell * this._freq[s])
-      sum += bw * this.sWeight[s] * r * (raw - this._sMean[s]) * this._sGain[s]
+      const round = SHATTER_VERTEX_CELLS * cell * this._freq[s]
+      const raw = this._shatterRaw(x, z, s, round)
+      // The mean at THIS rounding, not at zero -- see the bake. Getting this
+      // wrong does not show up as a wrong shape up close, where round is 0 and
+      // the two agree exactly; it shows up as distant ground sagging.
+      sum += bw * this.sWeight[s] * r * (raw - this._shatterMean(s, round)) * this._sGain[s]
     }
     return amount * sum
   }

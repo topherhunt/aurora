@@ -97,6 +97,40 @@ export function makeCharacter(seed, strength = 1) {
     leanX: sym(1) * 0.021 * s,
     leanZ: sym(2) * 0.021 * s,
     leanPow: 1.35,
+    // BATTER: the walls are not plumb. Signed, one term per horizontal axis,
+    // and read as a SLOPE -- 0.04 is a wall four centimetres out of plumb per
+    // metre of height, so a three-metre wall stands 12 cm proud of its sill and
+    // the pair of them open 24 cm across the building. Positive splays the
+    // walls outward as they rise, negative leans them in over the floor.
+    //
+    // SIGN AND SIZE ARE DRAWN SEPARATELY, for the reason `vergeSplay` gives
+    // below: one symmetric draw puts half the village within a hair of plumb by
+    // construction, because the sign coming out near zero takes the size with
+    // it. Every building gets a real batter; which way is the coin toss.
+    //
+    // The ceiling is set by the mass junctions and not by taste. Past about
+    // 0.045 the field pulls a wing's wall out of the range wall it is buried in
+    // faster than the joint overlaps can absorb, and the daylight probe starts
+    // finding real holes in the inns -- hundreds of rays, not the stray
+    // pinhole. 0.042 measures one ray in 1.7 million, which is the number the
+    // building carried before this term existed.
+    //
+    // This is NOT the lean above and could not be folded into it. A lean moves
+    // both walls of a pair the SAME way, which is a building tipping over; a
+    // batter moves them OPPOSITE ways, mirrored about the building's own
+    // centre line, which is a frame that was raised out of square and stayed
+    // that way. The two read completely differently and a village wants both.
+    //
+    // Symmetric by construction rather than by luck: makeWarp() applies it
+    // through an odd function of the offset from the centre, so whatever the
+    // left wall does the right wall does in mirror image, and the term is
+    // exactly zero on the centre line where the ridge sits.
+    //
+    // The axes are drawn independently, so a building can splay along its
+    // length and pinch across its width. That is more interesting than one
+    // uniform pyramid and it is what a settled frame with one bad sill does.
+    batterX: (r(19) < 0.5 ? -1 : 1) * (0.014 + r(20) * 0.028) * s,
+    batterZ: (r(21) < 0.5 ? -1 : 1) * (0.014 + r(22) * 0.028) * s,
     // Roof: how far the covering bows between ridge and eave under its own
     // weight, and how much the two buckle seams wander along their length.
     //
@@ -174,6 +208,61 @@ export function makeCharacter(seed, strength = 1) {
   }
 }
 
+/** The plan's footprint reduced to a centre and a half-extent per axis, or null
+ *  if there is no footprint to reduce. The half-extents floor at 0.5 m: a
+ *  degenerate axis would divide the batter by nothing and throw the wall to
+ *  infinity, and this is the one place a plan could hand the field a zero. */
+function footprintBox(footprint) {
+  if (!footprint || footprint.length < 3) return null
+  let x0 = Infinity
+  let x1 = -Infinity
+  let z0 = Infinity
+  let z1 = -Infinity
+  for (const [px, pz] of footprint) {
+    if (px < x0) x0 = px
+    if (px > x1) x1 = px
+    if (pz < z0) z0 = pz
+    if (pz > z1) z1 = pz
+  }
+  return {
+    cx: (x0 + x1) / 2,
+    cz: (z0 + z1) / 2,
+    hx: Math.max(0.5, (x1 - x0) / 2),
+    hz: Math.max(0.5, (z1 - z0) / 2),
+  }
+}
+
+// How far off the centre line a point counts as, for the batter. Odd, so the
+// two walls of a pair mirror each other and the centre line never moves;
+// normalised so it reaches exactly 1 at the footprint edge, which means
+// `batterX` IS the slope of the wall face and a wide building leans by the same
+// ANGLE as a narrow one rather than by the same distance; and saturating, so a
+// wing that sticks out past the bounding box, or a roof that oversails it, is
+// carried along by the wall it belongs to instead of being flung further.
+//
+// Saturation is the whole reason it is tanh and not a clamped straight ramp. A
+// clamped ramp has a CREASE at the footprint edge, and there is real geometry
+// sitting exactly there and just past it -- the wall plane, the eave, the verge,
+// a porch post. A crease in the field puts a visible kink through all of them
+// at the same height. tanh has no corner anywhere, so the oversail bends
+// smoothly away from the wall it hangs off.
+//
+// THE CUBE INSIDE IT IS WHAT MAKES THE TERM AFFORDABLE, and it was measured
+// rather than chosen. tanh(u) alone is at its STEEPEST on the centre line, so
+// the middle of the plan -- which is exactly where an L-plan buries its wing
+// wall inside the range wall -- is where two surfaces slide apart fastest, and
+// the daylight probe found holes in the inns at a batter that looked mild on
+// the walls. tanh(u^3) is flat at the centre and does its bending out at the
+// faces, which is also the honest shape: a battered frame is out of square at
+// its WALLS, and its middle goes along for the ride. The same batter that leaked
+// a thousand rays through the straight ramp leaks one through this one.
+const FLANK = 1.6
+const FLANK_NORM = Math.tanh(FLANK)
+
+function flank(u) {
+  return Math.tanh(FLANK * u * u * u) / FLANK_NORM
+}
+
 /**
  * The displacement field for one building.
  *
@@ -183,12 +272,20 @@ export function makeCharacter(seed, strength = 1) {
  *
  * `y0` is the height the lean is measured from, so a building on a plinth leans
  * from its plinth rather than from the origin.
+ *
+ * `footprint` is the plan's hull of [x, z] corners, and it is what makes the
+ * BATTER possible: leaning a wall off plumb without shearing the building means
+ * knowing which side of its own centre a vertex is on, and a pure field over
+ * space has no other way to find that out. Passing it is what turns the term
+ * on; without it the walls stay plumb and everything else is unchanged, which
+ * is what the part-level checks that build one wall in isolation want.
  */
-export function makeWarp(k, y0 = 0) {
+export function makeWarp(k, y0 = 0, footprint = null) {
   if (!(k.strength > 0)) return null
   const s = k.seed * 31 + 7
   const inv = 1 / k.scale
   const inv2 = 1 / k.scale2
+  const box = footprintBox(footprint)
   return (x, y, z) => {
     const ax = x * inv
     const ay = y * inv
@@ -198,14 +295,19 @@ export function makeWarp(k, y0 = 0) {
     const bz = z * inv2
     const h = Math.max(0, y - y0)
     const lean = Math.pow(h, k.leanPow)
+    // Linear in height, unlike the lean: a batter is an ANGLE the wall was
+    // raised at, so it opens at a constant rate all the way up. The lean is a
+    // settlement and accelerates.
+    const bx2 = box ? k.batterX * flank((x - box.cx) / box.hx) * h : 0
+    const bz2 = box ? k.batterZ * flank((z - box.cz) / box.hz) * h : 0
     return [
-      x + k.amp * vnoise(s, ax, ay, az) + k.amp2 * vnoise(s + 101, bx, by, bz) + k.leanX * lean,
+      x + k.amp * vnoise(s, ax, ay, az) + k.amp2 * vnoise(s + 101, bx, by, bz) + k.leanX * lean + bx2,
       // Half amplitude vertically. A building that heaves up and down as much
       // as it wanders sideways stops reading as settled and starts reading as
       // melted, and the eave line -- the one horizontal the eye actually
       // measures -- is the first thing to go.
       y + 0.5 * (k.amp * vnoise(s + 211, ax, ay, az) + k.amp2 * vnoise(s + 307, bx, by, bz)),
-      z + k.amp * vnoise(s + 401, ax, ay, az) + k.amp2 * vnoise(s + 509, bx, by, bz) + k.leanZ * lean,
+      z + k.amp * vnoise(s + 401, ax, ay, az) + k.amp2 * vnoise(s + 509, bx, by, bz) + k.leanZ * lean + bz2,
     ]
   }
 }

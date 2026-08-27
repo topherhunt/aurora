@@ -115,11 +115,11 @@
 
       <h2>the LOD ladder</h2>
       <table id="ladderTable"></table>
-      <p class="note">Every tier is the <em>same displacement field</em> sampled on a coarser solid, so a tier change loses corners rather than swapping in a different rock. That is also what makes a boulder's LOD1 usable as a cobble's LOD0 -- the shape is one function, and <em>size</em> is applied after it. Switch distance assumes each triangle should stay above ~3&nbsp;px on a Quest 2 eye buffer (16.2&nbsp;px/&deg;).</p>
+      <p class="note">Every tier is the <em>same displacement field</em> sampled on a coarser solid, so a tier change loses corners rather than swapping in a different rock. <strong>There is one ladder and every rock is on it</strong> -- what differs between a cobble and a tor is not which tiers they ship but the DISTANCES, which are <em>ROCK_LOD_AT</em> metres per metre of measured width. The ranges above are this rock's. The greyed <em>model</em> figure beside each is where that tier stops earning its triangles at ~3&nbsp;px each on a Quest 2 eye buffer (16.2&nbsp;px/&deg;); shipping inside it is a deliberate choice to spend less.</p>
 
       <h2>can it be a card?</h2>
       <table id="parallax"></table>
-      <p class="note">A billboard's defect is <em>parallax</em>: it refuses to turn, and the error that leaves is an angle. Under ~2&deg; it stops reading as wrong at walking pace, which puts the crossover at <em>depth &times; 28.6</em>. A rock is a much worse candidate than a fern -- it is an opaque convex lump, so two crossed planes show their intersection as a visible X, and a single plane vanishes edge-on. The number to beat is the T8 switch distance above: if the mesh is still cheap out to further than the crossover, the card is not earning its layer.</p>
+      <p class="note">A billboard's defect is <em>parallax</em>: it refuses to turn, and the error that leaves is an angle. Under ~2&deg; it stops reading as wrong at walking pace, which puts the crossover at <em>depth &times; 28.6</em>. A rock is a much worse candidate than a fern -- it is an opaque convex lump, so two crossed planes show their intersection as a visible X, and a single plane vanishes edge-on. The number to beat is the handover distance above: if the coarsest mesh is still honest out to further than the crossover, the card is not earning its layer.</p>
 
       <h2>what ships</h2>
       <table id="disk"></table>

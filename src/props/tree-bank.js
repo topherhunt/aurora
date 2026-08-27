@@ -17,21 +17,29 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 //
 // FOUR TIERS, FINEST FIRST -- tier 0 is the one you stand under:
 //
-//   0  LOD0   the full tree, resolveTree's own numbers
-//   1  LOD1   treeLod(p, 1): trunkSides 3, branchSides 1, and the crown drawn
-//             as a BUNDLE of twenty big tiled triangles thrown through it
-//             instead of as cards. Every foliage count and size is inherited
-//             from LOD0 untouched. Seven to twelve times cheaper than LOD0 --
-//             pine 792 -> 83, oak 516 -> 47, birch 350 -> 49, aspen 432 -> 51
-//             at the base size, each of them exactly trunk 3 + limbs x 1 +
-//             bundle 20. The ratio only widens with the size variants, since
-//             the bundle is a flat twenty however big the crown gets.
+//   0  LOD0   the full tree, resolveTree's own numbers. 470 triangles mean.
+//   1  LOD1   the same tree with cheap wood: a 3-sided trunk and one flat fin
+//             per limb, and FOLIAGE THAT IS BIT-IDENTICAL TO TIER 0's. 338
+//             triangles mean, a 28% cut, all of it out of sticks.
 //   2  cross  the impostor as THREE fixed planes. Six triangles.
 //   3  card   the same impostor as ONE spun plane, and that plane is ONE
 //             triangle: apex up for the pine, apex down for the three
 //             broadleaves, which is the shape each species already is. Only
 //             built when `billboard` is set; without it tier 2 is the last
 //             tier.
+//
+// THE TWO MESH TIERS ARE THE SAME TREE AND THAT IS LITERAL HERE, not a claim
+// about silhouettes. They are built from one seed through one rng stream, and
+// tier 1 changes only `trunkSides` and `branchSides`, so every card in the
+// crown is the same card in the same seat at the same size. Measured over all
+// 16 variants, the two tiers agree on height and crown width to every digit
+// printed. Nothing pops at the boundary except branches losing their barrel.
+//
+// A CHEAPER LOD1 EXISTED AND WAS WITHDRAWN. The same two wood cuts, but with
+// the crown thrown as a bundle of twenty big tiled triangles (`bundleTris`),
+// which took the tier to ~130 triangles and held 10 to 45 m. It did not look
+// like a tree there. Cheap and well-nested is not the same as convincing. The
+// bundle is still in tree.js and no tier asks for it.
 //
 // BOTH CARD TIERS ARE THE SAME PHOTOGRAPH, one baked texture layer per SPECIES,
 // so the second tier costs geometry and nothing else -- no second bake, no
@@ -75,23 +83,28 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // forest starts rotating. It is why the cross tier needed no new vertex
 // attribute and no duplicate impostor layer.
 //
-// THE TWO MESH TIERS NEST BY CONSTRUCTION, so the swap does not resize the
-// tree. treeLod changes only the REPRESENTATION and leaves every count and size
-// alone, so buildTree walks an IDENTICAL rng stream at both tiers and lays out
-// the identical tree; LOD1's blades are then hung on the very cards LOD0 draws.
-// Height is identical to 0.00%, both tiers standing exactly `height` tall by
-// construction, and crown width over 24 seeds x 3 sizes runs NARROW rather than
-// wide: pine -5.5%, oak -1.3%, birch -1.5%, aspen -0.9%, worst case about -10%
-// and -19% on small pines, whose crowns hold the most sprays and are the
-// hardest for sixty blade corners to sample. That is why `crownWidth` below can
-// be read off tier 0 and used for every tier.
+// `crownWidth` IS READ OFF TIER 0 AND USED FOR EVERY TIER, and it is exact
+// rather than approximate: tier 1 measures the same crown to every digit, and
+// both card tiers are framed on it. The impostor is a photograph OF that tree,
+// so no tier can disagree with any other about how wide the crown is.
 // ---------------------------------------------------------------------------
 
 // Height multipliers on each species' own default. Not a scale: the tree is
 // REGENERATED at each height, and tree.js's density law gives a short tree
-// fewer branches and sprays rather than shrunken ones. Three is enough because
-// yaw and species already carry most of the visible variety.
-export const TREE_SIZES = [0.78, 1.0, 1.34]
+// fewer branches and sprays rather than shrunken ones. That law is the whole
+// reason a multiplier this small is allowed: 0.33 does not build a 12 m pine
+// shrunk to 3 m, which would read as a toy, it builds a sapling with a
+// sapling's number of whorls on it (pine 792 triangles -> 452, oak 516 -> 252).
+//
+// THE SAPLING IS A QUARTER OF THE FOREST, because trees.js picks a variant
+// uniformly and there are four sizes. That is the one number to turn if it
+// reads as too many: a weighted pick in the placement loop, not a change here.
+// It costs less than its share of triangles either way, a sapling mesh being
+// roughly half the price of the mean tree.
+//
+// The absolute heights differ by species, since these multiply the species'
+// own default: 0.33 is a 3.0 m pine or oak and a 2.0 m birch or aspen.
+export const TREE_SIZES = [0.33, 0.78, 1.0, 1.34]
 
 /** Every species x size combination, in a stable order. Index into this is a variant id. */
 export function treeVariants() {
@@ -184,12 +197,15 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
     const p = paramsFor(v, seed + i * 101)
     const g0 = buildTree(p)
     lod0.push(g0)
+
+    // The SAME tree with cheap wood -- see treeLod. Same seed, so buildTree
+    // walks the identical rng stream and the crown that comes out is not merely
+    // the same size, it is the same cards in the same seats.
     lod1.push(buildTree(treeLod(p, 1)))
 
     // The card is framed on tier 0's measured crown, which is the tree the
     // impostor is a photograph OF and what bakeTreeImpostors points its camera
-    // at. Tier 1 measures the same crown to within a few percent (the nesting
-    // note above), so one framing serves both mesh tiers.
+    // at.
     const u = g0.userData.tree
     const ext = impostorCardExtents({ width: u.crownWidth, height: u.height })
     // The CROSS tier: three fixed planes wearing CANOPY normals, which fan out

@@ -38,17 +38,22 @@
 //
 // HOW A CELL IS ADDRESSED.
 //
-// Each sheet is 128 px holding a 2x2 grid of 64 px cells, and a geometry picks
-// its cell by UV offset (`capCell` / `fleshCell` in props/mushroom.js). 2x2 and
+// Each sheet is a 128 px layer holding four 64 px cells in a 2x2 grid, and a
+// geometry picks its cell by UV offset (`cellUV` in props/mushroom.js). 2x2 and
 // not 4x4 because sheet cells bleed into one another in the low mips, and at
 // 32 px a cell has two usable mip levels before it is averaging its neighbours.
 //
-// THE CAP CELL IS A POLAR CHART. Its u axis is the angle around the cap and its
-// v axis is the distance from apex (0) to rim (1), because that is how a
-// surface of revolution is unwrapped and because everything a cap wears is
-// radial. Two consequences worth stating: a wart drawn at radius v has to be
-// stretched in u by 1/v to come out round on the mushroom, and the chart must
-// be seamless across u = 0 = 1 or every cap gets a meridian.
+// THE TWO SHEET KINDS ARE THE SAME SHAPE AND MEAN DIFFERENT THINGS.
+//
+// A CAP CELL IS A DISC seen from above: the cap's rim inscribed in the square,
+// the corners unused. The mesh gets it by projecting along the cap's own axis,
+// which makes UV affine in the cap's local x and z and so makes the hardware's
+// interpolation exact -- see CAP below, which is the whole argument.
+//
+// A FLESH CELL IS A POLAR CHART, u the angle and v the distance from the axis,
+// because gills and stalk fibres are lines of constant u and because the
+// underside is never seen from straight on. Its u wraps, so `wrapNoise` and the
+// seam gate still matter there.
 //
 // THE FLESH CELL IS SHARED BY THE UNDERSIDE, THE STEM AND THE RING, and that is
 // not a compromise -- gills radiating from the axis and fibres running up a
@@ -67,6 +72,53 @@
 const SHEET = 128
 const CELL = 64
 const GRID = 2
+
+// A CAP CELL IS A DISC SEEN FROM ABOVE, not a polar chart, and that is the one
+// decision the fly agaric's spots depend on.
+//
+// The obvious layout for a surface of revolution is the polar chart -- u the
+// angle round the cap, v apex to rim -- and it was the layout here, and it has
+// a defect that no amount of resolution fixes. A polar chart has to be UNROLLED
+// onto the mesh, and the mesh is a fan of `radial` triangles meeting at the
+// apex. Each triangle carries a WEDGE of the chart, 360/radial degrees wide,
+// and the GPU interpolates u linearly across it while the true angle does not
+// vary linearly across a flat triangle at all. Two artefacts follow and both
+// get worse toward the middle:
+//
+//   The chart is sliced at every wedge boundary. A wart of radius 0.05 sitting
+//   at v = 0.14 spans 11% of the u axis, which on the fly agaric's 9-gon is
+//   1.02 wedges -- WIDER THAN A WHOLE TRIANGLE, so it is guaranteed to be cut
+//   by at least one edge and to kink there.
+//
+//   And v is interpolated as the ring parameter while the surface crosses the
+//   chord, so the texture runs 6% long in radius inside every wedge (9-gon),
+//   pulling the spot into a lens.
+//
+// A planar overlay has neither, because projecting the cap along its own axis
+// makes u and v AFFINE functions of the cap's local x and z -- and a triangle's
+// x and z are already linear in its barycentric coordinates, so the hardware's
+// linear interpolation is EXACT. Triangle count stops being a texture problem
+// and goes back to being only a silhouette problem. The chart also has no apex
+// singularity to pinch and no angular seam to close, so the whole class of
+// bugs that `wrapNoise` and the u-inset existed to manage simply is not there.
+//
+// SO: CAP x CAP texels, the cap's rim inscribed as a circle, and the corners
+// outside it filled by clamping the radius (below) so a bilinear tap at the
+// disc edge finds more rim rather than a cell boundary.
+//
+// The cost is the corners: pi/4 of the cell is the disc, so 21.5% of the texels
+// are never sampled. It buys back more than it costs. A wart at the rim is 3.2
+// texels across here, exactly what the 128 x 32 polar strip gave it, but it is
+// 3.2 texels across AT EVERY RADIUS instead of ballooning to 15 near the apex
+// where the chart had to spend u to stay round -- and none of it is sliced.
+//
+// The one real loss is at the skirt. A planar projection samples by projected
+// radius, so a steep rim gets fewer texels per unit of surface: on the fly
+// agaric's profile the rim slope is 57 degrees, which is 1.9x compression in
+// the last few texels. That is also what a decal projected from above genuinely
+// looks like, and it is how a real cap photographs from above, so it reads as
+// foreshortening rather than as an error.
+const CAP = CELL
 
 // ---------------------------------------------------------------------------
 // Noise that WRAPS in u.
@@ -143,7 +195,7 @@ export const CAP_FOREST = [
     // in this sheet rather than in a per-instance tint, since its stem is white.
     base: [198, 44, 30], edge: 0.72, centre: 1.12,
     pattern: 'warts', accent: [240, 236, 220], accentN: 66, accentSize: 0.05,
-    grain: 0.09, seed: 11,
+    grain: 0.2, seed: 11,
   },
   {
     name: 'chestnut',
@@ -152,7 +204,7 @@ export const CAP_FOREST = [
     // cheapest cue that a cap is a dome rather than a disc.
     base: [134, 88, 52], edge: 1.14, centre: 0.78,
     pattern: 'fibres', accent: [92, 58, 34], accentN: 26, accentSize: 0,
-    grain: 0.13, seed: 12,
+    grain: 0.22, seed: 12,
   },
   {
     name: 'ivory',
@@ -161,7 +213,7 @@ export const CAP_FOREST = [
     // this is the cell a scatter reaches for when it wants an unnamed colour.
     base: [216, 205, 180], edge: 0.9, centre: 1.05,
     pattern: 'scales', accent: [176, 160, 132], accentN: 5, accentSize: 0,
-    grain: 0.07, seed: 13,
+    grain: 0.16, seed: 13,
   },
   {
     name: 'amber',
@@ -169,7 +221,7 @@ export const CAP_FOREST = [
     // negative `capRise` -- the funnel is half of what makes it read.
     base: [220, 152, 54], edge: 1.06, centre: 0.86,
     pattern: 'wrinkles', accent: [168, 106, 30], accentN: 22, accentSize: 0,
-    grain: 0.1, seed: 14,
+    grain: 0.19, seed: 14,
   },
 ]
 
@@ -180,7 +232,7 @@ export const CAP_CAVE = [
     // real one, which is exactly the register the brief asked for.
     base: [124, 86, 168], edge: 0.78, centre: 1.1,
     pattern: 'fibres', accent: [78, 52, 118], accentN: 30, accentSize: 0,
-    grain: 0.11, seed: 21,
+    grain: 0.2, seed: 21,
   },
   {
     name: 'verdigris',
@@ -188,7 +240,7 @@ export const CAP_CAVE = [
     // this the cell that will carry a cave's colour identity.
     base: [72, 152, 148], edge: 0.84, centre: 1.06,
     pattern: 'scales', accent: [206, 224, 214], accentN: 7, accentSize: 0,
-    grain: 0.1, seed: 22,
+    grain: 0.19, seed: 22,
   },
   {
     name: 'bone',
@@ -196,7 +248,7 @@ export const CAP_CAVE = [
     // low-contrast: in a cave it is lit by whatever the player brought.
     base: [204, 198, 186], edge: 0.86, centre: 1.04,
     pattern: 'warts', accent: [166, 158, 146], accentN: 46, accentSize: 0.045,
-    grain: 0.06, seed: 23,
+    grain: 0.15, seed: 23,
   },
   {
     name: 'ink',
@@ -204,7 +256,7 @@ export const CAP_CAVE = [
     // object, which is what the biggest cave caps want to do overhead.
     base: [58, 54, 66], edge: 1.35, centre: 0.7,
     pattern: 'wrinkles', accent: [30, 28, 38], accentN: 16, accentSize: 0,
-    grain: 0.14, seed: 24,
+    grain: 0.24, seed: 24,
   },
 ]
 
@@ -240,7 +292,7 @@ export const FLESH = [
 // ---------------------------------------------------------------------------
 
 export function capCell(spec) {
-  const px = new Uint8Array(CELL * CELL * 4)
+  const px = new Uint8Array(CAP * CAP * 4)
 
   // Warts are pre-placed on rings rather than rolled per pixel, so their count
   // is exactly `accentN` and their spacing is even. Count per ring goes as the
@@ -254,10 +306,10 @@ export function capCell(spec) {
     // splitting them evenly is what piles warts up at the crown. Normalised
     // against the total rather than accumulated with a running cap, which
     // would spend the whole budget on the inner rings and leave the rim bare.
-    // Rings stop short of the rim on purpose. A fly agaric's veil remnants sit
-    // on the crown and the outer eighth is usually bare and striate, and the
-    // texture agrees: see the arc-radius floor below for why the rim is the one
-    // place a physically-sized wart cannot be drawn at this resolution anyway.
+    // Rings stop short of the rim on purpose: a fly agaric's veil remnants sit
+    // on the crown, and the outer eighth is usually bare and striate. It also
+    // keeps every wart clear of the skirt, which is the one part of the disc a
+    // planar projection compresses (see CAP above).
     const rings = 5
     const vs = Array.from({ length: rings }, (_, r) => 0.14 + 0.62 * (r / (rings - 1)))
     const total = vs.reduce((a, b) => a + b, 0)
@@ -275,17 +327,53 @@ export function capCell(spec) {
     })
   }
 
-  for (let y = 0; y < CELL; y++) {
-    for (let x = 0; x < CELL; x++) {
-      const u = (x + 0.5) / CELL // angle around the cap
-      const v = (y + 0.5) / CELL // apex (0) to rim (1)
+  for (let y = 0; y < CAP; y++) {
+    for (let x = 0; x < CAP; x++) {
+      // Cartesian raster, polar maths. The cell is a picture of the cap from
+      // above, so the loop walks texels; every pattern below is still written
+      // in (angle, radius) because gills, streaks, scales and wart rings are
+      // all genuinely radial features. Only the SAMPLING changed.
+      const cx = (x + 0.5) / CAP
+      const cy = (y + 0.5) / CAP
+      const dx = cx * 2 - 1
+      const dy = cy * 2 - 1
+      const rr = Math.hypot(dx, dy)
+      // Clamped, not discarded. The corners of the cell lie outside the rim and
+      // nothing samples them -- but `Math.min` continues the rim's own colour
+      // out into them, so the bilinear tap at the very edge of the disc finds
+      // more rim instead of whatever a bare buffer would hold. Leaving them
+      // black would draw a dark fringe right where the cap is thinnest.
+      const v = Math.min(1, rr) // apex (0) to rim (1)
+      const u = (Math.atan2(dy, dx) / (Math.PI * 2) + 1) % 1 // angle around the cap
 
       // The radial value ramp. Every cap has one and its SIGN is most of the
       // cap's character: a bolete is dark at the crown, a russula pale there.
       let shade = mix(spec.centre, spec.edge, Math.pow(v, 0.8))
 
-      // Grain, at two frequencies so it does not read as a single screen door.
-      const n = wrapNoise(u, v, 8, 6, spec.seed) * 0.62 + wrapNoise(u, v, 24, 18, spec.seed + 5) * 0.38
+      // Grain, at two lattice frequencies plus the texel lattice itself, and
+      // the third term is a different KIND of thing from the first two rather
+      // than just a smaller one. The 8x6 and 24x18 octaves are the cap's
+      // mottle -- damp patches, uneven flesh -- and they are the part that
+      // survives into the mips, but any lattice noise is by construction
+      // smooth between its knots, so stacking more of them only ever produces
+      // finer cloud. A cap read as flat paint at 1:1 (scarlet worst, since a
+      // saturated hue under hard white warts has nowhere to hide) wants the
+      // one thing a lattice cannot give: uncorrelated per-texel static, which
+      // is `hash2` sampled straight at the pixel with no interpolation at all.
+      // It is film grain, and like film grain it is MEANT to average away the
+      // moment the cap is a few metres off -- the mottle is what carries the
+      // silhouette at range, this is what carries the surface up close.
+      // The two lattice octaves are sampled in CELL SPACE, not in (u, v). On
+      // the polar chart they had to be polar, and the price was a pinwheel at
+      // the crown: as v goes to 0 a texel step in x is a huge step in angle, so
+      // the mottle sheared into a star exactly where the cap is flattest and
+      // most visible. Sampled on the disc it is isotropic everywhere, which is
+      // what mottle is. Nothing needs to wrap here -- the disc has no seam --
+      // but `wrapNoise` is the lattice this file has, and its periodicity is
+      // simply unused.
+      const n = wrapNoise(cx, cy, 8, 6, spec.seed) * 0.44
+              + wrapNoise(cx, cy, 24, 18, spec.seed + 5) * 0.28
+              + hash2(x, y, spec.seed + 31) * 0.28
       shade *= 1 + (n - 0.5) * 2 * spec.grain
 
       let r = spec.base[0] * shade
@@ -349,23 +437,19 @@ export function capCell(spec) {
         b = mix(b, spec.accent[2], k)
       } else if (spec.pattern === 'warts') {
         for (const w of warts) {
-          // The 1/v correction, and the reason this chart is polar. u is an
-          // angle, so at radius v one unit of u is 2*pi*v of arc -- draw a
-          // circle in chart space and it comes out as a fat lens at the rim
-          // and a needle at the crown. Measuring the u offset in ARC LENGTH
-          // instead makes the wart round on the actual cap at every radius.
+          // Warts are placed in (angle, radius) but measured in ARC LENGTH, so
+          // `arc` and `rad` are both real distances on the cap and the wart is
+          // a true circle of radius w.r wherever it sits.
+          //
+          // ONE RADIUS, not two. The polar chart needed a second, floored one:
+          // a wart at the rim spanned half a texel of the u axis there and
+          // aliased into a dashed line unless it was stretched tangentially to
+          // ~1.6 texels. That floor was the "stretched" half of what the spots
+          // looked like, and it is gone -- on the disc a wart is 3.2 texels
+          // across at every radius, so there is nothing left to floor against.
           const arc = wrapDelta(u, w.u) * Math.PI * 2 * Math.max(v, 0.09)
           const rad = v - w.v
-          // Two radii, not one, and the difference is a RESOLUTION limit rather
-          // than a modelling choice. A wart of physical radius w.r sitting at
-          // radius v spans w.r / (2*pi*v) of the u axis -- at the rim of a 64 px
-          // cell that is half a pixel, so a correctly-sized wart there aliases
-          // into a dashed line. The arc radius is therefore floored at ~1.6 px
-          // of u. It stretches the outermost warts tangentially, which is what
-          // a real veil remnant does as the cap expands under it, and it leaves
-          // the radial size honest.
-          const ra = Math.max(w.r, (1.6 / CELL) * Math.PI * 2 * Math.max(v, 0.09))
-          const d = Math.hypot(arc / ra, rad / Math.max(1e-4, w.r))
+          const d = Math.hypot(arc, rad) / Math.max(1e-4, w.r)
           if (d < 1.15) {
             // Warts are raised, so their own far edge is in shadow. One term,
             // and it is what stops them reading as printed dots.
@@ -378,7 +462,27 @@ export function capCell(spec) {
         }
       }
 
-      const o = (y * CELL + x) * 4
+      // Tooth over EVERYTHING, applied last and therefore to the markings too.
+      // The grain above is mixed into `shade` before the pattern block runs, so
+      // every `mix()` toward `accent` above washes it back out again in
+      // proportion to k: a fully-opaque wart, scale plate or ridge crease ends
+      // up carrying none of it and reads as plastic sitting on a textured cap,
+      // which is the half of "smooth shiny red" that raising `grain` alone does
+      // not fix. This pass is a multiply on the finished rgb, so it cannot be
+      // erased by anything. Amplitude is a THIRD of the base grain on purpose,
+      // because the accents genuinely are the smoother material -- a veil
+      // remnant is a wet skin over the cap, not more cap -- so the cell still
+      // separates marking from ground by texture, just not by flat-versus-not.
+      // Mostly per-texel with some 32x24 lattice mixed in, so a big wart gets a
+      // little mottle across it rather than an even dusting of salt.
+      const tooth = hash2(x, y, spec.seed + 47) * 0.62
+                  + wrapNoise(cx, cy, 32, 24, spec.seed + 53) * 0.38
+      const bite = 1 + (tooth - 0.5) * 2 * spec.grain * 0.34
+      r *= bite
+      g *= bite
+      b *= bite
+
+      const o = (y * CAP + x) * 4
       px[o] = clamp255(r)
       px[o + 1] = clamp255(g)
       px[o + 2] = clamp255(b)
@@ -446,11 +550,13 @@ export function fleshCell(spec) {
 }
 
 // ---------------------------------------------------------------------------
-// Sheet assembly. Four cells into one 128 px layer, in reading order:
-//   0 1
-//   2 3
-// which is what `cellUV` in props/mushroom.js decodes, so the two files have to
-// agree about this and nothing else.
+// Sheet assembly. Both sheet kinds are now the same shape -- a 2x2 grid of
+// 64 px cells in one 128 px layer -- so `cellUV` in props/mushroom.js decodes
+// either. What differs is what the cell MEANS: a flesh cell is a polar chart
+// of the gills and stalk, a cap cell is a disc seen from above.
+//
+//     0 1
+//     2 3
 // ---------------------------------------------------------------------------
 
 function pack(cells) {

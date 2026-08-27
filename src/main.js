@@ -20,6 +20,7 @@ import { Aurora } from './aurora.js'
 import { WorldClock, CLOCK } from './clock.js'
 import { WorldLighting } from './lighting.js'
 import { SkyProbe } from './sky-probe.js'
+import { WorldProbe } from './world-probe.js'
 import { Measure } from './measure.js'
 import { Hud } from './hud.js'
 import { Tuner } from './tuner.js'
@@ -132,17 +133,22 @@ const lighting = new WorldLighting()
 // layers on top of it, both hidden entirely whenever their fade is zero.
 const sky = new Sky(scene)
 
-// The aurora and the stars are meshes, so the analytic sky reflection cannot
-// see them. This captures those two and nothing else, five faces at 64 px, one
-// face per update. See sky-probe.js -- particularly the note on why they are
-// ENABLED on a second layer rather than moved to one.
+// The aurora is a mesh, so the analytic sky reflection cannot see it. This
+// captures it and nothing else, five faces at 64 px, one face per update. See
+// sky-probe.js -- particularly the note on why it is ENABLED on a second layer
+// rather than moved to one.
 const probe = new SkyProbe()
 
-// Constructed AFTER those three on purpose: the water reflects the sky by
+// A second capture, of the world rather than of the sky: the horizon map knows
+// how high the ground rises and nothing about the trees standing on it, so this
+// is where the bank comes from. See world-probe.js.
+const worldProbe = new WorldProbe()
+
+// Constructed AFTER those four on purpose: the water reflects the sky by
 // calling the dome's own shading function, asks the horizon map where the
-// mountains are, and adds the probe's aurora on top -- taking all three by
-// reference. See water.js.
-const water = new Water(scene, { sky, lighting, probe })
+// mountains are, adds the probe's aurora on top and reads the world capture for
+// the bank -- taking all of them by reference. See water.js.
+const water = new Water(scene, { sky, lighting, probe, world: worldProbe })
 // Nothing grows underwater. The village test comes first because it is a
 // distance check against a handful of sites, and heightAt is only paid on the
 // few candidates that land on a water cell at all -- levelAt is one array
@@ -186,7 +192,23 @@ const aurora = new Aurora(scene, { seed: SEED })
 // invisible in the headset -- three reserves layers 1 and 2 for the eyes and
 // masks with three bits, so anything above layer 2 is drawn by neither. The
 // full trap is written out in sky-probe.js.
-SkyProbe.include(aurora.mesh, stars.points)
+// The aurora only. The stars are POINTS, and gl_PointSize counts framebuffer
+// pixels rather than angle -- so the 1.1-4.5 px speck that is right on a 1500 px
+// screen spans 1.5 to 6.3 degrees of a 64 px cube face, against the ~0.05 degrees
+// a real star has. All 2400 of them, blown up 30 to 100 times, is what the
+// reflection was showing. There is no size that fixes it either: a star under one
+// pixel is what stars.js exists to keep, and the probe's bilinear filter would
+// smear it to nothing. See the header there.
+SkyProbe.include(aurora.mesh)
+
+// ...and the world probe's exclusion list, which is the mirror image of that
+// call: it captures layer 0 wholesale, so what it must NOT see is named here
+// rather than what it must. The water, or the reflection contains a 128 px
+// reflection. The dome and the two additive meshes, because the water already
+// has all three by other routes -- analytically for the sky, from the sky probe
+// for the aurora -- and because a dome fills every face with alpha 1, which
+// turns "is there land along this ray" into "yes, always". See world-probe.js.
+worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 
 // Phase A, in the browser, for the first time. It has existed since §2 and been
 // exercised only by map.html; the game itself has been running on the raw
@@ -699,11 +721,16 @@ function tick() {
   hud.setLines(hudLines(skyState))
   hud.paint(now)
 
-  // BEFORE the main render, and that ordering is load-bearing: the probe binds
-  // a render target and toggles renderer.xr off to get its own camera looked
+  // BEFORE the main render, and that ordering is load-bearing: both probes bind
+  // a render target and toggle renderer.xr off to get their own camera looked
   // through. Doing it after the XR framebuffer is set up but before the scene
   // is drawn would put the frame in the wrong buffer.
   probe.update(renderer, scene, headTmp)
+  // Phase A has no submersion query, so there is no "the surface she is at" to
+  // hand over -- the capture is taken at her head instead. That is off by
+  // however tall she is, which at these grazing angles moves the horizon by well
+  // under a degree.
+  worldProbe.update(renderer, scene, headTmp, null)
 
   renderer.render(scene, camera)
 }

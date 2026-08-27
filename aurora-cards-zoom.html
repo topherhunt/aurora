@@ -1,0 +1,102 @@
+<!doctype html>
+<!--
+  Throwaway magnifier for the card aurora, driven by the same headless Chrome as
+  aurora-cards-probe.html.
+
+  It exists because the probe answers "is the sky lit" and cannot answer "can you
+  count the columns". At 480x300 across a 62 degree field, one card is a couple
+  of pixels wide, so the difference between a curtain and a fence is below the
+  resolution of the only picture anybody was looking at -- which is how a picket
+  fence survived a round of tuning that was specifically aimed at it.
+
+  So: a narrow field of view, a larger buffer, and one shot per suspect region.
+
+  Looking at the shots is not enough either, and that is worth recording. Two
+  numbers decided everything this page was built to decide, and neither is
+  visible by eye. The first is the fraction of LIT pixels with any channel above
+  250: clipping erases the smooth part of an overlap first, so a saturated sky
+  grows a picket fence that no profile tuning can remove. The second is
+  band-pass contrast per spatial scale -- a difference of two boxcars at radii
+  s and 2s, per row, as RMS over local mean, swept over s = 2..60 px. A comb
+  lives at the left of that sweep and the aurora at the right. It has to be
+  local rather than a periodogram, because card spacing on screen varies with
+  channel width and distance, so the comb is CHIRPED and a global spectrum
+  smears it into nothing. Calibrate against a deliberately built fence
+  (spacingFrac 0.6, skirtTight 200, width 0.08) or the numbers mean nothing:
+  that reads 40-53% and a clean sky reads under 3%.
+
+  Not part of the app. Delete it with the probe.
+-->
+<meta charset="utf-8">
+<title>aurora cards zoom</title>
+<style>body{background:#000;color:#ccc;font:12px monospace}canvas{display:none}</style>
+<div id="out">running</div>
+<div id="shots"></div>
+<script type="module">
+import * as THREE from 'three'
+import { AuroraCards } from '/src/aurora-cards/curtains.js'
+import { defaults } from '/src/aurora-cards/params.js'
+import { BUILTIN_PRESETS } from '/src/aurora-cards/presets.js'
+
+const W = 900, H = 600
+
+const lines = []
+const say = (s) => { lines.push(s); document.getElementById('out').textContent = lines.join('\n') }
+
+const canvas = document.createElement('canvas')
+canvas.width = W; canvas.height = H
+document.body.appendChild(canvas)
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true })
+renderer.setPixelRatio(1)
+renderer.setSize(W, H, false)
+renderer.debug.onShaderError = (gl, prog) => say('SHADER ERROR: ' + gl.getProgramInfoLog(prog))
+
+const scene = new THREE.Scene()
+const cards = new AuroraCards(scene, {})
+const shots = document.getElementById('shots')
+
+// fov, pitch, and a label. The wide one is the framing the probe uses, for
+// comparison; the narrow ones are the two places the columns have historically
+// separated -- the hem, where they are brightest, and the upper third, where
+// the hem blur has already faded out and the profile is back to sharp.
+const VIEWS = [
+  { name: 'wide', fov: 62, pitch: 0.30 },
+  { name: 'upper', fov: 16, pitch: 0.40 },
+]
+
+// A brightness ladder at the SHIPPED profile, because the profile turned out not
+// to be the problem. Separating the core from the skirt showed the derived halo
+// summing flat and the two together flatter still; what made the columns
+// countable was the sky clipping to white, which erases the smooth part of the
+// sum and leaves only the gaps between the saturated cores. So this sweeps the
+// one thing that decides whether that happens.
+const TRIALS = Object.entries(BUILTIN_PRESETS).map(([k, p]) => ({ name: k.replace(/ /g, '-'), values: p.values }))
+
+function shoot(label, values, view) {
+  const camera = new THREE.PerspectiveCamera(view.fov, W / H, 0.1, 40000)
+  camera.position.set(0, 2, 0)
+  camera.rotation.order = 'YXZ'
+  camera.rotation.y = 0
+  camera.rotation.x = view.pitch
+  cards.setValues({ ...defaults(), ...values })
+  cards.update(camera, 6.0)
+  renderer.render(scene, camera)
+  const d = document.createElement('div')
+  d.className = 'shot'
+  d.dataset.name = label + '-' + view.name
+  d.textContent = canvas.toDataURL('image/png')
+  shots.appendChild(d)
+  say('  ' + label + ' / ' + view.name + '   ' + cards.stats.cards + ' cards')
+}
+
+for (const view of VIEWS) {
+  for (const t of TRIALS) shoot(t.name, t.values, view)
+}
+
+say('')
+const done = document.createElement('div')
+done.id = 'done'
+done.textContent = 'done'
+document.body.appendChild(done)
+</script>

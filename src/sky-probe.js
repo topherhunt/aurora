@@ -1,5 +1,5 @@
 /**
- * SKY PROBE -- the aurora and the stars, captured so the water can reflect them.
+ * SKY PROBE -- the aurora, captured so the water can reflect it.
  *
  * WHY THIS EXISTS AND WHAT IT DELIBERATELY DOES NOT CAPTURE
  *
@@ -10,12 +10,22 @@
  * tried -- a low-res capture of a smooth night gradient bands, which is the
  * exact reason sky.js was never a cubemap in the first place.
  *
- * What the analytic path structurally cannot do is the aurora and the stars.
- * Both are MESHES: parametric geometry with a dozen noise evaluations per
- * vertex, additively blended. There is no function to call. So this captures
- * those two things and only those two things, and water.js ADDS the result to
- * the analytic sky -- which is exactly how they are composited into the real
- * sky, so the two paths agree by construction rather than by tuning.
+ * What the analytic path structurally cannot do is the aurora: parametric
+ * geometry with a dozen noise evaluations per vertex, additively blended, with
+ * no function to call. So this captures that one thing and only that one thing,
+ * and water.js ADDS the result to the analytic sky -- which is exactly how the
+ * aurora is composited into the real sky, so the two paths agree by
+ * construction rather than by tuning.
+ *
+ * NOT THE STARS, and the reason is a unit mismatch rather than a cost. Stars are
+ * POINTS, and gl_PointSize is a count of FRAMEBUFFER pixels, not an angle. The
+ * 1.1 to 4.5 px speck that is correct on a 1500 px-wide screen covers the same
+ * 1.1 to 4.5 px of a 64 px cube face, which is 1.5 to 6.3 DEGREES -- against the
+ * ~0.05 degrees a real star subtends. All 2400 of them at 30 to 100 times size
+ * is a lake reflecting gravel, and there is no size that fixes it: a star has to
+ * live under a pixel, and this probe's bilinear filter would smear a sub-pixel
+ * point into nothing on the way back out. See the header of stars.js, which
+ * makes the same argument about why stars can only be screen-space points.
  *
  * That split is what makes the capture cheap enough to be worth having. It
  * carries only soft, diffuse, additive light, so 64 pixels a face is plenty;
@@ -42,10 +52,10 @@
  * hemisphere before sampling, so -Y is never read and rendering it would be
  * pure waste.
  *
- * PARALLAX: none worth having. The aurora sits 5.5 to 17.6 km out and the
- * stars at 15 km, so a capture taken at the head and reused for a hundred
- * metres of walking is off by about a degree. The camera is moved to the head
- * anyway because it is free, but nothing depends on it being current.
+ * PARALLAX: none worth having. The aurora sits 5.5 to 17.6 km out, so a capture
+ * taken at the head and reused for a hundred metres of walking is off by about a
+ * degree. The camera is moved to the head anyway because it is free, but nothing
+ * depends on it being current.
  *
  * THE LAYER TRAP -- READ THIS BEFORE CHANGING THE LAYER NUMBER
  *
@@ -62,11 +72,11 @@
  * Moving the aurora to a private layer would leave it perfect on the desktop
  * canvas and invisible in the headset.
  *
- * So nothing is moved. The aurora and the stars stay on layer 0 exactly as
- * they were, and are additionally ENABLED on PROBE_LAYER. Object layers are a
- * mask and a camera draws an object when the masks intersect: the XR eyes
- * still see them via layer 0, and this camera -- an ordinary camera, outside
- * the XR path -- sees them and nothing else via PROBE_LAYER.
+ * So nothing is moved. The aurora stays on layer 0 exactly as it was, and is
+ * additionally ENABLED on PROBE_LAYER. Object layers are a mask and a camera
+ * draws an object when the masks intersect: the XR eyes still see it via layer
+ * 0, and this camera -- an ordinary camera, outside the XR path -- sees it and
+ * nothing else via PROBE_LAYER.
  */
 import * as THREE from 'three'
 
@@ -114,8 +124,8 @@ export class SkyProbe {
     // Six 90-degree cameras with the orientations the cube faces want. Built by
     // CubeCamera rather than by hand because getting six up-vectors and the
     // handedness right is exactly the kind of thing that is subtly wrong for a
-    // week. near/far bracket everything the probe can see: the stars are at
-    // 15 km, the aurora out to 17.6.
+    // week. near/far bracket everything the probe can see: the aurora reaches
+    // out to 17.6 km.
     //
     // Its children share ONE Layers instance -- CubeCamera assigns
     // `camera.layers = this.layers` rather than copying -- so this is one write,

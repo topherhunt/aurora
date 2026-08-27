@@ -7,6 +7,9 @@ import { buildTextureArray, loadImageLayers, IMAGE_LAYERS, TEX_SIZE } from './te
 import { createPropMaterial, setSnow } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 import treeSource from './props/tree.js?raw'
+// The shipped ladder's own numbers rather than a copy of them: a bench that
+// quotes a band the world stopped using is worse than one that quotes none.
+import { TREE_TUNING } from './v2/render/trees.js'
 
 // ---------------------------------------------------------------------------
 // The procedural tree previewer (gen-tree.html).
@@ -79,6 +82,7 @@ const SLIDERS = [
   ['branchSides', 0, 8, 1, 'sides around a solid limb, costing branchSides triangles each. 1 is the LOD1 limb: one vertical fin, 1 triangle. 0 draws no limb at all, only its foliage'],
   ['branchRings', 1, 4, 1, 'rings below the tip. 1 is a straight cone; 2 lets a strongly drooping branch actually curve, at twice the triangles'],
   ['branchWidth', 0, 0.12, 0.002, 'limb base radius, as a fraction of its own length'],
+  ['branchOfTrunk', 0.2, 1.5, 0.05, 'and the cap on top of that: a branch\'s base radius may never exceed this share of the radius the TRUNK has where the branch attaches. Above 1 a branch is allowed to be thicker than the trunk it grows out of, which is what every species did before this cap existed -- aspen 11 of 14 branches over 0.8 and the worst 2.3x, birch 11 of 13, oak 6 of 12, pine 3 of 30. The top of the range is here to show you what that bug looked like, not because any value up there is right'],
 
   ['#', 'forks'],
   ['forks', 0, 4, 1, 'child limbs split off each branch. One level only, so limbs = branches x (1 + forks)'],
@@ -92,6 +96,7 @@ const SLIDERS = [
   ['sprays', 0, 14, 1, 'leaf cards per LIMB on AVERAGE, including one terminal card at the tip. This is the whole density knob, and at one triangle a card it is also the whole foliage budget'],
   ['sprayByLength', 0, 1, 0.01, 'how far a limb\'s share of those cards follows its own length. 0 = every limb gets the same count, which gives a conifer a square tufted top; 1 = fully proportional. The total is normalised either way, so this costs nothing'],
   ['apexSprays', 0, 6, 1, 'cards on the TRUNK\'s own tip, which no branch reaches. At 0 every tree ends in a bare spike'],
+  ['apexScale', 0.3, 1.2, 0.05, 'how big those leader cards are against every other card on the tree. Not 1: the apex cards are the only ones that skip sprayTaper, so at parity they come out full size beside limb tips already cut to 0.35 on a pine, roughly three times their neighbours. A leader shoot is one season\'s growth and is SMALLER than the foliage below it, which is why the useful half of this range sits under 1'],
   ['sprayMetres', 0.05, 4, 0.01, 'one spray\'s stem-to-tip reach in WORLD METRES. Depends on the cut: a broadleaf spray is about half a metre, the pine fan is a whole branch at 1.5'],
   ['cardTris', 1, 2, 1, '1 = a triangle with its apex at the stem, halving the cost of every card and clipping the outer corners of the art. 2 = the full quad, which is also the only one that can fold'],
   ['cardFoldMin', 0, 1.2, 0.01, 'radians the shallower half of a QUAD card is bent about its own seam. Costs no triangles and no area -- it trades flat projection for a card that still has a silhouette seen edge-on. Nothing at cardTris 1, which has no seam'],
@@ -99,17 +104,20 @@ const SLIDERS = [
   ['sprayTaper', 0.1, 1.5, 0.01, 'spray size at the limb TIP as a fraction of its size at the base. Under 1 puts the big sprays near the trunk and fine ones at the ends'],
   ['sprayVary', 0, 0.6, 0.01, 'random +/- size variation per card, on top of the taper'],
   ['sprayStart', 0, 1, 0.01, 'earliest point along a limb a side shoot may attach'],
+  ['sprayTipBack', 0, 0.5, 0.05, 'and how far back from the TIP the terminal card is seated, as a fraction of the limb\'s own length. At 0 it sits on the apex of the cone, where the limb has no radius at all, so the card touches nothing and reads as floating in front of the branch. Past ~0.5 the terminal card stops overhanging the tip on the longest branches, which is where the range stops. Measured at the default: the card falls 0.18 m short of a pine\'s longest branch tip and 0.27 m short of an oak\'s, covered in practice by the last stratified side shoot'],
   ['sprayOut', 0, 1, 0.01, '0 = shoots continue the limb, 1 = they leave straight out its side'],
   ['sprayLift', 0, 1, 0.01, '0 = card lies along the shoot (needled spray), 1 = stands upright (broadleaf)'],
   ['sprayDown', 0, 1, 0.01, 'and then this much of UP taken back off, so the spray hangs outward and down off the twig. Randomised half-to-full per card'],
   ['sprayJitter', 0, 2, 0.01, 'random roll of each card about its own axis'],
   ['sprayAspect', 0.3, 2.5, 0.01, 'card width/height. Set from the art\'s alpha bounds -- move it and the leaves stretch'],
+  ['sprayStemU', 0, 1, 0.01, 'where ACROSS the leaf art the stem is, so a card can be hung on the branch by the pixel the spray actually grows from rather than by the corner of its square. Like sprayAspect this is a property of the CUT and NOT a taste knob: it is measured off the shipped PNGs (oak 0.602, ash 0.421, aspen 0.481, spray_pine 0.435) and scripts/check-trees.mjs re-derives it and fails if it drifts. Dragging it off the loaded species\' measured value is a way to SEE the bug it fixes -- the spray hanging a few centimetres to one side of its twig -- not a way to tune anything'],
+  ['sprayStemV', 0, 0.4, 0.01, 'and how far UP the cut before the art has any body to it, as a fraction of card height: the card is buried that far into the limb, so the first leaf the alpha test keeps is the one sitting on the wood. Measured and gated exactly as sprayStemU is (oak 0.039, ash 0.203, aspen 0.164, spray_pine 0.016), so the same warning applies. Ash is the extreme of the four because the bottom fifth of that cut is a stalk two texels wide that the alpha test and the mip chain erase between them'],
   ['leafSkyward', 0, 1, 0.01, 'how far foliage normals turn toward the sky. This is the black-underside knob: 0 shades each card by its own plane, 1 shades the whole canopy as if lit from above'],
 
   ['#', 'crown bundle'],
-  ['bundleTris', 0, 48, 1, 'blades through the crown, one big triangle each, and the whole switch: 0 draws the cards, which is LOD0 and the only thing LOD0 may ever be. Anything above 0 walks the very same cards and throws this many triangles through the crown instead, corners landing on the outer points those cards reached -- which is what the LOD1 button turns on, at 20'],
+  ['bundleTris', 0, 48, 1, 'blades through the crown, one big triangle each, and the whole switch: 0 draws the cards, which is what every shipped tier does. Anything above 0 walks the very same cards and throws this many triangles through the crown instead, corners landing on the outer points those cards reached. It WAS LOD1, at 20, and was withdrawn on looks: cheap (a crown for 20 triangles), well nested, and it read as twenty blades close up and as a worse cross further off. The slider is left here to be looked at, not because a tier turns it on'],
   ['bundleSpread', 0, 2.5, 0.05, 'how far each corner is pushed out from the crown centre, past the spray seat it was taken from, as a multiple of that spray\'s own reach. 1 stops at the leaf tip, and the default is past it: 60 corners sample a crown of hundreds of sprays, so they almost never land on the outermost one and the bundle comes out a size small'],
-  ['bundleTilt', 0, 1.2, 0.05, 'the vertical span each blade is made to cover, as a multiple of the crown\'s DIAMETER, clamped to its height. Not a taste knob: at 0 half the blades come out near-HORIZONTAL, which is area paid for and never seen, because the camera at this tier is level with the crown. The top of the range is where it is because the clamp is real -- a blade cannot span more than the crown is tall, and measured over 4 species x 3 sizes x 4 seeds the geometry stops moving between 1.2 and 1.35, so a slider running past that would advertise travel that does nothing'],
+  ['bundleTilt', 0, 1.2, 0.05, 'the vertical span each blade is made to cover, as a multiple of the crown\'s DIAMETER, clamped to its height. Not a taste knob: at 0 half the blades come out near-HORIZONTAL, which is area paid for and never seen, because the camera at the range this was built for is level with the crown. The top of the range is where it is because the clamp is real -- a blade cannot span more than the crown is tall, and measured over 4 species x 3 sizes x 4 seeds the geometry stops moving between 1.2 and 1.35, so a slider running past that would advertise travel that does nothing'],
 
   ['#', 'material'],
   ['alphaTest', 0.05, 0.95, 0.01, 'cutout threshold. Low = lacy and aliased, high = eats the leaf edges'],
@@ -117,10 +125,12 @@ const SLIDERS = [
   ['snow', 0, 1, 0.01, 'snow on the FOLIAGE, in world-space blobs leaning toward whatever faces the sky. A global uniform on the shared material -- it costs no triangles, no layers and nothing at all at 0, and it reaches the LOD2 impostor too'],
 ]
 
-// DESIGN.md §5's per-class mesh-tier budgets, which is what the panel checks
-// against. Two numbers for trees because the class has two mesh tiers.
-// DESIGN.md §5's prop ladder, per class and per mesh tier.
-const CLASS_BUDGET = { tree: [500, 130, 6], bush: [84, 56, 2] }
+// DESIGN.md §5's prop ladder, per class and per mesh tier, which is what the
+// panel checks against. Two mesh numbers for trees, three for bushes. The tree
+// pair is the shipped bank's MEAN over all sixteen variants, so a big pine (792
+// / 547) reads warn and a sapling (452 / 287) reads ok, which is the honest way
+// round: the bank averages to these and the forest is budgeted on the average.
+const CLASS_BUDGET = { tree: [470, 340, 6], bush: [84, 56, 2] }
 
 let speciesKey = 'pine'
 let bushMode = false
@@ -421,6 +431,35 @@ function frame() {
 const fmt = (b) =>
   b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`
 
+// The ladder the world actually runs, priced for the tree on the stage. Every
+// distance comes from LOD_BANDS and DRAW_RADIUS, and every triangle count from
+// resolveTree -- the same function buildTree grows from -- so the only numbers
+// typed in here are the two card tiers, which are fixed by their builders (three
+// crossed quads, then one spun triangle) rather than by these parameters.
+//
+// It is per-tier for THIS tree rather than a class average because that is the
+// question the bench is open to answer: a 3 m sapling and a 25 m pine sit at
+// opposite ends of a 4x spread, and the class number describes neither.
+function lodTable(el, active) {
+  const { LOD_BANDS, DRAW_RADIUS } = TREE_TUNING
+  const m = (d) => (d >= 1000 ? `${d / 1000} km` : `${d} m`)
+  const edges = [0, ...LOD_BANDS, DRAW_RADIUS]
+  const rows = [
+    ['LOD0', 'full mesh', resolveTree(treeLod(params, 0)).triangles],
+    ['LOD1', '3-side trunk, fin limbs', resolveTree(treeLod(params, 1)).triangles],
+    ['LOD2', '3 crossed quads', 6],
+    ['card', '1 spun triangle', 1],
+  ]
+  el.innerHTML = rows
+    .map(([tier, what, tris], i) => {
+      const band = i < edges.length - 1 ? `${edges[i]}-${m(edges[i + 1])}` : '&mdash;'
+      return `<tr class="${i === active ? 'here' : ''}">` +
+        `<td class="k">${tier} <span class="s">${what}</span></td>` +
+        `<td class="band">${band}</td><td class="n">${tris}</td></tr>`
+    })
+    .join('')
+}
+
 function table(el, rows) {
   el.innerHTML = rows
     .map(([k, v, cls]) => `<tr><td class="k">${k}</td><td class="n ${cls ?? ''}">${v}</td></tr>`)
@@ -511,6 +550,16 @@ function refresh() {
       per <= budget ? 'ok' : 'warn',
     ],
   ])
+
+  // The bush class runs its own ladder -- three mesh tiers, a two-quad card, and
+  // bands set for a 0.5 m plant -- so quoting the forest's distances over a bush
+  // would be quoting the wrong ladder. gen-fern.html is where that one is priced.
+  const lodEl = document.getElementById('lod')
+  if (bushMode) {
+    lodEl.innerHTML = '<tr><td class="k">bush class &mdash; its own ladder, priced in gen-fern</td></tr>'
+  } else {
+    lodTable(lodEl, lodTier)
+  }
 
   // The numbers that say whether a SIZE is believable, in metres. Every shape
   // parameter above is a fraction of height, so these are the only readouts

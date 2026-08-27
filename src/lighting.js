@@ -292,6 +292,109 @@ export const AIR_CEILING = new THREE.Color(0xc2d4ee).multiplyScalar(0.8)
 const _airLin = new THREE.Color()
 const _airOut = { r: 0, g: 0, b: 0 }
 
+// CAUSTICS: the moving net of focused sunlight on a bed under water (§11).
+//
+// The definitions. Emitted only on the fragment patch, because that is the one
+// that has a world position per pixel -- and it is also the only one that
+// matters, since the fragment patch is the terrain and the terrain is the bed.
+// Rocks and props take the murk and the darkening like everything else and
+// simply do not catch the net; the alternative is a third varying on every
+// material in the world to light the six per cent of them that are ever under a
+// lake.
+//
+// WHY THIS IS NOT THE WATER'S OWN WAVE FIELD, which would be the physical
+// answer and was the first instinct. Caustics are the SECOND derivative of the
+// surface -- the convergence of the refracted rays, not their direction -- and
+// water.js's field is built to hand back a normal, i.e. the first. Getting the
+// focus out of it means differentiating it again, which is four more noise
+// evaluations per pixel for a pattern nobody can check: the bed is a couple of
+// metres under a rippling ceiling she is not looking at while she looks at it.
+// So this is its own field, and the honest claim for it is that it moves like
+// caustics rather than that it is caustics.
+//
+// The shape, which is where the look comes from and is worth spelling out: a
+// ridge, 1 - |2n - 1|, turns a smooth noise field into thin bright LINES along
+// its half-level -- filaments, not blobs, which is the whole visual signature.
+// Two of them, at different scales and drifting different ways, multiply to a
+// net that crosses and uncrosses instead of sliding rigidly past. The power
+// then thins the filaments and darkens everything between them, so the result
+// is mostly black with sharp bright threads in it rather than a grey wash --
+// which is what makes it read as light being focused rather than as a texture.
+const CAUSTIC_DEFS = /* glsl */ `
+  uniform vec4 uCaustic; // gain, 1/metres, surface y, 1/fade metres
+  uniform float uCausticT;
+
+  float wlCHash( vec2 c ) {
+    vec3 p3 = fract( vec3( c.x, c.y, c.x ) * 0.1031 );
+    p3 += dot( p3, p3.yzx + 33.33 );
+    return fract( ( p3.x + p3.y ) * p3.z );
+  }
+
+  float wlCNoise( vec2 p ) {
+    vec2 i = floor( p );
+    vec2 f = p - i;
+    // Smoothstep rather than the quintic the wave field uses: nothing here
+    // differentiates the result, and the quintic's only advantage is a
+    // continuous second derivative.
+    vec2 u = f * f * ( 3.0 - 2.0 * f );
+    return mix( mix( wlCHash( i ), wlCHash( i + vec2( 1.0, 0.0 ) ), u.x ),
+                mix( wlCHash( i + vec2( 0.0, 1.0 ) ), wlCHash( i + vec2( 1.0, 1.0 ) ), u.x ), u.y );
+  }
+
+  // THE DRIFT RATES ARE IN CELLS PER SECOND, not metres per second, because p
+  // arrives already divided by uCaustic.y -- so at a 1.6 m cell the first layer
+  // crosses about 57 cm of bed a second. Four times the first pass, which read
+  // as a slow slide rather than as waves: the eye reads a caustic net as MOVING
+  // WATER only when the threads reorganise at roughly the rate ripples cross,
+  // and a net that drifts more slowly than that reads as a projected texture on
+  // a floor. The two layers stay at their own rates and their own headings --
+  // what makes it look alive is them shearing past each other, and scaling both
+  // by one number keeps that shear intact while speeding it up.
+  float wlCaustic( vec2 p, float t ) {
+    vec2 a = p + vec2( 0.36, 0.20 ) * t;
+    vec2 b = p * 1.63 - vec2( 0.28, 0.44 ) * t;
+    float ra = 1.0 - abs( wlCNoise( a ) * 2.0 - 1.0 );
+    float rb = 1.0 - abs( wlCNoise( b ) * 2.0 - 1.0 );
+    float net = ra * rb;
+    net *= net;
+    return net * net * net;
+  }
+`
+
+// Where the net is applied, at the top of the fog slot and therefore in OUTPUT
+// space -- three orders `<colorspace_fragment>` before `<fog_fragment>`, which
+// is the same reason uAirNear and uAirFar are raw sRGB. Additive light after
+// tone mapping is not where a physical model would put it, and here that is the
+// right trade twice: the threads survive intact instead of being rolled off by
+// the shoulder exactly where they are brightest, and they are still added
+// BEFORE the aerial mix below, so a bed twenty metres away loses its caustics
+// to the murk along with everything else rather than glowing through it.
+//
+// The branch is on a uniform, so every fragment in the draw takes the same side
+// of it and it costs nothing while she is dry. `wlDepth > 0.0` is what keeps
+// the net off the bank: ground above the surface is lit by the same sun through
+// no water at all.
+const CAUSTIC_APPLY = (worldPos) => /* glsl */ `
+  if ( uCaustic.x > 0.0 ) {
+    float wlDepth = uCaustic.z - ${worldPos}.y;
+    if ( wlDepth > 0.0 ) {
+      // Facing up, in world terms. THREE's own 'normal' is view-space here, and
+      // vec4 * mat is the transpose product, which for the rotation part of a
+      // view matrix is its inverse -- the cheap way back out to world without
+      // uploading a second matrix. Squared, so a wall catches a little and a
+      // ledge catches most, with no edge between them.
+      vec3 wlCN = normalize( ( vec4( normal, 0.0 ) * viewMatrix ).xyz );
+      float wlUp = clamp( wlCN.y, 0.0, 1.0 );
+      // Depth fade. Light that has come this far down has already been scattered
+      // out of a beam and into a glow, so the net dissolves rather than dims:
+      // by two fade lengths there is nothing left to focus.
+      float wlFade = exp( - wlDepth * uCaustic.w );
+      gl_FragColor.rgb += uCaustic.x * wlUp * wlUp * wlFade
+        * wlCaustic( ${worldPos}.xz * uCaustic.y, uCausticT );
+    }
+  }
+`
+
 // Replaces `#include <fog_fragment>`. Guarded exactly the way the stock chunk
 // is, so a material with `fog: false` compiles to nothing here as before.
 const AERIAL_GLSL = /* glsl */ `
@@ -335,6 +438,16 @@ export class WorldLighting {
       // The far end of it, in the same raw-sRGB terms and for the same reason.
       // Not fogColor but fogColor under AIR_CEILING -- see the note there.
       uAirFar: { value: new THREE.Vector3(0, 0, 0) },
+      // The caustic net: gain, 1/metres of feature size, the water's surface y,
+      // and 1/metres of depth fade. A gain of zero is OFF and is the resting
+      // state -- there is no separate enable, because a second flag saying the
+      // same thing as a zero is a second thing to leave set.
+      uCaustic: { value: new THREE.Vector4(0, 0.5, 0, 1 / 6) },
+      // Its own clock rather than a share of anything else's. Seconds, and it
+      // is fed the same wrapped value the props run on, for the same reason:
+      // a float that has been counting since page load loses its low bits by
+      // the time anyone has walked anywhere.
+      uCausticT: { value: 0 },
     }
 
     this.horizonTex = null
@@ -420,6 +533,49 @@ export class WorldLighting {
   }
 
   /**
+   * Replace the air with something that is not air -- today, the water she is
+   * standing in (§11). Both ends of the aerial ramp go to one colour, which is
+   * what collapses a model built for kilometres of atmosphere into a medium
+   * you cannot see twenty metres through: with the two ends equal, the
+   * in-scatter ramp has nowhere to go and only the extinction term is left.
+   *
+   * `air` is a Vector3 of RAW sRGB COMPONENTS, in the same terms uAirNear and
+   * uAirFar are declared in and for the same reason -- the mix it feeds runs
+   * after colorspace_fragment. Handing it linear values gives a murk that is
+   * too dark by exactly one gamma curve, which looks like a tuning problem and
+   * is not one.
+   *
+   * MUST BE CALLED AFTER `update` IN THE SAME FRAME, and it holds for one frame
+   * only. This is a later writer over the two uniforms update() sets from the
+   * palette, not a mode with state of its own -- so stopping calling it is all
+   * that surfacing takes, and there is no flag that can be left set.
+   */
+  setAir(air) {
+    this.uniforms.uAirNear.value.copy(air)
+    this.uniforms.uAirFar.value.copy(air)
+  }
+
+  /**
+   * The caustic net on the bed (§11). `gain` of 0 turns it off, which is the
+   * resting state and the only off there is.
+   *
+   * `surfaceY` is the WATER's elevation, not the eye's: the shader shades a
+   * point on the ground and needs to know how much water is stacked over THAT
+   * point. Passing the eye instead gives a net that brightens and dims as she
+   * swims up and down, which is backwards -- the bed does not care where she is.
+   *
+   * Written every frame she is under, like setAir, and for the same reason: a
+   * later writer with no state beats a mode with an off switch that can be
+   * missed. `t` is seconds, already wrapped.
+   */
+  setCaustic(gain, scale, surfaceY, fade, t) {
+    if (!(fade > 0)) throw new Error(`setCaustic: fade must be > 0 metres, got ${fade}`)
+    if (!(scale > 0)) throw new Error(`setCaustic: scale must be > 0 metres, got ${scale}`)
+    this.uniforms.uCaustic.value.set(gain, 1 / scale, surfaceY, 1 / fade)
+    this.uniforms.uCausticT.value = t
+  }
+
+  /**
    * Patch a MeshLambertMaterial to be shadowed and occluded by the terrain.
    *
    * `mode` is 'fragment' for the terrain and 'vertex' for everything else --
@@ -450,7 +606,7 @@ export class WorldLighting {
       if (mode === 'fragment') {
         if (!worldPosVarying) throw new Error('patch: fragment mode needs worldPosVarying')
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\n${NIGHT_GLSL}`)
+          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\n${NIGHT_GLSL}\n${CAUSTIC_DEFS}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
@@ -460,7 +616,9 @@ export class WorldLighting {
               NEAR_GLSL(`${worldPosVarying}.xyz`)
             )}`
           )
-          .replace('#include <fog_fragment>', AERIAL_GLSL)
+          // Caustics ahead of the aerial mix, in the same slot, so the murk
+          // gets the last word on a bed at range.
+          .replace('#include <fog_fragment>', `${CAUSTIC_APPLY(worldPosVarying)}\n${AERIAL_GLSL}`)
       } else {
         shader.vertexShader = shader.vertexShader
           .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\nvarying vec3 vWlShade;`)

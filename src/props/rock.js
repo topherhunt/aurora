@@ -19,19 +19,20 @@ import { LAYER } from '../textures.js'
 // position is decided by feeding that direction into `shapeRadius`, which is
 // deterministic and stateless. Nothing depends on which solid we started from,
 // how many vertices it had, or what order they came in. The consequence is the
-// one the whole LOD ladder rests on: an octahedron (8 faces), an icosahedron
-// (20), and its two subdivisions (80, 180) all sample THE SAME ROCK, coarser or
-// finer (180, 80, 20, 8 -- three's polyhedron subdivision splits each edge into
-// detail+1, so the counts go as 20*(detail+1)^2 rather than doubling). That is
-// why a tier change is a silhouette that simplifies rather than
-// a different rock that pops -- and why "some boulder shapes will also work
-// well as medium & small rocks, just bump LOD0 -> LOD1" is literally true here:
-// ROCK_LADDERS below does exactly that and nothing else.
+// one the whole LOD ladder rests on: an icosahedron (20 faces) and its two
+// subdivisions (80, 180) all sample THE SAME ROCK, coarser or finer (three's
+// polyhedron subdivision splits each edge into detail+1, so the counts go as
+// 20*(detail+1)^2 rather than doubling). That is why a tier change is a
+// silhouette that simplifies rather than a different rock that pops -- and why
+// "some boulder shapes will also work well as medium & small rocks, just bump
+// LOD0 -> LOD1" is literally true here: every rock ships all three tiers, and
+// only the DISTANCES at which it steps between them depend on how big it is.
+// See ROCK_LOD_AT.
 //
 // Purity gets the tiers onto the same shape; it does not get them to the same
-// SIZE. Sampling a lump on 8 directions loses every peak between the samples,
-// so the raw T8 is about a third smaller than the T180 it replaces even though
-// both describe the same rock. So every tier is measured against one dense
+// SIZE. Sampling a lump on 20 directions loses every peak between the samples,
+// so the raw T20 comes out smaller than the T180 it replaces even though both
+// describe the same rock. So every tier is measured against one dense
 // reference and given a single uniform gain that matches its mean silhouette
 // radius to the reference's. That is the number a player perceives at an LOD
 // switch, and driving it to zero is what makes the switch invisible.
@@ -114,47 +115,83 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 // T80 is 240 triangles -- which is why `shards` is the most expensive slider on
 // the bench by a wide margin and the budget panel prints the product.
 //
-// T180 is for CRAGS ONLY: the 3-14 m outcrops that stand on a peak or a cliff
-// and are looked at from the next valley. Nothing that fits in a forest ever
-// asks for it, and putting it on a boulder buys silhouette nobody can resolve.
+// EVERY ROCK SHIPS ALL THREE, whatever size it is. There used to be a fourth
+// tier and a per-size-class ladder deciding which three of the four you got --
+// a crag 180/80/20, a boulder 80/20/8, a cobble 20/8 -- on the argument that a
+// small rock is never seen from far enough away to need the fine end. That
+// argument is about DISTANCE and it was being answered with GEOMETRY: the
+// ladder decided which meshes a shape owned, while a hand-typed table of metres
+// per BED decided when to step between them, and the two halves had no way to
+// agree. A rock could sit at its coarsest tier from 40 m and dissolve out of
+// the world at 45 without the ladder having anything to do with it. One ladder
+// for every rock and one rule for when it steps -- ROCK_LOD_AT -- puts the size
+// argument in the thresholds, which is where it was always about.
 //
-// T8 exists to answer "we probably need a real LOD2, maybe just 8-16 tris,
-// before going to a plain billboard". An octahedron is the smallest closed
-// solid that still has a top, a bottom and four sides to catch light
-// differently, and displaced by the same field as its bigger siblings it keeps
-// the rock's proportions and its lean. A tetrahedron (4) does not: three of its
-// four faces point sideways and it reads as a shard of glass.
+// T180 IS STILL FOR THE BIG ONES, and now it says so in metres rather than in
+// class membership: at 4 m per metre of size, a 40 cm chip carries 180 faces
+// for its first 1.6 m and a 10 m cap carries them for 40.
+//
+// T8 IS GONE. An octahedron displaced by the same field as its siblings keeps
+// the rock's proportions and its lean, and at eight faces that is ALL it keeps:
+// a generic diamond with the right aspect ratio and none of the silhouette that
+// makes stone read as stone. Below it sits a photograph of the real rock for
+// two triangles, which is better at every distance where either is legible. All
+// keeping it bought was the six triangles between them, and triangles are not
+// what a distant rock costs -- see the header of v2/render/rocks.js.
 export const ROCK_TIERS = [
   { name: 'T180', solid: 'ico', detail: 2, faces: 180 },
   { name: 'T80', solid: 'ico', detail: 1, faces: 80 },
   { name: 'T20', solid: 'ico', detail: 0, faces: 20 },
-  { name: 'T8', solid: 'oct', detail: 0, faces: 8 },
 ]
 
-// Which tiers a size class actually ships, as indices into ROCK_TIERS. This is
-// the whole of "bump LOD0 -> LOD1": the same `buildRock(options)` call with a
-// different `tier`, so a cobble's LOD0 IS a boulder's LOD1 mesh.
+// WHEN A ROCK STEPS DOWN THAT LADDER, in metres of camera distance PER METRE of
+// the rock's own size -- `rockLodSize` below says which metre that is. One
+// number per boundary: T180 inside the first, T80 inside the second, T20 inside
+// the third, and the two-triangle billboard card beyond it.
 //
-// The classes are cut by ANGULAR size, not metres, because that is what decides
-// whether a triangle is visible. A 0.4 m cobble is never seen from far enough
-// away to need three tiers -- it is culled while its LOD1 is still 30 px wide.
-// A 10 m crag is a landmark that has to hold up from the next valley.
-export const ROCK_LADDERS = {
-  crag: [0, 1, 2], //  3 - 14 m   outcrops, peak jaggedness, cliff furniture
-  boulder: [1, 2, 3], //  0.8 - 3 m   forest obstacles, line-of-sight breakers
-  cobble: [2, 3], //  0.15 - 0.7 m riverbed, shore, underfoot
-  pebble: [3], //  under 0.15 m scatter, no LOD at all
-}
+// Per metre because what decides whether a triangle is worth drawing is ANGULAR
+// size, and a rock's angular size is its size over its distance. So a 2 m rock
+// holds its finest mesh to 8 m, its second to 15, its third to 50, and is a
+// card past that; a 4 m one doubles all four; a 12 m tor holds T180 to 48 m and
+// cards at 300. That is ONE system for every rock in the world -- they all step
+// at the same apparent size, and only the metres differ.
+//
+// These are deliberately tighter than a pixel-error argument would give. Sizing
+// the step so a triangle never falls under about three pixels wants roughly
+// 70 m per metre before the card; this asks for 25. The ladder is set where it
+// is to buy back triangles, not to be invisible, and the number to move if a
+// band looks wrong is this one -- nothing else in the system encodes a
+// distance.
+export const ROCK_LOD_AT = [4, 7.5, 25]
 
-// Which ladder a rock of this size uses. The thresholds are the class
-// boundaries above and nothing more subtle -- `size` is the largest horizontal
-// extent in metres, and the classes are already cut where the angular argument
-// changes.
-export function rockClass(size) {
-  if (size >= 3) return 'crag'
-  if (size >= 0.8) return 'boulder'
-  if (size >= 0.15) return 'cobble'
-  return 'pebble'
+// THE METRE THE LADDER IS MEASURED IN: the LONGEST AXIS of the rock's box.
+//
+// Height alone is what you would reach for -- it is how anyone describes a rock
+// -- but this bank is mostly flat things. A `lip` is 7 m across and 1.7 m tall
+// and a `shingle` is 1.2 m across and 11 cm tall; keyed on height the shingle
+// would be a billboard at 2.7 m, close enough to step on. Width alone has the
+// opposite fault: a `spire` is 2.5 m across and 6 m tall and would card while
+// it still filled a third of the screen.
+//
+// The longest of the three has neither fault and needs no weighting to say so.
+// It is also the RIGHT quantity rather than a compromise between two wrong
+// ones: what the ladder is really asking is "how many pixels does this rock
+// subtend", the answer is its largest apparent extent over its distance, and
+// the largest extent a box can present to any camera is its longest axis. A
+// A billboard is the case that makes it matter: the card spins to face the eye,
+// so whatever it is sized to is what the rock looks like from every bearing at
+// once, and a ladder that had already decided the rock was small would have
+// handed it over at the wrong distance.
+//
+// Depth is in there with width because the bank elongates in plan -- `elongate`
+// defaults to 1.25 and goes past 2 -- so for a rock lying across the view the
+// long horizontal axis is as often z as x.
+//
+// This is a CEILING on apparent size, so it is conservative in the safe
+// direction: a rock is never judged smaller than it can look, and the worst
+// case is that a slab seen exactly edge-on carries a finer mesh than it needs.
+export function rockLodSize(measured) {
+  return Math.max(measured.height, measured.width, measured.depth)
 }
 
 export const ROCK_DEFAULTS = {
@@ -435,22 +472,63 @@ const SUPPORT_DIRS = (() => {
 // it has been scaled up to match. Deliberately loose, and looser than it looks
 // like it should be. The temptation is to pin it near 1.0 so `size` stays
 // literally true of every tier, but that trades the error nobody can see for the
-// one everybody can: an octahedron's six poles sit ON the shape while everything
+// one everybody can: a coarse solid's vertices sit ON the shape while everything
 // between them is cut away, so holding its box to the reference's leaves it 13%
 // short in apparent radius -- a visible shrink at the LOD switch -- to save an
-// overhang that is a fraction of a pixel at the distance a T8 is ever drawn.
+// overhang that is a fraction of a pixel at the distance a coarse tier is drawn.
 //
 // The number is 1.8 because a CAP THAT BINDS IS A BIAS GENERATOR, and that is
 // the failure it has to stay clear of. The gain is one uniform number and the
-// cap is taken on the worst axis, so a spire whose T8 happens to bulge in x and
+// cap is taken on the worst axis, so a spire whose T20 happens to bulge in x and
 // under-sample in y gets its gain throttled by x and comes out 22% short in y --
 // exactly the visible shrink the gain exists to remove, reintroduced by its own
-// safety rail. Measured over 60 seeds x 9 shapes x 3 coarse tiers: at 1.3 that
+// safety rail. Measured over 60 seeds x 9 shapes x the three coarse tiers there
+// were then, the 8-face one below T20 included: at 1.3 that
 // happened to 46 of 1620 builds and the worst was 29% off; at 1.8 it is 0 of
 // 1620 and the worst is 2.3%. So the cap now catches only a genuinely degenerate
 // build, which is all it was ever for. Collision and spacing read `measured`,
 // which is the reference's box, not a tier's.
 export const BOX_MARGIN = 1.8
+
+/**
+ * The rock's MEAN horizontal silhouette width, averaged over the compass.
+ *
+ * WHAT IT IS FOR is the billboard. `width` and `depth` are the box, so
+ * `max(width, depth)` is the WIDEST the rock can ever look -- and a card sized
+ * to that is that wide from every bearing, because it spins to face the eye.
+ * Measured over the bank, the widest extent averages 1.4x the mesh's actual
+ * silhouette across the compass and reaches 1.7x on the slabs, so a rock
+ * swapping to its card visibly swelled. The mean is the number that makes the
+ * swap free on average, which is the only thing a single quad can promise: it
+ * is still narrow when the rock turns its long side to you and wide when it
+ * turns its short side, but it no longer sits above BOTH.
+ *
+ * A HALF TURN, not a full one, because the extent along a bearing and the
+ * extent along its opposite are the same measurement. 90 steps is 2 degrees,
+ * against a signal whose whole variation is the aspect ratio -- doubling the
+ * steps moves the answer by under a tenth of a percent on every shape in the
+ * bank.
+ *
+ * Taken on the SEATED reference, like every other entry in `measured`, so the
+ * buried belly is flattened rather than counted.
+ */
+function meanPlanWidth(pos, steps = 90) {
+  let total = 0
+  for (let s = 0; s < steps; s++) {
+    const a = (s / steps) * Math.PI
+    const rx = Math.cos(a)
+    const rz = -Math.sin(a)
+    let lo = Infinity
+    let hi = -Infinity
+    for (let i = 0; i < pos.length; i += 3) {
+      const u = pos[i] * rx + pos[i + 2] * rz
+      if (u < lo) lo = u
+      if (u > hi) hi = u
+    }
+    total += hi - lo
+  }
+  return total / steps
+}
 
 function meanSupport(pos, cx, cy, cz) {
   let total = 0
@@ -581,12 +659,12 @@ export function buildRock(options = {}) {
   const az = Math.max(0.05, 1 / p.elongate)
 
   // --- measure the rock, once, on a set of directions no tier uses ---------
-  // This is the one place the tiers are tied together. A T8 octahedron samples
-  // eight directions and misses every peak between them, so its own bounding box
-  // is ~20% shorter than a T80's; measure each tier on its own vertices and
+  // This is the one place the tiers are tied together. A T20 icosahedron samples
+  // twenty directions and misses every peak between them, so its own bounding box
+  // is shorter than a T80's; measure each tier on its own vertices and
   // every one of them gets a different bed plane, a different centre and a
   // different scale, and the rock jumps at every LOD change. One dense
-  // measurement decides all three for all four tiers instead. What is left over
+  // measurement decides all three for all three tiers instead. What is left over
   // after that -- the AREA a coarse solid loses between its samples -- is what
   // the support gain further down corrects.
   const ref = []
@@ -630,6 +708,9 @@ export function buildRock(options = {}) {
     width: (maxX - minX) * k,
     depth: (maxZ - minZ) * k,
     height: (maxY - cutY) * k,
+    // Not a fourth box axis -- the mean of the box's own horizontal extent over
+    // every bearing. See meanPlanWidth; the billboard is what wants it.
+    planMean: meanPlanWidth(ref) * k,
   }
 
   // The reference's average silhouette radius, on the seated shape.
@@ -697,23 +778,23 @@ export function buildRock(options = {}) {
   }
 
   // Match this tier's average silhouette radius to the reference's. Sampling a
-  // lumpy shape on 8 directions instead of 320 does not just round the corners
+  // lumpy shape on 20 directions instead of 320 does not just round the corners
   // off, it loses AREA -- every peak between two samples is cut away -- so an
-  // untouched T8 reads a third smaller than the T180 it replaces and the swap
-  // looks like the rock jumping backwards. One uniform gain about the bed origin
+  // untouched T20 reads smaller than the T180 it replaces and the swap looks
+  // like the rock jumping backwards. One uniform gain about the bed origin
   // buys that back -- proportions, lean and the bed plane are all untouched --
   // and it drives the mean signed error between a tier and the reference to
   // roughly zero, which is the number a player perceives as a pop. What it
   // cannot fix is the SPREAD: the coarse tier is still short in some directions
   // and now long in others. That is the right trade. A silhouette that is the
-  // right size and the wrong shape is invisible at the range a T8 is drawn at;
+  // right size and the wrong shape is invisible at the range a T20 is drawn at;
   // one that is the right shape and the wrong size is a visible jump.
   const tierSupport = meanSupport(positions, cx, cy, cz)
   let gain = tierSupport > 1e-6 ? refSupport / tierSupport : 1
 
   // ...with a loose bounding-box cap on top, for the pathological case only.
-  // The gain is an average and an octahedron's error is not evenly spread -- its
-  // six poles sit ON the shape while everything between them is cut away -- so a
+  // The gain is an average and a coarse solid's error is not evenly spread --
+  // its vertices sit ON the shape while everything between them is cut away -- so a
   // gain that fixes the average necessarily pushes those poles outside the real
   // rock. That is allowed, up to BOX_MARGIN; read the argument there for why the
   // overhang is the cheaper error. The cap can bite a FINE tier too, for an

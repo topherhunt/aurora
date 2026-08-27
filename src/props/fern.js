@@ -28,8 +28,12 @@ import { mulberry32 } from '../sim/mathx.js'
 //
 // ATTRIBUTES: two layouts, chosen by whether `frondLayers` is passed, because
 // BatchedMesh requires every geometry in a batch to agree on the attribute set.
-//   - omitted  -> { position, normal, uv }. One bound texture, which is what
-//     the previewer (gen-fern.html) renders.
+//   - omitted  -> { position, normal, uv }. One bound texture. NOTHING RENDERS
+//     THIS ANY MORE -- gen-fern.html moved to the shared prop material when the
+//     card arrived, so the only callers left are the node probes, which measure
+//     geometry and never sample a texel. Note that a sampler2D bound the
+//     ordinary way defaults to flipY = true, so a renderer brought back onto
+//     this layout would see the frond upside down against the v below.
 //   - an array -> { position, normal, uvProj, texLayer }. The shared prop
 //     material's layout (src/material.js): one sampler2DArray, one material,
 //     one multi-draw call for every prop in the world.
@@ -143,10 +147,17 @@ function addFrond(out, p) {
       tmp.copy(pos).addScaledVector(bladeSide, sign * halfW)
       positions.push(tmp.x, tmp.y, tmp.z)
       normals.push(normal.x, normal.y, normal.z)
-      // v = 1 at the base: the cutout stores each frond with its stipe at the
-      // top of the image, and three flips textures on upload (flipY), so image
-      // top lands at v = 1.
-      uvs.push(e, 1 - s)
+      // v = 0 at the base: the cutout stores each frond with its stipe at the
+      // TOP of the image (extract-frond.mjs never rotates a component, and
+      // fern_frond_0.png's first ~16 rows are the bare 2-3 px stalk), and the
+      // frond is sampled from a DataArrayTexture, whose flipY three sets to
+      // false -- so image row 0 lands at v = 0, not v = 1.
+      //
+      // Getting this backwards does not look like a texture bug. The card is
+      // symmetric enough that the fern still reads as a fern; what it reads as
+      // is a fern whose stems all sprout in mid-air at the frond TIPS and whose
+      // feathered ends meet at the crown, which is how it was found.
+      uvs.push(e, s)
       // Constant across the frond, but it has to be per-vertex: that is what
       // lets ONE geometry in ONE batch wear several textures (textures.js).
       if (layers) layers.push(p.texLayer)
@@ -167,9 +178,9 @@ export function buildFern(options = {}) {
   const rand = mulberry32(p.seed)
 
   // `frondLayers` decides the attribute layout, because the two are the same
-  // decision. Omit it and you get { position, normal, uv }: the previewer's
-  // layout, one texture bound as material.map, which is what gen-fern.html renders.
-  // Pass it and you get { position, normal, uvProj, texLayer }: the shared
+  // decision. Omit it and you get { position, normal, uv }: one texture bound
+  // as material.map, which now only the node probes ask for (see ATTRIBUTES
+  // above). Pass it and you get { position, normal, uvProj, texLayer }: the shared
   // batch's layout, where `uv` is deliberately NOT the name (three's map path
   // assumes sampler2D and would fight us) and every geometry in the batch must
   // agree on the attribute set or BatchedMesh refuses it.

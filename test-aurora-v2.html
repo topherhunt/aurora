@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- the card lab</title>
+    <style>
+      /* Same split as test-aurora.html and for the same reason: the sidebar styles itself, scoped under .aur-sb, and injects that CSS from src/aurora-lab/ui/sidebar.js. What is here is only the page shell -- the two-column frame, the stage, and the shader dump. A rule for a control would put the panel's appearance in two files, and the two would drift. */
+      :root { --panel: rgba(8,14,26,.9); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      #panel {
+        flex: 0 0 336px; min-height: 0;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #hint {
+        position: absolute; left: 12px; top: 10px; color: var(--dim); pointer-events: none;
+        text-shadow: 0 1px 3px #000;
+      }
+      #hint em { color: #a9c2e6; font-style: normal; }
+      #boot {
+        position: absolute; inset: 0; display: grid; place-items: center;
+        background: #05080f; color: var(--dim); transition: opacity .4s; z-index: 5;
+      }
+      #boot.gone { opacity: 0; pointer-events: none; }
+      #boot pre { color: #d98c8c; white-space: pre-wrap; max-width: 80ch; text-align: left; }
+
+      /* Both halves of the card material, on demand. It matters more here than it does on the raymarch page: the vertex shader is where a card is turned to face the eye and where the sky-lock happens, so reading only the fragment source would hide the half that decides where the aurora IS. */
+      #shader {
+        position: absolute; inset: 24px; z-index: 6; display: none;
+        background: rgba(5,8,15,.97); border: 1px solid var(--edge); border-radius: 4px;
+        overflow: auto; padding: 12px 16px;
+      }
+      #shader.open { display: block; }
+      #shader pre { margin: 0; color: #a9c2e6; white-space: pre; font: 11px/1.45 monospace; }
+      #shader .close {
+        position: sticky; top: 0; float: right; cursor: pointer; color: var(--dim);
+        background: #0e1726; border: 1px solid var(--edge); border-radius: 3px;
+        font: inherit; padding: 2px 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="panel"></div>
+
+    <div id="stage">
+      <div id="hint">drag to look &middot; wheel to zoom &middot; <em>space</em> pause &middot; <em>.</em> step a frame &middot; <em>h</em> hides the panel</div>
+      <div id="shader"><button class="close">close</button><pre></pre></div>
+      <div id="boot">tracing the ley lines&hellip;</div>
+    </div>
+
+    <script type="module" src="/src/test-aurora-v2-main.js"></script>
+  </body>
+</html>

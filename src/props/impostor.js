@@ -75,7 +75,7 @@ const DILATE_PASSES = 2
 // mid-texel and mips down honestly. It is one render at load and a 1 MB
 // readback, and it is done in JS rather than by asking the render target for
 // MSAA so that the result does not depend on what the driver decided to do.
-const SUPERSAMPLE = 4
+export const SUPERSAMPLE = 4
 
 // The canopy fan, in the units the header describes. 0.55 puts the top corners
 // at normal.y 0.876 and the skirt corners at 0.633 -- a lean of about 29 and 51
@@ -128,7 +128,10 @@ export function impostorCardExtents({ width, height }) {
   return { width: width * (1 + MARGIN * 2), height: height * (1 + MARGIN) }
 }
 
-export function bakeImpostor(renderer, geometry, texArray, layer, { width, height, azimuth = 0 }) {
+export function bakeImpostor(
+  renderer, geometry, texArray, layer,
+  { width, height, azimuth = 0, tint = null, vertexColors = false }
+) {
   if (!(width > 0) || !(height > 0)) {
     throw new Error(`bakeImpostor: need a positive width and height, got ${width}x${height}`)
   }
@@ -158,7 +161,19 @@ export function bakeImpostor(renderer, geometry, texArray, layer, { width, heigh
   cam.lookAt(0, 0, 0)
   cam.updateMatrixWorld()
 
-  const material = createImpostorBakeMaterial(texArray)
+  // `vertexColors` is the building kit's -- see createImpostorBakeMaterial. A
+  // prop leaves it off and carries no `color` attribute at all.
+  const material = createImpostorBakeMaterial(texArray, { vertexColors })
+  // A FAMILY MAY BE TINTED, and if it is, the photograph has to be tinted the
+  // same way or the card is a different colour from the mesh it stands in for --
+  // which is the most visible artefact an impostor can have, because the swap
+  // happens at a fixed distance in front of the player and a colour step there
+  // reads as a wall. Dead wood is the case: it is drawn through a material whose
+  // `color` browns and darkens live bark into dead bark (DEADWOOD_TINT), and the
+  // multiply belongs here for the same reason it belongs there -- before the
+  // atlas sample is handed on, so moss and snow still mix over the top of it in
+  // their own colours.
+  if (tint !== null) material.color.setHex(tint)
   const mesh = new THREE.Mesh(geometry, material)
   const scene = new THREE.Scene()
   scene.add(mesh)
@@ -236,7 +251,7 @@ export function bakeImpostor(renderer, geometry, texArray, layer, { width, heigh
 // indistinguishable from one that got thinner. `dilate` has already pushed
 // colour into the transparent margin by the time this runs, which is exactly
 // why the alpha test is here and not a check for a non-black texel.
-function coveredLuma(px) {
+export function coveredLuma(px) {
   let sum = 0
   let n = 0
   for (let i = 0; i < px.length; i += 4) {
@@ -247,7 +262,7 @@ function coveredLuma(px) {
   return n > 0 ? sum / n : 0
 }
 
-function coverage(px) {
+export function coverage(px) {
   let n = 0
   for (let i = 3; i < px.length; i += 4) if (px[i] >= 128) n++
   return n / (px.length / 4)
@@ -258,7 +273,7 @@ function coverage(px) {
 // transparent texels' colour -- which is black, because nothing ever wrote them
 // -- into every edge and hand back a canopy with a sooty rim. Alpha itself
 // averages plainly, because that is exactly what coverage means.
-function downsample(src, big) {
+export function downsample(src, big) {
   const n = big / TEX_SIZE
   const out = new Uint8Array(TEX_SIZE * TEX_SIZE * 4)
   for (let y = 0; y < TEX_SIZE; y++) {
@@ -291,7 +306,7 @@ function downsample(src, big) {
   return out
 }
 
-function flipY(px) {
+export function flipY(px) {
   const row = TEX_SIZE * 4
   const tmp = new Uint8Array(row)
   for (let y = 0; y < TEX_SIZE / 2; y++) {
@@ -305,7 +320,7 @@ function flipY(px) {
 
 // Push colour outward into transparent texels, alpha untouched. See
 // DILATE_PASSES.
-function dilate(px) {
+export function dilate(px) {
   for (let pass = 0; pass < DILATE_PASSES; pass++) {
     const src = px.slice()
     for (let y = 0; y < TEX_SIZE; y++) {
@@ -495,10 +510,17 @@ export function buildImpostorCard(
   height,
   layer,
   planes = 3,
-  { upNormal = false, canopy = false, tri = false } = {}
+  { upNormal = false, canopy = false, tri = false, spherical = false } = {}
 ) {
   if (upNormal && canopy) {
     throw new Error('buildImpostorCard: upNormal and canopy are two answers to the same question')
+  }
+  // `spherical` is not a shape -- the vertices below are identical either way.
+  // It says which of billboardVertex's two spins this card will meet, and the
+  // only thing that depends on that is the bounding volume. See the note by
+  // the bounds at the end of this function.
+  if (spherical && !upNormal) {
+    throw new Error('buildImpostorCard: a card that is not marked for spinning cannot be spun spherically')
   }
   if (tri && tri !== 'up' && tri !== 'down') {
     throw new Error(`buildImpostorCard: tri must be 'up', 'down' or false, not ${tri}`)
@@ -593,9 +615,43 @@ export function buildImpostorCard(
   geo.setIndex(indices)
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
+
+  // THE BOUNDS HAVE TO HOLD THE SPIN, NOT THE VERTICES. BatchedMesh culls each
+  // instance against the bounding sphere of the geometry it is drawing, and
+  // billboardVertex moves the vertices after that decision is made. So the
+  // sphere has to contain every position the spin can put them in, or the
+  // renderer drops a card that is still on screen -- which reads as rocks
+  // blinking in and out as you turn, worst near the edge of the view where a
+  // frame of head movement flips the test back and forth.
+  //
+  // The cylindrical spin is safe with the tight sphere for free: it turns
+  // (x, z) about the instance's Y axis, so every vertex keeps its height and
+  // its horizontal radius and stays inside the box the vertices already
+  // describe. That is why only rocks show this and no other card does.
+  //
+  // The spherical spin does not. It rebuilds the vertex as
+  // `x * screenRight + y * screenUp` -- an orthonormal pair -- so a vertex ends
+  // up at distance hypot(x, y) FROM THE FOOT, pointing anywhere at all. The
+  // envelope is therefore a sphere centred on the foot whose radius is the
+  // longest vertex, which is exactly what is measured here. It is bigger than
+  // the tight one (about 2x on a square card) and that is the honest price of
+  // a quad that can face any direction.
+  if (spherical) {
+    let r2 = 0
+    for (let k = 0; k < positions.length; k += 3) {
+      const d2 = positions[k] ** 2 + positions[k + 1] ** 2 + positions[k + 2] ** 2
+      if (d2 > r2) r2 = d2
+    }
+    const r = Math.sqrt(r2)
+    geo.boundingSphere.center.set(0, 0, 0)
+    geo.boundingSphere.radius = r
+    geo.boundingBox.min.set(-r, -r, -r)
+    geo.boundingBox.max.set(r, r, r)
+  }
+
   geo.userData.impostor = {
     width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
-    upNormal, canopy, tri,
+    upNormal, canopy, tri, spherical,
   }
   return geo
 }

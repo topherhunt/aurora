@@ -3,7 +3,7 @@ import {
   Builder, WALL_STYLE, TINT, member2, gableEnd, leanEnd,
   plinth, doorway, steps2, SMOOTH_LAYERS,
   wall2, planGableRoof, planLeanRoof, drawRoof, windowUnit2, chimney2, porch2,
-  clearUnder, doorHeight, wallOpenings, dormer2, hash,
+  clearUnder, doorHeight, wallOpenings, dormer2, dormerHalfWidth, hash,
 } from './parts.js'
 import { makeCharacter, makeWarp, warpBuilder, smoothNormals } from './warp.js'
 import { windowHalfWidth } from '../plan.js'
@@ -46,15 +46,22 @@ const STYLE_OF = {
   masonry: WALL_STYLE.MASONRY,
 }
 
-/** Roof kind -> the layer and tint that render it, as v1. `slate` is SHINGLE at
- *  a cold tint; `pantile` is its own layer because a scallop is a shape and no
- *  tint makes a rectangle round. Pantile takes the least moss of the four --
- *  fired clay sheds water and gives nothing to root in. */
+/** Roof kind -> the layer and tint that render it, as v1. `slate` is SHINGLE
+ *  under a tint that cancels the tile's own chroma; `pantile` is its own layer
+ *  because a scallop is a shape and no tint makes a rectangle round. Pantile
+ *  takes the least moss of the four -- fired clay sheds water and gives nothing
+ *  to root in.
+ *
+ *  `age` IS PER MATERIAL and not one number for all four, because the aging term
+ *  mixes toward `thatchOld`, which is a straw grey. That is the right direction
+ *  for straw and for weathered wood and the wrong one for stone: on slate it is
+ *  the one thing that would put the warmth back in after the tint took it out,
+ *  and it would do it right along the eave, where the roof is nearest the eye. */
 const ROOF_OF = {
-  thatch: { layer: LAYER.THATCH, tint: TINT.thatchNew, fringe: true, moss: 0.4 },
-  shake: { layer: LAYER.SHINGLE, tint: TINT.shake, fringe: false, moss: 0.22 },
-  slate: { layer: LAYER.SHINGLE, tint: TINT.slate, fringe: false, moss: 0.12 },
-  pantile: { layer: LAYER.ROOF_TILE, tint: TINT.pantile, fringe: false, moss: 0.08 },
+  thatch: { layer: LAYER.THATCH, tint: TINT.thatchNew, fringe: true, moss: 0.4, age: 0.5 },
+  shake: { layer: LAYER.SHINGLE, tint: TINT.shake, fringe: false, moss: 0.22, age: 0.5 },
+  slate: { layer: LAYER.SHINGLE, tint: TINT.slate, fringe: false, moss: 0.12, age: 0.1 },
+  pantile: { layer: LAYER.ROOF_TILE, tint: TINT.pantile, fringe: false, moss: 0.08, age: 0.5 },
 }
 
 /**
@@ -83,7 +90,7 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
   // it, and that is the same field the whole vertex array goes through below.
   // The identity of this object matters as well as its values -- the roof sheets
   // cache their warped selves against it.
-  const warp = makeWarp(k, plan.plinthBottom)
+  const warp = makeWarp(k, plan.plinthBottom, plan.footprint)
 
   // Where each dormer ended up seated, filled in below and handed back unwarped:
   // the gate needs to walk up to a dormer and measure it, and finding one in a
@@ -127,12 +134,13 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
           cx: m.cx, cz: m.cz, w: m.w, d: m.d, eaveY: m.eaveY, rise: m.roof.rise,
           ridgeAxis: m.ridgeAxis, overhang, verge, ...wingVerge(m, main, verge),
           layer: roofSpec.layer, tint: roofSpec.tint, seed,
-          moss: roofSpec.moss, fringe, detail: lod, k,
+          moss: roofSpec.moss, age: roofSpec.age, fringe, detail: lod, k,
         })
         : planLeanRoof({
           cx: m.cx, cz: m.cz, w: m.w, d: m.d,
           highY: m.roof.highY, lowY: m.roof.lowY, dir: m.roof.dir,
           overhang: overhang * 0.7, layer: roofSpec.layer, tint: roofSpec.tint,
+          age: roofSpec.age,
           seed, detail: lod, k,
         }))
     }
@@ -351,14 +359,26 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
     const dSeed = plan.seed * 71 + m.id * 13
     for (const side of [-1, 1]) {
       const u = hash(dSeed, side > 0 ? 1 : 2)
-      const n = u < 0.833 ? 0 : (u < 0.945 ? 1 : 2)
+      const rolled = u < 0.833 ? 0 : (u < 0.945 ? 1 : 2)
+      // TWO ON ONE PITCH HAVE TO FIT SIDE BY SIDE, and the thing that has to
+      // fit is the covering rather than the stub: it oversails the cheeks, so a
+      // pair the dice put a metre apart ends up with one eave laid ON the other
+      // -- two doubled sheets in the same plane, which is the one overlap in
+      // this kit that shows, because everything else that interpenetrates does
+      // it at an angle. So the pair is held apart by the width of what is
+      // actually drawn, and a pitch too short to hold them that far apart gets
+      // one dormer instead of two rather than a narrower pair.
+      const room = alongHalf - 0.95
+      const apart = dormerHalfWidth(plan.overhang, k) + 0.05
+      const n = rolled === 2 && room < apart ? 1 : rolled
       for (let i = 0; i < n && dormerSeats.length < 2; i++) {
         // Two of them stand either side of the middle; one stands where the
         // seed puts it. Never within a stub's width of a gable end, where the
         // verge is and where the roof is busiest.
-        const room = alongHalf - 0.95
         const jit = (hash(dSeed, side * 7 + i * 3 + 20) - 0.5) * 2
-        const a = n === 2 ? (i === 0 ? -1 : 1) * room * (0.5 + jit * 0.18) : jit * room * 0.75
+        const a = n === 2
+          ? (i === 0 ? -1 : 1) * Math.max(apart, room * (0.5 + jit * 0.18))
+          : jit * room * 0.75
         // Set back from the wall plane so the eave of the main roof, its fringe
         // and its verge all stay clear in front of the stub.
         const c = side * (runHalf - 0.3)
@@ -376,7 +396,8 @@ export function buildBuilding2(plan, { detail = 2, strength = 1, character = nul
         if (blocked) continue
         const seat = dormer2(b, {
           x, z, nx, nz, sheetAt: R.heightAt, ridgeLimit: runHalf - 0.6,
-          layer: roofSpec.layer, color: R.color, detail, k,
+          layer: roofSpec.layer, color: R.color, detail, k, style,
+          overhang: plan.overhang,
           seed: plan.seed * 31 + m.id * 5 + (side > 0 ? 1 : 2) * 3 + i,
         })
         if (seat) dormerSeats.push({ ...seat, massId: m.id, sheetAt: R.heightAt })

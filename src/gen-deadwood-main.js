@@ -8,6 +8,10 @@ import {
   DEADWOOD_DEFAULTS,
   DEADWOOD_TIERS,
   DEADWOOD_VARIANTS,
+  DEADWOOD_TINT,
+  LOG_DEFAULTS,
+  MAX_JAG,
+  JAG_FULL,
 } from './props/deadwood.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE, IMAGE_LAYERS } from './textures.js'
@@ -85,7 +89,7 @@ const SPECIES = [
 // bare spar and `jag1` at its ceiling shatters the top into splinters half a
 // metre long, and seeing both is how you learn where the useful end is.
 const SLIDERS = [
-  ['tier', 0, 2, 1, 'which mesh tier is drawn: 0 = T0 (8 sides), 1 = T1 (5), 2 = T2 (3). All three are the SAME swept surface at different resolutions -- a tier change loses facets, it does not swap in a different log'],
+  ['tier', 0, 1, 1, 'which mesh tier is drawn: 0 = T0 (15 sides, 0-10 m), 1 = T1 (5 sides and flat stubs, 10-20 m). Both are the SAME swept surface at different resolutions -- a tier change loses facets, it does not swap in a different log. Past 20 m the world draws a billboard instead of either'],
   ['length', 0.4, 12, 0.05, 'along the spine, in metres: a snag\'s height, a log\'s length. Absolute rather than relative, unlike a rock -- everybody knows how big a log is, and a 0.9 m trunk across a path is a different OBJECT from a 0.3 m one closer up'],
   ['butt', 0.1, 1.2, 0.01, 'DIAMETER at the base, in metres'],
   ['taper', 0, 0.8, 0.01, 'fraction of the butt diameter lost by the far end. Never reaches 1: dead wood is broken off, not sharpened'],
@@ -105,18 +109,31 @@ const SLIDERS = [
   ['checks', 0, 8, 1, 'long radial splits running the length, as a count. 0 = none. Cut as a narrow spike rather than a sine, because a check is a SPLIT: a sine gives you a fluted column'],
   ['checkDepth', 0, 0.3, 0.005, 'how far they bite, as a fraction of the radius'],
 
-  ['jag0', 0, 0.35, 0.005, 'BUTT end: how far the rim wanders along the spine, as a fraction of the length. 0 is a clean cut -- leave it there for a standing snag, whose butt is in the ground'],
-  ['jag1', 0, 0.35, 0.005, 'FAR end: the same, and for a snag this is the break. The splinters are cubed, so a few run long and most of the rim stays low -- a raw noise value gives an evenly scalloped edge that reads as decorative'],
-  ['jagCount', 3, 10, 1, 'how many splinters go round'],
-  ['cup0', 0, 0.8, 0.02, 'BUTT end: how far the end face is pulled INTO the piece, as a fraction of its own radius. A rotten heart is dished; a sound break is flat'],
-  ['cup1', 0, 0.8, 0.02, 'FAR end: the same'],
+  ['jag0', 0, 4, 0.05, 'BUTT end: how savagely the rim is broken, where 3.5 eats the most a rim is ever allowed to (40% of the length) and half of that really is half as deep, on every seed. 0 is a clean cut -- leave it there for a standing snag, whose butt is in the ground'],
+  ['jag1', 0, 4, 0.05, 'FAR end: the same, and for a snag this is the break. Every seed gets the same LADDER of notch depths -- one at the full bite, one shallow, the rest between -- dealt to unevenly spaced splinters of unevenly broad tops. So how chewed the rim is holds still while how it is arranged does not, and the deepest notch always lands exactly on the number set here'],
+  ['jagCount', 3, 10, 1, 'how many splinters go round. Wants to divide the tier\'s side count: 5 on T0\'s 15 puts one vertex on each splinter tip and two down in each notch'],
+  // Past 1.0 the dish is deeper than the piece is wide, which is a HOLLOW you
+  // can see into rather than a dished face -- a rotting stump with its heart
+  // gone. That is a different object, not more of the same one, and it is worth
+  // a third of the slider because it is the single most convincing dead thing
+  // this generator makes.
+  ['cup0', 0, 3, 0.02, 'BUTT end: how far the end face is pulled INTO the piece, as a fraction of its own radius. A rotten heart is dished; a sound break is flat. Past 1.0 it is a hollow you can see down'],
+  ['cup1', 0, 3, 0.02, 'FAR end: the same'],
 
   ['flare', 0, 1.4, 0.02, 'root buttress at the very base, as a fraction of the butt radius. tree.js has none of this and can afford not to -- the bottom half metre of a living trunk is behind ferns. A SNAG IS ITS BOTTOM HALF METRE'],
   ['flareRun', 0.04, 0.6, 0.01, 'over what fraction of the length the flare dies away'],
+  ['roots', 0, 12, 1, 'how many BUTTRESSES the flare breaks into. 0 or 1 leaves it a smooth collar. Wants to divide the tier\'s side count -- 6 roots on T0\'s 12 sides lands one vertex on each fin and one in each gap'],
+  ['rootBite', 0, 2, 0.05, 'how hard the flare is pulled into the fins, as a fraction of itself. 1.0 = fins carry double, gaps carry none. ABOVE 1 the gaps cut INSIDE the taper radius, which is the pinch between two roots'],
 
   ['stubs', 0, 6, 1, 'broken branch stubs. Not branches: a stub is a short cone with a jagged end and no curve at all. They are the first thing a tier drops, at T1'],
   ['stubStart', 0, 0.9, 0.02, 'fraction of the length below which no stub grows'],
-  ['stubLength', 0.3, 2.5, 0.05, 'as a multiple of the local DIAMETER'],
+  ['stubEnd', 0.1, 1, 0.02, 'and above which none does. `jag` eats the top of the piece and `stubs` does not know it has: a stub placed at 0.95 on a trunk whose rim has been chewed back to 0.6 grows out of thin air. Keep this under 1 minus the deepest bite jag1 can take'],
+  // To 4 rather than to 2.5, because 2.5 is where the default sits and a slider
+  // whose default IS its ceiling can only be dragged one way -- you cannot tell
+  // whether the value was chosen or whether the control ran out. Four diameters
+  // is a long spar of a stub and obviously too much, which is the point: a range
+  // has to overshoot to show you where the useful end was.
+  ['stubLength', 0.3, 8, 0.05, 'as a multiple of the local DIAMETER'],
   ['stubRadius', 0.1, 0.6, 0.01, 'as a fraction of the local trunk radius'],
   ['stubRise', -0.4, 1.2, 0.02, 'radians above horizontal. Dead stubs DROOP -- a stub angled up like a live branch reads as a tree that is still trying'],
 
@@ -143,7 +160,20 @@ const SLIDERS = [
 // preset names bark, jag and flare, and opening on one would make the defaults a
 // setting nobody ever saw. `custom` is the honest label for that state.
 const BENCH_KEYS = new Set(['snow', 'moss', 'brightness'])
-const params = { ...DEADWOOD_DEFAULTS, snow: 0, moss: 0, brightness: 1 }
+
+// The three bench sliders' own defaults, written once. They are needed in three
+// places -- the opening state, the `defaults` button, and the table the changed
+// labels compare against -- and a literal `snow: 0` in each of those is three
+// chances for a bench slider to open orange, or to open at a value the
+// `defaults` button then moves it off.
+const BENCH_DEFAULTS = { snow: 0, moss: 0, brightness: 1 }
+
+// One lookup for "what was this before anybody touched it", across both halves
+// of the panel. Shape comes from the generator's own defaults so the bench
+// cannot disagree with deadwood.js about what a default is.
+const DEFAULT_OF = { ...DEADWOOD_DEFAULTS, ...BENCH_DEFAULTS }
+
+const params = { ...DEADWOOD_DEFAULTS, ...BENCH_DEFAULTS }
 let presetName = ''
 let speciesIndex = 0
 
@@ -214,6 +244,10 @@ const atlas = buildTextureArray()
 
 function makeMaterial() {
   const m = createPropMaterial(atlas)
+  // The whole family is aged by a multiply on the material rather than by a
+  // darkened set of atlas layers -- see DEADWOOD_TINT. The bench has to wear it
+  // too or the bench is showing live bark.
+  m.color.setHex(DEADWOOD_TINT)
   const arrayPatch = m.onBeforeCompile
   m.onBeforeCompile = (shader, r) => {
     arrayPatch(shader, r)
@@ -449,6 +483,10 @@ function pixelsTall(height, distance) {
   return ((Math.atan(height / distance) * 180) / Math.PI) * 16.2
 }
 
+// The deepest a rim of the given `jag` can be bitten, as a fraction of the piece's
+// length. Mirrors `endT`'s `bite` term: MAX_JAG at JAG_FULL, proportional below it.
+const deepest = (jag) => MAX_JAG * Math.min(1, Math.max(0, jag) / JAG_FULL)
+
 function refresh() {
   const s = rebuild()
   const d = s.stats
@@ -525,7 +563,11 @@ function refresh() {
     ['the step where it has gone', `${(params.barkThick * 1000).toFixed(0)} mm`],
     ['&hellip; against the butt radius', `${((params.barkThick / (m.buttDiameter * 0.5)) * 100).toFixed(1)}%`],
     ['checks', params.checks > 0 ? `${Math.round(params.checks)} &times; ${(params.checkDepth * 100).toFixed(0)}% deep` : 'none'],
-    ['break, butt / far', `${(params.jag0 * params.length * 100).toFixed(0)} / ${(params.jag1 * params.length * 100).toFixed(0)} cm ragged`],
+    // The DEEPEST bite either end can take. `jag` is read against JAG_FULL rather
+    // than used raw: the slider is a fraction of what a rim may eat, and past
+    // JAG_FULL it stops buying rim, so the number printed has to stop rising with
+    // it or the readout says a stump is chewed 3.5 lengths down.
+    ['break, butt / far', `${(deepest(params.jag0) * params.length * 100).toFixed(0)} / ${(deepest(params.jag1) * params.length * 100).toFixed(0)} cm at the deepest`],
     ['heart dished, butt / far', `${(params.cup0 * 100).toFixed(0)}% / ${(params.cup1 * 100).toFixed(0)}% of radius`],
     ['bark layer', SPECIES[speciesIndex][0]],
     ['under it', 'TIMBER_BEAM'],
@@ -549,8 +591,15 @@ function refresh() {
       : []),
     ['moss load', mossLoad.toFixed(2)],
     ['&nbsp;&nbsp;cut it asks the field for', mossCutFor(Math.min(1 - MOSS.cutGuard, Math.max(MOSS.cutGuard, mossLoad))).toFixed(3)],
-    ['&nbsp;&nbsp;blend either side', `&plusmn;${MOSS.edge.toFixed(2)}`],
+    // NOT symmetric, and the asymmetry is the point: the mask opens a long way
+    // below the cut and closes a short way above it, so a colony fades OUT into
+    // the wood over three times the distance it fades IN. That is what makes it
+    // read as growth rather than as a stencil.
+    ['&nbsp;&nbsp;blend, below / above cut', `&minus;${MOSS.blend.toFixed(2)} / +${(MOSS.blend * MOSS.blendSkew).toFixed(2)}`],
+    ['&nbsp;&nbsp;the fringe darkens to', `&times;${MOSS.fringe.toFixed(2)}`],
     ['&nbsp;&nbsp;how far it leans on DOWN', MOSS.down.toFixed(2)],
+    // The one moss behaviour that is about dead wood specifically.
+    ['&nbsp;&nbsp;climbs to, above own root', `${MOSS.rise.toFixed(1)} m, gone by ${(MOSS.rise + MOSS.riseBand).toFixed(1)} m`],
     ['snow load', snowLoad.toFixed(2)],
     ['&nbsp;&nbsp;cut it asks the field for', (SNOW_ROCK.cutBias - snowLoad * SNOW_ROCK.cutSpan).toFixed(3)],
     ['&nbsp;&nbsp;rim, at most', `&plusmn;${SNOW_ROCK.edgeMax.toFixed(3)}`],
@@ -645,9 +694,54 @@ function drawSwatch() {
 const slidersEl = document.getElementById('sliders')
 const readouts = {}
 
+// --- precision, twice, because there are two different questions -------------
+//
+// `decimals` is a slider's step read as a number of places: 0.005 is three.
+//
+// `atStep` is what gets PRINTED. It kills float noise -- dragging `bark` lands
+// on 0.30000000000000004 often enough -- without moving the value: a preset's
+// authored 0.85 stays 0.85 rather than being nudged onto the nearest step, so
+// what the copy says and what deadwood.js says are the same number.
+//
+// `onGrid` is what gets COMPARED. It snaps to the nearest value the slider can
+// actually land on, which `atStep` deliberately does not, and that difference
+// matters in exactly one case: a default that does not sit on the step grid.
+// Drag such a slider away and back and the best you can reach is a neighbouring
+// step, and a label left orange there would be pointing at a discrepancy the
+// control cannot fix.
+function decimals(step) {
+  const s = String(step)
+  const dot = s.indexOf('.')
+  return dot < 0 ? 0 : s.length - dot - 1
+}
+
+function atStep(v, step) {
+  return Number(Number(v).toFixed(decimals(step)))
+}
+
+function onGrid(v, step) {
+  return Math.round(Number(v) / step)
+}
+
+// Shape keys the bench does not put on a slider -- `kind`, `barkLayer`,
+// `woodLayer`, `stubSides` -- have no step and are compared exactly. They are
+// all discrete, so there is no noise to forgive.
+function sameAsDefault(key, v) {
+  const d = DEFAULT_OF[key]
+  if (!(key in readouts)) return v === d
+  const { step } = readouts[key]
+  return onGrid(v, step) === onGrid(d, step)
+}
+
 function showValue(key, step) {
   const v = params[key]
   readouts[key].out.textContent = step >= 1 ? String(Math.round(v)) : Number(v).toFixed(2)
+  // The changed mark is folded in HERE rather than into the input handler
+  // because the handler is not the only way a value moves: a preset, the
+  // `defaults` button and every future path all go through syncSliders, and
+  // syncSliders goes through showValue. One choke point is the only arrangement
+  // in which no path can leave a label lying about its row.
+  readouts[key].label.classList.toggle('changed', !sameAsDefault(key, v))
 }
 
 for (const [key, min, max, step, help] of SLIDERS) {
@@ -658,7 +752,7 @@ for (const [key, min, max, step, help] of SLIDERS) {
     `<input type="range" min="${min}" max="${max}" step="${step}" value="${params[key]}" />` +
     `<span class="v"></span>`
   const input = row.querySelector('input')
-  readouts[key] = { input, out: row.querySelector('.v'), step }
+  readouts[key] = { input, out: row.querySelector('.v'), label: row.querySelector('label'), step }
   input.addEventListener('input', () => {
     params[key] = Number(input.value)
     showValue(key, step)
@@ -691,11 +785,28 @@ function syncSliders() {
 const kindBtns = { snag: document.getElementById('kindSnag'), log: document.getElementById('kindLog') }
 
 function setKind(kind) {
+  const was = params.kind
   params.kind = kind
+  // A KIND CHANGE IS A DEFAULTS CHANGE, and it did not used to be. Standing a
+  // stump on its side does not make it a log: four of DEADWOOD_DEFAULTS' numbers
+  // are authored for a rooted, rotted-out stump and are simply wrong lying down
+  // (see LOG_DEFAULTS for which and why). Leaving them alone meant the log
+  // button showed a 0.95 m stump on its side with a 3.5 jag eating half of it,
+  // which is not the shape the world ships and so is not a shape anybody can
+  // sign off here.
+  //
+  // Only on an ACTUAL change of kind, and only the LOG_DEFAULTS keys, so a
+  // deliberate edit survives everything except pressing the other button.
+  if (was !== kind) {
+    const from = kind === 'log' ? LOG_DEFAULTS : DEADWOOD_DEFAULTS
+    for (const key of Object.keys(LOG_DEFAULTS)) {
+      if (key === 'kind') continue
+      params[key] = from[key]
+    }
+    presetName = ''
+    syncSliders()
+  }
   for (const [k, btn] of Object.entries(kindBtns)) btn.classList.toggle('on', k === kind)
-  // A kind change is not a shape change -- the presets are named for their kind
-  // and a snag preset stood on its side is still that preset's shape -- but it
-  // does change what the camera should be looking at.
   frame()
   refresh()
 }
@@ -722,9 +833,8 @@ presetSel.addEventListener('change', () => {
   // looking at is not a variant anybody can sign off.
   const p = deadwoodParams(presetName, params.seed)
   Object.assign(params, p)
-  // The bark layer is a property of the variant when it names one, and every
-  // preset that does is a conifer. Reflect it in the dropdown rather than
-  // letting the select and the mesh disagree.
+  // The bark layer IS one of the bank's axes -- every preset names one. Reflect
+  // it in the dropdown rather than letting the select and the mesh disagree.
   const si = SPECIES.findIndex(([, layer]) => layer === p.barkLayer)
   speciesIndex = si < 0 ? 0 : si
   speciesSel.value = String(speciesIndex)
@@ -789,7 +899,7 @@ toggle('seasons', () => seasonOn, (v) => {
 })
 
 document.getElementById('reset').addEventListener('click', () => {
-  Object.assign(params, DEADWOOD_DEFAULTS, { snow: 0, moss: 0, brightness: 1, seed: params.seed })
+  Object.assign(params, DEADWOOD_DEFAULTS, BENCH_DEFAULTS, { seed: params.seed })
   presetName = ''
   presetSel.value = ''
   speciesIndex = 0
@@ -798,6 +908,122 @@ document.getElementById('reset').addEventListener('click', () => {
   syncSliders()
   frame()
   refresh()
+})
+
+// --- copying the shape out ----------------------------------------------------
+//
+// The bench is where a shape gets DECIDED and deadwood.js is where it has to end
+// up, and until this button there was no crossing between them: you tuned
+// something worth keeping and then read thirty-four numbers off the panel by eye
+// to type them back in, which nobody does twice.
+//
+// So what this emits is not a report, it is SOURCE, and it is one block rather
+// than a choice of two. Live lines for every shape key that differs from
+// DEADWOOD_DEFAULTS, commented lines for every key that does not, in
+// deadwood.js's own key order. The live lines on their own are exactly a
+// DEADWOOD_VARIANTS `p` value -- a variant names its difference and inherits the
+// rest -- and uncommenting the whole block gives the full shape to paste over
+// DEADWOOD_DEFAULTS. Nobody has to pick a mode before pressing the button, which
+// matters because you do not know which of the two you wanted until you are
+// looking at the numbers.
+//
+// `seed` is named in the header and kept OUT of the literal: it is not shape, it
+// is which draw of the shape, and deadwoodParams overrides whatever a variant
+// tries to say about it anyway. `snow`, `moss` and `brightness` are kept out for
+// the harder reason -- they are not the generator's at all, they are two global
+// uniforms and a bench dial, and a `p` block that named them would be pasting
+// the previewer's weather into the world's bank.
+const SHAPE_KEYS = Object.keys(DEADWOOD_DEFAULTS).filter((k) => k !== 'seed')
+
+// `barkLayer: 2` would build and would be unreadable sitting in the bank beside
+// eight entries that say LAYER.BARK_PINE. Reverse-looked-up out of LAYER rather
+// than carried as a fifth column on SPECIES, so a renamed layer cannot leave
+// this printing a constant that no longer exists -- it throws instead.
+function layerName(value) {
+  const name = Object.keys(LAYER).find((k) => LAYER[k] === value)
+  if (name === undefined) throw new Error(`gen-deadwood: no LAYER constant equals ${value}`)
+  return `LAYER.${name}`
+}
+
+function sourceValue(key, v) {
+  if (key === 'kind') return `'${v}'`
+  if (key === 'barkLayer' || key === 'woodLayer') return layerName(v)
+  // Every numeric shape key except `stubSides` has a slider and so has a step.
+  // stubSides is a count the bench does not expose, and 1 is its precision.
+  return String(atStep(v, key in readouts ? readouts[key].step : 1))
+}
+
+function shapeSource() {
+  const lines = []
+  let changed = 0
+  for (const key of SHAPE_KEYS) {
+    // The species dropdown is the truth for `barkLayer`, not params: opts()
+    // overrides it on the way into buildDeadwood, so params.barkLayer still
+    // holds whatever the last preset said while the mesh on screen wears
+    // whatever the dropdown says. Copying params here would hand back a bark the
+    // page never drew.
+    const v = key === 'barkLayer' ? SPECIES[speciesIndex][1] : params[key]
+    const same = sameAsDefault(key, v)
+    if (!same) changed++
+    // Unchanged lines print the DEFAULT's own literal rather than the live
+    // value: they claim to be the default, and a default that does not sit on
+    // the step grid would otherwise print as the step beside it.
+    //
+    // `// ` and three spaces are the same width on purpose: the keys line up in
+    // one column whether a line is live or not, so the block reads as a single
+    // list of the shape with some of it switched off, which is what it is.
+    lines.push(same ? `// ${key}: ${sourceValue(key, DEFAULT_OF[key])},` : `   ${key}: ${sourceValue(key, v)},`)
+  }
+  return { lines, changed }
+}
+
+function copyText() {
+  const { lines, changed } = shapeSource()
+  return [
+    `// /gen-deadwood -- ${params.kind}, ${SPECIES[speciesIndex][0]} bark, seed ${params.seed}, ${presetName || 'custom'}.`,
+    `// ${changed} of ${SHAPE_KEYS.length} shape keys differ from DEADWOOD_DEFAULTS. The LIVE lines are that`,
+    '// difference and nothing else, which is what a DEADWOOD_VARIANTS `p` block wants; the',
+    '// commented lines are already at their default -- uncomment the lot for the full shape,',
+    '// to paste over DEADWOOD_DEFAULTS instead.',
+    '{',
+    ...lines,
+    '}',
+    `// bench only, not shape: snow ${atStep(params.snow, readouts.snow.step)}, ` +
+      `moss ${atStep(params.moss, readouts.moss.step)}, brightness ${atStep(params.brightness, readouts.brightness.step)}`,
+  ].join('\n')
+}
+
+const copyBtn = document.getElementById('copy')
+let copyTimer = 0
+
+function flashCopy(label, hold) {
+  copyBtn.textContent = label
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => { copyBtn.textContent = 'copy' }, hold)
+}
+
+copyBtn.addEventListener('click', () => {
+  // navigator.clipboard is absent outright on a non-secure origin and the write
+  // is permission-gated even on a secure one, so BOTH failures have to reach the
+  // label. A button that silently did nothing would look exactly like a button
+  // that worked, and the whole reason this exists is that there was no way to
+  // get the numbers out -- "there was no way, and I could not tell" is worse
+  // than the state it replaces. No textarea fallback: a copy that half works is
+  // a copy nobody trusts. The failure holds four times as long because it is a
+  // sentence to read rather than a word to notice, and it also goes to the
+  // console, because `NotAllowedError` is a thing you look up.
+  if (!navigator.clipboard) {
+    flashCopy('no clipboard API', 4000)
+    console.error('gen-deadwood: navigator.clipboard is undefined -- this page is not on a secure origin')
+    return
+  }
+  navigator.clipboard.writeText(copyText()).then(
+    () => flashCopy('copied', 1000),
+    (e) => {
+      flashCopy(`clipboard blocked (${e.name})`, 4000)
+      console.error('gen-deadwood: clipboard write refused', e)
+    }
+  )
 })
 
 // --- the year ----------------------------------------------------------------

@@ -51,17 +51,19 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, reliefIsOff } from '../src/v2/height/rel
 import { thermalErode } from '../src/v2/height/erode.js'
 import { brushRect, stamp } from '../src/v2/height/sculpt.js'
 import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
-import { RidgeField } from '../src/v2/height/ridge.js'
+import { RidgeField, SHATTER_VERTEX_CELLS } from '../src/v2/height/ridge.js'
 import { CreaseField, CREASE_CELL, CREASE_REACH, CREASE_JITTER, CREASE_CAP, CREASE_SILL, CREASE_ANISO, CREASE_FLOOR } from '../src/v2/height/crease.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
 import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
+import { clamp01, smoothstep } from '../src/sim/mathx.js'
 
 const PNG_PATH = new URL('../public/world/height.png', import.meta.url)
 const JSON_PATH = new URL('../public/world/height.json', import.meta.url)
 const PLAYER_PATH = new URL('../src/player.js', import.meta.url)
 const MESH_PATH = new URL('../src/v2/terrain/chunk-mesh-v2.js', import.meta.url)
+const RIDGE_PATH = new URL('../src/v2/height/ridge.js', import.meta.url)
 
 // A deterministic scatter of world points, used by every statistical section so
 // two sections' numbers are comparable. Confined to the inner 90% so no probe
@@ -1984,21 +1986,423 @@ export async function run({ heightmap } = {}) {
           `every scale is band-limited away by a ${dead.toFixed(1)} m cell -- the term is EXACTLY 0, not small`,
           `${last.alive}/${SN} sites still moving`
         )
-        // WHAT IS NOT ASSERTED, because it is not true: the fade is not monotone
-        // BETWEEN those rungs, and the term does not stay zero-mean across them.
-        // `_shatterRaw`'s soft max widens the pyramid edges by the cell, which
-        // shaves every shard, while `_sMean` is measured once at round 0 and never
-        // tracks it -- so coarsening pushes the whole term down by a constant that
-        // grows to over a metre, and rms picks that constant back up as mean^2
-        // after the shards themselves have thinned. ridge.js names this
-        // approximation and calls it second-order; the numbers below are what
-        // second-order is worth here, and they are printed so that a later reader
-        // finding the bump does not take it for a band-limit fault.
+        // AND IN BETWEEN THE RUNGS TOO, which the ladder above cannot see on its
+        // own: those cells are chosen where every weight is exactly 0 or exactly
+        // 1, so a term that lurched about between them would still step down
+        // cleanly at each one. The off-rung cell is printed for that reason.
         const mid = cellStats(dead / 2)
         console.log(
-          `        (not monotone in between: a ${(dead / 2).toFixed(1)} m cell reads ${mid.rms.toFixed(3)} m rms against ${rungs[rungs.length - 2].rms.toFixed(3)} m at ` +
-            `${ladder[ladder.length - 2].toFixed(1)} m, and the mean sinks from ${rungs[0].mean.toFixed(3)} m at cell 0 to ${mid.mean.toFixed(3)} m -- the rounding shaves the shards, the mean table does not follow)`
+          `        (and in between: a ${(dead / 2).toFixed(1)} m cell reads ${mid.rms.toFixed(3)} m rms against ${rungs[rungs.length - 2].rms.toFixed(3)} m at ` +
+            `${ladder[ladder.length - 2].toFixed(1)} m, with a mean of ${mid.mean.toFixed(3)} m against ${rungs[0].mean.toFixed(3)} m at cell 0)`
         )
+
+        // --- and the fade leaves the GROUND where it was ---------------------
+        //
+        // THE LADDER ABOVE IS ABOUT AMPLITUDE; THIS IS ABOUT WHERE THE MIDDLE OF
+        // IT SITS, and the two are independent. A term can shrink to nothing with
+        // distance and still drag the surface down on its way out -- which is what
+        // this operator did, and it is the most expensive kind of wrong a height
+        // field can be, because a distant hill standing metres below where it will
+        // stand when you reach it does not read as a bug. It reads as hills growing
+        // in front of you as you fly.
+        //
+        // THE MECHANISM, and it is FIRST-ORDER rather than a second-order slop that
+        // the band limit could be trusted to absorb. `atShatter` rounds the pyramid
+        // apexes by SHATTER_VERTEX_CELLS * cell / lambda so a shard's edges are
+        // never narrower than the triangles carrying them, and that rounding does
+        // not merely soften the envelope, it COLLAPSES it: the mean raw envelope
+        // runs 0.186 at round 0 and is exactly 0 well before the last knot, and the
+        // whole table is printed below so the shape is on the record. Subtract a
+        // round-0 constant from a collapsed envelope and what is left is not a
+        // fading term at all, it is `r * (0 - 0.186) * gain` -- a negative constant
+        // scaled by the ridgeness gate, digging out precisely the crests the gate
+        // selects.
+        //
+        // THE BAND LIMIT DOES NOT RESCUE IT, which is the part that makes this easy
+        // to reason past. The two effects are on different schedules, and the
+        // argument is stated in units of `round` rather than of metres because
+        // SHATTER_VERTEX_CELLS has been retuned once already and any figure in
+        // metres goes stale the moment it moves again: `bw` holds a scale FULLY on
+        // (weight exactly 1) all the way out to cell = lambda / 4, and the mean
+        // measured at that cell is printed below beside the round-0 one. Whatever
+        // the gap between those two numbers reads, it is offset the old code left
+        // standing on ground the band limit had not begun to retire. The PRE-FIX
+        // row further down is that same claim as a measured sag in metres, and it
+        // fails the bound it is checked against.
+        //
+        // So the mean is tabulated against `round` and interpolated, and the four
+        // probes below are the four ways that can be got wrong: the table can be
+        // read at the wrong argument (the bias check), it can be built so it no
+        // longer agrees with the old constant at cell 0 (the close-up identity), it
+        // can be too short for the collapse (the tail), and it can be measured on a
+        // sample too small to be monotone (the knots).
+        {
+          const rf = ridgeOn.ridge
+
+          // SHATTER_MEAN_KNOTS and SHATTER_MEAN_STEP are module-private in
+          // ridge.js, so they are read out of it AS TEXT -- the same trick the
+          // slope-units section uses on player.js, and worth more than an import
+          // would be: the knot count read from the source is then checked against
+          // the array the bake actually filled, so a table shortened in one place
+          // and not the other fails here instead of silently reading 0 over the
+          // part of the rounding it no longer covers.
+          const ridgeSrc = await readFile(RIDGE_PATH, 'utf8')
+          const KNOTS = Number(/SHATTER_MEAN_KNOTS\s*=\s*([0-9.]+)/.exec(ridgeSrc)[1])
+          const STEP = Number(/SHATTER_MEAN_STEP\s*=\s*([0-9.]+)/.exec(ridgeSrc)[1])
+          const knotAt = (s, k) => rf._sMeanTab[s * KNOTS + k]
+          console.log(
+            `        shatter mean envelope tabulated over ${KNOTS} knots at ${STEP} in round, reaching round ${((KNOTS - 1) * STEP).toFixed(1)} ` +
+              `(round = ${SHATTER_VERTEX_CELLS} * cell / lambda, so ${(((KNOTS - 1) * STEP * rf.lambda[0]) / SHATTER_VERTEX_CELLS).toFixed(1)} m of cell at the finest scale):`
+          )
+          for (let s = 0; s < rf.count; s++) {
+            console.log(
+              `          scale ${s} (lambda ${rf.lambda[s].toFixed(1)} m): ` +
+                Array.from({ length: KNOTS }, (_, k) => knotAt(s, k).toFixed(4)).join(' ')
+            )
+          }
+          // The two schedules, side by side, in the units that survive a retune.
+          // `bw = smoothstep(2*cell, 4*cell, lambda)` is still exactly 1 at
+          // cell = lambda / 4, so the round reached there is the LAST argument at
+          // which the band limit is doing nothing at all -- and the mean already
+          // read at it is what the old code was subtracting the round-0 constant
+          // against on a fully present scale.
+          const fullRound = SHATTER_VERTEX_CELLS * 0.25
+          console.log(
+            `        where the two schedules disagree: bw is still exactly 1 out to cell = lambda/4, i.e. round ${fullRound.toFixed(2)}, ` +
+              `and the mean there has already fallen ` +
+              rf.lambda.map((l, s) => `${rf._shatterMean(s, 0).toFixed(3)} -> ${rf._shatterMean(s, fullRound).toFixed(3)} (${l.toFixed(0)} m)`).join(', ')
+          )
+          check(
+            rf._sMeanTab.length === rf.count * KNOTS,
+            `the mean table ridge.js baked is the ${KNOTS} knots per scale its own constant declares`,
+            `${rf._sMeanTab.length} entries over ${rf.count} scales`
+          )
+
+          // THE CLOSE-UP IDENTITY, and it is `===` rather than a tolerance for the
+          // reason every bit-exact check in this file is: this is the assertion
+          // that the ground she WALKS on did not move. At cell 0 the rounding is 0,
+          // knot 0 is the round-0 mean the old code subtracted everywhere, and the
+          // interpolation at t = 0 must return it untouched. A millimetre here is a
+          // player hovering or sinking, and a table that had been rebuilt with a
+          // different sample count or a knot 0 at STEP rather than at 0 would land
+          // exactly there.
+          const idBad = []
+          for (let s = 0; s < rf.count; s++) if (rf._shatterMean(s, 0) !== rf._sMean[s]) idBad.push(s)
+          check(
+            idBad.length === 0,
+            'at cell 0 the tabulated mean IS the round-0 mean, bit for bit, at every scale -- the surface she walks on did not move',
+            `${rf.count} scales, ${rf.lambda.map((l, s) => `${l.toFixed(0)} m: ${rf._shatterMean(s, 0)}`).join(', ')}`
+          )
+
+          // THE TABLE SPANS THE ROUNDING. `_shatterMean` returns a flat 0 past the
+          // last knot, so if the envelope has not actually gone by then the lookup
+          // starts inventing a mean of 0 for a term that still has one -- which is
+          // the trench above, back again and now confined to the far LOD tiers
+          // where nobody stands to notice. The bake throws on this too; asserted
+          // here as well so the tail is a number on the record rather than a
+          // condition that merely failed to fire.
+          const tails = Array.from({ length: rf.count }, (_, s) => knotAt(s, KNOTS - 1))
+          check(
+            tails.every((t) => t === 0),
+            `the envelope's mean is EXACTLY 0 at the last knot, so the lookup's flat tail is the truth and not an assumption`,
+            `round ${((KNOTS - 1) * STEP).toFixed(1)}: ${tails.join(', ')}`
+          )
+          // Monotone, because rounding a pyramid's edges off can only take envelope
+          // away and never add it. A rise anywhere in the table is a sampling
+          // artifact -- MEAN_SITES too small for the scale -- and it would put a
+          // slope of the wrong sign into the interpolation, which is a term that
+          // grows slightly as the mesh coarsens.
+          const rises = []
+          for (let s = 0; s < rf.count; s++) {
+            for (let k = 1; k < KNOTS; k++) if (knotAt(s, k) > knotAt(s, k - 1)) rises.push(`scale ${s} knot ${k}`)
+          }
+          check(
+            rises.length === 0,
+            'and it falls monotonically with the rounding -- rounding a shard off removes envelope, it cannot add any',
+            rises.length ? rises.join(', ') : `0 rises over ${rf.count * (KNOTS - 1)} knot intervals, ${knotAt(0, 0).toFixed(4)} down to 0`
+          )
+
+          // THE PRE-FIX OPERATOR, REBUILT. Nine lines of `atShatter` with ONE
+          // symbol changed -- `_sMean[s]`, the single round-0 constant, where the
+          // shipped code reads `_shatterMean(s, round)` -- and it is what turns the
+          // bias bound below from a formality into a bound. A threshold that only
+          // the correct code has ever been run against says nothing about how loose
+          // it is; this one is measured against the exact expression that shipped
+          // the bug, on the same sites, in the same run.
+          const shatterOldAt = (x, z, cell) => {
+            const u = (x + WORLD_HALF) * rf._invX
+            const v = (z + WORLD_HALF) * rf._invZ
+            let sum = 0
+            for (let s = 0; s < rf.count; s++) {
+              const bw = cell > 0 ? smoothstep(cell * 2, cell * 4, rf.lambda[s]) : 1
+              if (bw <= 0) continue
+              const r = clamp01(rf._cubic(rf.ridge[s], u, v) * (1 / 255))
+              if (r <= 0) continue
+              const round = SHATTER_VERTEX_CELLS * cell * rf._freq[s]
+              sum += bw * rf.sWeight[s] * r * (rf._shatterRaw(x, z, s, round) - rf._sMean[s]) * rf._sGain[s]
+            }
+            return shatterKnob.on * sum
+          }
+
+          // PEAK GROUND, the same p90 off the same scatter the block above sorted,
+          // without the slope gate: the sag is driven by the ridgeness gate rather
+          // than by steepness, and summit plateaus are exactly where a person
+          // stands and looks at the range opposite.
+          const above = []
+          for (let i = 0; i < PEAK_SITES; i++) if (heights[i] >= p90) above.push(measureSite(i))
+          const BIAS_CELLS = [1, 2, 4, 8, 16, 32, 64]
+          // 3x the worst measured bias of any correct term here and 4.6x under the
+          // 2.31 m the pre-fix operator sags at a 16 m cell. Wide enough that a
+          // re-import or a re-tune does not have to move it, narrow enough that
+          // half a metre of drift on a summit -- a stride's worth of climb
+          // appearing out of nothing as a chunk splits -- fails.
+          const BIAS_BOUND = 0.5
+
+          // Hoisted, because it is the shape of loop that has cost this file dearly
+          // before: a V2Height built inside the sample loop took a section from 8 s
+          // to 387 s and passed the whole time.
+          const biasOf = (f) => BIAS_CELLS.map((cell) => {
+            let sum = 0
+            let worst = 0
+            for (const p of above) {
+              const d = f(p.x, p.z, cell) - f(p.x, p.z, 0)
+              sum += d
+              if (Math.abs(d) > Math.abs(worst)) worst = d
+            }
+            return { mean: sum / above.length, worst }
+          })
+          const rowsBias = [
+            [`shatter=${shatterKnob.on}`, biasOf((x, z, cell) => shatterOn.heightAt(x, z, cell))],
+            [`ridge=${ridgeKnob.on}`, biasOf((x, z, cell) => ridgeOn.heightAt(x, z, cell))],
+            [`crag=${knobOf('crag').on}`, biasOf((x, z, cell) => cragRef.heightAt(x, z, cell))],
+            // The pre-fix world: the shipped field with the shipped shatter term
+            // swapped for the rebuilt one. Everything else about it is identical,
+            // so the difference between this row and the first IS the mean table.
+            ['PRE-FIX', biasOf((x, z, cell) => shatterOn.heightAt(x, z, cell) + shatterOldAt(x, z, cell) - shatterAt(x, z, cell))],
+          ]
+          console.log(
+            `        LOD bias on ${above.length} sites above p90 (${p90.toFixed(0)} m), mean heightAt(cell) - heightAt(0) in m, against a ${BIAS_BOUND.toFixed(1)} m bound:`
+          )
+          console.log('          ' + 'cell'.padEnd(14) + BIAS_CELLS.map((c) => `${c} m`.padStart(9)).join(''))
+          for (const [label, row] of rowsBias) {
+            console.log('          ' + label.padEnd(14) + row.map((r) => `${r.mean >= 0 ? '+' : ''}${r.mean.toFixed(3)}`.padStart(9)).join(''))
+          }
+          const worstOf = (row) => row.reduce((a, r) => Math.max(a, Math.abs(r.mean)), 0)
+          const cellOf = (row) => BIAS_CELLS[row.indexOf(row.reduce((a, r) => (Math.abs(r.mean) > Math.abs(a.mean) ? r : a)))]
+          for (const [label, row] of rowsBias.slice(0, 3)) {
+            check(
+              worstOf(row) < BIAS_BOUND,
+              `${label} moves peak ground by under ${BIAS_BOUND.toFixed(1)} m of mean bias at every cell from ${BIAS_CELLS[0]} to ${BIAS_CELLS[BIAS_CELLS.length - 1]} m`,
+              `worst ${worstOf(row).toFixed(3)} m at a ${cellOf(row)} m cell, over ${above.length} sites`
+            )
+          }
+          // AND THE BOUND CAN BE FAILED. The first three rows come out at a
+          // fraction of it, which is the right answer and is also what a bound
+          // loose enough to pass anything looks like.
+          const pre = rowsBias[3][1]
+          check(
+            worstOf(pre) > BIAS_BOUND,
+            `and the pre-fix operator FAILS that same bound on those same sites -- a round-0 mean against a collapsed envelope, which is what this probe was written to catch`,
+            `worst ${worstOf(pre).toFixed(3)} m at a ${cellOf(pre)} m cell (${(worstOf(pre) / BIAS_BOUND).toFixed(1)}x the bound), worst single site ${pre.reduce((a, r) => (Math.abs(r.worst) > Math.abs(a) ? r.worst : a), 0).toFixed(1)} m`
+          )
+          // And the control is the shipped operator everywhere the fix is a no-op,
+          // or the row above is a different term rather than the same term with one
+          // symbol changed. `===`: at round 0 the interpolation reads knot 0, which
+          // IS `_sMean`, so this is exact arithmetic and not a near miss.
+          let ctrlDiff = 0
+          for (const p of above) if (shatterOldAt(p.x, p.z, 0) !== shatterAt(p.x, p.z, 0)) ctrlDiff++
+          check(
+            ctrlDiff === 0,
+            'and at cell 0 that control IS the shipped operator, bit for bit -- so the row above differs from the world in one symbol and nowhere else',
+            `${ctrlDiff}/${above.length} sites differ`
+          )
+
+          // THE MAGNITUDE NEVER GROWS WITH THE CELL. Weaker than the bias check and
+          // deliberately kept beside it: a term whose contribution got LARGER as the
+          // mesh coarsened would be a term the LOD ladder cannot converge on at all,
+          // whatever its mean did. Printed for both operators because the pre-fix
+          // one PASSES this -- its sag is a constant offset, which shrinks along
+          // with everything else -- and that is the whole argument for why the bias
+          // check has to exist separately.
+          const MAG_CELLS = [0, 1, 2, 4, 8, 16, 32, 64]
+          const magOf = (f) => MAG_CELLS.map((cell) => {
+            let s = 0
+            for (let i = 0; i < SN; i++) {
+              const p = measureSite(i)
+              s += Math.abs(f(p.x, p.z, cell))
+            }
+            return s / SN
+          })
+          const magNew = magOf(shatterAt)
+          const magOld = magOf(shatterOldAt)
+          console.log(`        mean |shatter| over ${SN} sites by cell: ` + MAG_CELLS.map((c, k) => `${c} m -> ${magNew[k].toFixed(3)} m`).join(',  '))
+          console.log(`          (pre-fix, for contrast: ` + MAG_CELLS.map((c, k) => `${magOld[k].toFixed(3)}`).join(' ') + ` -- also non-increasing, which is why the bias row above is the probe that matters)`)
+          const grew = []
+          for (let k = 1; k < MAG_CELLS.length; k++) if (magNew[k] > magNew[k - 1]) grew.push(`${MAG_CELLS[k - 1]} -> ${MAG_CELLS[k]} m`)
+          check(
+            grew.length === 0,
+            'the shatter term never contributes MORE at a coarser cell than at a finer one',
+            grew.length ? `grew over ${grew.join(', ')}` : `${magNew[0].toFixed(3)} m at cell 0 down to ${magNew[MAG_CELLS.length - 1].toFixed(3)} m at ${MAG_CELLS[MAG_CELLS.length - 1]} m, over ${MAG_CELLS.length} rungs`
+          )
+
+          // --- and the individual SUMMITS, which the mean above cannot see ------
+          //
+          // A ZERO MEAN IS COMPATIBLE WITH A HILL CLIMBING TWENTY METRES, and the
+          // block above is a mean. It was written against a bias that really was a
+          // uniform offset, it passed at 0.07 m once the mean table landed, and the
+          // symptom -- one particular hill visibly rising as you fly at it -- did
+          // not go away. That is not the probe having been wrong. It is the probe
+          // having answered the question it asks, which is about the population, in
+          // a world where what a person actually looks at is one point of it. So
+          // this block asserts on the DISTRIBUTION over the highest ground instead:
+          // p95 and max of each summit's own |heightAt(cell) - heightAt(0)|, no
+          // averaging across sites anywhere in it.
+          //
+          // THE BOUNDS ARE IN UNITS OF THE CELL, the same rule section 4 already
+          // holds the mesher to: a summit may not move by as much as a fraction of
+          // the triangle that is representing it. Metres alone would be the wrong
+          // unit here -- a 32 m cell is entitled to more slop than a 2 m one, and a
+          // flat metre bound would be simultaneously unreachable up close and
+          // meaningless far out.
+          //
+          // WHAT IS LEFT IS NOT ZERO AND THE BOUND DOES NOT PRETEND IT IS. Roughly
+          // ten metres of climb remains on the worst summits at the coarsest rungs.
+          // It is NOT the apex rounding, which SHATTER_VERTEX_CELLS now handles; it
+          // is the band limit itself retiring whole scales -- once `bw` reaches 0 a
+          // scale's shard is gone from that tier entirely, and no rounding constant
+          // can reach that. It is a known, open defect, it is not fixed, and it has
+          // not been judged either way. What this probe does is pin the CURRENT
+          // numbers so the next change to the term has to be deliberate about them.
+          const summitOrder = Array.from({ length: PEAK_SITES }, (_, i) => i).sort((a, b) => heights[b] - heights[a])
+          const SUMMIT_N = 60
+          const summits = summitOrder.slice(0, SUMMIT_N).map((i) => measureSite(i))
+          const SUM_CELLS = [2, 4, 8, 16, 32]
+
+          // The operator with the apex rounding parameterised, so the constant that
+          // was just retuned is a variable here rather than a fact of the file. The
+          // vc = 3 row below is the shipped world with ONLY that constant put back,
+          // and it is a regression control in exactly the sense the PRE-FIX row is:
+          // the bound is measured against a version known to be wrong, in the same
+          // run, on the same summits.
+          const shatterAtVC = (vc) => (x, z, cell) => {
+            const u = (x + WORLD_HALF) * rf._invX
+            const v = (z + WORLD_HALF) * rf._invZ
+            let sum = 0
+            for (let s = 0; s < rf.count; s++) {
+              const bw = cell > 0 ? smoothstep(cell * 2, cell * 4, rf.lambda[s]) : 1
+              if (bw <= 0) continue
+              const r = clamp01(rf._cubic(rf.ridge[s], u, v) * (1 / 255))
+              if (r <= 0) continue
+              const round = vc * cell * rf._freq[s]
+              sum += bw * rf.sWeight[s] * r * (rf._shatterRaw(x, z, s, round) - rf._shatterMean(s, round)) * rf._sGain[s]
+            }
+            return shatterKnob.on * sum
+          }
+          const shatterVCShipped = shatterAtVC(SHATTER_VERTEX_CELLS)
+          const shatterVC3 = shatterAtVC(3)
+          let vcDiff = 0
+          for (const p of summits) {
+            if (shatterVCShipped(p.x, p.z, 0) !== shatterAt(p.x, p.z, 0)) vcDiff++
+            if (shatterVCShipped(p.x, p.z, 16) !== shatterAt(p.x, p.z, 16)) vcDiff++
+          }
+          check(
+            vcDiff === 0,
+            `at SHATTER_VERTEX_CELLS = ${SHATTER_VERTEX_CELLS} the parameterised operator IS the shipped one, bit for bit, at cell 0 and at a 16 m cell -- so the vc=3 row below differs from the world in that constant and nothing else`,
+            `${vcDiff}/${summits.length * 2} summit samples differ`
+          )
+
+          const ladderOf = (f) => SUM_CELLS.map((cell) => {
+            const d = summits.map((p) => Math.abs(f(p.x, p.z, cell) - f(p.x, p.z, 0))).sort((a, b) => a - b)
+            return { cell, p95: d[Math.floor(0.95 * (d.length - 1))], max: d[d.length - 1] }
+          })
+          const withVC3 = (x, z, cell) => shatterOn.heightAt(x, z, cell) + shatterVC3(x, z, cell) - shatterVCShipped(x, z, cell)
+          const rowsSummit = [
+            ['all off', ladderOf((x, z, cell) => field.heightAt(x, z, cell))],
+            [`shatter=${shatterKnob.on}`, ladderOf((x, z, cell) => shatterOn.heightAt(x, z, cell))],
+            ['vc=3', ladderOf(withVC3)],
+          ]
+          console.log(
+            `        per-summit LOD growth, top ${SUMMIT_N} of the ${PEAK_SITES}-site scatter (${heights[summitOrder[SUMMIT_N - 1]].toFixed(0)} .. ${heights[summitOrder[0]].toFixed(0)} m), ` +
+              `|heightAt(cell) - heightAt(0)| per site in m, no averaging across sites:`
+          )
+          console.log('          ' + 'cell'.padEnd(12) + SUM_CELLS.map((c) => `${c} m`.padStart(16)).join(''))
+          for (const [label, row] of rowsSummit) {
+            console.log('          ' + label.padEnd(12) + row.map((r) => `${r.p95.toFixed(2)}/${r.max.toFixed(2)}`.padStart(16)).join('') + '   (p95/max)')
+          }
+
+          // Scale-free, and the same shape of rule as section 4's `worstCells`:
+          // 0.75 of a cell for the worst summit, 0.45 for the 95th percentile of
+          // them. Both are set from what the shipped term measures with headroom --
+          // the shipped max peaks at 0.45 cells and its p95 at 0.33 -- and both are
+          // failed by the vc = 3 row at 1.27 and 0.96 cells, so neither is a bound
+          // that merely happens to be true.
+          const SUMMIT_MAX_CELLS = 0.75
+          const SUMMIT_P95_CELLS = 0.45
+          const inCells = (row, key) => row.reduce((a, r) => Math.max(a, r[key] / r.cell), 0)
+          const atCells = (row, key) => row.reduce((a, r) => (r[key] / r.cell > a[key] / a.cell ? r : a)).cell
+          const shipped = rowsSummit[1][1]
+          const meanBiasWorst = worstOf(rowsBias[0][1])
+          check(
+            inCells(shipped, 'max') < SUMMIT_MAX_CELLS,
+            `no single summit of the top ${SUMMIT_N} climbs by ${SUMMIT_MAX_CELLS} of a cell between LOD tiers -- the growth the mean-bias probe above cannot see`,
+            `worst ${inCells(shipped, 'max').toFixed(2)} cells (${shipped.reduce((a, r) => Math.max(a, r.max), 0).toFixed(2)} m at a ${atCells(shipped, 'max')} m cell), against ${meanBiasWorst.toFixed(3)} m of MEAN bias over the same knob -- one summit moves metres where the population moves centimetres`
+          )
+          check(
+            inCells(shipped, 'p95') < SUMMIT_P95_CELLS,
+            `and 95% of those summits stay inside ${SUMMIT_P95_CELLS} of a cell, so the worst is a tail and not the typical summit`,
+            `worst p95 ${inCells(shipped, 'p95').toFixed(2)} cells (${shipped.reduce((a, r) => Math.max(a, r.p95), 0).toFixed(2)} m at a ${atCells(shipped, 'p95')} m cell)`
+          )
+          const vc3row = rowsSummit[2][1]
+          check(
+            inCells(vc3row, 'max') > SUMMIT_MAX_CELLS && inCells(vc3row, 'p95') > SUMMIT_P95_CELLS,
+            `and putting SHATTER_VERTEX_CELLS back to 3 FAILS both of those bounds on those same summits -- rounding a shard by three cells shrinks it faster than the mesh loses the ability to draw it`,
+            `max ${inCells(vc3row, 'max').toFixed(2)} cells and p95 ${inCells(vc3row, 'p95').toFixed(2)} cells, against ${SUMMIT_MAX_CELLS} and ${SUMMIT_P95_CELLS}`
+          )
+
+          // THE MESHER'S OWN SHARE, which is what makes the rows above attributable
+          // to the knob at all. Every LOD tier resamples a band-limited field, so
+          // some movement is structural and belongs to no relief term. Measured
+          // with all four knobs off it is a fraction of a metre, so the metres in
+          // the shatter row are the term's and not the ladder's.
+          const offRow = rowsSummit[0][1]
+          const offMax = offRow.reduce((a, r) => Math.max(a, r.max), 0)
+          const shippedMax = shipped.reduce((a, r) => Math.max(a, r.max), 0)
+          check(
+            offMax < 1,
+            `with every relief knob off, the same summits stay put to under a metre across the whole ladder -- LOD growth on a summit is a knob's doing, not the mesher's`,
+            `worst ${offMax.toFixed(2)} m at a ${offRow.reduce((a, r) => (r.max > a.max ? r : a)).cell} m cell, over ${SUMMIT_N} summits and ${SUM_CELLS.length} tiers`
+          )
+          check(
+            shippedMax / offMax > 8,
+            `and the shatter knob moves them at least 8x further than that bare ladder does, so the residual below is the term's to answer for`,
+            `${shippedMax.toFixed(2)} m against ${offMax.toFixed(2)} m, ${(shippedMax / offMax).toFixed(1)}x`
+          )
+
+          // THE SHAPE, for two or three summits by name, because a percentile does
+          // not show which DIRECTION a summit goes or that different summits go
+          // opposite ways. Some sink as the mesh coarsens and some rise; a reader
+          // who has only seen the bias row would expect neither.
+          const movers = summits
+            .map((p) => {
+              const base = shatterOn.heightAt(p.x, p.z, 0)
+              return { p, d: Math.max(...SUM_CELLS.map((c) => Math.abs(shatterOn.heightAt(p.x, p.z, c) - base))) }
+            })
+            .sort((a, b) => b.d - a.d)
+            .slice(0, 3)
+          const LAD_CELLS = [0, ...SUM_CELLS]
+          console.log(`        the three worst of them by name, heightAt in m at cells ${LAD_CELLS.join('/')}:`)
+          for (const m of movers) {
+            console.log(
+              `          (${m.p.x.toFixed(0)}, ${m.p.z.toFixed(0)})  shatter ` +
+                LAD_CELLS.map((c) => shatterOn.heightAt(m.p.x, m.p.z, c).toFixed(1)).join(' -> ') +
+                `   all off ` +
+                LAD_CELLS.map((c) => field.heightAt(m.p.x, m.p.z, c).toFixed(1)).join(' -> ')
+            )
+          }
+          console.log(
+            `        the ~${shippedMax.toFixed(0)} m spread in those rows is the OPEN residual: the band limit retiring whole scales, which no rounding constant reaches. Not fixed, not yet judged -- pinned here so it cannot get worse unnoticed.`
+          )
+        }
       }
     }
 

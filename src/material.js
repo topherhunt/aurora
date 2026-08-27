@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { LAYER, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS } from './textures.js'
+import { LAYER, SNOW_LAYERS, SNOW_CARD_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS } from './textures.js'
 
 // ---------------------------------------------------------------------------
 // Snow, and moss, which is snow upside down.
@@ -64,6 +64,12 @@ const snowLayers = { value: Float32Array.from(SNOW_LAYERS) }
 const SNOW_HARD_LAYERS = [...SNOW_ROCK_LAYERS, ...SNOW_WOOD_LAYERS]
 const snowRockLayers = { value: Float32Array.from(SNOW_HARD_LAYERS) }
 
+// The flat-photograph subset of the foliage list. A third mask rather than a
+// third recipe: it picks how the snow is APPLIED, not how much falls. See
+// SNOW_CARD_LAYERS in textures.js for why a card cannot use the threshold the
+// meshes use once the blob field has faded out from under it.
+const snowCardLayers = { value: Float32Array.from(SNOW_CARD_LAYERS) }
+
 const mossAmount = { value: 0 }
 const mossLayers = { value: Float32Array.from(MOSS_LAYERS) }
 
@@ -86,6 +92,12 @@ const snowLine = { value: -1e6 }
 const snowBand = { value: 1 }
 // Snow's mirror of mossVary, same no-op default. See setSnowVary.
 const snowVary = { value: new THREE.Vector2(1, 1) }
+// And the same range again for FOLIAGE, which is a separate uniform rather than
+// a widening of the one above because the two are tuned against different
+// surfaces: snowVary's band is chosen so a boulder is not a white boulder, and a
+// canopy asks a different question entirely. Same no-op default, same reason.
+// See setLeafSnowVary.
+const leafSnowVary = { value: new THREE.Vector2(1, 1) }
 
 /**
  * Season, 0 = bare, 1 = nearly all white. This is a CEILING, not the value each
@@ -190,20 +202,22 @@ export function getSnowLine() {
  * The RANGE of the snow ceiling, per instance, exactly as setMossVary is for
  * moss and rolled off the same hash of the root's world XZ.
  *
- * HARD SURFACES ONLY -- stone and wood. Snow falls on foliage too and this must
- * not touch it: the vertex shader gates the roll on SNOW_HARD_LAYERS, the same
- * list the fragment shader picks the stone recipe from, so a boulder and a
- * fallen log roll a ceiling and a leaf keeps the full one. Moss has no such gate
- * and wants none -- every layer it grows on is a surface whose mossiness is
+ * HARD SURFACES ONLY -- stone and wood. Foliage rolls too, but off its OWN
+ * uniform: the vertex shader gates this roll on SNOW_HARD_LAYERS, the same list
+ * the fragment shader picks the stone recipe from, so a boulder and a fallen log
+ * roll this range and a canopy rolls setLeafSnowVary's instead. Two ranges
+ * because they answer two different questions -- see setLeafSnowVary -- and the
+ * two lists are disjoint, so no surface in the world rolls both. Moss has no such
+ * split and wants none: every layer it grows on is a surface whose mossiness is
  * meant to vary from neighbour to neighbour.
  *
  * WHAT IT IS FOR is the one thing a scene-wide `setSnow` cannot express: a rock
  * at full load is not a snowy rock, it is a WHITE rock. Stone leans on `up`
- * twice as hard as foliage does (SNOW_ROCK_UP), so by the time the mask has
- * covered the top it is already well down the sides, and a load of 1.0 takes the
- * undersides too and throws the stone away. A narrow band up around a third --
- * (0.3, 0.5) -- caps every rock somewhere between a dusted crown and a loaded
- * one, and the variation between neighbours is what stops a snowfield of
+ * harder than foliage does, 0.65 against 0.45 (SNOW_ROCK_UP), so by the time the
+ * mask has covered the top it is already well down the sides, and a load of 1.0
+ * takes the undersides too and throws the stone away. A narrow band up around a
+ * third -- (0.3, 0.5) -- caps every rock somewhere between a dusted crown and a
+ * loaded one, and the variation between neighbours is what stops a snowfield of
  * boulders reading as one material.
  *
  * The roll is INDEPENDENT of moss's: same hash, different constants, so a rock
@@ -221,17 +235,58 @@ export function getSnowVary() {
   return { lo: snowVary.value.x, hi: snowVary.value.y }
 }
 
-// Blob size, in cycles per world metre. At 12.8 a clump is roughly 7.5 cm
-// across, so a 2 m spray card carries a couple of dozen and the snow reads as
-// settled crystals rather than as paint.
-const SNOW_FREQ = 12.8
+/**
+ * The RANGE of the snow ceiling for FOLIAGE, the same shape of knob as
+ * setSnowVary and rolled off the same hash. (1, 1) is the default and a no-op,
+ * so /gen-tree's slider still means exactly what it says.
+ *
+ * IT IS A SECOND UNIFORM RATHER THAN A WIDER FIRST ONE, and the reason is that
+ * the two ranges are answering different questions. setSnowVary's band exists
+ * because a rock at a full load stops being a rock; a canopy at a full load is
+ * fine on its own terms -- a tree buried in snow after a storm is a real tree.
+ * The problem foliage actually has is one the single instance never shows: a
+ * STAND of them, every canopy in the wood carrying the identical ceiling because
+ * the ceiling is a scene uniform, which reads as a paint job over the forest
+ * rather than as weather that fell on it. Handing foliage setSnowVary's stone
+ * band would fix the stand by making every tree a rock's colour of snow.
+ *
+ * WHAT THE WORLD DRIVES IT WITH is a band like (0.25, 0.6): the lightest canopy
+ * is dusted, the heaviest is loaded but not buried, and no tree in the world is
+ * at 1.0. The spread between neighbours is the whole point, exactly as it is for
+ * boulders.
+ *
+ * THE ROLL IS THE SAME `snowRoll` the hard surfaces use, deliberately: a tree's
+ * canopy and its own trunk share one instance root, so they hash to one number
+ * and a heavily loaded crown sits on a heavily loaded trunk. SNOW_LAYERS and
+ * SNOW_HARD_LAYERS are disjoint (check-rocks asserts it), so a given surface is
+ * scaled by exactly one of the two ranges and never by both.
+ */
+export function setLeafSnowVary(lo, hi) {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    throw new Error(`setLeafSnowVary: need two numbers, got ${lo} and ${hi}`)
+  }
+  if (hi < lo) throw new Error(`setLeafSnowVary: hi ${hi} is below lo ${lo}`)
+  leafSnowVary.value.set(Math.min(1, Math.max(0, lo)), Math.min(1, Math.max(0, hi)))
+}
+
+export function getLeafSnowVary() {
+  return { lo: leafSnowVary.value.x, hi: leafSnowVary.value.y }
+}
+
+// Blob size, in cycles per world metre. At 6.4 a clump is roughly 15 cm across,
+// so a 2 m spray card carries a dozen or so and the snow reads as settled
+// PATCHES rather than as paint. Twice the size this field ran at before: at 7.5
+// cm the clumps were fine enough to read as a grain on the surface rather than
+// as snow lying on it, and the drift they cut wanted to be something you could
+// see the shape of from a few metres away.
+const SNOW_FREQ = 6.4
 
 // The three numbers that shape the blob field both masks are cut out of. What
 // they DO is argued at blobField() in SNOW_COMMON, which is where the mechanism
 // is; what each one is worth is here.
 //
 // All three are in units of the CALLER's own frequency, never in metres, so they
-// mean the same thing to the snow at 12.8 and the moss at 24.0 and neither has
+// mean the same thing to the snow at 6.4 and the moss at 24.0 and neither has
 // to be re-tuned when the other moves.
 //
 // The warp is sampled at 0.46 of the caller's frequency -- a bit over twice the
@@ -253,11 +308,20 @@ const BLOB_WARP = 1.9
 const BLOB_CONTRAST = 1.55
 
 // Where the world-space blobs stop being resolvable and start shimmering.
-// Procedural noise has NO MIP CHAIN: at 7.5 cm a blob is under a pixel past ten
-// metres or so, and undersampled noise crawls when you move your head -- which
-// in a headset is the worst artefact there is. Past SNOW_FADE_FAR the noise is
+// Procedural noise has NO MIP CHAIN: a blob under a pixel across is undersampled
+// noise, and undersampled noise crawls when you move your head -- which in a
+// headset is the worst artefact there is. Past SNOW_FADE_FAR the noise is
 // blended to its own mean, so a distant tree gets the slider's average coverage
 // flat, which is what a mip would have converged to anyway.
+//
+// These two are DELIBERATELY EARLIER than the blobs now need. At 7.5 cm a blob
+// was under a pixel past ten metres or so and 12-40 m was sized against that; at
+// 15 cm it holds a pixel to about twice that range, so the fade now begins on a
+// field that is still resolvable. What that costs is a little patch detail on
+// props in the middle distance; what it buys is the ~145 ALU of blobField() off
+// everything past forty metres, which at a forest's instance count is the reason
+// the fade exists at all. Sized against the blob again only if the patches ever
+// have to read at range.
 const SNOW_FADE_NEAR = 12.0
 const SNOW_FADE_FAR = 40.0
 
@@ -281,32 +345,55 @@ const SNOW_EDGE_MAX = 0.06
 const SNOW_CUT_BIAS = 1.08
 const SNOW_CUT_SPAN = 1.16
 
-// --- and the ONE number that differs for a hard surface ---------------------
+// --- and the ONE number that differs between the two families ---------------
 //
 // Everything above serves a boulder as written. The only thing SNOW_HARD_LAYERS
-// changes is how hard the drift leans on `up`: 0.5, against 0.25 for foliage.
-// Same blob size, same cutover rim, same span, same linear ramp. It is named for
-// stone because stone is what it was argued against, and a log wears it
-// unchanged -- the brief in the paragraph below is a fallen log's brief word for
-// word.
+// changes is how hard the drift leans on `up`: SNOW_ROCK_UP at 0.65 for stone
+// and wood, against SNOW_FOLIAGE_UP at 0.45 for a canopy. Same blob size, same
+// cutover rim, same span, same linear ramp. The hard number is named for stone
+// because stone is what it was argued against, and a log wears it unchanged --
+// the brief below is a fallen log's brief word for word.
 //
-// It is deliberately not more than that, and two earlier attempts at this
-// section were the same mistake twice. Lean `up` to 0.8 and you get a clean
-// white cap whose rim is a contour of the surface normal -- which is wrong for a
-// rock for a reason a canopy never exposes: A ROCK HAS FLAT FACES. `up` is
-// CONSTANT across a cut facet, so a mask that `up` dominates puts the whole
-// facet on the same side of the cut, every facet flips as a unit, and the
-// snowline runs along the facet edges as a hard straight seam. No amount of
-// softening the rim fixes that, because the seam is in the mask and not in the
-// edge; the only thing that breaks it is noise carrying enough weight to vary
-// WITHIN a face. At 0.5 it does, which is why the patches read as settled snow
-// rather than as paint, and why sharing the canopy's other numbers is not
-// laziness but the actual answer.
+// BOTH LEAN UPWARD MOSTLY AND NEITHER LEANS COMPLETELY, and that gap is the
+// constraint the pair is tuned against rather than an accident of taste. Lean
+// `up` to 0.8 and you get a clean white cap whose rim is a contour of the
+// surface normal -- which is wrong here for a reason a smooth surface never
+// exposes: A ROCK HAS FLAT FACES. `up` is CONSTANT across a cut facet, so a mask
+// that `up` dominates puts the whole facet on the same side of the cut, every
+// facet flips as a unit, and the snowline runs along the facet edges as a hard
+// straight seam. No amount of softening the rim fixes that, because the seam is
+// in the mask and not in the edge; the only thing that breaks it is noise
+// carrying enough weight to vary WITHIN a face. Two earlier attempts at this
+// section made that mistake twice, and the argument is untouched by the move to
+// 0.65 -- what the move needs is a number for where the flip actually starts.
 //
-// What 0.5 buys, and it is the whole brief: the top whitens first, a sheer side
-// is about half covered by the time the top is solid, an underside is the last
-// thing to go -- and a full winter still covers everything, exactly as foliage
-// does. There is no face the slider cannot reach.
+// THERE IS ONE, AND IT IS 0.83. blobField() spans the whole of [0,1] (see
+// BLOB_CONTRAST), so on a facet whose `up` is fixed the only thing moving
+// `drift` is the noise, over a span of exactly (1 - w). That facet is therefore
+// PART covered -- some patches, not a flipped unit -- across a stretch of the
+// load slider worth (1 - w + 2 * SNOW_EDGE_MAX) / SNOW_CUT_SPAN, and check-rocks
+// holds that stretch to a quarter of the travel. Solve it and the quarter is
+// reached at w = 0.83: past there a facet spends the slider snapping bare to
+// white in one step, which IS the straight-seam artefact written as a number.
+// 0.65 leaves 40% of the travel patchy and 0.45 leaves 58%, so both sit well
+// inside the safe side of it with room to spare. What the 0.15 over the old 0.5
+// buys is the thing the change was made for: the top whitens decisively ahead of
+// the sides instead of the two arriving nearly together.
+//
+// AND A LEAF CARD IS ALSO A FLAT QUAD, which is why foliage moved with stone and
+// why it stopped short too. A spray card is one quad with ONE authored normal,
+// so `up` is constant across the whole card exactly as it is across a facet --
+// the flat-face argument is not a stone argument, it is a constant-normal
+// argument, and foliage is constant-normal at card scale. Foliage stays the
+// lighter of the two because a canopy is a stack of cards at every angle where a
+// rock is a solid, so the same weight reads as a heavier cap on it; 0.45 lifts
+// the lean far enough that snow sits ON the leaves rather than mixing evenly
+// THROUGH them, and leaves the noise the larger share.
+//
+// What the pair buys, and it is the whole brief: the top whitens first, a sheer
+// side is well short of covered by the time the top is solid, an underside is
+// the last thing to go -- and a full winter still covers everything, foliage
+// included. There is no face the slider cannot reach.
 //
 // WHERE THE NOISE IS SAMPLED matters more than any of this, and it is worth
 // stating because it is the question a UV-projected texture would raise:
@@ -314,7 +401,8 @@ const SNOW_CUT_SPAN = 1.16
 // dominant-axis projection with a seam at every facet edge, and the snow does
 // not care, because the noise field is continuous through the solid. Nothing
 // here needs a UV unwrap, a second projection, or a baked variant.
-const SNOW_ROCK_UP = 0.5
+const SNOW_ROCK_UP = 0.65
+const SNOW_FOLIAGE_UP = 0.45
 
 // Exported ONLY so scripts/check-rocks.mjs can hold the promises above to
 // account without a GL context. Nothing at runtime reads this: the numbers are
@@ -322,7 +410,10 @@ const SNOW_ROCK_UP = 0.5
 // the gate is checking is the rock's behaviour under all of them together.
 export const SNOW_ROCK = Object.freeze({
   up: SNOW_ROCK_UP,
-  foliageUp: 0.25,
+  // The KEY keeps its name -- /gen-deadwood's weather panel and check-rocks both
+  // read `foliageUp` -- but the value is the module const now, so the shader and
+  // the gate can no longer drift apart the way a repeated literal let them.
+  foliageUp: SNOW_FOLIAGE_UP,
   freq: SNOW_FREQ,
   blobWarp: BLOB_WARP,
   blobContrast: BLOB_CONTRAST,
@@ -672,6 +763,7 @@ const SNOW_COMMON = /* glsl */ `
   uniform float uSnow;
   uniform float uSnowLayers[ ${SNOW_LAYERS.length} ];
   uniform float uSnowRockLayers[ ${SNOW_HARD_LAYERS.length} ];
+  uniform float uSnowCardLayers[ ${SNOW_CARD_LAYERS.length} ];
   varying vec4 vSnowPos;
 
   float snowHash( vec3 p ) {
@@ -780,9 +872,10 @@ const SNOW_APPLY = /* glsl */ `
       float rock = min( rockMask, 1.0 );
       // Blobs, leaning upward: snow settles on what faces the sky, and without
       // that lean a fully snowed tree reads as bleached rather than as loaded.
-      // Stone leans twice as hard -- see SNOW_ROCK_UP -- so it fills in from the
-      // top down, but the noise still keeps half the say, which is what stops
-      // flat cut faces flipping as whole units.
+      // Both families lean MOSTLY upward and neither leans completely -- stone
+      // at 0.65 against foliage's 0.45 (see SNOW_ROCK_UP) -- so both fill in from
+      // the top down while the noise keeps a third of the say or better, which is
+      // what stops a flat face, cut facet or leaf card, flipping as a whole unit.
       // WORLD up, not normal.y. At this point in the shader "normal" is
       // normalize( vNormal ), which three built with the normalMatrix and is
       // therefore in VIEW space -- its .y is "up relative to the camera". Snow
@@ -804,8 +897,10 @@ const SNOW_APPLY = /* glsl */ `
       if ( snowNear > 0.004 ) {
         blob = mix( 0.5, blobField( vSnowPos.xyz * ${SNOW_FREQ.toFixed(2)} ), snowNear );
       }
-      // The one number stone changes. Everything else below is shared.
-      float upWeight = mix( 0.25, ${SNOW_ROCK_UP}, rock );
+      // The one number stone changes. Everything else below is shared. Both ends
+      // are module consts, so nothing here is a literal the gate can fall out of
+      // step with -- see SNOW_ROCK_UP.
+      float upWeight = mix( ${SNOW_FOLIAGE_UP}, ${SNOW_ROCK_UP}, rock );
       float drift = blob * ( 1.0 - upWeight ) + up * upWeight;
       float cut = ${SNOW_CUT_BIAS} - vSnowPos.w * ${SNOW_CUT_SPAN};
       // Grayscale-and-tint rather than a flat fill. Eleven ALU against the ~145
@@ -820,8 +915,28 @@ const SNOW_APPLY = /* glsl */ `
       // as much as foliage does: snow has a rim, and a feathered rim on a
       // boulder reads as airbrush.
       float edge = clamp( fwidth( drift ), ${SNOW_EDGE_MIN}, ${SNOW_EDGE_MAX} );
-      diffuseColor.rgb = mix( diffuseColor.rgb, snowCol,
-        smoothstep( cut - edge, cut + edge, drift ) );
+      float cover = smoothstep( cut - edge, cut + edge, drift );
+      // A FLAT PHOTOGRAPH CANNOT USE THAT THRESHOLD once the noise is gone.
+      // Past SNOW_FADE_FAR the blob is the constant above and an impostor's
+      // normal is uniform over the whole quad, so drift is one number for
+      // every fragment of the card and the smoothstep returns 0 or 1 for all
+      // of it -- the tree goes pure white or stays pure green, and at these
+      // constants it whitens at a load of 0.306, which most trees clear. So a
+      // card takes its own instance's snow LOAD as a coverage fraction
+      // instead. vSnowPos.w already carries the per-tree roll and the foliage
+      // cap, so the far forest still varies tree to tree.
+      //
+      // CROSSFADED ON THE SAME snowNear THAT FADES THE NOISE, in the same
+      // direction: where the blob field is still running it broke the card up
+      // fine and the threshold is the better picture, so it keeps it. The two
+      // meet where the noise has already gone to its constant, which is what
+      // makes the boundary invisible rather than merely gradual.
+      float cardMask = 0.0;
+      for ( int i = 0; i < ${SNOW_CARD_LAYERS.length}; i++ ) {
+        cardMask += step( abs( vTexLayer - uSnowCardLayers[ i ] ), 0.5 );
+      }
+      cover = mix( cover, mix( vSnowPos.w, cover, snowNear ), min( cardMask, 1.0 ) );
+      diffuseColor.rgb = mix( diffuseColor.rgb, snowCol, cover );
     }
   }
 `
@@ -911,7 +1026,92 @@ const SNOW_APPLY = /* glsl */ `
  */
 export const CARD_UP_MARK = 0.99
 
-function billboardVertex(layerCount) {
+// ---------------------------------------------------------------------------
+// CYLINDRICAL OR SPHERICAL, and it is one flag because it is one decision made
+// per BED rather than per card.
+//
+// The default is cylindrical: the card yaws about world Y and its height stays
+// vertical however the camera is pitched. For anything that grows out of the
+// ground that is not an approximation, it is the truth -- a tree trunk IS
+// vertical, and a spherical tree card seen from a hillside above would lie its
+// trunk back along the ground, which is worse than the foreshortening it fixes.
+//
+// A ROCK IS NOT A TREE. It has no up. Look down at a boulder field from a ridge
+// -- which in this world is most of the time anyone is looking at one, because
+// the beds that reach card range are the scree and the giants and both of them
+// live on slopes -- and every cylindrical card in it is a vertical signboard
+// presenting the rock's SIDE elevation to a camera that should be seeing its
+// top. The rocks read as cardboard standees the moment the view tips, and the
+// tell is that they all tip together.
+//
+// THE PIVOT IS THE CARD'S FOOT, not its middle, and that is the whole reason
+// this needs no extra attribute. A centre pivot would keep the rock's mass
+// exactly over its map position and swing the bottom half of the card under the
+// hill; a foot pivot keeps the card's ground contact and lays the rock back
+// away from the eye as the view tips over it. Ground contact is the cue that
+// matters at this range -- a rock that has come unstuck from the hillside is
+// visible at a kilometre and a rock displaced half its own height along the
+// ground is not.
+//
+// COST: it replaces a 2D rotation with a 3x3, which is about a dozen more
+// vertex ops on a two-triangle card -- four vertices per rock, at the range
+// where a rock is four vertices. It is not measurable.
+function billboardVertex(layerCount, spherical) {
+  // Screen right and screen up, in world space: rows 0 and 1 of the view
+  // matrix's rotation. VIEW-PLANE aligned rather than a true look-at, which is
+  // both cheaper and steadier -- a look-at billboard swings as the card crosses
+  // the screen, and on a hillside covered in them that swing is a shimmer.
+  const spin = spherical
+    ? /* glsl */ `
+      vec3 bbRw = vec3( viewMatrix[ 0 ][ 0 ], viewMatrix[ 1 ][ 0 ], viewMatrix[ 2 ][ 0 ] );
+      vec3 bbUw = vec3( viewMatrix[ 0 ][ 1 ], viewMatrix[ 1 ][ 1 ], viewMatrix[ 2 ][ 1 ] );
+
+      // The world-from-object linear map for this instance, and the inverse we
+      // need to hand the answer back in the object space three is expecting.
+      //
+      // THIS IS EXACT ONLY BECAUSE THE SCALE IS UNIFORM. For M = s*R the upper
+      // 3x3 inverse is transpose / s2, and s2 is the squared length of any
+      // column. rocks.js composes every instance with _s.set(scale, scale,
+      // scale) -- one number on all three axes -- so the identity holds. A bed
+      // that ever starts stretching an axis would need a real inverse here, and
+      // would get a sheared card instead, so: keep rock instances uniform.
+      mat3 bbM = mat3( modelMatrix );
+      #ifdef USE_BATCHING
+        bbM = bbM * mat3( batchingMatrix );
+      #endif
+      #ifdef USE_INSTANCING
+        bbM = bbM * mat3( instanceMatrix );
+      #endif
+      float bbS2 = dot( bbM[ 0 ], bbM[ 0 ] );
+
+      // The card spans local X for its width and local Y for its height, with
+      // its foot on y = 0 (buildImpostorCard). So the foot pivot is free: y is
+      // already measured up from it, and the two axes go straight onto screen
+      // right and screen up.
+      vec3 bbW = transformed.x * bbRw + transformed.y * bbUw;
+      // v * M is M-transpose * v in GLSL, which is the inverse rotation.
+      transformed = ( bbW * bbM ) / bbS2;`
+    : /* glsl */ `
+      // Face: the horizontal direction from the plant to the eye. Degenerate
+      // only when the camera is exactly on the axis, where any answer is right.
+      vec2 bbTo = cameraPosition.xz - bbOrigin.xz;
+      float bbLen = length( bbTo );
+      vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
+      // Screen-right, in world XZ: up x face, which is (f.z, -f.x).
+      vec2 bbR = vec2( bbF.y, -bbF.x );
+
+      // The instance yaw, as a unit complex number, and the rotation that takes
+      // it to bbR: bbR * conj(axis). Composed in object space, so what the
+      // matrix does afterwards lands us exactly on bbR.
+      vec2 bbC = vec2( bbR.x * bbA.x + bbR.y * bbA.y, bbR.y * bbA.x - bbR.x * bbA.y );
+
+      // Rotate (x, z) by bbC. RHS is fully evaluated before the assignment, so
+      // reading transformed.x twice here is safe.
+      transformed.xz = vec2(
+        transformed.x * bbC.x - transformed.z * bbC.y,
+        transformed.x * bbC.y + transformed.z * bbC.x
+      );`
+
   return /* glsl */ `
   {
     float bbMask = 0.0;
@@ -946,26 +1146,11 @@ function billboardVertex(layerCount) {
       bbOrigin = modelMatrix * bbOrigin;
       bbAxis = modelMatrix * bbAxis;
 
-      // Face: the horizontal direction from the plant to the eye. Degenerate
-      // only when the camera is exactly on the axis, where any answer is right.
-      vec2 bbTo = cameraPosition.xz - bbOrigin.xz;
-      float bbLen = length( bbTo );
-      vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
-      // Screen-right, in world XZ: up x face, which is (f.z, -f.x).
-      vec2 bbR = vec2( bbF.y, -bbF.x );
-
-      // The instance yaw, as a unit complex number, and the rotation that takes
-      // it to bbR: bbR * conj(axis). Composed in object space, so what the
-      // matrix does afterwards lands us exactly on bbR.
+      // The instance's own yaw as a unit complex number. The cylindrical spin
+      // divides it out; the spherical one throws it away entirely. Both want it
+      // for the u-flip below.
       vec2 bbA = normalize( vec2( bbAxis.x, bbAxis.z ) );
-      vec2 bbC = vec2( bbR.x * bbA.x + bbR.y * bbA.y, bbR.y * bbA.x - bbR.x * bbA.y );
-
-      // Rotate (x, z) by bbC. RHS is fully evaluated before the assignment, so
-      // reading transformed.x twice here is safe.
-      transformed.xz = vec2(
-        transformed.x * bbC.x - transformed.z * bbC.y,
-        transformed.x * bbC.y + transformed.z * bbC.x
-      );
+${spin}
 
       // One free bit of variety: the instance's own yaw, which the spin has
       // just thrown away, decides whether this card reads its picture
@@ -1049,7 +1234,13 @@ function billboardVertex(layerCount) {
 // Fraction of the gone-distance at which the dissolve starts. 0.85 makes the
 // band 15% of the range, so a tree that vanishes at 1500 m starts dissolving at
 // 1275 m -- over two minutes of walking, which is as gradual as it gets.
-const FADE_BAND = 0.85
+//
+// Exported because a caller that wants a prop SOLID up to some distance has to
+// divide by this to get the gone-distance to hand `setPropFadeAt`: the slot is
+// where the prop is gone, not where it starts going. See RockBed._fadeFloor,
+// which is exactly that sum -- a rock has to still be whole when it reaches the
+// distance its billboard takes over at, or it dissolves as a mesh instead.
+export const FADE_BAND = 0.85
 
 /**
  * How long an LOD cross-dissolve takes, in seconds. Long enough that the eye
@@ -1597,9 +1788,14 @@ const STRIP_SAMPLE = /* glsl */ `
  */
 export function createPropMaterial(
   textureArray,
-  { vertexColors = false, billboardLayers = null, stripTiling = false } = {}
+  { vertexColors = false, billboardLayers = null, sphericalBillboard = false, stripTiling = false } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
+  // A flag with nothing to act on is a caller who thinks their cards are being
+  // spun differently and is looking at unchanged pixels. Say so instead.
+  if (sphericalBillboard && !billboards) {
+    throw new Error('createPropMaterial: sphericalBillboard needs billboardLayers to spin')
+  }
 
   const material = new THREE.MeshLambertMaterial({
     color: 0xffffff,
@@ -1620,9 +1816,11 @@ export function createPropMaterial(
     shader.uniforms.uSnow = snowAmount
     shader.uniforms.uSnowLayers = snowLayers
     shader.uniforms.uSnowRockLayers = snowRockLayers
+    shader.uniforms.uSnowCardLayers = snowCardLayers
     shader.uniforms.uSnowLine = snowLine
     shader.uniforms.uSnowBand = snowBand
     shader.uniforms.uSnowVary = snowVary
+    shader.uniforms.uLeafSnowVary = leafSnowVary
     shader.uniforms.uMoss = mossAmount
     shader.uniforms.uMossLayers = mossLayers
     shader.uniforms.uMossLine = mossLine
@@ -1649,11 +1847,21 @@ export function createPropMaterial(
         uniform float uSnowLine;
         uniform float uSnowBand;
         uniform vec2 uSnowVary;
+        uniform vec2 uLeafSnowVary;
+        // The FOLIAGE list, which this stage did not need until the leaf roll
+        // arrived -- the fragment stage has had it all along (SNOW_APPLY), and
+        // the uniform is the same object bound to both.
+        uniform float uSnowLayers[ ${SNOW_LAYERS.length} ];
         uniform float uSnowRockLayers[ ${SNOW_HARD_LAYERS.length} ];
         uniform float uMoss;
         uniform float uMossLine;
         uniform float uMossBand;
         uniform vec2 uMossVary;
+        // WHERE MOSS MAY GROW, the same list the fragment stage masks with
+        // (MOSS_APPLY) and the same uniform object bound to both. This stage
+        // needs it because the per-instance moss roll is gated on it -- see the
+        // mossV loop below.
+        uniform float uMossLayers[ ${MOSS_LAYERS.length} ];
         uniform float uPropClock;
         varying vec4 vSnowPos;
         varying vec2 vMoss;
@@ -1677,7 +1885,7 @@ export function createPropMaterial(
         vUvProj = uvProj;
         vec3 propObjPos = transformed;
         ${FADE_VERTEX}
-        ${billboards ? billboardVertex(billboards.length) : ''}
+        ${billboards ? billboardVertex(billboards.length, sphericalBillboard) : ''}
         ${stripTiling ? STRIP_VERTEX : ''}`
       )
       // Snow is placed in WORLD space so that two instances of the same tree
@@ -1717,49 +1925,76 @@ export function createPropMaterial(
         // moss has no tendency to roll bare of snow.
         float mossRoll = fract( sin( dot( propRootW.xz, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
         float snowRoll = fract( sin( dot( propRootW.xz, vec2( 39.3467, 11.135 ) ) ) * 24634.6345 );
-        // NEITHER ROLL IS FOR FOLIAGE, and the two gates below are the tests.
-        // uSnowVary and uMossVary are global uniforms like everything else here,
-        // but each exists to fix a problem that belongs to a particular kind of
-        // surface, so each has to ask its own question:
+        // EVERY ROLL ASKS WHICH SURFACE IT IS ON, and the three gates below are
+        // the tests. uSnowVary, uLeafSnowVary and uMossVary are global uniforms
+        // like everything else here, but each exists to fix a problem that
+        // belongs to a particular kind of surface, so each has to ask its own
+        // question:
         //
         //   rockV -- "does this wear the ROCK RECIPE", which since wood joined
         //   SNOW_HARD_LAYERS means stone AND wood. That is the right gate for
-        //   snow, because the problem is the recipe's: a surface leaning on 'up'
-        //   twice as hard as foliage takes its own undersides at a full load and
-        //   stops being stone, or being wood (see setSnowVary). A canopy at a
-        //   full load is a loaded tree and correct, so foliage keeps the ceiling.
+        //   uSnowVary, because the problem is the recipe's: a surface leaning on
+        //   'up' harder than foliage does takes its own undersides at a full load
+        //   and stops being stone, or being wood (see setSnowVary).
         //
-        //   stoneV -- "is this actually STONE", which is narrower, and it is what
-        //   the moss roll wants. uMossVary is driven from Rocks.syncBands with a
-        //   range chosen for boulders; MOSS_LAYERS used to be the stone layer
-        //   alone so there was nothing else for that range to reach, and it now
-        //   carries the three barks and TIMBER_BEAM as well. Gating moss on the
-        //   wider list would quietly halve the moss on every trunk and beam in
-        //   the world to suit a decision about rocks, so bark and timber keep the
-        //   full moss ceiling.
+        //   leafV -- "is this FOLIAGE", over SNOW_LAYERS, and it is a genuine
+        //   membership test rather than the complement of rockV on purpose:
+        //   "not a hard surface" also catches grass, fronds, the terrain and
+        //   every building layer, none of which is a canopy. It answers a
+        //   different problem from rockV's, and the difference is the number of
+        //   trees you are looking at. ONE canopy at a full load is a loaded tree
+        //   and perfectly correct; a whole STAND of them at a full load is every
+        //   tree in the wood wearing the identical ceiling, because the ceiling
+        //   is a scene uniform -- which reads as paint over the forest rather
+        //   than as weather that fell on it. uLeafSnowVary is the answer to that
+        //   one, and it is a separate uniform because stone's band is tuned
+        //   against a rock going white and would be the wrong band here (see
+        //   setLeafSnowVary).
         //
-        // Both read the SAME uniform, which is legal because SNOW_HARD_LAYERS is
-        // built stone-first (see its definition) -- the first SNOW_ROCK_LAYERS
-        // entries of the array are exactly the stone ones. Two loops of one and
-        // five iterations at vertex rate, against the matrix-vector product
-        // already here. Neither is MOSS_LAYERS: that list says where moss may
-        // grow at all, and these ask which surfaces a per-instance RANGE was
-        // chosen for.
+        //   mossV -- "can this grow moss at all", over MOSS_LAYERS, and it is
+        //   the same list and the same uniform the fragment stage masks moss
+        //   with. Moss varies per instance EVERYWHERE it grows: on the boulder,
+        //   on the living trunk, on the village beam and on the fallen log, all
+        //   off one roll and one range. A narrower gate here would mean a rock
+        //   rolling bare next to a trunk wearing the flat world ceiling, which
+        //   is the same weather landing two ways. Leaves are excluded for free,
+        //   because moss does not grow on a canopy and MOSS_LAYERS never listed
+        //   one.
+        //
+        // rockV reads uSnowRockLayers, which is legal for a hard-surface test
+        // because SNOW_HARD_LAYERS is built stone-first (see its definition).
+        // leafV reads uSnowLayers, the foliage list, and mossV reads uMossLayers;
+        // both had to be DECLARED in this stage for it, the fragment stage having
+        // always had them. Three loops of ten, five and five iterations at vertex
+        // rate, against the matrix-vector product already here.
         float rockV = 0.0;
         for ( int i = 0; i < ${SNOW_HARD_LAYERS.length}; i++ ) {
           rockV += step( abs( texLayer - uSnowRockLayers[ i ] ), 0.5 );
         }
-        float stoneV = 0.0;
-        for ( int i = 0; i < ${SNOW_ROCK_LAYERS.length}; i++ ) {
-          stoneV += step( abs( texLayer - uSnowRockLayers[ i ] ), 0.5 );
+        float leafV = 0.0;
+        for ( int i = 0; i < ${SNOW_LAYERS.length}; i++ ) {
+          leafV += step( abs( texLayer - uSnowLayers[ i ] ), 0.5 );
+        }
+        float mossV = 0.0;
+        for ( int i = 0; i < ${MOSS_LAYERS.length}; i++ ) {
+          mossV += step( abs( texLayer - uMossLayers[ i ] ), 0.5 );
         }
         // .w is this INSTANCE's snow load: the season ceiling, rolled into
-        // [uSnowVary.x, uSnowVary.y] if this is stone, and cut down by how far
-        // its own root sits above the snow line. Linear in the roll, unlike moss
-        // below: the band this is meant to be driven with is narrow, and shaping
-        // a narrow band only pushes instances onto its two ends.
+        // [uSnowVary.x, uSnowVary.y] if this is a hard surface or into
+        // [uLeafSnowVary.x, uLeafSnowVary.y] if it is foliage, and cut down by
+        // how far its own root sits above the snow line. Linear in the roll,
+        // unlike moss below: the bands this is meant to be driven with are narrow,
+        // and shaping a narrow band only pushes instances onto its two ends.
+        //
+        // TWO MIXES, ONE ROLL, and both facts are deliberate. The two lists are
+        // disjoint (check-rocks asserts it), so at most one of the mixes is ever
+        // anything but 1.0 and a surface is never scaled twice; and sharing
+        // snowRoll means a tree's canopy and its own trunk hash off the same
+        // instance root and therefore take a COHERENT load, a heavy crown over a
+        // heavy trunk rather than two independent draws on one tree.
         vSnowPos = vec4( propWorld,
           uSnow * mix( 1.0, mix( uSnowVary.x, uSnowVary.y, snowRoll ), min( rockV, 1.0 ) )
+            * mix( 1.0, mix( uLeafSnowVary.x, uLeafSnowVary.y, snowRoll ), min( leafV, 1.0 ) )
             * smoothstep( uSnowLine - uSnowBand * 0.5, uSnowLine + uSnowBand * 0.5,
               propRootY ) );
         // Moss runs the other way: full below its line, gone above it. Same
@@ -1772,8 +2007,9 @@ export function createPropMaterial(
         // top short of 1.0 keeps a few at the full ceiling instead of everything
         // landing in the middle.
         //
-        // AND IT IS GATED ON STONE, narrowly -- see stoneV above for why that is
-        // a different question from the one the snow roll asks.
+        // AND IT IS GATED ON MOSS_LAYERS -- everywhere moss grows and nowhere
+        // else, so stone, bark and timber all vary and a canopy never does. See
+        // mossV above.
         //
         // .y IS THIS FRAGMENT'S HEIGHT ABOVE ITS OWN INSTANCE ROOT, in world
         // metres, and it is the whole reason vMoss became a vec2. Moss lives on
@@ -1790,7 +2026,7 @@ export function createPropMaterial(
         vMoss = vec2(
           uMoss
             * mix( 1.0, mix( uMossVary.x, uMossVary.y, smoothstep( 0.15, 0.95, mossRoll ) ),
-              min( stoneV, 1.0 ) )
+              min( mossV, 1.0 ) )
             * ( 1.0 - smoothstep( uMossLine - uMossBand * 0.5,
               uMossLine + uMossBand * 0.5, propRootY ) ),
           propWorld.y - propRootY );`
@@ -1853,8 +2089,13 @@ export function createPropMaterial(
   // conflated with an unpatched MeshLambertMaterial. The billboard list is part
   // of the key because it is compiled INTO the shader (an array size and a loop
   // bound cannot be uniforms), so two materials differing only in which layers
-  // billboard are two different programs.
-  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${stripTiling ? '-strip' : ''}`
+  // billboard are two different programs. So is `sphericalBillboard`, for the
+  // same reason and with a sharper failure: it selects between two different
+  // bodies for the same branch, so two materials agreeing on the layer list and
+  // differing only here would silently share whichever compiled first -- and
+  // the symptom is a hillside of rocks spinning like trees, or a forest lying
+  // its trunks down, depending on the order they happened to be built in.
+  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${stripTiling ? '-strip' : ''}`
   material.customProgramCacheKey = () => key
 
   return material
@@ -1899,14 +2140,26 @@ export function createPropMaterial(
  *
  * `toneMapped: false` stays: the renderer applies none, and the bake must not
  * be the one surface in the project that guesses about that.
+ *
+ * `vertexColors` HAS TO BE ASKED FOR, and a building has to ask. A prop keeps
+ * its colour in the atlas and carries no `color` attribute at all, but the
+ * building kit keeps a lot of its colour per vertex -- a slate roof IS the
+ * shingle tile under a measured tint, and the thatch weathering, the moss at
+ * the eave and every wall tint are the same mechanism. Baking a building
+ * through the prop's material photographs it with all of that switched off,
+ * which puts a brown card in front of a grey roof at the swap distance: the
+ * one artefact an impostor is least allowed to have. It is an option rather
+ * than the default because three requires the attribute once it is on, and a
+ * fern geometry does not have one.
  */
-export function createImpostorBakeMaterial(textureArray) {
+export function createImpostorBakeMaterial(textureArray, { vertexColors = false } = {}) {
   const material = new THREE.MeshLambertMaterial({
     color: 0xffffff,
     alphaTest: 0.5,
     transparent: false,
     side: THREE.DoubleSide,
     toneMapped: false,
+    vertexColors,
   })
 
   material.onBeforeCompile = (shader) => {
@@ -1953,6 +2206,6 @@ export function createImpostorBakeMaterial(textureArray) {
       )
   }
 
-  material.customProgramCacheKey = () => 'impostor-bake-lit-v1'
+  material.customProgramCacheKey = () => `impostor-bake-lit-v1${vertexColors ? '-vc' : ''}`
   return material
 }

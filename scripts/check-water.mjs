@@ -11,6 +11,7 @@ import { runPhaseA } from '../src/sim/phase-a.js'
 import { Water } from '../src/water.js'
 import { Sky } from '../src/sky.js'
 import { SkyProbe } from '../src/sky-probe.js'
+import { WorldProbe } from '../src/world-probe.js'
 import { WorldLighting } from '../src/lighting.js'
 import { TerrainHeight, WORLD_SIZE, WORLD_HALF } from '../src/sim/terrain-height.js'
 
@@ -25,7 +26,7 @@ const N = 512
 const r = runPhaseA(SEED, N)
 const th = new TerrainHeight(SEED)
 const scene = new THREE.Scene()
-const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting(), probe: new SkyProbe() })
+const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting(), probe: new SkyProbe(), world: new WorldProbe() })
 const built = water.setFromPhaseA({ lake: r.lake, filled: r.filled, ground: r.base, n: r.n, cell: r.cell })
 
 console.log(`\nwater   seed ${SEED}, ${N}^2, cell ${r.cell.toFixed(1)} m`)

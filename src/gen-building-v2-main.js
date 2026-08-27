@@ -6,6 +6,10 @@ import { planBuilding, KINDS, WALL_STYLES, ROOF_KINDS } from './buildings/plan.j
 import { buildBuilding2 } from './buildings/v2/building.js'
 import { makeCharacter, makeWarp } from './buildings/v2/warp.js'
 import { openEdges, signedVolume } from './buildings/v2/parts.js'
+import {
+  BUILDING_BANDS, CARD_COMBOS, RIDGE_PX, buildingCardFrames, bakeBuildingCardBank, cardLayerFor,
+  buildBuildingCross,
+} from './buildings/v2/card.js'
 import { grassTexture } from './preview-stage.js'
 import { TRI_BUDGET, CALL_BUDGET } from './budget.js'
 
@@ -51,6 +55,7 @@ const CHARACTER = [
   ['strength', 0, 1.6, 0.02, 'scales the whole personality. 0 builds the straight v1 building; 1 is what ships. Past 1 is for finding where it breaks, not for using'],
   ['noise', 0, 2, 0.05, 'the two octaves of the field itself -- the coarse one bows a whole wall, the fine one takes the machine edge off a member'],
   ['lean', 0, 2, 0.05, 'the settle. Grows as height^1.35, so the eaves lean and the plinth does not'],
+  ['batter', 0, 2, 0.05, 'how far off plumb the walls were RAISED, as opposed to how far they have since settled. Mirrored about the building\'s own centre line, so the two walls of a pair splay apart or pinch together instead of both tipping the same way'],
   ['roofSag', 0, 2, 0.05, 'how far the covering bows between ridge and eave, and how much the two buckle seams wander along their length'],
   ['ridge', 0, 2, 0.05, 'the ridge line\'s OWN droop, signed per building -- it dips in the middle on some and humps up on others'],
   ['eave', 0, 2, 0.05, 'how far the eave line swells past its nominal overhang, and how much it rises and falls along it. The sinuous bottom roofline lives here, and only about two buildings in three get any of it'],
@@ -79,7 +84,7 @@ const DEFAULTS = {
   overhang: 0.4, windowScale: 1, slope: 0,
 }
 const CHAR_DEFAULTS = {
-  strength: 1, noise: 1, lean: 1, roofSag: 1, ridge: 1, eave: 1, oversail: 1,
+  strength: 1, noise: 1, lean: 1, batter: 1, roofSag: 1, ridge: 1, eave: 1, oversail: 1,
   rake: 1, flare: 1, openings: 1, bow: 1, smooth: 78,
 }
 
@@ -101,6 +106,8 @@ function characterFor(seed) {
   k.amp2 *= chars.noise
   k.leanX *= chars.lean
   k.leanZ *= chars.lean
+  k.batterX *= chars.batter
+  k.batterZ *= chars.batter
   k.sag *= chars.roofSag
   k.buckle *= chars.roofSag
   k.ridgeSag *= chars.ridge
@@ -199,8 +206,21 @@ scene.add(figure)
 // --- the real material ------------------------------------------------------
 
 const textureArray = buildTextureArray()
+// NO billboardLayers, and that is deliberate rather than an omission. Buildings
+// have no spun tier -- the cross runs the whole way to the cull distance -- and
+// naming the card layer here would arm material.js's spin test against it. See
+// the contract note in card.js.
 const material = createPropMaterial(textureArray, { vertexColors: true })
 material.side = THREE.FrontSide // buildings are closed solids; foliage is not
+
+// A CARD NEEDS THE OTHER SIDE. The building material is FrontSide because the
+// kit is a union of closed solids and backface culling is free triangles; a
+// card is one quad with a picture on it and culling its back half is the two
+// planes of the cross vanishing as you walk round them. Same shader, same
+// array, one flag apart -- so it is a second material rather than a second
+// material SYSTEM, and in the game both tiers would draw from the same batch.
+const cardMaterial = createPropMaterial(textureArray, { vertexColors: true })
+cardMaterial.side = THREE.DoubleSide
 // The tree/fern layers arrive from PNGs a few frames later. Buildings do not
 // use any of them, but the array is shared and patching it late is how the
 // runtime behaves, so the previewer does it too.
@@ -239,10 +259,66 @@ function clearGroup() {
   group.clear()
 }
 
+/** The two card tiers are named rather than numbered, because they are not
+ *  further steps down the same ladder -- they are a photograph of the bottom
+ *  step. `cardTier()` is null while a mesh tier is selected. */
+function cardTier() {
+  return typeof picks.detail === 'string' ? picks.detail : null
+}
+
+/** The twenty photographs, one per wall style x roof kind, rebaked whenever the
+ *  character sliders move so that what the card wears matches the mesh beside
+ *  it. In the game this runs ONCE at load and never again -- the bank is keyed
+ *  on material, not on building, so nothing a village does can invalidate it.
+ *  Here the sliders are the whole point, so the previewer pays for the rebake.
+ *
+ *  Cached on the slider state rather than rebuilt per frame: twenty detail-0
+ *  cottages and twenty render targets is cheap once and wasteful on every
+ *  orbit. */
+let cardBank = null
+let cardBankKey = ''
+function bank() {
+  const key = JSON.stringify(chars)
+  if (cardBankKey !== key) {
+    cardBank = bakeBuildingCardBank(renderer, textureArray, {
+      characterFor, smoothAngle: chars.smooth,
+    })
+    cardBankKey = key
+  }
+  return cardBank
+}
+
+/** One building's card: its own two true widths, wearing the shared photograph
+ *  its material pair maps to.
+ *
+ *  The frames come from THIS building and the picture comes from the bank, and
+ *  that split is the design: the silhouette is exact for every variant while
+ *  twenty slices cover all 148 of them. `entry` is the stand-in that was
+ *  actually photographed, so the panel can name it. */
+function buildCard(plan) {
+  const built = buildBuilding2(plan, {
+    detail: 0, character: characterFor(plan.seed), smoothAngle: chars.smooth,
+  })
+  const frames = buildingCardFrames(built.geometry)
+  built.geometry.dispose()
+  const layer = cardLayerFor(plan)
+  const entry = bank()[layer - bank()[0].layer]
+  const geometry = buildBuildingCross(frames, layer)
+  return { geometry, frames, entry, triangles: geometry.userData.impostor.triangles }
+}
+
 function rebuild() {
   clearGroup()
   material.wireframe = wireframe
+  cardMaterial.wireframe = wireframe
 
+  const tier = cardTier()
+  // A GALLERY OF CARDS IS NOW HONEST. It used not to be: the photograph lived in
+  // one shared layer that the next bake overwrote, so twelve cards were twelve
+  // copies of whichever building was shot last. The bank is keyed on material
+  // instead of on building, so twelve cards are twelve seeds' own widths wearing
+  // whichever of the twenty pictures their style and roof map to -- and where
+  // two of them share a picture, that is the scheme working, not a bug.
   const seeds = galleryMode
     ? Array.from({ length: GALLERY_N }, (_, i) => Number(params.seed) + i)
     : [Number(params.seed)]
@@ -255,33 +331,72 @@ function rebuild() {
 
   let tris = 0
   let dormers = 0
+  let card = null
+  let probeGeo = null
   const hero = plans[0]
-  plans.forEach((plan, i) => {
-    const built = buildBuilding2(plan, {
-      detail: picks.detail, character: characterFor(plan.seed), smoothAngle: chars.smooth,
-    })
-    const { geometry, triangles } = built
-    tris += triangles
-    if (i === 0) dormers = built.dormers.length
-    const mesh = new THREE.Mesh(geometry, material)
-    if (galleryMode) {
+
+  if (tier && galleryMode) {
+    plans.forEach((plan, i) => {
+      const one = buildCard(plan)
+      tris += one.triangles
+      if (i === 0) card = one
+      const mesh = new THREE.Mesh(one.geometry, cardMaterial)
       mesh.position.set(
         ((i % GALLERY_COLS) - (GALLERY_COLS - 1) / 2) * spacing,
         0,
         (Math.floor(i / GALLERY_COLS) - (GALLERY_ROWS - 1) / 2) * spacing
       )
-    }
-    group.add(mesh)
-  })
+      group.add(mesh)
+    })
+  } else if (tier) {
+    // THE CARD IS SHOWN BESIDE THE MESH IT IS A PHOTOGRAPH OF, not instead of
+    // it. A card on its own is unjudgeable -- it is a picture of a building and
+    // it looks like one, and the only question worth asking of it is where it
+    // stops matching, which needs the thing it stopped matching from in the
+    // same shot. The detail-0 tier stands on -X, where `vs straight` puts its
+    // twin, for the same reason: uphill, on the ground the plan was written for.
+    card = buildCard(hero)
+    tris = card.triangles
+    group.add(new THREE.Mesh(card.geometry, cardMaterial))
+    const mesh0 = buildBuilding2(hero, {
+      detail: 0, character: characterFor(hero.seed), smoothAngle: chars.smooth,
+    })
+    dormers = mesh0.dormers.length
+    probeGeo = mesh0.geometry
+    const twin = new THREE.Mesh(mesh0.geometry, material)
+    twin.position.set(-(hero.stats.width + 3), 0, 0)
+    group.add(twin)
+  } else {
+    plans.forEach((plan, i) => {
+      const built = buildBuilding2(plan, {
+        detail: picks.detail, character: characterFor(plan.seed), smoothAngle: chars.smooth,
+      })
+      const { geometry, triangles } = built
+      tris += triangles
+      if (i === 0) {
+        dormers = built.dormers.length
+        probeGeo = geometry
+      }
+      const mesh = new THREE.Mesh(geometry, material)
+      if (galleryMode) {
+        mesh.position.set(
+          ((i % GALLERY_COLS) - (GALLERY_COLS - 1) / 2) * spacing,
+          0,
+          (Math.floor(i / GALLERY_COLS) - (GALLERY_ROWS - 1) / 2) * spacing
+        )
+      }
+      group.add(mesh)
+    })
 
-  // The control case, stood next to the thing rather than remembered. Placed on
-  // -X, which is UPHILL when `slope` is on, so the twin sits on the same ground
-  // the plan was written against rather than floating over the fall.
-  if (ghostMode && !galleryMode) {
-    const twin = buildBuilding2(hero, { detail: picks.detail, strength: 0 })
-    const mesh = new THREE.Mesh(twin.geometry, material)
-    mesh.position.set(-(hero.stats.width + 3), 0, 0)
-    group.add(mesh)
+    // The control case, stood next to the thing rather than remembered. Placed
+    // on -X, which is UPHILL when `slope` is on, so the twin sits on the same
+    // ground the plan was written against rather than floating over the fall.
+    if (ghostMode && !galleryMode) {
+      const twin = buildBuilding2(hero, { detail: picks.detail, strength: 0 })
+      const mesh = new THREE.Mesh(twin.geometry, material)
+      mesh.position.set(-(hero.stats.width + 3), 0, 0)
+      group.add(mesh)
+    }
   }
 
   // The figure stands where the plan put the door, one pace out from it, so it
@@ -293,7 +408,7 @@ function rebuild() {
   grid.visible = showGrid && !galleryMode
   grid.position.y = 0.01
 
-  return { tris, plans, hero, spacing, dormers }
+  return { tris, plans, hero, spacing, dormers, card, probeGeo }
 }
 
 // --- panels -----------------------------------------------------------------
@@ -327,7 +442,11 @@ function refresh() {
   // kind of change that would open a seam if the field were not keyed on
   // position -- this readout is the claim in warp.js being checked live, on the
   // building you are currently looking at, at whatever strength you have set.
-  const heroGeo = group.children[0].geometry
+  // On a card tier the thing at the front of the group is the card, and a card
+  // is a SHEET -- open by construction, zero volume, and asking it about
+  // airtightness would report eight open edges and a failure that is not one.
+  // So the probe follows the building rather than the front of the group.
+  const heroGeo = s.probeGeo
   const open = openEdges(heroGeo).length
   const vol = signedVolume(heroGeo)
 
@@ -353,13 +472,18 @@ function refresh() {
   // sagged eave carries one course fewer than a straight one.
   const k = characterFor(plan.seed)
   const straight = buildBuilding2(plan, { detail: picks.detail, strength: 0 })
-  const moved = maxDisplacement(straight.geometry, makeWarp(k, plan.plinthBottom))
+  const moved = maxDisplacement(straight.geometry, makeWarp(k, plan.plinthBottom, plan.footprint))
   straight.geometry.dispose()
 
+  // The batter is signed and both signs mean something, so it is printed with
+  // its sign rather than with a word: a minus here is a wall leaning IN over
+  // the floor, which is the rarer and the more striking of the two.
+  const sgn = (v) => `${v >= 0 ? '+' : '&minus;'}${(Math.abs(v) * 100).toFixed(1)}`
   table(document.getElementById('charTable'), [
     ['strength', k.strength.toFixed(2), k.strength > 0 ? 'hot' : ''],
     ['worst vertex moved', `${moved === null ? '--' : `${moved.toFixed(3)} m`}`, 'hot'],
     ['lean at the eave', `${(Math.hypot(k.leanX, k.leanZ) * Math.pow(Math.max(0, plan.stats.ridgeY - plan.plinthBottom), k.leanPow)).toFixed(3)} m`],
+    ['wall batter', `${sgn(k.batterX)} / ${sgn(k.batterZ)} cm per m of height, across x / z. Plus splays out, minus leans in`],
     ['roof sag', `${k.sag.toFixed(3)} m`],
     ['buckle seams', `${k.buckle.toFixed(3)} m`],
     ['ridge droop', `${k.ridgeSag >= 0 ? '' : '&minus;'}${Math.abs(k.ridgeSag).toFixed(3)} m ${k.ridgeSag >= 0 ? 'dip' : 'hog'}`],
@@ -404,17 +528,59 @@ function refresh() {
     ['porch / steps', `${plan.porch ? 'porch' : '--'} / ${plan.steps ? `${Math.round((plan.floorY - plan.steps.groundY) / 0.19)} steps` : '--'}`],
   ])
 
-  // The three tiers, always all three, always from the same plan and the same
-  // character -- so the ratio on screen is the ratio the gate measures.
+  // The three mesh tiers, always all three, always from the same plan and the
+  // same character -- so the ratio on screen is the ratio the gate measures.
+  //
+  // EVERY ROW CARRIES ITS BAND, near edge to far edge, because a triangle count
+  // on its own says nothing about whether it is the right count: 67 triangles
+  // is generous at 300 m and threadbare at 30. The two card rows carry their
+  // apparent SIZE as well -- a 6 m ridge at §5's 16.2 px per degree of Quest 2
+  // eye -- since that is the number that decides whether a picture is enough.
+  const B = BUILDING_BANDS
+  const px = (d) => `${(RIDGE_PX / d).toFixed(0)} px`
   const tiers = [2, 1, 0].map((d) => buildBuilding2(plan, { detail: d, character: k }))
   table(document.getElementById('lod'), [
-    ['detail 2 &mdash; to 60 m', `${tiers[0].triangles} tris`],
-    ['detail 1 &mdash; to 170 m', `${tiers[1].triangles} / ${LOD1_BUDGET} tris`, tiers[1].triangles <= LOD1_BUDGET ? 'ok' : 'warn'],
-    ['detail 0 &mdash; to the card', `${tiers[2].triangles} tris`, 'ok'],
+    ['detail 2 &mdash; 0 to ' + B.detail2 + ' m', `${tiers[0].triangles} tris`],
+    [`detail 1 &mdash; ${B.detail2} to ${B.detail1} m`, `${tiers[1].triangles} / ${LOD1_BUDGET} tris`, tiers[1].triangles <= LOD1_BUDGET ? 'ok' : 'warn'],
+    [`detail 0 &mdash; ${B.detail1} to ${B.detail0} m`, `${tiers[2].triangles} tris`, 'ok'],
     ['ratio', `1 : ${(tiers[0].triangles / Math.max(1, tiers[1].triangles)).toFixed(1)} : ${(tiers[0].triangles / Math.max(1, tiers[2].triangles)).toFixed(1)}`],
+    [`cross &mdash; ${B.detail0} to ${B.cull} m`, `4 tris, ${px(B.detail0)} to ${px(B.cull)}`, 'ok'],
   ])
   const d2 = tiers[0].triangles
   for (const t of tiers) t.geometry.dispose()
+
+  // What the photograph came out like, and it is here rather than in a console
+  // because the failure this catches is silent: a card framed wrong is a card
+  // that is EMPTY, and an empty card draws nothing at all rather than drawing
+  // something wrong. Coverage is the fraction of the slice the building
+  // actually covers -- a few points either side of a third is a building that
+  // filled its frame; near zero means the camera missed.
+  const cardEl = document.getElementById('card')
+  if (s.card) {
+    const { frames, entry } = s.card
+    const bankKB = CARD_COMBOS.length * 64
+    table(cardEl, [
+      // The two halves of the scheme, in the order they matter. First: WHICH
+      // PICTURE, which is a property of the material pair and not of this
+      // building -- the stand-in named here is the cottage that was actually
+      // photographed, and it is a different building from the one on screen.
+      ['wears combo', `${entry.style} / ${entry.roof}`],
+      ['photographed', `cottage seed ${entry.plan.seed}, ${entry.frames[entry.frames.wide].width.toFixed(1)} &times; ${entry.frames.height.toFixed(1)} m`],
+      ['coverage', `${(entry.shot.coverage * 100).toFixed(0)} %`, entry.shot.coverage > 0.05 ? 'ok' : 'warn'],
+      ['mean luma', `${entry.shot.meanLuma.toFixed(3)}`],
+      // Second: WHAT SHAPE, which is a property of this building alone. Both
+      // planes are its own true widths, so the silhouette is exact even though
+      // the picture is borrowed -- that split is the whole design.
+      ['this cross', `${frames.x.width.toFixed(1)} &times; ${frames.z.width.toFixed(1)} m, ${frames.height.toFixed(1)} tall`],
+      // How hard the one photograph is stretched to fit each plane. It is the
+      // cost of sharing, and it is per-seed: a square hut pays 1.0x, a
+      // longhouse pays four.
+      ['stretch onto narrow', `${(Math.max(frames.x.width, frames.z.width) / Math.min(frames.x.width, frames.z.width)).toFixed(2)}&times;`],
+      ['whole bank', `${CARD_COMBOS.length} layers &times; 64 KB = ${(bankKB / 1024).toFixed(2)} MB`, 'ok'],
+    ])
+  } else {
+    table(cardEl, [['', 'pick a card tier to bake one']])
+  }
 
   const nearAll = d2 * VISIBLE_BUILDINGS
   table(document.getElementById('village'), [
@@ -533,7 +699,7 @@ const pickDefs = [
   ['shape', ['auto', 'single', 'outshut', 'ell', 'tee', 'wing'], 'how the masses combine. Not every kind allows every shape -- auto picks a legal one'],
   ['style', ['auto', ...WALL_STYLES], 'wall treatment. ONE per building: mixing them makes it read as several buildings shoved together'],
   ['roof', ['auto', ...ROOF_KINDS], 'slate is not a texture -- it is the shake tile at a cold tint. pantile is, because a scallop is a shape'],
-  ['detail', ['2', '1', '0'], 'which LOD tier to build. 2 is what you see inside 60 m; 1 keeps the massing and the warp and drops the joinery'],
+  ['detail', ['2', '1', '0', 'cross'], 'which LOD tier to build. 2 is what you see inside 60 m; 1 keeps the massing and the warp and drops the joinery. cross is not a mesh -- it is two planes at this building\'s own true widths wearing a photograph of a stand-in cottage in the same wall style and roof, and it draws beside detail 0 so you can see where it stops matching'],
 ]
 for (const [key, options, help] of pickDefs) {
   const row = document.createElement('div')
@@ -544,7 +710,9 @@ for (const [key, options, help] of pickDefs) {
   const sel = row.querySelector('select')
   sel.value = String(picks[key])
   sel.addEventListener('change', () => {
-    picks[key] = key === 'detail' ? Number(sel.value) : sel.value
+    // A mesh tier is a NUMBER, because that is what buildBuilding2 takes; the
+    // two card tiers stay strings, and `cardTier()` tells them apart by that.
+    picks[key] = key === 'detail' && /^\d+$/.test(sel.value) ? Number(sel.value) : sel.value
     // A kind whitelists its shapes and styles, so switching kind can strand an
     // explicit pick on something illegal. Fall back to auto rather than
     // silently building something the grammar forbids.

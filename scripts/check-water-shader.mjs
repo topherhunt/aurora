@@ -356,9 +356,10 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   const { Sky } = await import('../src/sky.js')
   const { WorldLighting } = await import('../src/lighting.js')
   const { SkyProbe } = await import('../src/sky-probe.js')
+  const { WorldProbe } = await import('../src/world-probe.js')
 
   const scene = new THREE.Scene()
-  const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting(), probe: new SkyProbe() })
+  const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting(), probe: new SkyProbe(), world: new WorldProbe() })
 
   const resolve = (src) => {
     let out = src
@@ -526,8 +527,15 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   check(meshA.layers.test(new THREE.Layers()) && meshA.layers.mask === (1 | (1 << PROBE_LAYER)),
     'included objects keep layer 0 and gain the probe layer',
     `mask ${meshA.layers.mask.toString(2)}`)
-  check(/SkyProbe\.include\(\s*aurora\.mesh,\s*stars\.points\s*\)/.test(mainSrc),
-    'main.js includes both additive meshes, which are the only things worth capturing')
+  // The aurora ALONE. Stars are points, and gl_PointSize counts framebuffer
+  // pixels rather than angle -- the 1.1 to 4.5 px speck that is right on a screen
+  // spans 1.5 to 6.3 degrees of a 64 px cube face, against the ~0.05 degrees a
+  // real star has. 2400 of those is a lake reflecting gravel. Asserted negatively
+  // as well, because putting them back is a one-word edit that looks harmless.
+  check(/SkyProbe\.include\(\s*aurora\.mesh\s*\)/.test(mainSrc),
+    'main.js captures the aurora, which is the only thing worth capturing')
+  check(!/stars\.points/.test(mainSrc.slice(mainSrc.indexOf('SkyProbe.include'), mainSrc.indexOf('SkyProbe.include') + 60)),
+    'and not the stars, which have no angular size a 64 px face can represent')
 
   // Half float, because the aurora's dim end lives below one 8-bit step and
   // quantising it would plate the curtain in the water while looking fine in
@@ -778,12 +786,25 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   // the silhouette colour by `blocked` as well, or a fully occluded patch is
   // still (1 - mirror) * uTint no matter how dark the silhouette is -- which at
   // noon left it three times brighter than the darkest terrain on screen. With
-  // both sides at uSilTint the composite is uSilTint for ANY Fresnel value,
-  // which is what makes the match hold at grazing angles too.
-  check(/vec3 body = mix\( uTint, uSilTint, blocked \);/.test(frag)
+  // both sides at the silhouette the composite is the silhouette for ANY Fresnel
+  // value, which is what makes the match hold at grazing angles too.
+  //
+  // `land.rgb` rather than `uSilTint` since the world probe landed: it is
+  // worldSilhouette's return, which IS uSilTint wherever the capture has no
+  // colour of its own, so the invariant is unchanged and the colour is better
+  // where there is one. What matters is that both sides read the same thing.
+  check(/vec3 body = mix\( uTint, land\.rgb, blocked \);/.test(frag)
+    && /refl = mix\( refl, land\.rgb, blocked \);/.test(frag)
     && /vec3 color = mix\( body, refl, mirror \);/.test(frag),
-    'a fully blocked patch composites to uSilTint at every viewing angle',
-    'both sides of the Fresnel mix are taken to the silhouette colour')
+    'a fully blocked patch composites to the silhouette at every viewing angle',
+    'both sides of the Fresnel mix are taken to the same silhouette colour')
+
+  // And that silhouette really does fall back to uSilTint where the capture is
+  // empty -- the line that keeps a far ridge the cube barely resolves from
+  // reading as a hole of sky in the middle of a mountain.
+  check(/return vec4\( mix\( uSilTint, wc\.rgb, cover \), max\( ridge, cover \) \);/.test(frag),
+    'and it falls back to uSilTint where the world capture has no colour, taking the MAX of the two coverages',
+    'a capture with 128 px cannot be allowed to argue a mountain away')
 
   // --- the glint lobe ----------------------------------------------------------
   //

@@ -235,9 +235,13 @@ export class WaterSurfaces {
    *
    * Lakes are answered before rivers, and where both cover a point the HIGHEST surface wins. A river running into a lake is under the lake's still level, not beside it, and a tributary joining a trunk is under the trunk. Taking the max is also the only answer that does not depend on the order the document happens to list bodies in.
    *
-   * The authored footprint, not the drawn overhang: `footprint` feathers to zero at rx/rz, and the metre and a half the disc reaches past that exists to bury a polygon edge, not to make ground wet.
+   * TWO ANSWERS, AND THEY ARE DELIBERATELY DIFFERENT. By default this is the AUTHORED footprint: `footprint` feathers to zero at rx/rz, and the metre and a half the disc reaches past that exists to bury a polygon edge, not to make ground wet. That is the right answer for the prop scatter, which is the caller that made this fast, and treating the overhang as wet there would strip a band of props off both sides of every stream.
+   *
+   * `drawn = true` asks the other question -- where is the water you can SEE -- by widening each river sample the way `ribbonVertices` widens it, `hw + min(RIVER_WIDEN, hw * RIVER_WIDEN_FRAC)`, from the same two constants so the query and the geometry cannot drift. That is what the submersion test wants: the eye is under the water when it is under the polygon, not when it is under a footprint the polygon disagrees with by a metre. Cost is identical -- same 3x3 block, same scan, one add per sample -- and it is one call a frame rather than one per scatter candidate.
+   *
+   * It is an UPPER BOUND on tight turns, not an exact silhouette: `ribbonVertices` also narrows the ribbon through a corner by its circumradius and drops folded quads outright, and reproducing that here would mean rebuilding the geometry to ask a question about it. The residue is a few centimetres on the inside of a hairpin, which is the one place a river is least likely to be over her head.
    */
-  levelAt(x, z) {
+  levelAt(x, z, drawn = false) {
     let best = null
 
     for (const b of this.lakeBoxes) {
@@ -270,7 +274,8 @@ export class WaterSurfaces {
           const cx = x0 + t * ex
           const cz = z0 + t * ez
           const d2 = (x - cx) * (x - cx) + (z - cz) * (z - cz)
-          const hw = h0 + t * (h1 - h0)
+          let hw = h0 + t * (h1 - h0)
+          if (drawn) hw += Math.min(RIVER_WIDEN, hw * RIVER_WIDEN_FRAC)
           if (d2 > hw * hw) continue
           const y = y0 + t * (y1 - y0)
           if (best === null || y > best) best = y

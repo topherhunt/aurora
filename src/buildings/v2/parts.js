@@ -29,7 +29,7 @@ import { wobble } from './warp.js'
 //                buckles along under its own weight. Plus a sagging middle, an
 //                eave that reaches past its nominal overhang, and an eave line
 //                that sways along its length instead of ruling straight.
-//   chimney      ONE four-sided prism with jittered corners, flaring OUT as it
+//   chimney      ONE prism of four to six jittered corners, flaring OUT as it
 //                rises. v1's battered stack plus corbelled cap was two solids
 //                and ~48 triangles for a shape that still read as a post.
 //   window       four independently skewed corners rather than a rectangle, a
@@ -119,6 +119,40 @@ export function boxSection(hu, hv, seed, jitter = 0.22) {
     su * hu * (1 + (hash(seed, k * 2 + 1) - 0.5) * 2 * jitter),
     sv * hv * (1 + (hash(seed, k * 2 + 2) - 0.5) * 2 * jitter),
   ])
+}
+
+/**
+ * The same idea at five or six corners, for the stacks that are not square.
+ *
+ * boxSection cannot be generalised, because its whole trick is that it NAMES
+ * the four corners of a rectangle and then shoves each one about. Past four
+ * there are no named corners, so this walks the angles instead -- and it
+ * disturbs the ANGLE as well as the radius, because evenly spaced angles with
+ * only the radii moved still read as a regular polygon somebody dented, which
+ * is the one thing a pile of field stone is not.
+ *
+ * The half-step offset puts n = 4 back on the diagonals, where boxSection's
+ * corners are, so the two belong to one family. Both jitters are then capped
+ * tighter than boxSection's, and for a reason boxSection does not have: its
+ * corners are pinned one to a quadrant and cannot pass each other however hard
+ * they are shoved, while these are only kept apart by staying in angle order
+ * and by not denting so deep that a corner turns reflex. Either failure folds
+ * prism()'s cap fan back over itself. 0.40 of a step and 0.18 of the radius
+ * leave both with margin at n = 6 on the most eccentric stack the planner
+ * draws, which is the case that runs out of room first.
+ *
+ * Wound anticlockwise in (u, v), which is what prism() requires and what
+ * boxSection also gives it: here it follows from the angles increasing.
+ */
+export function polySection(hu, hv, n, seed, jitter = 0.18) {
+  const step = (Math.PI * 2) / n
+  const out = []
+  for (let k = 0; k < n; k++) {
+    const a = (k + 0.5) * step + (hash(seed, k * 2 + 1) - 0.5) * step * 0.4
+    const r = 1 + (hash(seed, k * 2 + 2) - 0.5) * 2 * jitter
+    out.push([Math.cos(a) * hu * r, Math.sin(a) * hv * r])
+  }
+  return out
 }
 
 /** The same loop, scaled. prism()'s `sectionEnd` must be this and never a
@@ -617,8 +651,8 @@ export function planGableRoof(o) {
     cx, cz, w, d, eaveY, rise,
     ridgeAxis = 'x', seed = 0, overhang = 0.4, verge = 0.3,
     vergeLo = null, vergeHi = null,
-    layer = LAYER.THATCH, tint = TINT.thatchNew, moss = 0.35, fringe = true,
-    detail = 2, k = FLAT,
+    layer = LAYER.THATCH, tint = TINT.thatchNew, moss = 0.35, age = 0.5,
+    fringe = true, detail = 2, k = FLAT,
   } = o
   // CHARACTER SURVIVES DOWN TO DETAIL 1, and it is free there. It used to stop
   // at detail 2 and the middle tier read as a different, straighter village --
@@ -662,7 +696,7 @@ export function planGableRoof(o) {
   const grid = detail >= 2
     ? roofGrid(2 * alongHalf + vLo + vHi, Math.hypot(runHalf + oh, rise + drop))
     : { nu: 1, nv: 1 }
-  const color = roofTint({ base: tint, eaveY: eave, ridgeY, moss })
+  const color = roofTint({ base: tint, eaveY: eave, ridgeY, moss, ageAtEave: age })
 
   const slopes = [1, -1].map((sign) => slopeSurface({
     cx, cz, alongAxis: ridgeAxis, dirSign: sign, alongHalf,
@@ -714,7 +748,7 @@ export function planGableRoof(o) {
 export function planLeanRoof(o) {
   const {
     cx, cz, w, d, highY, lowY, dir = '+z', seed = 0, overhang = 0.3,
-    layer = LAYER.THATCH, tint = TINT.thatchNew, detail = 2, k = FLAT,
+    layer = LAYER.THATCH, tint = TINT.thatchNew, age = 0.5, detail = 2, k = FLAT,
   } = o
   // Detail 1 keeps the character, for the reasons planGableRoof() gives.
   const kk = detail >= 1 ? k : FLAT
@@ -733,7 +767,7 @@ export function planLeanRoof(o) {
   const grid = detail >= 2
     ? roofGrid(2 * alongHalf + 2 * verge, Math.hypot(runNominal + oh, highY - eave))
     : { nu: 1, nv: 1 }
-  const color = roofTint({ base: tint, eaveY: eave, ridgeY: highY, moss: 0.3 })
+  const color = roofTint({ base: tint, eaveY: eave, ridgeY: highY, moss: 0.3, ageAtEave: age })
 
   // HOW FAR THE SHEET RUNS PAST THE WALL IT LEANS ON, up-slope, on the same
   // plane. The plan pins the top edge at the main mass's NOMINAL eave and the
@@ -808,6 +842,40 @@ export function leanToRoof2(b, o) {
 }
 
 /**
+ * What a dormer's vertical faces are walled in, per wall style.
+ *
+ * The UPPER half of the wall in every case, which is the half a dormer is near:
+ * a stone-based wall is timber by the time it reaches the eave, so a dormer
+ * standing above that eave is boarded and not rubble, and only a wall that is
+ * masonry the whole way up gives its dormer stone cheeks.
+ */
+// The stub's plan size, and how much of the building's own overhang its
+// covering is entitled to oversail by. Up here rather than inside dormer2()
+// because dormerHalfWidth() below is what building.js holds a PAIR of dormers
+// apart by, and a number copied into two files is a number that drifts.
+const DORM_HW = 0.54
+const DORM_RISE = 0.42
+const DORM_TRIM = 0.34
+
+/**
+ * How far a dormer reaches either side of its seat, covering and all, in the
+ * plan the building is laid out in. The eave oversail is measured along the
+ * pitch, so only its horizontal part counts here.
+ */
+export function dormerHalfWidth(overhang, k = FLAT) {
+  const rafter = Math.hypot(DORM_HW, DORM_RISE)
+  return DORM_HW * (1 + (overhang * DORM_TRIM * k.overhang) / rafter)
+}
+
+const DORMER_WALL_LAYER = {
+  [WALL_STYLE.LOG]: LAYER.TIMBER_BEAM,
+  [WALL_STYLE.STAVE]: LAYER.TIMBER_PLANK,
+  [WALL_STYLE.HALF_TIMBER]: LAYER.PLASTER,
+  [WALL_STYLE.STONE_BASE]: LAYER.TIMBER_PLANK,
+  [WALL_STYLE.MASONRY]: LAYER.STONE,
+}
+
+/**
  * A DORMER: a stub of roof driven out through the main slope, with a window in
  * the gablet it presents.
  *
@@ -818,7 +886,32 @@ export function leanToRoof2(b, o) {
  * A five-sided section swept horizontally into the slope IS the dormer -- two
  * roof planes, two cheeks and a floor from the sides of the sweep, the gablet
  * and its buried twin from the two caps -- and it costs sixteen triangles, which
- * is four more than the chimney.
+ * is four more than the chimney. Eight more go on the covering, which is a
+ * separate oversailing sheet and not a face of the solid at all; the reason is
+ * down at the end of the body, and it is that a roof with no thickness cannot
+ * overhang and stay closed at the same time.
+ *
+ * IT IS SWEPT BY HAND RATHER THAN BY prism(), and the reason is entirely about
+ * texture. prism() gives every face of a solid one layer and one frame, which is
+ * right for a timber and wrong for a building: a dormer is a scrap of ROOF over a
+ * scrap of WALL, and it has to be both. Drawn face by face it is the same sixteen
+ * triangles, and each one gets the layer and the frame it should have had:
+ *
+ *  - The two pitches, and the sheet that oversails them, take the COVERING, with
+ *    U along the little ridge and V the arc length up from the little eave --
+ *    the same frame slopeSurface() gives the roof this grew out of, so the straw
+ *    runs the same way on both and laps downhill on the stub as well.
+ *  - The gablet and the two cheeks take the WALL, in whatever layer the house is
+ *    walled in, and they measure V as ABSOLUTE WORLD HEIGHT. That is the one
+ *    thing that matters about the frame here: it is what makes the log courses of
+ *    a dormer cheek line up with the log courses of the wall three metres below
+ *    it, exactly as it does between one wall of the building and the next.
+ *
+ * The old version swept a prism with `vWorldY` set, and the stub is swept
+ * HORIZONTALLY: world height is the same number at both ends of a horizontal
+ * sweep, so V never moved and the covering was smeared the entire depth of the
+ * dormer. A horizontal sweep and `vWorldY` cannot both be right, and this file
+ * has the same trap noted at the porch rail.
  *
  * WHAT KEEPS IT WATERTIGHT is the same pair of tricks:
  *
@@ -833,18 +926,14 @@ export function leanToRoof2(b, o) {
  *    interesting. Where the sheet never gets clear before the ridge, there is no
  *    dormer -- which is what happens on a shallow-pitched hut, and correctly so.
  *
- * The whole stub is drawn in the COVERING's layer and colour rather than in
- * boards. A thatched gablet is what a thatched roof actually does when it has to
- * grow a window, and it also means the thing reads as a piece of the roof pushed
- * out rather than as a shed nailed onto it.
- *
  * Returns the SEAT it drew -- where the stub met the sheet and how far back it
  * had to run to get under it -- or null if it drew nothing. The caller keeps
  * those so the gate can walk up to each one and measure it, rather than having
  * to find dormers in a finished vertex array by looking for shapes.
  */
 export function dormer2(b, {
-  x, z, nx, nz, sheetAt, ridgeLimit, layer, color, seed = 0, detail = 2, k = FLAT,
+  x, z, nx, nz, sheetAt, ridgeLimit, layer, color, style = WALL_STYLE.LOG,
+  overhang = 0.4, seed = 0, detail = 2, k = FLAT,
 }) {
   if (detail < 1) return null
   const faceY = sheetAt(x, z)
@@ -859,30 +948,142 @@ export function dormer2(b, {
   const winH = 0.6
   const winW = 0.62
   const eaveH = SILL + winH + 0.07 + 0.26
-  const apexH = eaveH + 0.42
-  const hw = 0.54
+  const apexH = eaveH + DORM_RISE
+  const hw = DORM_HW
+
+  // HOW FAR THE COVERING OVERSAILS, which it does for the reason the roof this
+  // grew out of does: the rafters run past the wall and the straw runs past the
+  // rafters, and a stub is built by the people who built the roof. So it is the
+  // BUILDING'S OWN overhang it is given, cut to TRIM -- the full 0.4 m of the
+  // house on a plate a metre wide would be a mushroom, and none at all is the
+  // box with a lid this used to be. The verge keeps the roof's own 3:4 against
+  // the eave, and `k.overhang` scales both, so the house wearing deep sheltering
+  // eaves has the dormer to match rather than one bought off a different roof.
+  // dormerHalfWidth() up top is the same sum, and is what holds a pair apart.
+  const eaveOut = overhang * DORM_TRIM * k.overhang
+  const vergeOut = eaveOut * 0.75
+  // And how far the sheet floats over the boarding it is laid on. Vertical, not
+  // along the pitch normal: shifted straight up, both pitches still meet at the
+  // apex and the ridge closes exactly, where a normal offset would open a slot
+  // along the ridge as wide as the lift.
+  const LIFT = 0.035
 
   // HOW FAR IN THE SWEEP HAS TO RUN before the covering is clear over the top of
   // it. Marched, not solved: `sheetAt` is the triangles, and the triangles are
-  // where the sag and the buckle are.
+  // where the sag and the buckle are. Measured to the top of the OVERSAILING
+  // sheet and not the solid under it, that being the highest thing drawn.
   const CLEAR = 0.22
   let depth = 0
   for (let t = 0.4; t <= ridgeLimit; t += 0.12) {
-    if (sheetAt(x - nx * t, z - nz * t) >= faceY + apexH + CLEAR) { depth = t; break }
+    if (sheetAt(x - nx * t, z - nz * t) >= faceY + apexH + LIFT + CLEAR) { depth = t; break }
   }
   if (depth <= 0) return null
 
+  // The section, in (a, v): `a` runs across the face and `v` up from where the
+  // main sheet crosses it. WOUND ANTICLOCKWISE, which is the whole winding
+  // argument for the solid: for a CCW loop the outward normal of the edge from
+  // corner i to corner j is (dv, -da), and every face below is wound front edge
+  // first, back edge second, which lands on exactly that normal for all five of
+  // them at once. Get the loop right and there is nothing left to get wrong.
   const sec = [
     [0, apexH], [-hw, eaveH], [-hw, -SINK], [hw, -SINK], [hw, eaveH],
   ]
-  b.prism([x, faceY, z], [x - nx * depth, faceY, z - nz * depth], sec,
-    { layer, color, vWorldY: true })
+  // The face frame. `u` is the horizontal across the face, chosen so that
+  // cross(u, +y) is the outward normal, which is what makes a quad wound (u
+  // first, y second) face out of the building rather than into it.
+  const ux = nz
+  const uz = -nx
+  const P = (i, d) => [
+    x + ux * sec[i][0] - nx * d,
+    faceY + sec[i][1],
+    z + uz * sec[i][0] - nz * d,
+  ]
+  const A = sec.map((_, i) => P(i, 0))
+  const B = sec.map((_, i) => P(i, depth))
+
+  const wallLayer = DORMER_WALL_LAYER[style]
+  const wallTile = TILE_METRES[wallLayer]
+  const roofTile = TILE_METRES[layer]
+  // The wall frame, evaluated in WORLD space rather than off the quad's own
+  // corners: U is the world position projected onto the face's own horizontal,
+  // V is absolute height. Same courses as the wall below, and the gablet's fan
+  // of three triangles shares one frame instead of getting a new one per
+  // triangle -- which is the reason these are explicit and the cheeks below are
+  // not, a fan having no single pair of edges to derive a frame from.
+  const wallUV = (p) => [(p[0] * ux + p[2] * uz) / wallTile, p[1] / wallTile]
+  // ONE TINT FOR ALL FIVE STYLES, including the two that are stone and plaster
+  // down at ground level. wall2 tints those with groundGrime, and a grime is a
+  // function of height that is spent by the eave, arriving within a few percent
+  // of white. So at the height a dormer sits at, every wall on the building is
+  // showing its layer very nearly untinted, whatever it is made of.
+  const wallO = { layer: wallLayer, color: TINT.timber }
+
+  // The gablet, and its buried twin at the back of the sweep. The window stands
+  // in front of the first of them; the second is under the covering and is here
+  // because a solid with an open end is not a solid.
+  for (let i = 1; i < sec.length - 1; i++) {
+    b.tri(A[0], A[i], A[i + 1], { ...wallO, uvs: [wallUV(A[0]), wallUV(A[i]), wallUV(A[i + 1])] })
+    b.tri(B[0], B[i + 1], B[i], { ...wallO, uvs: [wallUV(B[0]), wallUV(B[i + 1]), wallUV(B[i])] })
+  }
+
+  // The slant of one pitch, which is the V the covering is measured along: the
+  // eave corner is 0 and the apex is the full length of the rafter, so the straw
+  // laps from the ridge down to the eave at the density it does everywhere else.
+  const rafter = Math.hypot(hw, apexH - eaveH)
+  const slant = rafter / roofTile
+  const dU = depth / roofTile
+  const pitchUV = (vLo, vHi) => [[0, vLo], [dU, vLo], [dU, vHi], [0, vHi]]
+  const face = (i, j, o) => b.quad(A[i], B[i], B[j], A[j], o)
+  face(0, 1, { layer, color, uvs: pitchUV(slant, 0) })
+  face(4, 0, { layer, color, uvs: pitchUV(0, slant) })
+  // The cheeks take the derived frame, because they are single quads and their
+  // own first edge IS the sweep: U comes out running back into the roof and
+  // `vWorldY` puts V on absolute height, which is the whole point.
+  face(1, 2, { ...wallO, vWorldY: true })
+  face(3, 4, { ...wallO, vWorldY: true })
+  // The floor, buried below the covering. NOT `vWorldY`: it is horizontal, so
+  // world height is one number across the whole face and the tile would smear
+  // over it -- the same trap the old prism fell into on all five faces at once.
+  face(2, 3, wallO)
+
+  // THE COVERING IS A SHEET LAID OVER THE STUB rather than a face of it, and it
+  // has to be, because that is the only way an overhang can exist here. A roof
+  // in this kit has no thickness, so a face that oversails the solid it belongs
+  // to leaves that solid open along the edge it left behind, and the airtight
+  // check is exactly the check that catches it. So the five-sided solid keeps
+  // all five of its faces and stays closed -- its two pitches standing in for
+  // the boarding, in the covering's own layer so that what shows in the slot at
+  // the eave is more roof -- and the sheet floats LIFT above them and runs out
+  // past the eave corners and past the gablet.
+  //
+  // DOUBLED, for the same reason slopeSurface() doubles: a doubled quad seals
+  // its own four edges, so an oversailing sheet costs the airtight check
+  // nothing, and the underside of an overhang is the one piece of a roof you
+  // are guaranteed to see from the ground.
+  const tipA = hw + eaveOut * (hw / rafter)
+  const tipV = eaveH - eaveOut * ((apexH - eaveH) / rafter)
+  const Q = (a, v, d) => [
+    x + ux * a - nx * d,
+    faceY + v + LIFT,
+    z + uz * a - nz * d,
+  ]
+  const dLo = -vergeOut
+  const cU = (depth + vergeOut) / roofTile
+  const cV = (rafter + eaveOut) / roofTile
+  const coverUV = (vLo, vHi) => [[0, vLo], [cU, vLo], [cU, vHi], [0, vHi]]
+  const coverO = { layer, color, double: true }
+  const ridge = (d) => Q(0, apexH, d)
+  const tip = (s, d) => Q(s * tipA, tipV, d)
+  b.quad(ridge(dLo), ridge(depth), tip(-1, depth), tip(-1, dLo),
+    { ...coverO, uvs: coverUV(cV, 0) })
+  b.quad(tip(1, dLo), tip(1, depth), ridge(depth), ridge(dLo),
+    { ...coverO, uvs: coverUV(0, cV) })
 
   windowUnit2(b, {
     x, z, y0: faceY + SILL, nx, nz, width: winW, height: winH,
     shutters: false, seed: seed * 29 + 7, detail, k,
   })
-  return { x, z, nx, nz, faceY, depth, apexH, eaveH, hw, sink: SINK }
+  return { x, z, nx, nz, faceY, depth, apexH, eaveH, hw, sink: SINK, lift: LIFT }
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,16 +2134,22 @@ export function windowUnit2(
  *
  * v1 built two battered prisms of six to eight sides -- a stack and a corbelled
  * cap -- for about 48 triangles, and the result still read as a post with a
- * collar. This is four sides, one solid, twelve triangles, and it goes the other
- * way: WIDER at the crown than at the base, with each of its four corners
- * jittered independently on both axes so no two faces are the same width and no
- * corner is square.
+ * collar. This is ONE solid of four, five or six sides -- twelve, sixteen or
+ * twenty triangles, two stacks in three of them square -- and it goes the other
+ * way: WIDER at the crown than at the base, with every corner jittered
+ * independently so no two faces are the same width and no corner is regular.
+ *
+ * The odd five- and six-sided ones are a minority on purpose. A village where
+ * every stack has the same corner count reads as a kit even when no two stacks
+ * are the same shape, because the eye counts silhouettes before it measures
+ * them; a village where none of them agree reads as a different kit. A third of
+ * them breaking the pattern is what makes the pattern look unplanned.
  *
  * Flaring outward is not masonry practice and is not meant to be. It is the one
  * shape a real chimney never has, which is exactly why it reads as somewhere
  * else -- and it is the tallest thing on the building, so it is the silhouette
- * the whole village is identified by from across the valley. The 36 triangles it
- * gives back are most of what pays for the roof grid.
+ * the whole village is identified by from across the valley. The 28 to 36
+ * triangles it gives back are most of what pays for the roof grid.
  */
 export function chimney2(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, k = FLAT }) {
   const grime = groundGrime(baseY, 1.4, 0.22)
@@ -1964,7 +2171,22 @@ export function chimney2(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, k
   //
   // For a VERTICAL sweep prism()'s section frame is (+z, +x), so the section's u
   // is the world z half-extent and its v is the world x one.
-  const sec = boxSection(d / 2, w / 2, seed * 7 + 1, 0.24)
+  //
+  // THE CORNER COUNT IS DRAWN FROM `seed` AND FROM NOTHING ELSE -- not from the
+  // detail tier, not from a counter, not once per end of the sweep. The stack
+  // has to come out identical every time the same plan is built and identical at
+  // every tier it is built at, and both ends of the prism have to be the SAME
+  // loop scaled, or the facets twist between base and crown.
+  //
+  // Four sides keeps its own generator rather than falling out of polySection at
+  // n = 4: boxSection puts its corners at the corners of the rectangle, where a
+  // polygon walked by angle puts them a factor of root two inside them, and the
+  // square majority is the shape the whole look was tuned on.
+  const roll = hash(seed, 11)
+  const sides = roll < 0.66 ? 4 : roll < 0.84 ? 5 : 6
+  const sec = sides === 4
+    ? boxSection(d / 2, w / 2, seed * 7 + 1, 0.24)
+    : polySection(d / 2, w / 2, sides, seed * 7 + 1, 0.18)
   b.prism([x, foot, z], [x, topY, z], sec, {
     sectionEnd: scaleSection(sec, k.flare),
     layer: LAYER.STONE, color: grime, vWorldY: true,

@@ -76,6 +76,11 @@ const REFERENCE_V1 = {
     gain: 1,
     exposure: 1,
     persp: 0.78,
+
+    // Zero, deliberately, and it is the one place in this file where the schema default is overridden rather than copied. This preset is a PIN: it records the sky that was signed off as "looks fantastic, just needs 200x optimization", and the zenith dissolve did not exist when that judgement was made. Shipping the pin with the dissolve on would silently redefine the thing every later sky is compared against, which is the one job a pin has. The working presets below take the schema default of 0.70 instead.
+    zenFade: 0,
+    zenReach: 0.90,
+
     fieldScale: 0.012,
     horizonCut: -0.02,
     extinct: 0.8,
@@ -171,6 +176,8 @@ const REFERENCE_V1 = {
 //     starting point for a headset, not a measurement.
 const FAST = {
   ...REFERENCE_V1,
+  // Both working presets turn the dissolve on. They are what you actually fly around in, and the hard disc overhead is the artifact it exists to remove; only the pin above keeps it, and only because the pin has to stay what it was.
+  zenFade: 0.70,
   steps: 20,
   warpStages: 1,
   leyPatchAmt: 0,
@@ -209,6 +216,7 @@ const FAST = {
 // buffer somewhere around 250-400 px wide and set the divisor from that.
 const LOWRES = {
   ...REFERENCE_V1,
+  zenFade: 0.70,
   steps: 64,
   lowRes: 6,
   lowBlur: 1.0,

@@ -5,7 +5,7 @@
 // three pieces that CAN go wrong silently and CAN be tested were deliberately
 // written as plain functions in their own modules, and this is what tests them:
 //
-//   pick.js          the terrain raymarch, against an analytic field
+//   pick.js          the terrain raymarch and the prop pick, against fixtures
 //   lake-transform.js  the gizmo-transform -> lake-record mapping
 //   history.js       the bounded undo stack
 //   restore.js       replaying a snapshot into a live Layers
@@ -26,7 +26,7 @@
 import { fileURLToPath } from 'node:url'
 
 import { WORLD_SIZE } from '../src/v2/config.js'
-import { raymarchGround } from '../src/v2/edit/pick.js'
+import { raymarchGround, pickProp } from '../src/v2/edit/pick.js'
 import { gizmoFromLake, lakeFromGizmo, MIN_LAKE_RADIUS } from '../src/v2/edit/lake-transform.js'
 import { History } from '../src/v2/edit/history.js'
 import { restoreLayers, emptyDoc } from '../src/v2/edit/restore.js'
@@ -478,6 +478,67 @@ function sectionSplit() {
   }
 }
 
+// --- section 7: naming the prop under the cursor -----------------------------
+//
+// pickProp exists so a variant can be QUOTED, and its whole value is that the
+// name it prints belongs to the thing being looked at. Every failure mode here
+// is silent in the view: a sign slip in the axis solution names the tree behind
+// you, a bad clamp names nothing when you look up at a crown, and the parallel
+// branch is only ever reached by looking straight down, which is exactly the
+// pose someone naming a mushroom is in and exactly the one nobody tests by
+// hand. So the geometry is asserted rather than eyeballed.
+function sectionPick() {
+  console.log('\n-- prop picking')
+
+  // The scatters' public shape, and only that: pickProp duck-types across six
+  // modules, so a fixture that offered more than tiles/instX/instY/instZ plus a
+  // variant array would be testing something no scatter promises.
+  const mk = (pts) => ({
+    tiles: new Map([[0, { n: pts.length, ids: pts.map((_, i) => i) }]]),
+    instX: Float32Array.from(pts.map((p) => p[0])),
+    instY: Float32Array.from(pts.map((p) => p[1])),
+    instZ: Float32Array.from(pts.map((p) => p[2])),
+    variantAt: Uint16Array.from(pts.map((p) => p[3])),
+  })
+  const src = (pts, radius, rise) => [{ label: 'tree', sys: mk(pts), idKey: 'variantAt', radius, rise }]
+
+  const eye = { x: 0, y: 1.7, z: 0 }
+  const fwd = { x: 0, y: 0, z: -1 }
+  const tree = [[0, 0, -20, 7]]
+
+  const level = pickProp(src(tree, 3, 26), eye, fwd, 100)
+  check(level !== null && level.label === 'tree' && level.variant === 7, 'a trunk ahead is named, with its variant')
+  check(level !== null && near(level.dist, 20, 1e-3), 'and the range is to the axis, not to the pick volume', `${level?.dist.toFixed(3)} m`)
+
+  // The clamp's whole job. At 30 degrees up the ray passes the trunk's foot by
+  // 11 m and only meets the capsule 13 m up it, so an unclamped solve or a
+  // volume that stops at chest height both report nothing here -- and "nothing"
+  // is what you get for pointing at any canopy at all.
+  const up = { x: 0, y: Math.sin(Math.PI / 6), z: -Math.cos(Math.PI / 6) }
+  check(pickProp(src(tree, 3, 26), eye, up, 100) !== null, 'a crown 13 m up the axis is still named')
+  check(pickProp(src(tree, 3, 8), eye, up, 100) === null, 'and a volume that ends below it is not stretched to reach')
+
+  check(pickProp(src(tree, 3, 26), eye, fwd, 10) === null, 'a prop past the ground range is hidden by the hill')
+  check(pickProp(src([[4, 0, -20, 7]], 3, 26), eye, fwd, 100) === null, 'a trunk 4 m off a 3 m volume is a miss')
+  check(pickProp(src([[0, 0, 20, 7]], 3, 26), eye, fwd, 100) === null, 'and one behind the camera is never named')
+
+  const two = pickProp(src([[0, 0, -40, 1], [0, 0, -20, 2]], 3, 26), eye, fwd, 100)
+  check(two !== null && two.variant === 2, 'the NEAR one wins when the ray passes through both', `named ${two?.variant}`)
+
+  // The degenerate branch: den = 1 - dir.y^2 is zero looking straight down, and
+  // the closed-form solve divides by it.
+  const down = pickProp(src([[0.05, 0, 0, 3]], 0.18, 0.3), eye, { x: 0, y: -1, z: 0 }, 100)
+  check(down !== null && down.variant === 3, 'a mushroom underfoot survives the straight-down singularity')
+
+  let threw = false
+  try {
+    pickProp([{ label: 'tree', sys: mk(tree), idKey: 'shapeAt', radius: 3, rise: 26 }], eye, fwd, 100)
+  } catch {
+    threw = true
+  }
+  check(threw, 'a source naming a variant array the scatter does not have throws')
+}
+
 export async function run() {
   console.log('\n=== v2 editing tools ===')
   sectionRaymarch()
@@ -486,6 +547,7 @@ export async function run() {
   sectionRestore()
   sectionHandles()
   sectionSplit()
+  sectionPick()
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
   // THROWS rather than returning the count, because check-v2.mjs's aggregator
   // only catches: it calls `await mod.run()` and ignores what comes back, so a

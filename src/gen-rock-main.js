@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { buildRock, rockClass, ROCK_DEFAULTS, ROCK_TIERS, ROCK_LADDERS } from './props/rock.js'
+import { buildRock, ROCK_DEFAULTS, ROCK_TIERS, ROCK_LOD_AT, rockLodSize } from './props/rock.js'
 import { ROCK_VARIANTS, TINTS, TINT_GAIN, rockParams } from './props/rock-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
@@ -25,9 +25,9 @@ import impostorSource from './props/impostor.js?raw'
 //   GALLERY -- twenty seeds of one preset. A generator is only as good as its
 //   range, and one rock proves nothing about a parameter set.
 //
-//   LADDER -- the same rock at all four tiers, side by side, at true size. This
-//   is the view that settles "do we need a real LOD2", because the T8 sitting
-//   next to the T80 either still reads as that rock or does not.
+//   LADDER -- the same rock at all three mesh tiers, side by side, at true
+//   size. This is the view that settles "do we need a real LOD2", because the
+//   T20 sitting next to the T80 either still reads as that rock or does not.
 //
 //   TINTS -- one rock per environment colour. Every rock in the world wears one
 //   128px granite tile, so this is the whole of the variety argument.
@@ -56,7 +56,10 @@ const STONE_TEX = 'rocks/stone.png'
 // colour, which is exactly why the shape list can stay this short. `size` is
 // not really part of the shape either: now that the tile scales with the rock,
 // an entry is the same picture at any scale, so the size a variant carries is
-// the one it is MEANT for -- what decides its class and therefore its ladder.
+// the one it is MEANT for. It no longer picks a ladder -- there is one ladder
+// and every rock is on it -- but the size a rock ends up at is what sets the
+// DISTANCES on that ladder, so it still decides how much mesh the world spends
+// on the variant. See ROCK_LOD_AT.
 
 // --- slider spec ------------------------------------------------------------
 // Ranges reach past what is useful on purpose: `cutDepth` at 1 shaves a rock
@@ -65,7 +68,7 @@ const SLIDERS = [
   ['size', 0.06, 14, 0.02, 'largest HORIZONTAL extent in metres, measured on the dense reference. The shape is built in relative units and rescaled, and the texture scales with it, so a shape found at 2 m is the same rock at 14 m'],
   ['squash', 0.15, 2.6, 0.01, 'height / width. Under 0.4 is a slab, over 1.5 is a standing stone'],
   ['elongate', 1, 2.6, 0.01, 'x extent against z extent. 1 is round in plan'],
-  ['tier', 0, 3, 1, 'which mesh tier is drawn: 0 = T180, 1 = T80, 2 = T20, 3 = T8. All four are the SAME rock at different resolutions'],
+  ['tier', 0, 2, 1, 'which mesh tier is drawn: 0 = T180, 1 = T80, 2 = T20. All three are the SAME rock at different resolutions, and beyond T20 the world draws the billboard'],
   ['lumps', 0, 0.9, 0.01, 'large-scale radial displacement -- the mass of the rock. Ceiling raised past the default because the default WAS the ceiling, which is never evidence that the ceiling is right'],
   ['lumpFreq', 0.6, 4, 0.05, 'how many lumps around the rock'],
   ['grain', 0, 0.5, 0.005, 'small-scale bumps that catch light along an edge. The 128px tile does the finer work'],
@@ -437,13 +440,20 @@ function refresh() {
   const s = rebuild()
   const per = Math.round(s.tris / s.count)
   const m = s.measured
-  const cls = rockClass(params.size)
-  const ladder = ROCK_LADDERS[cls]
   const shards = Math.max(1, Math.round(params.shards))
+
+  // THE SHIPPED THRESHOLDS, in metres, for THIS rock. ROCK_LOD_AT is metres of
+  // camera distance per metre of the rock's LADDER SIZE, so that one number is
+  // the whole of what separates this rock's ladder from any other rock's. It is
+  // the height with a floor at half the width -- see rockLodSize, which is the
+  // same function v2/render/rocks.js measures instances through, so the metres
+  // shown here are the metres the world uses.
+  const lod = rockLodSize(m)
+  const shipAt = ROCK_LOD_AT.map((k) => k * lod)
+  const cardAt = shipAt[shipAt.length - 1]
 
   // --- this rock ---
   const tier = ROCK_TIERS[Math.round(params.tier)]
-  const inLadder = ladder.includes(Math.round(params.tier))
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} on screen)` : ''}`],
     ...(s.card
@@ -464,11 +474,17 @@ function refresh() {
     // than a constant anyone can look up. Both halves are worth showing: the
     // repeat count is the art direction, the metres are what the shader sees.
     ['tile repeat', `${s.stats.texRepeat.toFixed(2)}&times; &nbsp; = ${s.stats.texMetres.toFixed(2)} m`],
-    ['size class', cls],
-    // `wrap` because this cell is a sentence, not a number: at a tier outside the
-    // class it names the whole ladder, and a nowrap sentence is what put a
-    // horizontal scrollbar under this panel.
-    ['tier in this class?', inLadder ? 'yes' : `no, ${cls} ships ${ladder.map((i) => ROCK_TIERS[i].name).join('/')}`, inLadder ? 'ok' : 'warn wrap'],
+    // WHERE THIS ROCK GOES TO BILLBOARD, which is the one number the ladder
+    // table below cannot put in a row of its own because it is the row that has
+    // no tier. Shown here too because it is the headline: it is how far the
+    // world will draw any mesh at all for a rock this size.
+    // The size the ladder is read in, and which of the three box axes is in
+    // charge, because that is the first question anyone asks of a number like
+    // this. It is a plain max, so naming the winner is naming the whole rule.
+    ['ladder size', `${lod.toFixed(2)} m &nbsp; <span class="k">its ${
+      lod === m.height ? 'height' : lod === m.width ? 'width' : 'depth'
+    }</span>`],
+    ['billboards past', `${cardAt.toFixed(0)} m`],
   ])
   document.getElementById('geonote').innerHTML = s.card
     ? `The card is a photograph of the mesh taken at load into <em>LAYER.IMPOSTOR_ROCK</em>, so it costs no disk and cannot disagree with the mesh. It is the weakest tier here by a distance -- see the parallax note.`
@@ -476,29 +492,48 @@ function refresh() {
       `&sect;5's boulder row budgets <em>20 tris &times; 440 instances</em>, which predates this ladder -- that row is T20 with one shard, and it is the tier the vast majority of instances are at.`
 
   // --- the ladder ---
+  //
+  // EVERY ROW CARRIES THE DISTANCE IT SHIPS AT, the billboard included, because
+  // a ladder without its thresholds does not say what the world does -- it only
+  // says what the meshes cost. The tiers are the same for every rock; the
+  // metres are this rock's alone.
+  //
+  // The model distance is kept beside it as the second number, because it is
+  // the argument the shipped one has to answer: it says where the tier stops
+  // earning its triangles at 3 px each, and a shipped threshold well inside it
+  // is a deliberate choice to spend fewer triangles than the eye could use.
   table(
     document.getElementById('ladderTable'),
     ROCK_TIERS.map((t, i) => {
-      const ships = ladder.includes(i)
+      const from = i === 0 ? 0 : shipAt[i - 1]
       const d = switchDistance(t.faces * shards, m.height)
       return [
-        `${t.name}${ships ? '' : ' <span class="k">(not in class)</span>'}`,
-        `${t.faces * shards} tris &nbsp; to ${d.toFixed(0)} m`,
-        ships ? '' : 'k',
+        t.name,
+        `${t.faces * shards} tris &nbsp; ${from.toFixed(0)}&ndash;${shipAt[i].toFixed(0)} m ` +
+          `&nbsp; <span class="k">model ${d.toFixed(0)}</span>`,
+        '',
         i === Math.round(params.tier) && !s.card ? 'here' : '',
       ]
-    }).concat([['card, beyond', `${2 * params.planes} tris`, '', s.card ? 'here' : '']])
+    }).concat([[
+      'billboard',
+      `${2 * params.planes} tris &nbsp; beyond ${cardAt.toFixed(0)} m`,
+      '',
+      s.card ? 'here' : '',
+    ]])
   )
 
   // --- can it be a card ---
   const depth = Math.max(m.width, m.depth)
   const crossover = depth * 28.6
-  const t8 = switchDistance(ROCK_TIERS[ROCK_TIERS.length - 1].faces * shards, m.height)
+  const coarsest = ROCK_TIERS[ROCK_TIERS.length - 1]
   table(document.getElementById('parallax'), [
     ['depth (widest plan axis)', `${depth.toFixed(2)} m`],
     ['parallax crossover', `${crossover.toFixed(0)} m`],
-    ['T8 stops earning at', `${t8.toFixed(0)} m`],
-    ['card is honest first?', crossover <= t8 ? 'yes' : 'no -- mesh is still cheaper', crossover <= t8 ? 'ok' : 'warn'],
+    // Against the SHIPPED handover and not the model's, because the shipped one
+    // is where the billboard actually takes over. A rock whose parallax error
+    // is still visible at that range is a rock the world cards too early.
+    [`${coarsest.name} hands over at`, `${cardAt.toFixed(0)} m`],
+    ['card is honest first?', crossover <= cardAt ? 'yes' : 'no -- mesh is still cheaper', crossover <= cardAt ? 'ok' : 'warn'],
     ['rock is this tall at 60 m', `${pixelsTall(m.height, 60).toFixed(0)} px`],
     ['&hellip; and at 150 m', `${pixelsTall(m.height, 150).toFixed(0)} px`],
   ])

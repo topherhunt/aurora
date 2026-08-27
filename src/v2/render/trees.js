@@ -4,6 +4,7 @@ import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers } from '../../prop
 import {
   createPropMaterial,
   setSnowLine,
+  setLeafSnowVary,
   setPropFadeAt,
   setPropFadeTimerAt,
   getPropClock,
@@ -142,29 +143,43 @@ import {
 // Measured on a flat headless world at the standing eye height, 40,972 trees
 // placed inside 1500 m:
 //
-//   tier 0   LOD0 mesh    < 10 m          10 instances    440 tris each
-//   tier 1   LOD1 mesh    10 - 45 m      313              60 tris each
-//   tier 2   crossed card 45 - 100 m   1,237               6 tris each
-//   tier 3   billboard    to 1500 m    39,412               1 tri  each
+//   tier 0   LOD0 mesh    < 8 m             8 instances    2.7k
+//   tier 1   LOD1 mesh    8 - 15 m         25              8.3k
+//   tier 2   crossed card 15 - 100 m    1,527              9.2k
+//   tier 3   billboard    to 1500 m     39,412             39.4k
 //
-// 70k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. It was 131k
-// before two changes this session, and both of them are visible in that table:
-// the crown bundle took tier 1 from ~130 triangles a tree to 60 (-22k), and the
-// one-triangle card halved the far band (-39k).
+// 59.6k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. Five
+// other camera spots on the same flat world give 58 to 61k. The mesh tiers cost
+// 470 and 338 triangles a tree averaged over the bank; what a given spot pays
+// is which variants happen to be standing near it, which is why those two rows
+// wander by a third between spots and the card rows do not.
 //
-// THE FAR BAND IS NOW 56% OF THE FOREST and there is no third halving in it --
-// one triangle is the floor for one tree. What takes it further is a clump card,
-// one picture per patch of canopy rather than per tree, which is the named next
-// piece below. Tier 1 is second at 27%, and its outer edge is the knob to turn
-// before the density is, the annulus being twenty times tier 0's area.
+// THE TWO MESH TIERS DIFFER ONLY IN WOOD. LOD1 is LOD0 with `trunkSides` 3 and
+// `branchSides` 1 -- a three-sided trunk and one flat fin per limb -- and its
+// FOLIAGE IS THE SAME CARDS IN THE SAME SEATS, not a coarser crown that happens
+// to measure the same. So the 8 m boundary is the cheapest swap in the project:
+// nothing about the canopy changes, and what pops is limbs losing their barrel
+// at a range where a limb is about 15 px wide and mostly behind its own leaves.
+// The 28% it saves is all sticks, which is why it can be spent this close in.
+//
+// WHY THE MESH STOPS AT 15 m rather than being pushed further. The next saving
+// after the wood is the crown, and there is no honest cut in a crown: a card is
+// already one triangle at its true world size, so fewer sprays thins the tree
+// and bigger ones put a two-foot needle on a spruce. A tier past LOD1 has to
+// stop drawing the crown as geometry, and that is what the cross IS.
+//
+// THE FAR BAND IS 66% OF THE FOREST and there is no third halving in it -- one
+// triangle is the floor for one tree. What takes it further is a clump card, one
+// picture per patch of canopy rather than per tree, which is the named next
+// piece below.
 //
 // THE CROSS TIER IS FREE IN EVERYTHING BUT TRIANGLES, and cheap in those. Both
 // card tiers hang on the SAME baked impostor layer -- one photograph per species
 // -- so the cross costs no second bake, no duplicate texture layer and no
-// texture memory. It costs 7.4k triangles, because the 45-100 m annulus holds
-// about a thousand trees where the far field holds forty thousand; putting the
-// cross at 1500 m instead would cost 240k. That asymmetry is the whole reason
-// the ladder splits here rather than anywhere else.
+// texture memory. It costs 9.2k triangles, because the 15-100 m annulus holds
+// about fifteen hundred trees where the far field holds forty thousand; putting
+// the cross at 1500 m instead would cost 240k. That asymmetry is the whole
+// reason the ladder splits here rather than anywhere else.
 //
 // WHAT THE CROSS BUYS is depth, and it matters most in the headset. A billboard
 // has no binocular disparity across its own surface, so it reads as a cutout
@@ -200,19 +215,36 @@ const DENSITY = 0.05
 // starts where a tree is already a one-triangle card.
 const FULL_RADIUS = 80
 
-// Metres. Tier 0 inside 10, LOD1 mesh to 45, crossed card to 100, billboard out
-// to the draw radius. The cross band is where the billboard's total lack of
-// depth would still read -- a 9 m tree at 60 m is 90 px tall in a headset and a
-// flat cutout at that size is obvious, especially in stereo, where a card has
-// no disparity across its own surface. Past 100 m it stops mattering and the
-// billboard's 2 triangles against the cross's 6 start to.
-const LOD_BANDS = [10, 45, 100]
+// Metres. LOD0 inside 8, LOD1 to 15, crossed card to 100, billboard out to the
+// draw
+// radius. The cross band is where the billboard's total lack of depth would
+// still read -- a 9 m tree at 60 m is 90 px tall in a headset and a flat cutout
+// at that size is obvious, especially in stereo, where a card has no disparity
+// across its own surface. Past 100 m it stops mattering and the billboard's 2
+// triangles against the cross's 6 start to.
+//
+// THE FIRST TWO NUMBERS ARE THE NEAR FIELD'S QUALITY KNOBS and they are priced
+// very differently. Both bands grow as the SQUARE of their reach, but a tree in
+// the first costs 470 triangles and one in the second 338, so widening the
+// SECOND is what buys geometry cheaply: 15 m holds 32 mesh trees for 11k
+// between the two tiers, where putting LOD0 alone out to 15 m cost 14k for the
+// same trees. Measured on the flat world, tier by tier: 8 m holds 8 LOD0 trees,
+// the 8-15 m shell holds another 24, and 100 m holds 1,526 crosses.
+//
+// Moving the FIRST number is nearly free in both directions, because the two
+// mesh tiers are within 28% of each other -- that is what makes it safe to keep
+// LOD0 as tight as this. Moving the SECOND is the real spend: 20 m instead of
+// 15 would add ~25 more LOD1 trees and 8k.
+//
+// Three entries here, four tiers in tree-bank.js; they have to keep agreeing and
+// check-trees asserts that they do.
+const LOD_BANDS = [8, 15, 100]
 
 // The band test measures to a tree's ROOT, and a tree is not at its root -- it
 // is nine metres of canopy standing on it. So the sphere is centred low, and
 // height reads as distance: step onto a ledge level with a nearby crown and the
-// vertical leg alone eats most of the 10 m budget. You can be closer to the tree
-// than a player standing at its foot and still be handed the coarser tier, while
+// vertical leg alone eats the whole 8 m budget twice over. You can be closer to
+// the tree than a player standing at its foot and still be handed a coarser tier, while
 // your face is in the leaves. On foot this never comes up, which is why the
 // bands measured fine when they were tuned; on a ledge or in the air it is the
 // first thing you see.
@@ -226,8 +258,9 @@ const LOD_BANDS = [10, 45, 100]
 //
 // AT GROUND LEVEL IT DOES ALMOST NOTHING, which is the property that makes it
 // safe to land without re-tuning the bands: eye height over a tree's root is a
-// metre or two, and at 2 m the tightest band widens from a 9.80 m disc to a
-// 9.95 m one, 1.6%. At 45 and 100 m it is under a tenth of a percent. The
+// metre or two, and at 2 m the tightest band widens from a 7.75 m disc to a
+// 7.94 m one, 2.5% -- five percent of its AREA, which is half a tree. At 100 m
+// it is under a tenth of a percent. The
 // ellipsoid meets the ground plane in very nearly the same disc the sphere did.
 // It only opens up where the sphere was wrong.
 //
@@ -235,9 +268,9 @@ const LOD_BANDS = [10, 45, 100]
 // without re-deriving the ladder's instance counts. A band's population is the
 // area of its horizontal cross-section through the ellipsoid, and that section
 // is WIDEST AT ZERO ALTITUDE and shrinks from there: at height y the tier-0 disc
-// has radius sqrt(10^2 - (y/2)^2), which is 10 m on the ground, 8.7 m at 10 m
-// up, and gone by 20 m. So the 10 / 313 instance counts in the ladder above are
-// the maximum, not a typical case, and climbing only ever moves trees to
+// has radius sqrt(8^2 - (y/2)^2), which is 8 m on the ground, 6.2 m at 10 m up,
+// and gone by 16 m. So the instance counts in the ladder above are the
+// maximum, not a typical case, and climbing only ever moves trees to
 // coarser tiers. The stretch buys back a tier the old test wrongly took away; it
 // never hands out a tier the old test would have refused on the ground.
 //
@@ -315,7 +348,16 @@ const PLACEMENT_CELL = 4.0
 // frame. Raising it does not buy accuracy, only latency.
 const GROUND_SWEEP = 16
 
-const SCALE = [0.85, 1.15]
+// Per-instance height, on top of the variant's own size multiplier. This is a
+// true SCALE -- the matrix, not a rebuild -- so it does not change a tree's
+// branch count the way TREE_SIZES does, and it is kept narrow for that reason:
+// it is the jitter that stops two trees of one variant being the same tree, not
+// the size ladder. The ladder is TREE_SIZES and it is four entries wide.
+const SCALE = [0.80, 1.20]
+
+// How much of the snow slider one CANOPY may take, rolled per tree. See
+// syncSnowLine for why it is neither 0 nor 1 at either end.
+const LEAF_SNOW_CAP = [0.25, 0.6]
 
 /** Deterministic 32-bit PRNG. Same one the rest of the project uses. */
 function mulberry32(a) {
@@ -454,6 +496,45 @@ export class Trees {
       this.tierIds.push(tier.geometries.map((g) => this.batch.addGeometry(g)))
       this.tierTris.push(tier.triangles.slice())
     }
+
+    // The trunk's world radius WHERE IT MEETS THE GROUND, per variant, at
+    // instance scale 1. `anchorsInto` is the only reader; see there for what it
+    // is for.
+    //
+    // TAKEN FROM THE GENERATOR RATHER THAN MEASURED OFF THE MESH, because the
+    // generator already publishes it exactly. tree.js builds the whole tree at
+    // height 1, rescales it by `scale = height / boundingBox.max.y` at the very
+    // end, and writes `trunkDiameter: 2 * p.trunkRadius * scale` into
+    // geo.userData.tree -- so the number is already in metres and already
+    // carries the rescale. It is the radius AT THE BASE and not an average,
+    // because the trunk is a cone whose radius law is
+    // `radiusAt(f) = trunkRadius * (1 - f)` and the base ring sits at f = 0, on
+    // y = 0, which is where the tree's root is by construction. Measuring the
+    // lowest few centimetres of LOD0's vertices instead reproduces this to the
+    // last digit for all sixteen variants (the base ring is a polygon with a
+    // vertex on +x, so max |x| IS the parametric radius), which is how the
+    // choice was checked rather than assumed.
+    //
+    // IT IS NOT crownWidth, and the difference is the whole point of the
+    // number: for the size-1.0 oak the trunk is about 0.35 m and the crown
+    // reaches about 3.5 m, so anything seated off the crown would be placed ten
+    // trunk radii out in the open where there is no tree to be at the foot of.
+    //
+    // Read here, INSIDE the constructor and before the dispose below, because
+    // this is the last moment the bank's own geometries are unambiguously live.
+    // A missing or zero diameter throws rather than defaulting: a footprint of
+    // nought reads downstream as "this tree has no trunk", which is a silent
+    // wrong answer of exactly the kind that only shows up as mushrooms
+    // floating in mid-air a long way from anything.
+    this.unitTrunkRadius = new Float32Array(this.variantCount)
+    for (let v = 0; v < this.variantCount; v++) {
+      const u = bank.tiers[0].geometries[v].userData.tree
+      if (!u || !(u.trunkDiameter > 0)) {
+        throw new Error(`Trees: LOD0 variant ${v} publishes no usable trunkDiameter`)
+      }
+      this.unitTrunkRadius[v] = u.trunkDiameter / 2
+    }
+
     // BatchedMesh has copied every vertex into its arena; the originals are now
     // a second copy with no reader.
     for (const g of geos) g.dispose()
@@ -689,6 +770,122 @@ export class Trees {
     // are in the number the panel shows for this frame.
     this.tris = tris + this.fadeTris
     this.nearTiles = nearCount
+  }
+
+  /**
+   * Where the trunks are, so another scatter can seat its props against real
+   * trees rather than against its own idea of where trees probably are.
+   *
+   * WHY THIS EXISTS AT ALL. A mushroom clump at the foot of a tree is only
+   * convincing if it is at the foot of a tree that is DRAWN. Re-deriving the
+   * forest from the hash on the consumer's side would give the right answer
+   * only where the two scatters happened to agree about the placement tests,
+   * the thinning level and the ground -- and the moment they drift, the
+   * mushrooms stand in clearings and the trees have bare feet. So the forest
+   * reports the trees it actually placed instead.
+   *
+   * Writes every RESIDENT instance whose centre falls inside the half-open
+   * axis-aligned box [x0, x1) x [z0, z1) into `out`, stride 4:
+   *
+   *   out[i*4+0]  x       world x of the trunk axis
+   *   out[i*4+1]  y       the trunk's own seated origin (instY), which is
+   *                       BELOW the drawn ground -- see the note further down
+   *   out[i*4+2]  z       world z of the trunk axis
+   *   out[i*4+3]  radius  world radius of the prop's FOOTPRINT at the ground,
+   *                       which for a tree is the trunk's own base radius in
+   *                       metres -- about 0.03 m for an aspen sapling up to
+   *                       about 0.47 m for a large oak, times the instance's own
+   *                       0.80-1.20 scale, and NOT the 1.4-8.5 m the crowns
+   *                       reach
+   *
+   * Returns the number of anchors written.
+   *
+   * THE BOX IS HALF-OPEN ON BOTH AXES and that is not a detail: the caller
+   * tiles the world with these boxes, and a tree sitting exactly on a shared
+   * edge has to land in exactly one of the two tiles that meet there. Closed
+   * boxes would seat two clumps on it and grow them twice; open ones would
+   * leave it out of both. So the test is `>= x0 && < x1`, and any caller
+   * splitting a region must abut its boxes exactly rather than overlap them.
+   *
+   * SATURATION IS THE CALLER'S TO NOTICE. `out` is never written past, so a box
+   * holding more trees than it has room for fills the array and returns
+   * floor(out.length / 4) -- indistinguishable, from in here, from a box that
+   * happened to hold exactly that many. A caller that cares has to compare the return
+   * against its own capacity, because silently truncating a fixed prefix of a
+   * tile is the failure that reads as one corner of the world having no
+   * mushrooms.
+   *
+   * NO PER-INSTANCE ALLOCATION -- two loops, no closures, no temporaries, no
+   * iterator over instances. The one allocation is the Map iterator the outer
+   * `for...of` makes, which is the same one `update()` already makes every
+   * frame. It is expected to be called from a scatter's own tile growth, which
+   * already runs against a per-frame millisecond budget.
+   *
+   * WHAT THE CONSUMER HAS TO KNOW ABOUT THE POPULATION IT IS READING:
+   *
+   *   Only RESIDENT tiles are walked, so this answers for the disc around the
+   *   camera and nothing outside it. A box beyond DRAW_RADIUS reports zero
+   *   trees, and so does one over a tile still sitting in the build queue.
+   *
+   *   The tree set is COMPLETE ONLY INSIDE fullRadius (80 m). Past it the
+   *   graded thinning has already cut this tile's trees by fullRadius / d, so
+   *   the anchors thin out with distance exactly as the forest does. Seating
+   *   clumps out there would put fewer of them at greater ranges and then
+   *   thicken them as the player walked in, which is a forest floor that grows
+   *   under you. Stay inside the full-density band.
+   *
+   *   THE y IS THE TRUNK'S OWN ORIGIN AND NOT THE SURFACE. instY is
+   *   `_groundFor(x, z) - PLACEMENT.sink * scale`, so it sits 12 to 18 cm
+   *   BELOW the drawn ground, by however much this instance's own 0.80-1.20
+   *   scale sinks it. A prop written flush at this y is underground -- for a
+   *   13 cm mushroom, entirely underground. A caller placing something at an
+   *   anchor should take the ground height at its own x, z, exactly as
+   *   rocks.js says of the same field. It also moves when `_reground` re-seats
+   *   the tile on a re-split chunk, so an anchor read once is a snapshot rather
+   *   than a fact.
+   *
+   * Cross-dissolve GHOSTS are not reported, which is correct rather than
+   * incidental: a duplicate is the same tree at a departing tier and belongs to
+   * no tile, so the loop below cannot reach it and no trunk is ever counted
+   * twice during a band swap.
+   */
+  anchorsInto(x0, z0, x1, z1, out) {
+    // Floored, so an `out` whose length is not a multiple of the stride simply
+    // gets the whole anchors it has room for rather than a partial one.
+    const cap = (out.length / 4) | 0
+    let n = 0
+    for (const tile of this.tiles.values()) {
+      // Whole-tile reject before a single instance is touched. Tiles are 25 m
+      // and a caller's box is typically one of its own tiles, so the
+      // overwhelming majority of the ~12,000 resident tiles are thrown out on
+      // four compares. Both extents are half-open in the same sense as the box,
+      // so a tile whose far edge lands exactly on x0 holds nothing inside it.
+      const tx0 = tile.tx * TILE
+      const tz0 = tile.tz * TILE
+      if (tx0 >= x1 || tx0 + TILE <= x0) continue
+      if (tz0 >= z1 || tz0 + TILE <= z0) continue
+
+      // Per tile and not over the pool, because a freed id keeps its old
+      // coordinates until something else takes it -- walking the pool would
+      // report trees that were thinned out or evicted, at wherever they last
+      // stood. `tile.n` is the live prefix of `ids`; the same contract `update`
+      // and `_release` iterate under.
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const x = this.instX[id]
+        if (x < x0 || x >= x1) continue
+        const z = this.instZ[id]
+        if (z < z0 || z >= z1) continue
+        if (n >= cap) return cap
+        const o = n * 4
+        out[o] = x
+        out[o + 1] = this.instY[id]
+        out[o + 2] = z
+        out[o + 3] = this.unitTrunkRadius[this.variantAt[id]] * this.instScale[id]
+        n++
+      }
+    }
+    return n
   }
 
   /**
@@ -1077,9 +1274,34 @@ export class Trees {
     return baked
   }
 
-  /** Match the props' snow to the terrain's, so a tree and its ground agree. */
+  /**
+   * Match the props' snow to the terrain's, so a tree and its ground agree --
+   * the band verbatim, the same call Rocks.syncBands makes, and calling both is
+   * harmless because the uniforms are global and the value is identical.
+   *
+   * AND CAP WHAT A CANOPY MAY TAKE OF IT, per tree, which is a knob foliage did
+   * not have until now. The snow line is a property of the MOUNTAIN: cross it
+   * and every tree above it took the full ceiling, so a stand went white in
+   * lockstep and read as one poured material rather than as weather that fell on
+   * individual trees. Rocks have had the same cap for the same reason
+   * (SNOW_CAP, rocks.js) and this is that argument applied to leaves.
+   *
+   * A QUARTER TO THREE FIFTHS, and both ends are load bearing. The bottom is not
+   * 0 because a tree above the snow line with no snow on it at all is a hole in
+   * the weather, not variety. The top is not 1 because a canopy at a full load
+   * is a white blob with no species left in it -- a spruce and a birch are the
+   * same object at that point, and the whole reason the bank has four trees is
+   * that they read differently at distance. Three fifths is a laden crown that
+   * still has leaves in it.
+   *
+   * The roll is per instance and hashes the tree's own root position, so it is
+   * stable across all four tiers and across a cross-dissolve -- both of those
+   * swap the geometry id and never the matrix -- and a tree does not change its
+   * snow load when it changes LOD.
+   */
   syncSnowLine(layers) {
     setSnowLine(layers.snow.base, layers.snow.band)
+    setLeafSnowVary(LEAF_SNOW_CAP[0], LEAF_SNOW_CAP[1])
   }
 
   get stats() {

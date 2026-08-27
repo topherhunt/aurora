@@ -140,6 +140,153 @@ export function screenRay(camera, ndcX, ndcY) {
   return { origin, dir }
 }
 
+// ---------------------------------------------------------------------------
+// PROP PICKING, which is a different problem from ground picking and solved a
+// different way.
+//
+// The ground is a field, so it can be marched. The props are forty thousand
+// instances drawn by a vertex shader that spins cards to face the camera and
+// cross-dissolves them between tiers -- there is no CPU-side geometry to cast
+// against, and building one would cost more than the whole scatter does. What
+// there IS, in every scatter module, is the same handful of public arrays:
+// `tiles` (a Map of live tiles, each with `n` and `ids`), `instX/instY/instZ`,
+// and an integer variant array. So this walks those directly and duck-types
+// across the six systems rather than putting a sixth copy of one loop into six
+// files.
+//
+// It is a NAMING tool and not a hit test. The readout it feeds exists so that
+// "that tree is too tall" can be said as "tree 11 is too tall", and being one
+// instance off inside a thicket does not cost anything. Hence the pick volumes
+// below: a vertical capsule per system, sized to the SPECIES rather than to the
+// instance, with no attempt to follow a crown that leans or a log that lies
+// across the slope. The ray takes the nearest instance whose axis it passes
+// close enough to, and the caller's ground distance is a ceiling, so a hillside
+// in front of a tree hides it exactly as it does on screen.
+//
+// COST is a per-tile box reject first -- tiles are 8 to 25 m and the corridor is
+// a few tens of metres, so nearly all of the ~12,000 resident tiles die on four
+// compares -- and then about twenty flops per surviving instance. At the panel's
+// 4 Hz that is nothing; it is not fit for a per-frame caller and has no reason
+// to be, since the readout it feeds updates at the panel's rate.
+// ---------------------------------------------------------------------------
+
+/**
+ * A scatter to pick against.
+ *
+ * `radius` is how far off the axis the ray may pass and still count, and `rise`
+ * how far above the instance's own y the axis runs. Both are in metres at
+ * instance scale 1, and both are DELIBERATELY GENEROUS -- a pick volume that
+ * undershoots reads as a readout that does not work, while one that overshoots
+ * reads as a readout that is easy to aim. The scale array, where a system has
+ * one, multiplies both.
+ *
+ * @typedef {object} PickSource
+ * @property {string} label     what to call it in the readout
+ * @property {object} sys       the scatter, needing tiles/instX/instY/instZ
+ * @property {string} idKey     the variant array's property name on `sys`
+ * @property {number} radius    pick radius, metres at scale 1
+ * @property {number} rise      pick height, metres at scale 1
+ * @property {string} [scaleKey] per-instance scale array, if the system has one
+ */
+
+/** Scratch, so a 4 Hz readout allocates nothing. */
+const pickHit = { label: '', variant: 0, dist: 0 }
+
+/**
+ * The nearest prop whose pick volume the ray enters, or null.
+ *
+ * `maxDist` is normally the range to the ground under the cursor: props beyond
+ * it are behind the hill and must not be reported. Pass Infinity to ignore the
+ * terrain.
+ *
+ * Returns a SHARED object -- read it before the next call. That is the same
+ * bargain the scatter's own stats objects make, and for the same reason.
+ *
+ * @param {PickSource[]} sources
+ * @param {{x: number, y: number, z: number}} origin
+ * @param {{x: number, y: number, z: number}} dir  unit length
+ * @param {number} maxDist
+ */
+export function pickProp(sources, origin, dir, maxDist) {
+  let bestT = maxDist
+  let best = null
+
+  // Order matters only for cost, not for the answer: whichever source is walked
+  // first pulls bestT in and makes every later source's reject bite harder.
+  for (const src of sources) {
+    const sys = src.sys
+    if (!sys || !sys.tiles) continue
+    const scales = src.scaleKey ? sys[src.scaleKey] : null
+    const ids = sys[src.idKey]
+    if (!ids) throw new Error(`pickProp: ${src.label} has no ${src.idKey}`)
+
+    // 1 - D.y^2, the denominator of the line-line solution, hoisted because it
+    // is a property of the ray and not of any instance.
+    const den = 1 - dir.y * dir.y
+
+    for (const tile of sys.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const ax = sys.instX[id]
+        const ay = sys.instY[id]
+        const az = sys.instZ[id]
+
+        // Reject on the foot of the axis before anything else. Six multiplies,
+        // and it throws out everything behind the camera and everything past
+        // whatever has already been hit -- which, because bestT starts at the
+        // ground range, means everything the hillside is covering.
+        const fx = ax - origin.x
+        const fy = ay - origin.y
+        const fz = az - origin.z
+        const foot = dir.x * fx + dir.y * fy + dir.z * fz
+        if (foot <= 0) continue
+        const scale = scales === null ? 1 : scales[id]
+        const rise = src.rise * scale
+        if (foot >= bestT + rise) continue
+
+        // Closest approach between the ray and the instance's vertical axis
+        // segment, as line-line and then clamped -- the textbook form, because
+        // the cheap shortcut (project into xz and solve there) divides by zero
+        // for anyone looking straight down at a mushroom, which is exactly the
+        // pose someone naming a mushroom is in.
+        let s
+        if (den > 1e-6) {
+          // w = origin - axisFoot, so e = w.y and d = dir . w, and the axis
+          // parameter is ( e - dir.y * d ) / den.
+          const d = -foot
+          s = (-fy - dir.y * d) / den
+        } else {
+          // Ray parallel to the axis: no height along it is closer than any
+          // other, so take the middle and let the radius decide.
+          s = rise * 0.5
+        }
+        if (s < 0) s = 0
+        else if (s > rise) s = rise
+
+        // Re-solved against the CLAMPED point rather than the unclamped pair,
+        // which is what makes the clamp mean anything at the two ends.
+        const py = fy + s
+        const t = dir.x * fx + dir.y * py + dir.z * fz
+        if (t <= 0 || t >= bestT) continue
+
+        const ex = fx - dir.x * t
+        const ey = py - dir.y * t
+        const ez = fz - dir.z * t
+        const r = src.radius * scale
+        if (ex * ex + ey * ey + ez * ez > r * r) continue
+
+        bestT = t
+        best = src
+        pickHit.label = src.label
+        pickHit.variant = ids[id]
+        pickHit.dist = t
+      }
+    }
+  }
+
+  return best === null ? null : pickHit
+}
+
 /**
  * Pointer event -> NDC against the element the event was aimed at. Uses the
  * canvas rect rather than the window, because the canvas is not the whole page
