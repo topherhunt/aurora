@@ -86,6 +86,8 @@
 //   the batch has an identical layout and refuses the whole mesh over one stray
 //   `uv`, so this is a boot failure for the entire forest.
 
+import { readFileSync } from 'node:fs'
+
 import * as THREE from 'three'
 
 import {
@@ -93,7 +95,7 @@ import {
 } from '../src/props/tree.js'
 import { TREE_SIZES, buildTreeBank, treeVariants, treeImpostorLayers } from '../src/props/tree-bank.js'
 import { buildImpostorCard } from '../src/props/impostor.js'
-import { CARD_UP_MARK } from '../src/material.js'
+import { CARD_UP_MARK, PROP_FADE_SECONDS } from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
 import { LAYER_COUNT, IMAGE_LAYERS, buildTextureArray } from '../src/textures.js'
@@ -140,7 +142,7 @@ const paramsFor = (s, seed, size = 1) => {
 // triangle counts pine, oak, birch and aspen actually build at seed 7 and their
 // own heights, so a harness that has stopped measuring the species says so here
 // rather than passing three sections later.
-const LOD0_TRIS = { pine: 802, oak: 526, birch: 360, aspen: 442 }
+const LOD0_TRIS = { pine: 819, oak: 543, birch: 377, aspen: 459 }
 
 // --- 1. the triangle law ----------------------------------------------------
 //
@@ -227,6 +229,85 @@ console.log('\n-- the triangle law --')
     g0.dispose()
     g1.dispose()
   }
+}
+
+// --- 1b. the trunk is not a pole --------------------------------------------
+//
+// `trunkLobe` exists so a trunk you walk up to is not a lathe-turned cone. What
+// has to be true of it: the base ring is genuinely out of round, by about the
+// amplitude asked for and not more; NO TWO TREES ARE OUT OF ROUND THE SAME WAY,
+// which is the whole point and is what a single hardcoded profile would fail;
+// and the lobes are SMOOTH around the ring rather than aliased into spikes,
+// which is the failure a harmonic above the sampling rate produces and is the
+// one that would read as a modelling bug rather than as wood.
+
+console.log('\n-- the trunk is not a pole --')
+
+{
+  // The trunk cone is built first and its base ring is the first `sides + 1`
+  // vertices, the last of which is the duplicated seam. Reading them directly is
+  // the only way to see the built skin rather than the parameter.
+  const baseRing = (p) => {
+    const g = buildTree(p)
+    const pos = g.attributes.position.array
+    const sides = Math.max(3, Math.round(p.trunkSides))
+    const r = []
+    for (let k = 0; k < sides; k++) r.push(Math.hypot(pos[k * 3], pos[k * 3 + 2]))
+    g.dispose()
+    return r
+  }
+  const spread = (r) => {
+    const mean = r.reduce((a, b) => a + b, 0) / r.length
+    return { mean, lo: Math.min(...r) / mean, hi: Math.max(...r) / mean }
+  }
+
+  for (const s of species) {
+    const p = paramsFor(s, 7)
+    const r = baseRing(p)
+    const sp = spread(r)
+    check(sp.hi - sp.lo > 0.12 && sp.hi - sp.lo < 2.2 * p.trunkLobe,
+      `${s}'s trunk is out of round, by about what trunkLobe asked for`,
+      `x${sp.lo.toFixed(3)} to x${sp.hi.toFixed(3)} of the mean, at trunkLobe ${p.trunkLobe}`)
+
+    // THE ALIASING TEST IS A COUNT OF TURNS, not a step size. A profile of
+    // harmonics up to `top` turns from swelling to hollowing 2 x top times
+    // around the ring and no more, whatever its amplitude; one aliased past the
+    // sampling rate turns at nearly every corner, because that is what "the
+    // ring cannot represent this harmonic" looks like in the vertices. The step
+    // size cannot separate those on its own -- 2*pi*n*A/sides is already ~15% of
+    // the radius for the FUNDAMENTAL at this amplitude, which is a real slope
+    // and what a swollen trunk should have -- so it is here only as the upper
+    // bound an alternating in-out ring would blow through.
+    const top = Math.max(2, Math.floor(r.length / 3))
+    let turns = 0
+    let worst = 0
+    for (let k = 0; k < r.length; k++) {
+      const d0 = r[(k + 1) % r.length] - r[k]
+      const d1 = r[(k + 2) % r.length] - r[(k + 1) % r.length]
+      if (d0 * d1 < 0) turns++
+      worst = Math.max(worst, Math.abs(d0) / sp.mean)
+    }
+    check(turns <= 2 * top && worst < 1.3 * p.trunkLobe,
+      `${s}'s lobes are a smooth profile rather than a ring aliased into spikes`,
+      `${turns} turns around ${r.length} corners (a profile capped at harmonic ${top} may have ${2 * top}), worst step ${(worst * 100).toFixed(1)}% of the radius`)
+  }
+
+  // Two trees, same species, different seed. Identical rings would mean the
+  // profile is a constant dressed up as a draw.
+  const a = baseRing(paramsFor('oak', 7))
+  const b = baseRing(paramsFor('oak', 11))
+  let same = 0
+  for (let k = 0; k < a.length; k++) if (Math.abs(a[k] - b[k]) < 1e-4) same++
+  check(same < a.length / 3, 'two oaks at two seeds are out of round differently',
+    `${same} of ${a.length} corners agree to 0.1 mm`)
+
+  // And the coarse tier, whose 3-sided trunk cannot carry a lobe without
+  // turning into a spike. `sides >= 6` in buildTree is what stops it; if that
+  // guard goes, this ring comes back wildly uneven.
+  const coarse = baseRing(treeLod(paramsFor('oak', 7), 1))
+  const cs = spread(coarse)
+  check(cs.hi - cs.lo < 1e-6, 'and LOD1\'s three-sided trunk is left perfectly round',
+    `x${cs.lo.toFixed(4)} to x${cs.hi.toFixed(4)}`)
 }
 
 // --- 2. the coarse mesh nests inside LOD0 -----------------------------------
@@ -1039,6 +1120,133 @@ trees.place(0, 0)
   // whole near field is promoted on the first frame there is. It degrades to a
   // plain pop, which at boot nobody sees.
   note('cross-dissolves in flight after the first update', `${s.fading}`)
+}
+
+// --- 9c. the shape of the cross-dissolve ramp -------------------------------
+//
+// WHAT THIS IS FOR. A cross-dissolve conserves coverage -- the two halves take
+// complementary thresholds, so the prop is fully covered from the first frame to
+// the last and the only visible signal is the MIX. That is what stops the
+// silhouette thinning, and it is also why the opening of the ramp is invisible:
+// at 10% the arriving tier is scattered single pixels over a face the departing
+// tier still fills. A LINEAR ramp therefore spends its first fifth looking like
+// nothing has happened, which is read as latency between crossing the band and
+// the animation starting -- reported from the headset as "a split second before
+// the dithering even starts", on a fade that was in fact already running.
+//
+// So the ramp is eased and the promise is about its FRONT, not its length. Both
+// numbers are read out of material.js's own shader source rather than restated
+// here, because the thing that would break this is somebody making the ramp
+// linear again, and a copy of the curve in the gate would go on passing.
+{
+  const src = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8')
+  check(/uPropClock - fadeT0 \) \*\s*\n\s*\$\{\(1 \/ PROP_FADE_SECONDS\)/.test(src),
+    'the shader runs its clock off PROP_FADE_SECONDS itself, not off a second copy of the number',
+    `interpolated into the GLSL as ${(1 / PROP_FADE_SECONDS).toFixed(6)}/s`)
+  check(PROP_FADE_SECONDS <= 0.25,
+    'and the window is a quarter second or less, so a swap resolves before it can be stared at',
+    `${PROP_FADE_SECONDS * 1000} ms`)
+
+  // The ease, evaluated rather than pattern-matched: p is linear time through
+  // the window, `ease` is what the shader turns it into, and `ease` is also the
+  // arriving tier's coverage because the threshold test is `abs(vPropFade) <=
+  // fadeT` against a uniform dither.
+  const easeSrc = /^\s*fadeP = ([^;]+);/m.exec(src)[1]
+  const ease = (p) => Function('fadeP', `return ${easeSrc.replace(/([0-9])\.0\b/g, '$1')}`)(p)
+  check(Math.abs(ease(0)) < 1e-9 && Math.abs(ease(1) - 1) < 1e-9,
+    'the ease still starts at nothing and ends at everything, so no tier is clipped or held over',
+    `f(0) = ${ease(0)}, f(1) = ${ease(1)}`)
+  let mono = true
+  for (let i = 1; i <= 100; i++) if (ease(i / 100) <= ease((i - 1) / 100)) mono = false
+  check(mono, 'and it never goes backwards, so the dissolve does not visibly reverse mid-swap')
+  check(ease(0.1) >= 0.18,
+    'and it clears nearly a fifth of the swap in the first tenth of the window -- the anti-lag promise',
+    `${(ease(0.1) * 100).toFixed(0)}% arrived after ${(PROP_FADE_SECONDS * 100).toFixed(0)} ms, ` +
+    `against 10% if the ramp were linear`)
+  check(ease(0.3) >= 0.5,
+    'and half of it in the first three tenths, which is where the eye actually reads the transition',
+    `${(ease(0.3) * 100).toFixed(0)}%`)
+
+  // COVERAGE IS CONSERVED AT EVERY POINT ON THE RAMP, which is the other half of
+  // the design and the one the ease must not break. Simulated against the real
+  // fragment test: the departing half keeps a pixel when `1 - f > ign`, the
+  // arriving half when `f > 1 - ign`, and the two must partition every pixel.
+  let holes = 0
+  let doubles = 0
+  for (let i = 0; i <= 20; i++) {
+    const f = ease(i / 20)
+    for (let j = 0; j < 64; j++) {
+      const ign = (j + 0.5) / 64
+      const out = 1 - f > ign
+      const arr = f > 1 - ign
+      if (!out && !arr) holes++
+      if (out && arr) doubles++
+    }
+  }
+  check(holes === 0 && doubles === 0,
+    'and exactly one of the two halves survives at every pixel, at every point on the ramp',
+    `21 ramp positions x 64 dither levels, ${holes} holes, ${doubles} doubled`)
+}
+
+// --- 10b. what the cursor calls a tree, and where it thinks the tree is ------
+//
+// The /v2 readout names whatever is under the cursor. Two promises here: the
+// NAME is one somebody can act on -- `oak-2`, a species and which of the four
+// sizes, not the bank index 11 -- and the pick VOLUME is the tree's own trunk
+// and crown rather than a species constant. The second is what stopped the
+// cursor pointing through a trunk at the fern behind it: a 3 m radius column
+// from the ground up put the eye INSIDE the tree at any range you would inspect
+// one from, and pick.js ranks a volume from inside by its far wall.
+
+console.log('\n-- the cursor names a tree --')
+
+{
+  const names = trees.variantName
+  check(names.length === trees.variantCount, 'every variant has a name', `${names.length} of ${trees.variantCount}`)
+  check(names[0] === 'pine-0' && names[6] === 'oak-2' && names[15] === 'aspen-3',
+    'and the name is the species and which size it is, not the bank index',
+    `variant 0/6/15 are ${names[0]}/${names[6]}/${names[15]}`)
+  check(new Set(names).size === names.length, 'and no two variants answer to the same name')
+
+  // A real instance out of the placed bed, so this is the path pickProp walks.
+  const tile = trees.tiles.values().next().value
+  const id = tile.ids[0]
+  const v = trees.variantAt[id]
+  check(trees.nameAt(id) === names[v], 'a placed instance names its own variant', trees.nameAt(id))
+
+  const trunk = trees.pickTrunkAt(id, { radius: 0, base: 0, rise: 0 })
+  const crown = trees.pickCrownAt(id, { radius: 0, base: 0, rise: 0 })
+  const scale = trees.instScale[id]
+  check(near(trunk.base, 0, 1e-9) && near(trunk.rise, crown.base, 1e-6),
+    'the trunk volume runs from the ground to exactly where the crown starts',
+    `trunk 0 to ${trunk.rise.toFixed(2)} m, crown from ${crown.base.toFixed(2)} m`)
+  check(near(crown.base + crown.rise, trees.unitHeight[v] * scale, 1e-5),
+    'and the crown stops at the tip rather than somewhere above it',
+    `${(crown.base + crown.rise).toFixed(2)} m against a ${(trees.unitHeight[v] * scale).toFixed(2)} m tree`)
+  check(trunk.radius > 0 && trunk.radius < crown.radius / 3,
+    'the trunk is picked at trunk width and not at crown width -- the whole bug',
+    `trunk r ${trunk.radius.toFixed(2)} m, crown r ${crown.radius.toFixed(2)} m`)
+  check(trunk.radius > trees.unitTrunkRadius[v] * scale,
+    'and a little wider than the published base radius, because the trunk is a cone drawn inside it',
+    `${trunk.radius.toFixed(3)} m against ${(trees.unitTrunkRadius[v] * scale).toFixed(3)} m`)
+
+  // Over every placed tree, not just the first: the old constant was 3 m for
+  // all of them, and a sapling is a third the size of its full-grown variant.
+  const scratchSize = { radius: 0, base: 0, rise: 0 }
+  let widest = 0
+  let narrowest = Infinity
+  let n = 0
+  for (const t of trees.tiles.values()) {
+    for (let k = 0; k < t.n; k++) {
+      trees.pickTrunkAt(t.ids[k], scratchSize)
+      widest = Math.max(widest, scratchSize.radius)
+      narrowest = Math.min(narrowest, scratchSize.radius)
+      n++
+    }
+  }
+  check(widest < 3 && narrowest > 0.01 && widest / narrowest > 5,
+    'and the volumes track the trees rather than being one number for the forest',
+    `${n} trees, trunk pick radius ${narrowest.toFixed(3)} to ${widest.toFixed(3)} m, all under the 3 m the constant used`)
 }
 
 trees.dispose()

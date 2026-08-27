@@ -23,7 +23,13 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- Cliffsides, riverbeds, lake beds: include larger sized rock caps, as well as whole giant boulders underwater.
+- Tame rock counts. Currently way too many. In valley forests, should be 1/5th current volume.
+- Tame rock LODs & tri budget. Currently wasteful.
+  - Rock caps: instead of a billboard, maybe a flat card for the distance LOD?
+- Cliffsides: Include larger rock caps. Fit rock shade / brightness better with the terrain it's on.
+- Giant boulders underwater (rivers, lakebeds).
+- Fix the x-cross on top of tree cards. (mipmap bleed?)
+- Make auroras more sinuous. Also the curtains / ley-lines currently tend to run east<>west, shouldn't they roughly run north-south?
 - Rivers should sit into the hillside (node needs to be placed deep enough that the river wall  bites in
 - 2x ground variation at the 0.5m-2m level. This should help riverbanks feel broken up rather than smooth splines.
 - [ ] Deadwood: currently it's always placed in the same places as trees. Scatter it randomly, NOT under trees, though it's OK if it occasionally intersects. Also it needs to be browner, less red. Also vary size randomly from (current size) to 4x current size.

@@ -59,7 +59,7 @@ import {
 } from '../src/props/deadwood.js'
 import { DEADWOOD_BANDS, DEADWOOD_NAMES } from '../src/props/deadwood.js'
 import {
-  DEADWOOD_SEEDS, buildDeadwoodBank, deadwoodImpostorLayers,
+  DEADWOOD_SEEDS, buildDeadwoodBank, deadwoodImpostorLayers, cardAzimuth,
 } from '../src/props/deadwood-bank.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { Deadwood, SNAG_HEIGHT, LOG_LENGTH } from '../src/v2/render/deadwood.js'
@@ -633,8 +633,11 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
     const pos = g.attributes.position.array
     let w = 0
     let h = 0
+    // HORIZONTAL DISTANCE FROM THE AXIS, not the X extent: a log's card is fixed
+    // and turned to the azimuth it was photographed at, so its width lies along
+    // Z and reading X alone would measure it as nothing at all.
     for (let k = 0; k < pos.length; k += 3) {
-      w = Math.max(w, Math.abs(pos[k]) * 2)
+      w = Math.max(w, Math.hypot(pos[k], pos[k + 2]) * 2)
       h = Math.max(h, pos[k + 1])
     }
     // A hair of tolerance for the float round-trip through the attribute array.
@@ -648,12 +651,70 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
   check(tight.length === 0, 'and each billboard covers the piece it stands in for',
     tight.length === 0 ? 'card >= mesh extents, and within the baked frame' : tight.join('; '))
 
+  // A LOG'S CARD DOES NOT SPIN AND A SNAG'S DOES, which is the fix for the log
+  // that changed heading every time the LOD swapped. Three things have to agree
+  // or the tier is wrong in a way nothing else here would catch:
+  //
+  //   THE MARKER. material.js spins a card iff `normal.y > CARD_UP_MARK`, so the
+  //   log's normal has to be horizontal and the snag's vertical. This is the
+  //   whole of the behaviour and it is one number.
+  //
+  //   THE AIM. A fixed card is only right if it lies in the plane the camera was
+  //   at when the picture was taken -- bakeImpostor stands at (sin a, 0, cos a),
+  //   so the normal must point THERE. Checked against cardAzimuth, which is also
+  //   what the bake reads, so the two cannot be set apart by hand.
+  //
+  //   THE SPAN. The log is built lying down its own +Z, so a card carrying its
+  //   length has to span Z and not X. Measured as the quad's actual extent.
+  const spin = []
+  bank.tiers[2].geometries.forEach((g, i) => {
+    const v = bank.variants[i]
+    const log = v.kind === 'log'
+    const n = g.attributes.normal.array
+    const pos = g.attributes.position.array
+    const az = log ? cardAzimuth(v.kind) : 0
+    const wantN = log ? [Math.sin(az), 0, Math.cos(az)] : [0, 1, 0]
+    for (let k = 0; k < n.length; k += 3) {
+      if (Math.hypot(n[k] - wantN[0], n[k + 1] - wantN[1], n[k + 2] - wantN[2]) > 1e-6) {
+        spin.push(`${v.name}: normal ${[n[k], n[k + 1], n[k + 2]].map((q) => q.toFixed(2))} not ${wantN}`)
+        break
+      }
+    }
+    if (g.userData.impostor.upNormal !== !log) spin.push(`${v.name}: upNormal ${g.userData.impostor.upNormal}`)
+    if (g.userData.impostor.azimuth !== az) spin.push(`${v.name}: baked at ${az}, quad at ${g.userData.impostor.azimuth}`)
+    let ax = 0
+    let azx = 0
+    for (let k = 0; k < pos.length; k += 3) {
+      ax = Math.max(ax, Math.abs(pos[k]))
+      azx = Math.max(azx, Math.abs(pos[k + 2]))
+    }
+    // The long axis is Z for a log and X for a snag, and the other one is flat.
+    if (log ? !(azx > 0.1 && ax < 1e-6) : !(ax > 0.1 && azx < 1e-6)) {
+      spin.push(`${v.name}: spans x=${ax.toFixed(2)} z=${azx.toFixed(2)}`)
+    }
+  })
+  check(spin.length === 0, 'the log\'s card is fixed and aimed at its own bake angle, the snag\'s spins',
+    spin.length === 0 ? `logs face ${(cardAzimuth('log') * 180 / Math.PI).toFixed(0)} degrees and span Z; snags carry the up marker`
+      : spin.slice(0, 4).join('; '))
+
+  // The bake and the quad read the SAME function for the angle. Source, because
+  // the failure this rules out is somebody re-typing the quarter turn at one of
+  // the two sites: the two would still each be self-consistent and every number
+  // above would still pass, with the card showing a log end-on.
+  const bankSrc = fs.readFileSync(new URL('../src/props/deadwood-bank.js', import.meta.url), 'utf8')
+  check(
+    /azimuth: cardAzimuth\(kind\)/.test(bankSrc) && /azimuth: spun \? 0 : cardAzimuth\(v\.kind\)/.test(bankSrc),
+    'and the photograph and the quad take their angle from one place',
+    'cardAzimuth is read by both cardSubject and the card build')
+
   const imp = deadwoodImpostorLayers()
   check(new Set(imp).size === imp.length && imp.every((l) => l >= 0 && l < LAYER_COUNT),
     'the impostor layers are distinct and inside the atlas', `${imp.join(', ')} of ${LAYER_COUNT}`)
-  // A billboard's vertex normal is VERTICAL, so it must take its snow as a
-  // coverage fraction off the card list rather than off the normal-dependent
-  // hard-surface recipe -- which would paint the whole card white. Same reason
+  // A billboard's vertex normal says nothing about the surface it is a picture
+  // of -- vertical on the snag, horizontal on the log -- so it must take its
+  // snow as a coverage fraction off the card list rather than off the
+  // normal-dependent hard-surface recipe, which reads that normal and would
+  // paint the snag's whole card white and the log's not at all. Same reason
   // the tree impostors are on this list. Not on MOSS_LAYERS, also like the
   // trees: a 20 m card is not the place to resolve a moss patch.
   const offCard = imp.filter((l) => !SNOW_CARD_LAYERS.includes(l))
@@ -891,17 +952,27 @@ const EMPTY_FOREST = mockForest([])
   const onNaive = run(mockForest(naive))
   const kept = onNaive.placed / bare.placed
 
-  check(bare.placed > 50, 'placed enough pieces to measure a yield', `${bare.placed} with no forest`)
-  check(kept > 0.9, 'the scatter does not draw the forest\'s own positions',
-    `${onNaive.placed}/${bare.placed} survive a trunk on every tile's first candidate ` +
-    `(${(kept * 100).toFixed(1)}%, unsalted would be about 75%)`)
-
-  // The CONTROL, and it is what makes the number above mean anything: the same
+  // The CONTROL, and it is what makes the naive number mean anything: the same
   // trunk count at positions with no relationship to any stream. If the naive
   // forest ever costs materially more than this one, the two streams have found
-  // their way back into step.
+  // their way back into step. Run FIRST because the absolute floor below is only
+  // legible next to it.
   const control = run(mockForest(naive.map(([x, z, r]) => [x + TILE * 0.5, z + TILE * 0.37, r])))
-  check(kept > control.placed / bare.placed - 0.05,
+  const incidental = control.placed / bare.placed
+
+  check(bare.placed > 50, 'placed enough pieces to measure a yield', `${bare.placed} with no forest`)
+  // THE FLOOR IS BELOW THE INCIDENTAL COST, NOT AT IT, and the gap between the
+  // two is the thing that moved when LOG_LENGTH doubled: a 35 m log is a long
+  // segment and crosses a sparse trunk by chance far more often than a 17 m one,
+  // so even a perfectly decorrelated stream now loses most of the old headroom
+  // to collisions that have nothing to do with the salt. What the floor still
+  // has to separate is SALTED from UNSALTED, and unsalted lands near 75% -- so
+  // it sits between the two rather than tracking either.
+  check(kept > 0.85, 'the scatter does not draw the forest\'s own positions',
+    `${onNaive.placed}/${bare.placed} survive a trunk on every tile's first candidate ` +
+    `(${(kept * 100).toFixed(1)}%; incidental collisions alone cost ` +
+    `${((1 - incidental) * 100).toFixed(1)}%, unsalted would be about 75%)`)
+  check(kept > incidental - 0.05,
     'and pays no more for a forest on its own grid than for one beside it',
     `${onNaive.placed} against the control's ${control.placed}`)
   control.dispose()
@@ -1025,6 +1096,107 @@ const EMPTY_FOREST = mockForest([])
     'and the size actually varies rather than sitting at one value',
     `standing pieces span ${snagLo.toFixed(2)}-${snagHi.toFixed(2)} m`)
   dw.dispose()
+}
+
+// ---------------------------------------------------------------------------
+// DRIFTWOOD. Submerged ground used to be an unconditional rejection and is now a
+// rate that only LOGS may draw against, which is three separate claims:
+//
+//   A LAKE BED GETS LOGS, and about half of what the dry rule would have put
+//   there. Measured against a control with the same seed and no water at all, so
+//   the denominator is the number of sites the rest of placement actually
+//   offered rather than one this gate worked out for itself.
+//
+//   IT GETS NO STUMPS. The asymmetry is the design and it is easy to lose in a
+//   refactor -- a stump standing on a lake bed is the failure mode.
+//
+//   A RIVER BED COUNTS AS A LAKE BED. The river-path clearance is what used to
+//   keep dead wood out of a watercourse, so a log admitted to the water has to
+//   be exempt from it or the riverbed stays swept clean while the lake fills up.
+//   Dry ground keeps the clearance, and that is checked in the same run.
+// ---------------------------------------------------------------------------
+{
+  console.log('\nand the drowned ground gets driftwood, not stumps')
+
+  const field = {
+    heightAt: () => 40,
+    heightAndSlopeAt: () => ({ h: 40, tan: 0 }),
+    snowLineAt: () => 900,
+    bands: { altLo: 0, altSpan: 100 },
+  }
+  // A 60 m disc of lake on the origin, and a 12 m river ribbon lying straight
+  // across it down the x axis. Every other placement test passes on this ground,
+  // which is the point: the only thing that can reject a piece here is water.
+  const LAKE = 60
+  const RIBBON = 6
+  const inLake = (x, z) => Math.hypot(x, z) < LAKE
+  const inRibbon = (z) => Math.abs(z) < RIBBON
+  const LAKE_WATER = { isSubmerged: (x, z) => inLake(x, z) }
+  const RIVER_LAYERS = {
+    ...MOCK_LAYERS,
+    paths: { nearest: (x, z, kind) => (kind === 'river' ? { dist: Math.abs(z), halfWidth: RIBBON } : null) },
+  }
+
+  const run = (water, layers) => {
+    const d = new Deadwood(new THREE.Scene(), field, water, layers, MOCK_TEX, EMPTY_FOREST, { seed: 21 })
+    d.place(0, 0)
+    return d
+  }
+  const tally = (d) => {
+    const t = { wetLogs: 0, wetSnags: 0, dryLogs: 0, ribbonLogs: 0, dryRibbonLogs: 0 }
+    for (const tile of d.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const log = d.isLog[d.variantAt[id]] === 1
+        const x = d.instX[id]
+        const z = d.instZ[id]
+        if (inLake(x, z)) {
+          if (log) t.wetLogs++
+          else t.wetSnags++
+          if (log && inRibbon(z)) t.ribbonLogs++
+        } else {
+          if (log) t.dryLogs++
+          if (log && inRibbon(z)) t.dryRibbonLogs++
+        }
+      }
+    }
+    return t
+  }
+
+  const dry = run(MOCK_WATER, MOCK_LAYERS)
+  const wet = run(LAKE_WATER, MOCK_LAYERS)
+  const dryT = tally(dry)
+  const wetT = tally(wet)
+
+  check(dryT.wetLogs > 20, 'the lake bed holds enough sites to measure',
+    `${dryT.wetLogs} logs land inside the ${LAKE} m disc with the water taken away`)
+  check(wetT.wetLogs > 0, 'a lake bed gets driftwood',
+    `${wetT.wetLogs} logs lying under water`)
+  check(wetT.wetSnags === 0, 'and not one stump stands in it',
+    wetT.wetSnags === 0 ? 'no standing piece is submerged' : `${wetT.wetSnags} snags underwater`)
+  const share = wetT.wetLogs / dryT.wetLogs
+  check(share > 0.35 && share < 0.65, 'and it keeps about half of what the dry rule would have put there',
+    `${(share * 100).toFixed(0)}% of ${dryT.wetLogs}, against the half PLACEMENT.submerged asks for`)
+  // EXACTLY equal, not approximately: the roll that admits a drowned log is drawn
+  // last in the candidate's stream precisely so that adding it moved nothing on
+  // dry land. A difference of one here means the stream shifted.
+  check(wetT.dryLogs === dryT.dryLogs, 'and dry ground is placed exactly as it was',
+    `${wetT.dryLogs} logs outside the lake either way`)
+
+  const riverDry = run(MOCK_WATER, RIVER_LAYERS)
+  const riverWet = run(LAKE_WATER, RIVER_LAYERS)
+  const rdT = tally(riverDry)
+  const rwT = tally(riverWet)
+
+  check(rdT.ribbonLogs === 0 && rdT.dryRibbonLogs === 0,
+    'the river clearance keeps dead wood out of a watercourse on dry ground',
+    `${rdT.ribbonLogs + rdT.dryRibbonLogs} logs inside the ${RIBBON} m ribbon with no water under it`)
+  check(rwT.ribbonLogs > 0, 'and a river BED is water, so a log may lie in it',
+    `${rwT.ribbonLogs} logs in the drowned stretch of the ribbon`)
+  check(rwT.dryRibbonLogs === 0, 'while the dry stretch of the same river stays clear',
+    `${rwT.dryRibbonLogs} logs in the ribbon beyond the lake`)
+
+  for (const d of [dry, wet, riverDry, riverWet]) d.dispose()
 }
 
 // --- `jag` means the same thing on every seed --------------------------------

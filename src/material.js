@@ -1107,8 +1107,10 @@ function billboardVertex(spherical) {
       vec3 bbRw = vec3( viewMatrix[ 0 ][ 0 ], viewMatrix[ 1 ][ 0 ], viewMatrix[ 2 ][ 0 ] );
       vec3 bbUw = vec3( viewMatrix[ 0 ][ 1 ], viewMatrix[ 1 ][ 1 ], viewMatrix[ 2 ][ 1 ] );
 
-      // The world-from-object linear map for this instance, and the inverse we
-      // need to hand the answer back in the object space three is expecting.
+      // The world-from-object linear map for this instance. We are about to
+      // build the answer in WORLD space and have to hand it back in the object
+      // space three is expecting, so what is wanted here is that map read
+      // backwards.
       //
       // THIS IS EXACT ONLY BECAUSE THE SCALE IS UNIFORM. For M = s*R the upper
       // 3x3 inverse is transpose / s2, and s2 is the squared length of any
@@ -1129,9 +1131,27 @@ function billboardVertex(spherical) {
       // its foot on y = 0 (buildImpostorCard). So the foot pivot is free: y is
       // already measured up from it, and the two axes go straight onto screen
       // right and screen up.
+      //
+      // THOSE LOCAL METRES ARE THE CARD AT SCALE 1, and the instance scale has
+      // to multiply them exactly as it multiplies a mesh vertex. Dividing by s2
+      // here is the plain inverse, which maps the world offset back untouched --
+      // so the matrix reapplies s on the way out, the s cancels, and every spun
+      // card in the bed draws at its raw bank size no matter how big the rock
+      // is. That is not a subtle error and it is not a rare one: a crust cap
+      // sits at scale 4.10 in the median and 8.33 at the top, so its billboard
+      // came out at a quarter of the mesh it replaced and sometimes an eighth,
+      // while an underfoot pebble at 0.23 came out four times too big. 87% of
+      // placed rocks drew a card under 0.8x its mesh.
+      //
+      // Rolling the scale into the inverse costs nothing. We want M-inverse
+      // applied to (s * bbW), and M-inverse is transpose / s2, so the two
+      // constants collapse to transpose / s -- one inversesqrt where there used
+      // to be a divide. The cylindrical branch below never had this bug: it
+      // rotates within object space and never leaves it, so the scale is never
+      // divided out to begin with.
       vec3 bbW = transformed.x * bbRw + transformed.y * bbUw;
       // v * M is M-transpose * v in GLSL, which is the inverse rotation.
-      transformed = ( bbW * bbM ) / bbS2;`
+      transformed = ( bbW * bbM ) * inversesqrt( bbS2 );`
     : /* glsl */ `
       // Face: the horizontal direction from the plant to the eye. Degenerate
       // only when the camera is exactly on the axis, where any answer is right.
@@ -1275,8 +1295,20 @@ export const FADE_BAND = 0.85
  * carrying many duplicates at once. Exported because the scatter that stamps the
  * timers has to know when to reclaim them, and two definitions of this number
  * would drift apart into duplicates that outlive their fade.
+ *
+ * A QUARTER SECOND, DOWN FROM A HALF, and the reason is the front of the ramp
+ * rather than its length. A cross-dissolve conserves coverage: the prop is fully
+ * covered from the first frame to the last, and all that changes is which tier
+ * owns each pixel. That is the whole point of the complementary thresholds
+ * below, and it is also why the transition is INVISIBLE while p is small -- at
+ * 10% the arriving tier is a sprinkle of isolated pixels over a silhouette that
+ * still looks solid. So the eye does not see a fade start at t=0, it sees
+ * nothing happen and then a dissolve begin somewhere around a third of the way
+ * in. At 500 ms that dead-looking opening was ~150 ms, which reads as a lag
+ * between crossing the band and the animation starting. The ramp is also eased
+ * (see fadeP below) so that opening is short in p as well as in seconds.
  */
-export const PROP_FADE_SECONDS = 0.5
+export const PROP_FADE_SECONDS = 0.25
 
 // Where the packing lives. A fade timer rides in the SAME float as the
 // gone-distance, distinguished by sign: positive is a distance, negative is a
@@ -1287,8 +1319,8 @@ export const PROP_FADE_SECONDS = 0.5
 // t0 = 0 would encode as -0.0, which compares equal to 0.0 and would be read as
 // the never-fade default.
 //
-// Float32 at 5120 resolves to about half a millisecond, so a 500 ms fade still
-// has ~1000 distinct steps. The wrap is what keeps that true: an unbounded
+// Float32 at 5120 resolves to about half a millisecond, so a 250 ms fade still
+// has ~500 distinct steps. The wrap is what keeps that true: an unbounded
 // performance.now() clock would be at 1e5 seconds after a day and the fade would
 // quantise to a tenth of itself.
 const PROP_CLOCK_WRAP = 1024
@@ -1350,6 +1382,20 @@ const FADE_VERTEX = /* glsl */ `
       float fadeT0 = fadeBias - ( fadeIn ? ${FADE_IN_BIAS}.0 : ${FADE_OUT_BIAS}.0 );
       float fadeP = clamp( ( uPropClock - fadeT0 ) *
         ${(1 / PROP_FADE_SECONDS).toFixed(6)}, 0.0, 1.0 );
+      // EASED OUT, not linear, and this is the fix for "the fade takes a moment
+      // to get going". Coverage is conserved through the whole dissolve, so the
+      // only visible signal is the MIX, and a mix under about a fifth is not a
+      // visible signal at all -- the arriving tier is scattered single pixels on
+      // a silhouette the departing tier still fills. A linear ramp therefore
+      // spends its first fifth looking like nothing has happened yet, which is
+      // read as latency between crossing the band and the animation starting.
+      // p*(2-p) is a quadratic ease-out: it clears a fifth in the first tenth of
+      // the window and half in the first three tenths, so the dissolve is
+      // visibly underway within a frame or two, and it decelerates into the end
+      // where the last few departing pixels are what the eye is tracking. Any
+      // remap is safe here as long as BOTH halves get the same one, which they
+      // do -- they are computed from this single fadeP below.
+      fadeP = fadeP * ( 2.0 - fadeP );
       // The two halves are complements in MAGNITUDE -- the departing tier keeps
       // 1-p of its pixels while the arriving one keeps p -- and the SIGN is how
       // the fragment stage knows which of the two thresholds to test against.

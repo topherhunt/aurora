@@ -8,7 +8,9 @@ import { LAYER } from '../textures.js'
 // Three primitives, and that is the whole tree:
 //
 //   TRUNK    one solid cone, `trunkSides` around, closing to a POINT at the
-//            top, wearing bark. `trunkRings` only buys subdivision for the lean.
+//            top, wearing bark, and NOT round: `trunkLobe` swells and hollows
+//            its cross-section so no two trunks are out of round the same way.
+//            `trunkRings` only buys subdivision for the lean.
 //   LIMBS    solid cones too, launched off the trunk and bent over by
 //            `branchDroop` along a path that is integrated exactly the way a
 //            fern frond is. A limb is a branch off the trunk OR a fork off a
@@ -187,12 +189,27 @@ import { LAYER } from '../textures.js'
 // height or its scale -- `belowGround` in userData reports how far down they go.
 //
 // A SPUR IS TWO TRIANGLES AND HAS NO UNDERSIDE, which follows from where it is
-// seen from. It is a tent: a ridge running from the flare down to the tip, two
-// flanks falling away either side of it, and nothing closing the bottom -- the
-// face that would close it points into the soil, and the only eye that could
-// ever reach it is one below the terrain. `branchPath` still runs, because the
-// tip has to land where `rootDroop` puts it, but the wedge between flare and tip
-// is straight: at five spurs a tree, an arc is not worth the ring that draws it.
+// seen from. It is a tent on three corners and a tip: the ridge corner touches
+// the trunk `rootRise` up it, the other two sit on the trunk's base plane a
+// `rootWidth` out to either side, and both faces run from that outline down to a
+// shared tip under the soil. Every one of those four numbers -- the rise, the
+// dive, the length and the two widths, which are drawn SEPARATELY -- is jittered
+// per spur, because a wedge that is isoceles about its own azimuth at a rise
+// every spur shares reads as a turned collar rather than as roots, however good
+// one blade of it looks. Nothing closes the bottom -- the face that would close it
+// runs from the ground edge to a tip a metre and more under, so the only eye
+// that could ever reach it is one below the terrain. `branchPath` still runs,
+// because the tip has to land where `rootDroop` puts it, but the wedge is
+// straight: at five spurs a tree, an arc is not worth the ring that draws it.
+//
+// It is also why the corners are where they are rather than anywhere prettier. A
+// ridge OUTSIDE the bark is a blade leaning on the trunk with daylight up the
+// seam, so it goes inside it; ground corners at the launch height are a shelf
+// with air flowing under it, so they go to y = 0 and the 15 cm sink buries the
+// edge. Together they are the difference between the trunk spreading and a part
+// bolted to it -- and the bark they carry has to be the trunk's bark at the
+// trunk's size for the same reason, which is what addRootSpur's projected UVs
+// and horizontal normals are for.
 // `rootWidth` sizes the wedge off the TRUNK's radius rather than off its own
 // length, which is the rule branchOfTrunk had to be added to enforce for
 // branches: a spur is the trunk's foot spreading, so it is anchored to that foot.
@@ -235,9 +252,23 @@ export const TREE_DEFAULTS = {
                        // tree is 9 m or 20 m
 
   // --- trunk ---
-  trunkSides: 8,       // sides around. 8 reads as round at any distance you can
-                       // make out a trunk from; this is the LOD0 number, and a
-                       // cheaper tier drops it rather than decimating the mesh
+  trunkSides: 25,      // sides around. This is the LOD0 number and a cheaper
+                       // tier drops it rather than decimating the mesh. 8 was
+                       // enough to read as round from a distance, and the trunk
+                       // is the one part of a tree the player walks up to and
+                       // stands against, where an octagon reads as an octagon.
+                       // It costs `trunkSides` triangles flat -- the cone has
+                       // one ring -- so 8 -> 25 is 17 triangles on a tree of
+                       // 526 (oak) to 802 (pine), and it buys the roundness
+                       // that `trunkLobe` then breaks on purpose
+  trunkLobe: 0.15,     // how far the trunk's cross-section departs from a
+                       // circle, as a fraction of its radius. A trunk is not a
+                       // lathe-turned pole: it swells and hollows around its
+                       // circumference, and at 25 sides that is finally
+                       // expressible. Three harmonics at random phase per tree
+                       // (see the warp in buildTree), so no two trunks bulge
+                       // the same way and none of them is symmetrical. 0 is a
+                       // true cone
   trunkRings: 1,       // rings BELOW the apex. The trunk always closes to a
                        // point, so 1 is a plain cone at `trunkSides` triangles;
                        // raise it only to let `trunkBend` show as a curve
@@ -257,34 +288,49 @@ export const TREE_DEFAULTS = {
                        // `rootWidth` already takes off the trunk. There is no
                        // `rootSides`: a spur is two triangles, fixed -- see
                        // addRootSpur
-  rootRise: 0.05,      // where up the trunk a spur leaves, as a fraction of
-                       // height. Deliberately ABOVE the 15 cm the scatter sinks
-                       // a tree by (0.05 x 9 m = 45 cm on a pine), so the flare
-                       // itself stands clear of the ground and only what dives
-                       // off it is buried.
+  rootRise: 0.10,      // MEAN height up the trunk of the spur's RIDGE corner, as
+                       // a fraction of height -- so it is the height of the
+                       // visible flare, the two other corners being pinned to
+                       // y = 0. Each spur draws its own around this, 40% either
+                       // way, so the crown has a broken skyline rather than one
+                       // hem cut all round at a set height.
                        //
-                       // A FRACTION, so a SAPLING barely clears: the flare tops
-                       // out 2 cm above the soil line on a 3 m pine and 5 cm
-                       // UNDER it on a 2 m birch, so a sapling's crown reads at
-                       // the ground rather than above it and shows only where
-                       // terrain falls away. The alternative is to state this in
+                       // It has to clear the 15 cm the scatter sinks a tree by
+                       // before any of it shows, which is what this is set for
+                       // rather than for how deep the roots go: the dive starts
+                       // at the ground line, so `rootLength` and `rootAngle`
+                       // decide the buried metre and a half and this decides
+                       // only how much stands proud. On a 9 m pine the ridges
+                       // land between 55 cm and 1.11 m, averaging 72 cm, of
+                       // which 57 cm is above the soil line.
+                       //
+                       // A FRACTION, so a SAPLING shows less of it: on a 3 m
+                       // pine the mean ridge clears the soil line by 7 cm and
+                       // the tallest spur by 19, and on a 2 m birch the mean is
+                       // 2 cm UNDER it with only the tallest showing. That is
+                       // the intent -- a sapling has a crown at the ground, not
+                       // one it stands on. The alternative is to state this in
                        // world metres like `sprayMetres`, and it is worse: a
-                       // flare 45 cm up a 3 m trunk that is 8 cm thick there
+                       // 72 cm flare on a 3 m trunk that is 8 cm thick there
                        // reads as stilts
   rootLength: 0.18,    // spur length as a fraction of height
   rootAngle: 0.7,      // radians BELOW horizontal at the launch, so a spur
-                       // leaves the trunk already heading for the soil
+                       // leaves the trunk already heading for the soil. Jittered
+                       // a fifth either way per spur, as the length is
   rootDroop: 0.5,      // and bends this much further down along its own length,
                        // the way branchDroop bends a limb up over into a sag.
                        // Only the TIP moves: a two-triangle wedge is straight,
                        // so the droop decides where the spur ends rather than
                        // showing as an arc
-  rootWidth: 1.1,      // spur half-width and ridge height at the flare, as a
-                       // fraction of the TRUNK's radius where it leaves. Off the
-                       // trunk rather than off its own length -- see the note
-                       // above. Over 1 on purpose: a buttress is WIDER than the
-                       // trunk at the soil line, which is what makes it read as
-                       // the trunk spreading rather than as a stick nailed on
+  rootWidth: 1.1,      // half the spur's width where it meets the ground, as a
+                       // fraction of the TRUNK's radius at its foot. Each SIDE
+                       // draws its own, 35% either way, so the blade leans
+                       // instead of being isoceles about its own azimuth. Off the trunk rather than
+                       // off its own length -- see the note above. Over 1 on
+                       // purpose: a buttress is WIDER than the trunk at the soil
+                       // line, which is what makes it read as the trunk
+                       // spreading rather than as a stick nailed on. Zero draws
+                       // no crown at all, and resolveTree prices it at zero
 
   // --- crown ---
   branches: 13,
@@ -1180,59 +1226,90 @@ function addFin(out, base, tip, radius, vRepeat, texLayer) {
   return 1
 }
 
-// A ROOT SPUR IN TWO TRIANGLES: a tent with the bottom left open.
+// A ROOT SPUR IN TWO TRIANGLES: a buttress blade with the bottom left open.
 //
-// It is `addCone` with three sides, one ring and the underside face never
-// emitted -- a ridge vertex above the flare, one either side of it, and all
-// three closing to the tip. The dropped face is the one whose normal points into
-// the soil, and it runs from the flare's base edge down to a tip most of a metre
-// under: nearly all of it is buried, and the hand's width that is not sits
-// tucked under the flare against the bark, where you would have to crouch beside
-// the trunk and look up to find it. Every angle anyone actually stands at sees
-// two flanks and a ridge, which is the whole silhouette a buttress has -- so two
-// triangles is not a compromise on a cone, it IS the shape.
+// Three corners and a tip. The ridge corner sits just INSIDE the bark, so the
+// blade grows out of the trunk instead of leaning against it; the other two sit
+// on the trunk's own base plane, which the scatter then buries 15 cm deep, so
+// the blade meets the ground along an edge rather than hovering over it with
+// daylight underneath. The face those two would close -- the underside, running
+// from that ground edge down to a tip a metre and more under -- is never
+// emitted, and nothing above the soil can see it. What is left is what a
+// buttress actually shows: two flanks and a ridge.
 //
-// FLAT NORMALS, one per face, for the reason addFin authors its own: a flare is
-// faceted where it leaves the trunk, and interpolating the ridge round to the
-// flanks would light it as a tube half-buried in the ground.
+// SAME BARK AT THE SAME SIZE AS THE TRUNK, which is the whole of why the UVs are
+// projected rather than parameterised. The trunk tiles `barkRepeat` times per
+// unit of tree UP it and, through `uRepeat`, the same per unit AROUND it, so
+// bark has one density in world space; a spur that ran u 0..1 across its own
+// width and v 0..1 down its own length would tile that same texture some twenty
+// times denser and read as a different, finer material bolted to the tree. So u
+// and v here are DISTANCES scaled by the same `barkRepeat`, measured in one
+// frame shared by both faces -- the ridge as v, the horizontal across as u.
+// Shared rather than per-face so the grain runs continuously over the ridge; the
+// cost is that each flank is foreshortened by its tilt out of that plane, which
+// is a fraction of a tile and invisible against bark's own noise.
 //
-// `up` and `side` are handed in rather than derived, because the caller already
-// has the spur's azimuth and the two must agree with it -- `up` is UP with the
-// along-spur component removed, so the ridge leans out over the flanks the way
-// the spur dives.
-function addRootSpur(out, base, tip, up, side, radius, vRepeat, texLayer) {
-  // Ring order runs ridge -> left -> right, which is the direction that leaves
-  // the two kept faces wound outward; the face that would close left back round
-  // to the ridge is the underside, and is simply never pushed.
-  const ring = [
-    { p: new THREE.Vector3().copy(base).addScaledVector(up, radius), u: 0 },
-    { p: new THREE.Vector3().copy(base).addScaledVector(side, radius), u: 1 / 3 },
-    { p: new THREE.Vector3().copy(base).addScaledVector(side, -radius), u: 2 / 3 },
-    // the ridge again, at the far end of u: addCone's duplicated seam vertex,
-    // free here because flat shading duplicates every corner anyway.
-    { p: new THREE.Vector3().copy(base).addScaledVector(up, radius), u: 1 },
-  ]
+// AND EACH SPUR IS OFFSET BY (uOff, vOff), because measuring from `top` puts
+// every spur's ridge corner at exactly (0, 0) -- five blades round one foot all
+// sampling the identical square centimetres of bark, which reads as a stamped
+// part repeated rather than as five roots. The offset is in TILES, so the whole
+// number part does nothing (the map wraps) and the fraction is the entire range
+// there is; the caller draws one per spur off the root stream. It moves the
+// sample, not the density, so the fix above survives it.
+//
+// BARREL NORMALS, authored per VERTEX, which is what stops the wedge shading as
+// two flat slabs with a crease down the ridge. A face normal is one value over a
+// whole triangle, so under a per-fragment Lambert plus the view-facing ramp in
+// material.js each flank comes out a uniform tone and the two jump at the edge
+// they share -- a hard line where there is no hard edge. Instead every vertex
+// takes the HORIZONTAL direction from the trunk's axis out to itself, which is
+// exactly the normal addCone hands the bark at that azimuth. Three things fall
+// out of that at once: the corners the two faces share carry one value, so the
+// ridge is seamless; the normal fans smoothly from the ridge round to the ground
+// corners, so a spur reads as the trunk's barrel swelling; and the ridge corner
+// agrees with the bark it is buried in, so the junction disappears rather than
+// showing as a seam. Horizontal for the reason the trunk's own are -- an upward
+// normal is a brighter one off the sky, and a spur that lit brighter than the
+// bark it is flush against read as a stuck-on part.
+//
+// Measured from the world axis rather than from the trunk's leaning centreline
+// because at the foot they ARE the same line: trunkAt bends by `trunkBend * f^2`
+// and the whole crown lives under f = 0.05, which is a couple of millimetres of
+// lean against a radius of fifteen centimetres.
+function addRootSpur(out, top, left, right, tip, tilesPerUnit, uOff, vOff, texLayer) {
+  // The projection frame: v runs down the ridge, u across it, both from `top`.
+  const along = new THREE.Vector3().subVectors(tip, top).normalize()
+  const across = new THREE.Vector3().subVectors(left, right)
+  across.addScaledVector(along, -across.dot(along)).normalize()
+  const d = new THREE.Vector3()
+  const uv = (p) => {
+    d.subVectors(p, top)
+    return [d.dot(across) * tilesPerUnit + uOff, d.dot(along) * tilesPerUnit + vOff]
+  }
+
+  // The ridge corner's own outward, which is the fallback for a vertex that
+  // lands on the axis: `top` is 0.85 of a radius off it, so this is never zero.
+  const out0 = new THREE.Vector3(top.x, 0, top.z).normalize()
   const n = new THREE.Vector3()
-  const e1 = new THREE.Vector3()
-  const e2 = new THREE.Vector3()
+  const normalAt = (p) => {
+    n.set(p.x, 0, p.z)
+    return n.lengthSq() < 1e-12 ? n.copy(out0) : n.normalize()
+  }
   let tris = 0
-  for (const [a, b] of [[0, 1], [2, 3]]) {
-    e1.subVectors(ring[b].p, ring[a].p)
-    e2.subVectors(tip, ring[a].p)
-    // No degenerate-face bail here on purpose: resolveTree prices a spur at two
-    // triangles flat, so this loop has to emit two or the law and the builder
-    // part company. The caller guarantees a positive radius and a tip a real
-    // distance from the flare, which is what makes that safe.
-    n.crossVectors(e1, e2).normalize()
+  // Wound top -> left and right -> top, which is the order that leaves both
+  // faces facing out of the wedge. The pair that would close left round to
+  // right is the underside, and is simply never pushed.
+  // No degenerate-face bail anywhere in here on purpose: resolveTree prices a
+  // spur at two triangles flat, so this loop has to emit two or the law and the
+  // builder part company. The caller guarantees three distinct corners and a tip
+  // a real distance from them, which is what makes that safe.
+  for (const [a, b] of [[top, left], [right, top]]) {
     const i = out.positions.length / 3
-    const corners = [
-      [ring[a].p, ring[a].u, 0],
-      [ring[b].p, ring[b].u, 0],
-      [tip, (ring[a].u + ring[b].u) * 0.5, vRepeat],
-    ]
-    for (const [p, u, v] of corners) {
+    for (const p of [a, b, tip]) {
+      const [u, v] = uv(p)
+      const nv = normalAt(p)
       out.positions.push(p.x, p.y, p.z)
-      out.normals.push(n.x, n.y, n.z)
+      out.normals.push(nv.x, nv.y, nv.z)
       out.uvs.push(u, v)
       out.layers.push(texLayer)
       out.leaf.push(0) // wood: the canopy-normal pass must not touch these
@@ -1250,21 +1327,39 @@ function addRootSpur(out, base, tip, up, side, radius, vRepeat, texLayer) {
 //
 // Each ring carries its own frame (`e1`, `e2`) so this serves a trunk, whose
 // rings are all horizontal, and a branch, whose rings turn with the path.
-function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer) {
+/**
+ * `warp`, where a caller passes one, is `sides` radius MULTIPLIERS -- one per
+ * face corner, indexed by k and reused at the duplicated seam vertex so the
+ * ring closes on itself. It is how the trunk stops being a surface of
+ * revolution; see the warp built in buildTree.
+ *
+ * THE NORMALS DO NOT FOLLOW IT. They stay radial, which for a lobed ring is
+ * wrong by atan(r'/r) -- a couple of degrees at the amplitudes used. That is
+ * the same approximation this function already makes about the cone's own
+ * taper (the normals are horizontal, and a cone's are not), and the lobes are
+ * there to be seen in the SILHOUETTE and in the bark's stretch, neither of
+ * which reads a normal. Shading them properly means a derivative per corner
+ * and a second array to carry it, for a shift the bark texture hides.
+ */
+function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer, warp = null) {
   const base = out.positions.length / 3
   const stride = sides + 1
   const n = new THREE.Vector3()
+  if (warp !== null && warp.length !== sides) {
+    throw new Error(`addCone: warp has ${warp.length} multipliers for ${sides} sides`)
+  }
 
   // The seam vertex is duplicated (sides + 1 per ring) so u can run the whole
   // way round; sharing it would wrap the bark backwards over the last face.
   for (const ring of rings) {
     for (let k = 0; k <= sides; k++) {
       const a = (k / sides) * TAU
+      const radius = warp === null ? ring.radius : ring.radius * warp[k % sides]
       n.copy(ring.e1).multiplyScalar(Math.cos(a)).addScaledVector(ring.e2, Math.sin(a))
       out.positions.push(
-        ring.pos.x + n.x * ring.radius,
-        ring.pos.y + n.y * ring.radius,
-        ring.pos.z + n.z * ring.radius
+        ring.pos.x + n.x * radius,
+        ring.pos.y + n.y * radius,
+        ring.pos.z + n.z * radius
       )
       out.normals.push(n.x, n.y, n.z)
       out.uvs.push((k / sides) * uRepeat, ring.v)
@@ -1506,13 +1601,56 @@ export function buildTree(options = {}) {
   const trunkAxis = []
   for (let r = 0; r < rings; r++) trunkAxis.push(trunkAt(r / rings))
   trunkAxis.push(trunkAt(1))
+
+  // THE TRUNK IS NOT A SURFACE OF REVOLUTION, and `lobeAt` is the whole of what
+  // makes that true: a multiplier on the radius that depends on WHICH WAY ROUND
+  // the trunk you are, so the cross-section swells on one side and hollows on
+  // another. Three cosine harmonics at random phase, normalised so `trunkLobe`
+  // is the peak departure whatever the phases came out as.
+  //
+  // THE HARMONICS ARE CAPPED AT sides/3 and that cap is load-bearing, not
+  // caution: a ring of `sides` corners samples the shape, so a harmonic above
+  // sides/2 aliases into a jagged ring that reads as a modelling mistake rather
+  // than as wood. A third of the sides is two samples per lobe with margin, and
+  // it means the same tree coarsened to a 3-sided LOD1 trunk quietly loses its
+  // lobes instead of turning into a spiky wedge.
+  //
+  // ITS OWN RNG STREAM, on exactly the argument the root crown makes below:
+  // drawing from `rand` here would shift every branch azimuth and every spray
+  // seat in the project, and the pine preset is marked LOD0 LOCKED so that
+  // cannot happen. On a stream of its own this is additive -- the same seed
+  // lays out the same tree, now with a trunk that is not a pole.
+  const lobeAmp = Math.max(0, p.trunkLobe)
+  let lobeAt = () => 1
+  if (lobeAmp > 0 && sides >= 6) {
+    const lobeRand = mulberry32((p.seed ^ 0x5bf03635) >>> 0)
+    const top = Math.max(2, Math.floor(sides / 3))
+    const harm = [
+      { n: Math.min(top, 2 + Math.floor(lobeRand() * 2)), a: 1, ph: lobeRand() * TAU },
+      { n: Math.min(top, 4 + Math.floor(lobeRand() * 3)), a: 0.55, ph: lobeRand() * TAU },
+      { n: Math.min(top, 7 + Math.floor(lobeRand() * 3)), a: 0.28, ph: lobeRand() * TAU },
+    ]
+    const norm = harm.reduce((s, h) => s + h.a, 0)
+    lobeAt = (a) => {
+      let v = 0
+      for (const h of harm) v += h.a * Math.cos(h.n * a + h.ph)
+      return 1 + lobeAmp * (v / norm)
+    }
+  }
+
   if (p.trunkRadius > 0) {
     const list = []
     for (let r = 0; r < rings; r++) {
       const f = r / rings // rings at 0 .. (R-1)/R; the apex takes f = 1
       list.push({ pos: trunkAxis[r], e1: E1, e2: E2, radius: radiusAt(f), v: f * p.barkRepeat })
     }
-    trunkTris = addCone(out, list, trunkAt(1), sides, uRepeat, p.barkRepeat, p.barkLayer)
+    // One multiplier per corner. The same for every ring, so the lobes run
+    // straight up the trunk and taper with it rather than twisting -- a
+    // swelling that spiralled would need a phase per ring, and at `trunkRings`
+    // 1 there is only one ring to give it to.
+    const warp = new Float32Array(sides)
+    for (let k = 0; k < sides; k++) warp[k] = lobeAt((k / sides) * TAU)
+    trunkTris = addCone(out, list, trunkAt(1), sides, uRepeat, p.barkRepeat, p.barkLayer, warp)
   }
 
   // --- the root crown --------------------------------------------------------
@@ -1539,10 +1677,14 @@ export function buildTree(options = {}) {
   // failure check-trees.mjs exists for.
   if (nRoot > 0) {
     const rootRand = mulberry32((p.seed ^ 0xc2b2ae35) >>> 0)
-    const f = Math.min(0.9, Math.max(0, p.rootRise))
-    const rootR = radiusAt(f)
-    const ridge = new THREE.Vector3()
-    const flank = new THREE.Vector3()
+    // The MEAN rise; each spur draws its own around it below. The foot radius is
+    // shared, because every spur leaves the same trunk at the same ground line.
+    const meanRise = Math.min(0.9, Math.max(0, p.rootRise))
+    // NOT `radiusAt(0)` on its own any more: the trunk it is seated on is
+    // lobed, so "the radius at the foot" is a different number on each side of
+    // it. Each spur takes the radius at ITS OWN azimuth (below), and this is
+    // the mean the ground corners' spread is stated against.
+    const meanFootR = radiusAt(0)
     // Evenly around the foot with a jitter of up to `yawJitter` of one spacing,
     // and the whole ring rolled to a random start. Even rather than golden-angle
     // because five spurs at the golden angle leave two of them nearly on top of
@@ -1553,42 +1695,85 @@ export function buildTree(options = {}) {
       const az = roll + ((i + (rootRand() - 0.5) * p.yawJitter) / nRoot) * TAU
       const outward = new THREE.Vector3(Math.cos(az), 0, Math.sin(az))
       const side = new THREE.Vector3(-Math.sin(az), 0, Math.cos(az))
+      // NO TWO SPURS ARE THE SAME SHAPE, and the draws below are the difference
+      // between a root crown and a lathe-turned collar. The knobs above say how
+      // big a crown IS; these say it is a crown of roots. Their spreads are
+      // hardcoded rather than exposed, exactly as branchDroop's and
+      // branchLength's per-limb jitter are -- one more slider per number here
+      // would be five sliders nobody moves.
+      //
+      // HOW HIGH IT REACHES, 40% either way. This is the one the eye finds
+      // first, because a single rise all the way round reads as a hem cut at a
+      // set height rather than as wood that grew.
+      const f = Math.min(0.9, meanRise * (0.6 + rootRand() * 0.8))
+      // The skin THIS spur grows out of, lobe included -- see meanFootR.
+      const lobe = lobeAt(az)
+      const rootR = radiusAt(f) * lobe
+      const footR = meanFootR * lobe
+      // HOW STEEPLY IT DIVES, a fifth either way, so one spur runs out along the
+      // surface where its neighbour drops away.
+      const angle = p.rootAngle * (0.8 + rootRand() * 0.4)
       const dir = new THREE.Vector3()
         .copy(outward)
-        .multiplyScalar(Math.cos(p.rootAngle))
-        .addScaledVector(UP, -Math.sin(p.rootAngle))
+        .multiplyScalar(Math.cos(angle))
+        .addScaledVector(UP, -Math.sin(angle))
         .normalize()
-      // Length varies per spur by a quarter either way: a flare of five
-      // identical prongs reads as a stand rather than as a root.
-      const length = Math.max(1e-4, p.rootLength * (0.75 + rootRand() * 0.5))
-      // Seated INSIDE the drawn trunk, half a radius in, for the reason a
-      // branch is -- see chordAt. A spur launched off the trunk's skin is a
-      // stick leaning against it, and this one is meant to be the trunk
-      // widening.
-      const start = chordAt(trunkAxis, f).addScaledVector(outward, rootR * 0.5)
-      const pts = branchPath(start, dir, side, {
+      // HOW FAR IT REACHES, 30% either way: a flare of five identical prongs
+      // reads as a stand rather than as a root.
+      const length = Math.max(1e-4, p.rootLength * (0.7 + rootRand() * 0.6))
+      // THE RIDGE CORNER, this spur's own rise up the trunk and just INSIDE the
+      // bark it is drawn against. The trunk is a cone of `trunkSides` flats, so its skin
+      // is not at the radius: it dips to cos(pi/sides) of it in the middle of a
+      // face, 0.992 at the 25 sides the bank's species have. 0.85 is under
+      // that, so the corner is buried in the wood all the way round and the
+      // blade grows out of the trunk instead of standing off it with a gap up
+      // the seam. It stops clearing below six sides, where the inradius falls to
+      // 0.866 and then 0.5; no tier hits that, because the only tier that
+      // coarsens the trunk that far (`trunkSides` 3) also sets `roots` 0.
+      //
+      // `rootR` already carries this spur's own lobe multiplier, so the 0.85 is
+      // measured against the skin that is actually there at this azimuth rather
+      // than against the mean circle -- which on a trunk swelling to 1.15 and
+      // hollowing to 0.85 is the difference between buried and standing proud.
+      const top = chordAt(trunkAxis, f).addScaledVector(outward, rootR * 0.85)
+      // THE TWO GROUND CORNERS, on the trunk's own base plane -- y = 0 exactly,
+      // which the 15 cm placement sink then puts under the soil. Seated half a
+      // foot-radius in for the reason a branch is (see chordAt) and spread
+      // `rootWidth` of that radius out to either side, so the blade meets the
+      // ground along an edge instead of hovering above it.
+      //
+      // AND THE TWO WIDTHS ARE DRAWN SEPARATELY, which is the splay and the last
+      // symmetry to go. One width makes the wedge isoceles about its own azimuth
+      // with the ridge bisecting it -- a shape that stays symmetrical however
+      // much the rise, the dive and the length are jittered, because it is
+      // symmetrical in a direction none of those touch. Drawn apart, the ground
+      // edge sits off-centre under the ridge and the blade leans, differently on
+      // every spur.
+      const foot = trunkAxis[0].clone().addScaledVector(outward, footR * 0.5)
+      const wide = () => footR * p.rootWidth * (0.65 + rootRand() * 0.7)
+      const left = foot.clone().addScaledVector(side, wide())
+      const right = foot.clone().addScaledVector(side, -wide())
+      left.y = 0
+      right.y = 0
+      // The tip dives from the GROUND edge, not from the ridge: the blade is a
+      // straight wedge, so all the droop can show is where the path ends, and
+      // ending it under the foot is what makes the spur read as diving in
+      // rather than as a shelf tacked to the trunk.
+      const pts = branchPath(foot, dir, side, {
         droop: p.rootDroop * (0.85 + rootRand() * 0.3),
         curve: 1, // even along the spur: a buttress bends from the flare down,
                   // where a limb (branchCurve 1.5) holds stiff and sags at the tip
         sway: 0,
         length,
       }, PATH_N)
-      // Bark along the spur at the trunk's own metres-per-tile, and once around,
-      // exactly as a limb does it.
-      const vRepeat = Math.max(1, Math.round(length * p.barkRepeat))
-      // The wedge is straight from flare to tip, so the droop shows only in
-      // where the path ENDS -- which is the whole of what the droop is for at
-      // this size. `ridge` is UP with the along-spur part taken out, so it
-      // leans out over the flanks by exactly the angle the spur dives at, and
-      // `flank` is the horizontal perpendicular the two sides sit on.
       const tip = samplePath(pts, 1).pos
-      ridge.subVectors(tip, start).normalize()
-      flank.crossVectors(ridge, UP)
-      if (flank.lengthSq() < 1e-8) flank.set(1, 0, 0)
-      flank.normalize()
-      ridge.crossVectors(flank, ridge).normalize()
-      rootTris += addRootSpur(
-        out, start, tip, ridge, flank, rootR * p.rootWidth, vRepeat, p.barkLayer)
+      // `barkRepeat` straight through: the spur tiles bark at the trunk's own
+      // tiles-per-unit, in metres, not over its own extent. The two draws after
+      // it slide this spur's window over the map so the five do not all show
+      // the same knot -- both in tiles, so a whole tile of it is a no-op and the
+      // fraction is the whole range. See addRootSpur.
+      rootTris += addRootSpur(out, top, left, right, tip, p.barkRepeat,
+        rootRand(), rootRand(), p.barkLayer)
     }
   }
 
@@ -2154,12 +2339,15 @@ export function buildTree(options = {}) {
     // foliage drooping through the ground on a low-branched species -- is
     // reported separately rather than folded in, because on a slope that is the
     // difference between a low branch and a buried one. The root crown alone is
-    // 0.6 to 1.0 m of it at the base sizes.
+    // 0.8 to 1.4 m of it at the base sizes.
     height: b.max.y,
     belowGround: -Math.min(0, b.min.y),
     // The two numbers that decide whether a size looks right, in metres rather
     // than in fractions -- see the note on height at the top of this file.
     crownWidth: Math.max(b.max.x - b.min.x, b.max.z - b.min.z),
+    // The MEAN diameter at the foot. `trunkLobe` takes the skin to roughly
+    // +/- 11% of it around the circumference, so this is the circle the lobes
+    // are stated against and not a bound on any of them.
     trunkDiameter: 2 * p.trunkRadius * scale,
     firstBranchHeight: p.firstBranch * scale,
   }

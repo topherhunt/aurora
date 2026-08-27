@@ -88,3 +88,11 @@ export const PINNED_CHUNKS = 21
 export const HEIGHTMAP_URL = 'world/height.png'
 export const HEIGHTMAP_META_URL = 'world/height.json'
 export const LAYERS_URL = 'world/layers.json'
+
+// The one seed every generated thing in v2 is derived from: the prop banks, the
+// scatters' placement, the shape of the rocks in the rock bank. It lives here
+// rather than in main.js because the previewers need it too -- /gen-rock has to
+// be able to resolve a shape id the running world printed (`shingle-1`) back to
+// the seed that built it, and it can only do that against the same bank seed the
+// world used. See NAMING ONE SHAPE in props/rock-bank.js.
+export const SEED = 20260824

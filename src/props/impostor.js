@@ -510,10 +510,19 @@ export function buildImpostorCard(
   height,
   layer,
   planes = 3,
-  { upNormal = false, canopy = false, tri = false, spherical = false } = {}
+  { upNormal = false, canopy = false, tri = false, spherical = false, azimuth = 0 } = {}
 ) {
   if (upNormal && canopy) {
     throw new Error('buildImpostorCard: upNormal and canopy are two answers to the same question')
+  }
+  // `azimuth` IS THE BAKE ANGLE, NOT A FREE ROTATION. bakeImpostor stands its
+  // camera at (sin a, 0, cos a) and photographs whatever faces it; a FIXED card
+  // has to lie in the plane that camera was looking at, or it shows a broadside
+  // photograph edge-on. A SPUN card never faces anywhere in particular -- the
+  // vertex shader turns it to the eye every frame -- so an azimuth on one would
+  // be a claim the geometry cannot keep. Refuse rather than ignore it.
+  if (azimuth !== 0 && upNormal) {
+    throw new Error('buildImpostorCard: a spun card has no fixed azimuth to be baked at')
   }
   // `spherical` is not a shape -- the vertices below are identical either way.
   // It says which of billboardVertex's two spins this card will meet, and the
@@ -541,7 +550,11 @@ export function buildImpostorCard(
   const hw = width / 2
 
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI
+    // MINUS the azimuth, so the normal comes out pointing AT the bake camera.
+    // The normal below is (-sin a, 0, cos a); at a = -azimuth that is
+    // (sin azimuth, 0, cos azimuth), which is exactly where bakeImpostor put the
+    // camera. Zero leaves every existing card on the axes it was already on.
+    const a = -azimuth + (i / n) * Math.PI
     const dx = Math.cos(a)
     const dz = Math.sin(a)
     // The plane spans `d` and up; its normal is the remaining horizontal axis.
@@ -651,7 +664,7 @@ export function buildImpostorCard(
 
   geo.userData.impostor = {
     width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
-    upNormal, canopy, tri, spherical,
+    upNormal, canopy, tri, spherical, azimuth,
   }
   return geo
 }

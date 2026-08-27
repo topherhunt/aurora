@@ -21,10 +21,12 @@ import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
 
 import {
-  LITTER_LAYERS, LITTER_PATCH_M, LITTER_MARGIN, LITTER_STONES, LITTER_SIZE, LITTER_SIZE_POW,
+  LITTER_LAYERS, LITTER_PATCH_M, LITTER_MARGIN, LITTER_REACH, LITTER_RIM_KNEE, LITTER_RIM_TAPER,
+  LITTER_STONES, LITTER_SIZE, LITTER_SIZE_POW,
   LITTER_VARIANTS, LITTER_SEEDS, LITTER_TIER, LITTER_TINTS, LITTER_KEY, LITTER_SKY,
   buildLitterPool, litterPlacements,
 } from '../src/props/litter.js'
+import { smoothstep } from '../src/sim/mathx.js'
 import { ROCK_TIERS, BOX_MARGIN } from '../src/props/rock.js'
 import { rockParams, TINTS, TINT_GAIN } from '../src/props/rock-bank.js'
 import { LAYER, LAYER_COUNT, ROCK_TILE_MEAN, buildTextureArray } from '../src/textures.js'
@@ -156,21 +158,31 @@ const patches = BAKE_SEEDS.map((seed) => litterPlacements(seed, pool.length))
       }
     }
   })
-  // Measured worst across the four seeds is 0.698 m against a half-patch of 0.800, so there is 10 cm of clear rim at the tightest stone in the whole set. Asserted at the half-patch itself rather than at a padded bound because this one is not a tuning question: a stone past 0.800 IS in the wrap border.
+  // Measured worst across the four seeds is 0.673 m against a half-patch of 0.800, so there is 13 cm of clear rim at the tightest stone in the whole set. Asserted at the half-patch itself rather than at a padded bound because this one is not a tuning question: a stone past 0.800 IS in the wrap border.
   check(worst <= half, 'no stone reaches the patch border, so nothing is cut off and the wrap blend has only transparency to mix',
     `worst outer edge ${worst.toFixed(3)} m at ${worstAt}, half-patch ${half.toFixed(3)} m`)
 
-  // AND IT HOLDS FOR A STONE THAT WAS NEVER ROLLED. The check above samples 216 stones; this one is the arithmetic, and it is the thing LITTER_MARGIN is actually FOR. The furthest a centre can land is half the inner square, and the largest stone possible is LITTER_SIZE[1], so the margin is only adequate if the two together still clear the half-patch. This fails the moment somebody raises the top of the size range without touching the margin, which is the realistic way it breaks.
-  const worstPossible = (LITTER_PATCH_M * (1 - LITTER_MARGIN * 2)) / 2 + LITTER_SIZE[1] / 2
-  check(worstPossible <= half, 'and the margin is wide enough for the largest stone the size range can roll, not just the ones it did',
-    `worst possible ${worstPossible.toFixed(3)} m against ${half.toFixed(3)} m, margin ${(LITTER_MARGIN * 100).toFixed(0)}%`)
+  // AND IT HOLDS FOR A STONE THAT WAS NEVER ROLLED. The check above samples 296 stones; this one is the arithmetic, and it is the thing LITTER_MARGIN is actually FOR. It fails the moment somebody raises the top of the size range, or the reach, without touching the other, which is the realistic way it breaks.
+  //
+  // SWEPT RATHER THAN EVALUATED AT ONE POINT, because the drift's two bounds pull against each other along the radius: the centre can go furthest out at the rim, where LITTER_RIM_TAPER has taken most of the size range away, and the stone can be widest in the middle, where it cannot go far. The product is what has to clear the half-patch, so the sweep walks the radius and takes the worst of it instead of assuming the answer is at one end. (It is at the rim, at 0.749 m, but that is a fact about the current numbers and not something to build the check on.)
+  let worstPossible = 0
+  let worstT = 0
+  for (let i = 0; i <= 1000; i++) {
+    const t = i / 1000
+    const rim = 1 - LITTER_RIM_TAPER * smoothstep(LITTER_RIM_KNEE, 1, t)
+    const reach = LITTER_REACH * t + (LITTER_SIZE[0] + (LITTER_SIZE[1] - LITTER_SIZE[0]) * rim) / 2
+    if (reach > worstPossible) { worstPossible = reach; worstT = t }
+  }
+  check(worstPossible <= half, 'and the margin is wide enough for the largest stone the drift can roll anywhere along its radius, not just the ones it did',
+    `worst possible ${worstPossible.toFixed(3)} m at ${(worstT * 100).toFixed(0)}% of the reach, against ${half.toFixed(3)} m, margin ${(LITTER_MARGIN * 100).toFixed(0)}%`)
 }
 
 {
-  // THE SIZE ROLL IS SKEWED SMALL, WHICH IS THE WHOLE OF LITTER_SIZE_POW, and both ends are bounded because a one-sided bound would be green on a roll that had collapsed. The median is quoted as a fraction of the size range: a uniform roll medians at 0.500 and u^2 medians at 0.250, so the ceiling below sits between them and catches a power drifting back toward 1. Measured medians across the four seeds are 0.393, 0.365, 0.308 and 0.204, so the worst seed has 0.057 of headroom -- close enough to be worth knowing that a failure here at 0.42 is drift and not a mistake.
+  // THE SIZE ROLL IS SKEWED SMALL, WHICH IS THE WHOLE OF LITTER_SIZE_POW, and both ends are bounded because a one-sided bound would be green on a roll that had collapsed. The median is quoted as a fraction of the size range: a uniform roll medians at 0.500 and u^2 medians at 0.250, so the ceiling below sits between them and catches a power drifting back toward 1. Measured medians across the four seeds are 0.264, 0.194, 0.157 and 0.189 -- around and mostly under u^2's own 0.250 because LITTER_RIM_TAPER takes a further bite out of the range for every stone past the knee.
   const MEDIAN_CEIL = 0.45
-  // And the other end: the handful of big ones. Measured 12, 12, 9 and 8 stones in the top quarter of the range, so a floor of 2 is nowhere near the data -- it is there to catch a total collapse, not to police the count, and the ceiling above is what actually holds the skew.
-  const TOP_QUARTER_FLOOR = 2
+  // AND THE OTHER END, MEASURED IN METRES RATHER THAN AS A FRACTION OF THE RANGE, and the change of unit is the point. A fraction of the range was the right reading while every stone rolled against the whole of it; now the taper hands most of the patch a shorter range, so "the top quarter of LITTER_SIZE" is a bar only the stones inside LITTER_RIM_KNEE can clear at all and the count says as much about the knee as about the roll. What the picture actually needs is stones big enough to READ as stones: at LITTER_PATCH_M / 128 the texel is 1.25 cm, so 15 cm is a dozen texels across and has a recognisable outline, where the 5 cm floor of the range is four texels and is grit. Measured 18, 15, 12 and 12 of them; the floor is set well under the thinnest seed because this catches a collapse to grit, it does not police the count.
+  const STONE_M = 0.15
+  const STONE_FLOOR = 6
   const [minS, maxS] = LITTER_SIZE
   const frac = (s) => (s - minS) / (maxS - minS)
 
@@ -178,20 +190,76 @@ const patches = BAKE_SEEDS.map((seed) => litterPlacements(seed, pool.length))
     const sorted = p.map((s) => s.size).sort((a, b) => a - b)
     return frac(sorted[sorted.length >> 1])
   })
-  const tops = patches.map((p) => p.filter((s) => frac(s.size) >= 0.75).length)
+  const stones = patches.map((p) => p.filter((s) => s.size >= STONE_M).length)
   const all = patches.flat().map((s) => s.size)
 
   check(Math.max(...medians) < MEDIAN_CEIL, `the size roll is skewed small, which is what LITTER_SIZE_POW = ${LITTER_SIZE_POW} is for`,
     `median at ${medians.map((v) => v.toFixed(3)).join(' / ')} of the range, uniform would be 0.500, ceiling ${MEDIAN_CEIL}`)
-  check(Math.min(...tops) >= TOP_QUARTER_FLOOR, 'and it has not collapsed onto one size -- every patch still has a few large stones in it',
-    `${tops.join(' / ')} stones in the top quarter, floor ${TOP_QUARTER_FLOOR}`)
+  check(Math.min(...stones) >= STONE_FLOOR, 'and it has not collapsed to grit -- every patch still has stones with an outline in it',
+    `${stones.join(' / ')} stones at or over ${STONE_M} m (a dozen texels), floor ${STONE_FLOOR}`)
   check(Math.min(...all) >= minS - 1e-9 && Math.max(...all) <= maxS + 1e-9, 'and no stone escapes LITTER_SIZE at either end',
     `${Math.min(...all).toFixed(4)} .. ${Math.max(...all).toFixed(4)} m against ${minS} .. ${maxS}`)
 }
 
 {
-  // COVERAGE IS A BAND, NOT A FLOOR. The header's target is "a little under half": above that the transparent gaps close up and the layer becomes a solid grey tile that shows a visible square wherever two patches overlap, below it the stamp stops being worth its two triangles. Summed circular footprint over patch area, which reads a little high against what the bake reports because it ignores overlap, and that is fine as long as the bound is set from the same measurement. Measured 37.6%, 35.6%, 33.0% and 29.3% across the four seeds; the band sits a little under 5 points below the emptiest and a little over 8 above the fullest, with the upper end deliberately at the "under half" the header promises.
-  const COVER_BAND = [0.24, 0.46]
+  // THE DRIFT TAPERS TO GRIT AT ITS RIM, which is the promise that actually dissolves the patch's edge and the one thing the lobed outline cannot do on its own: a 25 cm stone sitting at the rim IS the rim, however wavy the line it sits on. So the last thing before bare ground has to be small enough that the eye cannot find a boundary in it.
+  //
+  // Measured out past 80% of the reach, and read against the ceiling LITTER_RIM_TAPER itself imposes there rather than against a number typed in here -- the assertion is that no stone in the outer fifth is bigger than the taper's own arithmetic allows, so it stays true if the knee or the taper is retuned and fails if the taper is quietly disconnected from the roll. Note the test radius is measured against LITTER_REACH while the taper is a function of the radius against the LOBED edge, which is never longer: every stone past 0.8 of the reach is therefore past 0.8 of its own edge too, and the ceiling below is the loosest one that can apply to it.
+  const RIM_FROM = 0.8
+  const ceiling = LITTER_SIZE[0] + (LITTER_SIZE[1] - LITTER_SIZE[0]) * (1 - LITTER_RIM_TAPER * smoothstep(LITTER_RIM_KNEE, 1, RIM_FROM))
+  const rims = patches.map((p) => {
+    const out = p.filter((s) => Math.hypot(s.x, s.z) > RIM_FROM * LITTER_REACH)
+    return { n: out.length, max: out.length ? Math.max(...out.map((s) => s.size)) : 0 }
+  })
+  check(rims.every((r) => r.n > 0 && r.max <= ceiling + 1e-9),
+    'and the drift thins into bare ground rather than stopping on a line -- nothing at its rim is bigger than grit',
+    `biggest past ${(RIM_FROM * 100).toFixed(0)}% of the reach is ${rims.map((r) => r.max.toFixed(3)).join(' / ')} m against the taper's own ${ceiling.toFixed(3)} m ceiling there, on ${rims.map((r) => r.n).join(' / ')} stones, range top ${LITTER_SIZE[1]} m`)
+}
+
+{
+  // AND THE COVERED GROUND IS A DRIFT AND NOT A SQUARE, which is the complaint this shape exists to answer: stones dropped uniformly on an inset square put as much gravel in the four corners as in the middle, so the layer read as a square of gravel and two of them overlapping drew the join. Rasterised at the layer's own 128 texels, because the question is about the PICTURE and a summed footprint cannot see where the ground it covers is.
+  //
+  // A corner wedge is where both |x| and |z| are past 0.55 of the half-patch -- the region a square fills and a disc of any radius under 0.78 of the half-patch can barely graze. Against it, the middle, inside 0.35 of the half-patch on both axes. The retired square covered 9%, 7%, 8% and 8% of its corners at these same wedges; the drift covers 0%, 0%, 0.03% and 0.27%, those last two being a stone's shoulder leaning in at seeds 3 and 4. So the ceiling is a whisker rather than zero -- it is the difference between a corner that has gravel in it and a corner that has a stone's shoulder leaning into it, and the second is not what makes a patch read as square.
+  const CORNER_CEIL = 0.01
+  const MIDDLE_FLOOR = 0.15
+  const N = 128
+  const cell = LITTER_PATCH_M / N
+  const half = LITTER_PATCH_M / 2
+  const rows = patches.map((p) => {
+    const g = new Uint8Array(N * N)
+    for (const s of p) {
+      const rr = (s.size / 2) ** 2
+      const i0 = Math.max(0, Math.floor((s.x - s.size / 2 + half) / cell))
+      const i1 = Math.min(N - 1, Math.ceil((s.x + s.size / 2 + half) / cell))
+      const j0 = Math.max(0, Math.floor((s.z - s.size / 2 + half) / cell))
+      const j1 = Math.min(N - 1, Math.ceil((s.z + s.size / 2 + half) / cell))
+      for (let j = j0; j <= j1; j++) {
+        const dz = (j + 0.5) * cell - half - s.z
+        for (let i = i0; i <= i1; i++) {
+          const dx = (i + 0.5) * cell - half - s.x
+          if (dx * dx + dz * dz <= rr) g[j * N + i] = 1
+        }
+      }
+    }
+    let ch = 0, ct = 0, mh = 0, mt = 0
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const ax = Math.abs((i + 0.5) * cell - half) / half
+        const az = Math.abs((j + 0.5) * cell - half) / half
+        if (ax > 0.55 && az > 0.55) { ct++; ch += g[j * N + i] }
+        else if (ax < 0.35 && az < 0.35) { mt++; mh += g[j * N + i] }
+      }
+    }
+    return { corner: ch / ct, middle: mh / mt }
+  })
+  check(rows.every((r) => r.corner <= CORNER_CEIL && r.middle > MIDDLE_FLOOR),
+    'and the ground it covers has no corners in it -- the patch reads as a drift rather than as a square of gravel',
+    `corners ${rows.map((r) => `${(r.corner * 100).toFixed(2)}%`).join(' / ')} against middles ${rows.map((r) => `${(r.middle * 100).toFixed(0)}%`).join(' / ')}, ceiling ${(CORNER_CEIL * 100).toFixed(0)}% and floor ${(MIDDLE_FLOOR * 100).toFixed(0)}% (the retired square covered 7-9% of its corners)`)
+}
+
+{
+  // COVERAGE IS A BAND, NOT A FLOOR. The header's target is "a little under half": above that the transparent gaps close up and the layer becomes a solid grey tile that shows a visible square wherever two patches overlap, below it the stamp stops being worth its two triangles. Summed circular footprint over patch area, which reads a little high against what the bake reports because it ignores overlap, and that is fine as long as the bound is set from the same measurement. Measured 40.6%, 25.7%, 25.0% and 29.8% across the four seeds; the band sits about 4 points below the emptiest and 3 above the fullest, with the upper end still under the "under half" the header promises. The spread is wider than the square's was, twice over: a seed that rolls small also loses the taper's bite, and widening LITTER_SIZE's top to 0.34 means one big stone moves the summed footprint further than it used to. Seed 1 is the reason the ceiling is not tighter.
+  const COVER_BAND = [0.20, 0.44]
   const area = LITTER_PATCH_M * LITTER_PATCH_M
   const covers = patches.map((p) => p.reduce((sum, s) => sum + Math.PI * (s.size / 2) ** 2, 0) / area)
   check(covers.every((c) => c > COVER_BAND[0] && c < COVER_BAND[1]),

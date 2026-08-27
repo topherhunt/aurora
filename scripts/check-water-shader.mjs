@@ -363,7 +363,17 @@ check(WATER.clarity >= 0 && WATER.clarity < 1, 'and it is a fraction -- 1 would 
 check(waterSrc.includes('depthWrite: true'), 'and the surface still writes depth, so what is behind it stays behind it')
 // The divide is what stops the water going dark exactly where it goes clear:
 // blending returns src * a, so the reflection has to be pre-scaled back up.
-check(/alpha = 1\.0 - uClarity \* \( 1\.0 - f \) \* near/.test(waterSrc), 'clarity is conditioned on both angle and distance')
+check(/alpha = 1\.0 - uClarity\.x \* down \* near/.test(waterSrc), 'clarity is conditioned on both angle and distance')
+// GEOMETRIC, not Fresnel. pow(1 - cos, 5) is still 0.88 at twenty degrees below
+// the horizontal, which let the bed through most of the way to the horizon --
+// the complaint that produced clarityAngle. -V.y is the sine of the depression
+// angle for a unit V, so this is the angle itself and nothing standing in for it.
+check(/smoothstep\( uClarity\.y, 1\.0, -V\.y \)/.test(waterSrc), 'and the angle half is the view ray, not a fifth power of it')
+check(
+  WATER.clarityAngle >= 30 && WATER.clarityAngle <= 75,
+  'and it does not open until she is looking properly down at it',
+  `clarityAngle ${WATER.clarityAngle} deg`
+)
 check(/color \/= alpha/.test(waterSrc), 'and the surface light is pre-divided so transparency does not dim the reflection')
 check(
   !/MeshStandardMaterial|MeshLambertMaterial/.test(waterSrc),
@@ -393,6 +403,15 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
 
   const scene = new THREE.Scene()
   const water = new Water(scene, { sky: new Sky(scene), lighting: new WorldLighting(), probe: new SkyProbe(), world: new WorldProbe() })
+
+  // The degrees -> sine conversion lives on the CPU, once, so the shader is one
+  // smoothstep against -V.y. Restating sin() in GLSL would be a second copy of
+  // one decision, and the copy that drifts is always the one nobody reads.
+  check(
+    Math.abs(water.material.uniforms.uClarity.value.y - Math.sin((WATER.clarityAngle * Math.PI) / 180)) < 1e-12,
+    'the clarity uniform carries the sine of the angle, not its degrees',
+    `${water.material.uniforms.uClarity.value.y.toFixed(4)} = sin ${WATER.clarityAngle} deg`
+  )
 
   const resolve = (src) => {
     let out = src

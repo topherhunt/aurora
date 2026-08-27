@@ -525,7 +525,7 @@ function geometryBytes(geo) {
 // once the card existed there was nothing left for it to be better than.
 //
 // IT IS A BILLBOARD: ONE QUAD, SPUN, AND SPUN IN EVERY DIRECTION. The pinned
-// call is `buildImpostorCard(w, h, LAYER.IMPOSTOR_ROCK, 1, { upNormal: true,
+// call is `buildImpostorCard(w, h, rockImpostorLayer(name), 1, { upNormal: true,
 // spherical: true })`, and every one of those arguments is load-bearing. A rock
 // is looked DOWN on as often as across, so rocks.js is the only bed that builds
 // its material with `sphericalBillboard`, and `spherical` here is how the card
@@ -552,32 +552,38 @@ function geometryBytes(geo) {
 // the two at the crown, which on a bedded shape is most of what is above ground
 // at all.
 //
-// ONE LAYER, ONE PHOTOGRAPH, TWENTY-FIVE SHAPES -- AND THE LAYER DOES NOT FIT
-// THE BANK. This has to be said plainly rather than discovered later. The card
-// stretches one 128x128 slice across whatever quad it is put on, so the picture
-// only lands undistorted on a shape with the SUBJECT'S ASPECT. Measured over the
-// bank (height against the larger horizontal extent, over the three shipped
-// seeds of all twenty-five variants), that aspect runs from 0.089 on a `shingle`
-// flake to 1.929 on a `spire`, a spread of 21.7x, with a median of 0.439 and a
-// mean of 0.504. No single photograph covers that. The subject below is aimed at
-// 0.415, the GEOMETRIC middle of that range rather than the arithmetic one,
-// because the geometric middle is what balances the two worst cases against each
-// other: 4.7x vertically squashed on the flake, 4.6x stretched on the spire.
+// ONE PHOTOGRAPH PER VARIANT, AND IT USED TO BE ONE FOR ALL TWENTY-FIVE. The
+// card stretches a 128x128 slice across whatever quad it is put on, so a shared
+// photograph only lands undistorted on a shape with the SUBJECT'S ASPECT.
+// Measured over the bank (height against the mean plan width, averaged over the
+// shipped seeds of each variant), that aspect runs from 0.14 on a `capslab` to
+// 1.95 on a `spire`. Against the one `boulder` that used to stand in for all of
+// them the stretch ran 0.29x to 4.00x: a slab was a boulder squashed to under a
+// third of its height, a spire was a boulder pulled four times taller, and the
+// only variant drawn as itself was `boulder`. That is what "the billboard does
+// not have the right aspect ratio" is, and no single photograph fixes it.
 //
-// THAT IS ACCEPTED, AND ONLY BECAUSE THE SUBJECT IS A ROCK. The same stretch on
-// a fern would bend every frond and on a pine would fatten the trunk, because
-// those silhouettes carry structure the eye can measure against. A rock card is
-// a grey blob of granite speckle with a lumpy outline: squash it and it is a
-// flatter grey blob, which is what a shingle flake is, and stretch it and it is
-// a taller one, which is what a spire is. The card's WORLD EXTENTS are each
-// shape's own, so the silhouette a distant rock occupies is right even where
-// the picture inside it has been reproportioned. Silhouette is what reads at
-// this range; interior texel density is not.
+// It was argued for a while that this was survivable BECAUSE the subject is a
+// rock: a rock card is a grey blob of granite speckle with a lumpy outline, so
+// squash it and it is a flatter blob, which is what a slab is. That argument is
+// wrong about exactly the thing a card is for. The card's world EXTENTS were
+// always each shape's own, so the box a distant rock occupies was right; what
+// was wrong is the only thing inside that box -- the outline. A spire and a
+// slab differ in silhouette and in nothing else at 250 m, and a shared
+// photograph is precisely a decision to throw silhouette away.
 //
-// If this ever stops being good enough, the fix is the one fern-bank.js already
-// runs -- cut the bank into two or three aspect classes and give each its own
-// layer, the way `arch` cuts the ferns -- NOT a fatter card. Allocating layers
-// is textures.js's call, so it is written down here rather than done here.
+// THE COST IS 25 ATLAS LAYERS, 1.6 MB, and it is the cheap end of this
+// trade-off: the same per-variant run for buildings would have been 148 slices
+// and 9.3 MB, which is why card.js photographs a wall-style x roof-kind grid
+// instead. A rock has no such grid to collapse along. See LAYER.IMPOSTOR_ROCK
+// in textures.js, which is the base of the run; `rockImpostorLayer` below
+// indexes it, and the order is ROCK_NAMES.
+//
+// The per-vertex price is the other half and it is smaller than it looks:
+// material.js's billboardVertex walks `uBillboardLayers` per vertex, so the
+// list going from 1 entry to 25 is 25 step() calls on every rock vertex drawn.
+// At the measured 30k rock vertices in view that is under a million ops a
+// frame, on the one material only the five rock beds share.
 //
 // WHAT CANCELS AND WHAT DOES NOT. The card GEOMETRY is built when the bank is,
 // and the PIXELS cannot exist until there is a renderer, so the two halves can
@@ -595,7 +601,12 @@ function geometryBytes(geo) {
 // view made a rock swell by up to 1.7x at the moment it swapped to its card.
 // Framing wide and drawing average is not a contradiction: the bake normalises
 // the subject to its own frame, so the picture spans the quad's frame whatever
-// that is. What does not cancel is the aspect difference argued above.
+// that is. What it leaves is a horizontal squeeze of `planMean / max(w, d)` --
+// the widest silhouette drawn at the average width -- and that is the intended
+// reading of a quad that spins: it is seen from every bearing, so it is drawn
+// at what the rock looks like from every bearing. Now that the photograph is
+// the shape's own, that squeeze is the ONLY difference left between the card
+// and the mesh it takes over from.
 // ---------------------------------------------------------------------------
 
 /**
@@ -638,92 +649,87 @@ export function rockBakeFrame(measured) {
 }
 
 /**
- * Which rock gets photographed for the one impostor layer, and at which seed.
+ * The seed every card photograph is taken at, for every variant.
  *
- * `boulder`, and the choice is made on the same grounds fern-bank.js picks the
- * MIDDLE of its axes rather than variant 0. Four things had to be true at once
- * and only this variant manages all four:
+ * A FIXED CONSTANT, not the bank's, and it matters more now than it did when
+ * there was one subject. `buildRockBank`'s seed is a dial someone may turn, and
+ * the photographs must not change under the world when they do: the card
+ * geometry is sized from each PLACED shape's own measurement while the picture
+ * inside it comes from this seed, so a drifting subject would silently
+ * reproportion every distant rock in the world. Fixing it also means the bench
+ * and the world photograph the identical rock.
  *
- *   MIDDLE ASPECT. `boulder`'s own mean over the shipped seeds is 0.478, which
- *   is the nearest any single variant gets to the middle of the bank without
- *   also having a signature silhouette. Photographing the first entry in the
- *   table instead would make every distant rock in the world a flattened river
- *   stone.
- *
- *   ONE MASS, NO SIGNATURE. A stand-in for twenty-five shapes must be the one
- *   nobody notices. That rules out everything whose silhouette says something
- *   specific: `cleft` sits at almost exactly the median aspect and is useless
- *   here, because it is two masses with a gap between them and the gap would be
- *   photographed into every rock on the far hillside. Same for `spire`'s point,
- *   `blockstack`'s step, and `shelf`'s overhang.
- *
- *   CLOSED. Every open-bottomed variant is a shell with no underside, so its
- *   photograph is thin along its own bed plane -- exactly the edge of the card
- *   that meets the ground, and exactly where a missing row of texels reads as a
- *   rock hovering.
- *
- *   BIG ENOUGH TO GET THERE. The card is the LAST band, so the shapes that
- *   actually wear it at any size on screen are the large ones; a cobble is culled
- *   long before. At 1.9 m across, tagged for three of the four environments and
- *   for no `site` at all, `boulder` is the shape most likely to BE the rock the
- *   card is standing in for.
- *
- * THE SEED IS A FIXED CONSTANT, not the bank's, and it is CHOSEN rather than
- * arbitrary. `buildRockBank`'s seed is a dial someone may turn, and the
- * photograph must not change under the world when they do -- the card geometry
- * is sized from each shape's own measurement and only the picture inside it
- * comes from here, so a drifting subject would silently reproportion every
- * distant rock. Fixing it also means the bench and the world photograph the
- * identical rock.
- *
- * 1978 is the seed whose boulder measures an aspect of 0.4150, which is the
- * bank's geometric middle to four places -- the value argued for in THE CARD
- * above, and the reason to prefer it over the variant's own mean of 0.478. Seeds
- * 1..4000 were searched for it. Re-derive it if the bank's extremes move: it is
- * sqrt(min aspect x max aspect) over every shipped shape.
+ * One seed for all twenty-five rather than one per variant, because the thing a
+ * card has to get right is the variant's silhouette FAMILY -- a spire outline
+ * against a slab outline -- and seed-to-seed variation inside a variant is
+ * small next to that. Which seed is arbitrary now that no single subject has to
+ * sit at the bank's geometric middle; 1978 is kept because it is the one the
+ * shipped `boulder` card was taken at and there is no reason to move it.
  */
-export const ROCK_CARD_SUBJECT = 'boulder'
 export const ROCK_CARD_SEED = 1978
 
 /**
- * Build the subject and hand back the geometry beside the framing it was
- * measured at, so the bake photographs the very thing that was measured rather
- * than a second build of it. Caller disposes.
+ * Which atlas layer holds `name`'s photograph.
+ *
+ * The run is laid out in ROCK_NAMES order from LAYER.IMPOSTOR_ROCK, and this is
+ * the ONLY place that arithmetic happens: the bake writes through it and the
+ * card geometry reads through it, so a variant added to the table in the middle
+ * cannot leave the two disagreeing about which slice is whose.
+ */
+export function rockImpostorLayer(name) {
+  const i = ROCK_NAMES.indexOf(name)
+  if (i < 0) throw new Error(`rockImpostorLayer: no rock variant named ${name}`)
+  return LAYER.IMPOSTOR_ROCK + i
+}
+
+/**
+ * Build one variant's photographic subject and hand back the geometry beside
+ * the framing it was measured at, so the bake photographs the very thing that
+ * was measured rather than a second build of it. Caller disposes.
  *
  * Photographed at the FINEST tier. The bake resolves to 128 px either way, so a
  * coarse subject would only donate its own faceting to a picture that is meant
  * to stand in for the fine one.
+ *
+ * OPEN SHELLS ARE PHOTOGRAPHED TOO, and the old single-subject code refused
+ * them. The objection was that a shell has no underside, so its photograph is
+ * thin along its own bed plane -- the edge of the card that meets the ground,
+ * where a missing row of texels reads as a rock hovering. That was decisive
+ * when one picture had to serve every shape, because it would have hollowed the
+ * foot of all twenty-five. It is not decisive for a shell photographing ITSELF:
+ * a `cap` really is a shell bedded into the hillside, so a card whose bottom
+ * edge is where the shell's rim is, is the truthful picture of it.
  */
-function rockCardSubject() {
-  const v = ROCK_VARIANTS[ROCK_CARD_SUBJECT]
-  if (!v) throw new Error(`rockCardSubject: no rock variant named ${ROCK_CARD_SUBJECT}`)
-  if (v.openBottom === 1) {
-    throw new Error(`rockCardSubject: ${ROCK_CARD_SUBJECT} is an open shell -- see the note on ROCK_CARD_SUBJECT`)
-  }
-  const geo = buildRock({ ...rockParams(ROCK_CARD_SUBJECT, ROCK_CARD_SEED), tier: 0 })
+function rockCardSubject(name) {
+  const v = ROCK_VARIANTS[name]
+  if (!v) throw new Error(`rockCardSubject: no rock variant named ${name}`)
+  const geo = buildRock({ ...rockParams(name, ROCK_CARD_SEED), tier: 0 })
   return { geo, frame: rockBakeFrame(geo.userData.rock.measured) }
 }
 
 /**
- * Photograph the bank into LAYER.IMPOSTOR_ROCK, in place.
+ * Photograph every variant into its own layer of the IMPOSTOR_ROCK run, in
+ * place.
  *
- * Call ONCE, after `loadImageLayers()` has resolved -- the subject wears
+ * Call ONCE, after `loadImageLayers()` has resolved -- the subjects wear
  * LAYER.ROCK, and LAYER.ROCK is a PNG that arrives some hundreds of
- * milliseconds into the session. Bake before it lands and the card is a
- * photograph of an untextured lump. Until then the far band draws an empty
- * layer, which is fully transparent and so discarded by alphaTest, exactly as
- * the tree, fern and grass cards do.
+ * milliseconds into the session. Bake before it lands and the cards are
+ * photographs of untextured lumps. Until then the far band draws empty layers,
+ * which are fully transparent and so discarded by alphaTest, exactly as the
+ * tree, fern and grass cards do.
  *
  * Needs the live renderer, so it cannot live in `buildRockBank` -- that runs in
- * a constructor and in node. Returns what `bakeImpostor` measured, with the
- * layer beside it, for the caller to log.
+ * a constructor and in node. Returns one row per variant, for the caller to log.
  */
 export function bakeRockImpostors(renderer, texArray) {
-  const { geo, frame } = rockCardSubject()
-  const azimuth = widestAzimuth(geo)
-  const baked = bakeImpostor(renderer, geo, texArray, LAYER.IMPOSTOR_ROCK, { ...frame, azimuth })
-  geo.dispose()
-  return { layer: LAYER.IMPOSTOR_ROCK, subject: ROCK_CARD_SUBJECT, azimuth, ...baked }
+  return ROCK_NAMES.map((name) => {
+    const { geo, frame } = rockCardSubject(name)
+    const azimuth = widestAzimuth(geo)
+    const layer = rockImpostorLayer(name)
+    const baked = bakeImpostor(renderer, geo, texArray, layer, { ...frame, azimuth })
+    geo.dispose()
+    return { layer, subject: name, azimuth, ...baked }
+  })
 }
 
 /**
@@ -787,7 +793,7 @@ function widestAzimuth(geo, steps = 180) {
  * card VANISHES edge-on rather than just flattening.
  */
 export function rockImpostorLayers() {
-  return [LAYER.IMPOSTOR_ROCK]
+  return ROCK_NAMES.map(rockImpostorLayer)
 }
 
 /**
@@ -799,14 +805,74 @@ export const ROCK_BAND_COUNT = ROCK_TIERS.length + 1
 /** How many of those bands are real meshes. The rest -- one -- is the card. */
 export const ROCK_MESH_BAND_COUNT = ROCK_BAND_COUNT - 1
 
+// ---------------------------------------------------------------------------
+// NAMING ONE SHAPE, which matters because a name that cannot be typed back into
+// the previewer is not a name, it is a number that happens to be printed.
+//
+// A bank shape is fixed by three things: the bank seed, the variant, and which
+// of that variant's `seeds` shapes it is. The bank seed is one number for the
+// whole world, so what actually distinguishes one shape from another is the
+// last two -- and `variant-index` spells exactly those two and nothing else.
+//
+// It used to print `variant#seed`, the raw rockSeed, on the argument that seed
+// is what /gen-rock's seed box takes. That was true and it was useless:
+// `shingle#20402384070` is eleven digits of bank arithmetic that nobody can
+// read, compare, or remember long enough to walk to a keyboard, and two rocks
+// one seed apart in the bank look nothing like consecutive. `shingle-1` is the
+// second shingle in the bank, it sorts, it can be said out loud, and /gen-rock
+// resolves it back to a seed with `rockShapeSeed` -- so the previewer takes the
+// printed name directly and the seed stays an implementation detail of the
+// bank, which is what it always was.
+// ---------------------------------------------------------------------------
+
+/**
+ * The seed `buildRockBank` builds `name`'s `index`-th shape from.
+ *
+ * The strides are coprime with nothing in particular and simply have to keep
+ * (variant, index) pairs from colliding at the bank sizes anyone builds: 9173
+ * per variant against 101 per index leaves room for 90 shapes of a variant
+ * before one variant's run reaches the next one's.
+ *
+ * SEEDS ARE PER (VARIANT, INDEX), not global, so adding a seed to the bank does
+ * not reshape the rocks already in it -- the same reason tree-bank.js gives one
+ * seed per variant rather than one per species.
+ */
+export function rockShapeSeed(bankSeed, name, index) {
+  const variant = ROCK_NAMES.indexOf(name)
+  if (variant < 0) throw new Error(`rockShapeSeed: no rock variant named ${name}`)
+  if (!Number.isInteger(index) || index < 0) throw new Error(`rockShapeSeed: index must be a non-negative integer, got ${index}`)
+  return bankSeed + variant * 9173 + index * 101
+}
+
+/** The printable id of one bank shape: `variant-index`, e.g. `shingle-1`. */
+export function rockShapeId(name, index) {
+  return `${name}-${index}`
+}
+
+/**
+ * `variant-index` back into its two parts, or null if the string is not one.
+ *
+ * Deliberately strict about the variant existing, because the one caller is a
+ * previewer box someone types into and "no such rock" is the answer it needs.
+ */
+export function parseRockShapeId(id) {
+  const cut = String(id).lastIndexOf('-')
+  if (cut <= 0) return null
+  const name = id.slice(0, cut)
+  const index = Number(id.slice(cut + 1))
+  if (!ROCK_NAMES.includes(name)) return null
+  if (!Number.isInteger(index) || index < 0) return null
+  return { name, index }
+}
+
 /**
  * Bake the whole bank: every variant, at `seeds` shapes each, at every tier.
  *
  * Returns `{ shapes, geometries, triangles, bytes }`.
  *
- *   `shapes[i]` is one buildable rock: `{ variant, name, seed, tint, envs,
- *   measured, tiers }`, where `tiers` is ALWAYS ROCK_BAND_COUNT long so a band
- *   index and a shape id are independent lookups.
+ *   `shapes[i]` is one buildable rock: `{ variant, name, index, seed, tint,
+ *   envs, measured, tiers }`, where `tiers` is ALWAYS ROCK_BAND_COUNT long so a
+ *   band index and a shape id are independent lookups.
  *
  *   `geometries` is the de-duplicated list of every geometry the bank made, in
  *   the order they should enter the batch. The caller owns them and MUST
@@ -833,12 +899,11 @@ export const ROCK_MESH_BAND_COUNT = ROCK_BAND_COUNT - 1
  * `size`, so one shared quad would draw a `pebble` and a `lip` at the same size
  * on the hillside. Every shape therefore gets its own two triangles, sized from
  * its own `measured` -- which is `ROCK_NAMES.length * seeds` extra arena entries
- * of 4 vertices each, about 150 bytes apiece. The PICTURE on them is still one
- * shared bake into one layer; see THE CARD above for what that costs.
+ * of 4 vertices each, about 150 bytes apiece. The PICTURE on them is the
+ * variant's own, one atlas layer per variant; see THE CARD above.
  *
- * SEEDS ARE PER (VARIANT, INDEX), not global: adding a seed to the bank must
- * not reshape the rocks already in it, for the same reason tree-bank.js gives
- * one seed per variant rather than one per species.
+ * Every shape's seed comes from `rockShapeSeed`, which is also what resolves a
+ * printed `variant-index` back to a rock in the previewer.
  */
 export function buildRockBank({ seed = 1, seeds = 3 } = {}) {
   if (!Number.isInteger(seeds) || seeds < 1) throw new Error(`buildRockBank: seeds must be a positive integer, got ${seeds}`)
@@ -852,7 +917,7 @@ export function buildRockBank({ seed = 1, seeds = 3 } = {}) {
     const v = ROCK_VARIANTS[name]
 
     for (let s = 0; s < seeds; s++) {
-      const rockSeed = seed + variant * 9173 + s * 101
+      const rockSeed = rockShapeSeed(seed, name, s)
       const tiers = ROCK_TIERS.map((_, tier) => {
         const g = buildRock({ ...rockParams(name, rockSeed), tier })
         geometries.push(g)
@@ -866,7 +931,7 @@ export function buildRockBank({ seed = 1, seeds = 3 } = {}) {
       // `bakeRockImpostors` about the framing by construction -- see THE CARD.
       const measured = tiers[0].userData.rock.measured
       const ext = impostorCardExtents(rockCardFrame(measured))
-      const card = buildImpostorCard(ext.width, ext.height, LAYER.IMPOSTOR_ROCK, 1, {
+      const card = buildImpostorCard(ext.width, ext.height, rockImpostorLayer(name), 1, {
         upNormal: true,
         spherical: true,
       })
@@ -878,6 +943,10 @@ export function buildRockBank({ seed = 1, seeds = 3 } = {}) {
       shapes.push({
         variant,
         name,
+        // Which of this variant's `seeds` shapes it is, 0-based. Together with
+        // `name` it is the shape's whole identity within a bank -- see
+        // `rockShapeId`, which is what the v2 cursor readout prints.
+        index: s,
         seed: rockSeed,
         tint: v.tint,
         envs: v.envs,

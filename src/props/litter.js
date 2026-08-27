@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { mulberry32 } from '../sim/mathx.js'
+import { mulberry32, smoothstep } from '../sim/mathx.js'
 import { LAYER, TEX_SIZE } from '../textures.js'
 import { createImpostorBakeMaterial } from '../material.js'
 import { buildRock } from './rock.js'
@@ -8,7 +8,20 @@ import { SUPERSAMPLE, downsample, flipY, dilate, coveredLuma, coverage } from '.
 
 // ---------------------------------------------------------------------------
 // STREWN LITTER: a photograph, taken from directly overhead, of a few dozen
-// small stones dropped at random on a square of ground.
+// small stones lying in a drift on a square of ground.
+//
+// A DRIFT, AND NOT A SQUARE FULL OF STONES, which is the one thing about this
+// picture the eye can catch out. The stones used to be dropped uniformly over an
+// inset square, and a square of gravel is what it then read as: the covered
+// ground ended on four straight lines, the corners carried stones as large as
+// the middle did, and two stamps overlapping drew the join. Yaw does not hide
+// that -- a rotated square is still a square, and rotating two of them against
+// each other only makes the corners cross. So the stones are laid inside a
+// LOBED DISC instead (see LITTER_REACH), with the size range tapering to
+// grit at its rim: the covered set has no straight edge anywhere, no corner to
+// recognise, and it thins into bare ground rather than stopping on a line. Two
+// stamps overlapping now read as one wider drift, which is what they are meant
+// to be.
 //
 // WHAT IT REPLACES. The rock scatter used to draw this look as geometry -- the
 // `underfoot` bed, running at a stone every 1.7 m across every cliff and every
@@ -65,27 +78,87 @@ export const LITTER_LAYERS = [LAYER.LITTER_0, LAYER.LITTER_1, LAYER.LITTER_2, LA
 // smaller and a patch is one rock and may as well have been geometry.
 export const LITTER_PATCH_M = 1.6
 
-// The clear rim, as a fraction of the patch. Two jobs, and the second is the
-// one that would be missed. It keeps every stone whole -- a centre may not land
-// closer to the edge than half of the largest stone, or the picture has cut-off
-// rocks along its border. And the atlas is RepeatWrapping (barkRepeat needs it,
-// see textures.js), so a stone touching the edge would be bilinearly blended
-// with whatever is on the OPPOSITE side of the same patch. An empty rim means
-// that blend mixes transparent with transparent and nothing shows.
-export const LITTER_MARGIN = 0.14
+// The clear rim, and the reach of the drift that falls out of it. Two jobs, and
+// the second is the one that would be missed. It keeps every stone whole -- a
+// centre may not land closer to the edge than half of the largest stone, or the
+// picture has cut-off rocks along its border. And the atlas is RepeatWrapping
+// (barkRepeat needs it, see textures.js), so a stone touching the edge would be
+// bilinearly blended with whatever is on the OPPOSITE side of the same patch. An
+// empty rim means that blend mixes transparent with transparent and nothing
+// shows.
+//
+// MEASURED RADIALLY NOW, as a fraction of the HALF-patch, because the stones no
+// longer land in a square and the old per-axis reading of the same number would
+// describe nothing. The margin buys a little more than it looks: the widest a
+// stone can be out at the reach is LITTER_RIM_TAPER's tapered top, 14 cm rather
+// than the range's own 26, so 0.175 leaves 7 cm of guaranteed clear rim against
+// the 1.25 cm one texel of the wrap blend actually needs. check-litter.mjs sweeps
+// the taper for the true worst rather than trusting that arithmetic.
+export const LITTER_MARGIN = 0.175
+export const LITTER_REACH = (LITTER_PATCH_M / 2) * (1 - LITTER_MARGIN)
+
+// How far the drift's rim is pushed off a circle, as two harmonics of the angle
+// -- a 2-fold squash and a 3-fold wobble, each at its own phase per patch. A
+// disc is a better patch than a square (it has no corners and no straight edge)
+// but it is still a shape the eye can name, and four discs of gravel on a
+// hillside read as four dropped plates. At 0.18 + 0.12 the rim wanders by up to
+// 30% of the reach, which is enough that no two of the four bakes have the same
+// outline and none of them has a nameable one.
+export const LITTER_LOBES = [0.18, 0.12]
+
+// Where the size range starts giving way toward the rim, as a fraction of the
+// reach, and how much of it is gone by the rim itself.
+//
+// THIS IS WHAT ACTUALLY DISSOLVES THE EDGE, and it is worth separating from the
+// shape above. A drift with a lobed outline but full-sized stones out to that
+// outline still ends on a readable line, because a 25 cm stone at the rim IS the
+// rim. Tapering the range instead means the last thing before bare ground is
+// 5-14 cm grit, which at 1.25 cm a texel is a handful of pixels the eye cannot
+// find a boundary in. It is the same trick the scatter plays at its own scale
+// with the rim dissolve, one level down.
+//
+// The taper multiplies the RANGE and not the size, so the small end of
+// LITTER_SIZE is still the small end at the rim and no stone escapes underneath
+// it.
+export const LITTER_RIM_KNEE = 0.5
+export const LITTER_RIM_TAPER = 0.55
 
 // How many stones land in one patch. Tuned to coverage rather than to taste:
 // bakeLitter logs the covered fraction, and the target is a little under half.
 // Fuller than that and the transparent gaps close up, the patch becomes a solid
-// grey tile, and stamping two of them overlapping shows a visible square.
-export const LITTER_STONES = 54
+// grey tile, and two stamps overlapping read as a slab rather than as a drift.
+//
+// 52, and the number has been up and down for two separate reasons that pull
+// opposite ways, which is why it is not the 54 the original square used.
+//
+// UP, for the drift: giving up the four corners and tapering the rim costs about
+// a third of the stone on the ground, so at 54 the drift rasterised at 14-20% of
+// the patch against the square's own 22-28, and 74 was what brought that back.
+// DOWN, for the wider size range: coverage goes as the SQUARE of the stone size,
+// so widening LITTER_SIZE's top from 0.26 to 0.34 raised the same 74 stones to
+// 26-29% and the summed footprint past the "under half" this comment promises.
+// 52 lands at 19-27% rasterised, which is where 74 had it before the range
+// moved. Fewer, larger, more varied stones for the same ground covered.
+export const LITTER_STONES = 52
 
 // The size range of one stone, in metres, and the power that skews the roll.
 // A real spread of loose stone is mostly small with a few large ones, not
 // uniform between the bounds -- u^2 puts about half the stones under 10 cm and
 // leaves a handful up near the top, which is what makes the patch read as
 // natural rather than as a hatch pattern of same-sized dots.
-export const LITTER_SIZE = [0.045, 0.26]
+//
+// THE TOP OF THE RANGE IS WHERE THE VARIETY LIVES, not the bottom, and that is
+// worth knowing before reaching for either end. The floor is pinned by the
+// texel: at LITTER_PATCH_M / 128 one texel is 1.25 cm, so 4.5 cm is under four
+// of them and anything smaller is a stone the downsample cannot resolve into a
+// shape -- it aliases into a speck of noise and adds nothing but shimmer. The
+// ceiling has no such limit, so 0.26 -> 0.34 is what actually widened the
+// spread: the coefficient of variation across the four bakes went 0.52-0.56 to
+// 0.52-0.65, the 90th percentile stone from 17-22 cm to 19-27, and the largest
+// from 24-26 cm to 30-33. Half the stones are still under 10 cm, which is the
+// part that must not change -- a drift of uniformly LARGE stones is as monotone
+// as a drift of uniformly small ones, and reads as rubble rather than litter.
+export const LITTER_SIZE = [0.045, 0.34]
 export const LITTER_SIZE_POW = 2.0
 
 // The bake rig. The world's lighting is applied to the quad on top of this, so
@@ -186,16 +259,34 @@ export function buildLitterPool() {
  */
 export function litterPlacements(seed, poolSize = LITTER_VARIANTS.length * LITTER_SEEDS) {
   const rand = mulberry32(seed * 7919 + 13)
-  const inner = LITTER_PATCH_M * (1 - LITTER_MARGIN * 2)
+  // Drawn once, before the loop: the lobes are the PATCH's shape and not any
+  // stone's, so a phase per stone would average them away to a circle.
+  const phase2 = rand() * Math.PI * 2
+  const phase3 = rand() * Math.PI * 2
   const [minS, maxS] = LITTER_SIZE
   const out = []
   for (let i = 0; i < LITTER_STONES; i++) {
+    const shape = (rand() * poolSize) | 0
+    const tint = LITTER_TINTS[(rand() * LITTER_TINTS.length) | 0]
+
+    // Polar, so the drift's rim is a function of the angle and the taper is a
+    // function of how far out along it the stone sits.
+    const th = rand() * Math.PI * 2
+    const edge = LITTER_REACH * (1
+      - LITTER_LOBES[0] * (0.5 + 0.5 * Math.cos(2 * th + phase2))
+      - LITTER_LOBES[1] * (0.5 + 0.5 * Math.cos(3 * th + phase3)))
+    // sqrt, so the stones spread evenly over the drift's AREA. A raw uniform
+    // radius packs half of them inside the inner quarter and the picture becomes
+    // a cairn with a halo.
+    const t = Math.sqrt(rand())
+    const rim = 1 - LITTER_RIM_TAPER * smoothstep(LITTER_RIM_KNEE, 1, t)
+
     out.push({
-      shape: (rand() * poolSize) | 0,
-      tint: LITTER_TINTS[(rand() * LITTER_TINTS.length) | 0],
-      size: minS + (maxS - minS) * Math.pow(rand(), LITTER_SIZE_POW),
-      x: (rand() - 0.5) * inner,
-      z: (rand() - 0.5) * inner,
+      shape,
+      tint,
+      size: minS + (maxS - minS) * Math.pow(rand(), LITTER_SIZE_POW) * rim,
+      x: Math.cos(th) * edge * t,
+      z: Math.sin(th) * edge * t,
       yaw: rand() * Math.PI * 2,
     })
   }

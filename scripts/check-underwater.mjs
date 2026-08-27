@@ -31,7 +31,7 @@ import { Sky } from '../src/sky.js'
 import { SkyProbe } from '../src/sky-probe.js'
 import { WorldProbe, WORLD_PROBE } from '../src/world-probe.js'
 import { WorldLighting } from '../src/lighting.js'
-import { Water, UNDERWATER, murkDensity, murkLinear, murkAir } from '../src/water.js'
+import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../src/water.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 import { RIVER_WIDEN, RIVER_WIDEN_FRAC } from '../src/v2/render/ribbon.js'
 
@@ -682,6 +682,245 @@ check(
       Math.abs(gain(20) - UNDERWATER.caustic) < 1e-9,
     'and it reaches both ends exactly rather than asymptotically'
   )
+}
+
+// --- 9. the air the capture is taken in ------------------------------------------
+//
+// The world capture is anchored 20 cm ABOVE the surface -- it is a picture of
+// the world seen from the air -- but on a frame where she is under, everything
+// that decides what air looks like has already been sunk to the murk: fog
+// density at the 20 m ceiling, both ends of the aerial ramp on one colour, both
+// lights dimmed and pulled toward blue-grey. Capture through that and the cube
+// comes back with its distance flattened into haze and its near props grey, and
+// that cube is precisely what shades the underside of the surface. The murk
+// arrives on the sky she is looking up at through the water, having already
+// been applied to the water she is looking through -- twice, in series, which
+// is what "the distant props fade into a murky light-blue-gray haze" was.
+//
+// The fix is two closures around one render. What can go wrong with it is not
+// the colour -- it is the BRACKETING, and every way of getting that wrong draws
+// without complaint.
+{
+  const scene3 = new THREE.Scene()
+  // A REAL BACKGROUND COLOUR ON THE STUB SCENE, because the crash this block now
+  // guards was in the interaction between two state swaps rather than in either
+  // one. The probe sets scene.background to null for the length of the capture
+  // -- alpha zero is its payload -- and sinkAir writes the murk INTO
+  // scene.background. Nest them the wrong way round and leave() runs against a
+  // null and throws the first time she ducks under. A stub scene left with the
+  // default background of null cannot see that, so this one has a colour and
+  // the fake hook touches it exactly the way the real one does.
+  scene3.background = new THREE.Color(0x000000)
+  // `air` is a boolean standing in for the whole atmosphere: true means the
+  // palette's, false means the murk. The stub renderer records what it was at
+  // the moment render() was called, which is the only instant that matters.
+  let air = false
+  const sawAir = []
+  const stub3 = {
+    coordinateSystem: THREE.WebGLCoordinateSystem,
+    xr: { enabled: true },
+    getRenderTarget: () => null,
+    getClearColor: (c) => c.setHex(0),
+    getClearAlpha: () => 1,
+    setClearColor: () => {},
+    setRenderTarget: () => {},
+    clear: () => {},
+    render: () => sawAir.push(air),
+  }
+  const hook = {
+    enter: () => {
+      air = true
+      if (scene3.background === null) throw new Error('enter() ran with scene.background nulled by the probe')
+    },
+    leave: () => {
+      air = false
+      // The line that actually threw. Deliberately unguarded: a hook that
+      // tiptoes around the probe's null is not the fix, the ordering is.
+      scene3.background.copy(murkLinear)
+    },
+  }
+  const DT3 = 1 / 72
+  const h3 = new THREE.Vector3(0, 99, 0)
+
+  const p5 = new WorldProbe()
+  // Caught, so that the ordering bug reports as a failed check and the rest of
+  // this file still runs. Left uncaught it takes the whole gate down with a
+  // stack trace, which is the same information told worse.
+  let threw = null
+  try {
+    for (let k = 0; k < 40; k++) p5.update(stub3, scene3, h3, 100, DT3, hook)
+  } catch (e) {
+    threw = e
+  }
+  check(threw === null, 'the hook survives forty frames of capture', threw ? threw.message : '')
+
+  check(
+    sawAir.length > 0 && sawAir.every(Boolean),
+    'every face of the world capture is rendered in air, not in the murk of the frame around it',
+    `${sawAir.filter(Boolean).length} of ${sawAir.length} captures`
+  )
+  // AND IT IS PUT BACK. A leave() that is skipped -- an early return between the
+  // two, a throw, a second render slipped in -- leaves the palette's fog and the
+  // undimmed lights standing for the MAIN render, and the whole underwater look
+  // vanishes for that frame. One frame in thirty is a flicker nobody can trace.
+  check(air === false, 'and the murk is put back before the frame is drawn, every time')
+  // Reached only if neither closure threw, which is the assertion: both run
+  // outside the probe's own swap, so the scene they are handed is the scene the
+  // frame has rather than the half-dismantled one the capture needs.
+  check(
+    scene3.background !== null && scene3.background.equals(murkLinear),
+    'and both halves of the hook see a whole scene, not the one the probe took apart'
+  )
+
+  // A frame that captures nothing must not touch the atmosphere at all: between
+  // bursts the probe returns early, and paying for a fog rewrite and a lighting
+  // update on those frames would be a cost this feature does not have.
+  const p6 = new WorldProbe()
+  p6.update(stub3, scene3, h3, 100, DT3, hook)   // burst starts: 1 face
+  let entries = 0
+  const counting = {
+    enter: () => { entries++; hook.enter() },
+    leave: hook.leave,
+  }
+  const before6 = p6.captures
+  for (let k = 0; k < 4; k++) p6.update(stub3, scene3, h3, 100, DT3, counting)
+  check(
+    entries === p6.captures - before6,
+    'and the hook runs once per captured face and not once per frame',
+    `${entries} entries for ${p6.captures - before6} faces`
+  )
+
+  // The hook is optional and the default is the frame's own air, so phase A and
+  // every dry frame in v2 are unchanged -- and unchanged is checked by driving
+  // it, not by reading the default.
+  const p7 = new WorldProbe()
+  const clean = sawAir.length
+  p7.update(stub3, scene3, h3, null, DT3)
+  check(sawAir.length > clean, 'and a probe called without a hook still captures', `${sawAir.length - clean} face`)
+}
+
+// The call site. Passed only while she is under, because a dry frame's air is
+// already the air the capture wants and swapping it for itself is work for
+// nothing.
+{
+  const v2 = fs.readFileSync(new URL('../src/v2/main.js', import.meta.url), 'utf8')
+  check(
+    /worldProbe\.update\(renderer, scene, headTmp, waterY, dt, submerged \? airHook : null\)/.test(v2),
+    'v2 lends the capture the air only while she is under'
+  )
+  // SINK IS NOT IDEMPOTENT and lift is the thing that makes that safe. The light
+  // lines multiply -- they are dimming the palette's own answer for this hour,
+  // not landing on a fixed number -- so sinking twice with no lift between dims
+  // twice, and the second frame of a swim would be darker than the first and the
+  // third darker again. What stops that is that lift is an ABSOLUTE write of the
+  // same values applySky sets, so it is a real inverse and not an undo.
+  const lift = /function liftAir\(state\) \{([\s\S]*?)\n\}/.exec(v2)
+  check(lift !== null, 'v2 has a liftAir that restores the palette')
+  if (lift) {
+    check(
+      !/[*+/-]=/.test(lift[1]),
+      'and it assigns rather than accumulating, so it is an inverse and not an undo',
+      (lift[1].match(/.*[*+/-]=.*/g) ?? []).join(' | ')
+    )
+    for (const line of ['sun.intensity = state.lightIntensity', 'hemi.intensity = state.hemiIntensity',
+      'scene.fog.density = state.hazeDensity', 'lighting.update(state)']) {
+      check(lift[1].includes(line), `and it restores ${line.split(' ')[0]}`)
+    }
+  }
+  // One sink, two callers. A second copy of those six lines is a second place
+  // for a knob to be forgotten, and the copy that is forgotten is always the one
+  // nobody reads.
+  const sinks = (v2.match(/sinkAir\(\)/g) ?? []).length
+  check(sinks >= 2 || /leave: sinkAir/.test(v2), 'and the murk has one implementation, shared by the frame and the hook')
+}
+
+// --- 10. the current ------------------------------------------------------------
+//
+// A slow lateral push while she is under. Two things about it can be wrong in a
+// way that only shows up minutes later, and both are arithmetic rather than
+// looks, so both belong here.
+{
+  const v = new THREE.Vector3()
+  check(
+    Math.abs(CURRENT.slowShare + (1 - CURRENT.slowShare) - 1) < 1e-12 &&
+      CURRENT.slowShare > 0.5 && CURRENT.slowShare < 1,
+    'the two swings share one amplitude, and the long one carries most of it',
+    `${CURRENT.slowShare} / ${(1 - CURRENT.slowShare).toFixed(2)}`
+  )
+
+  // THE EXCURSION, measured rather than asserted from the knobs: what the effect
+  // was asked for is a metre or so of travel side to side, and `sway` is the
+  // peak displacement, which is half of it. Sampling finely enough to catch the
+  // peak of the fastest term.
+  let peak = 0
+  for (let t = 0; t < 600; t += 0.05) {
+    currentDrift(t, 1, v)
+    peak = Math.max(peak, Math.hypot(v.x, v.z))
+  }
+  //
+  // The bound is sway * sqrt(1 + cross^2) and NOT sway: the across term is
+  // perpendicular, so it adds to the along term in quadrature rather than
+  // sharing its amplitude. At cross 0.3 that is 4% over, which is the whole
+  // difference between a bound that is true and one that reads nicer.
+  const bound = CURRENT.sway * Math.sqrt(1 + CURRENT.cross * CURRENT.cross)
+  check(
+    2 * peak > 1 && 2 * peak < 1.6 && peak <= bound + 1e-9,
+    'she travels about a metre and a half side to side, and no further than the two terms in quadrature',
+    `${(2 * peak).toFixed(2)} m of travel, peak ${peak.toFixed(3)} against bound ${bound.toFixed(3)}`
+  )
+
+  // NOT A METRONOME. One sine has a period you can feel coming; the test is that
+  // the field does not repeat over the couple of minutes anyone will float in
+  // one place. Comparing the whole displacement, not one axis, because the cross
+  // term is what breaks the repeat.
+  let worst = 0
+  for (let t = 0; t < 120; t += 0.25) {
+    currentDrift(t, 1, v)
+    const x = v.x
+    const z = v.z
+    currentDrift(t + CURRENT.slow, 1, v)
+    worst = Math.max(worst, Math.hypot(v.x - x, v.z - z))
+  }
+  check(
+    worst > 0.2 * CURRENT.sway,
+    'and the two periods do not line up, so it does not repeat on the long swing',
+    `${worst.toFixed(2)} m apart one slow period later`
+  )
+
+  // IT IS LATERAL. A vertical push fights the submersion test at the waterline:
+  // her eye crosses the surface, the murk goes on and off, and the whole effect
+  // strobes.
+  currentDrift(3.3, 1, v)
+  check(v.y === 0, 'and it never pushes her up or down')
+
+  // STRENGTH SCALES IT LINEARLY and zero is genuinely nothing, which is what
+  // makes the ease in and out safe: at strength 0 she is exactly where she would
+  // have been, so surfacing cannot leave her displaced.
+  currentDrift(11.7, 0, v)
+  check(v.x === 0 && v.z === 0, 'and at zero strength it is exactly nothing, so surfacing returns her')
+
+  // THE DIFFERENCE, not the drift. This is the one that walks her out of the
+  // world: adding currentDrift's answer every frame integrates it, and a term
+  // with a non-zero mean over any finite window becomes a slow march. The call
+  // site must add the CHANGE since last frame.
+  const v2 = fs.readFileSync(new URL('../src/v2/main.js', import.meta.url), 'utf8')
+  check(
+    /player\.rig\.position\.x \+= swayWant\.x - swayApplied\.x/.test(v2) &&
+      /player\.rig\.position\.z \+= swayWant\.z - swayApplied\.z/.test(v2) &&
+      /swayApplied\.copy\(swayWant\)/.test(v2),
+    'v2 applies the drift as a difference against what it last applied, not as an increment'
+  )
+  // BEFORE the mover, so the clamp and the ground test see where she actually
+  // is. 70 cm added afterwards is enough to put her inside a bank with nothing
+  // left in the frame to push her out of it.
+  check(
+    v2.indexOf('swayApplied.copy(swayWant)') < v2.indexOf('player.update(dt, moveInput)'),
+    'and it lands before the mover, so collision and the world clamp see it'
+  )
+  // And it eases. The push arriving in one frame is a shove, and a shove in a
+  // headset is how you make someone ill -- worst at the waterline, where she
+  // crosses the boundary over and over.
+  check(CURRENT.ease >= 1, 'and it comes and goes over seconds rather than in a frame', `${CURRENT.ease} s`)
 }
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

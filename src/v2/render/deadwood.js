@@ -41,15 +41,25 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //    rule would put a flat card's honest range for a 0.45 m-deep log at ~13 m,
 //    so the 20 m crossover is being taken slightly early on the rule's terms and
 //    paid for by the prop's own shape: a near-cylinder is the one silhouette a
-//    single spun card is nearly RIGHT for, because rotating a cylinder about its
-//    long axis does not change its outline.
+//    flat card is nearly RIGHT for, because rotating a cylinder about its long
+//    axis does not change its outline.
 //
-//    The one place that breaks is a log seen END-ON, where the card still shows
-//    its full 3 m length instead of a 0.4 m disc. That is a known cost of the
-//    one-card tier and it is the tier that was asked for; the mitigation is that
-//    a log points somewhere random and the eye at 20 m has a whole forest floor
-//    to look at. If it ever reads badly, the fix is the crossed pair the other
-//    families use, not a wider mesh band.
+//    THE LOG'S CARD IS FIXED AND THE SNAG'S SPINS, which is a change from what
+//    this tier first shipped as. Spinning is correct for a stump -- a solid of
+//    revolution looks the same from every side, so turning the quad to the eye
+//    is free. It is wrong for a log, because a log HAS a heading: a spun card
+//    holds still against the eye while the mesh under it points along its yaw,
+//    so every LOD swap looks like the log turning to a new direction and then
+//    turning back when the player walks in again. A fixed card is carried by the
+//    instance's own yaw and the log stays where it lay. See deadwood-bank.js.
+//
+//    The cost has moved rather than gone. Spun, a log seen END-ON showed its
+//    full length instead of a 0.4 m disc; fixed, it thins to a sliver instead.
+//    Both are wrong and the second is the one the user asked for, because the
+//    error is momentary and does not read as motion. The mitigation is unchanged
+//    -- a log points somewhere random and the eye at 20 m has a whole forest
+//    floor to look at -- and if it ever reads badly the fix is the folded pair
+//    trees.js uses, not a wider mesh band.
 //
 // WHAT IT COSTS. At 0.006 pieces/m^2, FULL_RADIUS 45 and DRAW_RADIUS 100 the
 // graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 38 + 93 = ~131 standing, of which
@@ -101,22 +111,24 @@ const BUILD_BUDGET_MS = 1.0
 const NEAR_MARGIN = TILE * 1.5
 
 // Metres between the ground samples a log's belly is seated on, and the ceiling
-// on how many it may take. A 2 m log gets two samples and a 17 m one gets a
-// dozen; see `_seat`.
+// on how many it may take. A 2 m log gets two samples and the 35 m one at the
+// top of LOG_LENGTH gets the full two dozen; see `_seat`. The CEILING is the
+// number that has to follow the band -- it is what stops a long piece from being
+// sampled coarser than SEAT_SPACING promises, which is daylight under a belly.
 const SEAT_SPACING = 1.5
-const SEAT_MAX_SAMPLES = 12
+const SEAT_MAX_SAMPLES = 24
 
 // How many trunks one tile's keep-out query is allowed to see.
 //
 // A deadwood tile is 25 m and the box it asks for is PADDED by the longest half
-// a log can reach (a 17 m piece is 8.5 m of overhang), so the query covers up to
-// three of the forest's own 25 m tiles on each axis. trees.js grows
+// a log can reach (a 35 m piece is 17.4 m of overhang), so the query covers up
+// to four of the forest's own 25 m tiles on each axis. trees.js grows
 // round(25*25*0.05) = 31 candidates per tile and thinning only ever removes
-// some, so nine full tiles is 279. Rounded up, and `crowded` counts the tile
+// some, so sixteen full tiles is 496. Rounded up, and `crowded` counts the tile
 // that ever hits it -- a truncated read is dead wood placed against a partial
 // forest, which shows up as the odd piece through a trunk rather than as an
 // error.
-const ANCHOR_CAP = 320
+const ANCHOR_CAP = 512
 
 // Where a piece of dead wood may lie. Every one of these is a rejection, never
 // a retry -- see ferns.js on why re-rolling would thicken the litter beside
@@ -134,6 +146,23 @@ const PLACEMENT = {
   maxSlopeDeg: 25,
   freeboard: 0.3,
   pathClearance: 1.5,
+  // THE FRACTION OF DROWNED SITES A LOG IS ALLOWED TO KEEP, and the reason this
+  // is a rate and not a flag is that the bed of a lake is FLAT: every one of the
+  // tests above passes there, so an unconditional yes would carpet a lakebed at
+  // the full land density while the forest around it is thinned by slope and by
+  // trunks. Half is roughly what makes a submerged log read as something
+  // deposited rather than as a floor.
+  //
+  // LOGS ONLY, which is a deliberate asymmetry rather than an oversight. A log
+  // in the shallows is driftwood -- it got there by floating -- and it lies flat
+  // on the bed the way `_seat` already seats it. A snag is a tree that DIED
+  // STANDING, and a stump standing upright underwater is a thing that has to be
+  // explained; there is no story that puts it there.
+  //
+  // The `freeboard` above is the dry rule and stays the dry rule: a piece not
+  // taking this path still needs 30 cm of clearance over the water, so nothing
+  // ends up half-floating at the waterline.
+  submerged: 0.5,
   // Metres of daylight between a piece of dead wood and the nearest TRUNK,
   // measured surface to surface -- the trunk's own radius and the piece's own
   // half-thickness are both added to it before the test.
@@ -169,18 +198,26 @@ const PLACEMENT = {
 // storm-snapped spar you can stand under, one metre is a cut stump, and nothing
 // is a doorstop any more.
 //
-// LOGS ARE MEASURED BY LENGTH, and their range is left exactly where it was --
-// today's multiplier band re-expressed in metres, because a fallen log at 1.4 m
-// to 17 m was not what was complained about and shortening the old-growth trunks
-// would be answering a question nobody asked. Both bands keep SIZE_SKEW so the
-// top stays rare: `pow(u, 1.6)` on the snags puts the median stump near 2.1 m,
-// chest high, with 4 m ones scarce; the logs keep the harder cube they had.
+// LOGS ARE MEASURED BY LENGTH, and the top of their band is DOUBLE what it was:
+// the user's complaint about the old 17 m ceiling was that a log did not read as
+// an OBSTACLE, something to be walked round or climbed over rather than stepped
+// past. The cube skew is what makes the doubling do that work at the sizes
+// actually seen rather than only at the rare top -- `pow(u, 3)` takes the median
+// piece from 3.4 m to 5.6 m and the one-in-ten from 13 m to 26 m, so the whole
+// upper half of the distribution moves with the ceiling. Both bands keep their
+// SIZE_SKEW so the top stays rare: `pow(u, 1.6)` on the snags puts the median
+// stump near 2.1 m, chest high, with 4 m ones scarce.
+//
+// The ceiling is not free. It sets `maxHalf`, which pads the keep-out query's
+// box and therefore ANCHOR_CAP, and it sets how many ground samples `_seat`
+// needs to keep a belly on the ground -- SEAT_MAX_SAMPLES. Both are sized off
+// this number by hand and both say so.
 // Exported so the gate can measure the placed instances AGAINST the band rather
 // than against itself: the bug these replaced was perfectly self-consistent, and
 // a check that reads the same constant the scatter reads would have passed.
 export const SNAG_HEIGHT = [1.0, 4.0]
 const SNAG_SKEW = 1.6
-export const LOG_LENGTH = [1.4, 17.4]
+export const LOG_LENGTH = [1.4, 34.8]
 const LOG_SKEW = 3.0
 
 // How far the per-instance tint is pulled toward the terrain colour underfoot,
@@ -359,9 +396,11 @@ export class Deadwood {
     this._anchor = new Float32Array(ANCHOR_CAP * 4)
     this.anchorCount = 0
 
-    // The two impostor layers are what let the vertex shader spin the billboard
-    // tier. Necessary and not sufficient -- the shader's other test is the
-    // vertex normal, which is vertical only on the card. See CARD_UP_MARK.
+    // The two impostor layers are what mark the billboard tier AS cards, which
+    // is what makes the wind read `uvProj.y` as a height fraction. It is not
+    // what decides the spin: the shader's other test is the vertex normal, and
+    // only the SNAG's card carries the vertical one. A log's card is fixed and
+    // sits on this list all the same. See CARD_UP_MARK and deadwood-bank.js.
     this.material = createPropMaterial(textureArray, { billboardLayers: deadwoodImpostorLayers() })
     // THE WHOLE FAMILY IS ROTTING, so the whole family is tinted, once, on the
     // material. This multiplies diffuseColor BEFORE MOSS_APPLY and SNOW_APPLY
@@ -531,8 +570,8 @@ export class Deadwood {
    * in `this._anchor`.
    *
    * A SNAG is a point and a LOG IS A SEGMENT, and the difference matters at the
-   * sizes this scatter now rolls: a 17 m log tested at its midpoint alone would
-   * be free to lie straight through two trunks eight metres away on either side.
+   * sizes this scatter now rolls: a 35 m log tested at its midpoint alone would
+   * be free to lie straight through two trunks seventeen metres away either side.
    * So the log measures the trunk's distance to the SEGMENT between its ends,
    * which is the same shape `_seat` already works in.
    *
@@ -648,7 +687,7 @@ export class Deadwood {
     // SAMPLED BY LENGTH AND NOT BY COUNT, because what leaks daylight is the
     // ground BETWEEN two samples and that depends on how far apart they are, not
     // on how many there are. A fixed five is plenty for a 2 m log and leaves a
-    // 17 m one arched over 12 cm of hillside. At SEAT_SPACING the worst a smooth
+    // 35 m one arched clear over the hillside. At SEAT_SPACING the worst a smooth
     // rise can bulge between neighbours is a couple of centimetres, which is
     // under the terrain mesh's own faceting and inside any log's radius.
     //
@@ -685,7 +724,7 @@ export class Deadwood {
     //
     // SAMPLED BY LENGTH AND NOT BY COUNT, because what leaks daylight is the
     // ground BETWEEN two samples, and that depends on their spacing rather than
-    // on their number: a fixed five is plenty for a 2 m log and leaves a 17 m one
+    // on their number: a fixed five is plenty for a 2 m log and leaves a 35 m one
     // hanging. At SEAT_SPACING the worst a smooth rise can bulge between
     // neighbours is a couple of centimetres, which is under the terrain mesh's
     // own faceting and inside any log's own radius.
@@ -894,6 +933,11 @@ export class Deadwood {
       const tintV = rand()
       const tintR = rand()
       const u = rand()
+      // DRAWN LAST so that adding it did not move a single piece of dead wood in
+      // the world: every roll above keeps the position it already had in the
+      // stream, and this one takes the slot after them. See the note at the top
+      // of the loop on why the draws are unconditional.
+      const wet = rand()
 
       if (u >= uNew || u < uOld) continue
 
@@ -902,13 +946,24 @@ export class Deadwood {
       const { h, tan } = this.field.heightAndSlopeAt(x, z)
       if (h < PLACEMENT.minElev) { rej.elev++; continue }
       if (tan > maxSlopeTan) { rej.slope++; continue }
-      if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
+      // DROWNED IS NOT AUTOMATICALLY OUT ANY MORE. A lakebed and a riverbed are
+      // where driftwood ends up, and the shallows reading as swept clean while
+      // the bank beside them is littered was the thing that gave the water away
+      // as a texture rather than a place. So a submerged site is offered to a
+      // LOG at PLACEMENT.submerged and refused to everything else -- see the
+      // knob for why the two kinds are not treated alike.
+      const drowned = this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)
+      if (drowned && !(this.isLog[variant] && wet < PLACEMENT.submerged)) { rej.water++; continue }
       const snowLine = this.field.snowLineAt(x, z)
       if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
 
       const road = this.paths.nearest(x, z, 'road')
       if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
-      const river = this.paths.nearest(x, z, 'river')
+      // The river clearance is what keeps a log out of a WATERCOURSE, so a piece
+      // that has just been admitted to the water on purpose must not then be
+      // thrown out by it -- a riverbed is the river. The road test stays either
+      // way: a road crossing water is a ford and a log across it is a blockage.
+      const river = drowned ? null : this.paths.nearest(x, z, 'river')
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
 
       // Last, because it is the only test that is O(trunks) and the only one

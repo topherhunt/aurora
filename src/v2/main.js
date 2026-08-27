@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 
-import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, WORLD_HALF } from './config.js'
+import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, SEED, WORLD_HALF } from './config.js'
 import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from './height/relief.js'
@@ -43,7 +43,7 @@ import { Stars } from '../stars.js'
 // per pixel, which is what pays for a full sky dome. index.html still draws
 // src/aurora.js and is untouched.
 import { SkyAurora } from './render/aurora.js'
-import { Water, UNDERWATER, murkDensity, murkLinear, murkAir } from '../water.js'
+import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { SkyProbe } from '../sky-probe.js'
@@ -129,7 +129,6 @@ import { Input } from '../input.js'
 
 const FOG_COLOR = 0x9db4cf
 const SUN_COLOR = 0xfff2dc
-const SEED = 20260824
 
 const boot = document.getElementById('boot')
 const bootSay = (html) => {
@@ -697,12 +696,12 @@ async function bootWorld() {
     // inside this promise and not merely conventionally: run before the decode
     // and it would photograph the procedural fallback bark into the two cards.
     deadwood.bakeCards(renderer)
-    // The rock card. Unlike the four above it is not a method on the scatter,
-    // because there is nothing per-bed about it: one photograph of one boulder
-    // serves all five beds and every shape in the bank, so it lives on the bank
-    // and is baked once. See ROCK_CARD_SEED in props/rock-bank.js for which
-    // rock is photographed and why that choice is not arbitrary.
-    const rockCard = bakeRockImpostors(renderer, propTextures)
+    // The rock cards, one photograph per variant. Unlike the four above this is
+    // not a method on the scatter, because there is nothing per-bed about it:
+    // the same twenty-five pictures serve all five beds, so they live on the
+    // bank. See ROCK_CARD_SEED in props/rock-bank.js for the seed they are all
+    // taken at and why it is pinned.
+    const rockCards = bakeRockImpostors(renderer, propTextures)
     // The four strewn-pebble patches. Same rig as the impostors above and the
     // same reason for being here rather than on disk -- see props/litter.js.
     const lit = bakeLitterSet(renderer, propTextures)
@@ -725,10 +724,17 @@ async function bootWorld() {
     // Same instrument, same reason. A rock card is a grey blob, which makes
     // coverage the number that matters more than luma here: it says how much of
     // the quad is stone rather than hole, and a card whose coverage collapses is
-    // a distant boulder that has become a rectangle of sky.
+    // a distant boulder that has become a rectangle of sky. Printed as the range
+    // over the twenty-five rather than one line each: the console is not where
+    // twenty-five rows belong, and what a reader needs is whether any of them
+    // came out empty.
+    const worst = rockCards.reduce((a, b) => (b.coverage < a.coverage ? b : a))
+    const bestC = rockCards.reduce((a, b) => (b.coverage > a.coverage ? b : a))
     console.log(
-      `rock impostor baked: ${rockCard.subject} luma ${rockCard.meanLuma.toFixed(3)} ` +
-        `cover ${rockCard.coverage.toFixed(3)}`
+      `rock impostors baked: ${rockCards.length} variants, ` +
+        `luma ${(rockCards.reduce((t, b) => t + b.meanLuma, 0) / rockCards.length).toFixed(3)} mean, ` +
+        `cover ${worst.coverage.toFixed(3)} (${worst.subject}) .. ` +
+        `${bestC.coverage.toFixed(3)} (${bestC.subject})`
     )
   })
 
@@ -1323,6 +1329,16 @@ let submerged = false
 let eyeY = 0
 let waterY = null
 
+// THE CURRENT. `swayApplied` is the offset currently sitting in her rig
+// position, and it is the whole of the bookkeeping: every frame the DIFFERENCE
+// between where the current wants her and where it last put her is added, so
+// her displacement from her own path is always exactly currentDrift's answer
+// and never an integral of it. Adding the drift itself each frame would walk
+// her out of the world in about a minute.
+const swayApplied = new THREE.Vector3()
+const swayWant = new THREE.Vector3()
+let swayStrength = 0
+
 /**
  * Everything that changes when her head goes under, and it is deliberately all
  * in one place and all on the JS side.
@@ -1388,6 +1404,25 @@ function applySubmersion(head, elapsedReal, state) {
     return
   }
 
+  sinkAir()
+}
+
+/**
+ * The half-dozen values that are not true underwater, written over the top of
+ * the ones applySky has already set from the palette.
+ *
+ * SEPARATE FROM applySubmersion because it is called twice on a frame where the
+ * world capture runs -- once at the end of the frame's submersion pass, and
+ * again by the probe's air hook to sink the atmosphere back after the capture
+ * has borrowed the air. Two callers, one implementation; a second copy of these
+ * six lines would be a second place for a knob to be forgotten.
+ *
+ * NOT IDEMPOTENT, and it cannot be: the light lines are multiplicative, because
+ * what they are dimming is the palette's own answer for this hour rather than
+ * any fixed number. Calling it twice in a row dims twice. Every caller must put
+ * liftAir() between two calls, which is exactly what the hook does.
+ */
+function sinkAir() {
   // THE FOG, and it reaches everything. scene.fog.density is the extinction
   // coefficient of lighting.js's aerial model, so one number here is what puts
   // the 20 m ceiling on terrain, trees, rocks, grass, litter, mushrooms and
@@ -1430,6 +1465,37 @@ function applySubmersion(head, elapsedReal, state) {
   sky.mesh.visible = false
   stars.points.visible = false
   aurora.mesh.visible = false
+}
+
+/**
+ * Air again, for the length of one world-probe face. The inverse of sinkAir --
+ * and it is a real inverse rather than an undo, because every line here is the
+ * same ABSOLUTE write applySky makes at the top of the frame, restated from the
+ * same `state`. Nothing is subtracted, so nothing can drift.
+ *
+ * The dome, the stars and the aurora are not restored: the probe hides all
+ * three for its own reasons before it calls this, and it puts them back itself.
+ */
+function liftAir(state) {
+  sun.intensity = state.lightIntensity
+  setSRGB(sun.color, state.lightColor)
+  hemi.intensity = state.hemiIntensity
+  setSRGB(hemi.color, state.hemiSky)
+  setSRGB(hemi.groundColor, state.hemiGround)
+  scene.fog.density = state.hazeDensity
+  // Rewrites uAirNear and uAirFar from the palette, which is what undoes
+  // setAir(murkAir) -- setAir is a later writer over exactly those two, with no
+  // state of its own, so re-running the earlier writer IS the restore.
+  lighting.update(state)
+}
+
+// The pair handed to the world probe while she is under. Held at module scope
+// with the frame's clock state in a slot rather than built per frame, so a
+// swim allocates nothing.
+const airHook = {
+  state: null,
+  enter: () => liftAir(airHook.state),
+  leave: sinkAir,
 }
 
 // --- frame loop -------------------------------------------------------------
@@ -1487,20 +1553,71 @@ const cursorNdc = { x: 0, y: 0, seen: false }
 // Grass and litter are absent on purpose. Litter is centimetre-scale debris
 // nobody is going to name, and grass is not a model with variants at all -- it
 // is a strip texture, so there is no id to print.
+// These are TEMPLATES: `bindCursorPicks` copies each one and fills in the
+// scatter, because one label does not always mean one scatter to walk.
 const CURSOR_PICKS = [
-  { label: 'mushroom', sys: null, idKey: 'variantAt', radius: 0.18, rise: 0.3 },
-  { label: 'fern', sys: null, idKey: 'variantAt', radius: 0.6, rise: 1.2 },
-  { label: 'deadwood', sys: null, idKey: 'variantAt', radius: 0.9, rise: 1.5 },
-  { label: 'rock', sys: null, idKey: 'shapeAt', radius: 1.2, rise: 1.2, scaleKey: 'instScale' },
-  { label: 'tree', sys: null, idKey: 'variantAt', radius: 3, rise: 26, scaleKey: 'instScale' },
+  { label: 'mushroom', idKey: 'variantAt', radius: 0.18, rise: 0.3 },
+  { label: 'fern', idKey: 'variantAt', radius: 0.6, rise: 1.2 },
+  { label: 'deadwood', idKey: 'variantAt', radius: 0.9, rise: 1.5 },
+  // No radius/rise: a rock's pick volume is its own measured footprint and
+  // height, which `RockBed.pickSizeAt` reads straight off the bank shape. The
+  // constants that used to be here were 1.2 m either way at scale 1, which over
+  // a bank running 7:1 wide to 3:1 tall was air above some rocks and a cursor
+  // that pointed through the top of others.
+  { label: 'rock', idKey: 'shapeAt' },
+  // Nor here, and for a sharper version of the same reason: a tree is a thin
+  // trunk under a wide crown, so it is TWO pick volumes and `bindCursorPicks`
+  // expands this one entry into both. The constants that used to be here were a
+  // 3 m radius column 26 m tall, which is the crown's width applied all the way
+  // to the ground -- see `Trees.pickTrunkAt` for what that cost.
+  { label: 'tree', idKey: 'variantAt' },
 ]
+
+/**
+ * The list `pickProp` actually walks, built by `bindCursorPicks`. It is not
+ * `CURSOR_PICKS` because ROCKS ARE FIVE SCATTERS AND NOT ONE: `Rocks` is a
+ * facade over five `RockBed`s, and every array pickProp needs -- tiles, instX,
+ * shapeAt, instScale -- lives on a bed. So the rock template expands into one
+ * bound source per bed and the array is longer than the table above.
+ */
+let boundPicks = null
 
 /** Filled once the scatters exist; nearest-first, so the cheap sources prune for the dear ones. */
 function bindCursorPicks() {
   const bySys = { mushroom: mushrooms, fern: ferns, deadwood: deadwood, rock: rocks, tree: trees }
+  boundPicks = []
   for (const p of CURSOR_PICKS) {
-    p.sys = bySys[p.label]
-    if (!p.sys) throw new Error(`bindCursorPicks: no scatter built for ${p.label}`)
+    const sys = bySys[p.label]
+    if (!sys) throw new Error(`bindCursorPicks: no scatter built for ${p.label}`)
+    if (p.label === 'rock') {
+      // One source per BED. `Rocks` is a facade and owns none of the arrays
+      // pickProp walks; the beds do. Binding the facade is what made rocks
+      // unnameable, and pickProp now throws rather than skipping it in silence.
+      //
+      // The id printed is `RockBed.shapeIdAt` -- `variant-index`, which
+      // /gen-rock's shape box takes -- and not the raw `shapeAt` index, which
+      // means a different rock in each bed. See that method for why.
+      for (const bed of rocks.beds) {
+        boundPicks.push({
+          ...p,
+          sys: bed,
+          nameAt: (s, id) => s.shapeIdAt(id),
+          sizeAt: (s, id, out) => s.pickSizeAt(id, out),
+        })
+      }
+      continue
+    }
+    if (p.label === 'tree') {
+      // Two volumes, one prop. Both carry the same label and the same nameAt,
+      // so whichever the ray enters first the readout says the same thing --
+      // pickProp shares one `bestT` across sources, so the nearer of the two
+      // wins exactly as if they were one shape.
+      const nameAt = (s, id) => s.nameAt(id)
+      boundPicks.push({ ...p, sys, nameAt, sizeAt: (s, id, out) => s.pickTrunkAt(id, out) })
+      boundPicks.push({ ...p, sys, nameAt, sizeAt: (s, id, out) => s.pickCrownAt(id, out) })
+      continue
+    }
+    boundPicks.push({ ...p, sys })
   }
 }
 
@@ -1516,8 +1633,9 @@ function bindCursorPicks() {
 // CPU-side raycast knows nothing about.
 //
 // THE PROP IS A NAME, and only a name. pickProp walks the scatters' instance
-// arrays against a capsule per species; it is there so that "that tree needs to
-// be shorter" can be said as "tree 11 needs to be shorter". The ground range is
+// arrays against a cylinder or two per instance; it is there so that "that tree
+// needs to be shorter" can be said as "tree oak-2 needs to be shorter", about a
+// tree that can then be loaded in /gen-tree. The ground range is
 // its ceiling, so a hill in front of a tree hides the tree, but nothing else
 // occludes: point through a near trunk at a far rock and you get the trunk,
 // which is the answer wanted anyway.
@@ -1539,10 +1657,15 @@ function cursorPick() {
 
   // Infinity rather than the ground range when the ray reaches the horizon:
   // there is no hill to hide behind, so every prop along it is fair game.
-  const prop = pickProp(CURSOR_PICKS, origin, dir, cursorOut.dist === null ? Infinity : cursorOut.dist)
+  if (boundPicks === null) throw new Error('cursorPick ran before bindCursorPicks')
+  const prop = pickProp(boundPicks, origin, dir, cursorOut.dist === null ? Infinity : cursorOut.dist)
   if (prop) {
     cursorOut.label = prop.label
-    cursorOut.variant = prop.variant
+    // The PRINTABLE id, not the raw index. For rocks it is `variant-index`,
+    // which /gen-rock's shape box takes; for trees `species-size`; for the
+    // scatters whose variant array indexes their bank in order it is still the
+    // integer.
+    cursorOut.variant = prop.name
   }
   return cursorOut
 }
@@ -1636,6 +1759,22 @@ function tick() {
   }
 
   readInput()
+
+  // THE CURRENT, applied BEFORE the mover rather than after it. Everything that
+  // keeps her out of the ground and inside the world runs in player.update, and
+  // a push added afterwards would be a push it never saw -- 70 cm is enough to
+  // put her inside a bank. Added first, the drift is just somewhere she is, and
+  // if the clamp refuses part of it the refusal is absorbed into her own path
+  // instead of fighting the next frame's difference.
+  //
+  // `submerged` is last frame's answer, because applySubmersion runs later in
+  // this one. A frame of lag on a 2.5 s ease is not a thing that can be seen.
+  swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged ? dt : -dt) / CURRENT.ease, 0, 1)
+  currentDrift(now / 1000, swayStrength, swayWant)
+  player.rig.position.x += swayWant.x - swayApplied.x
+  player.rig.position.z += swayWant.z - swayApplied.z
+  swayApplied.copy(swayWant)
+
   player.update(dt, moveInput)
 
   // The clock the prop LOD cross-dissolves run on, and the only per-frame cost
@@ -1659,7 +1798,11 @@ function tick() {
   deadwood.update(headTmp.x, headTmp.y, headTmp.z)
 
   clock.advance(dt)
-  applySky(clock.state(), headTmp, now / 1000)
+  // Held in a local because the world probe wants it too: the capture is taken
+  // in air even while she is under, and putting the air back for that one face
+  // means restating this hour's palette. See airHook.
+  const state = clock.state()
+  applySky(state, headTmp, now / 1000)
 
   // BEFORE the render, and it must be the only caller of markers.update(): the
   // handles are scaled to hold a constant angular size, so a second call with a
@@ -1688,7 +1831,10 @@ function tick() {
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
   // capturing from inside the bank. `dt` drives the cross-fade and nothing else.
-  worldProbe.update(renderer, scene, headTmp, waterY, dt)
+  // The air hook only while she is under, because that is the only time the
+  // frame's atmosphere is not the one the capture wants.
+  airHook.state = state
+  worldProbe.update(renderer, scene, headTmp, waterY, dt, submerged ? airHook : null)
 
   renderer.render(scene, camera)
 }

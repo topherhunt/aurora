@@ -243,7 +243,21 @@ export class WorldProbe {
    * only. Everything else here counts frames, because everything else here is
    * rationing GPU work rather than animating.
    */
-  update(renderer, scene, head, surfaceY, dt) {
+  /**
+   * `air`, when given, is a pair of closures the host uses to lend the capture
+   * an atmosphere different from the one the frame is being drawn with. It
+   * exists for exactly one case: swimming. The capture is anchored just ABOVE
+   * the surface -- in air -- but it runs inside a frame whose fog, lights and
+   * aerial ramp have already been sunk to the murk, so without it the cube
+   * comes back with a 20 m haze ceiling and grey, murk-tinted props, and that
+   * cube is what the underside of the surface is shaded from. The murk would
+   * arrive on the sky she is looking up at through the water, twice over.
+   *
+   * Called around the ONE face this update draws, which is why it can be two
+   * closures rather than a mode: enter() before the render, leave() after, and
+   * a frame that captures nothing never calls either.
+   */
+  update(renderer, scene, head, surfaceY, dt, air = null) {
     if (!(dt >= 0)) throw new Error(`WorldProbe.update: needs a real dt, got ${dt}`)
 
     // The duck floor applies on BOTH branches, and that is what actually kills
@@ -309,6 +323,15 @@ export class WorldProbe {
     this.rig.position.copy(this.anchor)
     this.rig.updateMatrixWorld(true)
 
+    // THE AIR SWAP IS THE OUTER OF THE TWO, and that ordering is not cosmetic.
+    // This function's own swap sets scene.background to null for the length of
+    // the capture -- alpha zero is the payload -- and the host's murk writes a
+    // colour INTO scene.background. Nested the other way round, leave() runs
+    // while the background is still null and throws on the first frame she puts
+    // her head under. So: air on, probe state swapped, render, probe state back,
+    // air off, and neither half can see the other's null.
+    if (air !== null) air.enter()
+
     const wasXR = renderer.xr.enabled
     const prevTarget = renderer.getRenderTarget()
     const prevBackground = scene.background
@@ -331,6 +354,9 @@ export class WorldProbe {
 
     const cam = this.rig.children[FACES[this.face]]
     renderer.setRenderTarget(target, FACES[this.face])
+    // The clear is unaffected by `air` either way: it goes to transparent black
+    // because alpha zero is what "nothing along this ray" means, and no
+    // atmosphere changes that.
     renderer.clear(true, true, false)
     renderer.render(scene, cam)
 
@@ -340,6 +366,9 @@ export class WorldProbe {
     renderer.setRenderTarget(prevTarget)
     renderer.setClearColor(scratchColor, prevAlpha)
     renderer.xr.enabled = wasXR
+
+    // AFTER the background is back, per the note at the top of the swap.
+    if (air !== null) air.leave()
 
     this.face = (this.face + 1) % FACES.length
     this.captures++

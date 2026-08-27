@@ -6,7 +6,7 @@
 Per chunk, in the worker, deterministic from `hash(worldSeed, chunkX, chunkZ)`:
 
 - Poisson-disc or jittered-grid scatter, with density and species mix driven by biome weights
-- Reject on slopes above threshold, in water, on paths, on packed dirt, or inside village footprints
+- Reject on slopes above threshold, in water, on paths, on packed dirt, or inside village footprints. **In water is the one of those that is a rate rather than a rule**: submerged ground is where driftwood and sunk stone end up, so a scatter may buy a fraction of its drowned sites back -- see the `crust` and `boulders` rock beds, the `sunken` bed that exists *only* below the waterline (`submergedOnly`, which is needed because `_envAt` calls a dry bank `river` too), and `PLACEMENT.submerged` in `src/v2/render/deadwood.js`, which offers half its lakebed and riverbed sites to fallen LOGS and none of them to standing snags. A piece admitted that way is also exempt from the river-path clearance, since a riverbed *is* the river; the road clearance still holds, because a road crossing water is a ford
 - **Per-instance random Y-rotation and non-uniform scale** (0.8-1.3x, with slight independent vertical stretch). This is most of what makes a procedural forest stop looking procedural
 - Align to terrain normal but only partially (lerp ~30%) so trees on slopes lean slightly rather than growing perpendicular to the hillside
 

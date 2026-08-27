@@ -52,16 +52,20 @@ import * as THREE from 'three'
 import { buildRock, ROCK_TIERS, ROCK_LOD_AT, rockLodSize, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
 import {
   buildRockBank, rockParams, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, ROCK_MESH_BAND_COUNT,
-  ROCK_NAMES, ROCK_VARIANTS, SITES, TINTS, TINT_GAIN, rockImpostorLayers,
+  ROCK_NAMES, ROCK_VARIANTS, SITES, TINTS, TINT_GAIN, rockImpostorLayer, rockImpostorLayers,
+  rockShapeSeed, rockShapeId, parseRockShapeId,
 } from '../src/props/rock-bank.js'
+import { impostorCardExtents } from '../src/props/impostor.js'
 import { Rocks } from '../src/v2/render/rocks.js'
+import { pickProp } from '../src/v2/edit/pick.js'
 import {
-  LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
+  LAYER, LAYER_COUNT, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
   ROCK_TILE_MEAN, buildTextureArray,
 } from '../src/textures.js'
 import {
   SNOW_ROCK, MOSS, mossCutFor, createPropMaterial, getSnowLine, getMossLine,
   setMossVary, getMossVary, setSnowVary, getSnowVary, FADE_BAND,
+  setPropClock, PROP_FADE_SECONDS,
 } from '../src/material.js'
 import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { readPng } from '../tools/props/png.mjs'
@@ -73,6 +77,14 @@ const check = (ok, label, detail = '') => {
   if (!ok) failures++
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
+
+// Math.min(...a) over a placed-rock array is a stack overflow waiting for a bed
+// to get wider, and it got one: widening crust to hold a full billboard band
+// took its cap count past the argument limit and this gate died inside its own
+// helper rather than reporting anything. Anything measuring PLACED rocks uses
+// these; a spread is still fine over a fixed-length table.
+const amin = (a) => { let m = Infinity; for (const v of a) if (v < m) m = v; return m }
+const amax = (a) => { let m = -Infinity; for (const v of a) if (v > m) m = v; return m }
 
 // CLUMP_GAIN is module-private in rocks.js and section 8 needs its VALUE, not
 // its effect: the promise there is that the clump multiplier still has room to
@@ -1519,11 +1531,11 @@ console.log('\nscatter')
 
   const forestRocks = build(forest)
   const byBed = Object.fromEntries(forestRocks.stats.beds.map((b) => [b.name, b]))
-  check(forestRocks.beds.length === 5, 'five beds', forestRocks.beds.map((b) => b.cfg.name).join(', '))
+  check(forestRocks.beds.length === 6, 'six beds', forestRocks.beds.map((b) => b.cfg.name).join(', '))
   check(
     new Set(forestRocks.beds.map((b) => b.batch.material)).size === 1,
-    'one material across all five batches',
-    'every bed billboards the same one card layer, so one program still serves them'
+    'one material across all six batches',
+    'every bed billboards the same 25-layer card run, so one program still serves them'
   )
 
   // THE CARD'S BOUNDS HAVE TO HOLD THE SPIN, and this is the gate on the bug
@@ -1567,6 +1579,49 @@ console.log('\nscatter')
       `worst overhang ${worst[0].over.toFixed(4)} m on ${worst[0].name}, over ${worst.length} shapes`)
   }
 
+  // EVERY VARIANT WEARS ITS OWN PHOTOGRAPH, which is the promise the 25-layer
+  // IMPOSTOR_ROCK run was spent on. This used to be one layer holding one
+  // `boulder`, stretched onto all twenty-five quads: measured over the bank the
+  // stretch ran 0.29x on a `capslab` to 4.00x on a `spire`, so every distant
+  // rock that was not boulder-shaped was drawn as a boulder crushed or pulled
+  // into its outline. The three ways that can silently come back are a card
+  // built against the run's BASE (the old constant, which still resolves and
+  // still draws -- as a `pebble` now), two variants colliding on one slice, and
+  // the material's spin list drifting out of step with the layers the cards
+  // actually carry. All three are checked here rather than left to the eye,
+  // because all three look like "the far rocks are a bit off" and nothing else.
+  {
+    const cards = forestRocks.bank.shapes.map((sh) => ({
+      name: sh.name,
+      seed: sh.seed,
+      want: rockImpostorLayer(sh.name),
+      got: [...new Set(sh.tiers[ROCK_BAND_COUNT - 1].attributes.texLayer.array)],
+    }))
+    const wrong = cards.filter((c) => c.got.length !== 1 || c.got[0] !== c.want)
+    check(wrong.length === 0,
+      "every shape's card is drawn from its OWN variant's atlas layer",
+      wrong.length === 0
+        ? `${cards.length} shapes over ${ROCK_NAMES.length} variants, layers ${LAYER.IMPOSTOR_ROCK}..${LAYER.IMPOSTOR_ROCK + ROCK_NAMES.length - 1}`
+        : `${wrong[0].name}#${wrong[0].seed} wants ${wrong[0].want}, carries ${wrong[0].got.join('/')}`)
+
+    const perVariant = ROCK_NAMES.map(rockImpostorLayer)
+    check(new Set(perVariant).size === ROCK_NAMES.length && Math.max(...perVariant) < LAYER_COUNT,
+      'and no two variants share a slice, and the run fits the atlas',
+      `${ROCK_NAMES.length} distinct layers, top ${Math.max(...perVariant)} of ${LAYER_COUNT}`)
+
+    // The bake writes through `rockImpostorLayer` and the card geometry reads
+    // through it, so those two agree by construction. The material does NOT --
+    // it is handed `rockImpostorLayers()` separately, and material.js spins a
+    // quad only if its layer is in that list. Miss one and that variant's card
+    // is a fixed single vertical-normal plane, which is the one arrangement
+    // that vanishes edge-on instead of merely flattening.
+    const spun = new Set(rockImpostorLayers())
+    const unspun = cards.filter((c) => !spun.has(c.want))
+    check(unspun.length === 0,
+      'and every one of those layers is in the list the material is told to spin',
+      unspun.length === 0 ? `${spun.size} layers spun` : `${unspun[0].name} on layer ${unspun[0].want} would never turn`)
+  }
+
   // THE CARD REACHES AN INSTANCE, which is the one thing a bake and a geometry
   // contract cannot tell you between them. rock-bank.js builds a 2-triangle
   // up-normal quad for every shape and check-props confirms it; what nobody
@@ -1575,7 +1630,7 @@ console.log('\nscatter')
   // that will really draw a card at range, and one reading 8 or 20 is a bed
   // whose card is sitting unreachable in the arena.
   //
-  // ALL FIVE, now. The crust bed used to decline it -- first because the
+  // ALL OF THEM, now. The crust bed used to decline it -- first because the
   // cylindrical billboard spin laid a photograph flat against a cliff face, and
   // after the spherical spin fixed that, because its own per-bed bands put its
   // whole outer annulus on the coarsest mesh and a card would have bought
@@ -1586,7 +1641,7 @@ console.log('\nscatter')
   const coarse = ROCK_BAND_COUNT - 1
   check(
     forestRocks.beds.every((b) => b.tierTris[coarse].every((t) => t === 2)),
-    'all five beds really do draw a 2-triangle card at their outermost band',
+    'every bed really does draw a 2-triangle card at their outermost band',
     forestRocks.beds.map((b) => `${b.cfg.name} ${new Set(b.tierTris[coarse]).size === 1 ? b.tierTris[coarse][0] : '?'}`).join('  ')
   )
 
@@ -2029,8 +2084,8 @@ console.log('\nscatter')
       }
       return out
     }
-    const span = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} m over ${a.length}`
-    const inside = (a, lo, hi) => a.length > 0 && Math.min(...a) >= lo - 1e-4 && Math.max(...a) <= hi + 1e-4
+    const span = (a) => `${amin(a).toFixed(2)}-${amax(a).toFixed(2)} m over ${a.length}`
+    const inside = (a, lo, hi) => a.length > 0 && amin(a) >= lo - 1e-4 && amax(a) <= hi + 1e-4
 
     // A WALL IS THE CRUST BED'S GROUND ALONE. On 68 degrees the underfoot bed
     // (42), the boulders and the giants have all bowed out, so whatever covers
@@ -2055,18 +2110,25 @@ console.log('\nscatter')
     // The other half of "randomly vary": a bed that placed 5 m caps and nothing
     // else would satisfy the line above exactly. Both ends of the span have to
     // be reached, or the roll has stopped being a roll.
-    check(Math.min(...face) < 1.5 && Math.max(...face) > 9,
+    check(amin(face) < 1.5 && amax(face) > 9,
       'and the range is really used, not clustered on one size',
       `median ${[...face].sort((a, b) => a - b)[face.length >> 1].toFixed(2)} m`)
     steepRocks.dispose()
 
     // THE SAME BED ON A LAKE FLOOR IS A DIFFERENT SIZE, which is the whole
     // reason `sizeByEnv` exists rather than one `scale` pair. A stone you would
-    // step on is 0.5 to 3 m; the pebble stamps in litter.js carry everything
-    // finer than that.
+    // step on is 0.5 m and one you have to step OVER is 6; the pebble stamps in
+    // litter.js carry everything finer than the bottom of that.
     const bedRock = widths(riverRocks, 'crust')
-    check(inside(bedRock, 0.5, 3), 'the same bed on a lake floor places 0.5-3 m stones instead',
+    check(inside(bedRock, 0.5, 6), 'the same bed on a lake floor places 0.5-6 m stones instead',
       span(bedRock))
+    // AND THE TOP HALF OF THAT BAND IS REALLY REACHED. The band was doubled to
+    // 6 m to make a lake floor varied rather than uniform, and a range whose top
+    // never comes up is the same uniform floor with a bigger number written next
+    // to it -- which is exactly what widening it was meant to stop.
+    check(amax(bedRock) > 4.5 && amin(bedRock) < 1.2,
+      'and a lake floor uses the whole of that band, so the widening did something',
+      `${amin(bedRock).toFixed(2)}-${amax(bedRock).toFixed(2)} m over ${bedRock.length}`)
 
     // AND THE RIVERBED HAS NO GRAVEL LEFT IN GEOMETRY. The underfoot bed used
     // to run at full rate underwater, which put a half-metre stone every 2.9 m
@@ -2081,6 +2143,108 @@ console.log('\nscatter')
     // riverbed change was a river change and not a global one.
     const dry = widths(forestRocks, 'underfoot')
     check(inside(dry, 0.25, 1), 'while on dry ground it is still 0.25-1 m stones', span(dry))
+  }
+
+  // --- the bed that only exists underwater ---------------------------------
+  //
+  // `sunken` is the first bed whose whole definition is a NEGATIVE about where
+  // it may go, so what has to be gated is the boundary rather than the contents:
+  // the interesting failure is not "it placed no boulders", which the traverse
+  // above would catch, but "it placed them on the beach as well", which nothing
+  // else here would notice. `_envAt` is why that is a live risk -- it hands the
+  // river environment to any ground within SHORE_RISE of the surface, so the dry
+  // shingle beside a lake is `river` too and an ordinary `envDensity` entry
+  // would furnish it.
+  {
+    // A SHORELINE, which no fixture above is: every world in this file is either
+    // wholly dry or wholly drowned, and a bed that only exists on one side of a
+    // line cannot be tested on a world with no line in it. Flat ground at 60 m
+    // with the water reaching exactly half of it, so a straight count says which
+    // side each rock landed on.
+    const shore = {
+      field: {
+        scatterAt: (x, z, cell, out) => {
+          if (!(cell > 0)) throw new Error('scatterAt needs a positive cell')
+          out.h = 60
+          out.tan = 0
+          return out
+        },
+        heightAt: () => 60,
+        snowLineAt: () => 9999,
+        bands: { altLo: 0, altSpan: 900 },
+      },
+      // The BANK is dry and inside SHORE_RISE of the water, which is the case
+      // that matters: `levelAt` answers everywhere, so `_envAt` calls the whole
+      // world `river` and only `isSubmerged` separates the two halves.
+      water: { levelAt: () => 60.8, isSubmerged: (x) => x < 0 },
+    }
+    const shoreRocks = build(shore)
+    const bed = shoreRocks.beds.find((b) => b.cfg.name === 'sunken')
+    // Position and size in one walk. `instScale` times the shape's own measured
+    // width is what `sizeByEnv` resolves to, which is the same reading the crust
+    // block above takes; the x of the instance matrix is which side of the
+    // waterline it landed on.
+    const xs = []
+    const sunk = []
+    const mat = new THREE.Matrix4()
+    for (const t of bed.tiles.values()) {
+      for (let k = 0; k < t.n; k++) {
+        const id = t.ids[k]
+        bed.batch.getMatrixAt(id, mat)
+        xs.push(mat.elements[12])
+        sunk.push(bed.shapes[bed.shapeAt[id]].measured.width * bed.instScale[id])
+      }
+    }
+    check(xs.length > 200, 'the sunken bed fills a lake floor it is given half of',
+      `${xs.length} stones`)
+    check(xs.every((x) => x < 0), 'and not one of them is on the dry bank beside it',
+      `${xs.filter((x) => x >= 0).length} of ${xs.length} out of the water, ` +
+      `furthest ashore ${Math.max(...xs).toFixed(1)} m`)
+
+    // The size it was asked for, and both ends of it. A bed whose stones all
+    // came out at one size would be the crust bed's rippled sheet again in a
+    // different shape -- the point of the range is that you swim past a stone
+    // you could stand on and then past one you could not climb.
+    check(amin(sunk) >= 0.5 - 1e-4 && amax(sunk) <= 5 + 1e-4,
+      'and every one of them is a 0.5-5 m boulder',
+      `${amin(sunk).toFixed(2)}-${amax(sunk).toFixed(2)} m over ${sunk.length}`)
+    check(amax(sunk) > 4 && amin(sunk) < 1,
+      'and the band is really used, so a lake floor is not one stone repeated',
+      `${amin(sunk).toFixed(2)}-${amax(sunk).toFixed(2)} m over ${sunk.length}`)
+
+    // SPARSE AGAINST THE FLOOR IT STANDS ON, which is the difference between
+    // something you come across and something you wade through. The crust caps
+    // are the lake floor's cover and are meant to be everywhere; these are meant
+    // to be events, and an order of magnitude between the two counts is what
+    // says so in a number rather than in a comment.
+    const caps = shoreRocks.beds.find((b) => b.cfg.name === 'crust')
+    let capN = 0
+    for (const t of caps.tiles.values()) capN += t.n
+    check(capN > xs.length * 10, 'and it is an order of magnitude sparser than the caps under it',
+      `${xs.length} boulders against ${capN} caps on the same floor`)
+    shoreRocks.dispose()
+  }
+
+  // AND THE FLAG THAT CANNOT MEAN ANYTHING IS REFUSED. `submergedOnly` without
+  // `allowSubmerged` is a bed that requires water and is not allowed water, and
+  // the way that fails without this is an empty lake and no error anywhere.
+  // `RockBed` and `BEDS` are both private to rocks.js and are meant to stay
+  // that way, so this reads the source rather than widening the module's API to
+  // hold a test -- the same trick check-deadwood uses on `cardAzimuth`. What is
+  // being asserted is that the guard exists AND is written the right way round;
+  // the pair reversed would throw on every bed in the file, which the traverse
+  // above would catch instantly, so between the two the invariant is covered.
+  {
+    const src = readFileSync(new URL('../src/v2/render/rocks.js', import.meta.url), 'utf8')
+    check(/if \(cfg\.submergedOnly && !cfg\.allowSubmerged\) \{\s*\n\s*throw new Error/.test(src),
+      'a bed that demands water and is refused it throws at build instead of placing nothing')
+    // AND THE PLACEMENT GATE READS BOTH DIRECTIONS off one water lookup. The
+    // failure this catches is the cheap rewrite -- dropping back to
+    // `!cfg.allowSubmerged && isSubmerged(...)` -- which leaves `submergedOnly`
+    // as a field nothing reads and puts boulders on the beach with every gate
+    // above still green, because the bed would then place MORE rather than less.
+    check(/isSubmerged\(x, z, h\) !== Boolean\(cfg\.submergedOnly\)/.test(src),
+      'and the water test in _growTile is the one that can reject a DRY site too')
   }
 
   // Bedded, not balanced -- and deeper on a slope, which is what makes a cliff
@@ -2122,7 +2286,7 @@ console.log('\nscatter')
       return out
     }
     const stat = (a) => ({
-      min: Math.min(...a), max: Math.max(...a), mean: a.reduce((x, y) => x + y, 0) / a.length, n: a.length,
+      min: amin(a), max: amax(a), mean: a.reduce((x, y) => x + y, 0) / a.length, n: a.length,
     })
     const flat = stat(fracs(forestRocks, 'boulders'))
     const steep = stat(fracs(cliffRocks, 'boulders'))
@@ -2218,23 +2382,27 @@ console.log('\nscatter')
   // tiles are grown at every quantised level, on the ground that places the MOST
   // rocks.
   //
-  // TWO WORLDS, BECAUSE NO SINGLE ONE LOADS EVERY BED. The endless cliff is
-  // where the three ordinary beds run flat out at envDensity 1.0 -- but it is a
+  // THREE WORLDS, BECAUSE NO SINGLE ONE LOADS EVERY BED. The endless cliff is
+  // where the ordinary beds run flat out at envDensity 1.0 -- but it is a
   // UNIFORM slope, and a uniform slope is not the foot of anything, so the
   // `footOnly` scree bed places exactly nothing on it. This check ran on the
   // cliff alone and reported `scree 0/17039`: a green line, against a bound that
   // had never once been approached, for the bed with by far the largest pool in
   // the world. A bound asserted where it cannot fail is not a bound. The ridge
-  // is the other half -- it is the only world here with a break of slope in it,
-  // so it is the only one that loads the scree bed at all.
+  // is the second -- it is the only world here with a break of slope in it, so
+  // it is the only one that loads the scree bed at all. The river is the third,
+  // and it is here for the same reason one step further: `sunken` is
+  // `submergedOnly`, so it is dead ground on every world with dry feet, and the
+  // two above are both dry.
   //
-  // AND EVERY BED HAS TO PLACE SOMETHING ACROSS THE PAIR, which is the assertion
+  // AND EVERY BED HAS TO PLACE SOMETHING ACROSS THE SET, which is the assertion
   // that keeps this honest as beds are added. Without it a new bed that never
   // fires -- a bad `envDensity`, a site tag nothing rosters, a `footOnly` flag
-  // on a bed whose world has no feet -- sails through with used = 0, because
-  // zero is less than every bound there is.
+  // on a bed whose world has no feet, a `submergedOnly` flag on a bed whose
+  // world has no water -- sails through with used = 0, because zero is less
+  // than every bound there is.
   {
-    const worlds = { cliff: build(cliff), ridge: build(ridge) }
+    const worlds = { cliff: build(cliff), ridge: build(ridge), river: build(river) }
     for (const r of Object.values(worlds)) {
       // `place` AND THEN `update`, and the `place` is not belt-and-braces.
       // `update` drains the build queue against a WALL-CLOCK budget split
@@ -2260,7 +2428,7 @@ console.log('\nscatter')
       }
     }
     const beds = [...peak.values()]
-    check(beds.every((b) => b.used <= b.pool), 'the pool bound holds after a traverse of both worlds',
+    check(beds.every((b) => b.used <= b.pool), 'the pool bound holds after a traverse of all three worlds',
       beds.map((b) => `${b.name} ${b.used}/${b.pool} (${b.world})`).join('  '))
     check(beds.every((b) => b.used / b.pool < 0.95), 'and holds with headroom',
       `worst ${(Math.max(...beds.map((b) => b.used / b.pool)) * 100).toFixed(0)}% full`)
@@ -2277,13 +2445,20 @@ console.log('\nscatter')
     // Asserted per INSTANCE over both traverses rather than per bed, because the
     // floor `_rankOf` applies is a function of the size roll and a per-bed
     // statement could hold on the average while failing on the big end -- which
-    // is exactly the population that shows. `_getFade` reads back the number
-    // `setPropFadeAt` wrote, so this checks the value the SHADER will see and
-    // not a restatement of the arithmetic that produced it.
+    // is exactly the population that shows.
+    //
+    // READ OUT OF THE COLOUR TEXTURE, so this checks the value the SHADER will
+    // see and not a restatement of the arithmetic that produced it -- EXCEPT for
+    // the instances mid-swap, whose slot holds a cross-dissolve clock instead of
+    // a distance (material.js packs both in one float by sign). Those are read
+    // off `instGone`, which is the number `_endFade` will put back, and the two
+    // populations are counted separately below so this cannot quietly become a
+    // test of nothing if every rock ends up fading.
     {
       const LAST = ROCK_LOD_AT[ROCK_LOD_AT.length - 1]
       let n = 0
       let bad = 0
+      let fading = 0
       let worst = null
       let closest = Infinity
       for (const [name, r] of Object.entries(worlds)) {
@@ -2304,9 +2479,12 @@ console.log('\nscatter')
             for (let k = 0; k < t.n; k++) {
               const id = t.ids[k]
               const cardAt = rockLodSize(bed.shapes[bed.shapeAt[id]].measured) * bed.instScale[id] * LAST
+              const swapping = bed.fadeAt[id] >= 0
+              if (swapping) fading++
               // Where the dissolve STARTS, not where it ends: the slot is the
               // gone-distance and the band opens at FADE_BAND of it.
-              const dissolveFrom = fades[id * 4 + 3] * FADE_BAND
+              const gone = swapping ? bed.instGone[id] : fades[id * 4 + 3]
+              const dissolveFrom = gone * FADE_BAND
               n++
               if (dissolveFrom - cardAt < closest) closest = dissolveFrom - cardAt
               if (dissolveFrom < cardAt - 1e-3) {
@@ -2324,7 +2502,8 @@ console.log('\nscatter')
       check(n > 0 && bad === 0,
         'no rock starts dissolving before its billboard takes over',
         bad === 0
-          ? `${n} instances, closest call ${closest.toFixed(1)} m of margin`
+          ? `${n} instances (${n - fading} read straight out of the shader's own texture), ` +
+            `closest call ${closest.toFixed(1)} m of margin`
           : `${bad} of ${n}: worst ${worst.bed}/${worst.shape} at ${worst.scale.toFixed(2)}x (${worst.world}) ` +
             `cards at ${worst.cardAt.toFixed(0)} m but starts going at ${worst.dissolveFrom.toFixed(0)} m`)
     }
@@ -2364,6 +2543,115 @@ console.log('\nscatter')
       console.log(`       ${name}: ${s.placed} rocks, ${s.tris} tris drawn, bank ${s.bankTris} tris / ${s.bankKB} KB, build ${s.buildMs.toFixed(0)} ms`)
     }
     for (const r of Object.values(worlds)) r.dispose()
+  }
+
+  // --- the LOD cross-dissolve ----------------------------------------------
+  //
+  // A rock changing tier used to CUT: one frame a mesh, the next a billboard,
+  // and at the ranges the last rung sits at that is a visible twitch on ground
+  // covered in stone. Rocks now does what render/trees.js does -- a duplicate
+  // takes the tier being left, both halves get the same clock stamp, and they
+  // dither past each other on complementary thresholds so coverage is conserved
+  // and the silhouette never thins.
+  //
+  // ASSERTED THROUGH THE SLOT THE SHADER READS, because the whole mechanism is
+  // one float per instance in the alpha of the batch's colour texture and there
+  // is no other observable. Sign is the discriminator: positive is a
+  // gone-distance, negative is a biased clock reading. This block never names
+  // the biases -- they are material.js's -- it names the two things a caller can
+  // actually depend on: both halves go negative together, and the value tracks
+  // the clock.
+  {
+    setPropClock(0)
+    const r = build(cliff)
+    r.place(600, 600)
+    r.update(600, 61.6, 600, 50)
+
+    // The stamp a swap leaves, per bed, keyed by instance.
+    const slots = (bed) => bed.batch._colorsTexture.image.data
+    const snap = (bed) => bed.fades.map((f) => ({
+      orig: f.orig, dup: f.dup,
+      out: slots(bed)[f.dup * 4 + 3],
+      in: slots(bed)[f.orig * 4 + 3],
+    }))
+
+    // A step of 9 m re-tiers whatever is sitting on a rung; the ladder is in
+    // rock-sizes, so on a cliff apron that is thousands of stones at once.
+    r.update(609, 61.6, 600, 50)
+    const bed = r.beds.reduce((best, b) => (b.fades.length > best.fades.length ? b : best), r.beds[0])
+    const first = snap(bed)
+    check(first.length > 0, 'a rock crossing an LOD rung starts a cross-dissolve instead of cutting',
+      `${r.beds.reduce((n, b) => n + b.fades.length, 0)} in flight over six beds, ` +
+      `worst bed ${bed.cfg.name} with ${first.length}`)
+
+    check(first.every((f) => f.out < 0 && f.in < 0),
+      'and BOTH halves are stamped -- a departing duplicate and an arriving original',
+      `${first.length} pairs, all with a clock in the slot the gone-distance was in`)
+
+    // The ghost is a real second draw of the same rock: same place, same tint,
+    // the tier that was just left. If any of that drifts the pair reads as two
+    // rocks rather than one dissolving into itself.
+    const ma = new THREE.Matrix4()
+    const mb = new THREE.Matrix4()
+    const ca = new THREE.Color()
+    const cb = new THREE.Color()
+    let moved = 0
+    let recoloured = 0
+    let sameGeom = 0
+    for (const f of first) {
+      bed.batch.getMatrixAt(f.orig, ma)
+      bed.batch.getMatrixAt(f.dup, mb)
+      if (ma.elements.some((v, i) => Math.abs(v - mb.elements[i]) > 1e-6)) moved++
+      bed.batch.getColorAt(f.orig, ca)
+      bed.batch.getColorAt(f.dup, cb)
+      if (Math.abs(ca.r - cb.r) + Math.abs(ca.g - cb.g) + Math.abs(ca.b - cb.b) > 1e-6) recoloured++
+      if (bed.batch.getGeometryIdAt(f.orig) === bed.batch.getGeometryIdAt(f.dup)) sameGeom++
+      if (!bed.batch.getVisibleAt(f.dup)) sameGeom++
+    }
+    check(moved === 0 && recoloured === 0,
+      'the duplicate stands exactly where the rock stands and wears exactly its tint',
+      `${first.length} pairs, ${moved} adrift, ${recoloured} off-colour`)
+    check(sameGeom === 0, 'and is drawn, holding the tier the rock just left rather than the one it took',
+      `${first.length} pairs, all two different geometries`)
+
+    // The ghosts are drawn, so they are in the triangle count. A cross-dissolve
+    // that did not show up in `tris` would be a bill nobody could see.
+    check(bed.fadeTris > 0 && bed.tris > bed.fadeTris,
+      'and its triangles are counted, because the frame really does draw them',
+      `${bed.fadeTris} of ${bed.tris} on ${bed.cfg.name}`)
+
+    // THE CLOCK IS REALLY THE CLOCK. Retire this round, advance 7.5 s, force
+    // another round, and compare stamps: the departing half's value has to move
+    // by exactly the time that passed. That is bias-free -- it never says what
+    // the bias IS -- and it is the one thing that would break silently if the
+    // stamp were ever taken from something other than getPropClock().
+    const freeBefore = bed.freeCount
+    setPropClock(PROP_FADE_SECONDS + 0.001)
+    r.update(609, 61.6, 600, 50)
+    const stranded = first.filter((f) => bed.fadeAt[f.orig] >= 0 && bed.fades[bed.fadeAt[f.orig]].dup === f.dup)
+    check(stranded.length === 0, 'and the pair resolves: once the window is up every duplicate is handed back',
+      `${first.length} retired, pool at ${bed.freeCount} against ${freeBefore} before`)
+    const restored = first.filter((f) => slots(bed)[f.orig * 4 + 3] === bed.instGone[f.orig])
+    check(restored.length === first.length,
+      'and the original gets its rim dissolve back, since the timer was written over it',
+      `${restored.length} of ${first.length} back to their own gone-distance`)
+
+    setPropClock(20)
+    r.update(600, 61.6, 609, 50)
+    const second = snap(bed)
+    check(second.length > 0, 'a second crossing stamps again rather than reusing the first stamp',
+      `${second.length} in flight on ${bed.cfg.name}`)
+    const t0 = -first[0].out
+    const t1 = -second[0].out
+    check(Math.abs((t1 - t0) - 20) < 1e-3,
+      'and the value it stamps moves with the prop clock, second for second',
+      `clock advanced 20.000 s, stamp advanced ${(t1 - t0).toFixed(3)} s`)
+    check(second.every((f) => Math.abs(-f.out - t1) < 1e-3 && Math.abs((-f.in) - (-second[0].in)) < 1e-3),
+      'and both halves of every pair read the SAME instant, which is what conserves coverage',
+      `${second.length} pairs stamped at one clock reading`)
+
+    setPropClock(0)
+    r.dispose()
   }
 
   // Determinism. The scatter is a pure function of position, so two worlds built
@@ -2455,13 +2743,45 @@ console.log('\nscatter')
     // luminance the cue is normalised against and nothing else.
     check(dimmestLuma > 1, 'no instance darkens the tile',
       `dimmest instance is ${dimmestLuma.toFixed(2)}x the bare tile`)
-    // And the hue swing that buys is small and rare, which is the other half of
-    // what "seated, not repainted" has to mean. A wood is the worst case in the
-    // world for it -- the greenest ground and the lowest gains -- and there it
-    // takes a handful of instances a few percent under on blue alone.
-    check(dimmest > 0.9 && underOne / n < 0.02,
+    // And the hue swing that buys is bounded, which is the other half of what
+    // "seated, not repainted" has to mean. A wood is the worst case in the world
+    // for it -- the greenest ground and the lowest gains -- so the envelope is
+    // measured there and nowhere else.
+    //
+    // THE ENVELOPE MOVED WHEN THE CUE DID, and it is worth saying which way round
+    // that is. This bound is not the invariant; `dimmestLuma > 1` above is, and
+    // it has not shifted a decimal (1.73x). This is a tightness statement, and
+    // its number is a consequence of GROUND_CUE.forest -- at 0.3 a wood took 4
+    // boulders in 1,832 a few percent under on blue, at 0.45 it takes 70 and the
+    // worst is a sixth under. Both are the same hue rotation at constant
+    // brightness, just further round it. If this fails after a cue change, the
+    // question is whether the LUMINANCE promise still holds; if it does, this
+    // number follows the cue rather than the cue answering to it.
+    check(dimmest > 0.8 && underOne / n < 0.05,
       'and the hue the cue borrows off the ground never amounts to a repaint',
       `${underOne} of ${n} dip a channel below the tile, lowest ${dimmest.toFixed(2)}`)
+    // THE CUE ITSELF IS PER ENVIRONMENT and is not exported, so it is read out of
+    // the source. Two things are worth holding. A MISSING environment is the
+    // dangerous one: `GROUND_CUE[env]` would be undefined, `k1` would be NaN, and
+    // every instance in that environment would be written a NaN colour -- which
+    // three uploads without complaint and the GPU draws as black. And the ORDER
+    // is the design: it runs from ground a rock is made of to ground it is merely
+    // standing on, so a riverbed matches hardest, a crag next, and a wood least.
+    {
+      const src = readFileSync(new URL('../src/v2/render/rocks.js', import.meta.url), 'utf8')
+      const line = src.match(/^const GROUND_CUE = \{([^}]*)\}/m)
+      const cue = {}
+      if (line) for (const m of line[1].matchAll(/(\w+):\s*([0-9.]+)/g)) cue[m[1]] = +m[2]
+      check(ENVIRONMENTS.every((e) => Number.isFinite(cue[e])),
+        'every environment a rock can be placed in has a ground cue, so none is written a NaN tint',
+        ENVIRONMENTS.map((e) => `${e} ${cue[e]}`).join('  '))
+      check(cue.river >= cue.cliff && cue.cliff === cue.peak && cue.peak > cue.forest,
+        'and the cue is strongest where the rock is made of the ground and weakest where it only stands on it',
+        `river ${cue.river} >= cliff/peak ${cue.cliff} > forest ${cue.forest}`)
+      check(ENVIRONMENTS.every((e) => cue[e] < 1),
+        'and none of them repaints a rock outright, which would make a riverbed a flat plane')
+    }
+
     // ENV_TINTS is what makes that true per environment, so it has to name all
     // four and index nothing that does not exist.
     for (const env of ENVIRONMENTS) {
@@ -2625,7 +2945,7 @@ console.log('\nscatter')
     // through the instance's own 3x3, the cylindrical one rotates transformed.xz
     // in place and never mentions viewMatrix at all. Both materials are handed
     // the SAME layer list, so the spin is the only thing that differs.
-    const SPHERE = 'transformed = ( bbW * bbM ) / bbS2;'
+    const SPHERE = 'transformed = ( bbW * bbM ) * inversesqrt( bbS2 );'
     const YAW = 'transformed.xz = vec2('
     const rockVs = emit({ billboardLayers: rockImpostorLayers(), sphericalBillboard: true })
     const treeVs = emit({ billboardLayers: rockImpostorLayers() })
@@ -2660,7 +2980,7 @@ console.log('\nscatter')
     // And the world's own rock material is the one that asked for it, which is
     // what joins everything above to what actually ships.
     check(forestRocks.material.customProgramCacheKey().includes('-sph'),
-      'and the material the five beds share is that one',
+      'and the material every bed shares is that one',
       forestRocks.material.customProgramCacheKey())
 
     setMossVary(1, 1)
@@ -2695,8 +3015,281 @@ console.log('\nscatter')
       }
     }
     check(missing.length === 0,
-      'every rock bed owns a colours texture even when it placed nothing, so all five take the same texture units',
+      'every rock bed owns a colours texture even when it placed nothing, so all of them take the same texture units',
       missing.length ? `no texture on ${missing.join(', ')}` : `live per bed: ${counts.join(', ')}`)
+  }
+
+  // THE CURSOR READOUT NAMES A ROCK, AND THE NAME IS ONE YOU CAN GO AND LOOK AT.
+  //
+  // Two failures, both silent in the view and both of which had actually
+  // happened. First, `pickProp` duck-types on `sys.tiles`, and `Rocks` is a
+  // facade over five `RockBed`s that keeps none of the instance arrays itself --
+  // so the source bound to it failed the duck-type and was skipped without a
+  // word, and the readout named trees and nothing else. Second, the obvious
+  // thing to print is `shapeAt[id]`, which is an index into ONE BED'S roster:
+  // it looks like an id you could look up and is not one.
+  //
+  // So this asserts the whole path a person actually walks: aim at a rock, read
+  // `variant-index` off the HUD, paste it into /gen-rock's shape box -- and be
+  // looking at the same rock. The last step is the one worth proving, because
+  // the previewer reaches the shape by its own call, `rockShapeSeed` then
+  // `rockParams(presetName, seed)`, and nothing but this check holds that to
+  // the call the bank builds from.
+  //
+  // A THIRD failure, which is what the id format changed for: `variant#seed`
+  // printed the raw bank seed, eleven digits nobody can carry to a keyboard.
+  // It round-tripped and it was still useless, so "the id round-trips" is not
+  // the whole promise -- `parseRockShapeId` below is asserting it is legible as
+  // well as correct.
+  {
+    // The five sources main.js binds, built the same way, because the thing that
+    // broke was the BINDING and a fixture that skipped it would not have caught
+    // it. Biggest live instance so the aim is unambiguous inside a thicket.
+    const rockPicks = forestRocks.beds.map((bed) => ({
+      label: 'rock', sys: bed, idKey: 'shapeAt',
+      nameAt: (s, id) => s.shapeIdAt(id),
+      sizeAt: (s, id, out) => s.pickSizeAt(id, out),
+    }))
+    let target = null
+    for (const bed of forestRocks.beds) {
+      for (const tile of bed.tiles.values()) {
+        for (let k = 0; k < tile.n; k++) {
+          const id = tile.ids[k]
+          if (target === null || bed.instScale[id] > target.scale) {
+            target = { bed, id, scale: bed.instScale[id], x: bed.instX[id], y: bed.instY[id], z: bed.instZ[id] }
+          }
+        }
+      }
+    }
+    check(target !== null, 'the pick fixture has a rock to aim at', target ? `${target.bed.cfg.name}#${target.id}` : 'no live instance')
+
+    // Eye 3 m out and 1 m up, aimed at the instance's own axis a little above
+    // its foot -- the pose someone naming a rock is in.
+    const eye = { x: target.x + 3, y: target.y + 1, z: target.z }
+    const to = { x: target.x - eye.x, y: target.y + 0.3 - eye.y, z: target.z - eye.z }
+    const len = Math.hypot(to.x, to.y, to.z)
+    const dir = { x: to.x / len, y: to.y / len, z: to.z / len }
+
+    const hit = pickProp(rockPicks, eye, dir, Infinity)
+    check(hit !== null && hit.label === 'rock', 'a rock under the cursor is named at all, which it was not while `Rocks` itself was bound',
+      hit === null ? 'named nothing' : `named ${hit.label} ${hit.name}`)
+
+    // And binding the facade -- the actual bug -- has to be an error now, not a
+    // shrug. This is the assertion that keeps the failure loud.
+    let facadeThrew = false
+    try {
+      pickProp([{ label: 'rock', sys: forestRocks, idKey: 'shapeAt', radius: 1.2, rise: 1.2 }], eye, dir, Infinity)
+    } catch {
+      facadeThrew = true
+    }
+    check(facadeThrew, 'and binding the facade instead of its beds throws rather than quietly naming nothing')
+
+    const parsed = hit === null ? null : parseRockShapeId(hit.name)
+    check(parsed !== null, 'the id it prints is `variant-index`, not a bare roster index and not eleven digits of seed',
+      hit === null ? 'no hit' : hit.name)
+    const { name: variantName, index: shapeIndex } = parsed ?? { name: '', index: 0 }
+    check(ROCK_NAMES.includes(variantName),
+      'and the variant half is an entry in /gen-rock\'s preset dropdown, which lists exactly ROCK_VARIANTS',
+      `${variantName} against ${ROCK_NAMES.length} presets`)
+    check(shapeIndex >= 0 && shapeIndex < 2,
+      'and the index half is inside the bank\'s own seed count, so it names a shape that exists',
+      `index ${shapeIndex} of 2 seeds`)
+
+    // The round trip. /gen-rock answers a preset choice with
+    // `Object.assign(params, rockParams(presetName, params.seed))` and builds
+    // from that, so rebuilding through the same call has to give back the shape
+    // the bed is holding. Measured extents rather than vertex-by-vertex: the
+    // promise is that it is THE SAME ROCK, and three numbers to 1e-9 is that.
+    const shape = target.bed.shapes[target.bed.shapeAt[target.id]]
+    const rebuilt = buildRock({ ...rockParams(variantName, rockShapeSeed(7, variantName, shapeIndex)), tier: 0 })
+    const a = rebuilt.userData.rock.measured
+    const b = shape.measured
+    const off = Math.max(Math.abs(a.width - b.width), Math.abs(a.height - b.height), Math.abs(a.depth - b.depth))
+    check(hit.name === target.bed.shapeIdAt(target.id) && off < 1e-9,
+      'and pasting that id into /gen-rock rebuilds the very rock that was under the cursor',
+      `${hit.name}, extents off by ${off.toExponential(1)} m`)
+  }
+
+  // THE CURSOR STOPS AT THE FIRST FACE, rather than at the nearest AXIS.
+  //
+  // These are two different questions and the readout used to answer the wrong
+  // one. Ranking by closest approach to an instance's vertical axis makes a
+  // rock's pick strength depend on where its middle is, so a boulder whose near
+  // face fills the crosshair loses to a pebble standing a metre nearer its own
+  // centre -- and what the player sees is a cursor reading straight THROUGH the
+  // thing they are pointing at. The fixture below is that exact geometry, in
+  // the one arrangement where the two rankings disagree, so it fails the moment
+  // anyone puts the axis test back.
+  //
+  // Synthetic instances rather than placed ones, because the property is about
+  // the ORDER two volumes are returned in and a real bed cannot be asked to put
+  // two particular rocks in two particular places.
+  {
+    const fixture = (rocks) => ({
+      tiles: new Map([[0, { n: rocks.length, ids: rocks.map((_, i) => i) }]]),
+      instX: Float32Array.from(rocks, (r) => r.x),
+      instY: Float32Array.from(rocks, (r) => r.y),
+      instZ: Float32Array.from(rocks, (r) => r.z),
+      instScale: Float32Array.from(rocks, () => 1),
+      shapeAt: Uint16Array.from(rocks, (_, i) => i),
+      _rocks: rocks,
+    })
+    const sized = (sys) => ({
+      label: 'rock', sys, idKey: 'shapeAt',
+      sizeAt: (s, id, out) => {
+        out.radius = s._rocks[id].r
+        out.rise = s._rocks[id].rise
+        return out
+      },
+      nameAt: (s, id) => s._rocks[id].name,
+    })
+
+    // A: a wide rock 3 m off the sight line, whose near face the ray crosses at
+    // 17.35 m and whose AXIS it is closest to at 20 m.
+    // B: a pebble on the sight line whose face is at 18.5 m and whose axis is
+    // closest at 19 m. B is behind A's surface and in front of A's middle.
+    const through = fixture([
+      { name: 'A-wide', x: 20, y: 0, z: 3, r: 4, rise: 4 },
+      { name: 'B-pebble', x: 19, y: 0, z: 0, r: 0.5, rise: 1 },
+    ])
+    const eye = { x: 0, y: 1, z: 0 }
+    const east = { x: 1, y: 0, z: 0 }
+    const hitThrough = pickProp([sized(through)], eye, east, Infinity)
+    check(hitThrough !== null && hitThrough.name === 'A-wide',
+      'the cursor names the rock whose FACE it crosses first, not the one whose middle is nearest',
+      hitThrough === null ? 'named nothing' : `named ${hitThrough.name} at ${hitThrough.dist.toFixed(2)} m`)
+    check(hitThrough !== null && Math.abs(hitThrough.dist - (20 - Math.sqrt(7))) < 1e-3,
+      'and the range it reports is that face, not that middle',
+      hitThrough === null ? 'no hit' : `${hitThrough.dist.toFixed(3)} m against ${(20 - Math.sqrt(7)).toFixed(3)} m`)
+
+    // AND IT REACHES THE TOP OF A TALL ROCK. The volume used to be one species
+    // constant, 1.2 m of radius and 1.2 m of rise at scale 1, over a bank whose
+    // shapes run from a slab seven times wider than it is tall to a spire three
+    // times taller than it is wide. Everything above 1.2 m was unnameable, and
+    // "unnameable" looks exactly like "the cursor points through it".
+    const spire = fixture([{ name: 'spire', x: 10, y: 0, z: 0, r: 0.5, rise: 6 }])
+    const high = { x: 0, y: 5, z: 0 }
+    const bySize = pickProp([sized(spire)], high, east, Infinity)
+    const byConstant = pickProp(
+      [{ label: 'rock', sys: spire, idKey: 'shapeAt', radius: 1.2, rise: 1.2, scaleKey: 'instScale' }],
+      high, east, Infinity
+    )
+    check(bySize !== null, 'a rock is nameable at the top of its own height, five metres up a six-metre spire',
+      bySize === null ? 'named nothing' : `named ${bySize.name} at ${bySize.dist.toFixed(2)} m`)
+    check(byConstant === null,
+      'and the species constant it replaced provably could not do that, which is why it went',
+      byConstant === null ? 'the old 1.2 m volume names nothing up there' : `unexpectedly named ${byConstant.name}`)
+
+    // A source that declares neither has to say so. Silent zero-radius volumes
+    // name nothing, and a readout that names nothing is indistinguishable from
+    // a ray that hit nothing -- the same failure mode that hid the facade bug.
+    let unsizedThrew = false
+    try {
+      pickProp([{ label: 'rock', sys: spire, idKey: 'shapeAt' }], high, east, Infinity)
+    } catch {
+      unsizedThrew = true
+    }
+    check(unsizedThrew, 'and a pick source with neither a sizeAt nor a radius throws instead of naming nothing')
+  }
+
+  // THE BILLBOARD IS THE SIZE OF THE ROCK IT REPLACED.
+  //
+  // Two halves, and both of them were broken in ways that looked like the
+  // other. The card has to be the size of the mesh IN THE BANK, and the spin
+  // has to draw it at the instance's scale ON THE HILLSIDE. It was doing the
+  // second one exactly backwards: the spherical branch of billboardVertex built
+  // its answer in world space and mapped it back through the plain inverse, so
+  // the matrix reapplied the instance scale on the way out, the two cancelled,
+  // and every spun card drew at its raw bank size however big the rock was. A
+  // crust cap at scale 4.10 drew a quarter-size billboard; one at 8.33 drew an
+  // eighth. That is the "it swaps in a billboard vastly smaller than the shape
+  // it replaced" report, and it is arithmetic rather than opinion.
+  {
+    // Half one: the quad against the mesh it takes over from, in the bank.
+    // Silhouette width over 64 bearings, because a card that spins has to stand
+    // in for the rock seen from anywhere, not from the one azimuth it was
+    // measured at.
+    const BEARINGS = 64
+    const wr = []
+    const hr = []
+    for (const shape of forestRocks.bank.shapes) {
+      const frame = impostorCardExtents({ width: shape.measured.planMean, height: shape.measured.height })
+      const last = shape.tiers[ROCK_MESH_BAND_COUNT - 1]
+      const mp = last.attributes.position.array
+      let mLo = Infinity
+      let mHi = -Infinity
+      let meanW = 0
+      for (let b = 0; b < BEARINGS; b++) {
+        const ang = (b / BEARINGS) * Math.PI * 2
+        const dx = Math.cos(ang)
+        const dz = Math.sin(ang)
+        let lo = Infinity
+        let hi = -Infinity
+        for (let i = 0; i < mp.length; i += 3) {
+          const t = mp[i] * -dz + mp[i + 2] * dx
+          if (t < lo) lo = t
+          if (t > hi) hi = t
+          if (b === 0) {
+            if (mp[i + 1] < mLo) mLo = mp[i + 1]
+            if (mp[i + 1] > mHi) mHi = mp[i + 1]
+          }
+        }
+        meanW += hi - lo
+      }
+      meanW /= BEARINGS
+      wr.push(shape.measured.planMean / meanW)
+      hr.push(shape.measured.height / (mHi - mLo))
+    }
+    const band = (a) => `${amin(a).toFixed(2)} .. ${amax(a).toFixed(2)}`
+    check(amin(wr) > 0.7 && amax(wr) < 1.4 && amin(hr) > 0.7 && amax(hr) < 1.4,
+      'the card the bank builds is the size of the last mesh tier it takes over from',
+      `${wr.length} shapes, width ${band(wr)}, height ${band(hr)}`)
+
+    // Half two: the spin, modelled in JS exactly as the shader writes it, and
+    // asked the only question that matters -- does a card on an instance of
+    // scale s come out s times as big? A model and not the GPU, so the shader
+    // text is checked against it below; the two together are what stop this
+    // silently going back to a divide.
+    const spun = (scale, local) => {
+      const batching = new THREE.Matrix4().compose(
+        new THREE.Vector3(10, 2, 30),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0.64, 0)),
+        new THREE.Vector3(scale, scale, scale)
+      )
+      const bbM = new THREE.Matrix3().setFromMatrix4(batching)
+      const cam = new THREE.Object3D()
+      cam.rotation.set(-0.26, 0.44, 0, 'YXZ')
+      cam.updateMatrixWorld()
+      const v = cam.matrixWorld.clone().invert().elements
+      const bbRw = new THREE.Vector3(v[0], v[4], v[8])
+      const bbUw = new THREE.Vector3(v[1], v[5], v[9])
+      const e = bbM.elements
+      const bbS2 = e[0] * e[0] + e[1] * e[1] + e[2] * e[2]
+      const bbW = bbRw.clone().multiplyScalar(local.x).add(bbUw.clone().multiplyScalar(local.y))
+      // v * M in GLSL is M-transpose * v.
+      const transformed = new THREE.Vector3(
+        e[0] * bbW.x + e[1] * bbW.y + e[2] * bbW.z,
+        e[3] * bbW.x + e[4] * bbW.y + e[5] * bbW.z,
+        e[6] * bbW.x + e[7] * bbW.y + e[8] * bbW.z
+      ).multiplyScalar(1 / Math.sqrt(bbS2))
+      return transformed.applyMatrix3(new THREE.Matrix3().setFromMatrix4(batching)).length()
+    }
+    // 0.16 and 8.33 are the real extremes of instScale over the placed beds.
+    const SCALES = [0.16, 0.5, 1, 2, 4.1, 8.33]
+    const err = SCALES.map((s) => Math.abs(spun(s, { x: 1, y: 0 }) / s - 1))
+    check(amax(err) < 1e-6,
+      'and the spherical spin draws it at the instance scale instead of dividing that scale out',
+      `scale ${SCALES[0]} .. ${SCALES[SCALES.length - 1]}, worst error ${amax(err).toExponential(1)}`)
+    const stillSquare = Math.abs(spun(3, { x: 0, y: 1 }) / 3 - 1) < 1e-6
+    check(stillSquare, 'and the card height rides the same scale as its width, so it is not sheared',
+      `height at scale 3 is ${spun(3, { x: 0, y: 1 }).toFixed(4)} m per local metre`)
+
+    // The model above is only worth anything while the shader still says what
+    // it says. `/ bbS2` is the plain inverse and is the bug; `inversesqrt` is
+    // the inverse with the instance scale rolled back in.
+    const shaderText = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8')
+    check(shaderText.includes('inversesqrt( bbS2 )') && !shaderText.includes('/ bbS2'),
+      'and the shipped shader divides by the scale once, not twice, so the model is not describing dead code')
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

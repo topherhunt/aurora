@@ -157,40 +157,176 @@ export function screenRay(camera, ndcX, ndcY) {
 // It is a NAMING tool and not a hit test. The readout it feeds exists so that
 // "that tree is too tall" can be said as "tree 11 is too tall", and being one
 // instance off inside a thicket does not cost anything. Hence the pick volumes
-// below: a vertical capsule per system, sized to the SPECIES rather than to the
-// instance, with no attempt to follow a crown that leans or a log that lies
-// across the slope. The ray takes the nearest instance whose axis it passes
-// close enough to, and the caller's ground distance is a ceiling, so a hillside
-// in front of a tree hides it exactly as it does on screen.
+// below: a vertical cylinder per instance, with no attempt to follow a crown
+// that leans or a log that lies across the slope. The caller's ground distance
+// is a ceiling, so a hillside in front of a tree hides it exactly as it does on
+// screen.
 //
-// COST is a per-tile box reject first -- tiles are 8 to 25 m and the corridor is
-// a few tens of metres, so nearly all of the ~12,000 resident tiles die on four
-// compares -- and then about twenty flops per surviving instance. At the panel's
-// 4 Hz that is nothing; it is not fit for a per-frame caller and has no reason
-// to be, since the readout it feeds updates at the panel's rate.
+// WHAT THE RAY TAKES is the instance whose volume it ENTERS FIRST, and that is
+// a depth test rather than a proximity one. It used to rank by closest approach
+// to the instance's axis, which sounds like the same thing and is not: a ray
+// grazing the near edge of a boulder passes closest to that boulder's axis
+// somewhere in the middle of it, so a smaller rock standing a couple of metres
+// nearer could win on that number while being nowhere near the cursor. The
+// answer now is the first cylinder FACE the forward ray crosses -- the near one
+// from outside, the far one when the camera is already inside the volume, which
+// is the common case standing next to a tree and is the only reading of "first
+// face" that does not make a tree you are leaning on unnameable.
+//
+// SIZED TO THE INSTANCE, NOT THE SPECIES, wherever a system has more than one
+// shape. A single radius/rise pair is fine for a mushroom and hopeless for a
+// rock: the bank runs from a `capslab` seven times wider than it is tall to a
+// `spire` three times taller than it is wide, and instance scale spreads that
+// another fifty-fold (0.16 to 8.33 over the placed beds). One constant over
+// that range misses the top of the spire -- which reads as the cursor pointing
+// straight THROUGH it at whatever is behind -- while claiming several metres of
+// empty air above the slab. See `sizeAt`.
+//
+// A VOLUME THAT IS TOO BIG POINTS THROUGH ITS OWN PROP, which is the less
+// obvious half of that and is what the tree constant did. Trees were a 3 m
+// radius column 26 m tall -- crown-sized, applied all the way to the ground --
+// and it failed in both directions at once. Standing 3.5 m from a trunk the
+// ray "entered the tree" at 0.5 m, three metres of open air short of any wood.
+// Standing NEARER than 3 m, which is where anyone inspecting a tree stands, the
+// eye was inside the column, so by the rule below the tree ranked at its FAR
+// wall, five metres away and behind the trunk -- and a fern standing between
+// those two numbers won. The cursor pointed through the trunk at the fern
+// behind it, and the cause was a pick volume with the trunk nowhere near its
+// surface. Trees are now two cylinders, trunk and crown, off the generator's
+// own published `trunkDiameter`, `firstBranchHeight` and `crownWidth`.
+//
+// COST is two cheap rejects per instance on the axis foot -- everything behind
+// the camera and everything past whatever has already been hit, which because
+// the ceiling starts at the ground range means everything the hillside is
+// covering -- and then one sqrt for whatever survives them. There is no
+// per-tile reject; the beds hand over their live tiles and this walks them all.
+// At the panel's 4 Hz that is nothing; it is not fit for a per-frame caller and
+// has no reason to be, since the readout it feeds updates at the panel's rate.
 // ---------------------------------------------------------------------------
 
 /**
  * A scatter to pick against.
  *
- * `radius` is how far off the axis the ray may pass and still count, and `rise`
- * how far above the instance's own y the axis runs. Both are in metres at
- * instance scale 1, and both are DELIBERATELY GENEROUS -- a pick volume that
- * undershoots reads as a readout that does not work, while one that overshoots
- * reads as a readout that is easy to aim. The scale array, where a system has
- * one, multiplies both.
+ * `radius` is the pick cylinder's radius and `rise` its height above the
+ * instance's own y. Both are in metres at instance scale 1, the scale array
+ * multiplies both where a system has one, and both are DELIBERATELY GENEROUS --
+ * a pick volume that undershoots reads as a readout that does not work, while
+ * one that overshoots reads as a readout that is easy to aim.
+ *
+ * They are a SPECIES constant, which is only honest for a system whose members
+ * are one shape at one aspect. A system whose members are not gives `sizeAt`
+ * instead and omits both.
+ *
+ * ONE INSTANCE MAY BE MORE THAN ONE SOURCE. Nothing here says a scatter appears
+ * in the list once, and a shape that is not a cylinder is picked by binding it
+ * twice with two `sizeAt`s: a tree is a thin trunk under a wide crown, and one
+ * cylinder over both is either three metres of air around the trunk or a crown
+ * that cannot be pointed at. Two sources sharing a `label` and a `nameAt` read
+ * as one prop in the readout and cost one more pass over the same tiles.
  *
  * @typedef {object} PickSource
  * @property {string} label     what to call it in the readout
  * @property {object} sys       the scatter, needing tiles/instX/instY/instZ
  * @property {string} idKey     the variant array's property name on `sys`
- * @property {number} radius    pick radius, metres at scale 1
- * @property {number} rise      pick height, metres at scale 1
+ * @property {number} [radius]  pick radius, metres at scale 1
+ * @property {number} [rise]    pick height, metres at scale 1
  * @property {string} [scaleKey] per-instance scale array, if the system has one
+ * @property {(sys: object, id: number, out: {radius: number, base: number, rise: number}) => void} [sizeAt]
+ *   the pick volume for ONE instance, written into `out`. Overrides
+ *   radius/rise/scaleKey and is responsible for applying the instance scale
+ *   itself, since a system with a real per-instance size has the measurement
+ *   the scale is multiplying and this file does not. `base` is how far ABOVE
+ *   the instance's own y the cylinder starts, and arrives zeroed, so a volume
+ *   that stands on the ground can ignore it; it is there for the upper half of
+ *   a two-part prop.
+ * @property {(sys: object, id: number) => string} [nameAt] the id to QUOTE for
+ *   this instance, when the raw integer is not one. A variant index is only
+ *   quotable where it indexes a list the previewer also shows -- true for the
+ *   scatters whose `variantAt` indexes their bank in order, false for rocks,
+ *   whose `shapeAt` indexes ONE BED'S OWN ROSTER: a subset of the bank picked
+ *   per environment, so the same integer means a different rock in each of the
+ *   five beds and none of them means anything in /gen-rock. Such a source hands
+ *   back the string the previewer would accept instead.
  */
 
-/** Scratch, so a 4 Hz readout allocates nothing. */
-const pickHit = { label: '', variant: 0, dist: 0 }
+/**
+ * Scratch, so a 4 Hz readout allocates nothing. `variant` is the raw integer
+ * and `name` is what to print: the same thing spelled two ways for a source
+ * with no `nameAt`, and only `name` is meaningful for one with.
+ */
+const pickHit = { label: '', variant: 0, name: '', dist: 0 }
+
+/** Scratch for `sizeAt`, for the same reason. */
+const pickSize = { radius: 0, base: 0, rise: 0 }
+
+/**
+ * Where the forward ray first crosses the surface of the vertical cylinder of
+ * radius `r` standing on (ax, ay, az) and `rise` tall. -1 for a miss.
+ *
+ * A cylinder and not a capsule, because the thing being approximated is a rock
+ * sitting on the ground or a trunk standing on it, and both have a flat top and
+ * a flat bottom in the only sense that matters here -- a capsule's domed cap
+ * would put pick volume above the top of a slab, which is the failure being
+ * fixed.
+ *
+ * `dxz` is the ray direction's squared horizontal length, hoisted by the caller
+ * because it is a property of the ray and not of any instance. It is also the
+ * quadratic's leading coefficient, which is why the halved-b form below is the
+ * convenient one: with A = dxz the discriminant is b*b - A*c and both roots
+ * divide by A.
+ *
+ * A CAMERA INSIDE THE VOLUME gets the far face rather than the near one, since
+ * the near one is behind it. Returning a miss instead would make the readout go
+ * blank exactly when the player is closest to the thing they want named.
+ *
+ * That fallback is only sound while the volume FITS THE PROP, and it is the
+ * mechanism by which one that does not goes unnameable: an inside-the-volume
+ * rank is a distance measured out the far side, so every prop between the eye
+ * and that far wall outranks it. The volume must be tight enough that being
+ * inside it means being inside the prop -- see the note at the top of this
+ * section for the tree that was not.
+ */
+function cylinderEntry(origin, dir, dxz, ax, ay, az, r, rise) {
+  // The ray origin measured from the axis, horizontally.
+  const ox = origin.x - ax
+  const oz = origin.z - az
+
+  let tIn = -Infinity
+  let tOut = Infinity
+
+  if (dxz > 1e-12) {
+    const b = ox * dir.x + oz * dir.z
+    const c = ox * ox + oz * oz - r * r
+    const disc = b * b - dxz * c
+    if (disc < 0) return -1
+    const root = Math.sqrt(disc)
+    tIn = (-b - root) / dxz
+    tOut = (-b + root) / dxz
+  } else if (ox * ox + oz * oz > r * r) {
+    // Straight up or straight down, and outside the circle: the ray never
+    // enters it however far it runs. Inside the circle it always is, so the
+    // height slab alone decides and tIn/tOut stay unbounded.
+    return -1
+  }
+
+  if (Math.abs(dir.y) > 1e-12) {
+    let ta = (ay - origin.y) / dir.y
+    let tb = (ay + rise - origin.y) / dir.y
+    if (ta > tb) {
+      const swap = ta
+      ta = tb
+      tb = swap
+    }
+    if (ta > tIn) tIn = ta
+    if (tb < tOut) tOut = tb
+  } else if (origin.y < ay || origin.y > ay + rise) {
+    // Dead level, and above or below the slab: never enters.
+    return -1
+  }
+
+  if (tOut < 0 || tIn > tOut) return -1
+  return tIn > 0 ? tIn : tOut
+}
 
 /**
  * The nearest prop whose pick volume the ray enters, or null.
@@ -215,70 +351,72 @@ export function pickProp(sources, origin, dir, maxDist) {
   // first pulls bestT in and makes every later source's reject bite harder.
   for (const src of sources) {
     const sys = src.sys
-    if (!sys || !sys.tiles) continue
+    // LOUDLY. This used to `continue`, and that is how rocks went unnameable
+    // without anyone noticing: `Rocks` is a facade over five `RockBed`s and
+    // keeps none of these arrays itself, so the source bound to it failed the
+    // duck-type and was skipped in silence. A readout that prints nothing looks
+    // identical to a ray that hit nothing, so the skip cost nothing to write and
+    // hid the bug for as long as it existed. A source with no tiles is a wiring
+    // mistake and there is no case where quietly naming one fewer system is the
+    // wanted behaviour.
+    if (!sys) throw new Error(`pickProp: ${src.label} has no scatter bound`)
+    if (!sys.tiles) throw new Error(`pickProp: ${src.label} has no tiles -- bind the sub-scatter that owns them, not the facade over it`)
     const scales = src.scaleKey ? sys[src.scaleKey] : null
     const ids = sys[src.idKey]
     if (!ids) throw new Error(`pickProp: ${src.label} has no ${src.idKey}`)
+    if (!src.sizeAt && !(src.radius > 0 && src.rise > 0)) {
+      throw new Error(`pickProp: ${src.label} has neither a sizeAt nor a positive radius and rise`)
+    }
 
-    // 1 - D.y^2, the denominator of the line-line solution, hoisted because it
-    // is a property of the ray and not of any instance.
-    const den = 1 - dir.y * dir.y
+    // The ray's squared horizontal length: a property of the ray, not of any
+    // instance, and the leading coefficient of every cylinder solve below.
+    const dxz = dir.x * dir.x + dir.z * dir.z
 
     for (const tile of sys.tiles.values()) {
       for (let k = 0; k < tile.n; k++) {
         const id = tile.ids[k]
         const ax = sys.instX[id]
-        const ay = sys.instY[id]
+        let ay = sys.instY[id]
         const az = sys.instZ[id]
 
-        // Reject on the foot of the axis before anything else. Six multiplies,
+        let r
+        let rise
+        if (src.sizeAt) {
+          // Zeroed, not left as the last instance's: a `sizeAt` that only
+          // sometimes writes `base` would otherwise inherit a neighbour's.
+          pickSize.base = 0
+          src.sizeAt(sys, id, pickSize)
+          r = pickSize.radius
+          rise = pickSize.rise
+          ay += pickSize.base
+        } else {
+          const scale = scales === null ? 1 : scales[id]
+          r = src.radius * scale
+          rise = src.rise * scale
+        }
+
+        // Reject on the foot of the axis before the quadratic. Six multiplies,
         // and it throws out everything behind the camera and everything past
         // whatever has already been hit -- which, because bestT starts at the
-        // ground range, means everything the hillside is covering.
-        const fx = ax - origin.x
-        const fy = ay - origin.y
-        const fz = az - origin.z
-        const foot = dir.x * fx + dir.y * fy + dir.z * fz
-        if (foot <= 0) continue
-        const scale = scales === null ? 1 : scales[id]
-        const rise = src.rise * scale
-        if (foot >= bestT + rise) continue
+        // ground range, means everything the hillside is covering. The `reach`
+        // slack is the volume's own half-extent: an instance whose FOOT is a
+        // little behind the camera, or a little past the current best, can
+        // still have body in front of one or nearer than the other, and the
+        // old bare `foot <= 0` quietly dropped exactly the rocks the player was
+        // standing over.
+        const foot = dir.x * (ax - origin.x) + dir.y * (ay - origin.y) + dir.z * (az - origin.z)
+        const reach = r + rise
+        if (foot <= -reach) continue
+        if (foot >= bestT + reach) continue
 
-        // Closest approach between the ray and the instance's vertical axis
-        // segment, as line-line and then clamped -- the textbook form, because
-        // the cheap shortcut (project into xz and solve there) divides by zero
-        // for anyone looking straight down at a mushroom, which is exactly the
-        // pose someone naming a mushroom is in.
-        let s
-        if (den > 1e-6) {
-          // w = origin - axisFoot, so e = w.y and d = dir . w, and the axis
-          // parameter is ( e - dir.y * d ) / den.
-          const d = -foot
-          s = (-fy - dir.y * d) / den
-        } else {
-          // Ray parallel to the axis: no height along it is closer than any
-          // other, so take the middle and let the radius decide.
-          s = rise * 0.5
-        }
-        if (s < 0) s = 0
-        else if (s > rise) s = rise
-
-        // Re-solved against the CLAMPED point rather than the unclamped pair,
-        // which is what makes the clamp mean anything at the two ends.
-        const py = fy + s
-        const t = dir.x * fx + dir.y * py + dir.z * fz
-        if (t <= 0 || t >= bestT) continue
-
-        const ex = fx - dir.x * t
-        const ey = py - dir.y * t
-        const ez = fz - dir.z * t
-        const r = src.radius * scale
-        if (ex * ex + ey * ey + ez * ez > r * r) continue
+        const t = cylinderEntry(origin, dir, dxz, ax, ay, az, r, rise)
+        if (t < 0 || t >= bestT) continue
 
         bestT = t
         best = src
         pickHit.label = src.label
         pickHit.variant = ids[id]
+        pickHit.name = src.nameAt ? src.nameAt(sys, id) : String(ids[id])
         pickHit.dist = t
       }
     }

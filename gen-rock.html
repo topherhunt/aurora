@@ -47,6 +47,9 @@
       .pick select { flex: 1 1 auto; }
       #seedrow { display: flex; gap: 6px; margin-bottom: 8px; }
       #seedrow input { flex: 1 1 auto; }
+      #shaperow { display: flex; gap: 6px; margin-bottom: 4px; }
+      #shaperow input { flex: 1 1 auto; }
+      #shapenote { margin-bottom: 8px; }
       #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
       #buttons button { flex: 1 1 auto; padding: 4px 6px; }
 
@@ -92,6 +95,12 @@
           <input type="number" id="seed" value="1" min="0" step="1" />
           <button id="reroll">reroll</button>
         </div>
+        <div id="shaperow">
+          <input type="text" id="shapeid" placeholder="shape id, e.g. shingle-1"
+                 title="Paste what the /v2 cursor readout printed. It names one shape in the world's rock bank -- variant, then which of that variant's shapes it is -- and loading it sets the preset and the seed to exactly that rock." />
+          <button id="shapego">load</button>
+        </div>
+        <div class="s" id="shapenote">the id /v2 prints under `cursor:`</div>
         <div id="sliders"></div>
       </div>
       <div id="buttons">

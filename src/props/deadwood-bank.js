@@ -120,13 +120,22 @@ function cardExtentsOf(u) {
  * photographs a disc. A quarter turn puts it broadside, which is the only view
  * of a fallen log worth keeping.
  */
+/**
+ * The angle the kind's photograph is taken from, in bakeImpostor's convention.
+ *
+ * ONE function and not two constants, because a FIXED card has to lie in the
+ * plane its own photograph was taken in and a bake angle that drifted away from
+ * the quad's angle would show a broadside log edge-on. Both callers below read
+ * this, and the gate reads it too.
+ */
+export function cardAzimuth(kind) {
+  return kind === 'log' ? Math.PI / 2 : 0
+}
+
 function cardSubject(kind) {
   const { name } = CARD_SUBJECTS[kind]
   const geo = buildDeadwood({ ...deadwoodParams(name, DEADWOOD_CARD_SEED), tier: 0 })
-  return {
-    geo,
-    frame: { ...cardExtentsOf(geo.userData.deadwood), azimuth: kind === 'log' ? Math.PI / 2 : 0 },
-  }
+  return { geo, frame: { ...cardExtentsOf(geo.userData.deadwood), azimuth: cardAzimuth(kind) } }
 }
 
 function geometryBytes(geo) {
@@ -185,8 +194,29 @@ export function buildDeadwoodBank({ billboard = true } = {}) {
     // round so a stub or a splinter leaning out cannot be sliced off at the
     // edge. The quad has to be the FRUSTUM, margin included, or the picture
     // comes back inset and the log reads a size too small.
+    //
+    // A SNAG SPINS AND A LOG DOES NOT, and the difference is the same one this
+    // whole file is organised around: a stump is very nearly a solid of
+    // revolution, so turning its card to the eye every frame shows the same
+    // silhouette from every side and costs nothing. A LOG HAS A DIRECTION. Spun,
+    // its card holds still against the eye while the mesh underneath it points
+    // along a yaw, so the moment the LOD swaps the log appears to snap to a new
+    // heading -- and it snaps back the instant the player walks in again. Fixed,
+    // the card is carried by the instance's own yaw and the log lies where it
+    // lay, which is what the swap has to look like.
+    //
+    // The plane has to match the angle the photograph was taken at, which is
+    // what `azimuth` is doing: the log was shot broadside from +X (see
+    // cardSubject), so its quad spans the +Z axis the log is built along. The
+    // snag was shot from +Z and takes the default. `upNormal` is the marker
+    // material.js reads to decide which of the two it is holding -- see
+    // CARD_UP_MARK -- so the two options are one decision written twice.
     const ext = impostorCardExtents(cardExtentsOf(near.userData.deadwood))
-    cards.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1, { upNormal: true }))
+    const spun = v.kind !== 'log'
+    cards.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1, {
+      upNormal: spun,
+      azimuth: spun ? 0 : cardAzimuth(v.kind),
+    }))
   }
 
   const tiers = [{ geometries: t0 }, { geometries: t1 }]

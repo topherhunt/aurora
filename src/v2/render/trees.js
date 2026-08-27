@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers } from '../../props/tree-bank.js'
+import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
 import {
   createPropMaterial,
   setSnowLine,
@@ -320,6 +320,12 @@ const BUILD_BUDGET_MS = 2.0
 // inside it can need a mesh tier.
 const NEAR_MARGIN = TILE * 1.5
 
+// How much wider than its published BASE radius the trunk's cursor pick volume
+// is. The trunk is a cone, so its base radius overstates it everywhere above the
+// ground and a pick cylinder at exactly that radius still sits inside the bark
+// over most of the trunk's length. See `pickTrunkAt`.
+const TRUNK_PICK_SLACK = 1.5
+
 // Placement rules, lifted from v1's `tree` kind so the two routes agree about
 // where a tree can stand. `maxElevAboveSnow` is metres ABOVE the local snow
 // line, not absolute -- a real treeline sits well above the snow line.
@@ -518,11 +524,14 @@ export class Trees {
     // carries the rescale. It is the radius AT THE BASE and not an average,
     // because the trunk is a cone whose radius law is
     // `radiusAt(f) = trunkRadius * (1 - f)` and the base ring sits at f = 0, on
-    // y = 0, which is where the tree's root is by construction. Measuring the
-    // lowest few centimetres of LOD0's vertices instead reproduces this to the
-    // last digit for all sixteen variants (the base ring is a polygon with a
-    // vertex on +x, so max |x| IS the parametric radius), which is how the
-    // choice was checked rather than assumed.
+    // y = 0, which is where the tree's root is by construction.
+    //
+    // It is the MEAN radius rather than a bound on the wood, because the trunk
+    // is lobed: `trunkLobe` takes the built skin to roughly +/- 11% of this
+    // around the circumference. Measuring the base ring off LOD0's vertices
+    // gives that spread and not one number, which is why the published figure
+    // is taken from the generator -- what the readers here want is the circle
+    // the trunk is stated against.
     //
     // IT IS NOT crownWidth, and the difference is the whole point of the
     // number: for the size-1.0 oak the trunk is about 0.35 m and the crown
@@ -536,13 +545,29 @@ export class Trees {
     // wrong answer of exactly the kind that only shows up as mushrooms
     // floating in mid-air a long way from anything.
     this.unitTrunkRadius = new Float32Array(this.variantCount)
+    // And the other three numbers the same userData publishes, which together
+    // are the tree's silhouette in the only detail the cursor pick needs: a
+    // trunk of `unitTrunkRadius` standing `unitCrownBase` metres clear, and a
+    // crown of `unitCrownRadius` from there to `unitHeight`. See `pickTrunkAt`.
+    this.unitCrownRadius = new Float32Array(this.variantCount)
+    this.unitCrownBase = new Float32Array(this.variantCount)
+    this.unitHeight = new Float32Array(this.variantCount)
     for (let v = 0; v < this.variantCount; v++) {
       const u = bank.tiers[0].geometries[v].userData.tree
       if (!u || !(u.trunkDiameter > 0)) {
         throw new Error(`Trees: LOD0 variant ${v} publishes no usable trunkDiameter`)
       }
+      if (!(u.height > 0) || !(u.crownWidth > 0) || !(u.firstBranchHeight > 0)) {
+        throw new Error(`Trees: LOD0 variant ${v} publishes no usable height/crownWidth/firstBranchHeight`)
+      }
       this.unitTrunkRadius[v] = u.trunkDiameter / 2
+      this.unitCrownRadius[v] = u.crownWidth / 2
+      this.unitCrownBase[v] = u.firstBranchHeight
+      this.unitHeight[v] = u.height
     }
+
+    // What to CALL each variant in the cursor readout: `oak-2` and not `11`.
+    this.variantName = bank.variants.map(treeVariantId)
 
     // BatchedMesh has copied every vertex into its arena; the originals are now
     // a second copy with no reader.
@@ -898,6 +923,63 @@ export class Trees {
   }
 
   /**
+   * The id to QUOTE for one instance: `oak-2`, the same string /gen-tree's
+   * species picker and size ladder are indexed by.
+   */
+  nameAt(id) {
+    const name = this.variantName[this.variantAt[id]]
+    if (name === undefined) throw new Error(`Trees: no name for variant ${this.variantAt[id]} of instance ${id}`)
+    return name
+  }
+
+  /**
+   * The cursor pick volumes, WHICH ARE TWO CYLINDERS AND NOT ONE.
+   *
+   * A tree is a thin pole with a wide lump on top of it -- for the size-1.0 oak
+   * a 0.35 m trunk under a 3.5 m crown, a factor of ten -- and no single
+   * cylinder is honest about both. The wide one puts three metres of empty air
+   * around the trunk at eye height, which is where the player stands and points,
+   * and pick.js ranks a volume the eye is INSIDE by its far wall, so the tree
+   * came out five metres away and lost to a fern behind the trunk. The narrow
+   * one cannot be pointed at above the first branch, which is most of the tree
+   * on screen. So the trunk gets one cylinder from the ground to the first
+   * branch and the crown gets another from there to the tip, and the caller
+   * binds the scatter twice.
+   *
+   * Every number is the generator's OWN published measurement carried through
+   * `instScale`, not a constant kept in step by hand: `trunkDiameter`,
+   * `firstBranchHeight`, `crownWidth` and `height` off `geo.userData.tree`. A
+   * sapling is a third the height of its full-grown variant and gets a third
+   * the pick volume without anything here knowing that it exists.
+   *
+   * The trunk is widened by TRUNK_PICK_SLACK because it is a CONE, published at
+   * its base: without slack the pick surface is inside the bark for the whole
+   * upper trunk, and a cursor a few pixels off the middle of a distant trunk
+   * would read what is behind it. 1.5 is a little over the mean radius of a
+   * cone (which is a half) and still an order of magnitude under the crown.
+   */
+  pickTrunkAt(id, out) {
+    const v = this.variantAt[id]
+    const scale = this.instScale[id]
+    out.radius = this.unitTrunkRadius[v] * TRUNK_PICK_SLACK * scale
+    out.base = 0
+    out.rise = this.unitCrownBase[v] * scale
+    return out
+  }
+
+  /** The crown half of `pickTrunkAt`: first branch to tip, at crown width. */
+  pickCrownAt(id, out) {
+    const v = this.variantAt[id]
+    const scale = this.instScale[id]
+    const base = this.unitCrownBase[v]
+    out.radius = this.unitCrownRadius[v] * scale
+    out.base = base * scale
+    out.rise = (this.unitHeight[v] - base) * scale
+    if (!(out.rise > 0)) throw new Error(`Trees: variant ${v} branches at ${base} m, at or above its own height ${this.unitHeight[v]} m`)
+    return out
+  }
+
+  /**
    * Bring the visible tile set in line with the camera: queue what is missing,
    * evict what has fallen out. Returns immediately unless the camera has
    * actually changed tile, which is what makes it safe to call every frame.
@@ -1214,7 +1296,7 @@ export class Trees {
     }
   }
 
-  /** Retire every cross-dissolve whose half second is up. Once per frame. */
+  /** Retire every cross-dissolve whose window is up. Once per frame. */
   _sweepFades(now) {
     let k = 0
     while (k < this.fades.length) {

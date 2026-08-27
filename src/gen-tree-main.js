@@ -57,19 +57,20 @@ const SLIDERS = [
   ['sprayPower', 0, 1, 0.05, 'the same for spray SIZE, and lower on purpose: a spruce fan is about a metre and a half whether the tree is 9 m or 20 m'],
 
   ['#', 'trunk'],
-  ['trunkSides', 3, 12, 1, 'sides around the trunk. 3 is a wedge, 8 reads round at any range you can make a trunk out at'],
+  ['trunkSides', 3, 32, 1, 'sides around the trunk. 3 is a wedge, 8 reads round at any range you can make a trunk out at, and the default 25 is for the range you can put a hand on it at -- it costs exactly `sides` triangles'],
+  ['trunkLobe', 0, 0.5, 0.01, 'how far out of round the trunk is, as a fraction of its radius. Three harmonics at a phase this tree drew for itself, so it swells on one side and hollows on another. 0 is a lathe-turned pole. Needs sides to spend: under 6 it is ignored, and the harmonics are capped at a third of the sides so they cannot alias into spikes'],
   ['trunkRings', 1, 6, 1, 'rings below the apex. The trunk always closes to a point, so 1 is a plain cone; raise it to let trunkBend curve rather than lean'],
   ['trunkRadius', 0, 0.09, 0.001, 'base radius as a FRACTION of height -- the panel prints the metres'],
   ['trunkBend', 0, 0.3, 0.005, 'sideways offset of the top, as a fraction of height'],
   ['barkRepeat', 0.5, 16, 0.5, 'bark tiles UP the trunk this many times. The tiling AROUND it is derived so a tile stays roughly square in world space'],
 
   ['#', 'roots'],
-  ['roots', 0, 10, 1, 'spurs off the trunk\'s foot, diving into the soil, two triangles each -- a ridge and two flanks with no underside, because the face that would close one points into the soil. LOD0 ONLY -- treeLod sets this to 0, because the flare is centimetres of silhouette at the bottom of the tree and the coarse tier starts at 8 m, where it is a few pixels tall with terrain across half of it. The scatter buries only 15 cm of trunk, so without these a tree meets a slope along a hard circle, like a dowel pushed into the floor'],
-  ['rootRise', 0, 0.12, 0.005, 'where up the trunk a spur leaves, as a fraction of height. Keep it above the 15 cm the scatter sinks a tree by (0.05 x 9 m = 45 cm on a pine) or the flare is buried and only the dive shows'],
-  ['rootLength', 0, 0.4, 0.005, 'spur length as a fraction of height. The panel prints how far below ground the crown ends up'],
-  ['rootAngle', 0, 1.5, 0.01, 'radians BELOW horizontal at the launch. Near 0 the spurs run along the surface like a mangrove; past ~1 they dive straight down and almost nothing of them is visible'],
+  ['roots', 0, 10, 1, 'spurs off the trunk\'s foot, diving into the soil, two triangles each -- a corner on the trunk, two on the ground and a shared tip below, with no underside, because the face that would close one points into the soil. LOD0 ONLY -- treeLod sets this to 0, because the flare is centimetres of silhouette at the bottom of the tree and the coarse tier starts at 8 m, where it is a few pixels tall with terrain across half of it. The scatter buries only 15 cm of trunk, so without these a tree meets a slope along a hard circle, like a dowel pushed into the floor'],
+  ['rootRise', 0, 0.25, 0.005, 'MEAN height up the trunk of the spur\'s ridge corner, as a fraction of height -- the height of the visible flare, since the two other corners are pinned to ground level. Each spur draws its own 40% either way. It decides only how much STANDS PROUD, not how deep the crown goes: the dive starts at the ground line, so rootLength and rootAngle own the buried part. Keep it above the 15 cm the scatter sinks a tree by (0.10 x 9 m = 72 cm on a pine) or the flare is buried and only the dive shows'],
+  ['rootLength', 0, 0.4, 0.005, 'spur length as a fraction of height, jittered 30% either way per spur. The panel prints how far below ground the crown ends up'],
+  ['rootAngle', 0, 1.5, 0.01, 'radians BELOW horizontal at the launch, jittered a fifth either way per spur. Near 0 the spurs run along the surface like a mangrove; past ~1 they dive straight down and almost nothing of them is visible'],
   ['rootDroop', 0, 1.5, 0.01, 'and how much further down the spur bends along its own length, as branchDroop bends a limb. A spur is a straight two-triangle wedge, so this moves only where the tip lands -- the bend itself never shows'],
-  ['rootWidth', 0, 2, 0.05, 'spur half-width and ridge height at the flare, as a fraction of the TRUNK\'s radius where it leaves -- off the trunk rather than off its own length, because a spur is the foot spreading. Over 1 is deliberate: a buttress is wider than the trunk at the soil line. 0 draws no crown at all'],
+  ['rootWidth', 0, 2, 0.05, 'half the spur\'s width where it meets the ground, as a fraction of the TRUNK\'s radius at its foot, each SIDE drawing its own 35% either way so the blade leans instead of being isoceles about its own azimuth -- off the trunk rather than off its own length, because a spur is the foot spreading. Over 1 is deliberate: a buttress is wider than the trunk at the soil line. 0 draws no crown at all'],
 
   ['#', 'crown'],
   ['branches', 0, 40, 1, 'branches off the trunk. Each one also carries `forks` children -- see the budget panel'],
@@ -608,13 +609,14 @@ function refresh() {
     ],
     ['crown / height', (f.crownWidth / f.height).toFixed(2)],
     // Roots are most of this now and are SUPPOSED to be under the soil -- see
-    // THE ROOT CROWN in tree.js. The warn is still worth having, because past a
-    // tenth of the tree's height what is buried is a low branch rather than a
-    // flare.
+    // THE ROOT CROWN in tree.js, which is why the threshold moves when a crown
+    // is drawn. The spurs themselves reach a sixth of the tree's height down at
+    // the defaults; past a fifth what is buried is a low branch rather than a
+    // flare, and with no crown at all anything past a tenth already is.
     [
       'below ground',
       f.belowGround > 0.005 ? `${(f.belowGround * 100).toFixed(0)} cm` : 'none',
-      f.belowGround > f.height * 0.1 ? 'warn' : 'ok',
+      f.belowGround > f.height * (f.roots > 0 ? 0.2 : 0.1) ? 'warn' : 'ok',
     ],
     ['card allowed past', `${Math.round(cardAt)} m`],
   ])

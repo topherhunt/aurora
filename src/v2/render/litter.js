@@ -294,12 +294,31 @@ const CLIFF_TAN = Math.tan((42 * Math.PI) / 180)
 // directly would blow every stamp on a saddle to white and delete every stamp
 // in a wood. So the ratio against GROUND_REF -- roughly C_ROCK, the bare stony
 // ground litter mostly lies on -- is square-rooted to compress it and then
-// clamped: a snowfield lifts a patch by 60%, a dark wood floor drops it by 25%,
-// and nothing else gets through. Without any of it the four pictures read as
-// four rectangles of the same gravel dropped on every ground in the world.
+// clamped. Without any of it the four pictures read as four rectangles of the
+// same gravel dropped on every ground in the world.
+//
+// THE CEILING IS A SNOW SETTING AND NOTHING ELSE, which is worth knowing before
+// touching it. Every un-snowed entry in the mesher's palette sits between 0.059
+// (dirt) and 0.082 (rock) in luminance, so the compressed ratio lands between
+// 0.81 and 0.96 for all of them -- inside both bounds, and the floor below is
+// therefore a guard against a repalette rather than something that bites on any
+// ground in the world today. C_SNOW is 0.879,
+// a factor of eleven above the rest of the table, and the only thing the top of
+// this range decides is what litter looks like lying in snow. At 1.6 it was
+// clamped to less than half of what the ground under it was doing and read as
+// wet coal on a snowfield. 2.7 puts the mean stone at about 0.57 albedo against
+// snow's 0.879 -- still darker, because stone in snow IS darker, but by a
+// stone's worth rather than a hole's worth. Partial snow ramps through it
+// smoothly rather than stepping, since half-snowed ground compresses to 2.3 and
+// is still under the clamp.
+//
+// The hue fraction is deliberately NOT ramped alongside it: C_SNOW normalised to
+// unit luminance is [0.98, 1.00, 1.06], so at any fraction between a half and all
+// of it the tint moves by under 3% and the whole of the snow problem is the
+// magnitude.
 const GROUND_HUE = 0.55
 const GROUND_REF = 0.09
-const GROUND_BRIGHT = [0.75, 1.6]
+const GROUND_BRIGHT = [0.75, 2.7]
 
 // Per-stamp brightness jitter, multiplied on top of everything else. Narrow,
 // because the bake already carries every stone's own tint inside the picture

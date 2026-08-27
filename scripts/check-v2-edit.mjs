@@ -482,11 +482,19 @@ function sectionSplit() {
 //
 // pickProp exists so a variant can be QUOTED, and its whole value is that the
 // name it prints belongs to the thing being looked at. Every failure mode here
-// is silent in the view: a sign slip in the axis solution names the tree behind
-// you, a bad clamp names nothing when you look up at a crown, and the parallel
-// branch is only ever reached by looking straight down, which is exactly the
-// pose someone naming a mushroom is in and exactly the one nobody tests by
-// hand. So the geometry is asserted rather than eyeballed.
+// is silent in the view: a sign slip in the cylinder solve names the tree behind
+// you, a slab that stops too low names nothing when you look up at a crown, and
+// the degenerate branch is only ever reached by looking straight down, which is
+// exactly the pose someone naming a mushroom is in and exactly the one nobody
+// tests by hand. So the geometry is asserted rather than eyeballed.
+//
+// IT IS A DEPTH TEST NOW, not a proximity one. It used to rank candidates by
+// how close the ray passed to each instance's vertical AXIS, which let a small
+// prop standing nearer its own centre beat a large one whose face was already
+// filling the crosshair -- the cursor read straight through what it was aimed
+// at. What it ranks by now is the first cylinder FACE the forward ray crosses.
+// The two differ by the volume's own radius, which is what the range assertion
+// below pins down.
 function sectionPick() {
   console.log('\n-- prop picking')
 
@@ -508,7 +516,9 @@ function sectionPick() {
 
   const level = pickProp(src(tree, 3, 26), eye, fwd, 100)
   check(level !== null && level.label === 'tree' && level.variant === 7, 'a trunk ahead is named, with its variant')
-  check(level !== null && near(level.dist, 20, 1e-3), 'and the range is to the axis, not to the pick volume', `${level?.dist.toFixed(3)} m`)
+  check(level !== null && near(level.dist, 17, 1e-3),
+    'and the range is to the face the ray crosses, not to the axis three metres behind it',
+    `${level?.dist.toFixed(3)} m against a trunk at 20 m inside a 3 m volume`)
 
   // The clamp's whole job. At 30 degrees up the ray passes the trunk's foot by
   // 11 m and only meets the capsule 13 m up it, so an unclamped solve or a
@@ -525,8 +535,9 @@ function sectionPick() {
   const two = pickProp(src([[0, 0, -40, 1], [0, 0, -20, 2]], 3, 26), eye, fwd, 100)
   check(two !== null && two.variant === 2, 'the NEAR one wins when the ray passes through both', `named ${two?.variant}`)
 
-  // The degenerate branch: den = 1 - dir.y^2 is zero looking straight down, and
-  // the closed-form solve divides by it.
+  // The degenerate branch: the ray's horizontal length is zero looking straight
+  // down, and that is the quadratic's leading coefficient, so the circle solve
+  // has to be skipped entirely and the height slab left to decide alone.
   const down = pickProp(src([[0.05, 0, 0, 3]], 0.18, 0.3), eye, { x: 0, y: -1, z: 0 }, 100)
   check(down !== null && down.variant === 3, 'a mushroom underfoot survives the straight-down singularity')
 
@@ -537,6 +548,59 @@ function sectionPick() {
     threw = true
   }
   check(threw, 'a source naming a variant array the scatter does not have throws')
+
+  // --- a prop that is two cylinders ------------------------------------------
+  //
+  // The reported bug, as geometry. A tree used to be ONE 3 m x 26 m cylinder,
+  // which is the crown's width taken all the way to the ground, and standing
+  // 2 m from the trunk put the eye INSIDE it. pickProp ranks an inside-out
+  // volume by its far wall -- 5 m away, out the back of the tree -- so a fern
+  // standing 3.5 m out, between the eye and that wall, won and the readout said
+  // "fern" while the cursor was on bark. The volumes below are the ones Trees
+  // now builds off its own published measurements: a 0.51 m trunk to the first
+  // branch at 2.69 m, and a 3.27 m crown from there to the 9 m tip (oak-2).
+  const oak = mk([[0, 0, -2, 6]])
+  const trunkOf = (s, id, out) => { out.radius = 0.51; out.base = 0; out.rise = 2.69; return out }
+  const crownOf = (s, id, out) => { out.radius = 3.27; out.base = 2.69; out.rise = 6.31; return out }
+  const nameOf = () => 'oak-2'
+  const twoPart = [
+    { label: 'fern', sys: mk([[0, 0, -3.5, 4]]), idKey: 'variantAt', radius: 0.6, rise: 1.2 },
+    { label: 'tree', sys: oak, idKey: 'variantAt', nameAt: nameOf, sizeAt: trunkOf },
+    { label: 'tree', sys: oak, idKey: 'variantAt', nameAt: nameOf, sizeAt: crownOf },
+  ]
+
+  // Aiming at the middle of the clear trunk, from inside what the old volume was.
+  const atTrunk = { x: 0, y: 1.35 - eye.y, z: -2 }
+  const tl = Math.hypot(atTrunk.x, atTrunk.y, atTrunk.z)
+  const aim = { x: atTrunk.x / tl, y: atTrunk.y / tl, z: atTrunk.z / tl }
+  const bark = pickProp(twoPart, eye, aim, 100)
+  check(bark !== null && bark.label === 'tree' && bark.name === 'oak-2',
+    'the cursor on a trunk names the tree, not the fern standing behind it',
+    `said ${bark === null ? 'nothing' : `${bark.label} ${bark.name}`}`)
+  check(bark !== null && bark.dist < 1.6,
+    'and it stops at the bark rather than out the far side of the tree',
+    `${bark?.dist.toFixed(2)} m to a trunk face 1.49 m away`)
+
+  // The other half of the same promise: the volume must not claim air. At 2 m
+  // the old 3 m column named the tree while the cursor was a metre and a half
+  // clear of it, which is how the fern behind it lost in the first place.
+  const wide = { x: 1.2, y: 1.35 - eye.y, z: -2 }
+  const wl = Math.hypot(wide.x, wide.y, wide.z)
+  check(pickProp(twoPart, eye, { x: wide.x / wl, y: wide.y / wl, z: wide.z / wl }, 100) === null,
+    'and aiming 1.2 m to the side of a 0.51 m trunk names nothing at all')
+
+  // `base` is what lets the crown sit above the trunk instead of on the ground.
+  // Without it the second cylinder starts at y = 0 and the pair is just the old
+  // fat column again.
+  const high = { x: 0, y: 5 - eye.y, z: -2 }
+  const hl = Math.hypot(high.x, high.y, high.z)
+  const canopy = pickProp(twoPart, eye, { x: high.x / hl, y: high.y / hl, z: high.z / hl }, 100)
+  check(canopy !== null && canopy.name === 'oak-2', 'the crown 5 m up is named by the raised cylinder')
+  const only = [{ label: 'tree', sys: oak, idKey: 'variantAt', nameAt: nameOf, sizeAt: crownOf }]
+  const under = { x: 2.5, y: 1.0 - eye.y, z: -2 }
+  const ul = Math.hypot(under.x, under.y, under.z)
+  check(pickProp(only, eye, { x: under.x / ul, y: under.y / ul, z: under.z / ul }, 100) === null,
+    'and the ground under that crown is not inside it -- `base` lifts the volume, it does not just make it taller')
 }
 
 export async function run() {

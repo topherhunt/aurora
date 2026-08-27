@@ -133,6 +133,27 @@ export function treeVariants() {
 }
 
 /**
+ * What to CALL one variant: `species-size`, e.g. `oak-2`.
+ *
+ * A variant id is an index into `treeVariants()`, and "tree 11" tells you
+ * nothing about which tree it is -- the readout in /v2 exists so that "that
+ * tree is wrong" can be said about a tree somebody can then go and look at. The
+ * species is the half that identifies it and the trailing number is WHICH OF
+ * THE FOUR SIZES it is, indexing TREE_SIZES, not the size multiplier itself:
+ * an integer survives being read off a HUD and typed somewhere, and 0.33 wants
+ * a decimal point that a name does not need to carry.
+ *
+ * The same shape as a rock's `variant-index`, deliberately, and for the same
+ * reason: one convention for "which member of the bank is this" across the
+ * scatters that have a bank.
+ */
+export function treeVariantId(v) {
+  const size = TREE_SIZES.indexOf(v.size)
+  if (size < 0) throw new Error(`treeVariantId: ${v.species} has size ${v.size}, which is not one of TREE_SIZES`)
+  return `${v.species}-${size}`
+}
+
+/**
  * The impostor texture layers, one per species, de-duplicated.
  *
  * This is the list `createPropMaterial({ billboardLayers })` keys on to decide

@@ -248,26 +248,14 @@ export const LAYER = {
   IMPOSTOR_FERN_UPRIGHT: 30, // baked from the low-`arch` half of the bank
   IMPOSTOR_FERN_ARCHED: 31, // ...and the high-`arch` half
 
-  // --- rock impostor (src/props/rock.js) ------------------------------------
-  //
-  // ONE scratch layer, and it is deliberately not yet a decision. The fern's
-  // two layers were cut on `arch` because the bank was already settled and the
-  // axis that survives to 26 px was known; the rock bank is not settled -- what
-  // gen-rock.html exists for is to find out which shapes we actually want --
-  // so committing N impostor layers now would be committing to a bank nobody
-  // has chosen. The bench bakes into this one so the card tier can be LOOKED at
-  // while the shapes are being picked, and the split into per-shape layers is a
-  // thing to do once the shapes exist.
-  //
-  // Note that a rock's card is a much weaker idea than a fern's, and the bench
-  // says so on screen: a fern is a lacy volume that a flat photograph flatters,
-  // while a rock is an OPAQUE CONVEX LUMP whose whole read is the way its
-  // facets catch the light as you walk past. Crossed planes give a rock a
-  // visible X-shaped intersection where a fern's fronds hide it. The honest
-  // ladder may well be "8-triangle LOD2, then cull" -- §5's boulder row already
-  // assumes exactly that -- and the card button is how that gets confirmed
-  // rather than assumed.
-  IMPOSTOR_ROCK: 32,
+  // 32 IS FREE. It was the rock card's one scratch layer, back when the rock
+  // bank was still being picked on the bench and committing N layers to it
+  // would have been committing to shapes nobody had chosen. The bank is chosen
+  // now -- twenty-five variants, every one of them on a bed roster and gated
+  // there -- so the rock card moved to the per-shape run at the bottom of this
+  // table, exactly as the note here always said it should once the shapes
+  // existed. Take this slot for the next single-layer texture rather than
+  // growing LAYER_COUNT for it.
 
   // --- grass (src/props/grass-bank.js, src/v2/render/grass.js) --------------
   //
@@ -454,8 +442,31 @@ export const LAYER = {
   // widths and height, so the silhouette is the building's; only the picture
   // inside it is borrowed, and stretched to fit.
   IMPOSTOR_BUILDING: 50, // base of a 20-layer run, one per wall style x roof kind
+
+  // --- rock impostors (src/props/rock-bank.js, src/v2/render/rocks.js) ------
+  //
+  // ONE PHOTOGRAPH PER VARIANT, twenty-five of them, and unlike the building
+  // run above this one really is per shape rather than per material. The
+  // arithmetic that ruled it out for buildings rules it IN here: 25 slices is
+  // 1.6 MB against the 9.3 MB a per-variant building run would have cost, and a
+  // rock has no wall-style x roof-kind grid to collapse along -- its variants
+  // differ in SILHOUETTE, which is the one thing a card is.
+  //
+  // WHAT IT REPLACES. This was a single layer holding one photograph of one
+  // `boulder`, stretched onto all twenty-five shapes' quads. Measured over the
+  // bank, that stretch ran from 0.29x on a `capslab` -- a boulder squashed to
+  // under a third of its height -- to 4.00x on a `spire`. Every distant rock
+  // that was not roughly boulder-shaped was drawn as a boulder pulled or
+  // crushed into its outline. `rockImpostorLayer` in rock-bank.js is what
+  // indexes this run, and THE CARD in that file carries the rest of the
+  // argument.
+  //
+  // Base of a 25-layer run: `IMPOSTOR_ROCK + ROCK_NAMES.length - 1` is the top,
+  // rock-bank.js owns the order (it is `ROCK_NAMES`, which is the variant table
+  // in table order), and LAYER_COUNT below has to leave room for all of it.
+  IMPOSTOR_ROCK: 70,
 }
-export const LAYER_COUNT = 70
+export const LAYER_COUNT = 95
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //

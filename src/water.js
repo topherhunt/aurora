@@ -187,22 +187,31 @@ export const WATER = {
   // composite below runs differently. That is the point of the knob: it is a
   // whole rendering decision on a dimmer switch.
   //
-  // It is CONDITIONAL ON ANGLE AND DISTANCE, which is not a trick, it is the
-  // same Fresnel that decides everything else about this surface. Looking
-  // straight down at water near your feet, most of what arrives at the eye came
-  // up out of the water and only a little bounced off it -- so the bed should be
-  // there. Looking along a lake a hundred metres off, essentially all of it
-  // bounced, and the surface is a mirror with nothing behind it. The ramp
-  // between reuses `near`, the term that already decides where the ripples fade,
-  // so "close enough to resolve the waves" and "close enough to see the bottom"
-  // are one number rather than two that can disagree.
+  // It is CONDITIONAL ON ANGLE AND DISTANCE. Looking straight down at water near
+  // your feet, most of what arrives at the eye came up out of the water and only
+  // a little bounced off it -- so the bed should be there. Looking along a lake a
+  // hundred metres off, essentially all of it bounced, and the surface is a
+  // mirror with nothing behind it. The distance half of the ramp reuses `near`,
+  // the term that already decides where the ripples fade, so "close enough to
+  // resolve the waves" and "close enough to see the bottom" are one number rather
+  // than two that can disagree.
   //
-  // A NOTE ON HONESTY: this transmits more than Fresnel says it should. The
-  // physically exact version is `1 - mirror`, which caps at 1 - mirrorDown =
-  // 0.28 and is barely visible; that gap is not this knob's fault, it is
-  // `mirrorDown` being an artistic 0.72 where real water is nearer 0.02. Shaped
-  // by the Fresnel term but not bounded by it, so the two knobs stay
-  // independent. See the composite at the foot of the fragment shader.
+  // THE ANGLE HALF IS GEOMETRIC AND NOT FRESNEL, and that is the correction that
+  // matters. The first pass shaped it with `1 - f`, the Fresnel term upside
+  // down, on the grounds that Fresnel is the physical answer to exactly this
+  // question. It is -- and it is the wrong SHAPE, because a fifth power is
+  // almost flat until it is nearly grazing: at 20 degrees below the horizontal
+  // `1 - f` is still 0.88, so a rock forty-five metres out across the lake was
+  // as clearly visible as one at your feet. What the eye is actually complaining
+  // about is a view angle, so the term is a view angle: `clarityAngle` degrees
+  // below the horizontal before any of it starts, ramping to full looking
+  // straight down. Read off the flat view ray rather than the wave normal, or it
+  // would flicker with every ripple.
+  //
+  // A NOTE ON HONESTY: at its steepest this still transmits more than Fresnel
+  // says it should. The physically exact amount is `1 - mirror`, which caps at
+  // 1 - mirrorDown = 0.28; that gap is not this knob's fault, it is `mirrorDown`
+  // being an artistic 0.72 where real water is nearer 0.02.
   //
   // COSTS: the material becomes `transparent`, so it moves to the sorted pass
   // and blends against the finished frame. That is XR-safe -- blending is the
@@ -211,7 +220,10 @@ export const WATER = {
   // What it does NOT get is refraction: bending the background sample means
   // reading the frame as a texture, which is exactly the thing that does not
   // survive the headset.
-  clarity: 0.5,
+  clarity: 0.1,
+  // Degrees below the horizontal at which seeing into it begins. Full effect
+  // looking straight down; nothing at all at or above this.
+  clarityAngle: 45,
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +399,86 @@ export const UNDERWATER = {
   // `isNight` is a threshold at -6 degrees and a fifth of the brightest thing in
   // the view appearing in one frame is a pop you cannot unsee.
   causticNight: 0.2,
+}
+
+// --- the current (§11) -------------------------------------------------------
+//
+// A slow lateral push while she is under, so that floating in a lake is not the
+// same as standing in one with a blue filter on. It is the only motion in this
+// world she does not ask for, which is why every number here is small and why
+// the period is long: anything you can notice STARTING is a shove, and a shove
+// in a headset is a way to make someone ill.
+export const CURRENT = {
+  // Peak displacement from where she would be standing still, in metres, along
+  // the heading. She travels TWICE this side to side, which is the number to
+  // read the knob by: 0.7 gives the 1.4 m of travel the effect was asked for.
+  //
+  // The measured peak runs about 4% over, because `cross` below is
+  // perpendicular and so adds in quadrature rather than sharing this amplitude.
+  // The true bound is sway * sqrt(1 + cross^2); the gate holds it to that.
+  sway: 0.7,
+
+  // Which way the current runs, as a compass bearing in degrees -- 0 is north,
+  // 90 is east. Fixed for the whole world rather than per lake: there is no
+  // flow field to ask, and a body of water big enough to swim across has one
+  // prevailing set anyway.
+  heading: 34,
+
+  // The two periods, in seconds, and they are deliberately not commensurate.
+  // ONE sine is a metronome, and a metronome is the thing that reads as a bug
+  // rather than as water -- you feel the turn coming. Two whose ratio is not a
+  // simple fraction take about two minutes to repeat, by which time nobody is
+  // counting. The long one carries most of the amplitude; the short one is what
+  // keeps the turn-around from being a clean stop.
+  slow: 23,
+  fast: 9.5,
+  // How the amplitude is split between them. Must sum to 1, or the peak stops
+  // being `sway` -- the gate checks it.
+  slowShare: 0.7,
+
+  // How much of the motion runs ACROSS the heading rather than along it, as a
+  // fraction of `sway`. Small: this is what turns a line into a lazy figure
+  // rather than a shuttle, and at 1 it would be a circle, which is a whirlpool.
+  cross: 0.3,
+
+  // Seconds to come up to full strength on going under, and to let go on
+  // surfacing. Without it the push arrives and leaves in one frame, which is
+  // exactly the shove this whole block is written to avoid, and it is worst at
+  // the waterline where she is crossing the boundary repeatedly.
+  ease: 2.5,
+}
+
+const _dirX = Math.sin((CURRENT.heading * Math.PI) / 180)
+const _dirZ = -Math.cos((CURRENT.heading * Math.PI) / 180)
+
+/**
+ * Where the current has carried her, RELATIVE to where she would be standing
+ * still, at time `t` seconds and at `strength` 0..1. Writes x and z into `out`
+ * and zeroes y -- the push is lateral, because a vertical one fights the
+ * submersion test at the waterline and would flicker the whole effect on and
+ * off as her eye crossed the surface.
+ *
+ * PURE, and that is what makes it safe to apply as a difference: the caller
+ * keeps the offset it last added, adds the change, and the total displacement
+ * from her own path is always exactly this function's answer -- never an
+ * integral of it, which would drift her across the map.
+ */
+export function currentDrift(t, strength, out) {
+  const along =
+    CURRENT.slowShare * Math.sin((2 * Math.PI * t) / CURRENT.slow) +
+    (1 - CURRENT.slowShare) * Math.sin((2 * Math.PI * t) / CURRENT.fast + 1.7)
+  // A third period again, and phase-shifted, so the across term never peaks
+  // with the along term -- that is what makes the path an ellipse rather than a
+  // diagonal line.
+  const across = Math.sin((2 * Math.PI * t) / (CURRENT.slow * 0.61) + 0.9)
+
+  const a = CURRENT.sway * strength * along
+  const b = CURRENT.sway * CURRENT.cross * strength * across
+  // (-dirZ, dirX) is the heading turned a quarter turn.
+  out.x = _dirX * a - _dirZ * b
+  out.y = 0
+  out.z = _dirZ * a + _dirX * b
+  return out
 }
 
 // Visibility in metres -> the extinction coefficient lighting.js's aerial chunk
@@ -721,8 +813,11 @@ export class Water {
       // that mirror carries. Both belong to the underside's mirror and neither
       // is read without the other being relevant.
       uTir: { value: new THREE.Vector2(UNDERWATER.tir, UNDERWATER.tirLit) },
-      // How far you can see into the surface at its clearest. See WATER.clarity.
-      uClarity: { value: WATER.clarity },
+      // x: how far you can see into the surface at its clearest. y: the SINE of
+      // clarityAngle, which is what the shader compares against -- for a unit
+      // view ray, -V.y IS the sine of the angle below the horizontal, so the
+      // conversion belongs here and the shader gets to be one smoothstep.
+      uClarity: { value: new THREE.Vector2(WATER.clarity, Math.sin((WATER.clarityAngle * Math.PI) / 180)) },
     }
 
     this.material = new THREE.ShaderMaterial({
@@ -791,7 +886,7 @@ export class Water {
         uniform vec3 uUnder;
         uniform vec2 uWindow;
         uniform vec2 uTir;
-        uniform float uClarity;
+        uniform vec2 uClarity;
         ${SKY_GLSL}
         ${SAMPLE_GLSL}
         ${WAVE_GLSL}
@@ -1188,12 +1283,18 @@ export class Water {
           // SEEING INTO IT. See WATER.clarity for what the knob means and what
           // it costs; this is the three lines that spend it.
           //
-          // 1 - f is the Fresnel term upside down: 1 looking straight down,
-          // falling to 0 as the view goes grazing. near is the same distance
-          // ramp the ripples fade on. Multiplied, they are "close enough and
-          // steep enough to see the bottom", and both of them are already
-          // computed for other reasons, so the whole feature costs a multiply
-          // and a divide.
+          // -V.y is the SINE of the angle below the horizontal, because V is a
+          // unit vector -- so this is literally "am I looking down at least
+          // clarityAngle degrees", ramping to full straight down. Read off the
+          // view ray and NOT off the wave normal N: a per-facet test would open
+          // and shut the window with every ripple that crossed it.
+          //
+          // NOT the Fresnel term, which is what this was first built on and is
+          // the wrong shape for the job -- pow(x, 5) is still 0.88 at twenty
+          // degrees, so it let the bed through most of the way to the horizon.
+          // See WATER.clarityAngle. near is the same distance ramp the ripples
+          // fade on, already computed, so the whole feature costs a smoothstep,
+          // a multiply and a divide.
           //
           // THE DIVIDE is what keeps the surface's own light intact. Blending
           // gives back src * a + dst * ( 1 - a ), so an alpha of 0.6 would dim
@@ -1210,8 +1311,9 @@ export class Water {
           // mixing sRGB-encoded numbers. That is true of every transparent
           // material on the web and this one is not going to be the exception.
           float alpha = 1.0;
-          if ( uClarity > 0.0 ) {
-            alpha = 1.0 - uClarity * ( 1.0 - f ) * near;
+          if ( uClarity.x > 0.0 ) {
+            float down = smoothstep( uClarity.y, 1.0, -V.y );
+            alpha = 1.0 - uClarity.x * down * near;
             color /= alpha;
           }
 

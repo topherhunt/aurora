@@ -1,7 +1,11 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildRock, ROCK_DEFAULTS, ROCK_TIERS, ROCK_LOD_AT, rockLodSize } from './props/rock.js'
-import { ROCK_VARIANTS, TINTS, TINT_GAIN, rockParams } from './props/rock-bank.js'
+import {
+  ROCK_VARIANTS, TINTS, TINT_GAIN, rockParams, rockImpostorLayer,
+  rockShapeSeed, parseRockShapeId,
+} from './props/rock-bank.js'
+import { SEED as WORLD_SEED } from './v2/config.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
@@ -302,16 +306,26 @@ function rebuild() {
 
   let drawn = geos
   if (cardMode) {
-    // ONE bake feeds every card on screen, which is the shipping arrangement
-    // rather than a shortcut: a rock card is a picture of a rock, and the whole
-    // reason it is affordable is that a whole size class shares it. Seeing
-    // twenty instances of one photograph is the point of looking.
-    const ext = bakeImpostor(renderer, geos[0], atlas, LAYER.IMPOSTOR_ROCK, {
+    // ONE bake feeds every card on screen, and here that IS a shortcut -- the
+    // world photographs each of the twenty-five variants into its own slice of
+    // the IMPOSTOR_ROCK run (see THE CARD in rock-bank.js). The gallery is
+    // twenty seeds of ONE preset, so one bake is the right thing for this page:
+    // what you are looking at is the one slice the world would give this
+    // variant, worn by twenty different seeds of it -- which is exactly the
+    // question the card button is here to answer.
+    //
+    // Into that variant's real slice when a preset is selected, so the bench
+    // and the world are looking at the same texel budget. Sliders dragged off a
+    // preset clear `presetName`, and then there is no variant to own a slice:
+    // the run's base doubles as the scratch slot, as it did when it was the
+    // only rock impostor layer there was.
+    const bakeLayer = presetName ? rockImpostorLayer(presetName) : LAYER.IMPOSTOR_ROCK
+    const ext = bakeImpostor(renderer, geos[0], atlas, bakeLayer, {
       width: Math.max(measured.width, measured.depth),
       height: measured.height,
     })
     drawn = geos.map((geo) => {
-      const quad = buildImpostorCard(ext.width, ext.height, LAYER.IMPOSTOR_ROCK, params.planes)
+      const quad = buildImpostorCard(ext.width, ext.height, bakeLayer, params.planes)
       tris += quad.userData.impostor.triangles
       verts += quad.getAttribute('position').count
       bytes += geometryBytes(quad)
@@ -487,7 +501,7 @@ function refresh() {
     ['billboards past', `${cardAt.toFixed(0)} m`],
   ])
   document.getElementById('geonote').innerHTML = s.card
-    ? `The card is a photograph of the mesh taken at load into <em>LAYER.IMPOSTOR_ROCK</em>, so it costs no disk and cannot disagree with the mesh. It is the weakest tier here by a distance -- see the parallax note.`
+    ? `The card is a photograph of the mesh taken at load into this variant's own slice of the <em>LAYER.IMPOSTOR_ROCK</em> run -- one of twenty-five, one per variant -- so it costs no disk and cannot disagree with the mesh. It is the weakest tier here by a distance -- see the parallax note.`
     : `<em>shards</em> multiplies triangles directly: ${tier.faces} faces per shard, ${shards} shard${shards > 1 ? 's' : ''}. ` +
       `&sect;5's boulder row budgets <em>20 tris &times; 440 instances</em>, which predates this ladder -- that row is T20 with one shard, and it is the tier the vast majority of instances are at.`
 
@@ -569,7 +583,7 @@ function drawSwatch(stats) {
   ctx.imageSmoothingEnabled = false
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  const layer = cardMode ? LAYER.IMPOSTOR_ROCK : LAYER.ROCK
+  const layer = cardMode ? (presetName ? rockImpostorLayer(presetName) : LAYER.IMPOSTOR_ROCK) : LAYER.ROCK
   const px = layerPixels(layer)
   const rgb = new ImageData(TEX_SIZE, TEX_SIZE)
   const tinted = new ImageData(TEX_SIZE, TEX_SIZE)
@@ -608,7 +622,7 @@ function drawSwatch(stats) {
   })
 
   const banner = cardMode
-    ? 'baked -- IMPOSTOR_ROCK'
+    ? `baked -- IMPOSTOR_ROCK${presetName ? ` + ${presetName}` : ' (scratch)'}`
     : layersLoaded
       ? `ROCK -- stone.png, untinted | &times; ${TINTS[tintIndex][0]}`
       : 'stone.png still loading -- this is the procedural stand-in'
@@ -760,6 +774,45 @@ document.getElementById('reroll').addEventListener('click', () => {
   params.seed = Math.floor(Math.random() * 100000)
   seedInput.value = params.seed
   refresh()
+})
+
+// ---------------------------------------------------------------------------
+// LOADING A SHAPE THE RUNNING WORLD NAMED.
+//
+// /v2's cursor readout prints `variant-index` -- the shape's identity inside the
+// world's rock bank -- and this is the box that takes it back. `rockShapeSeed`
+// is the same function `buildRockBank` derives every shape's seed with, so
+// setting the preset and that seed puts this previewer on EXACTLY the rock that
+// was under the cursor, not a cousin of it.
+//
+// It reads WORLD_SEED from v2/config.js rather than taking a bank seed of its
+// own, because a shape id only means anything against the bank it was printed
+// from. If someone ever gives /v2 a per-session seed, this box has to learn it
+// too or it starts lying, so: one constant, imported, not copied.
+// ---------------------------------------------------------------------------
+const shapeInput = document.getElementById('shapeid')
+const shapeNote = document.getElementById('shapenote')
+const loadShapeId = () => {
+  const parsed = parseRockShapeId(shapeInput.value.trim())
+  if (!parsed) {
+    shapeNote.textContent = `not a shape id: expected something like shingle-1`
+    return
+  }
+  presetName = parsed.name
+  presetSel.value = presetName
+  params.seed = rockShapeSeed(WORLD_SEED, parsed.name, parsed.index)
+  seedInput.value = params.seed
+  Object.assign(params, rockParams(presetName, params.seed))
+  tintIndex = ROCK_VARIANTS[presetName].tint
+  tintSel.value = String(tintIndex)
+  shapeNote.textContent = `${parsed.name}-${parsed.index} -- seed ${params.seed}`
+  syncSliders()
+  frame()
+  refresh()
+}
+document.getElementById('shapego').addEventListener('click', loadShapeId)
+shapeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadShapeId()
 })
 
 // gallery / ladder / tints are one exclusive mode; card / grid / wire / spin are
