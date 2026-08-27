@@ -2,7 +2,8 @@ import * as THREE from 'three'
 
 import { buildFernBank, fernCardGeometries, bakeFernImpostors } from '../../props/fern-bank.js'
 import { FERN_DEFAULTS } from '../../props/fern.js'
-import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.js'
+import { createPropMaterial, setSnowLine } from '../../material.js'
+import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -377,6 +378,9 @@ export class Ferns {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // The rim dissolve: which ferns are drawn, which are hidden, and the
+    // quarter second between. No LOD cross-fade in this bed for it to preempt.
+    this.rim = new RimFade(this.batch, this.maxInstances)
 
     this.bandSq = Float32Array.from(LOD_BANDS, (b) => b * b)
     this.bandSqOut = Float32Array.from(LOD_BANDS, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
@@ -472,6 +476,7 @@ export class Ferns {
     const farTris = this.farTier === 'mesh' ? this.farMeshTris : this.tierTris[cardTier]
     let tris = 0
     let nearCount = 0
+    this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
@@ -503,10 +508,13 @@ export class Ferns {
         // held at the moment it went out of range, and keeps it forever.
         if (tile.near) this._demote(tile)
         tile.near = false
-        tris += tile.n * farTris[0]
+        const hidden = this.rim.sweepTile(
+          tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
+        tris += (tile.n - hidden) * farTris[0]
         continue
       }
       tile.near = true
+      this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
       nearCount++
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
@@ -515,6 +523,10 @@ export class Ferns {
         const ez = this.instZ[i] - camZ
         const d2 = ex * ex + ey * ey + ez * ez
         const cur = this.tierAt[i]
+
+        // Nothing to re-tier on a fern the rim is not drawing, and nothing to
+        // count either.
+        if (this.rim.isHidden(i)) continue
 
         // Walk out from the finest tier. An instance ALREADY AT tier t (or
         // finer) holds it until it passes the pushed-OUT boundary; one arriving
@@ -734,20 +746,18 @@ export class Ferns {
       this._c.setRGB(cueR * v * (0.93 + tintR * 0.14), cueG * v, cueB * v * 0.96)
       this.batch.setColorAt(id, this._c)
 
-      // The distance at which this particular fern stops existing, written into
-      // the unused alpha of the same colour texel (see setPropFadeAt). A fern of
-      // rank u survives while the local keep-fraction fullRadius/d exceeds u, so
-      // it goes at fullRadius/u -- or at the draw radius, whichever comes first
-      // for the densest ranks. The shader dissolves it over the last 15% of that
-      // distance, so nothing pops at the rim and nothing pops as the bed thins.
-      setPropFadeAt(this.batch, id, Math.min(this.fullRadius / u, this.radius))
-
       // Born as a card. `update` promotes the near ones on the very next frame,
       // and being briefly a billboard at 4 m is invisible next to the
       // alternative, which is a frame where the tier is undefined.
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
-      this.batch.setVisibleAt(id, true)
+
+      // The distance at which this particular fern stops existing. A fern of
+      // rank u survives while the local keep-fraction fullRadius/d exceeds u, so
+      // it goes at fullRadius/u -- or at the draw radius, whichever comes first
+      // for the densest ranks. The rim dissolves it over the last 15% of that
+      // distance, so nothing pops at the rim and nothing pops as the bed thins.
+      this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
     }
 
     this.placed += n - (tile ? tile.n : 0)
@@ -755,6 +765,9 @@ export class Ferns {
       tile.n = n
       tile.q = q
       tile.u = uNew
+      // The ferns just added are hidden and FRESH until the rim has looked at
+      // them, which it must do on this frame rather than on this tile's phase.
+      this.rim.markDue(tile)
     } else {
       this.tiles.set(key, { tx, tz, ids, rank, n, q, u: uNew, near: false, queued: false })
     }
@@ -772,11 +785,13 @@ export class Ferns {
         continue
       }
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n - w
     tile.n = w
+    this.rim.markDue(tile)
   }
 
   /** Put a whole tile back to the card tier in one pass. */
@@ -794,10 +809,12 @@ export class Ferns {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n
+    this.rim.releaseTile(tile)
   }
 
   _geometryFor(tier, variant) {
@@ -847,6 +864,8 @@ export class Ferns {
   get stats() {
     return {
       placed: this.placed,
+      rimHidden: this.rim.hiddenCount,
+      rimFading: this.rim.flightN,
       tris: this.tris,
       tiles: this.tiles.size,
       nearTiles: this.nearTiles,

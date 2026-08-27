@@ -6,8 +6,9 @@ import {
   GRASS_TIERS,
 } from '../../props/grass-bank.js'
 import {
-  createPropMaterial, setSnowLine, setPropFadeAt, stripClumpScale,
+  createPropMaterial, setSnowLine, stripClumpScale,
 } from '../../material.js'
+import { RimFade, RIM_PHASES } from './rim.js'
 
 // ---------------------------------------------------------------------------
 // The grass undercarpet on the /v2 route.
@@ -52,7 +53,7 @@ import {
 //   20-40 m  2,815               =  5.6k    0.75/m2, thinned 2.7x
 //   40-70 m  3,166               =  6.3k    0.31/m2, thinned 3.5x
 //            8,500 drawn           17.0k
-//   resident but veiled  +2,680             (see VEIL_PHASES)
+//   resident but hidden  +2,680             (see the rim note below)
 //
 // The clump carpet over the same ground is 22,353 drawn and 53.4k triangles, on
 // a 6/4/2-triangle ladder, so THE REGION BED IS 32% OF THE COST OF THE MEADOW IT
@@ -77,13 +78,13 @@ import {
 // exact and per tuft: 4,294 instances are resident and already fully dithered
 // away. What comes out of that pairing is the RIGHT picture -- the visible
 // density is the smooth F/d law with no step at any tile boundary -- bought
-// with instances the batch would otherwise transform and discard. The VEIL
+// with instances the batch would otherwise transform and discard. The RIM
 // takes those instances back off the GPU without touching the picture, which is
 // why the table above ends at 22,353 rather than 26,647; they stay RESIDENT,
 // because they are also the tufts that appear as the player walks toward them
 // and re-showing one is a byte where regrowing the tile is a job. Smaller tiles
 // would shrink the over-keep itself and cost more jobs; 8 m is where that trade
-// was left, and the veil is what makes leaving it there cheap.
+// was left, and the rim is what makes leaving it there cheap.
 //
 // AGAINST THE BUDGET. DESIGN.md §5 gives the scene 350k triangles. Terrain is
 // ~45k, trees ~137k, ferns ~31k, and the region bed is 17k: ~230k, or 66% of the
@@ -98,11 +99,11 @@ import {
 // 8,500 drawn strips is ~0.31 ms before a triangle is drawn, against the clump
 // carpet's 22,353 and ~0.83 ms -- which was the same order as the fern carpet's,
 // and is what set the radius. Grass's own update() measured 0.096 ms on the
-// clump carpet, veil included, and the region bed can only be under that: it
+// clump carpet, rim included, and the region bed can only be under that: it
 // walks 2.6x fewer instances and its re-tiering pass has nothing to do at all,
 // since a strip bed has no ladder and the tier loop falls straight through.
 // Neither pass walks everything anyway -- re-tiering only touches tiles inside
-// NEAR_MARGIN of the last mesh band, and the veil only an eighth of the rest.
+// NEAR_MARGIN of the last mesh band, and the rim only an eighth of the rest.
 //
 // WHY THE FULL-DENSITY RADIUS IS ONLY 20 m. Trees hold full density to 80,
 // comfortably past their last mesh band at 45, so the forest you walk through is
@@ -209,68 +210,34 @@ const PLACEMENT = {
   sink: 0.04,
 }
 
-// How many frames the veil takes to sweep every far tile once.
+// THE VEIL IS NOW THE SHARED RIM, and it is grass's own machinery that became
+// it: src/v2/render/rim.js is this sweep, lifted whole and given to all seven
+// scatters. The phase count, the speed-derived slack and the coordinate-derived
+// tile phase are all still the numbers measured here, and rim.js keeps the
+// argument for each of them. What is new there is the CLOCK -- the dissolve is
+// a stamped quarter second at a single trigger distance (`gone * RIM_AT`)
+// rather than a smoothstep across a 15% band, so a tuft parked in that band is
+// no longer parked in a permanent stipple.
 //
-// THE VEIL HIDES INSTANCES THAT THE DITHER HAS ALREADY DISSOLVED TO NOTHING.
-// The tile keep-fraction is a conservative superset of the per-instance fade
-// (see the header), so at any moment about a sixth of the standing tufts are
+// WHAT THE SWEEP RECOVERS, in grass's numbers, because this is where they were
+// taken. The tile keep-fraction is a conservative superset of the per-instance
+// fade (see the header), so without it about a sixth of the standing tufts are
 // resident, submitted, rasterised and then discarded fragment by fragment --
-// measured at 4,462 of 26,647 instances, 8,924 of 61,992 triangles, 14.4% of
-// the grass bill and ~2.0M of 45.3M rasterised pixels. Flipping those instances
-// invisible is free of any artefact, because `fade == 0` means every one of
-// their fragments is already being thrown away by the dither's discard. There
-// is no threshold to tune and no pop to trade against: the cut is exactly the
-// line the shader has already drawn.
+// measured at 4,462 of 26,647 instances, 8,924 of 61,992 triangles, 14.4% of the
+// grass bill and ~2.0M of 45.3M rasterised pixels. A full sweep of the 17,150
+// far instances measures 0.088 ms, against roughly 0.16 ms of BatchedMesh
+// per-instance CPU saved, so it would pay for itself run flat out; amortised
+// over RIM_PHASES it is 0.011 ms. The slack leaves 168 of the 4,462 drawn, so
+// what actually comes back is 4,294 instances and 8.6k of the 8.9k triangles.
 //
-// Finding them costs a distance test per instance. NEAR tiles get it exactly
-// and for nothing, because the LOD loop below has already computed that
-// distance and is holding it in a register. Far tiles are the other 17,150
-// instances and nobody else is paying for them: a full sweep of all of them
-// measures 0.088 ms, against roughly 0.16 ms of BatchedMesh per-instance CPU
-// saved (4,462 instances at the ~37 ns/instance/frame DESIGN.md prices them at)
-// plus the triangles and the fill. So it would pay for itself even run flat
-// out. It is AMORTISED anyway, to 0.011 ms, because there is no reason not to:
-// each frame veils the far tiles whose own phase comes up, and a tile that has
-// just been grown or regrown is veiled immediately regardless of phase so a
-// fresh tile is never wrong beyond the frame it was built in. That phase is
-// derived from the tile's COORDINATES and not from its position in the tile
-// Map, which is a bug this had: Map order changes every time _reseat evicts and
-// admits, so an index-derived phase let a tile go many sweeps without a turn.
-//
-// Eight phases is 133 ms of latency at 60 fps. Being late to HIDE a tuft costs
-// nothing but the triangles the veil was there to save. Being late to SHOW one
-// is the only artefact this design can produce, and it is a real one: a tuft
-// the player is walking toward crosses back inside its own fade while the veil
-// still has it hidden, and it pops in when the sweep catches up. Measured on a
-// straight walk, worst opacity at the moment of appearing: 0.3% at 1.5 m/s,
-// 4.2% at 5, and 43% at 12. The first two are nothing. The third is a pop.
-//
-// So the hide threshold carries SLACK: a tuft is hidden only once it is this
-// much further out than its own dissolve distance, and the slack is the
-// distance the camera can cover before the sweep comes round again. Then a tuft
-// re-entering its fade band was already scheduled to be shown a full slack ago,
-// and the latency is spent in the region where it is invisible either way.
-// Being derived from the measured camera speed rather than fixed is what keeps
-// it honest when the player sprints or the editor camera flies. With it, the
-// worst opacity on a hidden tuft is 0.00% at every speed check-grass.mjs tries,
-// including a standing start and a hard ramp to 30 m/s.
-//
-// WHAT THE SLACK COSTS is the tufts inside the band -- fully dissolved, still
-// drawn. At a standstill that is 168 of the 4,462, so the veil recovers 4,294
-// instances and 8.6k of the 8.9k triangles. The other cost is that a RISING
-// slack forces a sweep, since a decision taken under less slack than the camera
-// now warrants may be stale: under continuous acceleration that is a full sweep
-// every frame, about 7x the steady-state rate, which is the 0.088 ms above and
-// the reason that measurement was worth taking.
-const VEIL_PHASES = 8
-
-// Metres of slack at a standstill, and how fast the speed estimate is allowed
-// to decay. The floor covers a camera that is stationary but whose grass is
-// being regrown underneath it; the decay holds the recent PEAK speed for about
-// half a second, so a player who accelerates hard is covered by the frame after
-// rather than the sweep after.
-const VEIL_SLACK_MIN = 0.25
-const VEIL_SPEED_DECAY = 0.9
+// NEAR TILES GO THROUGH THE SAME SWEEP as far ones, which costs grass a distance
+// test the LOD loop below was already paying for. It is worth the duplication:
+// one piece of code decides where the boundary is, and a near tile holds almost
+// no dissolved tufts anyway -- the smallest dissolve distance a TUFT can be
+// given is fullRadius (rank u < 1, so fullRadius / u > fullRadius), which is
+// also the last mesh band. A STRIP dissolves as early as thinFrom = 8 m, well
+// inside that, which is safe for the same reason it is allowed to: a strip bed
+// has one tier, so there is no mesh for the rim to take.
 
 // Metres, the range of instance HEIGHTS -- heights rather than scale factors on
 // purpose: the bank tuft is 0.55 m, so this is a scale range of 0.91x to 2.7x,
@@ -337,7 +304,7 @@ const HEIGHT = [0.5, 1.5]
 // see the note on STRIP_HEIGHT, which is the expensive one.
 //
 // Every per-instance mechanism above transfers UNCHANGED, and that is most of
-// why this was cheap to try: the graded thinning, the rank dither, the veil and
+// why this was cheap to try: the graded thinning, the rank dither, the rim and
 // the tiled regrow are all functions of an instance's position and rank and
 // none of them knows what geometry it is pointing at. The one thing the strips
 // do NOT share is the scatter itself -- see R2_A below.
@@ -756,14 +723,11 @@ export class Grass {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
-    // The instance's own dissolve distance, mirrored from the colour texel's
-    // alpha (see setPropFadeAt) so the veil can read it without reaching into
-    // BatchedMesh's texture in a hot loop. 4 bytes an instance, ~174 kB.
-    this.instGone = new Float32Array(this.maxInstances)
-    // Shadows the batch's own visibility so the veil can skip the write when
-    // nothing changed. setVisibleAt is cheap but not free, and the whole point
-    // of the veil is that it costs less than what it saves.
-    this.instVis = new Uint8Array(this.maxInstances)
+    // The dissolve: which tufts are drawn, which are hidden, and the quarter
+    // second between. Owns each tuft's gone-distance and its visibility, and no
+    // grass bed has an LOD cross-fade for it to preempt, so it takes no
+    // onPreempt callback -- the tier swaps below are hard cuts.
+    this.rim = new RimFade(this.batch, this.maxInstances)
 
     this.bandSq = Float32Array.from(bands, (b) => b * b)
     this.bandSqOut = Float32Array.from(bands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
@@ -785,11 +749,6 @@ export class Grass {
     // slope. Any other order tilts about a world axis and skews the card.
     this._e = new THREE.Euler(0, 0, 0, 'YZX')
 
-    this.veilPhase = 0
-    this.veiled = 0
-    this.veilSlack = VEIL_SLACK_MIN
-    this.camSpeed = 0
-    this.camLast = null
     this.tris = 0
     this.placed = 0
     this.samples = 0
@@ -862,7 +821,7 @@ export class Grass {
    * are powers of two, so on the straight stretches this is exact: for the tuft
    * carpet it returns fullRadius / u to the last bit, the closed form it
    * replaces. That closed form was only ever correct while the law WAS
-   * fullRadius / d, and the strip bed's is not -- and a veil that disagrees with
+   * fullRadius / d, and the strip bed's is not -- and a rim that disagrees with
    * the thinning does not fail loudly, it just leaves grass standing invisible
    * or dissolves grass that is still on the books.
    */
@@ -910,43 +869,10 @@ export class Grass {
     const cardTier = this.cardTier
     let tris = 0
     let nearCount = 0
-    // Which slice of the far tiles gets its veil recomputed this frame. Walking
-    // the Map is cheap (a few hundred tiles); touching their instances is not,
-    // and that is what the phase gates.
-    const phase = this.veilPhase
-    this.veilPhase = (phase + 1) % VEIL_PHASES
-    // How far the camera can travel before this tile comes round again -- see
-    // VEIL_PHASES. Per FRAME rather than per second, because the sweep is
-    // counted in frames, so a slow frame widens the slack by exactly as much as
-    // it widens the staleness.
-    if (this.camLast) {
-      const moved = Math.hypot(camX - this.camLast[0], camY - this.camLast[1], camZ - this.camLast[2])
-      this.camSpeed = Math.max(moved, this.camSpeed * VEIL_SPEED_DECAY)
-      this.camLast[0] = camX
-      this.camLast[1] = camY
-      this.camLast[2] = camZ
-    } else {
-      this.camLast = [camX, camY, camZ]
-    }
-    this.veilSlack = VEIL_SLACK_MIN + this.camSpeed * VEIL_PHASES
-    const slack = this.veilSlack
+    // Advance the rim's sweep phase and re-measure the camera's speed once for
+    // the whole bed, then let each tile take its turn inside the loop below.
+    this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
-      // The phase is the TILE's own, derived from its coordinates, not its
-      // position in the Map. Map order changes every time _reseat evicts and
-      // admits tiles, so an index-based phase lets a tile miss its turn for
-      // longer than one sweep -- which is exactly what the slack above is sized
-      // against, and it was measurably breaking it at speed.
-      //
-      // A GROWING SLACK FORCES A SWEEP, because a tile's hidden tufts were hidden
-      // under the slack in force at the time, and that decision stops being safe
-      // the moment the camera speeds up. Without this, a player going from a
-      // standstill to a sprint outruns decisions taken at a standstill's slack,
-      // and the tufts those decisions hid pop in when the sweep catches up --
-      // measured at 5% opacity. Accelerating is rare and a full sweep is
-      // 0.088 ms, so paying it outright is the cheapest thing here. A SHRINKING
-      // slack needs nothing: the old wider one is conservative, and merely
-      // leaves a few tufts drawn a moment longer than they had to be.
-      const veilNow = tile.veilDue || tile.veilPhase === phase || slack > tile.veilSlack
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
       const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
@@ -978,18 +904,14 @@ export class Grass {
         // held when it went out of range, and keeps it forever.
         if (tile.near) this._demote(tile, cardTier)
         tile.near = false
-        // Far tiles are where nearly all of the fully-dissolved instances live,
-        // and they are the ONLY tiles the amortised sweep has to cover -- a near
-        // tile pays the exact test below every frame anyway.
-        if (veilNow) this._veil(tile, camX, camY, camZ, slack)
-        tris += (tile.n - tile.veiled) * this.tierTris[cardTier]
+        const hidden = this.rim.sweepTile(
+          tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
+        tris += (tile.n - hidden) * this.tierTris[cardTier]
         continue
       }
       tile.near = true
-      tile.veilDue = false
-      tile.veilSlack = slack
+      this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
       nearCount++
-      let veiled = 0
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
         const ex = this.instX[i] - camX
@@ -998,25 +920,9 @@ export class Grass {
         const d2 = ex * ex + ey * ey + ez * ez
         const cur = this.tierAt[i]
 
-        // The veil, exact and free: this loop has already paid for the distance.
-        // A near tile reaches past the last mesh band at its far corners, so it
-        // does hold dissolved instances -- always CARDS, though, never a mesh
-        // tier: the smallest dissolve distance a TUFT can be given is fullRadius
-        // (rank u < 1, so fullRadius / u > fullRadius), and fullRadius is also
-        // the last band, so anything past its own dissolve distance is past the
-        // last band too. A STRIP dissolves as early as thinFrom = 8 m, well
-        // inside that -- which is safe for the same reason it is allowed to: a
-        // strip bed has one tier, so there is no mesh for the veil to take.
-        const gone = this.instGone[i] + slack
-        const vis = d2 < gone * gone ? 1 : 0
-        if (vis !== this.instVis[i]) {
-          this.instVis[i] = vis
-          this.batch.setVisibleAt(i, vis === 1)
-        }
-        if (vis === 0) {
-          veiled++
-          continue
-        }
+        // Nothing to re-tier on a tuft the rim is not drawing, and nothing to
+        // count either.
+        if (this.rim.isHidden(i)) continue
 
         // Walk out from the finest tier. An instance ALREADY AT tier t (or
         // finer) holds it until it passes the pushed-OUT boundary; one arriving
@@ -1038,40 +944,9 @@ export class Grass {
         }
         tris += this.tierTris[tier]
       }
-      this.veiled += veiled - tile.veiled
-      tile.veiled = veiled
     }
     this.tris = tris
     this.nearTiles = nearCount
-  }
-
-  /**
-   * Hide the instances of one far tile that are past their own dissolve
-   * distance, and show any that have come back inside it.
-   *
-   * Called for a slice of the far tiles each frame -- see VEIL_PHASES for why
-   * this is amortised rather than exact, and why being a few frames late is not
-   * something a player can see.
-   */
-  _veil(tile, camX, camY, camZ, slack) {
-    let veiled = 0
-    for (let k = 0; k < tile.n; k++) {
-      const i = tile.ids[k]
-      const ex = this.instX[i] - camX
-      const ey = this.instY[i] - camY
-      const ez = this.instZ[i] - camZ
-      const gone = this.instGone[i] + slack
-      const vis = ex * ex + ey * ey + ez * ez < gone * gone ? 1 : 0
-      if (vis !== this.instVis[i]) {
-        this.instVis[i] = vis
-        this.batch.setVisibleAt(i, vis === 1)
-      }
-      if (vis === 0) veiled++
-    }
-    this.veiled += veiled - tile.veiled
-    tile.veiled = veiled
-    tile.veilDue = false
-    tile.veilSlack = slack
   }
 
   /**
@@ -1299,28 +1174,20 @@ export class Grass {
       this._tintTo(this._c, tintT * tintT, VALUE[0] + tintV * (VALUE[1] - VALUE[0]))
       this.batch.setColorAt(id, this._c)
 
-      // The distance at which this particular tuft stops existing, written into
-      // the unused alpha of the same colour texel (see setPropFadeAt). A tuft of
-      // rank u survives while the local keep-fraction exceeds u, so _goneFor
-      // inverts the keep law to find where that stops being true -- or the draw
-      // radius, whichever comes first for the densest ranks. The shader dissolves
-      // it over the last 15% of that distance with an ordered dither, so nothing
-      // pops at the rim and nothing pops as the carpet thins; no CPU per frame,
-      // one write per instance ever.
-      const gone = this._goneFor(u)
-      setPropFadeAt(this.batch, id, gone)
-      this.instGone[id] = gone
-
       // Born as a card. `update` promotes the near ones on the very next frame,
       // and being briefly a billboard at 3 m is invisible next to the
       // alternative, which is a frame where the tier is undefined.
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier])
-      // Born VISIBLE even if it is already past its own dissolve distance --
-      // `veilDue` below makes the veil sweep this tile on the same frame, and
-      // guessing here would need a camera position this function does not have.
-      this.batch.setVisibleAt(id, true)
-      this.instVis[id] = 1
+
+      // The distance at which this particular tuft stops existing. A tuft of
+      // rank u survives while the local keep-fraction exceeds u, so _goneFor
+      // inverts the keep law to find where that stops being true -- or the draw
+      // radius, whichever comes first for the densest ranks. Handing it to the
+      // rim leaves the tuft hidden and FRESH: the sweep marked due below decides
+      // whether it stands, on the same frame, with a camera position this
+      // function does not have.
+      this.rim.place(id, this._goneFor(u))
     }
 
     this.placed += n - (tile ? tile.n : 0)
@@ -1328,16 +1195,13 @@ export class Grass {
       tile.n = n
       tile.q = q
       tile.u = uNew
-      // The tufts just added are standing and unveiled; the ones already here
-      // keep whatever the last sweep decided. Only the sweep is owed.
-      tile.veilDue = true
+      // The tufts just added are hidden and FRESH; the ones already here keep
+      // whatever the last sweep decided. Only the sweep is owed.
+      this.rim.markDue(tile)
     } else {
       this.tiles.set(key, {
         tx, tz, ids, rank, n, q, u: uNew,
-        near: false, queued: false, veiled: 0, veilDue: true, veilSlack: 0,
-        // Coprime with VEIL_PHASES in x, so any run of tiles spreads evenly
-        // across the phases however the grid is walked.
-        veilPhase: (((tx * 5 + tz * 3) % VEIL_PHASES) + VEIL_PHASES) % VEIL_PHASES,
+        near: false, queued: false,
       })
     }
   }
@@ -1363,27 +1227,24 @@ export class Grass {
   /** Cut every tuft in the tile whose rank has fallen above the keep-fraction. */
   _thin(tile, uNew) {
     let w = 0
-    let veiled = 0
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       if (tile.rank[k] < uNew) {
         tile.ids[w] = id
         tile.rank[w] = tile.rank[k]
         w++
-        // The survivors carry their veil across; the cut ones take theirs with
-        // them, so the tile's count has to be rebuilt rather than adjusted.
-        if (this.instVis[id] === 0) veiled++
         continue
       }
       this.batch.setVisibleAt(id, false)
-      this.instVis[id] = 0
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n - w
-    this.veiled += veiled - tile.veiled
-    tile.veiled = veiled
     tile.n = w
+    // The survivors keep their state; the cut ones took theirs with them, so
+    // the tile's hidden count has to be rebuilt rather than adjusted.
+    this.rim.markDue(tile)
   }
 
   /** Put a whole tile back to the card tier in one pass. */
@@ -1401,13 +1262,12 @@ export class Grass {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       this.batch.setVisibleAt(id, false)
-      this.instVis[id] = 0
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n
-    this.veiled -= tile.veiled
-    tile.veiled = 0
+    this.rim.releaseTile(tile)
   }
 
   /**
@@ -1435,9 +1295,10 @@ export class Grass {
     return {
       style: this.style,
       placed: this.placed,
-      // Resident but hidden because the dither had already dissolved them --
-      // see VEIL_PHASES. `placed - veiled` is what actually reaches the GPU.
-      veiled: this.veiled,
+      // Resident but hidden because the rim has dissolved them away -- see
+      // rim.js. `placed - rimHidden` is what actually reaches the GPU.
+      rimHidden: this.rim.hiddenCount,
+      rimFading: this.rim.flightN,
       tris: this.tris,
       tiles: this.tiles.size,
       nearTiles: this.nearTiles,
@@ -1477,7 +1338,7 @@ export const GRASS_TUNING = {
   DRAW_RADIUS,
   LOD_BANDS,
   LOD_HYSTERESIS,
-  VEIL_PHASES,
+  RIM_PHASES,
   TILE,
   QUANT,
   HEIGHT,

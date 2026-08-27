@@ -97,6 +97,7 @@ import { TREE_SIZES, buildTreeBank, treeVariants, treeImpostorLayers } from '../
 import { buildImpostorCard } from '../src/props/impostor.js'
 import { CARD_UP_MARK, PROP_FADE_SECONDS } from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
+import { RIM_AT } from '../src/v2/render/rim.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
 import { LAYER_COUNT, IMAGE_LAYERS, buildTextureArray } from '../src/textures.js'
 import { readPng } from '../tools/props/png.mjs'
@@ -991,12 +992,10 @@ trees.place(0, 0)
     `${s.pool} for ${s.placed} placed`)
 }
 
-// The rim dissolve. Read BEFORE the first update(), because a cross-dissolve in
-// flight stamps a timer over this very channel -- the first of the two accepted
-// artefacts in trees.js's header -- and the gone-distance is not there to read
-// while it does.
+// The rim dissolve. The gone-distance is CPU state now -- rim.gone, not the
+// colour texel, which carries a clock reading or the never-fade 1.0 and never a
+// distance -- so this no longer has to run before the first update().
 {
-  const fade = trees.batch._colorsTexture.image.data
   let mismatched = 0
   let outOfRange = 0
   let rankAboveKeep = 0
@@ -1006,11 +1005,11 @@ trees.place(0, 0)
     const keep = trees.uAt[tile.q]
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      const gone = fade[id * 4 + 3]
-      const want = Math.min(FULL_RADIUS / trees.rankAt[id], DRAW_RADIUS)
+      const gone = trees.rim.gone[id]
+      const want = Math.min(FULL_RADIUS / tile.rank[k], DRAW_RADIUS)
       if (Math.abs(gone - want) > 1e-2) mismatched++
       if (gone < FULL_RADIUS - 1e-3 || gone > DRAW_RADIUS + 1e-3) outOfRange++
-      if (!(trees.rankAt[id] < keep)) rankAboveKeep++
+      if (!(tile.rank[k] < keep)) rankAboveKeep++
       minGone = Math.min(minGone, gone)
       maxGone = Math.max(maxGone, gone)
     }
@@ -1025,11 +1024,14 @@ trees.place(0, 0)
   // THE TWO POPULATIONS. The tile quantisation deliberately errs dense -- a
   // tile's far corner is thinned as though it stood at its near corner, and the
   // level always rounds toward keeping -- so the PLACED density runs 6-20% over
-  // the law. The per-instance rim dissolve is what puts it back: a tree past
-  // its own gone-distance is fully dithered out, so the DRAWN density is the
-  // law to within a couple of percent. Both are measured, because a drift in
-  // the second is a visible density error while a drift in the first is only
-  // instances nobody sees.
+  // the law. The per-instance gone-distance is what puts it back: inside its own
+  // gone-distance the population is the law to within a couple of percent. Both
+  // are measured, because a drift in the second is a visible density error while
+  // a drift in the first is only instances nobody sees.
+  //
+  // This is the LAW's population and not the drawn one -- the rim takes a tree
+  // at RIM_AT of its gone-distance, which is a constant factor under this, and
+  // the block after the first update() measures what is actually on screen.
   const ring = (r0, r1) => {
     let placed = 0
     let drawn = 0
@@ -1039,7 +1041,7 @@ trees.place(0, 0)
         const d = Math.hypot(trees.instX[id], trees.instZ[id])
         if (d < r0 || d >= r1) continue
         placed++
-        if (d < fade[id * 4 + 3]) drawn++
+        if (d < trees.rim.gone[id]) drawn++
       }
     }
     const area = Math.PI * (r1 * r1 - r0 * r0)
@@ -1055,7 +1057,7 @@ trees.place(0, 0)
     if (r.placed < r.drawn) overKept = false
     rings.push(`${(a + b) / 2} m ${r.drawn.toFixed(4)}/${r.want.toFixed(4)}`)
   }
-  check(lawHolds, 'the drawn density follows fullRadius / d to within 6% at 200, 400, 800 and 1200 m',
+  check(lawHolds, 'the population inside its own gone-distance follows fullRadius / d to within 6% at 200, 400, 800 and 1200 m',
     rings.join('  '))
   check(overKept, 'the tile quantisation errs dense at every range, never sparse')
 
@@ -1063,13 +1065,13 @@ trees.place(0, 0)
   for (const tile of trees.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      if (Math.hypot(trees.instX[id], trees.instZ[id]) < fade[id * 4 + 3]) drawn++
+      if (Math.hypot(trees.instX[id], trees.instZ[id]) < trees.rim.gone[id]) drawn++
     }
   }
   const ideal = Math.PI * FULL_RADIUS ** 2 * DENSITY
     + 2 * Math.PI * FULL_RADIUS * DENSITY * (DRAW_RADIUS - FULL_RADIUS)
-  check(near(drawn / ideal, 1, 0.05), 'the whole visible forest matches the integral to within 5%',
-    `${drawn} drawn of ${trees.placed} placed, ${Math.round(ideal)} ideal`)
+  check(near(drawn / ideal, 1, 0.05), 'the whole forest inside its gone-distances matches the integral to within 5%',
+    `${drawn} of ${trees.placed} placed, ${Math.round(ideal)} ideal`)
 }
 
 // The tier walk, re-derived with the same ellipsoid and the same out-from-the-
@@ -1083,12 +1085,20 @@ trees.place(0, 0)
   const counts = new Array(bank.tiers.length).fill(0)
   let wrong = 0
   let bill = 0
+  // Trees the rim has dissolved away. They are still resident and still hold
+  // whatever tier they last wore, so they belong in neither the ladder audit nor
+  // the triangle bill -- the batch is not drawing them at all.
+  let hidden = 0
   for (const tile of trees.tiles.values()) {
     const dx = (tile.tx + 0.5) * TILE
     const dz = (tile.tz + 0.5) * TILE
     const isNear = dx * dx + dz * dz < nearSq
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
+      if (trees.rim.isHidden(id)) {
+        hidden++
+        continue
+      }
       const tier = trees.tierAt[id]
       counts[tier]++
       bill += bank.tiers[tier].triangles[trees.variantAt[id]]
@@ -1112,6 +1122,44 @@ trees.place(0, 0)
   check(s.tris - trees.fadeTris === bill,
     'the reported triangle bill is the sum of what each instance actually draws',
     `${s.tris} reported, ${bill} from the ladder, ${trees.fadeTris} in cross-dissolves`)
+  // WHAT THE RIM ACTUALLY DRAWS, which is the number the player sees and is a
+  // constant RIM_AT under the law measured above -- the rim takes a tree at the
+  // midpoint of the old dissolve band, so the drawn density is that fraction of
+  // fullRadius / d at every range. A drift here is a forest that has thinned or
+  // thickened, which is exactly what choosing either end of the band would have
+  // done: see the trigger note in render/rim.js.
+  {
+    let held = true
+    const rows = []
+    for (const [r0, r1] of [[190, 210], [390, 410], [790, 810], [1190, 1210]]) {
+      let shown = 0
+      for (const tile of trees.tiles.values()) {
+        for (let k = 0; k < tile.n; k++) {
+          const id = tile.ids[k]
+          if (trees.rim.isHidden(id)) continue
+          const d = Math.hypot(trees.instX[id], trees.instZ[id])
+          if (d >= r0 && d < r1) shown++
+        }
+      }
+      const have = shown / (Math.PI * (r1 * r1 - r0 * r0))
+      const want = RIM_AT * DENSITY * FULL_RADIUS / ((r0 + r1) / 2)
+      if (Math.abs(have / want - 1) > 0.06) held = false
+      rows.push(`${(r0 + r1) / 2} m ${have.toFixed(4)}/${want.toFixed(4)}`)
+    }
+    check(held, 'the DRAWN density is RIM_AT of fullRadius / d to within 6% at 200, 400, 800 and 1200 m',
+      rows.join('  '))
+  }
+  check(hidden === s.rimHidden, 'and the rim agrees about how many trees it is not drawing',
+    `${hidden} walked, ${s.rimHidden} reported`)
+  let visibleMismatch = 0
+  for (const tile of trees.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      if (trees.batch.getVisibleAt(id) === trees.rim.isHidden(id)) visibleMismatch++
+    }
+  }
+  check(visibleMismatch === 0, 'and every tree it hides is actually invisible in the batch',
+    `${visibleMismatch} of ${s.placed} disagree`)
   check(s.tris < 200000, 'a kilometre and a half of forest stays under 200k triangles',
     `${s.tris} triangles for ${s.placed} trees`)
   note('boot cost', `bank ${s.buildMs.toFixed(0)} ms, place ${s.placeMs.toFixed(0)} ms, ` +

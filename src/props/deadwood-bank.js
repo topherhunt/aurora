@@ -1,4 +1,11 @@
-import { buildDeadwood, deadwoodParams, DEADWOOD_NAMES, DEADWOOD_VARIANTS, DEADWOOD_TINT } from './deadwood.js'
+import {
+  buildDeadwood,
+  deadwoodParams,
+  deadwoodLodSize,
+  DEADWOOD_NAMES,
+  DEADWOOD_VARIANTS,
+  DEADWOOD_TINT,
+} from './deadwood.js'
 import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'
 import { LAYER } from '../textures.js'
 
@@ -37,15 +44,17 @@ import { LAYER } from '../textures.js'
 /**
  * How many seeds each named variant is rolled at.
  *
- * The named table is combinatorial and deliberately coarse -- length, species,
- * how chewed the end is -- so it says nothing about the bend, the kink, where
- * the bark came off, or where the stubs are, and all of those are seeded. Two
- * rolls per name is 36 slots, and the scatter's own yaw and per-instance scale
- * multiply that out again.
+ * The named table is combinatorial and deliberately coarse -- length and species
+ * -- so it says nothing about the bend, the kink, where the bark came off, or
+ * where the stubs are, and all of those are seeded. On a LOG the seed now also
+ * decides how chewed both ends are and how many stubs it carries (see
+ * LOG_ROLLS), which is what let that axis come out of the name. Two rolls per
+ * name is 24 slots, and the scatter's own yaw and per-instance scale multiply
+ * that out again.
  *
  * Two and not three because a slot is a real cost here in a way it is not for a
  * mushroom: dead wood is 70-odd triangles at T0 against a mushroom's handful, so
- * 36 slots is already more arena than the whole mushroom bank's 90.
+ * 24 slots is already a third of the whole mushroom bank's 90.
  */
 export const DEADWOOD_SEEDS = 2
 
@@ -59,7 +68,7 @@ export const DEADWOOD_SEEDS = 2
  */
 const CARD_SUBJECTS = {
   snag: { name: 'stump-2m-oak', layer: LAYER.IMPOSTOR_DEADWOOD_SNAG },
-  log: { name: 'log-3m-oak-blown', layer: LAYER.IMPOSTOR_DEADWOOD_LOG },
+  log: { name: 'log-4m-oak', layer: LAYER.IMPOSTOR_DEADWOOD_LOG },
 }
 
 /** The seed the two photographs are taken at. Fixed, so a rebuild is the same picture. */
@@ -98,6 +107,16 @@ export function deadwoodBankVariants() {
  */
 export function deadwoodImpostorLayers() {
   return [LAYER.IMPOSTOR_DEADWOOD_SNAG, LAYER.IMPOSTOR_DEADWOOD_LOG]
+}
+
+/**
+ * The layer ONE kind's photograph lives in.
+ *
+ * The bench bakes into these too (gen-deadwood-main.js), so a card looked at on
+ * /gen-deadwood is the same texels in the same slot as the card the world draws.
+ */
+export function deadwoodImpostorLayer(kind) {
+  return CARD_SUBJECTS[kind].layer
 }
 
 /** The horizontal span a card has to cover, and the height. */
@@ -172,15 +191,21 @@ export function buildDeadwoodBank({ billboard = true } = {}) {
     t1.push(buildDeadwood({ ...p, tier: 1 }))
 
     // MEASURED off T0 and hung on the variant record, because the scatter needs
-    // all three and none of them is derivable from the variant's name: `length`
+    // all four and none of them is derivable from the variant's name: `length`
     // is the SPINE's length and what a bend, a flare and a lie-down made of it
     // is a different number. The scatter seats a log by sampling the ground at
     // its two ends (`long`) and buries the uphill side of a piece by its own
     // half-thickness (`radius`); `height` is what the card is scaled to.
+    //
+    // `lodSize` is the one that is NOT a measurement of a particular axis: it is
+    // whichever axis is longest, which is the metre DEADWOOD_LOD_AT's thresholds
+    // are counted in. Read through the generator's own function so a snag and a
+    // log cannot end up on two different ladders.
     const m = near.userData.deadwood.measured
     v.long = Math.max(m.width, m.depth)
     v.height = m.height
     v.radius = m.buttDiameter * 0.5
+    v.lodSize = deadwoodLodSize(m)
 
     if (!billboard) continue
 

@@ -74,7 +74,7 @@ import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 // Dividing by the tile's measured mean fixes both. The gain white-balances the
 // photograph out of the way (the blue channel is the weakest, so it gets the
 // largest gain) and lands on the authored colour, and because BatchedMesh's
-// colour texture is FLOAT (see setPropFadeAt's own guard in material.js) a gain
+// colour texture is FLOAT (see the fade-slot guards in material.js) a gain
 // above 1.0 is storable and BRIGHTENS. Nothing here darkens the tile: the
 // smallest gain in the table is 1.39 and check-rocks.mjs asserts it.
 //

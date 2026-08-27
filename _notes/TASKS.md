@@ -23,6 +23,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
+- Assess code length, comment length, etc. Can anything be refactored or trimmed to save token count for future claude agent readers?
 - Tame rock counts. Currently way too many. In valley forests, should be 1/5th current volume.
 - Tame rock LODs & tri budget. Currently wasteful.
   - Rock caps: instead of a billboard, maybe a flat card for the distance LOD?

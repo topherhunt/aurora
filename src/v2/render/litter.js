@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 
 import { LITTER_LAYERS, LITTER_PATCH_M } from '../../props/litter.js'
-import { createPropMaterial, setPropFadeAt } from '../../material.js'
+import { createPropMaterial } from '../../material.js'
+import { RimFade } from './rim.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
@@ -460,6 +461,9 @@ export class Litter {
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
     this.instLift = new Float32Array(this.maxInstances)
+    // The rim dissolve: which stamps are drawn, which are hidden, and the
+    // quarter second between. Litter has one tier, so nothing to preempt.
+    this.rim = new RimFade(this.batch, this.maxInstances)
 
     this.tiles = new Map()
     this.queue = []
@@ -649,6 +653,8 @@ export class Litter {
     this._sweep = (this._sweep + 1) % GROUND_SWEEP
     const ground = this.ground
     let ti = 0
+    let hidden = 0
+    this.rim.beginFrame(camX, camY, camZ)
     for (const t of this.tiles.values()) {
       if (ground && ti++ % GROUND_SWEEP === phase) {
         const gkey = ground.groundKeyAt((t.tx + 0.5) * tile, (t.tz + 0.5) * tile)
@@ -670,8 +676,10 @@ export class Litter {
         t.queued = true
         this.queue.push({ key: t.tx * 0x10000 + t.tz, tx: t.tx, tz: t.tz, q: this._levelFor(near2), d2: near2 })
       }
+
+      hidden += this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
     }
-    this.tris = this.placed * 2
+    this.tris = (this.placed - hidden) * 2
   }
 
   _reseat(cx, cz) {
@@ -781,10 +789,10 @@ export class Litter {
     )
     this.batch.setColorAt(id, this._c)
 
-    setPropFadeAt(this.batch, id, Math.min(this.fullRadius / u, this.radius))
-
     this.batch.setGeometryIdAt(id, this.quadIds[Math.min(3, (layerRoll * 4) | 0)])
-    this.batch.setVisibleAt(id, true)
+    // Hidden and FRESH until the rim has looked at it -- see rim.js. The caller
+    // marks the tile due, because a stamp is laid before its tile exists.
+    this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
     return id
   }
 
@@ -969,6 +977,7 @@ export class Litter {
       existing.n = n
       existing.q = q
       existing.u = uNew
+      this.rim.markDue(existing)
     } else {
       this.tiles.set(key, {
         tx,
@@ -1007,26 +1016,32 @@ export class Litter {
         w++
       } else {
         this.batch.setVisibleAt(id, false)
+        this.rim.drop(id)
         this.free[this.freeCount++] = id
       }
     }
     this.placed -= tile.n - w
     tile.n = w
+    this.rim.markDue(tile)
   }
 
   _release(tile) {
     for (let k = 0; k < tile.n; k++) {
       this.batch.setVisibleAt(tile.ids[k], false)
+      this.rim.drop(tile.ids[k])
       this.free[this.freeCount++] = tile.ids[k]
     }
     this.placed -= tile.n
     tile.n = 0
+    this.rim.releaseTile(tile)
   }
 
   get stats() {
     return {
       placed: this.placed,
-      tris: this.placed * 2,
+      rimHidden: this.rim.hiddenCount,
+      rimFading: this.rim.flightN,
+      tris: this.tris,
       tiles: this.tiles.size,
       pool: this.maxInstances,
       samples: this.samples,

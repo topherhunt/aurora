@@ -1219,13 +1219,20 @@ ${spin}
 // distance: every tree there has its own range at which it stops being drawn,
 // and crossing that range is a pop.
 //
-// HOW IT IS FED, and why it costs nothing per frame. Each instance carries ONE
-// number -- the distance at which it should be completely gone -- and the shader
-// compares that against the instance's live distance to the camera. Nothing is
-// animated on the CPU, no timers are kept, nothing is written per frame: the
-// fade is a pure function of where the player is standing, so it plays forwards
-// as they approach and backwards as they retreat, and it costs the same whether
-// ten instances or ten thousand are mid-dissolve.
+// HOW IT IS FED: A CLOCK, NOT A DISTANCE, and it used to be the other way. Each
+// instance carried the distance at which it should be gone, the shader compared
+// that against its live distance to the camera, and nothing was written per
+// frame at all -- the fade was a pure function of where the player stood. That
+// is as cheap as this can possibly be and it has one steady state nothing in the
+// shader can fix: A PROP PARKED IN ITS OWN FADE BAND IS PARKED IN A STIPPLE.
+// Stand still and it dithers forever, and because the band is a fixed FRACTION
+// of each instance's own range rather than a shell at the horizon, a flat 15% of
+// every prop past the full-density radius sat in one, at every distance out to
+// the draw radius. See src/v2/render/rim.js, which owns the replacement: the
+// same crossing now stamps a start time and the transition RESOLVES.
+//
+// So both dissolves are clocks, and the CPU's job in each is the same one: watch
+// for the crossing, stamp both ends of it, and reclaim when the window is up.
 //
 // WHERE THE NUMBER LIVES: the alpha channel of BatchedMesh's per-instance colour
 // texture, which three allocates as RGBA-float, fills with 1, and then only ever
@@ -1235,7 +1242,7 @@ ${spin}
 // it sounds, because BatchedMesh throws if a geometry entering the arena is
 // missing an attribute the arena has, so a new attribute is a change to every
 // generator in the project. Reaching for `_colorsTexture` is reaching past a
-// private field, so setPropFadeAt below validates it loudly rather than writing
+// private field, so the two writers below validate it loudly rather than writing
 // into whatever it finds.
 //
 // 1.0 MEANS NEVER FADE, which is three's own initial value, so every caller that
@@ -1257,19 +1264,28 @@ ${spin}
 // here sit at a few hundred metres where a tree is still tens of pixels tall.
 // Shrinking is the cheaper trick and the right one for a 26 m grass disc.
 //
-// THE SAME CHANNEL ALSO CARRIES A TIMER, which is what cross-dissolves an LOD
-// tier swap. A swap is not a function of distance the way the rim is: the
-// instance is at a fixed range when it happens, and the whole point is that it
-// RESOLVES -- stand still after crossing a band and the duplicate has to be
-// evicted and the stipple has to go away, or standing still costs a permanent
-// second mesh and permanent dots. So the pair is driven by a clock instead.
+// THE CHANNEL ALSO CARRIES THE LOD TIER SWAP, which is where the clock came
+// from. A swap has never had a distance version to fall back on: the instance is
+// at a fixed range when it happens, and the whole point is that it RESOLVES --
+// stand still after crossing a band and the duplicate has to be evicted and the
+// stipple has to go away, or standing still costs a permanent second mesh and
+// permanent dots. That argument turned out to be the rim's argument too, which
+// is why there is now one mechanism rather than two.
 //
 // The scheme is symmetric and costs one CPU write per instance per swap, not per
 // frame: the caller stamps a START TIME into the channel of both halves -- the
 // arriving tier fading IN, a duplicate holding the departing tier fading OUT --
 // and the shader turns `uPropClock - t0` into the fade. Everything after the
-// stamp is the GPU's, exactly as the distance dissolve is; the CPU's only other
-// job is to notice the fade has run out and hand the duplicate back.
+// stamp is the GPU's; the CPU's only other job is to notice the fade has run out
+// and hand the duplicate back.
+//
+// A RIM FADE IS THE SAME STAMP WITH NO SECOND HALF. There is no duplicate,
+// because there is no arriving tier -- the instance is going away entirely, or
+// coming back from having gone -- so one of the two thresholds simply goes
+// unused and the prop dithers against an empty background. Which means the rim
+// and the swap CANNOT SHARE AN INSTANCE, since there is one slot: rim.js and the
+// scatters resolve that by letting the rim win, on the grounds that which LOD
+// tier a departing prop was wearing is not a question anybody is asking.
 //
 // THE TWO HALVES TAKE COMPLEMENTARY THRESHOLDS (`ign` on one, `1 - ign` on the
 // other), so at every pixel exactly one of them survives. Coverage is conserved
@@ -1278,12 +1294,18 @@ ${spin}
 // the noise is low and holed where it is high, in both halves at once.
 // ---------------------------------------------------------------------------
 
-// Fraction of the gone-distance at which the dissolve starts. 0.85 makes the
-// band 15% of the range, so a tree that vanishes at 1500 m starts dissolving at
-// 1275 m -- over two minutes of walking, which is as gradual as it gets.
+// Fraction of the gone-distance at which the OLD distance-driven dissolve
+// started. 0.85 made the band 15% of the range, so a tree that vanished at
+// 1500 m began dissolving at 1275 m.
+//
+// It is no longer the trigger. The rim runs on the clock now and fires at a
+// single distance, `RIM_AT = (1 + FADE_BAND) / 2` in v2/render/rim.js -- the
+// MIDPOINT of that old band, which is where a hard cut preserves the coverage
+// the symmetric smoothstep used to average out to. FADE_BAND survives as the
+// definition of the band whose midpoint that is, and as the divisor below.
 //
 // Exported because a caller that wants a prop SOLID up to some distance has to
-// divide by this to get the gone-distance to hand `setPropFadeAt`: the slot is
+// divide by this to get the gone-distance to hand `RimFade.place`: the number is
 // where the prop is gone, not where it starts going. See RockBed._fadeFloor,
 // which is exactly that sum -- a rock has to still be whole when it reaches the
 // distance its billboard takes over at, or it dissolves as a mesh instead.
@@ -1310,10 +1332,11 @@ export const FADE_BAND = 0.85
  */
 export const PROP_FADE_SECONDS = 0.25
 
-// Where the packing lives. A fade timer rides in the SAME float as the
-// gone-distance, distinguished by sign: positive is a distance, negative is a
-// clock reading. Within the negative range the two directions are told apart by
-// magnitude -- a fade-OUT start is biased by 1 and a fade-IN start by 4096, and
+// Where the packing lives. A start time is stored NEGATED, which is what leaves
+// the positive side of the float free for the never-fade 1.0 -- and, when the
+// rim ran on distance, for a gone-distance in metres. The two DIRECTIONS are
+// told apart within the negative range by magnitude: a fade-OUT start is biased
+// by 1 and a fade-IN start by 4096, and
 // the clock wraps at 1024 so the two ranges (1..1025 and 4096..5120) cannot
 // meet. The bias of 1 on the out half is not decoration: an unbiased start of
 // t0 = 0 would encode as -0.0, which compares equal to 0.0 and would be read as
@@ -1367,16 +1390,11 @@ const FADE_VERTEX = /* glsl */ `
     int fadeSize = textureSize( batchingColorTexture, 0 ).x;
     float fadeSlot = texelFetch( batchingColorTexture,
       ivec2( fadeIdx % fadeSize, fadeIdx / fadeSize ), 0 ).a;
-    // POSITIVE is a gone-distance, and anything at or below 1 metre is the
-    // "never fade" default rather than a real range -- no scatter in this
-    // project fades anything inside 80 m.
-    if ( fadeSlot > 1.0 ) {
-      vec3 fadeRoot = ( modelMatrix * batchingMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
-      propFade = 1.0 - smoothstep( fadeSlot * ${FADE_BAND}, fadeSlot,
-        distance( cameraPosition, fadeRoot ) );
-    // NEGATIVE is a biased clock reading: half of an LOD cross-dissolve. See
+    // NEGATIVE is a biased clock reading, and it is now the ONLY thing this slot
+    // carries apart from the never-fade 1.0 every instance starts at. Both
+    // dissolves are stamped starts: the LOD cross-fade and the rim. See
     // setPropFadeTimerAt for the packing and the dissolve header for the shape.
-    } else if ( fadeSlot < 0.0 ) {
+    if ( fadeSlot < 0.0 ) {
       float fadeBias = -fadeSlot;
       bool fadeIn = fadeBias > ${(FADE_IN_BIAS + PROP_CLOCK_WRAP) / 2}.0;
       float fadeT0 = fadeBias - ( fadeIn ? ${FADE_IN_BIAS}.0 : ${FADE_OUT_BIAS}.0 );
@@ -1477,42 +1495,47 @@ const FADE_FRAGMENT = /* glsl */ `
   }`
 
 /**
- * Set the distance at which one instance is completely dissolved away.
+ * Put one instance back to "never fade", which is three's own initial value for
+ * the channel and the steady state of every prop that is neither mid-dissolve
+ * nor hidden.
  *
- * `gone` is metres from the camera; the dissolve occupies the outer 15% of it.
- * Pass 1 (or anything <= 1) to switch the effect off for that instance, which is
- * also the state every instance starts in.
+ * Called at the END of a transition as well as before one. A finished fade-OUT
+ * leaves an invisible instance holding a clock reading, and a clock reading that
+ * outlives the fade it described is a stale number waiting to be misread the
+ * next time the pool hands that id out; clearing it means the only two values
+ * the slot ever holds at rest are 1.0 and nothing.
  *
  * The batch must already have a colour texture -- BatchedMesh creates it lazily
  * on the first setColorAt -- because there is no public way to make one, and
  * conjuring it here would mean duplicating three's sizing rule.
  */
-export function setPropFadeAt(batch, instanceId, gone) {
+export function setPropSolidAt(batch, instanceId) {
   const tex = batch._colorsTexture
   if (!tex || !(tex.image.data instanceof Float32Array)) {
     throw new Error(
-      'setPropFadeAt: batch has no float colour texture -- call setColorAt at least once first'
+      'setPropSolidAt: batch has no float colour texture -- call setColorAt at least once first'
     )
   }
-  tex.image.data[instanceId * 4 + 3] = gone
+  tex.image.data[instanceId * 4 + 3] = 1
   tex.needsUpdate = true
 }
 
 /**
- * Stamp one half of an LOD cross-dissolve onto an instance: from `startTime` on
- * the prop clock it dithers IN over PROP_FADE_SECONDS if `fadeIn`, or OUT if
- * not. Written ONCE per swap; the shader does the rest.
+ * Stamp a dissolve onto an instance: from `startTime` on the prop clock it
+ * dithers IN over PROP_FADE_SECONDS if `fadeIn`, or OUT if not. Written ONCE per
+ * transition; the shader does the rest.
  *
- * The two halves of a pair must be stamped with the SAME start, or their
- * complementary thresholds stop summing to full coverage and the tree flickers
- * thin or double for the length of the fade.
+ * Used by both dissolves. An LOD cross-fade stamps a PAIR -- the arriving tier
+ * in, a duplicate holding the departing tier out -- and the two must carry the
+ * SAME start, or their complementary thresholds stop summing to full coverage
+ * and the prop flickers thin or double for the length of the fade. A rim fade
+ * stamps one instance alone and lets the other threshold go unused.
  *
- * This OVERWRITES whatever gone-distance the instance carried, because there is
- * one channel and it cannot hold both. The caller has to put the distance back
- * when the fade expires. That is not the compromise it looks like: a tier swap
- * only ever happens inside the near set, and the rim dissolve only ever starts
- * at 85% of a gone-distance that is hundreds of metres out, so an instance in a
- * position to want both at once does not exist.
+ * There is ONE slot, so an instance cannot be in both at once, and a caller that
+ * stamps over a transition in flight has silently cancelled it -- the fade is
+ * still counted, still holds a duplicate, and now has a start time describing
+ * some other event. Every caller here resolves that explicitly before stamping:
+ * see RimFade._startFade and the `running` check at the top of _crossFade.
  */
 export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
   const tex = batch._colorsTexture
@@ -1712,7 +1735,7 @@ export function stripTwistCoverage() {
 // to be worth a varying rather than a second attribute -- BatchedMesh throws if
 // a geometry entering the arena lacks an attribute the arena has, so a new
 // attribute is a change to every generator in the project (see the note by
-// setPropFadeAt, which is the same argument).
+// setPropSolidAt, which is the same argument).
 const STRIP_VERTEX = /* glsl */ `
   {
     mat4 stM = mat4( 1.0 );
@@ -1859,7 +1882,7 @@ const STRIP_SAMPLE = /* glsl */ `
 // this, and it is unavailable: BatchedMesh throws if a geometry entering the
 // arena lacks an attribute the arena has, so one new attribute is a change to
 // every generator in the project. Same constraint that shaped billboardVertex's
-// layer mask and setPropFadeAt's packing, and it pushes to the same answer --
+// layer mask and the fade slot's packing, and it pushes to the same answer --
 // derive it from what is already there.
 //
 // BEND AS AN ANGLE, NOT A DISTANCE. The displacement is `amp * y`, so it is

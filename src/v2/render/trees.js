@@ -5,11 +5,12 @@ import {
   createPropMaterial,
   setSnowLine,
   setLeafSnowVary,
-  setPropFadeAt,
+  setPropSolidAt,
   setPropFadeTimerAt,
   getPropClock,
   PROP_FADE_SECONDS,
 } from '../../material.js'
+import { RimFade } from './rim.js'
 
 // ---------------------------------------------------------------------------
 // The forest on the /v2 route: a tiled, camera-following scatter whose density
@@ -74,18 +75,17 @@ import {
 //   already standing, everything above is still cut. Only the new band pays a
 //   field sample.
 //
-// NOTHING POPS AT THE RIM. Because a tree's rank u fixes exactly where it stops
-// existing -- fullRadius / u -- that distance can be written once, at placement,
-// into the unused alpha of the instance's colour texel, and the prop shader
-// dissolves the tree over the last 15% of it with an ordered dither. One float
-// per instance, written once, no per-frame CPU. See setPropFadeAt in material.js
-// for why the channel is free and why the dissolve is a dither rather than a
-// blend. It covers the outer rim AND every thinning band, since a band is just
-// where a set of ranks reaches its own distance.
+// NOTHING POPS AT THE RIM. A tree's rank u fixes exactly where it stops existing
+// -- fullRadius / u -- and render/rim.js watches for the camera crossing 85% of
+// that, then stamps a quarter-second dither. It covers the outer rim AND every
+// thinning band, since a band is just where a set of ranks reaches its own
+// distance. See rim.js for why this is a clock rather than the smoothstep on
+// distance it used to be, and material.js's dissolve header for why the channel
+// is free and why the dissolve is a dither rather than a blend.
 //
-// NOTHING POPS AT A BAND EITHER, and that one is not free. A tier swap happens
-// at a fixed range, so it cannot be a function of distance the way the rim is:
-// the pair has to be driven by a clock, which means CPU state. `_crossFade`
+// NOTHING POPS AT A BAND EITHER, and it is the same mechanism. A tier swap
+// happens at a fixed range, so the pair has to be driven by that same clock.
+// `_crossFade`
 // takes a SECOND instance out of the pool, gives it the departing tier and the
 // same matrix, and stamps a start time into both halves -- the arriving tier
 // dithering in, the ghost dithering out, against complementary thresholds so
@@ -588,7 +588,6 @@ export class Trees {
 
     this.variantAt = new Uint16Array(this.maxInstances)
     this.tierAt = new Int8Array(this.maxInstances).fill(-1)
-    this.rankAt = new Float32Array(this.maxInstances)
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
@@ -605,6 +604,15 @@ export class Trees {
     this.fades = []
     this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
     this.fadeTris = 0
+
+    // The outer dissolve. It shares the fade slot with the cross-dissolves
+    // above, so the two have to agree about who owns an instance: the rim
+    // preempts a running cross-dissolve through this callback, and _crossFade
+    // refuses to start one on an instance the rim is already moving.
+    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
+      const running = this.fadeAt[id]
+      if (running >= 0) this._endFade(running)
+    })
 
     this.bandSq = Float32Array.from(LOD_BANDS, (b) => b * b)
     this.bandSqOut = Float32Array.from(LOD_BANDS, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
@@ -707,6 +715,11 @@ export class Trees {
     // gets its duplicate back rather than being refused for want of one.
     const now = getPropClock()
     this._sweepFades(now)
+    // Retires expired rim transitions and re-measures the camera speed the
+    // sweep's slack is sized from. Before the tile loop, for _sweepFades' own
+    // reason: an instance whose fade expires this frame has to be free to start
+    // another one in the same frame rather than waiting a whole sweep.
+    this.rim.beginFrame(camX, camY, camZ)
 
     const cardTier = this.cardTier
     let tris = 0
@@ -752,6 +765,11 @@ export class Trees {
         })
       }
 
+      // The rim, on this tile's own phase. Returns how many of its trees are
+      // dissolved away and set invisible, which is what the triangle count below
+      // has to leave out -- they are submitted to nothing.
+      const gone = this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
+
       const dx = (tile.tx + 0.5) * TILE - camX
       const dz = (tile.tz + 0.5) * TILE - camZ
       const near = dx * dx + dz * dz < this.nearSq
@@ -761,13 +779,17 @@ export class Trees {
         // held at the moment it went out of range, and keeps it forever.
         if (tile.near) this._demote(tile, cardTier)
         tile.near = false
-        tris += tile.n * this.tierTris[cardTier][0]
+        tris += (tile.n - gone) * this.tierTris[cardTier][0]
         continue
       }
       tile.near = true
       nearCount++
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
+        // Dissolved away and invisible. Skipping it here also keeps it from
+        // being re-tiered, which would set a geometry id on a hidden instance
+        // and start a cross-dissolve nobody could see.
+        if (this.rim.isHidden(i)) continue
         const ex = this.instX[i] - camX
         // Y_SQUASH is the whole vertical correction: the bands are ellipsoids,
         // not spheres, because instY is the tree's root and the tree is not.
@@ -1112,7 +1134,6 @@ export class Trees {
       rank[n] = u
       n++
       this.variantAt[id] = variant
-      this.rankAt[id] = u
       this.instX[id] = x
       this.instZ[id] = z
       this.instScale[id] = scale
@@ -1146,21 +1167,21 @@ export class Trees {
       this._c.setRGB(clamp01(g * (0.88 + tintR * 0.22)), clamp01(g), clamp01(g * 0.96))
       this.batch.setColorAt(id, this._c)
 
-      // The distance at which this particular tree stops existing, written into
-      // the unused alpha of the same colour texel (see setPropFadeAt). A tree of
-      // rank u survives while the local keep-fraction fullRadius/d exceeds u, so
-      // it goes at fullRadius/u -- or at the draw radius, whichever comes first
-      // for the densest ranks. The shader dissolves it over the last 15% of that
-      // distance, so nothing pops at the rim and nothing pops as the forest
-      // thins; no CPU work per frame, one write per instance ever.
-      setPropFadeAt(this.batch, id, Math.min(this.fullRadius / u, this.radius))
-
       // Born as a card. `update` promotes the near ones on the very next frame,
       // and being briefly a billboard at 8 m is invisible next to the
       // alternative, which is a frame where the tier is undefined.
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier][variant])
-      this.batch.setVisibleAt(id, true)
+
+      // The distance at which this particular tree stops existing. A tree of
+      // rank u survives while the local keep-fraction fullRadius/d exceeds u, so
+      // it goes at fullRadius/u -- or at the draw radius, whichever comes first
+      // for the densest ranks. The rim dissolves it over the last 15% of that
+      // distance, so nothing pops at the rim and nothing pops as the forest
+      // thins. LAST, and after the geometry and the tint, because it also takes
+      // the tree's VISIBILITY: a tree is placed hidden and the sweep below turns
+      // it on, so there is one piece of code deciding what is drawn out there.
+      this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
     }
 
     this.placed += n - (tile ? tile.n : 0)
@@ -1168,6 +1189,10 @@ export class Trees {
       tile.n = n
       tile.q = q
       tile.u = uNew
+      // Everything this tile just placed is hidden until the rim looks at it, so
+      // a thickened tile that waited for its phase would be a hole in the forest
+      // for up to eight frames.
+      this.rim.markDue(tile)
     } else {
       this.tiles.set(key, {
         tx,
@@ -1253,6 +1278,12 @@ export class Trees {
     const running = this.fadeAt[i]
     if (running >= 0) this._endFade(running)
 
+    // The rim outranks a tier swap, because there is one fade slot and only one
+    // of the two can have it. A tree that is on its way out of the world, or
+    // back into it, cuts between tiers instead -- which nobody can see, since
+    // the thing the eye is tracking is the tree arriving or leaving.
+    if (this.rim.isBusy(i)) return
+
     // Both ceilings degrade to a pop, which is what a swap did before this
     // existed. See FADE_POOL_RESERVE for why growth outranks polish.
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
@@ -1278,15 +1309,17 @@ export class Trees {
   }
 
   /**
-   * Finish the fade at index `k`: hand the ghost back and give the original its
-   * rim dissolve again, since the timer was written over the gone-distance.
+   * Finish the fade at index `k`: hand the ghost back and put the original's
+   * fade slot to rest.
    */
   _endFade(k) {
     const f = this.fades[k]
     this.batch.setVisibleAt(f.dup, false)
     this.free[this.freeCount++] = f.dup
     this.fadeTris -= f.tris
-    setPropFadeAt(this.batch, f.orig, Math.min(this.fullRadius / this.rankAt[f.orig], this.radius))
+    // Back to never-fade rather than back to a gone-distance: the rim is a clock
+    // now and keeps its own state, so the slot's resting value is just 1.
+    setPropSolidAt(this.batch, f.orig)
     this.fadeAt[f.orig] = -1
     // Swap-remove, so the list stays dense and the sweep stays a linear scan.
     const last = this.fades.pop()
@@ -1322,12 +1355,15 @@ export class Trees {
         continue
       }
       if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
+      this.rim.drop(id)
       this.batch.setVisibleAt(id, false)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n - w
     tile.n = w
+    // The tile's hidden count is now stale against a shorter id list.
+    this.rim.markDue(tile)
   }
 
   /** Put a whole tile back to the card tier in one pass. */
@@ -1346,10 +1382,12 @@ export class Trees {
       const id = tile.ids[k]
       // A tree being evicted mid-fade would strand its ghost visible forever.
       if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
+      this.rim.drop(id)
       this.batch.setVisibleAt(id, false)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
+    this.rim.releaseTile(tile)
     this.placed -= tile.n
   }
 
@@ -1403,6 +1441,8 @@ export class Trees {
       nearTiles: this.nearTiles,
       queued: this.queue.length,
       fading: this.fades.length,
+      rimHidden: this.rim.hiddenCount,
+      rimFading: this.rim.flightN,
       regrows: this.regrows,
       regrounds: this.regrounds,
       pool: this.maxInstances,

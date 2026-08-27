@@ -7,7 +7,8 @@ import {
   MUSHROOM_LOD_SPANS,
   MUSHROOM_NAMES,
 } from '../../props/mushroom-bank.js'
-import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.js'
+import { createPropMaterial, setSnowLine } from '../../material.js'
+import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -449,6 +450,9 @@ export class Mushrooms {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // The rim dissolve: which caps are drawn, which are hidden, and the quarter
+    // second between. No LOD cross-fade in this bed for it to preempt.
+    this.rim = new RimFade(this.batch, this.maxInstances)
 
     // Bands squared, but in UNITS OF THE PROP'S OWN SPAN SQUARED -- the test in
     // update() multiplies by `instSpan2` before comparing. Keeping the span out
@@ -563,6 +567,7 @@ export class Mushrooms {
     let tris = 0
     let nearCount = 0
 
+    this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
@@ -591,19 +596,26 @@ export class Mushrooms {
       if (dx * dx + dz * dz >= tile.nearSq) {
         if (tile.near) this._demote(tile)
         tile.near = false
+        const hidden = this.rim.sweepTile(
+          tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
         // Every instance in a far tile is on the card tier, so when that tier
         // is uniform the whole tile is one multiply. In the 'mesh' A/B mode it
         // is not, and the count has to be walked -- that mode exists precisely
         // to weigh the card against the real mesh, so its bill is the number
         // that must not be approximate.
         if (this.cardTrisFlat > 0 && this.farTier !== 'mesh') {
-          tris += tile.n * this.cardTrisFlat
+          tris += (tile.n - hidden) * this.cardTrisFlat
         } else {
-          for (let k = 0; k < tile.n; k++) tris += farTris[this.variantAt[tile.ids[k]]]
+          for (let k = 0; k < tile.n; k++) {
+            const id = tile.ids[k]
+            if (this.rim.isHidden(id)) continue
+            tris += farTris[this.variantAt[id]]
+          }
         }
         continue
       }
       tile.near = true
+      this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
       nearCount++
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
@@ -617,6 +629,9 @@ export class Mushrooms {
         const ez = this.instZ[i] - camZ
         const d2 = ex * ex + ey * ey + ez * ez
         const cur = this.tierAt[i]
+
+        // Nothing to re-tier on a cap the rim is not drawing.
+        if (this.rim.isHidden(i)) continue
 
         const s2 = this.instSpan2[i]
 
@@ -965,14 +980,14 @@ export class Mushrooms {
         )
         this.batch.setColorAt(id, this._c)
 
-        // Must follow setColorAt: the fade rides in the unused alpha of the
-        // batch's colour texture, and setPropFadeAt throws if that texture has
-        // not been created yet.
-        setPropFadeAt(this.batch, id, Math.min(this.fullRadius / u, this.radius))
-
         this.tierAt[id] = this.cardTier
         this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
-        this.batch.setVisibleAt(id, true)
+
+        // Must follow setColorAt: the fade rides in the unused alpha of the
+        // batch's colour texture, and the writers throw if that texture has not
+        // been created yet. The cap stays hidden until the rim's sweep has
+        // looked at it, which the tile below is marked due for.
+        this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
       }
       if (grew > 0) grewClumps++
     }
@@ -990,6 +1005,7 @@ export class Mushrooms {
       tile.clumps += grewClumps
       tile.span = biggest
       tile.nearSq = nearSq
+      this.rim.markDue(tile)
     } else {
       this.tiles.set(key, {
         tx, tz, ids, rank, n, q, u: uNew, clumps: grewClumps,
@@ -1021,6 +1037,7 @@ export class Mushrooms {
         continue
       }
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
@@ -1028,6 +1045,7 @@ export class Mushrooms {
     this.clumps -= tile.clumps - kept
     tile.clumps = kept
     tile.n = w
+    this.rim.markDue(tile)
   }
 
   /** Put a whole tile back to the card tier in one pass. */
@@ -1045,11 +1063,13 @@ export class Mushrooms {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n
     this.clumps -= tile.clumps
+    this.rim.releaseTile(tile)
   }
 
   _geometryFor(tier, variant) {
@@ -1102,6 +1122,8 @@ export class Mushrooms {
     return {
       placed: this.placed,
       clumps: this.clumps,
+      rimHidden: this.rim.hiddenCount,
+      rimFading: this.rim.flightN,
       tris: this.tris,
       tiles: this.tiles.size,
       nearTiles: this.nearTiles,

@@ -53,12 +53,14 @@ import {
   GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
 import { Grass, GRASS_TUNING } from '../src/v2/render/grass.js'
+import { RIM_AT, RIM_HYST } from '../src/v2/render/rim.js'
 import {
   LAYER, LAYER_COUNT, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, buildTextureArray,
   shapeImageLayer, GRASS_FRAY_TUNING,
 } from '../src/textures.js'
 import {
   stripCoverage, stripClumpScale, stripTwistCoverage, getStripTiling,
+  setPropClock, getPropClock,
 } from '../src/material.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { readPng } from '../tools/props/png.mjs'
@@ -70,7 +72,7 @@ const check = (ok, label, detail = '') => {
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol
 
-const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, VEIL_PHASES, TILE, HEIGHT, PLACEMENT,
+const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, RIM_PHASES, TILE, HEIGHT, PLACEMENT,
   STRIP_MATCH, STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK,
   STRIP_FULL_RADIUS, STRIP_THIN, stripThinAt } = GRASS_TUNING
 
@@ -441,11 +443,14 @@ const scene = new THREE.Scene()
 const texArray = buildTextureArray()
 const grass = new Grass(scene, flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
 grass.place(0, 0)
-// One update settles the near tiles and one phase of the far ones; VEIL_PHASES
+// One update settles the near tiles and one phase of the far ones; RIM_PHASES
 // of them settles every tile. The camera does not move between them, so this is
 // still one frame's answer -- just the fully swept version of it, which is the
-// only state the veil section below can assert on.
-for (let f = 0; f < VEIL_PHASES; f++) grass.update(0, EYE, 0)
+// only state the rim section below can assert on. Every instance is FRESH on
+// its first sweep and FRESH resolves with NO transition, so a settled stationary
+// world holds no fades in flight and the rim's state is binary. That is the
+// property the whole section leans on, and it is asserted rather than assumed.
+for (let f = 0; f < RIM_PHASES; f++) grass.update(0, EYE, 0)
 const st = grass.stats
 
 check(st.rejected.elev + st.rejected.slope + st.rejected.water + st.rejected.snow + st.rejected.path === 0,
@@ -508,34 +513,40 @@ check(TILE * TILE * DENSITY <= 256, 'a tile is at most 256 candidates', `${TILE 
 
 console.log('\n-- fade --')
 
-// Counted here, re-used by the veil section: the two arrive at it from opposite
+// Counted here, re-used by the rim section: the two arrive at it from opposite
 // directions and have to agree.
-let standingPastGone = 0
-// The same count, but past the threshold the VEIL actually uses -- which is a
-// slack metre or so beyond the dissolve distance, so that a tuft the camera is
-// closing on is shown again before it needs to be drawn. See VEIL_SLACK_MIN.
+let standingPastRim = 0
+// The same count, but past the threshold the RIM actually uses -- which is a
+// slack metre or so beyond the trigger distance, so that a tuft the camera is
+// closing on is shown again before it needs to be drawn. See RIM_SLACK_MIN.
 let standingPastSlack = 0
 
 {
+  // THE GONE-DISTANCE IS NOT IN THE TEXTURE ANY MORE. The alpha slot the shader
+  // reads carries a clock stamp now (see the DISSOLVE header in material.js), so
+  // the distances come off the rim's own array and the texture is checked
+  // separately, for being the never-fade sentinel everywhere at rest.
   const fade = grass.batch._colorsTexture.image.data
   let minGone = Infinity
   let maxGone = -Infinity
   let atRim = 0
+  let stamped = 0
   for (const tile of grass.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      const gone = fade[id * 4 + 3]
+      const gone = grass.rim.gone[id]
+      if (fade[id * 4 + 3] !== 1) stamped++
       // 3D, because that is what the shader compares against: the fade reads
       // distance(cameraPosition, fadeRoot), and at 1.6 m of eye height over a
       // 20 m full-density radius the vertical leg is not a rounding.
       const d = Math.hypot(grass.instX[id], grass.instZ[id], grass.instY[id] - EYE)
       minGone = Math.min(minGone, gone)
       maxGone = Math.max(maxGone, gone)
-      // Instances the TILE kept but the FADE has already dissolved. Not a bug --
+      // Instances the TILE kept but the RIM has already dissolved. Not a bug --
       // see "the tile keep is a superset" in grass.js -- but the size of it is
       // the price of the tile grid, so it is measured rather than assumed.
-      if (gone < d) standingPastGone++
-      if (gone + grass.veilSlack < d) standingPastSlack++
+      if (gone * RIM_AT < d) standingPastRim++
+      if (gone * RIM_AT + grass.rim.slack < d) standingPastSlack++
       if (gone >= DRAW_RADIUS - 1e-3) atRim++
     }
   }
@@ -545,67 +556,80 @@ let standingPastSlack = 0
   // closer than it does -- and the dither then dissolves it anyway, because the
   // fade distance is per instance and exact. The result is right (the visible
   // density is the continuous law, with no step at a tile boundary) and the
-  // price WOULD be instances that transform and discard, except that the veil
-  // takes them off the GPU -- see the veil section below, which pins that these
+  // price WOULD be instances that transform and discard, except that the rim
+  // takes them off the GPU -- see the rim section below, which pins that these
   // and only these are the hidden ones. They stay RESIDENT because they are
   // exactly the tufts that appear as the player walks toward them, so showing
   // one again is a byte where regrowing the tile is a job. Trees run the same
   // arithmetic at the same tile-to-radius ratio. Bound it, do not forbid it --
   // and if this number climbs, the cause is TILE growing against FULL_RADIUS,
   // not the fade.
-  check(standingPastGone < grass.placed * 0.25, 'the tile over-keep stays under a quarter of the pool',
-    `${standingPastGone} of ${grass.placed} dissolved but resident`)
+  // Just under 25% while the trigger sat at `gone`, and just under 30% now that
+  // it sits at `gone * RIM_AT` -- the trigger moved inward, so more of the
+  // over-kept population is past it. That is the move being priced, not the tile
+  // grid drifting, and if this number climbs further the cause is TILE growing
+  // against FULL_RADIUS.
+  check(standingPastRim < grass.placed * 0.3, 'the tile over-keep stays under a third of the pool',
+    `${standingPastRim} of ${grass.placed} past the rim trigger but resident`)
   check(maxGone <= DRAW_RADIUS + 1e-3, 'nothing is told to dissolve past the draw radius',
     `max ${maxGone.toFixed(1)} m`)
   // The clamp has to BITE, or the rim is a hard edge for the densest ranks.
   check(atRim > 0, 'the densest ranks are clamped to the draw radius', `${atRim} tufts`)
   check(minGone > FULL_RADIUS * 0.98, 'nothing dissolves before the full-density radius',
     `min ${minGone.toFixed(1)} m`)
-  // 1 m is the "never fade" sentinel in the shader (see FADE_VERTEX): a tuft
-  // left at three's default alpha of 1 would pop instead of fading.
-  check(minGone > 1, 'every instance carries a real distance, not the default 1')
+  // 1 is the "never fade" sentinel in the shader (see FADE_VERTEX), and at rest
+  // it is what EVERY instance carries: a stamp in that slot is a transition in
+  // flight, and a settled stationary world has none. A tuft left stamped after
+  // its transition retired is a clock reading waiting to be misread the next
+  // time its id is handed out.
+  check(stamped === 0, 'no fade stamp is left in the slot once the world settles',
+    `${stamped} of ${grass.placed} still stamped`)
+  check(grass.rim.flightN === 0, 'no rim transition is in flight in a settled world',
+    `${grass.rim.flightN} fading`)
 }
 
-// --- 5. the veil -------------------------------------------------------------
+// --- 5. the rim --------------------------------------------------------------
 //
-// The veil hides the instances the dither has already dissolved to nothing. The
-// whole safety argument is one claim -- that it hides EXACTLY the instances
-// whose every fragment was already being discarded -- so it is checked in both
-// directions. A false positive is a tuft that vanishes while still partly
-// visible, which is the pop the dither exists to prevent; a false negative is
-// simply the waste it was built to recover.
+// The rim decides which instances are on the GPU at all: past its trigger a tuft
+// dissolves over a quarter second and is then hidden, and coming back the other
+// way it is shown and dissolves in. The whole safety argument is one claim --
+// that nothing is hidden while any of it would still have been drawn -- so it is
+// checked in both directions. A false positive is a tuft that vanishes while
+// still on screen, which is the pop the dither exists to prevent; a false
+// negative is simply the waste the sweep was built to recover.
 //
-// `grass.update` has been called once per phase above, so every far tile has
-// had its turn and the sweep is settled. That is the state to assert on: mid-
-// sweep the answer is allowed to be stale, and VEIL_PHASES argues why.
+// `grass.update` has been called once per phase above, so every far tile has had
+// its turn and the sweep is settled. That is the state to assert on: mid-sweep
+// the answer is allowed to be stale, and RIM_PHASES argues why.
 
-console.log('\n-- veil --')
+console.log('\n-- rim --')
 
 {
   let hiddenButVisible = 0
   let shownButGone = 0
   let hidden = 0
   let ledger = 0
-  // The veil hides at `gone + slack`, not at `gone`. The slack is hysteresis --
-  // it is what keeps a tuft the camera is closing on from having to be shown in
-  // the same frame it is needed, given the sweep only reaches a tile every
-  // VEIL_PHASES frames -- so the band between the two is deliberately left
-  // resident and drawn. It is bounded below rather than forbidden.
-  const slack = grass.veilSlack
+  // The rim fires at `gone * RIM_AT + slack`, not at `gone`. The slack is
+  // hysteresis -- it is what keeps a tuft the camera is closing on from having
+  // to be shown in the same frame it is needed, given the sweep only reaches a
+  // tile every RIM_PHASES frames -- so the band between the two is deliberately
+  // left resident and drawn. It is bounded below rather than forbidden.
+  const slack = grass.rim.slack
   // The bill rebuilt from the LOD law rather than read off the class, so the
   // reported triangle count is checked against first principles and not against
   // itself.
   let billFull = 0
   let billDrawn = 0
   for (const tile of grass.tiles.values()) {
-    ledger += tile.veiled
+    ledger += tile.rimHidden
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       const d = Math.hypot(grass.instX[id], grass.instZ[id], grass.instY[id] - EYE)
       const vis = grass.batch.getVisibleAt(id)
+      const trigger = grass.rim.gone[id] * RIM_AT
       if (!vis) hidden++
-      if (!vis && d < grass.instGone[id]) hiddenButVisible++
-      if (vis && d > grass.instGone[id] + slack) shownButGone++
+      if (!vis && d < trigger) hiddenButVisible++
+      if (vis && d > trigger + slack) shownButGone++
       const band = LOD_BANDS.findIndex((b) => d < b)
       const tris = bank.tiers[band < 0 ? bank.cardTier : band].triangles
       billFull += tris
@@ -614,87 +638,107 @@ console.log('\n-- veil --')
   }
   // THE ONE THAT MATTERS. Nothing is hidden while any of it would still have
   // been drawn.
-  check(hiddenButVisible === 0, 'nothing is veiled while it is still on screen',
+  check(hiddenButVisible === 0, 'nothing is hidden while it is still inside its trigger',
     `${hiddenButVisible} cut early`)
-  check(shownButGone === 0, 'nothing past the veil threshold is left on the GPU',
+  check(shownButGone === 0, 'nothing past the rim threshold is left on the GPU',
     `${shownButGone} still submitted`)
-  // What the slack costs, at rest. These ARE fully dissolved and ARE drawn --
+  // What the slack costs, at rest. These ARE past the trigger and ARE drawn --
   // the honest price of not having to be right in the frame the tuft is needed.
-  check(standingPastGone - standingPastSlack < grass.placed * 0.02,
+  check(standingPastRim - standingPastSlack < grass.placed * 0.02,
     'the slack band is a rounding on the carpet',
-    `${standingPastGone - standingPastSlack} tufts inside ${slack.toFixed(2)} m of slack`)
-  check(hidden > grass.placed * 0.1, 'the veil is actually recovering something',
+    `${standingPastRim - standingPastSlack} tufts inside ${slack.toFixed(2)} m of slack`)
+  check(hidden > grass.placed * 0.1, 'the rim is actually recovering something',
     `${hidden} of ${grass.placed} hidden, ${((hidden / grass.placed) * 100).toFixed(1)}%`)
   // The stat the panel reads has to agree with the batch, or the triangle count
   // it reports is fiction.
-  check(ledger === hidden && grass.stats.veiled === hidden,
-    'the veil ledger agrees with the batch',
-    `${grass.stats.veiled} stat, ${ledger} tiles, ${hidden} batch`)
-  // The veiled instances are the over-kept ones and nothing else: the fade
+  check(ledger === hidden && grass.stats.rimHidden === hidden,
+    'the rim ledger agrees with the batch',
+    `${grass.stats.rimHidden} stat, ${ledger} tiles, ${hidden} batch`)
+  // THE STEADY STATE IS BINARY, which is the whole point of the clock: an
+  // instance is hidden or whole, never parked at partial coverage. `isHidden`
+  // is the rim's own answer and `getVisibleAt` is the batch's; they disagreeing
+  // would mean a transition that never retired.
+  let disagree = 0
+  for (const tile of grass.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      if (grass.rim.isHidden(id) === grass.batch.getVisibleAt(id)) disagree++
+    }
+  }
+  check(disagree === 0, 'the rim and the batch agree about every instance',
+    `${disagree} disagreements`)
+  // The hidden instances are the over-kept ones and nothing else: the fade
   // section counted them independently, one tile-thinning law against one
   // per-instance one.
-  check(hidden === standingPastSlack, 'the veil hides exactly the tile over-keep',
-    `${hidden} veiled, ${standingPastSlack} over-kept past the slack`)
+  check(hidden === standingPastSlack, 'the rim hides exactly the tile over-keep',
+    `${hidden} hidden, ${standingPastSlack} over-kept past the slack`)
 
-  // EVERYTHING VEILED IS A CARD, and that is a proof rather than a measurement:
-  // no tuft is given a dissolve distance under FULL_RADIUS (rank u < 1, so
-  // fullRadius/u > fullRadius), and FULL_RADIUS is also the last LOD band, so
-  // anything past its own dissolve distance is past the last band. The veil can
-  // therefore never take a 6-triangle tuft out from under the player's feet --
-  // which is the failure this pins, and it breaks the moment LOD_BANDS is
-  // allowed to reach past FULL_RADIUS.
+  // NOTHING IS HIDDEN NEAR THE PLAYER, and that is a proof rather than a
+  // measurement: no tuft is given a dissolve distance under FULL_RADIUS (rank
+  // u < 1, so fullRadius/u > fullRadius), so the closest trigger any tuft in the
+  // world can carry is FULL_RADIUS * RIM_AT. Nothing may be hidden inside that,
+  // and it breaks the moment LOD_BANDS is allowed to reach past FULL_RADIUS.
   check(LOD_BANDS[LOD_BANDS.length - 1] <= FULL_RADIUS,
     'the last LOD band does not reach past the full-density radius',
     `${LOD_BANDS[LOD_BANDS.length - 1]} m band, ${FULL_RADIUS} m full`)
-  let veiledMesh = 0
+  let hiddenMesh = 0
+  let nearestHidden = Infinity
   for (const tile of grass.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       if (grass.batch.getVisibleAt(id)) continue
       const d = Math.hypot(grass.instX[id], grass.instZ[id], grass.instY[id] - EYE)
-      if (LOD_BANDS.some((b) => d < b)) veiledMesh++
+      nearestHidden = Math.min(nearestHidden, d)
+      if (LOD_BANDS.some((b) => d < b)) hiddenMesh++
     }
   }
-  check(veiledMesh === 0, 'nothing veiled was a mesh tier', `${veiledMesh} mesh tufts hidden`)
+  check(nearestHidden >= FULL_RADIUS * RIM_AT - 1e-6,
+    'nothing is hidden inside the closest trigger any tuft can carry',
+    `nearest hidden ${nearestHidden.toFixed(2)} m, floor ${(FULL_RADIUS * RIM_AT).toFixed(2)} m`)
+  // The sliver between that floor and the last LOD band is the only place a
+  // still-meshed tuft can be hidden, and only the top few percent of ranks reach
+  // it. Bounded rather than forbidden: the alternative is flooring every
+  // gone-distance at FULL_RADIUS / RIM_AT, which would bend the thinning law
+  // near the full-density radius to buy back a handful of 6-triangle tufts at
+  // eighteen metres.
+  check(hiddenMesh < grass.placed * 0.005,
+    'the mesh tiers are all but untouched by the rim',
+    `${hiddenMesh} of ${grass.placed} hidden inside ${LOD_BANDS[LOD_BANDS.length - 1]} m`)
 
   // Ids are NOT freed. Re-showing a tuft the player is walking toward has to be
   // a byte, not a regrown tile -- and a freed id would have to be re-placed
   // from the RNG stream, which is the expensive path this avoids.
   check(grass.maxInstances - grass.freeCount === grass.placed,
-    'a veiled instance keeps its pool id', `${grass.maxInstances - grass.freeCount} held`)
+    'a hidden instance keeps its pool id', `${grass.maxInstances - grass.freeCount} held`)
 
   // And the triangle bill has to have actually come down, or none of the above
   // bought anything. `billFull` is what the carpet would cost with every
-  // resident tuft submitted, which is what it cost before the veil existed.
+  // resident tuft submitted, which is what it cost before the sweep existed.
   check(st.tris === billDrawn, 'the reported bill is the drawn bill',
     `${st.tris} reported, ${billDrawn} from the LOD law`)
-  check(billDrawn < billFull * 0.88, 'the veil takes a real bite out of the bill',
+  check(billDrawn < billFull * 0.88, 'the rim takes a real bite out of the bill',
     `${(billFull / 1000).toFixed(1)}k resident, ${(billDrawn / 1000).toFixed(1)}k drawn, ` +
     `${(((billFull - billDrawn) / billFull) * 100).toFixed(1)}% recovered`)
 }
 
-// THE VEIL UNDER MOTION, which is the only place it can go wrong. A stationary
+// THE RIM UNDER MOTION, which is the only place it can go wrong. A stationary
 // camera settles and every decision is exact; a moving one is acting on
-// decisions up to VEIL_PHASES frames old, and the failure that buys is a tuft
-// still hidden after it has come back inside its own fade -- a pop, and exactly
-// the pop the dither exists to prevent.
+// decisions up to RIM_PHASES frames old, and the failure that buys is a tuft
+// still hidden after the camera has come back inside its trigger -- a hole in
+// the carpet that fills in late.
 //
-// So this reconstructs the SHADER'S OWN opacity for every hidden tuft, every
-// frame, and asserts it is zero. Nothing is allowed to be hidden while any part
-// of it would have been drawn. The speed profiles are chosen for what they
-// stress rather than for realism: a constant sprint stresses the sweep period,
-// a standing start and a ramp stress the slack estimate (both were caught here
-// -- an index-based phase let tiles miss their turn, and a slack sized to the
-// old speed left 5% of a tuft showing when the player broke into a run), and
-// the jitter stresses both at once.
+// So this measures, every frame, how far INSIDE its own trigger the deepest
+// hidden tuft is. Zero is not the bound and never was under the clock: the
+// re-show test carries RIM_HYST of hysteresis, so a hidden tuft is allowed to
+// be up to that far inside before the sweep brings it back. Anything beyond it
+// is the sweep being late, which is the failure this exists to catch.
+//
+// The speed profiles are chosen for what they stress rather than for realism: a
+// constant sprint stresses the sweep period, a standing start and a ramp stress
+// the slack estimate (both were caught here -- an index-based phase let tiles
+// miss their turn, and a slack sized to the old speed left 5% of a tuft showing
+// when the player broke into a run), and the jitter stresses both at once.
 {
-  const smoothstep = (e0, e1, x) => {
-    const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)))
-    return t * t * (3 - 2 * t)
-  }
-  // Must match FADE_BAND in material.js -- the fraction of `gone` the dissolve
-  // is spread over.
-  const FADE_BAND = 0.85
   const PROFILES = {
     'a stroll': () => 1.5 / 60,
     'a sprint': () => 12 / 60,
@@ -707,7 +751,7 @@ console.log('\n-- veil --')
     const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
     g.place(0, 0)
     let x = 0
-    for (let f = 0; f < VEIL_PHASES; f++) g.update(x, EYE, 0)
+    for (let f = 0; f < RIM_PHASES; f++) g.update(x, EYE, 0)
     let worst = 0
     for (let f = 0; f < 180; f++) {
       x += step(f)
@@ -716,16 +760,56 @@ console.log('\n-- veil --')
         for (let k = 0; k < tile.n; k++) {
           const id = tile.ids[k]
           if (g.batch.getVisibleAt(id)) continue
-          const gone = g.instGone[id]
+          const trigger = g.rim.gone[id] * RIM_AT
           const d = Math.hypot(g.instX[id] - x, g.instZ[id], g.instY[id] - EYE)
-          worst = Math.max(worst, 1 - smoothstep(gone * FADE_BAND, gone, d))
+          worst = Math.max(worst, trigger - d)
         }
       }
     }
-    check(worst === 0, `nothing pops in under ${name}`,
-      `worst hidden tuft at ${(worst * 100).toFixed(2)}% opacity`)
+    check(worst <= RIM_HYST + 1e-6, `nothing is left hidden past the hysteresis under ${name}`,
+      `deepest hidden tuft ${worst.toFixed(2)} m inside its trigger, ${RIM_HYST} m allowed`)
     g.dispose()
   }
+}
+
+// THE CLOCK WRAPS, and a transition stamped either side of the wrap has to
+// retire anyway. `setPropClock` folds at PROP_CLOCK_WRAP so the packing stays in
+// range, which means a fade started at 1023.9 s reads an age of MINUS a thousand
+// seconds on the next frame. `_retire` treats a negative age as out of the
+// window in the other direction and finishes the transition; without that the
+// prop freezes at whatever coverage its opening frame had and stays there for
+// seventeen minutes, which is the permanent stipple in its purest form.
+//
+// Driven at the rim rather than walked into, because reaching the wrap by
+// updating is seventeen minutes of frames.
+{
+  const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+  g.place(0, 0)
+  for (let f = 0; f < RIM_PHASES; f++) g.update(0, EYE, 0)
+  const id = [...g.tiles.values()].flatMap((t) => [...t.ids.slice(0, t.n)])
+    .find((i) => !g.rim.isHidden(i))
+  if (id === undefined) throw new Error('check-grass: no visible tuft to wrap the clock under')
+
+  setPropClock(0.05)
+  g.rim._startFade(id, getPropClock(), false)
+  check(g.rim.isBusy(id) && g.batch._colorsTexture.image.data[id * 4 + 3] < 0,
+    'a rim fade stamped just after a wrap is in flight', `slot ${g.batch._colorsTexture.image.data[id * 4 + 3].toFixed(3)}`)
+  // The clock has gone BACKWARDS relative to the stamp, which is what a wrap
+  // looks like from inside a transition that straddles it.
+  setPropClock(1023.9)
+  g.update(0, EYE, 0)
+  check(!g.rim.isBusy(id) && g.rim.flightN === 0,
+    'and the wrap retires it instead of freezing it at its opening frame',
+    `state resolved, ${g.rim.flightN} still in flight`)
+  check(g.batch._colorsTexture.image.data[id * 4 + 3] === 1,
+    'and the slot goes back to the never-fade sentinel',
+    `slot ${g.batch._colorsTexture.image.data[id * 4 + 3]}`)
+  // It was a fade OUT, so the resolved state is hidden -- the wrap must not turn
+  // a departure into an arrival.
+  check(g.rim.isHidden(id) && !g.batch.getVisibleAt(id),
+    'and it lands where the transition was headed, not back where it started')
+  setPropClock(0)
+  g.dispose()
 }
 
 // --- 6. per-instance variation ----------------------------------------------
@@ -826,9 +910,10 @@ console.log('\n-- lod --')
     }
   }
   check(wrongTier === 0, 'every tuft is on the tier its distance names', `${wrongTier} off`)
-  // Over the DRAWN carpet, not the resident one -- everything the veil hid was
-  // a card (see the veil section), so counting those would flatter this.
-  const drawn = st.placed - st.veiled
+  // Over the DRAWN carpet, not the resident one -- all but a handful of what the
+  // rim hid was a card (see the rim section), so counting those would flatter
+  // this.
+  const drawn = st.placed - st.rimHidden
   check(counts[bank.cardTier] / drawn > 0.75, 'the card tier carries most of the carpet',
     `${((counts[bank.cardTier] / drawn) * 100).toFixed(0)}% of ${drawn} drawn`)
   console.log(`       tiers: ${counts.map((c, i) => `${bank.tiers[i].name} ${c}`).join('   ')}`)
@@ -974,7 +1059,7 @@ stripBank.tiers[0].geometry.dispose()
 
 const strips = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'strips' })
 strips.place(0, 0)
-for (let i = 0; i < VEIL_PHASES; i++) strips.update(0, EYE, 0)
+for (let i = 0; i < RIM_PHASES; i++) strips.update(0, EYE, 0)
 const ss = strips.stats
 
 // Facing area per triangle, both systems, at their own mean instance height.
@@ -1094,7 +1179,7 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
 // arithmetic and still be half the grass in the ring the player occupies, which
 // is exactly what "it looks sparser" turned out to be.
 //
-// Measured per ring off the real scatter, so the graded thinning and the veil
+// Measured per ring off the real scatter, so the graded thinning and the rim
 // are in it. Facing area is summed from the tier geometry itself: every quad is
 // a vertical card of horizontal width w, and a FIXED card seen from a uniform
 // yaw shows 2/pi of its width, which is the same factor the far-field
@@ -1122,7 +1207,7 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
   const sweep = (g, per) => {
     const f = new Array(RINGS.length - 1).fill(0)
     for (let id = 0; id < g.maxInstances; id++) {
-      if (g.instVis[id] === 0) continue
+      if (!g.batch.getVisibleAt(id)) continue
       const d = Math.hypot(g.instX[id], g.instZ[id])
       const r = ringOf(d)
       if (r >= 0) f[r] += per(d)
@@ -1153,7 +1238,7 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
 // the only failure mode worth gating is losing track of which number is which:
 // the ask ending up in a comment while the bed quietly delivers something else.
 // So this measures three separate things -- the law's own arithmetic, the bed on
-// the ground against that law, and the veil against it -- because a mismatch in
+// the ground against that law, and the rim against it -- because a mismatch in
 // any one of them is silent.
 {
   const RINGS = [0, LOD_BANDS[0], LOD_BANDS[1], 40, DRAW_RADIUS]
@@ -1190,11 +1275,23 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
   // The law is one thing; what actually got scattered is another. Density here
   // is VISIBLE instances per square metre, so it exercises the whole chain --
   // the quantised level table, the per-tile nearest-corner distance, the rank
-  // test and the veil -- against the continuous law they are all approximating.
+  // test and the rim -- against the continuous law they are all approximating.
+  //
+  // THE RIM PUTS ITS OWN FACTOR IN, and it is not a fudge either. A strip is
+  // drawn while `_goneFor(u) * RIM_AT > d`, which is the same as `_goneFor(u) >
+  // d / RIM_AT`, which is the law's own keep-fraction read a little further out
+  // than the ring actually is. So the bed to expect is the law at `d / RIM_AT`,
+  // and past `radius * RIM_AT` it is nothing at all -- `_goneFor` clamps to the
+  // draw radius, so the outermost shell holds the ranks that would have run
+  // further and now stop there. The old smoothstep drew that shell at falling
+  // coverage instead of not at all; the cut sits at the midpoint of the band it
+  // spanned, so the COVERAGE either delivers is the same and only the instance
+  // count moved. See rim.js on why the trigger is the midpoint.
+  const drawnKeep = (d) => (d / RIM_AT >= strips.radius ? 0 : strips._keepAt(d / RIM_AT))
   const perRing = (g) => {
     const n = new Array(RINGS.length - 1).fill(0)
     for (let id = 0; id < g.maxInstances; id++) {
-      if (g.instVis[id] === 0) continue
+      if (!g.batch.getVisibleAt(id)) continue
       const d = Math.hypot(g.instX[id], g.instZ[id])
       for (let i = 0; i < n.length; i++) if (d >= RINGS[i] && d < RINGS[i + 1]) n[i]++
     }
@@ -1202,20 +1299,21 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
   }
   const got = perRing(strips)
   const want = RINGS.slice(0, -1).map((r0, i) =>
-    STRIP_DENSITY * ringMean((d) => base(d) / stripThinAt(d), r0, RINGS[i + 1]))
+    STRIP_DENSITY * ringMean(drawnKeep, r0, RINGS[i + 1]))
   const bedReport = got
     .map((v, i) => `${RINGS[i]}-${RINGS[i + 1]}m ${v.toFixed(2)} vs ${want[i].toFixed(2)}`).join('  ')
   check(got.every((v, i) => Math.abs(v / want[i] - 1) < 0.1),
-    'and the bed on the ground is the bed the law describes', `${bedReport} /m2`)
+    'and the bed on the ground is the bed the law describes, read at the rim trigger',
+    `${bedReport} /m2`)
 
-  // THE VEIL AND THE THINNING CANNOT BE ALLOWED TO DISAGREE. _goneFor inverts
+  // THE RIM AND THE THINNING CANNOT BE ALLOWED TO DISAGREE. _goneFor inverts
   // the keep law to decide where ONE instance dissolves; the level table decides
   // where its whole TILE thins. Drift between them does not throw -- it leaves
   // grass standing invisible, or dissolves grass the tiles still count.
   //
   // The invariant that matters is exact and is checked first: the distance
   // _goneFor returns falls inside the bracket whose two keep-fractions straddle
-  // u, so the veil can never put an instance on the wrong side of a level.
+  // u, so the rim can never put an instance on the wrong side of a level.
   //
   // Against the CONTINUOUS law it is a geometric interpolation between two grid
   // samples, exact wherever the law is a straight power -- everywhere except the
@@ -1389,15 +1487,15 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
     'and the whole of STRIP_TILES is drawn from, which is where the variety now comes from',
     counts.map((c) => `${c}:${((seen.get(c) / n) * 100).toFixed(0)}%`).join(' '))
 }
-check(ss.tris === (ss.placed - ss.veiled) * 2, 'every drawn strip costs exactly two triangles',
+check(ss.tris === (ss.placed - ss.rimHidden) * 2, 'every drawn strip costs exactly two triangles',
   `${(ss.tris / 1000).toFixed(1)}k`)
 // The whole claim, end to end and measured rather than derived. Stated PER
 // INSTANCE, because that is the part of it that does not move when STRIP_MATCH
 // does: a strip is two triangles flat, where a tuft averages its ladder, and how
 // far apart the two BEDS end up is then a consequence of the density the
 // invariant asks for rather than a property of the system. Both are printed.
-const tuftPer = st.tris / (st.placed - st.veiled)
-const stripPer = ss.tris / (ss.placed - ss.veiled)
+const tuftPer = st.tris / (st.placed - st.rimHidden)
+const stripPer = ss.tris / (ss.placed - ss.rimHidden)
 check(stripPer < tuftPer, 'a strip instance costs less than a tuft instance',
   `${stripPer.toFixed(2)} tri vs ${tuftPer.toFixed(2)} across the tuft ladder ` +
   `(${(stripPer / tuftPer).toFixed(2)}x)`)

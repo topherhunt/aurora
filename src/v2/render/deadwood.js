@@ -5,8 +5,9 @@ import {
   bakeDeadwoodImpostors,
   deadwoodImpostorLayers,
 } from '../../props/deadwood-bank.js'
-import { DEADWOOD_BANDS, DEADWOOD_TINT } from '../../props/deadwood.js'
-import { createPropMaterial, setSnowLine, setPropFadeAt } from '../../material.js'
+import { DEADWOOD_LOD_AT, DEADWOOD_CULL, DEADWOOD_TINT } from '../../props/deadwood.js'
+import { createPropMaterial, setSnowLine } from '../../material.js'
+import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -36,13 +37,20 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //    meets the hill. Both kinds still sink by their own half-thickness times the
 //    local slope, which is what closes the gap on the uphill side.
 //
-// 2. THE BANDS ARE THE USER'S, AND THERE IS NO CROSS TIER. 0-10 m the real mesh,
-//    10-20 m the 5-gon, billboard to 100 m and gone. DESIGN.md §5's parallax
-//    rule would put a flat card's honest range for a 0.45 m-deep log at ~13 m,
-//    so the 20 m crossover is being taken slightly early on the rule's terms and
-//    paid for by the prop's own shape: a near-cylinder is the one silhouette a
-//    flat card is nearly RIGHT for, because rotating a cylinder about its long
-//    axis does not change its outline.
+// 2. THE BANDS SCALE WITH THE PIECE, AND THERE IS NO CROSS TIER. DEADWOOD_LOD_AT
+//    is metres of camera distance per metre of the piece's longest axis, so a
+//    chest-high stump gets the mesh to ~10 m, the 5-gon to ~20 and a billboard
+//    out to the 100 m cull -- the ladder this layer shipped with -- while a 20 m
+//    log holds a mesh across the whole draw radius. That is not generosity, it
+//    is the same apparent size: distance is measured from the instance ORIGIN,
+//    so under a flat ladder a player standing at a long log's END was looking at
+//    T1 from arm's length, which is the artefact this ladder was rewritten to
+//    close. DESIGN.md §5's parallax rule would put a flat card's honest range
+//    for a 0.45 m-deep log at ~13 m, so the stump's ~20 m crossover is being
+//    taken slightly early on the rule's terms and paid for by the prop's own
+//    shape: a near-cylinder is the one silhouette a flat card is nearly RIGHT
+//    for, because rotating a cylinder about its long axis does not change its
+//    outline.
 //
 //    THE LOG'S CARD IS FIXED AND THE SNAG'S SPINS, which is a change from what
 //    this tier first shipped as. Spinning is correct for a stump -- a solid of
@@ -63,8 +71,12 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //
 // WHAT IT COSTS. At 0.006 pieces/m^2, FULL_RADIUS 45 and DRAW_RADIUS 100 the
 // graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 38 + 93 = ~131 standing, of which
-// about 2 are inside 10 m and about 8 inside 20. So the bill is ~2 x 76 + ~6 x 44
-// + ~123 x 2 = ~660 triangles for the whole layer. It is the cheapest scatter in
+// about 2 are on a mesh tier at any moment and a handful more on the coarse one.
+// So the bill is ~2 x 76 + ~6 x 44 + ~123 x 2 = ~660 triangles for the whole
+// layer. The size-relative ladder moves that number around rather than up: the
+// big pieces that now hold a mesh further out are the rare tail of LOG_SKEW, and
+// a 20 m log meshed at 60 m is 126 triangles for the most conspicuous object in
+// the scene. It is the cheapest scatter in
 // the world by an order of magnitude, and it is cheap for the obvious reason:
 // dead wood is meant to be something you come across, not something you wade
 // through.
@@ -84,19 +96,33 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 const DENSITY = 0.006
 
 // Metres. Inside this every piece that rolled one is standing. Comfortably past
-// the last mesh band so the thinning only ever starts where a log is already a
-// single spun card.
+// the last mesh band FOR A TYPICAL PIECE -- a chest-high stump cards at ~20 m --
+// so the thinning only ever starts where dead wood is already a single card.
+//
+// The size-relative ladder puts one exception under that sentence and it is
+// worth naming rather than chasing: a rare 20 m log is still on a mesh tier when
+// the graded thinning reaches it, so it can dissolve out while meshed. That is a
+// dithered fade and not a pop (see render/rim.js), and the alternative -- ranking
+// pieces by size so the big ones are thinned last, as rocks.js's `_rankOf` does
+// -- would make the scatter's density a function of the size roll.
 const FULL_RADIUS = 45
 
 // The user's ladder, straight out of the generator so the bench and the world
 // cannot drift apart: mesh, coarse mesh, billboard, cull.
-const LOD_BANDS = DEADWOOD_BANDS.slice(0, 2)
-const DRAW_RADIUS = DEADWOOD_BANDS[DEADWOOD_BANDS.length - 1]
+//
+// DEADWOOD_LOD_AT is in metres of camera distance PER METRE of the piece's own
+// ladder size, so what a frame compares is `d2 < size^2 * k^2` -- the size term
+// is per instance and only the squared coefficient is precomputable. Same shape
+// rocks.js's LOD_SQ has, for the same reason.
+const LOD_SQ = Float32Array.from(DEADWOOD_LOD_AT, (k) => k * k)
+const LOD_LAST = DEADWOOD_LOD_AT[DEADWOOD_LOD_AT.length - 1]
+const DRAW_RADIUS = DEADWOOD_CULL
 
 // Steps per octave in the per-tile keep-fraction, and the dead band on a tier
 // boundary. Both are the forest's values for the forest's reasons.
 const QUANT = 4
 const LOD_HYSTERESIS = 0.12
+const LOD_SQ_OUT = Float32Array.from(DEADWOOD_LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
 
 // Metres per tile. The forest's 25 rather than the fern's 12, because at this
 // density a 12 m tile holds under one candidate and the keep-fraction has
@@ -341,7 +367,6 @@ export class Deadwood {
     this.tileSpan = Math.ceil(radius / TILE) + 1
     this.radiusSq = radius * radius
     this.evictSq = (radius + TILE * 1.5) ** 2
-    this.nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
 
     this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / fullRadius) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
@@ -363,6 +388,10 @@ export class Deadwood {
     this.vLong = Float32Array.from(bank.variants, (v) => v.long)
     this.vHeight = Float32Array.from(bank.variants, (v) => v.height)
     this.vRadius = Float32Array.from(bank.variants, (v) => v.radius)
+    // The metre DEADWOOD_LOD_AT counts in, per variant and AS BUILT -- an
+    // instance's own ladder size is this times its uniform scale, which is what
+    // `instSize` holds.
+    this.vLod = Float32Array.from(bank.variants, (v) => v.lodSize)
 
     // The scale band each variant needs in order to land inside its kind's METRE
     // band, worked out once here because it is a fact about the built geometry
@@ -450,9 +479,14 @@ export class Deadwood {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
-
-    this.bandSq = Float32Array.from(LOD_BANDS, (b) => b * b)
-    this.bandSqOut = Float32Array.from(LOD_BANDS, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
+    // The instance's own ladder size in world metres: its variant's longest axis
+    // as built, times the scale it was placed at. Stored rather than recomputed
+    // because `update` needs it for every near instance every frame and the
+    // scale is not otherwise kept -- it lives in the batch's matrix.
+    this.instSize = new Float32Array(this.maxInstances)
+    // The rim dissolve: which pieces are drawn, which are hidden, and the
+    // quarter second between. No LOD cross-fade here for it to preempt.
+    this.rim = new RimFade(this.batch, this.maxInstances)
 
     // key -> { tx, tz, ids, rank, n, q, u, near, queued }
     this.tiles = new Map()
@@ -772,6 +806,7 @@ export class Deadwood {
     const farTris = this.farTier === 'mesh' ? this.farMeshTris : this.tierTris[cardTier]
     let tris = 0
     let nearCount = 0
+    this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
@@ -793,17 +828,33 @@ export class Deadwood {
 
       const dx = (tile.tx + 0.5) * TILE - camX
       const dz = (tile.tz + 0.5) * TILE - camZ
-      if (dx * dx + dz * dz >= this.nearSq) {
+      // PER TILE rather than one number for the layer, which is what the
+      // size-relative ladder forced. The blanket demote is only sound past the
+      // distance at which nothing in the tile can still be a mesh, and that
+      // distance now depends on what is IN the tile: a 35 m log holds a mesh to
+      // 350 m, further than the layer is ever drawn, so a single bound taken
+      // over the whole bank would be larger than the draw radius and this fast
+      // path would never fire again. `tile.maxSize` is the largest ladder size
+      // the tile actually placed, kept up to date by `_growTile` and `_thin`.
+      const nearReach = tile.maxSize * LOD_LAST + NEAR_MARGIN
+      if (dx * dx + dz * dz >= nearReach * nearReach) {
         if (tile.near) this._demote(tile)
         tile.near = false
+        this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
         // Walked rather than multiplied out, because the card tier is NOT
         // uniform here the way the mushrooms' is: every variant gets its own
         // quad, and a quad is two triangles today only by happy accident of
-        // `planes: 1`. Cheap either way -- a far tile holds one or two pieces.
-        for (let k = 0; k < tile.n; k++) tris += farTris[this.variantAt[tile.ids[k]]]
+        // `planes: 1`. Cheap either way -- a far tile holds one or two pieces,
+        // and walking is also what lets the rim's hidden ones be left out.
+        for (let k = 0; k < tile.n; k++) {
+          const id = tile.ids[k]
+          if (this.rim.isHidden(id)) continue
+          tris += farTris[this.variantAt[id]]
+        }
         continue
       }
       tile.near = true
+      this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
       nearCount++
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
@@ -817,10 +868,20 @@ export class Deadwood {
         const d2 = ex * ex + ey * ey + ez * ez
         const cur = this.tierAt[i]
 
+        // Nothing to re-tier on a piece the rim is not drawing.
+        if (this.rim.isHidden(i)) continue
+
+        // Compared against the piece's OWN size squared: the thresholds are
+        // metres per metre, so both sides of the test scale together and every
+        // piece of dead wood in the world steps at the same apparent size. The
+        // hysteresis band rides on the same product, so a piece straddling a
+        // boundary needs to move 12% of ITS band -- not of a fixed one -- to
+        // step back.
+        const sizeSq = this.instSize[i] * this.instSize[i]
         let tier = cardTier
-        for (let t = 0; t < this.bandSq.length; t++) {
+        for (let t = 0; t < LOD_SQ.length; t++) {
           const sticky = cur >= 0 && cur <= t
-          if (d2 < (sticky ? this.bandSqOut[t] : this.bandSq[t])) {
+          if (d2 < sizeSq * (sticky ? LOD_SQ_OUT[t] : LOD_SQ[t])) {
             tier = t
             break
           }
@@ -915,6 +976,7 @@ export class Deadwood {
     const rank = tile ? tile.rank : new Float32Array(this.perTile)
     let n = tile ? tile.n : 0
     let grewLogs = 0
+    let maxSize = tile ? tile.maxSize : 0
 
     const { altLo, altSpan } = this.field.bands
     const snowBand = this.layers.snow.band
@@ -995,6 +1057,9 @@ export class Deadwood {
       this.instX[id] = x
       this.instY[id] = this._seated.y
       this.instZ[id] = z
+      const lodSize = this.vLod[variant] * scale
+      this.instSize[id] = lodSize
+      if (lodSize > maxSize) maxSize = lodSize
 
       this._p.set(x, this._seated.y, z)
       // Yaw first, then pitch about a WORLD axis. Composed in that order --
@@ -1033,16 +1098,16 @@ export class Deadwood {
       )
       this.batch.setColorAt(id, this._c)
 
-      // Must follow setColorAt: the fade rides in the unused alpha of the
-      // batch's colour texture. A piece of rank u survives while the local
-      // keep-fraction fullRadius/d exceeds u, so it goes at fullRadius/u -- or
-      // at the draw radius, whichever comes first.
-      setPropFadeAt(this.batch, id, Math.min(this.fullRadius / u, this.radius))
-
       // Born as a card; `update` promotes the near ones on the very next frame.
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
-      this.batch.setVisibleAt(id, true)
+
+      // Must follow setColorAt: the fade rides in the unused alpha of the
+      // batch's colour texture. A piece of rank u survives while the local
+      // keep-fraction fullRadius/d exceeds u, so it goes at fullRadius/u -- or
+      // at the draw radius, whichever comes first. Hidden until the rim's sweep
+      // has looked at it, which the tile below is marked due for.
+      this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
     }
 
     this.placed += n - (tile ? tile.n : 0)
@@ -1052,8 +1117,12 @@ export class Deadwood {
       tile.q = q
       tile.u = uNew
       tile.logs += grewLogs
+      tile.maxSize = maxSize
+      this.rim.markDue(tile)
     } else {
-      this.tiles.set(key, { tx, tz, ids, rank, n, q, u: uNew, logs: grewLogs, near: false, queued: false })
+      this.tiles.set(key, {
+        tx, tz, ids, rank, n, q, u: uNew, logs: grewLogs, maxSize, near: false, queued: false,
+      })
     }
   }
 
@@ -1061,6 +1130,11 @@ export class Deadwood {
   _thin(tile, uNew) {
     let w = 0
     let logs = 0
+    // Recomputed rather than left alone: thinning can take the tile's only big
+    // log away, and a stale bound would hold the whole tile on the per-instance
+    // path for as long as it stays resident. It is a max over what survives, so
+    // it has to be built from scratch on the compacting pass.
+    let maxSize = 0
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       if (tile.rank[k] < uNew) {
@@ -1068,9 +1142,11 @@ export class Deadwood {
         tile.rank[w] = tile.rank[k]
         w++
         if (this.isLog[this.variantAt[id]]) logs++
+        if (this.instSize[id] > maxSize) maxSize = this.instSize[id]
         continue
       }
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
@@ -1078,6 +1154,8 @@ export class Deadwood {
     this.logs -= tile.logs - logs
     tile.logs = logs
     tile.n = w
+    tile.maxSize = maxSize
+    this.rim.markDue(tile)
   }
 
   /** Put a whole tile back to the card tier in one pass. */
@@ -1095,11 +1173,13 @@ export class Deadwood {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n
     this.logs -= tile.logs
+    this.rim.releaseTile(tile)
   }
 
   _geometryFor(tier, variant) {
@@ -1152,6 +1232,8 @@ export class Deadwood {
       placed: this.placed,
       logs: this.logs,
       snags: this.placed - this.logs,
+      rimHidden: this.rim.hiddenCount,
+      rimFading: this.rim.flightN,
       tris: this.tris,
       tiles: this.tiles.size,
       nearTiles: this.nearTiles,

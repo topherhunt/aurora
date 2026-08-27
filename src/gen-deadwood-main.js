@@ -9,10 +9,19 @@ import {
   DEADWOOD_TIERS,
   DEADWOOD_VARIANTS,
   DEADWOOD_TINT,
+  DEADWOOD_LOD_AT,
+  DEADWOOD_CULL,
+  deadwoodLodSize,
   LOG_DEFAULTS,
   MAX_JAG,
   JAG_FULL,
 } from './props/deadwood.js'
+import {
+  cardAzimuth,
+  deadwoodImpostorLayer,
+  deadwoodImpostorLayers,
+} from './props/deadwood-bank.js'
+import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE, IMAGE_LAYERS } from './textures.js'
 import { createPropMaterial, setSnow, setMoss, MOSS, SNOW_ROCK, mossCutFor } from './material.js'
@@ -89,7 +98,7 @@ const SPECIES = [
 // bare spar and `jag1` at its ceiling shatters the top into splinters half a
 // metre long, and seeing both is how you learn where the useful end is.
 const SLIDERS = [
-  ['tier', 0, 1, 1, 'which mesh tier is drawn: 0 = T0 (15 sides, 0-10 m), 1 = T1 (5 sides and flat stubs, 10-20 m). Both are the SAME swept surface at different resolutions -- a tier change loses facets, it does not swap in a different log. Past 20 m the world draws a billboard instead of either'],
+  ['tier', 0, 1, 1, 'which mesh tier is drawn: 0 = T0 (15 sides), 1 = T1 (5 sides and flat stubs). Both are the SAME swept surface at different resolutions -- a tier change loses facets, it does not swap in a different log. Where the world steps between them is RELATIVE to the piece: DEADWOOD_LOD_AT holds T0 to 5x and T1 to 10x the longest axis, so a 2 m stump cards at 20 m and a 20 m log is still a mesh at 200. The ladder panel prints those distances for the piece on screen'],
   ['length', 0.4, 12, 0.05, 'along the spine, in metres: a snag\'s height, a log\'s length. Absolute rather than relative, unlike a rock -- everybody knows how big a log is, and a 0.9 m trunk across a path is a different OBJECT from a 0.3 m one closer up'],
   ['butt', 0.1, 1.2, 0.01, 'DIAMETER at the base, in metres'],
   ['taper', 0, 0.8, 0.01, 'fraction of the butt diameter lost by the far end. Never reaches 1: dead wood is broken off, not sharpened'],
@@ -243,17 +252,25 @@ scene.add(rule)
 const atlas = buildTextureArray()
 
 function makeMaterial() {
-  const m = createPropMaterial(atlas)
+  // WITH THE BILLBOARD LAYERS, which is what makes the CARD button show a card
+  // rather than a quad nailed to the ground. A snag's quad is built with
+  // `upNormal`, and the shader spins exactly those -- layer in this list AND a
+  // vertical vertex normal (see CARD_UP_MARK in material.js). A log's quad is not
+  // marked, so it stays in the plane it was photographed in even though its layer
+  // is listed. The bench therefore gets the world's own behaviour for free, and
+  // if the two ever diverge it is visible here first.
+  const m = createPropMaterial(atlas, { billboardLayers: deadwoodImpostorLayers() })
   // The whole family is aged by a multiply on the material rather than by a
   // darkened set of atlas layers -- see DEADWOOD_TINT. The bench has to wear it
-  // too or the bench is showing live bark.
+  // too or the bench is showing live bark. syncMaterial reapplies it every frame
+  // the brightness slider moves.
   m.color.setHex(DEADWOOD_TINT)
   const arrayPatch = m.onBeforeCompile
   m.onBeforeCompile = (shader, r) => {
     arrayPatch(shader, r)
     wrapLambert(shader)
   }
-  m.customProgramCacheKey = () => 'gen-deadwood-array-wrap-v1'
+  m.customProgramCacheKey = () => 'gen-deadwood-array-wrap-billboard-v1'
   return m
 }
 
@@ -267,7 +284,12 @@ function syncMaterial() {
   // amounts of each.
   setSnow(seasonOn ? seasonSnow : params.snow)
   setMoss(seasonOn ? seasonMoss : params.moss)
-  material.color.setScalar(1).multiplyScalar(params.brightness)
+  // FROM THE TINT, not from white. This used to be `setScalar(1)`, which threw
+  // DEADWOOD_TINT away on the first refresh and left the bench drawing live bark
+  // through a material the world browns -- invisible until you put a baked card
+  // (which carries the tint in its texels) next to the mesh, which is exactly
+  // what the CARD button does.
+  material.color.setHex(DEADWOOD_TINT).multiplyScalar(params.brightness)
   material.wireframe = wireframe
   material.needsUpdate = true
 }
@@ -301,6 +323,15 @@ const GALLERY_N = GALLERY_COLS * GALLERY_ROWS
 let mode = 'one'
 let wireframe = false
 let showGrid = true
+
+// Draw the billboard instead of the mesh. NOT a mode and not a camera move: the
+// question a card asks is "does this still read as a log from where I am
+// standing", and you cannot answer it if pressing the button moves the view or
+// changes the layout. So it composes with all four -- the gallery becomes twelve
+// cards, the ladder becomes three copies of the one card, and PAIR is the view it
+// was really built for, because the snag's card and the log's card are two
+// different KINDS of billboard and that is only visible side by side.
+let cardMode = false
 
 // SEASONS is not a mode -- see the header. It drives the two global uniforms
 // through a year over whatever layout is up.
@@ -353,13 +384,64 @@ function rebuild() {
   let tris = 0
   let verts = 0
   let bytes = 0
-  for (const geo of geos) {
-    tris += geo.userData.deadwood.triangles
-    verts += geo.userData.deadwood.vertices
-    bytes += geometryBytes(geo)
+  let card = null
+  let drawn = geos
+  if (cardMode) {
+    // ONE PHOTOGRAPH PER KIND, which is not a shortcut for the bench -- it is
+    // what the world does. There are two impostor layers for the whole family
+    // (deadwood-bank.js), so every stump in the world wears one picture of a
+    // stump and every log wears one picture of a log, stretched to its own
+    // extents. A gallery of twelve seeds drawn from one bake is therefore the
+    // honest view of the card, and the uncomfortable one: it is the question the
+    // button exists to ask.
+    //
+    // The SUBJECT is what is on screen rather than the bank's chosen subject, so
+    // a shape being tuned can be photographed before it is written down. Baked
+    // into the kind's real layer either way, so the texel budget is the world's.
+    const baked = new Map()
+    items.forEach((it, i) => {
+      const kind = it.opts.kind
+      if (baked.has(kind)) return
+      const m = geos[i].userData.deadwood.measured
+      const layer = deadwoodImpostorLayer(kind)
+      baked.set(kind, {
+        layer,
+        ext: bakeImpostor(renderer, geos[i], atlas, layer, {
+          // The LONG horizontal axis, exactly as cardExtentsOf reads it: a log
+          // photographed down its own length is a picture of a disc.
+          width: Math.max(m.width, m.depth),
+          height: m.height,
+          azimuth: cardAzimuth(kind),
+          // The family's own multiply, because the bank bakes with it. Whether
+          // that is right is a question this button can now be pointed at.
+          tint: DEADWOOD_TINT,
+        }),
+      })
+    })
+    drawn = items.map((it) => {
+      const { layer, ext } = baked.get(it.opts.kind)
+      const spun = it.opts.kind !== 'log'
+      const quad = buildImpostorCard(ext.width, ext.height, layer, 1, {
+        upNormal: spun,
+        azimuth: spun ? 0 : cardAzimuth(it.opts.kind),
+      })
+      tris += quad.userData.impostor.triangles
+      verts += quad.getAttribute('position').count
+      bytes += geometryBytes(quad)
+      return quad
+    })
+    card = { ...drawn[0].userData.impostor, ...baked.get(items[0].opts.kind).ext, kinds: baked.size }
+    // clearGroup only disposes what is IN the group, and the meshes are not.
+    for (const geo of geos) geo.dispose()
+  } else {
+    for (const geo of geos) {
+      tris += geo.userData.deadwood.triangles
+      verts += geo.userData.deadwood.vertices
+      bytes += geometryBytes(geo)
+    }
   }
 
-  geos.forEach((geo, i) => {
+  drawn.forEach((geo, i) => {
     const mesh = new THREE.Mesh(geo, material)
     mesh.position.set(items[i].x, 0, items[i].z)
     group.add(mesh)
@@ -378,7 +460,7 @@ function rebuild() {
   grid.visible = showGrid && single
   rule.visible = showGrid && single
 
-  return { tris, verts, bytes, count: items.length, stats: geos[0].userData.deadwood, barkFaces }
+  return { tris, verts, bytes, count: items.length, card, stats: geos[0].userData.deadwood, barkFaces }
 }
 
 // --- framing ----------------------------------------------------------------
@@ -497,9 +579,23 @@ function refresh() {
   // --- this piece ---
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} on screen)` : ''}`],
-    [`&nbsp;&nbsp;barrel, ${d.sides}&times;${d.rings}`, d.barrelTris],
-    ['&nbsp;&nbsp;two end faces', d.capTris],
-    [`&nbsp;&nbsp;${d.stubs} stub${d.stubs === 1 ? '' : 's'}`, d.stubTris],
+    // In CARD mode the breakdown below is the mesh that was photographed, not
+    // what is on screen, so the card says what it is instead and the mesh rows
+    // step aside. Its size is the one number worth reading here: a card is
+    // stretched to the piece's own extents plus the bake margin, so it should
+    // come out a few per cent larger than the mesh in both axes and never
+    // smaller.
+    ...(s.card
+      ? [
+          [`&nbsp;&nbsp;card, ${s.card.planes} plane&times;2`, s.card.triangles],
+          ['&nbsp;&nbsp;baked at', `${s.card.width.toFixed(2)} &times; ${s.card.height.toFixed(2)} m`],
+          ['&nbsp;&nbsp;photographs', `${s.card.kinds === 2 ? 'a snag and a log' : params.kind === 'log' ? 'one log' : 'one snag'}, at tier ${Math.round(params.tier)}`],
+        ]
+      : [
+          [`&nbsp;&nbsp;barrel, ${d.sides}&times;${d.rings}`, d.barrelTris],
+          ['&nbsp;&nbsp;two end faces', d.capTris],
+          [`&nbsp;&nbsp;${d.stubs} stub${d.stubs === 1 ? '' : 's'}`, d.stubTris],
+        ]),
     ['vertices', Math.round(s.verts / s.count)],
     ['pieces drawn', s.count],
     ['geometry in RAM', fmt(s.bytes)],
@@ -511,27 +607,51 @@ function refresh() {
     ['tile', `${d.uRepeat}&times; round &nbsp; = ${d.texMetres.toFixed(2)} m`],
     ['texel', `${((d.texMetres * 1000) / TEX_SIZE).toFixed(0)} mm`],
   ])
-  document.getElementById('geonote').innerHTML =
-    `<em>rings</em> is the only slider that moves the barrel: ${d.sides} sides &times; ${d.rings} rings &times; 2. ` +
+  document.getElementById('geonote').innerHTML = s.card
+    ? `The card is a photograph of the mesh, taken into this kind's own layer -- one for every stump in the world and one for ` +
+      `every log -- so it costs no disk and cannot disagree with the shape. The world always shoots T0; this bench shoots ` +
+      `whatever <em>tier</em> is set, which is how you find out what the coarse silhouette would have cost the picture. ` +
+      `<em>A SNAG'S CARD SPINS AND A LOG'S DOES NOT.</em> ` +
+      `A stump is near enough a solid of revolution that turning its card to the eye shows the same silhouette from every side; a ` +
+      `log has a HEADING, and a spun card would hold still against the eye while the mesh under it points along a yaw, so the log ` +
+      `would appear to snap to a new direction at the swap and snap back when you walked in again. The log's card is therefore ` +
+      `fixed in the plane it was photographed in and carried by the instance's own yaw. Orbit the ${mode === 'pair' ? 'pair' : 'piece'} ` +
+      `and watch which one follows you.`
+    : `<em>rings</em> is the only slider that moves the barrel: ${d.sides} sides &times; ${d.rings} rings &times; 2. ` +
     `The two end faces are fixed at 2 &times; ${d.sides} however ragged they are -- a fan has the same count whether its ` +
     `centre is proud, flat or dished, so the whole of <em>cup</em> is free. Stubs cost ${d.stubs ? `${d.stubTris} here` : 'nothing at this tier'} ` +
     `and are the first thing the ladder drops.`
 
   // --- the ladder ---
-  // Height is what subtends, and for a log that is its diameter rather than its
-  // length; `measured.height` is already the right number for both kinds
-  // because it is read off the built mesh after the lie-down.
+  // Two different distances per tier and they answer two different questions.
+  //
+  // `to N m` is WHERE THE WORLD ACTUALLY STEPS: DEADWOOD_LOD_AT times this
+  // piece's own ladder size, which is the longest of its three measured axes.
+  // That is the number to judge a tier by, and it is why the same slider setting
+  // prints a different distance on a stump and on a 10 m log -- the ladder is
+  // relative, so a big piece holds its mesh proportionally further out.
+  //
+  // `px` is the pixel model's opinion of where it COULD step -- switchDistance
+  // sizes the step so a triangle never falls under about three pixels -- kept
+  // beside it because the gap between the two is the budget being spent. Height
+  // is what subtends there, and for a log that is its diameter rather than its
+  // length; `measured.height` is already the right number for both kinds because
+  // it is read off the built mesh after the lie-down.
+  const lodSize = deadwoodLodSize(m)
   table(
     document.getElementById('ladderTable'),
     DEADWOOD_TIERS.map((t, i) => {
       const c = deadwoodCost(params, i)
       return [
         `${t.name} &nbsp;<span class="k">${c.sides}&times;${c.rings}${c.stubs ? ` +${c.stubs}` : ''}</span>`,
-        `${c.triangles} tris &nbsp; to ${switchDistance(c.triangles, m.height).toFixed(0)} m`,
+        `${c.triangles} tris &nbsp; to ${(lodSize * DEADWOOD_LOD_AT[i]).toFixed(0)} m ` +
+          `&nbsp;<span class="k">px ${switchDistance(c.triangles, m.height).toFixed(0)} m</span>`,
         '',
-        i === tierIndex ? 'here' : '',
+        i === tierIndex && !s.card ? 'here' : '',
       ]
     }).concat([
+      ['card &nbsp;<span class="k">1&times;1</span>', `2 tris &nbsp; to the ${DEADWOOD_CULL} m cull`, '', s.card ? 'here' : ''],
+      ['ladder size, longest axis', `${lodSize.toFixed(2)} m`],
       ['this piece is this tall at 20 m', `${pixelsTall(m.height, 20).toFixed(0)} px`],
       ['&hellip; and at 60 m', `${pixelsTall(m.height, 60).toFixed(0)} px`],
     ])
@@ -639,11 +759,25 @@ function refresh() {
 // over both. Seeing them adjacent is the only way to judge whether a debarked
 // patch will read at all -- on birch it is the DARK side of the boundary, which
 // is the opposite of every intuition the oak tile gives you.
+// In CARD mode the third pane becomes the photograph instead of the moss, which
+// is the only place the baked texels can be READ: whether the silhouette
+// survived the alpha cut, whether the dilate pass left a sooty rim, whether the
+// piece is centred in its slice. Moss steps aside rather than bark or heartwood
+// because moss is a uniform, not a decision the bake can get wrong.
 const SWATCH_PANES = [
   ['bark', () => SPECIES[speciesIndex][1]],
   ['heartwood', () => LAYER.TIMBER_BEAM],
   ['moss', () => LAYER.MOSS],
 ]
+
+function swatchPanes() {
+  if (!cardMode) return SWATCH_PANES
+  return [
+    SWATCH_PANES[0],
+    SWATCH_PANES[1],
+    [`card, ${params.kind}`, () => deadwoodImpostorLayer(params.kind)],
+  ]
+}
 
 function drawSwatch() {
   const canvas = document.getElementById('swatch')
@@ -654,9 +788,10 @@ function drawSwatch() {
   const tmp = document.createElement('canvas')
   tmp.width = tmp.height = TEX_SIZE
   const tctx = tmp.getContext('2d')
-  const w = canvas.width / SWATCH_PANES.length
+  const panes = swatchPanes()
+  const w = canvas.width / panes.length
 
-  SWATCH_PANES.forEach(([label, layerOf], i) => {
+  panes.forEach(([label, layerOf], i) => {
     const px = layerPixels(layerOf())
     const img = new ImageData(TEX_SIZE, TEX_SIZE)
     for (let k = 0; k < TEX_SIZE * TEX_SIZE; k++) {
@@ -679,7 +814,13 @@ function drawSwatch() {
   })
 
   const [name, , , why] = SPECIES[speciesIndex]
-  document.getElementById('swatchnote').innerHTML = layersLoaded
+  document.getElementById('swatchnote').innerHTML = cardMode
+    ? `The third pane is the baked card itself, and it is the only place the photograph can be read as pixels. The picture does ` +
+      `not fill its slice: <em>bakeImpostor</em> leaves a transparent margin all round so a stub or a splinter leaning out cannot ` +
+      `be sliced off at the edge, and the quad is built at the FRUSTUM rather than at the piece, which is what cancels the ` +
+      `stretch. It is baked through <em>DEADWOOD_TINT</em> because the family's material carries that multiply -- a card baked ` +
+      `untinted would be live bark standing in front of a player next to dead bark.`
+    : layersLoaded
     ? `<em>${name}</em>: ${why}. The middle pane is what is exposed where a sheet has come away, and it is the buildings' own ` +
       `baulk rather than a new tile -- a weathered log with the checks and the splits already in it, which is exactly what a ` +
       `debarked trunk is. The tile runs at <em>${params.texMetres.toFixed(2)} m</em> along the piece and ` +
@@ -887,6 +1028,11 @@ function toggle(id, get, set) {
     refresh()
   })
 }
+// Deliberately not a camera move and deliberately not exclusive with the four
+// views -- see cardMode. Each press re-bakes, which is a stall of two ortho
+// renders and two readbacks; that is what the world pays once at load, and here
+// it buys a card that follows the sliders.
+toggle('card', () => cardMode, (v) => { cardMode = v })
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })

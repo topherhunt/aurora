@@ -121,9 +121,9 @@ const JAG_SLAB_HI = 2.0 // ...and the broadest: a slab with a shoulder either si
 // argument for it was the one ROCK_TIERS makes for keeping an octahedron -- a
 // lit face, a shaded face and a turning silhouette. It is a good argument for a
 // boulder and a bad one for a stump, because a boulder's LOD ladder has to reach
-// out past where an impostor is affordable and a stump's does not: DEADWOOD_BANDS
-// puts the card at 20 m and the cull at 100, so the span a T2 would have covered
-// is a photograph instead. A photograph of the real LOD0 beats a 3-gon of it at
+// out past where an impostor is affordable and a stump's does not: DEADWOOD_LOD_AT
+// cards a chest-high stump at about 20 m against a cull at 100, so the span a T2
+// would have covered is a photograph instead. A photograph of the real LOD0 beats a 3-gon of it at
 // any distance, and costs one triangle rather than eighteen.
 //
 // STUBS SURVIVE TO T1, as one triangle each rather than a cone. A stub is the
@@ -165,22 +165,59 @@ export const DEADWOOD_TIERS = [
 // T0 WENT OVER ON PURPOSE, and this is the record of it. Fifteen sides and a
 // fourth ring take a stump from 76 triangles to 162, so the target moves with it
 // rather than the bench printing a permanent red number nobody reads. What makes
-// it affordable is the band, not the count: DEADWOOD_BANDS ends T0 at 10 m, so the
-// pieces paying 162 are the handful within a few strides of the player, and a log
-// -- which keeps three rings and two stubs -- pays 126 of it. Everything past 10 m
-// is already on the 5-sided T1 at 54, or on one triangle of card.
+// it affordable is the band, not the count: DEADWOOD_LOD_AT ends T0 at 5 m per
+// metre of size, so on a chest-high stump the pieces paying 162 are the handful
+// within a few strides of the player, and a log -- which keeps three rings and
+// two stubs -- pays 126 of it. Past that the piece is already on the 5-sided T1
+// at 54, or on one triangle of card. A LONG log holds T0 further out in metres
+// and that is the ladder working: it is the same handful of pixels either way.
 export const BUDGET_TRIS = [168, 56]
 
-// Where each tier ends, in metres, and where the prop stops being drawn at all.
-// The user set these against the bench's own distance readout: T0 to 10 m, T1 to
-// 20, the billboard from there to the cull.
+// WHERE EACH TIER ENDS, in metres of camera distance PER METRE of the piece's
+// own size -- `deadwoodLodSize` below says which metre that is. T0 inside the
+// first, T1 inside the second, the billboard card beyond it.
 //
-// The cull is the number worth defending. 100 m on a 2 m log is 1.6 px of card,
-// which is under the threshold at which anything can be recognised -- but a
-// SCATTER of them is not one log, and a field of dead wood thinning out at the
+// PER METRE, and this is the correction the ladder was rewritten for. These used
+// to be flat distances -- T0 to 10 m, T1 to 20 -- set against the bench's
+// readout on a chest-high stump, which is a fine number for a stump and a
+// nonsense one for a log. LOG_LENGTH reaches 34.8 m, and distance is measured
+// from the instance ORIGIN, so a player standing at a 20 m log's END is 10 m
+// from its origin and looking at five-sided T1 geometry from arm's length. What
+// decides whether a triangle is worth drawing is ANGULAR size, so the threshold
+// has to carry the size term: every piece then steps at the same apparent size
+// and only the metres differ. Same system rocks.js runs on -- see ROCK_LOD_AT,
+// which this deliberately mirrors rather than inventing a second mechanism.
+//
+// The numbers are chosen to leave the MEDIAN SNAG where the user set it. At 5
+// and 10 per metre a 2.1 m stump -- the median of SNAG_HEIGHT under its skew --
+// holds T0 to 10.5 m and T1 to 21, which is the old ladder to within a stride.
+// Everything bigger stretches proportionally: the median 5.6 m log meshes to
+// 28 m and cards at 56, and a 20 m one is still a mesh at the cull.
+export const DEADWOOD_LOD_AT = [5, 10]
+
+// Metres, absolute, where dead wood stops being drawn at all. NOT relative: this
+// is a fact about the SCATTER rather than about the piece -- the tile grid ends
+// here -- and it is the number worth defending. 100 m on a 2 m log is 1.6 px of
+// card, which is under the threshold at which anything can be recognised -- but
+// a SCATTER of them is not one log, and a field of dead wood thinning out at the
 // same radius the trees do is what stops the deadwood layer reading as a ring
 // painted round the player.
-export const DEADWOOD_BANDS = [10, 20, 100]
+export const DEADWOOD_CULL = 100
+
+// THE METRE THE LADDER IS MEASURED IN: the longest axis of the piece's box, and
+// the same function for a snag and for a log.
+//
+// One function for both kinds is the whole point rather than a convenience. The
+// two kinds are the same object lying in different directions -- a snag is tall
+// and a log is long -- so keying on height would card a 30 m log at 20 m and
+// keying on plan width would hold a slim spar's full mesh out to nothing. The
+// longest axis has neither fault and needs no per-kind branch to say so: what
+// the ladder is asking is how many pixels the piece subtends, and the largest
+// extent a box can present to a camera is its longest axis. Same argument
+// `rockLodSize` makes at greater length.
+export function deadwoodLodSize(measured) {
+  return Math.max(measured.height, measured.width, measured.depth)
+}
 
 // The whole family is drawn through a material tinted by this, and nothing else
 // in the world wears it.
@@ -418,39 +455,79 @@ export const DEADWOOD_SPECIES = [
 //           the shape a trunk makes where it dives into soil; a log broken out of
 //           the middle of one never had them, and putting six fins on the end of
 //           a piece lying on its side reads as a cog rather than as wood.
-//   jag1    3.5 is a rotted-out stump top. Both ends of a log are SNAPS, which
-//           are ragged but not eaten, so the far end goes back to a modest bite
-//           and `jag0` carries the variation instead.
-//   stubs   fewer, because the branches on the underside broke off in the fall
-//           and the ones on top are what is left.
+//   flare   a root flare belongs to the end still in the ground. A log that
+//           broke off above the roots has almost none, so 0.1 rather than 0.38.
+//   roots   and what little flare it has is a SWELL, not a crown. Buttresses are
+//           the shape a trunk makes where it dives into soil; a log broken out of
+//           the middle of one never had them, and putting six fins on the end of
+//           a piece lying on its side reads as a cog rather than as wood.
+//   cup0    BOTH ENDS ARE OPEN AND BORED RIGHT OUT, at 2. A stump has one end in
+//   cup1    the soil and one rotted top; a log has two breaks, both at eye level
+//           to somebody walking past, and a break in a rotten trunk is a hole
+//           rather than a dish. This is the cheapest detail on the piece -- an
+//           end fan has the same triangle count however deep its centre is
+//           driven -- so there is no reason to be shy with it.
+//   stubEnd  0.95: branch stubs run the WHOLE length. On a standing snag the top
+//           is a rotted rim and stubs stop short of it; a fallen log's far end is
+//           a snap through live wood, and branches were growing right up to it.
 //   bend    a log is the only one of the two long enough for a lean to read as a
 //   kinkFreq  lean rather than as a base that will not sit flat, so it keeps the
 //           crooked spine the stump gave up. Without it a 3 m log is a dowel.
 //   rings   three, because those metres are straight trunk. The stump spends its
 //           fourth ring on the run between the root crown and the broken rim.
-//   cup0    both of a log's ends are visible and both are breaks, so it keeps the
-//           bored hollow at each. A stump's butt is underground; see cup0's note.
+//
+// `length`, `jag0`, `jag1` and `stubs` are NOT here. The first is the variant
+// axis below and the other three are rolled per seed -- see LOG_ROLLS.
 export const LOG_DEFAULTS = {
   kind: 'log',
-  length: 2,
   flare: 0.1,
   roots: 0,
-  jag1: 0.16,
-  stubs: 2,
-  cup0: 1.6,
+  cup0: 2,
+  cup1: 2,
+  stubEnd: 0.95,
   bend: 0.06,
   kinkFreq: 3.6,
   rings: 3,
 }
 
-// LOGS: length x species x how chewed the butt is.
+// WHAT A LOG ROLLS PER SEED instead of being authored, and why these three.
 //
-// `jag0` is the axis rather than `jag1` because the butt is the end you see. A
-// log lies with one end toward you more often than not, and the difference
-// between a 0.35 butt (blown out, splintered, a hole you can see into) and a
-// 0.15 one (snapped clean) is the difference between two objects at ten metres.
-const LOG_LENGTHS = [2, 3]
-const LOG_BUTTS = [['blown', 0.35], ['snapped', 0.15]]
+// They used to be a variant AXIS: `jag0` took 0.35 ('blown') or 0.15 ('snapped')
+// and the name carried which. That axis is gone, and it is worth being clear
+// that this is not the same choice made twice. An axis is for a difference you
+// want to be able to PLACE -- the scatter picks a variant, so an axis is a knob
+// the world can point at a spot. How chewed one particular log's ends are is not
+// that: it is the natural spread within one kind of object, and the whole reason
+// two logs lying side by side do not look stamped. Rolling it gets that spread
+// on every piece in the world for free, where the axis got exactly two of it and
+// doubled the bank to do so.
+//
+// Both ends now roll the same range, which is a second change: `jag0` used to
+// carry all the variation because the butt is the end you see. Once the value is
+// per-seed rather than per-variant there is nothing to spend the far end on
+// keeping quiet for, and a log with one savage end and one demure one is a
+// shape, not a rule.
+//
+// The ranges are the user's, read against JAG_FULL -- 1 to 2 is a quarter to a
+// half of the rim's full appetite, so both ends are ragged breaks rather than
+// the eaten-out crater a 3.5 stump top is. Stubs 4 to 6 rather than the old
+// flat 2: the branches on the underside broke off in the fall, but a whole trunk
+// carried more than two to begin with, and a bare pole reads as sawn timber.
+const LOG_ROLLS = {
+  jag0: [1, 2],
+  jag1: [1, 2],
+  stubs: [4, 6],
+}
+
+// LOGS: length x species.
+//
+// 2.5 m and 4 m, both up from the 2 m and 3 m this shipped with. The short one
+// is the piece a forest floor is actually littered with; the long one is a trunk
+// you walk round rather than over. The scatter rescales both -- LOG_LENGTH runs
+// to 34.8 m -- so what this axis really sets is the PROPORTION at which the
+// shape was authored: a 4 m log at its authored butt diameter is a slimmer thing
+// than a 2.5 m one, and that difference survives the rescale.
+const LOG_LENGTHS = [2.5, 4]
 
 // STUMPS: species x length.
 //
@@ -468,11 +545,9 @@ function buildVariantTable() {
   const out = {}
   for (const len of LOG_LENGTHS) {
     for (const [species, layer] of DEADWOOD_SPECIES) {
-      for (const [butt, jag0] of LOG_BUTTS) {
-        out[`log-${len}m-${species}-${butt}`] = {
-          envs: ['wood', 'old growth', 'path side'],
-          p: { ...LOG_DEFAULTS, length: len, barkLayer: layer, jag0 },
-        }
+      out[`log-${len}m-${species}`] = {
+        envs: ['wood', 'old growth', 'path side'],
+        p: { ...LOG_DEFAULTS, length: len, barkLayer: layer },
       }
     }
   }
@@ -490,7 +565,7 @@ function buildVariantTable() {
 /**
  * Every shipping deadwood shape, by name.
  *
- * Twelve logs and six stumps. The bench reads this as its preset list and the
+ * Six logs and six stumps. The bench reads this as its preset list and the
  * world's scatter reads the same object, so a shape signed off on /gen-deadwood
  * is bit-identical to the one that ships.
  */
@@ -506,11 +581,35 @@ export const DEADWOOD_NAMES = Object.keys(DEADWOOD_VARIANTS)
  * than surviving from whatever was on screen before -- a preset that inherited
  * half of the last one is not a shape anybody can sign off. Same contract as
  * rockParams.
+ *
+ * A LOG ALSO ROLLS THREE OF ITS OWN DIALS HERE, and this is the right place for
+ * them rather than inside buildDeadwood: what comes out of this function IS the
+ * shape, so the bench's sliders show the rolled values, the seed spinner walks
+ * them, and anybody who wants a particular log can copy the numbers out and set
+ * them by hand. A roll hidden in the builder would leave the bench lying about
+ * what it drew. See LOG_ROLLS for why these three and not others.
+ *
+ * The stream is hashed from the NAME as well as the seed, so seed 1 does not
+ * hand the oak log and the birch log the same three numbers -- the bank builds
+ * every variant on the same short list of seeds, and correlated rolls would put
+ * identically-broken ends on one of every three logs in the world.
  */
 export function deadwoodParams(name, seed = 1) {
   const v = DEADWOOD_VARIANTS[name]
   if (!v) throw new Error(`deadwoodParams: no variant named ${name}`)
-  return { ...DEADWOOD_DEFAULTS, ...v.p, seed }
+  const p = { ...DEADWOOD_DEFAULTS, ...v.p, seed }
+  if (p.kind !== 'log') return p
+
+  let h = seed | 0
+  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193)
+  const rand = mulberry32((h ^ 0x7f4a7c15) >>> 0)
+  p.jag0 = LOG_ROLLS.jag0[0] + rand() * (LOG_ROLLS.jag0[1] - LOG_ROLLS.jag0[0])
+  p.jag1 = LOG_ROLLS.jag1[0] + rand() * (LOG_ROLLS.jag1[1] - LOG_ROLLS.jag1[0])
+  // Rounded, because `stubs` is a COUNT: the builder walks it as an integer and
+  // a fractional value would silently truncate, turning a flat 4-6 into a
+  // distribution that never reaches 6.
+  p.stubs = Math.round(LOG_ROLLS.stubs[0] + rand() * (LOG_ROLLS.stubs[1] - LOG_ROLLS.stubs[0]))
+  return p
 }
 
 // --- noise on a cylinder -----------------------------------------------------
@@ -1202,6 +1301,13 @@ export function buildDeadwood(options = {}) {
   buildCap(1)
   buildCap(0)
 
+  // WHERE THE TRUNK ENDS AND THE STUBS BEGIN, in floats of `out.pos`. Everything
+  // emitted from here on is a branch stub, and the bedding at the bottom of this
+  // function needs to tell the two apart -- see `drop` for why. It is a plain
+  // watermark rather than a flag on each vertex because the stub loop is the last
+  // thing that emits: one number says it.
+  const trunkFloats = out.pos.length
+
   // --- branch stubs ---------------------------------------------------------
   //
   // Not growLimb and not a branch: a stub is a broken-off base, so it is a short
@@ -1367,8 +1473,29 @@ export function buildDeadwood(options = {}) {
     }
   }
 
+  // THE TRUNK IS WHAT RESTS ON THE GROUND, AND THE STUBS ARE ALLOWED THROUGH IT.
+  //
+  // This min used to run over every vertex, and that made a branch stub the thing
+  // that decided where the whole piece sat: one stub drooping under the barrel is
+  // the lowest point on the mesh, so the piece was lifted until the STUB touched
+  // the ground and the trunk hung above it. On a log with four to six stubs round
+  // a 3 m barrel that is not an edge case, it is the usual outcome -- the log
+  // rests on two spikes with daylight along its whole belly, which is the one
+  // artefact that says "placed" rather than "fell".
+  //
+  // So the min is taken over the TRUNK only, and the clamp below is applied to
+  // the trunk only. A stub that ends up under y = 0 simply passes into the soil,
+  // which is what a branch under a fallen trunk does. It costs the triangles of
+  // the buried part, and that is the right trade: the alternative is trimming
+  // stubs against the plane, which would mean the stub's length changed with how
+  // the piece was bedded and a tier's stub card no longer matched its cone.
+  //
+  // Answering the question directly: the origin does not move here. The origin is
+  // already the middle of the footprint (see midX/midZ below) and the piece is
+  // bedded by translating in Y; what changed is WHICH vertices get a vote on that
+  // translation.
   let minY = Infinity
-  for (let i = 1; i < positions.length; i += 3) if (positions[i] < minY) minY = positions[i]
+  for (let i = 1; i < trunkFloats; i += 3) if (positions[i] < minY) minY = positions[i]
 
   // A LOG LIES IN THE GROUND, NOT ON A TANGENT TO IT.
   //
@@ -1438,7 +1565,10 @@ export function buildDeadwood(options = {}) {
   for (let i = 0; i < positions.length; i += 3) {
     positions[i] -= midX
     const y = positions[i + 1] - drop
-    positions[i + 1] = y < 0 ? 0 : y
+    // Clamped on the trunk, free on the stubs. Both are dropped by the same
+    // `drop`, so the piece is one rigid object; only the flattening of what went
+    // under the plane is the trunk's alone. See minY above.
+    positions[i + 1] = i < trunkFloats && y < 0 ? 0 : y
     positions[i + 2] -= midZ
   }
 
@@ -1492,6 +1622,11 @@ export function buildDeadwood(options = {}) {
     sides,
     rings,
     stubs: nStubs,
+    // Vertices 0..trunkVertices are the barrel and its two end faces; everything
+    // after them is a branch stub. Published because the bedding rule is stated
+    // in terms of that split -- the trunk rests on y = 0 and a stub may pass
+    // below it -- and a check of that rule has to be able to see the same line.
+    trunkVertices: trunkFloats / 3,
     // Split out so the bench can say where the budget went. The barrel is the
     // only part that scales with `rings`; the caps are fixed at 2 x sides and
     // the stubs cost their own count x sides.

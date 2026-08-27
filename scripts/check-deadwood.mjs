@@ -57,9 +57,11 @@ import {
   deadwoodParams, buildDeadwood, buildSnag, buildLog, deadwoodCost,
   deadwoodRim, MAX_JAG, JAG_FULL,
 } from '../src/props/deadwood.js'
-import { DEADWOOD_BANDS, DEADWOOD_NAMES } from '../src/props/deadwood.js'
 import {
-  DEADWOOD_SEEDS, buildDeadwoodBank, deadwoodImpostorLayers, cardAzimuth,
+  DEADWOOD_LOD_AT, DEADWOOD_CULL, DEADWOOD_NAMES, deadwoodLodSize,
+} from '../src/props/deadwood.js'
+import {
+  DEADWOOD_SEEDS, buildDeadwoodBank, deadwoodImpostorLayers, deadwoodImpostorLayer, cardAzimuth,
 } from '../src/props/deadwood-bank.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { Deadwood, SNAG_HEIGHT, LOG_LENGTH } from '../src/v2/render/deadwood.js'
@@ -150,9 +152,22 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
     bad.length === 0 ? `${VARIANTS.length * TIERS.length} builds` : bad.join('; '))
 
   // And the formula has to be pure arithmetic, not a cache of the last build.
-  const a = deadwoodCost(deadwoodParams('log-3m-oak-blown', 1), 0)
-  const b = deadwoodCost(deadwoodParams('log-3m-oak-blown', 999), 0)
-  check(a.triangles === b.triangles, 'and the cost does not depend on the seed', `${a.triangles} == ${b.triangles}`)
+  //
+  // A SNAG is the subject, because a log's stub count is a per-seed roll now (see
+  // LOG_ROLLS) and two seeds of one log legitimately cost different numbers of
+  // triangles. That is not a hole in the claim: the check above builds every
+  // variant and compares the formula against the mesh, so what is being ruled out
+  // here is the cost reading state it should not, and a snag says it cleanly.
+  const a = deadwoodCost(deadwoodParams('stump-2m-oak', 1), 0)
+  const b = deadwoodCost(deadwoodParams('stump-2m-oak', 999), 0)
+  check(a.triangles === b.triangles, 'and a snag\'s cost does not depend on the seed', `${a.triangles} == ${b.triangles}`)
+  // The other half of the same coin: the log's roll has to be VISIBLE to the
+  // formula, or the bench's budget table would print one number while the world
+  // drew another.
+  const rolled = new Set()
+  for (let s = 1; s <= 24; s++) rolled.add(deadwoodCost(deadwoodParams('log-4m-oak', s), 0).triangles)
+  check(rolled.size > 1, 'while a log\'s stub roll moves it',
+    `${rolled.size} triangle counts over 24 seeds: ${[...rolled].sort((x, y) => x - y).join(', ')}`)
   void worst
 }
 
@@ -179,20 +194,38 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
 {
   console.log('\nsitting on the ground')
 
+  // THE RULE IS ABOUT THE TRUNK, and the split is what this block is really
+  // checking. A branch stub is allowed to pass through y = 0 -- a branch under a
+  // fallen trunk is in the soil -- so a min taken over every vertex would say
+  // nothing about whether the piece is bedded. What must hold is that the TRUNK
+  // touches the plane and does not dip through it, on every variant and at every
+  // tier, and that is what makes a log rest along its belly rather than on the
+  // two stubs that happen to hang lowest. `trunkVertices` is where the generator
+  // says the barrel and its end faces stop.
   const hover = []
   const buried = []
+  let deepestStub = 0
   for (const name of VARIANTS) {
     for (const tier of TIERS) {
-      const pos = arr(get(name, tier), 'position')
+      const geo = get(name, tier)
+      const pos = arr(geo, 'position')
+      const trunk = geo.userData.deadwood.trunkVertices * 3
       let min = Infinity
-      for (let i = 1; i < pos.length; i += 3) min = Math.min(min, pos[i])
+      for (let i = 1; i < trunk; i += 3) min = Math.min(min, pos[i])
+      for (let i = trunk + 1; i < pos.length; i += 3) deepestStub = Math.min(deepestStub, pos[i])
       if (min > 1e-5) hover.push(`${name} T${tier} +${min.toFixed(4)}`)
       if (min < -1e-5) buried.push(`${name} T${tier} ${min.toFixed(4)}`)
     }
   }
-  check(hover.length === 0, 'nothing hovers -- every piece touches y = 0',
+  check(hover.length === 0, 'no TRUNK hovers -- every piece rests on y = 0',
     hover.length === 0 ? `${VARIANTS.length * TIERS.length} builds` : hover.join(', '))
-  check(buried.length === 0, 'and nothing hangs below it', buried.length === 0 ? 'min y == 0' : buried.join(', '))
+  check(buried.length === 0, 'and no trunk hangs below it', buried.length === 0 ? 'min y == 0 on the barrel' : buried.join(', '))
+  // Evidence rather than a threshold, and it is the number that says the split is
+  // doing something: if no stub ever went under, the trunk-only rule would be
+  // indistinguishable from the old all-vertices one and this block would be
+  // passing for the wrong reason.
+  check(deepestStub < -1e-3, 'and a stub is free to pass into the soil',
+    `deepest stub ${(deepestStub * 100).toFixed(1)} cm under the plane`)
 
   // A log lies down and a snag stands up, and the difference is not cosmetic:
   // material.js's moss height cue measures from the instance root, so a piece
@@ -285,7 +318,23 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
 {
   console.log('\nwinding, against the normals it was authored beside')
 
+  // EXCEPT ON THE RIBBON THE PIECE IS LYING ON. buildDeadwood beds a piece by
+  // clamping every trunk vertex below the ground to y = 0, and it does that
+  // AFTER emitTri has measured each face and blended its normals (deadwood.js
+  // says so where MAX_LEAN is applied). So a face that straddled the plane comes
+  // out with two corners dragged up onto it and a third left below: the triangle
+  // is folded over, its geometric normal no longer resembles the shell normal it
+  // was authored beside, and the dot goes negative. That is the clamp's doing,
+  // not a winding error -- the same faces are wound correctly before it runs.
+  //
+  // A clamped vertex is the only way a coordinate lands on EXACTLY 0, so that is
+  // the test, and the count of what it skips is printed rather than swallowed.
+  // The skipped set is the buried belly and the roots; the barrel above the soil,
+  // both end caps and every stub are still judged, so a real flip -- which turns
+  // whole rings at a time -- still has nowhere to hide.
   const flipped = []
+  let judged = 0
+  let bedded = 0
   for (const name of VARIANTS) {
     for (const tier of TIERS) {
       const geo = get(name, tier)
@@ -293,6 +342,8 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
       const n = arr(geo, 'normal')
       let bad = 0
       for (let f = 0; f < p.length; f += 9) {
+        if (p[f + 1] === 0 || p[f + 4] === 0 || p[f + 7] === 0) { bedded++; continue }
+        judged++
         const ax = p[f + 3] - p[f], ay = p[f + 4] - p[f + 1], az = p[f + 5] - p[f + 2]
         const bx = p[f + 6] - p[f], by = p[f + 7] - p[f + 1], bz = p[f + 8] - p[f + 2]
         const cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx
@@ -307,8 +358,11 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
       if (bad > 0) flipped.push(`${name} T${tier}: ${bad} faces`)
     }
   }
+  const pct = (bedded / (judged + bedded) * 100).toFixed(0)
   check(flipped.length === 0, 'every face winds the way its normals point',
-    flipped.length === 0 ? 'no inside-out triangles' : flipped.join('; '))
+    flipped.length === 0
+      ? `no inside-out triangles in ${judged} faces (${bedded}, ${pct}%, sit on the ground clamp and are not judged)`
+      : flipped.join('; '))
 
   // AND THE SAME QUESTION ASKED SOMEWHERE THE ANSWER CANNOT BE A TAUTOLOGY.
   //
@@ -458,7 +512,7 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
     for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false
     return true
   }
-  const p = deadwoodParams('log-3m-oak-blown', 42)
+  const p = deadwoodParams('log-4m-oak', 42)
   check(same(buildDeadwood(p), buildDeadwood(p)), 'the same parameters build the same log, to the float')
   check(!same(buildDeadwood(p), buildDeadwood({ ...p, seed: 43 })),
     'and a different seed builds a different one', 'not a constant wearing a seed')
@@ -710,6 +764,15 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
   const imp = deadwoodImpostorLayers()
   check(new Set(imp).size === imp.length && imp.every((l) => l >= 0 && l < LAYER_COUNT),
     'the impostor layers are distinct and inside the atlas', `${imp.join(', ')} of ${LAYER_COUNT}`)
+  // And the per-kind lookup lands in the same two slots the variants carry. The
+  // bench bakes through deadwoodImpostorLayer (gen-deadwood-main.js) into what it
+  // believes is the world's slot, so a kind that resolved to the wrong layer
+  // would photograph a log over the snag's card and nothing on this page would
+  // say so -- the bench would look right, having overwritten the evidence.
+  const wrongSlot = bank.variants.filter((v) => deadwoodImpostorLayer(v.kind) !== v.impostorLayer)
+  check(wrongSlot.length === 0, 'and one kind\'s card is in one layer, whoever asks',
+    wrongSlot.length === 0 ? `snag ${deadwoodImpostorLayer('snag')}, log ${deadwoodImpostorLayer('log')}, over ${bank.variants.length} slots`
+      : `${wrongSlot.length} disagree, first ${wrongSlot[0].name}`)
   // A billboard's vertex normal says nothing about the surface it is a picture
   // of -- vertical on the snag, horizontal on the log -- so it must take its
   // snow as a coverage fraction off the card list rather than off the
@@ -723,8 +786,22 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
 
   for (const t of bank.tiers) for (const g of t.geometries) g.dispose()
 
-  check(DEADWOOD_BANDS.length === 3 && DEADWOOD_BANDS.every((b, i) => i === 0 || b > DEADWOOD_BANDS[i - 1]),
-    'the LOD bands ascend and end at the cull distance', `${DEADWOOD_BANDS.join(' / ')} m`)
+  check(DEADWOOD_LOD_AT.length === DEADWOOD_TIERS.length &&
+      DEADWOOD_LOD_AT.every((k, i) => k > 0 && (i === 0 || k > DEADWOOD_LOD_AT[i - 1])),
+    'the LOD thresholds ascend and there is one per mesh tier',
+    `${DEADWOOD_LOD_AT.join(' / ')} m per metre for ${DEADWOOD_TIERS.map((t) => t.name).join('/')} + card`)
+  check(DEADWOOD_CULL > 0, 'and the cull is an absolute distance', `${DEADWOOD_CULL} m`)
+  // THE ARTEFACT THE RELATIVE LADDER EXISTS TO CLOSE, stated as an inequality
+  // that holds for every size at once. Distance is measured from the instance
+  // ORIGIN, which sits at the middle of the piece, so the closest a player can
+  // get to a piece of ladder size L while still being outside it is L/2 -- at
+  // its tip. Under a FLAT ladder that number grew with the piece and the
+  // threshold did not, which is how a player touching a 20 m log's end was
+  // looking at T1. Per metre, the tip is at 0.5 whatever the size is, so one
+  // comparison against the first threshold settles it for the whole bank.
+  check(DEADWOOD_LOD_AT[0] > 0.5,
+    'and a piece is on its finest mesh when the player is touching its tip',
+    `T0 holds to ${DEADWOOD_LOD_AT[0]}x the ladder size against a tip at 0.5x`)
 }
 
 // --- the scatter seats a long thing on a hill -------------------------------
@@ -1095,6 +1172,101 @@ const EMPTY_FOREST = mockForest([])
   check(snagHi - snagLo > (SNAG_HEIGHT[1] - SNAG_HEIGHT[0]) * 0.4,
     'and the size actually varies rather than sitting at one value',
     `standing pieces span ${snagLo.toFixed(2)}-${snagHi.toFixed(2)} m`)
+  dw.dispose()
+}
+
+// --- and it steps down its ladder at the same APPARENT size, whatever size it is
+//
+// THE BUG THIS BLOCK EXISTS FOR is a player standing at the end of a long log
+// and looking at five-sided geometry. The ladder used to be flat metres, and the
+// distance a tier is chosen by is measured from the instance ORIGIN -- the
+// middle of the piece -- so a 20 m log put its own tip 10 m out, past where the
+// old ladder had already handed the whole thing to T1.
+//
+// Measured on the placed scatter and not on the constants, for the reason the
+// metre-band block above gives: the flat ladder was perfectly self-consistent,
+// and a check that read the same constant the scatter reads would have passed.
+// What is asserted is the RELATION between an instance's own size and the
+// distance at which its tier changes, walked over every placed piece.
+{
+  console.log('\nand it steps down its ladder at the same apparent size')
+
+  const field = {
+    heightAt: () => 40,
+    heightAndSlopeAt: () => ({ h: 40, tan: 0 }),
+    snowLineAt: () => 900,
+    bands: { altLo: 0, altSpan: 100 },
+  }
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, MOCK_TEX,
+    EMPTY_FOREST, { seed: 23 })
+  dw.place(0, 0)
+
+  // The bank's own ladder size is what the scatter scales, so the two have to
+  // agree before anything measured off the instance means anything.
+  const lodMismatch = dw.bank.variants.filter((v, i) =>
+    Math.abs(dw.vLod[i] - deadwoodLodSize({ width: v.long, depth: v.long, height: v.height })) > 1e-4)
+  check(lodMismatch.length === 0,
+    'every variant\'s ladder size is the longest axis of the piece it built',
+    lodMismatch.length === 0 ? `${dw.bank.variants.length} variants agree with deadwoodLodSize`
+      : `${lodMismatch.length} disagree: ${lodMismatch.slice(0, 3).map((v) => v.name).join(', ')}`)
+
+  // Drive the frame path from a few vantage points and check every near piece's
+  // chosen tier against its own size. `update` is what actually assigns tiers;
+  // `place` births everything on the card.
+  const wrong = []
+  let sizes = 0
+  let unlit = 0
+  let bigLogMesh = null
+  for (const [cx, cz] of [[0, 0], [30, 12], [-45, 60]]) {
+    // Twice: the first pass promotes off the card, and hysteresis only ever
+    // makes a piece STICKIER at its current tier, so a second pass at the same
+    // place is the settled answer.
+    dw.update(cx, 1.6, cz)
+    dw.update(cx, 1.6, cz)
+    for (const tile of dw.tiles.values()) {
+      if (!tile.near) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        // `update` re-tiers only what the rim is actually drawing, so a piece
+        // the rim has dissolved (or has not faded in yet) still carries the tier
+        // it was born on, which is the card. Asking those about their tier is
+        // asking about a piece that is drawing nothing.
+        if (dw.rim.isHidden(id)) { unlit++; continue }
+        const size = dw.instSize[id]
+        const tier = dw.tierAt[id]
+        const d = Math.hypot(dw.instX[id] - cx, dw.instY[id] - 1.6, dw.instZ[id] - cz)
+        sizes++
+        // The band the distance falls in, in units of the piece's own size, at
+        // the STRICT thresholds. Hysteresis only ever holds a piece at a tier it
+        // is already on, and it is applied to the OUTER edge, so a piece inside
+        // the strict boundary is inside both tests and cannot be coarser than
+        // this -- while one just outside it may legitimately still be finer.
+        // So the assertion is one-sided: too coarse for how big the thing looks
+        // is the artefact, and too fine is only ever a few triangles.
+        let want = DEADWOOD_LOD_AT.length
+        for (let t = 0; t < DEADWOOD_LOD_AT.length; t++) {
+          if (d < size * DEADWOOD_LOD_AT[t]) { want = t; break }
+        }
+        if (tier > want) {
+          wrong.push(`${dw.bank.variants[dw.variantAt[id]].name} ${size.toFixed(1)} m at ${d.toFixed(1)} m on T${tier}, wants T${want}`)
+        }
+        // The user's own case, kept as evidence rather than as a threshold: the
+        // longest piece in view and how far out it is still a real mesh.
+        if (tier < dw.cardTier && (!bigLogMesh || size > bigLogMesh.size)) {
+          bigLogMesh = { size, d, tier }
+        }
+      }
+    }
+  }
+
+  check(sizes > 30, 'walked enough placed pieces to measure a ladder',
+    `${sizes} instance-frames, ${unlit} more the rim was not drawing`)
+  check(wrong.length === 0, 'no piece is coarser than its own apparent size allows',
+    wrong.length === 0 ? `thresholds ${DEADWOOD_LOD_AT.join('/')} m per metre of ladder size`
+      : `${wrong.length} too coarse: ${wrong.slice(0, 3).join('; ')}`)
+  check(bigLogMesh !== null && bigLogMesh.size > 6,
+    'and a long log is still a mesh well past where the flat ladder carded it',
+    bigLogMesh ? `${bigLogMesh.size.toFixed(1)} m piece on T${bigLogMesh.tier} at ${bigLogMesh.d.toFixed(1)} m` : 'none seen')
   dw.dispose()
 }
 

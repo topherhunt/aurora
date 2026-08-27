@@ -64,9 +64,10 @@ import {
 } from '../src/textures.js'
 import {
   SNOW_ROCK, MOSS, mossCutFor, createPropMaterial, getSnowLine, getMossLine,
-  setMossVary, getMossVary, setSnowVary, getSnowVary, FADE_BAND,
-  setPropClock, PROP_FADE_SECONDS,
+  setMossVary, getMossVary, setSnowVary, getSnowVary,
+  setPropClock, getPropClock, PROP_FADE_SECONDS,
 } from '../src/material.js'
+import { RIM_AT } from '../src/v2/render/rim.js'
 import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { readPng } from '../tools/props/png.mjs'
 
@@ -2447,13 +2448,13 @@ console.log('\nscatter')
     // statement could hold on the average while failing on the big end -- which
     // is exactly the population that shows.
     //
-    // READ OUT OF THE COLOUR TEXTURE, so this checks the value the SHADER will
-    // see and not a restatement of the arithmetic that produced it -- EXCEPT for
-    // the instances mid-swap, whose slot holds a cross-dissolve clock instead of
-    // a distance (material.js packs both in one float by sign). Those are read
-    // off `instGone`, which is the number `_endFade` will put back, and the two
-    // populations are counted separately below so this cannot quietly become a
-    // test of nothing if every rock ends up fading.
+    // READ OFF THE RIM, which is now the only place a gone-distance lives. The
+    // colour texture used to carry it and this used to read it there, which was
+    // the stronger test -- it checked the number the SHADER sees rather than a
+    // restatement of the arithmetic that produced it. That slot holds nothing
+    // but a clock now (see the DISSOLVE header in material.js), so the texture
+    // is checked separately, for holding ONLY the never-fade sentinel or a stamp
+    // and never a distance that a stale writer left behind.
     {
       const LAST = ROCK_LOD_AT[ROCK_LOD_AT.length - 1]
       let n = 0
@@ -2461,6 +2462,9 @@ console.log('\nscatter')
       let fading = 0
       let worst = null
       let closest = Infinity
+      // A slot that is neither the never-fade sentinel nor a negative stamp is a
+      // distance somebody wrote and the shader will read as a clock.
+      let slotBad = 0
       for (const [name, r] of Object.entries(worlds)) {
         for (const bed of r.beds) {
           // A bed that placed nothing in THIS world never allocated the colour
@@ -2481,10 +2485,12 @@ console.log('\nscatter')
               const cardAt = rockLodSize(bed.shapes[bed.shapeAt[id]].measured) * bed.instScale[id] * LAST
               const swapping = bed.fadeAt[id] >= 0
               if (swapping) fading++
-              // Where the dissolve STARTS, not where it ends: the slot is the
-              // gone-distance and the band opens at FADE_BAND of it.
-              const gone = swapping ? bed.instGone[id] : fades[id * 4 + 3]
-              const dissolveFrom = gone * FADE_BAND
+              const slot = fades[id * 4 + 3]
+              if (slot !== 1 && slot >= 0) slotBad++
+              // Where the dissolve STARTS, not where it ends: the rim carries
+              // the gone-distance and fires at RIM_AT of it.
+              const gone = bed.rim.gone[id]
+              const dissolveFrom = gone * RIM_AT
               n++
               if (dissolveFrom - cardAt < closest) closest = dissolveFrom - cardAt
               if (dissolveFrom < cardAt - 1e-3) {
@@ -2502,10 +2508,12 @@ console.log('\nscatter')
       check(n > 0 && bad === 0,
         'no rock starts dissolving before its billboard takes over',
         bad === 0
-          ? `${n} instances (${n - fading} read straight out of the shader's own texture), ` +
+          ? `${n} instances (${fading} of them mid-swap), ` +
             `closest call ${closest.toFixed(1)} m of margin`
           : `${bad} of ${n}: worst ${worst.bed}/${worst.shape} at ${worst.scale.toFixed(2)}x (${worst.world}) ` +
             `cards at ${worst.cardAt.toFixed(0)} m but starts going at ${worst.dissolveFrom.toFixed(0)} m`)
+      check(slotBad === 0, 'the fade slot never holds anything but a sentinel or a stamp',
+        `${slotBad} of ${n} carry a positive value that is not the never-fade 1`)
     }
     // THE CONSOLE READOUT IS THE ONLY INSTRUMENT THE BLINK HAS, so it is gated
     // like anything else: it reaches across five typed arrays, a private texture
@@ -2556,11 +2564,21 @@ console.log('\nscatter')
   //
   // ASSERTED THROUGH THE SLOT THE SHADER READS, because the whole mechanism is
   // one float per instance in the alpha of the batch's colour texture and there
-  // is no other observable. Sign is the discriminator: positive is a
-  // gone-distance, negative is a biased clock reading. This block never names
-  // the biases -- they are material.js's -- it names the two things a caller can
-  // actually depend on: both halves go negative together, and the value tracks
-  // the clock.
+  // is no other observable. A negative value is a biased clock reading and 1 is
+  // the never-fade sentinel; nothing else may appear there. This block never
+  // names the biases -- they are material.js's -- it names the two things a
+  // caller can actually depend on: both halves go negative together, and the
+  // value tracks the clock.
+  //
+  // THAT ONE FLOAT IS ALSO THE RIM'S, which is the only place these two
+  // mechanisms can collide: the rim stamps the same slot when a rock crosses
+  // its cull trigger, and a cross-dissolve half-way through would have its stamp
+  // silently overwritten and its ghost stranded visible forever -- a rock frozen
+  // at partial coverage, which is exactly the artefact the clock exists to
+  // remove. Two guards, and both are gated below: `RockBed` refuses to start a
+  // cross-dissolve on an instance the rim is already transitioning
+  // (`rim.isBusy`), and `RimFade` ends any running cross-dissolve before it
+  // stamps (the `onPreempt` callback the bed hands it).
   {
     setPropClock(0)
     const r = build(cliff)
@@ -2586,7 +2604,7 @@ console.log('\nscatter')
 
     check(first.every((f) => f.out < 0 && f.in < 0),
       'and BOTH halves are stamped -- a departing duplicate and an arriving original',
-      `${first.length} pairs, all with a clock in the slot the gone-distance was in`)
+      `${first.length} pairs, all with a clock in the fade slot`)
 
     // The ghost is a real second draw of the same rock: same place, same tint,
     // the tier that was just left. If any of that drifts the pair reads as two
@@ -2631,10 +2649,15 @@ console.log('\nscatter')
     const stranded = first.filter((f) => bed.fadeAt[f.orig] >= 0 && bed.fades[bed.fadeAt[f.orig]].dup === f.dup)
     check(stranded.length === 0, 'and the pair resolves: once the window is up every duplicate is handed back',
       `${first.length} retired, pool at ${bed.freeCount} against ${freeBefore} before`)
-    const restored = first.filter((f) => slots(bed)[f.orig * 4 + 3] === bed.instGone[f.orig])
+    // And the slot goes back to the never-fade sentinel rather than being left
+    // holding a spent stamp. It cannot go back to a gone-distance -- there is no
+    // distance in that slot any more -- so what "restored" means now is that the
+    // rock is SOLID: the rim owns the same float and would read a leftover stamp
+    // as a transition it never started.
+    const restored = first.filter((f) => slots(bed)[f.orig * 4 + 3] === 1)
     check(restored.length === first.length,
-      'and the original gets its rim dissolve back, since the timer was written over it',
-      `${restored.length} of ${first.length} back to their own gone-distance`)
+      'and the original is left solid rather than holding the spent timer',
+      `${restored.length} of ${first.length} back to the never-fade sentinel`)
 
     setPropClock(20)
     r.update(600, 61.6, 609, 50)
@@ -2649,6 +2672,34 @@ console.log('\nscatter')
     check(second.every((f) => Math.abs(-f.out - t1) < 1e-3 && Math.abs((-f.in) - (-second[0].in)) < 1e-3),
       'and both halves of every pair read the SAME instant, which is what conserves coverage',
       `${second.length} pairs stamped at one clock reading`)
+
+    // THE COLLISION, both ways. Neither guard can be reached by walking -- the
+    // LOD rungs are metres out and the rim trigger is hundreds -- so both are
+    // driven straight at the two methods that own the slot. A silent failure
+    // here is a stranded ghost: a rock drawn twice at partial coverage with no
+    // clock left to retire it, which no other check in this file would notice.
+    {
+      const live = bed.fades[0]
+      const before = bed.freeCount
+      bed.rim._startFade(live.orig, getPropClock(), false)
+      check(bed.fadeAt[live.orig] === -1 && bed.freeCount === before + 1,
+        'a rim dissolve preempts a cross-dissolve rather than overwriting its stamp',
+        `ghost handed back, pool ${bed.freeCount} against ${before}`)
+      check(slots(bed)[live.orig * 4 + 3] < 0 && !bed.batch.getVisibleAt(live.dup),
+        'and what is left in the slot is the RIM\'s stamp, with the ghost off screen',
+        `slot ${slots(bed)[live.orig * 4 + 3].toFixed(3)}`)
+
+      // The other direction: the rim is mid-transition on this instance, so a
+      // tier crossing has to leave it alone. Which tier a rock was wearing on
+      // its way out of the world is not a question anybody is asking.
+      const stamp = slots(bed)[live.orig * 4 + 3]
+      const held = bed.freeCount
+      bed._crossFade(live.orig, 0, bed.shapeAt[live.orig], getPropClock())
+      check(bed.fadeAt[live.orig] === -1 && bed.freeCount === held
+        && slots(bed)[live.orig * 4 + 3] === stamp,
+        'and a cross-dissolve refuses to start while the rim owns the slot',
+        `slot unchanged at ${stamp.toFixed(3)}, pool unchanged at ${held}`)
+    }
 
     setPropClock(0)
     r.dispose()

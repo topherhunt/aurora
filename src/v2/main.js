@@ -1701,7 +1701,7 @@ function panelStats() {
     deadwoodCount: deadwood.stats.placed,
     deadwoodTris: deadwood.stats.tris,
     grassCount: grass.stats.placed,
-    grassVeiled: grass.stats.veiled,
+    grassHidden: grass.stats.rimHidden,
     grassTris: grass.stats.tris,
     rockCount: rocks.stats.placed,
     rockTris: rocks.stats.tris,

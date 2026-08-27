@@ -6,9 +6,10 @@ import {
 } from '../../props/rock-bank.js'
 import { ROCK_LOD_AT, rockLodSize } from '../../props/rock.js'
 import {
-  createPropMaterial, setSnowLine, setMossLine, setSnowVary, setMossVary, setPropFadeAt,
+  createPropMaterial, setSnowLine, setMossLine, setSnowVary, setMossVary, setPropSolidAt,
   setPropFadeTimerAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS,
 } from '../../material.js'
+import { RimFade, RIM_AT } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -140,7 +141,7 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // ladder is a function of SIZE and decides which mesh, while the graded
 // thinning is a function of the instance's random RANK and decides whether the
 // rock is there at all. Most rocks dissolve well before they reach their card,
-// and the sooner the higher their rank. See setPropFadeAt in _growTile.
+// and the sooner the higher their rank. See `rim.place` in _growTile.
 //
 // THERE IS A CARD TIER, and the argument that used to stand here against one
 // is kept because it is still true and is now the thing the card has to be
@@ -998,6 +999,11 @@ const ROCK_CARD_LIFE = 2.0
  * The one place the three consumers -- `_fadeFloor`, `_exemptFrac` and the
  * constructor's reach check -- agree on what "past the end of the ladder"
  * means. They read the same function so they cannot drift.
+ *
+ * The divisor stays FADE_BAND even though the rim now fires at the larger
+ * `RIM_AT`: dividing by the smaller number pushes the gone-distance FURTHER
+ * out, so the band this buys is a superset of the one it promises. Swapping in
+ * RIM_AT would shave 8% off every rock's reach for no gain but tightness.
  */
 function cardGoneAt(size) {
   return (size * ROCK_LOD_AT[ROCK_LOD_AT.length - 1] * ROCK_CARD_LIFE) / FADE_BAND
@@ -1497,11 +1503,15 @@ class RockBed {
     // same reason it is the wrong one for the ladder: what must not collide is
     // the ground each rock covers, not how big it looks.
     this.instSpan = new Float32Array(this.maxInstances)
-    // The gone-distance this rock's rim dissolve was set to at placement. Kept
-    // because a cross-dissolve WRITES OVER that slot -- one float carries either
-    // a distance or a timer, never both -- so ending a fade has to put the rim
-    // back, and re-deriving it would mean carrying the tile's rank down here.
-    this.instGone = new Float32Array(this.maxInstances)
+    // The rim dissolve: which rocks are drawn, which are hidden, and the quarter
+    // second between. It holds each rock's gone-distance as `rim.gone`, and it
+    // shares ONE float per instance with the cross-dissolve below -- so it is
+    // handed the callback that retires a swap it is about to write over, and
+    // `_crossFade` asks `isBusy` before starting one the rim would clobber.
+    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
+      const running = this.fadeAt[id]
+      if (running >= 0) this._endFade(running)
+    })
 
     // Cross-dissolves in flight: { orig, dup, start, tris }. `fadeAt` maps an
     // instance to its entry so a second band crossing can finish the first, and
@@ -1627,11 +1637,12 @@ class RockBed {
    * still be a mesh -- `size * ROCK_LOD_AT.at(-1)`, the distance at which it
    * finally becomes a two-triangle card. The second is `ROCK_CARD_LIFE`, the
    * span the card is then whole for. The third is the `/ FADE_BAND`, and it is
-   * not a fudge: `setPropFadeAt` takes the distance at which a prop is GONE and
-   * the dissolve starts at 0.85 of it, so handing it the card distance would
-   * have the rock start dithering at 0.85 of the way there and finish exactly
-   * as it cards -- dissolving as a mesh and never showing a billboard at all,
-   * which is the complaint this whole path exists to answer.
+   * not a fudge: the rim takes the distance at which a prop is GONE and starts
+   * its dissolve short of that, so handing it the card distance would have the
+   * rock start dithering before it ever cards -- dissolving as a mesh and never
+   * showing a billboard at all, which is the complaint this whole path exists
+   * to answer. See `cardGoneAt` for why the divisor is the old band rather than
+   * the rim's actual `RIM_AT` trigger.
    *
    * An upper bound rather than the exact figure, because the exact one needs
    * the shape and the shape needs a field sample to pick an environment, and
@@ -1787,6 +1798,7 @@ class RockBed {
     // its duplicate back rather than being refused for want of one.
     const now = getPropClock()
     this._sweepFades(now)
+    this.rim.beginFrame(camX, camY, camZ)
 
     const tile = this.tile
     const coarse = ROCK_BAND_COUNT - 1
@@ -1809,6 +1821,8 @@ class RockBed {
       const nz = Math.max(t.tz * tile, Math.min(camZ, (t.tz + 1) * tile))
       const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
 
+      this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
+
       const q = t.q
       const thicken = near2 < this.loSq[q]
       const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
@@ -1823,12 +1837,17 @@ class RockBed {
       if (!near) {
         if (t.near) this._demote(t, coarse)
         t.near = false
-        for (let k = 0; k < t.n; k++) tris += this.tierTris[coarse][this.shapeAt[t.ids[k]]]
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          if (this.rim.isHidden(id)) continue
+          tris += this.tierTris[coarse][this.shapeAt[id]]
+        }
         continue
       }
       t.near = true
       for (let k = 0; k < t.n; k++) {
         const i = t.ids[k]
+        if (this.rim.isHidden(i)) continue
         const ex = this.instX[i] - camX
         const ey = this.instY[i] - camY
         const ez = this.instZ[i] - camZ
@@ -2340,13 +2359,13 @@ class RockBed {
       // are not resident at all, and it is there so the dissolve finishes before
       // the tile evicts. It can no longer undercut the guarantee: the bed
       // constructor refuses a `radius` shorter than the bed's own card distance.
-      this.instGone[id] = Math.min(this.fullRadius / rankU, this.radius)
-      setPropFadeAt(this.batch, id, this.instGone[id])
-
       // Born at the coarsest tier; `update` promotes the near ones next frame.
       this.tierAt[id] = ROCK_BAND_COUNT - 1
       this.batch.setGeometryIdAt(id, this.tierIds[ROCK_BAND_COUNT - 1][shape])
-      this.batch.setVisibleAt(id, true)
+
+      // Hidden until the rim's sweep has looked at it, which the tile below is
+      // marked due for -- see rim.js.
+      this.rim.place(id, Math.min(this.fullRadius / rankU, this.radius))
     }
 
     this.placed += n - (existing ? existing.n : 0)
@@ -2354,6 +2373,7 @@ class RockBed {
       existing.n = n
       existing.q = q
       existing.u = uNew
+      this.rim.markDue(existing)
     } else {
       this.tiles.set(key, {
         tx,
@@ -2429,6 +2449,11 @@ class RockBed {
     const running = this.fadeAt[i]
     if (running >= 0) this._endFade(running)
 
+    // A rim transition owns the slot while it runs, and it outranks this one:
+    // which tier a rock was wearing on its way out of the world is not a
+    // question anybody is asking. See RimFade's constructor for the other half.
+    if (this.rim.isBusy(i)) return
+
     // Both ceilings degrade to a pop, which is what a swap did before this
     // existed. See FADE_POOL_RESERVE for why growth outranks polish.
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
@@ -2454,15 +2479,15 @@ class RockBed {
   }
 
   /**
-   * Finish the fade at index `k`: hand the ghost back and give the original its
-   * rim dissolve again, since the timer was written over the gone-distance.
+   * Finish the fade at index `k`: hand the ghost back and put the original's
+   * slot back to the never-fade default, since the timer was written into it.
    */
   _endFade(k) {
     const f = this.fades[k]
     this.batch.setVisibleAt(f.dup, false)
     this.free[this.freeCount++] = f.dup
     this.fadeTris -= f.tris
-    setPropFadeAt(this.batch, f.orig, this.instGone[f.orig])
+    setPropSolidAt(this.batch, f.orig)
     this.fadeAt[f.orig] = -1
     // Swap-remove, so the list stays dense and the sweep stays a linear scan.
     const last = this.fades.pop()
@@ -2499,11 +2524,13 @@ class RockBed {
       // A rock thinned out mid-fade would strand its ghost visible forever.
       if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n - w
     tile.n = w
+    this.rim.markDue(tile)
   }
 
   _demote(tile, coarse) {
@@ -2521,10 +2548,12 @@ class RockBed {
       // Same as _thin: an evicted rock has to take its ghost with it.
       if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
       this.batch.setVisibleAt(id, false)
+      this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n
+    this.rim.releaseTile(tile)
   }
 
   /**
@@ -2629,6 +2658,8 @@ class RockBed {
       tiles: this.tiles.size,
       queued: this.queue.length,
       fading: this.fades.length,
+      rimHidden: this.rim.hiddenCount,
+      rimFading: this.rim.flightN,
       pool: this.maxInstances,
       used: this.maxInstances - this.freeCount,
       density: this.density,
@@ -2863,22 +2894,24 @@ export class Rocks {
    * happens: `window.v2rocks.describeNear(camX, camY, camZ)`, `console.table` on
    * the result, and turn on the spot.
    *
-   * `dissolveFrom` is the number to watch. It is where the DITHER opens, not
-   * where the rock goes: a row whose `d` is past it is being drawn at partial
-   * coverage, which is the one state in this system that can look like a blink
-   * on a small enough sprite, and a row whose `d` is past `cardsAt` while `tier`
-   * is still a mesh is the ladder itself being wrong.
+   * `dissolving` is the flag to watch, and it is now a QUARTER-SECOND state
+   * rather than a band: the rim stamps a clock when the camera crosses
+   * `dissolveFrom` and the row is at partial coverage only until that stamp
+   * runs out, after which it is `hidden` (resident, invisible, drawing nothing)
+   * or whole. Partial coverage is the one state in this system that can look
+   * like a blink on a small enough sprite, so a row that is STILL `dissolving`
+   * on a second readout is a stuck transition, not a slow one. A row whose `d`
+   * is past `cardsAt` while `tier` is still a mesh is the ladder itself being
+   * wrong.
    */
   describeNear(camX, camY, camZ, radius = 40) {
     const rows = []
     const last = ROCK_LOD_AT[ROCK_LOD_AT.length - 1]
     for (const bed of this.beds) {
-      // The gone-distance comes off `instGone` and NOT off the colour texture
-      // the shader reads, because that slot is dual-purpose: while a rock is
-      // cross-dissolving between tiers it holds a clock reading instead, and a
-      // readout that printed the raw texel would report a dissolve starting at
-      // minus three kilometres for exactly the rocks the user is watching swap.
-      // `instGone` is what `_endFade` puts back, so it is the durable answer.
+      // The gone-distance comes off the rim's own array and NOT off the colour
+      // texture the shader reads, because that slot holds a CLOCK now and never
+      // a distance: a readout that printed the raw texel would report a dissolve
+      // starting at minus three kilometres for every rock mid-transition.
       for (const t of bed.tiles.values()) {
         for (let k = 0; k < t.n; k++) {
           const id = t.ids[k]
@@ -2890,7 +2923,7 @@ export class Rocks {
           const shape = bed.shapeAt[id]
           const size = bed.shapeLod[shape] * bed.instScale[id]
           const tier = bed.tierAt[id]
-          const gone = bed.instGone[id]
+          const gone = bed.rim.gone[id]
           rows.push({
             bed: bed.cfg.name,
             shape: bed.shapes[shape].name,
@@ -2899,9 +2932,10 @@ export class Rocks {
             tier: tier === ROCK_BAND_COUNT - 1 ? 'card' : `mesh${tier}`,
             tris: bed.tierTris[tier][shape],
             cardsAt: +(size * last).toFixed(1),
-            dissolveFrom: +(gone * FADE_BAND).toFixed(1),
+            dissolveFrom: +(gone * RIM_AT).toFixed(1),
             goneAt: +gone.toFixed(1),
-            dissolving: d >= gone * FADE_BAND,
+            dissolving: bed.rim.isBusy(id),
+            hidden: bed.rim.isHidden(id),
             // Mid-swap, so this row is currently drawn as TWO stippled halves
             // and `tris` is the arriving one only -- see RockBed._crossFade.
             fading: bed.fadeAt[id] >= 0,

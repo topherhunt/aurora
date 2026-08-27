@@ -50,7 +50,7 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 // missing prints as `??` in the warn colour rather than as a plausible zero:
 //   { fps, ms, tris, calls, resident, drawn, terrainTris, queued,
 //     triDeg, profileDeg, treeCount,
-//     treeTris, grassCount, grassVeiled, grassTris, fernCount, fernTris,
+//     treeTris, grassCount, grassHidden, grassTris, fernCount, fernTris,
 //     mushroomCount, mushroomTris, deadwoodCount, deadwoodTris,
 //     rockCount, rockTris, litterCount, litterTris,
 //     x, y, z, ground, cell, cursorDist, cursorLabel, cursorVariant,
@@ -588,13 +588,13 @@ export class Panel {
     // is the layer whose row moves most: the region bed is 3/m^2 of scattered
     // strips and lands around 17k, but the same meadow drawn as 3-card clumps
     // (M toggles it) is 53k, and that swing alone is enough to send `tris`
-    // above red. Grass shows drawn/resident, because the two differ: the veil
-    // (render/grass.js) sets the already-dithered-away instances invisible
+    // above red. Grass shows drawn/resident, because the two differ: the rim
+    // (render/rim.js) sets the instances past their trigger distance invisible
     // without releasing them, so a bare resident count would overstate what the
     // triangle figure beside it is counting.
     kv('trees', Number.isFinite(s.treeCount) ? `${s.treeCount} ${(s.treeTris / 1000).toFixed(0)}k` : null)
     kv('grass', Number.isFinite(s.grassCount)
-      ? `${s.grassCount - s.grassVeiled}/${s.grassCount} ${(s.grassTris / 1000).toFixed(0)}k`
+      ? `${s.grassCount - s.grassHidden}/${s.grassCount} ${(s.grassTris / 1000).toFixed(0)}k`
       : null)
     kv('ferns', Number.isFinite(s.fernCount) ? `${s.fernCount} ${(s.fernTris / 1000).toFixed(0)}k` : null)
     // ONE DECIMAL on this row alone, and it is not an inconsistency. Every other
