@@ -1,0 +1,6 @@
+{
+  "idle": { "breathe": 0.015, "sway": 0.02, "cadence": 0.3 },
+  "walk": { "stride": 0.55, "kneeBend": 0.9, "armSwing": 0.4, "bounce": 0.025, "cadence": 1.0 },
+  "run": { "stride": 0.9, "kneeBend": 1.3, "armSwing": 0.7, "bounce": 0.06, "cadence": 1.7 },
+  "sit": { "kneeBend": 1.55, "hipBend": 1.4, "torsoLean": 0.08 }
+}

@@ -1,5 +1,7 @@
 # Project agent instructions
 
+Run `npm run build` after each code change to ensure nothing was broken.
+
 When the user asks to generate imagery for this project, use the project's Fluxcline image
 generation harness rather than Codex's built-in image-generation system. For simple, deliberately
 small graphics such as pixel art, generate them deterministically in code instead. Keep generated

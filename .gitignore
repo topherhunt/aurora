@@ -1,6 +1,8 @@
 tmp/
 node_modules/
 dist/
+tools/characters/sheets/
 devops/deploy.env
+.env
 .DS_Store
 .claude/settings.local.json

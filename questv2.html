@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- Quest WebXR minimal test bench</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #9db4cf; }
+      body { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: #e9f2ff; }
+      canvas { display: block; }
+      #stats { position: fixed; left: 12px; top: 12px; z-index: 3; padding: 8px 10px; background: rgba(5, 10, 18, .78); white-space: pre; pointer-events: none; }
+      #status { color: #9bd4ff; }
+      #boot { position: fixed; inset: 0; display: grid; place-items: center; z-index: 5; background: #0a0e16; color: #a9c5e7; }
+      #boot.gone { opacity: 0; pointer-events: none; transition: opacity .3s; }
+      #boot pre { color: #ffad91; max-width: 70ch; white-space: pre-wrap; }
+      #xr { position: fixed; right: 12px; top: 12px; z-index: 4; padding: 9px 12px; border: 1px solid #d7e9ff; border-radius: 4px; background: rgba(5, 10, 18, .78); color: #e9f2ff; font: inherit; cursor: pointer; }
+      #xr:disabled { opacity: .55; cursor: default; }
+    </style>
+  </head>
+  <body>
+    <div id="boot">loading Quest minimal test bench ...</div>
+    <div id="stats"></div>
+    <button id="xr" disabled>checking WebXR ...</button>
+    <script type="module" src="/src/quest-main-v2.js"></script>
+  </body>
+</html>

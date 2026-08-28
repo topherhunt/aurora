@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- character rig</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+
+      #panel {
+        flex: 0 0 300px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      #picker { display: flex; gap: 6px; margin-bottom: 8px; }
+      #picker select { flex: 1 1 auto; }
+      #idrow { display: flex; gap: 6px; margin-bottom: 8px; }
+      #idrow input { flex: 1 1 auto; }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
+      #buttons button { flex: 1 1 auto; padding: 4px 6px; }
+      #mode { display: flex; gap: 4px; margin-bottom: 8px; }
+      #mode button { flex: 1 1 auto; }
+
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
+
+      #budget {
+        flex: 0 0 296px; overflow-y: auto; padding: 8px 10px;
+        border-left: 1px solid var(--edge); background: var(--panel);
+      }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .ok { color: var(--good); } .warn { color: var(--warn); }
+      #status { margin-top: 6px; }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 1px 0; vertical-align: baseline; }
+      td.k { color: var(--dim); }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">CHARACTER RIG</div>
+        <div class="s">drag a bone into place; the mesh follows live</div>
+      </header>
+      <div id="controls">
+        <h2>character</h2>
+        <div id="idrow">
+          <input type="text" id="charId" value="test-nordic" />
+          <button id="load">load</button>
+        </div>
+        <h2>bone</h2>
+        <div id="picker"><select id="bone"></select></div>
+        <div id="mode">
+          <button id="modeTranslate" class="on">move</button>
+          <button id="modeRotate">rotate</button>
+        </div>
+      </div>
+      <div id="buttons">
+        <button id="save">save rig-override.json</button>
+        <button id="resetBone">reset this bone</button>
+        <button id="resetAll">reset all bones</button>
+      </div>
+    </div>
+
+    <div id="stage"><div id="hint">drag to orbit &middot; scroll to zoom &middot; drag the gizmo to move the selected bone</div></div>
+
+    <div id="budget">
+      <h2>this bench</h2>
+      <p class="note">
+        Every character shares one bone hierarchy (<em>tools/characters/rig.mjs</em>), placed at
+        proportional fractions of the measured figure. That's usually close but not exact --
+        this bench nudges one character's bone positions without touching its mesh. <em>save</em>
+        writes <em>public/characters/&lt;id&gt;/rig-override.json</em> (bone name -&gt;
+        local translation), which <em>generate-character.mjs</em> applies on top of the
+        proportional placement the next time that character is regenerated.
+      </p>
+      <p class="note warn">
+        Skin weights are computed from the proportional placement, not the override -- moving a
+        bone here changes where it sits at rest but not which vertices follow it when a clip
+        animates. Good for a bind-pose correction (a shoulder that reads too narrow); a large move
+        will show its seams once the character walks.
+      </p>
+      <h2>current override</h2>
+      <table id="overrideTable"></table>
+      <h2>status</h2>
+      <div id="status" class="note"></div>
+    </div>
+
+    <script type="module" src="/src/gen-character-main.js"></script>
+  </body>
+</html>

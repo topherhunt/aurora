@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- Quest WebXR A-Frame test bench</title>
+    <!--
+      /questv3 -- NOT built the way /quest and /questv2 are. Those two are
+      hand-rolled Three.js: a raw WebGLRenderer, our own requestSession call,
+      our own animation loop. Neither has ever entered VR successfully on the
+      test Quest 2, even after fixing a real bug (requestSession needs
+      'local-floor' declared in optionalFeatures, see quest-main.js) -- VR
+      entry still breaks in a way that looks like it corrupts the shared
+      WebGL context and re-triggers our boot sequence into a hung state.
+
+      A-Frame's own Hello World demo, on this exact headset, DID enter VR
+      successfully. So does aboveparadowski.com, which is also A-Frame. This
+      page is deliberately as close to stock A-Frame Hello World as possible
+      -- same CDN script, same implicit default camera rig (A-Frame injects
+      one with look-controls/wasd-controls when you don't specify a
+      <a-camera> yourself), same default <a-scene> attributes (no
+      vr-mode-ui/loading-screen overrides), A-Frame's own Enter VR button and
+      session/reference-space handling instead of any custom requestSession
+      code. The only difference from Hello World is a few more flat-colour
+      primitives, so it's not literally the exact page already tested.
+
+      Goal: confirm VR entry actually works via this architecture before
+      layering anything else back on top of it.
+
+      UPDATE: confirmed on-device -- VR entry works. Added a world-space
+      feature-toggle panel (src/questv3-main.js, component "quest-features")
+      that reimplements /quest's stress categories -- prop counts, procedural
+      terrain, alpha-tested billboards, dynamic lighting, cubemap reflection,
+      an animated sky -- directly against A-Frame's own THREE.Scene, so each
+      toggle can be trialed inside an architecture already proven to enter VR.
+      A camera entity and two laser-controls entities were added (required for
+      panel raycasting); everything else about the base scene is unchanged.
+
+      UPDATE: added locomotion -- the rig carries movement-controls (see
+      below re: which library), and quest-features toggles its `fly` flag on
+      an A/X button press from either hand controller. wasd-controls was
+      removed from the camera since movement-controls already covers
+      keyboard on the rig; having both double-moves.
+
+      UPDATE: removed the static <a-plane> ground primitive -- quest-features
+      builds its own ground (the 'terrain' toggle), and the two flat green
+      planes sat at nearly the same position and z-fought.
+
+      UPDATE: moved the two laser-controls hand entities to be children of
+      #rig instead of top-level scene siblings -- the standard A-Frame rig
+      scaffold, needed so tracked poses compose correctly with rig movement.
+
+      UPDATE: root-caused why the joystick never moved anything -- checked
+      the actual aframe.min.js 1.5.0 bundle and 'movement-controls' isn't in
+      it at all. It's not core A-Frame, it ships in the separate aframe-extras
+      package, which this page never loaded, so the attribute was silently
+      inert this whole time (unrelated to the rig-nesting above). Compared
+      against aboveparadowski.com's source (a confirmed-working Quest A-Frame
+      app): it loads aframe-extras but scopes its own movement-controls to
+      'controls: keyboard' only, and does VR locomotion via a *separate*
+      aframe-blink-controls component (thumbstick push = teleport arc, not
+      smooth walk) attached per-hand. Now loading both libraries and mirroring
+      that split: movement-controls stays keyboard-only (flatscreen), and
+      blink-controls handles the VR thumbstick teleport.
+
+      UPDATE: blink-controls' `button` schema is a red herring for "push
+      forward to teleport" -- setting `button: thumbstick` (as first tried)
+      rebinds activation to thumbstickdown/up (a CLICK of the stick), not
+      forward tilt. Left/right tilt still snap-turns either way, since that's
+      wired unconditionally. Leaving `button` unset restores the default
+      fuzzy forward-axis activation, which is what "push up to teleport"
+      actually needs.
+    -->
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@7.7.0/dist/aframe-extras.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/aframe-blink-controls@0.4.3/dist/aframe-blink-controls.min.js"></script>
+    <style>
+      html, body { margin: 0; height: 100%; }
+      #stats { position: fixed; left: 12px; top: 12px; z-index: 3; padding: 8px 10px; background: rgba(5, 10, 18, .78); color: #e9f2ff; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="stats">questv3 -- A-Frame architecture + a feature-toggle panel to the left (point + trigger, or click on flatscreen)</div>
+    <a-scene quest-features>
+      <a-sky color="#9db4cf"></a-sky>
+      <a-box position="-1 0.5 -3" rotation="0 45 0" color="#4CC3D9"></a-box>
+      <a-sphere position="0 1.25 -5" radius="1.25" color="#EF2D5E"></a-sphere>
+      <a-cylinder position="1 0.75 -3" radius="0.5" height="1.5" color="#FFC65D"></a-cylinder>
+      <a-box position="2.5 0.4 -2" scale="0.8 0.8 0.8" color="#2f7d3a"></a-box>
+      <a-sphere position="-2.5 0.4 -2" radius="0.4" color="#8a8a86"></a-sphere>
+      <a-entity id="rig" movement-controls="controls: keyboard; fly: false">
+        <a-camera id="camera" look-controls></a-camera>
+        <a-entity laser-controls="hand: left" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
+        <a-entity laser-controls="hand: right" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
+      </a-entity>
+    </a-scene>
+    <script type="module" src="/src/questv3-main.js"></script>
+  </body>
+</html>

@@ -8,6 +8,7 @@ import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from './height/relief.js
 import { Layers } from './layers/layers.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
+import { MacroTerrain } from './terrain/macro-terrain.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
 import { SKYLINE } from './terrain/skyline.js'
 import { Markers } from './render/markers.js'
@@ -51,6 +52,13 @@ import { WorldProbe } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
 import { PeerAvatars } from './render/avatar.js'
+
+// Explicit presentation mode, rather than a user-agent guess. This keeps
+// desktop profiling unchanged and also makes Quest mode testable in a desktop
+// browser with `?quest` before entering XR.
+const QUEST_MODE = new URLSearchParams(location.search).has('quest')
+const QUEST_TERRAIN_TRI_DEG = 15.0
+const QUEST_TERRAIN_ONLY = QUEST_MODE
 
 // ---------------------------------------------------------------------------
 // The /v2 route (DESIGN.md §18): the imported world, walkable, with the
@@ -157,6 +165,11 @@ renderer.setSize(innerWidth, innerHeight)
 renderer.outputColorSpace = THREE.SRGBColorSpace
 renderer.xr.enabled = true
 renderer.xr.setFoveation(1.0)
+if (QUEST_MODE) {
+  // TerrainV2 reads this on its first update, so configure it before boot.
+  LOD.triDeg = QUEST_TERRAIN_TRI_DEG
+  console.log(`[v2] Quest mode: terrain <=${LOD.triDeg}deg, grass disabled`)
+}
 document.body.appendChild(renderer.domElement)
 document.body.appendChild(VRButton.createButton(renderer))
 
@@ -213,6 +226,12 @@ SkyProbe.include(aurora.mesh)
 // for the aurora -- and because a dome fills every face with alpha 1, which
 // turns "is there land along this ray" into "yes, always". See world-probe.js.
 worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
+
+if (QUEST_TERRAIN_ONLY) {
+  water.group.visible = false
+  stars.points.visible = false
+  aurora.mesh.visible = false
+}
 
 const input = new Input(renderer)
 const peerAvatars = new PeerAvatars(scene)
@@ -452,10 +471,12 @@ async function bootWorld() {
   // asynchronously (loadImageLayers, below); the bank and the batches do not wait
   // on them, so the world has trees and stone from the first frame wearing
   // whatever the procedural layers already hold.
-  propTextures = buildTextureArray()
-  terrain = new TerrainV2(scene, {
-    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures,
-  })
+  propTextures = QUEST_TERRAIN_ONLY ? null : buildTextureArray()
+  terrain = QUEST_TERRAIN_ONLY
+    ? new MacroTerrain(scene, { heightmap })
+    : new TerrainV2(scene, {
+      heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures,
+    })
 
   lighting.patch(terrain.material, {
     mode: 'fragment',
@@ -487,6 +508,7 @@ async function bootWorld() {
   player.spawnAt(spawn.x, spawn.z)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
+  if (!QUEST_TERRAIN_ONLY) {
   // Trees. The atlas was built up at the terrain, above, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
   // layers landing, because a photograph taken before the bark has loaded would
@@ -494,7 +516,11 @@ async function bootWorld() {
   // `ground: terrain` is what stops distant trees floating: a tree's Y comes off
   // the chunk mesh that is actually drawn under it, not off the exact field the
   // chunk's triangles are chording across. See Trees._groundFor.
-  trees = new Trees(scene, height, waterSurfaces, propTextures, { seed: SEED, ground: terrain })
+  trees = new Trees(scene, height, waterSurfaces, propTextures, {
+    seed: SEED,
+    ground: terrain,
+    ...(QUEST_MODE ? { quest: true, simple: true, radius: 300 } : {}),
+  })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
   // would be the one surface the night lift never reaches.
@@ -502,7 +528,7 @@ async function bootWorld() {
   // on it, and these two materials compile DIFFERENT shader source -- the tree
   // material's uBillboardLayers is four long, the ferns' is two -- so sharing a
   // key would hand one of them the other's program.
-  lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb' })
+  if (!QUEST_MODE) lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb' })
   // So a tree and the ground it stands on cross the snow line together.
   trees.syncSnowLine(layers)
   trees.place(spawn.x, spawn.z)
@@ -524,22 +550,23 @@ async function bootWorld() {
   // The whole Layers goes in, not just its paths: a fern takes a hue cue from
   // the terrain colour underfoot, which needs the snow band and the road
   // flattening as well as the path exclusions.
-  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED })
-  lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
-  ferns.syncSnowLine(layers)
-  ferns.place(spawn.x, spawn.z)
-  const fs = ferns.stats
-  const fr = fs.rejected
-  console.log(
-    `[v2] ferns ${fs.placed} placed over ${fs.tiles} tiles in ${fs.placeMs.toFixed(0)} ms ` +
-    `(${fs.density}/m^2 to ${fs.fullRadius} m, thinning to ${fs.radius} m, ` +
-    `${fs.heightRange[0]}-${fs.heightRange[1]} m tall, pool ${fs.used}/${fs.pool}) ` +
-    `(dropped: ${fr.elev} elev, ${fr.slope} slope, ${fr.water} water, ${fr.snow} snow, ${fr.path} path)`
-  )
-  // A/B hook for the billboard, from the console: v2ferns.setFarTier('mesh')
-  // holds real LOD2 geometry past 14 m so the card can be judged against ground
-  // truth, and 'card' puts it back. See Ferns.setFarTier.
-  window.v2ferns = ferns
+  if (!QUEST_MODE) {
+    ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED })
+    lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
+    ferns.syncSnowLine(layers)
+    ferns.place(spawn.x, spawn.z)
+    const fs = ferns.stats
+    const fr = fs.rejected
+    console.log(
+      `[v2] ferns ${fs.placed} placed over ${fs.tiles} tiles in ${fs.placeMs.toFixed(0)} ms ` +
+      `(${fs.density}/m^2 to ${fs.fullRadius} m, thinning to ${fs.radius} m, ` +
+      `${fs.heightRange[0]}-${fs.heightRange[1]} m tall, pool ${fs.used}/${fs.pool}) ` +
+      `(dropped: ${fr.elev} elev, ${fr.slope} slope, ${fr.water} water, ${fr.snow} snow, ${fr.path} path)`
+    )
+    window.v2ferns = ferns
+  } else {
+    window.v2ferns = { disabled: true }
+  }
 
   // Grass, at 3 tufts per square metre -- the densest thing in the world by a
   // factor of sixty, and a THIRD batch for the same reason ferns are a second
@@ -551,7 +578,7 @@ async function bootWorld() {
   // dither at each tuft's own cull distance so nothing pops. A fixed disc at
   // this density would be 46,000 instances for the same horizon. See
   // render/grass.js, which lays out where its ~54k triangles go.
-  buildGrass(grassStyle, spawn.x, spawn.z)
+  if (!QUEST_MODE) buildGrass(grassStyle, spawn.x, spawn.z)
   // A/B hooks for the two grass strategies, from the console. `M` swaps the bed;
   // these tune it without a reload.
   //
@@ -568,15 +595,19 @@ async function bootWorld() {
   // two triangles at any size, so halving `size` costs 4x the instances to cover
   // the same ground. Both rebuild rather than reconfigure, because the pool, the
   // tile candidate count and the bank all depend on them.
-  const rebuild = (opts) => {
-    player.headPosition(headTmp)
-    buildGrass(grassStyle, headTmp.x, headTmp.z, opts)
-  }
-  window.v2grass = {
-    style: (s) => { player.headPosition(headTmp); buildGrass(s, headTmp.x, headTmp.z) },
-    tiling: (o) => { setStripTiling(o); return getStripTiling() },
-    size: (h) => rebuild({ height: h }),
-    density: (d) => rebuild({ density: d }),
+  if (!QUEST_MODE) {
+    const rebuild = (opts) => {
+      player.headPosition(headTmp)
+      buildGrass(grassStyle, headTmp.x, headTmp.z, opts)
+    }
+    window.v2grass = {
+      style: (s) => { player.headPosition(headTmp); buildGrass(s, headTmp.x, headTmp.z) },
+      tiling: (o) => { setStripTiling(o); return getStripTiling() },
+      size: (h) => rebuild({ height: h }),
+      density: (d) => rebuild({ density: d }),
+    }
+  } else {
+    window.v2grass = { disabled: true }
   }
 
   // Stone, in three size beds at once: pebbles underfoot, boulders through the
@@ -693,6 +724,7 @@ async function bootWorld() {
     `${ds.placeMs.toFixed(0)} ms (pool ${ds.used}/${ds.pool}, bank ${ds.bankKB} KB) (dropped: ${dr})`
   )
   window.v2deadwood = deadwood
+  }
 
   // Last of the five, so the cursor readout can be bound now. Deliberately here
   // rather than lazily inside the readout: a missing scatter should be a boot
@@ -720,11 +752,11 @@ async function bootWorld() {
   // ONE loadImageLayers for all three, and the bakes hang off the same promise.
   // Separate calls would be separate decodes of the same PNGs into the same
   // atlas.
-  loadImageLayers(propTextures).then(() => {
+  if (!QUEST_TERRAIN_ONLY) loadImageLayers(propTextures).then(() => {
     propLayersReady = true
     const baked = trees.bakeCards(renderer)
-    ferns.bakeCards(renderer)
-    grass.bakeCards(renderer)
+    if (ferns) ferns.bakeCards(renderer)
+    if (grass) grass.bakeCards(renderer)
     mushrooms.bakeCards(renderer)
     // Dead wood wears the TREES' bark PNGs, so this bake genuinely has to be
     // inside this promise and not merely conventionally: run before the decode
@@ -772,7 +804,7 @@ async function bootWorld() {
     )
   })
 
-  editor = new Editor({
+  if (!QUEST_TERRAIN_ONLY) editor = new Editor({
     scene,
     camera,
     renderer,
@@ -792,12 +824,12 @@ async function bootWorld() {
   // document has to read it. Wired AFTER the editor exists rather than in each
   // constructor, because `markers.setVisibility` re-syncs immediately and the
   // predicate it is handed is the editor's.
-  const isVisible = (kind, id, index) => editor.isVisible(kind, id, index)
+  const isVisible = editor ? (kind, id, index) => editor.isVisible(kind, id, index) : () => true
   markers.setVisibility(isVisible)
   waterSurfaces.setVisibility(isVisible)
   roads.setVisibility(isVisible)
 
-  panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
+  if (!QUEST_TERRAIN_ONLY) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
 
   ready = true
   bootDone()
@@ -880,23 +912,35 @@ function onRelief(next) {
   const cx = player.rig.position.x
   const cz = player.rig.position.z
 
-  trees.syncSnowLine(layers)
-  trees.place(cx, cz)
-  ferns.syncSnowLine(layers)
-  ferns.place(cx, cz)
-  grass.syncSnowLine(layers)
-  grass.place(cx, cz)
-  rocks.syncBands(layers)
-  rocks.place(cx, cz)
-  litter.place(cx, cz)
+  if (trees) {
+    trees.syncSnowLine(layers)
+    trees.place(cx, cz)
+  }
+  if (ferns) {
+    ferns.syncSnowLine(layers)
+    ferns.place(cx, cz)
+  }
+  if (grass) {
+    grass.syncSnowLine(layers)
+    grass.place(cx, cz)
+  }
+  if (rocks) {
+    rocks.syncBands(layers)
+    rocks.place(cx, cz)
+  }
+  if (litter) litter.place(cx, cz)
   // LAST, and after rocks specifically, for the reason given where mushrooms
   // are constructed: a clump is placed against the trees and rocks that are
   // already standing, so re-placing it before they have moved onto the new
   // relief would anchor it to the old world.
-  mushrooms.syncSnowLine(layers)
-  mushrooms.place(cx, cz)
-  deadwood.syncSnowLine(layers)
-  deadwood.place(cx, cz)
+  if (mushrooms) {
+    mushrooms.syncSnowLine(layers)
+    mushrooms.place(cx, cz)
+  }
+  if (deadwood) {
+    deadwood.syncSnowLine(layers)
+    deadwood.place(cx, cz)
+  }
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
   // that resolves y from the field rather than integrating toward it, and the
@@ -922,12 +966,14 @@ function onView() {
 }
 
 function onTool(name) {
+  if (!editor || !panel) return
   editor.setActive(true)
   editor.setTool(name)
   panel.syncSelection()
 }
 
 async function onAction(name) {
+  if (!editor || !panel) return
   panel.setError('')
   try {
     if (name === 'save') {
@@ -1165,8 +1211,10 @@ addEventListener('keydown', (e) => {
   // flag (see the key-conflict note in editor.js).
   if (e.code === 'Tab') {
     e.preventDefault()
-    editor.setActive(!editor.active)
-    panel.syncSelection()
+    if (editor && panel) {
+      editor.setActive(!editor.active)
+      panel.syncSelection()
+    }
     return
   }
 
@@ -1175,7 +1223,7 @@ addEventListener('keydown', (e) => {
   // here and scale-mode in Blender, and editor.js resolves that by consuming
   // G/R/S only while a gizmo is attached. Acting on a consumed key anyway would
   // walk her backwards through the object she is scaling.
-  if (editor.onKeyDown(e)) return
+  if (editor && editor.onKeyDown(e)) return
 
   // Arming a tool from the digit that names it, when the editor is not active
   // yet. Once it IS active the branch above has already handled these.
@@ -1199,7 +1247,7 @@ addEventListener('keydown', (e) => {
   // something a player does.
   if (fresh.includes('grassStyle')) {
     player.headPosition(headTmp)
-    buildGrass(grassStyle === 'strips' ? 'tufts' : 'strips', headTmp.x, headTmp.z)
+    if (grass) buildGrass(grassStyle === 'strips' ? 'tufts' : 'strips', headTmp.x, headTmp.z)
   }
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped multiplicatively
@@ -1231,7 +1279,7 @@ addEventListener('keyup', (e) => {
 // tab is away.
 addEventListener('blur', () => {
   held.clear()
-  if (ready) editor.onBlur()
+  if (ready && editor) editor.onBlur()
 })
 
 // THE LAST LINE OF DEFENCE FOR AN UNSAVED SCULPT, and it is here because it was
@@ -1241,7 +1289,7 @@ addEventListener('blur', () => {
 // else at all. Cmd-R on that state is silent, instant and total. Returning a
 // string makes the browser ask first, which is the whole point.
 addEventListener('beforeunload', (e) => {
-  if (!ready || !editor.sculptor.dirty) return
+  if (!ready || !editor || !editor.sculptor.dirty) return
   e.preventDefault()
   e.returnValue = 'The terrain you sculpted has not been saved and will be lost.'
   return e.returnValue
@@ -1253,14 +1301,14 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   // otherwise a right-click also spins the camera out from under the menu it
   // just opened.
   dragging = e.button === 0 && !orbitLocked
-  editor.onPointerDown(e)
+  if (editor) editor.onPointerDown(e)
 })
 // Right-click on a handle. The editor decides WHAT can be done to the thing
 // under the cursor and hands back closures; the panel draws them. The browser's
 // own menu is suppressed only when the editor is armed and actually answered --
 // on a right-click over empty ground in walk mode you still get the browser's.
 renderer.domElement.addEventListener('contextmenu', (e) => {
-  if (!ready || !editor.active) return
+  if (!ready || !editor || !editor.active) return
   const items = editor.menuFor(e)
   if (items.length === 0) return
   e.preventDefault()
@@ -1268,14 +1316,14 @@ renderer.domElement.addEventListener('contextmenu', (e) => {
 })
 addEventListener('pointerup', (e) => {
   dragging = false
-  if (ready) editor.onPointerUp(e)
+  if (ready && editor) editor.onPointerUp(e)
 })
 addEventListener('pointermove', (e) => {
   if (!ready) return
   // Always forwarded, drag or not: the editor tracks the pointer for its ground
   // readout and for the placement preview, both of which have to follow the
   // cursor while nothing is pressed.
-  editor.onPointerMove(e)
+  if (editor) editor.onPointerMove(e)
   // And the host keeps its own copy for the panel's range readout. The editor
   // already tracks this, but only while it is ARMED -- the readout is wanted in
   // walk mode too, which is most of when anyone is looking at the panel. Two
@@ -1333,9 +1381,11 @@ function applySky(state, head, elapsedReal) {
 
   lighting.update(state)
   sky.update(head, state)
-  stars.update(head, state, clock.elapsed, elapsedReal)
-  aurora.update(head, state, elapsedReal)
-  water.update(elapsedReal, hemi)
+  if (!QUEST_TERRAIN_ONLY) {
+    stars.update(head, state, clock.elapsed, elapsedReal)
+    aurora.update(head, state, elapsedReal)
+    water.update(elapsedReal, hemi)
+  }
 
   // LAST, and that is the whole of its plumbing. Everything above writes the
   // world as seen through air, straight from the palette; this overwrites the
@@ -1622,7 +1672,11 @@ function bindCursorPicks() {
   boundPicks = []
   for (const p of CURSOR_PICKS) {
     const sys = bySys[p.label]
-    if (!sys) throw new Error(`bindCursorPicks: no scatter built for ${p.label}`)
+    if (!sys) {
+      // Quest mode deliberately omits some presentation-only scatters. They
+      // have no pick source, so leave them out of the cursor list as well.
+      continue
+    }
     if (p.label === 'rock') {
       // One source per BED. `Rocks` is a facade and owns none of the arrays
       // pickProp walks; the beds do. Binding the facade is what made rocks
@@ -1726,21 +1780,21 @@ function panelStats() {
     profileDeg: st.profileDeg,
     // `tris` above is the whole frame as the GPU sees it; these three say how
     // much of it is the prop scatter, which is the layer currently being tuned.
-    treeCount: trees.stats.placed,
-    treeTris: trees.stats.tris,
-    fernCount: ferns.stats.placed,
-    fernTris: ferns.stats.tris,
-    mushroomCount: mushrooms.stats.placed,
-    mushroomTris: mushrooms.stats.tris,
-    deadwoodCount: deadwood.stats.placed,
-    deadwoodTris: deadwood.stats.tris,
-    grassCount: grass.stats.placed,
-    grassHidden: grass.stats.rimHidden,
-    grassTris: grass.stats.tris,
-    rockCount: rocks.stats.placed,
-    rockTris: rocks.stats.tris,
-    litterCount: litter.stats.placed,
-    litterTris: litter.stats.tris,
+    treeCount: trees ? trees.stats.placed : 0,
+    treeTris: trees ? trees.stats.tris : 0,
+    fernCount: ferns ? ferns.stats.placed : 0,
+    fernTris: ferns ? ferns.stats.tris : 0,
+    mushroomCount: mushrooms ? mushrooms.stats.placed : 0,
+    mushroomTris: mushrooms ? mushrooms.stats.tris : 0,
+    deadwoodCount: deadwood ? deadwood.stats.placed : 0,
+    deadwoodTris: deadwood ? deadwood.stats.tris : 0,
+    grassCount: grass ? grass.stats.placed : 0,
+    grassHidden: grass ? grass.stats.rimHidden : 0,
+    grassTris: grass ? grass.stats.tris : 0,
+    rockCount: rocks ? rocks.stats.placed : 0,
+    rockTris: rocks ? rocks.stats.tris : 0,
+    litterCount: litter ? litter.stats.placed : 0,
+    litterTris: litter ? litter.stats.tris : 0,
     x: headTmp.x,
     y: headTmp.y,
     z: headTmp.z,
@@ -1756,7 +1810,7 @@ function panelStats() {
     // 'under' beats 'fly' and 'walk' because it is the one of the three that
     // is not obvious from the view -- once everything is murk, the readout is
     // how you tell "she is submerged" from "the shader broke".
-    mode: editor.active
+    mode: editor && editor.active
       ? `edit:${editor.tool}`
       : submerged
         ? 'under'
@@ -1824,15 +1878,15 @@ function tick() {
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
   terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
-  trees.update(headTmp.x, headTmp.y, headTmp.z)
-  ferns.update(headTmp.x, headTmp.y, headTmp.z)
-  grass.update(headTmp.x, headTmp.y, headTmp.z)
-  rocks.update(headTmp.x, headTmp.y, headTmp.z)
-  litter.update(headTmp.x, headTmp.y, headTmp.z)
+  if (trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
+  if (ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
+  if (grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
+  if (rocks) rocks.update(headTmp.x, headTmp.y, headTmp.z)
+  if (litter) litter.update(headTmp.x, headTmp.y, headTmp.z)
   // After rocks, and for the same reason the construction and the relief
   // re-place are: a clump follows the anchors, so it wants them stepped first.
-  mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
-  deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+  if (mushrooms) mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
+  if (deadwood) deadwood.update(headTmp.x, headTmp.y, headTmp.z)
 
   clock.advance(dt)
   // Held in a local because the world probe wants it too: the capture is taken
@@ -1844,17 +1898,17 @@ function tick() {
   // BEFORE the render, and it must be the only caller of markers.update(): the
   // handles are scaled to hold a constant angular size, so a second call with a
   // different camera would size them for a frame nobody is looking through.
-  editor.update(dt, camera)
+  if (editor) editor.update(dt, camera)
 
   if (now - lastPanelAt >= 250) {
     lastPanelAt = now
-    panel.setStats(panelStats())
+    if (panel) panel.setStats(panelStats())
     // The editor RECORDS what went wrong (a click that missed the ground, a
     // failed autosave) and the panel DISPLAYS what it is told; nothing joins the
     // two, so the host does. Only on change, so a message this file put up --
     // "saved 710 B to public/world/layers.json" -- is not overwritten every
     // quarter second by an empty string.
-    if (editor.error !== shownError) {
+    if (editor && editor.error !== shownError) {
       shownError = editor.error
       panel.setError(editor.error)
     }
@@ -1863,7 +1917,7 @@ function tick() {
   // BEFORE the main render, and that ordering is load-bearing: both probes bind
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
-  probe.update(renderer, scene, headTmp)
+  if (!QUEST_TERRAIN_ONLY) probe.update(renderer, scene, headTmp)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
@@ -1871,7 +1925,7 @@ function tick() {
   // The air hook only while she is under, because that is the only time the
   // frame's atmosphere is not the one the capture wants.
   airHook.state = state
-  worldProbe.update(renderer, scene, headTmp, waterY, dt, submerged ? airHook : null)
+  if (!QUEST_TERRAIN_ONLY) worldProbe.update(renderer, scene, headTmp, waterY, dt, submerged ? airHook : null)
 
   renderer.render(scene, camera)
 }
@@ -1884,8 +1938,8 @@ renderer.setAnimationLoop(tick)
 renderer.xr.addEventListener('sessionstart', () => {
   if (!ready) return
   player.setFlying(false)
-  editor.setActive(false)
-  panel.syncSelection()
+  if (editor) editor.setActive(false)
+  if (panel) panel.syncSelection()
 })
 
 bootWorld().catch(bootFail)

@@ -67,13 +67,8 @@ ${DOMAIN} {
 	handle /ws* {
 		reverse_proxy 127.0.0.1:${APP_PORT}
 	}
-	@v2 path /v2
-	rewrite @v2 /v2.html
-	@v1 path /v1
-	rewrite @v1 /v1.html
-	@avatarPreview path /avatar-preview
-	rewrite @avatarPreview /avatar-preview.html
 	root * ${REMOTE_DIR}/dist
+	try_files {path} {path}.html
 	file_server
 }
 CADDY

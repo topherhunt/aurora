@@ -1,8 +1,19 @@
 import { dirname, join, relative, resolve } from 'node:path'
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { defineConfig } from 'vite'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { defineConfig, loadEnv } from 'vite'
 import { decodePng } from './src/v2/height/png.js'
 import basicSsl from '@vitejs/plugin-basic-ssl'
+import { generateImage } from './tools/characters/openrouter.mjs'
+import { buildViewPrompt } from './tools/characters/sheet-prompt.mjs'
+import { generateCharacter } from './tools/characters/generate-character.mjs'
+
+// Vite loads .env into import.meta.env for client bundles, but NOT into
+// process.env for its own config/plugin code -- openrouter.mjs reads
+// process.env.OPENROUTER_API_KEY directly (a plain Node script also imports
+// it, with no Vite involved at all), so pull it in explicitly here.
+if (!process.env.OPENROUTER_API_KEY) {
+  process.env.OPENROUTER_API_KEY = loadEnv('development', process.cwd(), 'OPENROUTER_API_KEY').OPENROUTER_API_KEY
+}
 
 // --- the prop originals index (dev only) ------------------------------------
 //
@@ -258,19 +269,251 @@ function worldHeight() {
   }
 }
 
+// --- character tuning benches: save tuned params back to disk (dev only) ----
+//
+// gen-anim.html tunes tools/characters/animations.mjs's per-clip parameters
+// live and needs them to land in the checked-in tools/characters/animations.json
+// (generate-character.mjs reads that file, falling back to animations.mjs's
+// own DEFAULT_PARAMS when it's absent) so a batch run picks up the tuning.
+// gen-character.html adjusts one character's bone offsets and writes a
+// rig-override.json next to that character's own GLBs.
+//
+// The rig-override route takes an `id` from the request, unlike /__world and
+// /__height's fixed paths, so it validates against an existing character
+// directory first -- an unchecked id would be an arbitrary file write to
+// anyone on the wifi, same risk /__world's fixed path was written to avoid.
+function charactersSave() {
+  const readBody = (req, maxBytes) => new Promise((resolve, reject) => {
+    const chunks = []
+    let bytes = 0
+    req.on('data', (c) => {
+      bytes += c.length
+      if (bytes > maxBytes) req.destroy(new Error(`body over ${maxBytes} bytes`))
+      chunks.push(c)
+    })
+    req.on('error', reject)
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+  })
+  return {
+    name: 'aurora:characters-save',
+    apply: 'serve',
+    configureServer(server) {
+      const root = server.config.root
+      const animFile = resolve(root, 'tools/characters/animations.json')
+      server.middlewares.use('/__animations', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST only' })); return }
+        readBody(req, 1 << 16).then((text) => {
+          JSON.parse(text) // parse before writing, so a bad body cannot truncate a good file
+          writeFileSync(animFile, text)
+          res.end(JSON.stringify({ ok: true, path: relative(root, animFile) }))
+        }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+      })
+      server.middlewares.use('/__character-rig', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const id = new URL(req.url, 'http://x').searchParams.get('id') || ''
+        const dir = resolve(root, 'public/characters', id)
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST only' })); return }
+        if (!/^[a-z0-9-]+$/.test(id) || !existsSync(resolve(dir, 'lod0.glb'))) {
+          res.statusCode = 400
+          res.end(JSON.stringify({ error: `no character "${id}"` }))
+          return
+        }
+        readBody(req, 1 << 16).then((text) => {
+          JSON.parse(text)
+          const file = resolve(dir, 'rig-override.json')
+          writeFileSync(file, text)
+          res.end(JSON.stringify({ ok: true, path: relative(root, file) }))
+        }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+      })
+    },
+  }
+}
+
+// --- character sheet image generation (dev only) -----------------------------
+//
+// gen-sheet.html's reroll/preview/pick bench. Two of these three endpoints
+// are pure local file I/O and free; only /__generate-sheet-view spends real
+// money (one OpenRouter call per request), and it fires exclusively when the
+// bench's "generate" button is clicked -- this file never calls it in a loop
+// or on its own initiative. Consistency across the front/side/back views
+// comes from attaching the already-picked front.png as an image-edit
+// reference (openrouter.mjs's `referenceImages`) when generating the other two.
+function sheetGen() {
+  const readBody = (req, maxBytes) => new Promise((resolve, reject) => {
+    const chunks = []
+    let bytes = 0
+    req.on('data', (c) => {
+      bytes += c.length
+      if (bytes > maxBytes) req.destroy(new Error(`body over ${maxBytes} bytes`))
+      chunks.push(c)
+    })
+    req.on('error', reject)
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+  })
+
+  return {
+    name: 'aurora:sheet-gen',
+    apply: 'serve',
+    configureServer(server) {
+      const root = server.config.root
+      const sheetsDir = (id) => resolve(root, 'tools/characters/sheets', id)
+
+      server.middlewares.use('/__generate-sheet-view', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST only' })); return }
+        readBody(req, 1 << 16).then(async (text) => {
+          const { id, view, vars, seed, useReference } = JSON.parse(text)
+          if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid character id "${id}"`)
+          const prompt = buildViewPrompt(view, vars)
+          let referenceImages
+          if (useReference) {
+            const refPath = resolve(sheetsDir(id), 'front.png')
+            if (!existsSync(refPath)) throw new Error(`no saved front.png for "${id}" yet -- generate and pick a front view first`)
+            referenceImages = [readFileSync(refPath)]
+          }
+          const { buffer, cost } = await generateImage({ prompt, seed, referenceImages })
+          res.end(JSON.stringify({ ok: true, imageB64: buffer.toString('base64'), cost }))
+        }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+      })
+
+      // Zero-cost local write: persists a picked candidate so it survives a
+      // reload and becomes generate-character.mjs's sheetDir input directly.
+      server.middlewares.use('/__save-sheet-view', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        const view = q.get('view') || ''
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST only' })); return }
+        if (!/^[a-z0-9-]+$/.test(id) || !['front', 'side', 'back'].includes(view)) {
+          res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}" or view "${view}"` })); return
+        }
+        readBody(req, 1 << 24).then((text) => {
+          const { imageB64 } = JSON.parse(text)
+          const dir = sheetsDir(id)
+          mkdirSync(dir, { recursive: true })
+          const file = resolve(dir, `${view}.png`)
+          writeFileSync(file, Buffer.from(imageB64, 'base64'))
+          res.end(JSON.stringify({ ok: true, path: relative(root, file) }))
+        }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+      })
+
+      // Closes the loop: once all three views are picked, bake straight into
+      // public/characters/<id>/ with the already-built mesh/rig/texture/anim
+      // pipeline -- no separate CLI step needed from the bench.
+      server.middlewares.use('/__bake-character', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        const heightM = Number(q.get('heightM') || '1.7')
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST only' })); return }
+        if (!/^[a-z0-9-]+$/.test(id)) { res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}"` })); return }
+        const dir = sheetsDir(id)
+        for (const view of ['front', 'side', 'back']) {
+          if (!existsSync(resolve(dir, `${view}.png`))) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ error: `missing ${view}.png for "${id}" -- pick all three views first` }))
+            return
+          }
+        }
+        try {
+          const outDir = resolve(root, 'public/characters', id)
+          const r = generateCharacter({ id, sheetDir: dir, outDir, heightM })
+          res.end(JSON.stringify({ ok: true, results: r.results, billboard: r.billboard }))
+        } catch (e) {
+          res.statusCode = 400
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+        }
+      })
+    },
+  }
+}
+
+// --- unknown routes get a route list, not the homepage (dev only) -----------
+//
+// Vite's dev server SPA-falls-back any unmatched extensionless request to
+// index.html, so a typo'd bench name (or any path that was never a route at
+// all) silently rendered the v2 world instead of failing loudly. Production
+// doesn't have this problem -- devops/provision.sh's Caddy config is
+// `try_files {path} {path}.html` then a bare `file_server`, which 404s for
+// real when neither exists, no catch-all. This is the dev-server equivalent
+// of that real 404, scoped to the routes this project actually knows about
+// (BARE_ROUTES, plus any request that already resolves to a real .html file)
+// rather than Caddy's broader "any *.html in dist" match, so this stays a
+// deliberate list rather than silently blessing whatever's on disk.
+//
+// Registered AFTER bareRoutes() in the plugin list so it sees the rewritten
+// URL for a known bare route, and BEFORE vite's own middleware runs, so it
+// intercepts before the SPA fallback ever fires.
+function unknownRouteGuard() {
+  return {
+    name: 'aurora:unknown-route-guard',
+    apply: 'serve',
+    configureServer(server) {
+      const root = server.config.root
+      // A request path can resolve on disk either directly under the project
+      // root (source files, tools/) or under public/ (Vite serves public/'s
+      // contents at the URL root, stripping the directory) -- check both, or
+      // every asset public/ ships (character GLBs included) reads as missing.
+      const existsOnDisk = (urlPath) => existsSync(resolve(root, urlPath)) || existsSync(resolve(root, 'public', urlPath))
+      server.middlewares.use((req, res, next) => {
+        const url = decodeURIComponent(req.url.split('?')[0])
+        // Not a page request: vite-internal virtual paths (/@vite, /@fs, ...),
+        // this project's own POST endpoints, and anything with a real file
+        // extension other than .html -- those are asset requests, and vite's
+        // static middleware already 404s a missing one correctly (no SPA
+        // fallback fires for a request with an extension).
+        if (url === '/' || url.startsWith('/@') || url.startsWith('/__')) return next()
+        const last = url.split('/').pop()
+        const isPage = !last.includes('.') || url.endsWith('.html')
+        if (isPage) {
+          if (url.endsWith('.html') && existsOnDisk(url.slice(1))) return next()
+          if (!url.endsWith('.html') && BARE_ROUTES.includes(url.slice(1))) return next()
+          res.statusCode = 404
+          res.setHeader('content-type', 'text/html')
+          const items = ['/', ...BARE_ROUTES.map((r) => `/${r}`)].sort().map((r) => `<li><a href="${r}">${r}</a></li>`).join('')
+          res.end(`<!doctype html><html><head><title>404</title><style>
+            body{background:#05080f;color:#cfe3ff;font:14px/1.6 monospace;padding:2em}
+            a{color:#7fd1ff} h1{font-size:16px;color:#eaf3ff}
+          </style></head><body>
+            <h1>no route "${url}"</h1>
+            <p>available routes:</p>
+            <ul>${items}</ul>
+          </body></html>`)
+          return
+        }
+        // A non-page asset request (an extension other than .html): vite's own
+        // transform middleware handles real and virtual files and never reaches
+        // here for those, so anything that does is genuinely missing on disk --
+        // and vite's SPA fallback would otherwise silently hand back index.html
+        // for it too. A plain 404, not the route list: a broken image path
+        // isn't asking "what pages exist".
+        if (existsOnDisk(url.slice(1))) return next()
+        res.statusCode = 404
+        res.setHeader('content-type', 'text/plain')
+        res.end(`404: ${url}`)
+      })
+    },
+  }
+}
+
 // --- bare paths as routes rather than filenames (dev only) ------------------
 //
 // The world pages have explicit routes: `/` is v2 and `/v1` is the old prototype.
 // The named HTML files remain useful direct build artifacts, while these rewrites make
-// the local dev server match the production Caddy routes.
+// the local dev server match production, where Caddy's `try_files {path} {path}.html`
+// does the same append-if-it-exists match against dist/ for any bare path.
 //
-// A list rather than a blanket "append .html to anything that misses": the
-// fallback is what makes a genuine 404 look like a working page, and widening
-// the rewrite to every miss would spread that failure mode rather than fix it.
+// A list rather than a blanket "append .html to anything that misses": Caddy's
+// try_files only rewrites when the .html file actually exists on disk, so it never
+// turns a genuine 404 into a served page. This list is the dev-server equivalent of
+// that existence check -- add a name here whenever a new bare route is wired into
+// BARE_ROUTES so dev matches what Caddy already serves in production with no
+// provisioning step at all.
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v1', 'v2', 'avatar-preview', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'test-aurora']
+const BARE_ROUTES = ['v1', 'v2', 'avatar-preview', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'test-aurora', 'quest', 'questv2', 'questv3']
 
 function bareRoutes() {
   return {
@@ -312,7 +555,7 @@ function bareRoutes() {
 // cover, and the only way to see a range is to put twenty seeds side by side.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), bareRoutes()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -361,6 +604,12 @@ export default defineConfig({
         // The building bench, served at /gen-building. Its strength-0 mode
         // provides the straight control for judging the warped geometry.
         genBuilding: resolve(__dirname, 'gen-building.html'),
+        // The character benches, served at /gen-anim and /gen-character:
+        // tune the shared procedural animation set, and adjust one
+        // character's bone placement, per tools/characters/'s pipeline.
+        genAnim: resolve(__dirname, 'gen-anim.html'),
+        genCharacter: resolve(__dirname, 'gen-character.html'),
+        genSheet: resolve(__dirname, 'gen-sheet.html'),
         // §18. The alternative world: coarse shape imported from an image, fine
         // shape procedural down to 10 cm, and everything a human wants to place
         // by hand authored as a content layer on top. Shares the coordinate box
@@ -382,6 +631,19 @@ export default defineConfig({
         // is one quad, which is what makes it honest about the shader's cost.
         // See the header of src/aurora-lab/glsl/frame.js.
         testAurora: resolve(__dirname, 'test-aurora.html'),
+        quest: resolve(__dirname, 'quest.html'),
+        // The minimum-complexity control group for /quest: no texture array,
+        // no render-to-texture baking, no image loads -- just primitive
+        // geometry and flat colour, to isolate whether the Quest 2 boot hang
+        // traces to /quest's texture pipeline or to something more basic.
+        questv2: resolve(__dirname, 'questv2.html'),
+        // A-Frame-based, not Three.js -- see questv3.html's header comment.
+        // Neither /quest nor /questv2's hand-rolled WebXR session code has
+        // ever entered VR successfully on the test Quest 2; A-Frame's own
+        // Hello World demo (and aboveparadowski.com, also A-Frame) has. This
+        // is that same architecture as a minimal proof of concept to build
+        // real content on top of once VR entry itself is confirmed working.
+        questv3: resolve(__dirname, 'questv3.html'),
       },
     },
   },

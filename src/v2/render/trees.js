@@ -240,6 +240,35 @@ const FULL_RADIUS = 80
 // Three entries here, four tiers in tree-bank.js; they have to keep agreeing and
 // check-trees asserts that they do.
 const LOD_BANDS = [8, 15, 100]
+const QUEST_LOD_BANDS = [8]
+const QUEST_CROSS_TIER = 2
+
+function buildSimpleTreeBank(seed) {
+  const source = buildTreeBank({ seed, billboard: false })
+  const geometries = source.tiers[0].geometries.map((sourceGeo) => {
+    const u = sourceGeo.userData.tree
+    const geo = new THREE.ConeGeometry(u.crownWidth / 2, u.height, 4, 1, false)
+    geo.translate(0, u.height / 2, 0)
+    geo.userData.tree = { ...u }
+    return geo
+  })
+  for (const tier of source.tiers) {
+    for (const geo of tier.geometries) geo.dispose()
+  }
+  const tiers = Array.from({ length: 4 }, () => ({
+    geometries: geometries.map((geo) => geo.clone()),
+  }))
+  for (const tier of tiers) {
+    tier.triangles = tier.geometries.map((geo) => geo.index.count / 3)
+  }
+  for (const geo of geometries) geo.dispose()
+  return {
+    variants: source.variants,
+    tiers,
+    bytes: 0,
+    triangles: tiers.reduce((sum, tier) => sum + tier.triangles.reduce((a, n) => a + n, 0), 0),
+  }
+}
 
 // The band test measures to a tree's ROOT, and a tree is not at its root -- it
 // is nine metres of canopy standing on it. So the sphere is centred low, and
@@ -409,7 +438,15 @@ export class Trees {
     field,
     water,
     textureArray,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, ground = null } = {}
+    {
+      seed = 1,
+      density = DENSITY,
+      radius = DRAW_RADIUS,
+      fullRadius = FULL_RADIUS,
+      ground = null,
+      quest = false,
+      simple = false,
+    } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
       throw new Error('Trees: needs a V2Height with scatterAt')
@@ -434,6 +471,9 @@ export class Trees {
     this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
+    this.quest = quest
+    this.simple = simple
+    this.lodBands = quest ? QUEST_LOD_BANDS : LOD_BANDS
 
     // Candidates per tile at FULL density. Far tiles walk the same candidate
     // list and cut most of it on rank before paying for a field sample.
@@ -443,7 +483,7 @@ export class Trees {
     // Evict only once a tile is well outside the radius, so a player pacing back
     // and forth across one line does not rebuild the same row every crossing.
     this.evictSq = (radius + TILE * 1.5) ** 2
-    this.nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
+    this.nearSq = (this.lodBands[this.lodBands.length - 1] + NEAR_MARGIN) ** 2
 
     // Keep-fraction per quantised level: uAt[q] = 2^(-q/QUANT). Level 0 keeps
     // everything; the coarsest level is the one the eviction rim needs.
@@ -462,7 +502,7 @@ export class Trees {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = buildTreeBank({ seed, billboard: true })
+    const bank = simple ? buildSimpleTreeBank(seed) : buildTreeBank({ seed, billboard: true })
     this.bank = bank
     this.variantCount = bank.variants.length
     this.tierCount = bank.tiers.length
@@ -473,15 +513,12 @@ export class Trees {
     // so the mesh tiers and the billboards share one material and therefore one
     // draw call -- DESIGN.md §5's rule, and the whole reason this is a shader
     // trick rather than a second mesh with a second material.
-    this.material = createPropMaterial(textureArray, {
-      billboardLayers: treeImpostorLayers(),
-      // Sway ramps out by 100 m, which is exactly LOD_BANDS[2] -- so in practice
-      // only the mesh tiers and the crossed cards move, and the 39,000 far
-      // billboards evaluate the bend and multiply it by zero. That is on
-      // purpose: it is a DISTANCE ramp and not a tier test, so the two halves of
-      // a tier cross-dissolve always agree. See the wind header in material.js.
-      wind: 'tree',
-    })
+    this.material = simple
+      ? new THREE.MeshBasicMaterial({ color: 0x185c22, vertexColors: false })
+      : createPropMaterial(textureArray, {
+        billboardLayers: treeImpostorLayers(),
+        wind: 'tree',
+      })
 
     const geos = bank.tiers.flatMap((t) => t.geometries)
     this.batch = new THREE.BatchedMesh(
@@ -614,8 +651,8 @@ export class Trees {
       if (running >= 0) this._endFade(running)
     })
 
-    this.bandSq = Float32Array.from(LOD_BANDS, (b) => b * b)
-    this.bandSqOut = Float32Array.from(LOD_BANDS, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
+    this.bandSq = Float32Array.from(this.lodBands, (b) => b * b)
+    this.bandSqOut = Float32Array.from(this.lodBands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
 
     // key -> { tx, tz, ids: Int32Array, rank: Float32Array, n, q, near, queued }
     this.tiles = new Map()
@@ -804,11 +841,16 @@ export class Trees {
         // That asymmetry is the dead band -- getting it the wrong way round
         // widens the tier instead of sticking it, and the instance oscillates.
         let tier = cardTier
-        for (let t = 0; t < this.bandSq.length; t++) {
-          const sticky = cur >= 0 && cur <= t
-          if (d2 < (sticky ? this.bandSqOut[t] : this.bandSq[t])) {
-            tier = t
-            break
+        if (this.quest) {
+          const sticky = cur === QUEST_CROSS_TIER
+          if (d2 < (sticky ? this.bandSqOut[0] : this.bandSq[0])) tier = QUEST_CROSS_TIER
+        } else {
+          for (let t = 0; t < this.bandSq.length; t++) {
+            const sticky = cur >= 0 && cur <= t
+            if (d2 < (sticky ? this.bandSqOut[t] : this.bandSq[t])) {
+              tier = t
+              break
+            }
           }
         }
 
@@ -1397,6 +1439,7 @@ export class Trees {
    * deliberate one-off stall at load and not an offline asset.
    */
   bakeCards(renderer) {
+    if (this.simple) return []
     const t0 = performance.now()
     const baked = bakeTreeImpostors(renderer, this.textureArray)
     this.cardBakeMs = performance.now() - t0
@@ -1429,6 +1472,7 @@ export class Trees {
    * snow load when it changes LOD.
    */
   syncSnowLine(layers) {
+    if (this.simple) return
     setSnowLine(layers.snow.base, layers.snow.band)
     setLeafSnowVary(LEAF_SNOW_CAP[0], LEAF_SNOW_CAP[1])
   }

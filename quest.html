@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- Quest WebXR test bench</title>
+    <!--
+      /quest, rearchitected onto A-Frame's own session bootstrap -- the
+      original hand-rolled Three.js version (raw WebGLRenderer, our own
+      requestSession call, our own animation loop) never reliably entered VR
+      on the test Quest 2. /questv3 proved A-Frame's own Enter VR button and
+      reference-space handling does, on this exact headset, so this page now
+      uses that same scaffold (see questv3.html for the full history of why).
+
+      Unlike /questv3, src/quest-main.js keeps the REAL content pipeline --
+      texture arrays, tree-bank impostor baking, rock-bank geometry, Sky/
+      Stars/WorldClock -- instead of questv3's simplified stand-ins. See the
+      top-of-file comment in quest-main.js for the one open risk this carries:
+      that pipeline's modules import this project's own (newer) npm three.js,
+      while A-Frame 1.5.0 bundles its own (much older) one -- not yet
+      confirmed safe in-headset.
+    -->
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@7.7.0/dist/aframe-extras.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/aframe-blink-controls@0.4.3/dist/aframe-blink-controls.min.js"></script>
+    <style>
+      html, body { margin: 0; height: 100%; }
+      #stats { position: fixed; left: 12px; top: 12px; z-index: 3; padding: 8px 10px; background: rgba(5, 10, 18, .78); color: #e9f2ff; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="stats">quest -- A-Frame architecture, real tree/rock/sky content, panel to the left (point + trigger, or click on flatscreen)</div>
+    <a-scene quest-features>
+      <a-sky id="sky" color="#9db4cf"></a-sky>
+      <a-entity id="rig" movement-controls="controls: keyboard; fly: false">
+        <a-camera id="camera" look-controls></a-camera>
+        <a-entity laser-controls="hand: left" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
+        <a-entity laser-controls="hand: right" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
+      </a-entity>
+    </a-scene>
+    <script type="module" src="/src/quest-main.js"></script>
+  </body>
+</html>
