@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 
 // ---------------------------------------------------------------------------
 // The lab's mountain backdrop: a whole skyline in one draw call, computed per

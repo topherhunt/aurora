@@ -2,6 +2,7 @@ tmp/
 node_modules/
 dist/
 tools/characters/sheets/
+tools/fauna/sheets/
 devops/deploy.env
 .env
 .DS_Store

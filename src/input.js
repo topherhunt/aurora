@@ -27,7 +27,12 @@ export class Input {
     this.state.right.source = null
     if (!session) return this.state
 
-    for (const src of session.inputSources) {
+    // session.inputSources is an XRInputSourceArray, not a real Array -- it's
+    // only guaranteed indexed access + length, so Array.prototype methods like
+    // .indexOf aren't safe to call on it directly (throws on some browsers).
+    const sources = session.inputSources
+    for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+      const src = sources[sourceIndex]
       const hand = src.handedness
       if (hand !== 'left' && hand !== 'right') continue
       const gp = src.gamepad
@@ -36,7 +41,7 @@ export class Input {
 
       const side = this.state[hand]
       side.source = src
-      side.sourceIndex = session.inputSources.indexOf(src)
+      side.sourceIndex = sourceIndex
       side.axes = [gp.axes[2] ?? 0, gp.axes[3] ?? 0]
 
       const prev = this.prev[hand]

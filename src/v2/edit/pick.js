@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 import { WORLD_SIZE } from '../config.js'
 

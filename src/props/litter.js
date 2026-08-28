@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { mulberry32, smoothstep } from '../sim/mathx.js'
 import { LAYER, TEX_SIZE } from '../textures.js'
 import { createImpostorBakeMaterial } from '../material.js'

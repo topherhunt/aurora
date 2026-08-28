@@ -143,6 +143,26 @@ function applyReferenceUI() {
 document.getElementById('refToggle').addEventListener('change', applyReferenceUI)
 document.getElementById('refOpacity').addEventListener('input', applyReferenceUI)
 
+// --- mesh opacity: dial the loaded character mesh down to see the
+// reference cards (or the skeleton) through it, for comparing the loft
+// mesh's silhouette against the source art. Blended like the reference
+// cards below full opacity, for the same draw-order-ambiguity trade-off --
+// this mesh is convex-ish per limb so the artifact is minor.
+function applyMeshOpacityUI() {
+  const opacity = Number(document.getElementById('meshOpacity').value)
+  if (!root) return
+  root.traverse((o) => {
+    if (!o.isMesh) return
+    for (const mat of Array.isArray(o.material) ? o.material : [o.material]) {
+      mat.opacity = opacity
+      mat.transparent = opacity < 1
+      mat.depthWrite = opacity >= 1
+      mat.needsUpdate = true
+    }
+  })
+}
+document.getElementById('meshOpacity').addEventListener('input', applyMeshOpacityUI)
+
 function setCameraPreset(preset) {
   const eyeY = currentHeightM * 0.55
   const d = Math.max(2, currentHeightM * 1.8)
@@ -182,6 +202,7 @@ async function loadCharacter(id) {
       currentHeightM = metaRes.ok ? (await metaRes.json()).heightM : 1.7
     } catch { currentHeightM = 1.7 }
     controls.target.set(0, currentHeightM * 0.55, 0)
+    applyMeshOpacityUI()
     await loadReferenceCards(id, currentHeightM)
 
     const boneSelect = document.getElementById('bone')

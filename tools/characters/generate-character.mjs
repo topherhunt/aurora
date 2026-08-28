@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writePng } from '../props/png.mjs'
-import { decodeSheet, keyBackground, silhouetteProfile } from './chromakey.mjs'
+import { decodeSheet, keyBackground, silhouetteProfile, columnProfile } from './chromakey.mjs'
 import { buildCharacterMesh } from './loft-mesh.mjs'
 import { buildSkeleton, skinVertices } from './rig.mjs'
 import { bakeTexture } from './bake-texture.mjs'
@@ -35,6 +35,8 @@ export function generateCharacter({ id, sheetDir, outDir, heightM = 1.7 }) {
     profiles[name] = silhouetteProfile(alpha, view.w, view.h)
   }
 
+  const frontColumnProfile = columnProfile(alphas.front, views.front.w, views.front.h)
+
   fs.mkdirSync(outDir, { recursive: true })
 
   const texture = bakeTexture(views, profiles, 128)
@@ -52,7 +54,7 @@ export function generateCharacter({ id, sheetDir, outDir, heightM = 1.7 }) {
   let skeleton
   const results = []
   for (let lod = 0; lod < 3; lod++) {
-    const mesh = buildCharacterMesh(profiles.front, profiles.side, { heightM, lod })
+    const mesh = buildCharacterMesh(profiles.front, profiles.side, frontColumnProfile, { heightM, lod })
     if (lod === 0) {
       skeleton = buildSkeleton(mesh.landmarks)
       // gen-character.html's per-bone nudges, applied on top of rig.mjs's

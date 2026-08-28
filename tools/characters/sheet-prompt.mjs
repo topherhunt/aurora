@@ -7,9 +7,11 @@
 // image as a reference (openrouter.mjs's `referenceImages`) when generating
 // side and back.
 //
-// Arms stay at the character's sides (not a T-pose) in every view -- that
-// constraint is what keeps the front-view silhouette a single blob for
-// loft-mesh.mjs's torso loft (see that file's header).
+// The character stands in a T-pose (arms straight out to the sides) in every
+// view -- that separates the arm from the torso as a distinct blob in the
+// front-view silhouette, the same way the legs are already separated, so
+// loft-mesh.mjs can measure the arm directly (chromakey.mjs's columnProfile)
+// instead of estimating its width by subtracting an assumed torso width.
 // ---------------------------------------------------------------------------
 
 const VIEW_TEXT = {
@@ -37,7 +39,7 @@ export function buildViewPrompt(view, vars) {
   const subject = describeSubject(vars)
   return (
     `Full-body character reference image on a solid flat magenta background (#FF00FF, chroma key). ` +
-    `The character stands straight with arms relaxed at their sides (not raised, not a T-pose), legs together, ` +
+    `The character stands straight in a T-pose: arms held straight out to their sides, horizontal, palms down, legs together, ` +
     `orthographic proportions with no perspective distortion, evenly lit, no shadows or gradient on the background, ` +
     `no props, no other characters, no text or watermarks. ${viewText}\n\nCharacter: ${subject}.`
   )

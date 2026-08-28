@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { WORLD_HALF } from './sim/terrain-height.js'
 
 // ---------------------------------------------------------------------------
@@ -285,6 +285,22 @@ export class Player {
       this.speed = drive * top
     } else {
       this.speed += (drive * top - this.speed) * (1 - Math.exp(-dt / L.accelTau))
+    }
+
+    // TEMPORARY diagnostic for the "walking glides like ice" report: prints
+    // once a second, while actually moving, whether `instant` is really true
+    // and what speed/top/flying actually resolved to. Remove once confirmed.
+    if (drive > 0) {
+      const now = performance.now()
+      if (!this._lastMoveLog || now - this._lastMoveLog > 1000) {
+        this._lastMoveLog = now
+        console.warn('[player] move:', {
+          instant: input.instant, flying: this.flying, drive, top,
+          speed: this.speed, dt, accelTau: L.accelTau,
+        })
+      }
+    } else {
+      this._lastMoveLog = 0
     }
 
     if (this.flying) {

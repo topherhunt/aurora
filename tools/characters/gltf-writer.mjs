@@ -5,13 +5,55 @@
 // (JOINTS_0/WEIGHTS_0 + a skin + inverse bind matrices) and baked animation
 // clips, neither of which the tree pipeline needed.
 //
-// Bind pose is assumed translation-only (no per-bone rotation at rest) --
-// true for every skeleton rig.mjs builds -- so each inverse bind matrix is
-// just translate(-worldPos) and never needs a real matrix inverse.
+// Bind pose is translation-only for most bones, but rig.mjs's arm bones
+// carry a real rest rotation (T-pose), so world position/rotation per bone
+// -- and each inverse bind matrix -- has to be composed through the full
+// glTF hierarchy rule (childWorldPos = parentWorldPos + parentWorldRot *
+// childTranslation, childWorldRot = parentWorldRot * childLocalRot), not a
+// plain translation sum. That composition is a no-op for a skeleton whose
+// rotations are all identity, so nothing here regresses a translation-only
+// rig.
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs'
 import path from 'node:path'
+
+const IDENTITY_QUAT = [0, 0, 0, 1]
+
+// Rotates vector v by unit quaternion q (v' = q*v*q^-1).
+function rotateVec([qx, qy, qz, qw], [vx, vy, vz]) {
+  const tx = 2 * (qy * vz - qz * vy)
+  const ty = 2 * (qz * vx - qx * vz)
+  const tz = 2 * (qx * vy - qy * vx)
+  return [
+    vx + qw * tx + (qy * tz - qz * ty),
+    vy + qw * ty + (qz * tx - qx * tz),
+    vz + qw * tz + (qx * ty - qy * tx),
+  ]
+}
+
+// Hamilton product, a*b (applies b first then a).
+function quatMultiply([ax, ay, az, aw], [bx, by, bz, bw]) {
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ]
+}
+
+// Column-major 3x3 rotation matrix for unit quaternion q.
+function quatToMat3([x, y, z, w]) {
+  const x2 = x + x, y2 = y + y, z2 = z + z
+  const xx = x * x2, xy = x * y2, xz = x * z2
+  const yy = y * y2, yz = y * z2, zz = z * z2
+  const wx = w * x2, wy = w * y2, wz = w * z2
+  return [
+    1 - (yy + zz), xy + wz, xz - wy,
+    xy - wz, 1 - (xx + zz), yz + wx,
+    xz + wy, yz - wx, 1 - (xx + yy),
+  ]
+}
 
 function bufferViewsAndAccessors() {
   const views = []
@@ -47,9 +89,10 @@ function bufferViewsAndAccessors() {
  * geo: { pos, nrm, uv, idx, skinIndices?, skinWeights? } -- flat arrays, plain
  *   JS numbers. skinIndices/skinWeights are length vcount*4 each (4 bone
  *   influences per vertex) when the mesh is skinned.
- * skeleton?: { bones: [{ name, parent }] , translations: Float32Array(N*3) }
- *   -- translation is LOCAL to the bone's parent (world for root bones).
- *   Bind pose is translation-only, per the header note.
+ * skeleton?: { bones: [{ name, parent }], translations: Float32Array(N*3),
+ *   rotations?: Float32Array(N*4) } -- translation/rotation are LOCAL to the
+ *   bone's parent (world for root bones). rotations may be omitted (treated
+ *   as identity for every bone) or per-bone identity, per the header note.
  * animations?: [{ name, tracks: [{ bone, path: 'translation'|'rotation', times: number[], values: number[] }] }]
  *   -- values are flat VEC3 (translation) or VEC4 quaternion (rotation) per keyframe.
  * image?: Buffer -- a PNG to embed as the mesh's baseColor texture.
@@ -89,31 +132,54 @@ export function writeGlb(file, geo, { skeleton, animations, image } = {}) {
     attributes.JOINTS_0 = aJoints
     attributes.WEIGHTS_0 = aWeights
 
-    const { bones, translations } = skeleton
+    const { bones, translations, rotations } = skeleton
     const world = new Float32Array(bones.length * 3)
+    const worldRot = []
     for (let i = 0; i < bones.length; i++) {
       const p = bones[i].parent
-      const px = p >= 0 ? world[p * 3] : 0, py = p >= 0 ? world[p * 3 + 1] : 0, pz = p >= 0 ? world[p * 3 + 2] : 0
-      world[i * 3] = px + translations[i * 3]
-      world[i * 3 + 1] = py + translations[i * 3 + 1]
-      world[i * 3 + 2] = pz + translations[i * 3 + 2]
+      const pPos = p >= 0 ? [world[p * 3], world[p * 3 + 1], world[p * 3 + 2]] : [0, 0, 0]
+      const pRot = p >= 0 ? worldRot[p] : IDENTITY_QUAT
+      const localPos = [translations[i * 3], translations[i * 3 + 1], translations[i * 3 + 2]]
+      const rotatedLocalPos = rotateVec(pRot, localPos)
+      world[i * 3] = pPos[0] + rotatedLocalPos[0]
+      world[i * 3 + 1] = pPos[1] + rotatedLocalPos[1]
+      world[i * 3 + 2] = pPos[2] + rotatedLocalPos[2]
+      const localRot = rotations ? [rotations[i * 4], rotations[i * 4 + 1], rotations[i * 4 + 2], rotations[i * 4 + 3]] : IDENTITY_QUAT
+      worldRot[i] = quatMultiply(pRot, localRot)
     }
 
     const ibm = new Float32Array(bones.length * 16)
     for (let i = 0; i < bones.length; i++) {
-      // Column-major 4x4 identity with translation -world.
+      // Inverse of the bone's rigid bind-pose world transform (R, t): R^-1 =
+      // R^T (quaternion conjugate), t^-1 = -R^T * t. Reduces to the old
+      // translate(-world) shortcut whenever the bone's world rotation is
+      // identity.
+      const q = worldRot[i]
+      const conj = [-q[0], -q[1], -q[2], q[3]]
+      const rt = quatToMat3(conj)
+      const wp = [world[i * 3], world[i * 3 + 1], world[i * 3 + 2]]
+      const t = rotateVec(conj, [-wp[0], -wp[1], -wp[2]])
       const m = ibm.subarray(i * 16, i * 16 + 16)
-      m[0] = 1; m[5] = 1; m[10] = 1; m[15] = 1
-      m[12] = -world[i * 3]; m[13] = -world[i * 3 + 1]; m[14] = -world[i * 3 + 2]
+      m[0] = rt[0]; m[1] = rt[1]; m[2] = rt[2]; m[3] = 0
+      m[4] = rt[3]; m[5] = rt[4]; m[6] = rt[5]; m[7] = 0
+      m[8] = rt[6]; m[9] = rt[7]; m[10] = rt[8]; m[11] = 0
+      m[12] = t[0]; m[13] = t[1]; m[14] = t[2]; m[15] = 1
     }
     const aIbm = b.add(ibm, 0, 'MAT4', 5126, { count: bones.length })
 
     jointNodeBase = 1 // node 0 is the mesh node
-    const jointNodes = bones.map((bone, i) => ({
-      name: bone.name,
-      translation: [translations[i * 3], translations[i * 3 + 1], translations[i * 3 + 2]],
-      children: [],
-    }))
+    const jointNodes = bones.map((bone, i) => {
+      const node = {
+        name: bone.name,
+        translation: [translations[i * 3], translations[i * 3 + 1], translations[i * 3 + 2]],
+        children: [],
+      }
+      if (rotations) {
+        const q = [rotations[i * 4], rotations[i * 4 + 1], rotations[i * 4 + 2], rotations[i * 4 + 3]]
+        if (q[0] !== 0 || q[1] !== 0 || q[2] !== 0 || q[3] !== 1) node.rotation = q
+      }
+      return node
+    })
     bones.forEach((bone, i) => {
       if (bone.parent >= 0) jointNodes[bone.parent].children.push(jointNodeBase + i)
     })

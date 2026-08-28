@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 const SKIN = 0xd99b78
 const HAIR = 0x11131b

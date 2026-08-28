@@ -10,7 +10,7 @@
 // a clip needs it later, but nothing so far does.
 // ---------------------------------------------------------------------------
 
-function axisAngleQuat(x, y, z, angle) {
+export function axisAngleQuat(x, y, z, angle) {
   const len = Math.hypot(x, y, z) || 1
   const s = Math.sin(angle / 2) / len
   return [x * s, y * s, z * s, Math.cos(angle / 2)]
@@ -19,7 +19,22 @@ function axisAngleQuat(x, y, z, angle) {
 // rotX(bone, radians) rotates about the bone's local X axis (sagittal swing
 // -- the axis a leg or arm naturally swings on when walking forward).
 function rotX(radians) { return axisAngleQuat(1, 0, 0, radians) }
-function rotZ(radians) { return axisAngleQuat(0, 0, 1, radians) }
+export function rotZ(radians) { return axisAngleQuat(0, 0, 1, radians) }
+
+// Hamilton product, a (x,y,z,w) times b (x,y,z,w) -- composes two rotations,
+// applying b first then a. Used by bakeClip to compose an animated delta
+// (expressed in the bone's original vertical-rest-pose convention) with an
+// arm bone's real rest rotation (rig.mjs, T-pose arms are horizontal at
+// rest), and safe to call on every bone unconditionally: multiplying by the
+// identity quaternion (every non-arm bone's rest rotation) is a no-op.
+export function quatMultiply([ax, ay, az, aw], [bx, by, bz, bw]) {
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ]
+}
 
 export const DEFAULT_PARAMS = {
   idle: { breathe: 0.015, sway: 0.02, cadence: 0.3 },
@@ -125,8 +140,17 @@ export function bakeClip(name, skeleton, params = DEFAULT_PARAMS[name], { frames
     const phase = isStatic ? 0 : i / frames
     const { rot, hipsBobY = 0 } = evaluateClip(name, phase, params)
     for (const [bone, quat] of Object.entries(rot)) {
+      const idx = boneIndex.get(bone)
+      if (idx === undefined) throw new Error(`clip "${name}" references unknown bone "${bone}"`)
+      // glTF rotation tracks are absolute, not additive to the bone's rest
+      // rotation -- composing here is what keeps a T-pose arm bone's swing
+      // meaning "swing this far off rest" instead of overwriting its rest
+      // orientation outright. A no-op for every bone whose rest rotation is
+      // identity (everything but the six arm bones -- rig.mjs).
+      const rest = [skeleton.rotations[idx * 4], skeleton.rotations[idx * 4 + 1], skeleton.rotations[idx * 4 + 2], skeleton.rotations[idx * 4 + 3]]
+      const composed = quatMultiply(rest, quat)
       if (!rotTracks.has(bone)) rotTracks.set(bone, [])
-      rotTracks.get(bone).push(...quat)
+      rotTracks.get(bone).push(...composed)
     }
     hipsY.push(hipsRestY + hipsBobY)
   }

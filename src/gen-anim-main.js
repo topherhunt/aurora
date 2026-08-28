@@ -101,7 +101,13 @@ function applyPose(clipName, phase) {
   const { rot, hipsBobY = 0 } = evaluateClip(clipName, phase, params[clipName])
   for (const [boneName, q] of Object.entries(rot)) {
     const b = bones.get(boneName)
-    if (b) b.quaternion.set(q[0], q[1], q[2], q[3])
+    if (!b) continue
+    // evaluateClip's quat is a delta off the bone's rest orientation, not an
+    // absolute local rotation -- compose with the bind-pose quat captured in
+    // `rest` (identity for most bones, but a real rest rotation for T-pose
+    // arm bones -- rig.mjs), same composition bakeClip does for the shipped
+    // GLB (animations.mjs).
+    b.quaternion.copy(rest.get(boneName).quat).multiply(new THREE.Quaternion(q[0], q[1], q[2], q[3]))
   }
   const hips = bones.get('Hips')
   if (hips) hips.position.y = rest.get('Hips').pos.y + hipsBobY

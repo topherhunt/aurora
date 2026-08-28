@@ -112,7 +112,7 @@ function chroma(r, g, b) {
 function rawMagentaScore(r, g, b) { return (r + b) / 2 - g }
 const RAW_MAGENTA_CUTOFF = 50
 
-export function keyBackground({ w, h, rgba }, { lo = 25, hi = 65, cutoff = 0.99 } = {}) {
+export function keyBackground({ w, h, rgba }, { lo = 25, hi = 65, cutoff = 0.99, closeRadius = 0 } = {}) {
   if (w < CORNER_PATCH * 2 || h < CORNER_PATCH * 2) throw new Error(`image ${w}x${h} too small for ${CORNER_PATCH}px corner sampling`)
   const tl = cornerColor(rgba, w, h, 0, 0)
   const tr = cornerColor(rgba, w, h, w - CORNER_PATCH, 0)
@@ -156,7 +156,102 @@ export function keyBackground({ w, h, rgba }, { lo = 25, hi = 65, cutoff = 0.99 
       }
     }
   }
+  keepEnclosedRegions(alpha, w, h, closeRadius)
   return alpha
+}
+
+// A per-pixel colour test alone can't tell "this pixel is the background"
+// from "this pixel just happens to be a similar colour to the background" --
+// a character/creature painted in a hue close to the chroma-key colour (e.g.
+// Glimmerfin's magenta-purple scales against a magenta key) loses chunks of
+// its own body to the key, breaking what should be one contiguous solid into
+// a lattice of holes.
+//
+// The background is not just "a similar colour" though -- it is specifically
+// the region reachable from outside the figure without crossing it, i.e. the
+// set of alpha=0 pixels 4-connected to the image border. Anything colour-
+// keyed as background but NOT reachable that way is enclosed BY the figure
+// (surrounded on all sides by kept pixels) and gets reclassified to
+// foreground, unmodified -- it was never unmixed against the background
+// above, since only pixels already classified foreground went through that
+// step, so there is nothing to undo.
+//
+// `closeRadius` (0 by default -- exact behaviour above, unchanged) additionally
+// seals off any GENUINE gap narrower than 2*closeRadius+1 px before the flood
+// fill runs, so a real but hairline background-coloured seam (e.g. the slivers
+// between a dorsal fin's rays) can no longer act as a leak channel from the
+// true outer background into an interior hole one pixel away from it. This is
+// a deliberate trade a caller opts into: characters need their real gaps (leg
+// separation, underarm) to stay open for loft-mesh.mjs's silhouette-based
+// limb measurement, but a flat fish sprite has no such consumer and reads
+// better as one solid silhouette with no interior holes at all -- see
+// tools/fauna/fish-prompt.mjs's caller.
+function keepEnclosedRegions(alpha, w, h, closeRadius = 0) {
+  const bgCandidate = new Uint8Array(w * h)
+  for (let i = 0; i < w * h; i++) bgCandidate[i] = alpha[i] === 0 ? 1 : 0
+
+  const searchMask = closeRadius > 0 ? erode(bgCandidate, w, h, closeRadius) : bgCandidate
+
+  const reached = new Uint8Array(w * h)
+  const stack = []
+  const pushIfBg = (x, y) => {
+    if (x < 0 || x >= w || y < 0 || y >= h) return
+    const i = y * w + x
+    if (searchMask[i] && !reached[i]) { reached[i] = 1; stack.push(i) }
+  }
+  for (let x = 0; x < w; x++) { pushIfBg(x, 0); pushIfBg(x, h - 1) }
+  for (let y = 0; y < h; y++) { pushIfBg(0, y); pushIfBg(w - 1, y) }
+  while (stack.length) {
+    const i = stack.pop()
+    const x = i % w, y = (i - x) / w
+    pushIfBg(x - 1, y); pushIfBg(x + 1, y); pushIfBg(x, y - 1); pushIfBg(x, y + 1)
+  }
+
+  // Growing the reached region back out by the same radius it was eroded by
+  // restores the true background's real extent near actual foreground edges
+  // (which the erosion also ate into) -- without this, closeRadius would
+  // leave a false ring of "foreground" closeRadius pixels wide all around the
+  // real silhouette.
+  const trueBg = closeRadius > 0 ? dilate(reached, w, h, closeRadius) : reached
+
+  for (let i = 0; i < w * h; i++) {
+    if (bgCandidate[i] && trueBg[i]) alpha[i] = 0
+    else if (bgCandidate[i]) alpha[i] = 255 // was background-candidate but unreachable/sealed off -- an enclosed hole
+  }
+}
+
+// Separable box erosion/dilation over a 0/1 mask (Chebyshev/"square" window,
+// radius r -- a pixel survives erosion only if every pixel within r in both
+// x and y is also 1). Two 1-D min/max passes instead of one 2-D pass: O(w*h*r)
+// either way at this scale, but the separable form is simple and fast enough
+// (r stays small, a handful of px) without needing a sliding-window minimum.
+function erode(mask, w, h, r) { return boxFilter(mask, w, h, r, Math.min) }
+function dilate(mask, w, h, r) { return boxFilter(mask, w, h, r, Math.max) }
+
+function boxFilter(mask, w, h, r, reduce) {
+  const tmp = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = mask[y * w + x]
+      for (let dx = 1; dx <= r; dx++) {
+        if (x - dx >= 0) v = reduce(v, mask[y * w + (x - dx)])
+        if (x + dx < w) v = reduce(v, mask[y * w + (x + dx)])
+      }
+      tmp[y * w + x] = v
+    }
+  }
+  const out = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = tmp[y * w + x]
+      for (let dy = 1; dy <= r; dy++) {
+        if (y - dy >= 0) v = reduce(v, tmp[(y - dy) * w + x])
+        if (y + dy < h) v = reduce(v, tmp[(y + dy) * w + x])
+      }
+      out[y * w + x] = v
+    }
+  }
+  return out
 }
 
 /**
@@ -188,9 +283,20 @@ export function cropToFigure({ w, rgba }, alpha, profile) {
   return { w: cw, h: ch, rgba: out }
 }
 
+// Below this width, an internal transparent run within a row is treated as
+// noise (a stray unkeyed pixel or anti-aliasing), not a real separation
+// between two silhouette blobs (e.g. the legs in an "arms at sides, legs
+// together" pose, which are genuinely gapped from ankle to roughly mid-
+// thigh). Real gaps measured off actual character sheets run 40-330px wide;
+// noise is a handful of pixels.
+const MIN_GAP_PX = 10
+
 /**
  * Per-row [minX, maxX] silhouette extent (alpha > 128), plus the overall
  * figure's top/bottom rows. A row with no opaque pixel is `null` in `rows`.
+ * Each row also carries `gapMin`/`gapMax` -- the widest internal transparent
+ * run within [min,max], i.e. a real gap between two separate blobs on that
+ * row (both `null` if there's no such run at least `MIN_GAP_PX` wide).
  * Throws if the figure has fewer than 8 non-empty rows -- too thin a
  * silhouette to loft, almost certainly a keying failure rather than a real
  * character.
@@ -204,7 +310,18 @@ export function silhouetteProfile(alpha, w, h) {
       if (alpha[y * w + x] > 128) { if (min < 0) min = x; max = x }
     }
     if (min >= 0) {
-      rows[y] = { min, max }
+      let gapMin = null, gapMax = null, runStart = -1, bestLen = 0
+      for (let x = min; x <= max; x++) {
+        if (alpha[y * w + x] <= 128) {
+          if (runStart < 0) runStart = x
+        } else if (runStart >= 0) {
+          const len = x - runStart
+          if (len > bestLen) { bestLen = len; gapMin = runStart; gapMax = x }
+          runStart = -1
+        }
+      }
+      if (bestLen < MIN_GAP_PX) { gapMin = null; gapMax = null }
+      rows[y] = { min, max, gapMin, gapMax }
       nonEmpty++
       if (top < 0) top = y
       bottom = y
@@ -212,4 +329,32 @@ export function silhouetteProfile(alpha, w, h) {
   }
   if (nonEmpty < 8) throw new Error('silhouette has fewer than 8 non-empty rows -- chroma key likely failed')
   return { top, bottom, rows }
+}
+
+/**
+ * The transpose of silhouetteProfile: per-column [minY, maxY] silhouette
+ * extent, plus the overall figure's left/right columns. Used for a T-pose
+ * arm, whose long axis runs horizontally, so measuring it needs a per-column
+ * (not per-row) scan. No gap detection here -- callers only query columns
+ * clearly out in the arm/sleeve region, where there's no torso ambiguity to
+ * resolve (unlike the leg gap above, which shares its row with the torso
+ * span).
+ */
+export function columnProfile(alpha, w, h) {
+  const cols = new Array(w).fill(null)
+  let left = -1, right = -1, nonEmpty = 0
+  for (let x = 0; x < w; x++) {
+    let min = -1, max = -1
+    for (let y = 0; y < h; y++) {
+      if (alpha[y * w + x] > 128) { if (min < 0) min = y; max = y }
+    }
+    if (min >= 0) {
+      cols[x] = { min, max }
+      nonEmpty++
+      if (left < 0) left = x
+      right = x
+    }
+  }
+  if (nonEmpty < 8) throw new Error('silhouette has fewer than 8 non-empty columns -- chroma key likely failed')
+  return { left, right, cols }
 }

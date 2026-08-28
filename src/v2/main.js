@@ -154,14 +154,35 @@ const bootFail = (err) => {
   }
 }
 
+// A headset has no devtools console. Quest V3 (quest-main.js) already solved
+// this by routing crashes onto a world-space panel instead of a flat DOM
+// overlay, since the DOM overlay isn't rendered inside the VR canvas at all
+// -- ported here so a crash AFTER VR entry (this file's bootFail above only
+// helps before/outside VR) is still visible on the headset. Set once quest
+// mode has a camera to attach the error plane to (see the QUEST_MODE branch
+// below); reportRuntimeError still runs bootFail unconditionally, since it
+// also covers the flatscreen desktop-testing case.
+let showQuestRuntimeError = null
+function reportRuntimeError(err) {
+  bootFail(err)
+  if (showQuestRuntimeError) showQuestRuntimeError(err)
+}
+window.addEventListener('error', (e) => reportRuntimeError(e.error ?? new Error(e.message)))
+window.addEventListener('unhandledrejection', (e) => {
+  reportRuntimeError(e.reason instanceof Error ? e.reason : new Error(String(e.reason)))
+})
+
 // --- renderer ---------------------------------------------------------------
 //
-// Quest mode hands the whole engine bootstrap to A-Frame (same proven rig
-// scaffold as quest.html/quest-main.js: movement-controls + look-controls +
-// laser-controls/blink-controls per hand) instead of building a raw
-// WebGLRenderer + VRButton ourselves. Everything below this block only ever
-// touches the `renderer`/`scene`/`camera`/`rig` locals, never the
-// construction details, so it's unmodified by which branch ran.
+// Quest mode hands the renderer/session bootstrap to A-Frame (the proven-
+// reliable VR entry path, per quest.html/quest-main.js) but NOT locomotion --
+// unlike quest.html, there's no movement-controls/look-controls/blink-
+// controls here. Only laser-controls per hand, for panel raycasting. Moving
+// around is entirely Player.update(dt, moveInput) below, identical to normal
+// mode, so walking/flying feel the same in and out of quest mode. Everything
+// below this block only ever touches the `renderer`/`scene`/`camera`/`rig`
+// locals, never the construction details, so it's unmodified by which branch
+// ran.
 // three-instance.js already resolves to AFRAME.THREE once A-Frame's own
 // <script> tag has run (v2.html loads it unconditionally, before this
 // module), so objects built below are native to whichever THREE actually
@@ -180,11 +201,76 @@ let sceneEl = null, rigEl = null, leftHandEl = null, rightHandEl = null
 if (QUEST_MODE) {
   sceneEl = document.createElement('a-scene')
   sceneEl.setAttribute('vr-mode-ui', 'enabled: true')
+  // A-Frame 1.8's own renderer defaults (ACES filmic tone mapping,
+  // physically-correct lighting) diverge from normal mode's plain
+  // `new THREE.WebGLRenderer(...)` below, which never sets either -- so it
+  // runs on three's own defaults (NoToneMapping, legacy/non-physical light
+  // intensities). That divergence is what was lifting near-black areas (most
+  // visible on trees/terrain at night); match normal mode explicitly instead
+  // of taking A-Frame's opinion.
+  //
+  // `antialias: true` is NOT redundant with A-Frame's default. A-Frame's
+  // renderer schema defaults antialias to `auto`, which it resolves to FALSE on
+  // mobile GPUs -- and the Quest browser is a mobile GPU. Normal mode above
+  // asks for MSAA explicitly and gets it, so the headset was the one target
+  // drawing every distant ridge line with no edge coverage at all. On a
+  // shimmering skyline that reads as the terrain itself flickering.
+  //
+  // `logarithmicDepthBuffer` is opt-in behind `?quest&logdepth` rather than on
+  // by default: it costs a per-fragment gl_FragDepth write (which defeats early
+  // -Z on tiled mobile GPUs, exactly the wrong trade on a Quest 2) and the
+  // near/far fix below should make it unnecessary. It is here so the two can be
+  // A/B'd in the headset without a code change, because depth precision is not
+  // something a desktop can reproduce.
+  const questRenderer = ['toneMapping: none', 'physicallyCorrectLights: false', 'antialias: true']
+  if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
+  sceneEl.setAttribute('renderer', questRenderer.join('; '))
+  // No movement-controls/look-controls/blink-controls: locomotion in quest
+  // mode must be identical to normal mode, which is entirely driven by
+  // Player.update(dt, moveInput) + the manual mouse-drag look below. Only
+  // laser-controls stays, for panel-button raycasting.
+  //
+  // look-controls and wasd-controls must be disabled EXPLICITLY, because the
+  // <a-camera> PRIMITIVE attaches both by default (defaultComponents in
+  // A-Frame's primitives/a-camera.js) whether or not they are written here.
+  // Left on, they do not merely duplicate this file's locomotion, they fight
+  // it at a different level of the graph: A-Frame's `camera` component parents
+  // the actual THREE.PerspectiveCamera UNDER the entity's object3D, so
+  // look-controls' yaw/pitch land on the parent while the mouse-drag handler
+  // below writes the child. Two pitch/yaw pairs composed like that produce
+  // roll (the tilted, eventually upside-down horizon), and wasd-controls then
+  // pushes along the PARENT's rotation only -- the entity's `rotation`
+  // attribute -- so its motion diverges from the direction actually being
+  // looked down. Its 65 m/s^2 acceleration with velocity easing rides on top
+  // of Player's 1.45 m/s walk as well, which is the ice-skating glide.
+  //
+  // The explicit `position` is the same class of default: the primitive puts
+  // the ENTITY at y 1.6, and an entity offset is not the same thing as normal
+  // mode's camera offset -- in XR the headset pose is written to the THREE
+  // camera (the child), so a 1.6 on the parent stacks with it and lifts her a
+  // whole standing height off the ground. Zero it here and set eyeHeight on
+  // the camera itself below, exactly as normal mode does.
+  // near/far ARE NOT COSMETIC HERE, and this is the fix for the distant-ridge
+  // Z-fighting that only shows up in the headset. The <a-camera> primitive
+  // defaults to near 0.005 / far 10000 -- a 2,000,000:1 ratio -- while normal
+  // mode below builds its camera at 0.1 / 20000, a ratio of 200,000. A 24-bit
+  // depth buffer spends its precision logarithmically in that ratio, so at
+  // 0.005 near the quantisation at 2 km is on the order of tens of metres and
+  // at 4 km it is hundreds. Chunk skirts alone are up to 192 m deep on the
+  // coarsest tiers (skirtDepth = max(2, step * 3) in the chunk mesher), so the
+  // skirt and the neighbouring chunk's face land in the SAME depth bucket and
+  // whichever drew last wins. On a monitor that is a static, invisible tie; in
+  // XR the head never stops moving by a millimetre or two, so the tie is
+  // re-broken every frame and the whole skyline crawls. Matching normal mode's
+  // 0.1 buys back a factor of twenty of near-plane precision.
+  //
+  // far 20000 also matters on its own: stars.js puts its sphere at 15000, which
+  // A-Frame's default far of 10000 clips away entirely.
   sceneEl.innerHTML = `
-    <a-entity id="rig" movement-controls="controls: keyboard; fly: false">
-      <a-camera id="camera" look-controls></a-camera>
-      <a-entity id="left-hand" laser-controls="hand: left" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
-      <a-entity id="right-hand" laser-controls="hand: right" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
+    <a-entity id="rig">
+      <a-camera id="camera" look-controls="enabled: false" wasd-controls="enabled: false" position="0 0 0" near="0.1" far="20000"></a-camera>
+      <a-entity id="left-hand" laser-controls="hand: left"></a-entity>
+      <a-entity id="right-hand" laser-controls="hand: right"></a-entity>
     </a-entity>
   `
   document.body.appendChild(sceneEl)
@@ -195,6 +281,15 @@ if (QUEST_MODE) {
   renderer = sceneEl.renderer
   scene = sceneEl.object3D
   camera = sceneEl.camera
+  // Matches normal mode below. The mouse-drag look handler assigns
+  // rotation.x/y directly (not via quaternion), and three's default Euler
+  // order ('XYZ') couples yaw into roll as pitch grows -- without this she
+  // twists onto her side and eventually upside-down under a plain up/down
+  // drag, and WASD (read off the now-rolled local axes) comes out backwards.
+  // 'YXZ' (yaw first, then pitch) is the standard FPS-camera order and is
+  // what keeps normal mode's own drag-look free of that coupling.
+  camera.rotation.order = 'YXZ'
+  camera.position.y = LOCOMOTION.eyeHeight // desktop only; XR overwrites this from the pose
   rigEl = sceneEl.querySelector('#rig')
   leftHandEl = sceneEl.querySelector('#left-hand')
   rightHandEl = sceneEl.querySelector('#right-hand')
@@ -223,6 +318,44 @@ if (QUEST_MODE) {
   rightGrip = renderer.xr.getControllerGrip(1)
   rig.add(leftGrip, rightGrip)
   scene.add(rig)
+}
+
+if (QUEST_MODE) {
+  // A plane fixed to the camera (not the panel or the rig -- both can be
+  // anywhere, or not yet built) so it is guaranteed on-screen the instant an
+  // error fires, in or out of VR. Also catches a lost WebGL context, which
+  // fires no JS exception at all (a GPU/driver crash) and would otherwise
+  // look identical to the reported black-screen-after-VR-entry symptom.
+  const errCanvas = document.createElement('canvas')
+  errCanvas.width = 1024; errCanvas.height = 320
+  const errCtx = errCanvas.getContext('2d')
+  const errTexture = new THREE.CanvasTexture(errCanvas)
+  errTexture.colorSpace = THREE.SRGBColorSpace
+  const errMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.1, 0.34),
+    new THREE.MeshBasicMaterial({ map: errTexture, transparent: true, toneMapped: false, depthTest: false, side: THREE.DoubleSide })
+  )
+  errMesh.position.set(0, 0, -0.9)
+  errMesh.renderOrder = 999
+  errMesh.visible = false
+  camera.add(errMesh)
+
+  showQuestRuntimeError = (err) => {
+    errCtx.fillStyle = '#2a0a0a'
+    errCtx.fillRect(0, 0, errCanvas.width, errCanvas.height)
+    errCtx.fillStyle = '#ff9a7a'
+    errCtx.font = '22px monospace'
+    errCtx.textBaseline = 'top'
+    const lines = ['quest mode: JavaScript error', '', ...String(err?.stack ?? err).split('\n')]
+    lines.slice(0, 11).forEach((line, i) => errCtx.fillText(line.slice(0, 72), 14, 10 + i * 27))
+    errTexture.needsUpdate = true
+    errMesh.visible = true
+  }
+
+  sceneEl.canvas?.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault() // per spec: without this the context never becomes eligible to restore
+    reportRuntimeError(new Error('WebGL context lost (GPU/driver crash, not a JS exception)'))
+  })
 }
 
 scene.background = new THREE.Color(FOG_COLOR)
@@ -276,12 +409,12 @@ if (QUEST_MODE) {
 }
 
 // ---------------------------------------------------------------------------
-// Quest mode: hand-rolled flight + a world-space toggle panel, ported from
-// quest-main.js's already-proven pattern (same laser-controls raycast, same
-// A/X-to-fly, same panel-button canvas-texture approach) rather than
-// reinvented. Locomotion is entirely separate from Player.update() here --
-// see the note in tick() above updateQuestFlight for why the two can't share
-// a rig.
+// Quest mode: a world-space toggle panel, ported from quest-main.js's
+// already-proven pattern (same laser-controls raycast, same panel-button
+// canvas-texture approach) rather than reinvented. Locomotion itself is NOT
+// quest-specific -- it's the same Player.update(dt, moveInput) + mouse-drag
+// look that normal mode uses, so flying/walking feel identical in and out
+// of quest mode. Quest mode's only difference is this panel.
 // ---------------------------------------------------------------------------
 
 function labelTexture(text, bg = '#173154', fg = '#ffffff', width = 384) {
@@ -294,66 +427,27 @@ function labelTexture(text, bg = '#173154', fg = '#ffffff', width = 384) {
   return t
 }
 
-let questFlying = false
 let questPanelGroup = null
 const questPanelMeshes = []
 const questControllerHits = new Map()
-
-if (QUEST_MODE) {
-  function setQuestFlying(next) {
-    questFlying = next
-    rigEl.setAttribute('movement-controls', { fly: questFlying, controls: 'keyboard' })
-    sceneEl.querySelectorAll('[blink-controls]').forEach((el) => {
-      el.components['blink-controls']?.[questFlying ? 'pause' : 'play']()
-    })
-  }
-  ;[leftHandEl, rightHandEl].forEach((el) => {
-    el.addEventListener('abuttondown', () => setQuestFlying(!questFlying))
-    el.addEventListener('xbuttondown', () => setQuestFlying(!questFlying))
-  })
-}
-
-const QUEST_FLIGHT_BASE_SPEED = 4
-const QUEST_FLIGHT_HEIGHT_SPEED_GAIN = 0.15
-const QUEST_STICK_DEADZONE = 0.15
-const questFlightVelocity = new THREE.Vector3()
-const questFlightForward = new THREE.Vector3()
-const questFlightRight = new THREE.Vector3()
-const questTempQuat = new THREE.Quaternion()
-
-function updateQuestFlight(dt) {
-  if (!questFlying) return
-  questFlightVelocity.set(0, 0, 0)
-  for (const el of [leftHandEl, rightHandEl]) {
-    const axis = el.components['tracked-controls']?.axis
-    if (!axis || axis.length < 2) continue
-    const x = axis[axis.length - 2]
-    const y = axis[axis.length - 1]
-    if (Math.abs(x) < QUEST_STICK_DEADZONE && Math.abs(y) < QUEST_STICK_DEADZONE) continue
-    el.object3D.getWorldQuaternion(questTempQuat)
-    questFlightForward.set(0, 0, -1).applyQuaternion(questTempQuat)
-    questFlightRight.set(1, 0, 0).applyQuaternion(questTempQuat)
-    const altitude = Math.max(0, rig.position.y - height.heightAt(rig.position.x, rig.position.z))
-    const speed = QUEST_FLIGHT_BASE_SPEED + altitude * QUEST_FLIGHT_HEIGHT_SPEED_GAIN
-    questFlightVelocity.addScaledVector(questFlightForward, -y * speed)
-    questFlightVelocity.addScaledVector(questFlightRight, x * speed)
-  }
-  rig.position.addScaledVector(questFlightVelocity, dt)
-}
 
 // --- toggle panel ------------------------------------------------------------
 
 const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
-  { key: 'dayNight', text: 'day/night' },
-  { key: 'skip5h', text: '+5h', action: () => skipTime() },
+  { key: 'flatGround', text: 'flat ground' },
   { key: 'trees', text: 'trees' },
   { key: 'rocks', text: 'rocks' },
   { key: 'grass', text: 'grass' },
   { key: 'ferns', text: 'ferns' },
+  { key: 'instCull', text: 'per-instance cull' },
+  { key: 'dayNight', text: 'day/night' },
+  { key: 'lighting', text: 'terrain & prop lighting' },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
+  { key: 'skip5h', text: '+5h', action: () => skipTime() },
+  { key: 'recall', text: 'recall panel here', action: () => placeQuestPanel() },
 ]
 
 function questToggleLabel(row) {
@@ -368,27 +462,127 @@ function applyQuestToggle(key) {
   const enabled = (questToggles[key] = !questToggles[key])
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
+    case 'flatGround': setFlatGround(enabled); break
     case 'dayNight': sky.mesh.visible = enabled; stars.points.visible = enabled; break
+    case 'lighting': break // no object of its own; gates the sun/hemi/lighting.update block in applySky()
     case 'trees': trees.batch.visible = enabled; break
     case 'rocks': rocks.beds.forEach((b) => { b.batch.visible = enabled }); break
     case 'grass': grass.batch.visible = enabled; break
     case 'ferns': ferns.batch.visible = enabled; break
+    case 'instCull': applyBatchCulling(); break
     case 'water': waterSurfaces.group.visible = enabled; break
     case 'reflections': break // no object of its own; gates the sky/world capture updates in tick()
     case 'aurora': aurora.mesh.visible = enabled; break
   }
 }
 
-function activateQuestButton(key) {
-  applyQuestToggle(key)
+// ---------------------------------------------------------------------------
+// THE PER-INSTANCE CULL SWITCH, and why it is the first thing to try when a
+// layer "blinks" in the headset rather than merely running slow.
+//
+// A THREE.BatchedMesh with `perObjectFrustumCulled` on does a CPU sweep in
+// onBeforeRender: for every instance it reads the 4x4 out of the matrix
+// texture, transforms that instance's bounding sphere by it, and frustum-tests
+// the result, then rebuilds the multi-draw list. The early-out at the top of
+// that method only fires when NOTHING is on -- `!_visibilityChanged &&
+// !perObjectFrustumCulled && !sortObjects`.
+//
+// IN XR THAT SWEEP RUNS TWICE PER FRAME. WebGLRenderer's XR path loops
+// `for (const camera2 of camera.cameras) renderScene(...)`, once per eye, and
+// onBeforeRender is called inside renderScene -- so grass at ~22k instances is
+// 44k matrix reads and sphere transforms per frame, the forest another 82k, and
+// the terrain batch adds a full 1024-element SORT on top because terrain-v2.js
+// sets sortObjects. That is CPU work on a mobile core, and CPU work is exactly
+// what the headset has least of. It also explains the shape of the symptom:
+// stalls long enough to miss the compositor's deadline make the runtime
+// reproject a stale frame, which is the "furious blinking" -- not a shader
+// crash, and not the GPU, which the same headset happily feeds a million alpha
+// -masked triangles.
+//
+// Turning it OFF trades draw-time (every instance is submitted) for frame-time
+// (no sweep). The user's own /quest measurements say this world is nowhere near
+// GPU-bound, so that is the right side of the trade here -- but it is a toggle
+// and not a constant precisely because it is a trade, and the panel is where it
+// gets judged.
+function questBatches() {
+  const out = []
+  if (terrain) out.push(terrain.batch)
+  if (trees) out.push(trees.batch)
+  if (ferns) out.push(ferns.batch)
+  if (grass) out.push(grass.batch)
+  if (rocks) rocks.beds.forEach((b) => out.push(b.batch))
+  if (litter) out.push(litter.batch)
+  if (mushrooms) out.push(mushrooms.batch)
+  if (deadwood) out.push(deadwood.batch)
+  return out
+}
+
+// The "on" state restores each batch's OWN defaults rather than setting both
+// flags true, because they differ per layer by design -- terrain sorts and the
+// scatters do not -- and a toggle that forgot that would be comparing the
+// off state against a world nobody ships.
+const questCullDefaults = new WeakMap()
+function applyBatchCulling() {
+  const on = questToggles.instCull
+  for (const batch of questBatches()) {
+    if (!questCullDefaults.has(batch)) {
+      questCullDefaults.set(batch, { cull: batch.perObjectFrustumCulled, sort: batch.sortObjects })
+    }
+    const def = questCullDefaults.get(batch)
+    batch.perObjectFrustumCulled = on ? def.cull : false
+    batch.sortObjects = on ? def.sort : false
+  }
+}
+
+// Repaint one row's label from the live toggle state. Separate from the click
+// handler because a toggle can now be flipped by something OTHER than its own
+// button -- flat ground forces terrain off -- and a row whose label disagreed
+// with the world would make the panel worse than no panel.
+function refreshQuestRow(key) {
   const row = QUEST_TOGGLE_ROWS.find((r) => r.key === key)
   const mesh = questPanelMeshes.find((m) => m.userData.key === key)
-  if (mesh && row) {
-    const width = mesh.geometry.parameters.width
-    mesh.material.map?.dispose()
-    mesh.material.map = labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96))
-    mesh.material.needsUpdate = true
-  }
+  if (!mesh || !row) return
+  const width = mesh.geometry.parameters.width
+  mesh.material.map?.dispose()
+  mesh.material.map = labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96))
+  mesh.material.needsUpdate = true
+}
+
+function activateQuestButton(key) {
+  applyQuestToggle(key)
+  refreshQuestRow(key)
+}
+
+// --- the stats readout at the top of the panel -------------------------------
+//
+// ONE canvas and ONE CanvasTexture for the life of the panel, redrawn in place
+// at 4 Hz. The obvious shape -- build a fresh labelTexture per update, the way
+// the toggle rows do on click -- would allocate and upload a texture four times
+// a second forever, which is a leak of GPU memory on a device that has 6 GB for
+// everything. Rows get away with it because a click is a human-rate event.
+const QUEST_STATS_W = 1024
+const QUEST_STATS_H = 256
+let questStatsCanvas = null
+let questStatsCtx = null
+let questStatsTexture = null
+
+function drawQuestStats(lines) {
+  const ctx = questStatsCtx
+  ctx.fillStyle = '#08131f'
+  ctx.fillRect(0, 0, QUEST_STATS_W, QUEST_STATS_H)
+  ctx.font = 'bold 30px monospace'
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
+  lines.forEach((parts, row) => {
+    let x = 16
+    const y = 24 + row * 41
+    for (const [text, color] of parts) {
+      ctx.fillStyle = color
+      ctx.fillText(text, x, y)
+      x += ctx.measureText(text).width
+    }
+  })
+  questStatsTexture.needsUpdate = true
 }
 
 function buildQuestPanel() {
@@ -396,28 +590,50 @@ function buildQuestPanel() {
   scene.add(questPanelGroup)
 
   const bg = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.0, 2.4),
+    new THREE.PlaneGeometry(2.0, 2.24),
     new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: 0.94, side: THREE.DoubleSide })
   )
-  bg.position.set(0, 0, -0.01)
+  bg.position.set(0, 0.15, -0.01)
   questPanelGroup.add(bg)
 
   const title = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.9, 0.18),
-    new THREE.MeshBasicMaterial({ map: labelTexture('quest toggles (all off by default)', null, '#8fd48f', 900), transparent: true, toneMapped: false, side: THREE.DoubleSide })
+    new THREE.PlaneGeometry(1.9, 0.14),
+    new THREE.MeshBasicMaterial({ map: labelTexture('quest toggles -- left grip recalls this panel', null, '#8fd48f', 1100), transparent: true, toneMapped: false, side: THREE.DoubleSide })
   )
-  title.position.set(0, 1.08, 0.02)
+  title.position.set(0, 1.04, 0.02)
   questPanelGroup.add(title)
 
-  const rowHeight = 0.22
-  const top = 0.84
+  questStatsCanvas = document.createElement('canvas')
+  questStatsCanvas.width = QUEST_STATS_W
+  questStatsCanvas.height = QUEST_STATS_H
+  questStatsCtx = questStatsCanvas.getContext('2d')
+  questStatsTexture = new THREE.CanvasTexture(questStatsCanvas)
+  questStatsTexture.colorSpace = THREE.SRGBColorSpace
+  const stats = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.9, 1.9 * QUEST_STATS_H / QUEST_STATS_W),
+    new THREE.MeshBasicMaterial({ map: questStatsTexture, toneMapped: false, side: THREE.DoubleSide })
+  )
+  stats.position.set(0, 0.76, 0.02)
+  questPanelGroup.add(stats)
+  drawQuestStats([[['booting...', '#7f95b4']]])
+
+  // Two side-by-side columns rather than one tall stack, so the panel stays
+  // a comfortable height regardless of how many toggles it grows to.
+  const COLS = 2
+  const rowsPerCol = Math.ceil(QUEST_TOGGLE_ROWS.length / COLS)
+  const colWidth = 0.86
+  const colGap = 0.06
+  const rowHeight = 0.20
+  const top = 0.36
   QUEST_TOGGLE_ROWS.forEach((row, i) => {
-    const width = 1.8
+    const col = Math.floor(i / rowsPerCol)
+    const rowInCol = i % rowsPerCol
+    const width = colWidth
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(width, 0.18),
       new THREE.MeshBasicMaterial({ map: labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96)), side: THREE.DoubleSide, transparent: true, toneMapped: false })
     )
-    mesh.position.set(0, top - i * rowHeight, 0.03)
+    mesh.position.set((col - (COLS - 1) / 2) * (colWidth + colGap), top - rowInCol * rowHeight, 0.03)
     mesh.userData.key = row.key
     questPanelGroup.add(mesh)
     questPanelMeshes.push(mesh)
@@ -450,8 +666,7 @@ function buildQuestPanel() {
     if (hit) activateQuestButton(hit.object.userData.key)
   })
 
-  questPanelDesiredPosition(questPanelGroup.position)
-  questPanelGroup.lookAt(rig.position.x, questPanelGroup.position.y, rig.position.z)
+  placeQuestPanel()
 }
 
 function updateQuestControllerHover() {
@@ -465,6 +680,7 @@ function updateQuestControllerHover() {
 }
 
 const questPanelFwd = new THREE.Vector3()
+const questTempQuat = new THREE.Quaternion()
 function questPanelDesiredPosition(out) {
   camera.getWorldQuaternion(questTempQuat)
   questPanelFwd.set(0, 0, -1).applyQuaternion(questTempQuat)
@@ -478,15 +694,104 @@ function questPanelDesiredPosition(out) {
   return out
 }
 
-let questPanelLastReposition = 0
-const QUEST_PANEL_REPOSITION_MS = 5000
-function updateQuestPanel(now) {
-  updateQuestControllerHover()
+/**
+ * Put the panel in front of her, once, and leave it there.
+ *
+ * THE PANEL IS WORLD-FURNITURE, NOT A HUD. It used to re-seat itself every five
+ * seconds to follow her, and that reads terrible for a reason worth writing
+ * down: a surface that teleports on a timer has no physical explanation, so the
+ * eye reads it as the world breaking rather than as a menu. Anything that must
+ * follow the head belongs PARENTED to the camera, where it moves continuously
+ * and is visibly attached; anything that does not belongs in the world, at rest.
+ * This is the second kind, so it is placed on demand -- at boot, from the
+ * `recall panel here` row, and from the left grip -- and never on a clock.
+ */
+function placeQuestPanel() {
   if (!questPanelGroup) return
-  if (now - questPanelLastReposition < QUEST_PANEL_REPOSITION_MS) return
-  questPanelLastReposition = now
   questPanelDesiredPosition(questPanelGroup.position)
   questPanelGroup.lookAt(rig.position.x, questPanelGroup.position.y, rig.position.z)
+}
+
+function updateQuestPanel() {
+  updateQuestControllerHover()
+}
+
+// Short forms, because the panel is 1.9 m wide read from 2.2 m away and a raw
+// 1043968 is a number nobody in a headset is going to parse.
+function kilo(n) {
+  if (n === null || n === undefined) return '-'
+  if (n < 1000) return String(Math.round(n))
+  if (n < 1e6) return `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0)}k`
+  return `${(n / 1e6).toFixed(2)}M`
+}
+
+/**
+ * The stats block, rebuilt from the same numbers the desktop panel shows.
+ *
+ * WHY EACH LINE IS HERE rather than "everything renderer.info has": the panel
+ * exists to tell one failure mode from another in a headset with no console.
+ *   1. fps/ms is the symptom, and `tris`/`calls` are the two things that are
+ *      supposed to explain it. When fps collapses while both of those stay flat
+ *      -- which is what the grass toggle actually does -- the cost is CPU-side,
+ *      and that alone rules out "too many triangles" without a second test.
+ *   2. geometries/textures/programs catch the other shape of the same bug: a
+ *      count that climbs while nothing is being created is a per-frame
+ *      allocation, and it is the reason the stats canvas above is reused.
+ *   3. the terrain line separates RESIDENT chunks from DRAWN ones. The gap is
+ *      the streaming margin, and `q` (queued) going non-zero and staying there
+ *      is what a thrashing LOD looks like from inside.
+ *   4. the per-layer line is instances/triangles per scatter, so "which layer"
+ *      is answerable without toggling each one off in turn.
+ *   5. the input line is a DIAGNOSTIC, not a stat. If locomotion is dead, the
+ *      first question is whether the gamepads are even being seen, and there is
+ *      no other way to ask it on-device.
+ */
+function updateQuestStats() {
+  if (!questStatsTexture || !ready) return
+  const info = renderer.info
+  const st = terrain.stats
+  const fps = avgMs > 0 ? 1000 / avgMs : 0
+  const fpsColor = fps >= 65 ? '#8fd48f' : fps >= 45 ? '#ffd27a' : '#ff6b6b'
+  const inp = input.state
+  const la = inp.left.axes
+  const ra = inp.right.axes
+  drawQuestStats([
+    [
+      ['FPS ', '#7f95b4'], [fps.toFixed(0).padEnd(4), fpsColor],
+      ['MS ', '#7f95b4'], [avgMs.toFixed(1).padEnd(6), fpsColor],
+      ['TRIS ', '#7f95b4'], [kilo(info.render.triangles).padEnd(8), '#7fd7ff'],
+      ['CALLS ', '#7f95b4'], [String(info.render.calls), '#ff9a7a'],
+    ],
+    [
+      ['GEO ', '#7f95b4'], [String(info.memory.geometries).padEnd(6), '#b39ddb'],
+      ['TEX ', '#7f95b4'], [String(info.memory.textures).padEnd(6), '#b39ddb'],
+      ['PROG ', '#7f95b4'], [String(renderer.info.programs?.length ?? 0).padEnd(5), '#b39ddb'],
+      ['CULL ', '#7f95b4'], [questToggles.instCull ? 'on' : 'off', questToggles.instCull ? '#ffd27a' : '#8fd48f'],
+    ],
+    [
+      ['terrain res ', '#7f95b4'], [String(st.slots).padEnd(6), '#cfe3ff'],
+      ['drawn ', '#7f95b4'], [String(st.rendered).padEnd(6), '#cfe3ff'],
+      ['tris ', '#7f95b4'], [kilo(st.drawnTris).padEnd(7), '#cfe3ff'],
+      ['q ', '#7f95b4'], [String(st.queued).padEnd(4), st.queued > 0 ? '#ffd27a' : '#cfe3ff'],
+      ['deg ', '#7f95b4'], [st.triDeg.toFixed(1), '#cfe3ff'],
+    ],
+    [
+      ['tree ', '#7f95b4'], [`${kilo(trees.stats.placed)}/${kilo(trees.stats.tris)}`.padEnd(12), '#8fd48f'],
+      ['grass ', '#7f95b4'], [`${kilo(grass.stats.placed)}/${kilo(grass.stats.tris)}`.padEnd(12), '#8fd48f'],
+      ['rock ', '#7f95b4'], [`${kilo(rocks.stats.placed)}/${kilo(rocks.stats.tris)}`, '#8fd48f'],
+    ],
+    [
+      ['fern ', '#7f95b4'], [`${kilo(ferns.stats.placed)}/${kilo(ferns.stats.tris)}`.padEnd(12), '#8fd48f'],
+      ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(7), '#8fd48f'],
+      ['mode ', '#7f95b4'], [player.flying ? 'fly' : 'walk', '#8fd48f'],
+    ],
+    [
+      ['pads ', '#7f95b4'], [String(inp.connected).padEnd(3), inp.connected > 0 ? '#8fd48f' : '#ff6b6b'],
+      ['L ', '#7f95b4'], [`${la[0].toFixed(2)},${la[1].toFixed(2)}`.padEnd(13), '#cfe3ff'],
+      ['R ', '#7f95b4'], [`${ra[0].toFixed(2)},${ra[1].toFixed(2)}`.padEnd(13), '#cfe3ff'],
+      [questInputSource, '#7f95b4'],
+    ],
+  ])
 }
 
 const input = new Input(renderer)
@@ -542,8 +847,19 @@ let ready = false
 
 // Quest-mode toggle panel state -- every layer defaults off so the headset
 // can isolate one system's cost at a time. Non-quest mode never reads this.
+//
+// `instCull` is the one that does NOT default to the three.js default. See the
+// banner on applyBatchCulling: the per-instance frustum sweep runs once per EYE
+// in XR, which is CPU work the Quest 2 has least of, and turning it off is the
+// first thing to try when a layer stutters rather than merely renders slowly.
+// It starts off so the headset boots into the cheap configuration; flip it on
+// to measure what the sweep actually costs.
 const questToggles = QUEST_MODE
-  ? { terrain: false, dayNight: false, trees: false, rocks: false, grass: false, ferns: false, water: false, reflections: false, aurora: false }
+  ? {
+      terrain: false, flatGround: false, dayNight: false, lighting: false,
+      trees: false, rocks: false, grass: false, ferns: false,
+      instCull: false, water: false, reflections: false, aurora: false,
+    }
   : null
 
 // ---------------------------------------------------------------------------
@@ -622,6 +938,10 @@ function buildGrass(style, cx, cz, opts = {}) {
   lighting.patch(grass.material, { mode: 'vertex', cacheKey: `v2-grass-${style}` })
   grass.syncSnowLine(layers)
   grass.place(cx, cz)
+  // A rebuilt batch is a NEW BatchedMesh, so it arrives with three's defaults
+  // rather than whatever the panel's cull switch is currently set to. Without
+  // this, swapping grass style silently un-does the toggle.
+  if (QUEST_MODE) applyBatchCulling()
   if (propLayersReady) grass.bakeCards(renderer)
   const gs = grass.stats
   const gr = gs.rejected
@@ -1096,6 +1416,12 @@ async function bootWorld() {
     litter.batch.visible = false
     mushrooms.batch.visible = false
     deadwood.batch.visible = false
+    // The quadtree's own header says the XR route wants 4.0 degrees or coarser
+    // and that 3.0 -- the desktop default this route was inheriting -- spends
+    // 91% of terrain's whole triangle share, against 68% at 4.0. Quest mode was
+    // running the desktop budget on a mobile GPU.
+    LOD.triDeg = Math.min(MAX_TRI_DEG, 4.0)
+    applyBatchCulling()
     buildQuestPanel()
   }
 
@@ -1180,6 +1506,29 @@ function onRelief(next) {
   const cx = player.rig.position.x
   const cz = player.rig.position.z
 
+  replacePropsOnMovedGround(cx, cz)
+
+  console.log(
+    `[v2] relief ${JSON.stringify(relief)} -- field ${fieldMs.toFixed(0)} ms, ` +
+      `world ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, props re-placed`
+  )
+}
+
+/**
+ * The ground moved. Put every scatter back down on it and re-seat the player.
+ *
+ * EXTRACTED FROM onRelief RATHER THAN COPIED, because there are now two callers
+ * and the ORDER is the whole content of this function: mushrooms are anchored
+ * to the trees and rocks that are already standing, so re-placing them before
+ * those have moved would anchor a clump to the world that just went away. That
+ * is a silent bug -- nothing throws, the clumps simply hang in the old places --
+ * and a second copy of the block is exactly how it would come back.
+ *
+ * A prop's y is read ONCE, when it is placed. Nothing keeps the site list, so
+ * re-placing is not an optimisation over moving them; it is the only correction
+ * available.
+ */
+function replacePropsOnMovedGround(cx, cz) {
   if (trees) {
     trees.syncSnowLine(layers)
     trees.place(cx, cz)
@@ -1215,11 +1564,70 @@ function onRelief(next) {
   // zeroed speed it also does is wanted here: the ground moved under her, so any
   // momentum she had was measured against terrain that no longer exists.
   player.spawnAt(cx, cz)
+}
 
-  console.log(
-    `[v2] relief ${JSON.stringify(relief)} -- field ${fieldMs.toFixed(0)} ms, ` +
-      `world ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, props re-placed`
-  )
+// ---------------------------------------------------------------------------
+// FLAT GROUND: the isolation experiment, not a feature.
+//
+// THE QUESTION IT ANSWERS. "Is the grass expensive, or is standing the grass on
+// a streaming quadtree LOD terrain expensive?" Those two are impossible to tell
+// apart while the grass is on the terrain, because every candidate site the
+// scatter tests is a query into the same field the terrain streamer is meshing
+// against, and every chunk that swaps tier under a placed tuft moves the ground
+// out from under it.
+//
+// HOW IT WORKS. V2Height.setFlat replaces the whole composed field -- height AND
+// slope -- with one constant, so no scatter has to know it is being tested:
+// they all place themselves by asking the field, and the field answers "level,
+// at y". The terrain batch goes away and a TWO-TRIANGLE card the size of the
+// world stands in for it, which is one draw call and no streaming at all.
+//
+// WHAT IT IS NOT. It does not move anything already placed -- a prop's y is read
+// once -- so every layer has to be put down again, which is what
+// replacePropsOnMovedGround above is for. And it does not touch the authored
+// water or roads, which sit at authored elevations and would now be at the
+// wrong height relative to the card. That is acceptable for an ablation and
+// would not be for a feature.
+// ---------------------------------------------------------------------------
+
+let flatCard = null
+
+function setFlatGround(on) {
+  const cx = player.rig.position.x
+  const cz = player.rig.position.z
+
+  if (on) {
+    // The level is HER ground at the moment of the flip, so the card arrives
+    // under her feet instead of dropping her off a mountain or burying her.
+    const y = height.heightAt(cx, cz)
+    height.setFlat(y)
+    if (!flatCard) {
+      flatCard = new THREE.Mesh(
+        new THREE.PlaneGeometry(WORLD_HALF * 2, WORLD_HALF * 2, 1, 1),
+        new THREE.MeshBasicMaterial({ color: 0x46543a, side: THREE.DoubleSide })
+      )
+      flatCard.rotation.x = -Math.PI / 2
+      // Nothing about this plane is view-dependent and it is always underfoot,
+      // so the per-frame frustum test on it is pure overhead.
+      flatCard.frustumCulled = false
+      scene.add(flatCard)
+    }
+    flatCard.position.y = y
+    flatCard.visible = true
+    // The LOD terrain and a flat floor at the same time would be two grounds
+    // fighting, so the batch goes off and its toggle goes with it -- otherwise
+    // the panel would claim terrain was on while showing none.
+    terrain.batch.visible = false
+    questToggles.terrain = false
+    refreshQuestRow('terrain')
+  } else {
+    height.setFlat(null)
+    if (flatCard) flatCard.visible = false
+    terrain.batch.visible = questToggles.terrain
+  }
+
+  replacePropsOnMovedGround(cx, cz)
+  placeQuestPanel()
 }
 
 /**
@@ -1446,8 +1854,15 @@ const orbitLock = (lock) => {
 const DOUBLE_TAP_MS = 320
 let lastSpaceTap = -Infinity
 
+// The `!isPresenting` guard is LOCOMOTION's comfort rule -- free flight with no
+// ground reference is a nausea generator and §12 puts comfort over capability.
+// Quest mode is exempt, and deliberately so: it is a profiling route, not the
+// game. The whole point of it is to stand somewhere specific and look at one
+// layer's cost, and at 1.45 m/s the far side of an 8 km world is unreachable
+// inside a session. If quest mode ever stops being a lab and becomes something
+// a player is handed, this exemption is the line to delete.
 function setFlying(want) {
-  player.setFlying(want && !renderer.xr.isPresenting)
+  player.setFlying(want && (QUEST_MODE || !renderer.xr.isPresenting))
 }
 
 function onSpacePress(now) {
@@ -1625,13 +2040,21 @@ const setSRGB = (col, rgb) => col.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColor
 // writes the reflection the water bends, and hemi is set before water.update
 // because it is the ambient the water's silhouettes are matched to.
 function applySky(state, head, elapsedReal) {
-  sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
-  setSRGB(sun.color, state.lightColor)
-  sun.intensity = state.lightIntensity
+  // Gated in quest mode like every other layer: off by default so the sun/
+  // hemi lights and the WorldLighting shader patch (the day/night shading
+  // terrain, trees, rocks etc. all read) can be isolated from the rest of
+  // the atmosphere (fog/background/sky dome, which stay always-on below).
+  if (!QUEST_MODE || questToggles.lighting) {
+    sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
+    setSRGB(sun.color, state.lightColor)
+    sun.intensity = state.lightIntensity
 
-  setSRGB(hemi.color, state.hemiSky)
-  setSRGB(hemi.groundColor, state.hemiGround)
-  hemi.intensity = state.hemiIntensity
+    setSRGB(hemi.color, state.hemiSky)
+    setSRGB(hemi.groundColor, state.hemiGround)
+    hemi.intensity = state.hemiIntensity
+
+    lighting.update(state)
+  }
 
   setSRGB(scene.fog.color, state.fog)
   // hazeDensity, NOT fogDensity, and that is what makes v2's distance read as
@@ -1647,7 +2070,6 @@ function applySky(state, head, elapsedReal) {
   setSRGB(tmpCol, state.fog)
   scene.background.copy(tmpCol)
 
-  lighting.update(state)
   sky.update(head, state)
   if (!QUEST_MODE || questToggles.dayNight) stars.update(head, state, clock.elapsed, elapsedReal)
   if (!QUEST_MODE || questToggles.aurora) aurora.update(head, state, elapsedReal)
@@ -1859,28 +2281,176 @@ let acc = 0
 let avgMs = 0
 let lastPanelAt = 0
 let shownError = ''
-const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false }
+const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null }
 const headTmp = new THREE.Vector3()
+
+// ---------------------------------------------------------------------------
+// VR LOCOMOTION. The binding, in one place, because a control scheme spread
+// across a switch statement is a control scheme nobody can read back:
+//
+//   left stick  Y   glide walk, forward and BACK (it used to clamp at zero)
+//   right stick X   snap turn
+//   right stick Y   push forward to aim a teleport, release to go
+//   A / X           toggle fly; while flying, stick Y is throttle along
+//                   whichever HAND is pushing it, wherever that hand points
+//   left grip       recall the toggle panel to where you are standing
+//   right grip      +5 hours
+//   left Y          unstick
+//   right B         cycle the aurora pattern
+//
+// Walking is 1.45 m/s across an 8 km world, which is why fly and teleport are
+// not optional extras here: on foot the far side of the map is an hour away and
+// every layer being profiled looks identical from one standing spot.
+// ---------------------------------------------------------------------------
+
+// Standard xr-standard gamepad mapping; same table as input.js, repeated here
+// because the fallback below decodes a raw gamepad that Input never saw.
+const QUEST_BTN = { TRIGGER: 0, GRIP: 1, STICK: 3, PRIMARY: 4, SECONDARY: 5 }
+const questFallbackPrev = { left: {}, right: {} }
+
+// Which path produced this frame's axes, shown on the panel. If locomotion is
+// dead in the headset the FIRST thing to know is whether the sticks are being
+// read at all, and there is no console in there to ask.
+let questInputSource = 'none'
+
+/**
+ * Fill `input.state` from A-Frame's own controller entities.
+ *
+ * A SECOND ROUTE TO THE SAME GAMEPADS, not a second input scheme. Input polls
+ * `renderer.xr.getSession().inputSources` directly; A-Frame's tracked-controls
+ * holds the XRInputSource it matched to each hand entity. Those are normally
+ * the same objects -- but quest mode does not own the session (A-Frame does),
+ * and if the session this file's renderer reference exposes is ever not the one
+ * A-Frame entered, the direct poll returns nothing and locomotion silently
+ * dies with no error anywhere. The hand entities are visibly tracking in that
+ * case, which is the confusing part, so the fallback reads from the same place
+ * the visible hands do.
+ */
+function readQuestFallback(st) {
+  let found = 0
+  for (const [hand, el] of [['left', leftHandEl], ['right', rightHandEl]]) {
+    const side = st[hand]
+    const tracked = el?.components?.['tracked-controls-webxr'] ?? el?.components?.['tracked-controls']
+    const gp = tracked?.controller?.gamepad
+    if (!gp) {
+      side.axes = [0, 0]
+      continue
+    }
+    found++
+    side.source = el
+    side.axes = [gp.axes[2] ?? 0, gp.axes[3] ?? 0]
+    const prev = questFallbackPrev[hand]
+    for (const [name, idx] of Object.entries(QUEST_BTN)) {
+      const pressed = !!gp.buttons[idx]?.pressed
+      side.buttons[name] = { pressed, justPressed: pressed && !prev[name] }
+      prev[name] = pressed
+    }
+  }
+  st.connected = found
+}
+
+// Teleport. Armed by pushing the right stick forward, fired on release -- the
+// Quest system convention, so it needs no explanation in the headset.
+const QUEST_TELEPORT_ARM = 0.7
+const QUEST_TELEPORT_FIRE = 0.35
+const QUEST_TELEPORT_RANGE = 250
+let questTeleportArmed = false
+let questTeleportMarker = null
+const questTeleportTarget = { x: 0, z: 0, valid: false }
+const questHandPos = new THREE.Vector3()
+const questHandDir = new THREE.Vector3()
+const questFlyDir = new THREE.Vector3()
+
+function questTeleportAim() {
+  // Aimed down the RIGHT HAND, not the gaze. Marching the head ray would make
+  // the destination move whenever she looked around while holding the stick,
+  // and would put it wherever she happened to be reading the panel.
+  rightGrip.getWorldPosition(questHandPos)
+  rightGrip.getWorldQuaternion(questTempQuat)
+  questHandDir.set(0, 0, -1).applyQuaternion(questTempQuat)
+  // The march walks the exact height FIELD, not the meshed chunk, so it lands
+  // in the same place whether or not the terrain layer is even switched on --
+  // which it usually is not, in the mode this panel exists for.
+  const hit = raymarchGround(height, questHandPos, questHandDir, { maxDist: QUEST_TELEPORT_RANGE })
+  questTeleportTarget.valid = !!hit
+  if (hit) {
+    questTeleportTarget.x = hit.x
+    questTeleportTarget.z = hit.z
+    if (!questTeleportMarker) {
+      questTeleportMarker = new THREE.Mesh(
+        new THREE.RingGeometry(0.28, 0.42, 28),
+        new THREE.MeshBasicMaterial({ color: 0x7fd7ff, toneMapped: false, side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthTest: false })
+      )
+      questTeleportMarker.rotation.x = -Math.PI / 2
+      questTeleportMarker.renderOrder = 998
+      scene.add(questTeleportMarker)
+    }
+    questTeleportMarker.position.set(hit.x, hit.y + 0.05, hit.z)
+  }
+  if (questTeleportMarker) questTeleportMarker.visible = questTeleportTarget.valid
+}
 
 function readInput() {
   const st = input.update()
-  // In quest mode A-Frame's own movement-controls/laser-controls own
-  // locomotion (see updateQuestFlight below) -- input.update() still runs so
-  // currentPose()'s hand-connected flags stay live for netplay, but nothing
-  // here should also be driving moveInput/player.update against the same rig.
-  if (QUEST_MODE) return
+  questInputSource = st.connected > 0 ? 'xr' : 'none'
+  // Only when the direct poll came up empty: when it works it is the shorter
+  // path and it is the one normal (non-quest) XR uses too.
+  if (st.connected === 0 && QUEST_MODE) {
+    readQuestFallback(st)
+    if (st.connected > 0) questInputSource = 'aframe'
+  }
   if (st.connected > 0) {
-    moveInput.move = Math.max(0, -st.left.axes[1])
+    const ly = st.left.axes[1]
+    const rx = st.right.axes[0]
+    const ry = st.right.axes[1]
+
+    // Backwards used to be clamped away by a Math.max(0, ...). Reversing out of
+    // a rock face is the single most-wanted move in a world with no strafe.
+    moveInput.move = -ly
     moveInput.strafe = 0 // no strafing in VR, on purpose
     moveInput.lift = 0
-    const lx = st.left.axes[0]
-    const rx = st.right.axes[0]
-    moveInput.turn = Math.abs(lx) > Math.abs(rx) ? lx : rx
+    // Right stick ONLY. It used to take whichever stick was pushed further,
+    // which meant every walk with any sideways lean on the left stick also
+    // snap-turned her.
+    moveInput.turn = rx
     moveInput.unstick = !!st.left.buttons.SECONDARY?.justPressed
     moveInput.instant = false
+    moveInput.flyDirection = null
+
     if (st.right.buttons.GRIP?.justPressed) skipTime()
-    if (st.right.buttons.PRIMARY?.justPressed) cycleAurora()
-    if (st.left.buttons.PRIMARY?.justPressed) player.recenterXR(renderer)
+    if (st.right.buttons.SECONDARY?.justPressed) cycleAurora()
+    if (st.left.buttons.GRIP?.justPressed) placeQuestPanel()
+    if (st.left.buttons.STICK?.justPressed) player.recenterXR(renderer)
+    if (st.left.buttons.PRIMARY?.justPressed || st.right.buttons.PRIMARY?.justPressed) {
+      setFlying(!player.flying)
+    }
+
+    if (player.flying) {
+      // Whichever stick is being pushed harder decides both the throttle and
+      // the hand the direction comes off, so "fly where I am pointing" is true
+      // of the hand actually doing the pointing.
+      const useRight = Math.abs(ry) > Math.abs(ly)
+      const grip = useRight ? rightGrip : leftGrip
+      grip.getWorldQuaternion(questTempQuat)
+      questFlyDir.set(0, 0, -1).applyQuaternion(questTempQuat).normalize()
+      moveInput.move = -(useRight ? ry : ly)
+      moveInput.flyDirection = questFlyDir
+      if (questTeleportMarker) questTeleportMarker.visible = false
+      questTeleportArmed = false
+      return
+    }
+
+    // Teleport: aim while held, go on release. Fired from readInput rather than
+    // from a button event because the whole gesture is a stick threshold.
+    const push = -ry
+    if (push > QUEST_TELEPORT_ARM) {
+      questTeleportArmed = true
+      questTeleportAim()
+    } else if (questTeleportArmed && push < QUEST_TELEPORT_FIRE) {
+      questTeleportArmed = false
+      if (questTeleportMarker) questTeleportMarker.visible = false
+      if (questTeleportTarget.valid) player.teleportTo(questTeleportTarget.x, questTeleportTarget.z)
+    }
     return
   }
   moveInput.move = (on('forward') ? 1 : 0) - (on('back') ? 1 : 0)
@@ -1889,6 +2459,10 @@ function readInput() {
   moveInput.instant = true
   moveInput.turn = (on('turnRight') ? 1 : 0) - (on('turnLeft') ? 1 : 0)
   moveInput.unstick = on('unstick')
+  // Cleared explicitly: the VR branch above sets it, and a stale hand vector
+  // left in place after the controllers drop out would steer desktop flight off
+  // a quaternion nothing is updating any more.
+  moveInput.flyDirection = null
 }
 
 // Where the mouse last was, in NDC. `seen` stays false until the pointer has
@@ -2122,32 +2696,27 @@ function tick() {
 
   readInput()
 
-  if (QUEST_MODE) {
-    // A-Frame's own movement-controls/blink-controls drive rig XZ; fighting
-    // them with player.update() or the water-current sway below (which both
-    // write player.rig.position directly) is what the ported flight+
-    // ground-follow pair below replaces. See updateQuestFlight.
-    updateQuestFlight(dt)
-    if (!questFlying) rig.position.y = height.heightAt(rig.position.x, rig.position.z)
-    updateQuestPanel(now)
-  } else {
-    // THE CURRENT, applied BEFORE the mover rather than after it. Everything that
-    // keeps her out of the ground and inside the world runs in player.update, and
-    // a push added afterwards would be a push it never saw -- 70 cm is enough to
-    // put her inside a bank. Added first, the drift is just somewhere she is, and
-    // if the clamp refuses part of it the refusal is absorbed into her own path
-    // instead of fighting the next frame's difference.
-    //
-    // `submerged` is last frame's answer, because applySubmersion runs later in
-    // this one. A frame of lag on a 2.5 s ease is not a thing that can be seen.
-    swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged ? dt : -dt) / CURRENT.ease, 0, 1)
-    currentDrift(now / 1000, swayStrength, swayWant)
-    player.rig.position.x += swayWant.x - swayApplied.x
-    player.rig.position.z += swayWant.z - swayApplied.z
-    swayApplied.copy(swayWant)
+  // THE CURRENT, applied BEFORE the mover rather than after it. Everything that
+  // keeps her out of the ground and inside the world runs in player.update, and
+  // a push added afterwards would be a push it never saw -- 70 cm is enough to
+  // put her inside a bank. Added first, the drift is just somewhere she is, and
+  // if the clamp refuses part of it the refusal is absorbed into her own path
+  // instead of fighting the next frame's difference.
+  //
+  // `submerged` is last frame's answer, because applySubmersion runs later in
+  // this one. A frame of lag on a 2.5 s ease is not a thing that can be seen.
+  //
+  // Identical in quest mode -- quest mode only differs by which layers are
+  // visible (the toggle panel below), never by how she moves.
+  swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged ? dt : -dt) / CURRENT.ease, 0, 1)
+  currentDrift(now / 1000, swayStrength, swayWant)
+  player.rig.position.x += swayWant.x - swayApplied.x
+  player.rig.position.z += swayWant.z - swayApplied.z
+  swayApplied.copy(swayWant)
 
-    player.update(dt, moveInput)
-  }
+  player.update(dt, moveInput)
+
+  if (QUEST_MODE) updateQuestPanel()
 
   // The clock the prop LOD cross-dissolves run on, and the only per-frame cost
   // any of them has. Set BEFORE the scatters update, so the sweep that retires
@@ -2192,6 +2761,12 @@ function tick() {
   if (now - lastPanelAt >= 250) {
     lastPanelAt = now
     if (panel) panel.setStats(panelStats())
+    // The headset's equivalent of the desktop panel's stats block. Same 4 Hz,
+    // and deliberately NOT panelStats() itself: that one calls cursorPick(),
+    // which raymarches the height field and walks every scatter's instance
+    // arrays -- a mouse-cursor readout, on a device with no mouse, costing
+    // exactly the kind of CPU time this panel exists to hunt down.
+    if (QUEST_MODE) updateQuestStats()
     // The editor RECORDS what went wrong (a click that missed the ground, a
     // failed autosave) and the panel DISPLAYS what it is told; nothing joins the
     // two, so the host does. Only on change, so a message this file put up --
@@ -2225,8 +2800,8 @@ function tick() {
 if (QUEST_MODE) {
   // A-Frame drives its own render loop via component tick() methods, not
   // renderer.setAnimationLoop -- see quest-main.js's header for why calling
-  // setAnimationLoop here would silently stop movement-controls/blink-
-  // controls/look-controls from ticking at all.
+  // setAnimationLoop here would silently stop laser-controls (and any other
+  // A-Frame component) from ticking at all.
   AFRAME.registerComponent('v2-quest-tick', { tick: () => tick() })
   sceneEl.setAttribute('v2-quest-tick', '')
 } else {
@@ -2243,6 +2818,6 @@ renderer.xr.addEventListener('sessionstart', () => {
   if (panel) panel.syncSelection()
 })
 
-bootWorld().catch(bootFail)
+bootWorld().catch(reportRuntimeError)
 
 })().catch(bootFail)

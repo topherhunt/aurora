@@ -1324,12 +1324,13 @@ export class Trees {
     // of the two can have it. A tree that is on its way out of the world, or
     // back into it, cuts between tiers instead -- which nobody can see, since
     // the thing the eye is tracking is the tree arriving or leaving.
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i)) { this._popped('rim busy'); return }
 
     // Both ceilings degrade to a pop, which is what a swap did before this
     // existed. See FADE_POOL_RESERVE for why growth outranks polish.
-    if (this.fades.length >= FADE_MAX_INFLIGHT) return
-    if (this.freeCount <= FADE_POOL_RESERVE) return
+    if (this.fades.length >= FADE_MAX_INFLIGHT) { this._popped('inflight cap'); return }
+    if (this.freeCount <= FADE_POOL_RESERVE) { this._popped('pool reserve'); return }
+    this.crossFadeStarts = (this.crossFadeStarts || 0) + 1
 
     const dup = this.free[--this.freeCount]
     this.batch.getMatrixAt(i, this._m)
@@ -1348,6 +1349,23 @@ export class Trees {
     this.fadeTris += tris
     this.fadeAt[i] = this.fades.length
     this.fades.push({ orig: i, dup, start: now, tris })
+  }
+
+  /**
+   * TEMPORARY diagnostic for the "swaps are popping instead of dithering"
+   * report: counts and throttle-logs which of _crossFade's three refusal
+   * branches is actually firing at runtime, since the JS/GLSL math itself
+   * checks out clean under scripts/check-trees.mjs and the refusal reason
+   * can't be told apart by eye. Remove once the live cause is confirmed.
+   */
+  _popped(reason) {
+    this.poppedCounts = this.poppedCounts || {}
+    this.poppedCounts[reason] = (this.poppedCounts[reason] || 0) + 1
+    const now = performance.now()
+    if (!this._lastPopLog || now - this._lastPopLog > 2000) {
+      this._lastPopLog = now
+      console.warn(`[trees] tier swap popped instead of dithering: ${JSON.stringify(this.poppedCounts)} (${this.crossFadeStarts || 0} started cleanly)`)
+    }
   }
 
   /**

@@ -6,8 +6,11 @@ import basicSsl from '@vitejs/plugin-basic-ssl'
 import { generateImage } from './tools/characters/openrouter.mjs'
 import { buildViewPrompt } from './tools/characters/sheet-prompt.mjs'
 import { generateCharacter } from './tools/characters/generate-character.mjs'
-import { decodeSheet, keyBackground, silhouetteProfile, cropToFigure } from './tools/characters/chromakey.mjs'
+import { decodeSheet, keyBackground, silhouetteProfile, columnProfile, cropToFigure } from './tools/characters/chromakey.mjs'
 import { encodePng } from './tools/props/png.mjs'
+import { buildFishPrompt } from './tools/fauna/fish-prompt.mjs'
+import { buildFishMesh } from './tools/fauna/loft-fish-mesh.mjs'
+import { SPECIES as FISH_SPECIES } from './tools/fauna/fish-roster.mjs'
 
 // Vite loads .env into import.meta.env for client bundles, but NOT into
 // process.env for its own config/plugin code -- openrouter.mjs reads
@@ -529,6 +532,153 @@ function sheetGen() {
   }
 }
 
+// --- fish sheet image generation (dev only) ----------------------------------
+//
+// gen-fish.html's reroll/preview/pick bench -- the same shape as sheetGen()
+// above, cut down to fish's one view (side) and no reference-image chaining
+// (a character needs front/side/back to agree with each other; a fish sprite
+// is judged whole from a single profile image, so there is nothing for a
+// second generation to stay consistent with). Only /__generate-fish-view
+// spends real money; the rest is local file I/O.
+function fishGen() {
+  const readBody = (req, maxBytes) => new Promise((resolve, reject) => {
+    const chunks = []
+    let bytes = 0
+    req.on('data', (c) => {
+      bytes += c.length
+      if (bytes > maxBytes) req.destroy(new Error(`body over ${maxBytes} bytes`))
+      chunks.push(c)
+    })
+    req.on('error', reject)
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+  })
+
+  return {
+    name: 'aurora:fish-gen',
+    apply: 'serve',
+    configureServer(server) {
+      const root = server.config.root
+      const sheetsDir = (id) => resolve(root, 'tools/fauna/sheets', id)
+
+      server.middlewares.use('/__generate-fish-view', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST only' })); return }
+        readBody(req, 1 << 16).then(async (text) => {
+          const { id, description, seed } = JSON.parse(text)
+          if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid fish id "${id}"`)
+          const prompt = buildFishPrompt(description)
+          const { buffer, cost } = await generateImage({ prompt, aspectRatio: '16:9', seed })
+          res.end(JSON.stringify({ ok: true, imageB64: buffer.toString('base64'), cost }))
+        }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+      })
+
+      // Zero-cost local write: persists a picked candidate as side.png so it
+      // survives a reload.
+      server.middlewares.use('/__save-fish-view', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST only' })); return }
+        if (!/^[a-z0-9-]+$/.test(id)) { res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}"` })); return }
+        readBody(req, 1 << 24).then((text) => {
+          const { imageB64 } = JSON.parse(text)
+          const dir = sheetsDir(id)
+          mkdirSync(dir, { recursive: true })
+          const file = resolve(dir, 'side.png')
+          const buf = Buffer.from(imageB64, 'base64')
+          writeFileSync(file, buf)
+
+          const manifestFile = resolve(dir, 'candidates.json')
+          const manifest = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : {}
+          const entries = manifest.side || []
+          const match = entries.find((e) => {
+            try { return readFileSync(resolve(dir, 'candidates', e.file)).equals(buf) } catch { return false }
+          })
+          manifest.picked = match ? match.file : null
+          writeFileSync(manifestFile, JSON.stringify(manifest, null, 2))
+
+          res.end(JSON.stringify({ ok: true, path: relative(root, file) }))
+        }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+      })
+
+      // Lists candidates already on disk (from a live "generate" click, saved
+      // below, or from a future batch script) for one fish id.
+      server.middlewares.use('/__fish-candidates', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        if (!/^[a-z0-9-]+$/.test(id)) { res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}"` })); return }
+        const manifestFile = resolve(sheetsDir(id), 'candidates.json')
+        const manifest = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : {}
+        const entries = manifest.side || []
+        const candidates = entries.map((e) => {
+          const buf = readFileSync(resolve(sheetsDir(id), 'candidates', e.file))
+          return { imageB64: buf.toString('base64'), cost: e.cost, picked: e.file === manifest.picked }
+        })
+        res.end(JSON.stringify({ ok: true, candidates }))
+      })
+
+      // Alpha-keyed, tight-cropped picked view -- same chromakey pipeline as
+      // gen-sheet.html's /__sheet-reference, used here for the tint-preview
+      // panel (natural color, alpha-keyed cutout; the panel re-hues it live
+      // via CSS hue-rotate for per-individual variation). closeRadius: 4
+      // is the fish-specific difference from the character pipeline -- a fish
+      // sprite has no consumer that needs its real gaps (fin-ray slivers,
+      // open mouth) to stay open the way loft-mesh.mjs needs a character's leg
+      // gap to, so it reads better keyed as one fully solid silhouette. It
+      // also rescues a species painted close to the magenta key itself (e.g.
+      // Glimmerfin's purple scales) from losing chunks of its own body to the
+      // key -- see chromakey.mjs's keepEnclosedRegions header.
+      server.middlewares.use('/__fish-reference', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        if (!/^[a-z0-9-]+$/.test(id)) { res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}"` })); return }
+        const file = resolve(sheetsDir(id), 'side.png')
+        if (!existsSync(file)) { res.end(JSON.stringify({ ok: true, exists: false })); return }
+        try {
+          const decoded = decodeSheet(file)
+          const alpha = keyBackground(decoded, { closeRadius: 4 })
+          const profile = silhouetteProfile(alpha, decoded.w, decoded.h)
+          const crop = cropToFigure(decoded, alpha, profile)
+          const png = encodePng(crop.w, crop.h, crop.rgba, 4)
+          res.end(JSON.stringify({ ok: true, exists: true, imageB64: png.toString('base64') }))
+        } catch (e) {
+          res.statusCode = 400
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+        }
+      })
+
+      // Low-poly swim-ready mesh for the picked side view -- see
+      // tools/fauna/loft-fish-mesh.mjs's header for the contour-loft +
+      // lateral-bulge + per-vertex swim-bend-weight approach. `lengthM`
+      // defaults from fish-roster.mjs's lengthCm so the preview bench shows
+      // each species at its intended real-world size without extra input.
+      server.middlewares.use('/__fish-mesh', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        if (!/^[a-z0-9-]+$/.test(id)) { res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}"` })); return }
+        const file = resolve(sheetsDir(id), 'side.png')
+        if (!existsSync(file)) { res.end(JSON.stringify({ ok: true, exists: false })); return }
+        try {
+          const roster = FISH_SPECIES.find((s) => s.id === id)
+          const lengthM = Number(q.get('lengthM')) || (roster ? roster.lengthCm / 100 : 0.3)
+          const lod = Number(q.get('lod')) || 0
+          const decoded = decodeSheet(file)
+          const alpha = keyBackground(decoded, { closeRadius: 4 })
+          const cp = columnProfile(alpha, decoded.w, decoded.h)
+          const mesh = buildFishMesh(cp, { lengthM, lod })
+          res.end(JSON.stringify({ ok: true, exists: true, mesh }))
+        } catch (e) {
+          res.statusCode = 400
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+        }
+      })
+    },
+  }
+}
+
 // --- unknown routes get a route list, not the homepage (dev only) -----------
 //
 // Vite's dev server SPA-falls-back any unmatched extensionless request to
@@ -613,7 +763,7 @@ function unknownRouteGuard() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v1', 'v2', 'avatar-preview', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'test-aurora', 'quest', 'questv2', 'questv3']
+const BARE_ROUTES = ['v1', 'v2', 'avatar-preview', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'test-aurora', 'quest', 'questv2', 'questv3']
 
 function bareRoutes() {
   return {
@@ -655,7 +805,7 @@ function bareRoutes() {
 // cover, and the only way to see a range is to put twenty seeds side by side.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -701,6 +851,16 @@ export default defineConfig({
         // texture is code rather than a photograph (src/props/mushroom-texture.js),
         // so the bench is also the only place the sheets can be looked at.
         genMushroom: resolve(__dirname, 'gen-mushroom.html'),
+        // The crab bench, served at /gen-crab. Mesh and texture only, per the
+        // same code-not-photo reasoning as the mushroom's -- see the header
+        // of src/props/crab-texture.js.
+        genCrab: resolve(__dirname, 'gen-crab.html'),
+        // The butterfly bench, served at /gen-butterfly. Mesh and texture
+        // only, same code-not-photo reasoning -- see the header of
+        // src/props/butterfly-texture.js. Unlike the crab, colour and size
+        // are the whole point here, so the bench's reroll throws both wide
+        // rather than picking from a small fixed species table.
+        genButterfly: resolve(__dirname, 'gen-butterfly.html'),
         // The building bench, served at /gen-building. Its strength-0 mode
         // provides the straight control for judging the warped geometry.
         genBuilding: resolve(__dirname, 'gen-building.html'),
@@ -710,6 +870,9 @@ export default defineConfig({
         genAnim: resolve(__dirname, 'gen-anim.html'),
         genCharacter: resolve(__dirname, 'gen-character.html'),
         genSheet: resolve(__dirname, 'gen-sheet.html'),
+        // The fish bench, served at /gen-fish: the fauna analogue of
+        // gen-sheet.html, cut down to one sideview per species (tools/fauna/).
+        genFish: resolve(__dirname, 'gen-fish.html'),
         // §18. The alternative world: coarse shape imported from an image, fine
         // shape procedural down to 10 cm, and everything a human wants to place
         // by hand authored as a content layer on top. Shares the coordinate box

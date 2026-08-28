@@ -114,6 +114,36 @@ export class V2Height {
     this._epoch = -1
     this._authored = false
     this._syncAuthored()
+
+    // THE ABLATION FLOOR. Non-null replaces the whole composed field with one
+    // constant height and zero slope, everywhere. See setFlat.
+    this.flatY = null
+  }
+
+  /**
+   * Replace the world with a level plane at `y` metres, or `null` to restore it.
+   *
+   * AN ABLATION TOOL, and specifically the one the Quest route needs: every
+   * scatter in v2 places itself by asking this object for a height and a slope,
+   * so a flat answer here puts the whole prop world onto one plane WITHOUT any
+   * of them knowing they are being tested. That is the only way to ask "is the
+   * grass expensive, or is standing the grass on a streaming LOD terrain
+   * expensive" and get a clean answer -- and it is why this lives here rather
+   * than as a flag threaded through eight scatters.
+   *
+   * IT DOES NOT MOVE ANYTHING ALREADY PLACED. A prop's y is read once, when it
+   * is put down; the caller has to re-place every layer after flipping this, the
+   * same way onRelief does when the ground moves under it.
+   *
+   * SLOPE GOES TO ZERO WITH IT, not just height. Half the scatters reject a site
+   * on `tan` before they ever look at the height, so a flat field with the
+   * import's slopes still in it would grass a plane in exactly the imported
+   * mountain's pattern -- which is the confusing half-answer this exists to
+   * avoid.
+   */
+  setFlat(y) {
+    if (y !== null && !Number.isFinite(y)) throw new Error(`V2Height.setFlat: y must be a finite number or null, got ${y}`)
+    this.flatY = y
   }
 
   /**
@@ -452,6 +482,7 @@ export class V2Height {
    * this method is the half of it that lives here.
    */
   baseAt(x, z, cell = 0) {
+    if (this.flatY !== null) return this.flatY
     const hm = this.ground
     if (this._plain) return hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), 0)
     return hm.sample(x, z) + this._micro(x, z, cell, 0)
@@ -459,6 +490,7 @@ export class V2Height {
 
   /** The composed field. `cell` is the sampling spacing in metres; 0 is exact and is the default, because Player and the editor call this with two arguments. */
   heightAt(x, z, cell = 0) {
+    if (this.flatY !== null) return this.flatY
     if (this.layers.epoch !== this._epoch) this._syncAuthored()
     const hm = this.ground
     if (!this._authored) {
@@ -586,6 +618,7 @@ export class V2Height {
    * band-limited field would change under her as chunks swapped LOD.
    */
   normalAt(x, z, eps = 0.75, out = { x: 0, y: 1, z: 0 }) {
+    if (this.flatY !== null) { out.x = 0; out.y = 1; out.z = 0; return out }
     const hL = this.heightAt(x - eps, z)
     const hR = this.heightAt(x + eps, z)
     const hD = this.heightAt(x, z - eps)
@@ -624,6 +657,7 @@ export class V2Height {
    * class into the heightmap and pick up whichever convention they meet first.
    */
   slope01At(x, z) {
+    if (this.flatY !== null) return 0
     return this.ground.slopeAt(x, z)
   }
 
@@ -639,6 +673,7 @@ export class V2Height {
    * stand on. There is no scarp in v2, so `h` is simply heightAt.
    */
   heightAndSlopeAt(x, z) {
+    if (this.flatY !== null) return { h: this.flatY, tan: 0 }
     const e = 0.75
     const h = this.heightAt(x, z)
     const xm = this.heightAt(x - e, z)
@@ -690,6 +725,7 @@ export class V2Height {
    */
   scatterAt(x, z, cell, out = { h: 0, tan: 0 }) {
     if (!(cell > 0)) throw new Error(`V2Height.scatterAt: cell must be a positive fixed band limit, got ${cell}`)
+    if (this.flatY !== null) { out.h = this.flatY; out.tan = 0; return out }
     if (this.layers.epoch !== this._epoch) this._syncAuthored()
     const hm = this.ground
     const s = hm.slopeAt(x, z)

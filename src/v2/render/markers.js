@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 /**
  * The editor's visible handles: every snow line point, every spline control point, every lake centre.

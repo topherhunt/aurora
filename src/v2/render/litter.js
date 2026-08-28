@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 import { LITTER_LAYERS, LITTER_PATCH_M } from '../../props/litter.js'
 import { createPropMaterial } from '../../material.js'

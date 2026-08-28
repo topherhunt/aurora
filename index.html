@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aurora v2 -- world editor</title>
+    <!-- Loaded unconditionally (like quest.html) so ?quest can inject a live
+         <a-scene> from main.js without a page reload. Unused weight on the
+         desktop editor path when no <a-scene> is ever created -- A-Frame does
+         nothing until one exists in the DOM. -->
+    <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@7.7.0/dist/aframe-extras.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/aframe-blink-controls@0.4.3/dist/aframe-blink-controls.min.js"></script>
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0e16; }
       body { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #cfe3ff; }

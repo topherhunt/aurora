@@ -12,6 +12,8 @@ import {
   sheetRunes,
 } from './buildings/tiles.js'
 import { mushroomCapSheet, mushroomCaveSheet, mushroomFleshSheet } from './props/mushroom-texture.js'
+import { crabShellSheet, crabLimbSheet } from './props/crab-texture.js'
+import { butterflyWingSheet } from './props/butterfly-texture.js'
 
 // ---------------------------------------------------------------------------
 // The one prop texture. Every prop texture in the world is a layer of this.
@@ -465,8 +467,19 @@ export const LAYER = {
   // rock-bank.js owns the order (it is `ROCK_NAMES`, which is the variant table
   // in table order), and LAYER_COUNT below has to leave room for all of it.
   IMPOSTOR_ROCK: 70,
+
+  // Crab sheets, same reasoning as the mushroom's: a crab's shape is geometry
+  // (props/crab.js) and its texture is a mottled shell colour plus a plainer
+  // limb tone, both cheap arithmetic -- so these are the shipping art, zero
+  // bytes on disk. See props/crab-texture.js.
+  CRAB_SHELL: 95,
+  CRAB_LIMB: 96,
+
+  // Butterfly sheet, same reasoning as the crab's -- see props/butterfly-texture.js.
+  // Wing patterns and paired body tones, four 64px cells in one 128px layer.
+  BUTTERFLY_WING: 97,
 }
-export const LAYER_COUNT = 95
+export const LAYER_COUNT = 98
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -892,6 +905,13 @@ export function buildTextureArray() {
   layers[LAYER.MUSHROOM_CAP] = mushroomCapSheet()
   layers[LAYER.MUSHROOM_CAP_CAVE] = mushroomCaveSheet()
   layers[LAYER.MUSHROOM_FLESH] = mushroomFleshSheet()
+
+  // Crab sheets, same reasoning -- see the LAYER entries.
+  layers[LAYER.CRAB_SHELL] = crabShellSheet()
+  layers[LAYER.CRAB_LIMB] = crabLimbSheet()
+
+  // Butterfly sheet, same reasoning -- see the LAYER entry.
+  layers[LAYER.BUTTERFLY_WING] = butterflyWingSheet()
 
   // DataArrayTexture wants one contiguous buffer, layers back to back. Image
   // layers are left at zero -- fully transparent, so alphaTest discards them --
