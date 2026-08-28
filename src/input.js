@@ -23,6 +23,8 @@ export class Input {
   update() {
     const session = this.renderer.xr.getSession()
     this.state.connected = 0
+    this.state.left.source = null
+    this.state.right.source = null
     if (!session) return this.state
 
     for (const src of session.inputSources) {
@@ -33,6 +35,8 @@ export class Input {
       this.state.connected++
 
       const side = this.state[hand]
+      side.source = src
+      side.sourceIndex = session.inputSources.indexOf(src)
       side.axes = [gp.axes[2] ?? 0, gp.axes[3] ?? 0]
 
       const prev = this.prev[hand]

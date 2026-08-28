@@ -147,6 +147,15 @@ export class Player {
     this.speed = 0
   }
 
+  teleportTo(x, z) {
+    this.travel = null
+    this.flying = false
+    this.rig.position.set(x, this.th.heightAt(x, z), z)
+    this.smoothY = this.rig.position.y
+    this.speed = 0
+    this.blocked = false
+  }
+
   // Desktop only. Leaves her at her current altitude on entry so the view does
   // not jump, and drops her back onto the ground on exit.
   setFlying(on) {
@@ -279,7 +288,7 @@ export class Player {
     }
 
     if (this.flying) {
-      this._fly(dt, fwdIn, strafeIn, liftIn)
+      this._fly(dt, fwdIn, strafeIn, liftIn, input.flyDirection)
       return
     }
 
@@ -312,11 +321,14 @@ export class Player {
   // up regardless of where she is looking, which is what makes "hold space to
   // rise" behave the way it does in Minecraft rather than the way "forward"
   // does. Both at once compose into a diagonal, as they should.
-  _fly(dt, fwdIn, strafeIn, liftIn) {
+  _fly(dt, fwdIn, strafeIn, liftIn, flyDirection = null) {
     if (this.speed <= 0.001) return
 
-    this.camera.getWorldQuaternion(this._quat)
-    this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
+    if (flyDirection) this._fwd.copy(flyDirection)
+    else {
+      this.camera.getWorldQuaternion(this._quat)
+      this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
+    }
     this._right.set(1, 0, 0).applyQuaternion(this._quat)
     this._right.y = 0 // strafe stays level even when looking up or down
     if (this._right.lengthSq() > 1e-6) this._right.normalize()

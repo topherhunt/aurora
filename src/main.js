@@ -25,6 +25,7 @@ import { Measure } from './measure.js'
 import { Hud } from './hud.js'
 import { Tuner } from './tuner.js'
 import { Input } from './input.js'
+import { XRControls } from './xr-controls.js'
 import { budgetLine } from './budget.js'
 
 // ---------------------------------------------------------------------------
@@ -296,6 +297,7 @@ const hud = new Hud()
 camera.add(hud.mesh)
 hud.mesh.position.set(0, -0.28, -1.1)
 const input = new Input(renderer)
+let xrControls
 // Desktop-only survey tool (§0): the terrain constants are named after what
 // they do, not after the scale they act at, so tuning them from a written
 // description means guessing which one you meant. The panel labels each one
@@ -307,6 +309,7 @@ const tuner = new Tuner(terrain, terrainHeight)
 
 const spawn = findSpawn(terrainHeight)
 player.spawnAt(spawn.x, spawn.z)
+xrControls = new XRControls(renderer, scene, camera, player, terrainHeight, () => player.spawnAt(spawn.x, spawn.z))
 
 // TEMPORARY, and the only temporary thing about the village. SITING belongs to
 // Phase A (§6), which scores sites on proximity to fresh water and rejects
@@ -386,6 +389,7 @@ const KEY_ACTIONS = {
   p: 'auroraPattern',
   '[': 'coarser',
   ']': 'finer',
+  f: 'toggleFly',
 }
 
 const CODE_ACTIONS = {
@@ -393,7 +397,7 @@ const CODE_ACTIONS = {
   KeyA: 'left',
   KeyS: 'back',
   KeyD: 'right',
-  ArrowUp: 'forward',
+  ArrowUp: 'teleport',
   ArrowDown: 'back',
   ArrowLeft: 'turnLeft',
   ArrowRight: 'turnRight',
@@ -457,6 +461,7 @@ addEventListener('keydown', (e) => {
   if (fresh.includes('tuner')) tuner.toggle()
   if (fresh.includes('timeSkip')) skipTime()
   if (fresh.includes('auroraPattern')) cycleAurora()
+  if (fresh.includes('toggleFly')) setFlying(!player.flying)
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped
   // multiplicatively because the perceptual distance from 1.0 to 1.2 degrees is
@@ -476,9 +481,7 @@ addEventListener('keyup', (e) => {
 addEventListener('blur', () => held.clear())
 
 function setFlying(want) {
-  // Never in the headset: 29 m/s of free flight with no ground reference is
-  // exactly the vestibular mismatch §12 exists to prevent.
-  player.setFlying(want && !renderer.xr.isPresenting)
+  player.setFlying(want)
 }
 // The mouse does double duty: drag to look, click to measure. Distinguishing
 // them by accumulated pointer travel rather than by button or modifier keeps
@@ -625,16 +628,23 @@ let frames = 0
 let acc = 0
 let avgMs = 0
 let worst = 0
-const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false }
+const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null }
 const headTmp = new THREE.Vector3()
 
 function readInput() {
   const st = input.update()
   if (st.connected > 0) {
+    if (st.right.buttons.PRIMARY?.justPressed || st.left.buttons.PRIMARY?.justPressed) setFlying(!player.flying)
+    if (st.right.buttons.SECONDARY?.justPressed || st.left.buttons.SECONDARY?.justPressed) xrControls.toggleMenu()
+    xrControls.update(st)
+    const teleporting = !player.flying && (st.left.axes[1] < LOCOMOTION.stickDeadzone * -1 || st.right.axes[1] < LOCOMOTION.stickDeadzone * -1)
     // Left stick forward only (§12). axes[1] is negative when pushed up.
-    moveInput.move = Math.max(0, -st.left.axes[1])
+    moveInput.move = teleporting || xrControls.menuOpen ? 0 : player.flying
+      ? Math.max(0, -st.left.axes[1], -st.right.axes[1])
+      : Math.max(0, -st.left.axes[1])
     moveInput.strafe = 0 // no strafing in VR, on purpose
     moveInput.lift = 0 // fly mode never runs in XR; see LOCOMOTION in player.js
+    moveInput.flyDirection = player.flying ? xrControls.flyDirection(st) : null
     // Snap turn from either stick, so she does not have to remember which.
     const lx = st.left.axes[0]
     const rx = st.right.axes[0]
@@ -643,25 +653,22 @@ function readInput() {
     // The eased ramp is a VR comfort measure (§12) and belongs only here, where
     // there is a vestibular system to disagree with the moving world.
     moveInput.instant = false
-    if (st.right.buttons.SECONDARY?.justPressed) hud.toggle()
     // Right GRIP: skip six hours. GRIP rather than a face button because the
     // face buttons are taken and because a squeeze is hard to hit by accident
     // -- this is the one control in the game that changes the world rather than
     // her position in it.
     if (st.right.buttons.GRIP?.justPressed) skipTime()
-    // Right PRIMARY (A): cycle aurora patterns. The one face button still free
-    // on that hand, and the aurora is the thing you are most likely to want to
-    // change while standing in the headset looking up at it.
-    if (st.right.buttons.PRIMARY?.justPressed) cycleAurora()
-    if (st.left.buttons.PRIMARY?.justPressed) player.recenterXR(renderer)
     return
   }
-  moveInput.move = (on('forward') ? 1 : 0) - (on('back') ? 1 : 0)
+  const teleporting = on('teleport') && !player.flying
+  xrControls.update({ left: { axes: [0, teleporting ? -1 : 0], buttons: {} }, right: { axes: [0, 0], buttons: {} } }, teleporting)
+  moveInput.move = teleporting ? 0 : (on('forward') ? 1 : 0) - (on('back') ? 1 : 0)
   moveInput.strafe = (on('right') ? 1 : 0) - (on('left') ? 1 : 0)
   moveInput.lift = (on('flyUp') ? 1 : 0) - (on('flyDown') ? 1 : 0)
   // A key is already a binary input; ramping it up over half a second just reads
   // as lag when the world is on a monitor.
   moveInput.instant = true
+  moveInput.flyDirection = null
   // Snap turn on the arrow keys, so the VR turn path still gets exercised on
   // desktop now that the letter keys strafe instead.
   moveInput.turn = (on('turnRight') ? 1 : 0) - (on('turnLeft') ? 1 : 0)
