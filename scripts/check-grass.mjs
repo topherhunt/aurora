@@ -49,6 +49,7 @@ import * as THREE from 'three'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_TIERS, GRASS_BASE, TUFT_TWIST,
+  TUFT_SPLAY,
   buildGrassStripBank, stripTiles, STRIP_BASE, STRIP_TILE_ASPECT, grassCardAspect,
   GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
@@ -60,7 +61,7 @@ import {
 } from '../src/textures.js'
 import {
   stripCoverage, stripClumpScale, stripTwistCoverage, getStripTiling,
-  setPropClock, getPropClock,
+  setPropClock, getPropClock, PROP_FADE_SECONDS,
 } from '../src/material.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { readPng } from '../tools/props/png.mjs'
@@ -74,7 +75,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, RIM_PHASES, TILE, HEIGHT, PLACEMENT,
   STRIP_MATCH, STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK,
-  STRIP_FULL_RADIUS, STRIP_THIN, stripThinAt } = GRASS_TUNING
+  STRIP_FULL_RADIUS, STRIP_THIN, STRIP_THIN_OCTAVES, stripThinAt } = GRASS_TUNING
 
 // --- 1. the bank ------------------------------------------------------------
 
@@ -82,15 +83,21 @@ console.log('\n-- bank --')
 
 const bank = buildGrassBank()
 
-check(bank.tiers.length === 3, 'three tiers', bank.tiers.map((t) => t.name).join(' '))
+// TWO TIERS AND NO MIDDLE ONE, which is the ladder's whole shape: the crossed
+// clump where the player is standing, the camera-facing billboard everywhere
+// else. The 2-plane tier that used to sit between them cost 4 triangles to show
+// 1.27 quads of facing area, against the billboard's 2 for a full one -- see the
+// note over GRASS_TIERS. Gated as a decision, because "add a middle LOD back"
+// is exactly the change that would quietly undo it.
+check(bank.tiers.length === 2, 'two tiers', bank.tiers.map((t) => t.name).join(' '))
 check(
-  bank.tiers.map((t) => t.planes).join(',') === '3,2,1',
-  'planes go 3, 2, 1',
+  bank.tiers.map((t) => t.planes).join(',') === '3,1',
+  'planes go 3, 1',
   bank.tiers.map((t) => t.planes).join(',')
 )
 check(
-  bank.tiers.map((t) => t.triangles).join(',') === '6,4,2',
-  'triangles go 6, 4, 2',
+  bank.tiers.map((t) => t.triangles).join(',') === '6,2',
+  'triangles go 6, 2',
   `${bank.tiers.reduce((n, t) => n + t.triangles, 0)} in the whole ladder`
 )
 // The card MUST be last: render/grass.js indexes LOD_BANDS against tier order
@@ -173,24 +180,36 @@ for (const t of bank.tiers) {
 check(ext.width > GRASS_BASE.width, 'the card is wider than the tuft it replaces',
   `${ext.width.toFixed(3)} vs ${GRASS_BASE.width}`)
 
-// THE TUFT IS A TRIANGLE, NOT AN ASTERISK. The distinguishing fact is that no
-// card touches the tuft's axis: on the asterisk every plane ran through it, so
-// half of all vertices sat at radius 0. Here every base vertex is a corner of
-// the polygon, so all of them sit on the rim.
+// THE TUFT IS A SPLAYED TRIANGLE, NOT AN ASTERISK AND NOT A PRISM. Two
+// distinguishing facts, and the gates below are one apiece. No card touches the
+// tuft's axis -- on the asterisk every plane ran through it, so half of all
+// vertices sat at radius 0. And the two rings are DIFFERENT SIZES: the tips
+// inscribe the full footprint circle and the roots are gathered into a smaller
+// one, which is what makes a clump rather than three flats meeting at a hub.
+//
+// THE TOP RING IS THE ONE THAT CARRIES THE FOOTPRINT, and that is a constraint
+// and not a convention: bakeGrassImpostor frames its camera to GRASS_BASE, so
+// anything outside that circle is cropped out of the far tier's photograph.
 {
   const lod0 = bank.tiers[0].geometry
   const p = lod0.attributes.position
+  const rTop = GRASS_BASE.width / 2
+  const rBase = rTop - GRASS_BASE.height * Math.tan(TUFT_SPLAY)
   let onAxis = 0
-  let onRim = 0
+  let placed = 0
   const baseCorners = []
+  const topCorners = []
   for (let i = 0; i < p.count; i++) {
     const r = Math.hypot(p.getX(i), p.getZ(i))
+    const top = Math.abs(p.getY(i)) >= 1e-5
     if (r < 1e-4) onAxis++
-    if (near(r, GRASS_BASE.width / 2, 1e-4)) onRim++
-    if (Math.abs(p.getY(i)) < 1e-5) baseCorners.push([p.getX(i), p.getZ(i)])
+    if (near(r, top ? rTop : rBase, 1e-4)) placed++
+    ;(top ? topCorners : baseCorners).push([p.getX(i), p.getZ(i)])
+    check(r <= rTop + 1e-4, `LOD0: vertex ${i} is inside the bake framing`, r.toFixed(4))
   }
   check(onAxis === 0, 'LOD0: no card passes through the tuft axis', `${onAxis} vertices at r = 0`)
-  check(onRim === p.count, 'LOD0: every vertex sits on the footprint circle', `${onRim}/${p.count}`)
+  check(placed === p.count, 'LOD0: tips on the footprint circle, roots on the gathered one',
+    `${placed}/${p.count}`)
 
   // Base to base: the six base vertices are three COINCIDENT PAIRS, because
   // each card ends where the next one starts. An asterisk would give six
@@ -206,10 +225,35 @@ check(ext.width > GRASS_BASE.width, 'the card is wider than the tuft it replaces
   check(joins === 3, 'LOD0: the three cards join base to base, closing a triangle',
     `${joins} shared corners`)
 
-  // Each card is a chord of the circle, so sqrt(3)/2 of the footprint.
-  const side = Math.hypot(baseCorners[0][0] - baseCorners[1][0], baseCorners[0][1] - baseCorners[1][1])
-  check(near(side, (GRASS_BASE.width / 2) * Math.sqrt(3), 1e-4),
-    'LOD0: each card is the triangle side, 0.476 m', side.toFixed(4))
+  // Each edge is a chord of its own circle, so sqrt(3) times that radius. The
+  // card is a TRAPEZOID: wide at the tip, gathered at the root.
+  const side = (c) => Math.hypot(c[0][0] - c[1][0], c[0][1] - c[1][1])
+  check(near(side(topCorners), rTop * Math.sqrt(3), 1e-4),
+    'LOD0: the tip of each card is the triangle side, 0.476 m', side(topCorners).toFixed(4))
+  check(near(side(baseCorners), rBase * Math.sqrt(3), 1e-4),
+    'LOD0: the root of each card is gathered to 0.130 m', side(baseCorners).toFixed(4))
+
+  // ...and the lean that trapezoid implies is the splay it was asked for. Read
+  // off the geometry rather than off the constant, so a card that leaned by
+  // some other construction would still have to lean by this much.
+  const lean = Math.atan2(rTop - rBase, GRASS_BASE.height)
+  check(near(lean, TUFT_SPLAY, 1e-6), 'LOD0: the cards lean out by TUFT_SPLAY',
+    `${((lean * 180) / Math.PI).toFixed(1)} deg`)
+  check(TUFT_SPLAY > 0 && rBase > 0,
+    'the splay gathers the base without collapsing it',
+    `base radius ${rBase.toFixed(4)} of ${rTop.toFixed(4)}`)
+}
+
+// THE CARD IS NEITHER TWISTED NOR SPLAYED. It is a photograph of a tuft that is
+// both, so applying either to the quad the picture hangs on applies it twice --
+// and the vertex stage is busy turning that quad to face the camera besides.
+{
+  const card = bank.tiers[bank.cardTier].geometry
+  const p = card.attributes.position
+  const rs = []
+  for (let i = 0; i < p.count; i++) rs.push(Math.hypot(p.getX(i), p.getZ(i)))
+  check(rs.every((r) => near(r, rs[0], 1e-6)), 'the card has one ring, not two',
+    rs.map((r) => r.toFixed(4)).join(' '))
 }
 
 // THE TWIST, on the mesh tiers and NOT on the card. Measured as the angle
@@ -450,7 +494,19 @@ grass.place(0, 0)
 // its first sweep and FRESH resolves with NO transition, so a settled stationary
 // world holds no fades in flight and the rim's state is binary. That is the
 // property the whole section leans on, and it is asserted rather than assumed.
-for (let f = 0; f < RIM_PHASES; f++) grass.update(0, EYE, 0)
+//
+// THE CLOCK HAS TO RUN, and a stopped one is not the conservative choice. Every
+// tuft is born wearing the card tier, so the near tiles all swap to the clump on
+// their first sweep and each swap leaves a cross-dissolve ghost -- a second,
+// visible instance held out of the pool until _sweepFades retires it. Held at
+// one instant those ghosts never age out, and a thousand of them sit in the
+// ledger forever, which would read as a leak in `used` and a padded `tris` in
+// every count below. A full fade between sweeps is also the truthful frame: the
+// player never sees a boot transient, they see the settled bed.
+for (let f = 0; f <= RIM_PHASES; f++) {
+  setPropClock(f * PROP_FADE_SECONDS)
+  grass.update(0, EYE, 0)
+}
 const st = grass.stats
 
 check(st.rejected.elev + st.rejected.slope + st.rejected.water + st.rejected.snow + st.rejected.path === 0,
@@ -1039,14 +1095,16 @@ check(near(uMax, STRIP_BASE.width, 1e-9),
 stripBank.tiers[0].geometry.dispose()
 
 // THE TWO STRATEGIES, GATED AS A DECISION RATHER THAN LEFT AS A COMMENT. Which
-// bed you get when you do not ask for one is the whole of "strips are canonical
-// for regions", and it is one word in a default parameter. The clump ladder is
-// checked to be still THERE in the same breath, because the thing that would
-// quietly undo the other half of the decision is somebody reading a bank with no
-// caller as dead code and deleting it.
+// bed you get when you do not ask for one is the whole of "clumps are canonical",
+// and it is one word in a default parameter. Strips win on triangles and lose on
+// FILL -- the per-ring sweep below measures them at 1.0x to 2.0x the tuft bed's
+// facing area, and fill is the budget a headset runs out of first. The strip bed
+// is checked to be still THERE in the same breath, because the thing that would
+// quietly undo the other half of the decision is somebody reading a bed with no
+// default caller as dead code and deleting it.
 {
   const dflt = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7 })
-  check(dflt.style === 'strips', 'a region asked for grass without saying which gets strips',
+  check(dflt.style === 'tufts', 'a region asked for grass without saying which gets clumps',
     `default style ${dflt.style}`)
   dflt.dispose()
   const clump = buildGrassBank()
@@ -1199,7 +1257,11 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
     return sum
   }
   const tierFace = bank.tiers.map((t) => facingOf(t.geometry) * Math.sqrt(tuftSy) * tuftSy)
-  const RINGS = [0, LOD_BANDS[0], LOD_BANDS[1], 40, DRAW_RADIUS]
+  // The 20 m boundary is FULL_RADIUS -- where the density law stops being flat
+  // and starts falling as FULL_RADIUS / d. It used to be spelled LOD_BANDS[1],
+  // which was the same number for a different reason; the ladder is two tiers
+  // now and the ring that matters here was always the thinning knee.
+  const RINGS = [0, LOD_BANDS[0], FULL_RADIUS, 40, DRAW_RADIUS]
   const ringOf = (d) => {
     for (let i = 0; i < RINGS.length - 1; i++) if (d >= RINGS[i] && d < RINGS[i + 1]) return i
     return -1
@@ -1214,7 +1276,7 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
     }
     return f.map((v, i) => v / (Math.PI * (RINGS[i + 1] ** 2 - RINGS[i] ** 2)))
   }
-  const tuftRings = sweep(grass, (d) => tierFace[d < LOD_BANDS[0] ? 0 : d < LOD_BANDS[1] ? 1 : 2])
+  const tuftRings = sweep(grass, (d) => tierFace[d < LOD_BANDS[0] ? 0 : bank.cardTier])
   const stripRings = sweep(strips, () => stripFace)
   const ratios = stripRings.map((v, i) => v / tuftRings[i])
   const report = ratios.map((r, i) => `${RINGS[i]}-${RINGS[i + 1]}m ${r.toFixed(2)}x`).join('  ')
@@ -1241,7 +1303,17 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
 // the ground against that law, and the rim against it -- because a mismatch in
 // any one of them is silent.
 {
-  const RINGS = [0, LOD_BANDS[0], LOD_BANDS[1], 40, DRAW_RADIUS]
+  // THE RINGS ARE STRIP_THIN'S OWN KNEES, plus the end of the last ramp, because
+  // this gate asks whether the table is delivered and so each ring has to be
+  // exactly one table entry's domain. A window that opens at a knee and shuts
+  // before that knee's ramp has finished can only ever read low -- it would gate
+  // the measurement rather than the bed. (They were once spelled with
+  // FULL_RADIUS, which happened to be the second knee. FULL_RADIUS is 10 m now
+  // and the coincidence is gone.)
+  const RINGS = [
+    0, ...STRIP_THIN.map(([r]) => r),
+    STRIP_THIN[STRIP_THIN.length - 1][0] * 2 ** STRIP_THIN_OCTAVES, DRAW_RADIUS,
+  ]
   const base = (d) => Math.min(1, FULL_RADIUS / d)
   // Area-weighted mean of f over an annulus, by the midpoint rule. 2000 steps
   // over 8 m is finer than anything in the law by three orders of magnitude.

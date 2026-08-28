@@ -424,9 +424,11 @@ const wingEdge = colorRow('wing margin', () => hex(palette.wing[params.wingCell]
   palette.wing[params.wingCell].edge = unhex(v)
   repaintWing(params.wingCell)
 }, 'the darker rim colour every real wing has')
-const bodyBase = colorRow('body colour', () => hex(palette.body[params.bodyCell].base), (v) => {
-  palette.body[params.bodyCell].base = unhex(v)
-  repaintBody(params.bodyCell)
+// palette.body is indexed 0/1, paired by index with the wing pattern -- not
+// by params.bodyCell, which is the 2/3 texture-cell offset the mesh reads.
+const bodyBase = colorRow('body colour', () => hex(palette.body[params.wingCell].base), (v) => {
+  palette.body[params.wingCell].base = unhex(v)
+  repaintBody(params.wingCell)
 }, 'body and antennae both read this cell')
 
 function syncPalette() {
@@ -434,7 +436,7 @@ function syncPalette() {
   wingBase.value = hex(palette.wing[params.wingCell].base)
   wingAccent.value = hex(palette.wing[params.wingCell].accent)
   wingEdge.value = hex(palette.wing[params.wingCell].edge)
-  bodyBase.value = hex(palette.body[params.bodyCell].base)
+  bodyBase.value = hex(palette.body[params.wingCell].base)
 }
 
 // --- seed / wild reroll / reset --------------------------------------------

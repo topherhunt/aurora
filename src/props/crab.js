@@ -266,24 +266,26 @@ function emitTube(out, frames, cols, length, layer, cell, radiusFn, opts = {}) {
 // taper narrower at the rear -- a continuous stand-in for a pentagonal
 // outline rather than the plain ellipse `cos/sin * shellWidth/shellLength`
 // draws on its own. `theta = PI/2` is the front (see rimMount/addEyestalks),
-// so `Math.sin(theta)` is +1 there and -1 at the rear.
-function shellRadialScale(theta) {
+// so `Math.sin(theta)` is +1 there and -1 at the rear. `shellPentagon` is the
+// knob: 0 leaves the plain ellipse, higher pushes the front/rear split
+// further apart.
+function shellRadialScale(theta, shellPentagon) {
   const front = Math.sin(theta)
-  return front >= 0 ? 1 + 0.12 * front : 1 + 0.15 * front
+  return front >= 0 ? 1 + shellPentagon * front : 1 + shellPentagon * 1.25 * front
 }
 
 function addCarapace(out, p) {
   const cols = Math.max(3, Math.round(p.shellRadial))
 
   const topPoint = (t, theta, target) => {
-    const rs = shellRadialScale(theta)
+    const rs = shellRadialScale(theta, p.shellPentagon)
     const x = t * Math.cos(theta) * p.shellWidth * rs
     const z = t * Math.sin(theta) * p.shellLength * rs
     const y = p.shellRise * (1 - Math.pow(t, p.shellCurve))
     return target.set(x, y, z)
   }
   const underPoint = (t, theta, target) => {
-    const rs = shellRadialScale(theta)
+    const rs = shellRadialScale(theta, p.shellPentagon)
     const x = t * Math.cos(theta) * p.shellWidth * rs
     const z = t * Math.sin(theta) * p.shellLength * rs
     const y = -p.bellyDepth * (1 - Math.pow(t, p.bellyCurve))
@@ -324,8 +326,8 @@ function addCarapace(out, p) {
       const theta = (j / cols) * TAU
       underPoint(t, theta, tmp)
       const n = surfaceNormal(underPoint, t, theta, true)
-      const [u, v] = cellUV(p.limbCell, j / cols, t)
-      vert(out, tmp.x, tmp.y, tmp.z, n.x, n.y, n.z, u, v, p.limbLayer)
+      const [u, v] = cellUV(p.shellCell, j / cols, t)
+      vert(out, tmp.x, tmp.y, tmp.z, n.x, n.y, n.z, u, v, p.shellLayer)
     }
   }
   for (let k = 0; k < underRings; k++) {
@@ -347,7 +349,7 @@ function addCarapace(out, p) {
 
 function rimMount(p, theta) {
   const radial = new THREE.Vector3(Math.cos(theta), 0, Math.sin(theta)).normalize()
-  const rs = shellRadialScale(theta)
+  const rs = shellRadialScale(theta, p.shellPentagon)
   const pos = new THREE.Vector3(
     Math.cos(theta) * p.shellWidth * rs,
     0,
@@ -375,28 +377,50 @@ function addEyestalks(out, p) {
   const cols = Math.max(3, Math.round(p.limbCols))
   const segments = Math.max(1, Math.round(p.eyeSegments))
   const length = p.eyeLength * p.shellLength
+  const totalBend = 0.15
+
+  // The segment closest to the body is grown 20% and its start pulled back
+  // into the shell, so the stalk emerges from under the rim instead of
+  // touching it at a single tangent point -- see addLegs for the full
+  // reasoning, shared by every limb on this animal.
+  const evenSeg = length / segments
+  const innerLen = evenSeg * 1.2
+  const embed = innerLen - evenSeg
 
   for (const side of [-1, 1]) {
     const theta = Math.PI / 2 - side * (p.eyeSpread / 2)
-    const { pos, radial } = rimMount(p, theta)
+    const { pos: rimPos, radial } = rimMount(p, theta)
     const bendAxis = verticalBendAxis(radial)
     const dir = radial.clone().applyAxisAngle(bendAxis, -p.eyeLift)
+    const start = rimPos.clone().addScaledVector(dir, -embed)
 
     const radiusFn = (s) => {
       const taper = p.eyeRadius * (1 - 0.6 * s)
       const bulb = p.eyeBulb * Math.exp(-Math.pow((s - 0.92) / 0.1, 2))
       return Math.max(0.002, taper + bulb)
     }
-    const frames = limbFrames(pos, dir, bendAxis, 0.15, length, segments, radiusFn)
-    emitTube(out, frames, cols, length, p.limbLayer, p.limbCell, radiusFn)
+    const innerRadiusFn = (s) => radiusFn((s * innerLen - embed) / length)
+    const innerFrames = limbFrames(start, dir, bendAxis, 0, innerLen, 1, innerRadiusFn)
+    emitTube(out, innerFrames, cols, innerLen, p.shellLayer, p.shellCell, innerRadiusFn)
+
+    let tip = innerFrames[innerFrames.length - 1]
+    if (segments > 1) {
+      const outerDir = dir.clone().applyAxisAngle(bendAxis, totalBend / segments)
+      const outerLen = length - evenSeg
+      const outerSegments = segments - 1
+      const outerTotalBend = (totalBend * outerSegments) / segments
+      const outerRadiusFn = (s) => radiusFn((evenSeg + s * outerLen) / length)
+      const outerFrames = limbFrames(tip.pos, outerDir, bendAxis, outerTotalBend, outerLen, outerSegments, outerRadiusFn)
+      emitTube(out, outerFrames, cols, outerLen, p.shellLayer, p.shellCell, outerRadiusFn)
+      tip = outerFrames[outerFrames.length - 1]
+    }
 
     // End cap: a small fan closing the bulb's tip so the eye is a solid.
-    const tip = frames[frames.length - 1]
     const capCentre = tip.pos.clone().addScaledVector(tip.tangent, tip.radius * 0.4)
     const centreIdx = vert(
       out, capCentre.x, capCentre.y, capCentre.z,
       tip.tangent.x, tip.tangent.y, tip.tangent.z,
-      ...cellUV(p.limbCell, 0.5, 1), p.limbLayer,
+      ...cellUV(p.shellCell, 0.5, 1), p.shellLayer,
     )
     const ringBase = out.positions.length / 3
     const tmp = new THREE.Vector3()
@@ -405,8 +429,8 @@ function addEyestalks(out, p) {
       tmp.copy(tip.pos)
         .addScaledVector(tip.side, tip.radius * Math.cos(th))
         .addScaledVector(tip.fwd, tip.radius * Math.sin(th))
-      const [u, v] = cellUV(p.limbCell, j / cols, 1)
-      vert(out, tmp.x, tmp.y, tmp.z, tip.tangent.x, tip.tangent.y, tip.tangent.z, u, v, p.limbLayer)
+      const [u, v] = cellUV(p.shellCell, j / cols, 1)
+      vert(out, tmp.x, tmp.y, tmp.z, tip.tangent.x, tip.tangent.y, tip.tangent.z, u, v, p.shellLayer)
     }
     for (let j = 0; j < cols; j++) out.indices.push(centreIdx, ringBase + j, ringBase + j + 1)
   }
@@ -442,8 +466,17 @@ function addPincer(out, p, side, scale) {
   const upperLen = armLength * upperFrac
   const upperSegments = hasElbow ? 1 : armSegments
   const upperRadiusFn = (s) => armRadiusFn(s * upperFrac)
-  const upperFrames = limbFrames(pos, dir, bendAxis, 0, upperLen, upperSegments, upperRadiusFn)
-  emitTube(out, upperFrames, cols, upperLen, p.limbLayer, p.limbCell, upperRadiusFn)
+
+  // The segment closest to the body is grown 50% and its start pulled back
+  // into the shell -- see addLegs for the full reasoning, shared by every
+  // limb on this animal. Everything from the original mount point onward
+  // (the elbow, forearm and claws) is unchanged.
+  const grownUpperLen = upperLen * 1.5
+  const embed = grownUpperLen - upperLen
+  const start = pos.clone().addScaledVector(dir, -embed)
+  const grownUpperRadiusFn = (s) => upperRadiusFn((s * grownUpperLen - embed) / upperLen)
+  const upperFrames = limbFrames(start, dir, bendAxis, 0, grownUpperLen, upperSegments, grownUpperRadiusFn)
+  emitTube(out, upperFrames, cols, grownUpperLen, p.shellLayer, p.shellCell, grownUpperRadiusFn)
 
   let armTip = upperFrames[upperFrames.length - 1]
 
@@ -454,7 +487,7 @@ function addPincer(out, p, side, scale) {
     const lowerSegments = armSegments - 1
     const lowerRadiusFn = (s) => armRadiusFn(upperFrac + s * (1 - upperFrac))
     const lowerFrames = limbFrames(armTip.pos, forearmDir, bendAxis, 0, lowerLen, lowerSegments, lowerRadiusFn)
-    emitTube(out, lowerFrames, cols, lowerLen, p.limbLayer, p.limbCell, lowerRadiusFn)
+    emitTube(out, lowerFrames, cols, lowerLen, p.shellLayer, p.shellCell, lowerRadiusFn)
     armTip = lowerFrames[lowerFrames.length - 1]
   }
 
@@ -466,7 +499,7 @@ function addPincer(out, p, side, scale) {
     // Splay the prong direction about the vertical axis through the tip.
     const dirP = armTip.tangent.clone().applyAxisAngle(UP, prongSide * p.clawGape)
     const framesP = limbFrames(armTip.pos, dirP, UP, 0, clawLength, clawSegments, clawRadiusFn)
-    emitTube(out, framesP, cols, clawLength, p.limbLayer, p.limbCell, clawRadiusFn)
+    emitTube(out, framesP, cols, clawLength, p.shellLayer, p.shellCell, clawRadiusFn)
   }
 }
 
@@ -488,6 +521,18 @@ function addLegs(out, p) {
   const segments = Math.max(1, Math.round(p.legSegments))
   const length = p.legLength * p.shellWidth
   const pairs = Math.max(1, Math.round(p.legPairs))
+  const totalBend = -p.legDroop
+
+  // The segment closest to the body is grown 20% and its start pulled back
+  // into the shell, along the SAME direction it walks back out along, so it
+  // re-crosses the original rim point exactly where the unmodified leg
+  // would have -- the leg now plugs into the carapace instead of touching
+  // it at a single tangent point on the rim, and everything downstream (the
+  // bend toward the ground, the pointed tip) is unchanged.
+  const evenSeg = length / segments
+  const innerLen = evenSeg * 1.2
+  const embed = innerLen - evenSeg
+  const radiusFn = (s) => Math.max(0.0015, p.legRadius * (1 - p.legTaper * s))
 
   for (const side of [-1, 1]) {
     for (let i = 0; i < pairs; i++) {
@@ -495,13 +540,24 @@ function addLegs(out, p) {
       const offset = (spanT - 0.5) * p.legSpan
       const theta = side === 1 ? offset : Math.PI - offset
 
-      const { pos, radial } = rimMount(p, theta)
+      const { pos: rimPos, radial } = rimMount(p, theta)
       const bendAxis = verticalBendAxis(radial)
       const dir = radial.clone().applyAxisAngle(bendAxis, -p.legLift0)
+      const start = rimPos.clone().addScaledVector(dir, -embed)
 
-      const radiusFn = (s) => Math.max(0.0015, p.legRadius * (1 - p.legTaper * s))
-      const frames = limbFrames(pos, dir, bendAxis, -p.legDroop, length, segments, radiusFn)
-      emitTube(out, frames, cols, length, p.limbLayer, p.limbCell, radiusFn, { pointyTip: true })
+      const innerRadiusFn = (s) => radiusFn((s * innerLen - embed) / length)
+      const innerFrames = limbFrames(start, dir, bendAxis, 0, innerLen, 1, innerRadiusFn)
+      emitTube(out, innerFrames, cols, innerLen, p.shellLayer, p.shellCell, innerRadiusFn, { pointyTip: segments === 1 })
+
+      if (segments > 1) {
+        const outerDir = dir.clone().applyAxisAngle(bendAxis, totalBend / segments)
+        const outerLen = length - evenSeg
+        const outerSegments = segments - 1
+        const outerTotalBend = (totalBend * outerSegments) / segments
+        const outerRadiusFn = (s) => radiusFn((evenSeg + s * outerLen) / length)
+        const outerFrames = limbFrames(innerFrames[innerFrames.length - 1].pos, outerDir, bendAxis, outerTotalBend, outerLen, outerSegments, outerRadiusFn)
+        emitTube(out, outerFrames, cols, outerLen, p.shellLayer, p.shellCell, outerRadiusFn, { pointyTip: true })
+      }
     }
   }
 }

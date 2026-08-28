@@ -113,6 +113,7 @@ export class Player {
     this.travel = null // non-null while a double-click flight is in progress
 
     this._head = new THREE.Vector3()
+    this._origin = new THREE.Vector3()
     this._quat = new THREE.Quaternion()
     this._fwd = new THREE.Vector3()
     this._right = new THREE.Vector3()
@@ -121,11 +122,39 @@ export class Player {
     this._maxTan = Math.tan((LOCOMOTION.maxSlopeDeg * Math.PI) / 180)
   }
 
-  // World XZ of her head. Everything -- terrain height, slope tests, movement
-  // origin -- keys off the head rather than the rig, because in roomscale those
-  // drift apart and the head is where she actually thinks she is.
+  // World position of her head, which is where she is LOOKING FROM.
+  //
+  // Used for what the eye decides: which way she walks, what the terrain
+  // selection points at, which way a snap turn pivots. NOT for terrain height
+  // or slope -- those key off originPosition below, and the comment there says
+  // why the two must not be confused.
   headPosition(out = this._head) {
     this.camera.getWorldPosition(out)
+    return out
+  }
+
+  // Where LOCOMOTION is, as opposed to where her head is.
+  //
+  // The rig is what the sticks move. The head is the rig PLUS whatever the HMD
+  // reports for her physical pose in the play space, so the two differ by
+  // however far she has leaned or stepped -- up to a couple of metres in
+  // roomscale, and a few centimetres just from breathing.
+  //
+  // Ground following, the slope tests and the fly floor all key off THIS rather
+  // than off the head, and that is a comfort requirement rather than a
+  // preference. Sampling the ground under her HEAD means leaning on a slope
+  // re-samples it at a different point, so `rig.position.y` moves, so the whole
+  // world heaves up or down underneath a head that only translated sideways.
+  // That is a vestibular mismatch -- the eyes report vertical motion the inner
+  // ear did not -- and it is the fastest way to make somebody sick in a headset.
+  // On desktop the camera is a child of the rig at (0, eyeHeight, 0), so this
+  // returns the same XZ headPosition does and nothing changes.
+  //
+  // DIRECTION still comes from the head: she walks where she is looking, and
+  // _snapTurn still rotates about the head so a turn does not shove her
+  // sideways through the world.
+  originPosition(out = this._origin) {
+    this.rig.getWorldPosition(out)
     return out
   }
 
@@ -164,8 +193,8 @@ export class Player {
     this.speed = 0
     this.blocked = false
     if (!on) {
-      const head = this.headPosition()
-      this.rig.position.y = this.th.heightAt(head.x, head.z)
+      const origin = this.originPosition()
+      this.rig.position.y = this.th.heightAt(origin.x, origin.z)
       this.smoothY = this.rig.position.y
     }
   }
@@ -262,6 +291,7 @@ export class Player {
 
     const L = LOCOMOTION
     const head = this.headPosition()
+    const origin = this.originPosition()
     const strafe = input.strafe ?? 0
 
     this._snapTurn(input.turn, head)
@@ -278,7 +308,7 @@ export class Player {
     // would make the ascend key double as a walk key.
     const drive = this.flying ? Math.min(1, Math.hypot(demand, liftIn)) : demand
 
-    const top = this.flying ? this.flySpeedAt(head) : L.maxSpeed
+    const top = this.flying ? this.flySpeedAt(origin) : L.maxSpeed
     if (drive <= 0) {
       this.speed = 0 // instant stop on release (§12)
     } else if (input.instant) {
@@ -308,26 +338,26 @@ export class Player {
       return
     }
 
-    if (this.speed > 0.001) this._tryMove(this.speed * dt, head, fwdIn, strafeIn, demand)
+    if (this.speed > 0.001) this._tryMove(this.speed * dt, origin, fwdIn, strafeIn, demand)
 
-    if (input.unstick) this._unstick(head)
+    if (input.unstick) this._unstick(origin)
 
-    // Terrain following with damping. Recompute the head XZ because _tryMove
-    // may have shifted the rig.
-    this.headPosition(head)
-    const ground = this.th.heightAt(head.x, head.z)
+    // Terrain following with damping. Recompute the origin because _tryMove may
+    // have shifted the rig.
+    this.originPosition(origin)
+    const ground = this.th.heightAt(origin.x, origin.z)
     if (this.smoothY === null) this.smoothY = ground
     this.smoothY += (ground - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
     this.rig.position.y = this.smoothY
   }
 
-  // Fly speed at a given head position, from height above the ground directly
-  // below. The HUD already shows both halves of this -- `agl` and `speed` on the
-  // position block -- which is what makes a speed that changes on its own
-  // legible rather than mysterious.
-  flySpeedAt(head) {
+  // Fly speed at a given locomotion origin, from height above the ground
+  // directly below. The HUD already shows both halves of this -- `agl` and
+  // `speed` on the position block -- which is what makes a speed that changes on
+  // its own legible rather than mysterious.
+  flySpeedAt(origin) {
     const L = LOCOMOTION
-    const alt = head.y - this.th.heightAt(head.x, head.z)
+    const alt = origin.y - this.th.heightAt(origin.x, origin.z)
     const t = THREE.MathUtils.clamp((alt - L.flyLowAlt) / (L.flyHighAlt - L.flyLowAlt), 0, 1)
     return L.flyLowSpeed + (L.flyHighSpeed - L.flyLowSpeed) * t
   }
@@ -369,9 +399,11 @@ export class Player {
     p.y += this._step.y
 
     // Never below the ground. Flying inside a mountain is disorienting and the
-    // only way out is guesswork, so the floor just pushes her back up.
-    const head = this.headPosition()
-    const floor = this.th.heightAt(head.x, head.z) + LOCOMOTION.flyClearance
+    // only way out is guesswork, so the floor just pushes her back up. On the
+    // origin, not the head: a floor that tracked the head would lift the rig
+    // whenever she leaned out over a drop. See originPosition.
+    const origin = this.originPosition()
+    const floor = this.th.heightAt(origin.x, origin.z) + LOCOMOTION.flyClearance
     if (p.y < floor) p.y = floor
     this.smoothY = p.y
   }
@@ -395,7 +427,7 @@ export class Player {
   // fwdIn/strafeIn are signed; demand is their magnitude. In XR strafeIn is
   // always 0 -- §12 keeps VR locomotion forward-only, and this stays a desktop
   // convenience rather than becoming a second way to move in the headset.
-  _tryMove(dist, head, fwdIn, strafeIn, demand) {
+  _tryMove(dist, origin, fwdIn, strafeIn, demand) {
     this.camera.getWorldQuaternion(this._quat)
     this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
     this._fwd.y = 0
@@ -421,13 +453,13 @@ export class Player {
     let dx = this._fwd.x * dist
     let dz = this._fwd.z * dist
 
-    if (!this._walkable(head.x, head.z, dx, dz, dist)) {
+    if (!this._walkable(origin.x, origin.z, dx, dz, dist)) {
       // Too steep head-on. Slide along the contour instead of stopping dead --
       // stopping at a wall she is pressed against feels broken, whereas sliding
       // reads as "the mountain is steering me", which is the intended experience.
       const eps = 1.0
-      const gx = (this.th.heightAt(head.x + eps, head.z) - this.th.heightAt(head.x - eps, head.z)) / (2 * eps)
-      const gz = (this.th.heightAt(head.x, head.z + eps) - this.th.heightAt(head.x, head.z - eps)) / (2 * eps)
+      const gx = (this.th.heightAt(origin.x + eps, origin.z) - this.th.heightAt(origin.x - eps, origin.z)) / (2 * eps)
+      const gz = (this.th.heightAt(origin.x, origin.z + eps) - this.th.heightAt(origin.x, origin.z - eps)) / (2 * eps)
       let cx = -gz
       let cz = gx
       const clen = Math.hypot(cx, cz)
@@ -443,7 +475,7 @@ export class Player {
       }
       dx = cx * dist
       dz = cz * dist
-      if (!this._walkable(head.x, head.z, dx, dz, dist)) {
+      if (!this._walkable(origin.x, origin.z, dx, dz, dist)) {
         this.blocked = true
         return
       }
@@ -490,16 +522,16 @@ export class Player {
     return Math.abs(h2 - h0) / LOCOMOTION.stride <= this._maxTan
   }
 
-  _unstick(head) {
-    if (this.th.slopeAt(head.x, head.z) <= (LOCOMOTION.maxSlopeDeg * Math.PI) / 180) return
+  _unstick(origin) {
+    if (this.th.slopeAt(origin.x, origin.z) <= (LOCOMOTION.maxSlopeDeg * Math.PI) / 180) return
     for (let r = 3; r <= 80; r += 3) {
       for (let a = 0; a < 16; a++) {
         const ang = (a / 16) * Math.PI * 2 + r * 0.37
-        const tx = head.x + Math.cos(ang) * r
-        const tz = head.z + Math.sin(ang) * r
+        const tx = origin.x + Math.cos(ang) * r
+        const tz = origin.z + Math.sin(ang) * r
         if (this.th.slopeAt(tx, tz) <= (LOCOMOTION.maxSlopeDeg * Math.PI) / 180) {
-          this.rig.position.x += tx - head.x
-          this.rig.position.z += tz - head.z
+          this.rig.position.x += tx - origin.x
+          this.rig.position.z += tz - origin.z
           this.speed = 0
           return
         }

@@ -23,6 +23,13 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
+- Get VR looking passable
+  - Terrain.
+    - [x] Eliminate skyline
+  - Grass.
+    - [ ] Remove the strips system. Instead randomly scatter grass. LOD0 is 3-card tufts; beyond 8m, grass is a cylindrical billboard.
+    - [ ] Will this give us a blatant sphere of grass instances, cutting off at a hard cull seam?
+
 - Assess code length, comment length, etc. Can anything be refactored or trimmed to save token count for future claude agent readers?
 - Tame rock counts. Currently way too many. In valley forests, should be 1/5th current volume.
 - Tame rock LODs & tri budget. Currently wasteful.
@@ -31,7 +38,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - Giant boulders underwater (rivers, lakebeds).
 - Fix the x-cross on top of tree cards. (mipmap bleed?)
 - Make auroras more sinuous. Also the curtains / ley-lines currently tend to run east<>west, shouldn't they roughly run north-south?
-- Rivers should sit into the hillside (node needs to be placed deep enough that the river wall  bites in
+- Rivers should sit into the hillside (node needs to be placed deep enough that the river wall bites in
 - 2x ground variation at the 0.5m-2m level. This should help riverbanks feel broken up rather than smooth splines.
 - [ ] Deadwood: currently it's always placed in the same places as trees. Scatter it randomly, NOT under trees, though it's OK if it occasionally intersects. Also it needs to be browner, less red. Also vary size randomly from (current size) to 4x current size.
 - [ ] Mushrooms: double current default size? and randomly vary sizes obvi

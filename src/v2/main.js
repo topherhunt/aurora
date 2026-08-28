@@ -10,7 +10,6 @@ import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
 import { C_GRASS } from './terrain/chunk-mesh-v2.js'
-import { SKYLINE } from './terrain/skyline.js'
 import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
 import { RoadSurfaces } from './render/road-surfaces.js'
@@ -28,7 +27,7 @@ import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeLitterSet } from '../props/litter.js'
 import { bakeRockImpostors } from '../props/rock-bank.js'
-import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling } from '../material.js'
+import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWindEnabled } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -402,7 +401,7 @@ SkyProbe.include(aurora.mesh)
 worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 
 if (QUEST_MODE) {
-  // All 9 toggles default off; see questToggles/applyQuestToggle below.
+  // Every world layer defaults off; see questToggles/applyQuestToggle below.
   sky.mesh.visible = false
   water.group.visible = false
   stars.points.visible = false
@@ -450,6 +449,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'grass', text: 'grass' },
   { key: 'ferns', text: 'ferns' },
   { key: 'instCull', text: 'per-instance cull' },
+  { key: 'wind', text: 'wind' },
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
   { key: 'dayNight', text: 'day/night' },
   { key: 'lighting', text: 'terrain & prop lighting' },
@@ -485,6 +485,12 @@ function applyQuestToggle(key) {
     case 'grass': grass.batch.visible = enabled; break
     case 'ferns': ferns.batch.visible = enabled; break
     case 'instCull': applyBatchCulling(); break
+    // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
+    // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
+    // its price in milliseconds. Strength 0 would stop the motion and leave every
+    // instruction running, which measures nothing. Expect a one-off hitch on the
+    // frame you press it -- that is the shader compile, not the result.
+    case 'wind': setWindEnabled(enabled); break
     case 'teleport': // pure state; readInput branches on it. Drop any half-made aim.
       questTeleportArmed = false
       if (questTeleportMarker) questTeleportMarker.visible = false
@@ -746,6 +752,30 @@ function updateQuestPanel() {
 }
 
 // Short forms, because the panel is 2.7 m wide read from 2.8 m away and a raw
+// WHETHER BatchedMesh IS ONE DRAW CALL OR N OF THEM, which is a property of the
+// DRIVER and not of anything in this repo, so it can only be read on device.
+//
+// A BatchedMesh submits through `renderMultiDraw`, which needs WEBGL_multi_draw.
+// Without the extension three falls back (WebGLRenderer, `if ( ! extensions.get(
+// 'WEBGL_multi_draw' ) )`) to a loop that sets the `_gl_DrawID` uniform and
+// issues one drawElements PER VISIBLE INSTANCE -- so a 21,000-instance grass bed
+// becomes 21,000 uniform writes and 21,000 draw calls per eye per frame, while
+// `renderer.info.render.calls` still reports 1. That is exactly the signature the
+// grass toggle produces: framerate collapses, triangles and calls stay flat, and
+// standing still does not help.
+//
+// If this reads NO, the BatchedMesh -> InstancedMesh rewrite in grass.js is
+// worth its cost. If it reads yes, the cause is elsewhere and the rewrite would
+// buy nothing -- so read it before rewriting anything.
+//
+// Memoised on first read rather than answered at module scope, because `renderer`
+// is not built until boot() runs and the answer never changes after it is.
+let multiDraw = null
+function hasMultiDraw() {
+  if (multiDraw === null) multiDraw = renderer.extensions.has('WEBGL_multi_draw')
+  return multiDraw
+}
+
 // 1043968 is a number nobody in a headset is going to parse.
 function kilo(n) {
   if (n === null || n === undefined) return '-'
@@ -763,6 +793,9 @@ function kilo(n) {
  *      supposed to explain it. When fps collapses while both of those stay flat
  *      -- which is what the grass toggle actually does -- the cost is CPU-side,
  *      and that alone rules out "too many triangles" without a second test.
+ *      MDRAW is the first suspect that test leaves standing: `calls` counts a
+ *      BatchedMesh as one, and without WEBGL_multi_draw it is one per instance.
+ *      See hasMultiDraw above.
  *   2. geometries/textures/programs catch the other shape of the same bug: a
  *      count that climbs while nothing is being created is a per-frame
  *      allocation, and it is the reason the stats canvas above is reused.
@@ -795,7 +828,8 @@ function updateQuestStats() {
       ['GEO ', '#7f95b4'], [String(info.memory.geometries).padEnd(6), '#b39ddb'],
       ['TEX ', '#7f95b4'], [String(info.memory.textures).padEnd(6), '#b39ddb'],
       ['PROG ', '#7f95b4'], [String(renderer.info.programs?.length ?? 0).padEnd(5), '#b39ddb'],
-      ['CULL ', '#7f95b4'], [questToggles.instCull ? 'on' : 'off', questToggles.instCull ? '#ffd27a' : '#8fd48f'],
+      ['CULL ', '#7f95b4'], [(questToggles.instCull ? 'on' : 'off').padEnd(5), questToggles.instCull ? '#ffd27a' : '#8fd48f'],
+      ['MDRAW ', '#7f95b4'], [hasMultiDraw() ? 'yes' : 'NO', hasMultiDraw() ? '#8fd48f' : '#ff6b6b'],
     ],
     [
       ['terrain res ', '#7f95b4'], [String(st.slots).padEnd(6), '#cfe3ff'],
@@ -882,12 +916,20 @@ let ready = false
 // in XR, which is CPU work the Quest 2 has least of, and turning it off is the
 // first thing to try when a layer stutters rather than merely renders slowly.
 // It starts off so the headset boots into the cheap configuration; flip it on
-// to measure what the sweep actually costs.
+// to measure what the sweep actually costs. Terrain does not pay for that
+// choice: TerrainV2.cullDeg culls the same batch by yaw during a sweep it was
+// already running. The scatter layers still submit everything when this is off.
 const questToggles = QUEST_MODE
   ? {
       terrain: false, flatGround: false, dayNight: false, lighting: false,
       trees: false, rocks: false, grass: false, ferns: false,
       instCull: false, water: false, reflections: false, aurora: false,
+      // The one toggle that starts ON, because unlike every layer above it the
+      // wind is not a thing being added to an empty world -- it is how the world
+      // already ships, and the measurement being made here is what REMOVING it
+      // buys. Starting it off would mean the panel's default state disagreed
+      // with the world outside quest mode.
+      wind: true,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
       // this panel exists to look at, which is what the world does to the frame
       // while you are moving continuously through it.
@@ -935,14 +977,14 @@ function loadRelief() {
   }
 }
 
-// Which grass system is standing. 'strips' is how a REGION is grassed and is
-// what stands here -- one flat card, metres wide, drawing the same cutout
-// several times across itself, at a third of the triangles for more grass facing
-// the camera. 'tufts' is the 3-card clump, which is the right answer for a
-// grassy POINT and is stood up here as a whole carpet only so the two can be
-// judged against the same hillside in the same light. See THE TWO STRATEGIES in
-// the header of render/grass.js.
-let grassStyle = 'strips'
+// Which grass system is standing. 'tufts' is what stands here -- the 3-card
+// crossed clump inside 8 m, a camera-facing billboard everywhere beyond it.
+// 'strips' is the flat multi-metre card that draws the same cutout several
+// times across itself; it wins on triangles and loses on FILL, which is the
+// budget a Quest actually runs out of, and it is kept switchable (M key) so the
+// two can be judged against the same hillside in the same light. See THE TWO
+// STRATEGIES in the header of render/grass.js.
+let grassStyle = 'tufts'
 // Whether the prop atlas' PNGs have landed. The tuft's far tier is a photograph
 // of the tuft, so a Grass built after they land has to bake immediately rather
 // than waiting for a promise that has already resolved.
@@ -1453,7 +1495,19 @@ async function bootWorld() {
     // and that 3.0 -- the desktop default this route was inheriting -- spends
     // 91% of terrain's whole triangle share, against 68% at 4.0. Quest mode was
     // running the desktop budget on a mobile GPU.
-    LOD.triDeg = Math.min(MAX_TRI_DEG, 4.0)
+    //
+    // 5.72 rather than 4.0: measured over a 48-camera walking sweep of the real
+    // heightmap, worst-case selection is 262 leaves at 4.0 against 175 at 5.72,
+    // which is 335k triangles against 224k before any culling. The ceiling is
+    // MAX_TRI_DEG = atan(2 / CHUNK_RES) = 7.125 degrees, where the range floor in
+    // the split rule stops the rule from refining at all.
+    LOD.triDeg = Math.min(MAX_TRI_DEG, 5.72)
+    // The yaw cull that replaces per-instance frustum culling on this route. See
+    // the banner on applyBatchCulling for why the GPU-side one is off here, and
+    // TerrainV2.cullDeg for why doing it in the visibility sweep is free -- that
+    // loop was already running this test for a stats readout. Worst case over the
+    // same sweep: 224k submitted becomes 108k.
+    terrain.cullDeg = (70 * Math.PI) / 180
     applyBatchCulling()
     buildQuestPanel()
   }
@@ -1783,7 +1837,6 @@ const KEY_ACTIONS = {
   m: 'grassStyle',
   '[': 'coarser',
   ']': 'finer',
-  k: 'skyline',
 }
 
 const CODE_ACTIONS = {
@@ -1803,7 +1856,6 @@ const CODE_ACTIONS = {
   KeyM: 'grassStyle',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
-  KeyK: 'skyline',
 }
 
 // ---------------------------------------------------------------------------
@@ -1852,7 +1904,6 @@ const HOTKEYS = [
     rows: [
       { keys: '[', what: 'coarser terrain: triDeg up one step of 1.25x' },
       { keys: ']', what: 'finer terrain: triDeg down one step of 1.25x' },
-      { keys: 'k', what: 'skyline target on and off: extra detail on ground that draws a silhouette edge' },
     ],
   },
   {
@@ -1992,16 +2043,6 @@ addEventListener('keydown', (e) => {
   // distance from 0.4 to 0.6.
   if (fresh.includes('coarser')) LOD.triDeg = Math.min(MAX_TRI_DEG, LOD.triDeg * 1.25)
   if (fresh.includes('finer')) LOD.triDeg = Math.max(MIN_TRI_DEG, LOD.triDeg / 1.25)
-  // K turns the profile target off and on, and it invalidates rather than
-  // letting the change ride out SELECT_EVERY_FRAMES the way the bracket keys do.
-  // The whole value of this key is A/B on the SAME skyline in the SAME light --
-  // a hundred milliseconds of lag is enough to make the two halves of the
-  // comparison land on different frames, which is exactly what an eye judging a
-  // silhouette edge will latch onto instead of the edge.
-  if (fresh.includes('skyline')) {
-    SKYLINE.on = !SKYLINE.on
-    terrain.invalidate()
-  }
 })
 
 addEventListener('keyup', (e) => {
@@ -2716,7 +2757,6 @@ function panelStats() {
     terrainTris: st.drawnTris,
     queued: st.queued,
     triDeg: st.triDeg,
-    profileDeg: st.profileDeg,
     // `tris` above is the whole frame as the GPU sees it; these three say how
     // much of it is the prop scatter, which is the layer currently being tuned.
     treeCount: trees ? trees.stats.placed : 0,

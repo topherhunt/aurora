@@ -4,7 +4,7 @@ import { createTerrainMaterial } from '../../terrain/terrain-material.js'
 
 // Quest diagnostic terrain: one fixed mesh sampled directly from the imported
 // macro heightmap. It intentionally has no quadtree, workers, chunk streaming,
-// skirts, BatchedMesh, skyline selection, or procedural detail. The grid is
+// skirts, BatchedMesh, or procedural detail. The grid is
 // deliberately much smaller than the source image so this test measures the
 // terrain machinery without replacing it with a million-vertex stress test.
 const RES = 128
@@ -82,8 +82,6 @@ export class MacroTerrain {
       pendingEdits: 0,
       workerBusy01: 0,
       triDeg: 15,
-      profileDeg: null,
-      horizonMs: 0,
       cellUnderfoot: WORLD_SIZE / RES,
     }
   }

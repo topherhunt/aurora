@@ -684,14 +684,30 @@ for (const t of [
   // everywhere and is an expensive way to change nothing -- which is the exact
   // failure a wrong `spread` in cut-terrain.mjs produces, and it looks like the
   // feature simply not working. The floor is well under the 0.15 snow is cut at.
+  //
+  // The ceiling is where grade() starts clamping the low tail at zero: at a
+  // relative sd much past 0.6 a photograph's darkest texels flatten into patches
+  // of pure black that the shader then multiplies the palette by, and the meadow
+  // grows holes. Grass is cut at 0.60 and sits right under it on purpose.
   const sd = [0, 0, 0]
   for (let i = 0; i < N; i++) {
     for (let c = 0; c < 3; c++) sd[c] += (srgbToLinear(png.data[i * 4 + c] / 255) - lin[c]) ** 2
   }
   const rel = sd.map((v, c) => Math.sqrt(v / N) / lin[c])
-  check(Math.min(...rel) > 0.08 && Math.max(...rel) < 0.6,
+  check(Math.min(...rel) > 0.08 && Math.max(...rel) <= 0.65,
     `the ${t.name} field actually varies, and not so hard it posterises`,
     `relative sd ${rel.map((v) => v.toFixed(3)).join(' ')}`)
+
+  // AND NOTHING IS CRUSHED. The measure the sd ceiling is a proxy for, checked
+  // directly: a texel at zero in any channel is a black speck the terrain shader
+  // multiplies straight through the palette, and enough of them read as dirt
+  // rather than as shadow.
+  let crushed = 0
+  for (let i = 0; i < N; i++) {
+    if (png.data[i * 4] === 0 || png.data[i * 4 + 1] === 0 || png.data[i * 4 + 2] === 0) crushed++
+  }
+  check(crushed / N < 0.005, `and the ${t.name} tile's shadows are not clipped to black`,
+    `${((crushed / N) * 100).toFixed(2)}% of texels at zero in some channel`)
 
   for (const axis of ['u', 'v']) {
     const s = seamScore(png.data, png.width, axis)

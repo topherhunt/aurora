@@ -15,30 +15,46 @@
 // header documents for characters): nose at -Z, tail at +Z, ring angle
 // theta=0 pointing local +Y (dorsal/up).
 //
-// Every ring also carries `t` (0=nose, 1=tail-tip) and `bend` -- a swim-bend
-// weight that grows toward the tail (see bendWeight below) -- as a per-vertex
-// attribute, so a runtime swim shader/animator can offset each vertex
-// sideways by `bend * amplitude * sin(freq*time - k*z)` without needing a
-// skeleton: the tail whips further than the head on the same sine wave. This
-// module only measures and tags the mesh; actually driving that offset each
-// frame is a render-time concern, not this file's.
+// The body itself is a smooth, rounded oval loft -- three rings (nose, mid,
+// peduncle) of a plain hexagonal cross-section, no pinching toward the poles.
+// The dorsal, ventral and caudal (tail) fins are NOT part of that loft: each
+// is a single flat double-sided triangle (the preview's material is already
+// THREE.DoubleSide, so one triangle reads as a two-sided blade, no second
+// face needed) poking out from the oval body to the real measured contour.
+// That split is what makes the fins read as thin blades while the body stays
+// a rounded torpedo: earlier attempts pinched the *whole* ring loft toward
+// its poles, which either pinched the body too (losing the oval) or, at high
+// segment counts, pinched so little between neighbouring vertices that no
+// edge was visible at all. Splitting fin-from-body sidesteps both failure
+// modes at once, and costs only 1 extra triangle per fin.
+//
+// Every vertex also carries `t` (0=nose, 1=tail-tip) and `bend` -- a
+// swim-bend weight that grows toward the tail (see bendWeight below) -- so a
+// runtime swim shader/animator can offset each vertex sideways by
+// `bend * amplitude * sin(freq*time - k*z)` without needing a skeleton: the
+// tail whips further than the head on the same sine wave, and the fins (whose
+// t comes from their own z position) move with whichever part of the body
+// they're attached to. This module only measures and tags the mesh; actually
+// driving that offset each frame is a render-time concern, not this file's.
 // ---------------------------------------------------------------------------
 
-// Tri count for a capped ring loft is exactly 2*segments*rings (the side
-// bands contribute (rings-1)*segments*2, the two single-vertex caps add
-// segments*2 more -- see buildFishMesh below). LOD0 is deliberately very
-// coarse: at 4 rings/6 segments the dorsal (theta=0) and ventral (theta=pi)
-// vertices land exactly on the ring's poles regardless of RING_PINCH, so
-// each of those two vertices is already zero-lateral-width, and with only
-// two neighbours 60deg away the triangle between them reads as one flat,
-// visibly bladed wedge instead of a smoothly rounded curve -- few enough
-// vertices that the "knife edge" comes from the topology itself, not from
-// pinching a smooth curve harder (see RING_PINCH below, which turned out too
-// subtle to see at the old 14-segment resolution: the pole vertex was always
-// already at zero width, so pinch only nudged its already-close neighbours).
+// Body-loft t-positions (nose / mid-body / peduncle, i.e. the narrow point
+// just before the tail fin) and how much of the mid ring's real measured
+// half-height becomes the oval body vs. is left over for the dorsal/ventral
+// fins to fill in as separate triangles. Nose and peduncle use their full
+// measured half-height (already thin, no fin there); only the mid ring is
+// deliberately undersized relative to the real contour.
+const BODY_T = [0, 0.5, 0.82]
+const MID_RING_INDEX = 1
+const BODY_CAP_FRACTION = 0.6 // mid ring's oval half-height = 60% of the real measured half-height there
+
+// Tri count for a capped 3-ring loft is 2*segments*3 (two side bands of
+// segments*2 each, plus segments*2 for the two single-vertex caps). Adding
+// three 1-triangle fins (dorsal, ventral, caudal) on top: LOD0's 36 + 3 = 39,
+// LOD1's 30 + 3 = 33.
 const LOD_PARAMS = [
-  { rings: 4, segments: 6 }, // LOD0, 48 tris
-  { rings: 3, segments: 4 }, // LOD1, 24 tris
+  { segments: 6 }, // LOD0, 39 tris (36 body + 3 fins)
+  { segments: 5 }, // LOD1, 33 tris (30 body + 3 fins)
 ]
 
 /** A column's {min,max} nearest to pixel x (within 30px) in a chromakey.columnProfile. */
@@ -79,26 +95,17 @@ function bulgeFactor(t) {
 // stand-in for that curve, not a biomechanical model.
 function bendWeight(t) { return t * t }
 
-// How sharply the ring's lateral (X) extent pinches in toward the dorsal and
-// ventral poles (theta=0 and theta=pi). 1 = plain ellipse (sin/cos); above 1
-// pinches faster, so the flank vertices next to the poles (at LOD0's 6
-// segments, the +-60deg neighbours of theta=0/pi) sit closer to zero width
-// too, sharpening the blade the pole vertices already form. Matters far less
-// than segment count now -- the poles themselves are always exactly zero
-// width regardless of this exponent -- but still steepens the taper into
-// them.
-const RING_PINCH = 2.2
-
 // One ring in the XY plane (X=lateral, Y=dorsal-ventral), stacked along Z
 // (length). theta=0 points +Y (dorsal/up), matching loft-mesh.mjs's ring()
-// convention of theta=0 = a fixed "up-ish" reference direction.
+// convention of theta=0 = a fixed "up-ish" reference direction. Plain
+// ellipse, no pinching -- the body is meant to read as a rounded oval; any
+// knife-edge look now comes from the separate fin triangles, not from this
+// loft.
 function ring(cx, cy, cz, rx, ry, segments) {
   const pts = []
   for (let s = 0; s < segments; s++) {
     const theta = (s / segments) * Math.PI * 2
-    const sinT = Math.sin(theta)
-    const xShape = Math.sign(sinT) * Math.abs(sinT) ** RING_PINCH
-    pts.push({ x: cx + rx * xShape, y: cy + ry * Math.cos(theta), z: cz })
+    pts.push({ x: cx + rx * Math.sin(theta), y: cy + ry * Math.cos(theta), z: cz })
   }
   return pts
 }
@@ -119,6 +126,15 @@ function computeNormals(pos, idx) {
   return n
 }
 
+/** Real (unshifted) centre/half-height at t, in world units, straight off the silhouette. */
+function measureAt(cp, pxToM, lengthM, t) {
+  const x = cp.left + t * (cp.right - cp.left)
+  const col = nearestColumn(cp, Math.round(x))
+  const ry = (col.max - col.min) / 2 * pxToM
+  const cy = -((col.min + col.max) / 2) * pxToM // pixel-y grows downward; flip so dorsal (small pixel-y) is +Y (up)
+  return { t, z: (t - 0.5) * lengthM, cy, ry }
+}
+
 /**
  * Builds one LOD of a fish mesh from a side-view columnProfile.
  *
@@ -129,84 +145,119 @@ function computeNormals(pos, idx) {
  *
  * Returns { pos, nrm, uv, idx, t, bend, spine }. `t`/`bend` are per-vertex
  * (one entry per position, not per-component) so a swim shader can read them
- * straight off the same vertex it's displacing. `spine` is the ring
- * centreline itself ({z,t,bend} per ring), handy for a preview/debug overlay
- * of the bend curve without re-deriving it from the mesh.
+ * straight off the same vertex it's displacing. `spine` is the body loft's
+ * ring centreline ({z,t,bend} per ring), handy for a preview/debug overlay of
+ * the bend curve without re-deriving it from the mesh.
  */
 export function buildFishMesh(sideColumnProfile, { lengthM = 0.3, lod = 0 } = {}) {
   const p = LOD_PARAMS[lod]
   const cp = sideColumnProfile
   const pxToM = lengthM / (cp.right - cp.left)
+  const segments = p.segments
 
-  // First pass: per-ring centre/half-height in world units, unshifted.
-  const rawRings = []
-  for (let i = 0; i < p.rings; i++) {
-    const t = i / (p.rings - 1)
-    const x = cp.left + t * (cp.right - cp.left)
-    const col = nearestColumn(cp, Math.round(x))
-    const ry = (col.max - col.min) / 2 * pxToM
-    const cy = -((col.min + col.max) / 2) * pxToM // pixel-y grows downward; flip so dorsal (small pixel-y) is +Y (up)
-    rawRings.push({ t, z: (t - 0.5) * lengthM, cy, ry })
-  }
+  // Body rings: nose, mid, peduncle. Mid ring's oval half-height is capped
+  // to BODY_CAP_FRACTION of its real measured half-height -- the leftover
+  // (real - capped) becomes the dorsal/ventral fin height below. Nose and
+  // peduncle keep their full measured half-height; they're already thin and
+  // have no fin of their own.
+  const rawRings = BODY_T.map((t) => measureAt(cp, pxToM, lengthM, t))
+  const midFull = rawRings[MID_RING_INDEX]
+  const midCapped = midFull.ry * BODY_CAP_FRACTION
+  const finHeight = midFull.ry - midCapped
 
-  // Centre the whole silhouette vertically at y=0 (nose-to-tail centroid of
-  // its own bounding box), so the mesh doesn't need the caller to know its
-  // source image's incidental vertical framing.
-  let yMin = Infinity, yMax = -Infinity
-  for (const r of rawRings) { yMin = Math.min(yMin, r.cy - r.ry); yMax = Math.max(yMax, r.cy + r.ry) }
-  const yShift = -(yMin + yMax) / 2
+  // Caudal (tail) fin tip: the tallest column in the tail-fin span beyond the
+  // peduncle (t > last body ring), not just the very last pixel column,
+  // since the silhouette edge right at the tip can be a sliver too thin to
+  // read as a fin.
+  const tailSamples = [0.88, 0.92, 0.96, 1].map((t) => measureAt(cp, pxToM, lengthM, t))
+  const tail = tailSamples.reduce((a, b) => (b.ry > a.ry ? b : a))
+
+  // Centre the whole silhouette (body + fins) vertically at y=0, so the mesh
+  // doesn't need the caller to know its source image's incidental framing.
+  const yExtents = [
+    ...rawRings.map((r) => [r.cy - r.ry, r.cy + r.ry]),
+    [midFull.cy - midFull.ry, midFull.cy + midFull.ry], // dorsal/ventral fin tips reach the real extent
+    [tail.cy - tail.ry, tail.cy + tail.ry],
+  ].flat()
+  const yShift = -(Math.min(...yExtents) + Math.max(...yExtents)) / 2
 
   const geo = { pos: [], uv: [], idx: [] }
   const t = [], bend = []
   const spine = []
 
-  const vStart0 = 0
-  rawRings.forEach((r, i) => {
-    const cy = r.cy + yShift
-    const rx = r.ry * bulgeFactor(r.t)
-    const b = bendWeight(r.t)
-    const pts = ring(0, cy, r.z, rx, r.ry, p.segments)
-    pts.forEach((pt, s) => {
-      geo.pos.push(pt.x, pt.y, pt.z)
-      geo.uv.push(s / p.segments, r.t)
-      t.push(r.t)
-      bend.push(b)
-    })
-    spine.push({ z: r.z, t: r.t, bend: b })
-    if (i < rawRings.length - 1) {
-      const a = vStart0 + i * p.segments, bb = vStart0 + (i + 1) * p.segments
-      for (let s = 0; s < p.segments; s++) {
-        const s2 = (s + 1) % p.segments
-        geo.idx.push(a + s, bb + s, bb + s2, a + s, bb + s2, a + s2)
-      }
-    }
-  })
+  const pushVertex = (x, y, z, uvU, uvV, tVal) => {
+    geo.pos.push(x, y + yShift, z)
+    geo.uv.push(uvU, uvV)
+    t.push(tVal)
+    bend.push(bendWeight(tVal))
+    return geo.pos.length / 3 - 1
+  }
 
-  // Cap nose and tail so the mesh is closed (a fish is not a hollow tube).
-  // Same bottom/top cap winding as loft-mesh.mjs's loftInto() -- the nose
-  // (first ring, most -Z) plays "bottom", the tail (last ring, most +Z)
-  // plays "top", and the two caps face opposite directions so their winding
-  // is deliberately reversed relative to each other.
+  // --- body loft: 3 rings, plain oval cross-section ---
+  const ringStart = rawRings.map((r, i) => {
+    const isMid = i === MID_RING_INDEX
+    const ry = isMid ? midCapped : r.ry
+    const rx = r.ry * bulgeFactor(r.t) // lateral bulge stays tied to the real (uncapped) contour scale
+    const pts = ring(0, r.cy, r.z, rx, ry, segments)
+    const start = geo.pos.length / 3
+    pts.forEach((pt, s) => pushVertex(pt.x, pt.y, pt.z, s / segments, r.t, r.t))
+    spine.push({ z: r.z, t: r.t, bend: bendWeight(r.t) })
+    return start
+  })
+  for (let i = 0; i < rawRings.length - 1; i++) {
+    const a = ringStart[i], bb = ringStart[i + 1]
+    for (let s = 0; s < segments; s++) {
+      const s2 = (s + 1) % segments
+      geo.idx.push(a + s, bb + s, bb + s2, a + s, bb + s2, a + s2)
+    }
+  }
+
+  // Nose and peduncle caps, closing the body loft. Same bottom/top cap
+  // winding as loft-mesh.mjs's loftInto() -- the nose (first ring, most -Z)
+  // plays "bottom", the peduncle (last ring, most +Z) plays "top", and the
+  // two caps face opposite directions so their winding is deliberately
+  // reversed relative to each other.
   {
     const r = rawRings[0]
-    const c = geo.pos.length / 3
-    geo.pos.push(0, r.cy + yShift, r.z); geo.uv.push(0.5, r.t)
-    t.push(r.t); bend.push(bendWeight(r.t))
-    for (let s = 0; s < p.segments; s++) {
-      const s2 = (s + 1) % p.segments
-      geo.idx.push(c, vStart0 + s2, vStart0 + s)
+    const c = pushVertex(0, r.cy, r.z, 0.5, r.t, r.t)
+    for (let s = 0; s < segments; s++) {
+      const s2 = (s + 1) % segments
+      geo.idx.push(c, ringStart[0] + s2, ringStart[0] + s)
     }
   }
   {
-    const r = rawRings[rawRings.length - 1]
-    const c = geo.pos.length / 3
-    geo.pos.push(0, r.cy + yShift, r.z); geo.uv.push(0.5, r.t)
-    t.push(r.t); bend.push(bendWeight(r.t))
-    const base = vStart0 + (rawRings.length - 1) * p.segments
-    for (let s = 0; s < p.segments; s++) {
-      const s2 = (s + 1) % p.segments
-      geo.idx.push(c, base + s, base + s2)
+    const last = rawRings.length - 1
+    const r = rawRings[last]
+    const c = pushVertex(0, r.cy, r.z, 0.5, r.t, r.t)
+    for (let s = 0; s < segments; s++) {
+      const s2 = (s + 1) % segments
+      geo.idx.push(c, ringStart[last] + s, ringStart[last] + s2)
     }
+  }
+
+  // --- fins: each a single flat double-sided triangle (the preview material
+  // is THREE.DoubleSide) poking out from the body loft's surface to the real
+  // measured contour. Base = two points straddling the fin's z along the
+  // body's oval surface; tip = the real silhouette extent at that point. ---
+  const finBaseHalfZ = 0.08 * lengthM
+  const addSpikeFin = (baseY, tipY, z) => {
+    const tt = Math.min(1, Math.max(0, z / lengthM + 0.5))
+    const a = pushVertex(0, baseY, z - finBaseHalfZ, 0.5, tt, tt)
+    const b = pushVertex(0, baseY, z + finBaseHalfZ, 0.5, tt, tt)
+    const c = pushVertex(0, tipY, z, 0.5, tt, tt)
+    geo.idx.push(a, b, c)
+  }
+  // dorsal (up) and ventral (down), both at the mid ring where the body was capped
+  addSpikeFin(midFull.cy + midCapped, midFull.cy + midCapped + finHeight, midFull.z)
+  addSpikeFin(midFull.cy - midCapped, midFull.cy - midCapped - finHeight, midFull.z)
+  // caudal (tail): base at the peduncle centre, tip spans the tail's full real height
+  {
+    const peduncle = rawRings[rawRings.length - 1]
+    const tt = 1
+    const base = pushVertex(0, peduncle.cy, peduncle.z, 0.5, peduncle.t, peduncle.t)
+    const top = pushVertex(0, tail.cy + tail.ry, tail.z, 0.5, tt, tt)
+    const bot = pushVertex(0, tail.cy - tail.ry, tail.z, 0.5, tt, tt)
+    geo.idx.push(base, top, bot)
   }
 
   const pos = new Float32Array(geo.pos)

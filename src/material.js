@@ -1044,6 +1044,15 @@ export const CARD_UP_MARK = 0.99
 // top. The rocks read as cardboard standees the moment the view tips, and the
 // tell is that they all tip together.
 //
+// A GRASS CARPET IS NOT A TREE EITHER, for a different reason: it is not that
+// grass has no up, it is that the player gets ABOVE it. A tuft is ankle-high, so
+// any view from more than a couple of metres up is looking down on the bed at a
+// steep angle, and a cylindrical card at a steep angle is a sliver. The slivers
+// are not scattered either -- a card's foreshortening depends only on the angle
+// between its yaw and the view, so at a fixed altitude the bed thins in
+// CONCENTRIC RINGS around the player, which is what "crop circles below you"
+// is. Spherical tips each card back to meet the eye and the rings go away.
+//
 // THE PIVOT IS THE CARD'S FOOT, not its middle, and that is the whole reason
 // this needs no extra attribute. A centre pivot would keep the rock's mass
 // exactly over its map position and swing the bottom half of the card under the
@@ -1112,12 +1121,17 @@ function billboardVertex(spherical) {
       // space three is expecting, so what is wanted here is that map read
       // backwards.
       //
-      // THIS IS EXACT ONLY BECAUSE THE SCALE IS UNIFORM. For M = s*R the upper
-      // 3x3 inverse is transpose / s2, and s2 is the squared length of any
-      // column. rocks.js composes every instance with _s.set(scale, scale,
-      // scale) -- one number on all three axes -- so the identity holds. A bed
-      // that ever starts stretching an axis would need a real inverse here, and
-      // would get a sheared card instead, so: keep rock instances uniform.
+      // EXACT FOR ANY M = R * S with R orthonormal and S a diagonal scale, which
+      // is every matrix a TRS compose can produce. The inverse of R * S is
+      // S-inverse * R-transpose, and R-transpose is S-inverse * M-transpose, so
+      // M-inverse = S-inverse-SQUARED * M-transpose -- one componentwise divide
+      // by the squared column lengths, no general inverse needed. It reduces to
+      // the old transpose/s2 when the three columns are the same length.
+      //
+      // PER-AXIS AND NOT ONE NUMBER, because grass is not uniform: render/grass.js
+      // scales a tuft (sqrt(h), h, sqrt(h)) so tall grass stays narrow, and
+      // folding that through a single-s inverse stretches the card by another
+      // factor of h -- up to 2.7x at the tall end of the roll.
       mat3 bbM = mat3( modelMatrix );
       #ifdef USE_BATCHING
         bbM = bbM * mat3( batchingMatrix );
@@ -1125,7 +1139,9 @@ function billboardVertex(spherical) {
       #ifdef USE_INSTANCING
         bbM = bbM * mat3( instanceMatrix );
       #endif
-      float bbS2 = dot( bbM[ 0 ], bbM[ 0 ] );
+      vec3 bbS2 = vec3(
+        dot( bbM[ 0 ], bbM[ 0 ] ), dot( bbM[ 1 ], bbM[ 1 ] ), dot( bbM[ 2 ], bbM[ 2 ] ) );
+      vec3 bbS = sqrt( bbS2 );
 
       // The card spans local X for its width and local Y for its height, with
       // its foot on y = 0 (buildImpostorCard). So the foot pivot is free: y is
@@ -1133,25 +1149,25 @@ function billboardVertex(spherical) {
       // right and screen up.
       //
       // THOSE LOCAL METRES ARE THE CARD AT SCALE 1, and the instance scale has
-      // to multiply them exactly as it multiplies a mesh vertex. Dividing by s2
-      // here is the plain inverse, which maps the world offset back untouched --
-      // so the matrix reapplies s on the way out, the s cancels, and every spun
-      // card in the bed draws at its raw bank size no matter how big the rock
-      // is. That is not a subtle error and it is not a rare one: a crust cap
-      // sits at scale 4.10 in the median and 8.33 at the top, so its billboard
-      // came out at a quarter of the mesh it replaced and sometimes an eighth,
-      // while an underfoot pebble at 0.23 came out four times too big. 87% of
-      // placed rocks drew a card under 0.8x its mesh.
+      // to multiply them exactly as it multiplies a mesh vertex. Leave it out
+      // and the plain inverse maps the world offset back untouched, the matrix
+      // reapplies the scale on the way out, and every spun card in the bed draws
+      // at its raw bank size no matter how big the rock is. That was not a
+      // subtle error and it was not a rare one: a crust cap sits at scale 4.10
+      // in the median and 8.33 at the top, so its billboard came out at a
+      // quarter of the mesh it replaced and sometimes an eighth, while an
+      // underfoot pebble at 0.23 came out four times too big. 87% of placed
+      // rocks drew a card under 0.8x its mesh.
       //
-      // Rolling the scale into the inverse costs nothing. We want M-inverse
-      // applied to (s * bbW), and M-inverse is transpose / s2, so the two
-      // constants collapse to transpose / s -- one inversesqrt where there used
-      // to be a divide. The cylindrical branch below never had this bug: it
-      // rotates within object space and never leaves it, so the scale is never
-      // divided out to begin with.
-      vec3 bbW = transformed.x * bbRw + transformed.y * bbUw;
-      // v * M is M-transpose * v in GLSL, which is the inverse rotation.
-      transformed = ( bbW * bbM ) * inversesqrt( bbS2 );`
+      // The scale is applied HERE, on the way out into world space, and taken
+      // off again by the divide below -- x by the x column's length and y by the
+      // y column's, so a card that spins keeps exactly the proportions the same
+      // card would have had standing still. The cylindrical branch below never
+      // needed any of this: it rotates within object space and never leaves it,
+      // so the scale is never divided out to begin with.
+      vec3 bbW = ( transformed.x * bbS.x ) * bbRw + ( transformed.y * bbS.y ) * bbUw;
+      // v * M is M-transpose * v in GLSL; the divide finishes the inverse.
+      transformed = ( bbW * bbM ) / bbS2;`
     : /* glsl */ `
       // Face: the horizontal direction from the plant to the eye. Degenerate
       // only when the camera is exactly on the axis, where any answer is right.
@@ -1235,15 +1251,30 @@ ${spin}
 // for the crossing, stamp both ends of it, and reclaim when the window is up.
 //
 // WHERE THE NUMBER LIVES: the alpha channel of BatchedMesh's per-instance colour
-// texture, which three allocates as RGBA-float, fills with 1, and then only ever
-// writes .rgb of (setColorAt takes a THREE.Color, which has no alpha; the shader
-// chunk reads .rgb). So the channel is present, per-instance, already uploaded,
-// and unused. Using it needs no new vertex attribute -- which matters more than
-// it sounds, because BatchedMesh throws if a geometry entering the arena is
-// missing an attribute the arena has, so a new attribute is a change to every
-// generator in the project. Reaching for `_colorsTexture` is reaching past a
-// private field, so the two writers below validate it loudly rather than writing
-// into whatever it finds.
+// texture, which three allocates as RGBA-float, fills with 1, and which nothing
+// in this project ever writes (setColorAt takes a THREE.Color, which has no
+// alpha). So the channel is present, per-instance, and already uploaded. Using
+// it needs no new vertex attribute -- which matters more than it sounds, because
+// BatchedMesh throws if a geometry entering the arena is missing an attribute
+// the arena has, so a new attribute is a change to every generator in the
+// project. Reaching for `_colorsTexture` is reaching past a private field, so the
+// two writers below validate it loudly rather than writing into whatever it
+// finds.
+//
+// THREE ITSELF NOW CLAIMS THAT CHANNEL, and the fragment stage has to take it
+// back -- see COLOR_FRAGMENT below, which is the whole of the defence. Through
+// r180 `getBatchingColor` returned a vec3 and `color_fragment` did
+// `diffuseColor.rgb *= vColor`, so the alpha really was spare. The three A-Frame
+// 1.8 ships -- which is the three every page here runs on, see
+// three-instance.js -- returns a vec4 instead, defines USE_COLOR_ALPHA for any
+// batch that has a colour texture, and does `diffuseColor *= vColor`. That
+// multiplies a stamped clock reading of about -4096 straight into diffuseColor.a,
+// which alphaTest 0.5 then discards: every dissolving prop went fully INVISIBLE
+// for the 250 ms of its fade instead of dithering through it, at both ends of a
+// tier swap and at the rim, which is exactly the "swaps pop instead of
+// dithering" report. Overriding the include is cheaper and more durable than
+// moving the fade to a texture of our own, and it costs nothing real: a
+// per-instance opacity has nothing to blend with in a binary cutout anyway.
 //
 // 1.0 MEANS NEVER FADE, which is three's own initial value, so every caller that
 // does not opt in -- v1's scatter, the ferns, the buildings -- is unaffected and
@@ -1493,6 +1524,26 @@ const FADE_FRAGMENT = /* glsl */ `
     // radius is exactly the black dot the dissolve exists to prevent.
     if ( abs( vPropFade ) <= fadeT ) discard;
   }`
+
+/**
+ * three's own per-instance colour, with the ALPHA DROPPED. Replaces
+ * `#include <color_fragment>` outright.
+ *
+ * The fade slot is that alpha (see the dissolve header), so a version of three
+ * that multiplies vColor into diffuseColor whole hands alphaTest a stamped clock
+ * reading and it discards the entire prop for the length of its dissolve. This
+ * line is what stops that, and it has to be a REPLACEMENT rather than a patch
+ * bolted after the include, because the damage is done inside it.
+ *
+ * Both spellings of the guard are named, so this is right whichever the renderer
+ * defines: three <= r180 gives a batched colour texture USE_COLOR and a vec3
+ * vColor, r181 and A-Frame's fork give it USE_COLOR_ALPHA and a vec4. `.rgb` is
+ * a legal swizzle on both.
+ */
+const COLOR_FRAGMENT = /* glsl */ `
+  #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+    diffuseColor.rgb *= vColor.rgb;
+  #endif`
 
 /**
  * Put one instance back to "never fade", which is three's own initial value for
@@ -1952,6 +2003,53 @@ export function getWind() {
   return { strength: windStrength.value, degrees: windDirDeg.value }
 }
 
+// ---------------------------------------------------------------------------
+// COMPILING THE WIND OUT, which is a DIFFERENT switch from `setWind({ strength:
+// 0 })` and exists because the two answer different questions.
+//
+// Strength 0 answers "is the MOTION the problem" -- a moving canopy defeats
+// nothing in this pipeline that a still one does not, but it is the honest first
+// thing to rule out. Every instruction windVertex emits still runs: two matrix
+// products, a pow, three sin, a smoothstep and a distance, per vertex, per eye.
+//
+// This switch answers "is the COST the problem", and on a headset that is the
+// question worth being able to ask. It rebuilds the program with the whole block
+// absent, so an A/B of the two is the price of the wind in milliseconds and
+// nothing else changes.
+//
+// A REGISTRY, where the two uniforms above deliberately need none. Uniforms are
+// shared by reference and a value change reaches every program for free; a
+// PROGRAM change does not -- three only recompiles a material whose needsUpdate
+// is set, and the three prop materials that carry wind are built in three
+// different modules. Small and bounded (trees, ferns, grass), so a Set of hard
+// references is right and a WeakSet would be wrong: nothing else holds these
+// alive for us at the moment we need to walk them.
+//
+// The flag is read INSIDE onBeforeCompile rather than captured at construction,
+// so a material built before the first flip still compiles the current state.
+// customProgramCacheKey has to carry it for the same reason billboardLayers is
+// in there: the two variants are two programs, and a shared cache key would hand
+// the second one whichever compiled first.
+const windMaterials = new Set()
+let windCompiled = true
+
+/**
+ * Compile the wind block in or out of every prop material that uses it.
+ *
+ * Costs a shader recompile per material on the frame it is called -- a visible
+ * hitch on a headset, once, which is the price of the measurement.
+ */
+export function setWindEnabled(enabled) {
+  if (typeof enabled !== 'boolean') throw new Error(`setWindEnabled: need a boolean, got ${enabled}`)
+  if (enabled === windCompiled) return
+  windCompiled = enabled
+  for (const material of windMaterials) material.needsUpdate = true
+}
+
+export function getWindEnabled() {
+  return windCompiled
+}
+
 /**
  * Snap an angular frequency to the nearest whole number of cycles per clock
  * wrap, so `sin( uPropClock * w )` is CONTINUOUS across the wrap.
@@ -2206,7 +2304,7 @@ export function createPropMaterial(
     shader.uniforms.uMossVary = mossVary
     shader.uniforms.uPropClock = propClock
     if (billboards) shader.uniforms.uBillboardLayers = { value: billboards }
-    if (windSpec) {
+    if (windSpec && windCompiled) {
       shader.uniforms.uWindDir = windDir
       shader.uniforms.uWindStrength = windStrength
     }
@@ -2249,7 +2347,7 @@ export function createPropMaterial(
         varying vec2 vMoss;
         varying float vPropFade;
         ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
-        ${windSpec ? `uniform vec2 uWindDir;
+        ${windSpec && windCompiled ? `uniform vec2 uWindDir;
         uniform float uWindStrength;` : ''}
         ${stripTiling ? `varying float vStripSeed;
         varying float vStripTx;
@@ -2270,7 +2368,7 @@ export function createPropMaterial(
         vec3 propObjPos = transformed;
         ${propCardMask(billboards ? billboards.length : 0)}
         ${FADE_VERTEX}
-        ${windSpec ? windVertex(windSpec, { strip: stripTiling, cards: !!billboards }) : ''}
+        ${windSpec && windCompiled ? windVertex(windSpec, { strip: stripTiling, cards: !!billboards }) : ''}
         ${billboards ? billboardVertex(sphericalBillboard) : ''}
         ${stripTiling ? STRIP_VERTEX : ''}`
       )
@@ -2419,6 +2517,10 @@ export function createPropMaterial(
       )
 
     shader.fragmentShader = shader.fragmentShader
+      // FIRST, because every patch below it assumes diffuseColor.a still means
+      // opacity. See COLOR_FRAGMENT: the per-instance colour's alpha is the fade
+      // slot, and three's own include would push it into the alphaTest.
+      .replace('#include <color_fragment>', COLOR_FRAGMENT)
       .replace(
         '#include <common>',
         `#include <common>
@@ -2481,8 +2583,13 @@ export function createPropMaterial(
   // differing only here would silently share whichever compiled first -- and
   // the symptom is a hillside of rocks spinning like trees, or a forest lying
   // its trunks down, depending on the order they happened to be built in.
+  //
+  // The wind suffix is evaluated per CALL and not folded into `key`, because
+  // setWindEnabled flips it under a material that is already built.
   const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${stripTiling ? '-strip' : ''}`
-  material.customProgramCacheKey = () => key
+  material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
+
+  if (windSpec) windMaterials.add(material)
 
   return material
 }

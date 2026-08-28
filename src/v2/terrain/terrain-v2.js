@@ -10,7 +10,6 @@ import {
   PINNED_CHUNKS,
 } from '../config.js'
 import { selectNodes, nodeKey, unpackKey, inCone, EYE_HALF_ANGLE, LOD } from './quadtree-v2.js'
-import { SKYLINE, MaxPyramid, HorizonTable } from './skyline.js'
 import {
   acceptsReply,
   cellSize,
@@ -81,6 +80,17 @@ import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.j
 // double a measured 0.023 ms p50 / 0.044 ms p99 selection (check-v2-quadtree.mjs)
 // to buy sub-cell reselection of terrain that is already correct.
 const SELECT_EVERY_FRAMES = 6
+
+// The floor on how often `_dirty` may force a reselect, in frames.
+//
+// Without it the dirty path has no floor at all, and that is not a rare corner:
+// every landed chunk sets _dirty, and while the pipe is full chunks land on most
+// frames -- so through the whole settling of a new view, which is exactly when
+// the frame budget is tightest, selection runs at the FULL frame rate instead of
+// the 12 Hz the constant above claims. Two frames costs 28 ms of extra latency
+// on a stand-in swap at 72 Hz, which nobody can see, and it caps the burst at
+// half rate.
+const MIN_SELECT_FRAMES = 2
 
 // Requests allowed in flight per worker, and in v2 this number is bounded from
 // ABOVE by the slot pool rather than only from below by worker throughput.
@@ -159,23 +169,6 @@ export class TerrainV2 {
           `(${width * height} expected) -- a detached or truncated buffer meshes a flat world silently`
       )
     }
-
-    // The two halves of the silhouette target, built once because both are pure
-    // functions of the import: the pyramid answers "how high does the ground get
-    // anywhere in this box" at any box size, and the table folds that into one
-    // running-max angle per (azimuth, range) whenever the eye moves. See skyline.js
-    // for why this cannot be built out of the `info` table instead.
-    //
-    // FROM A SLICE, and the 4 MB is bought deliberately. MaxPyramid ALIASES level 0
-    // rather than copying it, and `data` here is heightmap.js's own field -- toRaw()
-    // hands out the instance's buffer and documents it as a thing to transfer. Any
-    // future caller taking it up on that would detach the pyramid's base out from
-    // under it, and a detached level reads as undefined per texel, so maxIn returns
-    // -Infinity, so every node tests as fully occluded: the profile target would
-    // switch ITSELF off with nothing thrown and no symptom but coarser ridges. That
-    // is the same trade, for the same reason, as the per-worker `copy` below.
-    this._pyramid = new MaxPyramid({ width, height, data: data.slice() })
-    this._horizon = new HorizonTable(this._pyramid)
 
     this.scene = scene
     this.queueDepth = queueDepth
@@ -290,6 +283,26 @@ export class TerrainV2 {
     // still gets correct, merely more expensive, terrain (quadtree-v2.js).
     this._cam = { x: 0, y: 0, z: 0, yaw: 0 }
 
+    // Half-angle, in RADIANS, of a yaw cone that chunks must touch to be flagged
+    // visible at all. null means no such cone -- every selected chunk is
+    // submitted and the GPU's per-instance frustum cull decides, which is the
+    // right answer on desktop and the ONLY answer when yaw is unknown.
+    //
+    // It exists for XR, where BatchedMesh's per-instance culling is off (its
+    // per-instance bounds test runs on the main thread once per eye, and that is
+    // exactly the thread that has nothing to spare at 72 Hz). With it off the
+    // batch submits the full 360-degree selection to both eyes, and roughly half
+    // of those chunks are behind her. Testing yaw HERE costs nothing: the loop
+    // below was already computing this exact predicate to feed the drawnTris
+    // readout and then throwing the answer away.
+    //
+    // Set it WIDER than the eye actually sees. Selection runs at 12 Hz, so a
+    // chunk that enters the eye cone between two selections has to already be
+    // flagged visible or it pops in on a head turn. 70 degrees against a
+    // ~55-degree eye is about 15 degrees of slack, which covers a fast turn at
+    // 72 Hz frame rate.
+    this.cullDeg = null
+
     // `tris` is what is RESIDENT and flagged visible; `drawnTris` is the subset
     // inside the eye cone, which is what the GPU actually rasterises. The gap is
     // the streaming margin and it is large, so the budget question has to be
@@ -333,10 +346,6 @@ export class TerrainV2 {
       finestCell: 0,
       cellUnderfoot: null,
       triDeg: LOD.triDeg,
-      // null rather than the knob's value while the target is off, so nothing
-      // reading this can print a profileDeg that no selection is honouring.
-      profileDeg: SKYLINE.on ? SKYLINE.profileDeg : null,
-      horizonMs: this._horizon.lastMs,
     }
 
     // What the mesher has taught us about the world, key -> {minY, maxY}. It is
@@ -912,9 +921,17 @@ export class TerrainV2 {
    * both are moments a stand-in should stop standing in.
    */
   update(cam) {
+    if (!cam) throw new Error('TerrainV2.update: no camera')
     this.frame++
+    // Every frame, not just on the selection ticks: _syncVisibility's cull cone
+    // reads this, and a cone that only moved at 12 Hz would let terrain wink in
+    // a sixth of a second after a head turn. SELECTION still runs on the timer
+    // below -- what depth a chunk is meshed at can lag a head turn, what is
+    // FLAGGED VISIBLE cannot.
+    this._cam = cam
 
-    if (this._dirty || this.frame - this._lastSelect >= SELECT_EVERY_FRAMES) {
+    const since = this.frame - this._lastSelect
+    if (since >= SELECT_EVERY_FRAMES || (this._dirty && since >= MIN_SELECT_FRAMES)) {
       this._select(cam)
       this._lastSelect = this.frame
       this._dirty = false
@@ -936,17 +953,15 @@ export class TerrainV2 {
     // wants to show as "the workers are the bound right now".
     this.stats.workerBusy01 = this.inFlight / this._inFlightCap
     this.stats.triDeg = LOD.triDeg
-    this.stats.profileDeg = SKYLINE.on ? SKYLINE.profileDeg : null
-    // The last REBUILD, not the last selection: build() returns early when she has
-    // not moved, so this holding still while she turns is the cache working rather
-    // than the number going stale.
-    this.stats.horizonMs = this._horizon.lastMs
   }
 
   /**
-   * Force a reselection on the next update instead of waiting out
+   * Force a reselection within MIN_SELECT_FRAMES instead of waiting out
    * SELECT_EVERY_FRAMES. LOD.triDeg is read inside _select, so a panel slider that
    * only mutated it would look dead for up to six frames.
+   *
+   * The flag is sticky, so an invalidate landing inside the floor is deferred,
+   * never dropped.
    */
   invalidate() {
     this._dirty = true
@@ -955,15 +970,7 @@ export class TerrainV2 {
   _select(cam) {
     if (!cam) throw new Error('TerrainV2.update: no camera')
     this._cam = cam
-    // The horizon table is a function of the eye POSITION and selection is its only
-    // reader, so it is rebuilt here rather than per frame -- and build() no-ops
-    // under 4 m of movement, which is what makes standing still or turning on the
-    // spot free. Left null without a y: an elevation-angle table cannot be built
-    // from a ground position and build() throws on one, so a caller holding only
-    // x/z keeps the two-target rule instead of taking the whole frame down.
-    const skyline = SKYLINE.on && cam.y !== undefined ? this._horizon : null
-    if (skyline) skyline.build(cam)
-    const desired = selectNodes(cam, { maxDepth: MAX_DEPTH, info: this.info, skyline })
+    const desired = selectNodes(cam, { maxDepth: MAX_DEPTH, info: this.info })
     const render = new Set()
     const standIns = new Set()
     const queue = []
@@ -1136,16 +1143,24 @@ export class TerrainV2 {
     // question from `deepest` and the one the panel asks. See the note on
     // cellUnderfoot in the stats block.
     let underfoot = -1
+    // Both cones below are meaningless without a heading, so a caller that hands
+    // us only a ground position gets the whole selection and correct terrain.
+    const haveYaw = cam.yaw !== undefined
+    const cullHalf = haveYaw && this.cullDeg !== null ? this.cullDeg : null
     for (const [key, entry] of this.cache) {
       if (!entry.slot) continue
-      const want = render.has(key)
+      const n = entry.node
+      // Selected AND, if a cull cone is configured, pointing the right way. The
+      // cone is applied to VISIBILITY only, never to selection or streaming --
+      // the chunk stays resident and keeps its slot, so turning around costs a
+      // setVisibleAt and not a round trip through the mesher.
+      const want = render.has(key) && (cullHalf === null || inCone(cam, n.x, n.z, n.size, cullHalf))
       if (entry.visible !== want) {
         entry.visible = want
         this.batch.setVisibleAt(entry.slot.instanceId, want)
       }
       if (!want) continue
       tris += entry.tris
-      const n = entry.node
       if (n.depth > deepest) deepest = n.depth
       // n.x/n.z are the node's MIN corner (quadtree-v2.js selectNodes), so this
       // is a half-open box test and exactly one drawn chunk per depth can match.
@@ -1155,7 +1170,7 @@ export class TerrainV2 {
       // Mirrors what BatchedMesh's per-instance culling will do on the GPU. It is
       // recomputed here rather than read back because there is nothing to read
       // back -- the cull happens during render, after this runs.
-      if (cam.yaw === undefined || inCone(cam, n.x, n.z, n.size, EYE_HALF_ANGLE)) drawn += entry.tris
+      if (!haveYaw || inCone(cam, n.x, n.z, n.size, EYE_HALF_ANGLE)) drawn += entry.tris
     }
     this.stats.tris = tris
     this.stats.drawnTris = drawn

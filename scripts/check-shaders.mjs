@@ -313,6 +313,20 @@ ${COLOR_FNS}
 // real source and pass shaders the browser rejects. `batched: false` covers the
 // gen-*.html editors, which put the same material on a plain Mesh -- a real
 // second path, because the snow patch branches on USE_BATCHING.
+//
+// A BATCH ALSO CARRIES A COLOUR TEXTURE here, because every scatter calls
+// setColorAt and because the LOD dissolve reads its alpha (material.js) -- so
+// USE_BATCHING_COLOR is what compiles FADE_VERTEX at all, and without it this
+// harness was type-checking the dissolve by not looking at it.
+//
+// The FRAGMENT half of that pair is USE_COLOR_ALPHA and NOT USE_COLOR, which is
+// the shape three hands us today: r181 and the fork A-Frame 1.8 ships make the
+// per-instance colour a vec4 and define USE_COLOR_ALPHA for any batch with a
+// colour texture, where r180 defined USE_COLOR and kept vColor a vec3. Modelling
+// the newer rule is the point -- it is what makes `diffuseColor *= vColor` reach
+// diffuseColor.a, which is what COLOR_FRAGMENT exists to prevent. Three's own
+// chunks are npm's, so this pairing also gives vColor the vec4 it has in both
+// stages of the real program and the cross-stage check stays honest.
 const propDefines = ({ batched = true, vertexColors = false } = {}) => {
   const shared = [
     '#define USE_FOG',
@@ -320,9 +334,10 @@ const propDefines = ({ batched = true, vertexColors = false } = {}) => {
     vertexColors ? '#define USE_COLOR' : '',
     '#define DOUBLE_SIDED',
   ]
+  const batchColor = batched ? '#define USE_COLOR_ALPHA' : ''
   return {
-    vert: [batched ? '#define USE_BATCHING' : '', ...shared],
-    frag: ['#define USE_ALPHATEST', ...shared],
+    vert: [batched ? '#define USE_BATCHING' : '', batched ? '#define USE_BATCHING_COLOR' : '', batchColor, ...shared],
+    frag: ['#define USE_ALPHATEST', batchColor, ...shared],
   }
 }
 
@@ -337,14 +352,23 @@ const atlas = new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1)
 // green on a shader containing none of our code. So each variant names the text
 // it MUST contain, and a missing marker fails as loudly as a syntax error.
 const PROP_MARKS = {
-  vert: ['attribute float texLayer;', 'varying vec2 vMoss;', 'vMoss = vec2(', 'snowRoll', 'mossRoll'],
+  vert: [
+    'attribute float texLayer;', 'varying vec2 vMoss;', 'vMoss = vec2(', 'snowRoll', 'mossRoll',
+    'vPropFade = propFade;',
+  ],
   frag: [
     'uniform sampler2DArray uAtlas;',
+    'float ign( vec2 p )',
     'float blobField( vec3 p )',
     'log( mossLoad',
     'snowNear > 0.004',
     'mossNear > 0.004',
     'normal *= faceDirection;',
+    // The dissolve's alpha channel, defended. If this line is missing, three's
+    // own color_fragment is back and a fading prop is discarded whole by the
+    // alphaTest instead of dithering -- which compiles perfectly and is only
+    // visible from inside the world. See COLOR_FRAGMENT in material.js.
+    'diffuseColor.rgb *= vColor.rgb;',
   ],
 }
 

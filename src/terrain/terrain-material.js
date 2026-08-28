@@ -378,10 +378,16 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // How far each ground tile is allowed to swing its surface. Same units as
     // uStone -- a fraction of the fully-applied contrast field -- and the two
     // differ because the TILES differ, not because grass wants more texture than
-    // snow does: cut-terrain.mjs grades the meadow to a relative sd of 0.30 and
-    // the snowfield to 0.15, so equal weights here would ship half the crumple.
-    // Turn either to 0 to see the noise layers this replaced, which is the
-    // comparison the whole GROUND_METRES block above is making.
+    // snow does: cut-terrain.mjs grades the meadow to a relative sd of 0.60 and
+    // the snowfield to 0.15, so equal weights here would ship a quarter of the
+    // crumple. Turn either to 0 to see the noise layers this replaced, which is
+    // the comparison the whole GROUND_METRES block above is making.
+    //
+    // WHAT SHIPS IS THE PRODUCT of the weight here and that sd, so the meadow
+    // lands at 0.48 and the snowfield at 0.135. Push the CONTRAST from the cut
+    // rather than from here: past 1.0 this mix() extrapolates, and an
+    // extrapolated field goes negative in its low tail, which clamps to black
+    // specks rather than to deep shadow.
     material.userData.uniforms.uGrassTile = { value: 0.8 }
     material.userData.uniforms.uSnowTile = { value: 0.9 }
     material.userData.uniforms.uGrassTileMean = {

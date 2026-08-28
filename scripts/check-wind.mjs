@@ -15,7 +15,7 @@
 
 import * as THREE from 'three'
 
-import { createPropMaterial, WIND_PRESETS, setWind, getWind } from '../src/material.js'
+import { createPropMaterial, WIND_PRESETS, setWind, getWind, setWindEnabled, getWindEnabled } from '../src/material.js'
 import { treeVariants } from '../src/props/tree-bank.js'
 import { FERN_DEFAULTS } from '../src/props/fern.js'
 import { GRASS_BASE } from '../src/props/grass-bank.js'
@@ -225,6 +225,44 @@ console.log('\n=== wind: the three scatters actually opted in ===\n')
   const grass = readFileSync(new URL('../src/v2/render/grass.js', import.meta.url), 'utf8')
   const wired = (grass.match(/wind: 'grass'/g) ?? []).length
   check(wired === 2, 'and grass wires BOTH its beds, so the M key does not stop the wind', `${wired} of 2`)
+}
+
+console.log('\n=== wind: the compile-out switch is a real ablation ===\n')
+
+// setWindEnabled exists so the quest panel can price the wind, and a switch that
+// only LOOKED off would report the wrong price. Three claims, and all three have
+// to hold or the measurement lies: the GLSL is gone, the cache key changed (a
+// shared key hands the second variant whichever program compiled first, so
+// "off" would silently draw the "on" shader), and a material built BEFORE the
+// flip is marked for recompile.
+{
+  const before = createPropMaterial(atlas, { wind: 'grass', stripTiling: true })
+  const onKey = before.customProgramCacheKey()
+  const onVersion = before.version
+
+  setWindEnabled(false)
+  check(getWindEnabled() === false, 'setWindEnabled(false) is observable through getWindEnabled')
+
+  const { src, uniforms } = vertexSource({ billboardLayers: [0, 1, 2], wind: 'tree' })
+  check(!src.includes('uWindStrength') && !src.includes('uWindDir'),
+    'with wind off, a wind-preset material emits no wind GLSL at all')
+  check(uniforms.uWindDir === undefined && uniforms.uWindStrength === undefined,
+    'and binds neither wind uniform')
+
+  const offKey = before.customProgramCacheKey()
+  check(offKey !== onKey, 'and the two states are two program cache keys', `${onKey} vs ${offKey}`)
+  check(before.version > onVersion,
+    'and a material built before the flip is marked for recompile',
+    `version ${onVersion} -> ${before.version}`)
+
+  setWindEnabled(true)
+  const { src: backSrc } = vertexSource({ billboardLayers: [0, 1, 2], wind: 'tree' })
+  check(backSrc.includes('uWindStrength'), 'and flipping back restores the block')
+  check(before.customProgramCacheKey() === onKey, 'and restores the original cache key')
+
+  let threw = false
+  try { setWindEnabled('off') } catch { threw = true }
+  check(threw, 'a non-boolean throws rather than silently compiling the wind out')
 }
 
 console.log(failed === 0 ? '\nall wind checks passed\n' : `\n${failed} CHECK(S) FAILED\n`)

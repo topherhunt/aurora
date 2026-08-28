@@ -2,7 +2,7 @@ import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildCrab, crabTriangles, CRAB_DEFAULTS } from './props/crab.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
-import { CRAB_SHELL, CRAB_LIMB, shellCell, limbCell, CRAB_CELL_PX } from './props/crab-texture.js'
+import { CRAB_SHELL, shellCell, CRAB_CELL_PX } from './props/crab-texture.js'
 import { buildTextureArray, LAYER, TEX_SIZE } from './textures.js'
 import { createPropMaterial } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
@@ -14,9 +14,9 @@ import textureSource from './props/crab-texture.js?raw'
 //
 // Mesh and texture only, matching the scope of props/crab.js -- no LOD ladder,
 // no card, no scatter bank, because none of that exists yet for this prop.
-// Same live-palette idea as gen-mushroom.html: the shell and limb sheets are
-// four numbers in an array, so a colour picker here regenerates a 64 px cell
-// and re-uploads the layer between frames instead of just captioning a PNG.
+// Same live-palette idea as gen-mushroom.html: the sheet is four numbers in
+// an array, so a colour picker here regenerates a 64 px cell and re-uploads
+// the layer between frames instead of just captioning a PNG.
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2
@@ -31,6 +31,7 @@ const SLIDERS = [
   [null, 'shellCurve', 0.8, 5, 0.05, '1 = conical, 2 = domed, 4+ = flat with a shoulder'],
   [null, 'bellyDepth', 0, 0.35, 0.005, 'how far the underside dishes down from the rim'],
   [null, 'bellyCurve', 0.6, 4, 0.05, 'where the belly dish happens across its own radius'],
+  [null, 'shellPentagon', 0, 1, 0.02, '0 = plain ellipse, higher = wider front / tapered rear'],
 
   ['— eyestalks', 'eyeLength', 0.05, 0.7, 0.01, 'relative to shellLength'],
   [null, 'eyeRadius', 0.005, 0.06, 0.002, 'stalk radius'],
@@ -67,12 +68,11 @@ const SLIDERS = [
 const params = { ...CRAB_DEFAULTS }
 
 // --- live palette -------------------------------------------------------
-// Working copies of the two sheets' cell specs, exactly the mushroom bench's
+// Working copy of the sheet's cell specs, exactly the mushroom bench's
 // pattern: edited here, read by nothing else. Shipped colours live in
 // crab-texture.js; copy a hex out of the picker and paste it there to ship it.
 const palette = {
   [LAYER.CRAB_SHELL]: CRAB_SHELL.map((s) => ({ ...s })),
-  [LAYER.CRAB_LIMB]: CRAB_LIMB.map((s) => ({ ...s })),
 }
 
 const hex = (rgb) => '#' + rgb.map((c) => Math.round(c).toString(16).padStart(2, '0')).join('')
@@ -168,7 +168,7 @@ function paintCell(layer, cell, px) {
 let uploadQueued = false
 function repaint(layer, cell) {
   const spec = palette[layer][cell]
-  paintCell(layer, cell, layer === LAYER.CRAB_LIMB ? limbCell(spec) : shellCell(spec))
+  paintCell(layer, cell, shellCell(spec))
   uploadQueued = true
 }
 
@@ -250,14 +250,14 @@ function refresh() {
     ['crab-texture.js (the colour)', fmt(diskBytes.tex)],
     ['total on disk', fmt(src)],
     ['gzipped over the wire', fmt(srcGz), 'ok'],
-    ['2 sheets, in RAM', fmt(2 * LAYER_STRIDE)],
+    ['1 sheet, in RAM', fmt(LAYER_STRIDE)],
     ['extra draw calls', '0', 'ok'],
     ['extra vertex attributes', '0', 'ok'],
   ])
   document.getElementById('memnote').innerHTML =
-    `Not one byte of image ships. A carapace is a mottled colour and a plainer limb tone, ` +
-    `both cheap arithmetic, so storing a photograph of either would be storing the output ` +
-    `of a function -- and the function is up there in the palette, live.`
+    `Not one byte of image ships. A carapace -- and every limb hanging off it -- is a mottled ` +
+    `colour, cheap arithmetic, so storing a photograph of it would be storing the output of a ` +
+    `function -- and the function is up there in the palette, live.`
 
   table(document.getElementById('source'), [
     ['scanned source photographs', '0', 'ok'],
@@ -277,56 +277,49 @@ function drawSheets() {
   ctx.imageSmoothingEnabled = false
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  const sheets = [
-    [LAYER.CRAB_SHELL, 'shell'],
-    [LAYER.CRAB_LIMB, 'limb'],
-  ]
-  const w = canvas.width / sheets.length
+  const w = canvas.width
   const h = canvas.height - 14
 
   const tmp = document.createElement('canvas')
   tmp.width = tmp.height = TEX_SIZE
   const tctx = tmp.getContext('2d')
 
-  sheets.forEach(([layer, name], i) => {
-    const px = layerPixels(layer)
-    const img = new ImageData(TEX_SIZE, TEX_SIZE)
-    for (let j = 0; j < TEX_SIZE * TEX_SIZE; j++) {
-      const o = j * 4
-      const row = TEX_SIZE - 1 - Math.floor(j / TEX_SIZE)
-      const d = (row * TEX_SIZE + (j % TEX_SIZE)) * 4
-      img.data[d] = px[o]
-      img.data[d + 1] = px[o + 1]
-      img.data[d + 2] = px[o + 2]
-      img.data[d + 3] = 255
-    }
-    tctx.putImageData(img, 0, 0)
-    ctx.drawImage(tmp, i * w, 0, w, h)
+  const px = layerPixels(LAYER.CRAB_SHELL)
+  const img = new ImageData(TEX_SIZE, TEX_SIZE)
+  for (let j = 0; j < TEX_SIZE * TEX_SIZE; j++) {
+    const o = j * 4
+    const row = TEX_SIZE - 1 - Math.floor(j / TEX_SIZE)
+    const d = (row * TEX_SIZE + (j % TEX_SIZE)) * 4
+    img.data[d] = px[o]
+    img.data[d + 1] = px[o + 1]
+    img.data[d + 2] = px[o + 2]
+    img.data[d + 3] = 255
+  }
+  tctx.putImageData(img, 0, 0)
+  ctx.drawImage(tmp, 0, 0, w, h)
 
-    ctx.strokeStyle = 'rgba(10,16,26,.55)'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(i * w + w / 2, 0); ctx.lineTo(i * w + w / 2, h)
-    ctx.moveTo(i * w, h / 2); ctx.lineTo(i * w + w, h / 2)
-    ctx.stroke()
+  ctx.strokeStyle = 'rgba(10,16,26,.55)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h)
+  ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2)
+  ctx.stroke()
 
-    const active = layer === LAYER.CRAB_SHELL ? params.shellCell : params.limbCell
-    const cx = i * w + (active % 2) * (w / 2)
-    const cy = (1 - Math.floor(active / 2)) * (h / 2)
-    ctx.strokeStyle = '#c9a227'
-    ctx.lineWidth = 2
-    ctx.strokeRect(cx + 1, cy + 1, w / 2 - 2, h / 2 - 2)
+  const cx = (params.shellCell % 2) * (w / 2)
+  const cy = (1 - Math.floor(params.shellCell / 2)) * (h / 2)
+  ctx.strokeStyle = '#c9a227'
+  ctx.lineWidth = 2
+  ctx.strokeRect(cx + 1, cy + 1, w / 2 - 2, h / 2 - 2)
 
-    ctx.fillStyle = '#7f96b8'
-    ctx.font = '10px monospace'
-    ctx.textAlign = 'center'
-    ctx.fillText(name, i * w + w / 2, canvas.height - 3)
-  })
+  ctx.fillStyle = '#7f96b8'
+  ctx.font = '10px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillText('shell + limbs', w / 2, canvas.height - 3)
 }
 
 document.getElementById('swatchnote').innerHTML =
-  'Shell and limb sheets, 2&times;2 cells each, paired by index -- cell <em>i</em> of the shell ' +
-  'is the same species as cell <em>i</em> of the limb. Gold outlines the two cells this crab wears.'
+  'One sheet, 2&times;2 cells. Carapace and every limb read the same cell -- gold outlines the ' +
+  'one this crab wears.'
 
 // --- controls ---------------------------------------------------------------
 
@@ -407,22 +400,17 @@ function colorRow(label, get, set, help) {
   return c
 }
 
-// Species chips set BOTH cells together -- the shell and limb sheets are
-// paired by index, and a crab wearing shell cell 2 and limb cell 0 would be
-// one species' carapace on another's legs.
-const speciesChips = chipRow('species', (i) => { params.shellCell = i; params.limbCell = i })
-const shellColor = colorRow('shell colour', () => hex(palette[LAYER.CRAB_SHELL][params.shellCell].base), (v) => {
+// One species chip sets the one cell the whole crab wears -- carapace, legs,
+// arms and eyestalks all read it through their own chart.
+const speciesChips = chipRow('species', (i) => { params.shellCell = i })
+const shellColor = colorRow('colour', () => hex(palette[LAYER.CRAB_SHELL][params.shellCell].base), (v) => {
   palette[LAYER.CRAB_SHELL][params.shellCell].base = unhex(v)
   repaint(LAYER.CRAB_SHELL, params.shellCell)
 }, 'repaints the 64 px cell and re-uploads the layer, live')
-const shellAccent = colorRow('shell mottle', () => hex(palette[LAYER.CRAB_SHELL][params.shellCell].accent), (v) => {
+const shellAccent = colorRow('mottle', () => hex(palette[LAYER.CRAB_SHELL][params.shellCell].accent), (v) => {
   palette[LAYER.CRAB_SHELL][params.shellCell].accent = unhex(v)
   repaint(LAYER.CRAB_SHELL, params.shellCell)
 }, 'the blotches over the base colour')
-const limbColor = colorRow('limb colour', () => hex(palette[LAYER.CRAB_LIMB][params.limbCell].base), (v) => {
-  palette[LAYER.CRAB_LIMB][params.limbCell].base = unhex(v)
-  repaint(LAYER.CRAB_LIMB, params.limbCell)
-}, 'legs, pincers and eyestalks all read this cell')
 
 function syncPalette() {
   ;[...speciesChips.children].forEach((b, i) => {
@@ -430,7 +418,6 @@ function syncPalette() {
   })
   shellColor.value = hex(palette[LAYER.CRAB_SHELL][params.shellCell].base)
   shellAccent.value = hex(palette[LAYER.CRAB_SHELL][params.shellCell].accent)
-  limbColor.value = hex(palette[LAYER.CRAB_LIMB][params.limbCell].base)
 }
 
 // --- seed / reset ---------------------------------------------------------
@@ -474,15 +461,10 @@ toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
 
 document.getElementById('reset').addEventListener('click', () => {
   Object.assign(params, CRAB_DEFAULTS, { seed: params.seed })
-  for (const [layer, source] of [
-    [LAYER.CRAB_SHELL, CRAB_SHELL],
-    [LAYER.CRAB_LIMB, CRAB_LIMB],
-  ]) {
-    source.forEach((s, i) => {
-      palette[layer][i] = { ...s }
-      repaint(layer, i)
-    })
-  }
+  CRAB_SHELL.forEach((s, i) => {
+    palette[LAYER.CRAB_SHELL][i] = { ...s }
+    repaint(LAYER.CRAB_SHELL, i)
+  })
   syncSliders()
   syncPalette()
   frame()

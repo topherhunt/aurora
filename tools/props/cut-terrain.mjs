@@ -24,10 +24,19 @@
 //
 //   `spread` IS THE ONLY NUMBER THAT REALLY SHIPS. grade() re-anchors each
 //   channel to mean = target and sd = target * spread, so after the divide the
-//   field has mean 1 and relative sd = `spread` per channel, exactly. 0.30 on
-//   grass is a swing of roughly 0.4x to 1.9x at three sigma, which is the range
-//   between a lit blade and the shadow under it. Snow is a smoother surface and
-//   takes half of that.
+//   field has mean 1 and relative sd = `spread` per channel -- exactly, right up
+//   until the point where the low tail starts clamping at zero, and then the
+//   shipped sd is somewhat under what is asked for here. Snow is a smoother
+//   surface and takes a quarter of what grass takes.
+//
+//   Grass sits at 0.60 because 0.30 was tried first and read as wishy-washy: a
+//   swing of 0.4x to 1.6x is what a photograph of a lawn in flat light contains,
+//   and flat light is exactly the thing that makes a hillside look like painted
+//   cardboard. At 0.60 the shadow under a clump goes properly dark and a lit
+//   blade properly bright, which is what makes the surface read as depth rather
+//   than as a tint. This is the one number to reach for if the ground ever looks
+//   noncommittal again -- and the one to back off if it starts to look like
+//   static.
 //
 //   AND `desaturate` DECIDES HOW MUCH HUE VARIATION SURVIVES. It runs before the
 //   per-channel re-anchor, so at 1.0 the three channels become proportional and
@@ -46,7 +55,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { decode, seam, healWrap, resample, grade, writeTile } from '../buildings/imageops.mjs'
-import { SRGB_TO_LIN } from '../buildings/imageops.mjs'
+import { SRGB_TO_LIN, LIN_TO_SRGB } from '../buildings/imageops.mjs'
 
 const OUT = 'public/terrain'
 const WORK = 'tmp/terrain-src/work'
@@ -65,7 +74,7 @@ const TILES = [
     out: 'grass.png',
     // A mid meadow green. Divided back out by the shader; see the header.
     target: [104, 122, 68],
-    spread: 0.3,
+    spread: 0.6,
     desaturate: 0.55,
     ceiling: 0.72,
   },
@@ -115,5 +124,13 @@ for (const tile of TILES) {
 
   console.log(`  ${tile.out.padEnd(13)} ${N}x${N}  seam u ${seam(img, 'u').toFixed(2)}, v ${seam(img, 'v').toFixed(2)}`)
   console.log(`                linear mean  [${mean.map((v) => v.toFixed(4)).join(', ')}]  <- copy into src/textures.js`)
+
+  // AND THE PLACEHOLDER, WHICH IS THE SAME NUMBER IN sRGB. It is printed rather
+  // than assumed equal to `target` because once the low tail clamps at zero the
+  // graded mean rises off the target, and a placeholder still set to the target
+  // would make the world visibly change colour the moment the PNG decodes.
+  const fill = mean.map((v) => Math.round(LIN_TO_SRGB(v) * 255))
+  console.log(`                placeholder  [${fill.join(', ')}]  <- and this one, beside it`)
+
   console.log(`                field sd     ${sd.map((v, c) => (v / mean[c]).toFixed(3)).join(' ')} relative -- the swing the surface gets`)
 }

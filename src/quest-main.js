@@ -32,7 +32,8 @@ import { buildTextureArray, loadImageLayers } from './textures.js'
 import { buildTreeBank, bakeTreeImpostors } from './props/tree-bank.js'
 import { buildRock } from './props/rock.js'
 import { ROCK_NAMES, rockParams } from './props/rock-bank.js'
-import { createPropMaterial } from './material.js'
+import { buildGrassStripBank, STRIP_BASE, STRIP_TILE_ASPECT, GRASS_HEIGHT_REF } from './props/grass-bank.js'
+import { createPropMaterial, setPropClock } from './material.js'
 
 function hash(x, z) { const n = Math.sin(x * 127.1 + z * 311.7) * 43758.5453; return n - Math.floor(n) }
 function noise(x, z) {
@@ -108,7 +109,7 @@ AFRAME.registerComponent('quest-features', {
     })
 
     const state = {
-      billboardCount: 0, treeCount: 0, boulderCount: 0,
+      billboardCount: 0, treeCount: 0, boulderCount: 0, grassCount: 0,
       inward: false, masked: true, terrain: false, lit: false, terrainScale: 128, vertices: 64,
       lakes: false, reflection: false, sky: false, treeMode: 'individual', billboardMode: 'individual',
     }
@@ -197,14 +198,18 @@ AFRAME.registerComponent('quest-features', {
       mesh.material.needsUpdate = true
     }
 
-    const panelBg = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 3.9), new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: .94, side: THREE.DoubleSide }))
-    panelBg.position.set(0, .7, 0)
+    // Grew by one row's .24 when the grass row landed. The CENTRE moves by half
+    // that, not the top: the title and the count line above it are positioned
+    // absolutely, so an extension has to open downward or it slides out from
+    // under them.
+    const panelBg = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 4.14), new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: .94, side: THREE.DoubleSide }))
+    panelBg.position.set(0, .58, 0)
     panel.add(panelBg)
     const panelTitle = new THREE.Mesh(new THREE.PlaneGeometry(2.0, .39), new THREE.MeshBasicMaterial({ map: statsTexture(0, 0, sceneEl.renderer?.info ?? { render: { calls: 0 }, memory: { geometries: 0, textures: 0 } }), side: THREE.DoubleSide, transparent: true, toneMapped: false }))
     panelTitle.position.set(0, 2.55, .04)
     panel.add(panelTitle)
     panelLabel('quest feature panel', 2.20)
-    panelLabel('billboards (0)  trees (0)  boulders (0)', 1.96)
+    panelLabel('billboards (0)  trees (0)  boulders (0)  grass (0)', 1.96)
     // Two-column rows (width .92, x +-.48) keep the panel from growing too
     // tall to read comfortably in-headset -- everything that fits a short
     // on/off or mode label pairs up; only labels needing the full width
@@ -213,21 +218,26 @@ AFRAME.registerComponent('quest-features', {
       ['billboard+', 'billboards +', 1.72, { width: .76, x: -.42 }], ['billboard-', 'billboards -', 1.72, { width: .76, x: .42 }],
       ['tree+', 'trees +', 1.48, { width: .76, x: -.42 }], ['tree-', 'trees -', 1.48, { width: .76, x: .42 }],
       ['boulder+', 'boulders +', 1.24, { width: .76, x: -.42 }], ['boulder-', 'boulders -', 1.24, { width: .76, x: .42 }],
-      ['treeMode', 'trees: individual', 1.00, { width: .92, x: -.48 }],
-      ['billboardMode', 'boards: individual', 1.00, { width: .92, x: .48 }],
-      ['terrain', 'terrain: flat card', .76],
-      ['scale+', 'scale x2', .52, { width: .76, x: -.42 }], ['scale-', 'scale /2', .52, { width: .76, x: .42 }],
-      ['verts+', 'verts x2', .28, { width: .76, x: -.42 }], ['verts-', 'verts /2', .28, { width: .76, x: .42 }],
-      ['lighting', 'lighting: off', .04, { width: .92, x: -.48 }],
-      ['masked', 'masked: on', .04, { width: .92, x: .48 }],
-      ['inward', 'inward: off', -.20, { width: .92, x: -.48 }],
-      ['lakes', 'lakes: off', -.20, { width: .92, x: .48 }],
-      ['reflection', 'cubemap reflection: off', -.44],
-      ['sky', 'sky + day/night: off', -.68, { width: 1.4, x: -.2 }],
-      ['skip5h', '+5h', -.68, { width: .5, x: .86 }],
+      // Grass says x2 / /2 where the three rows above say + / -, and they are
+      // the same doubling. The labels differ because grass is the one counter
+      // whose interesting range spans two orders of magnitude, so the step being
+      // multiplicative is the thing you need to know before you press it.
+      ['grass+', 'grass x2', 1.00, { width: .76, x: -.42 }], ['grass-', 'grass /2', 1.00, { width: .76, x: .42 }],
+      ['treeMode', 'trees: individual', .76, { width: .92, x: -.48 }],
+      ['billboardMode', 'boards: individual', .76, { width: .92, x: .48 }],
+      ['terrain', 'terrain: flat card', .52],
+      ['scale+', 'scale x2', .28, { width: .76, x: -.42 }], ['scale-', 'scale /2', .28, { width: .76, x: .42 }],
+      ['verts+', 'verts x2', .04, { width: .76, x: -.42 }], ['verts-', 'verts /2', .04, { width: .76, x: .42 }],
+      ['lighting', 'lighting: off', -.20, { width: .92, x: -.48 }],
+      ['masked', 'masked: on', -.20, { width: .92, x: .48 }],
+      ['inward', 'inward: off', -.44, { width: .92, x: -.48 }],
+      ['lakes', 'lakes: off', -.44, { width: .92, x: .48 }],
+      ['reflection', 'cubemap reflection: off', -.68],
+      ['sky', 'sky + day/night: off', -.92, { width: 1.4, x: -.2 }],
+      ['skip5h', '+5h', -.92, { width: .5, x: .86 }],
     ]
     for (const [key, text, y, opts] of keys) panelButton(key, text, y, opts)
-    const flyLabel = panelLabel('locomotion: walk (A/X to fly)', -1.00)
+    const flyLabel = panelLabel('locomotion: walk (A/X to fly)', -1.24)
 
     // --- terrain / scatter --------------------------------------------------
     const groundTexture = grassTexture(sceneEl.renderer)
@@ -326,15 +336,19 @@ AFRAME.registerComponent('quest-features', {
     let treeGeometries = null
     let propMaterial = null
     let rockMaterial = null
+    let grassMaterial = null
+    let grassStripGeometry = null
 
     function clearContent() {
       while (content.children.length) {
         const o = content.children.pop()
-        // treeBillboardGeometry is shared (unlike trees, billboard meshes/
-        // instances reuse it directly rather than cloning per-instance) --
-        // disposing it here would destroy it out from under every future
-        // rebuild, since it's never rebuilt itself.
-        o.traverse((n) => { if (n.geometry && n.geometry !== treeBillboardGeometry) n.geometry.dispose() })
+        // treeBillboardGeometry and grassStripGeometry are shared (unlike trees,
+        // these are reused directly rather than cloned per-instance) --
+        // disposing either here would destroy it out from under every future
+        // rebuild, since neither is ever rebuilt itself.
+        o.traverse((n) => {
+          if (n.geometry && n.geometry !== treeBillboardGeometry && n.geometry !== grassStripGeometry) n.geometry.dispose()
+        })
       }
     }
 
@@ -371,6 +385,108 @@ AFRAME.registerComponent('quest-features', {
         content.add(m)
       }
       for (let i = 0; i < state.boulderCount; i++) makeBoulder(i)
+      placeGrass()
+    }
+
+    // -----------------------------------------------------------------------
+    // THE GRASS STRIP BED, and why it is a DISC AT FIXED RADIUS rather than a
+    // scatter over the arena like every other prop here.
+    //
+    // Every other counter on this panel spreads its props over the full 124 m
+    // arena, so doubling the count doubles the number of distant objects and the
+    // question it answers is "how many draws/triangles can this thing take".
+    // That is the wrong question for grass. A strip bed is two triangles per
+    // instance -- the triangle bill is never the problem -- and what actually
+    // has to be measured is SCREEN COVERAGE: metres of alpha-tested card per
+    // metre of ground, right where the player is standing.
+    //
+    // So the radius is FIXED and the count is the variable, which makes each
+    // press a doubling of DENSITY. v2/render/grass.js runs 3 strips/m2 inside
+    // its full-density radius, so this disc at 20 m (1,257 m2) hits the shipped
+    // density at ~3,800 strips -- five presses from the 256 the first press
+    // gives. Walk to the edge of the disc and watch the frame time: if it
+    // recovers as the carpet leaves the lower half of your view, the bed is
+    // fill-bound, and no amount of instance-count work will help it.
+    //
+    // FIRST PRESS IS 256, not the 2 the other counters start at, because 2
+    // strips in a 1,257 m2 disc is not a picture of anything.
+    const GRASS_RADIUS = 20
+    const GRASS_FIRST = 256
+
+    function grassXZ(i) {
+      // sqrt on the radius roll, or the scatter piles up in the middle: area
+      // grows as r^2, so a uniform roll on r puts half the strips in the inner
+      // quarter of the disc and the density this rig exists to control would
+      // vary by 4x across it.
+      const r = Math.sqrt(hash(i, 40)) * GRASS_RADIUS
+      const a = hash(i, 41) * Math.PI * 2
+      let x = Math.cos(a) * r
+      let z = Math.sin(a) * r
+      // Same push the other props take, and it matters more here: a strip is a
+      // 4 m wall of cutout and a bed of them growing through the panel is a rig
+      // you cannot read the numbers off.
+      const dx = x - panel.position.x, dz = z - panel.position.z
+      const d = Math.hypot(dx, dz)
+      if (d < PANEL_CLEARANCE) {
+        const t = d > 1e-4 ? Math.atan2(dz, dx) : hash(i, 42) * Math.PI * 2
+        x = panel.position.x + Math.cos(t) * PANEL_CLEARANCE
+        z = panel.position.z + Math.sin(t) * PANEL_CLEARANCE
+      }
+      return [x, z]
+    }
+
+    // One InstancedMesh, the real strip geometry, the real stripTiling material.
+    // Anything less faithful would measure a different shader than the one the
+    // game runs -- the textureGrad, the per-tile hash and the three discards in
+    // STRIP_SAMPLE are the whole thing under test, and they only exist when
+    // createPropMaterial is asked for stripTiling.
+    //
+    // InstancedMesh and not BatchedMesh on purpose: it takes three's per-instance
+    // frustum sweep and the matrices-texture re-upload off the table, so whatever
+    // this rig measures is the DRAW, not the CPU bookkeeping around it. If the
+    // arena tanks at the same density the game does, the batch was never the
+    // problem.
+    function placeGrass() {
+      if (!state.grassCount || !grassStripGeometry) return
+      // The shipped grass material is DoubleSide, so `inward: on` is the
+      // game-faithful setting and `inward: off` halves the rasterised area.
+      // Left wired to the toggle rather than pinned, because that halving is
+      // itself one of the cheapest fill measurements on the panel.
+      grassMaterial.side = side()
+      grassMaterial.alphaTest = state.masked ? .5 : 0
+      grassMaterial.needsUpdate = true
+
+      const im = new THREE.InstancedMesh(grassStripGeometry, grassMaterial, state.grassCount)
+      const m4 = new THREE.Matrix4()
+      const q = new THREE.Quaternion()
+      const e = new THREE.Euler(0, 0, 0, 'YZX')
+      const pos = new THREE.Vector3()
+      const scaleVec = new THREE.Vector3()
+      for (let i = 0; i < state.grassCount; i++) {
+        const [x, z] = grassXZ(i)
+        // The shipped bed rolls height over its own STRIP_HEIGHT, which is
+        // derived from the tuft bed's mean and lives private to
+        // v2/render/grass.js. GRASS_HEIGHT_REF is the exported range that one is
+        // pinned to at the top end, and it is close enough for a fill test: what
+        // this rig is measuring is card area, and the two ranges differ by 8 cm
+        // at the short end.
+        const h = GRASS_HEIGHT_REF[0] + hash(i, 43) * (GRASS_HEIGHT_REF[1] - GRASS_HEIGHT_REF[0])
+        const sy = h / STRIP_BASE.height
+        // 3 to 6 tiles, matching STRIP_TILES. The x scale IS the tile count --
+        // see the note in v2/render/grass.js: the vertex stage reads the
+        // instance's own x/y scale ratio and rescales the baked uvProj.x by it,
+        // so this one line is what makes a strip three clumps long or six.
+        const nTiles = 3 + Math.floor(hash(i, 44) * 4)
+        const sx = (sy * nTiles * STRIP_BASE.height * STRIP_TILE_ASPECT) / STRIP_BASE.width
+        e.set(0, hash(i, 45) * Math.PI * 2, 0)
+        q.setFromEuler(e)
+        pos.set(x, heightAt(x, z), z)
+        scaleVec.set(sx, sy, sx)
+        im.setMatrixAt(i, m4.compose(pos, q, scaleVec))
+      }
+      im.instanceMatrix.needsUpdate = true
+      im.userData.triangleCount = (grassStripGeometry.index.count / 3) * state.grassCount
+      content.add(im)
     }
     // Billboards share the real tree-bank's impostor geometry/atlas material,
     // same as trees -- 'individual' is one draw call per billboard;
@@ -504,7 +620,7 @@ AFRAME.registerComponent('quest-features', {
       for (const m of panelMeshes) {
         const k = m.userData.key
         let t = null
-        if (k === 'billboard+' || k === 'billboard-' || k === 'tree+' || k === 'tree-' || k === 'boulder+' || k === 'boulder-') continue // static "+ / -" labels
+        if (k === 'billboard+' || k === 'billboard-' || k === 'tree+' || k === 'tree-' || k === 'boulder+' || k === 'boulder-' || k === 'grass+' || k === 'grass-') continue // static "+ / -" labels
         if (k === 'treeMode') t = `trees: ${state.treeMode}`
         if (k === 'billboardMode') t = `boards: ${state.billboardMode}`
         if (k === 'terrain') t = `terrain: ${state.terrain ? 'perlin' : 'flat card'}`
@@ -521,14 +637,14 @@ AFRAME.registerComponent('quest-features', {
       }
     }
     function updateLabels() {
-      setPanelMap(panelLabels[1], `billboards (${state.billboardCount})  trees (${state.treeCount})  boulders (${state.boulderCount})`, null, '#8fd48f')
+      setPanelMap(panelLabels[1], `billboards (${state.billboardCount})  trees (${state.treeCount})  boulders (${state.boulderCount})  grass (${state.grassCount})`, null, '#8fd48f')
       const errorLine = runtimeError ? ` -- RUNTIME ERROR: ${runtimeError.message}` : assetError ? ` -- assets FAILED (${assetStage})` : assetsReady ? '' : ` -- loading assets: ${assetStage}`
       setPanelMap(panelLabels[0], `quest feature panel${errorLine}`, null, runtimeError || assetError ? '#ff9a7a' : '#8fd48f')
     }
 
     // --- key handling --------------------------------------------------------
     const CONTENT_KEYS = new Set([
-      'billboard+', 'billboard-', 'tree+', 'tree-', 'boulder+', 'boulder-',
+      'billboard+', 'billboard-', 'tree+', 'tree-', 'boulder+', 'boulder-', 'grass+', 'grass-',
       'treeMode', 'billboardMode', 'terrain', 'scale+', 'scale-', 'verts+', 'verts-',
       'lighting', 'masked', 'inward', 'lakes', 'reflection',
     ])
@@ -539,6 +655,11 @@ AFRAME.registerComponent('quest-features', {
       if (key === 'tree-') state.treeCount = state.treeCount <= 1 ? 0 : Math.floor(state.treeCount / 2)
       if (key === 'boulder+') state.boulderCount = state.boulderCount === 0 ? 2 : state.boulderCount * 2
       if (key === 'boulder-') state.boulderCount = state.boulderCount <= 1 ? 0 : Math.floor(state.boulderCount / 2)
+      // Starts at GRASS_FIRST rather than 2 because two strips in a 20 m disc is
+      // not a measurement, it is a rounding error. The interesting range starts
+      // three doublings above where the other counters start.
+      if (key === 'grass+') state.grassCount = state.grassCount === 0 ? GRASS_FIRST : state.grassCount * 2
+      if (key === 'grass-') state.grassCount = state.grassCount <= 1 ? 0 : Math.floor(state.grassCount / 2)
       if (key === 'treeMode') state.treeMode = state.treeMode === 'individual' ? 'instanced' : 'individual'
       if (key === 'billboardMode') state.billboardMode = state.billboardMode === 'individual' ? 'instanced' : 'individual'
       if (key === 'terrain') state.terrain = !state.terrain
@@ -680,6 +801,10 @@ AFRAME.registerComponent('quest-features', {
       const dt = Math.min(.1, Math.max(0, (now - lastFrame) / 1000))
       lastFrame = now
       if (state.sky) applySky(dt)
+      // Drives the grass material's wind. Unconditional: the arena is a
+      // like-for-like rig, and a still strip bed would be measuring a shader
+      // the game never runs.
+      setPropClock(now / 1000)
 
       // Ground-follow: movement-controls only moves the rig in XZ (plus Y
       // while flying), so without this the rig stayed pinned to y=0 no
@@ -752,6 +877,20 @@ AFRAME.registerComponent('quest-features', {
           const rockPatch = rockMaterial.onBeforeCompile
           rockMaterial.onBeforeCompile = (shader, object) => { rockPatch(shader, object); wrapLambert(shader) }
           rockMaterial.customProgramCacheKey = () => 'quest-rock-array-wrap-v1'
+          // The grass material is deliberately the GAME's grass material, strip
+          // tiling and wind and all -- an arena that drew grass through the
+          // plain propMaterial would prove nothing, because the plain material
+          // is exactly what the strip shader is suspected of being more
+          // expensive than. Same wrapLambert wrap as the other two so the
+          // `lighting` toggle reaches it too.
+          grassMaterial = createPropMaterial(propAtlas, { stripTiling: true, wind: 'grass' })
+          const grassPatch = grassMaterial.onBeforeCompile
+          grassMaterial.onBeforeCompile = (shader, object) => { grassPatch(shader, object); wrapLambert(shader) }
+          grassMaterial.customProgramCacheKey = () => 'quest-grass-strip-wrap-v1'
+          assetStage = 'building grass strip bank'
+          // tiers[0] is the near tier -- the full-detail strip card, which is
+          // the one whose fragment cost is in question. Needs no renderer.
+          grassStripGeometry = buildGrassStripBank().tiers[0].geometry
           assetsReady = true
           rebuild() // re-run now that treeGeometries/propMaterial/rockMaterial exist
         })

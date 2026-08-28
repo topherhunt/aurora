@@ -594,6 +594,17 @@ export class WorldLighting {
    * `cacheKey` must be distinct per material, because three keys its program
    * cache on it and two differently-patched Lamberts would otherwise share a
    * compiled program.
+   *
+   * IT IS COMPOSED WITH WHATEVER KEY THE MATERIAL ALREADY HAD, not substituted
+   * for it, and that is not tidiness. createPropMaterial builds a key that
+   * varies with the things it compiles in and out -- billboard layers, strip
+   * tiling, and whether the wind block is present at all (setWindEnabled).
+   * Replacing that key pins the material to ONE entry in three's program cache,
+   * so `material.needsUpdate = true` re-runs onBeforeCompile, three looks the
+   * result up under the unchanged key, finds the program it compiled the first
+   * time and hands that back. The new source is never compiled and the toggle
+   * silently does nothing -- which is exactly how the /?quest wind switch came
+   * to read "no difference" on a headset.
    */
   patch(material, { mode, cacheKey, worldPosVarying = null }) {
     if (mode !== 'fragment' && mode !== 'vertex') throw new Error(`patch: bad mode ${mode}`)
@@ -646,7 +657,8 @@ export class WorldLighting {
       }
     }
 
-    material.customProgramCacheKey = () => cacheKey
+    const prevKey = material.customProgramCacheKey
+    material.customProgramCacheKey = () => `${cacheKey}|${prevKey.call(material)}`
     return material
   }
 

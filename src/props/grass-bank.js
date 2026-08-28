@@ -120,19 +120,30 @@ export function grassCardMean([lo, hi] = GRASS_HEIGHT_REF) {
 /** 0.635 m wide by 1.0 m tall. What one clump of grass IS in this world. */
 export const GRASS_CLUMP = grassCardMean()
 
-// Cards per tier, finest first. 3 / 2 / 1 is the manifest's ladder and the
-// bottom of it is the interesting entry: ONE plane is only legal because the
-// vertex shader turns it (see billboardVertex in material.js). A fixed single
-// quad seen along its own plane covers no pixels at all.
+// Cards per tier, finest first: the crossed clump, then the billboard, and
+// nothing in between. ONE plane is only legal because the vertex shader turns
+// it (see billboardVertex in material.js) -- a fixed single quad seen along its
+// own plane covers no pixels at all.
 //
-// There is no fourth tier and no "coarser mesh" below the billboard. A tuft
-// is already 6 triangles at its finest; the entire ladder spans 6 -> 2, and the
-// only thing left to cut after that is the instance itself, which is what the
-// graded thinning in render/grass.js does instead.
+// THE MIDDLE 2-PLANE TIER IS GONE, and dropping it is a saving on both axes at
+// once. Two quads at a random azimuth show, on average, 2 * (2/pi) = 1.27 quads
+// of facing area for 4 triangles; a billboard shows a full one for 2. So the
+// swap is half the triangles AND about a fifth less rasterised area, over the
+// 8-to-20 m ring, which is a large slice of the bed. Fill is what a mobile GPU
+// runs out of first, so that second number is the one that matters.
+//
+// It is a saving on LOOKS too, which is the part that is easy to disbelieve. A
+// randomly-yawed card goes edge-on to the player some of the time and is
+// invisible when it does; a billboard never does. A ring of billboards reads as
+// denser than the same ring of crossed cards while drawing fewer of them.
+//
+// There is no coarser mesh below the billboard. A tuft is already 6 triangles at
+// its finest; the ladder spans 6 -> 2, and the only thing left to cut after that
+// is the instance itself, which is what the graded thinning in render/grass.js
+// does instead.
 export const GRASS_TIERS = [
   { name: 'LOD0', planes: 3 },
-  { name: 'LOD1', planes: 2 },
-  { name: 'LOD2', planes: 1, billboard: true },
+  { name: 'LOD1', planes: 1, billboard: true },
 ]
 
 // How far the top of a card is turned from its base, about the tuft's own axis.
@@ -158,6 +169,41 @@ const TUFT_TWIST_DEG = 22
 
 /** The twist in radians, exported so scripts/check-grass.mjs gates the shape. */
 export const TUFT_TWIST = (TUFT_TWIST_DEG * Math.PI) / 180
+
+// SPLAY: the cards lean OUTWARD from a gathered base, so a tuft reads as one
+// plant instead of three flats meeting at a hub.
+//
+// Straight-up cards on a regular polygon give the tuft the same footprint at the
+// root as at the tip, which is the shape of nothing that grows: real grass comes
+// out of one crown and opens as it rises. At three planes the straight prism is
+// also the specific silhouette this was reported as -- a Triforce, three
+// verticals with a hole in the middle -- because the base edges are as far apart
+// as the tops and the eye can see daylight between them at every height.
+//
+// HOW IT IS APPLIED, and the choice matters for the bake. The TOP ring keeps the
+// full `width / 2` and the BASE ring is pulled in to `width / 2 - height *
+// tan(splay)`, rather than opening the top outward or splitting the difference.
+// That leaves the tuft's bounding circle exactly `width` -- which is what
+// bakeGrassImpostor frames the camera to, so the photograph still contains the
+// whole plant. Splaying about the middle would put the tips outside the frame
+// and crop them, and the crop would show up only in the far tier, where it is
+// hardest to notice and hardest to explain.
+//
+// The card becomes a TRAPEZOID (narrower at the root), not a rotated rectangle
+// the way the twist leaves it. That is deliberate and it is free for the same
+// reason the twist is: uvProj is an explicit 0..1 UV, so pulling the two bottom
+// corners together compresses the cutout toward the stem instead of shearing it
+// -- which is the direction real blades go anyway.
+//
+// 20 degrees at the default 0.55 x 0.55 tuft pulls the base circumradius from
+// 0.275 m to 0.075 m: a tight crown under a full-width canopy. The hard ceiling
+// is the angle at which the base radius reaches zero (45 degrees at this aspect,
+// where all three cards meet in a point); buildGrassTuft throws past it rather
+// than folding the polygon inside out.
+const TUFT_SPLAY_DEG = 20
+
+/** The splay in radians, exported so scripts/check-grass.mjs gates the shape. */
+export const TUFT_SPLAY = (TUFT_SPLAY_DEG * Math.PI) / 180
 
 /**
  * A grass tuft: `planes` quads seated at y = 0, in the batch's attribute layout.
@@ -199,17 +245,31 @@ export const TUFT_TWIST = (TUFT_TWIST_DEG * Math.PI) / 180
  * 20 m boundary, and at this density that boundary has a few thousand tufts
  * sitting on it. One normal for the ladder, no swap artefact.
  *
- * @param {number} width  footprint DIAMETER -- the circle the cards inscribe
+ * @param {number} width  footprint DIAMETER at the TOP -- the circle the tips
+ *   inscribe, and the tuft's bounding circle at any splay. See TUFT_SPLAY.
  * @param {number} twist  radians the top edge is turned from the base edge
+ * @param {number} splay  radians the cards lean outward from a gathered base
  */
-function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
+function buildGrassTuft(width, height, layer, planes, { twist = 0, splay = 0 } = {}) {
   const n = Math.max(1, Math.round(planes))
   const r = width / 2
 
-  // The base edges, as pairs of xz points. The polygon is phased so that one
-  // edge is square-on to +z, which is the azimuth bakeGrassImpostor photographs
-  // from -- that is the tuft's widest profile, so the card gets the fullest
-  // silhouette on offer rather than a vertex-on one.
+  // How far in the base ring sits from the top ring. Only a polygon can splay:
+  // at n < 3 the cards cross through the centre, so pulling their feet in gives
+  // an hourglass rather than a crown and there is no gathered base to make.
+  const inset = n >= 3 ? height * Math.tan(splay) : 0
+  const rBase = r - inset
+  if (rBase <= 0) {
+    throw new Error(
+      `buildGrassTuft: splay ${((splay * 180) / Math.PI).toFixed(1)} deg collapses the base of a ` +
+      `${width.toFixed(3)} x ${height.toFixed(3)} tuft (base radius ${rBase.toFixed(3)})`
+    )
+  }
+
+  // The card edges, as pairs of xz points at the TOP ring's radius. The polygon
+  // is phased so that one edge is square-on to +z, which is the azimuth
+  // bakeGrassImpostor photographs from -- that is the tuft's widest profile, so
+  // the card gets the fullest silhouette on offer rather than a vertex-on one.
   const edges = []
   if (n >= 3) {
     const v = []
@@ -227,6 +287,10 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
     }
   }
 
+  // Base ring / top ring. Scaling the whole ring keeps the base polygon regular
+  // and concentric, so every card leans out by the same angle.
+  const k = rBase / r
+
   const positions = []
   const normals = []
   const uvs = []
@@ -240,16 +304,20 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
     // Every other card reads its u backwards, so the same 128 px cutout does not
     // repeat verbatim inside one tuft. Same trick as buildImpostorCard's.
     const flip = i % 2 === 1
-    // The top edge is the base edge turned about the tuft's axis. A rotation,
-    // so the top edge is exactly as long as the base and the card is warped
-    // rather than stretched -- and the tuft's bounding circle is untouched,
-    // which is what keeps the bake framing correct at any twist.
+    // The top edge is the edge as given, turned about the tuft's axis. A
+    // rotation, so it stays exactly the width the polygon was built at and the
+    // tuft's bounding circle is untouched -- which is what keeps the bake
+    // framing correct at any twist.
     const ta = [a[0] * ct - a[1] * st, a[0] * st + a[1] * ct]
     const tb = [b[0] * ct - b[1] * st, b[0] * st + b[1] * ct]
+    // ...and the base edge is the same edge pulled in toward the axis by the
+    // splay, which is the only place the two rings differ in size.
+    const ba = [a[0] * k, a[1] * k]
+    const bb = [b[0] * k, b[1] * k]
     // v = 0 at the top -- see the note by flipY in bakeImpostor.
     const corners = [
-      [a[0], 0, a[1], 0, 1],
-      [b[0], 0, b[1], 1, 1],
+      [ba[0], 0, ba[1], 0, 1],
+      [bb[0], 0, bb[1], 1, 1],
       [tb[0], height, tb[1], 1, 0],
       [ta[0], height, ta[1], 0, 0],
     ]
@@ -272,6 +340,7 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
   geo.computeBoundingSphere()
   geo.userData.tuft = {
     width, height, planes: n, layer, triangles: n * 2, twist, polygon: n >= 3,
+    splay: n >= 3 ? splay : 0, baseWidth: 2 * rBase,
   }
   return geo
 }
@@ -495,12 +564,15 @@ export function buildGrassBank({ height = GRASS_BASE.height } = {}) {
     // by texture layer and nothing else. See LAYER.IMPOSTOR_GRASS.
     const layer = billboard ? LAYER.IMPOSTOR_GRASS : LAYER.GRASS_TUFT
     const size = billboard ? ext : frame
-    // The card is NOT twisted, and it is the one tier that must not be. It is a
-    // photograph of the tuft, so the twist is already in the picture; twisting
-    // the quad the picture hangs on would apply it a second time, and would do
-    // it to a surface the vertex shader is busy turning to face the camera.
+    // The card is NEITHER twisted NOR splayed, and it is the one tier that must
+    // be neither. It is a photograph of the tuft, so both are already in the
+    // picture; applying them to the quad the picture hangs on would apply them a
+    // second time, and would do it to a surface the vertex shader is busy
+    // turning to face the camera. (The splay would not even survive: a single
+    // plane is n < 3, where buildGrassTuft ignores it anyway.)
     const geometry = buildGrassTuft(size.width, size.height, layer, planes, {
       twist: billboard ? 0 : TUFT_TWIST,
+      splay: billboard ? 0 : TUFT_SPLAY,
     })
     bytes += geometryBytes(geometry)
     return { name, planes, billboard, layer, geometry, triangles: planes * 2 }
@@ -549,7 +621,7 @@ export function bakeGrassImpostor(renderer, texArray, { height = GRASS_BASE.heig
     frame.height,
     LAYER.GRASS_TUFT,
     GRASS_TIERS[0].planes,
-    { twist: TUFT_TWIST }
+    { twist: TUFT_TWIST, splay: TUFT_SPLAY }
   )
   const baked = bakeImpostor(renderer, subject, texArray, LAYER.IMPOSTOR_GRASS, frame)
   subject.dispose()

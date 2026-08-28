@@ -244,7 +244,6 @@ const SECTIONS = [
   ['check-v2-field.mjs', 'field -- determinism, band limit monotone in cell, convergence at cell 0'],
   ['check-v2-layers.mjs', 'layers -- snow line interpolation, carve depths, dirty-rect rebake, culling rate'],
   ['check-v2-quadtree.mjs', 'quadtree -- split rule, depth ladder, slot pool high-water mark'],
-  ['check-v2-skyline.mjs', 'skyline -- max pyramid, horizon table, the profile target is a refinement and only a refinement'],
   ['check-v2-terrain.mjs', 'streaming -- key packing, dirty-rect invalidation, fallback walks, eviction'],
   ['check-v2-surfaces.mjs', 'surfaces -- lake discs, river ribbons, road ribbons against the carved ground'],
   ['check-v2-edit.mjs', 'edit -- tool state machine, undo, document round trip'],

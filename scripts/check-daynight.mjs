@@ -15,6 +15,8 @@ import * as THREE from 'three'
 import { WorldClock, CLOCK, MOON, MOONLIGHT, paletteAt, celestial } from '../src/clock.js'
 import { bakeHorizon, decodeHorizon, AZIMUTHS, HORIZON_SOFT } from '../src/sim/horizon.js'
 import { WorldLighting } from '../src/lighting.js'
+import { createPropMaterial, setWindEnabled } from '../src/material.js'
+import { buildTextureArray } from '../src/textures.js'
 import { Sky } from '../src/sky.js'
 import { Stars } from '../src/stars.js'
 import { Aurora } from '../src/aurora.js'
@@ -470,6 +472,29 @@ console.log('\n--- shader patches actually land ------------------------------')
   check(!p.fragmentShader.includes('uHorizonMap'), 'props: and do NOT pay for a texture fetch per fragment')
 
   check(terrain.customProgramCacheKey() !== prop.customProgramCacheKey(), 'the two patched Lamberts do not share a program')
+
+  // AND THE CACHE KEY IS CHAINED TOO, for the same reason onBeforeCompile is.
+  // createPropMaterial's key varies with what it compiles in and out -- the
+  // billboard layers, the strip tiling, and whether the wind block is there at
+  // all. A patch that REPLACED the key would pin the material to one entry in
+  // three's program cache, so flipping any of those would re-run
+  // onBeforeCompile, look the result up under the unchanged key, and get back
+  // the program compiled the first time. No error, no recompile, no effect --
+  // which is how the /?quest wind switch came to read "no difference".
+  {
+    const atlas = buildTextureArray()
+    const grass = createPropMaterial(atlas, { stripTiling: true, wind: 'grass' })
+    const own = grass.customProgramCacheKey()
+    lighting.patch(grass, { mode: 'vertex', cacheKey: 'gate-grass' })
+    const patched = grass.customProgramCacheKey()
+    check(patched !== 'gate-grass' && patched.includes(own),
+      "a patched prop material still carries its OWN cache key", patched)
+    setWindEnabled(false)
+    check(grass.customProgramCacheKey() !== patched,
+      'so compiling the wind out still moves the key three caches on',
+      `${patched} -> ${grass.customProgramCacheKey()}`)
+    setWindEnabled(true)
+  }
 
   // No unresolved template holes anywhere -- `${WORLD_HALF}` interpolating to
   // undefined would produce GLSL that fails to compile on the headset only.

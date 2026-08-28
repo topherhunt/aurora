@@ -49,7 +49,7 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 // `setStats` takes a flat object; the host fills what it can and anything
 // missing prints as `??` in the warn colour rather than as a plausible zero:
 //   { fps, ms, tris, calls, resident, drawn, terrainTris, queued,
-//     triDeg, profileDeg, treeCount,
+//     triDeg, treeCount,
 //     treeTris, grassCount, grassHidden, grassTris, fernCount, fernTris,
 //     mushroomCount, mushroomTris, deadwoodCount, deadwoodTris,
 //     rockCount, rockTris, litterCount, litterTris,
@@ -577,12 +577,9 @@ export class Panel {
     // what the prop rows count and what the budget is actually spent on.
     kv('terrain', Number.isFinite(s.resident) && Number.isFinite(s.terrainTris) ? `${s.resident}/${s.drawn} ${(s.terrainTris / 1000).toFixed(0)}k` : null)
     kv('queued', Number.isFinite(s.queued) ? String(s.queued) : null, s.queued > 64 ? 'c-bad' : '')
-    // Two targets on one row because they are read against each other -- the
-    // profile figure means nothing except as a ratio to the default beside it,
-    // and the gap between them IS how many depth levels a silhouette is worth.
-    // "off" rather than a blank when K has turned the term off, so the A/B has a
-    // legible state on both sides of the keypress. See terrain/skyline.js.
-    kv('triDeg', num(s.triDeg, 2) === null ? null : `${num(s.triDeg, 2)}/${Number.isFinite(s.profileDeg) ? s.profileDeg.toFixed(2) : 'off'}`)
+    // The one LOD target: the largest a triangle is ever allowed to look, in
+    // degrees. [ and ] move it, so this is the readout the keys are aimed at.
+    kv('triDeg', num(s.triDeg, 2))
     // The three prop layers get a row each: count, then what that count is
     // actually costing in triangles. DESIGN.md §5 allots trees 37k, and grass
     // is the layer whose row moves most: the region bed is 3/m^2 of scattered
