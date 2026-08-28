@@ -56,6 +56,77 @@ let bones = new Map() // name -> THREE.Bone
 let rest = new Map() // name -> Vector3, the position each bone loaded at (proportional placement + any override baked into the GLB is NOT applied -- lod0.glb never bakes overrides in, generate-character.mjs applies them at bake time, so "rest" here is always the un-overridden proportional pose)
 let dirty = new Set() // bone names moved this session
 let currentId = ''
+let currentHeightM = 1.7
+
+// --- reference cards: the alpha-keyed sheet views as world-scaled planes,
+// so a moved bone can be checked against the actual art, not just the loft
+// mesh's approximation of it. Front/back sit back-to-back through x=0/z~0
+// (theta=0 in loft-mesh.mjs's ring convention is front, facing -Z); side is
+// rotated 90 deg through the same centreline (theta=90deg, facing +X). See
+// tools/characters/loft-mesh.mjs's header for that convention.
+const referenceGroup = new THREE.Group()
+scene.add(referenceGroup)
+const textureLoader = new THREE.TextureLoader()
+
+async function loadReferenceCards(id, heightM) {
+  for (const child of [...referenceGroup.children]) {
+    referenceGroup.remove(child)
+    child.geometry.dispose()
+    child.material.map?.dispose()
+    child.material.dispose()
+  }
+
+  const specs = [
+    { view: 'front', rotationY: 0, axis: 'x', offset: 0.004 },
+    { view: 'back', rotationY: Math.PI, axis: 'x', offset: -0.004 },
+    { view: 'side', rotationY: Math.PI / 2, axis: 'z', offset: 0.004 },
+  ]
+
+  await Promise.all(specs.map(async (spec) => {
+    try {
+      const res = await fetch(`/__sheet-reference?id=${encodeURIComponent(id)}&view=${spec.view}`)
+      const j = await res.json()
+      if (!res.ok || !j.exists) return
+      const tex = await textureLoader.loadAsync(`data:image/png;base64,${j.imageB64}`)
+      tex.colorSpace = THREE.SRGBColorSpace
+      const geo = new THREE.PlaneGeometry(j.worldWidthM, j.worldHeightM)
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.rotation.y = spec.rotationY
+      mesh.position.y = j.worldHeightM / 2
+      if (spec.axis === 'x') mesh.position.x = spec.offset
+      else mesh.position.z = spec.offset
+      mesh.userData.refView = spec.view
+      referenceGroup.add(mesh)
+    } catch { /* reference cards are a visual aid -- a fetch failure just leaves that card off */ }
+  }))
+  applyReferenceUI()
+}
+
+function applyReferenceUI() {
+  const visible = document.getElementById('refToggle').checked
+  const opacity = Number(document.getElementById('refOpacity').value)
+  for (const child of referenceGroup.children) {
+    child.visible = visible
+    child.material.opacity = opacity
+  }
+}
+document.getElementById('refToggle').addEventListener('change', applyReferenceUI)
+document.getElementById('refOpacity').addEventListener('input', applyReferenceUI)
+
+function setCameraPreset(preset) {
+  const eyeY = currentHeightM * 0.55
+  const d = Math.max(2, currentHeightM * 1.8)
+  controls.target.set(0, eyeY, 0)
+  if (preset === 'front') camera.position.set(0, eyeY, d)
+  else if (preset === 'back') camera.position.set(0, eyeY, -d)
+  else if (preset === 'side') camera.position.set(d, eyeY, 0)
+  else camera.position.set(d * 0.75, eyeY + currentHeightM * 0.3, d * 0.75)
+}
+document.getElementById('camFront').addEventListener('click', () => setCameraPreset('front'))
+document.getElementById('camSide').addEventListener('click', () => setCameraPreset('side'))
+document.getElementById('camBack').addEventListener('click', () => setCameraPreset('back'))
+document.getElementById('camIso').addEventListener('click', () => setCameraPreset('iso'))
 
 async function loadCharacter(id) {
   setStatus(`loading ${id}...`)
@@ -74,6 +145,13 @@ async function loadCharacter(id) {
     rest = new Map()
     root.traverse((o) => { if (o.isBone) { bones.set(o.name, o); rest.set(o.name, o.position.clone()) } })
     dirty = new Set()
+
+    try {
+      const metaRes = await fetch(`/characters/${id}/meta.json`)
+      currentHeightM = metaRes.ok ? (await metaRes.json()).heightM : 1.7
+    } catch { currentHeightM = 1.7 }
+    controls.target.set(0, currentHeightM * 0.55, 0)
+    await loadReferenceCards(id, currentHeightM)
 
     const boneSelect = document.getElementById('bone')
     boneSelect.innerHTML = ''

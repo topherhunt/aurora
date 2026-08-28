@@ -25,7 +25,7 @@ export const ADULT_PROFESSIONS = [
   { id: 'innkeeper', label: 'Innkeeper', gear: 'a clean apron over practical wool clothing, a ring of keys at the belt' },
   { id: 'merchant', label: 'Merchant', gear: 'fine dyed wool robes trimmed with fur, a leather coin purse' },
   { id: 'herbalist', label: 'Herbalist', gear: 'a hooded cloak, pouches of dried herbs at the belt' },
-  { id: 'woodcutter', label: 'Woodcutter', gear: 'a heavy fur vest, an axe slung over one shoulder' },
+  { id: 'woodcutter', label: 'Woodcutter', gear: 'a heavy fur vest, carrying a bundle of cut firewood' },
   { id: 'shepherd', label: 'Shepherd', gear: 'a thick wool cloak, a wooden crook' },
   { id: 'guard', label: 'Town Guard', gear: 'a chainmail hauberk, an open-faced helm, a spear' },
   { id: 'mercenary', label: 'Mercenary', gear: 'mismatched scavenged armor and an assortment of weapons' },
@@ -60,19 +60,26 @@ export function randomProfession(age) {
   return list[Math.floor(Math.random() * list.length)]
 }
 
-/** Turns a {role,gender,age,professionId} selection into buildViewPrompt's `vars`. */
+/**
+ * Turns a {role,gender,age,professionId} selection into buildViewPrompt's
+ * `vars`. `professionId` is optional -- omit it (e.g. for a child with no
+ * trade yet) to describe the character by role alone.
+ */
 export function describeNordicCharacter({ role, gender, age, professionId }) {
   const roleDef = ROLES.find((r) => r.id === role)
   if (!roleDef) throw new Error(`unknown role "${role}"`)
   if (!GENDERS.includes(gender)) throw new Error(`unknown gender "${gender}"`)
   if (!AGES.includes(age)) throw new Error(`unknown age "${age}"`)
-  const prof = professionsFor(age).find((p) => p.id === professionId)
-  if (!prof) throw new Error(`unknown profession "${professionId}" for age "${age}"`)
 
   const ageWord = age === 'child' ? 'a child' : 'an adult'
-  const description =
-    `${ageWord} ${gender} Nordic ${roleDef.label.toLowerCase()}, ${prof.label.toLowerCase()} by trade, ` +
-    `in a Skyrim-esque Nordic fantasy medieval world. Wearing ${roleDef.gear}; ${prof.gear}.`
+  let description = `${ageWord} ${gender} Nordic ${roleDef.label.toLowerCase()}, in a Skyrim-esque Nordic fantasy medieval world. Wearing ${roleDef.gear}.`
+  if (professionId) {
+    const prof = professionsFor(age).find((p) => p.id === professionId)
+    if (!prof) throw new Error(`unknown profession "${professionId}" for age "${age}"`)
+    description =
+      `${ageWord} ${gender} Nordic ${roleDef.label.toLowerCase()}, ${prof.label.toLowerCase()} by trade, ` +
+      `in a Skyrim-esque Nordic fantasy medieval world. Wearing ${roleDef.gear}; ${prof.gear}.`
+  }
 
   return { species: 'human', age, description }
 }

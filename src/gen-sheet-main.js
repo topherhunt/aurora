@@ -73,10 +73,92 @@ function vars() {
 
 function currentId() { return document.getElementById('charId').value.trim() }
 
-function selectView(v) {
+// --- roster picker: load a batch-generated character's on-disk candidates --
+
+const rosterSelect = document.getElementById('roster')
+let roster = []
+
+fetch('/tools/characters/characters.json')
+  .then((r) => r.json())
+  .then((j) => {
+    roster = j.characters
+    fillOptions(rosterSelect, [{ value: '', label: '(none -- freeform)' }, ...roster.map((c) => ({ value: c.id, label: c.id }))])
+  })
+  .catch(() => {}) // roster is optional -- the bench still works freeform without it
+
+async function loadRosterCharacter(id) {
+  const c = roster.find((r) => r.id === id)
+  if (!c) return
+  rosterSelect.value = id
+  document.getElementById('charId').value = c.id
+  roleSelect.value = c.role
+  genderSelect.value = c.gender
+  ageSelect.value = c.age
+  fillProfessions()
+  professionSelect.value = c.professionId || 'random'
+  for (const v of VIEWS) { candidates[v] = []; picked[v] = -1 }
+  await loadCandidatesFromDisk(view)
+  await loadReference()
+  renderGallery()
+  updateBakeButton()
+}
+
+rosterSelect.addEventListener('change', () => { if (rosterSelect.value) loadRosterCharacter(rosterSelect.value) })
+
+document.getElementById('rosterPrev').addEventListener('click', () => stepRoster(-1))
+document.getElementById('rosterNext').addEventListener('click', () => stepRoster(1))
+
+function stepRoster(delta) {
+  if (!roster.length) return
+  const i = roster.findIndex((r) => r.id === rosterSelect.value)
+  const next = roster[(i + delta + roster.length) % roster.length]
+  loadRosterCharacter(next.id)
+}
+
+async function loadCandidatesFromDisk(v) {
+  const id = currentId()
+  if (!id) return
+  try {
+    const res = await fetch(`/__sheet-candidates?id=${encodeURIComponent(id)}&view=${v}`)
+    const j = await res.json()
+    if (!res.ok) throw new Error(j.error)
+    candidates[v] = j.candidates
+    const pickedIndex = j.candidates.findIndex((c) => c.picked)
+    picked[v] = pickedIndex
+    setStatus(`loaded ${j.candidates.length} ${v} candidate(s) from disk`, 'ok')
+  } catch (e) {
+    setStatus(`load failed: ${e.message}`, 'warn')
+  }
+}
+
+// Shows the picked front image alongside side/back candidates for direct
+// comparison -- fetched fresh on every view switch/character load so it
+// always reflects the current pick, not a stale in-memory copy.
+async function loadReference() {
+  const refPanel = document.getElementById('reference')
+  const refImg = document.getElementById('referenceImg')
+  const id = currentId()
+  if (view === 'front' || !id) { refPanel.classList.remove('on'); return }
+  try {
+    const res = await fetch(`/__sheet-view?id=${encodeURIComponent(id)}&view=front`)
+    const j = await res.json()
+    if (j.exists) {
+      refImg.src = `data:image/png;base64,${j.imageB64}`
+      refPanel.classList.add('on')
+    } else {
+      refPanel.classList.remove('on')
+    }
+  } catch {
+    refPanel.classList.remove('on')
+  }
+}
+
+async function selectView(v) {
   view = v
   for (const name of VIEWS) document.getElementById(`view${cap(name)}`).classList.toggle('on', name === v)
   document.getElementById('galleryTitle').textContent = `${v} -- candidates`
+  if (rosterSelect.value && candidates[v].length === 0) await loadCandidatesFromDisk(v)
+  await loadReference()
   renderGallery()
 }
 
@@ -151,6 +233,7 @@ async function pickCandidate(i) {
     picked[view] = i
     renderGallery()
     updateBakeButton()
+    if (view === 'front') await loadReference()
     setStatus(`saved -> ${j.path}`, 'ok')
   } catch (e) {
     setStatus(`save failed: ${e.message}`, 'warn')

@@ -41,6 +41,107 @@ export function keyMagenta({ w, h, rgba }) {
   return alpha
 }
 
+// Corner-sampled background key: doesn't assume the background is magenta at
+// all, just that it's whatever solid-ish colour sits in the four corners (Flux
+// doesn't always land exactly on #FF00FF, especially on side/back views
+// generated via an image reference rather than from scratch). Samples a small
+// patch at each corner, bilinearly interpolates a per-pixel expected
+// background colour across the image (handles a soft gradient/vignette, not
+// just a flat fill), and feathers alpha by Euclidean colour distance from
+// that expectation -- same LO/HI feather-band idea as keyMagenta, just not
+// tied to a specific hue.
+const CORNER_PATCH = 10
+
+function cornerColor(rgba, w, h, cx, cy) {
+  let r = 0, g = 0, b = 0, n = 0
+  for (let y = cy; y < cy + CORNER_PATCH; y++) {
+    for (let x = cx; x < cx + CORNER_PATCH; x++) {
+      const i = (y * w + x) * 4
+      r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2]; n++
+    }
+  }
+  return [r / n, g / n, b / n]
+}
+
+const lerp = (a, b, t) => a + (b - a) * t
+
+// Distance is measured in CHROMA space (colour with luma subtracted out), not
+// raw RGB -- a chroma-keyed sheet often has a soft coloured contact-shadow
+// under the figure's feet (Flux renders ambient bounce off the background
+// colour) that's much darker than the flat background but the *same hue*.
+// Raw RGB distance treats "darker" as "different", leaving that shadow as a
+// visible halo; chroma distance only cares about hue/saturation, so a dim
+// magenta shadow keys out just as cleanly as the bright magenta field around
+// it, while genuine foreground colours (leather, skin, hair) -- which sit far
+// from the background hue regardless of their own brightness -- still don't.
+function chroma(r, g, b) {
+  const y = (r + g + b) / 3
+  return [r - y, g - y, b - y]
+}
+
+/**
+ * Keys the background out of `{w,h,rgba}` by sampling its four corners
+ * instead of assuming a fixed colour. Returns a Uint8Array alpha mask (0..255),
+ * same size as keyMagenta. `lo`/`hi` are the feather band in chroma-space
+ * Euclidean distance; default tuned against real magenta-background sheet
+ * output -- widen if a character's own colours are close to the background
+ * hue.
+ */
+export function keyBackground({ w, h, rgba }, { lo = 25, hi = 65 } = {}) {
+  if (w < CORNER_PATCH * 2 || h < CORNER_PATCH * 2) throw new Error(`image ${w}x${h} too small for ${CORNER_PATCH}px corner sampling`)
+  const tl = chroma(...cornerColor(rgba, w, h, 0, 0))
+  const tr = chroma(...cornerColor(rgba, w, h, w - CORNER_PATCH, 0))
+  const bl = chroma(...cornerColor(rgba, w, h, 0, h - CORNER_PATCH))
+  const br = chroma(...cornerColor(rgba, w, h, w - CORNER_PATCH, h - CORNER_PATCH))
+
+  const alpha = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    const v = h > 1 ? y / (h - 1) : 0
+    for (let x = 0; x < w; x++) {
+      const u = w > 1 ? x / (w - 1) : 0
+      const bgCr = lerp(lerp(tl[0], tr[0], u), lerp(bl[0], br[0], u), v)
+      const bgCg = lerp(lerp(tl[1], tr[1], u), lerp(bl[1], br[1], u), v)
+      const bgCb = lerp(lerp(tl[2], tr[2], u), lerp(bl[2], br[2], u), v)
+      const i = (y * w + x) * 4
+      const [cr, cg, cb] = chroma(rgba[i], rgba[i + 1], rgba[i + 2])
+      const dr = cr - bgCr, dg = cg - bgCg, db = cb - bgCb
+      const dist = Math.sqrt(dr * dr + dg * dg + db * db)
+      const t = Math.min(1, Math.max(0, (dist - lo) / (hi - lo)))
+      alpha[y * w + x] = Math.round(t * 255)
+    }
+  }
+  return alpha
+}
+
+/**
+ * Crops `{w,h,rgba}` (plus its `alpha` mask and `profile` from
+ * silhouetteProfile) down to the figure's own bounding box -- billboard.mjs
+ * and the reference-plane endpoint in vite.config.js both need exactly this
+ * crop, just at different final uses.
+ */
+export function cropToFigure({ w, rgba }, alpha, profile) {
+  let left = Infinity, right = -Infinity
+  for (let y = profile.top; y <= profile.bottom; y++) {
+    const row = profile.rows[y]
+    if (!row) continue
+    if (row.min < left) left = row.min
+    if (row.max > right) right = row.max
+  }
+  const top = profile.top, bottom = profile.bottom
+  const cw = right - left + 1, ch = bottom - top + 1
+
+  const out = new Uint8Array(cw * ch * 4)
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const src = ((y + top) * w + (x + left)) * 4
+      const dst = (y * cw + x) * 4
+      out[dst] = rgba[src]; out[dst + 1] = rgba[src + 1]; out[dst + 2] = rgba[src + 2]
+      out[dst + 3] = alpha[(y + top) * w + (x + left)]
+    }
+  }
+  return { w: cw, h: ch, rgba: out }
+}
+
 /**
  * Per-row [minX, maxX] silhouette extent (alpha > 128), plus the overall
  * figure's top/bottom rows. A row with no opaque pixel is `null` in `rows`.

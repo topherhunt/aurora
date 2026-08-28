@@ -80,6 +80,19 @@
           <button id="modeTranslate" class="on">move</button>
           <button id="modeRotate">rotate</button>
         </div>
+        <h2>reference cards</h2>
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+          <input type="checkbox" id="refToggle" checked /> show front/side/back sheets
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+          opacity <input type="range" id="refOpacity" min="0.2" max="1" step="0.05" value="0.85" style="flex:1 1 auto;" />
+        </label>
+        <div id="camPresets" style="display:flex; gap:4px;">
+          <button id="camFront" style="flex:1 1 auto;">front</button>
+          <button id="camSide" style="flex:1 1 auto;">side</button>
+          <button id="camBack" style="flex:1 1 auto;">back</button>
+          <button id="camIso" style="flex:1 1 auto;">iso</button>
+        </div>
       </div>
       <div id="buttons">
         <button id="save">save rig-override.json</button>
@@ -105,6 +118,14 @@
         bone here changes where it sits at rest but not which vertices follow it when a clip
         animates. Good for a bind-pose correction (a shoulder that reads too narrow); a large move
         will show its seams once the character walks.
+      </p>
+      <p class="note">
+        The three reference cards are the same alpha-keyed sheet views the bake reads, cropped
+        tight to the figure and scaled to this character's real height -- so a bone that lands on
+        the wrong shoulder or knee in the image is visibly wrong here, not just "proportionally
+        plausible". Front/back sit back to back through the centreline; side is rotated 90&deg;
+        through the same line. The back card's image isn't un-mirrored, so left/right won't always
+        match there -- only use it to check vertical placement (elbow, knee, ankle height).
       </p>
       <h2>current override</h2>
       <table id="overrideTable"></table>

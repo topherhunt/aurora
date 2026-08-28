@@ -1,0 +1,31 @@
+{
+  "characters": [
+    { "id": "blacksmith",   "role": "villager", "gender": "male",   "age": "adult", "professionId": "blacksmith",   "heightM": 1.82 },
+    { "id": "farmer",       "role": "villager", "gender": "female", "age": "adult", "professionId": "farmer",       "heightM": 1.65 },
+    { "id": "hunter",       "role": "villager", "gender": "male",   "age": "adult", "professionId": "hunter",       "heightM": 1.78 },
+    { "id": "fisherman",    "role": "villager", "gender": "female", "age": "adult", "professionId": "fisherman",    "heightM": 1.63 },
+    { "id": "innkeeper",    "role": "villager", "gender": "female", "age": "adult", "professionId": "innkeeper",    "heightM": 1.68 },
+    { "id": "herbalist",    "role": "villager", "gender": "female", "age": "adult", "professionId": "herbalist",    "heightM": 1.60 },
+    { "id": "woodcutter",   "role": "villager", "gender": "male",   "age": "adult", "professionId": "woodcutter",   "heightM": 1.85 },
+    { "id": "shepherd",     "role": "villager", "gender": "male",   "age": "adult", "professionId": "shepherd",     "heightM": 1.75 },
+    { "id": "alchemist",    "role": "villager", "gender": "female", "age": "adult", "professionId": "alchemist",    "heightM": 1.62 },
+    { "id": "miner",        "role": "villager", "gender": "male",   "age": "adult", "professionId": "miner",        "heightM": 1.77 },
+
+    { "id": "merchant",     "role": "traveler", "gender": "female", "age": "adult", "professionId": "merchant",     "heightM": 1.66 },
+    { "id": "trapper",      "role": "traveler", "gender": "male",   "age": "adult", "professionId": "trapper",      "heightM": 1.79 },
+    { "id": "thief",        "role": "traveler", "gender": "female", "age": "adult", "professionId": "thief",        "heightM": 1.60 },
+    { "id": "skald",        "role": "traveler", "gender": "male",   "age": "adult", "professionId": "skald",        "heightM": 1.72 },
+    { "id": "healer",       "role": "traveler", "gender": "female", "age": "adult", "professionId": "healer",       "heightM": 1.64 },
+
+    { "id": "guard",        "role": "warrior",  "gender": "male",   "age": "adult", "professionId": "guard",        "heightM": 1.83 },
+    { "id": "mercenary",    "role": "warrior",  "gender": "female", "age": "adult", "professionId": "mercenary",    "heightM": 1.70 },
+    { "id": "shieldmaiden", "role": "warrior",  "gender": "female", "age": "adult", "professionId": "shieldmaiden", "heightM": 1.72 },
+    { "id": "jarlsthane",   "role": "warrior",  "gender": "male",   "age": "adult", "professionId": "jarlsthane",   "heightM": 1.86 },
+    { "id": "battlemage",   "role": "warrior",  "gender": "female", "age": "adult", "professionId": "battlemage",   "heightM": 1.68 },
+
+    { "id": "child-villager-1", "role": "villager", "gender": "female", "age": "child", "professionId": null, "heightM": 1.20 },
+    { "id": "child-villager-2", "role": "villager", "gender": "male",   "age": "child", "professionId": null, "heightM": 1.25 },
+    { "id": "child-villager-3", "role": "villager", "gender": "female", "age": "child", "professionId": null, "heightM": 1.15 },
+    { "id": "child-traveler-1", "role": "traveler", "gender": "male",   "age": "child", "professionId": null, "heightM": 1.30 }
+  ]
+}

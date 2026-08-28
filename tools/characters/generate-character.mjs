@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writePng } from '../props/png.mjs'
-import { decodeSheet, keyMagenta, silhouetteProfile } from './chromakey.mjs'
+import { decodeSheet, keyBackground, silhouetteProfile } from './chromakey.mjs'
 import { buildCharacterMesh } from './loft-mesh.mjs'
 import { buildSkeleton, skinVertices } from './rig.mjs'
 import { bakeTexture } from './bake-texture.mjs'
@@ -29,7 +29,7 @@ export function generateCharacter({ id, sheetDir, outDir, heightM = 1.7 }) {
   const profiles = {}
   for (const name of ['front', 'side', 'back']) {
     const view = decodeSheet(path.join(sheetDir, `${name}.png`))
-    const alpha = keyMagenta(view)
+    const alpha = keyBackground(view)
     views[name] = view
     alphas[name] = alpha
     profiles[name] = silhouetteProfile(alpha, view.w, view.h)

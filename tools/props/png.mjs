@@ -44,9 +44,12 @@ const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 // channels-per-pixel by PNG colour type
 const CHANNELS = { 0: 1, 2: 3, 4: 2, 6: 4 }
 
-export function writePng(path, w, h, pixels, channels = 4) {
+// The encode half of writePng, without the filesystem write -- for callers
+// that need PNG bytes in memory (e.g. a dev-server endpoint answering with
+// base64) rather than a file on disk.
+export function encodePng(w, h, pixels, channels = 4) {
   if (channels !== 4 && channels !== 1) {
-    throw new Error(`writePng supports 1 or 4 channels, got ${channels}`)
+    throw new Error(`encodePng supports 1 or 4 channels, got ${channels}`)
   }
   const ihdr = Buffer.alloc(13)
   ihdr.writeUInt32BE(w, 0)
@@ -64,15 +67,16 @@ export function writePng(path, w, h, pixels, channels = 4) {
     )
   }
 
-  writeFileSync(
-    path,
-    Buffer.concat([
-      Buffer.from(SIG),
-      chunk('IHDR', ihdr),
-      chunk('IDAT', deflateSync(raw, { level: 9 })),
-      chunk('IEND', Buffer.alloc(0)),
-    ])
-  )
+  return Buffer.concat([
+    Buffer.from(SIG),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+export function writePng(path, w, h, pixels, channels = 4) {
+  writeFileSync(path, encodePng(w, h, pixels, channels))
 }
 
 // Returns { width, height, channels, data } where data is a Uint8Array of

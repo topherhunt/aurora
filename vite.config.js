@@ -6,6 +6,8 @@ import basicSsl from '@vitejs/plugin-basic-ssl'
 import { generateImage } from './tools/characters/openrouter.mjs'
 import { buildViewPrompt } from './tools/characters/sheet-prompt.mjs'
 import { generateCharacter } from './tools/characters/generate-character.mjs'
+import { decodeSheet, keyBackground, silhouetteProfile, cropToFigure } from './tools/characters/chromakey.mjs'
+import { encodePng } from './tools/props/png.mjs'
 
 // Vite loads .env into import.meta.env for client bundles, but NOT into
 // process.env for its own config/plugin code -- openrouter.mjs reads
@@ -396,6 +398,82 @@ function sheetGen() {
           writeFileSync(file, Buffer.from(imageB64, 'base64'))
           res.end(JSON.stringify({ ok: true, path: relative(root, file) }))
         }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+      })
+
+      // Lists candidates batch-sheets.mjs already generated on disk for one
+      // character/view, so gen-sheet.html can load them into its existing
+      // gallery/pick UI instead of only showing what was just live-generated.
+      server.middlewares.use('/__sheet-candidates', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        const view = q.get('view') || ''
+        if (!/^[a-z0-9-]+$/.test(id) || !['front', 'side', 'back'].includes(view)) {
+          res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}" or view "${view}"` })); return
+        }
+        const manifestFile = resolve(sheetsDir(id), 'candidates.json')
+        const manifest = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : {}
+        const entries = manifest[view] || []
+        // Detect which candidate (if any) is the one already picked, by byte
+        // comparison against the saved <view>.png -- so a reload doesn't lose
+        // the "picked" highlight in the UI.
+        const pickedFile = resolve(sheetsDir(id), `${view}.png`)
+        const pickedBuf = existsSync(pickedFile) ? readFileSync(pickedFile) : null
+        const candidates = entries.map((e) => {
+          const buf = readFileSync(resolve(sheetsDir(id), 'candidates', e.file))
+          return { imageB64: buf.toString('base64'), cost: e.cost, picked: Boolean(pickedBuf && pickedBuf.equals(buf)) }
+        })
+        res.end(JSON.stringify({ ok: true, candidates }))
+      })
+
+      // Reference image for the current pick (e.g. the picked front, shown
+      // alongside side/back candidates so they can be compared side by side).
+      server.middlewares.use('/__sheet-view', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        const view = q.get('view') || ''
+        if (!/^[a-z0-9-]+$/.test(id) || !['front', 'side', 'back'].includes(view)) {
+          res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}" or view "${view}"` })); return
+        }
+        const file = resolve(sheetsDir(id), `${view}.png`)
+        if (!existsSync(file)) { res.end(JSON.stringify({ ok: true, exists: false })); return }
+        res.end(JSON.stringify({ ok: true, exists: true, imageB64: readFileSync(file).toString('base64') }))
+      })
+
+      // gen-character.html's reference-plane overlay: the picked (already
+      // alpha-keyed) view, cropped tight to the figure and sized in world
+      // metres, so the bench can place it as a card the skeleton's own
+      // metre-scale bone positions land on directly -- no guessing at the
+      // sheet's empty margin above the head or below the feet.
+      server.middlewares.use('/__sheet-reference', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const q = new URL(req.url, 'http://x').searchParams
+        const id = q.get('id') || ''
+        const view = q.get('view') || ''
+        if (!/^[a-z0-9-]+$/.test(id) || !['front', 'side', 'back'].includes(view)) {
+          res.statusCode = 400; res.end(JSON.stringify({ error: `invalid id "${id}" or view "${view}"` })); return
+        }
+        const file = resolve(sheetsDir(id), `${view}.png`)
+        if (!existsSync(file)) { res.end(JSON.stringify({ ok: true, exists: false })); return }
+        try {
+          const { characters } = JSON.parse(readFileSync(resolve(root, 'tools/characters/characters.json'), 'utf8'))
+          const character = characters.find((c) => c.id === id)
+          if (!character) throw new Error(`"${id}" is not in characters.json -- no heightM to scale against`)
+          const decoded = decodeSheet(file)
+          const alpha = keyBackground(decoded)
+          const profile = silhouetteProfile(alpha, decoded.w, decoded.h)
+          const crop = cropToFigure(decoded, alpha, profile)
+          const pixelsPerMeter = (profile.bottom - profile.top) / character.heightM
+          const png = encodePng(crop.w, crop.h, crop.rgba, 4)
+          res.end(JSON.stringify({
+            ok: true, exists: true, imageB64: png.toString('base64'),
+            worldWidthM: crop.w / pixelsPerMeter, worldHeightM: crop.h / pixelsPerMeter,
+          }))
+        } catch (e) {
+          res.statusCode = 400
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+        }
       })
 
       // Closes the loop: once all three views are picked, bake straight into

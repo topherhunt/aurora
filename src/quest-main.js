@@ -15,19 +15,23 @@
 // manual raycasting against plain THREE meshes (mouse on flatscreen,
 // laser-controls' own raycaster component in VR), exactly questv3's pattern.
 //
-// KNOWN RISK, not yet verified on-device: content geometry/materials here are
-// built by tree-bank.js/rock.js/material.js/sky.js/stars.js/clock.js/
-// textures.js/preview-stage.js, which all `import * as THREE from 'three'`
-// (this project's npm three@0.180.0) -- a different THREE.js MODULE INSTANCE
-// than AFRAME.THREE, which is bundled inside A-Frame 1.5.0 (three r150-ish, a
-// ~30-revision gap). Basic Object3D/Mesh/BufferGeometry/Material trees are
-// usually cross-version safe (three's renderer duck-types via .isMesh etc.,
-// not instanceof), and createPropMaterial's onBeforeCompile only touches
-// long-stable chunk names (#include <common>/<begin_vertex>/
-// <project_vertex>/<normal_fragment_begin>), so this SHOULD work -- but it
-// has not been confirmed in-headset. If trees/rocks render black, invisible,
-// or throw shader compile errors in the console, this version gap is the
-// first suspect.
+// CONFIRMED ON-DEVICE RISK: content geometry/materials here are built by
+// tree-bank.js/rock.js/material.js/sky.js/stars.js/clock.js/textures.js/
+// preview-stage.js, which all `import * as THREE from 'three'` (this
+// project's npm three@0.180.0) -- a different THREE.js MODULE INSTANCE than
+// AFRAME.THREE, bundled inside A-Frame 1.5.0 (three r158, a ~22-revision
+// gap). Foreign DATA (Vector3/Color reads, DataTexture as .map) duck-types
+// fine through A-Frame's renderer, but a foreign Mesh/Points/Material added
+// directly to the live scene does NOT: on-device this produced both a
+// catchable throw (tree-impostor baking, fixed by giving that one-off bake a
+// matching-version throwaway renderer) and an uncatchable black-screen crash
+// (real billboards/trees, and separately the sky/day-night system) with no
+// console error at all. The fix in this file is a translation shim
+// (localGeometry/localMaterial/localShaderMaterial below) that rebuilds
+// every geometry/material as a native AFRAME.THREE instance before it
+// touches the live scene, while leaving the shared content modules
+// themselves untouched npm-three (other entry points depend on that).
+// EXPERIMENTAL -- not yet confirmed on-device to actually resolve the crash.
 const THREE = AFRAME.THREE
 
 import { Sky } from './sky.js'
@@ -39,6 +43,68 @@ import { buildTreeBank, bakeTreeImpostors } from './props/tree-bank.js'
 import { buildRock } from './props/rock.js'
 import { ROCK_NAMES, rockParams } from './props/rock-bank.js'
 import { createPropMaterial } from './material.js'
+import {
+  Scene as RealScene,
+  WebGLRenderer as RealWebGLRenderer,
+} from 'three'
+
+// --- translation shim: native (AFRAME.THREE) copies of foreign (npm-three)
+// geometry/material ------------------------------------------------------
+// Confirmed on-device: A-Frame's own WebGLRenderer (r158) throws/black-
+// screens when handed a live scene object (Mesh/Points wrapping a
+// BufferGeometry/Material) built by this project's npm three.js (0.180.0) --
+// a ~22-revision gap, different module instance entirely. Foreign DATA
+// (Vector3/Color reads, DataTexture/DataArrayTexture assigned as .map) is
+// fine -- three's renderer duck-types those and already renders our terrain's
+// grassTexture() DataTexture correctly on-device. What's NOT fine is a
+// foreign Mesh/Points/Material object added directly to the live A-Frame
+// scene graph and rendered every frame. These helpers rebuild the geometry/
+// material as literal native THREE (= AFRAME.THREE) instances before
+// anything touches the live scene; the content-generation modules themselves
+// (tree-bank.js, rock.js, material.js, sky.js, stars.js, ...) stay untouched
+// npm-three, since main.js/v2/main.js/gen-*-main.js depend on that and don't
+// load A-Frame. EXPERIMENTAL: not yet confirmed on-device to fix the crash.
+function localGeometry(geo) {
+  const g = new THREE.BufferGeometry()
+  for (const name in geo.attributes) {
+    const a = geo.attributes[name]
+    g.setAttribute(name, new THREE.BufferAttribute(a.array, a.itemSize, a.normalized))
+  }
+  if (geo.index) g.setIndex(new THREE.BufferAttribute(geo.index.array, 1))
+  g.userData = geo.userData // plain data (tree height/crownWidth, rock measured) -- safe to share by reference
+  g.computeBoundingSphere()
+  g.computeBoundingBox()
+  return g
+}
+const MATERIAL_SCALAR_PROPS = ['alphaTest', 'transparent', 'side', 'vertexColors', 'depthWrite', 'depthTest', 'blending', 'fog', 'wireframe']
+function localMaterial(mat, Ctor = THREE.MeshLambertMaterial) {
+  const m = new Ctor()
+  if (mat.color) m.color.setRGB(mat.color.r, mat.color.g, mat.color.b)
+  for (const p of MATERIAL_SCALAR_PROPS) if (p in mat) m[p] = mat[p]
+  // Reattached by reference: createPropMaterial's onBeforeCompile only reads
+  // its own outer-closure variables (textureArray, snow/moss uniforms, ...),
+  // never `material` itself, so the same function works unmodified on a
+  // native material instance.
+  m.onBeforeCompile = mat.onBeforeCompile
+  m.customProgramCacheKey = mat.customProgramCacheKey
+  return m
+}
+function localShaderMaterial(mat) {
+  // uniforms shared BY REFERENCE (not cloned) -- Sky/Stars mutate uniform
+  // .value objects in place (see sky-glsl.js writeSkyUniforms), never
+  // reassign the uniforms dict, so this mirror stays live automatically.
+  return new THREE.ShaderMaterial({
+    uniforms: mat.uniforms,
+    vertexShader: mat.vertexShader,
+    fragmentShader: mat.fragmentShader,
+    side: mat.side,
+    transparent: mat.transparent,
+    depthWrite: mat.depthWrite,
+    depthTest: mat.depthTest,
+    blending: mat.blending,
+    fog: mat.fog,
+  })
+}
 
 function hash(x, z) { const n = Math.sin(x * 127.1 + z * 311.7) * 43758.5453; return n - Math.floor(n) }
 function noise(x, z) {
@@ -87,6 +153,32 @@ AFRAME.registerComponent('quest-features', {
     const statsEl = document.getElementById('stats')
     const skyEl = document.querySelector('a-sky')
 
+    // --- runtime error surfacing ---------------------------------------------
+    // /quest has no devtools console in-headset, so a thrown error or a lost
+    // WebGL context (a GPU-driver crash, not a JS exception -- these fire
+    // NO console error at all) previously just went black with nothing to go
+    // on. Catch both classes and route them through the same
+    // assetError/updateLabels() display the asset-load failure already used,
+    // so either kind of failure is visible on the world-space panel (the flat
+    // #stats div isn't visible while presenting in VR) instead of silent.
+    let runtimeError = null
+    window.addEventListener('error', (e) => {
+      runtimeError = e.error ?? new Error(e.message)
+      console.error('quest runtime error', runtimeError)
+      updateLabels()
+    })
+    window.addEventListener('unhandledrejection', (e) => {
+      runtimeError = e.reason instanceof Error ? e.reason : new Error(String(e.reason))
+      console.error('quest unhandled rejection', runtimeError)
+      updateLabels()
+    })
+    sceneEl.canvas?.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault() // per spec: without this the context never becomes eligible to restore
+      runtimeError = new Error('WebGL context lost (GPU/driver crash, not a JS exception)')
+      console.error('quest webglcontextlost', e)
+      updateLabels()
+    })
+
     const state = {
       billboardCount: 0, treeCount: 0, boulderCount: 0,
       inward: false, masked: true, terrain: false, lit: false, terrainScale: 128, vertices: 64,
@@ -108,16 +200,39 @@ AFRAME.registerComponent('quest-features', {
     // frame via applySky(); when off, resetSkyVisuals() restores the statics.
     // Deliberately without the aurora (v2/render/aurora.js) -- that's its own
     // expensive draw and not what this toggle is testing.
-    const sky = new Sky(scene3D)
+    //
+    // Sky/Stars build their own foreign (npm-three) Mesh/Points and, inside
+    // their OWN constructors, call scene.add(...) on whatever scene they're
+    // given -- so they're constructed here against a throwaway, never-
+    // rendered npm-three Scene instead of the real one. skyMirror/
+    // starsMirror are native AFRAME.THREE copies actually added to scene3D;
+    // applySky() below calls the ORIGINAL unmodified sky.update()/
+    // stars.update() (untouched math) then copies the resulting transform/
+    // visibility onto the mirrors each frame. Materials are shared via
+    // localShaderMaterial's by-reference uniforms, so writeSkyUniforms'
+    // in-place mutation of sky.uniforms/stars' uniforms reaches the mirror
+    // automatically with no per-frame uniform copying needed.
+    const skyScratchScene = new RealScene()
+    const sky = new Sky(skyScratchScene)
     sky.mesh.visible = false
     sky.uniforms.uSunDir.value.copy(sunDir)
-    const stars = new Stars(scene3D, { seed: 20260828 })
+    const skyMirror = new THREE.Mesh(localGeometry(sky.mesh.geometry), localShaderMaterial(sky.material))
+    skyMirror.renderOrder = sky.mesh.renderOrder
+    skyMirror.frustumCulled = false
+    skyMirror.visible = false
+    scene3D.add(skyMirror)
+    const stars = new Stars(skyScratchScene, { seed: 20260828 })
+    const starsMirror = new THREE.Points(localGeometry(stars.points.geometry), localShaderMaterial(stars.material))
+    starsMirror.visible = stars.points.visible
+    scene3D.add(starsMirror)
     const clock = new WorldClock({ seed: 20260828 })
     const setSRGB = (color, rgb) => color.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
     const headPos = new THREE.Vector3()
     function resetSkyVisuals() {
       sky.mesh.visible = false
+      skyMirror.visible = false
       stars.points.visible = false
+      starsMirror.visible = false
       if (skyEl) skyEl.setAttribute('visible', true)
       sun.color.set(0xfff0d2); sun.intensity = 2.2; sun.position.copy(sunDir).multiplyScalar(50)
       hemi.color.set(0xd8e8ff); hemi.groundColor.set(0x34402b); hemi.intensity = 1.8
@@ -127,10 +242,15 @@ AFRAME.registerComponent('quest-features', {
       const s = clock.state()
       const camera = sceneEl.camera
       if (camera) camera.getWorldPosition(headPos)
-      if (skyEl) skyEl.setAttribute('visible', false) // sky.mesh (the real dome) replaces it while active
+      if (skyEl) skyEl.setAttribute('visible', false) // skyMirror (the real dome) replaces it while active
       sky.mesh.visible = true
       sky.update(headPos, s)
       stars.update(headPos, s, clock.elapsed, performance.now() / 1000)
+      skyMirror.visible = sky.mesh.visible
+      skyMirror.position.copy(sky.mesh.position)
+      starsMirror.visible = stars.points.visible
+      starsMirror.position.copy(stars.points.position)
+      starsMirror.quaternion.copy(stars.points.quaternion)
       sun.position.copy(s.lightDir).multiplyScalar(50)
       setSRGB(sun.color, s.lightColor)
       sun.intensity = s.lightIntensity
@@ -172,32 +292,37 @@ AFRAME.registerComponent('quest-features', {
       mesh.material.needsUpdate = true
     }
 
-    const panelBg = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 4.9), new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: .94, side: THREE.DoubleSide }))
+    const panelBg = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 3.9), new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: .94, side: THREE.DoubleSide }))
+    panelBg.position.set(0, .7, 0)
     panel.add(panelBg)
     const panelTitle = new THREE.Mesh(new THREE.PlaneGeometry(2.0, .39), new THREE.MeshBasicMaterial({ map: statsTexture(0, 0, sceneEl.renderer?.info ?? { render: { calls: 0 }, memory: { geometries: 0, textures: 0 } }), side: THREE.DoubleSide, transparent: true, toneMapped: false }))
     panelTitle.position.set(0, 2.55, .04)
     panel.add(panelTitle)
     panelLabel('quest feature panel', 2.20)
     panelLabel('billboards (0)  trees (0)  boulders (0)', 1.96)
+    // Two-column rows (width .92, x +-.48) keep the panel from growing too
+    // tall to read comfortably in-headset -- everything that fits a short
+    // on/off or mode label pairs up; only labels needing the full width
+    // (terrain, reflection, sky/skip) stay single-column.
     const keys = [
       ['billboard+', 'billboards +', 1.72, { width: .76, x: -.42 }], ['billboard-', 'billboards -', 1.72, { width: .76, x: .42 }],
       ['tree+', 'trees +', 1.48, { width: .76, x: -.42 }], ['tree-', 'trees -', 1.48, { width: .76, x: .42 }],
       ['boulder+', 'boulders +', 1.24, { width: .76, x: -.42 }], ['boulder-', 'boulders -', 1.24, { width: .76, x: .42 }],
-      ['treeMode', 'tree render: individual', 1.00],
-      ['billboardMode', 'billboard render: individual', .76],
-      ['terrain', 'terrain: flat card', .52],
-      ['scale+', 'scale x2', .28, { width: .76, x: -.42 }], ['scale-', 'scale /2', .28, { width: .76, x: .42 }],
-      ['verts+', 'verts x2', .04, { width: .76, x: -.42 }], ['verts-', 'verts /2', .04, { width: .76, x: .42 }],
-      ['lighting', 'terrain lighting: off', -.20],
-      ['masked', 'masked alpha: on', -.44],
-      ['inward', 'inward faces: off', -.68],
-      ['lakes', 'lake pools: off', -.92],
-      ['reflection', 'cubemap reflection: off', -1.16],
-      ['sky', 'sky + day/night: off', -1.40, { width: 1.4, x: -.2 }],
-      ['skip5h', '+5h', -1.40, { width: .5, x: .86 }],
+      ['treeMode', 'trees: individual', 1.00, { width: .92, x: -.48 }],
+      ['billboardMode', 'boards: individual', 1.00, { width: .92, x: .48 }],
+      ['terrain', 'terrain: flat card', .76],
+      ['scale+', 'scale x2', .52, { width: .76, x: -.42 }], ['scale-', 'scale /2', .52, { width: .76, x: .42 }],
+      ['verts+', 'verts x2', .28, { width: .76, x: -.42 }], ['verts-', 'verts /2', .28, { width: .76, x: .42 }],
+      ['lighting', 'lighting: off', .04, { width: .92, x: -.48 }],
+      ['masked', 'masked: on', .04, { width: .92, x: .48 }],
+      ['inward', 'inward: off', -.20, { width: .92, x: -.48 }],
+      ['lakes', 'lakes: off', -.20, { width: .92, x: .48 }],
+      ['reflection', 'cubemap reflection: off', -.44],
+      ['sky', 'sky + day/night: off', -.68, { width: 1.4, x: -.2 }],
+      ['skip5h', '+5h', -.68, { width: .5, x: .86 }],
     ]
     for (const [key, text, y, opts] of keys) panelButton(key, text, y, opts)
-    const flyLabel = panelLabel('locomotion: walk (A/X to fly)', -1.72)
+    const flyLabel = panelLabel('locomotion: walk (A/X to fly)', -1.00)
 
     // --- terrain / scatter --------------------------------------------------
     const groundTexture = grassTexture(sceneEl.renderer)
@@ -239,6 +364,29 @@ AFRAME.registerComponent('quest-features', {
       return new THREE.Mesh(g, terrainMaterial)
     }
     const heightAt = (x, z) => (state.terrain ? elevation(x, z) : 0)
+    // heightAt() is the fast, continuous procedural function used for prop
+    // scatter (cheap, called thousands of times per rebuild). The ACTUAL
+    // rendered terrain is a piecewise-linear mesh sampled from heightAt() at
+    // a coarse grid (state.vertices), so at any given (x, z) the visible
+    // surface can sit noticeably above/below heightAt()'s exact value -- the
+    // gap grows with grid spacing (larger terrainScale or fewer vertices).
+    // groundHeightAt() raycasts the ACTUAL mesh instead, so the player and
+    // panel always sit exactly on the surface you can see, not the smooth
+    // math underneath it. Only used for the two things a mismatch is
+    // actually visible on (player standing height, panel height) -- prop
+    // scatter keeps heightAt() since a raycast per prop is far too slow
+    // at the instance counts this page tests (hundreds of thousands).
+    let terrainMesh = null
+    const DOWN = new THREE.Vector3(0, -1, 0)
+    const groundRaycaster = new THREE.Raycaster()
+    const groundRayOrigin = new THREE.Vector3()
+    function groundHeightAt(x, z) {
+      if (!terrainMesh) return heightAt(x, z)
+      groundRayOrigin.set(x, 500, z)
+      groundRaycaster.set(groundRayOrigin, DOWN)
+      const hit = groundRaycaster.intersectObject(terrainMesh)[0]
+      return hit ? hit.point.y : heightAt(x, z)
+    }
 
     // The arena props scatter over the flat plane's own fixed 128x128m
     // footprint, not state.terrainScale -- that slider resizes the
@@ -281,7 +429,7 @@ AFRAME.registerComponent('quest-features', {
         // instances reuse it directly rather than cloning per-instance) --
         // disposing it here would destroy it out from under every future
         // rebuild, since it's never rebuilt itself.
-        o.traverse((n) => { if (n.isBatchedMesh) { n.dispose(); return } if (n.geometry && n.geometry !== treeBillboardGeometry) n.geometry.dispose() })
+        o.traverse((n) => { if (n.geometry && n.geometry !== treeBillboardGeometry) n.geometry.dispose() })
       }
     }
 
@@ -307,7 +455,7 @@ AFRAME.registerComponent('quest-features', {
       placeTrees(treePlacements)
       const makeBoulder = (i) => {
         const name = ROCK_NAMES[i % ROCK_NAMES.length]
-        const geo = buildRock({ ...rockParams(name, 1978 + i), tier: 0 })
+        const geo = localGeometry(buildRock({ ...rockParams(name, 1978 + i), tier: 0 }))
         const scale = Math.min(1, 2 / geo.userData.rock.measured.height) // cap at 2m tall
         const measured = geo.userData.rock.measured
         const [x, z] = scatterXZ(i, 30, (Math.max(measured.width, measured.depth) / 2) * scale)
@@ -428,36 +576,40 @@ AFRAME.registerComponent('quest-features', {
       const terrain = makeTerrain()
       terrain.userData.terrain = true
       content.add(terrain)
+      terrain.updateMatrixWorld(true) // groundHeightAt() raycasts this mesh below, before any render pass has run
+      terrainMesh = terrain
       placeProps()
       makeLakes()
       // The panel sits at a fixed world XZ, but enabling procedural terrain
       // can put the real ground metres away from y=0 there -- pin its height
-      // to the ground beneath it rather than a flat 1.6m.
-      panel.position.y = heightAt(panel.position.x, panel.position.z) + 1.6
+      // to the ground beneath it (groundHeightAt: the actual rendered
+      // surface, not the smooth math heightAt() computes) rather than a flat
+      // 1.6m.
+      panel.position.y = groundHeightAt(panel.position.x, panel.position.z) + 1.6
       updatePanel()
       updateLabels()
       updateReflection()
     }
 
-    // A BatchedMesh's own .geometry is sized to its RESERVED capacity, and an
-    // InstancedMesh's one geometry draws N times -- both carry a precomputed
-    // userData.triangleCount instead of being counted from their buffers.
+    // An InstancedMesh's one geometry draws N times, so it carries a
+    // precomputed userData.triangleCount instead of being counted from its
+    // buffers directly.
     function triangles() { let n = 0; content.traverse((o) => { if (o.userData.triangleCount !== undefined) n += o.userData.triangleCount; else if (o.isMesh && o.geometry) n += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3 }); return n }
     function updatePanel() {
       for (const m of panelMeshes) {
         const k = m.userData.key
         let t = null
         if (k === 'billboard+' || k === 'billboard-' || k === 'tree+' || k === 'tree-' || k === 'boulder+' || k === 'boulder-') continue // static "+ / -" labels
-        if (k === 'treeMode') t = `tree render: ${state.treeMode}`
-        if (k === 'billboardMode') t = `billboard render: ${state.billboardMode}`
+        if (k === 'treeMode') t = `trees: ${state.treeMode}`
+        if (k === 'billboardMode') t = `boards: ${state.billboardMode}`
         if (k === 'terrain') t = `terrain: ${state.terrain ? 'perlin' : 'flat card'}`
         if (k === 'scale+') t = `scale ${state.terrainScale}m  x2`
         if (k === 'verts+') t = `verts ${state.vertices}  x2`
         if (k === 'scale-' || k === 'verts-') continue
-        if (k === 'lighting') t = `terrain lighting: ${state.lit ? 'on' : 'off'}`
-        if (k === 'masked') t = `masked alpha: ${state.masked ? 'on' : 'off'}`
-        if (k === 'inward') t = `inward faces: ${state.inward ? 'on' : 'off'}`
-        if (k === 'lakes') t = `lake pools: ${state.lakes ? 'on' : 'off'}`
+        if (k === 'lighting') t = `lighting: ${state.lit ? 'on' : 'off'}`
+        if (k === 'masked') t = `masked: ${state.masked ? 'on' : 'off'}`
+        if (k === 'inward') t = `inward: ${state.inward ? 'on' : 'off'}`
+        if (k === 'lakes') t = `lakes: ${state.lakes ? 'on' : 'off'}`
         if (k === 'reflection') t = `cubemap reflection: ${state.reflection ? 'on' : 'off'}`
         if (k === 'sky') t = `sky + day/night: ${state.sky ? `on (${clock.clockText})` : 'off'}`
         if (t !== null) setPanelMap(m, t)
@@ -465,8 +617,8 @@ AFRAME.registerComponent('quest-features', {
     }
     function updateLabels() {
       setPanelMap(panelLabels[1], `billboards (${state.billboardCount})  trees (${state.treeCount})  boulders (${state.boulderCount})`, null, '#8fd48f')
-      const assetLine = assetError ? `assets: FAILED (${assetStage})` : assetsReady ? '' : ` -- loading assets: ${assetStage}`
-      setPanelMap(panelLabels[0], `quest feature panel${assetLine}`, null, assetError ? '#ff9a7a' : '#8fd48f')
+      const errorLine = runtimeError ? ` -- RUNTIME ERROR: ${runtimeError.message}` : assetError ? ` -- assets FAILED (${assetStage})` : assetsReady ? '' : ` -- loading assets: ${assetStage}`
+      setPanelMap(panelLabels[0], `quest feature panel${errorLine}`, null, runtimeError || assetError ? '#ff9a7a' : '#8fd48f')
     }
 
     // --- key handling --------------------------------------------------------
@@ -559,12 +711,20 @@ AFRAME.registerComponent('quest-features', {
 
     // --- locomotion: movement-controls + blink-controls on #rig (declared in
     // quest.html) handle actual movement; A/X toggles walk vs. fly ----------
+    // Walking is teleport-only (blink-controls) by design -- questv3-main.js's
+    // history notes this avoids VR motion sickness. Flying wants the
+    // opposite: a continuous stick-glide, which movement-controls only does
+    // via its 'gamepad' control scope (thumbstick), never wired in before
+    // now (the rig only ever declared 'controls: keyboard'), so toggling
+    // 'fly' alone did nothing in-headset -- there was no control scope
+    // driving movement off the stick at all. Gamepad scope is added ONLY
+    // while flying, so walking keeps its teleport-only feel.
     const rigEl = sceneEl.querySelector('#rig')
     let flying = false
     function setFlying(next) {
       flying = next
-      rigEl.setAttribute('movement-controls', 'fly', flying)
-      setPanelMap(flyLabel, `locomotion: ${flying ? 'fly' : 'walk'} (A/X to toggle)`, null, '#8fd48f')
+      rigEl.setAttribute('movement-controls', { fly: flying, controls: flying ? 'keyboard, gamepad' : 'keyboard' })
+      setPanelMap(flyLabel, `locomotion: ${flying ? 'fly (push stick to glide)' : 'walk'} (A/X to toggle)`, null, '#8fd48f')
     }
     sceneEl.querySelectorAll('[laser-controls]').forEach((el) => {
       el.addEventListener('abuttondown', () => setFlying(!flying))
@@ -582,6 +742,15 @@ AFRAME.registerComponent('quest-features', {
       lastFrame = now
       if (state.sky) applySky(dt)
 
+      // Ground-follow: movement-controls only moves the rig in XZ (plus Y
+      // while flying), so without this the rig stayed pinned to y=0 no
+      // matter what Perlin terrain did underneath it. Skipped while flying
+      // -- that's the one case where the player's OWN Y is intentional.
+      if (rigEl && !flying) {
+        const rigPos = rigEl.object3D.position
+        rigPos.y = groundHeightAt(rigPos.x, rigPos.z)
+      }
+
       fpsFrames++
       if (now - fpsAt >= 500) {
         fps = Math.round((fpsFrames * 1000) / (now - fpsAt)); fpsFrames = 0; fpsAt = now
@@ -590,7 +759,8 @@ AFRAME.registerComponent('quest-features', {
           const tris = triangles()
           if (statsEl) {
             const assetLine = assetError ? `assets: FAILED at "${assetStage}": ${assetError.message ?? assetError}` : assetsReady ? 'assets: ready' : `assets: loading (${assetStage}) ...`
-            statsEl.innerHTML = `triangles: ${tris.toLocaleString()}\nFPS: ${fps}\ndraw calls: ${info.render.calls}\ngeometries: ${info.memory.geometries}  textures: ${info.memory.textures}\n${assetLine}\n${sceneEl.is('vr-mode') ? 'XR: presenting' : 'XR: inline'}`
+            const errorLine = runtimeError ? `\nRUNTIME ERROR: ${runtimeError.message}` : ''
+            statsEl.innerHTML = `triangles: ${tris.toLocaleString()}\nFPS: ${fps}\ndraw calls: ${info.render.calls}\ngeometries: ${info.memory.geometries}  textures: ${info.memory.textures}\n${assetLine}\n${sceneEl.is('vr-mode') ? 'XR: presenting' : 'XR: inline'}${errorLine}`
           }
           panelTitle.material.map?.dispose()
           panelTitle.material.map = statsTexture(tris, fps, info)
@@ -622,21 +792,40 @@ AFRAME.registerComponent('quest-features', {
           assetStage = 'building tree bank'
           const treeBank = buildTreeBank({ seed: 20260828, billboard: true })
           assetStage = 'baking tree impostors (render-to-texture)'
-          bakeTreeImpostors(sceneEl.renderer, propAtlas, { seed: 20260828 })
-          treeBillboardGeometry = treeBank.tiers[3].geometries[0]
-          treeGeometries = treeBank.tiers[0].geometries // LOD0: the real tree, ~500-800 tris incl. leaf cards
+          // A dedicated npm-three WebGLRenderer, NOT sceneEl.renderer -- the
+          // impostor bake builds its scene/materials/render-target with this
+          // project's own npm three.js (see the props/impostor.js and
+          // tree-bank.js imports), while sceneEl.renderer is A-Frame 1.5.0's
+          // bundled three.js (r158, a different module instance). Handing an
+          // r158 renderer an 0.180-built Scene/Material threw
+          // "e.onBuild is not a function" deep in WebGLRenderer.render on
+          // device -- confirming the version-mismatch risk flagged at the top
+          // of this file. Every other bake call site in this codebase
+          // (gen-tree-main.js, main.js, v2/main.js) already constructs its
+          // own matching-version THREE.WebGLRenderer rather than reusing an
+          // unrelated one; this does the same. It never attaches to the DOM
+          // (bakeImpostor only ever renders to an offscreen
+          // WebGLRenderTarget), so a bare renderer with no canvas append is
+          // enough, and it's disposed right after since it's only needed for
+          // this one load-time step.
+          const bakeRenderer = new RealWebGLRenderer({ antialias: false })
+          bakeTreeImpostors(bakeRenderer, propAtlas, { seed: 20260828 })
+          bakeRenderer.dispose()
+          bakeRenderer.forceContextLoss()
+          treeBillboardGeometry = localGeometry(treeBank.tiers[3].geometries[0])
+          treeGeometries = treeBank.tiers[0].geometries.map(localGeometry) // LOD0: the real tree, ~500-800 tris incl. leaf cards
           assetStage = 'compiling prop material'
-          propMaterial = createPropMaterial(propAtlas)
-          const propPatch = propMaterial.onBeforeCompile
-          propMaterial.onBeforeCompile = (shader, object) => { propPatch(shader, object); wrapLambert(shader) }
-          propMaterial.customProgramCacheKey = () => 'quest-prop-array-wrap-v1'
-          rockMaterial = propMaterial.clone()
-          // Material.clone()/copy() does NOT carry over onBeforeCompile or
-          // customProgramCacheKey (plain instance properties, not part of
-          // Material's copy list) -- without this, rockMaterial silently
-          // falls back to the no-op prototype onBeforeCompile and every rock
-          // renders as flat white material.color.
-          rockMaterial.onBeforeCompile = propMaterial.onBeforeCompile
+          const foreignPropMaterial = createPropMaterial(propAtlas)
+          const propPatch = foreignPropMaterial.onBeforeCompile
+          foreignPropMaterial.onBeforeCompile = (shader, object) => { propPatch(shader, object); wrapLambert(shader) }
+          foreignPropMaterial.customProgramCacheKey = () => 'quest-prop-array-wrap-v1'
+          // localMaterial() rebuilds this as a native AFRAME.THREE material --
+          // see the top-of-file translation-shim note. propMaterial/
+          // rockMaterial are the only material instances that ever reach the
+          // live scene here (rock/billboard/tree meshes below reuse these,
+          // never the foreign originals).
+          propMaterial = localMaterial(foreignPropMaterial, THREE.MeshLambertMaterial)
+          rockMaterial = localMaterial(foreignPropMaterial, THREE.MeshLambertMaterial)
           rockMaterial.customProgramCacheKey = () => 'quest-rock-array-wrap-v1'
           assetsReady = true
           rebuild() // re-run now that treeGeometries/propMaterial/rockMaterial exist
