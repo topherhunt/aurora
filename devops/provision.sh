@@ -71,6 +71,8 @@ ${DOMAIN} {
 	rewrite @v2 /v2.html
 	@v1 path /v1
 	rewrite @v1 /v1.html
+	@avatarPreview path /avatar-preview
+	rewrite @avatarPreview /avatar-preview.html
 	root * ${REMOTE_DIR}/dist
 	file_server
 }

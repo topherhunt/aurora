@@ -270,7 +270,7 @@ function worldHeight() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v1', 'v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'test-aurora']
+const BARE_ROUTES = ['v1', 'v2', 'avatar-preview', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'test-aurora']
 
 function bareRoutes() {
   return {
@@ -338,6 +338,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         v1: resolve(__dirname, 'v1.html'),
+        avatarPreview: resolve(__dirname, 'avatar-preview.html'),
         spike: resolve(__dirname, 'spike.html'),
         map: resolve(__dirname, 'map.html'),
         props: resolve(__dirname, 'props.html'),
