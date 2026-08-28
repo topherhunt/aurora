@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 
 import { HEIGHT_GLSL, HEIGHT_UNIFORMS } from './gpu-height.js'
 import { buildBladeTexture } from './blade-texture.js'

@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { mulberry32 } from '../sim/mathx.js'
 import { planVillage, VILLAGE_PLAN } from './plan.js'

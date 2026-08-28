@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildFern, geometryBytes, FERN_DEFAULTS } from './props/fern.js'
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'

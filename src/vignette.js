@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 
 // ---------------------------------------------------------------------------
 // Comfort vignette (DESIGN.md §12): tunnel the periphery during movement.

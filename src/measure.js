@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 
 // ---------------------------------------------------------------------------
 // Click-to-measure: a red beam on the ground and a distance readout.

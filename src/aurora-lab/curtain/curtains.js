@@ -54,7 +54,7 @@
 // WHAT IS NOT: any frame time, anywhere, on any device. Whether it compiles on the Adreno driver -- SwiftShader is ANGLE's software path and shares ANGLE's front end, which is what caught the reserved word, but it is not the headset's compiler. Whether the defaults look good, which is a question for a person at the panel.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 import { CURTAIN_ENTRY, STRUCTURAL_KEYS, curtainGroups, curtainParams, curtainDefaults } from './params.js'
 import { CURTAIN_VERTEX, CURTAIN_FRAGMENT, auditUniformUse } from './glsl.js'
 import { buildCurtainGeometry, WORLD_PER_KM } from './geometry.js'

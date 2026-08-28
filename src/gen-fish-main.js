@@ -7,7 +7,7 @@
 // one view, so there is no reference-image chaining and no bake step yet.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { SPECIES } from '../tools/fauna/fish-roster.mjs'
 

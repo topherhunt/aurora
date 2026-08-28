@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { mulberry32, clamp01, smoothstep } from '../sim/mathx.js'
 import { buildConifer, buildBoulder, buildGrass, buildCabin } from './shapes.js'
 import { buildFernBank, fernCardGeometries, bakeFernImpostors } from './fern-bank.js'

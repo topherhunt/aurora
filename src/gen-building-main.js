@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE, TILE_METRES } from './textures.js'
 import { createPropMaterial } from './material.js'

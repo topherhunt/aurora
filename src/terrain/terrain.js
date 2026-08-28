@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { selectNodes, nodeKey, inCone, MAX_DEPTH, EYE_HALF_ANGLE } from './quadtree.js'
 import { TUNING, SNOW, WORLD_SIZE, WORLD_HALF } from '../sim/terrain-height.js'
 import { CHUNK_RES } from '../sim/chunk-mesh.js'

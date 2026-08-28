@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildMushroom, mushroomTriangles, MUSHROOM_DEFAULTS } from './props/mushroom.js'
 import {

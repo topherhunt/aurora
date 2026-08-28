@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 
 import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, WORLD_HALF } from '../v2/config.js'
 

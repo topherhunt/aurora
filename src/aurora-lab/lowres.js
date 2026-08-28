@@ -159,7 +159,7 @@
 // denoising.)
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 
 import { VERTEX_GLSL } from './glsl/frame.js'
 

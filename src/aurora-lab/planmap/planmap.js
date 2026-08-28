@@ -28,7 +28,7 @@
 // screen.js declares `uniform float uTime` by hand at the top of every fragment it assembles, and the march passes it straight down as auroraField's `t`. This material is not built by screen.js, so it declares u_pmTime instead, and the page must hand it the SAME number it hands screen.update -- the accumulated shader time, after the timeScale multiply. A mismatch does not error; it renders the map from a different instant than the frame that reads it, which looks like the aurora lagging its own controls.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 import { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL } from '../glsl/noise.js'
 import { ALGORITHMS } from '../algorithms.js'

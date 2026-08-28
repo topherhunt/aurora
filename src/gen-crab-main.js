@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildCrab, crabTriangles, CRAB_DEFAULTS } from './props/crab.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons

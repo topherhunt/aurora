@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 import { bakeImpostor, impostorCardExtents } from '../../props/impostor.js'
 import { LAYER } from '../../textures.js'
 import { KINDS, planBuilding } from '../plan.js'

@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 import { TerrainHeight, WORLD_SIZE } from './sim/terrain-height.js'
 // One spawn rule, shared with Phase A and check-sim. It used to be copied

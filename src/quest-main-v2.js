@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { Input } from './input.js'
 import { Player } from './player.js'
 import { XRControls } from './xr-controls.js'

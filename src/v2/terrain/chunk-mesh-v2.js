@@ -509,4 +509,9 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   return { positions, normals, colors, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
-export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, cullMargin, shade }
+// C_GRASS is exported because the quest flat-ground card has to paint itself the
+// grassland colour EXACTLY, not approximately: terrain-material.js decides "is
+// this ground vegetated" from the vertex colour alone, so a hand-picked green
+// that is a shade off classifies as something else and the card comes out with
+// the wrong grain.
+export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, cullMargin, shade, C_GRASS }

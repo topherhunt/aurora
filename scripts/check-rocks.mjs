@@ -60,7 +60,8 @@ import { Rocks } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
   LAYER, LAYER_COUNT, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
-  ROCK_TILE_MEAN, buildTextureArray,
+  ROCK_TILE_MEAN, GRASS_TILE_MEAN, SNOW_TILE_MEAN,
+  TERRAIN_GRASS_PLACEHOLDER, TERRAIN_SNOW_PLACEHOLDER, buildTextureArray,
 } from '../src/textures.js'
 import {
   SNOW_ROCK, MOSS, mossCutFor, createPropMaterial, getSnowLine, getMossLine,
@@ -633,6 +634,72 @@ const srgbToLinear = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1
 }
 
 // ---------------------------------------------------------------------------
+// 4a-bis. The two GROUND tiles, on the same terms.
+//
+// grass.png and snow.png are cut by tools/props/cut-terrain.mjs and worn by the
+// terrain the same way stone.png is worn by the cliff: divided by their own
+// linear mean and multiplied into the palette, so they are CONTRAST FIELDS, not
+// albedos. That makes the mean the load-bearing number -- a stale copy of it in
+// textures.js does not throw, it quietly regrades every metre of ground in the
+// world, and the only place that would ever be noticed is here.
+//
+// The placeholder is checked against the same number. An image layer that has
+// not finished decoding is transparent BLACK, and a field built by dividing
+// black by a mean is black -- the whole world, for the first frames. The flat
+// fill that stands in has to average what the photograph averages, or the
+// terrain visibly changes colour when the PNG lands.
+// ---------------------------------------------------------------------------
+
+for (const t of [
+  { name: 'grass', layer: LAYER.TERRAIN_GRASS, mean: GRASS_TILE_MEAN, fill: TERRAIN_GRASS_PLACEHOLDER },
+  { name: 'snow', layer: LAYER.TERRAIN_SNOW, mean: SNOW_TILE_MEAN, fill: TERRAIN_SNOW_PLACEHOLDER },
+]) {
+  const path = `public/${IMAGE_LAYERS[t.layer]}`
+  console.log(`\n${path.split('/').pop()}`)
+  const png = readPng(path)
+  check(png.width === TEX_SIZE && png.height === TEX_SIZE,
+    `${path} is ${TEX_SIZE}x${TEX_SIZE}`, `${png.width}x${png.height}`)
+  check(png.channels === 4, 'RGBA, 4 channels', `${png.channels} channels`)
+
+  const N = png.width * png.height
+  const lin = [0, 0, 0]
+  let opaque = 0
+  for (let i = 0; i < N; i++) {
+    if (png.data[i * 4 + 3] === 255) opaque++
+    for (let c = 0; c < 3; c++) lin[c] += srgbToLinear(png.data[i * 4 + c] / 255)
+  }
+  for (let c = 0; c < 3; c++) lin[c] /= N
+  check(opaque === N, 'fully opaque -- the ground is not a cutout', `${N - opaque} non-opaque texels`)
+
+  const drift = Math.max(...lin.map((v, c) => Math.abs(v - t.mean[c]) / t.mean[c]))
+  check(drift < 0.02, `the ${t.name} tile mean in textures.js still describes the shipped tile`,
+    `${lin.map((v) => v.toFixed(4)).join(' ')} vs ${t.mean.join(' ')}, ${(drift * 100).toFixed(1)}% off`)
+
+  const fillLin = t.fill.map((v) => srgbToLinear(v / 255))
+  const fillDrift = Math.max(...fillLin.map((v, c) => Math.abs(v - t.mean[c]) / t.mean[c]))
+  check(fillDrift < 0.02, `and the ${t.name} placeholder averages the same thing`,
+    `${fillLin.map((v) => v.toFixed(4)).join(' ')}, ${(fillDrift * 100).toFixed(1)}% off`)
+
+  // THE FIELD HAS TO HAVE A SWING IN IT. A tile graded flat divides to 1.0
+  // everywhere and is an expensive way to change nothing -- which is the exact
+  // failure a wrong `spread` in cut-terrain.mjs produces, and it looks like the
+  // feature simply not working. The floor is well under the 0.15 snow is cut at.
+  const sd = [0, 0, 0]
+  for (let i = 0; i < N; i++) {
+    for (let c = 0; c < 3; c++) sd[c] += (srgbToLinear(png.data[i * 4 + c] / 255) - lin[c]) ** 2
+  }
+  const rel = sd.map((v, c) => Math.sqrt(v / N) / lin[c])
+  check(Math.min(...rel) > 0.08 && Math.max(...rel) < 0.6,
+    `the ${t.name} field actually varies, and not so hard it posterises`,
+    `relative sd ${rel.map((v) => v.toFixed(3)).join(' ')}`)
+
+  for (const axis of ['u', 'v']) {
+    const s = seamScore(png.data, png.width, axis)
+    check(s < 1.35, `no visible wrap seam in ${axis}`, `seam ${s.toFixed(2)}x the worst interior step`)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 4b. The cliff wears the same tile.
 //
 // A boulder resting against the crag it fell off has to be the same MATERIAL as
@@ -680,11 +747,33 @@ console.log('\nstone on the cliff')
   // if this ever stops being LAYER.ROCK the boulders and the cliff are two
   // different rocks again and nothing else here would notice.
   const fetches = stoneSrc.fragmentShader.match(/textureGrad\( uAtlas, vec3\([^)]*\), /g) || []
-  check(fetches.length === 3, 'the cliff samples the rock tile triplanar, three fetches',
-    `${fetches.length} fetches`)
-  check(fetches.every((f) => f.includes(`, ${LAYER.ROCK}.0 )`)),
-    'and it is LAYER.ROCK -- the same tile the boulders wear',
-    `layer ${LAYER.ROCK}`)
+  const byLayer = (l) => fetches.filter((f) => f.includes(`, ${l}.0 )`))
+  check(byLayer(LAYER.ROCK).length === 3, 'the cliff samples the rock tile triplanar, three fetches',
+    `${byLayer(LAYER.ROCK).length} of ${fetches.length} atlas fetches are LAYER.ROCK`)
+
+  // THE GROUND WEARS ONE FETCH, AND IT IS PLANAR. A cliff needs three because it
+  // faces sideways; the meadow and the snowfield face up, so xz alone is right
+  // and the other two projections would be two thirds of the fill rate spent on
+  // a blend weight of zero. The layer is a parameter here rather than a literal
+  // -- grass and snow share the one helper -- so the projection is checked at the
+  // helper and the layer at the two call sites.
+  const ground = fetches.filter((f) => f.includes(', layer )'))
+  check(ground.length === 1, 'the ground tile is one shared planar fetch', `${ground.length} fetches`)
+  check(ground.every((f) => f.includes('.xz *')), 'and it projects down the xz plane', ground.join(' '))
+  check(fetches.length === 4, 'and those four are every atlas fetch the terrain makes',
+    `${fetches.length} fetches: ${fetches.join(' ')}`)
+
+  // ONE CALL SITE EACH, AT ONE METRE. The scale is the ask: a tile stretched over
+  // ten metres reads as a smear and one crammed into a tenth reads as static, and
+  // neither would fail anything else here.
+  for (const [name, layer] of [['grass', LAYER.TERRAIN_GRASS], ['snow', LAYER.TERRAIN_SNOW]]) {
+    const calls = stoneSrc.fragmentShader.match(
+      new RegExp(`auroraGroundTile\\([^)]*, ${layer}\\.0, ([0-9.]+) \\)`, 'g')) || []
+    check(calls.length === 1, `the ${name} tile is sampled once, on LAYER.TERRAIN_${name.toUpperCase()}`,
+      `${calls.length} call sites for layer ${layer}`)
+    check(calls.every((c) => Math.abs(Number(c.match(/, ([0-9.]+) \)$/)[1]) - 1) < 1e-4),
+      `and it tiles at one metre`, calls.join(' '))
+  }
 
   // IMPLICIT LOD WOULD BE UNDEFINED HERE. Both call sites sit inside a guard
   // that folds in distance and the rock/grass classification, so a quad at the

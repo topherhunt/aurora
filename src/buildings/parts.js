@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { LAYER, TILE_METRES } from '../textures.js'
 import { IRON_ISLANDS, RUNE_ISLANDS } from './tiles.js'
 

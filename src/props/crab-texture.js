@@ -1,28 +1,26 @@
 // ---------------------------------------------------------------------------
-// Crab sheets: one shell palette (the domed carapace top) and one limb
-// palette (legs, pincer arms, claws, eyestalks), both generated in code.
+// Crab sheet: one palette, worn by the carapace AND every limb -- legs, arm,
+// claws, eyestalks all sample the same 64 px cell as the shell they hang off,
+// generated in code.
 //
 // Same reasoning as props/mushroom-texture.js, not repeated in full here: a
 // crab's shape is geometry (props/crab.js) and what is left for the texture
-// to carry is a mottled shell colour plus a slightly darker, plainer limb
-// tone -- a handful of arithmetic terms, not a photograph. Zero bytes on
-// disk, no IMAGE_LAYERS entry, adding a colour is an edit to the array below.
+// to carry is a mottled shell colour -- a handful of arithmetic terms, not a
+// photograph. Zero bytes on disk, no IMAGE_LAYERS entry, adding a colour is
+// an edit to the array below.
 //
 // SHEET SHAPE: a 128 px layer holding four 64 px cells in a 2x2 grid, same
-// `cellUV`/`capUV` addressing as the mushroom sheets (props/crab.js). The
-// shell and limb sheets are PAIRED BY INDEX -- cell i of the shell sheet is
-// the same species as cell i of the limb sheet -- exactly like the mushroom's
-// cap/flesh pairing, so a crab's body and legs read as one animal.
+// `cellUV`/`capUV` addressing as the mushroom sheets (props/crab.js).
 //
-// A SHELL CELL IS A DISC seen from above, addressed by the carapace's own
-// planar projection (see capUV in props/crab.js) for the same reason the
-// mushroom cap is: the projection is affine in the carapace's local x/z, so
-// the GPU's linear interpolation is exact regardless of triangle count and
-// there is no polar seam to manage.
-//
-// A LIMB CELL IS A POLAR CHART, u around the tube and v from body to tip,
-// because every limb -- leg, arm, claw, eyestalk -- is a swept tube and a
-// tube's natural chart is (angle, length along).
+// EVERY SURFACE READS THE SAME CELL through two different charts. The
+// carapace is addressed by its own planar projection (see capUV in
+// props/crab.js), which is affine in the carapace's local x/z, so the GPU's
+// linear interpolation is exact regardless of triangle count and there is no
+// polar seam to manage. A limb is addressed by a polar chart, u around the
+// tube and v from body to tip, because every limb -- leg, arm, claw,
+// eyestalk -- is a swept tube and a tube's natural chart is (angle, length
+// along). The cell's own mottling is noisy enough that either chart reads as
+// the same animal's hide.
 // ---------------------------------------------------------------------------
 
 const SHEET = 128
@@ -91,15 +89,8 @@ export const CRAB_SHELL = [
   },
 ]
 
-export const CRAB_LIMB = [
-  { name: 'russet', base: [110, 54, 30], accent: [72, 34, 20], accentN: 7, grain: 0.16, seed: 61 },
-  { name: 'cobalt', base: [42, 66, 96], accent: [22, 36, 58], accentN: 8, grain: 0.15, seed: 62 },
-  { name: 'sand', base: [156, 130, 90], accent: [116, 92, 60], accentN: 6, grain: 0.13, seed: 63 },
-  { name: 'moss', base: [66, 80, 44], accent: [42, 54, 26], accentN: 7, grain: 0.15, seed: 64 },
-]
-
 // ---------------------------------------------------------------------------
-// Cell painters. Alpha is 255 everywhere -- a crab is an opaque closed solid
+// Cell painter. Alpha is 255 everywhere -- a crab is an opaque closed solid
 // and the shared prop material runs alphaTest 0.5 with transparent: false, so
 // any texel under 128 is a hole punched through the shell, not a soft edge.
 // ---------------------------------------------------------------------------
@@ -153,47 +144,6 @@ export function shellCell(spec) {
   return px
 }
 
-export function limbCell(spec) {
-  const px = new Uint8Array(CELL * CELL * 4)
-  for (let y = 0; y < CELL; y++) {
-    for (let x = 0; x < CELL; x++) {
-      const u = (x + 0.5) / CELL // around the tube
-      const v = (y + 0.5) / CELL // 0 near the body, 1 at the tip
-
-      // A limb is thinner and more shaded than the shell it hangs off, and
-      // slightly darker toward the tip -- the part that is usually in its own
-      // shadow and in the dirt.
-      let shade = mix(1.05, 0.8, v)
-      const n = wrapNoise(u, v, 10, 4, spec.seed + 61) * 0.6
-              + wrapNoise(u, v, 26, 10, spec.seed + 67) * 0.4
-      shade *= 1 + (n - 0.5) * 2 * spec.grain
-
-      let r = spec.base[0] * shade
-      let g = spec.base[1] * shade
-      let b = spec.base[2] * shade
-
-      const patch = smoothstep(0.45, 0.6, wrapNoise(u, v, spec.accentN, spec.accentN * 0.4, spec.seed + 71))
-      r = mix(r, spec.accent[0] * shade, patch * 0.7)
-      g = mix(g, spec.accent[1] * shade, patch * 0.7)
-      b = mix(b, spec.accent[2] * shade, patch * 0.7)
-
-      const tooth = hash2(x, y, spec.seed + 77) * 0.62
-                  + wrapNoise(u, v, 30, 12, spec.seed + 83) * 0.38
-      const bite = 1 + (tooth - 0.5) * 2 * spec.grain * 0.3
-      r *= bite
-      g *= bite
-      b *= bite
-
-      const o = (y * CELL + x) * 4
-      px[o] = clamp255(r)
-      px[o + 1] = clamp255(g)
-      px[o + 2] = clamp255(b)
-      px[o + 3] = 255
-    }
-  }
-  return px
-}
-
 // ---------------------------------------------------------------------------
 // Sheet assembly -- a 2x2 grid of 64 px cells in one 128 px layer, same shape
 // as the mushroom sheets so `cellUV`/`capUV` in props/crab.js decode either.
@@ -219,10 +169,6 @@ function pack(cells) {
 
 export function crabShellSheet(specs = CRAB_SHELL) {
   return pack(specs.map(shellCell))
-}
-
-export function crabLimbSheet(specs = CRAB_LIMB) {
-  return pack(specs.map(limbCell))
 }
 
 export const CRAB_CELL_PX = CELL

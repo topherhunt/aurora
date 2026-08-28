@@ -24,9 +24,21 @@
 // frame is a render-time concern, not this file's.
 // ---------------------------------------------------------------------------
 
+// Tri count for a capped ring loft is exactly 2*segments*rings (the side
+// bands contribute (rings-1)*segments*2, the two single-vertex caps add
+// segments*2 more -- see buildFishMesh below). LOD0 is deliberately very
+// coarse: at 4 rings/6 segments the dorsal (theta=0) and ventral (theta=pi)
+// vertices land exactly on the ring's poles regardless of RING_PINCH, so
+// each of those two vertices is already zero-lateral-width, and with only
+// two neighbours 60deg away the triangle between them reads as one flat,
+// visibly bladed wedge instead of a smoothly rounded curve -- few enough
+// vertices that the "knife edge" comes from the topology itself, not from
+// pinching a smooth curve harder (see RING_PINCH below, which turned out too
+// subtle to see at the old 14-segment resolution: the pole vertex was always
+// already at zero width, so pinch only nudged its already-close neighbours).
 const LOD_PARAMS = [
-  { rings: 20, segments: 14 }, // LOD0, ~510 tris
-  { rings: 10, segments: 8 },  // LOD1, ~140 tris
+  { rings: 4, segments: 6 }, // LOD0, 48 tris
+  { rings: 3, segments: 4 }, // LOD1, 24 tris
 ]
 
 /** A column's {min,max} nearest to pixel x (within 30px) in a chromakey.columnProfile. */
@@ -69,11 +81,13 @@ function bendWeight(t) { return t * t }
 
 // How sharply the ring's lateral (X) extent pinches in toward the dorsal and
 // ventral poles (theta=0 and theta=pi). 1 = plain ellipse (sin/cos); above 1
-// pinches faster, so the dorsal/ventral silhouette -- where the real fin
-// actually lives -- reads as a thin knife-edge blade instead of a rounded
-// torpedo cross-section, while the belly/flank (near theta=+-90deg, where
-// sin(theta) is near +-1 either way) keeps its full rounded body width.
-const RING_PINCH = 1.7
+// pinches faster, so the flank vertices next to the poles (at LOD0's 6
+// segments, the +-60deg neighbours of theta=0/pi) sit closer to zero width
+// too, sharpening the blade the pole vertices already form. Matters far less
+// than segment count now -- the poles themselves are always exactly zero
+// width regardless of this exponent -- but still steepens the taper into
+// them.
+const RING_PINCH = 2.2
 
 // One ring in the XY plane (X=lateral, Y=dorsal-ventral), stacked along Z
 // (length). theta=0 points +Y (dorsal/up), matching loft-mesh.mjs's ring()

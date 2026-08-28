@@ -4,7 +4,7 @@
 // The position attribute holds the parameter triple rather than a location. three.js wants a position attribute to exist, and there is no honest world position to put there -- the vertices are placed by a curve that depends on time. Bounding volumes are therefore meaningless, which is why the caller sets frustumCulled false and provides its own bounding sphere.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 // Kilometres to scene units. The lab puts its mountains at 1500 and its star sphere at 15000, so this is chosen to land a 90 km hem at 540 units and a 780 km curtain at 4680: above the terrain, well inside the stars. It is a constant rather than a slider because changing it changes what every kilometre-denominated param means, and a panel where the units move is a panel you cannot tune.
 export const WORLD_PER_KM = 6.0

@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 
 import { Stars } from './stars.js'
 import { Backdrop } from './aurora-lab/backdrop.js'

@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildTree, resolveTree, treeLod, crownProfile, TREE_DEFAULTS, TREE_SPECIES, BUSH_OVERRIDES } from './props/tree.js'
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'

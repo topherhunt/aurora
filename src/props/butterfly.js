@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ export function butterflyTriangles(options = {}) {
   const antennaCols = Math.max(3, Math.round(p.antennaCols))
 
   let tris = bodySegments * bodyCols * 2
-  tris += 8 * 6 * 2 // SphereGeometry(_, 8, 6) triangle count (head bulb)
+  tris += 2 * 8 * (6 - 1) // SphereGeometry(_, 8, 6) triangle count (head bulb) -- pole rows are triangle fans, not full quads
   tris += 2 * antennaSegments * antennaCols * 2 // two antennae
   tris += 2 * 2 // two wing quads
   return tris

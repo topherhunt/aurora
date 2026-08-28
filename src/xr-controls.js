@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 
 const BLUE = 0x18bfff
 const DEADZONE = 0.18

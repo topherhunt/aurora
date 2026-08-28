@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildRock, ROCK_DEFAULTS, ROCK_TIERS, ROCK_LOD_AT, rockLodSize } from './props/rock.js'
 import {

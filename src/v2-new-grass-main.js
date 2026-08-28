@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 
 import { HEIGHTMAP_URL, HEIGHTMAP_META_URL } from './v2/config.js'

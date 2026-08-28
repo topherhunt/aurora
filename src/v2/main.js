@@ -9,6 +9,7 @@ import { Layers } from './layers/layers.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
+import { C_GRASS } from './terrain/chunk-mesh-v2.js'
 import { SKYLINE } from './terrain/skyline.js'
 import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
@@ -433,6 +434,14 @@ const questControllerHits = new Map()
 
 // --- toggle panel ------------------------------------------------------------
 
+// Column order matters: the panel fills column-major, so these read as three
+// groups of six -- world layers, then systems, then one-shot actions.
+//
+// THERE IS NO `recall panel here` ROW, deliberately. It was here and it was
+// useless: the only way to press it is to already be standing in front of the
+// panel, which is the one situation in which nothing needs recalling. Recall is
+// a CONTROLLER binding (B / Y) for exactly that reason -- the button you can
+// reach when the panel is behind you.
 const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
   { key: 'flatGround', text: 'flat ground' },
@@ -441,18 +450,24 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'grass', text: 'grass' },
   { key: 'ferns', text: 'ferns' },
   { key: 'instCull', text: 'per-instance cull' },
+  { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
   { key: 'dayNight', text: 'day/night' },
   { key: 'lighting', text: 'terrain & prop lighting' },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
+  { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
-  { key: 'recall', text: 'recall panel here', action: () => placeQuestPanel() },
+  { key: 'unstick', text: 'unstick', action: () => { questUnstickOnce = true } },
 ]
 
 function questToggleLabel(row) {
   if (row.action) return row.text
-  return `${row.text}: ${questToggles[row.key] ? 'on' : 'off'}`
+  const on = questToggles[row.key]
+  // `on`/`off` let a row name its two STATES instead of reporting a boolean.
+  // "move: walk" is a control the wearer can read; "teleport: off" makes them
+  // work out what the other half of the switch even is.
+  return `${row.text}: ${on ? (row.on ?? 'on') : (row.off ?? 'off')}`
 }
 
 function applyQuestToggle(key) {
@@ -470,6 +485,10 @@ function applyQuestToggle(key) {
     case 'grass': grass.batch.visible = enabled; break
     case 'ferns': ferns.batch.visible = enabled; break
     case 'instCull': applyBatchCulling(); break
+    case 'teleport': // pure state; readInput branches on it. Drop any half-made aim.
+      questTeleportArmed = false
+      if (questTeleportMarker) questTeleportMarker.visible = false
+      break
     case 'water': waterSurfaces.group.visible = enabled; break
     case 'reflections': break // no object of its own; gates the sky/world capture updates in tick()
     case 'aurora': aurora.mesh.visible = enabled; break
@@ -560,8 +579,16 @@ function activateQuestButton(key) {
 // the toggle rows do on click -- would allocate and upload a texture four times
 // a second forever, which is a leak of GPU memory on a device that has 6 GB for
 // everything. Rows get away with it because a click is a human-rate event.
-const QUEST_STATS_W = 1024
-const QUEST_STATS_H = 256
+// Panel geometry, in metres, in one place because the background, the title,
+// the stats plane and the button grid all have to agree on the width and there
+// is no layout engine in a Three.js scene to make them.
+const QUEST_PANEL_COLS = 3
+const QUEST_PANEL_COL_W = 0.86
+const QUEST_PANEL_COL_GAP = 0.06
+const PANEL_W = QUEST_PANEL_COLS * QUEST_PANEL_COL_W + (QUEST_PANEL_COLS - 1) * QUEST_PANEL_COL_GAP
+
+const QUEST_STATS_W = 1280
+const QUEST_STATS_H = 240
 let questStatsCanvas = null
 let questStatsCtx = null
 let questStatsTexture = null
@@ -570,12 +597,12 @@ function drawQuestStats(lines) {
   const ctx = questStatsCtx
   ctx.fillStyle = '#08131f'
   ctx.fillRect(0, 0, QUEST_STATS_W, QUEST_STATS_H)
-  ctx.font = 'bold 30px monospace'
+  ctx.font = 'bold 28px monospace'
   ctx.textBaseline = 'middle'
   ctx.textAlign = 'left'
   lines.forEach((parts, row) => {
     let x = 16
-    const y = 24 + row * 41
+    const y = 22 + row * 39
     for (const [text, color] of parts) {
       ctx.fillStyle = color
       ctx.fillText(text, x, y)
@@ -590,17 +617,17 @@ function buildQuestPanel() {
   scene.add(questPanelGroup)
 
   const bg = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.0, 2.24),
+    new THREE.PlaneGeometry(PANEL_W + 0.1, 2.1),
     new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: 0.94, side: THREE.DoubleSide })
   )
   bg.position.set(0, 0.15, -0.01)
   questPanelGroup.add(bg)
 
   const title = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.9, 0.14),
-    new THREE.MeshBasicMaterial({ map: labelTexture('quest toggles -- left grip recalls this panel', null, '#8fd48f', 1100), transparent: true, toneMapped: false, side: THREE.DoubleSide })
+    new THREE.PlaneGeometry(PANEL_W, 0.13),
+    new THREE.MeshBasicMaterial({ map: labelTexture('sticks move & turn -- A/X fly -- B/Y or esc recalls this panel -- stick click recenters', null, '#8fd48f', 1560), transparent: true, toneMapped: false, side: THREE.DoubleSide })
   )
-  title.position.set(0, 1.04, 0.02)
+  title.position.set(0, 1.05, 0.02)
   questPanelGroup.add(title)
 
   questStatsCanvas = document.createElement('canvas')
@@ -610,30 +637,28 @@ function buildQuestPanel() {
   questStatsTexture = new THREE.CanvasTexture(questStatsCanvas)
   questStatsTexture.colorSpace = THREE.SRGBColorSpace
   const stats = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.9, 1.9 * QUEST_STATS_H / QUEST_STATS_W),
+    new THREE.PlaneGeometry(PANEL_W, PANEL_W * QUEST_STATS_H / QUEST_STATS_W),
     new THREE.MeshBasicMaterial({ map: questStatsTexture, toneMapped: false, side: THREE.DoubleSide })
   )
-  stats.position.set(0, 0.76, 0.02)
+  stats.position.set(0, 0.70, 0.02)
   questPanelGroup.add(stats)
   drawQuestStats([[['booting...', '#7f95b4']]])
 
-  // Two side-by-side columns rather than one tall stack, so the panel stays
-  // a comfortable height regardless of how many toggles it grows to.
-  const COLS = 2
-  const rowsPerCol = Math.ceil(QUEST_TOGGLE_ROWS.length / COLS)
-  const colWidth = 0.86
-  const colGap = 0.06
+  // Three side-by-side columns rather than one tall stack, so the panel stays a
+  // comfortable height regardless of how many toggles it grows to. Column-major
+  // fill, so QUEST_TOGGLE_ROWS reads top-to-bottom in source order.
+  const rowsPerCol = Math.ceil(QUEST_TOGGLE_ROWS.length / QUEST_PANEL_COLS)
   const rowHeight = 0.20
-  const top = 0.36
+  const top = 0.30
   QUEST_TOGGLE_ROWS.forEach((row, i) => {
     const col = Math.floor(i / rowsPerCol)
     const rowInCol = i % rowsPerCol
-    const width = colWidth
+    const width = QUEST_PANEL_COL_W
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(width, 0.18),
       new THREE.MeshBasicMaterial({ map: labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96)), side: THREE.DoubleSide, transparent: true, toneMapped: false })
     )
-    mesh.position.set((col - (COLS - 1) / 2) * (colWidth + colGap), top - rowInCol * rowHeight, 0.03)
+    mesh.position.set((col - (QUEST_PANEL_COLS - 1) / 2) * (QUEST_PANEL_COL_W + QUEST_PANEL_COL_GAP), top - rowInCol * rowHeight, 0.03)
     mesh.userData.key = row.key
     questPanelGroup.add(mesh)
     questPanelMeshes.push(mesh)
@@ -687,7 +712,10 @@ function questPanelDesiredPosition(out) {
   questPanelFwd.y = 0
   if (questPanelFwd.lengthSq() < 1e-6) questPanelFwd.set(0, 0, -1)
   questPanelFwd.normalize()
-  const dist = 2.2
+  // Backed off with the third column: at 2.2 m a 2.7 m-wide panel subtends
+  // about 64 degrees, so the outer columns sit out where a Quest 2's lenses go
+  // soft and you have to turn your head to read them.
+  const dist = 2.8
   out.x = rig.position.x + questPanelFwd.x * dist
   out.z = rig.position.z + questPanelFwd.z * dist
   out.y = height.heightAt(out.x, out.z) + 1.3
@@ -703,8 +731,9 @@ function questPanelDesiredPosition(out) {
  * eye reads it as the world breaking rather than as a menu. Anything that must
  * follow the head belongs PARENTED to the camera, where it moves continuously
  * and is visibly attached; anything that does not belongs in the world, at rest.
- * This is the second kind, so it is placed on demand -- at boot, from the
- * `recall panel here` row, and from the left grip -- and never on a clock.
+ * This is the second kind, so it is placed on demand -- at boot, from the B / Y
+ * button on either controller, and when flat ground moves the floor -- and
+ * never on a clock.
  */
 function placeQuestPanel() {
   if (!questPanelGroup) return
@@ -716,7 +745,7 @@ function updateQuestPanel() {
   updateQuestControllerHover()
 }
 
-// Short forms, because the panel is 1.9 m wide read from 2.2 m away and a raw
+// Short forms, because the panel is 2.7 m wide read from 2.8 m away and a raw
 // 1043968 is a number nobody in a headset is going to parse.
 function kilo(n) {
   if (n === null || n === undefined) return '-'
@@ -783,7 +812,7 @@ function updateQuestStats() {
     [
       ['fern ', '#7f95b4'], [`${kilo(ferns.stats.placed)}/${kilo(ferns.stats.tris)}`.padEnd(12), '#8fd48f'],
       ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(7), '#8fd48f'],
-      ['mode ', '#7f95b4'], [player.flying ? 'fly' : 'walk', '#8fd48f'],
+      ['mode ', '#7f95b4'], [player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk', '#8fd48f'],
     ],
     [
       ['pads ', '#7f95b4'], [String(inp.connected).padEnd(3), inp.connected > 0 ? '#8fd48f' : '#ff6b6b'],
@@ -859,6 +888,10 @@ const questToggles = QUEST_MODE
       terrain: false, flatGround: false, dayNight: false, lighting: false,
       trees: false, rocks: false, grass: false, ferns: false,
       instCull: false, water: false, reflections: false, aurora: false,
+      // Walk, not teleport, is the default: teleport hides exactly the symptom
+      // this panel exists to look at, which is what the world does to the frame
+      // while you are moving continuously through it.
+      teleport: false,
     }
   : null
 
@@ -1602,10 +1635,21 @@ function setFlatGround(on) {
     const y = height.heightAt(cx, cz)
     height.setFlat(y)
     if (!flatCard) {
-      flatCard = new THREE.Mesh(
-        new THREE.PlaneGeometry(WORLD_HALF * 2, WORLD_HALF * 2, 1, 1),
-        new THREE.MeshBasicMaterial({ color: 0x46543a, side: THREE.DoubleSide })
-      )
+      // THE CARD WEARS THE TERRAIN'S OWN MATERIAL, the same object instance the
+      // chunk batch uses -- already lighting.patch'd, already carrying the
+      // grain/macro/micro uniforms. That works on two triangles because every
+      // layer in terrain-material.js is keyed to WORLD XZ in the fragment
+      // shader, not to UV or to vertex density: the grain does not know or care
+      // how big the triangle under it is, so an 8 km card reads exactly like
+      // meshed grassland and the ground keeps its sense of scale and distance.
+      //
+      // All it needs is the vertex colour the mesher would have written, since
+      // that is the only channel the shader classifies surfaces from.
+      const geo = new THREE.PlaneGeometry(WORLD_HALF * 2, WORLD_HALF * 2, 1, 1)
+      const colors = new Float32Array(4 * 3)
+      for (let i = 0; i < 4; i++) colors.set(C_GRASS, i * 3)
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+      flatCard = new THREE.Mesh(geo, terrain.material)
       flatCard.rotation.x = -Math.PI / 2
       // Nothing about this plane is view-dependent and it is always underfoot,
       // so the per-frame frustum test on it is pure overhead.
@@ -1887,6 +1931,16 @@ function cycleAurora() {
 
 addEventListener('keydown', (e) => {
   if (!ready || typing(e)) return
+
+  // Escape recalls the quest panel, the keyboard twin of B / Y. On a desktop
+  // there is no controller to press, and `?quest` is regularly driven from a
+  // laptop -- so without this the panel is unrecoverable the moment you walk
+  // past it. Gated on QUEST_MODE so Escape keeps whatever it means to the
+  // editor in the normal route, where this panel does not exist.
+  if (QUEST_MODE && e.code === 'Escape') {
+    placeQuestPanel()
+    return
+  }
 
   // Tab arms and disarms the editor. A dedicated key rather than a mode that is
   // always on, because an armed lake tool turns every stray click on the ground
@@ -2284,19 +2338,41 @@ let shownError = ''
 const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null }
 const headTmp = new THREE.Vector3()
 
+// Unstick is a one-shot the panel row raises and the next readInput consumes.
+// It cannot be a straight call because Player reads it as a per-frame input
+// flag, and it lives on the panel rather than a button because with the grips
+// now inert there is no spare face button that both hands could carry.
+let questUnstickOnce = false
+
 // ---------------------------------------------------------------------------
 // VR LOCOMOTION. The binding, in one place, because a control scheme spread
-// across a switch statement is a control scheme nobody can read back:
+// across a switch statement is a control scheme nobody can read back.
 //
-//   left stick  Y   glide walk, forward and BACK (it used to clamp at zero)
-//   right stick X   snap turn
-//   right stick Y   push forward to aim a teleport, release to go
-//   A / X           toggle fly; while flying, stick Y is throttle along
-//                   whichever HAND is pushing it, wherever that hand points
-//   left grip       recall the toggle panel to where you are standing
-//   right grip      +5 hours
-//   left Y          unstick
-//   right B         cycle the aurora pattern
+// THE TWO CONTROLLERS ARE MIRRORED. Every binding below is on BOTH hands and
+// means the same thing on both, so the world is fully playable one-handed --
+// which is how it actually gets played. The previous scheme split locomotion
+// across the hands (left stick walked, right stick turned and teleported) and
+// that is unplayable with one controller down, for no benefit: there is nothing
+// a walk needs that a turn cannot share a stick with.
+//
+//   either stick  Y   walk, forward and BACK -- or aim/fire a teleport when the
+//                     panel's `move` row says teleport. While flying, throttle.
+//   either stick  X   snap turn
+//   either stick  click   recentre
+//   A / X             toggle fly. Flying steers off whichever HAND is pushing
+//                     its stick, wherever that hand points.
+//   B / Y             recall the toggle panel to where you are standing
+//   grips             NOTHING. See below.
+//
+// GRIPS DO NOTHING, ON PURPOSE. They used to carry +5 hours and panel-recall,
+// and a grip is the button a hand presses by accident just holding a controller
+// -- so the sky would lurch five hours forward while you were reaching for
+// something. A binding you fire without meaning to is worse than no binding.
+//
+// AXIS DOMINANCE, not a per-hand split, is what stops a walk from turning you.
+// Each stick contributes to move only while |y| > |x| and to turn only while
+// |x| > |y|; a thumb pushed forward-ish walks and does not snap-turn, and the
+// two hands can never fight because whichever is pushed further wins.
 //
 // Walking is 1.45 m/s across an 8 km world, which is why fly and teleport are
 // not optional extras here: on foot the far side of the map is an hour away and
@@ -2361,12 +2437,13 @@ const questHandPos = new THREE.Vector3()
 const questHandDir = new THREE.Vector3()
 const questFlyDir = new THREE.Vector3()
 
-function questTeleportAim() {
-  // Aimed down the RIGHT HAND, not the gaze. Marching the head ray would make
-  // the destination move whenever she looked around while holding the stick,
-  // and would put it wherever she happened to be reading the panel.
-  rightGrip.getWorldPosition(questHandPos)
-  rightGrip.getWorldQuaternion(questTempQuat)
+function questTeleportAim(hand) {
+  // Aimed down the HAND THAT IS PUSHING THE STICK, not the gaze. Marching the
+  // head ray would make the destination move whenever she looked around while
+  // holding the stick, and would put it wherever she happened to be reading the
+  // panel. Taking it off the pushing hand is what keeps the two mirrored.
+  hand.getWorldPosition(questHandPos)
+  hand.getWorldQuaternion(questTempQuat)
   questHandDir.set(0, 0, -1).applyQuaternion(questTempQuat)
   // The march walks the exact height FIELD, not the meshed chunk, so it lands
   // in the same place whether or not the terrain layer is even switched on --
@@ -2400,52 +2477,63 @@ function readInput() {
     if (st.connected > 0) questInputSource = 'aframe'
   }
   if (st.connected > 0) {
+    const lx = st.left.axes[0]
     const ly = st.left.axes[1]
     const rx = st.right.axes[0]
     const ry = st.right.axes[1]
 
+    // Axis dominance, per stick, then the harder push wins between the hands.
+    // See the banner: this is what lets both sticks carry both move and turn
+    // without a sideways lean during a walk snap-turning her.
+    const lMove = Math.abs(ly) > Math.abs(lx) ? ly : 0
+    const rMove = Math.abs(ry) > Math.abs(rx) ? ry : 0
+    const lTurn = Math.abs(lx) > Math.abs(ly) ? lx : 0
+    const rTurn = Math.abs(rx) > Math.abs(ry) ? rx : 0
+    // Which hand is driving. Also decides where fly and teleport point, so the
+    // aim comes off the hand actually doing the pushing.
+    const useRight = Math.abs(rMove) > Math.abs(lMove)
+    const moveAxis = useRight ? rMove : lMove
+    const moveHand = useRight ? rightGrip : leftGrip
+
     // Backwards used to be clamped away by a Math.max(0, ...). Reversing out of
     // a rock face is the single most-wanted move in a world with no strafe.
-    moveInput.move = -ly
+    moveInput.move = -moveAxis
     moveInput.strafe = 0 // no strafing in VR, on purpose
     moveInput.lift = 0
-    // Right stick ONLY. It used to take whichever stick was pushed further,
-    // which meant every walk with any sideways lean on the left stick also
-    // snap-turned her.
-    moveInput.turn = rx
-    moveInput.unstick = !!st.left.buttons.SECONDARY?.justPressed
+    moveInput.turn = Math.abs(rTurn) > Math.abs(lTurn) ? rTurn : lTurn
+    moveInput.unstick = questUnstickOnce
+    questUnstickOnce = false
     moveInput.instant = false
     moveInput.flyDirection = null
 
-    if (st.right.buttons.GRIP?.justPressed) skipTime()
-    if (st.right.buttons.SECONDARY?.justPressed) cycleAurora()
-    if (st.left.buttons.GRIP?.justPressed) placeQuestPanel()
-    if (st.left.buttons.STICK?.justPressed) player.recenterXR(renderer)
+    // Mirrored, and NOTHING on the grips. +5h and aurora-cycle moved to the
+    // panel, where they cannot go off in your hand.
+    if (st.left.buttons.SECONDARY?.justPressed || st.right.buttons.SECONDARY?.justPressed) placeQuestPanel()
+    if (st.left.buttons.STICK?.justPressed || st.right.buttons.STICK?.justPressed) player.recenterXR(renderer)
     if (st.left.buttons.PRIMARY?.justPressed || st.right.buttons.PRIMARY?.justPressed) {
       setFlying(!player.flying)
     }
 
     if (player.flying) {
-      // Whichever stick is being pushed harder decides both the throttle and
-      // the hand the direction comes off, so "fly where I am pointing" is true
-      // of the hand actually doing the pointing.
-      const useRight = Math.abs(ry) > Math.abs(ly)
-      const grip = useRight ? rightGrip : leftGrip
-      grip.getWorldQuaternion(questTempQuat)
+      moveHand.getWorldQuaternion(questTempQuat)
       questFlyDir.set(0, 0, -1).applyQuaternion(questTempQuat).normalize()
-      moveInput.move = -(useRight ? ry : ly)
       moveInput.flyDirection = questFlyDir
       if (questTeleportMarker) questTeleportMarker.visible = false
       questTeleportArmed = false
       return
     }
 
+    if (!questToggles.teleport) return
+
     // Teleport: aim while held, go on release. Fired from readInput rather than
-    // from a button event because the whole gesture is a stick threshold.
-    const push = -ry
+    // from a button event because the whole gesture is a stick threshold. Push
+    // is the same forward push that walks in the other mode, so the panel row
+    // swaps the meaning of one gesture rather than adding a second one.
+    moveInput.move = 0
+    const push = -moveAxis
     if (push > QUEST_TELEPORT_ARM) {
       questTeleportArmed = true
-      questTeleportAim()
+      questTeleportAim(moveHand)
     } else if (questTeleportArmed && push < QUEST_TELEPORT_FIRE) {
       questTeleportArmed = false
       if (questTeleportMarker) questTeleportMarker.visible = false
@@ -2458,7 +2546,10 @@ function readInput() {
   moveInput.lift = (on('flyUp') ? 1 : 0) - (on('flyDown') ? 1 : 0)
   moveInput.instant = true
   moveInput.turn = (on('turnRight') ? 1 : 0) - (on('turnLeft') ? 1 : 0)
-  moveInput.unstick = on('unstick')
+  // The one-shot is honoured here too, so the panel's unstick row still works
+  // in desktop `?quest` testing where no controller is ever connected.
+  moveInput.unstick = on('unstick') || questUnstickOnce
+  questUnstickOnce = false
   // Cleared explicitly: the VR branch above sets it, and a stale hand vector
   // left in place after the controllers drop out would steer desktop flight off
   // a quaternion nothing is updating any more.

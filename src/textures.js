@@ -12,7 +12,7 @@ import {
   sheetRunes,
 } from './buildings/tiles.js'
 import { mushroomCapSheet, mushroomCaveSheet, mushroomFleshSheet } from './props/mushroom-texture.js'
-import { crabShellSheet, crabLimbSheet } from './props/crab-texture.js'
+import { crabShellSheet } from './props/crab-texture.js'
 import { butterflyWingSheet } from './props/butterfly-texture.js'
 
 // ---------------------------------------------------------------------------
@@ -250,14 +250,27 @@ export const LAYER = {
   IMPOSTOR_FERN_UPRIGHT: 30, // baked from the low-`arch` half of the bank
   IMPOSTOR_FERN_ARCHED: 31, // ...and the high-`arch` half
 
-  // 32 IS FREE. It was the rock card's one scratch layer, back when the rock
-  // bank was still being picked on the bench and committing N layers to it
-  // would have been committing to shapes nobody had chosen. The bank is chosen
-  // now -- twenty-five variants, every one of them on a bed roster and gated
-  // there -- so the rock card moved to the per-shape run at the bottom of this
-  // table, exactly as the note here always said it should once the shapes
-  // existed. Take this slot for the next single-layer texture rather than
-  // growing LAYER_COUNT for it.
+  // --- the ground itself (src/terrain/terrain-material.js) ------------------
+  //
+  // The meadow tile. 32 was the rock card's old scratch layer and has been free
+  // since the bank moved to the per-shape run at the bottom of this table, with
+  // a note saying to take the slot rather than grow LAYER_COUNT -- so this took
+  // it. Its pair, TERRAIN_SNOW, is at the far end of the table for want of a
+  // second hole; the two are read together and neither is ever worn as a
+  // `texLayer`, so their indices being apart costs nothing but this sentence.
+  //
+  // NOT AN ALBEDO, which is what makes one tile enough for a whole world of
+  // grass. The terrain shader divides it by its own linear mean (GRASS_TILE_MEAN
+  // below) and multiplies the palette by the result, so what ships is a contrast
+  // field averaging (1,1,1): it adds the photograph's grain and its
+  // blade-to-soil colour variation without moving the green that every other
+  // colour in terrain-material.js was tuned against. Same trick, same reasons,
+  // as LAYER.ROCK on a cliff face.
+  //
+  // Cut from tmp/grass.jpg by tools/props/cut-terrain.mjs, which is where the
+  // grade -- and in particular what `spread` and `desaturate` decide -- is
+  // argued.
+  TERRAIN_GRASS: 32,
 
   // --- grass (src/props/grass-bank.js, src/v2/render/grass.js) --------------
   //
@@ -468,18 +481,25 @@ export const LAYER = {
   // in table order), and LAYER_COUNT below has to leave room for all of it.
   IMPOSTOR_ROCK: 70,
 
-  // Crab sheets, same reasoning as the mushroom's: a crab's shape is geometry
-  // (props/crab.js) and its texture is a mottled shell colour plus a plainer
-  // limb tone, both cheap arithmetic -- so these are the shipping art, zero
-  // bytes on disk. See props/crab-texture.js.
+  // Crab sheet, same reasoning as the mushroom's: a crab's shape is geometry
+  // (props/crab.js) and its texture is a mottled shell colour, cheap
+  // arithmetic -- so this is the shipping art, zero bytes on disk. Every
+  // surface -- carapace and every limb -- reads this one layer. See
+  // props/crab-texture.js.
   CRAB_SHELL: 95,
-  CRAB_LIMB: 96,
 
   // Butterfly sheet, same reasoning as the crab's -- see props/butterfly-texture.js.
   // Wing patterns and paired body tones, four 64px cells in one 128px layer.
   BUTTERFLY_WING: 97,
+
+  // TERRAIN_GRASS's pair -- see the note at layer 32 for what these two are and
+  // why they are not albedos. Appended rather than slotted beside it because 32
+  // was the only hole left in the table.
+  //
+  // Cut from tmp/snow.jpg by tools/props/cut-terrain.mjs.
+  TERRAIN_SNOW: 98,
 }
-export const LAYER_COUNT = 98
+export const LAYER_COUNT = 99
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -672,6 +692,31 @@ export const MOSS_LAYERS = [LAYER.ROCK, LAYER.BARK, LAYER.BARK_BIRCH, LAYER.BARK
 // the terrain palette.
 export const ROCK_TILE_MEAN = [0.1148, 0.0933, 0.077]
 
+// --- and the same number for the two GROUND tiles ----------------------------
+//
+// Measured off the shipped files by tools/props/cut-terrain.mjs, which prints
+// them at the end of every run so they can be copied here. They serve exactly
+// one purpose and it is the same one ROCK_TILE_MEAN serves: terrain-material.js
+// divides the tile by this, which turns a photograph into a contrast field
+// averaging (1,1,1), so the tile adds grain and colour VARIATION and moves the
+// terrain palette neither darker nor warmer.
+//
+// A STALE VALUE HERE DOES NOT FAIL, it quietly regrades every metre of ground in
+// the world -- the divide is a multiply by 1/mean, so a copy that is 20% low
+// makes the whole meadow 20% brighter. That is why these are gated:
+// scripts/check-rocks.mjs re-measures both PNGs and fails on more than 2% drift,
+// the same guard ROCK_TILE_MEAN has.
+//
+// TERRAIN_GRASS_PLACEHOLDER and TERRAIN_SNOW_PLACEHOLDER are the sRGB bytes
+// these means decode from. buildTextureArray fills the two slices with them flat
+// so that, for the few frames before loadImageLayers lands, the field is exactly
+// 1.0 and the ground is the untextured palette rather than -- as an unpatched
+// transparent-black slice would make it -- black.
+export const GRASS_TILE_MEAN = [0.1384, 0.1946, 0.0578]
+export const SNOW_TILE_MEAN = [0.3419, 0.3467, 0.3663]
+export const TERRAIN_GRASS_PLACEHOLDER = [104, 122, 68]
+export const TERRAIN_SNOW_PLACEHOLDER = [158, 159, 163]
+
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
 //
@@ -768,6 +813,12 @@ export const IMAGE_LAYERS = {
   // It is the one layer that does not reach the array as the file has it: the
   // foot of the picture is frayed on the way in. See LAYER_SHAPERS.
   [LAYER.GRASS_TUFT]: 'grass/grass_tuft.png',
+  // The two ground tiles, cut by tools/props/cut-terrain.mjs. Unlike everything
+  // above them these are sampled by the TERRAIN shader rather than worn by any
+  // geometry -- see the note at LAYER.TERRAIN_GRASS -- which is the same
+  // arrangement LAYER.MOSS has.
+  [LAYER.TERRAIN_GRASS]: 'terrain/grass.png',
+  [LAYER.TERRAIN_SNOW]: 'terrain/snow.png',
 }
 
 // Deterministic value noise so the placeholder looks the same every run.
@@ -826,6 +877,15 @@ function mottled(base, alt, scale, seed) {
       255,
     ]
   }, seed)
+}
+
+// A flat fill. The only generator here that is not trying to look like anything:
+// it is what the two ground tiles stand in as, and its whole job is to be
+// EXACTLY their mean, so the contrast field the terrain shader builds out of it
+// is 1.0 and the untextured palette shows through unchanged. See the note on
+// GRASS_TILE_MEAN for why a transparent slice will not do.
+function flatFill([r, g, b]) {
+  return tile(() => [r, g, b, 255], 0)
 }
 
 // Foliage carries genuine alpha cutouts so alphaTest is actually exercised
@@ -906,12 +966,16 @@ export function buildTextureArray() {
   layers[LAYER.MUSHROOM_CAP_CAVE] = mushroomCaveSheet()
   layers[LAYER.MUSHROOM_FLESH] = mushroomFleshSheet()
 
-  // Crab sheets, same reasoning -- see the LAYER entries.
+  // Crab sheet, same reasoning -- see the LAYER entry.
   layers[LAYER.CRAB_SHELL] = crabShellSheet()
-  layers[LAYER.CRAB_LIMB] = crabLimbSheet()
 
   // Butterfly sheet, same reasoning -- see the LAYER entry.
   layers[LAYER.BUTTERFLY_WING] = butterflyWingSheet()
+
+  // The two ground tiles. Flat at the shipped tiles' own means, so the terrain
+  // is untextured for the few frames before the PNGs land rather than black.
+  layers[LAYER.TERRAIN_GRASS] = flatFill(TERRAIN_GRASS_PLACEHOLDER)
+  layers[LAYER.TERRAIN_SNOW] = flatFill(TERRAIN_SNOW_PLACEHOLDER)
 
   // DataArrayTexture wants one contiguous buffer, layers back to back. Image
   // layers are left at zero -- fully transparent, so alphaTest discards them --

@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
@@ -13,11 +13,12 @@ import { LAYER } from '../textures.js'
 // explicit start point and launch direction instead of always growing from
 // the origin.
 //
-// COLOUR LIVES IN THE TEXTURE (props/crab-texture.js): a shell cell for the
-// domed carapace top and belly, a limb cell for every tube. The two sheets
-// are paired by index, so `shellCell: 1, limbCell: 1` is one consistent
-// animal. The per-instance tint (BatchedMesh.setColorAt) is left for a
-// gentle per-instance jitter, same reasoning as the mushroom.
+// COLOUR LIVES IN THE TEXTURE (props/crab-texture.js): one shell cell, worn
+// by the domed carapace top and belly AND by every limb -- legs, arms, claws,
+// eyestalks all read the same cell through their own tube chart, so the whole
+// animal is one consistent species. The per-instance tint
+// (BatchedMesh.setColorAt) is left for a gentle per-instance jitter, same
+// reasoning as the mushroom.
 //
 // ATTRIBUTES: always { position, normal, uvProj, texLayer }, indexed. That is
 // the shared prop material's fixed layout and BatchedMesh rejects a geometry
@@ -47,6 +48,7 @@ export const CRAB_DEFAULTS = {
   shellCurve: 2.0,   // 1 = conical, 2 = domed, 4+ = flat with a shoulder
   bellyDepth: 0.12,  // how far the underside dishes down from the rim
   bellyCurve: 1.6,
+  shellPentagon: 0.3, // 0 = plain ellipse, higher = wider front / tapered rear
 
   // --- eyestalks ----------------------------------------------------------
   eyeLength: 0.32,   // relative to shellLength
@@ -87,13 +89,11 @@ export const CRAB_DEFAULTS = {
 
   // --- material -------------------------------------------------------------
   shellLayer: LAYER.CRAB_SHELL,
-  limbLayer: LAYER.CRAB_LIMB,
-  shellCell: 0, // which cell of the shell sheet (0..3)
-  limbCell: 0,  // ...and of the limb sheet, paired by index
+  shellCell: 0, // which cell of the shell sheet (0..3) -- worn by the whole crab
 }
 
-// Both crab sheets are a 2x2 grid of 64 px cells in a 128 px layer, same
-// shape as the mushroom sheets -- see props/crab-texture.js.
+// The crab sheet is a 2x2 grid of 64 px cells in a 128 px layer, same shape
+// as the mushroom sheets -- see props/crab-texture.js.
 const SHEET_GRID = 2
 const CELL = 1 / SHEET_GRID
 const INSET = 1 / 128

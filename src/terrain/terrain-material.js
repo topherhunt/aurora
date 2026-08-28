@@ -1,5 +1,5 @@
 import THREE from '../three-instance.js'
-import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
+import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN, SNOW_TILE_MEAN } from '../textures.js'
 
 // ---------------------------------------------------------------------------
 // The terrain material: Lambert + vertex colours + a procedural surface grain.
@@ -44,13 +44,23 @@ import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 // layer's job is to keep distant hillsides from reading as one colour and it
 // must not. One shared fade cannot do both.
 //
-// There is now a THIRD layer, on the same reasoning taken one step further:
+// GRASS AND SNOW NO LONGER USE MOST OF THAT. Both now wear a PHOTOGRAPH -- one
+// metre of meadow and one of crusted snow, tiled -- and where a photograph
+// applies, the noise that stood in for it is turned off rather than laid under
+// it. See the GROUND_METRES block below for the mechanism and for what is left
+// running on each surface. The three noise layers described here still carry
+// rock at every distance, and they still carry every surface once the ground
+// tiles have faded out past 150 m, so none of the reasoning above is dead.
+//
+// There is a THIRD layer, on the same reasoning taken one step further:
 // ~10 cm flecks, on a fade of its own that is over by 40 m. Same argument as
 // the near grain -- a 10 cm feature is a couple of pixels at 40 m and under one
 // past that, so it has to be gone by then or it is shimmer rather than texture.
 // Every surface gets it, each out of its own palette: grass reuses the dirt and
 // moss the coarser octaves already use, rock gets a light and a dark grey, snow
-// gets white and off-white.
+// gets white and off-white. Grass's and snow's halves of it are now inside the
+// ground tiles' fade too -- a 128 px tile over one metre resolves 8 mm, so it
+// covers the 10 cm scale outright and doing both is two textures at one size.
 //
 // It sits close to the snow sparkle's ~12 cm, which is deliberate rather than
 // an oversight -- they are different operations on the same scale (sparkle adds
@@ -111,6 +121,54 @@ const STONE_FAR = 650
 // coarse layer is carrying the surface by then.
 const FINE_NEAR = 30
 const FINE_FAR = 130
+
+// ---- The ground tiles: the meadow and the snowfield, photographed.
+//
+// Same trick as the stone above and for the same reason -- noise is isotropic
+// and self-similar, and a lawn is not: it has blades, and they lie in
+// directions, and they clump. What replaced it was three octaves of value noise
+// that made grass out of speckle, and speckle at three scales is still speckle.
+// LAYER.TERRAIN_GRASS and LAYER.TERRAIN_SNOW are one square metre each, cut from
+// photographs by tools/props/cut-terrain.mjs.
+//
+// A CONTRAST FIELD, NOT AN ALBEDO. Each tile is divided by its own linear
+// per-channel mean (GRASS_TILE_MEAN / SNOW_TILE_MEAN in textures.js) before it
+// multiplies anything, so it averages (1,1,1) and adds the photograph's grain
+// and its blade-to-soil colour swing without moving the palette. That is what
+// lets a photograph land on a surface whose every colour was tuned untextured,
+// and it is the only reason none of the constants in this file had to move.
+//
+// ONE METRE PER TILE, which is the ask and is also about right: at 128 px that
+// is 8 mm a texel, so a blade is a texel or two and a clump is a dozen. It is
+// therefore the finest layer in the shader by a wide margin, and everything the
+// noise layers say about aliasing applies here twice over -- except that a
+// mipped texture solves it for free, which noise cannot. As the tile goes
+// sub-pixel its mips converge to its own mean, the divide takes that to 1.0, and
+// the layer fades itself out. GROUND_FAR is therefore about not PAYING for a
+// fetch that has stopped changing pixels, not about hiding a pop.
+//
+// PLANAR, where the stone is triplanar, and that is a fill-rate decision rather
+// than a quality one: ground is most of the screen and three fetches over most
+// of the screen is not a price a Quest can pay. The xz projection stretches by
+// 1/cos(slope) -- 15% at 30 degrees -- and by the angle where that would start
+// to show, chunk-mesh has already classified the fragment as rock.
+//
+// WHAT THE TILES TURN OFF, inside their fade and on their own surface only: the
+// brightness speckle, the dirt/moss mottle on grass, and the grass and snow
+// halves of the 10 cm micro-tint layer. All of them are the same job done worse,
+// and running both is two textures at one scale, which reads as mud. What stays:
+// the snow SPARKLE (a specular stand-in, not a texture), the macro layers (they
+// are regional and the tile is not), and the whole normal-perturbation pass at
+// the bottom of this file (the tiles carry no relief, and a lit surface needs
+// both).
+const GROUND_METRES = 1
+// The tiles' own fade. Far shorter than the stone's because the tile is a
+// sixteenth of its size: 60 m is where a 1 m tile is starting to be carried by
+// its coarser mips anyway, and by 150 m it is several mips deep and worth
+// nothing at all. Lower GROUND_FAR first if the Quest turns out to be fill bound
+// on ground -- it is one fetch over a large share of the frame's fragments.
+const GROUND_NEAR = 60
+const GROUND_FAR = 150
 
 // Values are LINEAR, not sRGB -- three treats vertex colours and plain Color
 // uniforms as working-space. Roughly: linear 0.05 reads as sRGB 0.25.
@@ -187,6 +245,32 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     uMoss: { value: MOSS },
     uMacroValue: { value: 0.3 }, // +/- brightness swing at every distance
     uMacroTint: { value: 0.55 }, // how far the macro palette pulls the hue
+    // ---- The REGION octave: one more macro wavelength, ~90 m, and the coarsest
+    // colour variation in the shader.
+    //
+    // It exists because of what the ground tiles above it did. A tiled
+    // photograph is by construction the same square metre everywhere, so
+    // whatever it buys up close it buys nothing at all at range -- and the two
+    // macro octaves that used to carry the far field are 27 m and 10 m, which
+    // is a wavelength that has averaged itself to a flat tint by the time a
+    // hillside is 300 m away. The note above this file's FADE_NEAR records that
+    // those two were divided down FROM 110 m and 38 m because at that size they
+    // overlapped into one muddy middle tone; this is the coarse end coming back
+    // as a THIRD octave rather than as a resizing of the pair, so the mid-range
+    // mottle they buy is untouched and the gap above them is what gets filled.
+    //
+    // Three destinations from one field, which is what "browner, darker,
+    // greener" is: the value multiply darkens and lifts whole regions, the high
+    // end pulls toward uDirt and the low end toward uDeep. It reuses those two
+    // rather than introducing a coarse palette of its own, on the same argument
+    // the micro layer reuses them -- one colour family at every scale is what
+    // keeps a hillside reading as one material seen at three distances.
+    //
+    // Snow gets the value swing at half weight (wind scours a drift into bright
+    // and dull ground and that reads as snow) and none of the tint (brown snow
+    // reads as dirty snow), which is the same split the 27/10 m pair makes.
+    uRegionValue: { value: 0.26 }, // +/- brightness swing over ~90 m regions
+    uRegionTint: { value: 0.5 }, // how far a region pulls toward dirt or deep green
     uDry: { value: DRY },
     uDeep: { value: DEEP },
     uStain: { value: STAIN },
@@ -290,6 +374,22 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     material.userData.uniforms.uStoneMean = {
       value: new THREE.Vector3(ROCK_TILE_MEAN[0], ROCK_TILE_MEAN[1], ROCK_TILE_MEAN[2]),
     }
+
+    // How far each ground tile is allowed to swing its surface. Same units as
+    // uStone -- a fraction of the fully-applied contrast field -- and the two
+    // differ because the TILES differ, not because grass wants more texture than
+    // snow does: cut-terrain.mjs grades the meadow to a relative sd of 0.30 and
+    // the snowfield to 0.15, so equal weights here would ship half the crumple.
+    // Turn either to 0 to see the noise layers this replaced, which is the
+    // comparison the whole GROUND_METRES block above is making.
+    material.userData.uniforms.uGrassTile = { value: 0.8 }
+    material.userData.uniforms.uSnowTile = { value: 0.9 }
+    material.userData.uniforms.uGrassTileMean = {
+      value: new THREE.Vector3(GRASS_TILE_MEAN[0], GRASS_TILE_MEAN[1], GRASS_TILE_MEAN[2]),
+    }
+    material.userData.uniforms.uSnowTileMean = {
+      value: new THREE.Vector3(SNOW_TILE_MEAN[0], SNOW_TILE_MEAN[1], SNOW_TILE_MEAN[2]),
+    }
   }
 
   material.onBeforeCompile = (shader) => {
@@ -322,6 +422,8 @@ export function createTerrainMaterial({ atlas = null } = {}) {
         uniform vec3 uMoss;
         uniform float uMacroValue;
         uniform float uMacroTint;
+        uniform float uRegionValue;
+        uniform float uRegionTint;
         uniform vec3 uDry;
         uniform vec3 uDeep;
         uniform vec3 uStain;
@@ -342,6 +444,10 @@ ${atlas ? `        precision highp sampler2DArray;
         uniform float uStone;
         uniform float uStoneFine;
         uniform vec3 uStoneMean;
+        uniform float uGrassTile;
+        uniform float uSnowTile;
+        uniform vec3 uGrassTileMean;
+        uniform vec3 uSnowTileMean;
 
         // One triplanar sample of LAYER.ROCK at 1/\`k\` metres per tile, blended
         // by pre-normalised world-axis weights. Three fetches, and there is no
@@ -364,6 +470,16 @@ ${atlas ? `        precision highp sampler2DArray;
                + textureGrad( uAtlas, vec3( p.xz * k, ${LAYER.ROCK}.0 ), dx.xz * k, dy.xz * k ).rgb * w.y
                + textureGrad( uAtlas, vec3( p.xy * k, ${LAYER.ROCK}.0 ), dx.xy * k, dy.xy * k ).rgb * w.z;
         }
+
+        // One PLANAR sample of a ground tile at 1/\`k\` metres per tile. See the
+        // GROUND_METRES block for why the ground gets one fetch where a cliff
+        // gets three, and textureGrad for the same reason auroraStone has it:
+        // both call sites sit inside a guard that folds in distance and the
+        // surface classification, so the flow is not quad-uniform and an
+        // implicit LOD there is undefined.
+        vec3 auroraGroundTile( vec3 p, vec3 dx, vec3 dy, float layer, float k ) {
+          return textureGrad( uAtlas, vec3( p.xz * k, layer ), dx.xz * k, dy.xz * k ).rgb;
+        }
 ` : ''}
         // Shared between the colour pass and the normal pass, which are two
         // different chunk includes -- hence file scope rather than a block.
@@ -371,6 +487,12 @@ ${atlas ? `        precision highp sampler2DArray;
         float auroraMicroFade;
         float auroraRockBase;
         float auroraSnowBase;
+        // How much of grass's and snow's texture the photographed ground tiles
+        // are carrying at this fragment: 1 inside GROUND_NEAR, 0 past GROUND_FAR,
+        // and 0 ALWAYS when there is no atlas to sample. The noise layers read it
+        // to get out of the way of whatever it is covering, so its default has to
+        // be the one that leaves the untextured shader exactly as it was.
+        float auroraTileFade;
 
         // Hash-based value noise. No sin() -- it is slow on mobile GPUs and its
         // precision on some drivers is bad enough to produce visible banding.
@@ -529,6 +651,24 @@ ${atlas ? `        precision highp sampler2DArray;
             // Rock stains on the finer octave alone: mineral banding follows the
             // face, not the valley, so it should not track the coarser regions.
             diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.52, 0.95, auroraM2 ) * auroraRockBase * uMacroTint * 0.8 );
+
+            // ---- The region octave, ~90 m: browner, darker, greener.
+            //
+            // See uRegionValue for what it is for. Turned off-axis by the same
+            // rotation the boundary dither uses, and for the same reason: at the
+            // range this octave exists to serve it is the ONLY variation left,
+            // so its value-noise lattice would be the only pattern on a distant
+            // hillside, aligned with the chunk grid.
+            float auroraRegion = auroraNoise( auroraRot * auroraM * 0.0111 + vec2( 53.2, 17.9 ) );
+
+            diffuseColor.rgb *= 1.0 + ( auroraRegion - 0.5 ) * uRegionValue * ( 1.0 - auroraSnowBase * 0.5 );
+
+            // Wider thresholds than the 27 m pair's -- a region is either dry or
+            // it is lush or it is neither, and a smoothstep that starts at the
+            // mean would tint every fragment in the world and average back to
+            // the base colour, which is the flat green this is here to break.
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.62, 0.96, auroraRegion ) * auroraGreenBase * uRegionTint );
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.38, 0.04, auroraRegion ) * auroraGreenBase * uRegionTint );
           }
 
           float auroraDist = length( vWorldPos - cameraPosition );
@@ -538,6 +678,10 @@ ${atlas ? `        precision highp sampler2DArray;
           // normal_fragment_begin reads it too, and it runs whether or not the
           // near block was entered.
           auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
+          // Overwritten by the ground-tile block below wherever there is an
+          // atlas to sample. Without one there is no photograph, so nothing is
+          // covered and the noise layers keep every surface they ever had.
+          auroraTileFade = 0.0;
 ${atlas ? `
           // ---- Stone. See the header block above STONE_METRES.
           //
@@ -580,6 +724,27 @@ ${atlas ? `
               diffuseColor.rgb *= mix( 1.0, auroraFineL, uStoneFine * auroraFineK );
             }
           }
+
+          // ---- The ground tiles. See the GROUND_METRES block above.
+          //
+          // Same shape as the stone block, one fetch instead of three, and each
+          // guard folds in its own surface so a grass fragment never pays for
+          // the snow tile and neither pays anything above the snow line's crags.
+          // Both reuse the derivatives taken outside the stone guard: the uv is a
+          // plain multiple of world position, so its derivative is one too.
+          auroraTileFade = 1.0 - smoothstep( ${GROUND_NEAR.toFixed(1)}, ${GROUND_FAR.toFixed(1)}, auroraDist );
+
+          float auroraGrassK = auroraTileFade * auroraGreenBase;
+          if ( auroraGrassK > 0.004 ) {
+            vec3 auroraGrassTex = auroraGroundTile( vWorldPos, auroraDPx, auroraDPy, ${LAYER.TERRAIN_GRASS}.0, ${(1 / GROUND_METRES).toFixed(6)} ) / uGrassTileMean;
+            diffuseColor.rgb *= mix( vec3( 1.0 ), auroraGrassTex, uGrassTile * auroraGrassK );
+          }
+
+          float auroraSnowK = auroraTileFade * auroraSnowBase;
+          if ( auroraSnowK > 0.004 ) {
+            vec3 auroraSnowTex = auroraGroundTile( vWorldPos, auroraDPx, auroraDPy, ${LAYER.TERRAIN_SNOW}.0, ${(1 / GROUND_METRES).toFixed(6)} ) / uSnowTileMean;
+            diffuseColor.rgb *= mix( vec3( 1.0 ), auroraSnowTex, uSnowTile * auroraSnowK );
+          }
 ` : ''}
           if ( auroraNear > 0.004 ) {
             vec2 auroraP = vWorldPos.xz;
@@ -588,13 +753,24 @@ ${atlas ? `
             float auroraGrain = auroraNoise( auroraP * 1.9 ) * 0.6 + auroraNoise( auroraP * 0.28 ) * 0.4;
             auroraGrain = mix( 0.5, auroraGrain, auroraNear );
 
+            // HOW MUCH OF THIS FRAGMENT THE PHOTOGRAPHS ARE NOT CARRYING. Rock
+            // is always 1 -- it has a tile of its own but that one is bedding at
+            // 16 m, which says nothing at half a metre. Grass and snow fall to 0
+            // inside GROUND_NEAR and come back as their tiles fade out, so the
+            // noise below is what the surface reverts TO rather than a layer
+            // stacked under a photograph. Clamped because the two
+            // classifications are near-exclusive rather than provably so.
+            float auroraProc = clamp( 1.0 - auroraTileFade * ( auroraGreenBase + auroraSnowBase ), 0.0, 1.0 );
+
             // Brightness speckle. Applies to grass, rock and snow alike -- snow
             // without it is a flat white void with no readable surface at all.
-            diffuseColor.rgb *= 1.0 + ( auroraGrain - 0.5 ) * uSpeckle;
+            diffuseColor.rgb *= 1.0 + ( auroraGrain - 0.5 ) * uSpeckle * auroraProc;
 
             // Dirt and moss only show through on green ground, and only close
-            // enough to see them.
-            float auroraGreen = auroraGreenBase * auroraNear;
+            // enough to see them -- and only where the meadow tile is not
+            // already drawing the soil between the blades, which up close is
+            // everywhere.
+            float auroraGreen = auroraGreenBase * auroraNear * ( 1.0 - auroraTileFade );
             diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.56, 0.88, auroraGrain ) * auroraGreen * uDirtAmount );
             diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, smoothstep( 0.44, 0.12, auroraGrain ) * auroraGreen * uMossAmount );
 
@@ -644,17 +820,22 @@ ${atlas ? `
               float auroraMicroHi = smoothstep( 0.62, 0.90, auroraMicroN );
               float auroraMicroLo = smoothstep( 0.38, 0.10, auroraMicroN );
               float auroraMicroK = auroraMicroFade * uMicroTint;
+              // The tiles resolve 8 mm, so on grass and snow they have already
+              // drawn this scale and drawn it from a photograph. Rock keeps its
+              // pair whole -- the stone tile it wears is 16 m of bedding, which
+              // is four scales coarser than a fleck.
+              float auroraMicroProc = 1.0 - auroraTileFade;
 
-              diffuseColor.rgb *= 1.0 + ( auroraMicroN - 0.5 ) * uMicroValue * auroraMicroFade;
+              diffuseColor.rgb *= 1.0 + ( auroraMicroN - 0.5 ) * uMicroValue * auroraMicroFade * auroraProc;
 
               // Grass reuses DIRT and MOSS on purpose -- see the note on the
               // micro palette. Rock and snow get the pairs of their own.
-              diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, auroraMicroHi * auroraGreenBase * auroraMicroK );
-              diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, auroraMicroLo * auroraGreenBase * auroraMicroK );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, auroraMicroHi * auroraGreenBase * auroraMicroK * auroraMicroProc );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, auroraMicroLo * auroraGreenBase * auroraMicroK * auroraMicroProc );
               diffuseColor.rgb = mix( diffuseColor.rgb, uGrit, auroraMicroHi * auroraRockBase * auroraMicroK );
               diffuseColor.rgb = mix( diffuseColor.rgb, uSoot, auroraMicroLo * auroraRockBase * auroraMicroK );
-              diffuseColor.rgb = mix( diffuseColor.rgb, uFrost, auroraMicroHi * auroraSnowBase * auroraMicroK );
-              diffuseColor.rgb = mix( diffuseColor.rgb, uShade, auroraMicroLo * auroraSnowBase * auroraMicroK );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uFrost, auroraMicroHi * auroraSnowBase * auroraMicroK * auroraMicroProc );
+              diffuseColor.rgb = mix( diffuseColor.rgb, uShade, auroraMicroLo * auroraSnowBase * auroraMicroK * auroraMicroProc );
             }
           }
         }`
@@ -731,7 +912,7 @@ ${atlas ? `
   // Distinct cache key so this never gets conflated with an unpatched Lambert,
   // and distinct BETWEEN the two variants: whether the atlas was passed changes
   // the compiled source, so the two must never share a program.
-  const key = `aurora-terrain-v7${atlas ? '-stone' : ''}`
+  const key = `aurora-terrain-v8${atlas ? '-stone' : ''}`
   material.customProgramCacheKey = () => key
 
   return material

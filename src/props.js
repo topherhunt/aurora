@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js'
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js'
