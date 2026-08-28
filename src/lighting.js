@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { WORLD_SIZE, WORLD_HALF } from './sim/terrain-height.js'
 import { AZIMUTHS, HORIZON_SOFT } from './sim/horizon.js'
 

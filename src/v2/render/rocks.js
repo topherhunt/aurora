@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 import {
   buildRockBank, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT,

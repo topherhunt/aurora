@@ -60,7 +60,7 @@
  * level puts the horizon in the wrong place, and the horizon is the one feature
  * a grazing reflection is entirely made of.
  */
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 
 const scratchColor = new THREE.Color()
 

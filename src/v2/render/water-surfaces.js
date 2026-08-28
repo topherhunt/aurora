@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 import { footprint } from '../layers/water-bodies.js'
 import { ribbonVertices, discVertices, RIVER_WIDEN, RIVER_WIDEN_FRAC } from './ribbon.js'
 

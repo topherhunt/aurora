@@ -26,7 +26,7 @@
 // colorSpace is NoColorSpace because this is not colour. It is inert either way -- three forces LinearSRGBColorSpace for the ENCODE into any non-XR render target regardless of this field, and a hand-written sampler2D gets no decode injected on the way out -- so it is set for the next reader rather than for the renderer. It would stop being inert the moment anyone dropped this to eight-bit RGBA, which is exactly when getting it wrong would cost an afternoon.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 // Matching the defaults of pmRadRes and pmAzRes in planmap/algorithm.js. Two copies of a number, which is the shape of mistake this codebase has a standing opinion about -- so PlanMapAurora asserts they agree on construction rather than trusting the comment.
 export const DEFAULT_RADIAL = 384

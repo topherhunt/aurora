@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 
 import { buildTree, treeLod, TREE_DEFAULTS, TREE_SPECIES } from './tree.js'
 import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'

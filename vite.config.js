@@ -395,7 +395,25 @@ function sheetGen() {
           const dir = sheetsDir(id)
           mkdirSync(dir, { recursive: true })
           const file = resolve(dir, `${view}.png`)
-          writeFileSync(file, Buffer.from(imageB64, 'base64'))
+          const buf = Buffer.from(imageB64, 'base64')
+          writeFileSync(file, buf)
+
+          // Record WHICH candidate this was, by filename, not by the bytes we
+          // just wrote -- a later pass (alpha-sheets.mjs) rewrites <view>.png
+          // in place (adds an alpha channel), which would silently break a
+          // byte-equality "picked" check on every future read. Comparing here,
+          // at save time, is the last point the saved file is guaranteed
+          // byte-identical to the candidate it came from.
+          const manifestFile = resolve(dir, 'candidates.json')
+          const manifest = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : {}
+          const entries = manifest[view] || []
+          const match = entries.find((e) => {
+            try { return readFileSync(resolve(dir, 'candidates', e.file)).equals(buf) } catch { return false }
+          })
+          manifest.picked = manifest.picked || {}
+          manifest.picked[view] = match ? match.file : null
+          writeFileSync(manifestFile, JSON.stringify(manifest, null, 2))
+
           res.end(JSON.stringify({ ok: true, path: relative(root, file) }))
         }).catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
       })
@@ -414,14 +432,13 @@ function sheetGen() {
         const manifestFile = resolve(sheetsDir(id), 'candidates.json')
         const manifest = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : {}
         const entries = manifest[view] || []
-        // Detect which candidate (if any) is the one already picked, by byte
-        // comparison against the saved <view>.png -- so a reload doesn't lose
-        // the "picked" highlight in the UI.
-        const pickedFile = resolve(sheetsDir(id), `${view}.png`)
-        const pickedBuf = existsSync(pickedFile) ? readFileSync(pickedFile) : null
+        // "picked" is the candidate filename /__save-sheet-view recorded at
+        // save time (manifest.picked[view]) -- not a byte comparison against
+        // the current <view>.png, which alpha-sheets.mjs mutates in place.
+        const pickedFilename = manifest.picked?.[view]
         const candidates = entries.map((e) => {
           const buf = readFileSync(resolve(sheetsDir(id), 'candidates', e.file))
-          return { imageB64: buf.toString('base64'), cost: e.cost, picked: Boolean(pickedBuf && pickedBuf.equals(buf)) }
+          return { imageB64: buf.toString('base64'), cost: e.cost, picked: e.file === pickedFilename }
         })
         res.end(JSON.stringify({ ok: true, candidates }))
       })
@@ -458,18 +475,23 @@ function sheetGen() {
         if (!existsSync(file)) { res.end(JSON.stringify({ ok: true, exists: false })); return }
         try {
           const { characters } = JSON.parse(readFileSync(resolve(root, 'tools/characters/characters.json'), 'utf8'))
+          // heightM is only needed to report a real-metre size (gen-character.html's
+          // reference planes) -- gen-sheet.html's alpha-preview just wants the
+          // cropped image and works fine for a freeform id that isn't in the
+          // roster yet, so a missing character isn't an error here.
           const character = characters.find((c) => c.id === id)
-          if (!character) throw new Error(`"${id}" is not in characters.json -- no heightM to scale against`)
           const decoded = decodeSheet(file)
           const alpha = keyBackground(decoded)
           const profile = silhouetteProfile(alpha, decoded.w, decoded.h)
           const crop = cropToFigure(decoded, alpha, profile)
-          const pixelsPerMeter = (profile.bottom - profile.top) / character.heightM
           const png = encodePng(crop.w, crop.h, crop.rgba, 4)
-          res.end(JSON.stringify({
-            ok: true, exists: true, imageB64: png.toString('base64'),
-            worldWidthM: crop.w / pixelsPerMeter, worldHeightM: crop.h / pixelsPerMeter,
-          }))
+          const out = { ok: true, exists: true, imageB64: png.toString('base64') }
+          if (character) {
+            const pixelsPerMeter = (profile.bottom - profile.top) / character.heightM
+            out.worldWidthM = crop.w / pixelsPerMeter
+            out.worldHeightM = crop.h / pixelsPerMeter
+          }
+          res.end(JSON.stringify(out))
         } catch (e) {
           res.statusCode = 400
           res.end(JSON.stringify({ error: String(e?.message ?? e) }))

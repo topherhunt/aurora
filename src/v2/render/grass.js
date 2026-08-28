@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE,

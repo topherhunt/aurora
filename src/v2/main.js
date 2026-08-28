@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 
 import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, SEED, WORLD_HALF } from './config.js'
@@ -8,7 +8,6 @@ import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from './height/relief.js
 import { Layers } from './layers/layers.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
-import { MacroTerrain } from './terrain/macro-terrain.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
 import { SKYLINE } from './terrain/skyline.js'
 import { Markers } from './render/markers.js'
@@ -57,8 +56,6 @@ import { PeerAvatars } from './render/avatar.js'
 // desktop profiling unchanged and also makes Quest mode testable in a desktop
 // browser with `?quest` before entering XR.
 const QUEST_MODE = new URLSearchParams(location.search).has('quest')
-const QUEST_TERRAIN_TRI_DEG = 15.0
-const QUEST_TERRAIN_ONLY = QUEST_MODE
 
 // ---------------------------------------------------------------------------
 // The /v2 route (DESIGN.md §18): the imported world, walkable, with the
@@ -158,35 +155,78 @@ const bootFail = (err) => {
 }
 
 // --- renderer ---------------------------------------------------------------
+//
+// Quest mode hands the whole engine bootstrap to A-Frame (same proven rig
+// scaffold as quest.html/quest-main.js: movement-controls + look-controls +
+// laser-controls/blink-controls per hand) instead of building a raw
+// WebGLRenderer + VRButton ourselves. Everything below this block only ever
+// touches the `renderer`/`scene`/`camera`/`rig` locals, never the
+// construction details, so it's unmodified by which branch ran.
+// three-instance.js already resolves to AFRAME.THREE once A-Frame's own
+// <script> tag has run (v2.html loads it unconditionally, before this
+// module), so objects built below are native to whichever THREE actually
+// owns the live scene -- no foreign objects, no shim.
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-renderer.setPixelRatio(1) // never above 1 in XR; the headset controls its own resolution
-renderer.setSize(innerWidth, innerHeight)
-renderer.outputColorSpace = THREE.SRGBColorSpace
-renderer.xr.enabled = true
-renderer.xr.setFoveation(1.0)
+let renderer, scene, camera, rig, leftGrip, rightGrip
+let sceneEl = null, rigEl = null, leftHandEl = null, rightHandEl = null
+
+// Everything from here to the end of the file is wrapped in an async IIFE
+// (rather than using a top-level `await`) because Vite's default esbuild
+// build target predates ES2022 top-level await -- and every line below this
+// point depends on renderer/scene/camera/rig, which in quest mode aren't
+// resolved until the injected <a-scene>'s 'loaded' event fires.
+;(async () => {
+
 if (QUEST_MODE) {
-  // TerrainV2 reads this on its first update, so configure it before boot.
-  LOD.triDeg = QUEST_TERRAIN_TRI_DEG
-  console.log(`[v2] Quest mode: terrain <=${LOD.triDeg}deg, grass disabled`)
-}
-document.body.appendChild(renderer.domElement)
-document.body.appendChild(VRButton.createButton(renderer))
+  sceneEl = document.createElement('a-scene')
+  sceneEl.setAttribute('vr-mode-ui', 'enabled: true')
+  sceneEl.innerHTML = `
+    <a-entity id="rig" movement-controls="controls: keyboard; fly: false">
+      <a-camera id="camera" look-controls></a-camera>
+      <a-entity id="left-hand" laser-controls="hand: left" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
+      <a-entity id="right-hand" laser-controls="hand: right" blink-controls="cameraRig: #rig; teleportOrigin: #camera"></a-entity>
+    </a-entity>
+  `
+  document.body.appendChild(sceneEl)
+  await new Promise((resolve) => {
+    if (sceneEl.hasLoaded) resolve()
+    else sceneEl.addEventListener('loaded', resolve, { once: true })
+  })
+  renderer = sceneEl.renderer
+  scene = sceneEl.object3D
+  camera = sceneEl.camera
+  rigEl = sceneEl.querySelector('#rig')
+  leftHandEl = sceneEl.querySelector('#left-hand')
+  rightHandEl = sceneEl.querySelector('#right-hand')
+  rig = rigEl.object3D
+  leftGrip = leftHandEl.object3D
+  rightGrip = rightHandEl.object3D
+} else {
+  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+  renderer.setPixelRatio(1) // never above 1 in XR; the headset controls its own resolution
+  renderer.setSize(innerWidth, innerHeight)
+  renderer.outputColorSpace = THREE.SRGBColorSpace
+  renderer.xr.enabled = true
+  renderer.xr.setFoveation(1.0)
+  document.body.appendChild(renderer.domElement)
+  document.body.appendChild(VRButton.createButton(renderer))
 
-const scene = new THREE.Scene()
+  scene = new THREE.Scene()
+
+  camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 20000)
+  camera.rotation.order = 'YXZ'
+  camera.position.y = LOCOMOTION.eyeHeight // desktop only; XR overwrites this from the pose
+
+  rig = new THREE.Group()
+  rig.add(camera)
+  leftGrip = renderer.xr.getControllerGrip(0)
+  rightGrip = renderer.xr.getControllerGrip(1)
+  rig.add(leftGrip, rightGrip)
+  scene.add(rig)
+}
+
 scene.background = new THREE.Color(FOG_COLOR)
 scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00022)
-
-const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 20000)
-camera.rotation.order = 'YXZ'
-camera.position.y = LOCOMOTION.eyeHeight // desktop only; XR overwrites this from the pose
-
-const rig = new THREE.Group()
-rig.add(camera)
-const leftGrip = renderer.xr.getControllerGrip(0)
-const rightGrip = renderer.xr.getControllerGrip(1)
-rig.add(leftGrip, rightGrip)
-scene.add(rig)
 
 const sun = new THREE.DirectionalLight(SUN_COLOR, 2.1)
 sun.position.set(-0.45, 0.62, 0.3).normalize()
@@ -227,10 +267,226 @@ SkyProbe.include(aurora.mesh)
 // turns "is there land along this ray" into "yes, always". See world-probe.js.
 worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 
-if (QUEST_TERRAIN_ONLY) {
+if (QUEST_MODE) {
+  // All 9 toggles default off; see questToggles/applyQuestToggle below.
+  sky.mesh.visible = false
   water.group.visible = false
   stars.points.visible = false
   aurora.mesh.visible = false
+}
+
+// ---------------------------------------------------------------------------
+// Quest mode: hand-rolled flight + a world-space toggle panel, ported from
+// quest-main.js's already-proven pattern (same laser-controls raycast, same
+// A/X-to-fly, same panel-button canvas-texture approach) rather than
+// reinvented. Locomotion is entirely separate from Player.update() here --
+// see the note in tick() above updateQuestFlight for why the two can't share
+// a rig.
+// ---------------------------------------------------------------------------
+
+function labelTexture(text, bg = '#173154', fg = '#ffffff', width = 384) {
+  const c = document.createElement('canvas'); c.width = width; c.height = 96
+  const ctx = c.getContext('2d')
+  if (bg !== null) { ctx.fillStyle = bg; ctx.fillRect(0, 0, c.width, c.height) }
+  ctx.fillStyle = fg; ctx.font = 'bold 26px monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = bg === null ? 'left' : 'center'
+  ctx.fillText(text, bg === null ? 18 : c.width / 2, 48)
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+  return t
+}
+
+let questFlying = false
+let questPanelGroup = null
+const questPanelMeshes = []
+const questControllerHits = new Map()
+
+if (QUEST_MODE) {
+  function setQuestFlying(next) {
+    questFlying = next
+    rigEl.setAttribute('movement-controls', { fly: questFlying, controls: 'keyboard' })
+    sceneEl.querySelectorAll('[blink-controls]').forEach((el) => {
+      el.components['blink-controls']?.[questFlying ? 'pause' : 'play']()
+    })
+  }
+  ;[leftHandEl, rightHandEl].forEach((el) => {
+    el.addEventListener('abuttondown', () => setQuestFlying(!questFlying))
+    el.addEventListener('xbuttondown', () => setQuestFlying(!questFlying))
+  })
+}
+
+const QUEST_FLIGHT_BASE_SPEED = 4
+const QUEST_FLIGHT_HEIGHT_SPEED_GAIN = 0.15
+const QUEST_STICK_DEADZONE = 0.15
+const questFlightVelocity = new THREE.Vector3()
+const questFlightForward = new THREE.Vector3()
+const questFlightRight = new THREE.Vector3()
+const questTempQuat = new THREE.Quaternion()
+
+function updateQuestFlight(dt) {
+  if (!questFlying) return
+  questFlightVelocity.set(0, 0, 0)
+  for (const el of [leftHandEl, rightHandEl]) {
+    const axis = el.components['tracked-controls']?.axis
+    if (!axis || axis.length < 2) continue
+    const x = axis[axis.length - 2]
+    const y = axis[axis.length - 1]
+    if (Math.abs(x) < QUEST_STICK_DEADZONE && Math.abs(y) < QUEST_STICK_DEADZONE) continue
+    el.object3D.getWorldQuaternion(questTempQuat)
+    questFlightForward.set(0, 0, -1).applyQuaternion(questTempQuat)
+    questFlightRight.set(1, 0, 0).applyQuaternion(questTempQuat)
+    const altitude = Math.max(0, rig.position.y - height.heightAt(rig.position.x, rig.position.z))
+    const speed = QUEST_FLIGHT_BASE_SPEED + altitude * QUEST_FLIGHT_HEIGHT_SPEED_GAIN
+    questFlightVelocity.addScaledVector(questFlightForward, -y * speed)
+    questFlightVelocity.addScaledVector(questFlightRight, x * speed)
+  }
+  rig.position.addScaledVector(questFlightVelocity, dt)
+}
+
+// --- toggle panel ------------------------------------------------------------
+
+const QUEST_TOGGLE_ROWS = [
+  { key: 'terrain', text: 'terrain & LOD' },
+  { key: 'dayNight', text: 'day/night' },
+  { key: 'skip5h', text: '+5h', action: () => skipTime() },
+  { key: 'trees', text: 'trees' },
+  { key: 'rocks', text: 'rocks' },
+  { key: 'grass', text: 'grass' },
+  { key: 'ferns', text: 'ferns' },
+  { key: 'water', text: 'rivers & lakes' },
+  { key: 'reflections', text: 'cubemap reflections' },
+  { key: 'aurora', text: 'aurora' },
+]
+
+function questToggleLabel(row) {
+  if (row.action) return row.text
+  return `${row.text}: ${questToggles[row.key] ? 'on' : 'off'}`
+}
+
+function applyQuestToggle(key) {
+  const row = QUEST_TOGGLE_ROWS.find((r) => r.key === key)
+  if (!row) return
+  if (row.action) { row.action(); return }
+  const enabled = (questToggles[key] = !questToggles[key])
+  switch (key) {
+    case 'terrain': terrain.batch.visible = enabled; break
+    case 'dayNight': sky.mesh.visible = enabled; stars.points.visible = enabled; break
+    case 'trees': trees.batch.visible = enabled; break
+    case 'rocks': rocks.beds.forEach((b) => { b.batch.visible = enabled }); break
+    case 'grass': grass.batch.visible = enabled; break
+    case 'ferns': ferns.batch.visible = enabled; break
+    case 'water': waterSurfaces.group.visible = enabled; break
+    case 'reflections': break // no object of its own; gates the sky/world capture updates in tick()
+    case 'aurora': aurora.mesh.visible = enabled; break
+  }
+}
+
+function activateQuestButton(key) {
+  applyQuestToggle(key)
+  const row = QUEST_TOGGLE_ROWS.find((r) => r.key === key)
+  const mesh = questPanelMeshes.find((m) => m.userData.key === key)
+  if (mesh && row) {
+    const width = mesh.geometry.parameters.width
+    mesh.material.map?.dispose()
+    mesh.material.map = labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96))
+    mesh.material.needsUpdate = true
+  }
+}
+
+function buildQuestPanel() {
+  questPanelGroup = new THREE.Group()
+  scene.add(questPanelGroup)
+
+  const bg = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.0, 2.4),
+    new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: 0.94, side: THREE.DoubleSide })
+  )
+  bg.position.set(0, 0, -0.01)
+  questPanelGroup.add(bg)
+
+  const title = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.9, 0.18),
+    new THREE.MeshBasicMaterial({ map: labelTexture('quest toggles (all off by default)', null, '#8fd48f', 900), transparent: true, toneMapped: false, side: THREE.DoubleSide })
+  )
+  title.position.set(0, 1.08, 0.02)
+  questPanelGroup.add(title)
+
+  const rowHeight = 0.22
+  const top = 0.84
+  QUEST_TOGGLE_ROWS.forEach((row, i) => {
+    const width = 1.8
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, 0.18),
+      new THREE.MeshBasicMaterial({ map: labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96)), side: THREE.DoubleSide, transparent: true, toneMapped: false })
+    )
+    mesh.position.set(0, top - i * rowHeight, 0.03)
+    mesh.userData.key = row.key
+    questPanelGroup.add(mesh)
+    questPanelMeshes.push(mesh)
+  })
+
+  const dotGeometry = new THREE.SphereGeometry(0.012, 12, 8)
+  const dotMaterial = new THREE.MeshBasicMaterial({ color: 0xff3b3b, toneMapped: false, depthTest: false })
+  function wireQuestController(el) {
+    const dot = new THREE.Mesh(dotGeometry, dotMaterial)
+    dot.visible = false
+    scene.add(dot)
+    questControllerHits.set(el, { hit: null, dot })
+    el.addEventListener('triggerdown', () => {
+      const hit = questControllerHits.get(el)?.hit
+      if (hit) activateQuestButton(hit.object.userData.key)
+    })
+  }
+  ;[leftHandEl, rightHandEl].forEach(wireQuestController)
+
+  // Flatscreen click support for desktop `?quest` testing before entering XR.
+  const raycaster = new THREE.Raycaster()
+  const pointer = new THREE.Vector2()
+  window.addEventListener('pointerup', (e) => {
+    if (sceneEl.is('vr-mode')) return
+    const cam = sceneEl.camera
+    if (!cam) return
+    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
+    raycaster.setFromCamera(pointer, cam)
+    const hit = raycaster.intersectObjects(questPanelMeshes)[0]
+    if (hit) activateQuestButton(hit.object.userData.key)
+  })
+
+  questPanelDesiredPosition(questPanelGroup.position)
+  questPanelGroup.lookAt(rig.position.x, questPanelGroup.position.y, rig.position.z)
+}
+
+function updateQuestControllerHover() {
+  for (const [el, entry] of questControllerHits) {
+    const raycasterComp = el.components.raycaster
+    const hit = raycasterComp ? (raycasterComp.raycaster.intersectObjects(questPanelMeshes)[0] || null) : null
+    entry.hit = hit
+    entry.dot.visible = !!hit
+    if (hit) entry.dot.position.copy(hit.point)
+  }
+}
+
+const questPanelFwd = new THREE.Vector3()
+function questPanelDesiredPosition(out) {
+  camera.getWorldQuaternion(questTempQuat)
+  questPanelFwd.set(0, 0, -1).applyQuaternion(questTempQuat)
+  questPanelFwd.y = 0
+  if (questPanelFwd.lengthSq() < 1e-6) questPanelFwd.set(0, 0, -1)
+  questPanelFwd.normalize()
+  const dist = 2.2
+  out.x = rig.position.x + questPanelFwd.x * dist
+  out.z = rig.position.z + questPanelFwd.z * dist
+  out.y = height.heightAt(out.x, out.z) + 1.3
+  return out
+}
+
+let questPanelLastReposition = 0
+const QUEST_PANEL_REPOSITION_MS = 5000
+function updateQuestPanel(now) {
+  updateQuestControllerHover()
+  if (!questPanelGroup) return
+  if (now - questPanelLastReposition < QUEST_PANEL_REPOSITION_MS) return
+  questPanelLastReposition = now
+  questPanelDesiredPosition(questPanelGroup.position)
+  questPanelGroup.lookAt(rig.position.x, questPanelGroup.position.y, rig.position.z)
 }
 
 const input = new Input(renderer)
@@ -283,6 +539,12 @@ let deadwood = null
 let editor = null
 let panel = null
 let ready = false
+
+// Quest-mode toggle panel state -- every layer defaults off so the headset
+// can isolate one system's cost at a time. Non-quest mode never reads this.
+const questToggles = QUEST_MODE
+  ? { terrain: false, dayNight: false, trees: false, rocks: false, grass: false, ferns: false, water: false, reflections: false, aurora: false }
+  : null
 
 // ---------------------------------------------------------------------------
 // THE RELIEF KNOBS. See height/relief.js for what each one is; this is only
@@ -471,12 +733,10 @@ async function bootWorld() {
   // asynchronously (loadImageLayers, below); the bank and the batches do not wait
   // on them, so the world has trees and stone from the first frame wearing
   // whatever the procedural layers already hold.
-  propTextures = QUEST_TERRAIN_ONLY ? null : buildTextureArray()
-  terrain = QUEST_TERRAIN_ONLY
-    ? new MacroTerrain(scene, { heightmap })
-    : new TerrainV2(scene, {
-      heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures,
-    })
+  propTextures = buildTextureArray()
+  terrain = new TerrainV2(scene, {
+    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures,
+  })
 
   lighting.patch(terrain.material, {
     mode: 'fragment',
@@ -508,7 +768,6 @@ async function bootWorld() {
   player.spawnAt(spawn.x, spawn.z)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
-  if (!QUEST_TERRAIN_ONLY) {
   // Trees. The atlas was built up at the terrain, above, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
   // layers landing, because a photograph taken before the bark has loaded would
@@ -519,7 +778,6 @@ async function bootWorld() {
   trees = new Trees(scene, height, waterSurfaces, propTextures, {
     seed: SEED,
     ground: terrain,
-    ...(QUEST_MODE ? { quest: true, simple: true, radius: 300 } : {}),
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -528,7 +786,7 @@ async function bootWorld() {
   // on it, and these two materials compile DIFFERENT shader source -- the tree
   // material's uBillboardLayers is four long, the ferns' is two -- so sharing a
   // key would hand one of them the other's program.
-  if (!QUEST_MODE) lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb' })
+  lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb' })
   // So a tree and the ground it stands on cross the snow line together.
   trees.syncSnowLine(layers)
   trees.place(spawn.x, spawn.z)
@@ -550,23 +808,19 @@ async function bootWorld() {
   // The whole Layers goes in, not just its paths: a fern takes a hue cue from
   // the terrain colour underfoot, which needs the snow band and the road
   // flattening as well as the path exclusions.
-  if (!QUEST_MODE) {
-    ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED })
-    lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
-    ferns.syncSnowLine(layers)
-    ferns.place(spawn.x, spawn.z)
-    const fs = ferns.stats
-    const fr = fs.rejected
-    console.log(
-      `[v2] ferns ${fs.placed} placed over ${fs.tiles} tiles in ${fs.placeMs.toFixed(0)} ms ` +
-      `(${fs.density}/m^2 to ${fs.fullRadius} m, thinning to ${fs.radius} m, ` +
-      `${fs.heightRange[0]}-${fs.heightRange[1]} m tall, pool ${fs.used}/${fs.pool}) ` +
-      `(dropped: ${fr.elev} elev, ${fr.slope} slope, ${fr.water} water, ${fr.snow} snow, ${fr.path} path)`
-    )
-    window.v2ferns = ferns
-  } else {
-    window.v2ferns = { disabled: true }
-  }
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED })
+  lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
+  ferns.syncSnowLine(layers)
+  ferns.place(spawn.x, spawn.z)
+  const fs = ferns.stats
+  const fr = fs.rejected
+  console.log(
+    `[v2] ferns ${fs.placed} placed over ${fs.tiles} tiles in ${fs.placeMs.toFixed(0)} ms ` +
+    `(${fs.density}/m^2 to ${fs.fullRadius} m, thinning to ${fs.radius} m, ` +
+    `${fs.heightRange[0]}-${fs.heightRange[1]} m tall, pool ${fs.used}/${fs.pool}) ` +
+    `(dropped: ${fr.elev} elev, ${fr.slope} slope, ${fr.water} water, ${fr.snow} snow, ${fr.path} path)`
+  )
+  window.v2ferns = ferns
 
   // Grass, at 3 tufts per square metre -- the densest thing in the world by a
   // factor of sixty, and a THIRD batch for the same reason ferns are a second
@@ -578,7 +832,7 @@ async function bootWorld() {
   // dither at each tuft's own cull distance so nothing pops. A fixed disc at
   // this density would be 46,000 instances for the same horizon. See
   // render/grass.js, which lays out where its ~54k triangles go.
-  if (!QUEST_MODE) buildGrass(grassStyle, spawn.x, spawn.z)
+  buildGrass(grassStyle, spawn.x, spawn.z)
   // A/B hooks for the two grass strategies, from the console. `M` swaps the bed;
   // these tune it without a reload.
   //
@@ -595,7 +849,7 @@ async function bootWorld() {
   // two triangles at any size, so halving `size` costs 4x the instances to cover
   // the same ground. Both rebuild rather than reconfigure, because the pool, the
   // tile candidate count and the bank all depend on them.
-  if (!QUEST_MODE) {
+  {
     const rebuild = (opts) => {
       player.headPosition(headTmp)
       buildGrass(grassStyle, headTmp.x, headTmp.z, opts)
@@ -606,8 +860,6 @@ async function bootWorld() {
       size: (h) => rebuild({ height: h }),
       density: (d) => rebuild({ density: d }),
     }
-  } else {
-    window.v2grass = { disabled: true }
   }
 
   // Stone, in three size beds at once: pebbles underfoot, boulders through the
@@ -724,7 +976,6 @@ async function bootWorld() {
     `${ds.placeMs.toFixed(0)} ms (pool ${ds.used}/${ds.pool}, bank ${ds.bankKB} KB) (dropped: ${dr})`
   )
   window.v2deadwood = deadwood
-  }
 
   // Last of the five, so the cursor readout can be bound now. Deliberately here
   // rather than lazily inside the readout: a missing scatter should be a boot
@@ -752,7 +1003,7 @@ async function bootWorld() {
   // ONE loadImageLayers for all three, and the bakes hang off the same promise.
   // Separate calls would be separate decodes of the same PNGs into the same
   // atlas.
-  if (!QUEST_TERRAIN_ONLY) loadImageLayers(propTextures).then(() => {
+  loadImageLayers(propTextures).then(() => {
     propLayersReady = true
     const baked = trees.bakeCards(renderer)
     if (ferns) ferns.bakeCards(renderer)
@@ -804,7 +1055,7 @@ async function bootWorld() {
     )
   })
 
-  if (!QUEST_TERRAIN_ONLY) editor = new Editor({
+  if (!QUEST_MODE) editor = new Editor({
     scene,
     camera,
     renderer,
@@ -829,7 +1080,24 @@ async function bootWorld() {
   waterSurfaces.setVisibility(isVisible)
   roads.setVisibility(isVisible)
 
-  if (!QUEST_TERRAIN_ONLY) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
+  if (!QUEST_MODE) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
+
+  if (QUEST_MODE) {
+    // Every layer starts hidden; the world-space toggle panel below flips
+    // these on one at a time. litter/mushrooms/deadwood are always
+    // constructed (mushrooms anchors onto placed trees/rocks either way) but
+    // aren't among the 9 requested toggles, so they stay off with no button.
+    terrain.batch.visible = false
+    trees.batch.visible = false
+    rocks.beds.forEach((b) => { b.batch.visible = false })
+    grass.batch.visible = false
+    ferns.batch.visible = false
+    waterSurfaces.group.visible = false
+    litter.batch.visible = false
+    mushrooms.batch.visible = false
+    deadwood.batch.visible = false
+    buildQuestPanel()
+  }
 
   ready = true
   bootDone()
@@ -1381,11 +1649,9 @@ function applySky(state, head, elapsedReal) {
 
   lighting.update(state)
   sky.update(head, state)
-  if (!QUEST_TERRAIN_ONLY) {
-    stars.update(head, state, clock.elapsed, elapsedReal)
-    aurora.update(head, state, elapsedReal)
-    water.update(elapsedReal, hemi)
-  }
+  if (!QUEST_MODE || questToggles.dayNight) stars.update(head, state, clock.elapsed, elapsedReal)
+  if (!QUEST_MODE || questToggles.aurora) aurora.update(head, state, elapsedReal)
+  if (!QUEST_MODE || questToggles.water) water.update(elapsedReal, hemi)
 
   // LAST, and that is the whole of its plumbing. Everything above writes the
   // world as seen through air, straight from the palette; this overwrites the
@@ -1483,8 +1749,11 @@ function applySubmersion(head, elapsedReal, state) {
 
   if (!submerged) {
     // Nothing to restore but the dome, and only the dome because it is the one
-    // of the three that does not decide its own visibility every frame.
-    sky.mesh.visible = true
+    // of the three that does not decide its own visibility every frame. In
+    // quest mode the day/night toggle owns this instead of a bare `true`,
+    // since she can't be submerged while the (default-off) water toggle is
+    // off but this still runs every frame.
+    sky.mesh.visible = !QUEST_MODE || questToggles.dayNight
     return
   }
 
@@ -1595,6 +1864,11 @@ const headTmp = new THREE.Vector3()
 
 function readInput() {
   const st = input.update()
+  // In quest mode A-Frame's own movement-controls/laser-controls own
+  // locomotion (see updateQuestFlight below) -- input.update() still runs so
+  // currentPose()'s hand-connected flags stay live for netplay, but nothing
+  // here should also be driving moveInput/player.update against the same rig.
+  if (QUEST_MODE) return
   if (st.connected > 0) {
     moveInput.move = Math.max(0, -st.left.axes[1])
     moveInput.strafe = 0 // no strafing in VR, on purpose
@@ -1842,28 +2116,38 @@ function tick() {
   }
 
   if (!ready) {
-    renderer.render(scene, camera)
+    if (!QUEST_MODE) renderer.render(scene, camera)
     return
   }
 
   readInput()
 
-  // THE CURRENT, applied BEFORE the mover rather than after it. Everything that
-  // keeps her out of the ground and inside the world runs in player.update, and
-  // a push added afterwards would be a push it never saw -- 70 cm is enough to
-  // put her inside a bank. Added first, the drift is just somewhere she is, and
-  // if the clamp refuses part of it the refusal is absorbed into her own path
-  // instead of fighting the next frame's difference.
-  //
-  // `submerged` is last frame's answer, because applySubmersion runs later in
-  // this one. A frame of lag on a 2.5 s ease is not a thing that can be seen.
-  swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged ? dt : -dt) / CURRENT.ease, 0, 1)
-  currentDrift(now / 1000, swayStrength, swayWant)
-  player.rig.position.x += swayWant.x - swayApplied.x
-  player.rig.position.z += swayWant.z - swayApplied.z
-  swayApplied.copy(swayWant)
+  if (QUEST_MODE) {
+    // A-Frame's own movement-controls/blink-controls drive rig XZ; fighting
+    // them with player.update() or the water-current sway below (which both
+    // write player.rig.position directly) is what the ported flight+
+    // ground-follow pair below replaces. See updateQuestFlight.
+    updateQuestFlight(dt)
+    if (!questFlying) rig.position.y = height.heightAt(rig.position.x, rig.position.z)
+    updateQuestPanel(now)
+  } else {
+    // THE CURRENT, applied BEFORE the mover rather than after it. Everything that
+    // keeps her out of the ground and inside the world runs in player.update, and
+    // a push added afterwards would be a push it never saw -- 70 cm is enough to
+    // put her inside a bank. Added first, the drift is just somewhere she is, and
+    // if the clamp refuses part of it the refusal is absorbed into her own path
+    // instead of fighting the next frame's difference.
+    //
+    // `submerged` is last frame's answer, because applySubmersion runs later in
+    // this one. A frame of lag on a 2.5 s ease is not a thing that can be seen.
+    swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged ? dt : -dt) / CURRENT.ease, 0, 1)
+    currentDrift(now / 1000, swayStrength, swayWant)
+    player.rig.position.x += swayWant.x - swayApplied.x
+    player.rig.position.z += swayWant.z - swayApplied.z
+    swayApplied.copy(swayWant)
 
-  player.update(dt, moveInput)
+    player.update(dt, moveInput)
+  }
 
   // The clock the prop LOD cross-dissolves run on, and the only per-frame cost
   // any of them has. Set BEFORE the scatters update, so the sweep that retires
@@ -1877,16 +2161,21 @@ function tick() {
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
-  terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
-  if (trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
-  if (ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
-  if (grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
-  if (rocks) rocks.update(headTmp.x, headTmp.y, headTmp.z)
-  if (litter) litter.update(headTmp.x, headTmp.y, headTmp.z)
+  if (!QUEST_MODE || questToggles.terrain) {
+    terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
+  }
+  if (!QUEST_MODE || questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
+  if (!QUEST_MODE || questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
+  if (!QUEST_MODE || questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
+  if (!QUEST_MODE || questToggles.rocks) rocks.update(headTmp.x, headTmp.y, headTmp.z)
+  // litter/mushrooms/deadwood aren't among the 9 requested toggles -- always
+  // updated (they're the cheapest layers in the world; see their own
+  // headers), just permanently hidden in quest mode with no button to show them.
+  litter.update(headTmp.x, headTmp.y, headTmp.z)
   // After rocks, and for the same reason the construction and the relief
   // re-place are: a clump follows the anchors, so it wants them stepped first.
-  if (mushrooms) mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
-  if (deadwood) deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+  mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
+  deadwood.update(headTmp.x, headTmp.y, headTmp.z)
 
   clock.advance(dt)
   // Held in a local because the world probe wants it too: the capture is taken
@@ -1917,7 +2206,7 @@ function tick() {
   // BEFORE the main render, and that ordering is load-bearing: both probes bind
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
-  if (!QUEST_TERRAIN_ONLY) probe.update(renderer, scene, headTmp)
+  if (!QUEST_MODE || questToggles.reflections) probe.update(renderer, scene, headTmp)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
@@ -1925,12 +2214,24 @@ function tick() {
   // The air hook only while she is under, because that is the only time the
   // frame's atmosphere is not the one the capture wants.
   airHook.state = state
-  if (!QUEST_TERRAIN_ONLY) worldProbe.update(renderer, scene, headTmp, waterY, dt, submerged ? airHook : null)
+  if (!QUEST_MODE || questToggles.reflections) worldProbe.update(renderer, scene, headTmp, waterY, dt, submerged ? airHook : null)
 
-  renderer.render(scene, camera)
+  // A-Frame renders the scene itself after every registered component's tick()
+  // runs (see the `v2-quest-tick` component below) -- calling renderer.render
+  // here too would be a second render of the same frame.
+  if (!QUEST_MODE) renderer.render(scene, camera)
 }
 
-renderer.setAnimationLoop(tick)
+if (QUEST_MODE) {
+  // A-Frame drives its own render loop via component tick() methods, not
+  // renderer.setAnimationLoop -- see quest-main.js's header for why calling
+  // setAnimationLoop here would silently stop movement-controls/blink-
+  // controls/look-controls from ticking at all.
+  AFRAME.registerComponent('v2-quest-tick', { tick: () => tick() })
+  sceneEl.setAttribute('v2-quest-tick', '')
+} else {
+  renderer.setAnimationLoop(tick)
+}
 
 // §18: editing is a desktop activity and the gizmo has no controller binding.
 // Entering XR with a tool armed would leave a mode running that nothing in the
@@ -1943,3 +2244,5 @@ renderer.xr.addEventListener('sessionstart', () => {
 })
 
 bootWorld().catch(bootFail)
+
+})().catch(bootFail)

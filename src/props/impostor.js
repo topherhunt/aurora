@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { TEX_SIZE } from '../textures.js'
 import { createImpostorBakeMaterial, CARD_UP_MARK } from '../material.js'
 

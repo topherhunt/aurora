@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 import { bakeImpostor, impostorCardExtents } from './impostor.js'
 import { geometryBytes } from './fern.js' // generic; it lives there for historical reasons
 import { LAYER } from '../textures.js'

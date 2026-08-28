@@ -30,7 +30,7 @@
 // No depth buffer and no stencil: every pass is one full-target quad with depth off. colorSpace is NoColorSpace on all four, including MAP, which does carry colour: it carries LINEAR radiance that the screen shader multiplies by the extinction and hands to MAIN_GLSL, and MAIN_GLSL is where the one encode belongs.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 // Matching the defaults of smAzRes, smRows and smTaps in skymap/algorithm.js. Three copies of a number, which is the shape of mistake this codebase has a standing opinion about, so SkyMapAurora asserts they agree on construction rather than trusting this comment.
 export const DEFAULT_AZIMUTH = 512

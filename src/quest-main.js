@@ -15,24 +15,14 @@
 // manual raycasting against plain THREE meshes (mouse on flatscreen,
 // laser-controls' own raycaster component in VR), exactly questv3's pattern.
 //
-// CONFIRMED ON-DEVICE RISK: content geometry/materials here are built by
-// tree-bank.js/rock.js/material.js/sky.js/stars.js/clock.js/textures.js/
-// preview-stage.js, which all `import * as THREE from 'three'` (this
-// project's npm three@0.180.0) -- a different THREE.js MODULE INSTANCE than
-// AFRAME.THREE, bundled inside A-Frame 1.5.0 (three r158, a ~22-revision
-// gap). Foreign DATA (Vector3/Color reads, DataTexture as .map) duck-types
-// fine through A-Frame's renderer, but a foreign Mesh/Points/Material added
-// directly to the live scene does NOT: on-device this produced both a
-// catchable throw (tree-impostor baking, fixed by giving that one-off bake a
-// matching-version throwaway renderer) and an uncatchable black-screen crash
-// (real billboards/trees, and separately the sky/day-night system) with no
-// console error at all. The fix in this file is a translation shim
-// (localGeometry/localMaterial/localShaderMaterial below) that rebuilds
-// every geometry/material as a native AFRAME.THREE instance before it
-// touches the live scene, while leaving the shared content modules
-// themselves untouched npm-three (other entry points depend on that).
-// EXPERIMENTAL -- not yet confirmed on-device to actually resolve the crash.
-const THREE = AFRAME.THREE
+// Content geometry/materials here are built by tree-bank.js/rock.js/
+// material.js/sky.js/stars.js/clock.js/textures.js/preview-stage.js, all of
+// which import THREE from three-instance.js -- which resolves to AFRAME.THREE
+// on this page (A-Frame's CDN <script> tag runs and sets window.AFRAME before
+// this module's imports evaluate). So every object these modules construct is
+// already native to A-Frame's own three.js; nothing needs rebuilding before
+// touching the live scene.
+import THREE from './three-instance.js'
 
 import { Sky } from './sky.js'
 import { Stars } from './stars.js'
@@ -43,68 +33,6 @@ import { buildTreeBank, bakeTreeImpostors } from './props/tree-bank.js'
 import { buildRock } from './props/rock.js'
 import { ROCK_NAMES, rockParams } from './props/rock-bank.js'
 import { createPropMaterial } from './material.js'
-import {
-  Scene as RealScene,
-  WebGLRenderer as RealWebGLRenderer,
-} from 'three'
-
-// --- translation shim: native (AFRAME.THREE) copies of foreign (npm-three)
-// geometry/material ------------------------------------------------------
-// Confirmed on-device: A-Frame's own WebGLRenderer (r158) throws/black-
-// screens when handed a live scene object (Mesh/Points wrapping a
-// BufferGeometry/Material) built by this project's npm three.js (0.180.0) --
-// a ~22-revision gap, different module instance entirely. Foreign DATA
-// (Vector3/Color reads, DataTexture/DataArrayTexture assigned as .map) is
-// fine -- three's renderer duck-types those and already renders our terrain's
-// grassTexture() DataTexture correctly on-device. What's NOT fine is a
-// foreign Mesh/Points/Material object added directly to the live A-Frame
-// scene graph and rendered every frame. These helpers rebuild the geometry/
-// material as literal native THREE (= AFRAME.THREE) instances before
-// anything touches the live scene; the content-generation modules themselves
-// (tree-bank.js, rock.js, material.js, sky.js, stars.js, ...) stay untouched
-// npm-three, since main.js/v2/main.js/gen-*-main.js depend on that and don't
-// load A-Frame. EXPERIMENTAL: not yet confirmed on-device to fix the crash.
-function localGeometry(geo) {
-  const g = new THREE.BufferGeometry()
-  for (const name in geo.attributes) {
-    const a = geo.attributes[name]
-    g.setAttribute(name, new THREE.BufferAttribute(a.array, a.itemSize, a.normalized))
-  }
-  if (geo.index) g.setIndex(new THREE.BufferAttribute(geo.index.array, 1))
-  g.userData = geo.userData // plain data (tree height/crownWidth, rock measured) -- safe to share by reference
-  g.computeBoundingSphere()
-  g.computeBoundingBox()
-  return g
-}
-const MATERIAL_SCALAR_PROPS = ['alphaTest', 'transparent', 'side', 'vertexColors', 'depthWrite', 'depthTest', 'blending', 'fog', 'wireframe']
-function localMaterial(mat, Ctor = THREE.MeshLambertMaterial) {
-  const m = new Ctor()
-  if (mat.color) m.color.setRGB(mat.color.r, mat.color.g, mat.color.b)
-  for (const p of MATERIAL_SCALAR_PROPS) if (p in mat) m[p] = mat[p]
-  // Reattached by reference: createPropMaterial's onBeforeCompile only reads
-  // its own outer-closure variables (textureArray, snow/moss uniforms, ...),
-  // never `material` itself, so the same function works unmodified on a
-  // native material instance.
-  m.onBeforeCompile = mat.onBeforeCompile
-  m.customProgramCacheKey = mat.customProgramCacheKey
-  return m
-}
-function localShaderMaterial(mat) {
-  // uniforms shared BY REFERENCE (not cloned) -- Sky/Stars mutate uniform
-  // .value objects in place (see sky-glsl.js writeSkyUniforms), never
-  // reassign the uniforms dict, so this mirror stays live automatically.
-  return new THREE.ShaderMaterial({
-    uniforms: mat.uniforms,
-    vertexShader: mat.vertexShader,
-    fragmentShader: mat.fragmentShader,
-    side: mat.side,
-    transparent: mat.transparent,
-    depthWrite: mat.depthWrite,
-    depthTest: mat.depthTest,
-    blending: mat.blending,
-    fog: mat.fog,
-  })
-}
 
 function hash(x, z) { const n = Math.sin(x * 127.1 + z * 311.7) * 43758.5453; return n - Math.floor(n) }
 function noise(x, z) {
@@ -201,38 +129,20 @@ AFRAME.registerComponent('quest-features', {
     // Deliberately without the aurora (v2/render/aurora.js) -- that's its own
     // expensive draw and not what this toggle is testing.
     //
-    // Sky/Stars build their own foreign (npm-three) Mesh/Points and, inside
-    // their OWN constructors, call scene.add(...) on whatever scene they're
-    // given -- so they're constructed here against a throwaway, never-
-    // rendered npm-three Scene instead of the real one. skyMirror/
-    // starsMirror are native AFRAME.THREE copies actually added to scene3D;
-    // applySky() below calls the ORIGINAL unmodified sky.update()/
-    // stars.update() (untouched math) then copies the resulting transform/
-    // visibility onto the mirrors each frame. Materials are shared via
-    // localShaderMaterial's by-reference uniforms, so writeSkyUniforms'
-    // in-place mutation of sky.uniforms/stars' uniforms reaches the mirror
-    // automatically with no per-frame uniform copying needed.
-    const skyScratchScene = new RealScene()
-    const sky = new Sky(skyScratchScene)
+    // Sky/Stars build their Mesh/Points via three-instance.js, which resolves
+    // to AFRAME.THREE on this page -- so they're already native and can be
+    // added straight to the live scene3D, no scratch-scene/mirror step needed.
+    const sky = new Sky(scene3D)
     sky.mesh.visible = false
     sky.uniforms.uSunDir.value.copy(sunDir)
-    const skyMirror = new THREE.Mesh(localGeometry(sky.mesh.geometry), localShaderMaterial(sky.material))
-    skyMirror.renderOrder = sky.mesh.renderOrder
-    skyMirror.frustumCulled = false
-    skyMirror.visible = false
-    scene3D.add(skyMirror)
-    const stars = new Stars(skyScratchScene, { seed: 20260828 })
-    const starsMirror = new THREE.Points(localGeometry(stars.points.geometry), localShaderMaterial(stars.material))
-    starsMirror.visible = stars.points.visible
-    scene3D.add(starsMirror)
+    sky.mesh.frustumCulled = false
+    const stars = new Stars(scene3D, { seed: 20260828 })
     const clock = new WorldClock({ seed: 20260828 })
     const setSRGB = (color, rgb) => color.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
     const headPos = new THREE.Vector3()
     function resetSkyVisuals() {
       sky.mesh.visible = false
-      skyMirror.visible = false
       stars.points.visible = false
-      starsMirror.visible = false
       if (skyEl) skyEl.setAttribute('visible', true)
       sun.color.set(0xfff0d2); sun.intensity = 2.2; sun.position.copy(sunDir).multiplyScalar(50)
       hemi.color.set(0xd8e8ff); hemi.groundColor.set(0x34402b); hemi.intensity = 1.8
@@ -242,15 +152,10 @@ AFRAME.registerComponent('quest-features', {
       const s = clock.state()
       const camera = sceneEl.camera
       if (camera) camera.getWorldPosition(headPos)
-      if (skyEl) skyEl.setAttribute('visible', false) // skyMirror (the real dome) replaces it while active
+      if (skyEl) skyEl.setAttribute('visible', false) // sky.mesh (the real dome) replaces it while active
       sky.mesh.visible = true
       sky.update(headPos, s)
       stars.update(headPos, s, clock.elapsed, performance.now() / 1000)
-      skyMirror.visible = sky.mesh.visible
-      skyMirror.position.copy(sky.mesh.position)
-      starsMirror.visible = stars.points.visible
-      starsMirror.position.copy(stars.points.position)
-      starsMirror.quaternion.copy(stars.points.quaternion)
       sun.position.copy(s.lightDir).multiplyScalar(50)
       setSRGB(sun.color, s.lightColor)
       sun.intensity = s.lightIntensity
@@ -455,7 +360,7 @@ AFRAME.registerComponent('quest-features', {
       placeTrees(treePlacements)
       const makeBoulder = (i) => {
         const name = ROCK_NAMES[i % ROCK_NAMES.length]
-        const geo = localGeometry(buildRock({ ...rockParams(name, 1978 + i), tier: 0 }))
+        const geo = buildRock({ ...rockParams(name, 1978 + i), tier: 0 })
         const scale = Math.min(1, 2 / geo.userData.rock.measured.height) // cap at 2m tall
         const measured = geo.userData.rock.measured
         const [x, z] = scatterXZ(i, 30, (Math.max(measured.width, measured.depth) / 2) * scale)
@@ -710,26 +615,60 @@ AFRAME.registerComponent('quest-features', {
     }
 
     // --- locomotion: movement-controls + blink-controls on #rig (declared in
-    // quest.html) handle actual movement; A/X toggles walk vs. fly ----------
+    // quest.html) handle walking; A/X toggles walk vs. fly ------------------
     // Walking is teleport-only (blink-controls) by design -- questv3-main.js's
-    // history notes this avoids VR motion sickness. Flying wants the
-    // opposite: a continuous stick-glide, which movement-controls only does
-    // via its 'gamepad' control scope (thumbstick), never wired in before
-    // now (the rig only ever declared 'controls: keyboard'), so toggling
-    // 'fly' alone did nothing in-headset -- there was no control scope
-    // driving movement off the stick at all. Gamepad scope is added ONLY
-    // while flying, so walking keeps its teleport-only feel.
+    // history notes this avoids VR motion sickness. Flying is hand-rolled
+    // below instead of using movement-controls' 'gamepad' scope: that scope
+    // glides in the CAMERA's look direction, but flight here must follow
+    // whichever hand controller is pushing the stick (its own pointing
+    // direction), so updateFlight() reads each laser-controls entity's own
+    // world quaternion directly, the same pattern updateControllerHover()
+    // already uses for panel raycasting. blink-controls is paused while
+    // flying so its teleport arc never arms off the same stick push.
     const rigEl = sceneEl.querySelector('#rig')
     let flying = false
     function setFlying(next) {
       flying = next
-      rigEl.setAttribute('movement-controls', { fly: flying, controls: flying ? 'keyboard, gamepad' : 'keyboard' })
-      setPanelMap(flyLabel, `locomotion: ${flying ? 'fly (push stick to glide)' : 'walk'} (A/X to toggle)`, null, '#8fd48f')
+      rigEl.setAttribute('movement-controls', { fly: flying, controls: 'keyboard' })
+      sceneEl.querySelectorAll('[blink-controls]').forEach((el) => {
+        el.components['blink-controls']?.[flying ? 'pause' : 'play']()
+      })
+      setPanelMap(flyLabel, `locomotion: ${flying ? 'fly (point hand, push stick)' : 'walk'} (A/X to toggle)`, null, '#8fd48f')
     }
     sceneEl.querySelectorAll('[laser-controls]').forEach((el) => {
       el.addEventListener('abuttondown', () => setFlying(!flying))
       el.addEventListener('xbuttondown', () => setFlying(!flying))
     })
+
+    // Direction = the flying hand's own forward vector (not head/camera
+    // look). Speed scales with height above the terrain directly beneath the
+    // rig -- higher altitude flies faster.
+    const FLIGHT_BASE_SPEED = 4
+    const FLIGHT_HEIGHT_SPEED_GAIN = .15
+    const STICK_DEADZONE = .15
+    const flightVelocity = new THREE.Vector3()
+    const flightForward = new THREE.Vector3()
+    const flightRight = new THREE.Vector3()
+    function updateFlight(dt) {
+      if (!flying) return
+      flightVelocity.set(0, 0, 0)
+      for (const el of controllerHits.keys()) {
+        const axis = el.components['tracked-controls']?.axis
+        if (!axis || axis.length < 2) continue
+        const x = axis[axis.length - 2]
+        const y = axis[axis.length - 1]
+        if (Math.abs(x) < STICK_DEADZONE && Math.abs(y) < STICK_DEADZONE) continue
+        el.object3D.getWorldQuaternion(tempQuat)
+        flightForward.set(0, 0, -1).applyQuaternion(tempQuat)
+        flightRight.set(1, 0, 0).applyQuaternion(tempQuat)
+        const rigPos = rigEl.object3D.position
+        const altitude = Math.max(0, rigPos.y - groundHeightAt(rigPos.x, rigPos.z))
+        const speed = FLIGHT_BASE_SPEED + altitude * FLIGHT_HEIGHT_SPEED_GAIN
+        flightVelocity.addScaledVector(flightForward, -y * speed)
+        flightVelocity.addScaledVector(flightRight, x * speed)
+      }
+      rigEl.object3D.position.addScaledVector(flightVelocity, dt)
+    }
 
     // --- stats ---------------------------------------------------------------
     let fps = 0, fpsFrames = 0, fpsAt = performance.now()
@@ -750,6 +689,7 @@ AFRAME.registerComponent('quest-features', {
         const rigPos = rigEl.object3D.position
         rigPos.y = groundHeightAt(rigPos.x, rigPos.z)
       }
+      if (rigEl && flying) updateFlight(dt)
 
       fpsFrames++
       if (now - fpsAt >= 500) {
@@ -792,40 +732,25 @@ AFRAME.registerComponent('quest-features', {
           assetStage = 'building tree bank'
           const treeBank = buildTreeBank({ seed: 20260828, billboard: true })
           assetStage = 'baking tree impostors (render-to-texture)'
-          // A dedicated npm-three WebGLRenderer, NOT sceneEl.renderer -- the
-          // impostor bake builds its scene/materials/render-target with this
-          // project's own npm three.js (see the props/impostor.js and
-          // tree-bank.js imports), while sceneEl.renderer is A-Frame 1.5.0's
-          // bundled three.js (r158, a different module instance). Handing an
-          // r158 renderer an 0.180-built Scene/Material threw
-          // "e.onBuild is not a function" deep in WebGLRenderer.render on
-          // device -- confirming the version-mismatch risk flagged at the top
-          // of this file. Every other bake call site in this codebase
-          // (gen-tree-main.js, main.js, v2/main.js) already constructs its
-          // own matching-version THREE.WebGLRenderer rather than reusing an
-          // unrelated one; this does the same. It never attaches to the DOM
-          // (bakeImpostor only ever renders to an offscreen
-          // WebGLRenderTarget), so a bare renderer with no canvas append is
-          // enough, and it's disposed right after since it's only needed for
-          // this one load-time step.
-          const bakeRenderer = new RealWebGLRenderer({ antialias: false })
-          bakeTreeImpostors(bakeRenderer, propAtlas, { seed: 20260828 })
-          bakeRenderer.dispose()
-          bakeRenderer.forceContextLoss()
-          treeBillboardGeometry = localGeometry(treeBank.tiers[3].geometries[0])
-          treeGeometries = treeBank.tiers[0].geometries.map(localGeometry) // LOD0: the real tree, ~500-800 tris incl. leaf cards
+          // tree-bank.js/impostor.js build via three-instance.js, which
+          // resolves to AFRAME.THREE on this page -- so sceneEl.renderer (the
+          // same instance A-Frame itself renders with) can bake the impostors
+          // directly, no separate throwaway renderer needed.
+          bakeTreeImpostors(sceneEl.renderer, propAtlas, { seed: 20260828 })
+          treeBillboardGeometry = treeBank.tiers[3].geometries[0]
+          treeGeometries = treeBank.tiers[0].geometries // LOD0: the real tree, ~500-800 tris incl. leaf cards
           assetStage = 'compiling prop material'
-          const foreignPropMaterial = createPropMaterial(propAtlas)
-          const propPatch = foreignPropMaterial.onBeforeCompile
-          foreignPropMaterial.onBeforeCompile = (shader, object) => { propPatch(shader, object); wrapLambert(shader) }
-          foreignPropMaterial.customProgramCacheKey = () => 'quest-prop-array-wrap-v1'
-          // localMaterial() rebuilds this as a native AFRAME.THREE material --
-          // see the top-of-file translation-shim note. propMaterial/
-          // rockMaterial are the only material instances that ever reach the
-          // live scene here (rock/billboard/tree meshes below reuse these,
-          // never the foreign originals).
-          propMaterial = localMaterial(foreignPropMaterial, THREE.MeshLambertMaterial)
-          rockMaterial = localMaterial(foreignPropMaterial, THREE.MeshLambertMaterial)
+          // Two independent material instances (propMaterial for foliage,
+          // rockMaterial for rocks) so each can carry its own
+          // customProgramCacheKey -- createPropMaterial() already builds
+          // natively via three-instance.js, nothing to rebuild.
+          propMaterial = createPropMaterial(propAtlas)
+          const propPatch = propMaterial.onBeforeCompile
+          propMaterial.onBeforeCompile = (shader, object) => { propPatch(shader, object); wrapLambert(shader) }
+          propMaterial.customProgramCacheKey = () => 'quest-prop-array-wrap-v1'
+          rockMaterial = createPropMaterial(propAtlas)
+          const rockPatch = rockMaterial.onBeforeCompile
+          rockMaterial.onBeforeCompile = (shader, object) => { rockPatch(shader, object); wrapLambert(shader) }
           rockMaterial.customProgramCacheKey = () => 'quest-rock-array-wrap-v1'
           assetsReady = true
           rebuild() // re-run now that treeGeometries/propMaterial/rockMaterial exist

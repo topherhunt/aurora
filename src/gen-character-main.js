@@ -76,10 +76,16 @@ async function loadReferenceCards(id, heightM) {
     child.material.dispose()
   }
 
+  // Front and back are coplanar (both span X/Y, normal along Z) -- true
+  // z-fighting risk, so they get a small separation ALONG THEIR OWN NORMAL
+  // (world Z). Side is rotated 90deg so its normal is along world X instead;
+  // it never shares a plane with front/back, so it needs no offset at all --
+  // giving it one (as a previous version of this code did, along the wrong
+  // axis) just made it slide off the shared centreline.
   const specs = [
-    { view: 'front', rotationY: 0, axis: 'x', offset: 0.004 },
-    { view: 'back', rotationY: Math.PI, axis: 'x', offset: -0.004 },
-    { view: 'side', rotationY: Math.PI / 2, axis: 'z', offset: 0.004 },
+    { view: 'front', rotationY: 0, offsetZ: 0.004, mirrorU: false },
+    { view: 'back', rotationY: Math.PI, offsetZ: -0.004, mirrorU: true },
+    { view: 'side', rotationY: Math.PI / 2, offsetZ: 0, mirrorU: true },
   ]
 
   await Promise.all(specs.map(async (spec) => {
@@ -89,13 +95,29 @@ async function loadReferenceCards(id, heightM) {
       if (!res.ok || !j.exists) return
       const tex = await textureLoader.loadAsync(`data:image/png;base64,${j.imageB64}`)
       tex.colorSpace = THREE.SRGBColorSpace
+      // The back sheet is a straight photo of the character's back, not a
+      // mirror of the front -- so the character's own left shows up on the
+      // viewer's left in the back image, same screen-side as the front image
+      // shows the character's right. Flipping U here is what makes the two
+      // cards' edges (shoulders, hips) actually land on the same world-X
+      // line instead of swapping sides.
+      if (spec.mirrorU) { tex.wrapS = THREE.RepeatWrapping; tex.repeat.x = -1; tex.offset.x = 1 }
       const geo = new THREE.PlaneGeometry(j.worldWidthM, j.worldHeightM)
-      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false })
+      // alphaTest cutout, not alpha blending -- same convention as the tree/
+      // rock crossed-plane impostors (src/props/impostor.js). A blended
+      // transparent plane writes no depth (depthWrite:false is required to
+      // avoid it self-occluding its own soft edges) which means THREE
+      // crossed cards have no depth information to sort by at all -- three.js
+      // falls back to draw order, so whichever card is added last paints over
+      // the other two regardless of which is actually nearer the camera. An
+      // alphaTest cutout is opaque everywhere it draws, writes real depth,
+      // and lets the three planes occlude each other correctly like the
+      // solid geometry they're standing in for.
+      const mat = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.4, side: THREE.DoubleSide })
       const mesh = new THREE.Mesh(geo, mat)
       mesh.rotation.y = spec.rotationY
       mesh.position.y = j.worldHeightM / 2
-      if (spec.axis === 'x') mesh.position.x = spec.offset
-      else mesh.position.z = spec.offset
+      mesh.position.z = spec.offsetZ
       mesh.userData.refView = spec.view
       referenceGroup.add(mesh)
     } catch { /* reference cards are a visual aid -- a fetch failure just leaves that card off */ }
@@ -109,6 +131,13 @@ function applyReferenceUI() {
   for (const child of referenceGroup.children) {
     child.visible = visible
     child.material.opacity = opacity
+    // Full opacity stays an alphaTest cutout (opaque, depth-correct -- see the
+    // comment where this material is built) so the three cards intersect
+    // properly. Dialing opacity down is an explicit request to see through
+    // them, which brings back blending's draw-order ambiguity -- an accepted
+    // trade for that view, not the default state.
+    child.material.transparent = opacity < 1
+    child.material.needsUpdate = true
   }
 }
 document.getElementById('refToggle').addEventListener('change', applyReferenceUI)
@@ -131,6 +160,8 @@ document.getElementById('camIso').addEventListener('click', () => setCameraPrese
 async function loadCharacter(id) {
   setStatus(`loading ${id}...`)
   currentId = id
+  document.getElementById('charId').value = id
+  if (rosterSelect && roster.some((c) => c.id === id)) rosterSelect.value = id
   try {
     const gltf = await gltfLoader.loadAsync(`/characters/${id}/lod0.glb`)
     if (root) scene.remove(root)
@@ -210,6 +241,45 @@ function refreshOverrideTable() {
 
 document.getElementById('bone').addEventListener('change', (e) => selectBone(e.target.value))
 document.getElementById('load').addEventListener('click', () => loadCharacter(document.getElementById('charId').value.trim()))
+
+// --- roster picker: same pattern as gen-sheet.html's -- load any baked
+// character straight from tools/characters/characters.json instead of typing
+// its id by hand.
+const rosterSelect = document.getElementById('roster')
+let roster = []
+
+fetch('/tools/characters/characters.json')
+  .then((r) => r.json())
+  .then((j) => {
+    roster = j.characters
+    for (const c of roster) {
+      const opt = document.createElement('option')
+      opt.value = c.id
+      opt.textContent = c.id
+      rosterSelect.appendChild(opt)
+    }
+    if (roster.some((c) => c.id === document.getElementById('charId').value.trim())) {
+      rosterSelect.value = document.getElementById('charId').value.trim()
+    }
+  })
+  .catch(() => {}) // roster is optional -- the bench still works with a typed id without it
+
+rosterSelect.addEventListener('change', () => {
+  if (!rosterSelect.value) return
+  document.getElementById('charId').value = rosterSelect.value
+  loadCharacter(rosterSelect.value)
+})
+document.getElementById('rosterPrev').addEventListener('click', () => stepRoster(-1))
+document.getElementById('rosterNext').addEventListener('click', () => stepRoster(1))
+
+function stepRoster(delta) {
+  if (!roster.length) return
+  const i = roster.findIndex((r) => r.id === rosterSelect.value)
+  const next = roster[(i < 0 ? 0 : i + delta + roster.length) % roster.length]
+  rosterSelect.value = next.id
+  document.getElementById('charId').value = next.id
+  loadCharacter(next.id)
+}
 
 function modeButton(id, mode) {
   document.getElementById(id).addEventListener('click', () => {

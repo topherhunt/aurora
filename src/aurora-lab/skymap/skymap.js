@@ -43,7 +43,7 @@
 // Same as PlanMapAurora, and the same failure if it is got wrong: the page must hand render() the SAME accumulated shader time it hands screen.update, and a mismatch renders the sky from a different instant than the frame that reads it, which looks like the aurora lagging its own controls.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 import { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL } from '../glsl/noise.js'
 import { PALETTE_GLSL } from '../glsl/palette.js'

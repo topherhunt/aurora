@@ -99,6 +99,7 @@ async function loadRosterCharacter(id) {
   for (const v of VIEWS) { candidates[v] = []; picked[v] = -1 }
   await loadCandidatesFromDisk(view)
   await loadReference()
+  await loadAlphaPreview()
   renderGallery()
   updateBakeButton()
 }
@@ -153,12 +154,36 @@ async function loadReference() {
   }
 }
 
+// Shows the current view's pick run through the same alpha-key the bake
+// pipeline uses, composited over a checkerboard so a keying problem (a
+// magenta halo, an eaten sleeve) is visible right where the pick was made,
+// not just later in an offline contact sheet.
+async function loadAlphaPreview() {
+  const panel = document.getElementById('alphaPreview')
+  const img = document.getElementById('alphaPreviewImg')
+  const id = currentId()
+  if (!id || picked[view] < 0) { panel.classList.remove('on'); return }
+  try {
+    const res = await fetch(`/__sheet-reference?id=${encodeURIComponent(id)}&view=${view}`)
+    const j = await res.json()
+    if (j.exists) {
+      img.src = `data:image/png;base64,${j.imageB64}`
+      panel.classList.add('on')
+    } else {
+      panel.classList.remove('on')
+    }
+  } catch {
+    panel.classList.remove('on')
+  }
+}
+
 async function selectView(v) {
   view = v
   for (const name of VIEWS) document.getElementById(`view${cap(name)}`).classList.toggle('on', name === v)
   document.getElementById('galleryTitle').textContent = `${v} -- candidates`
   if (rosterSelect.value && candidates[v].length === 0) await loadCandidatesFromDisk(v)
   await loadReference()
+  await loadAlphaPreview()
   renderGallery()
 }
 
@@ -234,6 +259,7 @@ async function pickCandidate(i) {
     renderGallery()
     updateBakeButton()
     if (view === 'front') await loadReference()
+    await loadAlphaPreview()
     setStatus(`saved -> ${j.path}`, 'ok')
   } catch (e) {
     setStatus(`save failed: ${e.message}`, 'warn')

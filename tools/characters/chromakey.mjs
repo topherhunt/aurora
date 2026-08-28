@@ -81,33 +81,79 @@ function chroma(r, g, b) {
 
 /**
  * Keys the background out of `{w,h,rgba}` by sampling its four corners
- * instead of assuming a fixed colour. Returns a Uint8Array alpha mask (0..255),
- * same size as keyMagenta. `lo`/`hi` are the feather band in chroma-space
- * Euclidean distance; default tuned against real magenta-background sheet
- * output -- widen if a character's own colours are close to the background
- * hue.
+ * instead of assuming a fixed colour. Returns a Uint8Array alpha mask, hard
+ * binary (0 or 255 only, no feathered/blended edge) -- a soft edge is what
+ * was leaving a visible magenta fringe on fine detail (fur, hair) once
+ * composited over anything but the exact keyed-out background, since a
+ * half-transparent boundary pixel still carries its original, background-
+ * contaminated colour underneath that partial alpha.
+ *
+ * That contamination is corrected too, in place, on the pixels that DO end
+ * up opaque: `lo`/`hi` still define a soft band internally (same
+ * chroma-distance idea as before), used only to estimate how much of each
+ * near-edge pixel's colour is background bleed, and unmix it out before the
+ * hard cutoff is applied. `cutoff` (in the same 0..1 band-fraction terms) is
+ * where the binary line actually falls -- pushed toward `hi` by default
+ * (aggressive) rather than the band's midpoint, since eroding a pixel of
+ * real edge is a much smaller problem than leaving a ring of magenta-tinted
+ * fur/hair behind.
  */
-export function keyBackground({ w, h, rgba }, { lo = 25, hi = 65 } = {}) {
+// A second, luma-aware guard on top of the chroma-distance test above. Chroma
+// distance deliberately ignores luma (see chroma()'s comment, for the dim-
+// shadow case) -- but that same luma-blindness lets a background pixel that's
+// blended into something DARK (a black fur strand, a hair wisp) read as "far"
+// in chroma space even though it's still obviously magenta in raw RGB: fading
+// bright magenta (255,0,255) toward black keeps r and b well above g the
+// whole way down, but drags luma down enough to skew the luma-normalised
+// chroma vector away from the background's. rawMagentaScore is the same
+// hue-only score keyMagenta used before chroma distance existed -- cheap,
+// luma-independent, and enough on its own to catch what chroma distance
+// misses on dark fur/hair edges.
+function rawMagentaScore(r, g, b) { return (r + b) / 2 - g }
+const RAW_MAGENTA_CUTOFF = 50
+
+export function keyBackground({ w, h, rgba }, { lo = 25, hi = 65, cutoff = 0.99 } = {}) {
   if (w < CORNER_PATCH * 2 || h < CORNER_PATCH * 2) throw new Error(`image ${w}x${h} too small for ${CORNER_PATCH}px corner sampling`)
-  const tl = chroma(...cornerColor(rgba, w, h, 0, 0))
-  const tr = chroma(...cornerColor(rgba, w, h, w - CORNER_PATCH, 0))
-  const bl = chroma(...cornerColor(rgba, w, h, 0, h - CORNER_PATCH))
-  const br = chroma(...cornerColor(rgba, w, h, w - CORNER_PATCH, h - CORNER_PATCH))
+  const tl = cornerColor(rgba, w, h, 0, 0)
+  const tr = cornerColor(rgba, w, h, w - CORNER_PATCH, 0)
+  const bl = cornerColor(rgba, w, h, 0, h - CORNER_PATCH)
+  const br = cornerColor(rgba, w, h, w - CORNER_PATCH, h - CORNER_PATCH)
+  const chromaTl = chroma(...tl), chromaTr = chroma(...tr), chromaBl = chroma(...bl), chromaBr = chroma(...br)
 
   const alpha = new Uint8Array(w * h)
   for (let y = 0; y < h; y++) {
     const v = h > 1 ? y / (h - 1) : 0
     for (let x = 0; x < w; x++) {
       const u = w > 1 ? x / (w - 1) : 0
-      const bgCr = lerp(lerp(tl[0], tr[0], u), lerp(bl[0], br[0], u), v)
-      const bgCg = lerp(lerp(tl[1], tr[1], u), lerp(bl[1], br[1], u), v)
-      const bgCb = lerp(lerp(tl[2], tr[2], u), lerp(bl[2], br[2], u), v)
+      const bgR = lerp(lerp(tl[0], tr[0], u), lerp(bl[0], br[0], u), v)
+      const bgG = lerp(lerp(tl[1], tr[1], u), lerp(bl[1], br[1], u), v)
+      const bgB = lerp(lerp(tl[2], tr[2], u), lerp(bl[2], br[2], u), v)
+      const bgCr = lerp(lerp(chromaTl[0], chromaTr[0], u), lerp(chromaBl[0], chromaBr[0], u), v)
+      const bgCg = lerp(lerp(chromaTl[1], chromaTr[1], u), lerp(chromaBl[1], chromaBr[1], u), v)
+      const bgCb = lerp(lerp(chromaTl[2], chromaTr[2], u), lerp(chromaBl[2], chromaBr[2], u), v)
+
       const i = (y * w + x) * 4
-      const [cr, cg, cb] = chroma(rgba[i], rgba[i + 1], rgba[i + 2])
+      const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2]
+      const [cr, cg, cb] = chroma(r, g, b)
       const dr = cr - bgCr, dg = cg - bgCg, db = cb - bgCb
       const dist = Math.sqrt(dr * dr + dg * dg + db * db)
       const t = Math.min(1, Math.max(0, (dist - lo) / (hi - lo)))
-      alpha[y * w + x] = Math.round(t * 255)
+      const magentaScore = rawMagentaScore(r, g, b)
+
+      if (t >= cutoff && magentaScore < RAW_MAGENTA_CUTOFF) {
+        // Unmix the background's contribution to this pixel's colour,
+        // proportional to how confidently-foreground it is (t). A pixel
+        // right at the cutoff is still assumed ~cutoff background-blended;
+        // clamping the divisor to `cutoff` (rather than letting it approach
+        // 0) keeps that unmix from blowing up into noise right at the edge.
+        const unmix = Math.max(t, cutoff)
+        rgba[i] = Math.max(0, Math.min(255, Math.round(bgR + (r - bgR) / unmix)))
+        rgba[i + 1] = Math.max(0, Math.min(255, Math.round(bgG + (g - bgG) / unmix)))
+        rgba[i + 2] = Math.max(0, Math.min(255, Math.round(bgB + (b - bgB) / unmix)))
+        alpha[y * w + x] = 255
+      } else {
+        alpha[y * w + x] = 0
+      }
     }
   }
   return alpha

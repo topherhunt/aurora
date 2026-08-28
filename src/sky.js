@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { SKY_GLSL, makeSkyUniforms, writeSkyUniforms } from './sky-glsl.js'
 
 // ---------------------------------------------------------------------------

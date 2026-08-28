@@ -78,7 +78,7 @@
  * 0, and this camera -- an ordinary camera, outside the XR path -- sees it and
  * nothing else via PROBE_LAYER.
  */
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 
 const scratchColor = new THREE.Color()
 

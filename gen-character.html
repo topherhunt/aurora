@@ -41,6 +41,9 @@
       #picker select { flex: 1 1 auto; }
       #idrow { display: flex; gap: 6px; margin-bottom: 8px; }
       #idrow input { flex: 1 1 auto; }
+      #rosterNav { display: flex; gap: 6px; margin-bottom: 8px; }
+      #rosterNav select { flex: 1 1 auto; }
+      #rosterNav button { flex: 0 0 auto; }
       #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
       #buttons button { flex: 1 1 auto; padding: 4px 6px; }
       #mode { display: flex; gap: 4px; margin-bottom: 8px; }
@@ -70,6 +73,11 @@
       </header>
       <div id="controls">
         <h2>character</h2>
+        <div id="rosterNav">
+          <button id="rosterPrev" title="previous character">&lt; prev</button>
+          <select id="roster"></select>
+          <button id="rosterNext" title="next character">next &gt;</button>
+        </div>
         <div id="idrow">
           <input type="text" id="charId" value="test-nordic" />
           <button id="load">load</button>
@@ -123,9 +131,12 @@
         The three reference cards are the same alpha-keyed sheet views the bake reads, cropped
         tight to the figure and scaled to this character's real height -- so a bone that lands on
         the wrong shoulder or knee in the image is visibly wrong here, not just "proportionally
-        plausible". Front/back sit back to back through the centreline; side is rotated 90&deg;
-        through the same line. The back card's image isn't un-mirrored, so left/right won't always
-        match there -- only use it to check vertical placement (elbow, knee, ankle height).
+        plausible". Front/back sit back to back through the centreline (mirrored so the character's
+        own left/right lines up on both cards); side is rotated 90&deg; through the same line, no
+        mirroring needed there. Each card is still cropped to its own view's silhouette
+        independently, so a character photographed in a slightly asymmetric pose (weight on one
+        leg, an arm not quite straight) can still show a small edge mismatch -- that's the source
+        art, not a placement bug.
       </p>
       <h2>current override</h2>
       <table id="overrideTable"></table>

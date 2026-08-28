@@ -78,7 +78,7 @@
 // the aurora off at the skyline, which is the one occlusion that is real.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 
 import { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAMENT_GLSL } from './glsl/noise.js'
 import { PALETTE_GLSL } from './glsl/palette.js'

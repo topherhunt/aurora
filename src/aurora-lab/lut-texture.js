@@ -72,7 +72,7 @@
 //   disk, and cheap enough that it happens on first use rather than at import.
 // ---------------------------------------------------------------------------
 
-import * as THREE from 'three'
+import THREE from '../three-instance.js'
 
 import { LUT_SIZE, LUT_PERIOD } from './glsl/lut.js'
 

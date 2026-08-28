@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from '../../three-instance.js'
 
 import { buildFernBank, fernCardGeometries, bakeFernImpostors } from '../../props/fern-bank.js'
 import { FERN_DEFAULTS } from '../../props/fern.js'

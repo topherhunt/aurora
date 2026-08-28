@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import THREE from './three-instance.js'
 import { WORLD_HALF } from './sim/terrain-height.js'
 import { SKY_GLSL } from './sky-glsl.js'
 import { SAMPLE_GLSL } from './lighting.js'
