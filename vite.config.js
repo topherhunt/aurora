@@ -260,11 +260,9 @@ function worldHeight() {
 
 // --- bare paths as routes rather than filenames (dev only) ------------------
 //
-// §18 asks for a "/v2 route", and gen-rock was asked for as "/gen-rock". Without
-// this there is neither. `v2.html` is a rollup input, so `/v2.html` works -- but
-// a bare `/v2` misses on disk and falls into vite's SPA fallback, which answers
-// index.html. That is the WRONG page served with a 200, so the failure looks
-// like "v2 renders the v1 world" rather than like a missing route.
+// The world pages have explicit routes: `/` is v2 and `/v1` is the old prototype.
+// The named HTML files remain useful direct build artifacts, while these rewrites make
+// the local dev server match the production Caddy routes.
 //
 // A list rather than a blanket "append .html to anything that misses": the
 // fallback is what makes a genuine 404 look like a working page, and widening
@@ -272,7 +270,7 @@ function worldHeight() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'test-aurora']
+const BARE_ROUTES = ['v1', 'v2', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-building', 'test-aurora']
 
 function bareRoutes() {
   return {
@@ -300,7 +298,8 @@ function bareRoutes() {
 //
 // `base` is relative so the built output works from any subpath, including
 // topherhunt.com/games/aurora.
-// Four pages: index.html is the game, spike.html is the §0 measurement harness
+// The root index.html is the current v2 world; v1.html preserves the earlier prototype.
+// The remaining pages are measurement and authoring harnesses.
 // (which still has unread numbers on it and stays deployed alongside), map.html
 // is the §14 step 3 Phase A map view -- the only place the global pass can be
 // inspected whole, and the "eye" that every "tune it by eye" constant in
@@ -338,6 +337,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
+        v1: resolve(__dirname, 'v1.html'),
         spike: resolve(__dirname, 'spike.html'),
         map: resolve(__dirname, 'map.html'),
         props: resolve(__dirname, 'props.html'),

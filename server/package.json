@@ -1,0 +1,8 @@
+{
+  "name": "aurora-relay",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node src/main.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}

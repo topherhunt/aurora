@@ -3,25 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Aurora</title>
+    <title>Aurora v2 -- world editor</title>
     <style>
-      body { margin: 0; overflow: hidden; background: #0a0e16; font-family: monospace; }
-      #desktop-hud {
-        position: fixed; top: 8px; left: 8px; z-index: 10;
-        color: #cfe3ff; background: rgba(8,14,26,.82); padding: 10px 14px;
-        border: 1px solid #2b4a72; border-radius: 6px;
-        font-size: 12px; line-height: 1.5; white-space: pre; pointer-events: none;
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0e16; }
+      body { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #cfe3ff; }
+      canvas { display: block; }
+      #boot {
+        position: fixed; inset: 0; display: grid; place-items: center;
+        background: #0a0e16; color: #7f95b4; z-index: 100; transition: opacity .35s;
       }
-      #help {
-        position: fixed; bottom: 8px; left: 8px; z-index: 10;
-        color: #7f95b4; font-size: 12px; line-height: 1.6; white-space: pre;
-        pointer-events: none;
-      }
+      #boot.gone { opacity: 0; pointer-events: none; }
+      #boot b { color: #7fd1ff; font-weight: 600; }
+      #boot pre { color: #ff9a7a; max-width: 70ch; white-space: pre-wrap; }
     </style>
   </head>
   <body>
-    <div id="desktop-hud">booting...</div>
-    <div id="help">drag = look   click = measure   WASD = walk   hold ↑ = teleport, release = go   F = fly mode   arrows = snap turn   H = hud   U = unstick   [ ] = LOD detail   T = terrain tuner</div>
-    <script type="module" src="/src/main.js"></script>
+    <div id="boot"><span>loading <b>world/height.png</b> ...</span></div>
+    <div id="v2-panel"></div>
+    <script type="module" src="/src/v2/main.js"></script>
   </body>
 </html>

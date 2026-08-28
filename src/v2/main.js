@@ -49,6 +49,8 @@ import { WorldLighting } from '../lighting.js'
 import { SkyProbe } from '../sky-probe.js'
 import { WorldProbe } from '../world-probe.js'
 import { Input } from '../input.js'
+import { Netplay } from '../net.js'
+import { PeerAvatars } from './render/avatar.js'
 
 // ---------------------------------------------------------------------------
 // The /v2 route (DESIGN.md §18): the imported world, walkable, with the
@@ -168,6 +170,9 @@ camera.position.y = LOCOMOTION.eyeHeight // desktop only; XR overwrites this fro
 
 const rig = new THREE.Group()
 rig.add(camera)
+const leftGrip = renderer.xr.getControllerGrip(0)
+const rightGrip = renderer.xr.getControllerGrip(1)
+rig.add(leftGrip, rightGrip)
 scene.add(rig)
 
 const sun = new THREE.DirectionalLight(SUN_COLOR, 2.1)
@@ -210,6 +215,35 @@ SkyProbe.include(aurora.mesh)
 worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 
 const input = new Input(renderer)
+const peerAvatars = new PeerAvatars(scene)
+const room = new URLSearchParams(location.search).get('room') || 'default'
+const netplay = new Netplay({
+  room,
+  url: import.meta.env.VITE_WS_URL || undefined,
+  onState: (peers) => peerAvatars.apply(peers),
+})
+
+const poseQuat = new THREE.Quaternion()
+const posePos = new THREE.Vector3()
+const netPose = new Array(21).fill(0)
+function writePosePart(object, start) {
+  object.getWorldPosition(posePos)
+  object.getWorldQuaternion(poseQuat)
+  netPose[start] = posePos.x
+  netPose[start + 1] = posePos.y
+  netPose[start + 2] = posePos.z
+  netPose[start + 3] = poseQuat.x
+  netPose[start + 4] = poseQuat.y
+  netPose[start + 5] = poseQuat.z
+  netPose[start + 6] = poseQuat.w
+}
+
+function currentPose() {
+  writePosePart(camera, 0)
+  writePosePart(leftGrip, 7)
+  writePosePart(rightGrip, 14)
+  return [netPose.slice(), [Boolean(input.state.left.source), Boolean(input.state.right.source)]]
+}
 
 // Filled in by boot(); the frame loop refuses to run until they exist.
 let height = null
@@ -1784,6 +1818,9 @@ function tick() {
   setPropClock(now / 1000)
 
   player.headPosition(headTmp)
+  const [pose, hands] = currentPose()
+  netplay.sendPose(pose, hands, now)
+  netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
   terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })

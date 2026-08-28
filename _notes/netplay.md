@@ -1,6 +1,6 @@
 # Netplay: two people hiking the same world
 
-**Goal.** Topher and a friend each put on a Quest 2, open `https://aurora.topherhunt.com/`, and walk the /v2 world together, seeing each other's head and hands. No voice chat -- the Quest's own party system covers that. No shared world editing, no gameplay, no persistence. Just presence.
+**Goal.** Topher and a friend each put on a Quest 2, open `https://aurora.topherhunt.com/`, and walk the current v2 world together, seeing each other's head and hands. No voice chat -- the Quest's own party system covers that. No shared world editing, no gameplay, no persistence. Just presence.
 
 ## Verdict on feasibility
 
@@ -22,7 +22,8 @@ Cost of moving: TLS renewal (Caddy handles it), uptime, OS patching, and a deplo
 
 ## Architecture
 
-**Server** -- Node + `ws`, ~40 lines, its own `package.json`, no build step. A state relay, not a game server:
+**Server** -- Node + `ws` in `server/`, with its own `package.json` and no build step. The first
+implementation is a state relay, not a game server:
 
 - clients send `{pose: [head xyz+quat, left xyz+quat, right xyz+quat]}` whenever, ~20 Hz
 - server keeps `Map<id, lastPose>`
@@ -30,7 +31,8 @@ Cost of moving: TLS renewal (Caddy handles it), uptime, OS patching, and a deplo
 
 Tick-based rather than echo-on-receive so send rate and broadcast rate are decoupled, and a joining client gets everyone on the next tick rather than waiting for them to move.
 
-**Client** -- new `src/net.js` (socket, throttled send, receive buffer, interpolation) and `src/v2/render/avatar.js` (peer mesh, boot-time compile), plus ~10 lines in `tick()` at `src/v2/main.js:1740`.
+**Client** -- `src/net.js` owns the socket, throttled send, receive buffer, and interpolation;
+`src/v2/render/avatar.js` draws the peer head and hands; `src/v2/main.js` samples world-space poses.
 
 Sampling is free: `player.headPosition(headTmp)` already runs every frame near line 1786 and calls `camera.getWorldPosition()`. Hands need wiring that does not exist yet -- `src/input.js` polls `session.inputSources` for gamepad buttons and axes only, no poses. Add `renderer.xr.getControllerGrip(0|1)` and `rig.add()` them so their world transforms include the rig.
 
@@ -57,25 +59,28 @@ Sampling is free: `player.headPosition(headTmp)` already runs every frame near l
 
 ## Open question
 
-**Which page gets it.** `index.html` is v1; `/v2` is where the world actually lives (heightmap + layers + the full scatter stack). If `aurora.topherhunt.com/` currently serves v1, decide before writing the net layer. The net code is identical either way, but there is no point instrumenting the one you will not hike in.
+**Which page gets it.** The root `/` now serves v2; the old prototype is preserved at `/v1`. The net layer belongs on the root v2 page.
 
 ## Dev loop
 
-Cleanest is option 2 from the `vite.config.js` comment, extended to the socket port:
+Cleanest is the USB localhost loopback from the `vite.config.js` comment, with the relay running
+locally on its own port:
 
 ```
+VITE_WS_URL=ws://localhost:3004/ws npm run dev
+npm run relay
 adb reverse tcp:5173 tcp:5173
-adb reverse tcp:8080 tcp:8080
+adb reverse tcp:3004 tcp:3004
 ```
 
-The page is `http://localhost:5173`, which counts as a secure context for WebXR, and because it is not https there is no mixed-content rule -- plain `ws://localhost:8080` connects with no cert dance.
+The page is `http://localhost:5173`, which counts as a secure context for WebXR, and because it is not https there is no mixed-content rule -- plain `ws://localhost:3004` connects with no cert dance.
 
-Two headsets means one goes over the LAN with a self-signed cert. For that one, visit `https://<lan-ip>:8080` in the Quest browser once and click through the warning before the socket will open -- the cert exception is per-origin, so accepting it on :5173 does not cover :8080.
+For a LAN headset, use a local TLS reverse proxy for both Vite and the relay, or test through the
+deployed HTTPS site; the relay itself intentionally speaks plain HTTP/WebSocket on localhost only.
 
 ## Build order
 
-1. VPS + Caddy, serving the current static build at `aurora.topherhunt.com`. Verify parity with Pages before switching DNS.
-2. `server/` relay + `scripts/check-net.mjs`, tested headless with two fake clients.
-3. `src/net.js` + head-only avatar. Ship it, hike, confirm presence works.
-4. Hands: controller grip poses, wired into the same packet. Biggest presence win per byte -- head alone reads as a security camera, head plus hands reads as a person.
-5. Then consider COOP/COEP + SharedArrayBuffer for the terrain workers, now that the host can set headers.
+1. VPS + Caddy, serving the current static build and proxying `/health` and `/ws` for Aurora.
+2. `server/` relay + `scripts/check-net.mjs`, tested headlessly with two clients.
+3. `src/net.js` + peer head and hand markers, then test presence in the headset.
+4. Consider COOP/COEP + SharedArrayBuffer for the terrain workers, now that the host can set headers.
