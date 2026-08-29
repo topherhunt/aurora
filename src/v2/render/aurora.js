@@ -1,18 +1,19 @@
 // ---------------------------------------------------------------------------
 // THE V2 AURORA: the shader lab's sky-map curtain, wired to the world clock.
 //
-// This replaces src/aurora.js for /v2 only. src/aurora.js is still what
-// index.html draws and is not touched -- the two live side by side on purpose
-// until v1 is retired, and this file deliberately mirrors its public surface
-// (`mesh`, `update(head, state, elapsedReal)`, `cyclePattern`, `setPattern`,
-// `label`, `blurb`, `dispose`) so main.js changes in two lines rather than ten.
+// This is the aurora the world draws. It replaced the band mesh now parked in
+// archive/aurora-mesh/aurora.js, which nothing loads -- see archive/README.md
+// for the Quest measurement that decides whether that one comes back. This file
+// still mirrors its public surface (`mesh`, `update(head, state, elapsedReal)`,
+// `cyclePattern`, `setPattern`, `label`, `blurb`, `dispose`), which is what
+// keeps swapping them a two-line change in main.js.
 //
 // ===========================================================================
 // WHAT IS ACTUALLY DIFFERENT
 // ===========================================================================
 //
-// src/aurora.js draws BANDS: a few hundred quads swept along splines, each one
-// a shape somebody described in a table. It is cheap and it is topologically
+// The archived mesh draws BANDS: a few hundred quads swept along splines, each
+// one a shape somebody described in a table. It is cheap and it is topologically
 // incapable of the thing an aurora does -- a band cannot fork, braid or
 // dissolve into rays, because it is one strip and a strip has two edges.
 //
@@ -78,7 +79,7 @@ const BRIGHTNESS = 1.0
 
 // Below this the mesh is hidden AND the four prepasses are skipped, which is
 // what makes the whole system cost nothing at noon. Same threshold as
-// src/aurora.js, so the hour at which the aurora appears does not shift.
+// the archived band mesh, so the hour the aurora appears does not shift.
 const VISIBLE_AT = 0.004
 
 // The clock's own bounds on state.activity. Read from clock.js rather than
@@ -171,7 +172,7 @@ export class SkyAurora {
     this.screen.setParam( 'fieldSeed', ( ( seed % 101 ) + 101 ) % 101 )
 
     // -1 is auto, 0..N-1 pin one of PATTERNS. Same convention as
-    // src/aurora.js so cycleAurora() in main.js needs no changes.
+    // the archived band mesh, so cycleAurora() in main.js needs no changes.
     this.pattern = -1
 
     // What update() last resolved, for the HUD. Held rather than recomputed
@@ -231,7 +232,7 @@ export class SkyAurora {
   // `head` is her world position, `state` the clock state, `elapsedReal` real
   // seconds since start.
   //
-  // The animation clock is REAL seconds for the same reason src/aurora.js gives:
+  // The animation clock is REAL seconds for the same reason the band mesh gives:
   // the curtain should shimmer at the speed a real aurora shimmers however fast
   // the day is running, and a time skip must not fast-forward six minutes of
   // writhing into one frame. What the skip DOES move is state.activity, which

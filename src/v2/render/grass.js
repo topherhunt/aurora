@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE,
@@ -308,10 +309,6 @@ const FADE_POOL_RESERVE = 1024
 // is being cut is a scatter of dots on the ground.
 const DRAW_RADIUS = 70
 
-// Steps per octave in the per-tile keep-fraction. Same 4 as trees.js: a tile
-// regrows every 19% of distance, which is fine enough that the density step at
-// a tile boundary cannot be seen.
-const QUANT = 4
 
 // How far past a band an instance must travel before it drops a tier. Same
 // value and same reason as trees.js and ferns.js. IT MOVES NOTHING TODAY: both
@@ -1161,28 +1158,13 @@ export class Grass {
    * (see _growTile), so this bound has to be honest.
    */
   _poolBound() {
-    const span = this.tileSpan
-    const cx = TILE / 2
-    const cz = TILE / 2
-    let bound = 0
-    for (let iz = -span; iz <= span; iz++) {
-      for (let ix = -span; ix <= span; ix++) {
-        const dcx = (ix + 0.5) * TILE - cx
-        const dcz = (iz + 0.5) * TILE - cz
-        if (dcx * dcx + dcz * dcz > this.evictSq) continue
-        const nx = Math.max(ix * TILE, Math.min(cx, (ix + 1) * TILE))
-        const nz = Math.max(iz * TILE, Math.min(cz, (iz + 1) * TILE))
-        bound += this.perTile * this.uAt[this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)]
-      }
-    }
-    return Math.ceil(bound * 1.35)
+    return poolBound(TILE, this.tileSpan, this.evictSq, 1.35,
+      (d2) => this.perTile * this.uAt[this._levelFor(d2)])
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */
   _levelFor(d2) {
-    if (d2 <= this.fullSq) return 0
-    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.thinFrom) * QUANT)
-    return q < 0 ? 0 : q > this.maxQ ? this.maxQ : q
+    return levelFor(d2, this.fullSq, this.thinFrom, this.maxQ)
   }
 
   /**

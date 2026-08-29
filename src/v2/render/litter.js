@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { LITTER_LAYERS, LITTER_PATCH_M } from '../../props/litter.js'
 import { createPropMaterial } from '../../material.js'
@@ -327,10 +328,7 @@ const GROUND_BRIGHT = [0.75, 2.7]
 // pixel-identical where they meet.
 const TONE = [0.88, 1.14]
 
-// The rank quantisation and the build budget, both copied from the siblings.
-// QUANT is how many steps of thinning there are per doubling of distance; 4 is
-// fine enough that a tile never visibly pops a whole cohort at once.
-const QUANT = 4
+// The build budget and the placement grid, both copied from the siblings.
 const BUILD_BUDGET_MS = 0.6
 const PLACEMENT_CELL = 4.0
 const GROUND_SWEEP = 16
@@ -530,27 +528,12 @@ export class Litter {
    * dry THROWS in _growTile rather than quietly placing less.
    */
   _poolBound() {
-    const span = this.tileSpan
-    const tile = this.tile
-    const c = tile / 2
-    let bound = 0
-    for (let iz = -span; iz <= span; iz++) {
-      for (let ix = -span; ix <= span; ix++) {
-        const dcx = (ix + 0.5) * tile - c
-        const dcz = (iz + 0.5) * tile - c
-        if (dcx * dcx + dcz * dcz > this.evictSq) continue
-        const nx = Math.max(ix * tile, Math.min(c, (ix + 1) * tile))
-        const nz = Math.max(iz * tile, Math.min(c, (iz + 1) * tile))
-        bound += (this.perTile + this.perTileWet) * this.uAt[this._levelFor((nx - c) ** 2 + (nz - c) ** 2)]
-      }
-    }
-    return Math.ceil(bound * 1.35)
+    return poolBound(this.tile, this.tileSpan, this.evictSq, 1.35,
+      (d2) => (this.perTile + this.perTileWet) * this.uAt[this._levelFor(d2)])
   }
 
   _levelFor(d2) {
-    if (d2 <= this.fullSq) return 0
-    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.fullRadius) * QUANT)
-    return q < 0 ? 0 : q > this.maxQ ? this.maxQ : q
+    return levelFor(d2, this.fullSq, this.fullRadius, this.maxQ)
   }
 
   /** Which of the four environments a site is. Same order and same reasons as RockBed._envAt. */

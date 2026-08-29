@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import {
   buildMushroomBank,
@@ -146,9 +147,7 @@ const FULL_RADIUS = 24
 // per INSTANCE and the cull is not.
 const DRAW_RADIUS = 55
 
-// Steps per octave in the per-tile keep-fraction, and the dead band on a tier
-// boundary. Both are the forest's values for the forest's reasons.
-const QUANT = 4
+// The dead band on a tier boundary. The forest's value for the forest's reasons.
 const LOD_HYSTERESIS = 0.12
 
 // Metres per tile. Smaller than the fern's 12 and much smaller than the
@@ -509,28 +508,13 @@ export class Mushrooms {
    * the direction that throws.
    */
   _poolBound() {
-    const span = this.tileSpan
-    const cx = TILE / 2
-    const cz = TILE / 2
-    let bound = 0
-    for (let iz = -span; iz <= span; iz++) {
-      for (let ix = -span; ix <= span; ix++) {
-        const dcx = (ix + 0.5) * TILE - cx
-        const dcz = (iz + 0.5) * TILE - cz
-        if (dcx * dcx + dcz * dcz > this.evictSq) continue
-        const nx = Math.max(ix * TILE, Math.min(cx, (ix + 1) * TILE))
-        const nz = Math.max(iz * TILE, Math.min(cz, (iz + 1) * TILE))
-        bound += this.perTile * this.uAt[this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)]
-      }
-    }
-    return Math.ceil(bound * 2.0)
+    return poolBound(TILE, this.tileSpan, this.evictSq, 2.0,
+      (d2) => this.perTile * this.uAt[this._levelFor(d2)])
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */
   _levelFor(d2) {
-    if (d2 <= this.fullSq) return 0
-    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.fullRadius) * QUANT)
-    return q < 0 ? 0 : q > this.maxQ ? this.maxQ : q
+    return levelFor(d2, this.fullSq, this.fullRadius, this.maxQ)
   }
 
   /**

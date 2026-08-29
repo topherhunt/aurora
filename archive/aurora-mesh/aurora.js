@@ -1,4 +1,4 @@
-import THREE from './three-instance.js'
+import THREE from '../../src/three-instance.js'
 import { SLOTS, PATTERNS, composeAuto, bandsFor } from './aurora-patterns.js'
 
 // ---------------------------------------------------------------------------

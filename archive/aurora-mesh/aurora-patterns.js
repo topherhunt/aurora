@@ -49,7 +49,7 @@
 // random.
 // ---------------------------------------------------------------------------
 
-import { noise1 } from './clock.js'
+import { noise1 } from '../../src/clock.js'
 
 // Band slots in the shader's uniform arrays. This is a hard limit: the vertex
 // shader indexes uniform arrays of exactly this length, and the composer is

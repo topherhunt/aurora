@@ -2,9 +2,9 @@
 
 **None of the code described here is in the tree. Do not use this file for current behaviour** -- see `design/13-aurora-and-sky.md` for what actually runs.
 
-Round seven reverted `src/aurora.js` and `src/aurora-patterns.js` wholesale rather than patching forward, because rounds five and six had never drawn a pixel (round five shipped a duplicate `mScale` that stopped the shader linking). §13 records the revert target as "the commit before round five", which would have left round four standing. It did not: as of this writing the tree has **16 forms**, `MAX_RADIUS_KM = 333`, no `twist`, no `flame` and no `retired:` rows, and `src/aurora.js:480` carries round *three*'s presence envelope verbatim. So round four went with them, and the "catalogue got shorter" heading below describes a catalogue that is not shorter.
+Round seven reverted `aurora.js` and `aurora-patterns.js` (since moved to `archive/aurora-mesh/`) wholesale rather than patching forward, because rounds five and six had never drawn a pixel (round five shipped a duplicate `mScale` that stopped the shader linking). §13 records the revert target as "the commit before round five", which would have left round four standing. It did not: as of this writing the tree has **16 forms**, `MAX_RADIUS_KM = 333`, no `twist`, no `flame` and no `retired:` rows, and `aurora.js:480` carries round *three*'s presence envelope verbatim. So round four went with them, and the "catalogue got shorter" heading below describes a catalogue that is not shorter.
 
-What survives from these rounds and is live today: round five's `curl` / tangential-footprint construction (`src/aurora.js:265`, `:399`), and round six's same-scope redeclaration scanner in `scripts/check-daynight.mjs`. Both are documented in the current file, not here.
+What survives from these rounds: round five's `curl` / tangential-footprint construction (`archive/aurora-mesh/aurora.js:265`, `:399`), and round six's same-scope redeclaration scanner, now `scripts/lib/glsl-scope.mjs`. The mesh itself no longer draws -- see `archive/README.md`. Both are documented in §13, not here.
 
 Kept because the *arguments* still hold and re-deriving them costs more than reading them: an envelope's blur radius is its wavelength; apparent size and distance are one knob; a polar-coordinate footprint is a polar graph and inherits its symmetries.
 

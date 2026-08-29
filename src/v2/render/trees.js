@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
 import {
@@ -320,11 +321,6 @@ const FADE_MAX_INFLIGHT = 1024
 const FADE_POOL_RESERVE = 1024
 const DRAW_RADIUS = 1500
 
-// Steps per octave in the per-tile keep-fraction. 4 means a tile regrows every
-// 19% of distance, which is small enough that the density step at a tile
-// boundary is invisible; 1 would give 2x steps and visible rings at 160, 320
-// and 640 m.
-const QUANT = 4
 
 // How far past a band an instance must travel before it drops to the coarser
 // tier. Without it an instance sitting exactly on a boundary swaps geometry
@@ -694,28 +690,13 @@ export class Trees {
    * Running dry throws (see _growTile), so this bound has to be honest.
    */
   _poolBound() {
-    const span = this.tileSpan
-    const cx = TILE / 2
-    const cz = TILE / 2
-    let bound = 0
-    for (let iz = -span; iz <= span; iz++) {
-      for (let ix = -span; ix <= span; ix++) {
-        const dcx = (ix + 0.5) * TILE - cx
-        const dcz = (iz + 0.5) * TILE - cz
-        if (dcx * dcx + dcz * dcz > this.evictSq) continue
-        const nx = Math.max(ix * TILE, Math.min(cx, (ix + 1) * TILE))
-        const nz = Math.max(iz * TILE, Math.min(cz, (iz + 1) * TILE))
-        bound += this.perTile * this.uAt[this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)]
-      }
-    }
-    return Math.ceil(bound * 1.35)
+    return poolBound(TILE, this.tileSpan, this.evictSq, 1.35,
+      (d2) => this.perTile * this.uAt[this._levelFor(d2)])
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */
   _levelFor(d2) {
-    if (d2 <= this.fullSq) return 0
-    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.fullRadius) * QUANT)
-    return q < 0 ? 0 : q > this.maxQ ? this.maxQ : q
+    return levelFor(d2, this.fullSq, this.fullRadius, this.maxQ)
   }
 
   /**

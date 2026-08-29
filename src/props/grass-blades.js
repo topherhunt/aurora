@@ -44,18 +44,28 @@ import { mulberry32 } from '../sim/mathx.js'
 // THE BASE COLOUR IS THE TERRAIN'S, and that is what buys the missing alpha. A
 // card fades out at its edges; a triangle ends. What stops the ending being
 // visible is that the bottom vertices are painted with exactly the colour the
-// ground under them is painted with -- terrain/chunk-mesh-v2.js's `shade`, the
-// same function the chunk mesh calls, sampled per clump and delivered as
-// InstancedMesh.setColorAt. So the clump grows out of the ground rather than
-// being stuck on top of it, and grass on a snow margin or a road verge takes
-// the colour of what it is standing in for free.
+// ground under them is DRAWN in -- sampled per clump by the caller and handed
+// over as InstancedMesh.setColorAt. So the clump grows out of the ground rather
+// than being stuck on top of it, and grass on a snow margin or a road verge
+// takes the colour of what it is standing in for free.
 //
-// The ramp along the blade rides in the geometry's OWN vertex colours, which
-// three multiplies by the instance colour in `color_vertex`. Base is (1,1,1),
-// so the foot of every blade is the terrain colour untouched; the tip is
-// `tipGain` warmed by `tipWarm`. Two attributes and no fragment work: the
-// interpolator does the gradient, and the fragment stage is a Lambert term over
-// a varying. There is no texture to sample and no alpha to test.
+// Sampling that colour is the caller's job and not this module's, because the
+// terrain's own drawn colour is a shader chain and not a function -- see
+// `terrainTint` in src/gen-grass-main.js. The contract here is only that the
+// FEET are (1,1,1), so whatever colour arrives lands on them untouched.
+//
+// THE THREE THINGS THAT MAKE A TIP DIFFERENT FROM A FOOT, and where each lives:
+//   - the RAMP is geometry: `aBladeT` is 0 at the feet and 1 at the apex, and
+//     the interpolator turns it into a gradient for free;
+//   - the WARMTH is geometry too, baked into the tip's own vertex colour, since
+//     every clump wants the same hue shift;
+//   - the BRIGHTNESS is per instance, `aTipMul`, because a bed where every tip
+//     is lighter than its own foot by the same factor reads as one two-tone
+//     material stamped over and over. Half the clumps get a lighter tip and
+//     half a darker one -- see `bladeTipMul`.
+// No fragment work in any of it: the vertex stage multiplies, the interpolator
+// blends, and the fragment stage is a Lambert term over a varying. There is no
+// texture to sample and no alpha to test.
 // ---------------------------------------------------------------------------
 
 export const BLADE_DEFAULTS = {
@@ -69,12 +79,19 @@ export const BLADE_DEFAULTS = {
   heightVary: 0.20,
   // Base width. The blade closes to a point at the top, so the mean width over
   // its length is half this.
-  width: 0.022,
+  width: 0.035,
   // How far from the clump's centre the feet scatter. Blades sit at a random
   // radius and a random yaw within this disc and lean OUTWARD in proportion to
   // how far out they start, which is what makes a clump read as a fountain
   // rather than as a bundle of sticks.
-  clumpRadius: 0.10,
+  //
+  // 0.4 m is WIDER THAN THE CLUMP IS TALL, which is deliberate: at 10 blades a
+  // tight clump reads as a tussock with bald ground between it and its
+  // neighbours, and spreading the same ten blades over a disc bigger than the
+  // spacing lets neighbouring clumps interleave instead of tiling. The cost is
+  // a bigger bounding sphere per instance, which matters only if per-instance
+  // culling ever comes back.
+  clumpRadius: 0.40,
   // Apex offset as a fraction of blade height, at the rim of the clump.
   lean: 0.45,
   // Metres of the clump buried. The instance is placed on the FIELD height and
@@ -82,7 +99,12 @@ export const BLADE_DEFAULTS = {
   // stand slightly proud of the triangles actually drawn under it. Burying the
   // feet hides that, and it costs nothing because a buried vertex is clipped by
   // the depth test rather than shaded.
-  sink: 0.03,
+  //
+  // 0 because the feet now match the ground they stand on closely enough that
+  // the seam does not read, which is the better fix: a buried foot is a foot
+  // whose (1,1,1) vertex is under the surface, so the blade starts partway up
+  // its own gradient and the base colour it was given never reaches the eye.
+  sink: 0,
   // HOW FAR THE NORMAL IS BENT TOWARD STRAIGHT UP, 0 = the true face normal.
   // A blade lit by its own normal goes black whenever it turns edge-on to the
   // sun, and a field of them turns into salt-and-pepper noise that no amount of
@@ -90,15 +112,41 @@ export const BLADE_DEFAULTS = {
   // standard dodge: the clump then shades like the hillside it is standing on,
   // which is also what the eye expects from grass seen at any distance.
   normalUp: 0.70,
-  // The tip colour, as a multiplier over the terrain base. Under 1 darkens.
+  // The MEAN tip brightness, as a multiplier over the terrain base colour, and
+  // the spread either side of it. Per clump, not per blade: a clump is one
+  // plant and its blades are the same age.
   //
-  // 0.85 IS THE PLAYER'S CALL, NOT THE PHYSICAL ONE. Ambient occlusion argues
-  // the other way -- the base of a clump is the part shadowed by its own
-  // neighbours and the tip is the part catching sky -- so a value above 1 is
-  // the defensible default and this one is a look. The slider spans both.
-  tipGain: 0.85,
+  // 1.0 +/- 0.35 means no clump gets a tip the same brightness as its own foot
+  // -- the sign is drawn per clump but the MAGNITUDE never lands near zero, so
+  // every clump has a gradient in it and the bed as a whole has no single
+  // direction. The spread is read in LINEAR light and shown through a tone map
+  // and an sRGB encode, both of which compress it: a 20% linear step is under
+  // 10% of a code value by the time it reaches the eye, which is why the floor
+  // sits where it does rather than somewhere politer. Set tipVary to 0 and
+  // tipGain above 1 for the plainer reading: every tip lighter than its own
+  // base by the same amount.
+  tipGain: 1.0,
+  tipVary: 0.35,
   // Pushes red up and blue down at the tip, for sun-bleached ends.
   tipWarm: 0.0,
+}
+
+/**
+ * The per-clump tip brightness, as a multiplier over the base colour. Feed it
+ * to the bed as the `aTipMul` instanced attribute.
+ *
+ * The sign is a coin flip and the magnitude covers only the top half of
+ * `tipVary`, which is what guarantees contrast: drawing the whole multiplier
+ * uniformly from `1 +/- tipVary` puts a share of the clumps at ~1.0, and a
+ * clump whose tip matches its foot has no gradient at all.
+ *
+ * @param {object} params  BLADE_DEFAULTS, or an override of it
+ * @param {() => number} rand  a 0..1 source; two draws are taken
+ */
+export function bladeTipMul(params, rand) {
+  const p = { ...BLADE_DEFAULTS, ...params }
+  const sign = rand() < 0.5 ? -1 : 1
+  return Math.max(0, 1 + sign * p.tipVary * (0.55 + 0.45 * rand())) * p.tipGain
 }
 
 /**
@@ -126,11 +174,13 @@ export function buildBladeClump(params = {}, seed = 1) {
   const col = new Float32Array(n * 9)
   const ramp = new Float32Array(n * 3)
 
-  // The tip colour, resolved once. Warm pushes red up and blue down about the
-  // gain so that the tip can be bleached without also being brighter.
-  const tipR = Math.max(0, p.tipGain * (1 + p.tipWarm))
-  const tipG = Math.max(0, p.tipGain)
-  const tipB = Math.max(0, p.tipGain * (1 - p.tipWarm))
+  // The tip colour, resolved once. HUE ONLY -- warm pushes red up and blue down
+  // about a green of exactly 1, so the tip is bleached without being brighter.
+  // Brightness is `aTipMul`, per instance, and multiplying it in here as well
+  // would be the same number applied twice.
+  const tipR = Math.max(0, 1 + p.tipWarm)
+  const tipG = 1
+  const tipB = Math.max(0, 1 - p.tipWarm)
 
   const e1 = new THREE.Vector3()
   const e2 = new THREE.Vector3()
@@ -192,8 +242,9 @@ export function buildBladeClump(params = {}, seed = 1) {
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
   geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3))
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
-  // The wind reads this and nothing else does. Squared in the shader, so a
-  // blade pivots about its foot instead of shearing.
+  // 0 at the feet, 1 at the apex. The tip brightness ramp interpolates on it,
+  // and the wind squares it so a blade pivots about its foot instead of
+  // shearing.
   geo.setAttribute('aBladeT', new THREE.BufferAttribute(ramp, 1))
   geo.computeBoundingSphere()
   return geo
@@ -207,6 +258,10 @@ export function buildBladeClump(params = {}, seed = 1) {
  * That is free here in a way it is not for the card bed: with no alphaTest
  * there is no `discard`, so the tiler keeps its hidden-surface removal and a
  * back face that is behind something never reaches the fragment stage.
+ *
+ * PATCHED EITHER WAY. The wind is optional but the tip brightness is not: an
+ * instanced bed without the `aTipMul` block draws every tip at exactly its
+ * foot's colour, which is not a crash but is the whole gradient gone.
  *
  * @param {{wind?: boolean}} opts
  * @returns {THREE.MeshLambertMaterial} with `.userData.uniforms` for the wind
@@ -224,10 +279,6 @@ export function createBladeMaterial({ wind = true } = {}) {
     uWindSpeed: { value: 0.9 },
   }
   material.userData.uniforms = uniforms
-  if (!wind) {
-    material.customProgramCacheKey = () => 'grass-blade-v1-nowind'
-    return material
-  }
 
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms)
@@ -235,16 +286,53 @@ export function createBladeMaterial({ wind = true } = {}) {
       .replace('#include <common>', /* glsl */ `
         #include <common>
         attribute float aBladeT;
+        #ifdef USE_INSTANCING
+        attribute float aTipMul;
+        #endif
+        ${wind ? /* glsl */ `
         uniform float uTime;
         uniform float uWindAmp;
         uniform float uWindFreq;
         uniform float uWindSpeed;
+        ` : ''}
       `)
-      // AFTER begin_vertex, which is where `transformed` is created, and BEFORE
-      // project_vertex, which is where three multiplies the instance matrix in.
-      // Bending `transformed` therefore bends the blade in the CLUMP's local
-      // space and inherits the instance's yaw and scale, so a bigger clump
-      // sways further and a rotated one sways in its own frame.
+      // AFTER color_vertex, which is where three folds the geometry's own
+      // vertex colour and the instance colour together into vColor. The
+      // geometry half is (1,1,1) at the feet and the tip HUE at the apex, the
+      // instance half is the ground colour, and this is the brightness ramp
+      // that the two of them deliberately leave out -- applied here, once per
+      // vertex, so the interpolator delivers the blend for nothing.
+      .replace('#include <color_vertex>', /* glsl */ `
+        #include <color_vertex>
+        #ifdef USE_INSTANCING
+        vColor.rgb *= mix( 1.0, aTipMul, aBladeT );
+        #endif
+      `)
+
+    // BOTH FACES OF A BLADE ARE THE SAME SURFACE. Three's double-sided path
+    // flips the normal toward the viewer (`normal *= faceDirection` in
+    // normal_fragment_begin), which is right for a solid seen from inside and
+    // ruinous here: normalUp pushes every blade normal to within a few degrees
+    // of straight up, so a back-facing blade is handed a normal pointing at the
+    // ground, loses its dotNL against the sun entirely, and is left with the
+    // hemisphere's near-black ground colour. Half of every clump goes black.
+    // Undoing the flip (faceDirection twice is the identity) lights a fragment
+    // by the normal the GEOMETRY authored, whichever side you are on -- the
+    // same fix src/material.js makes for leaf cards, and for the same reason.
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <normal_fragment_begin>', /* glsl */ `
+        #include <normal_fragment_begin>
+        normal *= faceDirection;
+      `)
+
+    if (!wind) return
+
+    // AFTER begin_vertex, which is where `transformed` is created, and BEFORE
+    // project_vertex, which is where three multiplies the instance matrix in.
+    // Bending `transformed` therefore bends the blade in the CLUMP's local
+    // space and inherits the instance's yaw and scale, so a bigger clump
+    // sways further and a rotated one sways in its own frame.
+    shader.vertexShader = shader.vertexShader
       .replace('#include <begin_vertex>', /* glsl */ `
         #include <begin_vertex>
         #ifdef USE_INSTANCING
@@ -266,6 +354,6 @@ export function createBladeMaterial({ wind = true } = {}) {
   }
   // three keys its program cache on this alone, so the wind and no-wind builds
   // must not share it.
-  material.customProgramCacheKey = () => 'grass-blade-v1-wind'
+  material.customProgramCacheKey = () => (wind ? 'grass-blade-v3-wind' : 'grass-blade-v3-nowind')
   return material
 }

@@ -38,10 +38,9 @@ import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWind
 import { Player, LOCOMOTION } from '../player.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
-// v2's own aurora, not v1's band mesh. See the header of render/aurora.js: the
-// field is integrated as a convolution on a 512x64 map once per frame instead of
-// per pixel, which is what pays for a full sky dome. index.html still draws
-// src/aurora.js and is untouched.
+// See the header of render/aurora.js: the field is integrated as a convolution
+// on a 512x64 map once per frame instead of per pixel, which is what pays for a
+// full sky dome. The band mesh it replaced is parked in archive/aurora-mesh/.
 import { SkyAurora } from './render/aurora.js'
 import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK } from '../clock.js'

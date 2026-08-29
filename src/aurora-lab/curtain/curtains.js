@@ -15,7 +15,7 @@
 // WHY THE OLD POLYGON AURORA LOOKS THE WAY IT DOES, AND WHAT IS DIFFERENT HERE
 // ===========================================================================
 //
-// src/aurora.js has all the right individual ideas and still reads as wiggling polygons. Five reasons, and each one has an answer in this module:
+// archive/aurora-mesh/aurora.js has all the right individual ideas and still reads as wiggling polygons. Five reasons, and each one has an answer in this module:
 //
 // 1. Eleven curtains is a countable number. The eye counts them, and once it has counted them they are objects. Here there are eighteen, independently dimmed, so the count is never stable long enough to be taken. At the shipped gate amount none of them goes fully out: measured minimum brightness in the middle 40% of azimuth is 0.126, not 0. A curtain that DID reach zero would be collapsed to zero-area triangles rather than drawn and multiplied by nothing, and at cuGateAmt 1 that is worth a measured 29% of the overdraw -- so the collapse is a real mechanism sitting idle at the shipped tuning, which is a choice about how the sky should look and is spelled out at the collapse in glsl.js.
 //

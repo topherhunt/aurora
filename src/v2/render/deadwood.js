@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import {
   buildDeadwoodBank,
@@ -118,9 +119,7 @@ const LOD_SQ = Float32Array.from(DEADWOOD_LOD_AT, (k) => k * k)
 const LOD_LAST = DEADWOOD_LOD_AT[DEADWOOD_LOD_AT.length - 1]
 const DRAW_RADIUS = DEADWOOD_CULL
 
-// Steps per octave in the per-tile keep-fraction, and the dead band on a tier
-// boundary. Both are the forest's values for the forest's reasons.
-const QUANT = 4
+// The dead band on a tier boundary. The forest's value for the forest's reasons.
 const LOD_HYSTERESIS = 0.12
 const LOD_SQ_OUT = Float32Array.from(DEADWOOD_LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
 
@@ -523,28 +522,13 @@ export class Deadwood {
 
   /** How many instances the pool has to hold. Same tile-grid sum its siblings use. */
   _poolBound() {
-    const span = this.tileSpan
-    const cx = TILE / 2
-    const cz = TILE / 2
-    let bound = 0
-    for (let iz = -span; iz <= span; iz++) {
-      for (let ix = -span; ix <= span; ix++) {
-        const dcx = (ix + 0.5) * TILE - cx
-        const dcz = (iz + 0.5) * TILE - cz
-        if (dcx * dcx + dcz * dcz > this.evictSq) continue
-        const nx = Math.max(ix * TILE, Math.min(cx, (ix + 1) * TILE))
-        const nz = Math.max(iz * TILE, Math.min(cz, (iz + 1) * TILE))
-        bound += this.perTile * this.uAt[this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)]
-      }
-    }
-    return Math.ceil(bound * 1.35)
+    return poolBound(TILE, this.tileSpan, this.evictSq, 1.35,
+      (d2) => this.perTile * this.uAt[this._levelFor(d2)])
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */
   _levelFor(d2) {
-    if (d2 <= this.fullSq) return 0
-    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.fullRadius) * QUANT)
-    return q < 0 ? 0 : q > this.maxQ ? this.maxQ : q
+    return levelFor(d2, this.fullSq, this.fullRadius, this.maxQ)
   }
 
   /**

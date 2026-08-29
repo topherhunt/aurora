@@ -70,7 +70,7 @@
 // ADDITIVE, AND WHY NO SORTING IS NEEDED
 // ===========================================================================
 //
-// Same reasoning as src/aurora.js: an aurora is optically thin, so what reaches
+// Same reasoning as the archived band mesh: an aurora is optically thin, so what reaches
 // the eye is the sum of the emission along the ray with nothing occluding
 // anything else. Addition commutes, so draw order within the sky does not
 // matter, and depth writing would be actively wrong -- it would let one part of

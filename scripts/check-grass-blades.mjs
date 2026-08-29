@@ -15,10 +15,17 @@
 //
 //   THE FEET STOP BEING (1,1,1). The base vertex colour is multiplied by the
 //   per-instance colour in three's `color_vertex` chunk, and the instance
-//   colour is the terrain's own `shade()` at that spot. Anything but white at
-//   the foot double-tints it, and the clump stops growing out of the ground and
-//   starts sitting on it. Invisible in a screenshot of one clump; obvious as a
-//   pale or dark stipple across a hillside.
+//   colour is the colour the ground at that spot is drawn in. Anything but
+//   white at the foot double-tints it, and the clump stops growing out of the
+//   ground and starts sitting on it. Invisible in a screenshot of one clump;
+//   obvious as a pale or dark stipple across a hillside.
+//
+//   THE TIP BRIGHTNESS COMES BACK INTO THE GEOMETRY. It is per instance now,
+//   `aTipMul`, applied in the vertex patch -- which is why the vertex patch is
+//   installed on the no-wind build too. Baking it into the tip's vertex colour
+//   as well would apply the same number twice, and a bed where every clump
+//   shares one tip factor reads as a single two-tone material stamped over and
+//   over. The tip's own vertex colour carries HUE only.
 //
 //   THE BILL PER CLUMP MOVES. Ten triangles is the whole budget argument: at
 //   the preview defaults the disc is ~20k clumps, so one extra triangle per
@@ -43,7 +50,8 @@
 
 import THREE from '../src/three-instance.js'
 
-import { BLADE_DEFAULTS, buildBladeClump, createBladeMaterial } from '../src/props/grass-blades.js'
+import { BLADE_DEFAULTS, bladeTipMul, buildBladeClump, createBladeMaterial } from '../src/props/grass-blades.js'
+import { mulberry32 } from '../src/sim/mathx.js'
 
 let failures = 0
 function check(ok, label, detail = '') {
@@ -51,6 +59,12 @@ function check(ok, label, detail = '') {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol
+
+// The three include sites the patch reaches for, in the order three emits them.
+// A patch that misses one is a silent no-op -- String.replace on an absent
+// needle returns the string -- so the stub has to carry all three.
+const SHADER_SRC = '#include <common>\nvoid main() {\n#include <color_vertex>\n#include <begin_vertex>\n#include <project_vertex>\n}\n'
+const FRAG_SRC = '#include <common>\nvoid main() {\n#include <normal_fragment_begin>\n}\n'
 
 // Reads one clump back as blades, which is what every section below argues over.
 function blades(geo, sink) {
@@ -109,8 +123,29 @@ console.log('\n-- material --')
   check(mat.customProgramCacheKey() !== nowind.customProgramCacheKey(),
     'and wind and no-wind do not share a program cache key',
     `${mat.customProgramCacheKey()} / ${nowind.customProgramCacheKey()}`)
-  check(typeof nowind.onBeforeCompile !== 'function' || nowind.onBeforeCompile === THREE.Material.prototype.onBeforeCompile,
-    'no-wind leaves the shader alone entirely')
+  // No-wind is not unpatched: the tip brightness lives in the vertex shader and
+  // is not optional, so both builds carry the colour block and only the wind
+  // build carries the bend.
+  const still = { uniforms: {}, vertexShader: SHADER_SRC, fragmentShader: FRAG_SRC }
+  nowind.onBeforeCompile(still)
+  check(still.vertexShader.includes('aTipMul'),
+    'no-wind still gets the tip-brightness block, because that one is not optional')
+  check(!still.vertexShader.includes('uWindAmp'),
+    'and nothing else -- no wind uniforms, no bend')
+
+  // DoubleSide above is only safe because of this. Three's double-sided path
+  // flips the normal toward the viewer, and with normalUp pushing every blade
+  // normal near vertical that hands a back-facing blade a normal aimed at the
+  // ground: no sun term, hemisphere ground colour, black. Undoing the flip is
+  // the difference between a lit bed and half a lit bed, and losing it is
+  // silent -- everything still draws.
+  const lit = { uniforms: {}, vertexShader: SHADER_SRC, fragmentShader: FRAG_SRC }
+  mat.onBeforeCompile(lit)
+  for (const [name, s] of [['wind', lit], ['no-wind', still]]) {
+    check(s.fragmentShader.indexOf('#include <normal_fragment_begin>')
+      < s.fragmentShader.indexOf('normal *= faceDirection'),
+      `${name} undoes three's double-sided normal flip, after normal_fragment_begin`)
+  }
 }
 
 // --- 2. the wind patch ------------------------------------------------------
@@ -119,11 +154,7 @@ console.log('\n-- wind --')
 
 {
   const mat = createBladeMaterial()
-  const shader = {
-    uniforms: {},
-    vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}\n',
-    fragmentShader: '',
-  }
+  const shader = { uniforms: {}, vertexShader: SHADER_SRC, fragmentShader: '' }
   mat.onBeforeCompile(shader)
   const v = shader.vertexShader
 
@@ -137,9 +168,12 @@ console.log('\n-- wind --')
     'the bend is applied after transformed exists')
 
   // The whole bed is instanced. Without the guard this is a compile error on
-  // any non-instanced use of the same material.
-  const guard = v.indexOf('#ifdef USE_INSTANCING')
-  check(guard >= 0 && guard < v.indexOf('instanceMatrix') && v.includes('#endif'),
+  // any non-instanced use of the same material. The nearest guard ABOVE the
+  // read has to be the one still open at it, which is what the closing #endif
+  // landing past it says.
+  const im = v.indexOf('instanceMatrix')
+  const guard = v.lastIndexOf('#ifdef USE_INSTANCING', im)
+  check(guard >= 0 && v.indexOf('#endif', guard) > im,
     'and instanceMatrix is only read inside the USE_INSTANCING guard')
 
   // SQUARED. A linear ramp slides the whole blade sideways -- feet included --
@@ -198,10 +232,14 @@ console.log('\n-- heights --')
     'and they actually vary rather than being ten of the same blade',
     `spread ${(Math.max(...hs) - Math.min(...hs)).toFixed(3)} m`)
 
-  // The feet are buried by exactly the sink, at every blade, so the clump has
-  // one flat foot line to bury rather than ten different ones.
+  // One flat foot line rather than ten different ones, at whatever the sink is
+  // -- 0 by default, so the (1,1,1) foot vertex is at the surface where its
+  // terrain-matched colour can actually be seen.
   check(b.every((x) => near(x.foot.y, -BLADE_DEFAULTS.sink, 1e-6)),
-    `every foot sits at -${BLADE_DEFAULTS.sink} m, buried by the sink`)
+    `every foot sits at y = -${BLADE_DEFAULTS.sink}, which is the sink`)
+  const sunk = blades(buildBladeClump({ sink: 0.05 }, 3), 0.05)
+  check(sunk.every((x) => near(x.foot.y, -0.05, 1e-6)),
+    'and the sink still buries them when it is turned up')
   check(b.every((x) => x.apex.y > 0), 'and every apex is above ground',
     `lowest apex ${Math.min(...b.map((x) => x.apex.y)).toFixed(3)} m`)
 }
@@ -223,13 +261,32 @@ console.log('\n-- the fan --')
 
   // Lean is keyed to the foot's radius, so the middle stands up and the rim
   // splays. Measured as the apex moving OUTWARD from the clump's centre.
-  const leaning = b.filter((x) => {
+  //
+  // ONLY THE BLADES THAT HAVE AN OUTWARD DIRECTION AT ALL, and the cut is
+  // derived rather than picked. The radial splay at radius rr is
+  // `lean * h * rr / clumpRadius`; the jitter on top of it is `lean * h * 0.18`
+  // per axis, so its radial component is at worst `lean * h * 0.18 * sqrt(2)`
+  // inward. `lean` and the blade's own `h` appear in both and cancel, leaving
+  // splay > jitter exactly when
+  //
+  //     rr > clumpRadius * 0.18 * sqrt(2)
+  //
+  // -- inside that radius a blade may lean any way it likes, which is right,
+  // because a foot on the clump's axis has no outward to lean along. Gating the
+  // axis blades too passes on this seed and fails on about one seed in forty
+  // (2 of 500 measured), which is worse than not gating at all.
+  const jitterR = BLADE_DEFAULTS.clumpRadius * 0.18 * Math.SQRT2
+  const offAxis = b.filter((x) => Math.hypot(x.foot.x, x.foot.z) > jitterR)
+  const leaning = offAxis.filter((x) => {
     const rr = Math.hypot(x.foot.x, x.foot.z)
-    if (rr < 1e-4) return true
     return (x.apex.x * x.foot.x + x.apex.z * x.foot.z) / rr > rr
   })
-  check(leaning.length === b.length, 'and every blade leans outward, which is what makes it a fountain',
-    `${leaning.length} of ${b.length}`)
+  check(offAxis.length >= b.length * 0.5,
+    'most feet sit off the clump axis, where the lean has a direction to have',
+    `${offAxis.length} of ${b.length} past ${jitterR.toFixed(3)} m`)
+  check(leaning.length === offAxis.length,
+    'and every one of those leans outward, which is what makes it a fountain',
+    `${leaning.length} of ${offAxis.length}`)
 
   const feet = b.map((x) => Math.hypot(x.foot.x, x.foot.z))
   check(Math.max(...feet) <= BLADE_DEFAULTS.clumpRadius + 1e-6,
@@ -267,21 +324,50 @@ console.log('\n-- colour --')
 
 {
   // THE TERRAIN-MATCH INVARIANT. `color_vertex` multiplies this by the instance
-  // colour, and the instance colour is the terrain's own shade() at that spot.
+  // colour, and the instance colour is the colour the ground at that spot is
+  // drawn in.
   check(b.every((x) => x.footColor.every((c) => c === 1)),
     'the feet are exactly (1,1,1), so the instance colour lands on them unmodified',
     b[0].footColor.join(','))
-  check(b.every((x) => near(x.tipColor[1], BLADE_DEFAULTS.tipGain, 1e-6)),
-    `and the tips are ${BLADE_DEFAULTS.tipGain}x it`, b[0].tipColor.map((c) => c.toFixed(3)).join(','))
+  // HUE ONLY at the tip. Brightness is aTipMul, per instance; a gain baked in
+  // here as well would be the same number applied twice.
+  check(b.every((x) => near(x.tipColor[1], 1, 1e-6)),
+    'and the tips carry no brightness of their own -- green is exactly 1',
+    b[0].tipColor.map((c) => c.toFixed(3)).join(','))
   check(b.every((x) => x.ramp[0] === 0 && x.ramp[1] === 0 && x.ramp[2] === 1),
     'the ramp runs 0 at both feet and 1 at the apex, so the interpolator draws the gradient')
 
-  // Warm has to skew red against blue ABOUT the gain, not brighten the tip --
-  // a bleached tip is a different hue at the same value, not a lighter one.
+  // Warm skews red against blue about a green of 1, so a bleached tip is a
+  // different hue at the same value rather than a lighter one.
   const warm = blades(buildBladeClump({ tipWarm: 0.2 }, 7), BLADE_DEFAULTS.sink)[0].tipColor
-  check(warm[0] > warm[1] && warm[1] > warm[2] && near(warm[1], BLADE_DEFAULTS.tipGain, 1e-6),
+  check(warm[0] > warm[1] && warm[1] > warm[2] && near(warm[1], 1, 1e-6),
     'tipWarm pushes red up and blue down without moving green',
     warm.map((c) => c.toFixed(3)).join(','))
+
+  // --- the per-clump tip brightness.
+  //
+  // Two properties, and the second is the one worth a gate. A bed of clumps
+  // that all brighten is a two-tone material stamped over and over, so the sign
+  // has to split; and a clump whose multiplier lands near 1 has no gradient at
+  // all, which is the thing tipVary exists to prevent.
+  const mulRand = mulberry32(99)
+  const muls = Array.from({ length: 400 }, () => bladeTipMul(BLADE_DEFAULTS, mulRand))
+  const up = muls.filter((m) => m > BLADE_DEFAULTS.tipGain).length
+  check(up > 140 && up < 260, 'tip brightness goes up about as often as it goes down',
+    `${up} of ${muls.length} lighter`)
+  const floor = BLADE_DEFAULTS.tipGain * BLADE_DEFAULTS.tipVary * 0.55
+  check(muls.every((m) => Math.abs(m - BLADE_DEFAULTS.tipGain) >= floor - 1e-9),
+    'and no clump lands on its own base colour, so every clump has a gradient',
+    `closest ${Math.min(...muls.map((m) => Math.abs(m - BLADE_DEFAULTS.tipGain))).toFixed(4)}, floor ${floor.toFixed(4)}`)
+  check(muls.every((m) => m > 0), 'and none of them goes negative',
+    `${Math.min(...muls).toFixed(3)} - ${Math.max(...muls).toFixed(3)}`)
+
+  // tipVary 0 is the plainer reading the slider still has to reach: every tip
+  // lighter than its own base by exactly tipGain.
+  const flatRand = mulberry32(7)
+  const flat = Array.from({ length: 20 }, () => bladeTipMul({ tipGain: 1.4, tipVary: 0 }, flatRand))
+  check(flat.every((m) => near(m, 1.4, 1e-9)),
+    'tipVary 0 gives every clump the same tip, which is tipGain', flat[0].toFixed(3))
 }
 
 // --- 8. the knobs -----------------------------------------------------------

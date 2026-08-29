@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import {
   buildRockBank, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT,
@@ -929,7 +930,6 @@ const GROUND_CUE = { river: 0.75, forest: 0.45, cliff: 0.55, peak: 0.55 }
 
 // Everything below is render/trees.js's, unchanged, and its header is the
 // explanation for all of it.
-const QUANT = 4
 const LOD_HYSTERESIS = 0.12
 const BUILD_BUDGET_MS = 1.5
 const PLACEMENT_CELL = 4.0
@@ -1567,22 +1567,8 @@ class RockBed {
 
   /** See Trees._poolBound: summed over the real tile grid, because the law is not exact. */
   _poolBound() {
-    const span = this.tileSpan
-    const tile = this.tile
-    const cx = tile / 2
-    const cz = tile / 2
-    let bound = 0
-    for (let iz = -span; iz <= span; iz++) {
-      for (let ix = -span; ix <= span; ix++) {
-        const dcx = (ix + 0.5) * tile - cx
-        const dcz = (iz + 0.5) * tile - cz
-        if (dcx * dcx + dcz * dcz > this.evictSq) continue
-        const nx = Math.max(ix * tile, Math.min(cx, (ix + 1) * tile))
-        const nz = Math.max(iz * tile, Math.min(cz, (iz + 1) * tile))
-        bound += this.perTile * this._keepFrac(this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2))
-      }
-    }
-    return Math.ceil(bound * 1.35)
+    return poolBound(this.tile, this.tileSpan, this.evictSq, 1.35,
+      (d2) => this.perTile * this._keepFrac(this._levelFor(d2)))
   }
 
   /**
@@ -1623,9 +1609,7 @@ class RockBed {
   }
 
   _levelFor(d2) {
-    if (d2 <= this.fullSq) return 0
-    const q = Math.floor(Math.log2(Math.sqrt(d2) / this.fullRadius) * QUANT)
-    return q < 0 ? 0 : q > this.maxQ ? this.maxQ : q
+    return levelFor(d2, this.fullSq, this.fullRadius, this.maxQ)
   }
 
   /**

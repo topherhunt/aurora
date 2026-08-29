@@ -214,7 +214,10 @@ const FINE_FAR = 130
 // WHAT THE TILE TURNS OFF, inside its fade and ON GRASS ONLY: the brightness
 // speckle, the dirt/moss mottle, and the grass half of the 10 cm micro-tint
 // layer. All of them are the same job done worse, and running both is two
-// textures at one scale, which reads as mud. What stays: the snow SPARKLE (a
+// textures at one scale, which reads as mud. It turns them off THROUGH
+// auroraGreenBase, which is why that value has to reach a true 1.0 -- see the
+// block on it in the fragment shader for what a classifier that topped out at
+// 0.8 was quietly leaving switched on. What stays: the snow SPARKLE (a
 // specular stand-in, not a texture), the macro layers (they are regional and the
 // tile is not), and the whole normal-perturbation pass at the bottom of this
 // file (the tile carries no relief, and a lit surface needs both). Snow and rock
@@ -233,28 +236,28 @@ const GROUND_FAR = 150
 //
 // THE GRASS FOUR ARE TUNED AGAINST A MEASURED MEAN, not by eye. Every one of
 // them is a mix DESTINATION on green ground, so what the meadow actually reads
-// as is the average of the whole tint chain, not any one of these. Running that
-// chain over the baked fields (scratch: the four field samples a near fragment
-// gets, 200k of them) gives, for C_GRASS = (0.048, 0.088, 0.030), with SD/lum
-// as the contrast the eye actually reads:
+// as is the average of the whole tint chain, not any one of these.
 //
-//   base, untinted    lum 0.0753  g-max(r,b) 0.0400  g/r 1.83  SD/lum   --
-//   pre-bake              0.0652             0.0249      1.51       0.138
-//   the grey wash         0.0550             0.0105      1.21       0.218
-//   these values          0.0483             0.0239      1.74       0.294
+// AND THE MEAN THAT MATTERS IS THE ONE ON SCREEN, not the albedo. Two whole
+// rounds of this were tuned on albedo and both missed, because albedo is half
+// the transfer: the light is 2.1 sun plus 0.85 sky, a multiplier near (2.12,
+// 2.05, 1.93), and sRGB at the end is where the eye reads the answer. The
+// scratch harness runs the real chain over the real baked fields and the real
+// tile bytes, lights it and encodes it, and prints 8-bit sRGB. On distant grass,
+// where the ground tile has faded and only the palette is left:
 //
-// The grey-wash row is the "waxy white saran wrap" -- red held still while green
-// collapsed, and r converging on g IS a grey wash however dark it is. DIRT and
-// DRY are the only two members with g <= r, so over-firing them neutralises the
-// meadow, and the equalised fields WERE over-firing them (see the threshold
-// block in the fragment shader).
+//   screen 80,105,60   g/r 1.81   -- a flat uGrassShade of 0.85. Olive.
+//   screen 56,106,41   g/r 3.71   -- these four with uGrassTone. Verdant.
 //
-// The shipped row is then 26% darker than the pre-bake look with more than twice
-// its contrast, which is what "darker and more textured" costs in numbers. Note
-// where the darkening comes from: a third of it is these four getting deeper,
-// and the rest is uGrassShade below. It has to be split that way -- the mixes
-// only reach ~40% of a fragment between them, so no palette this side of black
-// can pull the mean down alone without painting the meadow one flat colour.
+// The green channel is the SAME in both. Nothing got brighter or darker; red
+// and blue came down by a third. That is the whole difference between "waxy"
+// and "vivid", and it is why the knob at the bottom of the shader is a vec3 and
+// not a float: a scalar moves the meadow along the grey axis it is already too
+// close to, which is the axis the complaint was never about.
+//
+// DIRT and DRY are the only two members with g <= r, so over-firing them
+// neutralises the meadow -- and the equalised fields WERE over-firing them, see
+// the threshold block in the fragment shader.
 const DIRT = new THREE.Color(0.044, 0.036, 0.019) // exposed soil and grit
 const MOSS = new THREE.Color(0.005, 0.026, 0.005) // the darker green in the mix
 
@@ -466,10 +469,41 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // two, and clipped at EVERY daylight angle down to a grazing one. That is
     // why the snowfield read as a flat white sheet with no texture on it: the
     // sparkle, the flecks, the grain and the entire relief pass were all being
-    // computed correctly and then thrown away by the clamp. 0.40 puts a lit face
-    // at ~0.86 and a shaded one at ~0.43, which is a range the eye can read as
-    // shape, and leaves the very brightest face square to the sun just touching
-    // 1.0 -- snow should be the thing in this world that reaches white.
+    // computed correctly and then thrown away by the clamp.
+    //
+    // WITH NO SHOULDER, LEVEL AND TEXTURE ARE THE SAME KNOB, and this number is
+    // where they are traded. Measured at N.L 0.75, which is what this scene's
+    // sun (49 degrees up) gives level ground, as mean screen grey, the
+    // 5th-to-95th percentile spread around it, and the share of fragments the
+    // clamp flattens:
+    //
+    //     0.40   216   193..239    0%      grey. reads as dirty snow
+    //     0.50   238   213..255   15%
+    //     0.55   245   223..255   35%      white, and the spread survives
+    //     0.60   250   231..255   56%
+    //     0.65   253   240..255   74%      most of the field is one value
+    //
+    // The clipped share is not waste up to a point: snow SHOULD have glare, and
+    // what clips first is the sparkle, which is a specular stand-in and belongs
+    // at white. Past ~0.55 it stops being glare and starts being the surface.
+    // Nothing about the texture's shape buys headroom here -- skewing the value
+    // swings below 1.0 and raising this to compensate lands on the same mean at
+    // the same clipped share, because it is the mean's distance from the ceiling
+    // that sets how much texture fits, and nothing else.
+    //
+    // READ THAT TABLE TOGETHER WITH THE ALBEDO REPAINT in <color_fragment>. It
+    // assumes the fragment starts at C_SNOW, and until that repaint existed only
+    // ground flatter than ~30 degrees did: a 40 degree flank started 26% darker
+    // and read 212 where this table says 238, which is why two rounds of raising
+    // this number did not make the mountains white. Raising the exposure could
+    // not fix it, because the exposure was never the thing taking it away.
+    //
+    // 0.55 also keeps the ANGULAR range, which is the larger shape signal: N.L
+    // 0.95 / 0.75 / 0.45 / 0.20 read 253 / 245 / 211 / 171, so a mountain is
+    // still modelled by its own faces. At the 1.0 this shipped with, that row
+    // was flat white from noon down to a 66-degree face, which is the
+    // "everything at one brightness" the clamp produces and the reason any of
+    // this is here.
     //
     // WHY THIS IS NOT A FIX IN chunk-mesh's C_SNOW. That constant does two jobs:
     // it is the snow albedo AND it is the classification channel this shader
@@ -480,11 +514,20 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // exactly the same way, so a snow-capped boulder will now read brighter than
     // the ground under it until that one is scaled to match.
     //
-    // uGrassShade is a LOOK choice and not a clipping one -- grass at 0.088 was
-    // never near the clamp. See the note above the palette for the split between
-    // this and the four constants.
-    uSnowAlbedo: { value: 0.4 },
-    uGrassShade: { value: 0.85 },
+    // uGrassTone is a LOOK choice and not a clipping one -- grass at 0.088 was
+    // never near the clamp -- and it is PER CHANNEL because the complaint it
+    // answers was never about level. A scalar can only slide the meadow up and
+    // down a grey axis it is already too close to; what reads as "waxy" is low
+    // chroma, and the only cure for low chroma is to take red and blue down
+    // while green stays. Measured on screen (the chain, the real tile, the 2.1
+    // sun and 0.85 sky, sRGB at the end): a flat 0.85 landed on 80,105,60 --
+    // an olive with g/r 1.81 -- and these three land on 56,106,41 with g/r 3.71
+    // at the same green. Same brightness, twice the chroma.
+    //
+    // It also does most of the work on the brown flecks in the ground tile: a
+    // dirt-coloured blotch needs red, and this halves red everywhere on grass.
+    uSnowAlbedo: { value: 0.55 },
+    uGrassTone: { value: new THREE.Color(0.45, 0.92, 0.45) },
   }
 
   if (atlas) {
@@ -574,7 +617,7 @@ export function createTerrainMaterial({ atlas = null } = {}) {
         uniform vec3 uFrost;
         uniform vec3 uShade;
         uniform float uSnowAlbedo;
-        uniform float uGrassShade;
+        uniform vec3 uGrassTone;
 ${atlas ? `        precision highp sampler2DArray;
         uniform sampler2DArray uAtlas;
         uniform float uStone;
@@ -670,7 +713,24 @@ ${atlas ? `        precision highp sampler2DArray;
           // colour so batched geometry stays position/normal/colour: grass is
           // green-dominant by construction in chunk-mesh.js, snow is the only
           // thing with a high blue channel, and rock is whatever is left.
-          float auroraGreenBase = clamp( ( vColor.g - max( vColor.r, vColor.b ) ) * 20.0, 0.0, 1.0 );
+          //
+          // IT HAS TO REACH 1.0 ON REAL GRASS, and for a long time it did not.
+          // C_GRASS is (0.048, 0.088, 0.030), so g - max(r, b) is 0.040 and the
+          // old times-20 clamp topped out at 0.80 on the greenest ground in the
+          // world. That 0.80 then multiplied five separate things -- the ground
+          // tile's weight, the green tints, the grass exposure, and (through
+          // auroraProc, which is 1 - tileFade * this) the procedural grain and
+          // fleck layers the tile exists to REPLACE. The meadow got 80% of the
+          // photograph plus 20% of a flat palette plus 20% of the noise the
+          // photograph was standing in for: three surfaces at one scale, which
+          // is the muddy, waxy, low-chroma ground this was reported as.
+          //
+          // The upper edge is therefore inside C_GRASS's own margin rather than
+          // past it, so pure grass saturates and auroraProc is exactly 0 there.
+          // The lower edge is what still lets the altitude ramp toward C_SCRUB
+          // (g - max(r, b) = -0.005) and the steepness ramp toward C_ROCK fade
+          // this out smoothly; snow is far negative and never registers.
+          float auroraGreenBase = smoothstep( 0.004, 0.030, vColor.g - max( vColor.r, vColor.b ) );
           float auroraVertexSnow = smoothstep( 0.30, 0.60, vColor.b );
 
           // Hoisted above every layer below because the FIRST of them needs it.
@@ -779,7 +839,34 @@ ${atlas ? `        precision highp sampler2DArray;
 
           float auroraSnowD = clamp( auroraVertexSnow + ( auroraBN - 0.5 ) * uBoundary, 0.0, 1.0 );
           float auroraSnowBase = smoothstep( 0.25, 0.75, auroraSnowD );
-          diffuseColor.rgb = mix( diffuseColor.rgb, uSnow, clamp( auroraSnowBase - auroraVertexSnow, 0.0, 1.0 ) );
+          // SNOW GETS ITS ALBEDO HERE, not from the vertex, and the difference
+          // is most of what "snow" looks like. shade() in chunk-mesh-v2.js does
+          // two jobs with one number: its snow factor is the COVERAGE, cut by
+          // steepness so cliffs do not read as white walls, and it is also the
+          // weight it lerps the vertex colour toward C_SNOW by. On a 40 degree
+          // flank -- an ordinary snowfield, not a cliff -- coverage is 0.71, so
+          // the vertex arrives at (0.634, 0.647, 0.677): 74% of C_SNOW's level
+          // and mixed a quarter of the way into dark grey rock, which is pale
+          // rock, because that is literally what it is. Meanwhile
+          // auroraVertexSnow reads 1.0 there, so every OTHER thing this shader
+          // does to snow -- the exposure, the sparkle, the frost pair, the
+          // relief weight -- was being applied at full strength to an albedo
+          // that had already been quietly darkened by an unrelated mechanism.
+          //
+          // Mixing to uSnow by auroraSnowBase is what makes the fragment agree
+          // with itself: the weight is the shader's own snow decision, the same
+          // one every line below reads, so a fragment shaded as 100% snow now
+          // starts from 100% snow albedo and a boundary fragment blends. It
+          // subsumes the old snowBase-minus-vertexSnow push, which could only
+          // ever add the dither's EXCESS on top of the diluted colour; the rock
+          // half of the dither below is unchanged.
+          //
+          // Nothing that was not already snow moves: where auroraVertexSnow is
+          // 0 the two expressions are the same expression, so grass, rock and
+          // every cliff past ~48 degrees (where vColor.b has fallen under the
+          // 0.30 that auroraVertexSnow thresholds) are bit-identical. The two
+          // differ only on ground the mesher had already called partly white.
+          diffuseColor.rgb = mix( diffuseColor.rgb, uSnow, auroraSnowBase );
           diffuseColor.rgb = mix( diffuseColor.rgb, uRock, clamp( auroraVertexSnow - auroraSnowBase, 0.0, 1.0 ) * ( 1.0 - auroraGreenBase ) );
 
           float auroraRockBase = ( 1.0 - auroraGreenBase ) * ( 1.0 - auroraSnowBase );
@@ -1136,7 +1223,7 @@ ${atlas ? `
           // palette colour would drag the surface back up, and the sparkle,
           // which ADDS, would drag it up hardest of all.
           diffuseColor.rgb *= mix( 1.0, uSnowAlbedo, auroraSnowBase );
-          diffuseColor.rgb *= mix( 1.0, uGrassShade, auroraGreenBase );
+          diffuseColor.rgb *= mix( vec3( 1.0 ), uGrassTone, auroraGreenBase );
         }`
       )
       // ---- Near-field relief: APPLY ONLY. The slopes were accumulated into

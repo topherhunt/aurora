@@ -13,7 +13,7 @@
 // ESSL 3.00. three.js prepends `#version 300 es` to every non-Raw material --
 // WebGLProgram.js line 864, unconditionally, not only when `glslVersion` is set
 // -- so dynamic loop bounds, integer operations and `uint` are all available
-// here. `src/aurora.js`'s integer hash is legal for that reason and not by
+// here. The archived band mesh's integer hash is legal for that reason and not by
 // luck.
 //
 // This file still hashes in FLOAT, and the reason is not portability. It is

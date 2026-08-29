@@ -31,7 +31,7 @@
 //                     off locally. Return 1.0 if there is nothing to gate.
 //
 // ===========================================================================
-// WHY A RAYMARCH AND NOT THE SHEET OF POLYGONS IN src/aurora.js
+// WHY A RAYMARCH AND NOT THE SHEET OF POLYGONS IN archive/aurora-mesh/aurora.js
 // ===========================================================================
 //
 // The polygon version is the correct answer to a different question. It builds

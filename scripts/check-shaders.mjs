@@ -24,6 +24,7 @@ import { WorldLighting } from '../src/lighting.js'
 import { SkyProbe } from '../src/sky-probe.js'
 import { WorldProbe } from '../src/world-probe.js'
 import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
+import { createBladeMaterial } from '../src/props/grass-blades.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -505,6 +506,58 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
   for (const mark of ['float wlCaustic( vec2 p, float t )', 'uCaustic.x > 0.0', 'aerialKeep', 'wlSun( vWorldPos.xz )']) {
     if (!frag.includes(mark)) MISSING_MARKS.push(`lighting.js fragment patch frag: ${mark}`)
   }
+}
+
+// --- src/props/grass-blades.js: the blade bed --------------------------------
+//
+// BOTH BUILDS, because they are two programs -- see the cacheKey -- and because
+// the wind flag is a toggle on /gen-grass, so the still one is compiled by
+// anyone who presses it. And with the vertex-mode lighting patch chained on
+// top, which is what the bed actually draws with: `lighting.patch` wraps
+// onBeforeCompile rather than replacing it, so compiling the material alone
+// would be checking a shader nothing renders.
+//
+// USE_INSTANCING and USE_INSTANCING_COLOR are not optional here. Everything
+// this material adds -- the wind bend, the per-clump tip brightness -- lives
+// inside `#ifdef USE_INSTANCING`, so a compile without them type-checks an
+// empty patch and reports success.
+for (const wind of [true, false]) {
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  const mat = createBladeMaterial({ wind })
+  new WorldLighting().patch(mat, { mode: 'vertex', cacheKey: 'check-blade' })
+  mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+
+  const defines = [
+    '#define USE_COLOR', '#define USE_INSTANCING', '#define USE_INSTANCING_COLOR',
+    '#define USE_FOG', '#define FOG_EXP2', '#define DOUBLE_SIDED',
+  ]
+  const label = `grass-blades ${wind ? 'wind   ' : 'no wind'}`
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}       vert`, 'vert', builtinPrologue('vert', defines), vert])
+  SHADERS.push([`${label}       frag`, 'frag', builtinPrologue('frag', defines), frag])
+  CROSS_STAGE.push([label, vert, frag])
+
+  // The tip ramp is the anchor that would go stale silently: three renaming or
+  // reordering <color_vertex> takes the gradient out of every blade in the bed
+  // and leaves a shader that compiles and draws a flat clump.
+  const marks = ['vColor.rgb *= mix( 1.0, aTipMul, aBladeT )', 'attribute float aTipMul']
+  if (wind) marks.push('transformed.x += bend')
+  for (const mark of marks) {
+    if (!vert.includes(mark)) MISSING_MARKS.push(`${label} vert: ${mark}`)
+  }
+  // Undoing three's double-sided normal flip. Loud here because losing it is
+  // silent at runtime: the bed still draws, and half of every clump is black.
+  if (!frag.includes('normal *= faceDirection')) {
+    MISSING_MARKS.push(`${label} frag: normal *= faceDirection`)
+  }
+  if (!wind && vert.includes('uWindAmp')) MISSING_MARKS.push(`${label} vert: wind leaked into the still build`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

@@ -2,7 +2,7 @@
 
 The retired v1 world was fully procedural: `TerrainHeight.heightAt` was the only author, and the only way to move a mountain was to move a noise constant and watch the whole world move with it. v2 is what replaced it: **the coarse shape is an imported image, the fine shape is procedural, and everything a human wants to place by hand is a CONTENT LAYER on top.**
 
-v2 does not import from `src/terrain/` beyond the shared leaf modules. It lives entirely under `src/v2/` behind `index.html`, and it may freely import the shared leaves (`src/sim/noise.js`, `src/sim/mathx.js`, `src/clock.js`, `src/sky.js`, `src/stars.js`, `src/aurora.js`, `src/lighting.js`, `src/player.js`, `src/input.js`, `src/water.js`, `src/terrain/terrain-material.js`). It must not import `src/sim/terrain-height.js` or `src/sim/phase-a.js`; the whole point is that the height field comes from somewhere else.
+v2 does not import from `src/terrain/` beyond the shared leaf modules. It lives entirely under `src/v2/` behind `index.html`, and it may freely import the shared leaves (`src/sim/noise.js`, `src/sim/mathx.js`, `src/clock.js`, `src/sky.js`, `src/stars.js`, `src/lighting.js`, `src/player.js`, `src/input.js`, `src/water.js`, `src/terrain/terrain-material.js`). It must not import `src/sim/terrain-height.js` or `src/sim/phase-a.js`; the whole point is that the height field comes from somewhere else.
 
 **Constraint 3 from DESIGN.md still binds.** Everything under `src/v2/height/` and `src/v2/layers/` imports no three.js and runs in node, which is what lets `scripts/check-v2.mjs` gate it headlessly. three.js starts at `src/v2/terrain/`, `src/v2/render/`, `src/v2/edit/`, `src/v2/ui/`.
 

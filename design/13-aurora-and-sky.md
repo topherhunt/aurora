@@ -1,8 +1,8 @@
 ## 13. Aurora and sky
 
-> **Covers:** both auroras -- the eleven curtain meshes `/` draws and the shader lab `/v2` now draws out of -- plus the sky dome, stars, night-sky banding, and the aurora's fill-rate budget.
-> **Read this when:** touching `src/aurora.js`, `src/aurora-patterns.js`, `src/aurora-lab/*`, `src/v2/render/aurora.js`, or `scripts/check-daynight.mjs`.
-> **The world draws `src/v2/render/aurora.js`** -- the lab's `skymap` algorithm on a full sky dome, wired to the world clock. `src/aurora.js`, the eleven parametric curtain meshes the retired v1 world drew, is no longer on any page; only `scripts/check-daynight.mjs` still imports it. The lab is at `/test-aurora` and is where the tuning happens.
+> **Covers:** both auroras -- the shader lab's field, which the world draws, and the archived curtain meshes it replaced -- plus the sky dome, stars, night-sky banding, and the aurora's fill-rate budget.
+> **Read this when:** touching `src/aurora-lab/*`, `src/v2/render/aurora.js`, or `archive/aurora-mesh/*`.
+> **The world draws `src/v2/render/aurora.js`** -- the lab's `skymap` algorithm on a full sky dome, wired to the world clock. The eleven parametric curtain meshes are parked in `archive/aurora-mesh/`, on no page and imported by no live code, kept resurrectable by a gate of their own if the field proves too costly on Quest 2 (`archive/README.md`). The lab is at `/test-aurora` and is where the tuning happens.
 > **Reverted work lives in** `design/history/aurora-rounds-4-6.md` **and is not in the tree.** Everything below is.
 
 **The aurora appears randomly at night, anywhere in the world** -- not gated on altitude. Summits simply give a better view: less terrain occlusion, less atmospheric haze, and a modest intensity boost with elevation.
@@ -21,9 +21,9 @@ An aurora is not a light in the sky. It is the **upper atmosphere itself glowing
 2. **All structure is vertical.** The rays are field lines. This is the constraint that decides both shaders: the noise that generates striations must be indexed on distance *along* the arc and must **not** contain an altitude term. One character's worth of mistake there and the whole thing stops being an aurora and becomes coloured fog. The gate asserts it textually.
 3. **It is optically thin.** You see straight through it: what reaches the eye is the sum along the line of sight. That means no sorting, no transparency ordering and no depth writes in any of the three, and it means the fold-on-fold brightening where a curtain doubles back on itself is *free* rather than something to model. Two of the three blend additively for that reason. The card technique does not, and the reason is the 8-bit framebuffer rather than the physics -- an unbounded sum clips, and what clipping does to a stack of columns is argued out under that section.
 
-### The shipped aurora: eleven parametric curtains
+### The archived aurora: eleven parametric curtains
 
-`src/aurora.js` plus the catalogue in `src/aurora-patterns.js`. **This is the one the game draws.** It is cheap, mobile-friendly, gated in depth, and it is what the lab further down exists to replace.
+`archive/aurora-mesh/aurora.js` plus its catalogue `aurora-patterns.js`. **Nothing draws this.** The lab further down replaced it, and it is parked rather than deleted as the fallback if the field's four prepasses prove too expensive on Quest 2 -- see `archive/README.md`. It is cheap, mobile-friendly, and gated in depth by `archive/aurora-mesh/check-aurora-mesh.mjs`, which is run by hand rather than from `npm run check` so that nothing live depends on the archive.
 
 #### The factorisation
 
@@ -167,7 +167,7 @@ Additive materials land in three.js's transparent pass, which runs *after* the o
 
 #### What was reverted, and where the boundary is
 
-**"Before X" means the last state that was seen, not the last commit before X.** One release landed with a duplicate `mScale` in it, so it never linked and never drew a pixel; the next round then re-tuned altitudes and extinction on top of a mesh nobody had ever looked at. Both rounds are therefore work whose *appearance* was never in evidence, and `src/aurora.js` and `src/aurora-patterns.js` were reverted wholesale rather than patched forward.
+**"Before X" means the last state that was seen, not the last commit before X.** One release landed with a duplicate `mScale` in it, so it never linked and never drew a pixel; the next round then re-tuned altitudes and extinction on top of a mesh nobody had ever looked at. Both rounds are therefore work whose *appearance* was never in evidence, and both archived files were reverted wholesale rather than patched forward.
 
 Out of the tree, and recorded in `design/history/aurora-rounds-4-6.md`: the 14,000-unit shell, the `d^2 / 2R` curvature drop, the `swoop`, the re-siting to 94-1,180 km, `MAX_RADIUS_KM = 1,600`, the narrowed extinction window, the `twist` and `flame` terms, and the 12-form catalogue. What survived is what had been committed before the round that broke -- the tangential footprint `tng * f0.y`, the quarter-wave trochoid offset, `curl`, and the gate's JS port of the noise -- plus the meander above, which is the one piece of the shell's thinking worth keeping and is kept without the shell that motivated it.
 
@@ -197,7 +197,7 @@ The ceiling is **topological**, not a matter of tuning. A curtain can fold and i
 
 `src/aurora-lab/*` plus `src/test-aurora-main.js` and `test-aurora.html`, gated by `scripts/check-aurora-lab.mjs`. A separate page rather than a mode inside the world, for the reason the grass bench is separate: what it needs is an empty sky over a nominal skyline and seventy sliders, and putting that behind a terrain load, a document fetch and a walk to a vantage point would mean paying all three every time you want to see what one exponent does. It is also the only page with nothing in it but sky, which is what makes it honest about the shader's cost.
 
-**One of these ships.** `/v2` draws the lab's `skymap` algorithm through `src/v2/render/aurora.js` -- see "The sky map in `/v2`" below. The lab is still where the tuning happens, and `src/aurora.js` at `index.html` is still the eleven curtain meshes, untouched.
+**One of these ships.** The world draws the lab's `skymap` algorithm through `src/v2/render/aurora.js` -- see "The sky map" below. The lab is still where the tuning happens.
 
 #### A field, not a mesh
 
@@ -383,7 +383,7 @@ Nothing below has been checked anywhere.
 - **Nothing has run on a Quest 2.**
 - **`LowResAurora` does not handle WebXR, explicitly.** Pass 2's `gl_FragCoord` runs across a side-by-side framebuffer while the target holds one eye, so the right eye would sample the wrong half. The class's viewport uniform is a `vec4` rect precisely so that the fix -- one target and one viewport per eye -- is a setter call rather than a shader rewrite.
 - **Temporal shimmer is predicted and unmeasured.** A screen-space low-res buffer slides across world-locked content, so turning the head should make the sky crawl. That is expected to bite before spatial softness does, with a practical ceiling somewhere around divisor 3-4 in a headset even where the frame budget would allow 8.
-- **Which algorithm wins is settled for `/v2` and open for `index.html`.** `skymap` is the one that shipped, on cost: it is the only entry whose per-fragment work is a fetch rather than a loop. `leyline` and `weave` read as gorgeous on a desktop and are the reference for what the sky should look like; `filament` was judged to be nothing; `sine` has only been seen as a probe capture. `src/aurora.js` has not been touched, so `index.html` is still the eleven curtain meshes.
+- **Which algorithm wins is settled: `skymap`, everywhere.** It shipped on cost -- the only entry whose per-fragment work is a fetch rather than a loop. `leyline` and `weave` read as gorgeous on a desktop and are the reference for what the sky should look like; `filament` was judged to be nothing; `sine` has only been seen as a probe capture. The band mesh it beat is now in `archive/aurora-mesh/`, held as the Quest fallback.
 
 See TASKS.md for the order that work goes in.
 
@@ -393,7 +393,7 @@ See TASKS.md for the order that work goes in.
 
 #### What it is wired to
 
-`clock.js` hands over two numbers per frame and the file reads no others. `state.aurora` is intensity, and it goes straight to `exposure` -- below `VISIBLE_AT` (0.004, the same threshold `src/aurora.js` uses, so the hour the aurora appears does not shift) the mesh is hidden **and the four prepasses are skipped**, which is what makes the whole system cost nothing at noon. `state.activity` is the weather, normalised against `AURORA_ACTIVITY.quiet` and `.storm` read out of `clock.js` rather than assumed, and it drives `ACTIVITY_SHAPE`.
+`clock.js` hands over two numbers per frame and the file reads no others. `state.aurora` is intensity, and it goes straight to `exposure` -- below `VISIBLE_AT` (0.004, the same threshold the archived band mesh uses, so the hour the aurora appears does not shift) the mesh is hidden **and the four prepasses are skipped**, which is what makes the whole system cost nothing at noon. `state.activity` is the weather, normalised against `AURORA_ACTIVITY.quiet` and `.storm` read out of `clock.js` rather than assumed, and it drives `ACTIVITY_SHAPE`.
 
 `BRIGHTNESS` is 1 and that is a claim, not a default: `/v2` and `/test-aurora` are both `SRGBColorSpace` out with no tone mapping, so at `state.aurora = 1` this is bit-for-bit the sky the lab shows at its defaults. A number other than 1 here would mean the two pages had quietly stopped being comparable.
 

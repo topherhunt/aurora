@@ -22,7 +22,7 @@ import { BUILTIN_NAMES, builtinByName } from './aurora-lab/presets.js'
 
 // ---------------------------------------------------------------------------
 // The /test-aurora route: a rig for designing the aurora that replaces
-// src/aurora.js.
+// archive/aurora-mesh/aurora.js.
 //
 // ===========================================================================
 // WHAT THIS PAGE IS AND IS NOT

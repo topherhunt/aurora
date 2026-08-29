@@ -711,9 +711,9 @@ export const ROCK_TILE_MEAN = [0.1148, 0.0933, 0.077]
 // so that, for the few frames before loadImageLayers lands, the field is exactly
 // 1.0 and the ground is the untextured palette rather than -- as an unpatched
 // transparent-black slice would make it -- black.
-export const GRASS_TILE_MEAN = [0.1384, 0.1946, 0.0578]
+export const GRASS_TILE_MEAN = [0.0502, 0.0813, 0.0177]
 export const SNOW_TILE_MEAN = [0.3419, 0.3467, 0.3663]
-export const TERRAIN_GRASS_PLACEHOLDER = [104, 122, 68]
+export const TERRAIN_GRASS_PLACEHOLDER = [63, 81, 36]
 export const TERRAIN_SNOW_PLACEHOLDER = [158, 159, 163]
 
 // ---------------------------------------------------------------------------
