@@ -2662,7 +2662,7 @@ console.log('\nscatter')
   //
   // A rock changing tier used to CUT: one frame a mesh, the next a billboard,
   // and at the ranges the last rung sits at that is a visible twitch on ground
-  // covered in stone. Rocks now does what render/trees.js does -- a duplicate
+  // covered in stone. Rocks now does what render/grass.js does -- a duplicate
   // takes the tier being left, both halves get the same clock stamp, and they
   // dither past each other on complementary thresholds so coverage is conserved
   // and the silhouette never thins.

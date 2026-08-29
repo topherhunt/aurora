@@ -2,7 +2,9 @@ import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildFern, geometryBytes, FERN_DEFAULTS } from './props/fern.js'
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
-import { FERN_CARD_PLANES, FERN_LAYERS, FERN_ASPECTS, fernCardLayer } from './props/fern-bank.js'
+import {
+  FERN_CARD_PLANES, FERN_LAYERS, FERN_ASPECTS, FERN_SHIP, FERN_TIERS, fernCardLayer,
+} from './props/fern-bank.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
 import { createPropMaterial } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
@@ -64,6 +66,7 @@ const SLIDERS = [
   ['pitch', 0.2, 1.55, 0.01, 'launch angle above horizontal (radians). High = upright shuttlecock'],
   ['arch', 0, 3.2, 0.01, 'total bend from launch to tip (radians). High = weeping'],
   ['curve', 0.3, 3, 0.05, 'where the bend concentrates. >1 = stiff base, floppy tip'],
+  ['tipBias', 0.5, 3, 0.05, 'where the segment SEAMS sit. >1 crowds them toward the tip, where the bend is. Equal to curve = equal turn per segment; 1 = evenly spaced'],
   ['pitchFalloff', 0, 0.9, 0.01, 'spread of launch angles between fronds -- what makes a rosette read as a rosette'],
   ['lengthVar', 0, 0.8, 0.01, 'per-frond length jitter'],
   ['widthScale', 0.3, 2.2, 0.01, 'multiplies the frond cutout width'],
@@ -78,10 +81,26 @@ const SLIDERS = [
   ['planes', 1, 4, 1, 'CARD ONLY: quads crossed about the axis. 1 is a single billboard and vanishes edge-on unless something turns it; 2 never vanishes and is what ships'],
 ]
 
+// WHAT THE PAGE OPENS ON IS WHAT THE GAME DRAWS, not FERN_DEFAULTS. Those are
+// the generator's own fallbacks and the bank overrides most of them (FERN_BASE
+// alone moves curve, pitchFalloff, lengthVar, widthScale, sway, roll, yawJitter
+// and crownRadius), so a bench starting from them was previewing a fern that
+// stands nowhere in the world. Seeded from FERN_SHIP at the finest tier's
+// segment count instead, so the first thing on screen is the LOD0 fern.
+//
 // brightness 2.0, not 1.0. The cutout is a forest-floor scan (mean RGB 28,41,4
 // over its own coverage) and at 1.0 it renders near-black against the ground.
 // This is a material setting, not geometry -- see the note in fern.js.
-const params = { ...FERN_DEFAULTS, alphaTest: 0.5, brightness: 2.0, planes: FERN_CARD_PLANES }
+const shipParams = () => ({
+  ...FERN_DEFAULTS,
+  ...FERN_SHIP,
+  segments: FERN_TIERS[FERN_TIERS.length - 1].segments,
+  alphaTest: 0.5,
+  brightness: 2.0,
+  planes: FERN_CARD_PLANES,
+})
+
+const params = shipParams()
 
 // --- scene ------------------------------------------------------------------
 
@@ -174,6 +193,17 @@ material.onBeforeCompile = (shader, r) => {
 // of them compiled in.
 material.customProgramCacheKey = () => 'gen-fern-array-wrap-v1'
 
+// A SEPARATE MATERIAL FOR WIREFRAME, not `material.wireframe = true`. Setting
+// the flag on the prop material keeps its map and its alphaTest, so every edge
+// crossing a transparent part of the frond cutout gets discarded and you see
+// perhaps half the mesh -- which is the opposite of what the view is for. This
+// samples nothing and discards nothing, so an edge is an edge.
+const wireMaterial = new THREE.MeshBasicMaterial({
+  color: 0x8fd48f,
+  wireframe: true,
+  fog: false,
+})
+
 // FROND_0 has no procedural stand-in in buildTextureArray(), so the layer is
 // transparent -- and therefore the fern is invisible -- until this resolves.
 // Deliberately unguarded: a failed layer throws and the page dies loudly,
@@ -225,9 +255,9 @@ function clearGroup() {
 function rebuild() {
   clearGroup()
   material.alphaTest = params.alphaTest
-  material.wireframe = wireframe
   material.color.setScalar(params.brightness)
   material.needsUpdate = true
+  const drawMaterial = wireframe ? wireMaterial : material
 
   const seeds = galleryMode
     ? Array.from({ length: GALLERY_N }, (_, i) => Number(params.seed) + i)
@@ -304,7 +334,7 @@ function rebuild() {
   }
 
   drawn.forEach((geo, i) => {
-    const mesh = new THREE.Mesh(geo, material)
+    const mesh = new THREE.Mesh(geo, drawMaterial)
     if (galleryMode) {
       mesh.position.set(
         ((i % GALLERY_COLS) - (GALLERY_COLS - 1) / 2) * gallerySpacing(),
@@ -583,15 +613,11 @@ toggle('wire', () => wireframe, (v) => { wireframe = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
 
 document.getElementById('reset').addEventListener('click', () => {
-  // `planes` is not a fern parameter -- FERN_DEFAULTS knows nothing about it --
-  // so reset has to name the shipping value itself or the slider would survive a
-  // reset while every other control snapped back.
-  Object.assign(params, FERN_DEFAULTS, {
-    alphaTest: 0.5,
-    brightness: 2.0,
-    planes: FERN_CARD_PLANES,
-    seed: params.seed,
-  })
+  // Back to the shipping fern, not to FERN_DEFAULTS -- same argument as the note
+  // on shipParams. The seed is deliberately kept: reset is for undoing a slider
+  // hunt, and rerolling the plant underneath you at the same time makes it
+  // impossible to see what the reset actually changed.
+  Object.assign(params, shipParams(), { seed: params.seed })
   for (const [key] of SLIDERS) {
     readouts[key].input.value = params[key]
     readouts[key].out.textContent =

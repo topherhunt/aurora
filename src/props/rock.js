@@ -3,109 +3,40 @@ import { mulberry32 } from '../sim/mathx.js'
 import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
-// Procedural rocks.
+// Procedural rocks. The argument is DESIGN.md §23; this is the contract.
 //
-// A rock is the opposite of a fern in every way that matters to a generator. A
-// fern is a rosette of flat cards whose entire silhouette lives in an alpha
-// channel; a rock is an OPAQUE CLOSED LUMP whose silhouette is the geometry and
-// nothing else. There is no texture trick available: you cannot photograph your
-// way out of a boulder. So the whole job here is to spend a handful of
-// triangles on a shape that reads as stone, and the answer this file settles on
-// has three parts.
+// A rock is an OPAQUE CLOSED LUMP whose silhouette IS the geometry -- there is no
+// alpha channel to hide in, so the whole job is spending a handful of triangles on
+// a shape that reads as stone. Three mechanisms do it.
 //
-// 1. DISPLACEMENT IS A PURE FUNCTION OF THE ORIGINAL UNIT DIRECTION.
+// 1. DISPLACEMENT IS A PURE FUNCTION OF THE ORIGINAL UNIT DIRECTION. Every vertex
+//    starts on the unit sphere and its final position comes from `shapeRadius`,
+//    which is deterministic and stateless -- nothing depends on which solid, how
+//    many vertices, or what order. So the ico at detail 0/1/2 (20/80/180 faces,
+//    20*(detail+1)^2) samples THE SAME ROCK at three resolutions, and a tier change
+//    is a silhouette that simplifies rather than a rock that pops. Purity does not
+//    equalise SIZE -- 20 directions lose every peak between samples -- so each tier
+//    gets one uniform gain matching its mean silhouette radius to a dense reference.
 //
-// Every vertex of every base solid starts on the unit sphere, and its final
-// position is decided by feeding that direction into `shapeRadius`, which is
-// deterministic and stateless. Nothing depends on which solid we started from,
-// how many vertices it had, or what order they came in. The consequence is the
-// one the whole LOD ladder rests on: an icosahedron (20 faces) and its two
-// subdivisions (80, 180) all sample THE SAME ROCK, coarser or finer (three's
-// polyhedron subdivision splits each edge into detail+1, so the counts go as
-// 20*(detail+1)^2 rather than doubling). That is why a tier change is a
-// silhouette that simplifies rather than a different rock that pops -- and why
-// "some boulder shapes will also work well as medium & small rocks, just bump
-// LOD0 -> LOD1" is literally true here: every rock ships all three tiers, and
-// only the DISTANCES at which it steps between them depend on how big it is.
-// See ROCK_LOD_AT.
+// 2. FLAT FACES COME FROM RADIAL PLANE CLIPPING, NOT NOISE. Noise alone gives you a
+//    potato; stone reads as stone through flat facets meeting at hard edges. Each
+//    vertex is clipped radially from its shard centre:
+//        r_max = min over planes with dot(p, n_i) > 0 of  c_i / dot(p, n_i)
+//    Chosen because it is ORDER-INDEPENDENT, NEVER INVERTS a triangle (vertices only
+//    move inward along their own ray), and needs no iteration. A face whose three
+//    vertices were pinned by the SAME plane is shaded flat regardless of `smooth`,
+//    or turning smoothing up rounds the fractures away and the potato is back.
 //
-// Purity gets the tiers onto the same shape; it does not get them to the same
-// SIZE. Sampling a lump on 20 directions loses every peak between the samples,
-// so the raw T20 comes out smaller than the T180 it replaces even though both
-// describe the same rock. So every tier is measured against one dense
-// reference and given a single uniform gain that matches its mean silhouette
-// radius to the reference's. That is the number a player perceives at an LOD
-// switch, and driving it to zero is what makes the switch invisible.
-//
-// This is the same lesson buildBoulder in props/shapes.js records in one line
-// ("jitter must be a pure function of the ORIGINAL position"), taken seriously.
-// There the reason was to stop a non-indexed solid tearing apart at its seams.
-// Here it is that plus the entire LOD story.
-//
-// 2. FLAT FACES COME FROM RADIAL PLANE CLIPPING, NOT FROM NOISE.
-//
-// Noise alone gives you a potato. What makes stone read as stone at 20
-// triangles is FLAT FACETS meeting at hard edges -- conchoidal fracture, joint
-// faces, bedding planes. So after displacement each vertex is clipped against a
-// small set of half-spaces, radially from the shard's own centre:
-//
-//     r_max = min over planes with dot(p̂, n_i) > 0 of  c_i / dot(p̂, n_i)
-//
-// Radial clipping (rather than the obvious "project any vertex outside the
-// plane onto it") is chosen for three properties. It is ORDER-INDEPENDENT, so
-// five planes give the same solid in any sequence. It NEVER INVERTS a triangle,
-// because every vertex only ever moves inward along its own ray. And it needs
-// no iteration to converge, because the min is exact.
-//
-// `cutBias` steers the plane normals between two real rock behaviours: -1 tilts
-// them toward vertical, which makes horizontal cut faces (BEDDING planes -- the
-// stacked slabs of a riverbed), and +1 tilts them toward horizontal, which
-// makes vertical cut faces (COLUMNAR jointing -- the sheer sides of a crag).
-//
-// A face whose three vertices were all pinned by the SAME plane is a genuine
-// flat facet, and it is shaded flat regardless of `smooth`. Without that test,
-// turning smoothing up to soften the lumps also rounds the fracture faces away,
-// and the rock goes back to being a potato.
-//
-// 3. ONE TILE, TINTED PER INSTANCE, PROJECTED PER FACE, SCALED BY THE ROCK.
-//
-// Every rock in the world wears LAYER.ROCK -- one 128px granite speckle, cut by
-// tools/props/cut-rock.mjs. Variety comes from a per-instance colour via
-// BatchedMesh.setColorAt, which defines USE_BATCHING_COLOR -> USE_COLOR in the
-// fragment prefix and multiplies diffuseColor by it WITHOUT needing
-// material.vertexColors (props/scatter.js already tints stands this way). So
-// granite, basalt, sandstone, wet shale and lichen-green are one draw call.
-// That is also why the tile is graded bright and near-neutral: a tint is a
-// multiply, so the tile's mean is the ceiling, and its hue would otherwise
-// fight every tint laid over it.
-//
-// UVs are a per-face planar projection off whichever world axis the face normal
-// dominates. No unwrapping and no seams to author. What that projection is
-// DIVIDED BY is the part that changed. It used to be a fixed 0.9 world metres,
-// which held absolute crystal size constant across a library spanning two orders
-// of magnitude -- a 12 cm cobble and a 14 m outcrop wearing literally the same
-// speckle. That is the textbook answer and it looks wrong. A 7 m crag under a
-// 0.9 m tile is eight repeats of one photograph across its face, and eight
-// repeats of anything reads as patterned fabric rather than as stone: the tile's
-// features sit far below the scale its silhouette promises, so the rock stops
-// having a size of its own and starts looking like a scale model.
-//
-// So the tile scales WITH the rock. `texRepeat` is how many times it tiles
-// across the rock's largest horizontal extent, whatever that extent happens to
-// be in metres, which makes a shape one picture at 0.2 m and at 14 m and makes
-// "author the shapes at 2 m and scale them to fit the scenery" literally true
-// rather than aspirational. The cost is real and worth naming: two rocks of
-// different sizes side by side no longer agree about how big a grain of this
-// granite is, so a boulder is no longer evidence about the cobble next to it.
-// `texJitter` then rolls the repeat +/-50% per seed. That is what buys back the
-// variety constant density used to get for free from the rocks being different
-// sizes, and it is what stops a bed of same-size cobbles looking stamped.
+// 3. ONE TILE (LAYER.ROCK), TINTED PER INSTANCE via BatchedMesh.setColorAt, so
+//    granite, basalt, sandstone, wet shale and lichen-green are one draw call. The
+//    tile is graded bright and near-neutral because a tint is a multiply. UVs are a
+//    per-face planar projection off the dominant world axis, divided by an extent
+//    that SCALES WITH THE ROCK (see texRepeat) rather than by fixed world metres.
 //
 // ATTRIBUTES: always { position, normal, uvProj, texLayer }, indexed with an
-// identity index. That is the shared prop material's layout (src/material.js)
-// and BatchedMesh rejects a geometry that disagrees. Unlike buildFern there is
-// no second `uv` layout, because gen-rock.html renders the real material rather
-// than a stand-in -- a rock needs the tint path to be worth looking at.
+// identity index. That is the shared prop material's layout (src/material.js) and
+// BatchedMesh rejects a geometry that disagrees. Unlike buildFern there is no second
+// `uv` layout, because gen-rock.html renders the real material.
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2
@@ -115,29 +46,11 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 // T80 is 240 triangles -- which is why `shards` is the most expensive slider on
 // the bench by a wide margin and the budget panel prints the product.
 //
-// EVERY ROCK SHIPS ALL THREE, whatever size it is. There used to be a fourth
-// tier and a per-size-class ladder deciding which three of the four you got --
-// a crag 180/80/20, a boulder 80/20/8, a cobble 20/8 -- on the argument that a
-// small rock is never seen from far enough away to need the fine end. That
-// argument is about DISTANCE and it was being answered with GEOMETRY: the
-// ladder decided which meshes a shape owned, while a hand-typed table of metres
-// per BED decided when to step between them, and the two halves had no way to
-// agree. A rock could sit at its coarsest tier from 40 m and dissolve out of
-// the world at 45 without the ladder having anything to do with it. One ladder
-// for every rock and one rule for when it steps -- ROCK_LOD_AT -- puts the size
-// argument in the thresholds, which is where it was always about.
-//
-// T180 IS STILL FOR THE BIG ONES, and now it says so in metres rather than in
-// class membership: at 4 m per metre of size, a 40 cm chip carries 180 faces
-// for its first 1.6 m and a 10 m cap carries them for 40.
-//
-// T8 IS GONE. An octahedron displaced by the same field as its siblings keeps
-// the rock's proportions and its lean, and at eight faces that is ALL it keeps:
-// a generic diamond with the right aspect ratio and none of the silhouette that
-// makes stone read as stone. Below it sits a photograph of the real rock for
-// two triangles, which is better at every distance where either is legible. All
-// keeping it bought was the six triangles between them, and triangles are not
-// what a distant rock costs -- see the header of v2/render/rocks.js.
+// EVERY ROCK SHIPS ALL THREE, whatever size it is, and T8 is gone: an octahedron
+// keeps the proportions and the lean and nothing else, while a two-triangle
+// photograph below it is better at every distance where either is legible. The size
+// argument lives entirely in ROCK_LOD_AT's thresholds, never in which meshes a
+// shape owns -- §23 records why a per-size-class ladder could not work.
 export const ROCK_TIERS = [
   { name: 'T180', solid: 'ico', detail: 2, faces: 180 },
   { name: 'T80', solid: 'ico', detail: 1, faces: 80 },
@@ -150,46 +63,27 @@ export const ROCK_TIERS = [
 // the third, and the two-triangle billboard card beyond it.
 //
 // Per metre because what decides whether a triangle is worth drawing is ANGULAR
-// size, and a rock's angular size is its size over its distance. So a 2 m rock
-// holds its finest mesh to 8 m, its second to 15, its third to 50, and is a
-// card past that; a 4 m one doubles all four; a 12 m tor holds T180 to 48 m and
-// cards at 300. That is ONE system for every rock in the world -- they all step
-// at the same apparent size, and only the metres differ.
+// size. A 2 m rock holds its finest mesh to 8 m, its second to 15, its third to 50,
+// and cards past that; a 12 m tor holds T180 to 48 m and cards at 300. One system
+// for every rock -- they all step at the same apparent size, only the metres differ.
 //
-// These are deliberately tighter than a pixel-error argument would give. Sizing
-// the step so a triangle never falls under about three pixels wants roughly
-// 70 m per metre before the card; this asks for 25. The ladder is set where it
-// is to buy back triangles, not to be invisible, and the number to move if a
-// band looks wrong is this one -- nothing else in the system encodes a
-// distance.
+// Deliberately tighter than a pixel-error argument, which wants ~70 m per metre
+// before the card against this 25: the ladder is set to buy back triangles, not to
+// be invisible. This is the number to move if a band looks wrong -- nothing else in
+// the system encodes a distance.
 export const ROCK_LOD_AT = [4, 7.5, 25]
 
 // THE METRE THE LADDER IS MEASURED IN: the LONGEST AXIS of the rock's box.
 //
-// Height alone is what you would reach for -- it is how anyone describes a rock
-// -- but this bank is mostly flat things. A `lip` is 7 m across and 1.7 m tall
-// and a `shingle` is 1.2 m across and 11 cm tall; keyed on height the shingle
-// would be a billboard at 2.7 m, close enough to step on. Width alone has the
-// opposite fault: a `spire` is 2.5 m across and 6 m tall and would card while
-// it still filled a third of the screen.
-//
-// The longest of the three has neither fault and needs no weighting to say so.
-// It is also the RIGHT quantity rather than a compromise between two wrong
-// ones: what the ladder is really asking is "how many pixels does this rock
-// subtend", the answer is its largest apparent extent over its distance, and
-// the largest extent a box can present to any camera is its longest axis. A
-// A billboard is the case that makes it matter: the card spins to face the eye,
-// so whatever it is sized to is what the rock looks like from every bearing at
-// once, and a ladder that had already decided the rock was small would have
-// handed it over at the wrong distance.
-//
-// Depth is in there with width because the bank elongates in plan -- `elongate`
-// defaults to 1.25 and goes past 2 -- so for a rock lying across the view the
-// long horizontal axis is as often z as x.
-//
-// This is a CEILING on apparent size, so it is conservative in the safe
-// direction: a rock is never judged smaller than it can look, and the worst
-// case is that a slab seen exactly edge-on carries a finer mesh than it needs.
+// Not height: a `shingle` is 1.2 m across and 11 cm tall and would be a billboard
+// at 2.7 m, close enough to step on. Not width: a `spire` 2.5 m across and 6 m tall
+// would card while still filling a third of the screen. The longest axis is the
+// RIGHT quantity rather than a compromise -- the largest extent a box can present to
+// any camera -- and it matters most for the card, which spins to face the eye and so
+// looks that size from every bearing at once. Depth is in with width because the
+// bank elongates in plan (`elongate` past 2), so the long horizontal axis is as
+// often z as x. A CEILING on apparent size: worst case a slab seen exactly edge-on
+// carries a finer mesh than it needs (§23).
 export function rockLodSize(measured) {
   return Math.max(measured.height, measured.width, measured.depth)
 }
@@ -255,19 +149,15 @@ export const ROCK_DEFAULTS = {
   sit: 0.12, // fraction of total height cut away at the bottom
 
   // AND OPTIONALLY, THROW THE BURIED BELLY AWAY. `sit` flattens everything below
-  // the bed plane ONTO it, which leaves a real horizontal disc down there --
-  // triangles that face straight down at ground level and are never once seen.
-  // With this on, any face all three of whose vertices landed on the plane is
-  // dropped, and what ships is an open shell: a cap that protrudes from a
-  // riverbed or a cliff face for a fraction of a closed rock's triangles. It
-  // costs nothing but the faces, because the rim vertices are shared with the
-  // sides and survive there.
+  // the bed plane ONTO it, leaving a real horizontal disc of triangles facing
+  // straight down at ground level that are never once seen. With this on, any face
+  // all three of whose vertices landed on the plane is dropped and what ships is an
+  // open shell -- free but for the faces, since the rim vertices are shared.
   //
-  // ONLY EVER USE IT ON SOMETHING BEDDED. An open shell has no bottom, so the
-  // moment the ground moves out from under it -- a terrain re-split, a rock on a
-  // steeper slope than it was placed for -- you are looking into the inside of
-  // it through backfaces. The saving scales with `sit`: on a T80 it is about a
-  // tenth of the faces at 0.3, a quarter at 0.4, half at 0.6.
+  // ONLY EVER USE IT ON SOMETHING BEDDED. An open shell has no bottom, so the moment
+  // the ground moves out from under it -- a terrain re-split, a steeper slope than it
+  // was placed for -- you are looking into the inside through backfaces. The saving
+  // scales with `sit`: on a T80, a tenth of the faces at 0.3, half at 0.6.
   openBottom: 0, // 0 = closed, 1 = drop the faces lying flat on the bed plane
 
   // --- material ------------------------------------------------------------
@@ -341,46 +231,32 @@ function shapeRadius(dx, dy, dz, p, nseed, phase) {
 }
 
 // The vertical profile, and the one part of the shape that does NOT go through
-// `shapeRadius`. It scales the two HORIZONTAL semi-axes and leaves the vertical
-// one alone, which is the whole reason it is a separate function.
+// `shapeRadius`: it scales the two HORIZONTAL semi-axes and leaves the vertical one
+// alone, which is the whole reason it is a separate function. An ISOTROPIC multiply
+// on the radius cannot make a spire -- a vertex's height is dy * ay * r, so shrinking
+// r near the top shrinks the HEIGHT there and the profile folds into a dome past
+// taper ~0.5 (§23). Scaling only x and z keeps height monotone in dy, and `foot`
+// flares the bottom half INDEPENDENTLY.
 //
-// The first cut of this was one line inside shapeRadius -- `r *= 1 - taper*0.45*dy`
-// -- an ISOTROPIC multiply on the radius, and it cannot make a spire. A vertex's
-// height is dy * ay * r, so shrinking r near the top shrinks the HEIGHT there
-// too: past taper ~0.5 the tallest point on the rock stops being the apex and
-// the profile folds over into a dome. Which is exactly what a spire built that
-// way looked like -- rounded on top, and (being linear and symmetric in dy) as
-// much wider at the base as it was narrower at the crown, so the base flared
-// into a point at the bed plane instead of sitting on it.
+// `taperPow` distributes the narrowing: 1 is a linear cone, above 1 is the
+// shoulders-and-a-tooth profile of a weathered pinnacle, below 1 is a needle. A
+// negative `taper` narrows the BASE instead -- the erratic and the mushroom, the same
+// curve mirrored, so `taperPow` means the same thing.
 //
-// Scaling only x and z fixes both. Height stays monotone in dy, so the apex is
-// the apex and the sides converge on it; and `foot` flares the bottom half
-// INDEPENDENTLY, so "pointed at the top" and "solid at the bottom" are two
-// dials instead of two ends of one.
-//
-// `taperPow` shapes how the narrowing is distributed. At 1 it is the old linear
-// cone. Above 1 the rock keeps its width and then loses it fast near the crown,
-// which is the shoulders-and-a-tooth profile a weathered pinnacle actually has;
-// below 1 it narrows immediately and reads as a needle.
-//
-// A negative `taper` narrows the BASE instead, which is the glacial erratic and
-// the mushroom -- the same curve mirrored, so `taperPow` means the same thing.
-//
-// The 0.94 clamps stop a horizontal semi-axis reaching zero, where the clip
-// below would divide by a degenerate radius; the 0.04 floor is the same guard
-// for the product.
+// The 0.94 clamps stop a horizontal semi-axis reaching zero, where the clip below
+// would divide by a degenerate radius; the 0.04 floor is the same guard for the
+// product.
 function profileRadial(dy, p) {
   const t = dy * 0.5 + 0.5 // 0 at the bed plane, 1 at the crown
   const pow = Math.max(0.2, p.taperPow)
   let h = 1
   if (p.taper > 0) h -= Math.min(0.94, p.taper) * Math.pow(t, pow)
   else if (p.taper < 0) h += Math.max(-0.94, p.taper) * Math.pow(1 - t, pow)
-  // A batter, not a skirt: quadratic in the distance below the crown, so most
-  // of the flare is in the bottom third and it has faded to nothing by the top.
-  // It has to reach well above the bed plane because `sit` flattens the bottom
-  // `sit` of the height onto that plane -- a flare that peaked only at t = 0
-  // would be entirely inside the part of the rock that gets clamped away, and
-  // the dial would look broken at exactly the settings that want it most.
+  // A batter, not a skirt: quadratic in the distance below the crown, so most of the
+  // flare is in the bottom third and has faded to nothing by the top. It has to reach
+  // well above the bed plane because `sit` flattens the bottom `sit` of the height
+  // onto that plane -- a flare peaking only at t = 0 would be entirely inside the
+  // clamped part, and the dial would look broken at the settings that want it most.
   if (p.foot > 0) h *= 1 + p.foot * (1 - t) * (1 - t)
   return Math.max(0.04, h)
 }
@@ -405,18 +281,12 @@ function cutPlanes(count, bias, depth, ax, ay, az, p, rand) {
     const nx = Math.cos(ang) * s
     const nz = Math.sin(ang) * s
 
-    // Offset measured against the ellipsoid's own support in this direction, so
-    // a cut bites the same proportion of a flat slab as of a tall spire.
-    //
-    // MEASURED AGAINST THE TAPERED ELLIPSOID, not the bare one, and on a spire
-    // that is the difference between cuts and no cuts at all. A plane's offset
-    // is a distance from the shard's centre; take it from the full semi-axes and
-    // it lands outside a crown that has been narrowed to a fifth of them, so the
-    // near-vertical columnar planes that are supposed to make the top TOOTHY
-    // sail past it and the tip comes out a smooth cone. So: find where this
-    // normal touches the untapered ellipsoid, read the profile at that height,
-    // and re-measure the support against the semi-axes the rock actually has
-    // there. Identical to the old line wherever `taper` and `foot` are 0.
+    // Offset measured against the TAPERED ellipsoid's support in this direction, so a
+    // cut bites the same proportion of a flat slab as of a tall spire. Taking it from
+    // the bare semi-axes lands the plane outside a crown narrowed to a fifth of them,
+    // so the columnar planes that should make the top toothy sail past it and the tip
+    // comes out a smooth cone. Identical to the bare form wherever taper and foot are
+    // 0.
     const support0 = Math.sqrt((ax * nx) ** 2 + (ay * ny) ** 2 + (az * nz) ** 2)
     const hr = profileRadial(support0 > 1e-9 ? (ay * ny) / support0 : 0, p)
     const support = Math.sqrt((ax * hr * nx) ** 2 + (ay * ny) ** 2 + (az * hr * nz) ** 2)
@@ -468,49 +338,38 @@ const SUPPORT_DIRS = (() => {
   return d
 })()
 
-// How far outside the reference's bounding box a tier is allowed to reach once
-// it has been scaled up to match. Deliberately loose, and looser than it looks
-// like it should be. The temptation is to pin it near 1.0 so `size` stays
-// literally true of every tier, but that trades the error nobody can see for the
-// one everybody can: a coarse solid's vertices sit ON the shape while everything
-// between them is cut away, so holding its box to the reference's leaves it 13%
-// short in apparent radius -- a visible shrink at the LOD switch -- to save an
-// overhang that is a fraction of a pixel at the distance a coarse tier is drawn.
+// How far outside the reference's bounding box a tier may reach once scaled up to
+// match. Deliberately loose: pinning it near 1.0 keeps `size` literally true of
+// every tier but trades the error nobody can see for the one everybody can -- a
+// coarse solid's vertices sit ON the shape while everything between is cut away, so
+// holding its box to the reference's leaves it 13% short in apparent radius.
 //
-// The number is 1.8 because a CAP THAT BINDS IS A BIAS GENERATOR, and that is
-// the failure it has to stay clear of. The gain is one uniform number and the
-// cap is taken on the worst axis, so a spire whose T20 happens to bulge in x and
-// under-sample in y gets its gain throttled by x and comes out 22% short in y --
-// exactly the visible shrink the gain exists to remove, reintroduced by its own
-// safety rail. Measured over 60 seeds x 9 shapes x the three coarse tiers there
-// were then, the 8-face one below T20 included: at 1.3 that
-// happened to 46 of 1620 builds and the worst was 29% off; at 1.8 it is 0 of
-// 1620 and the worst is 2.3%. So the cap now catches only a genuinely degenerate
-// build, which is all it was ever for. Collision and spacing read `measured`,
-// which is the reference's box, not a tier's.
+// 1.8 because A CAP THAT BINDS IS A BIAS GENERATOR: the gain is one uniform number
+// and the cap is taken on the worst axis, so a spire whose T20 bulges in x comes out
+// 22% short in y -- the very shrink the gain exists to remove, reintroduced by its
+// own safety rail. Over 60 seeds x 9 shapes x three coarse tiers: at 1.3, 46 of 1620
+// builds bound and the worst was 29% off; at 1.8 it is 0 of 1620, worst 2.3%. So it
+// catches only a degenerate build, which is all it was ever for. Collision and
+// spacing read `measured`, which is the reference's box, not a tier's.
 export const BOX_MARGIN = 1.8
 
 /**
  * The rock's MEAN horizontal silhouette width, averaged over the compass.
  *
  * WHAT IT IS FOR is the billboard. `width` and `depth` are the box, so
- * `max(width, depth)` is the WIDEST the rock can ever look -- and a card sized
- * to that is that wide from every bearing, because it spins to face the eye.
- * Measured over the bank, the widest extent averages 1.4x the mesh's actual
- * silhouette across the compass and reaches 1.7x on the slabs, so a rock
- * swapping to its card visibly swelled. The mean is the number that makes the
- * swap free on average, which is the only thing a single quad can promise: it
- * is still narrow when the rock turns its long side to you and wide when it
- * turns its short side, but it no longer sits above BOTH.
+ * `max(width, depth)` is the WIDEST the rock can ever look -- and a card sized to
+ * that is that wide from every bearing, because it spins to face the eye. Over the
+ * bank the widest extent averages 1.4x the mesh's actual silhouette and reaches
+ * 1.7x on the slabs, so a rock swapping to its card visibly swelled. The mean makes
+ * the swap free on average, which is all a single quad can promise.
  *
- * A HALF TURN, not a full one, because the extent along a bearing and the
- * extent along its opposite are the same measurement. 90 steps is 2 degrees,
- * against a signal whose whole variation is the aspect ratio -- doubling the
- * steps moves the answer by under a tenth of a percent on every shape in the
- * bank.
+ * A HALF TURN, because the extent along a bearing and along its opposite are the
+ * same measurement. 90 steps is 2 degrees against a signal whose whole variation is
+ * the aspect ratio -- doubling them moves the answer by under a tenth of a percent
+ * on every shape in the bank.
  *
- * Taken on the SEATED reference, like every other entry in `measured`, so the
- * buried belly is flattened rather than counted.
+ * Taken on the SEATED reference, like every other entry in `measured`, so the buried
+ * belly is flattened rather than counted.
  */
 function meanPlanWidth(pos, steps = 90) {
   let total = 0
@@ -777,18 +636,14 @@ export function buildRock(options = {}) {
     }
   }
 
-  // Match this tier's average silhouette radius to the reference's. Sampling a
-  // lumpy shape on 20 directions instead of 320 does not just round the corners
-  // off, it loses AREA -- every peak between two samples is cut away -- so an
-  // untouched T20 reads smaller than the T180 it replaces and the swap looks
-  // like the rock jumping backwards. One uniform gain about the bed origin
-  // buys that back -- proportions, lean and the bed plane are all untouched --
-  // and it drives the mean signed error between a tier and the reference to
-  // roughly zero, which is the number a player perceives as a pop. What it
-  // cannot fix is the SPREAD: the coarse tier is still short in some directions
-  // and now long in others. That is the right trade. A silhouette that is the
-  // right size and the wrong shape is invisible at the range a T20 is drawn at;
-  // one that is the right shape and the wrong size is a visible jump.
+  // Match this tier's average silhouette radius to the reference's. Sampling a lumpy
+  // shape on 20 directions instead of 320 does not just round the corners off, it
+  // loses AREA -- every peak between two samples is cut away -- so an untouched T20
+  // reads smaller than the T180 it replaces and the swap looks like the rock jumping
+  // backwards. One uniform gain about the bed origin buys that back with proportions,
+  // lean and bed plane untouched. What it cannot fix is the SPREAD, and that is the
+  // right trade: a silhouette that is the right size and the wrong shape is invisible
+  // at the range a T20 is drawn at; the right shape at the wrong size is a jump.
   const tierSupport = meanSupport(positions, cx, cy, cz)
   let gain = tierSupport > 1e-6 ? refSupport / tierSupport : 1
 

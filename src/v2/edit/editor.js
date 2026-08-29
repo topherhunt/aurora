@@ -20,32 +20,29 @@ import { SCULPT_MODES } from '../height/sculpt.js'
 // and a remesh. The host forwards raw pointer and key events and gets a `dirty
 // rect` callback back; it does not know about tools.
 //
-// FOUR THINGS IN HERE ARE NOT OBVIOUS AND ARE WORTH READING BEFORE CHANGING:
+// FIVE THINGS IN HERE ARE NOT OBVIOUS AND ARE WORTH READING BEFORE CHANGING:
 //
-// PICKING GOES THROUGH THE FIELD, NOT THE MESH. Every terrain click is
-// `raymarchGround`, for the reasons written at the top of pick.js -- the mesh
-// under the cursor is whatever LOD the streamer happens to have there.
+// PICKING GOES THROUGH THE FIELD, NOT THE MESH -- `raymarchGround`, for the reasons
+// at the top of pick.js: the mesh under the cursor is whatever LOD the streamer
+// happens to have there.
 //
-// CLICK IS NOT POINTERDOWN. Mouse-look starts on the same button on the same
-// canvas, so a press that MOVES is a camera drag and must not also place a
-// river point. A press is a click only if it comes up within DRAG_SLOP pixels
-// of where it went down. Without that, looking around while the river tool is
-// armed litters the world with control points.
+// CLICK IS NOT POINTERDOWN. Mouse-look starts on the same button on the same canvas,
+// so a press that MOVES is a camera drag; a press is a click only if it comes up
+// within DRAG_SLOP pixels of where it went down. Without that, looking around with
+// the river tool armed litters the world with control points.
 //
 // THE GIZMO GETS FIRST REFUSAL. TransformControls installs its own pointerdown
-// listener on the same canvas (see gizmo.js), so both it and this class see
-// every press. `gizmo.overHandle` is checked first and the press is dropped:
-// otherwise reaching for the translate arrow while the lake tool is armed
-// creates a lake under the arrow at the same time as dragging it.
+// listener on the same canvas (gizmo.js), so both it and this class see every press.
+// `gizmo.overHandle` is checked first and the press dropped, or reaching for the
+// translate arrow with the lake tool armed creates a lake under the arrow.
 //
 // UNDO RESTORES INTO THE LIVE `Layers`. See restore.js -- `Layers.deserialize`
 // returns a new instance and half the engine holds a reference to the old one.
 //
-// KEY CONFLICT, KNOWN AND DELIBERATE: `S` is walk-backward in the host's
-// movement code and scale-mode in Blender's muscle memory, which §18 asked for
-// by name. The resolution here is that G/R/S are consumed ONLY while a gizmo is
-// attached -- with nothing selected, S still walks. `onKeyDown` returns true
-// when it consumed the key, and the host must not act on it in that case.
+// KEY CONFLICT, KNOWN AND DELIBERATE: `S` is walk-backward in the host and
+// scale-mode in Blender's muscle memory, which §18 asked for by name. G/R/S are
+// consumed ONLY while a gizmo is attached, so with nothing selected S still walks.
+// `onKeyDown` returns true when it consumed the key; the host must then not act.
 // ---------------------------------------------------------------------------
 
 export const TOOLS = ['select', 'snowline', 'lake', 'river', 'road', 'sculpt']
@@ -64,20 +61,16 @@ const SELECTABLE = ['snow', 'lake', 'river', 'road']
 // THE EDITOR AND THE MARKER LAYER NAME HANDLES DIFFERENTLY, and the two shapes
 // have to be translated rather than assumed equal.
 //
-// Markers has one InstancedMesh per GEOMETRY, so its kinds are snow / spline /
-// lake -- a river point and a road point are the same bead and live in the same
-// mesh. Its snow records carry the literal id 'snow' (a snow point has no id in
-// the document) and its lake records carry index 0.
+// Markers has one InstancedMesh per GEOMETRY, so its kinds are snow / spline / lake
+// -- a river point and a road point are the same bead in the same mesh -- its snow
+// records carry the literal id 'snow' and its lake records carry index 0. The editor
+// selects by DOCUMENT identity instead: kind river or road so the panel can name the
+// thing, id null for a snow point, index null for a whole lake or path.
 //
-// The editor selects by DOCUMENT identity: kind river or road, so the context
-// panel can name the thing and the tools can tell one from the other; id null
-// for a snow point; index null for a whole lake or a whole path.
-//
-// Handing one vocabulary to the other throws -- setHighlight rejects an unknown
-// kind -- which is the good case. The quiet one is the id and index mismatch:
-// setHighlight compares all three fields to decide which instance to light up,
-// so ('lake', 'l3', null) against a record of ('lake', 'l3', 0) selects nothing
-// at all and simply draws no highlight.
+// Handing one vocabulary to the other throws on an unknown kind, which is the GOOD
+// case. The quiet one is the id/index mismatch: setHighlight compares all three
+// fields, so ('lake', 'l3', null) against a record of ('lake', 'l3', 0) selects
+// nothing at all and simply draws no highlight.
 // ---------------------------------------------------------------------------
 
 function markerHandle(kind, id, index) {
@@ -116,50 +109,39 @@ const HANDLE_PICK_PX = 10
 const MIN_SNOW_RADIUS = 10
 const MIN_PATH_WIDTH = 0.5
 
-// A snow-line control point should shape ONE MOUNTAIN, which is a fraction of
-// the world rather than a fixed number of metres. DERIVED, because the world box
-// has now been restated twice mid-build (16384 -> 4096 -> 8192) and a typed
-// literal was wrong both times. At WORLD_SIZE 8192 this is 409.6 m.
+// A snow-line control point should shape ONE MOUNTAIN, which is a fraction of the
+// world rather than a fixed number of metres. DERIVED, because the world box has
+// been restated twice mid-build (16384 -> 4096 -> 8192) and a typed literal was
+// wrong both times. 1/40 was the 16 km draft's guess and too small by four -- a
+// 205 m circle covers one flank of one peak, so a snow line over a massif took a
+// dozen points. The authoring unit is a MASSIF, not a summit: 1/10 is 819.2 m at
+// WORLD_SIZE 8192, so two points span a valley.
 //
-// 1/40 was the first guess, from the 16 km draft, and it was too small by four:
-// on an 8 km world a 205 m circle covers one flank of one peak, so pulling a
-// snow line up over a massif took a dozen points where it should have taken two.
-// 1/20 halved the point count and was still short of what painting a snow line
-// across a RANGE takes, which is the actual authoring gesture -- the unit that
-// gets a snow line is a massif, not a summit. 1/10 is 819.2 m at WORLD_SIZE
-// 8192, so two points span a valley.
-//
-// This is the DEFAULT only -- the radius is per point, editable in the panel and
-// draggable with the scale gizmo, and nothing about the field's resolution
-// changes with it (see the note on GRID_RES in layers/snowline.js: that sets how
-// finely the deviation field is SAMPLED, not how far one point reaches).
+// The DEFAULT only -- radius is per point, editable and scale-draggable, and nothing
+// about the field's resolution changes with it (GRID_RES in layers/snowline.js sets
+// how finely the deviation field is SAMPLED, not how far one point reaches).
 const SNOW_RADIUS = WORLD_SIZE / 10
 
-// A lake's size is physical rather than world-relative, so this is a literal --
-// but halved from the 16 km draft's 40 m along with the world, because the
-// default is not really "how big is a pond", it is "how big a thing do you want
-// to have to drag OUTWARD", and that is a fraction of what you can see. 20 m of
-// radius is a 40 m pond: visible from the shore you clicked on, and small enough
-// that growing it reads as authoring where shrinking one reads as fixing.
+// A lake's size is physical rather than world-relative, so this is a literal, but
+// halved from the 16 km draft's 40 m along with the world: the default is not "how
+// big is a pond", it is "how big a thing do you want to have to drag OUTWARD". 20 m
+// of radius is a 40 m pond -- visible from the shore you clicked, small enough that
+// growing it reads as authoring where shrinking one reads as fixing.
 //
-// SHAPE 1 (rectangle) AND CARVE 0, both of which were the other way round first.
+// SHAPE 1 (RECTANGLE) AND CARVE 0, both of which were the other way round first.
 //
-// The rectangle is about control. An ellipse gives the author two half-extents
-// and a rotation and then rounds every corner off; a lake tucked into the corner
-// of a valley wants to REACH the corner, and the only way to do that with an
-// ellipse is to oversize it until it swallows the ground on either side. Both
-// shapes are still authored by the same two numbers -- see water-bodies.js's
-// footprint(), where the rectangle case is two comparisons -- so this costs
-// nothing and the ellipse is one click away in the panel.
+// The rectangle is about control: an ellipse rounds every corner off, and a lake
+// tucked into the corner of a valley wants to REACH the corner. Both shapes are
+// authored by the same two numbers (water-bodies.js footprint(), where the rectangle
+// case is two comparisons), so this costs nothing and the ellipse is one click away.
 //
-// Carving is off because the basin it digs is the footprint, which means a
-// carving lake is always exactly as round (or as rectangular) as its own outline
-// and every shoreline in the world reads as stamped. A lake now sits on whatever
-// ground is already there and it is the AUTHOR's job to put it somewhere with a
-// hollow -- which is also what keeps the shoreline irregular, because the
-// waterline is then the intersection of a flat plane with real terrain. `depth`
-// is kept on the record: it is the number carve WOULD use, and turning carve
-// back on for one lake should not also require re-typing it.
+// Carving is off because the basin it digs IS the footprint, so a carving lake is
+// exactly as round or as rectangular as its own outline and every shoreline reads as
+// stamped. A lake now sits on whatever ground is there and it is the AUTHOR's job to
+// find a hollow -- which is what keeps the shoreline irregular, since the waterline
+// is then a flat plane intersecting real terrain. `depth` stays on the record: it is
+// the number carve WOULD use, and turning carve back on should not require re-typing
+// it.
 const LAKE_DEFAULTS = { rx: 20, rz: 20, rot: 0, shape: 1, carve: 0, depth: 8 }
 const LAKE_LIFT = 1 // §18: "y = groundY + 1" -- the water sits just above the hit
 const PATH_WIDTH = { river: 8, road: 6 } // metres of real river and real road; nothing to rescale

@@ -3,100 +3,47 @@ import { mulberry32 } from '../sim/mathx.js'
 import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
-// Procedural mushrooms.
+// Procedural mushrooms. The argument is DESIGN.md §24; this is the contract.
 //
-// A mushroom is neither of the two prop shapes this project already knows how
-// to build, and saying why is most of the design.
+// A mushroom is neither prop shape this project already builds. Not a fern: a
+// frond is genuinely flat, so an alpha cutout holds it, while a cap is a SOLID OF
+// REVOLUTION whose silhouette curve IS its identity and whose cutout is a
+// semicircle. Not a rock either: a rock is noise under one repeated tile, a cap is
+// a profile that must be right to the millimetre at the rim under a RADIAL texture
+// -- gills, streaks, concentric scales all running from the axis outward. So this
+// file builds surfaces of revolution with polar UVs, and four things follow.
 //
-// It is not a fern. A fern is a rosette of FLAT CARDS whose entire silhouette
-// lives in an alpha channel, and that works because a frond is genuinely flat:
-// photograph it once and you have it from every angle that matters. A mushroom
-// cap is a SOLID OF REVOLUTION seen from above at ankle height and from below
-// when it is three metres tall in a cave. Its silhouette is a curve -- the
-// difference between a cone, a dome, a parasol and a funnel is the entire
-// identity of the thing -- and an alpha cutout of a dome is a semicircle, which
-// is to say nothing at all.
+// 1. THE WHOLE CAP FAMILY IS TWO NUMBERS. Mycology's eight named cap shapes are one
+//    profile with two knobs, plus every shape between them:
+//        y(t) = capRise * (1 - t^capCurve) + margin * t^3
+//    t is normalised radius, axis to rim. capRise is apex above rim -- positive for
+//    any cap that sheds water, NEGATIVE for a funnel, and that sign is the whole
+//    difference between a bolete and a chanterelle. capCurve is where the drop
+//    happens; margin lifts or drops the outer eighth on its own.
 //
-// It is not a rock either. A rock's shape is noise and its texture is one tile
-// repeated; a mushroom's shape is a PROFILE CURVE that has to be right to the
-// millimetre at the rim, and its texture is radial -- gills, streaks, concentric
-// scales -- all of which run from the axis outward. Feed a mushroom the rock's
-// per-face planar projection and the gills run diagonally across the underside.
+// 2. NORMALS COME FROM THE SURFACE, NOT FROM THE TRIANGLES. A polar UV duplicates
+//    the column at theta = 0 = TAU, and computeVertexNormals gives each copy HALF
+//    its neighbourhood -- a bright seam apex to rim on every mushroom at every
+//    angle. Sampling the parametric surface makes theta wrap, so the seam cannot
+//    exist, and cap top and underside get their own normals so the rim reads as an
+//    edge rather than a soft fold.
 //
-// So this file builds surfaces of revolution with polar UVs, and everything
-// below follows from those two words.
+// 3. COLOUR LIVES IN THE TEXTURE, NOT IN THE TINT. The per-instance tint is a
+//    scalar multiply and cannot make a scarlet cap on a white stem, so the cap and
+//    flesh sheets carry colour, addressed per vertex by capCell and fleshCell: two
+//    independent hues at no extra attribute, material or draw call. The tint is
+//    left doing what it is good at, a value and warmth jitter. The named cost is
+//    mip bleed between sheet cells, which is why the sheets are 2x2 not 4x4.
 //
-// 1. THE WHOLE CAP FAMILY IS TWO NUMBERS.
+// 4. A CLUMP IS ONE GEOMETRY. Six caps of staggered ages read as something that
+//    grew where one reads as a placed object, and §5's binding cost is 37 ns per
+//    visible INSTANCE regardless of triangles -- so `cluster` is a sixth of the
+//    per-frame CPU of six instances. Same argument as `shards` in props/rock.js.
 //
-// Mycology names about eight cap shapes -- conical, campanulate, convex, plane,
-// umbonate, depressed, infundibuliform, offset. They are not eight shapes. They
-// are one profile with two knobs:
-//
-//     y(t) = capRise * (1 - t^capCurve) + margin * t^3
-//
-// where t is the normalised radius from axis (0) to rim (1). `capRise` is how
-// far the apex stands above the rim -- POSITIVE for every cap that sheds water,
-// NEGATIVE for a funnel, and the sign change is the only difference between a
-// bolete and a chanterelle. `capCurve` is where the drop happens: 1 is a
-// straight cone, 2 a paraboloid dome, 6 a flat parasol with a cliff at the rim.
-// `margin` then lifts or drops the outer eighth on its own, which is the
-// inrolled rim of a young button (negative) and the flaring rim of an old one
-// (positive).
-//
-// Two knobs, eight named shapes, and -- more to the point -- every shape
-// BETWEEN them, which is where the real ones actually live.
-//
-// 2. NORMALS ARE COMPUTED FROM THE SURFACE, NOT FROM THE TRIANGLES.
-//
-// `computeVertexNormals` is wrong here for a specific reason that would have
-// been found late and blamed on lighting. A polar UV needs a duplicated column
-// of vertices at theta = 0 = TAU, because one vertex cannot hold both u = 0 and
-// u = 1. Those duplicates are coincident in space but separate in the index, so
-// triangle-averaged normals give each of them HALF the neighbourhood -- and the
-// cap gets a visible bright seam running from apex to rim, on every mushroom,
-// at every angle. Sampling the parametric surface instead makes theta a
-// continuous variable that simply wraps, so the seam cannot exist.
-//
-// It also gets the crease at the rim right for free: the cap top and the cap
-// underside are separate surfaces that happen to share an edge, so they get
-// their own normals and the rim reads as an edge rather than as a soft fold.
-//
-// 3. COLOUR LIVES IN THE TEXTURE, NOT IN THE TINT.
-//
-// The shared prop material tints PER INSTANCE (`BatchedMesh.setColorAt`, see
-// props/rock.js) and that is a scalar multiply over the whole instance. A rock
-// is one material throughout, so a multiply is exactly right for it. A mushroom
-// is two: the thing that makes a fly agaric read as a fly agaric is a SCARLET
-// CAP ON A WHITE STEM, and no per-instance multiply can produce two hues.
-//
-// So the cap sheet and the flesh sheet (props/mushroom-texture.js) carry
-// colour, addressed per vertex by which cell of the sheet a surface samples --
-// `capCell` for the top, `fleshCell` for the underside, stem and ring. Cap and
-// stem are therefore coloured INDEPENDENTLY at zero cost: no extra attribute,
-// no extra material, no extra draw call. The per-instance tint is then left to
-// do what a tint is good at, which is a gentle value and warmth jitter so no
-// two mushrooms in one clump are the same mushroom twice.
-//
-// The cost is named rather than hidden: sheet cells bleed into each other in
-// the low mips, so a mushroom far enough away to be sampling a 4 px mip is
-// converging on the average of its sheet. That is a card's job long before it
-// happens -- the grass class takes its card at 20 m -- but it is why the sheets
-// are 2x2 rather than 4x4.
-//
-// 4. A CLUMP IS ONE GEOMETRY.
-//
-// Mushrooms come in troops. One mushroom alone reads as a placed object; six of
-// staggered ages around one patch of mycelium reads as something that grew. So
-// `cluster` builds them into ONE geometry, which is also the cheaper answer:
-// §5's binding cost for small props is 37 ns per visible INSTANCE regardless of
-// triangles, so six caps in one instance is a sixth of the per-frame CPU of six
-// instances. Same argument as `shards` in props/rock.js.
-//
-// ATTRIBUTES: always { position, normal, uvProj, texLayer }, indexed. That is
-// the shared prop material's layout (src/material.js) and BatchedMesh rejects a
-// geometry that disagrees. Unlike buildFern there is no second `uv` layout,
-// because the bench renders the real material -- a mushroom without its two
-// sheets is a grey lamp.
+// ATTRIBUTES: always { position, normal, uvProj, texLayer }, indexed. That is the
+// shared prop material's layout (src/material.js) and BatchedMesh rejects a
+// geometry that disagrees. No second `uv` layout, unlike buildFern, because the
+// bench renders the real material -- a mushroom without its sheets is a grey lamp.
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2
@@ -128,18 +75,15 @@ export const MUSHROOM_DEFAULTS = {
   sweep: TAU,      // arc of the cap. < TAU with no stem is a BRACKET fungus
 
   // --- underside ------------------------------------------------------------
-  underside: false, // build the gilled underside at all. OFF by default, and it
-                   // is worth being clear that this is a DEFAULT rather than a
-                   // tier setting: a forest-floor mushroom is a thing you look
-                   // down on, so its gills are a third of its triangles spent
-                   // on the one face nobody sees. Turn it on for anything you
-                   // can walk under. What "off" actually leaves behind is a cap
-                   // that is a single sheet, and since the prop material is
-                   // DoubleSide and re-flips the normal (src/material.js), that
-                   // sheet's far side is lit by the cap's own UPWARD normal --
-                   // so from below the cap reads as lit rather than shadowed,
-                   // which is exactly the trade and is fine right up until you
-                   // are standing under it
+  underside: false, // build the gilled underside at all. OFF by default, and that
+                   // is a DEFAULT rather than a tier setting: a forest-floor
+                   // mushroom is looked down on, so its gills are a third of its
+                   // triangles spent on the one face nobody sees. Turn it on for
+                   // anything you can walk under. "Off" leaves a cap that is a
+                   // single sheet, and since the prop material is DoubleSide and
+                   // re-flips the normal (src/material.js) that sheet reads as LIT
+                   // from below rather than shadowed -- fine until you stand under
+                   // it
   gillDrop: 0.06,  // how far the underside hangs below the rim before running
                    // back up to the stem. 0 = a flat disc, which reads as paper
   gillBlades: 0,   // ACTUAL radial gill geometry, 0 = texture only. 2 triangles
@@ -228,29 +172,22 @@ function cellUV(cell, u, v) {
   return [cx + INSET + u * span, cy + INSET + v * span]
 }
 
-// The cap top does NOT use cellUV's polar mapping. It is projected along the
-// cap's own axis instead -- a decal laid on the cap from above -- and the
-// reason is triangulation rather than art.
+// The cap top does NOT use cellUV's polar mapping. It is projected along the cap's
+// own axis -- a decal laid on from above -- and the reason is triangulation rather
+// than art: a polar chart interpolates the ANGLE linearly across each apex wedge,
+// which slices any wart wider than 40 degrees of arc and runs the radius 6% long
+// inside every wedge, both worst toward the middle where a cap is most visible.
 //
-// A polar mapping hands each of the `radial` apex triangles a WEDGE of the
-// chart and lets the GPU interpolate the angle linearly across it, which the
-// true angle does not do. On the fly agaric's 9-gon that slices any wart wider
-// than 40 degrees of arc (an inner-ring wart is 1.02 wedges wide, so all of
-// them) and runs the radius 6% long inside every wedge. Both artefacts grow
-// toward the middle, where the wedges converge and a cap is most visible.
+// A planar projection has neither, and not by being finer -- by being AFFINE. u and
+// v are linear in the cap's local x and z, a triangle's x and z are already linear
+// in its barycentrics, so the hardware's interpolation is EXACT and the texture
+// stops caring how many triangles the cap has. It also collapses the apex fan to a
+// single UV point instead of `cols + 1` of them (§24).
 //
-// A planar projection has neither, and not by being finer -- by being AFFINE. u
-// and v come out linear in the cap's local x and z; a triangle's x and z are
-// already linear in its barycentrics; so the hardware's linear interpolation is
-// EXACT and the texture stops caring how many triangles the cap has. It also
-// collapses the apex fan to a single point in UV instead of `cols + 1`
-// different ones, which is the same statement read the other way round.
-//
-// `rN` is the vertex's radius as a fraction of the cap's widest radius and
-// `theta` its angle, so this is the disc of props/mushroom-texture.js addressed
-// in its own coordinates. Inset on all four sides like any other cell -- the
-// disc has no wrap to protect, and the rim touches the cell edge at four points
-// without it.
+// `rN` is radius as a fraction of the cap's widest and `theta` the angle, so this is
+// mushroom-texture.js's disc in its own coordinates. Inset on all four sides like
+// any other cell -- no wrap to protect, but the rim touches the cell edge at four
+// points without it.
 function capUV(cell, rN, theta) {
   const cx = (cell % SHEET_GRID) * CELL
   const cy = Math.floor(cell / SHEET_GRID) * CELL
@@ -502,29 +439,24 @@ function addMushroom(out, p, place) {
   // --- the cap must not be impaled on its own stalk --------------------------
   //
   // A dome sits above the stem tip and needs nothing done to it. A FUNNEL does:
-  // with `capRise` negative the profile's low point is the axis, which is
-  // exactly where the stalk is, so a chanterelle built naively has its stem
-  // standing up through the middle of its own cap.
+  // with `capRise` negative the profile's low point is the axis, which is exactly
+  // where the stalk is, so a chanterelle built naively has its stem standing up
+  // through the middle of its own cap. Raising the cap until its surface meets the
+  // stalk AT THE STALK'S RADIUS closes it onto the top rim of the tube with no
+  // slit, and the bowl carries on falling away INSIDE the tube where the walls hide
+  // it -- which is what the real thing does.
   //
-  // The fix is to raise the cap until its surface meets the stalk AT THE
-  // STALK'S RADIUS rather than at the axis, and aligning there is the whole of
-  // it: the cap then closes onto the top rim of the tube with no slit, and the
-  // bowl carries on falling away INSIDE the tube where the tube's own walls
-  // hide it. That is also what the real thing does, since a chanterelle's
-  // funnel is continuous with its stalk rather than resting on top of one.
+  // "THE STALK'S RADIUS" IS ITS INSCRIBED RADIUS, not `stalkR`. A stem of
+  // `stemRadial` columns is a prism whose flat faces sit only
+  // stalkR * cos(pi / stemCols) from the axis -- half the circumradius at the
+  // default 3 columns -- so aligning to the circumradius pokes three corners up
+  // through the cap, the exact bug this block removes. The inscribed radius leaves
+  // the opposite error, a sub-millimetre slit at the three vertices, and a slit you
+  // cannot see beats a spike you can.
   //
-  // "The stalk's radius" is its INSCRIBED radius, not `stalkR`. A stem drawn
-  // with `stemRadial` columns is a prism, and the middle of a prism's flat face
-  // is only stalkR * cos(pi/stemCols) from the axis -- at the default 3 columns
-  // that is HALF the circumradius. Align to the circumradius instead and the
-  // three flat faces each poke a corner up through the cap, which is the exact
-  // bug this block exists to remove. Aligning to the inscribed radius leaves
-  // the opposite error, a sub-millimetre slit at the three vertices, and a slit
-  // you cannot see beats a spike you can.
-  //
-  // Sampled around theta rather than solved because `wavy` and `umbo` both
-  // perturb the height and neither inverts. Clamped at zero, so nothing whose
-  // cap already sheds water moves at all.
+  // Sampled around theta rather than solved because `wavy` and `umbo` both perturb
+  // the height and neither inverts. Clamped at zero, so nothing whose cap already
+  // sheds water moves at all.
   let capLift = 0
   if (stem) {
     const tStalk = Math.min(1, (stalkR * Math.cos(Math.PI / stemCols)) / Math.max(1e-4, p.capRadius))

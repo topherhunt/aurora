@@ -19,38 +19,31 @@ import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './rel
 //   2. detail   + Detail.at -- band-limited fractal, modulated by the coarse slope
 //   3. rivers   carve. Channels cut through whatever is there.
 //   4. lakes    basin carve, for lakes with `carve` set
-//   5. roads    smooth. LAST, and that is the whole point of stating an order:
-//               a road crossing a river has to read as a CAUSEWAY. Run the road
-//               first and the river then cuts its channel straight through the
-//               carriageway, which draws a ford where the author drew a bridge.
-//               Steps 3 to 5 live in Layers.carve, in that order, so there is
-//               exactly one place that can get it wrong.
+//   5. roads    smooth. LAST, and that is the whole point of stating an order: a
+//               road crossing a river must read as a CAUSEWAY, and run first it
+//               gets its carriageway cut through by the river -- a ford where the
+//               author drew a bridge. Steps 3 to 5 live in Layers.carve, in that
+//               order, so exactly one place can get it wrong.
 //
 // `cell` band-limits step 2 and NOTHING ELSE. Collision, picking and the editor
-// pass cell = 0 and get the exact field; the mesher passes its own cell size and
-// gets a version of that field with the octaves its triangles cannot resolve
-// faded out. This is why the player never falls through a coarse chunk: the
-// ground she collides against is the cell = 0 field, which is the LIMIT of every
-// band-limited version rather than a different function, so a coarse chunk drawn
-// under her feet is a low-pass image of exactly the surface she is standing on
-// and the error is bounded by the octaves that were faded, not by a mismatch
-// between two independent evaluations.
+// pass cell = 0 and get the exact field. That is why the player never falls
+// through a coarse chunk: the ground she collides against is the LIMIT of every
+// band-limited version rather than a different function, so the error is bounded
+// by the octaves that were faded and not by a mismatch between two evaluations.
 //
-// TWO SLOPE CONVENTIONS LIVE IN THIS REPO AND THEY ARE DIFFERENT NUMBERS. Read
-// the one-line note on slopeAt and on slope01At before calling either. Getting
-// them crossed does not throw anywhere -- it silently blocks the player on flat
-// ground or lets her walk up a cliff -- so the gate asserts the units on a plane
-// of known inclination rather than trusting these comments.
+// TWO SLOPE CONVENTIONS LIVE IN THIS REPO AND THEY ARE DIFFERENT NUMBERS -- see
+// slopeAt and slope01At. Crossing them throws nowhere; it silently blocks the
+// player on flat ground or walks her up a cliff, so the gate asserts the units
+// on a plane of known inclination rather than trusting these comments.
 // ---------------------------------------------------------------------------
 
 // Percentile anchors for the vertex-colour altitude ramp. The BAND is chosen
 // here; the METRES are measured off whatever image is loaded, in _bands below.
 //
 // p25 to p90 rather than min to max because both tails are outliers by
-// construction: the lowest quarter of an eroded landmass is one flat basin
-// floor, and the top few percent is a handful of summits. Anchoring on the
-// extremes would spend the entire ramp on ground almost nobody stands on and
-// leave the inhabited middle a single flat colour.
+// construction -- the lowest quarter of an eroded landmass is one basin floor
+// and the top few percent a handful of summits -- so the extremes would spend
+// the whole ramp on ground nobody stands on.
 const ALT_LO_P = 0.25
 const ALT_HI_P = 0.90
 
@@ -59,19 +52,13 @@ const ALT_HI_P = 0.90
 // it is one linear pass over the texel array instead of sorting a million floats.
 const HIST_BINS = 8192
 
-// THE DETAIL SEED, and it lives here because there is nowhere else it can.
-//
-// The worker's init message carries { heightmap, doc, epoch } and no seed -- the
-// protocol is fixed by the renderer side. But the worker and the main thread each
-// construct their own V2Height, and if those two disagree about the seed then the
-// terrain she is DRAWN standing on and the terrain she COLLIDES with are two
-// different fields that differ by metres at every point. Nothing would throw; she
-// would simply hover, or sink, depending on the octave phase.
-//
-// So the seed is a shared module constant rather than a message field, and the
-// default is the point: neither side has to remember to pass it. The gate passes
-// an explicit one to check that two instances built from the same seed agree and
-// that the seed is actually wired to the octave offsets.
+// THE DETAIL SEED, and it lives here because there is nowhere else it can. The
+// worker's init message carries { heightmap, doc, epoch } and no seed, but the
+// worker and the main thread each construct their own V2Height -- and if the two
+// disagree about the seed, the terrain she is DRAWN on and the terrain she
+// COLLIDES with differ by metres at every point. Nothing throws; she hovers or
+// sinks, depending on the octave phase. So it is a shared module constant with a
+// default, and neither side has to remember to pass it.
 export const WORLD_SEED = 20260824
 
 export class V2Height {
@@ -99,18 +86,13 @@ export class V2Height {
 
     this._rebuild()
 
-    // THE EMPTY-DOCUMENT FAST PATH.
-    //
-    // An unedited v2 world is the common case and it must cost exactly one
-    // branch, not a walk through three spatial indexes per vertex. `_authored`
-    // is "does any layer change the GEOMETRY here" -- lakes and paths, not snow
-    // points, because a snow point moves vertex colours and never a vertex.
-    //
+    // THE EMPTY-DOCUMENT FAST PATH. An unedited v2 world is the common case and
+    // must cost one branch, not a walk through three spatial indexes per vertex.
+    // `_authored` is "does any layer change the GEOMETRY here" -- lakes and
+    // paths, not snow points, which move vertex colours and never a vertex.
     // Recomputed when the epoch moves rather than on every mutation, so nothing
-    // has to remember to invalidate it: Layers bumps epoch on every commit, and
-    // an integer compare per query is cheaper than the Map lookups it replaces.
-    // check-v2-field's "empty-document fast path" section counts layer calls
-    // through a spy to prove the branch is real.
+    // has to remember to invalidate it. check-v2-field counts layer calls through
+    // a spy to prove the branch is real.
     this._epoch = -1
     this._authored = false
     this._syncAuthored()
@@ -123,23 +105,20 @@ export class V2Height {
   /**
    * Replace the world with a level plane at `y` metres, or `null` to restore it.
    *
-   * AN ABLATION TOOL, and specifically the one the Quest route needs: every
-   * scatter in v2 places itself by asking this object for a height and a slope,
-   * so a flat answer here puts the whole prop world onto one plane WITHOUT any
-   * of them knowing they are being tested. That is the only way to ask "is the
-   * grass expensive, or is standing the grass on a streaming LOD terrain
-   * expensive" and get a clean answer -- and it is why this lives here rather
-   * than as a flag threaded through eight scatters.
+   * AN ABLATION TOOL, and the one the Quest route needs: every scatter in v2
+   * places itself by asking this object for a height and a slope, so a flat
+   * answer here puts the whole prop world on one plane WITHOUT any of them
+   * knowing they are being tested -- which is the only way to separate "the grass
+   * is expensive" from "standing the grass on a streaming LOD terrain is
+   * expensive", and why this lives here rather than as a flag threaded through
+   * eight scatters.
    *
-   * IT DOES NOT MOVE ANYTHING ALREADY PLACED. A prop's y is read once, when it
-   * is put down; the caller has to re-place every layer after flipping this, the
-   * same way onRelief does when the ground moves under it.
+   * IT DOES NOT MOVE ANYTHING ALREADY PLACED: a prop's y is read once, when it is
+   * put down, so the caller re-places every layer after flipping this.
    *
    * SLOPE GOES TO ZERO WITH IT, not just height. Half the scatters reject a site
-   * on `tan` before they ever look at the height, so a flat field with the
-   * import's slopes still in it would grass a plane in exactly the imported
-   * mountain's pattern -- which is the confusing half-answer this exists to
-   * avoid.
+   * on `tan` before they look at the height, so a flat field with the import's
+   * slopes still in it would grass a plane in the imported mountain's pattern.
    */
   setFlat(y) {
     if (y !== null && !Number.isFinite(y)) throw new Error(`V2Height.setFlat: y must be a finite number or null, got ${y}`)
@@ -153,20 +132,18 @@ export class V2Height {
    *
    *   1. erode      relaxes the import toward the repose angle, producing the
    *                 field the world is actually built on
-   *   2. exposure   convexity, measured on THAT field -- measure it on the
-   *                 import instead and the crag band decorates ground the
-   *                 erosion has already moved
-   *   3. calibrate  the detail amplitude, measured on that field and THROUGH
-   *                 the sharpen curve and the exposure gain
+   *   2. exposure   convexity, measured on THAT field -- measure it on the import
+   *                 and the crag band decorates ground erosion has already moved
+   *   3. calibrate  the detail amplitude, measured on that field and THROUGH the
+   *                 sharpen curve and the exposure gain
    *   4. detail     the octave table the calibration just sized
    *   5. crag       the crease band, which reads exposure and the fall line
-   *   6. ridge      the directed crease, whose axes are the Hessian of THAT
-   *                 field -- eroded ground has different spines from the import
+   *   6. ridge      the directed crease, whose axes are the Hessian of THAT field
    *
-   * Called from the constructor and from setRelief, and it is the same code
-   * both times on purpose: a relief change has to leave this object in the state
-   * it would have been constructed in, or a knob would behave differently
-   * depending on whether it was on at boot.
+   * Called from the constructor and from setRelief, and the same code both times
+   * on purpose: a relief change has to leave this object in the state it would
+   * have been constructed in, or a knob would behave differently depending on
+   * whether it was on at boot.
    */
   _rebuild() {
     const seed = this.seed
@@ -192,35 +169,28 @@ export class V2Height {
     this.exposure = needs.exposure ? new ExposureField(ground) : null
 
     // THE SHIPPED PATH, kept as a literal branch rather than as an emergent
-    // property. `sharpen` lives inside Detail's octave loop and `erode` lives in
-    // `ground`, so neither needs the composed expression; only the two terms
-    // that read convexity do. When both are off, every sampler below runs the
-    // exact expression it ran before this file learned the word relief -- so
-    // "all knobs off is bit-identical" is something you can read rather than
-    // something you have to trust the arithmetic for. Note it is NOT keyed on
-    // `this.exposure` existing: crest and snowJag bake the grid without wanting
-    // anything from the geometry path.
+    // property, so "all knobs off is bit-identical" is something you can read
+    // rather than trust the arithmetic for. `sharpen` lives inside Detail's
+    // octave loop and `erode` lives in `ground`, so only the two terms that read
+    // convexity need the composed expression. NOT keyed on `this.exposure`
+    // existing: crest and snowJag bake the grid without wanting the geometry
+    // path.
     this._plain = !(relief.exposure > 0 || relief.crag > 0 || relief.bare > 0 || relief.ridge > 0 || relief.shatter > 0)
 
-    // 2. THE DETAIL TERM IS MEASURED AGAINST THE IMPORT, NOT CONFIGURED.
+    // 2. THE DETAIL TERM IS MEASURED AGAINST THE IMPORT, NOT CONFIGURED. Both of
+    // its scales come from the loaded image: the knee from its texel size, the
+    // amplitude from its own structure function. §18 asks for a tuned ROUGH
+    // constant, and a constant is wrong here -- the import is the thing v2 exists
+    // to let a human replace, and it was replaced twice during this build alone
+    // (16 km at 16 m texels, then 4 km at 4 m, then 8 km at 8 m), each time
+    // leaving a literal fitted to the last one still looking plausible.
     //
-    // Both of its scales come from the loaded image: the knee from its texel
-    // size, the amplitude from its own structure function. §18 asks for a tuned
-    // ROUGH constant; a constant is wrong here, because the import is the thing
-    // v2 exists to let a human replace, and it was replaced twice during this
-    // build alone -- 16 km at 16 m texels, then 4 km at 4 m, then 8 km at 8 m.
-    // A literal fitted to any one of those would still have looked like a
-    // plausible number under the next. See calibrateRough for the basis.
-    //
-    // Measured against the import's UNEXAGGERATED relief: the bake declares how
-    // far it stretched the image (height.json `exaggeration`) and calibrateRough
-    // divides that back out, so raising MAX_Y makes the mountains taller without
-    // making the gravel coarser. That divide is the one deliberate break in the
-    // spectral-continuity argument and its reasoning lives at calibrateRough.
-    //
-    // `rough` may be passed to pin the calibration, which check-v2-field uses to
-    // hold the octave table still while it measures something else. Nothing at
-    // runtime passes it.
+    // Measured against the import's UNEXAGGERATED relief -- the bake declares how
+    // far it stretched the image and calibrateRough divides that back out, so
+    // raising MAX_Y makes the mountains taller without making the gravel coarser.
+    // That divide is the one deliberate break in the spectral-continuity
+    // argument; see calibrateRough. `rough` pins the calibration for the gate;
+    // nothing at runtime passes it.
     const knee = ground.texelSize * KNEE_TEXELS
     const exposureGain = needs.exposure && relief.exposure > 0 ? (x, z) => this._exposureGain(x, z) : null
     if (this._pinnedRough !== null) {
@@ -236,34 +206,25 @@ export class V2Height {
     // and with `erode` up that is the relaxed copy and not the import.
     this.ridge = needs.ridge ? new RidgeField(ground, { seed }) : null
 
-    // 3. CREASE, and it goes LAST on purpose.
-    //
-    // It is not a term in `_micro` -- it replaces the coarse reconstruction
-    // itself, inside Heightmap.sample, so it reaches the mesher, the collision,
-    // the scatter and the raycast through the one call they all already make.
-    // That also means it works in the `_plain` path above without appearing in
-    // it: `_plain` is about the micro stack, and this knob does not touch the
-    // micro stack.
+    // 3. CREASE, and it goes LAST on purpose. It is not a term in `_micro` -- it
+    // replaces the coarse reconstruction itself, inside Heightmap.sample, so it
+    // reaches the mesher, the collision, the scatter and the raycast through the
+    // one call they all already make, and works in the `_plain` path without
+    // appearing in it.
     //
     // ATTACHED AFTER EVERYTHING BAKED FROM `ground` IS BUILT, which is the whole
-    // reason this sits at the bottom of the function. calibrateRough fits the
-    // detail amplitude to the ground's own structure function; a creased surface
-    // has more energy at texel scale, so calibrating against it would pull
-    // `rough` down and change the detail term over the ENTIRE world -- flat
-    // valley floors included -- in response to a knob whose whole claim is that
-    // it only touches crests. Exposure and ridge bake from `ground` for their
-    // own reasons and get the same treatment. Built last, the knob does exactly
-    // what it says and nothing at a distance.
+    // reason it sits at the bottom. calibrateRough fits the detail amplitude to
+    // the ground's own structure function, and a creased surface has more energy
+    // at texel scale, so calibrating against it would pull `rough` down and
+    // change the detail term over the ENTIRE world -- flat valley floors included
+    // -- in response to a knob whose whole claim is that it only touches crests.
     //
     // AND IT IS ATTACHED TO A VIEW, NEVER TO THE IMPORT. With `erode` off
-    // `ground === this.heightmap`, and that object is shared by reference with
-    // every other V2Height reading the same import -- the gate builds a dozen,
-    // and the editor holds one beside the live world. Attaching here directly
-    // means the last field constructed decides what all the others are standing
-    // on: measured, three fields built in a row all came out creased and a
-    // sibling's calibrateRough was fitted to a surface its own knob had switched
-    // off. `view()` shares the texels and owns the operator, so a knob can only
-    // ever change the field it was set on.
+    // `ground === this.heightmap`, an object shared by reference with every other
+    // V2Height reading the same import: attaching directly lets the last field
+    // constructed decide what all the others stand on. Measured, three fields
+    // built in a row all came out creased and a sibling's calibrateRough was
+    // fitted to a surface its own knob had switched off.
     this._attachCrease()
 
     // Invalidated rather than kept: erosion moves the texels the percentile
@@ -278,13 +239,11 @@ export class V2Height {
    * already carries one.
    *
    * IT IS A METHOD BECAUSE TWO PATHS REPLACE `this.ground` AND BOTH MUST DO
-   * THIS. `_rebuild` makes it from the import or the eroded copy; coarsePatched
-   * makes a fresh one on every tick of a brush stroke while `erode` is up. The
-   * first draft attached only in `_rebuild`, so with both knobs on the first
-   * brush tick handed the world a Heightmap with no operator on it and the
-   * terrain quietly un-creased itself mid-stroke, staying that way until
-   * something forced a full rebuild. Three lines that two call sites had to keep
-   * agreeing on is the shape of bug this whole file is careful about.
+   * THIS: `_rebuild` makes one from the import or the eroded copy, and
+   * coarsePatched makes a fresh one on every tick of a brush stroke while `erode`
+   * is up. The first draft attached only in `_rebuild`, so with both knobs on the
+   * first brush tick handed the world a Heightmap with no operator on it and the
+   * terrain quietly un-creased itself mid-stroke.
    */
   _attachCrease() {
     this.crease = null
@@ -305,10 +264,9 @@ export class V2Height {
    *
    * THE CALLER'S OBLIGATION, and nothing here can enforce it: this object is one
    * of THREE evaluating the same field -- the main thread's and one per terrain
-   * worker -- and they do not share memory. Set the relief on one and the ground
-   * she is drawn standing on and the ground she collides with are two different
-   * surfaces. TerrainV2.setRelief is the transport that keeps them together; see
-   * the banner in relief.js.
+   * worker -- and they do not share memory, so setting relief on one leaves the
+   * ground she is drawn on and the ground she collides with two different
+   * surfaces. TerrainV2.setRelief is the transport; see the banner in relief.js.
    */
   setRelief(relief) {
     const next = normalizeRelief(relief)
@@ -322,41 +280,30 @@ export class V2Height {
    * Tell the field that the IMPORT changed over `rect` (texel indices), because
    * the sculpt brush wrote into it.
    *
-   * Only erosion cares, and it cares absolutely: with erosion on, the world is
-   * built on a derived copy, and a brush stroke that updated the import and not
-   * the copy would be an invisible brush AND a player colliding with ground that
-   * is no longer drawn.
+   * Only erosion cares, and it cares absolutely: with erosion on the world is
+   * built on a derived copy, so a stroke that updated the import and not the copy
+   * would be an invisible brush AND a player colliding with ground that is no
+   * longer drawn.
    *
    * THE RESULT IS SPLICED INTO THE STANDING COPY, NOT SUBSTITUTED FOR IT, and
-   * that is the whole subtlety of this function. `thermalErode` returns a copy of
-   * the IMPORT with the region it was given relaxed -- so everything outside that
-   * region comes back un-eroded. Handing the return value straight to
-   * `this.ground` therefore reverted the entire eroded world to the import on the
-   * first tick of the first stroke: measured on the shipped field at 20 passes,
-   * one 200 m stamp moved 8.8% of the world's texels by up to 148 m, most of it
-   * nowhere near the brush. On screen that is the whole range visibly snapping
-   * back the instant the brush is pressed.
+   * that is the whole subtlety here. `thermalErode` returns a copy of the IMPORT
+   * with the given region relaxed, so everything outside that region comes back
+   * UN-eroded: handing the return value straight to `this.ground` reverted the
+   * entire eroded world to the import on the first tick of the first stroke --
+   * measured at 20 passes, one 200 m stamp moved 8.8% of the world's texels by up
+   * to 148 m, most of it nowhere near the brush.
    *
-   * Material moves one texel per pass, so a texel further than `passes` from a
-   * changed import texel cannot hear about the change: `rect` grown by `passes`
-   * is exactly the region whose eroded height can differ, and everything outside
-   * it is already correct in the standing copy. `thermalErode` grows what it is
-   * given by `passes + 1` before relaxing, so handing it the grown rect makes the
-   * grown rect itself exact rather than merely close.
+   * Material moves one texel per pass, so `rect` grown by `passes` is exactly the
+   * region whose eroded height can differ. `thermalErode` grows what it is given
+   * by `passes + 1`, which makes the grown rect exact rather than merely close.
    *
-   * NEITHER `bands` NOR THE EXPOSURE GRID REFRESHES HERE, and both omissions are
-   * decisions rather than oversights.
-   *
-   * `bands` is the world's own min/max, which the snow ramp and the rock beds are
-   * expressed against. Recomputing it mid-drag would repaint the whole world off
-   * a ramp its already-meshed chunks are not using, so the chunks under the brush
-   * would come back shaded against a different scale from their neighbours -- a
-   * seam that follows the brush. The terrain worker's `height` handler carries
-   * the same note for the same reason. A stroke moves a brush-sized patch of a
-   * 1024^2 field, so the error in the extremes is at worst the depth of one
-   * stroke, and the next full rebuild picks it up.
-   *
-   * The exposure grid is stale for a different reason: see the note in
+   * NEITHER `bands` NOR THE EXPOSURE GRID REFRESHES HERE, both decisions rather
+   * than oversights. `bands` is the world's own min/max, which the snow ramp and
+   * rock beds are expressed against, so recomputing it mid-drag would repaint the
+   * world off a ramp its already-meshed chunks are not using -- a seam that
+   * follows the brush. A stroke moves a brush-sized patch of a 1024^2 field, so
+   * the error in the extremes is at worst one stroke deep and the next full
+   * rebuild picks it up. The exposure grid is stale for a different reason: see
    * exposure.js on why a stale AMPLITUDE is safe where a stale SURFACE is not.
    */
   coarsePatched(rect) {
@@ -394,12 +341,11 @@ export class V2Height {
 
   /**
    * Swap in a freshly deserialized document. Use this rather than assigning
-   * `.layers`, and the reason is a trap rather than a style preference: the fast
-   * path's cache is keyed on `layers.epoch`, but a NEW Layers always starts at
-   * epoch 0, so replacing an empty epoch-0 document with an authored epoch-0
-   * document leaves the compare equal and the cached `_authored = false` intact.
-   * The carve chain then never runs and every river the author just drew is
-   * invisible until some later edit happens to bump the epoch past the old value.
+   * `.layers`: the fast path's cache is keyed on `layers.epoch`, and a NEW Layers
+   * always starts at epoch 0, so replacing an empty epoch-0 document with an
+   * authored one leaves the compare equal and `_authored = false` intact -- every
+   * river the author just drew invisible until some later edit bumps the epoch
+   * past the old value.
    */
   setLayers(layers) {
     if (!layers) throw new Error('V2Height.setLayers: layers is required')
@@ -416,20 +362,18 @@ export class V2Height {
   /**
    * The altitude ramp's anchors, in metres, measured off the loaded image.
    *
-   * DERIVED, NEVER A LITERAL, and that is the single most load-bearing decision
-   * in this file's shading contract. v1's chunk-mesh.js hardcodes (h - 107) / 100
-   * and its own comment records that a stale band silently put snow nowhere
-   * twice. The failure mode is not a crash: it is a world that renders, and is
-   * uniformly the wrong colour, and nobody can say why. The vertical range of a
-   * v2 world is whatever make-heightmap.mjs chose for that import, so the ramp
-   * has to follow it.
+   * DERIVED, NEVER A LITERAL, and the most load-bearing decision in this file's
+   * shading contract. v1's chunk-mesh.js hardcodes (h - 107) / 100 and its own
+   * comment records that a stale band silently put snow nowhere twice: the
+   * failure is not a crash, it is a world that renders, is uniformly the wrong
+   * colour, and nobody can say why. A v2 world's vertical range is whatever
+   * make-heightmap.mjs chose for that import.
    *
-   * Measured on the COARSE texels rather than by sweeping the composed field:
+   * Measured on the COARSE texels rather than by sweeping the composed field --
    * the detail term is metres of local roughness against a ramp spanning a
    * hundred-odd metres, so it cannot move a percentile, and a histogram over the
-   * texel array already in memory is one pass instead of a quarter of a million
-   * bicubic evaluations. Computed lazily and cached -- the mesher wants it, the
-   * player never does.
+   * texel array is one pass instead of a quarter of a million bicubic
+   * evaluations. Lazy and cached: the mesher wants it, the player never does.
    */
   get bands() {
     if (this._bands) return this._bands
@@ -476,10 +420,9 @@ export class V2Height {
    * Coarse plus detail, WITHOUT the carve chain.
    *
    * Public because the mesher needs it: a chunk whose AABB no authored element
-   * reaches is culled once, up front, and then every one of its 361 samples
-   * takes this path instead of asking three spatial indexes the same question
-   * 361 times over. That per-chunk cull is §18's headline performance claim and
-   * this method is the half of it that lives here.
+   * reaches is culled once, up front, and then every one of its 361 samples takes
+   * this path instead of asking three spatial indexes the same question 361 times
+   * over. That per-chunk cull is §18's headline performance claim.
    */
   baseAt(x, z, cell = 0) {
     if (this.flatY !== null) return this.flatY
@@ -510,14 +453,13 @@ export class V2Height {
   /**
    * THE SUB-TEXEL TERMS, as one expression: detail, exposure-modulated, plus the
    * crag band. Reached only when some relief knob that touches geometry is on --
-   * the `_plain` branch above is the shipped path and is untouched by any of
-   * this, which is what makes an all-off relief bit-identical rather than merely
-   * equivalent.
+   * the `_plain` branch above is the shipped path and is untouched by any of it,
+   * which is what makes an all-off relief bit-identical rather than equivalent.
    *
    * ONE gradient serves all three. Heightmap.slopeAt was already taking four
-   * bicubic taps on every evaluation and throwing the DIRECTION away;
-   * gradientAt returns the same slope from the same stencil and keeps the fall
-   * line, so the anisotropy is free and the crag's steepness gate costs nothing.
+   * bicubic taps per evaluation and throwing the DIRECTION away; gradientAt
+   * returns the same slope from the same stencil and keeps the fall line, so the
+   * anisotropy is free and the crag's steepness gate costs nothing.
    */
   _micro(x, z, cell, flatten01) {
     const g = this.ground.gradientAt(x, z, this._grad)
@@ -530,15 +472,14 @@ export class V2Height {
     if (this.ridge) {
       // Suppressed by the carve weight, crag's argument exactly: a road crosses
       // the fall line on precisely the convex steep ground a ridge term likes
-      // best, and the carve chain that runs after this would smooth the road
-      // back over a notch it never knew was cut.
+      // best, and the carve chain after this would smooth the road back over a
+      // notch it never knew was cut.
       //
-      // OUTSIDE the exposure gain, unlike crag, and not merely ahead of it. Its
-      // amplitude is already gated by its own ridgeness, which is a sharper and
-      // better-aimed statistic than convexity: a dome scores high on exposure
-      // and zero here, correctly, because a dome has no axis to be right about.
-      // Multiplying the two gates would only narrow the term to where they
-      // happen to agree, and convexity is the weaker of the two opinions.
+      // OUTSIDE the exposure gain, unlike crag, and not merely ahead of it: its
+      // amplitude is already gated by ridgeness, a sharper statistic than
+      // convexity (a dome scores high on exposure and zero here, correctly,
+      // having no axis to be right about). Multiplying the two would only narrow
+      // the term to where they agree, and convexity is the weaker opinion.
       const keep = 1 - (flatten01 < 0 ? 0 : flatten01 > 1 ? 1 : flatten01)
       if (keep > 0) m += keep * this.ridge.at(x, z, cell, relief.ridge)
       // Additive with `ridge` rather than exclusive with it, and gated the same
@@ -583,20 +524,17 @@ export class V2Height {
    * is a pass-through unless the `snowJag` knob is up.
    *
    * WHY THE SERRATION LIVES HERE AND NOT IN SnowField. Exposure is a property of
-   * the HEIGHT field and the snow layer is an authored document; putting a
-   * convexity term in Layers would make a thing a human draws depend on a thing
-   * the terrain computes, and the editor would be showing a snow line it cannot
-   * account for. Putting it here instead reaches the mesher's vertex colours and
-   * all four prop layers -- trees, ferns, grass, rocks all call this -- through
-   * one function, which is the whole reason V2Height carries a pass-through in
-   * the first place.
+   * the HEIGHT field and the snow layer is an authored document; a convexity term
+   * in Layers would make a thing a human draws depend on a thing the terrain
+   * computes, and the editor would show a snow line it cannot account for. Here
+   * it reaches the mesher's vertex colours and all four prop layers through one
+   * function.
    *
    * AND IT IS THE ONE ITEM ON THIS LIST THAT WORKS AT ANY DISTANCE. Everything
-   * else here is geometry, and geometry is band-limited by the mesh: past about
-   * a kilometre the cell is 32 m and there is no octave under 128 m left to
-   * carry an edge. A snow line is a COLOUR boundary, it is drawn on whatever
-   * triangles exist, and a ragged one reads as a ragged mountain from any range
-   * at all. Cheap, and it is the only thing in the set that touches a skyline.
+   * else here is geometry, and geometry is band-limited by the mesh: past about a
+   * kilometre the cell is 32 m and no octave under 128 m survives to carry an
+   * edge. A snow line is a COLOUR boundary drawn on whatever triangles exist, so
+   * a ragged one reads as a ragged mountain from any range at all.
    */
   snowLineAt(x, z) {
     const base = this.layers.snowLineAt(x, z)
@@ -611,11 +549,10 @@ export class V2Height {
    * Surface normal by central difference, signature-compatible with v1's
    * TerrainHeight.normalAt so src/player.js can hold either.
    *
-   * eps defaults to 0.75 for the same reason it does in v1 -- half of
-   * LOCOMOTION.stride, so what the collision normal reports and what the slope
-   * limiter refuses are measured over the same 1.5 m of ground. Note that this
-   * reads the EXACT field (cell = 0) on all four taps: a normal taken from the
-   * band-limited field would change under her as chunks swapped LOD.
+   * eps defaults to 0.75 for v1's reason -- half of LOCOMOTION.stride, so the
+   * collision normal and the slope limiter measure the same 1.5 m of ground. All
+   * four taps read the EXACT field (cell = 0): a normal off the band-limited
+   * field would change under her as chunks swapped LOD.
    */
   normalAt(x, z, eps = 0.75, out = { x: 0, y: 1, z: 0 }) {
     if (this.flatY !== null) { out.x = 0; out.y = 1; out.z = 0; return out }
@@ -633,14 +570,12 @@ export class V2Height {
   }
 
   /**
-   * SLOPE IN RADIANS, off the COMPOSED field. This is v1 TerrainHeight.slopeAt's
-   * convention and it is the one src/player.js consumes -- it compares the result
-   * against LOCOMOTION.maxSlopeDeg * PI / 180 at two call sites, so anything else
+   * SLOPE IN RADIANS, off the COMPOSED field -- v1 TerrainHeight.slopeAt's
+   * convention, the one src/player.js consumes. It compares the result against
+   * LOCOMOTION.maxSlopeDeg * PI / 180 at two call sites, so anything else
    * returned here blocks her on flat ground or walks her up a cliff, silently.
-   *
    * Composed rather than coarse because she walks on the composed field: a river
-   * bank cut by the carve chain is a real wall to her, and a coarse-only slope
-   * would not know it was there.
+   * bank cut by the carve chain is a real wall to her.
    */
   slopeAt(x, z, eps = 0.75) {
     const n = this.normalAt(x, z, eps)
@@ -648,12 +583,11 @@ export class V2Height {
   }
 
   /**
-   * SLOPE AS 0..1, off the COARSE field, via g / (1 + g) with 45 degrees at 0.5.
-   * This is Heightmap.slopeAt's convention and the one detail.js's amplitude
-   * modulation consumes. Deliberately a different NAME from slopeAt because it is
-   * a different number: at 45 degrees this returns 0.5 and slopeAt returns 0.785.
-   *
-   * Exposed so callers that want the shading-side quantity do not reach past this
+   * SLOPE AS 0..1, off the COARSE field, via g / (1 + g) with 45 degrees at 0.5 --
+   * Heightmap.slopeAt's convention, the one detail.js's amplitude modulation
+   * consumes. Deliberately a different NAME from slopeAt because it is a
+   * different number: at 45 degrees this returns 0.5 and slopeAt returns 0.785.
+   * Exposed so callers wanting the shading-side quantity do not reach past this
    * class into the heightmap and pick up whichever convention they meet first.
    */
   slope01At(x, z) {
@@ -663,14 +597,11 @@ export class V2Height {
 
   /**
    * Height plus the TANGENT of the slope, from the same five samples, for prop
-   * scatter -- which asks both questions about the same point tens of thousands
-   * of times per rebuild. Shape matches v1's, `{ h, tan }`, so scatter.js does
-   * not have to know which world it is placing trees on. A third convention, and
-   * it is a tangent because that is what scatter compares against; see slopeAt.
-   *
-   * Unlike v1's, this one is exact rather than a documented approximation: v1
-   * skips its scarp term here and argues the skip is safe on ground a prop can
-   * stand on. There is no scarp in v2, so `h` is simply heightAt.
+   * scatter, which asks both questions about the same point tens of thousands of
+   * times per rebuild. Shape matches v1's `{ h, tan }` so scatter.js need not know
+   * which world it is placing trees on. A third convention, and a tangent because
+   * that is what scatter compares against; see slopeAt. Exact rather than v1's
+   * documented approximation -- there is no scarp in v2.
    */
   heightAndSlopeAt(x, z) {
     if (this.flatY !== null) return { h: this.flatY, tan: 0 }
@@ -693,32 +624,26 @@ export class V2Height {
    *
    *   THE SLOPE IS FREE. heightAt already computes hm.slopeAt(x, z) to modulate
    *   the detail amplitude and throws it away; this returns it. heightAndSlopeAt
-   *   instead takes four EXTRA composed samples 75 cm out, so it costs five
-   *   field evaluations where this costs one. Measured on the shipped heightmap:
-   *   3.84 us against 0.71 us, which over a 41,000-tree boot is 157 ms against
-   *   29 ms.
+   *   takes four EXTRA composed samples 75 cm out, so it costs five field
+   *   evaluations where this costs one: 3.84 us against 0.71 us, which over a
+   *   41,000-tree boot is 157 ms against 29 ms.
    *
-   *   THE COARSE SLOPE IS ALSO THE MORE HONEST ONE, which is why this is not
-   *   simply a cheaper approximation. heightAndSlopeAt measures a 75 cm central
-   *   difference on a field that still has real energy at 10 cm, so what it
-   *   reports is the ROUGHNESS OF THE GROUND, not the pitch of the hillside: it
-   *   reads steeper than the coarse gradient at 66% of world sites, median 1.8
-   *   deg and p95 10.5 deg. A tree was being refused for standing on a 30 cm
-   *   gravel bump. Swapping the basis flips 7.7% of individual placements and
-   *   moves the accept rate 72.1% -> 75.6%, i.e. about 5% more trees, which is
-   *   the direction render/trees.js already documents as the safe one.
+   *   THE COARSE SLOPE IS ALSO THE MORE HONEST ONE, which is why this is not just
+   *   a cheaper approximation. A 75 cm central difference on a field with real
+   *   energy at 10 cm reports the ROUGHNESS OF THE GROUND, not the pitch of the
+   *   hillside: steeper than the coarse gradient at 66% of world sites, median
+   *   1.8 deg, p95 10.5 deg -- a tree refused for standing on a 30 cm gravel
+   *   bump. Swapping the basis flips 7.7% of placements and moves the accept rate
+   *   72.1% -> 75.6%. What it gives up: the slope no longer sees the carve chain,
+   *   so a tree may stand on a river bank the composed slope would have refused.
+   *   A tree IN the river bed is still refused, `h` below carrying the carve.
    *
-   *   What it gives up: the slope no longer sees the carve chain, so a tree may
-   *   stand on a river bank the composed slope would have refused. A tree IN the
-   *   river bed is still refused, because `h` below does carry the carve and
-   *   WaterSurfaces.isSubmerged reads it. Numbers from tmp/probe-tree-ground.mjs.
-   *
-   *   `cell` IS MANDATORY, and callers should pass a FIXED one. Prop existence
-   *   has to be a pure function of position: if the band limit followed the
-   *   terrain's LOD, trees near the elevation floor or the slope limit would
-   *   appear and vanish as chunks re-split under them, and the deterministic
-   *   tiled scatter -- walk away, walk back, same forest -- would be gone. See
-   *   render/trees.js PLACEMENT_CELL.
+   *   `cell` IS MANDATORY and callers should pass a FIXED one. Prop existence has
+   *   to be a pure function of position: if the band limit followed the terrain's
+   *   LOD, trees near the elevation floor or the slope limit would appear and
+   *   vanish as chunks re-split under them, and the deterministic tiled scatter --
+   *   walk away, walk back, same forest -- would be gone. See render/trees.js
+   *   PLACEMENT_CELL.
    *
    * `tan` converts Heightmap.slopeAt's 0..1 convention back to a tangent (see
    * slope01At), because a tangent is what scatter compares against.

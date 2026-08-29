@@ -51,6 +51,7 @@
 import THREE from '../src/three-instance.js'
 
 import { BLADE_DEFAULTS, bladeTipMul, buildBladeClump, createBladeMaterial } from '../src/props/grass-blades.js'
+import { setWindEnabled } from '../src/material.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 
 let failures = 0
@@ -182,6 +183,27 @@ console.log('\n-- wind --')
   // Phase off the clump's world origin, or the whole field nods in unison.
   check(v.includes('bladeRoot.x') && v.includes('bladeRoot.z'),
     'and the phase comes from the clump\'s world position, so the gust travels')
+
+  // THE MEADOW IS ON THE GLOBAL WIND SWITCH. setWindEnabled walks a private set
+  // that only registered materials are in, and a material has to read the flag
+  // in BOTH onBeforeCompile and the cache key -- miss the registration and the
+  // panel's wind row prices the whole world except its grass; miss the key and
+  // the recompile is handed back the cached wind program.
+  const keyOn = mat.customProgramCacheKey()
+  const versionOn = mat.version
+  setWindEnabled(false)
+  const off = { uniforms: {}, vertexShader: SHADER_SRC, fragmentShader: FRAG_SRC }
+  mat.onBeforeCompile(off)
+  check(mat.version > versionOn, 'the blade material is marked for recompile when the wind goes off',
+    `version ${versionOn} -> ${mat.version}`)
+  check(mat.customProgramCacheKey() !== keyOn,
+    'and its cache key changes with it, so the recompile is not handed the wind program',
+    `${keyOn} -> ${mat.customProgramCacheKey()}`)
+  check(!off.vertexShader.includes('uWindAmp') && off.vertexShader.includes('aTipMul'),
+    'and the bend compiles out while the tip brightness stays')
+  setWindEnabled(true)
+  check(mat.customProgramCacheKey() === keyOn, 'and flipping back restores the wind build',
+    mat.customProgramCacheKey())
 }
 
 // --- 3. the shape -----------------------------------------------------------
@@ -307,6 +329,18 @@ console.log('\n-- normals --')
   check(b.every((x) => x.normal.y > 0), 'and every normal points up rather than into the ground',
     `lowest y ${Math.min(...b.map((x) => x.normal.y)).toFixed(4)}`)
 
+  // THE DEFAULT HAS TO BE THE DEGENERATE CASE. A clump whose blades disagree
+  // about their normal disagrees about its lighting, and the size of that
+  // disagreement is set by the SUN's elevation rather than by the tilt: at 10
+  // degrees of elevation a 20 degree spread of normals -- which is what
+  // normalUp 0.70 leaves -- spans dotNL 0.00 to 0.49, so one blade is black and
+  // the blade touching it is fully lit. Held at zero spread here because the
+  // base of a blade is meant to be the ground it stands in, and any drift off
+  // 1.0 reintroduces that at the next dawn rather than at the next test run.
+  const spread = Math.max(...b.map((x) => Math.hypot(x.normal.x, x.normal.z)))
+  check(spread < 1e-6, 'and by default they are all the same normal, so a clump cannot shade like noise',
+    `widest tilt off vertical ${(Math.asin(spread) * 180 / Math.PI).toFixed(2)} deg`)
+
   // The two ends of the knob, which is the cheapest way to prove the bend is a
   // lerp toward up and not something else.
   const up = blades(buildBladeClump({ normalUp: 1 }, 7), BLADE_DEFAULTS.sink)
@@ -347,27 +381,53 @@ console.log('\n-- colour --')
   // --- the per-clump tip brightness.
   //
   // Two properties, and the second is the one worth a gate. A bed of clumps
-  // that all brighten is a two-tone material stamped over and over, so the sign
-  // has to split; and a clump whose multiplier lands near 1 has no gradient at
-  // all, which is the thing tipVary exists to prevent.
+  // that all brighten is a two-tone material stamped over and over, so the coin
+  // has to split; and a clump whose multiplier lands near 1 is a flat triangle,
+  // which is the thing the two-range draw exists to make impossible.
   const mulRand = mulberry32(99)
   const muls = Array.from({ length: 400 }, () => bladeTipMul(BLADE_DEFAULTS, mulRand))
-  const up = muls.filter((m) => m > BLADE_DEFAULTS.tipGain).length
+  const up = muls.filter((m) => m > 1).length
   check(up > 140 && up < 260, 'tip brightness goes up about as often as it goes down',
     `${up} of ${muls.length} lighter`)
-  const floor = BLADE_DEFAULTS.tipGain * BLADE_DEFAULTS.tipVary * 0.55
-  check(muls.every((m) => Math.abs(m - BLADE_DEFAULTS.tipGain) >= floor - 1e-9),
-    'and no clump lands on its own base colour, so every clump has a gradient',
-    `closest ${Math.min(...muls.map((m) => Math.abs(m - BLADE_DEFAULTS.tipGain))).toFixed(4)}, floor ${floor.toFixed(4)}`)
+
+  // THE GUARANTEE, AND IT IS MEASURED AGAINST 1, NOT AGAINST tipGain. The base
+  // colour a tip must not match is the instance colour, which reaches the foot
+  // vertices at multiplier 1 -- anchoring this on the distribution's own centre
+  // instead is how a bed of flat triangles passes a gate about flat triangles.
+  const G = BLADE_DEFAULTS.tipGain
+  const closest = Math.min(...muls.map((m) => Math.abs(m - 1)))
+  check(muls.every((m) => m >= G - 1e-9 || m <= 1 / G + 1e-9),
+    'and no clump lands anywhere near its own base colour, in either direction',
+    `closest ${closest.toFixed(4)} from 1, gap ${(1 / G).toFixed(3)} - ${G.toFixed(3)}`)
   check(muls.every((m) => m > 0), 'and none of them goes negative',
     `${Math.min(...muls).toFixed(3)} - ${Math.max(...muls).toFixed(3)}`)
 
-  // tipVary 0 is the plainer reading the slider still has to reach: every tip
-  // lighter than its own base by exactly tipGain.
+  // A DARK CLUMP IS AS FAR DOWN AS A LIGHT ONE IS UP, because the dark branch is
+  // the reciprocal and brightness is read multiplicatively. `2 - gain` would put
+  // the dark half nearer the base than the light half and give the bed a
+  // direction, and at gain > 2 it would go negative.
+  const pairRand = mulberry32(11)
+  const pairs = Array.from({ length: 200 }, () => bladeTipMul({ tipGain: 2, tipVary: 0 }, pairRand))
+  check(pairs.every((m) => near(m, 2, 1e-9) || near(m, 0.5, 1e-9)),
+    'the darker half is the reciprocal of the lighter, so the bed has no overall direction',
+    `${[...new Set(pairs.map((m) => m.toFixed(3)))].sort().join(' / ')}`)
+
+  // tipVary 0 is the two-tone reading the slider still has to reach: every tip
+  // exactly tipGain from its own base, one way or the other.
   const flatRand = mulberry32(7)
   const flat = Array.from({ length: 20 }, () => bladeTipMul({ tipGain: 1.4, tipVary: 0 }, flatRand))
-  check(flat.every((m) => near(m, 1.4, 1e-9)),
-    'tipVary 0 gives every clump the same tip, which is tipGain', flat[0].toFixed(3))
+  check(flat.every((m) => near(m, 1.4, 1e-9) || near(m, 1 / 1.4, 1e-9)),
+    'tipVary 0 gives every clump the same tip, which is tipGain or its reciprocal',
+    flat[0].toFixed(3))
+
+  // tipGain at or below 1 is the two ranges meeting at the base colour, which is
+  // the one thing this function promises cannot happen -- so it throws rather
+  // than quietly handing back a bed of flat triangles.
+  let refused = 0
+  for (const bad of [1, 0.8, 0]) {
+    try { bladeTipMul({ tipGain: bad }, mulberry32(1)) } catch { refused++ }
+  }
+  check(refused === 3, 'a tipGain that does not clear the base colour throws', `${refused} of 3 refused`)
 }
 
 // --- 8. the knobs -----------------------------------------------------------

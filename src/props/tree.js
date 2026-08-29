@@ -5,231 +5,43 @@ import { LAYER } from '../textures.js'
 // ---------------------------------------------------------------------------
 // Procedural trees and bushes.
 //
-// Three primitives, and that is the whole tree:
+// Four primitives, and that is the whole tree:
 //
 //   TRUNK    one solid cone, `trunkSides` around, closing to a POINT at the
 //            top, wearing bark, and NOT round: `trunkLobe` swells and hollows
-//            its cross-section so no two trunks are out of round the same way.
-//            `trunkRings` only buys subdivision for the lean.
+//            its cross-section. `trunkRings` only buys subdivision for the lean.
 //   LIMBS    solid cones too, launched off the trunk and bent over by
-//            `branchDroop` along a path that is integrated exactly the way a
-//            fern frond is. A limb is a branch off the trunk OR a fork off a
-//            branch -- same code, one level deep, so
-//            `limbs = branches x (1 + forks)`.
-//   FOLIAGE  leaf-spray cutouts off the texture array, one card per spray --
-//            see FOLIAGE IS MANY SMALL SPRAYS below.
-//   ROOTS    solid cones a third time, launched DOWN and OUT from the trunk's
-//            foot and mostly buried. LOD0 only -- see THE ROOT CROWN below.
+//            `branchDroop` along a path integrated the way a fern frond is. A
+//            limb is a branch off the trunk OR a fork off a branch -- same
+//            code, one level deep, so `limbs = branches x (1 + forks)`.
+//   FOLIAGE  leaf-spray cutouts off the texture array, one card per spray.
+//   ROOTS    two-triangle wedges, launched DOWN and OUT from the trunk's foot
+//            and mostly buried. LOD0 only.
 //
-// A CONE THAT ENDS IN A POINT IS THE CHEAP SOLID. A tube of `sides` x `rings`
-// quads costs `sides x rings x 2` triangles and ends in a flat cap that is a
-// lie: real trunks and real branches taper to nothing. Ending in an APEX
-// instead makes the last ring a fan of single triangles, so one ring plus a
-// point -- which is the whole of a branch and the whole of a conifer trunk --
-// is exactly `sides` triangles. Five triangles buys a solid branch where two
-// used to buy a flat ribbon, and eight buys a solid trunk where forty-eight
-// bought a tube with a cap on it.
+// A cone that ends in a POINT is the cheap solid: one ring plus an apex is
+// exactly `sides` triangles, which is the whole of a branch and the whole of a
+// conifer trunk. `resolveTree` is the one place the triangle arithmetic is
+// written out, and the number the previewer (gen-tree.html) prints.
 //
-//   cone(sides, rings) = sides x ((rings - 1) x 2 + 1)
-//   limb(sides, rings) = 1 if sides == 1, else cone(sides, rings)
-//   limbs              = branches x (1 + forks)
-//   tris = cone(trunkSides, trunkRings)
-//        + roots x 2
-//        + limbs x limb(branchSides, branchRings)
-//        + (limbs x sprays + apexSprays) x cardTris
-//
-// which is `resolveTree` below -- the one place that arithmetic is written, and
-// the number the previewer (gen-tree.html) puts at the top of its budget
-// panel. DESIGN.md §5 gives the tree class 490 and 338 triangles for its
-// two mesh tiers and the bush class 84 / 56 / 28; both are reachable by moving
-// the counts above and nothing else, which is what makes an LOD tier a
-// re-generation rather than a decimation. See §9 bugs 10-11 for why decimating
-// card foliage does not work at all.
-//
-// MACRO SHAPE IS A CROWN PROFILE, NOT A "TRIANGULARITY" SLIDER. What actually
-// separates a pine from an oak is *where up the tree the branches are longest*.
-// A pine's longest branches are at the very bottom of its crown and they
-// shorten all the way to the tip; an oak's are halfway up with the crown
-// falling away above AND below; a birch is somewhere between, widest about a
-// third up. That is two numbers -- `crownPeak` (where the widest branch is, as
-// a fraction of the crown) and `crownFullness` (how fast it falls away from
-// there) -- and one slider could not have covered it, because a cone and a
-// sphere differ in where the maximum sits, not in how sharp the top is.
-//
-//   crownPeak 0.0, fullness 1.0   cone            pine, spruce
-//   crownPeak 0.35, fullness 0.8  egg             birch
-//   crownPeak 0.5, fullness 0.5   round           oak, maple
-//   crownPeak 0.5, fullness 2.0   spindle         poplar, cypress
-//   crownPeak 0.9, fullness 1.0   inverted cone   an old open-grown oak
-//
-// HEIGHT CHANGES HOW MUCH TREE THERE IS, NOT JUST HOW BIG IT IS DRAWN. Every
-// shape number here is a fraction of `height`, so on its own that would make
-// two builds differing only in height exact scaled copies -- and a scaled copy
-// is the wrong answer in both directions. Scaled UP, the branches stay 13 and
-// the sprays stay 1.5 m, so a 20 m pine is the same sparse skeleton with more
-// air between its parts: barren. Scaled DOWN, a 3 m sapling carries a full
-// grown tree's worth of cards at a size that swallows it.
-//
-// So the counts are stated AT A REFERENCE HEIGHT and scale from there:
-//
-//   k          = height / heightRef
-//   branches  x= k^countPower     sprays per limb x= k^countPower
-//   sprayMetres x= k^sprayPower
-//
-// `countPower` 1 would hold the real-world DENSITY constant -- the same
-// branches per metre of trunk and the same sprays per metre of branch at every
-// size -- and triangles would then go as k^2, which is 3100 for a 20 m pine.
-// `countPower` 0 is the pure scaled copy, which is what a placement-time size
-// jitter wants (a tree set down 8% bigger is the same plant, not a denser one)
-// and what makes a 20 m tree barren.
-//
-// It is set to 0.35, which is neither, and it was found by eye in the previewer
-// rather than derived. Two reasons it lands that low. The eye judges density on
-// SCREEN, not in the world, and a taller tree is further away or subtends more
-// of the view either way; and `sprayPower` is already growing the cards, so the
-// counts are not carrying the job alone. What comes out is a 20 m pine that
-// looks as full as the 9 m one at 1200 triangles instead of 3100.
-//
-// `sprayPower` is separate and lower (0.5) because foliage does NOT scale with
-// the tree. A spruce fan is a metre and a half whether the tree is 9 m or 20 m;
-// a sapling's is smaller, but nothing like proportionally. Square root splits
-// that difference, and `resolveTree` reports what a given height actually asks
-// for so the previewer can print it.
-//
-// What this does NOT do is change proportions, and some of them should change:
-// a real dwarf pine has a proportionally thicker trunk, a lower first branch
-// and longer branches than a tower. Those stay a size ladder in the variant
-// bank moving `trunkRadius`, `firstBranch` and `branchLength`, and the
-// previewer prints all three in metres for exactly that reason.
-//
-// FOLIAGE IS MANY SMALL SPRAYS, NOT A FEW BIG CARDS. The tempting way to make
-// a canopy look full is to grow the leaf cards until they cover the gaps, and
-// it is always wrong: the art on a card is a spray of leaves at a real size, so
-// a card scaled to 2 m is a spruce needle two feet long. `sprayMetres` is
-// therefore in WORLD METRES -- the stem-to-tip reach of one spray, half a metre
-// or less, and it stays that whether it is on a sapling or a hundred-year tree.
-// That is the one place in this file deliberately not scale-invariant, and
-// lushness has to be bought with COUNT instead.
-//
-// ONE CARD PER SPRAY, AND NO TILED SURFACES ANYWHERE. There was a second mode
-// here -- a "cloak", two long flaps hinged on each limb with the spray tiled
-// down them -- and on paper it was unbeatable: the tile count is a UV number,
-// so twenty sprays on a branch cost the same four triangles as one. It is gone,
-// because a tiled quad LOOKS like a tiled quad. A row of identical sprays down
-// a branch reads as corduroy, and nothing inside one quad can break that: the
-// two flaps can run their u in opposite directions and each flap can pick a
-// different tile size, and it still reads as a repeating strip. Cheap and
-// obviously fake beats nothing. A conifer branch is now what it looks like --
-// many separate sprays, no two the same size or angle.
-//
-// THE RULE HOLDS AT EVERY MESH TIER, and that is a decision the ladder was
-// re-made around rather than a thing that happened to stay true. `bundleTris`
-// suspends it -- the crown becomes twenty big tiled triangles thrown through
-// it -- and the argument for why a blade is not the cloak coming back is a good
-// one: a blade is a steep triangle crossing the trunk at a random azimuth with
-// a random uv offset, twenty of them interpenetrating through a double-sided
-// material, so no two periods land in register. It shipped as LOD1 and it was
-// withdrawn on looks. What settles it is the range: at ten metres a tiled crown
-// is wrong for the same reason the cloak was, and there is no band left between
-// ten metres and the impostor that a tiled crown could have. So the parameter
-// stays, and no tier this file ships sets it. The long version is in treeLod.
-//
-// What makes that affordable is that a card is ONE triangle (`cardTris: 1`):
-// apex at the stem, base across the tip, which is the shape a spray already is.
-// Its UVs are (0.5, 0), (1, 1), (0, 1) -- strictly inside the layer, so there
-// is no bleed from the neighbouring copy the way a widened triangle would have.
-// What it gives up is the two BOTTOM CORNERS of the square, which on a spray
-// cut are nearly all transparent: gen-layers.mjs measures the opaque fraction
-// each cut keeps and prints it (82% ash, 72% aspen, 71% oak, 64% pine spray).
-// A quad is still one slider away for a cut that cannot afford it -- and every
-// LOD0 species now takes it, because the second triangle buys back the whole cut
-// AND buys the fold below, which the triangle cannot have.
-//
-// A CARD IS NOT FLAT. The quad's two triangles are bent 10 to 50 degrees about
-// the seam they already share, so a spray keeps a silhouette from the one family
-// of angles where a sheet has none -- the great circle of directions lying in
-// its own plane, which every card in a crown crosses as the player walks round
-// the tree. It costs no triangles, no texels and no surface area, and the whole
-// argument is at addCard.
-//
-// A limb's sprays are BIG AT THE TRUNK AND SMALL AT THE TIP (`sprayTaper`),
-// spaced at stratified-random points along it (never evenly), rolled to
-// golden-angle azimuths, sized +/- `sprayVary` and pushed outward and DOWN by
-// `sprayDown`. That is what a spruce branch is: a fan of needled twigs that
-// hangs. One terminal card continues the twig so no limb ends in a bare stick.
-//
-// `forks` buys the other half of lushness. A single limb with foliage on it
-// reads as a broom; a branch that splits once carries its foliage out into two
-// directions and doubles the places foliage can attach without touching the
-// trunk's branch count.
-//
-// A FORK HAS TO ATTACH TO THE SOLID THAT IS DRAWN, NOT TO THE PATH. This is
-// subtle and it was visible from across the clearing. A limb's centreline is
-// integrated at PATH_N = 8 points and curves; the limb's CONE is built from
-// `branchRings` rings and an apex, so at the default of one ring it is a single
-// straight chord from base to tip. Between them sits the sagitta of the droop
-// -- centimetres at branch scale, but a fork launched from the path rather than
-// from the chord starts that far off the wood and reads as a stick hovering
-// beside the branch. `chordAt` returns the point on the drawn axis, everything
-// that sits ON a limb uses it, and a fork additionally backs up half a radius
-// INTO its parent so the two cones actually intersect. The trunk has the same
-// problem for the same reason (`trunkBend` curves the path, one ring draws a
-// straight cone) and takes the same fix.
-//
-// THE ROOT CROWN IS LOD0 ONLY, AND MOST OF IT IS NEVER SEEN. A trunk is a cone
-// that stops dead at y = 0, and the scatter buries only 15 cm of it
-// (PLACEMENT.sink in v2/render/trees.js), so a tree standing on anything but
-// flat ground meets the terrain along a hard circle -- a dowel pushed into the
-// floor. Real trees flare: the trunk widens into spurs that dive into the soil,
-// and on a slope, a bank or an eroded path the uphill spurs are buried while the
-// downhill ones stand clear in the air. That is what these are, and it is why
-// they are allowed to go BELOW y = 0 rather than being lifted to sit on it: the
-// buried part is the point. The rescale at the bottom of buildTree divides by
-// `boundingBox.max.y`, so nothing hanging below the root changes the tree's
-// height or its scale -- `belowGround` in userData reports how far down they go.
-//
-// A SPUR IS TWO TRIANGLES AND HAS NO UNDERSIDE, which follows from where it is
-// seen from. It is a tent on three corners and a tip: the ridge corner touches
-// the trunk `rootRise` up it, the other two sit on the trunk's base plane a
-// `rootWidth` out to either side, and both faces run from that outline down to a
-// shared tip under the soil. Every one of those four numbers -- the rise, the
-// dive, the length and the two widths, which are drawn SEPARATELY -- is jittered
-// per spur, because a wedge that is isoceles about its own azimuth at a rise
-// every spur shares reads as a turned collar rather than as roots, however good
-// one blade of it looks. Nothing closes the bottom -- the face that would close it
-// runs from the ground edge to a tip a metre and more under, so the only eye
-// that could ever reach it is one below the terrain. `branchPath` still runs,
-// because the tip has to land where `rootDroop` puts it, but the wedge is
-// straight: at five spurs a tree, an arc is not worth the ring that draws it.
-//
-// It is also why the corners are where they are rather than anywhere prettier. A
-// ridge OUTSIDE the bark is a blade leaning on the trunk with daylight up the
-// seam, so it goes inside it; ground corners at the launch height are a shelf
-// with air flowing under it, so they go to y = 0 and the 15 cm sink buries the
-// edge. Together they are the difference between the trunk spreading and a part
-// bolted to it -- and the bark they carry has to be the trunk's bark at the
-// trunk's size for the same reason, which is what addRootSpur's projected UVs
-// and horizontal normals are for.
-// `rootWidth` sizes the wedge off the TRUNK's radius rather than off its own
-// length, which is the rule branchOfTrunk had to be added to enforce for
-// branches: a spur is the trunk's foot spreading, so it is anchored to that foot.
-//
-// LOD0 ONLY, and that is a range argument rather than a budget one. The flare is
-// centimetres of silhouette at the very bottom of the tree, which is exactly the
-// detail that is worth its 10 triangles when the player is standing next to the
-// trunk and worth nothing at all at the 8 m where LOD1 takes over -- by then the
-// whole root crown is a few pixels tall and half of it is behind the terrain.
-// treeLod sets `roots: 0` for that reason, which makes this the third number the
-// coarse tier moves and the only one that removes a part rather than cheapening
-// it. It costs the tiers nothing in nesting: roots are wood, they carry no
-// cards, and they do not reach past the crown, so LOD1 is still the same tree
-// wide and tall with the identical foliage in the identical seats.
+// Macro shape is a CROWN PROFILE -- `crownPeak`, where up the crown the widest
+// branch sits, and `crownFullness`, how fast it falls away -- because a cone and
+// a sphere differ in where the maximum is, not in how sharp the top is. Counts
+// are stated at `heightRef` and scale by k^countPower from there, so a taller
+// tree has MORE tree in it rather than a bigger copy of the same one. Foliage
+// does not scale with the tree: `sprayMetres` is in WORLD METRES, the one thing
+// here deliberately not scale-invariant, so lushness is bought with COUNT. No
+// tiled surface at any mesh tier.
 //
 // ATTRIBUTES: one layout, always `{ position, normal, uvProj, texLayer }` --
 // the shared prop material's (src/material.js). fern.js carries two layouts
 // because a fern is one texture and can be previewed through `material.map`; a
 // tree is bark AND leaves in one mesh, so per-vertex `texLayer` is not an
 // option it can decline. The previewer renders the real array material.
+//
+// DESIGN.md §20 has the rest: the crown-profile table, the height-density
+// numbers, the withdrawn "cloak", the card geometry and its fold, the root
+// crown, the LOD ladder and the bundle. Triangle budgets are §5; why decimating
+// card foliage does not work at all is §9 bugs 10-11.
 // ---------------------------------------------------------------------------
 
 export const TREE_DEFAULTS = {
@@ -279,40 +91,22 @@ export const TREE_DEFAULTS = {
                        // AROUND it is derived so a tile stays roughly square in
                        // world space -- see the note where the UVs are written
 
-  // --- roots: the flare at the foot, LOD0 only. See THE ROOT CROWN above ---
+  // --- roots: the flare at the foot, LOD0 only. See DESIGN.md §20 ---
   roots: 5,            // spurs around the trunk's foot. 0 draws none, which is
                        // what treeLod hands the coarse tier. NOT scaled by the
-                       // height-density law: a sapling has a root crown too, and
-                       // it is the same handful of spurs at a smaller size --
-                       // what changes with age is their thickness, which
-                       // `rootWidth` already takes off the trunk. There is no
-                       // `rootSides`: a spur is two triangles, fixed -- see
-                       // addRootSpur
+                       // height-density law: a sapling has the same handful of
+                       // spurs at a smaller size, and what changes with age is
+                       // their thickness, which `rootWidth` takes off the trunk.
+                       // There is no `rootSides` -- a spur is two triangles,
+                       // fixed. See addRootSpur
   rootRise: 0.10,      // MEAN height up the trunk of the spur's RIDGE corner, as
-                       // a fraction of height -- so it is the height of the
-                       // visible flare, the two other corners being pinned to
-                       // y = 0. Each spur draws its own around this, 40% either
-                       // way, so the crown has a broken skyline rather than one
-                       // hem cut all round at a set height.
-                       //
-                       // It has to clear the 15 cm the scatter sinks a tree by
-                       // before any of it shows, which is what this is set for
-                       // rather than for how deep the roots go: the dive starts
-                       // at the ground line, so `rootLength` and `rootAngle`
-                       // decide the buried metre and a half and this decides
-                       // only how much stands proud. On a 9 m pine the ridges
-                       // land between 55 cm and 1.11 m, averaging 72 cm, of
-                       // which 57 cm is above the soil line.
-                       //
-                       // A FRACTION, so a SAPLING shows less of it: on a 3 m
-                       // pine the mean ridge clears the soil line by 7 cm and
-                       // the tallest spur by 19, and on a 2 m birch the mean is
-                       // 2 cm UNDER it with only the tallest showing. That is
-                       // the intent -- a sapling has a crown at the ground, not
-                       // one it stands on. The alternative is to state this in
-                       // world metres like `sprayMetres`, and it is worse: a
-                       // 72 cm flare on a 3 m trunk that is 8 cm thick there
-                       // reads as stilts
+                       // a fraction of height -- the height of the visible
+                       // flare, the other two corners being pinned to y = 0.
+                       // Each spur draws its own 40% either way, so the crown
+                       // has a broken skyline rather than one hem cut all round.
+                       // Set to clear the 15 cm the scatter sinks a tree by; a
+                       // FRACTION so a sapling shows less. §20 has the measured
+                       // clearances and why world metres would be worse
   rootLength: 0.18,    // spur length as a fraction of height
   rootAngle: 0.7,      // radians BELOW horizontal at the launch, so a spur
                        // leaves the trunk already heading for the soil. Jittered
@@ -325,12 +119,10 @@ export const TREE_DEFAULTS = {
   rootWidth: 1.1,      // half the spur's width where it meets the ground, as a
                        // fraction of the TRUNK's radius at its foot. Each SIDE
                        // draws its own, 35% either way, so the blade leans
-                       // instead of being isoceles about its own azimuth. Off the trunk rather than
-                       // off its own length -- see the note above. Over 1 on
-                       // purpose: a buttress is WIDER than the trunk at the soil
-                       // line, which is what makes it read as the trunk
-                       // spreading rather than as a stick nailed on. Zero draws
-                       // no crown at all, and resolveTree prices it at zero
+                       // instead of being isoceles about its own azimuth. Off
+                       // the trunk rather than off its own length, and over 1 on
+                       // purpose -- see §20. Zero draws no crown at all, and
+                       // resolveTree prices it at zero
 
   // --- crown ---
   branches: 13,
@@ -367,23 +159,18 @@ export const TREE_DEFAULTS = {
                        // -- see chordAt, and everything that sits on a limb
   branchWidth: 0.03,   // base radius as a fraction of the limb's own length
   branchOfTrunk: 0.8,  // ...but never more than this share of the radius the
-                       // TRUNK has where the branch leaves it. `branchWidth`
-                       // sizes a limb off its own length, which is the right
-                       // instinct and, uncapped, a wrong shape: the trunk is a
-                       // cone closing to a point while `crownProfile` puts the
-                       // LONGEST branches around the middle, so the two curves
-                       // cross and every species grows branches thicker than the
-                       // trunk they hang on. Measured before the cap: aspen 11 of
-                       // 14 branches over this share and the worst 2.3x the trunk
-                       // radius, birch 11 of 13, oak 6 of 12, pine 3 of 30. This
-                       // is the rule the FORKS have always followed -- a child
-                       // takes exactly its parent's radius at the split -- said
-                       // once more for the branch/trunk joint, which never had it
+                       // TRUNK has where the branch leaves it. Uncapped,
+                       // `branchWidth` grows branches fatter than the trunk they
+                       // hang on, because the trunk closes to a point exactly
+                       // where `crownProfile` puts the longest branches --
+                       // measured before the cap, aspen 11 of 14 branches over
+                       // this share and the worst 2.3x the trunk radius, birch
+                       // 11 of 13, oak 6 of 12, pine 3 of 30. The rule the FORKS
+                       // have always followed, said once more for this joint
 
   // --- forks ---
-  // One level only. A second level is a geometric series in the triangle count
-  // and an unreadable budget panel; if it is ever wanted, `growLimb` already
-  // recurses and the guard is the `depth` argument.
+  // One level only: a second is a geometric series in the triangle count and an
+  // unreadable budget panel. `growLimb` already recurses; the guard is `depth`.
   forks: 1,            // child limbs per branch
   forkScale: 0.45,     // child length as a fraction of its parent's
   forkAngle: 0.95,     // radians the child turns off the parent's tangent
@@ -414,13 +201,12 @@ export const TREE_DEFAULTS = {
                        // and clips the outer corners of the spray. How much it
                        // clips per cut is printed by gen-layers.mjs
   // How far each half of a QUAD card is bent about the seam the two triangles
-  // already share, in radians. Only cardTris 2 has a seam to bend, so this does
-  // nothing at 1. Each
-  // half draws its own angle in this range and both go the same way, so a card
-  // is a shallow asymmetric taco. Zero triangles, zero texels, zero surface
-  // area: it trades flat projection for a silhouette that survives being looked
-  // at edge-on. The full argument is at addCard. Past ~1.0 the two halves close
-  // far enough to shade each other and the spray reads as folded paper.
+  // already share, in radians -- so this does nothing at cardTris 1, which has
+  // no seam. Each half draws its own angle in this range and both go the same
+  // way, so a card is a shallow asymmetric taco: zero triangles, zero texels and
+  // zero surface area for a silhouette that survives being looked at edge-on.
+  // Past ~1.0 the halves close far enough to shade each other and the spray
+  // reads as folded paper. See addCard and §20.
   cardFoldMin: 0.17,   // 10 degrees
   cardFoldMax: 0.87,   // 50 degrees
   sprays: 6,           // leaf cards per limb, INCLUDING one terminal card. This
@@ -446,28 +232,27 @@ export const TREE_DEFAULTS = {
   sprayStart: 0.15,    // earliest point along a limb a side shoot may attach
   sprayTipBack: 0.25,  // how far back from a limb's TIP its terminal card is
                        // seated, as a fraction of the limb's own length. At 0 it
-                       // sits exactly on the apex of the cone, where the limb has
-                       // no radius at all, so the card has nothing but a point to
-                       // touch and reads as floating in front of the branch. A
-                       // quarter back the limb still has a real radius -- 0.25 of
-                       // its base, 2 cm of wood on a pine's longest branch.
+                       // sits on the cone's apex, where the limb has no radius,
+                       // so the card touches nothing but a point and reads as
+                       // floating in front of the branch. A quarter back the limb
+                       // still has 0.25 of its base radius -- 2 cm of wood on a
+                       // pine's longest branch.
                        //
-                       // WHAT IT COSTS, measured rather than waved at. The
-                       // terminal card is `sprayMetres x sprayTaper` long and
-                       // still overhangs the tip on every SHORT limb by a wide
-                       // margin, which is every limb that carries only one card.
-                       // On the LONGEST branch of a pine it falls 0.18 m short of
-                       // the tip and on an oak 0.27 m; birch and aspen cover
-                       // theirs. Those are the branches carrying three or four
-                       // cards, whose last stratified side shoot sits in the top
-                       // quarter anyway, so nothing ends up bare in practice --
-                       // but a tip is no longer guaranteed covered by the
-                       // terminal card alone, and that is the trade.
+                       // WHAT IT COSTS, measured. The terminal card is
+                       // `sprayMetres x sprayTaper` long and still overhangs the
+                       // tip on every SHORT limb, which is every limb carrying
+                       // only one card. On the LONGEST branch it falls 0.18 m
+                       // short of a pine's tip and 0.27 m of an oak's; birch and
+                       // aspen cover theirs. Those branches carry three or four
+                       // cards whose last stratified shoot sits in the top
+                       // quarter anyway, so nothing is bare in practice -- but a
+                       // tip is no longer guaranteed covered by the terminal
+                       // card alone, and that is the trade.
                        //
                        // The TRUNK's leader cards use the same knob against their
-                       // OWN length rather than the trunk's, because the trunk's
-                       // length is the whole tree and a quarter of the way down
-                       // it is nobody's idea of "just below the tip"
+                       // OWN length, not the trunk's: the trunk's length is the
+                       // whole tree and a quarter down it is nobody's idea of
+                       // "just below the tip"
   sprayOut: 0.8,       // 0 = shoots continue the limb, 1 = straight out its side
   sprayLift: 0.35,     // then turned this far toward vertical
   sprayDown: 0.2,      // ...and then this much of UP subtracted again, so the
@@ -484,18 +269,10 @@ export const TREE_DEFAULTS = {
   // WHERE THE STEM IS IN THE ART, so the card can be hung on the branch by the
   // pixel the spray actually grows from rather than by the corner of its square.
   // Both are properties of the CUT, like `sprayAspect`, and both are measured
-  // off the shipped PNGs rather than guessed -- scripts/check-trees.mjs re-derives
-  // them from public/trees/*.png and fails if these drift from the art.
-  //
-  // WHY IT MATTERS, which is not obvious until you measure it. A card is seated
-  // at (u 0.5, v 0) today, i.e. the middle of its bottom edge. But no cut puts
-  // its stem there: leaf_oak's is at u 0.60, leaf_pine's at u 0.42, and the
-  // bottom fifth of leaf_ash is a stalk two texels wide that the alpha test and
-  // the mipmap chain between them erase. The result is a spray hanging a few
-  // centimetres off to one side of, and above, the twig it is supposed to be
-  // growing from, which is exactly what it looks like. Shifting the card so its
-  // real stem lands on the seat costs nothing -- no triangle, no texel, no
-  // change of size -- and is the whole fix.
+  // off the shipped PNGs rather than guessed -- scripts/check-trees.mjs
+  // re-derives them from public/trees/*.png and fails if these drift from the
+  // art. No cut puts its stem at the (0.5, 0) a card is hung by without them;
+  // the measured spread and what it was costing are in §20.
   sprayStemU: 0.5,     // u of the stem in the cut. 0.5 = the middle of the
                        // bottom edge, which is where a card is hung without this
   sprayStemV: 0.0,     // and how far UP the cut before the art has any body to
@@ -506,67 +283,47 @@ export const TREE_DEFAULTS = {
   // --- the crown bundle: a whole crown for about twenty triangles ---
   //
   // AT BUNDLETRIS 0 THIS DOES NOTHING and the crown is cards, which is what
-  // every tier the world ships draws. Any value above 0 says: walk the very
-  // same cards, seat for seat, and instead of drawing them throw this many big
-  // triangles through the crown, corners landing on the OUTER POINTS those cards
-  // reached. NOTHING TURNS IT ON ANY MORE -- it was LOD1's crown, it was
-  // withdrawn on looks, and the tier it belonged to no longer exists at a range
-  // a tiled surface can survive. Kept because it works and is the only crown in
-  // this file that costs a flat budget rather than a count; the long argument is
-  // the last paragraph of the treeLod note.
+  // every tier the world ships draws. Above 0 it walks the very same cards, seat
+  // for seat, and instead of drawing them throws this many big triangles through
+  // the crown, corners landing on the OUTER POINTS those cards reached. Nothing
+  // turns it on any more -- it was LOD1's crown and was withdrawn on looks (§20).
+  // Kept because it works and is the only crown here that costs a flat budget
+  // rather than a count.
   bundleTris: 0,       // blades through the crown, one triangle each. 20 against
                        // the 122 cards a pine crown would otherwise spend 122
                        // triangles drawing badly
   bundleSpread: 1.2,   // how far each corner is pushed out from the crown
                        // centre, past the card seat it was taken from, as a
                        // multiple of that card's own reach. 1 is the card's leaf
-                       // tip, and the default is deliberately past it: 20 blades
-                       // are 60 corners against a crown of hundreds of sprays,
-                       // so the outermost spray is almost never one of the 60
-                       // and the bundle comes out a size small if each corner
-                       // stops at the tip it landed on. Measured over 24 seeds x
-                       // 3 sizes, 1.2 puts the bundle's crown width within about a
-                       // percent of LOD0's for oak, birch and aspen; pine sits
-                       // ~5% narrow because its crown holds the most sprays and
-                       // is the hardest to sample
+                       // tip, and past it on purpose: 60 corners sample a crown
+                       // of hundreds of sprays and almost never land on the
+                       // outermost one. Measured over 24 seeds x 3 sizes, 1.2
+                       // is within a percent of LOD0's crown width for oak,
+                       // birch and aspen; pine sits ~5% narrow
   bundleTilt: 0.85,    // the vertical span each blade is made to cover, as a
                        // multiple of the crown's DIAMETER, clamped to its
-                       // height. This is not a taste knob: at 0 the three
-                       // corners are drawn from anywhere and a good half of the
-                       // blades come out near-HORIZONTAL, which is area paid for
-                       // and not seen, because the camera at this tier is always
-                       // roughly level with the crown. Forcing the corners into
-                       // low, middle and high bands makes every blade a steep
-                       // one -- measured, this leaves 2-8% of blades more than
-                       // 45 degrees off vertical, against 20-28% at 0.6
+                       // height. Not a taste knob: at 0 half the blades come out
+                       // near-HORIZONTAL, which is area paid for and not seen.
+                       // This leaves 2-8% of blades more than 45 degrees off
+                       // vertical, against 20-28% at 0.6. Why diameter and not
+                       // height: §20
 
   leafLayer: LAYER.LEAVES,
   barkLayer: LAYER.BARK,
 }
 
-// The width/height of the art on each leaf layer, measured from its alpha
-// bounds by tools/trees/gen-layers.mjs and pasted in. The card is built at this
-// ratio because the layer is a SQUARE and the art was stretched to fill it: a
-// card at any other ratio hands back a leaf that is visibly squashed or drawn
-// out. Re-run the tool and re-paste if the atlases are ever re-cut.
+// Each cut's aspect ratio and stem position, measured off the shipped PNGs by
+// tools/trees/gen-layers.mjs, pasted into the presets below and re-derived by
+// scripts/check-trees.mjs so they cannot quietly drift from the art. Re-run the
+// tool and re-paste if the atlases are ever re-cut.
 //
-//     oak 0.651   ash 0.642   aspen 0.492   spray_pine 0.961
+//     cut          aspect   stemU   stemV
+//     oak          0.651    0.602   0.039
+//     ash          0.642    0.421   0.203
+//     aspen        0.492    0.481   0.164
+//     spray_pine   0.961    0.435   0.016
 //
-// And the two STEM numbers beside them, which say where in that square the cut
-// actually grows from -- `sprayStemU` across, `sprayStemV` up. Measured off the
-// shipped PNGs at the alpha test's own threshold and re-derived by
-// scripts/check-trees.mjs, so these cannot quietly drift from the art:
-//
-//     cut          stemU   stemV
-//     oak          0.602   0.039
-//     ash          0.421   0.203
-//     aspen        0.481   0.164
-//     spray_pine   0.435   0.016
-//
-// The spread is the point. Not one of the four sits at the 0.5 a card is hung
-// by without them, and ash spends its bottom fifth on a stalk two texels wide
-// that the alpha test erases -- so on a birch the leaves used to start a fifth
-// of a card's height out in the air, off to one side of their own twig.
+// The spread is the point, and §20 says what it was costing.
 //
 // Presets, not a taxonomy. Each is a starting point in the previewer, and the
 // numbers that matter for telling one from another are crownPeak, crownFullness
@@ -580,20 +337,14 @@ export const TREE_SPECIES = {
   //                              spurs, 5.5 m crown
   //   bush   1.1 m,  138 tris,  10 branches / 10 limbs,  42 cards, 1.9 m crown
   //
-  // Both crowns are wider than they were before `apexScale` and `sprayTipBack`,
-  // and neither triangle count moved. It is the rescale feedback loop at the
-  // bottom of buildTree: both knobs lower the topmost foliage corner, the tree
-  // is divided by its own bounding box to hit its height target, and what a
-  // lower box buys is a bigger divisor. The tree takes 6% of it. The BUSH takes
-  // 43%, because a bush is 1.1 m tall carrying sprays specified at 1.5 m, so
-  // its bounding box is foliage from top to bottom and nothing else gets a
-  // vote. That is a proportion change on a signed-off preset and it is recorded
-  // rather than absorbed -- the bush is a previewer mode, not a bank entry, so
-  // nothing in the world moved with it.
+  // Both crowns came out wider when `apexScale` and `sprayTipBack` landed, at
+  // no change in triangles: the rescale feedback loop at the bottom of buildTree
+  // divides by the bounding box, and both knobs lower the topmost foliage
+  // corner. The tree took 6% of it and the BUSH 43% -- a proportion change on a
+  // signed-off preset, recorded rather than absorbed. See §20.
   //
-  // The tree is over DESIGN.md §5's 500-triangle LOD0 tree budget and stays
-  // there deliberately for now: 300 of it is limb cones at 5 sides each, and
-  // that is the lever LOD1 pulls, taking them to 60 (see treeLod).
+  // Over DESIGN.md §5's 500-triangle LOD0 budget and staying there for now: 300
+  // of it is limb cones at 5 sides each, which is the lever treeLod pulls.
   //
   // What each group is doing, so a future edit knows what it would break:
   //
@@ -616,9 +367,8 @@ export const TREE_SPECIES = {
   //     corners and on a needled cut that shows as a clipped edge.
   pine: {
     label: 'pine',
-    // The far tier's ONE-TRIANGLE billboard is apex-UP: a conifer is a
-    // triangle already, and this keeps 89% of its foliage against 61% the
-    // other way up. The table is in impostor.js.
+    // The far tier's ONE-TRIANGLE billboard is apex-UP: a conifer is a triangle
+    // already, and this keeps 89% of its foliage against 61% the other way up.
     billboardTri: 'up',
     barkLayer: LAYER.BARK_PINE,
     leafLayer: LAYER.SPRAY_PINE,
@@ -653,9 +403,8 @@ export const TREE_SPECIES = {
   },
   oak: {
     label: 'oak',
-    // Apex-DOWN: a round crown over a bare trunk keeps 84% this way and 61%
-    // the other, because the ground corners either side of a trunk hold
-    // nothing. The table is in impostor.js.
+    // Apex-DOWN: a round crown over a bare trunk keeps 84% this way and 61% the
+    // other, because the ground corners either side of a trunk hold nothing.
     billboardTri: 'down',
     barkLayer: LAYER.BARK,
     leafLayer: LAYER.LEAVES,
@@ -688,7 +437,7 @@ export const TREE_SPECIES = {
   birch: {
     label: 'birch',
     // Apex-DOWN, but the weakest fit of the four at 74% -- a wide, low,
-    // drooping crown is where neither triangle has room. See impostor.js.
+    // drooping crown is where neither triangle has room.
     billboardTri: 'down',
     barkLayer: LAYER.BARK_BIRCH,
     leafLayer: LAYER.LEAF_ASH,
@@ -696,7 +445,7 @@ export const TREE_SPECIES = {
     params: {
       sprayAspect: 0.642,
       sprayStemU: 0.421,
-      sprayStemV: 0.203, // the worst of the four -- see the stem table above
+      sprayStemV: 0.203, // the worst of the four -- see the cut table above
       // A birch is a 6 m tree, and heightRef says so: the counts below ARE the
       // counts for one, rather than a 9 m tree's counts scaled down. Move
       // `height` off 6 and they scale from here.
@@ -712,13 +461,10 @@ export const TREE_SPECIES = {
       branchRise: 0.35,
       branchDroop: 0.95, // birch twigs hang; this is most of what says "birch"
       branchCurve: 2.2,
-      // FOUR QUADS RATHER THAN SIX TRIANGLES, and the trade is deliberate: two
-      // fewer cards a limb, each keeping the whole of its cut instead of the
-      // ~82% the stem-apex triangle leaves of the ash spray, and each able to
-      // FOLD -- a triangle has no seam to fold on. Comparable leaf area, a
-      // silhouette that does not wink edge-on, and 212 spray triangles against
-      // the 158 the six triangles cost. Birch was the last species still on the
-      // TREE_DEFAULTS card; pine, oak and aspen were already quads.
+      // FOUR QUADS RATHER THAN SIX TRIANGLES: two fewer cards a limb, each
+      // keeping the whole of its cut instead of the ~82% the stem-apex triangle
+      // leaves of the ash spray, and each able to FOLD. Comparable leaf area,
+      // and 212 spray triangles against the 158 six triangles cost.
       sprays: 4,
       cardTris: 2,
       sprayLift: 0.2,
@@ -729,7 +475,7 @@ export const TREE_SPECIES = {
   },
   aspen: {
     label: 'aspen',
-    // Apex-DOWN, a lollipop like the oak: 85% against 66%. See impostor.js.
+    // Apex-DOWN, a lollipop like the oak: 85% against 66%.
     billboardTri: 'down',
     barkLayer: LAYER.BARK_BIRCH,
     leafLayer: LAYER.LEAF_ASPEN,
@@ -766,12 +512,9 @@ export const TREE_SPECIES = {
 // override is what makes "8 bush variants per species" one axis of the bank
 // rather than four more presets to keep in sync.
 //
-// DELIBERATELY SHORT. An earlier version of this list also set crownPeak,
-// crownFullness, the branch angles and the spray counts, and the result was
-// that all four species produced the same bush wearing four leaf textures --
-// the overrides had overwritten everything that distinguished them. What is
-// left here is only what the WORD bush means; the species keeps its own crown
-// shape, so a pine bush is a conifer sapling and an oak bush is a round one.
+// DELIBERATELY SHORT -- only what the WORD bush means, so each species keeps its
+// own crown shape. Adding crownPeak, fullness, branch angles and spray counts
+// here once produced four species of identical bush; see §20.
 export const BUSH_OVERRIDES = {
   height: 1.1,
   heightRef: 1.1,      // the counts below are a BUSH's counts, stated at a
@@ -796,66 +539,40 @@ export const BUSH_OVERRIDES = {
 /**
  * The LOD1 overlay: the same tree with cheaper WOOD and identical foliage.
  *
- * NOT A DECIMATION, and it cannot be one. A collapse decimator does not fail on
- * card foliage, it succeeds by flattening it -- see DESIGN.md §9 bugs 10-11,
- * where a grass tuft decimated to 95 cm2 of surface while every texture-based
- * gate scored it 89% healthy, and a 1,703-triangle hero oak collapsed to 1,794
- * twig cards, five trunk polygons and no leaves, because cards are boundary
- * edges a collapse cannot touch while the solid trunk collapses freely. So a
+ * NOT A DECIMATION, and it cannot be one: a collapse decimator does not fail on
+ * card foliage, it succeeds by flattening it (DESIGN.md §9 bugs 10-11). So a
  * tier is a re-run of the generator with different numbers, the way the fern
  * bank's three tiers are 6, 4 and 2 segments per frond.
  *
- * THREE NUMBERS MOVE AND NOTHING ELSE DOES. The tier covers 8-15 m (LOD_BANDS in
- * v2/render/trees.js) -- close enough that the tree is still a tree and not a
- * picture of one -- so the only cuts it can afford are ones that take triangles
- * out of the parts you are not looking at. That is the wood, and only the wood:
+ * THREE NUMBERS MOVE AND NOTHING ELSE DOES. The tier covers 8-22.5 m (LOD_BANDS in
+ * v2/render/trees.js), close enough that the tree is still a tree, so the only
+ * cuts it can afford come out of the parts you are not looking at -- the wood:
  *
- *   branchSides 1   A limb cone becomes ONE vertical triangle -- see addFin,
- *                   which orients it so every ground-level view looks ACROSS
- *                   it rather than along its edge. Branches are not deleted,
- *                   because the ones poking out past the crown are skyline and
- *                   skyline is the silhouette; what goes is the barrel they
- *                   were drawn as. This is where nearly all the saving is: a
- *                   pine spends 300 of its 802 triangles on limb cones and 60
- *                   on the same limbs as fins.
- *   trunkSides 3    The floor resolveTree clamps to anyway, and a three-sided
- *                   trunk has the same silhouette width as an eight-sided one.
- *                   What it loses is the shading gradient round the barrel.
- *   roots 0         The root crown goes entirely, and it is the one cut here
- *                   that DELETES a part rather than drawing it cheaper. It can
- *                   be, because the flare is centimetres of silhouette at the
- *                   foot of the tree and this tier starts at 8 m, where that is
- *                   a few pixels tall with terrain across half of it. See THE
- *                   ROOT CROWN at the top of this file.
+ *   branchSides 1   a limb cone becomes ONE vertical triangle (addFin). Nearly
+ *                   all the saving is here: a pine spends 300 of its 802
+ *                   triangles on limb cones and 60 on the same limbs as fins.
+ *   trunkSides 3    the floor resolveTree clamps to anyway, and the silhouette
+ *                   width is unchanged. What goes is the barrel's gradient.
+ *   roots 0         the one cut that DELETES a part rather than drawing it
+ *                   cheaper, and it can be: the flare is centimetres of
+ *                   silhouette at the foot and this tier starts at 8 m.
  *
- * Measured over the bank: 480 triangles a tree becomes 338, a 30% cut, and all
- * of it comes out of wood. Per species at the base size, LOD0 -> LOD1: pine
- * 802 -> 547, oak 526 -> 415, birch 360 -> 241, aspen 442 -> 315.
+ * Measured over the bank: 480 triangles a tree becomes 338, a 30% cut, all of it
+ * out of wood. Per species at the base size, LOD0 -> LOD1: pine 802 -> 547, oak
+ * 526 -> 415, birch 360 -> 241, aspen 442 -> 315.
  *
- * THE FOLIAGE IS NOT TOUCHED AND THAT IS THE DESIGN, not an omission. Sprays
- * are most of a broadleaf's bill -- oak spends 472 of 610 on cards -- so the
- * obvious next cut is there, and it is refused at this range because there is
- * no cut to make: a card is already one triangle at its true world size, and
- * every way of buying the crown back more cheaply means either fewer sprays,
- * which thins the tree, or bigger ones, which puts a two-foot needle on a
- * spruce. The rule at the top of this file is not suspended for a LOD tier.
- * That is also why this tier stops at 15 m and a photograph takes over: the
- * next honest saving on a crown is to stop drawing it as geometry at all.
+ * THE FOLIAGE IS NOT TOUCHED AND THAT IS THE DESIGN. A card is already one
+ * triangle at its true world size, so there is no cut left to make at this
+ * range: fewer sprays thins the tree and bigger ones put a two-foot needle on a
+ * spruce. That is also why the tier stops at 22.5 m and a photograph takes over.
  *
  * IT NESTS EXACTLY, which is what makes the swap at 8 m invisible. Every count
- * is inherited, so buildTree walks the identical rng stream and lays out the
- * identical tree, and the sprays are not merely the same NUMBER of cards -- they
- * are the same cards, in the same places, at the same size. The two tiers differ
- * only in how the sticks under them are drawn.
+ * is inherited, so buildTree walks the identical rng stream and the sprays are
+ * not merely the same NUMBER of cards -- they are the same cards, in the same
+ * places, at the same size.
  *
- * A TILED CROWN WAS TRIED IN THIS SLOT AND WITHDRAWN. `bundleTris` replaced the
- * cards with twenty big triangles thrown through the crown, tiling the leaf
- * texture at its true world size, and it took the tier to ~130 triangles. It
- * held 10-45 m and it did not look like a tree there: twenty blades read as
- * blades close up and as a worse cross further off. The parameter is still
- * live, still built by buildTree, and still the only way to draw a crown for
- * about a hundred triangles; it is simply not what this tier does. Cheap and
- * well-nested is not the same as convincing.
+ * `bundleTris` was tried in this slot and withdrawn on looks. §20 has that
+ * argument, the foliage one at length, and why the fin's slicing plane works.
  */
 export function treeLod(options, tier) {
   if (tier === 0) return { ...options }
@@ -885,10 +602,9 @@ export function treeLod(options, tier) {
  *
  * This is the one place the triangle law lives. buildTree builds from what this
  * returns, the previewer's budget panel prints it, and the probe asserts the
- * built mesh matches it -- so the law cannot drift away from the builder, which
- * is exactly what it did when the same arithmetic was written out in three
- * files. It is also the only honest way to answer "what would a 20 m one cost"
- * without building it.
+ * built mesh matches it, so the law cannot drift away from the builder -- which
+ * is exactly what it did when the same arithmetic lived in three files. It is
+ * also the only honest way to answer "what would a 20 m one cost".
  *
  *   cone(sides, rings) = sides x ((rings - 1) x 2 + 1)
  *   limb(sides, rings) = 1 if sides == 1, else cone(sides, rings)
@@ -905,10 +621,9 @@ export function treeLod(options, tier) {
  *   bundleTris > 0    bundleTris -- the crown bundle, one triangle each. The
  *                     sprays are still COUNTED and still walked; they are what
  *                     the blades are hung on. They are just not drawn. No tier
- *                     the world ships asks for this; see treeLod.
+ *                     the world ships asks for this.
  *
- * with `branches` and `sprays` already scaled by height -- see the note at the
- * top of this file.
+ * with `branches` and `sprays` already scaled by height (§20).
  */
 export function resolveTree(options = {}) {
   const p = { ...TREE_DEFAULTS, ...options }
@@ -936,13 +651,10 @@ export function resolveTree(options = {}) {
   const limb = (n, r) => (Math.round(n) === 1 ? 1 : cone(Math.round(n), r))
   const trunkTris =
     p.trunkRadius > 0 ? cone(Math.max(3, Math.round(p.trunkSides)), p.trunkRings) : 0
-  // The root crown, and it is NOT height-scaled: `countPower` says how much of a
-  // height change goes into counts rather than size, and the answer for the
-  // flare at the foot is none of it -- a sapling has the same handful of spurs a
-  // grown tree does, thinner. A spur is a fixed two-face wedge with its
-  // underside left open (addRootSpur), so there is no law to apply here and no
-  // cheaper form to fall back to: the tier that would have wanted one draws no
-  // roots at all.
+  // NOT height-scaled: a sapling has the same handful of spurs a grown tree
+  // does, thinner. A spur is a fixed two-face wedge (addRootSpur), so there is
+  // no law to apply and no cheaper form to fall back to -- the tier that would
+  // have wanted one draws no roots at all.
   const roots = p.trunkRadius > 0 && p.rootWidth > 0 ? Math.max(0, Math.round(p.roots)) : 0
   const rootTris = roots * 2
   const branchTris = limbs * limb(p.branchSides, p.branchRings)
@@ -1051,69 +763,31 @@ function samplePath(pts, s) {
 
 const PATH_N = 8
 
-// One flat leaf card. `up` is its long axis and `right` its width, and it is
-// seated so v = 0 -- the art's STEM end -- is at -h/2 along `up`.
+// One leaf card. `up` is its long axis and `right` its width, and it is seated
+// so v = 0 -- the art's STEM end -- is at -h/2 along `up`.
 //
-// `tris` picks the shape, and 1 is the interesting one.
+// `tris` picks the shape: 2 is the quad, every texel of the square reachable;
+// 1 is a TRIANGLE with its apex at the stem, uv (0.5, 0), (1, 1), (0, 1), which
+// is the shape a spray already is. The triangle halves the cost of every card
+// and gives up the two BOTTOM CORNERS of the square, which gen-layers.mjs
+// measures per cut (82% ash, 72% aspen, 71% oak, 64% pine spray). It cannot be
+// WIDENED to recover them -- the array is RepeatWrapping, so a UV past the edge
+// draws the next copy of the leaf. §20 has the recovery, which is art-side.
 //
-//   2  the quad. Every texel of the square is reachable.
-//   1  a TRIANGLE, apex at the stem and base across the tip: uv (0.5, 0),
-//      (1, 1), (0, 1). This is the shape a leaf spray already is -- it leaves
-//      the twig at a point and flares out -- so most of what the triangle gives
-//      up is the two BOTTOM CORNERS of the square, which on a spray cut are
-//      nearly all transparent. It halves the cost of every card in the tree.
-//      What it costs is measured, not assumed: gen-layers.mjs prints the
-//      fraction of OPAQUE art each cut keeps, and it is 82% for ash, 72% for
-//      aspen, 71% for oak and 64% for the padded pine spray. So it is a real
-//      trade, and `cardTris: 2` is there for a cut that cannot take it. The
-//      triangle cannot be WIDENED to recover the rest: the texture array is
-//      RepeatWrapping (barkRepeat needs it), so a UV past the edge draws the
-//      NEXT copy of the leaf rather than empty space. The way to recover it is
-//      in the art -- resample each row of the cut horizontally by v so the
-//      spray FILLS the triangle instead of being cropped by it, which is
-//      lossless and tapers the spray toward its stem, which is the shape it
-//      wants anyway. See tools/trees/gen-layers.mjs.
+// A FLAT CARD VANISHES EDGE-ON, AND A QUAD DOES NOT HAVE TO BE FLAT. `foldA` and
+// `foldB` bend the quad along the seam it is already cut on: the two triangles
+// share the c0-c2 edge -- stem-left corner to tip-right corner -- and each is
+// rotated about that edge, both toward the same face, so the card comes out a
+// shallow taco rather than a sheet. Passing unlike signs gives a propeller
+// instead, which is what grass-bank.js does to a tuft. It costs no triangles, no
+// texels and no surface area, only some flat PROJECTION -- §20 says why each of
+// those three is free, and what the winking it fixes actually looked like.
 //
-// A FLAT CARD VANISHES EDGE-ON, AND A QUAD DOES NOT HAVE TO BE FLAT. A spray is
-// a whole branch's worth of foliage riding on one quad, so the one view where
-// that quad goes to zero width is not a missing leaf, it is a missing branch --
-// and it is not a rare view either: it is the entire great circle of directions
-// lying in the card's own plane, which every card in the crown crosses as the
-// player walks round the tree. The canopy visibly winks.
-//
-// `foldA` and `foldB` fix it by BENDING the quad along the seam it is already
-// cut on. The two triangles share the c0-c2 edge -- stem-left corner to
-// tip-right corner -- and each is rotated about that edge, both toward the same
-// face, so the card comes out as a shallow taco rather than a sheet. The seam is
-// a diagonal rather than the card's long axis, and that is fine and slightly
-// better than fine: it makes the two halves different shapes, so a folded card
-// is asymmetric and a crown of them does not read as a crown of one repeated
-// part. Angling them in OPPOSITE senses instead would give a propeller, which is
-// what grass-bank.js does to a tuft -- pass foldA and foldB with unlike signs
-// for it.
-//
-// THREE THINGS THIS DELIBERATELY DOES NOT COST.
-//
-//   Triangles. It is the same 4 vertices and the same 2 triangles; resolveTree's
-//     law is untouched, and so is every budget the previewer prints.
-//   Texels. The alternative was a KITE -- stem, tip and one corner either side,
-//     which puts the seam on the long axis properly -- and it throws away half
-//     the square to do it, on art that was cut to fill the square.
-//   Area. Each half turns RIGIDLY about the seam: a corner keeps its distance
-//     from the seam axis and its position along it, and only trades in-plane
-//     offset for out-of-plane offset. So the card loses none of its surface,
-//     only some of its FLAT PROJECTION, which is exactly the trade being bought.
-//
-// What it does not buy on its own is shading contrast between the two halves.
-// Both faces still share one stored normal here, and the canopy-normal pass at
-// the bottom of buildTree would overwrite per-face normals anyway; splitting the
-// seam vertices to carry two of them is a separate change and costs 2 vertices a
-// card. The stored normal stays correct as an AVERAGE either way -- the two
-// folded faces tilt away from it symmetrically, so it is still their bisector.
-//
-// The face normal falls out of right x up, and the material draws double-sided
-// so the winding costs nothing -- but foliage does not KEEP this normal. See
-// the canopy-normal pass at the bottom of buildTree.
+// Both faces share one stored normal, which stays correct as an AVERAGE: the
+// folded halves tilt away from it symmetrically. The face normal falls out of
+// right x up and the material draws double-sided, so the winding costs nothing
+// -- but foliage does not KEEP this normal. See the canopy-normal pass at the
+// bottom of buildTree.
 function addCard(out, centre, right, up, w, h, texLayer, tris, foldA = 0, foldB = 0) {
   const base = out.positions.length / 3
   const n = new THREE.Vector3().crossVectors(right, up).normalize()
@@ -1169,25 +843,15 @@ function addCard(out, centre, right, up, w, h, texLayer, tris, foldA = 0, foldB 
   return tris
 }
 
-// A limb in ONE triangle: the LOD1 branch.
+// A limb in ONE triangle: the LOD1 branch. Two corners a radius either side of
+// the base and the apex at the tip -- the triangle you get by slicing the limb
+// cone down its own axis. No card, no texture trick, the same bark layer.
 //
-// A limb cone is already a shape that tapers linearly to a point, so the
-// cheapest honest thing that keeps its silhouette is the triangle you get by
-// slicing that cone down its own axis -- two corners a radius either side of
-// the base, and the apex at the tip. No card, no texture trick, the same bark
-// layer as the cone it replaces.
-//
-// THE SLICING PLANE IS THE VERTICAL ONE, and that is the whole reason this
-// works rather than reading as a flat scrap of cardboard. A branch is roughly
-// horizontal, and what a viewer standing on the ground sees of a real round
-// branch is its thickness measured PERPENDICULAR to both the branch and their
-// own eyeline -- which, for a horizontal branch and a roughly horizontal
-// eyeline, is vertical. So the fin's width runs along the component of UP
-// perpendicular to the limb: from anywhere on the ground, all the way round the
-// tree, the fin presents its full width and is indistinguishable from the cone.
-// The one angle that catches it out is looking straight down the limb's own
-// axis, where it thins to a line -- but a real branch pointed at your eye is a
-// dot, so that view was never going to show thickness either.
+// THE SLICING PLANE IS THE VERTICAL ONE, and that is why this works rather than
+// reading as a flat scrap of cardboard: the fin's width runs along the component
+// of UP perpendicular to the limb, which is the direction a ground-level viewer
+// measures a horizontal branch's thickness in. From anywhere on the ground, all
+// the way round the tree, it presents its full width. See §20.
 //
 // The normal is horizontal, perpendicular to the fin, so the material lights it
 // like the side of a cylinder. Seen from the far side, material.js keeps that
@@ -1228,54 +892,27 @@ function addFin(out, base, tip, radius, vRepeat, texLayer) {
 
 // A ROOT SPUR IN TWO TRIANGLES: a buttress blade with the bottom left open.
 //
-// Three corners and a tip. The ridge corner sits just INSIDE the bark, so the
-// blade grows out of the trunk instead of leaning against it; the other two sit
-// on the trunk's own base plane, which the scatter then buries 15 cm deep, so
-// the blade meets the ground along an edge rather than hovering over it with
-// daylight underneath. The face those two would close -- the underside, running
-// from that ground edge down to a tip a metre and more under -- is never
-// emitted, and nothing above the soil can see it. What is left is what a
-// buttress actually shows: two flanks and a ridge.
+// Three corners and a tip. The ridge corner sits just INSIDE the bark; the other
+// two sit on the trunk's own base plane, which the scatter then buries 15 cm
+// deep. The face those two would close -- the underside, running down to a tip a
+// metre and more under -- is never emitted, and nothing above the soil can see
+// it. What is left is what a buttress shows: two flanks and a ridge.
 //
-// SAME BARK AT THE SAME SIZE AS THE TRUNK, which is the whole of why the UVs are
-// projected rather than parameterised. The trunk tiles `barkRepeat` times per
-// unit of tree UP it and, through `uRepeat`, the same per unit AROUND it, so
-// bark has one density in world space; a spur that ran u 0..1 across its own
-// width and v 0..1 down its own length would tile that same texture some twenty
-// times denser and read as a different, finer material bolted to the tree. So u
-// and v here are DISTANCES scaled by the same `barkRepeat`, measured in one
-// frame shared by both faces -- the ridge as v, the horizontal across as u.
-// Shared rather than per-face so the grain runs continuously over the ridge; the
-// cost is that each flank is foreshortened by its tilt out of that plane, which
-// is a fraction of a tile and invisible against bark's own noise.
+// SAME BARK AT THE SAME SIZE AS THE TRUNK, which is why the UVs are projected
+// rather than parameterised: u and v are DISTANCES scaled by `barkRepeat`, in
+// one frame shared by both faces so the grain runs continuously over the ridge.
+// Parameterised 0..1 they would tile some twenty times denser and read as a
+// finer material bolted to the tree. Each spur is then offset by (uOff, vOff) in
+// TILES -- measuring from `top` alone puts all five ridge corners on the
+// identical square centimetres of bark. It moves the sample, not the density.
 //
-// AND EACH SPUR IS OFFSET BY (uOff, vOff), because measuring from `top` puts
-// every spur's ridge corner at exactly (0, 0) -- five blades round one foot all
-// sampling the identical square centimetres of bark, which reads as a stamped
-// part repeated rather than as five roots. The offset is in TILES, so the whole
-// number part does nothing (the map wraps) and the fraction is the entire range
-// there is; the caller draws one per spur off the root stream. It moves the
-// sample, not the density, so the fix above survives it.
-//
-// BARREL NORMALS, authored per VERTEX, which is what stops the wedge shading as
-// two flat slabs with a crease down the ridge. A face normal is one value over a
-// whole triangle, so under a per-fragment Lambert plus the view-facing ramp in
-// material.js each flank comes out a uniform tone and the two jump at the edge
-// they share -- a hard line where there is no hard edge. Instead every vertex
-// takes the HORIZONTAL direction from the trunk's axis out to itself, which is
-// exactly the normal addCone hands the bark at that azimuth. Three things fall
-// out of that at once: the corners the two faces share carry one value, so the
-// ridge is seamless; the normal fans smoothly from the ridge round to the ground
-// corners, so a spur reads as the trunk's barrel swelling; and the ridge corner
-// agrees with the bark it is buried in, so the junction disappears rather than
-// showing as a seam. Horizontal for the reason the trunk's own are -- an upward
-// normal is a brighter one off the sky, and a spur that lit brighter than the
-// bark it is flush against read as a stuck-on part.
-//
-// Measured from the world axis rather than from the trunk's leaning centreline
-// because at the foot they ARE the same line: trunkAt bends by `trunkBend * f^2`
-// and the whole crown lives under f = 0.05, which is a couple of millimetres of
-// lean against a radius of fifteen centimetres.
+// BARREL NORMALS, authored per VERTEX: every vertex takes the HORIZONTAL
+// direction from the trunk's axis out to itself, exactly the normal addCone
+// hands the bark at that azimuth. Shared corners then carry one value so the
+// ridge is seamless, the normal fans smoothly to the ground corners so the spur
+// reads as the trunk's barrel swelling, and the ridge agrees with the bark it is
+// buried in. Face normals instead give two flat slabs with a crease. Measured
+// from the world axis because at the foot it IS the trunk's centreline. §20.
 function addRootSpur(out, top, left, right, tip, tilesPerUnit, uOff, vOff, texLayer) {
   // The projection frame: v runs down the ridge, u across it, both from `top`.
   const along = new THREE.Vector3().subVectors(tip, top).normalize()
@@ -1321,8 +958,7 @@ function addRootSpur(out, top, left, right, tip, tilesPerUnit, uOff, vOff, texLa
 }
 
 // A tapered solid closing to a POINT: `rings` rings of `sides` vertices each,
-// then a fan of `sides` triangles to the apex. See the note at the top for why
-// the apex is worth having; the cost is
+// then a fan of `sides` triangles to the apex, costing
 // `sides x ((rings - 1) x 2 + 1)` triangles.
 //
 // Each ring carries its own frame (`e1`, `e2`) so this serves a trunk, whose
@@ -1333,13 +969,11 @@ function addRootSpur(out, top, left, right, tip, tilesPerUnit, uOff, vOff, texLa
  * ring closes on itself. It is how the trunk stops being a surface of
  * revolution; see the warp built in buildTree.
  *
- * THE NORMALS DO NOT FOLLOW IT. They stay radial, which for a lobed ring is
- * wrong by atan(r'/r) -- a couple of degrees at the amplitudes used. That is
- * the same approximation this function already makes about the cone's own
- * taper (the normals are horizontal, and a cone's are not), and the lobes are
- * there to be seen in the SILHOUETTE and in the bark's stretch, neither of
- * which reads a normal. Shading them properly means a derivative per corner
- * and a second array to carry it, for a shift the bark texture hides.
+ * THE NORMALS DO NOT FOLLOW IT. They stay radial, wrong by atan(r'/r) for a
+ * lobed ring -- a couple of degrees at the amplitudes used, and the same
+ * approximation this function already makes about the cone's own taper. The
+ * lobes are there to be seen in the SILHOUETTE and in the bark's stretch,
+ * neither of which reads a normal.
  */
 function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer, warp = null) {
   const base = out.positions.length / 3
@@ -1399,29 +1033,20 @@ function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer, warp = nul
   return tris
 }
 
-// THE BUNDLE CANOPY: `bundleTris` big triangles thrown through the crown, each one
+// THE BUNDLE CANOPY: `bundleTris` big triangles thrown through the crown, each
 // crossing the trunk, each corner sitting on an outer point some real LOD0 card
-// reached. They are not joined to each other and they are not a hull. See the
-// bundle note in treeLod for why the hull that came before this was the wrong
-// object, and for the one thing this trades away.
+// reached. They are not joined to each other and they are not a hull (§20).
 //
 // EACH BLADE TILES THE SPRAY ART AT ITS TRUE WORLD SIZE, which is the whole
-// reason a triangle this big is allowed to exist. A blade eight metres across
-// wearing one spray cut stretched over it would be an eight-metre leaf, which is
-// the exact sin the first LOD1 committed. Wearing the same cut repeated at
-// `sprayMetres` it is a sheet of ordinary foliage that happens to be carried on
-// one triangle.
+// reason a triangle this big may exist: at `sprayMetres` it is a sheet of
+// ordinary foliage carried on one triangle rather than an eight-metre leaf.
 //
 // THE UV FRAME IS BUILT FROM WORLD UP, NOT FROM THE TRIANGLE. v runs along the
 // blade's steepest up-slope and u across it, so however the blade is tilted its
-// sprays hang the way sprays hang. Taking the frame from the vertex order
-// instead would cost nothing and would rotate the foliage to a different random
-// angle on every blade, which is instantly readable as wrong -- leaves have a
-// gravity direction and the eye knows it.
-//
-// The per-blade uv OFFSET is what stops twenty blades tiling in register. They
-// all share one texture at one scale, so without it the repeats line up across
-// overlapping blades and the crown moires.
+// sprays hang the way sprays hang -- taking the frame from the vertex order
+// costs the same and rotates the foliage to a random angle on every blade, which
+// is instantly readable as wrong. The per-blade uv OFFSET is what stops twenty
+// blades tiling in register and moireing.
 function addBlade(out, a, b, c, uvScale, uOff, vOff, texLayer) {
   const base = out.positions.length / 3
   const ab = new THREE.Vector3().subVectors(b, a)
@@ -1463,24 +1088,13 @@ export function buildTree(options = {}) {
   const p = { ...TREE_DEFAULTS, ...options }
   const rand = mulberry32(p.seed)
 
-  // A SECOND STREAM, AND IT HAS TO BE SECOND. The card fold wants three random
-  // numbers per card, and drawing them from `rand` would shift every subsequent
-  // draw in the tree -- so adding a purely cosmetic bend would have moved every
-  // branch azimuth, every spray seat and every limb length in the project, and
-  // the pine preset is marked LOD0 LOCKED precisely so that does not happen. On
-  // its own stream the fold is additive: the same seed lays out the same tree it
-  // laid out before, wearing folded cards. It is the same argument tree-bank.js
-  // makes for seeding each limb independently, applied one knob early.
-  //
-  // ADDITIVE IN THE PRE-SCALE FRAME, which is not quite the same as identical.
-  // A tree is built at height 1 and then divided by its own bounding box (see
-  // the rescale at the bottom), so if the vertex that HAPPENS to be highest is a
-  // folded corner, bending it moves the box and the whole tree -- wood included
-  // -- takes a uniform scale with it. Measured at seed 7: pine, oak and birch
-  // move 0.000%, aspen 1.45%, because only aspen's top vertex is a free corner.
-  // That loop is documented at the rescale itself, and it is left alone for the
-  // same reason it is there: a second build to recover a percent is not a trade
-  // worth making, and no crown PROPORTION changes, only the overall size.
+  // A SECOND STREAM, AND IT HAS TO BE SECOND. Drawing the fold's three numbers
+  // per card from `rand` would shift every subsequent draw in the tree, so a
+  // purely cosmetic bend would have moved every branch azimuth, spray seat and
+  // limb length in the project -- and the pine preset is marked LOD0 LOCKED
+  // precisely so that does not happen. On its own stream the fold is additive.
+  // Same argument tree-bank.js makes for seeding each limb independently, and
+  // §20 has the one way "additive" is approximate (aspen moves 1.45%).
   const foldRand = mulberry32((p.seed ^ 0x9e3779b9) >>> 0)
   const foldMin = Math.max(0, p.cardFoldMin)
   const foldSpan = Math.max(0, p.cardFoldMax - foldMin)
@@ -1494,11 +1108,9 @@ export function buildTree(options = {}) {
     ]
   }
 
-  // A THIRD STREAM, on the same argument as the second and with one extra:
-  // every draw it makes happens AFTER the last limb is grown, so even sharing
-  // `rand` could not have shifted anything. It is separate anyway because
-  // "could not have" is a fact about the current order of two blocks, and the
-  // fold's note above is what happens when that stops being true quietly.
+  // A THIRD STREAM, on the same argument, and separate even though every draw it
+  // makes happens after the last limb is grown: "could not have shifted
+  // anything" is a fact about the current order of two blocks.
   const bundleRand = mulberry32((p.seed ^ 0x85ebca6b) >>> 0)
 
   // `leaf` is one flag per VERTEX, not per triangle: the canopy-normal pass at
@@ -1536,19 +1148,12 @@ export function buildTree(options = {}) {
   // decides what becomes of it: a card, or one entry in the sample list the
   // blades are later hung on. The seat, the size, the axes and the rng draws
   // that produced them are IDENTICAL either way -- that is the mechanism by
-  // which any tier is the same tree as LOD0 rather than a coarser one, and it
-  // is why LOD1, which draws the cards, draws exactly LOD0's cards.
+  // which any tier is the same tree as LOD0 rather than a coarser one.
   //
-  // A sample is the card's SEAT plus its `reach`, which is how far the card
-  // extends from that seat. Half the card's height is the honest number there:
-  // it is seated at its stem and runs h/2 either way along `up`, so h/2 is what
-  // it reaches in whatever direction it happens to point.
-  //
-  // The azimuth is kept, and that is the difference from the fitted hull this
-  // replaced. A hull only needed to know how FAR out the cards got at each
-  // height, so it threw the direction away and averaged what was left. A blade
-  // has to land its corners on three particular cards on three different sides
-  // of the trunk, so it needs the whole point.
+  // A sample is the card's SEAT plus its `reach`. Half the card's height is the
+  // honest number there: it is seated at its stem and runs h/2 either way along
+  // `up`. The azimuth is kept, which is the difference from the fitted hull this
+  // replaced -- see §20.
   const bundleSamples = bundleTris > 0 ? [] : null
   let sprayTris = 0
   let sprayCards = 0
@@ -1603,23 +1208,18 @@ export function buildTree(options = {}) {
   trunkAxis.push(trunkAt(1))
 
   // THE TRUNK IS NOT A SURFACE OF REVOLUTION, and `lobeAt` is the whole of what
-  // makes that true: a multiplier on the radius that depends on WHICH WAY ROUND
-  // the trunk you are, so the cross-section swells on one side and hollows on
+  // makes that true: a radius multiplier that depends on WHICH WAY ROUND the
+  // trunk you are, so the cross-section swells on one side and hollows on
   // another. Three cosine harmonics at random phase, normalised so `trunkLobe`
   // is the peak departure whatever the phases came out as.
   //
-  // THE HARMONICS ARE CAPPED AT sides/3 and that cap is load-bearing, not
-  // caution: a ring of `sides` corners samples the shape, so a harmonic above
-  // sides/2 aliases into a jagged ring that reads as a modelling mistake rather
-  // than as wood. A third of the sides is two samples per lobe with margin, and
-  // it means the same tree coarsened to a 3-sided LOD1 trunk quietly loses its
-  // lobes instead of turning into a spiky wedge.
+  // THE HARMONICS ARE CAPPED AT sides/3 and that cap is load-bearing: a ring of
+  // `sides` corners samples the shape, so a harmonic above sides/2 aliases into
+  // a jagged ring that reads as a modelling mistake rather than as wood. A third
+  // is two samples per lobe with margin, and it means a 3-sided LOD1 trunk
+  // quietly loses its lobes instead of turning into a spiky wedge.
   //
-  // ITS OWN RNG STREAM, on exactly the argument the root crown makes below:
-  // drawing from `rand` here would shift every branch azimuth and every spray
-  // seat in the project, and the pine preset is marked LOD0 LOCKED so that
-  // cannot happen. On a stream of its own this is additive -- the same seed
-  // lays out the same tree, now with a trunk that is not a pole.
+  // ITS OWN RNG STREAM, on the argument the card fold makes above.
   const lobeAmp = Math.max(0, p.trunkLobe)
   let lobeAt = () => 1
   if (lobeAmp > 0 && sides >= 6) {
@@ -1655,20 +1255,14 @@ export function buildTree(options = {}) {
 
   // --- the root crown --------------------------------------------------------
   //
-  // Spurs off the trunk's foot, diving into the soil. A spur takes a limb's
-  // path -- branchPath, launched below the horizontal instead of above it, no
-  // foliage and no forks -- and then draws it as a two-triangle open-bottomed
-  // wedge rather than a cone. The long version, including why it is LOD0 only,
-  // why it has no underside and why it is allowed below y = 0, is THE ROOT
-  // CROWN at the top of this file.
+  // Spurs off the trunk's foot, diving into the soil. A spur takes a limb's path
+  // -- branchPath, launched below the horizontal instead of above it, no foliage
+  // and no forks -- and then draws it as a two-triangle open-bottomed wedge
+  // rather than a cone. Why it is LOD0 only, why it has no underside and why it
+  // is allowed below y = 0: DESIGN.md §20.
   //
-  // ITS OWN RNG STREAM, on the same argument the card fold makes: drawing from
-  // `rand` here would shift every branch azimuth, every limb length and every
-  // spray seat in the project, and the pine preset is marked LOD0 LOCKED
-  // precisely so that cannot happen. On a stream of its own the root crown is
-  // additive -- the same seed lays out the same tree it laid out before, now
-  // standing on roots -- and LOD1, which draws none, still walks the identical
-  // crown.
+  // ITS OWN RNG STREAM, on the same argument the card fold makes, so LOD1 --
+  // which draws none -- still walks the identical crown.
   const nRoot = R.roots
   let rootTris = 0
   // `R.roots` is already zero unless the trunk and `rootWidth` are both drawn,
@@ -1695,16 +1289,14 @@ export function buildTree(options = {}) {
       const az = roll + ((i + (rootRand() - 0.5) * p.yawJitter) / nRoot) * TAU
       const outward = new THREE.Vector3(Math.cos(az), 0, Math.sin(az))
       const side = new THREE.Vector3(-Math.sin(az), 0, Math.cos(az))
-      // NO TWO SPURS ARE THE SAME SHAPE, and the draws below are the difference
-      // between a root crown and a lathe-turned collar. The knobs above say how
-      // big a crown IS; these say it is a crown of roots. Their spreads are
-      // hardcoded rather than exposed, exactly as branchDroop's and
-      // branchLength's per-limb jitter are -- one more slider per number here
-      // would be five sliders nobody moves.
+      // NO TWO SPURS ARE THE SAME SHAPE, and the four draws below are the
+      // difference between a root crown and a lathe-turned collar. The knobs
+      // above say how big a crown IS; these say it is a crown of roots. Their
+      // spreads are hardcoded rather than exposed, exactly as branchDroop's and
+      // branchLength's per-limb jitter are.
       //
-      // HOW HIGH IT REACHES, 40% either way. This is the one the eye finds
-      // first, because a single rise all the way round reads as a hem cut at a
-      // set height rather than as wood that grew.
+      // HOW HIGH IT REACHES, 40% either way. The one the eye finds first: a
+      // single rise all the way round reads as a hem cut at a set height.
       const f = Math.min(0.9, meanRise * (0.6 + rootRand() * 0.8))
       // The skin THIS spur grows out of, lobe included -- see meanFootR.
       const lobe = lobeAt(az)
@@ -1722,19 +1314,18 @@ export function buildTree(options = {}) {
       // reads as a stand rather than as a root.
       const length = Math.max(1e-4, p.rootLength * (0.7 + rootRand() * 0.6))
       // THE RIDGE CORNER, this spur's own rise up the trunk and just INSIDE the
-      // bark it is drawn against. The trunk is a cone of `trunkSides` flats, so its skin
-      // is not at the radius: it dips to cos(pi/sides) of it in the middle of a
-      // face, 0.992 at the 25 sides the bank's species have. 0.85 is under
-      // that, so the corner is buried in the wood all the way round and the
-      // blade grows out of the trunk instead of standing off it with a gap up
-      // the seam. It stops clearing below six sides, where the inradius falls to
-      // 0.866 and then 0.5; no tier hits that, because the only tier that
-      // coarsens the trunk that far (`trunkSides` 3) also sets `roots` 0.
+      // bark. The trunk is a cone of flats, so its skin dips to cos(pi/sides) of
+      // the radius in the middle of a face -- 0.992 at the 25 sides the bank's
+      // species have. 0.85 is under that, so the corner is buried all the way
+      // round and the blade grows out of the trunk instead of standing off it
+      // with a gap up the seam. It stops clearing below six sides; no tier hits
+      // that, because the only one that coarsens the trunk that far also sets
+      // `roots` 0.
       //
-      // `rootR` already carries this spur's own lobe multiplier, so the 0.85 is
-      // measured against the skin that is actually there at this azimuth rather
-      // than against the mean circle -- which on a trunk swelling to 1.15 and
-      // hollowing to 0.85 is the difference between buried and standing proud.
+      // `rootR` already carries this spur's lobe multiplier, so the 0.85 is
+      // measured against the skin actually there at this azimuth rather than
+      // against the mean circle -- on a trunk swelling to 1.15 and hollowing to
+      // 0.85 that is the difference between buried and standing proud.
       const top = chordAt(trunkAxis, f).addScaledVector(outward, rootR * 0.85)
       // THE TWO GROUND CORNERS, on the trunk's own base plane -- y = 0 exactly,
       // which the 15 cm placement sink then puts under the soil. Seated half a
@@ -1742,13 +1333,11 @@ export function buildTree(options = {}) {
       // `rootWidth` of that radius out to either side, so the blade meets the
       // ground along an edge instead of hovering above it.
       //
-      // AND THE TWO WIDTHS ARE DRAWN SEPARATELY, which is the splay and the last
-      // symmetry to go. One width makes the wedge isoceles about its own azimuth
-      // with the ridge bisecting it -- a shape that stays symmetrical however
-      // much the rise, the dive and the length are jittered, because it is
-      // symmetrical in a direction none of those touch. Drawn apart, the ground
-      // edge sits off-centre under the ridge and the blade leans, differently on
-      // every spur.
+      // AND THE TWO WIDTHS ARE DRAWN SEPARATELY, the last symmetry to go: one
+      // width makes the wedge isoceles about its own azimuth however much the
+      // rise, dive and length are jittered, because it is symmetrical in a
+      // direction none of those touch. Drawn apart, the ground edge sits
+      // off-centre under the ridge and the blade leans.
       const foot = trunkAxis[0].clone().addScaledVector(outward, footR * 0.5)
       const wide = () => footR * p.rootWidth * (0.65 + rootRand() * 0.7)
       const left = foot.clone().addScaledVector(side, wide())
@@ -1983,17 +1572,13 @@ export function buildTree(options = {}) {
     plan.push({ t, yaw, f, length })
   }
 
-  // SPRAY COUNT FOLLOWS BRANCH LENGTH, AND THE TOTAL DOES NOT MOVE. Giving
-  // every limb the same `sprays` puts as much foliage on the one-metre branch
-  // at the apex as on the four-metre one at the hem, and a conifer built that
-  // way has a square tufted top rather than a point -- the crown profile is in
-  // the wood and nowhere in the foliage. Each limb's share is weighted by its
-  // own length instead (`sprayByLength` 0 flat, 1 fully proportional) and then
-  // NORMALISED back to `plan.length x sprays`, so this rebalances the crown at
-  // exactly zero triangles. Shrinking the top sprays instead would have cost
-  // nothing either, but a small spray at the top of a big tree reads as a
-  // different plant; fewer sprays of the same size reads as thinner growth,
-  // which is what a conifer's apex actually is.
+  // SPRAY COUNT FOLLOWS BRANCH LENGTH, AND THE TOTAL DOES NOT MOVE. Giving every
+  // limb the same `sprays` gives a conifer a square tufted top rather than a
+  // point -- the crown profile ends up in the wood and nowhere in the foliage.
+  // Each limb's share is weighted by its own length instead (`sprayByLength` 0
+  // flat, 1 fully proportional) and NORMALISED back to `plan.length x sprays`,
+  // so this rebalances the crown at exactly zero triangles. Why not shrink the
+  // top sprays instead: §20.
   const maxLen = plan.reduce((m, b) => Math.max(m, b.length), 0) || 1
   const byLen = Math.min(1, Math.max(0, p.sprayByLength))
   const share = plan.map((b) => 1 + byLen * (b.length / maxLen - 1))
@@ -2094,14 +1679,11 @@ export function buildTree(options = {}) {
   // --- the crown bundle ------------------------------------------------------
   //
   // Every spray the crown would have carried is a sample by now, and this hangs
-  // `bundleTris` blades on them. Hung on the samples rather than derived from
-  // `crownProfile`, which was the obvious shortcut and is wrong: the profile is
-  // where the BRANCHES are, and the foliage is a spray's reach further out,
-  // drooping, tapering toward the limb tips and thinned by `sprayByLength`.
-  // Three corners need three seats to sit on, and a crown that grew fewer than
-  // three sprays has no bundle to hang -- which resolveTree has already promised
-  // `bundleTris` triangles for. Say so rather than quietly building a tree with
-  // no foliage and a triangle count that disagrees with the law.
+  // `bundleTris` blades on them -- on the samples rather than on `crownProfile`,
+  // which says where the BRANCHES are (§20). Three corners need three seats, and
+  // a crown that grew fewer than three sprays has no bundle to hang, which
+  // resolveTree has already promised `bundleTris` triangles for. Say so rather
+  // than quietly building a tree with no foliage and a count that disagrees.
   if (bundleSamples && bundleSamples.length < 3) {
     throw new Error(`buildTree: bundleTris ${bundleTris} on a crown of ${bundleSamples.length} sprays`)
   }
@@ -2142,25 +1724,10 @@ export function buildTree(options = {}) {
     })
 
     // A blade wants three corners on three sides of the trunk at three heights,
-    // and each corner takes the FURTHEST-OUT card anywhere near that ask. Not
-    // the nearest to the ask, which was the obvious reading and comes out a
-    // tenth narrow: twenty blades are sixty corners against a crown of hundreds
-    // of sprays, so a rule that lands each corner on a typical card in its
-    // neighbourhood never lands one on an extreme card, and the crown the
-    // bundle draws is the crown's AVERAGE radius rather than its silhouette.
-    // Reaching for the outermost card in the neighbourhood is also just what
-    // "the outer points the sprays reached" means.
-    //
-    // The neighbourhood is a soft one -- a gaussian falloff rather than a
-    // window -- because a hard window can be empty. A pine has no low outer
-    // points at all, and a corner asking for one has to be allowed to settle
-    // for the lowest thing there is rather than to invent it.
-    //
-    // Azimuth is the tighter of the two falloffs. A blade whose corners drift
-    // off their heights is still a blade; one whose corners drift off their
-    // azimuths stops crossing the trunk, which is the one property every blade
-    // has to have -- it is what makes the bundle a bundle rather than twenty
-    // flakes stuck to the outside of the crown.
+    // and each corner takes the FURTHEST-OUT card anywhere near that ask rather
+    // than the nearest to it, which comes out a tenth narrow. The neighbourhood
+    // is soft -- a gaussian falloff, not a window -- because a hard window can
+    // be empty; azimuth is the tighter of the two falloffs. §20 has why.
     const pick = (azWant, fWant) => {
       let best = outer[0]
       let bestScore = -Infinity
@@ -2179,21 +1746,13 @@ export function buildTree(options = {}) {
 
     // The three height targets, spanning `tilt` of the crown about a random
     // middle. Ordering them low/mid/high and then ROTATING which corner takes
-    // which is what keeps twenty blades from being twenty copies of one pose:
-    // the corner that is high is on a different side of the trunk each time, so
-    // the blades lean every way rather than all the same way.
+    // which keeps twenty blades from being twenty copies of one pose.
     //
-    // The span is set against the crown's DIAMETER rather than being a flat
-    // fraction of its height, because what makes a blade steep is its rise over
-    // its RUN, and the run is fixed -- corners are 120 degrees apart, so a blade
-    // always spans most of the crown horizontally. A fraction of height gives a
-    // tall narrow pine very steep blades and a wide flat oak nearly horizontal
-    // ones off the same number; measured, a flat 0.62 put 27% of an oak's blades
-    // more than 45 degrees off vertical, which is area paid for and not seen,
-    // because the camera at this tier is roughly level with the crown. Clamped
-    // at 1: a crown wider than it is tall cannot have steeper blades than its
-    // own full height, and asking for more would only push corners out past the
-    // foliage.
+    // The span is set against the crown's DIAMETER, not a flat fraction of its
+    // height, because what makes a blade steep is its rise over its RUN and the
+    // run is fixed at 120 degrees apart (§20: a flat 0.62 put 27% of an oak's
+    // blades past 45 degrees off vertical). Clamped at 1: a crown wider than it
+    // is tall cannot have steeper blades than its own full height.
     let rMax = 0
     for (const o of outer) {
       const rh = Math.hypot(o.pos.x - centre.x, o.pos.z - centre.z)
@@ -2220,29 +1779,19 @@ export function buildTree(options = {}) {
 
   // --- canopy normals -------------------------------------------------------
   //
-  // WHY FOLIAGE THROWS AWAY ITS FACE NORMAL. The scene is one sun plus a
-  // hemisphere light whose ground colour is nearly black (that is correct: it
-  // is the bounce off soil). A card whose normal points DOWN therefore gets
-  // dotNL 0 from the sun and the ground colour from the hemisphere, and comes
-  // out black. Wrap diffuse (preview-stage.js) lifts the shaded half but still
-  // bottoms out at zero for a normal facing straight away.
+  // WHY FOLIAGE THROWS AWAY ITS FACE NORMAL: a card facing DOWN gets dotNL 0
+  // from the sun and a nearly-black ground colour from the hemisphere light, and
+  // comes out black. The fix is not to light the card, it is to light the
+  // CANOPY. A real leaf is one cell thick and lit from every side at once, so
+  // which way its quad happens to face carries nothing worth shading. Every leaf
+  // vertex instead takes the canopy's normal at that point: turned away from the
+  // trunk axis so nothing faces inward, then tilted toward the sky by
+  // `leafSkyward`. No triangles and no new attribute.
   //
-  // This is HALF the fix; the other half is in src/material.js, which undoes
-  // three's double-sided normal flip. Without that, a card's normal is turned
-  // toward the viewer no matter what is written here -- which is exactly what
-  // points it at the ground when you stand under a canopy and look up -- and
-  // the two faces of one card shade differently. With both, a card is lit by
-  // the normal below from either side.
-  //
-  // The fix is not to light the card, it is to light the CANOPY. A real leaf is
-  // one cell thick and lit from every side at once, so which way its quad
-  // happens to face carries no information worth shading. Every leaf vertex
-  // instead takes the normal of the canopy as a whole at that point: turned away
-  // from the trunk axis so nothing ever faces inward, then tilted toward the
-  // sky by `leafSkyward`. Both faces of a card then get the same light, the
-  // underside of the crown reads as a dimmer green instead of a black hole,
-  // and it costs no triangles and no new attribute -- the normals were already
-  // in the buffer.
+  // This is HALF the fix. The other half is in src/material.js, which undoes
+  // three's double-sided normal flip -- without it a card's normal is turned
+  // toward the viewer whatever is written here, which is exactly what points it
+  // at the ground when you stand under a canopy and look up. §20.
   const nrm = new THREE.Vector3()
   const outward = new THREE.Vector3()
   const sky = Math.min(1, Math.max(0, p.leafSkyward))
@@ -2281,27 +1830,15 @@ export function buildTree(options = {}) {
   // measured over the whole tree, and foliage stands above the trunk tip, so
   // anything that moves the topmost leaf vertex -- a bigger spray, a folded
   // corner, a blade's top corner -- moves the divisor and rescales the WOOD with
-  // it. Two consequences worth knowing before chasing either one:
+  // it. Two consequences, both in §20: a huge `sprayMetres` fights the loop
+  // rather than driving it (5 m of oak spray lands at 3.13 m), and LOD0 and LOD1
+  // come out at the SAME scale to every digit because they share the topmost
+  // card. Left as a loop: a second build to recover a percent is not worth it.
   //
-  //   Asking for a huge `sprayMetres` fights the loop rather than driving it.
-  //     5 m of oak spray lands at 3.13 m and fattens the crown by a quarter,
-  //     because the overshoot it causes is what shrinks it back.
-  //   LOD0 and LOD1 come out at the SAME scale, to every digit, and that is
-  //     this line plus the fact that the two tiers share their foliage: the
-  //     topmost vertex of both is the same card, so the divisor is the same
-  //     number. Measured over all 16 variants, height and crown width agree
-  //     exactly. It was not always so -- a bundled LOD1 differed by a percent
-  //     of crown width, and the LOD1 before that by 45%.
-  //
-  // Left as a loop in both cases: a second build to recover a percent is not a
-  // trade worth making, and what it would buy is not visible.
-  // This is the one place a tree deliberately differs from a fern: the fern is
-  // translated so its bounding box sits on y = 0, but a root crown dives half a
-  // metre under it and a low branch can droop below that, and lifting the whole
-  // tree to clear either would leave the trunk hanging in the air. The trunk
-  // base is at y = 0 by construction, so it is already right and everything
-  // below is allowed to pass through the ground -- which is what real roots and
-  // real low branches do.
+  // The base is NOT re-seated, which is the one place a tree deliberately
+  // differs from a fern. The trunk base is at y = 0 by construction, and a root
+  // crown diving half a metre under it is allowed to pass through the ground --
+  // which is what real roots and real low branches do.
   geo.computeBoundingBox()
   // Held, because computeBoundingBox() reuses the same Box3 in place -- reading
   // the "before" box after the rescale would silently give the after one.

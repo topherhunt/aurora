@@ -12,82 +12,64 @@ import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
-// Fallen logs and rotten stumps on the forest floor, /v2 route.
+// Fallen logs and rotten stumps on the forest floor, /v2 route. The generator,
+// its ladder and its budget are DESIGN.md §21.
 //
 // Fifth sibling of render/trees.js, render/ferns.js, render/rocks.js and
-// render/mushrooms.js, and the same machine again: one BatchedMesh, one
-// material, a variant bank, a tier ladder, a tiled camera-following scatter,
-// graded thinning by per-candidate rank, rank-based incremental regrow and the
-// rim dissolve. Read trees.js's header for all of that; it is not re-argued.
-// This is the fern's version of the machine -- a plain ground scatter, not the
-// mushroom's anchored one -- and what follows is only what is different.
+// render/mushrooms.js, and the same machine again: one BatchedMesh, one material,
+// a variant bank, a tier ladder, a tiled camera-following scatter, graded
+// thinning by per-candidate rank, rank-based incremental regrow and the rim
+// dissolve. Read trees.js's header for all of that; it is not re-argued. This is
+// the fern's version -- a plain ground scatter, not the mushroom's anchored one.
 //
-// TWO THINGS ARE DIFFERENT, and both are the same fact from two sides: THIS
-// PROP LIES DOWN AND IS METRES LONG.
+// TWO THINGS ARE DIFFERENT, both the same fact from two sides: THIS PROP LIES
+// DOWN AND IS METRES LONG.
 //
-// 1. IT IS SEATED AT ITS TWO ENDS, not at its centre. Every other scatter in
-//    /v2 asks the height field for one number and drops the prop on it, which is
-//    right for a fern (30 cm across) and for a mushroom (9 cm) and merely
-//    approximate for a boulder. A 3 m log seated on its midpoint height buries
-//    one end in the hill and hangs the other in the air, and both ends are on
-//    screen at once. So a log samples the ground under each end and PITCHES to
-//    the line between them. See `_seat`.
+// 1. IT IS SEATED AT ITS TWO ENDS, not at its centre. Every other /v2 scatter
+//    asks the field for one number and drops the prop on it, which is right for a
+//    fern and merely approximate for a boulder. A 3 m log seated on its midpoint
+//    buries one end in the hill and hangs the other in the air, both on screen at
+//    once, so a log samples the ground under each end and PITCHES to the line
+//    between them. See `_seat`. A snag does not, and that is not an oversight: a
+//    tree grows toward the light, so a snag on a slope stands VERTICAL and its
+//    broken base meets the hill. Both sink by their own half-thickness times the
+//    local slope, which closes the uphill gap.
 //
-//    A stump does not, and that is not an oversight: a tree grows toward the
-//    light, so a snag on a slope stands VERTICAL and its broken base is what
-//    meets the hill. Both kinds still sink by their own half-thickness times the
-//    local slope, which is what closes the gap on the uphill side.
-//
-// 2. THE BANDS SCALE WITH THE PIECE, AND THERE IS NO CROSS TIER. DEADWOOD_LOD_AT
-//    is metres of camera distance per metre of the piece's longest axis, so a
-//    chest-high stump gets the mesh to ~10 m, the 5-gon to ~20 and a billboard
-//    out to the 100 m cull -- the ladder this layer shipped with -- while a 20 m
-//    log holds a mesh across the whole draw radius. That is not generosity, it
-//    is the same apparent size: distance is measured from the instance ORIGIN,
-//    so under a flat ladder a player standing at a long log's END was looking at
-//    T1 from arm's length, which is the artefact this ladder was rewritten to
-//    close. DESIGN.md §5's parallax rule would put a flat card's honest range
-//    for a 0.45 m-deep log at ~13 m, so the stump's ~20 m crossover is being
-//    taken slightly early on the rule's terms and paid for by the prop's own
-//    shape: a near-cylinder is the one silhouette a flat card is nearly RIGHT
-//    for, because rotating a cylinder about its long axis does not change its
+// 2. THE BANDS SCALE WITH THE PIECE AND THERE IS NO CROSS TIER (§21). Distance is
+//    measured from the instance ORIGIN, so under a flat ladder a player standing
+//    at a long log's END was looking at T1 from arm's length. §5's parallax rule
+//    puts a flat card's honest range for a 0.45 m-deep log at ~13 m, so the
+//    stump's ~20 m crossover is taken slightly early on the rule's terms and paid
+//    for by the shape: a near-cylinder is the one silhouette a flat card is nearly
+//    RIGHT for, because rotating it about its long axis does not change its
 //    outline.
 //
-//    THE LOG'S CARD IS FIXED AND THE SNAG'S SPINS, which is a change from what
-//    this tier first shipped as. Spinning is correct for a stump -- a solid of
-//    revolution looks the same from every side, so turning the quad to the eye
-//    is free. It is wrong for a log, because a log HAS a heading: a spun card
-//    holds still against the eye while the mesh under it points along its yaw,
-//    so every LOD swap looks like the log turning to a new direction and then
-//    turning back when the player walks in again. A fixed card is carried by the
-//    instance's own yaw and the log stays where it lay. See deadwood-bank.js.
-//
-//    The cost has moved rather than gone. Spun, a log seen END-ON showed its
-//    full length instead of a 0.4 m disc; fixed, it thins to a sliver instead.
-//    Both are wrong and the second is the one the user asked for, because the
-//    error is momentary and does not read as motion. The mitigation is unchanged
-//    -- a log points somewhere random and the eye at 20 m has a whole forest
-//    floor to look at -- and if it ever reads badly the fix is the folded pair
-//    trees.js uses, not a wider mesh band.
+//    THE LOG'S CARD IS FIXED AND THE SNAG'S SPINS. Spinning is correct for a
+//    stump -- a solid of revolution looks the same from every side. It is wrong
+//    for a log, which HAS a heading: a spun card holds still against the eye while
+//    the mesh under it points along its yaw, so every LOD swap looks like the log
+//    turning and then turning back. See deadwood-bank.js. The cost has moved
+//    rather than gone: spun, a log seen END-ON showed its full length instead of a
+//    0.4 m disc; fixed, it thins to a sliver. The second is the one asked for,
+//    because the error is momentary and does not read as motion. If it ever reads
+//    badly the fix is trees.js's folded pair, not a wider mesh band.
 //
 // WHAT IT COSTS. At 0.006 pieces/m^2, FULL_RADIUS 45 and DRAW_RADIUS 100 the
 // graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 38 + 93 = ~131 standing, of which
-// about 2 are on a mesh tier at any moment and a handful more on the coarse one.
-// So the bill is ~2 x 76 + ~6 x 44 + ~123 x 2 = ~660 triangles for the whole
-// layer. The size-relative ladder moves that number around rather than up: the
-// big pieces that now hold a mesh further out are the rare tail of LOG_SKEW, and
-// a 20 m log meshed at 60 m is 126 triangles for the most conspicuous object in
-// the scene. It is the cheapest scatter in
-// the world by an order of magnitude, and it is cheap for the obvious reason:
-// dead wood is meant to be something you come across, not something you wade
-// through.
+// about 2 are on a mesh tier and a handful more on the coarse one: ~2 x 76 +
+// ~6 x 44 + ~123 x 2 = ~660 triangles for the whole layer. The size-relative
+// ladder moves that around rather than up -- the big pieces holding a mesh
+// further out are the rare tail of LOG_SKEW, and a 20 m log meshed at 60 m is 126
+// triangles for the most conspicuous object in the scene. Cheapest scatter in the
+// world by an order of magnitude, for the obvious reason: dead wood is something
+// you come across, not something you wade through.
 //
-// THE COLOUR. Two multiplies, and they are doing different jobs. The MATERIAL
-// carries DEADWOOD_TINT, which is the whole family going brown and dark because
-// it is rotting -- one constant, no per-instance component, applied before moss
-// and snow mix over the top (see material.js). The per-INSTANCE colour below is
-// the fern's ground cue plus a value jitter, so two logs lying side by side are
-// not the same pixel and a log on scrub is drier than one on grass.
+// THE COLOUR. Two multiplies doing different jobs. The MATERIAL carries
+// DEADWOOD_TINT -- the whole family going brown and dark because it is rotting,
+// one constant, applied before moss and snow mix over the top (material.js). The
+// per-INSTANCE colour below is the fern's ground cue plus a value jitter, so two
+// logs side by side are not the same pixel and a log on scrub is drier than one
+// on grass.
 // ---------------------------------------------------------------------------
 
 // Pieces per square metre at full density. Sparse on purpose and by a long way:
@@ -98,14 +80,13 @@ const DENSITY = 0.006
 
 // Metres. Inside this every piece that rolled one is standing. Comfortably past
 // the last mesh band FOR A TYPICAL PIECE -- a chest-high stump cards at ~20 m --
-// so the thinning only ever starts where dead wood is already a single card.
+// so thinning only starts where dead wood is already a single card.
 //
-// The size-relative ladder puts one exception under that sentence and it is
-// worth naming rather than chasing: a rare 20 m log is still on a mesh tier when
-// the graded thinning reaches it, so it can dissolve out while meshed. That is a
-// dithered fade and not a pop (see render/rim.js), and the alternative -- ranking
-// pieces by size so the big ones are thinned last, as rocks.js's `_rankOf` does
-// -- would make the scatter's density a function of the size roll.
+// One exception the size-relative ladder puts under that sentence: a rare 20 m
+// log is still meshed when the graded thinning reaches it, so it can dissolve out
+// while meshed. That is a dithered fade, not a pop (render/rim.js), and ranking
+// pieces by size so the big ones thin last -- rocks.js's `_rankOf` -- would make
+// the scatter's density a function of the size roll.
 const FULL_RADIUS = 45
 
 // The user's ladder, straight out of the generator so the bench and the world
@@ -143,16 +124,14 @@ const NEAR_MARGIN = TILE * 1.5
 const SEAT_SPACING = 1.5
 const SEAT_MAX_SAMPLES = 24
 
-// How many trunks one tile's keep-out query is allowed to see.
-//
-// A deadwood tile is 25 m and the box it asks for is PADDED by the longest half
-// a log can reach (a 35 m piece is 17.4 m of overhang), so the query covers up
-// to four of the forest's own 25 m tiles on each axis. trees.js grows
-// round(25*25*0.05) = 31 candidates per tile and thinning only ever removes
-// some, so sixteen full tiles is 496. Rounded up, and `crowded` counts the tile
-// that ever hits it -- a truncated read is dead wood placed against a partial
-// forest, which shows up as the odd piece through a trunk rather than as an
-// error.
+// How many trunks one tile's keep-out query is allowed to see. A deadwood tile is
+// 25 m and its box is PADDED by the longest half a log can reach (17.4 m on a
+// 35 m piece), so the query covers up to four of the forest's own 25 m tiles on
+// each axis; trees.js grows round(25*25*0.05) = 31 candidates per tile and
+// thinning only removes, so sixteen full tiles is 496. Rounded up, and `crowded`
+// counts the tile that ever hits it -- a truncated read is dead wood placed
+// against a partial forest, which shows as the odd piece through a trunk rather
+// than as an error.
 const ANCHOR_CAP = 512
 
 // Where a piece of dead wood may lie. Every one of these is a rejection, never
@@ -171,34 +150,29 @@ const PLACEMENT = {
   maxSlopeDeg: 25,
   freeboard: 0.3,
   pathClearance: 1.5,
-  // THE FRACTION OF DROWNED SITES A LOG IS ALLOWED TO KEEP, and the reason this
-  // is a rate and not a flag is that the bed of a lake is FLAT: every one of the
-  // tests above passes there, so an unconditional yes would carpet a lakebed at
-  // the full land density while the forest around it is thinned by slope and by
-  // trunks. Half is roughly what makes a submerged log read as something
-  // deposited rather than as a floor.
+  // THE FRACTION OF DROWNED SITES A LOG IS ALLOWED TO KEEP. A rate and not a flag
+  // because a lake bed is FLAT: every test above passes there, so an
+  // unconditional yes would carpet it at the full land density while the forest
+  // around it is thinned by slope and by trunks. Half is roughly what makes a
+  // submerged log read as deposited rather than as a floor.
   //
-  // LOGS ONLY, which is a deliberate asymmetry rather than an oversight. A log
-  // in the shallows is driftwood -- it got there by floating -- and it lies flat
-  // on the bed the way `_seat` already seats it. A snag is a tree that DIED
-  // STANDING, and a stump standing upright underwater is a thing that has to be
-  // explained; there is no story that puts it there.
-  //
-  // The `freeboard` above is the dry rule and stays the dry rule: a piece not
-  // taking this path still needs 30 cm of clearance over the water, so nothing
-  // ends up half-floating at the waterline.
+  // LOGS ONLY, a deliberate asymmetry. A log in the shallows is driftwood -- it
+  // floated there -- and lies flat on the bed the way `_seat` already seats it. A
+  // snag DIED STANDING, and there is no story that puts a stump upright
+  // underwater. `freeboard` above stays the dry rule: a piece not taking this
+  // path still needs 30 cm over the water, so nothing half-floats at the
+  // waterline.
   submerged: 0.5,
-  // Metres of daylight between a piece of dead wood and the nearest TRUNK,
-  // measured surface to surface -- the trunk's own radius and the piece's own
-  // half-thickness are both added to it before the test.
+  // Metres of daylight between a piece and the nearest TRUNK, surface to surface
+  // -- the trunk's radius and the piece's half-thickness are both added before the
+  // test.
   //
-  // ONE METRE AND NOT A CANOPY RADIUS, which is the whole judgement in this
-  // number. The forest runs at 0.05 stems/m^2, about 4.5 m between neighbours,
-  // and an oak's crown reaches 3.5 m -- so a keep-out drawn round the CROWNS
-  // would tile the whole wood and there would be nowhere left to put a log. What
-  // the user asked for is that dead wood not be seated ON a tree; lying under
-  // one's branches is exactly where deadfall belongs, and an occasional clipped
-  // branch is cheaper than an empty forest floor.
+  // ONE METRE AND NOT A CANOPY RADIUS. The forest runs 0.05 stems/m^2, about 4.5 m
+  // between neighbours, and an oak's crown reaches 3.5 m, so a keep-out drawn
+  // round the CROWNS would tile the whole wood and leave nowhere to put a log.
+  // What was asked is that dead wood not be seated ON a tree; lying under one's
+  // branches is where deadfall belongs, and an occasional clipped branch is
+  // cheaper than an empty forest floor.
   treeClearance: 1.0,
   // Metres of the piece buried FLAT AND ALWAYS, on top of the slope-dependent
   // burial `_seat` works out. Small, because buildDeadwood already beds a log
@@ -208,35 +182,28 @@ const PLACEMENT = {
   sink: 0.02,
 }
 
-// How big a piece ends up, IN METRES OF THE FINISHED THING, and the scale is
-// then whatever it takes to get there.
+// How big a piece ends up, IN METRES OF THE FINISHED THING; the scale is whatever
+// it takes to get there.
 //
-// THAT IS THE POINT OF THE REWRITE. This used to be a multiplier on the bank's
-// own sizes, and a multiplier cannot be reasoned about: the bank ships stumps
-// whose built height runs 0.82 m to 1.95 m, so the same 0.7x floor that made a
-// 2 m spar a respectable 1.4 m turned a 1 m stump into a 0.57 m lump -- which is
-// the half-metre stump the user was looking at. A target in metres is the same
-// number whichever variant it lands on.
+// A MULTIPLIER CANNOT BE REASONED ABOUT, which is why this is a target. The bank
+// ships stumps whose built height runs 0.82 m to 1.95 m, so one 0.7x floor made a
+// 2 m spar a respectable 1.4 m and turned a 1 m stump into a 0.57 m lump. A
+// target in metres is the same number whichever variant it lands on.
 //
-// SNAGS ARE MEASURED BY HEIGHT, which is the dimension you judge a standing thing
-// by and the one the user gave a range for: one metre to four. Four metres is a
-// storm-snapped spar you can stand under, one metre is a cut stump, and nothing
-// is a doorstop any more.
+// SNAGS ARE MEASURED BY HEIGHT, the dimension you judge a standing thing by: one
+// metre (a cut stump) to four (a storm-snapped spar you can stand under).
 //
-// LOGS ARE MEASURED BY LENGTH, and the top of their band is DOUBLE what it was:
-// the user's complaint about the old 17 m ceiling was that a log did not read as
-// an OBSTACLE, something to be walked round or climbed over rather than stepped
-// past. The cube skew is what makes the doubling do that work at the sizes
-// actually seen rather than only at the rare top -- `pow(u, 3)` takes the median
-// piece from 3.4 m to 5.6 m and the one-in-ten from 13 m to 26 m, so the whole
-// upper half of the distribution moves with the ceiling. Both bands keep their
-// SIZE_SKEW so the top stays rare: `pow(u, 1.6)` on the snags puts the median
-// stump near 2.1 m, chest high, with 4 m ones scarce.
+// LOGS ARE MEASURED BY LENGTH, and their ceiling is DOUBLE the old 17 m, which did
+// not read as an OBSTACLE -- something to walk round or climb over rather than
+// step past. The cube skew is what makes the doubling work at the sizes actually
+// seen rather than only at the rare top: `pow(u, 3)` takes the median piece from
+// 3.4 m to 5.6 m and the one-in-ten from 13 m to 26 m. Both bands keep a SIZE_SKEW
+// so the top stays rare -- `pow(u, 1.6)` puts the median stump at 2.1 m, chest
+// high, with 4 m ones scarce.
 //
-// The ceiling is not free. It sets `maxHalf`, which pads the keep-out query's
-// box and therefore ANCHOR_CAP, and it sets how many ground samples `_seat`
-// needs to keep a belly on the ground -- SEAT_MAX_SAMPLES. Both are sized off
-// this number by hand and both say so.
+// The ceiling is not free: it sets `maxHalf`, which pads the keep-out query's box
+// and therefore ANCHOR_CAP, and it sets SEAT_MAX_SAMPLES. Both are sized off this
+// number by hand and both say so.
 // Exported so the gate can measure the placed instances AGAINST the band rather
 // than against itself: the bug these replaced was perfectly self-consistent, and
 // a check that reads the same constant the scatter reads would have passed.
@@ -249,33 +216,28 @@ const LOG_SKEW = 3.0
 // luminance-renormalised so only the HUE survives. See ferns.js for why the
 // renormalisation is load-bearing.
 //
-// HIGHER THAN THE FERN'S 0.35, which is a reversal of what this number used to
-// say and worth recording as one. The old argument was that DEADWOOD_TINT had
-// already taken the family toward the ground's browns, so a strong cue on top of
-// it would go to mud -- and that was true of the strong tint, which is exactly
-// the thing that made dead wood read as a stain on the forest floor. With the
-// tint pulled back toward neutral the cue is doing the work instead, and it is
-// the better tool for it: a constant is one brown everywhere, while this follows
-// the terrain from a riverbank to a burn to a hillside. A fern is a LIVING thing
-// standing IN the ground and only borrows a little of it; a rotting log is half
-// way to being ground already.
+// HIGHER THAN THE FERN'S 0.35, a reversal worth recording. The old argument was
+// that DEADWOOD_TINT had already taken the family toward the ground's browns so a
+// strong cue would go to mud -- true of the strong tint, which is what made dead
+// wood read as a stain on the floor. With the tint pulled back toward neutral the
+// cue does the work and is the better tool: a constant is one brown everywhere,
+// this follows the terrain from a riverbank to a burn. A fern is a LIVING thing
+// standing IN the ground and borrows a little; a rotting log is half way to being
+// ground already.
 const GROUND_CUE = 0.45
 
-// Mixed into the world seed, and it is not cosmetic -- it is the fix for dead
-// wood growing IN THE TREES.
-//
-// trees.js, ferns.js, grass.js and this file all hash a tile with the same
-// `tileSeed`, all run it off the same world SEED, all use 25 m tiles, and all
+// Mixed into the world seed, and not cosmetic -- it is the fix for dead wood
+// growing IN THE TREES. trees.js, ferns.js, grass.js and this file all hash a tile
+// with the same `tileSeed` off the same world SEED, all use 25 m tiles, and all
 // spend their first two draws on `x = (tx + rand()) * TILE` and the same for z.
 // Identical hash plus identical stream plus identical draw order is the SAME
-// SEQUENCE, so candidate k here landed at exactly candidate k's position in the
-// forest -- and since this layer draws four candidates per tile against the
-// forest's thirty-one, every single piece of dead wood was seated on a trunk.
-// A salt on the seed decorrelates the stream while leaving it a pure function of
-// position, so the world is still the same world every time it is walked.
-//
-// The keep-out below is the belt to this braces: the salt stops the systematic
-// collision, the keep-out catches the incidental one.
+// SEQUENCE, so candidate k here landed at candidate k's position in the forest --
+// and since this layer draws four candidates per tile against the forest's
+// thirty-one, every single piece of dead wood was seated on a trunk. A salt
+// decorrelates the stream while leaving it a pure function of position, so the
+// world is still the same world every time it is walked. The keep-out below is the
+// belt to this braces: the salt stops the systematic collision, the keep-out
+// catches the incidental one.
 const SEED_SALT = 0x5ea51f
 
 /** Deterministic 32-bit PRNG. Same one the rest of the project uses. */
@@ -545,13 +507,12 @@ export class Deadwood {
    * trees.update. Both hold today (see v2/main.js).
    *
    * WHAT THE FOREST IS COMPLETE ABOUT: trees.js keeps full density to 80 m and
-   * grades it away past that, while this layer grows tiles out to 100 m. So a
-   * piece seeded in the last 20 m is tested against a forest that is missing
-   * about a fifth of itself, and a trunk that thickens back in as the player
-   * walks up will occasionally arrive through a log already lying there. That is
-   * the "occasionally intersects" the user allowed, and the alternative -- re-
-   * testing placed pieces every time the forest regrows -- would mean dead wood
-   * that vanishes as you approach it, which is far worse than a clipped trunk.
+   * grades it away past that, while this layer grows tiles out to 100 m, so a
+   * piece seeded in the last 20 m is tested against a forest missing about a fifth
+   * of itself and a trunk thickening back in will occasionally arrive through a
+   * log already lying there. That is the "occasionally intersects" allowed here;
+   * re-testing placed pieces on every forest regrow would mean dead wood that
+   * vanishes as you approach it, which is far worse.
    */
   /**
    * The uniform scale for one instance, from its own size roll.
@@ -632,29 +593,22 @@ export class Deadwood {
    * Work out the height and the pitch a piece should be placed at, into
    * `this._seated`.
    *
-   * THE CENTRE HEIGHT IS NOT ENOUGH for anything metres long. buildDeadwood beds
-   * a log so that its belly touches y = 0 along its whole length, which is exact
-   * on flat ground and is exactly wrong on a hill -- a 3 m log on a 20 degree
-   * slope seated on its midpoint has one end a HALF METRE in the air. So:
+   * THE CENTRE HEIGHT IS NOT ENOUGH for anything metres long. buildDeadwood beds a
+   * log so its belly touches y = 0 along its whole length, exact on flat ground and
+   * exactly wrong on a hill -- a 3 m log on a 20 degree slope seated on its
+   * midpoint has one end a HALF METRE in the air. So a LOG pitches to the line
+   * between the ground under its two ends and is then dropped to the lowest height
+   * keeping every point at or under the ground; a SNAG does not pitch at all, and
+   * only its base rim is dealt with by the same rule.
    *
-   *   - a LOG pitches to the line between the ground under its two ends, and is
-   *     then dropped to the lowest height that keeps every point along it at or
-   *     under the ground.
-   *   - a SNAG does not pitch at all. A tree grows toward the light and a broken
-   *     stump inherits that, so it stands vertical on any slope this scatter will
-   *     accept, and only its base rim has to be dealt with -- by the same rule,
-   *     the lowest height the rim allows.
+   * ONE RULE: a piece sits at the lowest point of its own footprint, and anything
+   * the ground does inside that footprint pushes UP through the wood rather than
+   * lifting it off. Averaging or sampling the middle is what leaves daylight, and
+   * daylight under a log is the one thing this file must not produce.
    *
-   * ONE RULE, THEN: a piece sits at the lowest point of its own footprint, and
-   * anything the ground does inside that footprint pushes UP through the wood
-   * rather than lifting it off. The alternative -- averaging, or sampling the
-   * middle -- is what leaves daylight, and daylight under a log is the one thing
-   * the user asked this file not to produce.
-   *
-   * BOTH then sink by `tan * radius`, which buries the UPHILL side of a piece of
-   * that thickness while the downhill side rests on the ground rather than
-   * floating over it. That is why `radius` is measured off the built mesh rather
-   * than guessed.
+   * BOTH then sink by `tan * radius`, burying the UPHILL side of a piece of that
+   * thickness while the downhill side rests on the ground. That is why `radius` is
+   * measured off the built mesh rather than guessed.
    *
    * @param variant  bank variant id
    * @param x,z      where the piece stands
@@ -695,24 +649,10 @@ export class Deadwood {
     const hA = this.field.heightAt(x - dx, z - dz)
     const hB = this.field.heightAt(x + dx, z + dz)
     // THE CHORD IS NOT THE GROUND. Seated on the mean of its two ends a log is a
-    // straight line across a curved surface, and wherever the ground rises above
-    // that line the log is arched over it with daylight under its belly -- which
-    // is exactly what the user asked not to see. A rigid log cannot follow the
-    // ground, so the only honest fix is to push the whole line DOWN until no
-    // sample of the ground is above it, and let the ends bury by however much
-    // that costs. That is what a log lying across a rise does.
-    //
-    // SAMPLED BY LENGTH AND NOT BY COUNT, because what leaks daylight is the
-    // ground BETWEEN two samples and that depends on how far apart they are, not
-    // on how many there are. A fixed five is plenty for a 2 m log and leaves a
-    // 35 m one arched clear over the hillside. At SEAT_SPACING the worst a smooth
-    // rise can bulge between neighbours is a couple of centimetres, which is
-    // under the terrain mesh's own faceting and inside any log's radius.
-    //
-    // The line's height at `s` in [-1, 1] along the axis is `chord + s * rise`,
-    // and the violation at a sample is how far the ground there is ABOVE it.
-    // Starting at zero clamps it: over a hollow every violation is negative, the
-    // log bridges it, and that is right.
+    // straight line across a curved surface, arched over wherever the ground rises
+    // above that line. A rigid log cannot follow the ground, so the only honest fix
+    // is to push the whole line DOWN until no ground sample is above it and let the
+    // ends bury by whatever that costs -- which is what a log across a rise does.
     // NEGATIVE, and the sign is the whole of it: `_growTile` rotates about
     // (cos yaw, 0, -sin yaw), which is up x axis, and a positive angle about
     // that tips the +Z end DOWN. The +Z end is the one at hB, so a log running
@@ -720,32 +660,28 @@ export class Deadwood {
     out.pitch = -Math.atan2(hB - hA, half * 2)
 
     // THE PITCH LEVELS THE LOG. IT DOES NOT SEAT IT. Once the tilt is settled the
-    // height is a separate question with one answer: the log must be at or below
-    // the ground at EVERY point along itself, so its origin sits at the LOWEST
-    // height any of those points will allow, and the tightest sample is the one
-    // it rests on.
+    // height has one answer: the log must be at or below the ground at EVERY point
+    // along itself, so its origin sits at the lowest height any of those points
+    // allows and the tightest sample is the one it rests on. That covers both
+    // shapes with no special case -- across a RISE the tightest point is an end, so
+    // the log lies on its ends and the ground pushes up through its belly; across a
+    // HOLLOW it is the middle, so the belly touches and the ends bury into the two
+    // banks. The second is the one that matters, because a chord seat bridges the
+    // hollow with daylight the whole way under it.
     //
-    // That single rule covers both shapes and neither is a special case. Across a
-    // RISE the tightest point is an end, so the log lies on its two ends and the
-    // ground pushes up through its belly, which is a log across a ridge. Across a
-    // HOLLOW the tightest point is the middle, so the log drops until its belly
-    // touches and its ends bury into the two banks. The second is the one that
-    // matters: a chord seat leaves it bridging the hollow with daylight the whole
-    // way under it, which is exactly what the user asked not to see.
+    // MEASURED WHERE THE LOG ACTUALLY IS, not where the end samples were taken.
+    // Pitching foreshortens the piece -- the rotation lifting an end by
+    // `half * sin` pulls it in by `half * (1 - cos)`, two thirds of a metre for a
+    // long log on a 25 degree seat, which along a hillside is a quarter metre of
+    // height. So the axis is rotated first and the ground is asked about the points
+    // the wood will really occupy.
     //
-    // MEASURED WHERE THE LOG ACTUALLY IS, which is not where the end samples were
-    // taken. Pitching foreshortens the piece -- the rotation that lifts an end by
-    // `half * sin` also pulls it in by `half * (1 - cos)`, two thirds of a metre
-    // for a long log on a 25 degree seat, and two thirds of a metre along a
-    // hillside is a quarter metre of height. So the axis is rotated first and the
-    // ground is asked about the points the wood will really occupy.
-    //
-    // SAMPLED BY LENGTH AND NOT BY COUNT, because what leaks daylight is the
-    // ground BETWEEN two samples, and that depends on their spacing rather than
-    // on their number: a fixed five is plenty for a 2 m log and leaves a 35 m one
-    // hanging. At SEAT_SPACING the worst a smooth rise can bulge between
-    // neighbours is a couple of centimetres, which is under the terrain mesh's
-    // own faceting and inside any log's own radius.
+    // SAMPLED BY LENGTH AND NOT BY COUNT, because what leaks daylight is the ground
+    // BETWEEN two samples, which depends on their spacing rather than their number:
+    // a fixed five is plenty for a 2 m log and leaves a 35 m one hanging. At
+    // SEAT_SPACING the worst a smooth rise can bulge between neighbours is a couple
+    // of centimetres, under the terrain mesh's own faceting and inside any log's
+    // radius.
     const cp = Math.cos(out.pitch)
     const sp = Math.sin(out.pitch)
     const steps = Math.min(SEAT_MAX_SAMPLES, Math.max(2, Math.ceil((half * 2) / SEAT_SPACING)))

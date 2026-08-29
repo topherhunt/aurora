@@ -7,13 +7,26 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // The tree variant bank: every tree mesh in the world, baked once at load.
 //
 // Same policy as fern-bank.js and for the same reasons: THERE IS NO OFFLINE
-// BAKE STEP AND THERE SHOULD NOT BE. This runs at construction, hands its
-// geometries to BatchedMesh.addGeometry(), and then the caller disposes them.
+// BAKE STEP AND THERE SHOULD NOT BE. This runs at construction and hands its
+// geometries straight to the InstancedMeshes that draw them.
 // An asset file on disk would buy nothing and cost a build step, a cache to
 // invalidate and a way for the mesh to disagree with the generator.
 //
-// The bank is a CROSS PRODUCT: species x size x tier. Each instance then picks
-// a variant and a yaw, so the trees a player sees outnumber the meshes stored.
+// ONE VARIANT PER SPECIES, at that species' own default height -- 9 m for pine
+// and oak, 6 m for birch and aspen. Each instance then picks a species, a yaw
+// and a size multiplier on the MATRIX (trees.js SCALE, 0.5 to 1.5), so the
+// trees a player sees outnumber the four meshes stored by a long way.
+//
+// IT USED TO BE A CROSS PRODUCT, species x size, with a four-rung height ladder
+// that REGENERATED each tree rather than scaling it -- so a sapling had a
+// sapling's whorl count and life-sized needles. Sixteen variants times four
+// tiers is 64 geometries, which is 64 InstancedMeshes' worth of arena under the
+// ladder trees.js now draws (see its header): the Quest 2 wants few, fat
+// instanced draws, and a bank that fine splinters the forest into thin ones. So
+// the size ladder moved onto the instance matrix, and what it costs is that a
+// half-size tree now has half-size leaves instead of a young tree's leaves.
+// That reads at arm's length on the one tree you are standing under and nowhere
+// else; four species times four tiers is the trade.
 //
 // FOUR TIERS, FINEST FIRST -- tier 0 is the one you stand under:
 //
@@ -35,8 +48,9 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // the crown is the same card in the same seat at the same size. The root crown
 // tier 1 drops is wood at the foot, drawn from its own rng stream and reaching
 // nowhere near the crown, so dropping it moves no other part of the tree.
-// Measured over all 16 variants, the two tiers agree on height and crown width to every digit
-// printed. Nothing pops at the boundary except branches losing their barrel.
+// Measured over all four variants, the two tiers agree on height and crown
+// width to every digit printed. Nothing pops at the boundary except branches
+// losing their barrel.
 //
 // A CHEAPER LOD1 EXISTED AND WAS WITHDRAWN. The same two wood cuts, but with
 // the crown thrown as a bundle of twenty big tiled triangles (`bundleTris`),
@@ -72,7 +86,7 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // A ONE-PLANE CARD IS ONLY LEGAL IF SOMETHING TURNS IT, and material.js's
 // billboardVertex is that something -- it spins the card about its own trunk in
 // the VERTEX SHADER, so the turning costs no CPU, no second material and no
-// per-frame matrix write, and the batch stays one draw call. It also looks
+// per-frame matrix write, and the tier stays one draw call. It also looks
 // better than a fixed cross seen from far away: it always presents the
 // silhouette the photograph was actually taken from.
 //
@@ -92,65 +106,41 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // so no tier can disagree with any other about how wide the crown is.
 // ---------------------------------------------------------------------------
 
-// Height multipliers on each species' own default. Not a scale: the tree is
-// REGENERATED at each height, and tree.js's density law gives a short tree
-// fewer branches and sprays rather than shrunken ones. That law is the whole
-// reason a multiplier this small is allowed: 0.33 does not build a 12 m pine
-// shrunk to 3 m, which would read as a toy, it builds a sapling with a
-// sapling's number of whorls on it (pine 802 triangles -> 462, oak 526 -> 262,
-// the last 10 of each being the root crown, which is the same five spurs at
-// every size).
-//
-// THE SAPLING IS A QUARTER OF THE FOREST, because trees.js picks a variant
-// uniformly and there are four sizes. That is the one number to turn if it
-// reads as too many: a weighted pick in the placement loop, not a change here.
-// It costs less than its share of triangles either way, a sapling mesh being
-// roughly half the price of the mean tree.
-//
-// The absolute heights differ by species, since these multiply the species'
-// own default: 0.33 is a 3.0 m pine or oak and a 2.0 m birch or aspen.
-export const TREE_SIZES = [0.33, 0.78, 1.0, 1.34]
-
-/** Every species x size combination, in a stable order. Index into this is a variant id. */
+/**
+ * Every species, once, at its own default height, in a stable order. An index
+ * into this is a variant id.
+ *
+ * The height is the species' OWN `params.height` and never a multiplier on it:
+ * pine and oak state 9 m, birch and aspen 6 m, and a placed tree's size comes
+ * off the instance matrix instead.
+ */
 export function treeVariants() {
-  const out = []
-  for (const species of Object.keys(TREE_SPECIES)) {
+  return Object.keys(TREE_SPECIES).map((species) => {
     const sp = TREE_SPECIES[species]
     const base = { ...TREE_DEFAULTS, ...sp.params }
-    for (const size of TREE_SIZES) {
-      out.push({
-        species,
-        size,
-        height: base.height * size,
-        impostorLayer: sp.impostorLayer,
-        leafLayer: sp.leafLayer,
-        barkLayer: sp.barkLayer,
-        billboardTri: sp.billboardTri,
-      })
+    return {
+      species,
+      height: base.height,
+      impostorLayer: sp.impostorLayer,
+      leafLayer: sp.leafLayer,
+      barkLayer: sp.barkLayer,
+      billboardTri: sp.billboardTri,
     }
-  }
-  return out
+  })
 }
 
 /**
- * What to CALL one variant: `species-size`, e.g. `oak-2`.
+ * What to CALL one variant, which is now just its species.
  *
- * A variant id is an index into `treeVariants()`, and "tree 11" tells you
+ * A variant id is an index into `treeVariants()`, and "tree 3" tells you
  * nothing about which tree it is -- the readout in /v2 exists so that "that
- * tree is wrong" can be said about a tree somebody can then go and look at. The
- * species is the half that identifies it and the trailing number is WHICH OF
- * THE FOUR SIZES it is, indexing TREE_SIZES, not the size multiplier itself:
- * an integer survives being read off a HUD and typed somewhere, and 0.33 wants
- * a decimal point that a name does not need to carry.
- *
- * The same shape as a rock's `variant-index`, deliberately, and for the same
- * reason: one convention for "which member of the bank is this" across the
- * scatters that have a bank.
+ * tree is wrong" can be said about a tree somebody can then go and look at.
+ * With one variant per species the species IS the whole name; the size a given
+ * tree happens to be drawn at is on its matrix and is not a bank member.
  */
 export function treeVariantId(v) {
-  const size = TREE_SIZES.indexOf(v.size)
-  if (size < 0) throw new Error(`treeVariantId: ${v.species} has size ${v.size}, which is not one of TREE_SIZES`)
-  return `${v.species}-${size}`
+  if (!TREE_SPECIES[v.species]) throw new Error(`treeVariantId: ${v.species} is not a species`)
+  return v.species
 }
 
 /**
@@ -160,9 +150,8 @@ export function treeVariantId(v) {
  * which geometries in the batch its vertex shader spins toward the eye. It is
  * layers rather than geometry ids because the shader can only see a vertex
  * attribute, and `texLayer` is the one every prop in the project already
- * carries -- BatchedMesh throws if a geometry entering the arena is missing an
- * attribute the arena has, so a dedicated `isBillboard` attribute would be a
- * change to every generator in the project.
+ * carries -- one prop material serves ferns, rocks and trees, so a dedicated
+ * `isBillboard` attribute would be a change to every generator in the project.
  *
  * The layer list is NOT sufficient on its own, and deliberately so: both card
  * tiers wear the same impostor layer, and a three-plane cross spun about its
@@ -200,9 +189,10 @@ function geometryBytes(geo) {
  * is the geometry for tier `t` and variant `v`. Every tier is the same length,
  * so a band index and a variant id are independent lookups.
  *
- * The caller owns the geometries and MUST dispose them once they are in the
- * batch -- BatchedMesh copies the vertex data into its arena, so holding the
- * originals just doubles the memory.
+ * The caller owns the geometries and must dispose them when it tears down.
+ * Each one becomes the geometry of an InstancedMesh and is NOT copied, so
+ * disposing one that is still in the scene deletes the buffers out from under
+ * a live draw.
  *
  * The CARD tiers arrive as quads with no pixels behind them. Their layers are
  * not photographed here because the bake needs a renderer and a loaded atlas,
@@ -218,8 +208,8 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
   const cards = []
 
   variants.forEach((v, i) => {
-    // One seed per VARIANT, not per species: two sizes of the same species
-    // should not be the same tree at two scales.
+    // One seed per variant, spread rather than consecutive so two species do
+    // not walk neighbouring rng streams and grow correlated crowns.
     const p = paramsFor(v, seed + i * 101)
     const g0 = buildTree(p)
     lod0.push(g0)
@@ -296,21 +286,16 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
  * `readRenderTargetPixels` stalls the pipeline for each -- so this is a
  * deliberate one-off hitch at load rather than anything the frame loop does.
  *
- * ONE LAYER PER SPECIES, not per variant. The card geometry carries its own
- * width and height, so a small pine and a large one wear the same photograph at
- * two sizes. That is a real approximation and not just a saving: because the
- * density law regenerates rather than scales, a 7 m pine's crown-to-height
- * ratio is not quite a 12 m pine's, so the picture is stretched by that
- * difference. At the range a card is used it is well under a pixel.
+ * ONE LAYER PER SPECIES, which is now also one layer per variant. A placed
+ * tree's size is a uniform scale on its matrix, so the photograph is stretched
+ * evenly with the card and stays exact at every size in the range.
  */
 export function bakeTreeImpostors(renderer, texArray, { seed = 1 } = {}) {
   const variants = treeVariants()
   const done = []
   for (const species of Object.keys(TREE_SPECIES)) {
-    // The size-1.0 variant is the one that gets photographed: it sits in the
-    // middle of the range the card is stretched across.
-    const i = variants.findIndex((v) => v.species === species && v.size === 1.0)
-    if (i < 0) throw new Error(`bakeTreeImpostors: no size-1.0 variant for ${species}`)
+    const i = variants.findIndex((v) => v.species === species)
+    if (i < 0) throw new Error(`bakeTreeImpostors: no variant for ${species}`)
     const v = variants[i]
     const geo = buildTree(paramsFor(v, seed + i * 101))
     const u = geo.userData.tree

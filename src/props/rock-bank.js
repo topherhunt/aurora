@@ -7,18 +7,15 @@ import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 // baked geometry for every mesh tier of every one of them, and the billboard
 // card that stands in for all of them past the last mesh band.
 //
-// This file is the SINGLE SOURCE OF TRUTH for what a rock in this world can
-// look like. /gen-rock imports ROCK_VARIANTS as its preset list and TINTS as
-// its palette, and the world's scatter imports the same two, so a shape signed
-// off on the bench is bit-identical to the one that ships. Editing the table
-// below is the intended way to change the world's rocks; there is nowhere else
-// to edit.
+// SINGLE SOURCE OF TRUTH for what a rock here can look like. /gen-rock and the
+// world's scatter import the same ROCK_VARIANTS and TINTS, so a shape signed off
+// on the bench is bit-identical to the one that ships. Edit the table below;
+// there is nowhere else to edit.
 //
-// Same policy as tree-bank.js and fern-bank.js: NO OFFLINE BAKE STEP. The bank
-// is built at construction, handed to BatchedMesh.addGeometry(), and disposed.
-// The CARD tier is the one thing here that arrives in two pieces -- quads at
-// construction, pixels once the renderer exists -- for the reason fern-bank.js
-// gives at length above its own `fernCardGeometries`. See THE CARD below.
+// Same policy as tree-bank.js and fern-bank.js: NO OFFLINE BAKE STEP. Built at
+// construction, handed to BatchedMesh.addGeometry(), disposed. The CARD tier is
+// the one thing that arrives in two pieces -- quads at construction, pixels once
+// the renderer exists. See THE CARD below.
 //
 // WHERE A SHAPE MAY STAND. Four environments make demands a generator can
 // answer, and the table below is grouped by SHAPE FAMILY while these decide
@@ -37,60 +34,49 @@ import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 //           one entry out of twenty-five and it is the only one tagged here that
 //           comes to a point.
 //
-// Every variant is tagged with the environments it belongs in, and the scatter
-// picks from the tagged subset. A variant may appear in more than one -- a
-// pebble is underfoot everywhere -- but the tag list is what stops a river
-// shingle turning up on a summit.
+// Every variant is tagged with the environments it belongs in and the scatter
+// picks from the tagged subset. A variant may appear in more than one; the tag
+// list is what stops a river shingle turning up on a summit.
 //
-// A variant may ALSO carry `site`, which is a demand on the local relief rather
-// than on the environment: 'foot' for the base of a steep face, 'brow' for the
-// lip above one. Site-tagged variants are held out of the ordinary pools
-// entirely -- see RockBed._relief and SITES below.
+// A variant may ALSO carry `site`, a demand on local relief rather than on
+// environment: 'foot' for the base of a steep face, 'brow' for the lip above
+// one. Site-tagged variants are held out of the ordinary pools entirely -- see
+// RockBed._relief and SITES below.
 //
 // SIZE IS AUTHORED, NOT SCATTERED. `size` is the largest horizontal extent in
-// metres, so it is part of the variant rather than something the scatter rolls.
-// The scatter varies rocks by yaw, by a modest non-uniform scale and by tint; a
-// rock that needed to be four times bigger is a different variant, because the
-// proportions that read at 30 cm are not the ones that read at 1.2 m. What it
-// no longer decides is which LOD tiers the shape owns: every rock ships all
-// three, and how big it ends up in the world sets only the DISTANCES at which
-// it steps between them (props/rock.js, ROCK_LOD_AT).
+// metres, part of the variant rather than something the scatter rolls: the
+// proportions that read at 30 cm are not the ones that read at 1.2 m, so a rock
+// four times bigger is a different variant. The scatter varies yaw, a modest
+// non-uniform scale and tint. Size does not pick LOD tiers -- every rock ships
+// all three and size sets only the DISTANCES between them (rock.js,
+// ROCK_LOD_AT).
 // ---------------------------------------------------------------------------
 
 // --- the environment palette ------------------------------------------------
 //
 // A TINT IS A DESTINATION, NOT A MULTIPLIER. Every hex below is the sRGB colour
-// the tile is supposed to AVERAGE OUT TO once the tint has been applied, and the
-// multiplier that gets there is derived (TINT_GAIN). That inversion is the whole
-// point of this block, so it is worth saying why it was made.
+// the tile should AVERAGE OUT TO once tinted; the multiplier that gets there is
+// derived (TINT_GAIN) by dividing by the tile's measured mean.
 //
-// The old table was a set of multipliers against a tile deliberately graded pale
-// and near-neutral (mean 142/255, saturation 0.04), so every entry could be a
-// reduction and still land on stone. public/rocks/stone.png is now a real
-// photograph of granite: mean 93/84/76, luma 88/255, saturation 0.19. Multiply
-// THAT by 0x6e747c and the rock is not basalt, it is mud. Worse, a multiply can
-// only ever push a warm tile warmer, so half the palette was unreachable.
+// Multipliers only work against a tile graded pale and near-neutral.
+// public/rocks/stone.png is a photograph of granite (mean 93/84/76, saturation
+// 0.19): multiply THAT by 0x6e747c and the rock is mud, and since a multiply can
+// only push a warm tile warmer, half the palette is unreachable. Dividing
+// white-balances the photograph out of the way instead, and because
+// BatchedMesh's colour texture is FLOAT (see the fade-slot guards in
+// material.js) a gain above 1.0 is storable and BRIGHTENS. Nothing here darkens
+// the tile; the smallest gain is 1.39 and check-rocks.mjs asserts it.
 //
-// Dividing by the tile's measured mean fixes both. The gain white-balances the
-// photograph out of the way (the blue channel is the weakest, so it gets the
-// largest gain) and lands on the authored colour, and because BatchedMesh's
-// colour texture is FLOAT (see the fade-slot guards in material.js) a gain
-// above 1.0 is storable and BRIGHTENS. Nothing here darkens the tile: the
-// smallest gain in the table is 1.39 and check-rocks.mjs asserts it.
-//
-// The cost of a gain is highlight clipping, and the ceiling on how bright a tint
-// may be authored comes from there rather than from taste. The tile's 99th
-// percentile sits at 2.0-2.3x its own mean per channel, so a tint whose gain
-// tops about 5.7 starts blowing out more than a percent of its pixels -- which
-// is why there is no white marble in the list and why 'frost grey' stops where
-// it does. check-rocks.mjs measures the clipped fraction and holds it under 2%.
+// The ceiling on tint brightness is highlight clipping, not taste: the tile's
+// 99th percentile sits at 2.0-2.3x its own mean per channel, so a gain past
+// about 5.7 blows out more than a percent of its pixels. That is why there is no
+// white marble and why 'frost grey' stops where it does. check-rocks.mjs holds
+// the clipped fraction under 2%.
 
-// The tile's own linear-space channel means, from textures.js because the cliff
-// terrain divides by the same three numbers for the same reason. Every gain
-// below is a ratio against them, so if someone drops in a new tile and does not
-// update them the whole palette silently drifts; check-rocks.mjs re-measures the
-// shipped PNG and fails if they do.
-// (imported at the top of the file as ROCK_TILE_MEAN)
+// ROCK_TILE_MEAN is the tile's own linear-space channel means, imported from
+// textures.js because the cliff terrain divides by the same three numbers. Every
+// gain is a ratio against them, so a new tile with stale means silently drifts
+// the whole palette; check-rocks.mjs re-measures the shipped PNG and fails.
 
 // sRGB, because that is how a colour picker thinks. What a rock of this tint
 // averages out to on screen before lighting.
@@ -122,16 +108,13 @@ export const TINT_GAIN = TINTS.map(([, hex]) => {
 /** The four places a rock can belong. A variant carries a subset. */
 export const ENVIRONMENTS = ['river', 'forest', 'cliff', 'peak']
 
-// WHICH TINTS AN ENVIRONMENT CYCLES THROUGH. A variant's own `tint` is its
-// portrait colour -- what /gen-rock shows you when you pick it off the dropdown
-// -- and it is deliberately NOT what the world uses. One tint per variant means
-// every mosshump in the wood is the same green and the eye reads the repeat
-// instantly; the scatter rolls this list instead, so a slope of scree carries
-// four or five stone colours and stops looking like one object stamped out.
+// WHICH TINTS AN ENVIRONMENT CYCLES THROUGH. A variant's own `tint` is only its
+// portrait colour for /gen-rock; the world rolls this list instead, because one
+// tint per variant makes every mosshump in the wood the same green and the eye
+// reads the repeat instantly.
 //
-// Ordered most to least common, but the roll is uniform: the weighting is done
-// by how often a colour appears in the list, which is easier to read and easier
-// to retune than a table of probabilities.
+// The roll is uniform and the weighting is done by repeating a colour in the
+// list -- easier to read and retune than a table of probabilities.
 export const ENV_TINTS = {
   river: [0, 3, 1, 4, 0, 6, 3],
   forest: [0, 6, 5, 1, 0, 4, 6, 2],
@@ -141,12 +124,10 @@ export const ENV_TINTS = {
 
 // --- the twenty-five --------------------------------------------------------
 //
-// ORDERED BY SHAPE FAMILY, NOT BY ENVIRONMENT, and that reorganisation is the
-// point rather than a tidy-up. Grouping by place hid the real problem: the
-// `peak` tag had been handed to three tapered towers and nothing else, so above
-// the treeline the entire world was buttress, spire and fang -- three spikes and
-// a scree chip. Grouped by SHAPE it is obvious at a glance when a family is
-// thin, which is the failure mode that matters.
+// ORDERED BY SHAPE FAMILY, NOT BY ENVIRONMENT. Grouping by place hides a thin
+// family: the `peak` tag once held three tapered towers and a scree chip, and
+// nothing about that list said so. Grouped by shape it is obvious at a glance,
+// which is the failure mode that matters.
 //
 // Eight families, each a distinct way rock ends up sitting on a hillside and
 // each with its own parameter signature:
@@ -172,71 +153,44 @@ export const ENV_TINTS = {
 //                 protrudes from a bed for a fraction of a closed rock. See
 //                 `openBottom` in rock.js for what it costs you.
 //
-// `tint` is an index into TINTS; `envs` is where it may be placed; `site` is
-// the optional relief a variant demands -- 'foot' for the base of a steep face,
-// 'brow' for the lip above one. A variant with a `site` is held OUT of the
-// ordinary environment pools and only ever appears where the relief matches;
-// see RockBed._relief. Everything else ignores the ground beyond its env tag.
+// `tint` is an index into TINTS; `envs` is where it may be placed; `site` is the
+// optional relief a variant demands. A variant with a `site` is held OUT of the
+// ordinary environment pools; everything else ignores the ground beyond `envs`.
 //
-// LUMPS RUN 0.4 TO 0.75 NOW, against 0.14-0.30 before. The old table was tuned
-// against a ROCK_DEFAULTS of 0.55 that no variant ever used, so every shipped
-// rock was far smoother than the bench's own opening view -- boulders were
-// ellipsoids with a few flat cuts in them. The default is 0.7 and the table now
-// sits around it, which is what makes these read as irregular rather than as
-// faceted spheres.
+// LUMPS RUN 0.4 TO 0.75, around the 0.7 default. Anything near 0.2 gives an
+// ellipsoid with a few flat cuts in it -- a faceted sphere, not a rock.
 //
-// EVERY VARIANT IS SMOOTH-SHADED, and that is a correction. The table used to
-// run `smooth` from 0 to 0.35 on everything big, on the theory that a boulder is
-// a broken thing and broken things are faceted. What that actually produced was
-// a polyhedron: a T80 shell flat-shaded is eighty visible planes, and no amount
-// of stone texture over the top hides eighty planes once the light moves across
-// them. Snow made it unmissable, because snow replaces the albedo with a near
-// flat white and leaves the shading term as the only thing left to look at.
+// EVERY VARIANT IS SMOOTH-SHADED, nothing under 0.85. Low `smooth` on a big rock
+// gives a polyhedron: a flat-shaded T80 shell is eighty visible planes and no
+// stone texture hides them once the light moves, least of all under snow, which
+// replaces the albedo with flat white and leaves shading as the only cue.
 //
-// The faceted look those low numbers were reaching for does not come from
-// `smooth` at all -- it comes from the CUT PLANES, and rock.js shades a cut face
-// flat no matter how high `smooth` goes (a face whose three vertices were all
-// pinned by the same plane is genuinely planar, so flat is not a stylisation
-// there, it is correct). So the fracture reads exactly as before and only the
-// unbroken shell between the fractures rounds off, which is what weathering
-// does to it. Nothing below drops under 0.85; the variation that is left is
-// between 'water-worn' and 'freshly split', not between smooth and blocky.
+// The faceted look low `smooth` reaches for comes from the CUT PLANES instead,
+// and rock.js shades a cut face flat however high `smooth` goes -- three
+// vertices pinned by one plane really are planar. So fracture reads sharp and
+// only the unbroken shell between fractures rounds off, which is what weathering
+// does. The variation left is water-worn against freshly split.
 export const ROCK_VARIANTS = {
   // --- A. rounded: glacial and water-worn -----------------------------------
 
-  // A river stone, and NOT a speck any longer. It was authored at 0.11 m, and at
-  // that size a riverbed read as bare gravel with dust on it: the shapes were
-  // there in the numbers the bed asks for, and not one of them was big enough to
-  // see. It is 0.55 m now, five times over, and the underfoot bed's own scale
-  // roll of 0.7-1.6 puts what actually ships between 0.39 m and 0.88 m -- a stone
-  // you step around rather than one you cannot resolve.
+  // A river stone at half a metre, which the underfoot bed's 0.7-1.6 scale roll
+  // ships between 0.39 m and 0.88 m: a stone you step around. Anything near a
+  // tenth of a metre reads as bare gravel with dust on it -- the shapes are
+  // there and none of them is big enough to see.
   //
-  // THE FIVE TIMES IS AUTHORED HERE RATHER THAN APPLIED AT THE INSTANCE, and
-  // the reason has outlived the mechanism it was written about. It used to be
-  // the LOD ladder: at 0.11 m this variant fell in a `pebble` class that shipped
-  // one 8-face octahedron in every band, so scaling the instance matrix by five
-  // would have given a half-metre rock drawn as a die at arm's length. Size no
-  // longer picks the geometry at all -- every rock ships T180/T80/T20 and the
-  // thresholds scale with it -- so what is left is the plainer half: `texRepeat`
-  // and the proportions below are authored against THIS number, and an instance
-  // multiplier moves neither.
+  // SIZE IS AUTHORED HERE, NOT SCALED AT THE INSTANCE, and `texRepeat` moves
+  // with it: the tile is sized relative to the rock, not the world (rock.js,
+  // point 3), so an instance multiplier would stretch one granite grain to the
+  // size of a fist. 1.9 is where the bank's size-to-repeat curve sits at half a
+  // metre (`cobble` 0.34 m and `scree` 0.62 m are both 1.8). `sit` needs no such
+  // correction -- it is a fraction of the rock's own height.
   //
-  // `texRepeat` MOVES WITH IT, 1.4 -> 1.9. The tile is sized relative to the rock
-  // rather than to the world (rock.js, point 3), so leaving the repeat alone
-  // would hand the new stone the old picture stretched five times over: one
-  // granite grain the size of a fist. 1.9 is where the bank's own size-to-repeat
-  // curve already sits at half a metre -- `shingle` at 0.5 m is 2.0, `cobble` at
-  // 0.34 m and `scree` at 0.62 m are both 1.8. `sit` needs no such correction,
-  // because it is a fraction of the rock's OWN height and rescales itself.
-  //
-  // RIVER ONLY, and that argument is untouched by the resize. A stone this small
-  // still costs a whole instance, which is per-frame CPU that does not care how
-  // few triangles are in it; scattered over forest, cliff and peak it put one
-  // every 1.7 m and crowded out the rocks you can actually see, 41 of them for
-  // every boulder. A stream bed is the one place a carpet of small stones is the
-  // real thing rather than litter, so that is the one place it stays. Everywhere
-  // else the ground gets LAYER.LITTER -- one texture, no instances -- see
-  // textures.js.
+  // RIVER ONLY. A stone this small still costs a whole instance, and per-frame
+  // CPU does not care how few triangles are in it: over forest, cliff and peak
+  // it put one every 1.7 m and crowded out the rocks you can see, 41 for every
+  // boulder. A stream bed is the one place a carpet of small stones is the real
+  // thing rather than litter. Everywhere else the ground gets LAYER.LITTER --
+  // one texture, no instances.
   pebble: { size: 0.55, squash: 0.68, elongate: 1.4, lumps: 0.55, lumpFreq: 1.9, grain: 0.12, smooth: 0.96, cuts: 2, cutDepth: 0.5, cutBias: 0, sit: 0.3, texRepeat: 1.9, tint: 0, envs: ['river'] },
 
   // The river cobble: rounded on every axis because it has been rolled. At a
@@ -261,11 +215,11 @@ export const ROCK_VARIANTS = {
 
   // --- B. jointed: broken on joint sets, then weathered ---------------------
 
-  // The workhorse forest obstacle, and now BLOCKY rather than round -- ten cuts
-  // at 0.82 instead of four at 0.6. Rounding was the old recipe for "weathered",
-  // but weathering rounds the EDGES of a broken block, it does not put the block
-  // back into a sphere. Tagged `peak` as well: a glacially scoured summit is
-  // covered in exactly this, and the peak needed something that is not a spike.
+  // The workhorse forest obstacle: BLOCKY, ten deep cuts. Rounding is the wrong
+  // recipe for "weathered" -- weathering rounds the EDGES of a broken block, it
+  // does not put the block back into a sphere. Tagged `peak` too, because a
+  // glacially scoured summit is covered in exactly this and the peak needs
+  // something that is not a spike.
   boulder: { size: 1.9, squash: 0.78, elongate: 1.28, lumps: 0.62, lumpFreq: 1.6, grain: 0.09, smooth: 0.93, cuts: 10, cutDepth: 0.82, cutBias: 0, foot: 0.2, sit: 0.16, texRepeat: 2.2, tint: 6, envs: ['forest', 'cliff', 'peak'] },
 
   // "Some more angular and slightly pointed": a jointed block with one raised
@@ -296,19 +250,16 @@ export const ROCK_VARIANTS = {
   // Shingle: a flake lying flat, half buried. The `sit` is the point -- at 0.44
   // most of the rock is under the gravel and what shows is a worn edge.
   //
-  // TAGGED FOR THREE GROUNDS, and the two beyond the shore were added when
-  // `pebble` and `grit` went river-only: that left the underfoot bed with a
-  // single untagged shape in a wood and a single one above the treeline, which
-  // is the "same rock rotated" failure check-rocks' POOL_FLOOR exists to catch.
-  // A flake needs no water to explain it. In a wood it is a bit of bedrock
-  // showing through the leaf litter, and at the peak it is the characteristic
-  // shape up there -- frost splits rock along its bedding into flat plates, so
-  // a felsenmeer is mostly shingle. The one ground it stays off is `cliff`,
-  // where a loose flake would be lying on the face itself rather than on soil.
-  // Size is a LADDER choice here and not a world size, for the same reason as
-  // `cap` below: both beds that place a shingle size it in metres. Over the
-  // 0.8 m boulder line so a shell standing 3 m across a lake floor has a middle
-  // tier to fall to instead of dropping straight from T20 to a card.
+  // TAGGED FOR THREE GROUNDS, because `pebble` and `grit` are river-only and
+  // without it the underfoot bed has one shape in a wood and one above the
+  // treeline -- the "same rock rotated" failure check-rocks' POOL_FLOOR catches.
+  // A flake needs no water: in a wood it is bedrock through the leaf litter, and
+  // frost splits rock along its bedding into plates, so a felsenmeer is mostly
+  // shingle. Off `cliff` only, where a loose flake would lie on the face itself.
+  // Size here is a LADDER choice, not a world size (like `cap` below, both beds
+  // that place a shingle size it in metres): over the 0.8 m boulder line so a
+  // shell standing 3 m across a lake floor has a middle tier to fall to instead
+  // of dropping straight from T20 to a card.
   shingle: { size: 1.2, squash: 0.3, elongate: 1.8, lumps: 0.45, lumpFreq: 1.9, grain: 0.06, smooth: 0.94, cuts: 4, cutDepth: 0.78, cutBias: -0.9, sit: 0.44, openBottom: 1, texRepeat: 2.0, tint: 3, envs: ['river', 'forest', 'peak'] },
 
   // Riverbed and shore: flat, wide, sunk halfway, worn smooth. The one shape
@@ -329,24 +280,15 @@ export const ROCK_VARIANTS = {
 
   // --- D. shattered: frost-riven talus --------------------------------------
   //
-  // EQUIDIMENSIONAL, and that is the correction. Frost splits rock along joints
-  // in every direction at once, so a talus block is a lumpy die, not a shard.
-  // The old `scree` carried taper 0.2 and squash 0.55, which is a miniature
-  // spire, and it was the ONLY mid-size shape the peak had.
+  // EQUIDIMENSIONAL. Frost splits rock along joints in every direction at once,
+  // so a talus block is a lumpy die, not a shard. Any taper here is a miniature
+  // spire, and these are the peak's only mid-size shapes.
 
-  // Angular chips, and the other half of the riverbed resize: 0.14 m to 0.7 m,
-  // five times over on exactly the argument the `pebble` note makes at length.
-  // It changes class with it, from the `pebble` ladder to the `cobble` one, so
-  // what used to be an eight-triangle chip is a T20 with its cut faces actually
-  // visible -- which matters more here than it does on a pebble, because being
-  // freshly broken IS this variant's whole signature and eight faces cannot show
-  // it. `texRepeat` follows for the same reason, 1.2 -> 1.7, landing between
-  // `scree` (0.62 m, 1.8) and `cap` (0.75 m, 1.6) rather than where a 14 cm chip
-  // sat. `sit` is a fraction of its own height and needs nothing.
-  //
-  // At 0.7 m these are no longer the FINES, so the name now describes the shape
-  // rather than the grade: angular, equidimensional, freshly split. River only,
-  // for the same reason `pebble` is, and it keeps `river` because a gravel bar is
+  // Angular chips at 0.7 m -- the name describes the shape, not the grade:
+  // equidimensional and freshly split. Being freshly broken IS this variant's
+  // signature, and a chip small enough to ship as eight triangles cannot show
+  // it. `texRepeat` sits between `scree` (0.62 m, 1.8) and `cap` (1.6). River
+  // only, for the same instance-cost reason `pebble` is, and a gravel bar is
   // made of this at every size.
   grit: { size: 0.7, squash: 0.52, elongate: 1.6, lumps: 0.4, lumpFreq: 2.4, grain: 0.06, smooth: 0.88, cuts: 5, cutDepth: 0.9, cutBias: 0.2, sit: 0.24, texRepeat: 1.7, tint: 2, envs: ['river'] },
 
@@ -366,11 +308,10 @@ export const ROCK_VARIANTS = {
 
   // --- E. tor: columns with blunt crowns ------------------------------------
   //
-  // THE FIX FOR THE PEAK. Both of these were spires and are not any more, and
-  // the single number that did it is `taperPow`. Above about 1.5 the narrowing
-  // holds off through the body and then bites near the top -- shoulders, then a
-  // tooth. Near 1.0 it narrows evenly the whole way and arrives at a real flat
-  // crown, which is what a jointed column actually weathers into.
+  // `taperPow` IS WHAT SEPARATES A TOR FROM A SPIRE. Above about 1.5 the
+  // narrowing holds off through the body and then bites near the top --
+  // shoulders, then a tooth. Near 1.0 it narrows evenly the whole way to a flat
+  // crown, which is what a jointed column weathers into.
 
   // A squat tor: something you could stand on top of. Strata bands up the height
   // do the rest of the work of saying "this is bedrock, not a boulder".
@@ -378,26 +319,20 @@ export const ROCK_VARIANTS = {
 
   // The giant protruding from a cliff face: tall, heavy, cut on near-vertical
   // planes, with a flared base so it looks anchored in the slope rather than
-  // balanced on it. taperPow was 1.8 and is now 1.1, so the top is a broken-off
-  // crown rather than a horn.
+  // balanced on it. taperPow 1.1, so the top is a broken-off crown, not a horn.
   buttress: { size: 6.5, squash: 1.5, elongate: 1.3, lumps: 0.58, lumpFreq: 1.2, grain: 0.09, smooth: 0.86, cuts: 9, cutDepth: 0.86, cutBias: 0.6, taper: 0.34, taperPow: 1.1, foot: 0.55, strata: 3, strataAmp: 0.05, shards: 2, shardSpread: 0.55, shardDrop: 0.42, shardTilt: 0.3, sit: 0.26, texRepeat: 3.4, tint: 2, envs: ['cliff', 'peak'] },
 
   // --- F. pinnacle ----------------------------------------------------------
 
-  // The one genuinely pointed rock in the bank, and it is `peak` only. It used
-  // to have a 10.7 m twin called `fang` and the two of them, plus the buttress,
-  // WERE the summit -- three tapered towers and nothing else above the treeline.
-  // The fang is gone and this one is blunter (taper 0.85 -> 0.68, taperPow
-  // 2.2 -> 1.7) because a pinnacle only reads as one when it is the exception.
+  // The one genuinely pointed rock in the bank, `peak` only and deliberately
+  // blunt for a pinnacle: it reads as one only while it is the exception.
   //
-  // AND IT IS TAGGED `brow`, which is the rest of that same argument. Height
-  // alone is the wrong test for a pinnacle: an elevation gate puts spires evenly
-  // across every high slope, and an even scatter of pointed rocks is a field of
-  // fangs however few of them there are. What a spire wants is the ground that
-  // FALLS AWAY below it -- a summit, a crag top, the lip of an outcrop -- which
-  // is exactly what RockBed._relief calls a brow. The tag does two jobs at once:
-  // it pulls the spire out of the ordinary peak pool (so the open slopes get
-  // buttress, tor and whaleback and nothing sharp at all) and it concentrates
+  // TAGGED `brow`, and height alone is the wrong test. An elevation gate puts
+  // spires evenly across every high slope, and an even scatter of pointed rocks
+  // is a field of fangs however few there are. A spire wants ground that FALLS
+  // AWAY below it -- a summit, a crag top, the lip of an outcrop -- which is what
+  // RockBed._relief calls a brow. The tag pulls it out of the ordinary peak pool
+  // (open slopes get buttress, tor and whaleback, nothing sharp) and concentrates
   // what is left where a pinnacle is a landmark rather than litter.
   spire: { size: 3.6, squash: 2.2, elongate: 1.1, lumps: 0.5, lumpFreq: 1.15, grain: 0.09, smooth: 0.86, cuts: 9, cutDepth: 0.88, cutBias: 0.9, taper: 0.68, taperPow: 1.7, foot: 0.7, strata: 4, strataAmp: 0.06, shards: 1, sit: 0.3, texRepeat: 2.8, tint: 2, site: 'brow', envs: ['peak'] },
 
@@ -428,25 +363,17 @@ export const ROCK_VARIANTS = {
   // face for a third of the triangles a closed rock costs: `sit` past 0.5 buries
   // most of the shape and `openBottom` then throws the buried half away.
 
-  // BOTH OF THESE ARE TAGGED `peak`, for the same reason as `shingle`: bedrock
-  // breaking a thin skin of soil is if anything MORE of a peak thing than a
-  // riverbed thing. The argument does not depend on the size of the plate, which
-  // is why it covers the pair rather than just the small one -- a scoured slab
-  // lying on a summit is one of the most characteristic things up there, and the
-  // `crust` bed in rocks.js places exactly these two, so leaving `capslab` off
-  // `peak` left that bed with a single shape above the treeline and the world
-  // stamping one rock out over a whole environment.
+  // BOTH ARE TAGGED `peak`, for `shingle`'s reason: bedrock breaking a thin skin
+  // of soil is if anything more of a peak thing than a riverbed thing, at any
+  // size of plate. The `crust` bed in rocks.js places exactly these two, so
+  // dropping either leaves it stamping one shape over a whole environment.
 
-  // THIS SIZE NO LONGER SETS HOW BIG A CAP IS IN THE WORLD, and that is worth
-  // saying plainly because it is true of only a handful of entries in this file.
-  // Both beds that place a cap -- `crust` and `underfoot` in v2/render/rocks.js
-  // -- ask for a size in METRES per environment and divide it back through the
-  // shape's measured width, so the number here cancels out of the placement
-  // entirely. It is not dead: `texRepeat` and the proportions below are authored
-  // against it, and it is what /gen-rock draws. It used to pick the LOD ladder
-  // as well, which is why it was raised from 0.75 to clear a class boundary that
-  // no longer exists -- a cap on a cliff face is 1 to 10 m of rock, and the
-  // tiers now step at distances read off THAT rather than off this.
+  // THIS SIZE DOES NOT SET HOW BIG A CAP IS IN THE WORLD, which is true of only
+  // a handful of entries here. Both beds that place a cap -- `crust` and
+  // `underfoot` in v2/render/rocks.js -- ask for a size in METRES and divide it
+  // back through the shape's measured width, so this cancels out of the
+  // placement. It is not dead: `texRepeat` and the proportions below are
+  // authored against it, and it is what /gen-rock draws.
   cap: { size: 1.6, squash: 0.5, elongate: 1.35, lumps: 0.62, lumpFreq: 1.8, grain: 0.08, smooth: 0.95, cuts: 3, cutDepth: 0.5, cutBias: -0.3, sit: 0.52, openBottom: 1, texRepeat: 1.6, tint: 0, envs: ['river', 'cliff', 'peak'] },
 
   // The larger one: a flat plate of bedrock showing through, for the middle
@@ -511,118 +438,81 @@ function geometryBytes(geo) {
 // ---------------------------------------------------------------------------
 // THE CARD: what a rock is past the last mesh band.
 //
-// A FOURTH TIER, AND IT IS A REVERSAL. This file, textures.js and the /gen-rock
-// bench all argued for a while that a rock's ladder ends at an 8-triangle
-// octahedron and then culls: a rock is an opaque lump whose whole read is the
-// way its facets catch a moving light, and a photograph has no facets to catch
-// anything with. That is still true about what a card LOOKS like, and it is no
-// longer the argument that decides. What decides is that a coarse solid costs
+// A FOURTH TIER, past the coarsest mesh. A card looks worse than a coarse solid
+// -- a rock's whole read is the way its facets catch a moving light, and a
+// photograph has no facets -- and that is not what decides. A coarse solid costs
 // an instance, a matrix, a draw range and a scan slot exactly as a T180 does,
-// and the outermost band of a scree slope or a river bar holds tens of
-// thousands of them. Two triangles that keep a grey lump on the hillside beat
-// twenty that do, and both beat the hole that culling leaves in a talus field.
-// The octahedron itself is gone -- it was a generic diamond at any size, and
-// once the card existed there was nothing left for it to be better than.
+// and the outermost band of a scree slope holds tens of thousands of them. Two
+// triangles that keep a grey lump on the hillside beat twenty that do, and both
+// beat the hole culling leaves in a talus field.
 //
-// IT IS A BILLBOARD: ONE QUAD, SPUN, AND SPUN IN EVERY DIRECTION. The pinned
-// call is `buildImpostorCard(w, h, rockImpostorLayer(name), 1, { upNormal: true,
-// spherical: true })`, and every one of those arguments is load-bearing. A rock
-// is looked DOWN on as often as across, so rocks.js is the only bed that builds
-// its material with `sphericalBillboard`, and `spherical` here is how the card
-// is told which spin it will meet: the shape is the same either way, but the
-// bounding sphere a spherical spin needs is the one centred on the foot rather
-// than the one around the vertices. Getting that wrong does not misdraw the
-// card, it makes the renderer cull a card that is still on screen. One plane is
-// normally the illegal
-// row of that function's own table -- a FIXED single quad seen along its own
-// plane covers no pixels at all -- and `upNormal` is what makes it legal, because
-// a vertical normal is the mark material.js's billboardVertex tests to decide
-// whether to yaw a quad toward the eye. Spun, one plane never goes edge-on, and
-// two triangles is the floor. A rock is the prop that can least afford anything
-// above the floor, because its far band is the largest population in the world.
+// IT IS A BILLBOARD: ONE QUAD, SPUN IN EVERY DIRECTION. The pinned call is
+// `buildImpostorCard(w, h, rockImpostorLayer(name), 1, { upNormal: true,
+// spherical: true })` and every argument is load-bearing. A rock is looked DOWN
+// on as often as across, so rocks.js is the only bed whose material is built
+// with `sphericalBillboard`; `spherical` here tells the card which spin it will
+// meet, and the difference is the bounding sphere -- centred on the foot rather
+// than around the vertices. Getting that wrong does not misdraw the card, it
+// culls a card that is still on screen. One plane is normally the ILLEGAL row of
+// buildImpostorCard's table, since a fixed single quad seen along its own plane
+// covers no pixels; `upNormal` makes it legal, because a vertical normal is the
+// mark material.js's billboardVertex tests before yawing a quad toward the eye.
+// Spun, one plane never goes edge-on, and two triangles is the floor -- which a
+// rock needs, its far band being the largest population in the world.
 //
-// `tri` IS DELIBERATELY NOT PASSED, which would have halved it again. A conifer
-// can spend two corners of its photograph because a conifer IS a triangle and
-// the corners it drops hold no needles. A rock silhouette is convex and close
-// to filling its own box in every direction -- that is what "opaque closed lump"
-// means -- so every corner a triangle throws away is stone. Neither orientation
-// is survivable: `tri: 'down'` eats the two corners at the FOOT of the card,
-// which is where the rock meets the ground and the one part a distant rock needs
-// in order to read as sitting there rather than floating, and `tri: 'up'` eats
-// the two at the crown, which on a bedded shape is most of what is above ground
-// at all.
+// `tri` IS DELIBERATELY NOT PASSED. A conifer can spend two corners of its
+// photograph because a conifer IS a triangle and the dropped corners hold no
+// needles. A rock silhouette is convex and nearly fills its own box in every
+// direction, so every corner a triangle throws away is stone: `tri: 'down'` eats
+// the foot, which is the one part a distant rock needs in order to read as
+// sitting on the ground rather than floating, and `tri: 'up'` eats the crown,
+// which on a bedded shape is most of what is above ground at all.
 //
-// ONE PHOTOGRAPH PER VARIANT, AND IT USED TO BE ONE FOR ALL TWENTY-FIVE. The
-// card stretches a 128x128 slice across whatever quad it is put on, so a shared
-// photograph only lands undistorted on a shape with the SUBJECT'S ASPECT.
-// Measured over the bank (height against the mean plan width, averaged over the
-// shipped seeds of each variant), that aspect runs from 0.14 on a `capslab` to
-// 1.95 on a `spire`. Against the one `boulder` that used to stand in for all of
-// them the stretch ran 0.29x to 4.00x: a slab was a boulder squashed to under a
-// third of its height, a spire was a boulder pulled four times taller, and the
-// only variant drawn as itself was `boulder`. That is what "the billboard does
-// not have the right aspect ratio" is, and no single photograph fixes it.
+// ONE PHOTOGRAPH PER VARIANT. The card stretches a 128x128 slice across whatever
+// quad it is on, so a shared photograph only lands undistorted on a shape with
+// the SUBJECT'S ASPECT -- and measured over the bank that aspect runs 0.14 on a
+// `capslab` to 1.95 on a `spire`, a stretch of 0.29x to 4.00x against a single
+// `boulder` subject. The card's world EXTENTS were always each shape's own, so
+// what a shared photograph got wrong is the only thing inside that box: the
+// outline. A spire and a slab differ in silhouette and in nothing else at 250 m.
 //
-// It was argued for a while that this was survivable BECAUSE the subject is a
-// rock: a rock card is a grey blob of granite speckle with a lumpy outline, so
-// squash it and it is a flatter blob, which is what a slab is. That argument is
-// wrong about exactly the thing a card is for. The card's world EXTENTS were
-// always each shape's own, so the box a distant rock occupies was right; what
-// was wrong is the only thing inside that box -- the outline. A spire and a
-// slab differ in silhouette and in nothing else at 250 m, and a shared
-// photograph is precisely a decision to throw silhouette away.
+// THE COST IS 25 ATLAS LAYERS, 1.6 MB, the cheap end of the trade: the same
+// per-variant run for buildings would be 148 slices and 9.3 MB, which is why
+// card.js photographs a wall-style x roof-kind grid instead. A rock has no such
+// grid to collapse along. LAYER.IMPOSTOR_ROCK in textures.js is the base of the
+// run and `rockImpostorLayer` indexes it, in ROCK_NAMES order. The per-vertex
+// price is smaller than it looks: billboardVertex walks `uBillboardLayers`, so
+// 25 entries is 25 step() calls per rock vertex -- under a million ops a frame
+// at the measured 30k rock vertices in view.
 //
-// THE COST IS 25 ATLAS LAYERS, 1.6 MB, and it is the cheap end of this
-// trade-off: the same per-variant run for buildings would have been 148 slices
-// and 9.3 MB, which is why card.js photographs a wall-style x roof-kind grid
-// instead. A rock has no such grid to collapse along. See LAYER.IMPOSTOR_ROCK
-// in textures.js, which is the base of the run; `rockImpostorLayer` below
-// indexes it, and the order is ROCK_NAMES.
+// WHAT CANCELS. The card GEOMETRY is built when the bank is and the PIXELS
+// cannot exist until there is a renderer, so the two halves can never check each
+// other. Both go through `impostorCardExtents` and neither does the margin
+// arithmetic itself (`bakeImpostor` applies it internally, which is why the bake
+// is handed a frame and the quad the extents), so the transparent border cancels
+// exactly for every shape.
 //
-// The per-vertex price is the other half and it is smaller than it looks:
-// material.js's billboardVertex walks `uBillboardLayers` per vertex, so the
-// list going from 1 entry to 25 is 25 step() calls on every rock vertex drawn.
-// At the measured 30k rock vertices in view that is under a million ops a
-// frame, on the one material only the five rock beds share.
-//
-// WHAT CANCELS AND WHAT DOES NOT. The card GEOMETRY is built when the bank is,
-// and the PIXELS cannot exist until there is a renderer, so the two halves can
-// never check each other. Both go through `impostorCardExtents`, and neither
-// does the margin arithmetic itself (`bakeImpostor` applies it internally, which
-// is why the bake is handed a frame and the quad is handed the extents), so the
-// transparent border cancels exactly, for every shape, forever.
-//
-// THE TWO FRAMES ARE NOT THE SAME NUMBER, and that is deliberate. The
-// PHOTOGRAPH is framed to the subject at its WIDEST -- `rockBakeFrame`, taken at
-// `widestAzimuth` -- because a photograph that clips has thrown away silhouette
-// it can never get back. The QUAD is sized to each shape's MEAN silhouette --
-// `rockCardFrame` -- because the quad spins to face you, so whatever it is sized
-// to is what the rock looks like from EVERY bearing, and sizing it to the widest
-// view made a rock swell by up to 1.7x at the moment it swapped to its card.
-// Framing wide and drawing average is not a contradiction: the bake normalises
-// the subject to its own frame, so the picture spans the quad's frame whatever
-// that is. What it leaves is a horizontal squeeze of `planMean / max(w, d)` --
-// the widest silhouette drawn at the average width -- and that is the intended
-// reading of a quad that spins: it is seen from every bearing, so it is drawn
-// at what the rock looks like from every bearing. Now that the photograph is
-// the shape's own, that squeeze is the ONLY difference left between the card
-// and the mesh it takes over from.
+// THE TWO FRAMES ARE DIFFERENT NUMBERS, deliberately. The PHOTOGRAPH is framed
+// to the subject at its WIDEST (`rockBakeFrame`, at `widestAzimuth`), because a
+// photograph that clips has thrown away silhouette it can never recover. The
+// QUAD is sized to the MEAN silhouette (`rockCardFrame`), because a quad that
+// spins is seen from every bearing -- sizing it to the widest view swelled a
+// rock by up to 1.7x at the swap. Not a contradiction: the bake normalises the
+// subject to its own frame, so the picture spans the quad's frame whatever that
+// is, leaving a horizontal squeeze of `planMean / max(w, d)`. That squeeze is
+// the only difference left between the card and the mesh it takes over from.
 // ---------------------------------------------------------------------------
 
 /**
  * The world extents the card QUAD is drawn at, from `userData.rock.measured`.
  *
- * WIDTH IS THE MEAN SILHOUETTE and not the box. A billboard spins to face the
- * eye, so its width is what the rock looks like from every bearing at once, and
- * there is exactly one width that makes the swap from mesh to card free on
- * average: the mean of the mesh's own silhouette over the compass. See
- * `meanPlanWidth` in rock.js, which measures it, and `rockBakeFrame` below,
- * which is the OTHER framing and is deliberately wider.
- *
- * Sizing to `max(width, depth)` -- the widest the rock can ever look -- is the
- * obvious thing and is what this used to do. Measured over the bank it put the
- * card at 1.23x to 1.71x the mesh's silhouette, worst on the slabs, so distant
- * stone was systematically too big and the swap was a visible swell.
+ * WIDTH IS THE MEAN SILHOUETTE, not the box. A billboard spins to face the eye,
+ * so its width is what the rock looks like from every bearing at once, and one
+ * width makes the mesh-to-card swap free on average: the mean of the mesh's own
+ * silhouette over the compass (`meanPlanWidth` in rock.js). The obvious
+ * `max(width, depth)` measures 1.23x to 1.71x the mesh silhouette over the bank,
+ * worst on the slabs -- a visible swell at the swap. `rockBakeFrame` below is
+ * the OTHER framing and is deliberately wider.
  */
 export function rockCardFrame(measured) {
   if (!(measured.planMean > 0) || !(measured.height > 0)) {
@@ -651,20 +541,17 @@ export function rockBakeFrame(measured) {
 /**
  * The seed every card photograph is taken at, for every variant.
  *
- * A FIXED CONSTANT, not the bank's, and it matters more now than it did when
- * there was one subject. `buildRockBank`'s seed is a dial someone may turn, and
- * the photographs must not change under the world when they do: the card
- * geometry is sized from each PLACED shape's own measurement while the picture
- * inside it comes from this seed, so a drifting subject would silently
- * reproportion every distant rock in the world. Fixing it also means the bench
- * and the world photograph the identical rock.
+ * A FIXED CONSTANT, not the bank's. `buildRockBank`'s seed is a dial someone may
+ * turn, and the photographs must not move under the world when they do: the card
+ * geometry is sized from each PLACED shape's measurement while the picture in it
+ * comes from this seed, so a drifting subject would silently reproportion every
+ * distant rock. Fixing it also means the bench and the world photograph the same
+ * rock.
  *
- * One seed for all twenty-five rather than one per variant, because the thing a
- * card has to get right is the variant's silhouette FAMILY -- a spire outline
- * against a slab outline -- and seed-to-seed variation inside a variant is
- * small next to that. Which seed is arbitrary now that no single subject has to
- * sit at the bank's geometric middle; 1978 is kept because it is the one the
- * shipped `boulder` card was taken at and there is no reason to move it.
+ * One seed for all twenty-five rather than one per variant: what a card must get
+ * right is the silhouette FAMILY -- a spire outline against a slab outline -- and
+ * seed-to-seed variation inside a variant is small next to that. Which seed is
+ * arbitrary.
  */
 export const ROCK_CARD_SEED = 1978
 
@@ -691,14 +578,12 @@ export function rockImpostorLayer(name) {
  * coarse subject would only donate its own faceting to a picture that is meant
  * to stand in for the fine one.
  *
- * OPEN SHELLS ARE PHOTOGRAPHED TOO, and the old single-subject code refused
- * them. The objection was that a shell has no underside, so its photograph is
- * thin along its own bed plane -- the edge of the card that meets the ground,
- * where a missing row of texels reads as a rock hovering. That was decisive
- * when one picture had to serve every shape, because it would have hollowed the
- * foot of all twenty-five. It is not decisive for a shell photographing ITSELF:
- * a `cap` really is a shell bedded into the hillside, so a card whose bottom
- * edge is where the shell's rim is, is the truthful picture of it.
+ * OPEN SHELLS ARE PHOTOGRAPHED TOO. A shell has no underside, so its photograph
+ * is thin along its own bed plane -- the edge of the card that meets the ground,
+ * where missing texels read as a rock hovering. That objection is decisive only
+ * for a shared subject, which would hollow the foot of all twenty-five. A `cap`
+ * really is a shell bedded into the hillside, so a card whose bottom edge is the
+ * shell's rim is the truthful picture of it.
  */
 function rockCardSubject(name) {
   const v = ROCK_VARIANTS[name]
@@ -736,23 +621,18 @@ export function bakeRockImpostors(renderer, texArray) {
  * The compass bearing that sees the most of a rock, in radians.
  *
  * PHOTOGRAPH THE SUBJECT AT ITS LARGEST, NEVER FLAT-ON. The shot is framed to
- * `rockBakeFrame`, which is `max(width, depth)` across -- the widest the rock
- * can ever look -- so a bake taken along the rock's SHORT axis prints a narrow
- * silhouette into a wide frame and every distant rock in the world is drawn with
- * transparent margins down both sides. It does not misplace anything; it just
- * makes the far band quietly smaller than the mesh it replaced, which is one
- * half of the size mismatch a spun card can have.
+ * `rockBakeFrame` = `max(width, depth)`, so a bake along the rock's SHORT axis
+ * prints a narrow silhouette into a wide frame and every distant rock is drawn
+ * with transparent margins down both sides -- nothing is misplaced, the far band
+ * is just quietly smaller than the mesh it replaced.
  *
- * Azimuth 0 used to be hardcoded, and on the shipped subject and seed it happens
- * to land 4 degrees off the widest bearing -- 1.896 m photographed into a 1.900 m
- * frame, which is why the fault stayed invisible. It is luck and not a property:
- * the same subject at azimuth 113 degrees measures 1.399 m, so a new seed or a
- * new ROCK_CARD_SUBJECT could silently print a card 26% narrow. Searching costs
- * one pass over the subject's vertices, once, at boot.
+ * A hardcoded azimuth is luck, not a property: one shipped subject lands 4 deg
+ * off its widest bearing (1.896 m into a 1.900 m frame) and the SAME subject at
+ * 113 deg measures 1.399 m, so a new seed could print a card 26% narrow.
+ * Searching costs one pass over the subject's vertices, once, at boot.
  *
- * Half a turn is the whole search space -- a silhouette width at bearing `a` is
- * the same as at `a + pi`, since the projection is onto a line and direction
- * along it does not matter.
+ * Half a turn is the whole search space: width at bearing `a` equals width at
+ * `a + pi`, the projection being onto a line.
  */
 function widestAzimuth(geo, steps = 180) {
   const pos = geo.attributes.position.array
@@ -809,20 +689,15 @@ export const ROCK_MESH_BAND_COUNT = ROCK_BAND_COUNT - 1
 // NAMING ONE SHAPE, which matters because a name that cannot be typed back into
 // the previewer is not a name, it is a number that happens to be printed.
 //
-// A bank shape is fixed by three things: the bank seed, the variant, and which
-// of that variant's `seeds` shapes it is. The bank seed is one number for the
-// whole world, so what actually distinguishes one shape from another is the
-// last two -- and `variant-index` spells exactly those two and nothing else.
+// A bank shape is fixed by the bank seed, the variant, and which of that
+// variant's `seeds` shapes it is. The bank seed is one number for the whole
+// world, so `variant-index` spells everything that distinguishes two shapes.
 //
-// It used to print `variant#seed`, the raw rockSeed, on the argument that seed
-// is what /gen-rock's seed box takes. That was true and it was useless:
-// `shingle#20402384070` is eleven digits of bank arithmetic that nobody can
-// read, compare, or remember long enough to walk to a keyboard, and two rocks
-// one seed apart in the bank look nothing like consecutive. `shingle-1` is the
-// second shingle in the bank, it sorts, it can be said out loud, and /gen-rock
-// resolves it back to a seed with `rockShapeSeed` -- so the previewer takes the
-// printed name directly and the seed stays an implementation detail of the
-// bank, which is what it always was.
+// Printing the raw rockSeed instead is useless even though it is what
+// /gen-rock's box takes: `shingle#20402384070` is eleven digits of bank
+// arithmetic nobody can read, compare or remember, and two rocks one seed apart
+// look nothing like consecutive. `shingle-1` sorts and can be said out loud, and
+// /gen-rock resolves it back through `rockShapeSeed`.
 // ---------------------------------------------------------------------------
 
 /**
@@ -878,14 +753,11 @@ export function parseRockShapeId(id) {
  *   the order they should enter the batch. The caller owns them and MUST
  *   dispose them once BatchedMesh has copied them into its arena.
  *
- * EVERY SHAPE SHIPS EVERY TIER. There used to be a per-size-class ladder here
- * and short ones were padded by repeating the coarsest geometry REFERENCE, so a
- * cobble's two coarse bands were one arena entry. That is gone with the classes
- * (props/rock.js): the table is rectangular because it is built rectangular,
- * and it costs the bank about 1.6x its geometry -- 25 variants x 3 seeds x 3
- * tiers rather than the 2.4 tiers the classes averaged. What it buys is that a
- * band index means the same thing for every rock in the world, which is what
- * lets ROCK_LOD_AT be one rule instead of a table per bed.
+ * EVERY SHAPE SHIPS EVERY TIER. The table is rectangular because it is built
+ * rectangular -- 25 variants x 3 seeds x 3 tiers -- which costs about 1.6x the
+ * geometry a per-size-class ladder would. What it buys is that a band index
+ * means the same thing for every rock in the world, which is what lets
+ * ROCK_LOD_AT be one rule instead of a table per bed.
  *
  * THE CARD IS APPENDED LAST, so `tiers[ROCK_BAND_COUNT - 1]` is the card for
  * every shape without exception. Note the two are different kinds of object: a

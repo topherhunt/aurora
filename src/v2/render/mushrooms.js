@@ -13,75 +13,54 @@ import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
-// Mushroom clumps on the /v2 route.
+// Mushroom clumps on the /v2 route. The argument is DESIGN.md §24.
 //
-// Fourth sibling of render/trees.js, render/ferns.js and render/rocks.js, and
-// it reuses their machine wholesale: one BatchedMesh, one material, a variant
-// bank, a tier ladder, a tiled camera-following scatter, graded thinning by
-// per-candidate rank, rank-based incremental regrow, and the rim dissolve. Read
-// trees.js's header for how all of that works; none of it is re-argued here.
+// Fourth sibling of render/trees.js, ferns.js and rocks.js, reusing their machine
+// wholesale -- one BatchedMesh, one material, a variant bank, a tier ladder, a tiled
+// camera-following scatter, graded thinning by rank, rank-based incremental regrow,
+// the rim dissolve. trees.js's header argues all of it; none is re-argued here.
 //
-// TWO THINGS ARE GENUINELY DIFFERENT, and both come from the same fact: a
-// mushroom is not scattered over ground, it is scattered over OTHER PROPS.
+// TWO THINGS ARE GENUINELY DIFFERENT, both from the same fact: a mushroom is not
+// scattered over ground, it is scattered over OTHER PROPS.
 //
-// 1. THE CANDIDATES ARE ANCHORS, NOT POINTS. Every other scatter in /v2 rolls a
-//    fixed number of uniform random points per tile and asks the terrain
-//    whether each one is allowed. This one asks the tree and rock scatters
-//    where their instances are (`anchorsInto`, see below) and treats each
-//    returned prop as ONE candidate site. Mushrooms come up at the foot of
-//    things -- against a trunk, in the lee of a boulder -- and the cheap
-//    imitations of that (a noise field tuned to look foresty, a density
-//    multiplier keyed on altitude) all fail the same way: they put mushrooms in
-//    the open two metres from the nearest tree, which is exactly the tell.
+// 1. THE CANDIDATES ARE ANCHORS, NOT POINTS. This asks the tree and rock scatters
+//    where their instances are (`anchorsInto`) and treats each returned prop as one
+//    candidate site, because the cheap imitations -- a foresty noise field, a
+//    density keyed on altitude -- all put mushrooms in the open two metres from the
+//    nearest tree, which is exactly the tell. The cost is a real ORDERING
+//    DEPENDENCY on trees and rocks: see the note above `_growTile`.
 //
-//    The cost of doing it honestly is an ORDERING DEPENDENCY on trees and
-//    rocks, and it is a real one rather than a stylistic preference. See the
-//    note above `_growTile`.
+// 2. A CANDIDATE PRODUCES A CLUMP, NOT AN INSTANCE. One anchor becomes 1 to 5
+//    mushrooms of the SAME SPECIES, ringed near the prop's foot and tilted away
+//    from each other. Separate instances rather than mushroom.js's baked `cluster`,
+//    because separate instances get separate variants, yaws, scales and ground
+//    heights and a baked clump gets one of each -- every troop the same troop.
 //
-// 2. A CANDIDATE PRODUCES A CLUMP, NOT AN INSTANCE. One accepted anchor becomes
-//    1 to 5 mushrooms OF THE SAME SPECIES, ringed around a point near the
-//    prop's foot and tilted slightly away from each other. They are separate
-//    instances rather than one clustered geometry (mushroom.js has a `cluster`
-//    knob that would bake a troop into a single mesh) because separate
-//    instances get separate variants, separate yaws, separate scales and
-//    separate ground heights, and a baked clump gets one of each -- so every
-//    troop in the world would be the same troop.
-//
-// THE LADDER, and it is shorter than a fern's on purpose:
+// THE LADDER, shorter than a fern's on purpose:
 //
 //   tier 0   the mesh at radial 16, 60 to 66 tris.    inside 20 spans
 //   tier 1   the mesh at radial 6, 30 to 36 tris.      20 to 40 spans
 //   tier 2   one triangle, spun toward the eye, 1 tri. 40 spans to the draw radius
 //
-// There is no crossed-planes tier between the coarse mesh and the billboard,
-// which is where a tree and a fern both have one. The argument is on
-// MUSHROOM_LOD_SPANS in the bank: by 40 spans the whole prop is 23 px across,
-// past §5's parallax range and past the size at which a second plane's
-// silhouette is legible. So the billboard takes over at the end of the mesh and
-// runs to the rim dissolve, exactly as a distant tree, tuft or fern does.
+// No crossed-planes tier between coarse mesh and billboard, where a tree and a fern
+// both have one: by 40 spans the prop is 23 px across, past §5's parallax range and
+// past the size at which a second plane's silhouette is legible.
 //
-// THE BANDS ARE MULTIPLES OF THE PROP'S OWN SPAN, not metres, which is the one
-// place this scatter departs from its siblings. A fern is a fern; a mushroom is
-// 8 cm on the forest floor and metres in a cave, off the same five presets, and
-// a fixed band would card the small one while it was still 15 px tall and hold
-// the big one as a mesh long after 26. Hanging the ladder off the prop's own
-// size puts every swap at the same apparent size instead -- 46 px and 23 px at
-// 16.2 px/deg -- and costs one multiply per instance in the band test below.
-// A span is max(height, spread); MUSHROOM_LOD_SPANS carries the numbers, the
-// argument for the max, and the §5 parallax check on them.
-//
-// The far end is the 2-pixel rule coming the other way and stays absolute; see
-// DRAW_RADIUS.
+// THE BANDS ARE MULTIPLES OF THE PROP'S OWN SPAN, not metres -- the one place this
+// scatter departs from its siblings. A mushroom is 8 cm on the forest floor and
+// metres in a cave off the same five presets, so a fixed band would card the small
+// one at 15 px and hold the big one long past 26. A span is max(height, spread);
+// MUSHROOM_LOD_SPANS carries the pixel numbers and the §5 parallax check. The far
+// end is the 2-pixel rule coming the other way and stays absolute; see DRAW_RADIUS.
 // ---------------------------------------------------------------------------
 
 // How many anchors -- trees plus rocks -- this file ASSUMES are standing per
-// square metre, used only to size the instance pool. It is an assumption about
-// two other modules rather than a number this one controls, which is why the
-// pool carries a fatter safety factor than its siblings': trees.js runs at 0.05
-// stems/m^2 today and the boulder beds add to that, and if either of them is
-// ever turned up, this is the constant that has to move with it. Running the
-// pool dry throws (see `_growTile`), so the failure is loud rather than a bed
-// that quietly stops appearing.
+// square metre, used only to size the instance pool. It is an assumption about two
+// other modules rather than a number this one controls, which is why the pool
+// carries a fatter safety factor than its siblings': trees.js runs at 0.05
+// stems/m^2 today and the boulder beds add to that, so if either is turned up this
+// constant moves with it. Running the pool dry throws (see `_growTile`), so the
+// failure is loud rather than a bed that quietly stops appearing.
 const ANCHOR_DENSITY = 0.07
 
 // Fraction of anchors that host a clump at full density. Every tree and every
@@ -98,22 +77,18 @@ const CLUMP_MAX = 5
 const CLUMP_SKEW = 1.6
 
 // How far the clump's centre sits from the anchor's own footprint edge, in
-// metres, and how wide the ring of members around that centre is, as a multiple
-// of the tallest member's height. The gap exists because `anchorsInto` reports
-// a SOLID radius -- a trunk or a boulder occupies that circle, and a mushroom
-// placed inside it is a mushroom growing through bark. The gap is measured to
-// the NEAREST POSSIBLE MEMBER, not to the clump's centre; _growTile adds the
-// ring radius on top of it so the inward half of a wide troop clears the bark
-// too.
+// metres, and how wide the ring of members around that centre is, as a multiple of
+// the tallest member's height. The gap exists because `anchorsInto` reports a SOLID
+// radius -- a trunk or boulder occupies that circle, and a mushroom inside it grows
+// through bark. Measured to the NEAREST POSSIBLE MEMBER: _growTile adds the ring
+// radius on top so the inward half of a wide troop clears the bark too.
 //
-// The clearance is only ever as good as the radius it is measured from, and for
-// a ROCK that radius is a circle about the anchor origin measured BEFORE the
-// rock is tilted into the ground normal. A boulder leaning downhill on steep
-// ground carries its real footprint up to a couple of decimetres off the point
-// it reported, so a clump on the downhill side can end up closer to the stone
-// than this gap promises. The lower bound is set well clear of zero partly for
-// that: it is cheaper to stand every clump a finger's width further out than to
-// re-derive a tilted section the anchor API does not publish.
+// The clearance is only as good as the radius it is measured from, and for a ROCK
+// that radius predates the tilt into the ground normal -- a boulder leaning downhill
+// carries its real footprint a couple of decimetres off the point it reported. The
+// lower bound is well clear of zero partly for that: cheaper to stand every clump a
+// finger's width further out than to re-derive a tilted section the anchor API does
+// not publish.
 const ANCHOR_GAP = [0.06, 0.45]
 const CLUMP_RADIUS = [0.35, 1.1]
 
@@ -211,25 +186,21 @@ function mulberry32(a) {
  * A clump's seed, from the ANCHOR'S OWN POSITION rather than from its tile's
  * stream.
  *
- * This is the one place this file cannot copy its siblings, and the reason is
- * worth stating plainly. Every other scatter draws its candidates from one
- * stream per tile, so candidate k is whatever the k-th draw says it is -- which
- * is deterministic because the tile is the only thing that decides the order.
- * Here the candidates arrive from two independent modules whose own tiles are
- * resident or not depending on where the player has walked, so the ORDER the
- * anchors come back in is not a property of the world. Seeding off the tile
- * stream would mean a tree that was second in the list on one visit and third
- * on the next grew a different clump, and the mushrooms would silently shuffle
- * every time the bed was regrown.
+ * This is the one place this file cannot copy its siblings. Every other scatter
+ * draws candidates from one stream per tile, so candidate k is deterministic
+ * because the tile alone decides the order. Here the anchors arrive from two
+ * independent modules whose tiles are resident or not depending on where the player
+ * has walked, so the ORDER is not a property of the world: seeded off the tile
+ * stream, a tree that was second in the list on one visit and third on the next
+ * would grow a different clump, and the mushrooms would shuffle on every regrow.
  *
- * Hashing the anchor's own x and z instead makes a clump a property of the
- * thing it grows on. Quantised to 3 cm, which is far finer than any two props
- * are ever placed apart and far coarser than float drift.
+ * Hashing the anchor's own x and z makes a clump a property of the thing it grows
+ * on. Quantised to 3 cm, far finer than any two props are placed apart and far
+ * coarser than float drift.
  *
- * Note it is x and z only, never y: trees.js re-seats an instance's height when
- * the chunk under it loads at a new resolution (`_reground`), so a hash that
- * included y would move the mushrooms whenever the terrain LOD changed
- * underneath them.
+ * x AND z ONLY, NEVER y: trees.js re-seats an instance's height when the chunk under
+ * it loads at a new resolution (`_reground`), so a hash including y would move the
+ * mushrooms whenever the terrain LOD changed underneath them.
  */
 function clumpSeed(x, z, seed) {
   const qx = Math.round(x * 32) | 0
@@ -721,22 +692,18 @@ export class Mushrooms {
    * are the anchors whose rank falls under the keep-fraction, so raising the
    * fraction ADDS a band and lowering it CUTS one.
    *
-   * THE ORDERING CONTRACT. This reads the tree and rock scatters' PLACED
-   * instances, so it can only see anchors that already exist. Concretely:
+   * THE ORDERING CONTRACT. This reads the tree and rock scatters' PLACED instances,
+   * so it can only see anchors that already exist. At boot and on a relief edit,
+   * `place` must run after trees.place and rocks.place or the layer comes up empty
+   * and stays empty until the player walks far enough to evict and regrow; every
+   * frame, `update` must run after theirs so a tile just come into range finds the
+   * props that came into range with it.
    *
-   *   - at boot and on a relief edit, `place` must run after trees.place and
-   *     rocks.place, or the whole layer comes up empty and stays empty until
-   *     the player walks far enough to evict and regrow;
-   *   - every frame, `update` must run after theirs, so a tile that has just
-   *     come into range finds the props that came into range with it.
-   *
-   * What makes the frame case safe rather than merely ordered is the RADIUS
-   * GAP: this layer draws to 55 m and the forest keeps every stem at full
-   * density out to 80 m, so by the time a mushroom tile is queued at all, the
-   * trees inside it have been standing for a long while and are not thinned.
-   * Shrinking the forest's FULL_RADIUS below this layer's DRAW_RADIUS would
-   * break that quietly -- clumps would appear and vanish as the tree under them
-   * was thinned in and out -- which is why both numbers are named here.
+   * What makes the frame case SAFE rather than merely ordered is the RADIUS GAP:
+   * this layer draws to 55 m and the forest keeps every stem at full density out to
+   * 80 m. Shrinking the forest's FULL_RADIUS below this layer's DRAW_RADIUS would
+   * break that quietly -- clumps appearing and vanishing as the tree under them was
+   * thinned in and out -- which is why both numbers are named here.
    */
   _growTile(job) {
     const { key, tx, tz, q } = job
@@ -837,15 +804,13 @@ export class Mushrooms {
       // a fat oak pushes its mushrooms further out than a sapling does, which
       // is what actually happens.
       //
-      // THE RING'S OWN RADIUS IS IN THAT SUM, and it has to be. Members are
-      // scattered up to `ring` metres from this centre in EVERY direction,
-      // including straight back at the anchor, so a centre placed at just
-      // `aRad + gap` puts the inward members inside the trunk -- measured, on a
-      // grid of 0.25 m trunks, 13 of 390 mushrooms ended up inside the bark and
-      // the closest sat 2 cm from the axis. Pushing the centre out by the ring
-      // instead of clamping the strays afterwards keeps the ring a ring, and it
-      // has the side effect of being right anyway: a troop of five stands
-      // further off the trunk than a single cap does, because it needs the room.
+      // THE RING'S OWN RADIUS IS IN THAT SUM, and it has to be. Members scatter up to
+      // `ring` metres from this centre in EVERY direction, including straight back at
+      // the anchor, so a centre at just `aRad + gap` puts the inward members inside
+      // the trunk -- measured on 0.25 m trunks, 13 of 390 mushrooms ended up inside
+      // the bark and the closest sat 2 cm from the axis. Pushing the centre out keeps
+      // the ring a ring, and is right anyway: a troop of five stands further off the
+      // trunk than a single cap, because it needs the room.
       const cx = ax + Math.cos(clumpAz) * (aRad + gap + ring)
       const cz = az + Math.sin(clumpAz) * (aRad + gap + ring)
 

@@ -53,7 +53,7 @@ import {
   GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
 import { Grass, GRASS_TUNING } from '../src/v2/render/grass.js'
-import { RIM_AT, RIM_HYST } from '../src/v2/render/rim.js'
+import { RIM_AT, RIM_HYST, RIM_HYST_FRAC } from '../src/v2/render/rim.js'
 import {
   LAYER, LAYER_COUNT, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, buildTextureArray,
   shapeImageLayer, GRASS_FRAY_TUNING,
@@ -772,10 +772,11 @@ console.log('\n-- rim --')
 // the carpet that fills in late.
 //
 // So this measures, every frame, how far INSIDE its own trigger the deepest
-// hidden tuft is. Zero is not the bound and never was under the clock: the
-// re-show test carries RIM_HYST of hysteresis, so a hidden tuft is allowed to
-// be up to that far inside before the sweep brings it back. Anything beyond it
-// is the sweep being late, which is the failure this exists to catch.
+// hidden tuft is, against the hysteresis THAT tuft is allowed -- 2 m or 7.5% of
+// its own gone-distance, whichever is wider. Zero is not the bound and never was
+// under the clock: the re-show test carries that hysteresis, so a hidden tuft is
+// allowed to be up to that far inside before the sweep brings it back. Anything
+// beyond it is the sweep being late, which is the failure this exists to catch.
 //
 // The speed profiles are chosen for what they stress rather than for realism: a
 // constant sprint stresses the sweep period, a standing start and a ramp stress
@@ -797,6 +798,8 @@ console.log('\n-- rim --')
     let x = 0
     for (let f = 0; f < RIM_PHASES; f++) g.update(x, EYE, 0)
     let worst = 0
+    let worstAllowed = 0
+    let worstExcess = -Infinity
     for (let f = 0; f < 180; f++) {
       x += step(f)
       g.update(x, EYE, 0)
@@ -804,14 +807,20 @@ console.log('\n-- rim --')
         for (let k = 0; k < tile.n; k++) {
           const id = tile.ids[k]
           if (g.batch.getVisibleAt(id)) continue
-          const trigger = g.rim.gone[id] * RIM_AT
+          const gone = g.rim.gone[id]
+          const allowed = Math.max(RIM_HYST, gone * RIM_HYST_FRAC)
           const d = Math.hypot(g.instX[id] - x, g.instZ[id], g.instY[id] - EYE)
-          worst = Math.max(worst, trigger - d)
+          const inside = gone * RIM_AT - d
+          if (inside - allowed > worstExcess) {
+            worstExcess = inside - allowed
+            worst = inside
+            worstAllowed = allowed
+          }
         }
       }
     }
-    check(worst <= RIM_HYST + 1e-6, `nothing is left hidden past the hysteresis under ${name}`,
-      `deepest hidden tuft ${worst.toFixed(2)} m inside its trigger, ${RIM_HYST} m allowed`)
+    check(worst <= worstAllowed + 1e-6, `nothing is left hidden past the hysteresis under ${name}`,
+      `deepest hidden tuft ${worst.toFixed(2)} m inside its trigger, ${worstAllowed.toFixed(2)} m allowed`)
     g.dispose()
   }
 }
@@ -1833,6 +1842,162 @@ console.log('\n-- arena --')
 }
 
 grass.dispose()
+
+// --- 8. the blade bed -------------------------------------------------------
+
+console.log('\n-- blades --')
+
+{
+  const { BLADE_DENSITY, BLADE_FULL_RADIUS, BLADE_DRAW_RADIUS, BLADE_FALLOFF,
+    BLADE_SCALE } = GRASS_TUNING
+
+  // The ground colour, as a function of position and nothing else, so an
+  // instance tint can be checked against the exact spot its clump stands on.
+  const groundOf = (x, z) => [0.5 + 0.4 * Math.sin(x), 0.5 + 0.4 * Math.sin(z), 0.25]
+  const tint = {
+    groundAt: (rgb, x, z) => { rgb.set(groundOf(x, z)); return rgb },
+  }
+  const bladeBed = (opts = {}) => {
+    const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
+      { seed: 7, style: 'blades', tint, ...opts })
+    g.place(0, 0)
+    for (let i = 0; i < RIM_PHASES; i++) g.update(0, EYE, 0)
+    return g
+  }
+
+  // A BLADE TAKES ITS COLOUR FROM THE GROUND, so a bed with no ground to ask is
+  // not a bed with grey grass -- it is a caller who forgot an argument, and it
+  // has to say so at construction rather than 20 m into a walk.
+  let threw = false
+  try {
+    new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'blades' })
+  } catch { threw = true }
+  check(threw, 'blades without a terrain tint throw rather than rendering grey')
+
+  const blades = bladeBed()
+  const bs = blades.stats
+
+  check(bs.style === 'blades' && blades.density === BLADE_DENSITY
+    && blades.fullRadius === BLADE_FULL_RADIUS && blades.radius === BLADE_DRAW_RADIUS
+    && blades.falloff === BLADE_FALLOFF,
+  'the shipped bed stands at the tuned knobs',
+  `${blades.density}/m2, full ${blades.fullRadius} m, cull ${blades.radius} m, p ${blades.falloff}`)
+
+  // THE THINNING LAW, `keep = min(1, F/d)^p`, sampled either side of F. This is
+  // the only definition of the bill: _growTile grows from it, _thin cuts to it
+  // and _poolBound sizes from it, so a change here is a change to every one.
+  {
+    let worst = 0
+    for (const p of [0.5, 1, 2, 3]) {
+      const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
+        { seed: 7, style: 'blades', tint, falloff: p })
+      for (let d = 0.25; d <= g.radius; d += 0.25) {
+        const want = Math.pow(Math.min(1, g.fullRadius / d), p)
+        worst = Math.max(worst, Math.abs(g._keepAt(d) - want))
+      }
+      g.dispose()
+    }
+    check(worst < 1e-12, 'and thins as (F/d)^p outside F, flat at 1 inside it',
+      `worst ${worst.toExponential(1)} over p = 0.5, 1, 2, 3`)
+  }
+
+  // MORE CULLED AT DISTANCE, BUT NEVER ALL OF IT -- the point of the exponent.
+  // A steeper p leaves a smaller share standing at every distance past F and
+  // still leaves something standing at the cull radius, which is what separates
+  // "thin the far field" from "shrink the draw radius".
+  {
+    const R = blades.radius
+    const F = blades.fullRadius
+    const keep = (p, d) => Math.pow(Math.min(1, F / d), p)
+    check(keep(3, R) > 0 && keep(3, R) < keep(1, R) / 10,
+      'and a steeper exponent empties the far field without ever emptying it',
+      `at ${R} m: p=1 keeps ${(keep(1, R) * 100).toFixed(1)}%, p=3 keeps ${(keep(3, R) * 100).toFixed(2)}%`)
+    // Against a SHALLOWER bed, because the shipped one is already the steep end
+    // of the row -- comparing it to itself would pass on any knob at all.
+    const shallow = bladeBed({ falloff: 1 })
+    check(blades.stats.placed < shallow.stats.placed * 0.5 && blades.stats.placed > 0,
+      'and the knob reaches the scatter, not just the arithmetic',
+      `${blades.stats.placed} clumps at p=${blades.falloff} vs ${shallow.stats.placed} at p=1`)
+    shallow.dispose()
+  }
+
+  // A CLUMP IS A BUNDLE OF PLANTS, NOT A PICTURE OF ONE, so its size roll scales
+  // all three axes alike -- the card bed's sqrt on xz would turn a small roll
+  // into a squat bundle instead of a small one.
+  {
+    let worst = 0
+    let sampled = 0
+    let lo = Infinity
+    let hi = 0
+    const m = blades.batch.instanceMatrix.array
+    for (let i = 0; i < blades.batch.count && sampled < 500; i++) {
+      if (!blades.batch.getVisibleAt(i)) continue
+      const o = i * 16
+      const sx = Math.hypot(m[o], m[o + 1], m[o + 2])
+      const sy = Math.hypot(m[o + 4], m[o + 5], m[o + 6])
+      worst = Math.max(worst, Math.abs(sx / sy - 1))
+      lo = Math.min(lo, sy)
+      hi = Math.max(hi, sy)
+      sampled++
+    }
+    check(sampled > 0 && worst < 1e-5, 'a clump scales uniformly rather than squatting',
+      `worst xz/y ${worst.toExponential(1)} over ${sampled} clumps`)
+    check(lo >= BLADE_SCALE[0] - 1e-6 && hi <= BLADE_SCALE[1] + 1e-6,
+      'and stays inside BLADE_SCALE',
+      `${lo.toFixed(3)}x - ${hi.toFixed(3)}x of ${BLADE_SCALE.join('-')}`)
+  }
+
+  // THE TIP MULTIPLIER IS PER INSTANCE AND LIVES ON THE GEOMETRY. An
+  // InstancedBufferAttribute is read per instance but is held by the geometry,
+  // not the mesh, so the arena has to hang it on the CLONE it drew from -- put it
+  // on the source and every instance reads element 0.
+  {
+    const attr = blades.batch.geometry.getAttribute('aTipMul')
+    check(attr && attr.isInstancedBufferAttribute && attr.itemSize === 1,
+      'the tip multiplier rides an instanced attribute on the drawn geometry',
+      attr ? `${attr.array.length} slots, itemSize ${attr.itemSize}` : 'missing')
+    const set = new Set()
+    let outOfRange = 0
+    for (let i = 0; attr && i < blades.batch.count; i++) {
+      if (!blades.batch.getVisibleAt(i)) continue
+      const v = attr.array[i]
+      set.add(Math.round(v * 1e4))
+      if (!(v > 0)) outOfRange++
+    }
+    check(set.size > 100 && outOfRange === 0,
+      'and every clump rolls its own, so the bed is not one plant repeated',
+      `${set.size} distinct values, ${outOfRange} non-positive`)
+  }
+
+  // EVERY CLUMP IS THE COLOUR OF THE DIRT IT GREW OUT OF. The blade's foot
+  // vertices are (1,1,1), so the instance colour lands on them untouched and the
+  // meadow reads as the terrain growing rather than a green rug laid over it.
+  {
+    let worst = 0
+    let sampled = 0
+    const c = blades.batch.instanceColor.array
+    for (let i = 0; i < blades.batch.count && sampled < 500; i++) {
+      if (!blades.batch.getVisibleAt(i)) continue
+      const want = groundOf(blades.instX[i], blades.instZ[i])
+      for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(c[i * 3 + k] - want[k]))
+      sampled++
+    }
+    check(sampled > 0 && worst < 1e-6, 'and wears the ground colour under its own feet',
+      `worst channel ${worst.toExponential(1)} over ${sampled} clumps`)
+  }
+
+  // No impostor, because there is no card to bake one from -- the bed is opaque
+  // geometry all the way to the cull radius, which is the point of it.
+  check(blades.bakeCards() === null, 'a blade bed bakes no impostor card')
+
+  // THE BILL. Ten opaque triangles a clump against the tuft bed's alpha-tested
+  // two, so the trade only pays if the disc stays small: this is the number that
+  // has to fit under the ceiling alongside the terrain and the forest.
+  check(bs.tris < 200000, 'and the whole disc fits the triangle budget',
+    `${Math.round(bs.tris / 1000)}k triangles, ${bs.placed} clumps at ${bs.density}/m2 to ${bs.radius} m`)
+
+  blades.dispose()
+}
 
 // ---------------------------------------------------------------------------
 

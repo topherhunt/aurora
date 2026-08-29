@@ -7,109 +7,44 @@ import { measureSite } from './detail.js'
 // ---------------------------------------------------------------------------
 // RIDGE -- jaggedness placed on the spines the coarse field already has.
 // Opt-in; with both `ridge` and `shatter` at 0 this file is never entered.
+// Three-free and node-runnable. Full derivation and every measurement behind
+// these constants: DESIGN.md §18, "Relief".
 //
-// Three-free and node-runnable.
+// ONE BAKE, TWO OPERATORS. The expensive half infers WHERE jaggedness belongs: a
+// ridge axis and a ridgeness score read out of the coarse field's own Hessian at
+// three scales (2, 6, 18 texels), self-calibrated by percentile. That half is
+// shared whole. The cheap half decides WHAT to put there:
 //
-// ONE BAKE, TWO OPERATORS, and it is worth knowing which is which before reading
-// any further. The expensive half of this file infers WHERE jaggedness belongs:
-// it reads a ridge axis and a ridgeness score out of the coarse field's own
-// Hessian at three scales, self-calibrated by percentile, and that half is shared
-// whole. The cheap half decides WHAT to put there, and there are two answers:
-//
-//   `at`, the `ridge` knob. Filters noise across the inferred crest. It works,
-//         in the sense that it is genuinely directed and genuinely follows the
-//         landform, and it renders as CORDUROY -- see the SHATTER block below for
-//         why that is a property of the construction and not of its tuning. Kept
-//         because it is the honest statement of the anisotropy argument and
-//         because the failure is instructive. Pinned at design/attic/ridge-lic-v1.js.
+//   `at`, the `ridge` knob. Filters noise ACROSS the inferred crest, which makes
+//         it a function of along-crest position alone -- and level sets of a
+//         function of one variable are PARALLEL LINES, so it renders as
+//         corduroy. That is what the construction computes, not a tuning
+//         failure. Kept for the A/B; pinned at design/attic/ridge-lic-v1.js.
 //   `atShatter`, the `shatter` knob. An upper envelope of tilted pyramids over a
-//         jittered Voronoi lattice. This is the one that reads as rock, and it is
-//         also the cheaper of the two per sample.
+//         jittered Voronoi lattice. This is the one that reads as rock, and it
+//         is the cheaper of the two per sample.
 //
-// Everything from here to the SHATTER block is about the shared bake and about
-// `at`. It is all still live.
+// TWO TRAPS THIS FILE FELL INTO, both worth knowing before editing it.
 //
-// WHY THIS IS NOT ANOTHER NOISE BAND, and why crag.js could never have worked.
-// crag.js adds a crease network that is a function of (x, z) and nothing else.
-// A crease field with no preferred direction is isotropic BY CONSTRUCTION, and
-// isotropic creases summed over every orientation are crumpled foil: ridges
-// running every way at once, with hollows between them. Measured, crag at 12 m
-// raises 2 m curvature on peak ground by 182% and still reads as warble rather
-// than rock, because 182% more crumple is not a spine. No amount of amplitude
-// converts an undirected field into a directed one.
+//   A DIRECTION FIELD HAS NO GLOBAL POTENTIAL, so anisotropy cannot be had by
+//   rotating the noise's DOMAIN. t = x*ax + z*az has gradient (ax, az) PLUS
+//   x * d(ax)/ds + z * d(az)/ds, and x and z run to 4 km: at 2 km out that
+//   second term is ~27x the first and the noise coordinate becomes a hash of
+//   where you are. It fails silently -- the first draft measured 1.00x
+//   directionality (perfectly isotropic) with 567% of baseline curvature,
+//   because white noise is very curved indeed. So anisotropy is built the way it
+//   is built for direction fields generally: by filtering isotropic noise along
+//   a line, using BOUNDED LOCAL OFFSETS only.
 //
-// `at` is the other choice: make the displacement vary FAST
-// ALONG A CREST THE TERRAIN ITSELF PICKED and slowly across it. The same crease
-// operator that gave crumple then gives teeth marching down a skyline and ribs
-// descending the faces between them. That is one change of parameterisation, not
-// a new noise.
+//   AN UNDIRECTED CREASE FIELD IS ISOTROPIC BY CONSTRUCTION, which is why
+//   crag.js can only read as warble however hard it is pushed. 182% more crumple
+//   is not a spine, and no amplitude converts an undirected field into a
+//   directed one.
 //
-// HOW THE ANISOTROPY IS BUILT, and the trap that is worth writing down because
-// the first version of this file fell straight into it. The obvious move is to
-// rotate the noise's domain: take t = x*ax + z*az as an along-crest coordinate,
-// sample the noise fast in t and slowly across, done in one tap. IT DOES NOT
-// WORK, and it fails silently by producing something that measures as pure white
-// noise. t is a GLOBAL projection, so its gradient is not (ax, az): it is
-// (ax, az) plus x * d(ax)/ds + z * d(az)/ds, and x and z run to 4 km. The axis
-// field turns about 0.013 rad/m, which at 2 km from the origin makes that second
-// term roughly 27 TIMES the first. The noise coordinate is then dominated by
-// where you are in the world rather than by how far you moved, which is a hash.
-// Measured, the first draft came out at 1.00x directionality -- perfectly
-// isotropic -- while its 2 m curvature read 567% above baseline, because white
-// noise is very curved indeed. A direction field has no global potential and
-// cannot be integrated into a coordinate; that is not a detail, it is the reason
-// this cannot be done in one tap.
-//
-// So the anisotropy is built the way it is built for direction fields generally:
-// by FILTERING ISOTROPIC NOISE ALONG A LINE, using only bounded local offsets.
-// Take RIDGE_TAPS samples of ordinary simplex spaced along the ACROSS-crest
-// direction and combine them with binomial weights. Everything that varies
-// across the crest averages away; what survives is a function of position along
-// it, extruded down both faces. That extrusion IS the rib. No offset reaches
-// more than one wavelength from the centre -- the kernel spans two, over which
-// the axis turns some 20 degrees -- so there is no lever arm for the rotation to
-// act on. crag.js's `aniso` is the same
-// operator with three taps and the fall line in place of an inferred crest,
-// which is why it elongates a little and sharpens nothing.
-//
-// HOW THE AXIS IS INFERRED, and why this survives the import being replaced.
-// At each texel take the Hessian of the smoothed coarse field and diagonalise
-// it. For a symmetric 2x2 that is closed form and costs an atan2. The two
-// eigenvalues are the curvatures in the two principal directions:
-//
-//   kSmall  the algebraically smaller, so the MOST CONVEX direction -- across a
-//           ridge, where the ground falls away on both sides
-//   kBig    the algebraically larger, near zero on a true spine -- along it
-//
-// So the ALONG-RIDGE AXIS is kBig's eigenvector, and a scalar for "how much of a
-// ridge is this" falls straight out of the pair: strongly convex across AND flat
-// along. A dome has both curvatures equal and scores zero. A bowl has both
-// positive and scores zero. Only a spine scores.
-//
-// Nothing in that reads the image. It reads whatever height field is loaded, so
-// a procedurally generated macro layer gets the same treatment as the imported
-// PNG with no authoring and no per-world tuning -- which is the property that
-// makes this worth building rather than scattering rock meshes, and the reason
-// the amplitude is normalised per scale below.
-//
-// WHY THREE SCALES. A ridge is only a ridge relative to a neighbourhood size, in
-// exactly the sense exposure.js already argues for convexity. Detected at one
-// radius the operator answers a different question on every landform. Run at
-// three, the big massif gets big teeth, and the spurs that those teeth create
-// are themselves ridges at the next scale down and get their own smaller ones.
-// That recursion is the whole reason this looks emergent instead of stamped, and
-// it is why the per-scale amplitude follows a Hurst law rather than being equal.
-//
-// WHY THE STRUCTURE IS BAKED AND THE DISPLACEMENT IS NOT. The two halves live at
-// opposite ends of the spectrum and that is what makes the cost work. Ridge axes
-// are a LOW-frequency property -- a spine's direction turns over hundreds of
-// metres -- so an 8 m grid resolves them with room to spare, and a Hessian is
-// six taps of a blurred field that would otherwise be paid per vertex per
-// remesh. The teeth are HIGH frequency, 10 to 100 m, and stay live: fifteen
-// simplex taps a sample, five per scale. Baking the structure is what keeps that
-// affordable -- a heightAt sample costs 1.58 us here against 0.94 us at crag 12
-// and 0.72 us with the relief off, so the directed band is not free, it is worth
-// paying for.
+// THE STRUCTURE IS BAKED AND THE DISPLACEMENT IS NOT, which is what makes the
+// cost work: ridge axes are a LOW-frequency property an 8 m grid resolves with
+// room to spare, and the teeth are 10-100 m and stay live at fifteen simplex
+// taps a sample.
 // ---------------------------------------------------------------------------
 
 // Hessian stencil radii in TEXELS, coarsest last. At the shipped 8.008 m texel
@@ -126,142 +61,94 @@ export const RIDGE_SCALES = Object.freeze([2, 6, 18])
 export const RIDGE_TEETH = 3.0
 
 // Taps in the across-crest filter, and their spacing as a fraction of the teeth
-// wavelength. Five at half a wavelength gives a kernel spanning two wavelengths,
-// which measures at about 3x elongation -- features three times longer down the
-// face than along the skyline.
+// wavelength. Five at half a wavelength spans two wavelengths and measures at
+// about 3x elongation.
 //
-// BOTH NUMBERS ARE A STRAIGHT COST/COHERENCE TRADE and neither can be raised on
-// its own. More taps or wider spacing is more elongation, but the kernel is a
-// STRAIGHT line while the crest it is meant to follow is not: the axis turns
-// about 10 degrees per wavelength, so a kernel two wavelengths wide is already
-// working with an axis 20 degrees out at its ends, and past that the filter
-// starts averaging across the crest it is supposed to be running down. Five taps
-// times three scales is also fifteen simplex evaluations per height sample, and
-// this field is evaluated per vertex in two workers and again on the main thread
-// for collision. Following the streamline instead of a straight line would lift
-// the coherence ceiling and is the obvious next move if this needs to go wider.
+// NEITHER NUMBER CAN BE RAISED ALONE. More taps or wider spacing is more
+// elongation, but the kernel is a STRAIGHT line while the crest is not: the axis
+// turns ~10 degrees per wavelength, so a two-wavelength kernel is already 20
+// degrees out at its ends, and past that the filter averages ACROSS the crest it
+// is supposed to run down. It is also 15 simplex evaluations per height sample,
+// paid per vertex in two workers and again on the main thread. Following the
+// streamline instead of a straight line would lift the ceiling.
 export const RIDGE_TAPS = 5
 export const RIDGE_TAP_SPACING = 0.5
 
 // Amplitude across scales, A_s = lambda_s ** H, normalised so the three weights
 // sum to 1 and the knob stays denominated in metres.
 //
-// WELL BELOW THE 0.8-1.0 A REAL LANDSCAPE'S SPECTRUM WANTS, and deliberately.
-// The physically self-similar value puts 64% of the amplitude on the 99 m scale
-// and 11% on the 13 m one, which is upside down for what this term is for: the
-// 2-16 m band is the band the composed field is empty in and the band a person
-// standing on the mountain is looking at. Measured on peak ground at `ridge` 12,
-// dropping H from 0.9 to 0.35 raises the 2 m curvature multiple from 2.48x to
-// 4.27x while displacing LESS total height, 2.59 m rms against 3.11 m -- more
-// jaggedness for less movement, which is the whole trade this file is trying to
-// win. Going further to H = 0 reaches 5.96x but flattens the scales into three
-// equal bands and the result starts to read as one texture rather than as
-// structure at several sizes.
+// WELL BELOW THE 0.8-1.0 A REAL LANDSCAPE'S SPECTRUM WANTS, deliberately: the
+// self-similar value puts 64% of the amplitude on the 99 m scale and 11% on the
+// 13 m one, which is upside down for a term whose whole job is the 2-16 m band
+// the composed field is empty in. Measured on peak ground at `ridge` 12, 0.9 ->
+// 0.35 raises the 2 m curvature multiple from 2.48x to 4.27x while displacing
+// LESS height, 2.59 m rms against 3.11 -- more jaggedness for less movement. H =
+// 0 reaches 5.96x but flattens the three scales into one texture.
 export const RIDGE_HURST = 0.35
 
 // Where ridgeness starts and saturates, AS PERCENTILES OF THE LOADED FIELD'S OWN
-// ridgeness rather than as absolute numbers. This is the self-calibrating part
-// and it is what lets the same constants describe an alpine import and a downland
-// one: the knob means "teeth on the most ridge-like few percent of THIS world",
-// which is a statement about the shape of a landscape rather than about the units
-// of the image it came from.
+// ridgeness rather than as absolute numbers. This is the self-calibrating part:
+// the knob means "teeth on the most ridge-like few percent of THIS world", so
+// the same constants describe an alpine import and a downland one.
 //
-// The pair was swept rather than picked. Measured on the shipped import at
-// `ridge` 12, against the mean gate on high steep ground and on ground under 8
-// degrees, the trade is monotone and has no knee: 0.85/0.99 gives a 3.3x
-// selectivity and moves 2 m curvature by 1.04x, which is nothing; 0.10/0.70
-// gives 3.65x the curvature but only 3.0x selectivity, which is teeth in the
-// meadows. 0.50/0.90 sits where selectivity is still near its best (4.5x) and
-// the curvature multiple is 2.48x.
+// Swept rather than picked, and the trade is monotone with no knee. 0.85/0.99
+// gives 3.3x selectivity and moves 2 m curvature by 1.04x, which is nothing;
+// 0.10/0.70 gives 3.65x the curvature at only 3.0x selectivity, which is teeth
+// in the meadows. 0.50/0.90 keeps selectivity near its best (4.5x) at 2.48x.
 //
-// An earlier draft normalised by rms, exposure.js's trick, and it does not carry
-// over. Ridgeness is exactly zero everywhere the ground is concave -- most of the
-// world -- so the distribution has a large mass at 0, the rms lands well below
-// any non-zero value, and the gate saturated over 29% of the map. Teeth on a
-// third of the world is not teeth, it is texture. A percentile is immune to that
-// zero mass by construction.
+// NOT AN RMS -- exposure.js's trick does not carry over. Ridgeness is exactly
+// zero everywhere the ground is concave, so the distribution has a large mass at
+// 0, the rms lands below every non-zero value, and the gate saturated over 29%
+// of the map. A percentile is immune to that by construction.
 export const RIDGE_GATE_LO = 0.50
 export const RIDGE_GATE_HI = 0.90
 
 // --- SHATTER: the same gate and the same axis, a DIFFERENT operator ---------
 //
-// `ridge` above filters noise ACROSS the crest, which makes it a function of
-// along-crest position alone, extruded down both faces. Level sets of a function
-// of one variable are PARALLEL LINES, so |N| creases at every zero crossing and
-// the result is a family of evenly spaced parallel grooves -- corduroy, or read
-// at standing scale, a fingerprint. That is not a tuning failure, it is what the
-// construction computes, and it is the standard recipe for synthesising zebra
-// and fingerprint textures. Smearing noise along a direction field cannot make
-// rock.
-//
 // Rock is PIECEWISE PLANAR: flat faces meeting at edges. sqrt(n^2 + r^2) breaks
-// the derivative only along a CURVE (the noise's zero contour), so it can give
-// rounded ribs and rounded troughs and nothing else, at any amplitude. Three
-// things are needed and none of them come out of band-limited noise: facets, so
-// the derivative breaks across REGIONS; irregular spacing, because a noise with
-// one characteristic wavelength is periodic by construction; and isolated tall
-// maxima, which is what a spire is.
-//
-// A jittered Voronoi lattice gives all three at once, and the FIRST draft of
-// this operator got two of them and still came out wrong, which is worth keeping
-// because the failure is instructive. That draft partitioned the plane into
-// cells, gave each its own random elevation, and blended to the mean of the two
-// across each wall so the break was in the derivative rather than in the value.
-// It measured exactly as designed and it read as CRAZING -- the fine web of
-// cracks in an old glaze, or dried mud. Six variants of edge width, lip exponent
-// and cone weight were rendered and all six were the same picture, because the
-// defect was not in any of those dials:
-//
-//   EVERY cell was displaced, so the result tiled the plane. A tessellation with
-//   no gaps is a net, and a net is a texture, never a landform.
-//   HALF the cells sank, because the elevations ran -1..1. Rock stands proud of
-//   the ground it sits on; it does not dig matching pits beside itself.
-//   Each interior was FLAT, a table at a constant height, so the only structure
-//   anywhere was the rim. Tables with rims is precisely what crazing is.
-//
-// So this operator keeps the lattice and throws the rest away. It is an UPPER
-// ENVELOPE of tilted pyramids, one per cell, clamped at the ground:
+// the derivative only along a CURVE, so it can give rounded ribs and rounded
+// troughs and nothing else, at any amplitude. Three things are wanted and none
+// of them come out of band-limited noise: facets, so the derivative breaks
+// across REGIONS; irregular spacing, a noise with one characteristic wavelength
+// being periodic by construction; and isolated tall maxima, which is what a
+// spire is. A jittered Voronoi lattice gives all three at once.
 //
 //   h(p) = max(0, max over nearby cells c of [ a_c - taper * d_c(p) + tilt * u_c ])
 //
-// An envelope rather than a partition, and that one word is the whole difference
-// from the draft above. A partition assigns every point to a cell and asks what
-// that cell's height is; the boundaries are then the only structure there is,
-// which is a net. An envelope asks which pyramid is HIGHEST here, and the answer
-// is not always the nearest one -- a tall cell overruns its small neighbours
-// entirely, so a cell wall is a visible seam only where the two sides happen to
-// be comparable. What survives sets its own spacing, which is the one thing
-// band-limited noise can never give, having a single wavelength by definition.
+// AN ENVELOPE RATHER THAN A PARTITION, and that one word is the whole design. A
+// partition assigns every point to a cell and asks what that cell's height is,
+// so the boundaries are the only structure there is, which is a net -- and a net
+// is a texture, never a landform. An envelope asks which pyramid is HIGHEST, and
+// the answer is not always the nearest: a tall cell overruns its small
+// neighbours entirely, so the surviving spacing sets itself, which is the one
+// thing band-limited noise can never give.
 //
-// Faceted, because d_c is a Chebyshev distance in a frame rotated per cell,
-// whose level sets are SQUARES -- so a shard is a four-faced pyramid with
-// straight edges and a point on top, not a cone. One-sided, because of the outer
-// max(0, .): a flank runs down to the ground, meets it in a crease and stops,
-// and nothing ever sinks into a pit that has no reason to be there.
+// The first draft WAS a partition -- flat-topped cells blended across each wall
+// -- and read as CRAZING, the crack web in an old glaze, at every setting of six
+// dials, for three reasons none of those dials reached: EVERY cell was
+// displaced, so it tiled the plane; HALF of them sank, the elevations running
+// -1..1; and each interior was a FLAT table, so the only structure anywhere was
+// the rim. Faceted, because d_c is a Chebyshev distance in a per-cell rotated
+// frame whose level sets are SQUARES -- a four-faced pyramid, not a cone.
+// One-sided, because of the outer max(0, .): a flank runs down to the ground,
+// meets it in a crease and stops.
 //
 // THE ANISOTROPY IS DELIBERATELY GONE. It is what produced the stripes, and it
 // was never what made the term follow the landform -- the ridgeness gate does
-// that, and it survives unchanged. If directed facets are wanted later, the way
-// to get them is an elongated METRIC on bounded local deltas (stretch d_c in a
-// crest-aligned frame, which is a two-line change in `_shatterRaw`), never a
-// rotated domain: that is the global-projection bug this file already made once.
+// that. If directed facets are wanted later, stretch d_c in a crest-aligned
+// frame (two lines in `_shatterRaw`), never a rotated domain: that is the
+// global-projection trap in the header.
 
-// The amplitude of the WEAKEST cell, with the strongest fixed at 1. This is the
-// coverage dial, and getting it wrong fails in a different direction at each
-// end, both of them measured:
-//
-//   AT 0 the amplitudes run uniformly over 0..1, the weak cells reach nowhere,
-//   and about 40% of the ground is left as untouched macro field. That renders
-//   as isolated triangular flakes scattered across a surface that is still
-//   visibly smooth between them -- sprinkles on ice cream, which is exactly the
-//   objection that ruled out doing this with rock props in the first place.
-//   NEAR 1 every cell has the same amplitude, the envelope becomes a plain
-//   Worley cone field, and a lattice with one height is a regular egg carton.
-//
-// At 0.70 the weakest shard still reaches 0.44 cells, the envelope covers the
-// ground with no macro showing through, and the spread of amplitudes is still
-// wide enough that tall cells swallow their neighbours and set an irregular
-// spacing. Facets everywhere, spires where the lattice happened to be generous.
+// The amplitude of the WEAKEST cell, with the strongest fixed at 1. The coverage
+// dial, and it fails in a different direction at each end, both measured. AT 0
+// the amplitudes run uniformly over 0..1, the weak cells reach nowhere, and
+// about 40% of the ground is left as untouched macro field -- isolated
+// triangular flakes on a visibly smooth surface, which is sprinkles on ice
+// cream, the exact objection that ruled out doing this with rock props. NEAR 1
+// every cell has the same amplitude, the envelope becomes a plain Worley cone
+// field, and a lattice with one height is a regular egg carton. At 0.70 the
+// weakest shard still reaches 0.44 cells and the spread is still wide enough
+// that tall cells swallow their neighbours and set an irregular spacing.
 export const SHATTER_FLOOR = 0.70
 
 // How fast a shard falls from its own apex, in units of amplitude per cell
@@ -287,49 +174,39 @@ export const SHATTER_TILT = 0.6
 // makes that concrete.
 export const SHATTER_FACET = 1
 
-// Amplitude across scales, and DELIBERATELY NOT RIDGE_HURST -- this is the one
-// constant `shatter` cannot share with `ridge`, because the two terms have
-// different geometry and 0.35 is actively wrong here.
+// Amplitude across scales, and DELIBERATELY NOT RIDGE_HURST -- the one constant
+// `shatter` cannot share with `ridge`, because the two terms have different
+// geometry.
 //
 // `ridge` cuts creases into an existing surface, so its amplitude is free: a
-// crease is a crease at any depth, and 0.35 is chosen to put amplitude in the
-// 2-16 m band the composed field is empty in. A shard is a SOLID. Its width is
-// fixed by the lattice at reach * lambda_s, so its height and its width together
-// fix the angle of its faces, and an amplitude law that is not proportional to
-// lambda gives the scales different face angles. Measured at 0.35 the coarse
-// shards came out at 13 degrees and the fine ones at 63 -- the same knob
-// producing gentle hips at 99 m and needles at 13 m in the same frame, which
-// read as confetti scattered over a smooth hill rather than as one rock.
-//
-// At 1.0 the whole set is self-similar: every shard at every scale has the same
-// face angle, and `amount` sets that angle rather than a length. That is what
-// makes big shards look like the same material as small ones, which is the only
-// thing that makes a recursive construction read as rock instead of as three
-// textures laid over each other.
+// crease is a crease at any depth, and 0.35 buys the 2-16 m band. A shard is a
+// SOLID. Its width is fixed by the lattice at reach * lambda_s, so its height
+// and width together fix the ANGLE OF ITS FACES, and a law not proportional to
+// lambda gives the scales different angles -- measured at 0.35 the coarse shards
+// came out at 13 degrees and the fine ones at 63, gentle hips and needles in one
+// frame, confetti scattered over a smooth hill. At 1.0 the whole set is
+// self-similar and `amount` sets that angle rather than a length, which is what
+// makes big shards read as the same material as small ones.
 export const SHATTER_HURST = 1.0
 
 // Mesh cells a pyramid's four ridge edges must span before they are allowed to
-// stay perfectly sharp. crag.js's `_setCell` argument exactly, and for the same
-// reason: a crease narrower than the triangles carrying it does not get sharper
-// as chunks coarsen, it ALIASES, and the edge crawls as LOD swaps.
+// stay perfectly sharp. crag.js's `_setCell` argument exactly: a crease narrower
+// than the triangles carrying it does not get sharper as chunks coarsen, it
+// ALIASES, and the edge crawls as LOD swaps.
 //
-// ONE CELL, NOT THREE, AND THE SHARD MUST NOT SHRINK WITH DISTANCE. Widening an
-// edge to three cells does not soften a shard, it dissolves it: the rounding is
-// `SHATTER_VERTEX_CELLS * cell / lambda`, so at a 16 m cell the coarsest scale
-// was being rounded by about half a Voronoi cell -- some 48 m of apex taken off
-// a 98.8 m shard that a 16 m mesh can resolve to 32 m perfectly well. The band
-// limit was not doing this; at that cell it is still fully on. Measured, a
-// summit read 701.5 m on the 16 m tier and 723.1 m up close, and it climbed
-// smoothly through every rung between, so a hill visibly grew as the camera
-// approached it. At one cell the same summit moves 10.5 m instead of 19.6, and
-// the term surviving at a 16 m cell goes from 0.46 m to 1.81 m.
-//
-// So an edge spanning a single triangle is the floor, which is the actual
-// anti-aliasing requirement -- three was buying nothing the mesh needed. The
-// apex and the ground crease are still NOT widened: both are continuous in value
-// and break only in the derivative, so a coarse mesh cuts the corner off on its
-// own. What is left of the growth is the band limit retiring whole scales, which
-// this constant cannot reach.
+// ONE CELL, NOT THREE, AND A SHARD MUST NOT SHRINK WITH DISTANCE. The rounding
+// is SHATTER_VERTEX_CELLS * cell / lambda, so at three cells a 16 m mesh was
+// taking some 48 m of apex off a 98.8 m shard it resolves to 32 m perfectly
+// well: that dissolves a shard rather than softening it, and the band limit was
+// not doing it -- at that cell it is still fully on. Measured, a summit read
+// 701.5 m on the 16 m tier and 723.1 m up close, climbing smoothly through every
+// rung between, so a hill visibly grew as you walked at it. At one cell the same
+// summit moves 10.5 m instead of 19.6 and the term surviving a 16 m cell goes
+// from 0.46 m to 1.81 m. One triangle of edge width is the actual anti-aliasing
+// floor. The apex and the ground crease are still NOT widened -- both are
+// continuous in value and break only in the derivative, so a coarse mesh cuts
+// the corner on its own. What growth is left is the band limit retiring whole
+// scales, which this constant cannot reach.
 export const SHATTER_VERTEX_CELLS = 1
 
 // Sites sampled to estimate those percentiles. A full sort of 1024^2 floats to
@@ -338,13 +215,11 @@ export const SHATTER_VERTEX_CELLS = 1
 const PCTL_SITES = 65536
 
 // Sites used to measure E[|N|] for the FILTERED noise, per scale, so the crease
-// operator can be made zero-mean. Same argument as crag.js's mean table: an
-// unsubtracted mean is a constant offset scaled by the gate, which walks exactly
-// the ridges this term is aimed at either up or down relative to their own
-// valleys. Measured per scale and not once, because the across-crest filter
-// attenuates the noise and does so by a different factor at each scale -- the tap
-// spacing is a fixed fraction of a wavelength but the axis coherence over that
-// distance is not.
+// operator can be made zero-mean. An unsubtracted mean is a constant offset
+// scaled by the gate, which walks exactly the ridges this term is aimed at up or
+// down relative to their own valleys. Per scale and not once, because the filter
+// attenuates by a different factor at each -- how straight the crests are over
+// one kernel width is a property of the import, not a derivable number.
 const MEAN_SITES = 4096
 
 // The shatter mean is tabulated against the apex rounding rather than measured
@@ -469,23 +344,17 @@ export class RidgeField {
           // TIMES THE LOCAL PROMINENCE: how far this texel stands ABOVE the
           // field blurred at the same radius, clamped at zero.
           //
-          // Curvature alone is scale-free, and that is a defect here rather than
-          // a virtue. A 2 m hummock in a meadow and a 200 m arete have the same
-          // ridgeness if their cross-sections are the same shape, so a gate built
-          // on curvature alone puts identical teeth on both -- and the meadow one
-          // is a third of the landform's whole height. Weighting by prominence
-          // says the thing the eye actually believes: jaggedness belongs to what
-          // sticks up, in proportion to how far up it sticks. Since the weight
-          // then runs through the percentile normalisation below, it costs no
-          // memory and no per-sample work, and it is the reason there is no slope
-          // gate in this file the way there is in crag.js -- prominence already
-          // subsumes it, and does it without a threshold to tune.
+          // Curvature alone is scale-free, which is a defect here rather than a
+          // virtue: a 2 m hummock in a meadow and a 200 m arete score the same
+          // if their cross-sections match, and the meadow one is a third of its
+          // landform's whole height. Prominence says the thing the eye actually
+          // believes, costs nothing once it runs through the percentile
+          // normalisation below, and is why there is no slope gate in this file
+          // the way there is in crag.js.
           //
-          // Clamped at zero rather than taken as a magnitude, and the difference
-          // matters: |src - lo| is just as large at the bottom of a gorge as at
-          // the top of a spur. `convex` rejects most of that already, but a gorge
-          // floor can be locally convex, and teeth in the bottom of a ravine
-          // would be the exact inverse of the effect wanted.
+          // CLAMPED at zero rather than taken as a magnitude: |src - lo| is just
+          // as large at the bottom of a gorge as at the top of a spur, and a
+          // gorge floor can be locally convex.
           const prom = src[j0 + i] - c
           raw[j0 + i] = prom > 0 ? convex * flat * prom : 0
 
@@ -501,15 +370,13 @@ export class RidgeField {
       }
 
       // WIDENED ACROSS THE CREST BEFORE IT IS USED AS A GATE, at the radius that
-      // detected it. Without this the term is confined to the crest LINE, which
-      // is a one-texel ribbon: the noise is extruded down both faces but the gate
-      // that scales it is not, so the ribs are cut off exactly where the face
-      // they are supposed to run down begins. Measured, the unwidened version
-      // moved 2 m curvature on high steep ground by 1.01x -- that is, not at all,
+      // detected it. Unwidened, the gate is a one-texel ribbon on the crest LINE
+      // while the noise is extruded down both faces, so the ribs are cut off
+      // exactly where the face they are supposed to run down begins. Measured,
+      // that moved 2 m curvature on high steep ground by 1.01x -- not at all,
       // because high steep ground is mostly FACE, and a planar face has no
-      // curvature in either principal direction and scores zero ridgeness on its
-      // own account. It has to inherit it from the crest above it. Physically
-      // this is also just true: an arete sheds spurs a long way down both sides.
+      // curvature in either principal direction and must INHERIT its ridgeness
+      // from the crest above. An arete sheds spurs a long way down both sides.
       blur(raw, tmp, lo, w, h, r)
       raw.set(tmp)
 
@@ -576,42 +443,32 @@ export class RidgeField {
     this.tilt = tilt
     this.facet = facet
 
-    // A FULL-AMPLITUDE SHARD MUST NOT REACH PAST ITS OWN CELL, and this is the
-    // assertion the 3x3 neighbourhood in `_shatterRaw` rests on. Every cell
-    // outside that ring is at least one cell width away in Euclidean distance,
-    // so if no shard can reach that far the ring is the whole of the support and
-    // there is nothing outside it that could have won the max.
+    // A FULL-AMPLITUDE SHARD MUST NOT REACH PAST ITS OWN CELL. This is what the
+    // 3x3 neighbourhood in `_shatterRaw` rests on: every cell outside that ring
+    // is at least one cell width away, so if no shard can reach that far the
+    // ring is the whole of the support.
     //
-    // THE FACTOR OF sqrt(2) IS THE WHOLE ASSERTION and leaving it out is a bug I
-    // shipped and had to measure my way back out of. The naive reading is that a
-    // shard falls at (taper - tilt) at worst, so it dies at 1/(taper - tilt)
-    // cells and that is the reach. But `d` is a CHEBYSHEV distance, whose level
-    // sets are squares, and a square's CORNERS stand at sqrt(2) times its
-    // inradius. A shard therefore reaches sqrt(2)/(taper - tilt) along its own
-    // diagonals. At the first draft's taper 1.8 and tilt 0.6 that is 1.18 cells,
-    // and 13 samples in 120,000 came back differing from a 5x5 reference by up to
-    // 6 cm -- rare, silent, and a corner sliced off along a straight line exactly
-    // one cell out, which is a faint square grid pressed over the world. Cheaper
-    // to refuse the parameters than to widen the loop to 5x5 and pay 2.8x on
-    // every height sample in the project for a corner case.
-    //
-    // Stated at facet 1, which is the worst case and so covers the rest: the
-    // Euclidean distance the blend mixes in is never SMALLER than the Chebyshev
-    // one, so any facet below 1 only shortens the reach.
+    // THE FACTOR OF sqrt(2) IS THE WHOLE ASSERTION. The naive reading is that a
+    // shard falls at (taper - tilt) at worst and so dies at 1/(taper - tilt)
+    // cells -- but `d` is a CHEBYSHEV distance, whose level sets are squares, and
+    // a square's CORNERS stand at sqrt(2) times its inradius. Without it, the
+    // first draft's taper 1.8 and tilt 0.6 reach 1.18 cells, and 13 samples in
+    // 120,000 came back differing from a 5x5 reference by up to 6 cm: rare,
+    // silent, and a corner sliced off exactly one cell out, which is a faint
+    // square grid pressed over the world. Cheaper to refuse the parameters than
+    // to pay 2.8x on every height sample in the project for a 5x5 loop. Stated at
+    // facet 1, the worst case -- the Euclidean distance the blend mixes in is
+    // never SMALLER than the Chebyshev one.
     if (!(tilt < taper)) throw new Error(`RidgeField: SHATTER_TILT (${tilt}) must be below SHATTER_TAPER (${taper}) or a shard's downhill face never returns to the ground`)
     const reach = Math.SQRT2 / (taper - tilt)
     if (!(reach < 1)) throw new Error(`RidgeField: a full-amplitude shard reaches ${reach.toFixed(2)} cells along its diagonal at taper ${taper} and tilt ${tilt}, but the evaluator only searches the 3x3 neighbourhood -- raise SHATTER_TAPER above ${(Math.SQRT2 + tilt).toFixed(2)}`)
 
     // Per-cell amplitude and orientation, indexed by a hash byte. Tabulated
-    // because the alternative is a sine, a cosine and a divide for each of nine
-    // cells at each of three scales on every height sample, in two workers and
-    // on the main thread -- 54 transcendentals a sample to reproduce 256
-    // distinct answers.
-    //
-    // Only a quarter turn of rotation is tabulated: the pyramid has four-fold
-    // symmetry, so theta and theta + pi/2 are the same shard, and spending the
-    // byte on the range that repeats would quarter the number of orientations
-    // actually distinguishable.
+    // because the alternative is 54 transcendentals a sample -- nine cells at
+    // three scales, in two workers and on the main thread -- to reproduce 256
+    // distinct answers. Only a QUARTER TURN of rotation is tabulated: the pyramid
+    // has four-fold symmetry, so spending the byte on a range that repeats would
+    // quarter the orientations actually distinguishable.
     this._amp = new Float64Array(256)
     this._cos = new Float64Array(256)
     this._sin = new Float64Array(256)
@@ -647,23 +504,15 @@ export class RidgeField {
     this._kw = wk.map((x) => x / wsumK)
     this._koff = wk.map((_, k) => k - half)
 
-    // THE FILTERED NOISE IS RENORMALISED TO UNIT RMS, PER SCALE, and this is what
-    // keeps `amount` denominated in metres.
-    //
-    // The across-crest filter is an average of correlated samples, so it
-    // attenuates -- measured, five binomial taps take simplex from an rms of
-    // about 0.41 down to 0.18, and by a different factor at each scale, because
-    // the attenuation depends on how straight the crests in this particular
-    // import actually are over one kernel width. That is not a number that can be
-    // derived, only sampled. Left uncorrected it is not a cosmetic error: the
-    // knob would read 12 and deliver a fifth of that, and the figure would move
-    // again the moment the tap count, the spacing or the import changed. Both
-    // statistics are therefore measured HERE, against the real axis field at real
-    // world positions, and the ratio is folded into the evaluator.
-    //
-    // With this in place `amount` is very close to the half-range in metres on
-    // ground whose ridgeness is saturated, which is the only place the number is
-    // worth quoting about.
+    // THE FILTERED NOISE IS RENORMALISED TO UNIT RMS, PER SCALE, which is what
+    // keeps `amount` denominated in metres. The across-crest filter averages
+    // correlated samples and so attenuates -- five binomial taps take simplex
+    // from an rms of about 0.41 down to 0.18, by a different factor at each
+    // scale, because it depends on how straight THIS import's crests are over one
+    // kernel width. That cannot be derived, only sampled, so both statistics are
+    // measured here against the real axis field at real world positions. Left
+    // uncorrected the knob would read 12 and deliver a fifth of it, and the
+    // figure would move again on any change of tap count, spacing or import.
     this.meanAbs = new Float64Array(this.count)
     this._gain = new Float64Array(this.count)
     const samples = new Float64Array(MEAN_SITES)
@@ -686,44 +535,33 @@ export class RidgeField {
       this.meanAbs[si] = sum / MEAN_SITES / rms
     }
 
-    // The same treatment for the shatter operator, and it needs BOTH moments
-    // rather than just a scale. The shard envelope is one-sided -- zero on open
-    // ground and positive under a shard, never negative -- so its mean is well
-    // away from zero by construction, and an unsubtracted one would be a constant
-    // lift scaled by the gate, walking every gated ridge up off its own valley,
-    // which is the failure the ridge mean above exists to avoid.
+    // The same treatment for shatter, needing BOTH moments rather than a scale.
+    // The shard envelope is one-sided -- zero on open ground, never negative --
+    // so its mean is well away from zero by construction, and an unsubtracted one
+    // is a constant lift scaled by the gate, walking every gated ridge up off its
+    // own valley. SUBTRACTING IT IS ALSO WHAT MAKES THIS READ AS CARVING RATHER
+    // THAN AS STICKING THINGS ON: with the mean gone the ground between the
+    // shards sits slightly BELOW where the macro field put it and the shards
+    // stand well above, so a gated ridge is cut into teeth instead of being
+    // inflated into a bigger ridge with teeth on top.
     //
-    // SUBTRACTING IT IS ALSO WHAT MAKES THIS READ AS CARVING RATHER THAN AS
-    // STICKING THINGS ON. Once the mean is gone, the ground between the shards
-    // sits slightly BELOW where the macro field put it and the shards stand well
-    // above, so a gated ridge is cut into teeth instead of being inflated into a
-    // bigger ridge with teeth on top. That is both the geologically right way
-    // round and the reason the knob does not raise the summit line.
+    // THE MEAN IS A FUNCTION OF THE ROUNDING and has to be measured as one, which
+    // is the whole reason a distant hill used to sit metres below where it stood
+    // when you walked up to it. The apex rounding does not merely soften the
+    // distribution, it COLLAPSES it: scale 0 means raw 0.186 at cell 0, 0.033 at
+    // a 2 m cell, and exactly 0.000 by 4 m. Subtract a round-0 mean from that and
+    // the term is not a fading envelope at all, it is `r * (0 - 0.186) * gain` --
+    // a negative constant scaled by the ridgeness gate, cutting every crest down
+    // by a fixed amount that only lifts as you approach: measured on peak ground,
+    // 2.1 m low on average at a 64 m range and 16 m low at the worst point.
     //
-    // THE MEAN IS A FUNCTION OF THE ROUNDING, and it has to be measured as one
-    // rather than once at round 0. This is the whole reason a distant hill used
-    // to sit metres below where it stood when you walked up to it.
-    //
-    // `atShatter` rounds the pyramid apexes by SHATTER_VERTEX_CELLS * cell / λ so
-    // a shard's edges are never narrower than the triangles carrying them. That
-    // rounding does not merely soften the distribution, it COLLAPSES it: scale 0
-    // has mean raw 0.186 at cell 0, 0.033 at cell 2 m, and exactly 0.000 by cell
-    // 4 m. Subtract a round-0 mean from that and the term is not a fading
-    // envelope, it is `r * (0 - 0.186) * gain` -- a negative constant scaled by
-    // the ridgeness gate, cutting every crest down by a fixed amount that only
-    // lifts as you approach. Measured on peak ground, that put the mesh 2.1 m low
-    // on average at a 64 m range and 16 m low at the worst point.
-    //
-    // The band limit does not rescue it, which is the part that makes this easy
-    // to miss. `bw` is smoothstep(2*cell, 4*cell, λ), so at cell 4 m scale 0 is
+    // The band limit does not rescue it, which is what makes this easy to miss.
+    // `bw` is smoothstep(2*cell, 4*cell, lambda), so at a 4 m cell scale 0 is
     // still 74% present -- the rounding annihilates the signal a good deal faster
     // than the band limit retires the scale, and what survives in between is pure
-    // offset. So the mean is tabulated against `round` and interpolated, which is
-    // what crag.js does over its own rounding radius.
-    //
-    // SUBTRACTING THE RIGHT ONE PRESERVES BOTH PROPERTIES ABOVE. At every cell
-    // the term stays zero-mean, so it still carves rather than inflates, and it
-    // now fades to nothing instead of to a trench.
+    // offset. So the mean is tabulated against `round` and interpolated, and the
+    // term stays zero-mean at every cell: it still carves, and it now fades to
+    // nothing instead of to a trench.
     this._sMean = new Float64Array(this.count)
     this._sGain = new Float64Array(this.count)
     this._sMeanTab = new Float64Array(this.count * SHATTER_MEAN_KNOTS)
@@ -759,17 +597,14 @@ export class RidgeField {
       const tail = this._sMeanTab[si * SHATTER_MEAN_KNOTS + SHATTER_MEAN_KNOTS - 1]
       if (tail > 1e-6) throw new Error(`RidgeField: the shatter envelope at scale ${si} still means ${tail} at round ${(SHATTER_MEAN_KNOTS - 1) * SHATTER_MEAN_STEP} -- SHATTER_MEAN_KNOTS does not span the rounding, and past the table the mean reads 0`)
 
-      // SCALED BY THE PEAK AND NOT BY THE RMS, which is the difference between a
-      // knob that means something and one that does not. `ridge`'s field is
-      // roughly gaussian and its rms is within a factor of three of its extremes,
-      // so an rms scale reads as an amplitude there. This field is ZERO over most
-      // of its domain and spikes over the rest, so its rms sits far below its
-      // peak: scaled that way the knob read 14 and delivered shards 40 m tall, a
-      // factor of 2.9, and the factor moves whenever SPARSE or TAPER does. The
-      // peak is exactly 1 by construction (a full-amplitude cell has _amp 1 and
-      // its apex has d = 0 and u = 0), so no measurement is needed for it and
-      // `amount` becomes the metres a maximal shard stands proud, summed over the
-      // scales, which is a number that can be reasoned about.
+      // SCALED BY THE PEAK AND NOT BY THE RMS. `ridge`'s field is roughly
+      // gaussian and its rms is within a factor of three of its extremes, so an
+      // rms reads as an amplitude there. This one is ZERO over most of its
+      // domain and spikes over the rest: scaled that way the knob read 14 and
+      // delivered 40 m shards, and the factor moves whenever SPARSE or TAPER
+      // does. The peak is exactly 1 by construction -- a full-amplitude cell has
+      // _amp 1 and its apex has d = 0 and u = 0 -- so `amount` becomes the metres
+      // a maximal shard stands proud, summed over the scales.
       this._sGain[si] = 1 / (1 - mean)
     }
   }
@@ -817,21 +652,17 @@ export class RidgeField {
   }
 
   /**
-   * THE ANISOTROPY, and the only part of this file that is subtle.
+   * THE ANISOTROPY, and the only subtle part of this file.
    *
    * Isotropic simplex, sampled at `taps` points spaced along (bx, bz) -- the
    * ACROSS-crest direction -- and combined with binomial weights. What varies
-   * across the crest averages down; what varies along it survives untouched. The
-   * result is a function of position along the crest, extruded down both faces,
-   * and that extrusion is the rib.
+   * across the crest averages down; what varies along it survives, extruded down
+   * both faces, and that extrusion is the rib.
    *
-   * EVERY OFFSET IS LOCAL AND BOUNDED. That is the whole reason this shape was
-   * chosen over the one-tap rotated-domain version, whose failure is set out in
-   * the header: an along-crest COORDINATE cannot be built at all, because a
-   * direction field has no global potential, and the attempt silently degenerates
-   * into white noise proportional to your distance from the world origin. Here
-   * no offset exceeds one wavelength and the axis is read fresh at the centre
-   * only, so the error is the axis turning across the kernel and nothing more.
+   * EVERY OFFSET IS LOCAL AND BOUNDED, which is the whole reason for this shape
+   * over the one-tap rotated domain the header's first trap describes. No offset
+   * exceeds one wavelength and the axis is read fresh at the centre only, so the
+   * error is the axis turning across the kernel and nothing more.
    */
   _smear(x, z, s, bx, bz) {
     const f = this._freq[s]
@@ -851,23 +682,17 @@ export class RidgeField {
   /**
    * One scale of the shatter operator, BEFORE the zero-mean and unit-rms fix-up.
    * Returns the shard envelope in cell units of height: 0 on ordinary ground, up
-   * to 1 at the apex of a full-amplitude shard.
+   * to 1 at the apex of a full-amplitude shard. `round` is passed in rather than
+   * read off the scale because it widens with the mesh cell.
    *
-   * `round` is passed in rather than read off the scale because it widens with
-   * the mesh cell, and the bake measures at the cell-0 value of zero.
-   *
-   * NINE CELLS AND NOT MORE, which is what the reach assertion in the constructor
+   * NINE CELLS AND NOT MORE, which is what the constructor's reach assertion
    * buys: no shard's flank can leave its own cell, so the nearest ring is the
-   * whole of the support and there is nothing outside it that could have won the
-   * max. This is a stronger statement than the usual Worley one -- ordinary
-   * Worley needs 3x3 because a feature POINT could be just over the border, and
-   * here the whole SHARD has to fit.
+   * whole of the support. A stronger statement than ordinary Worley's, where only
+   * the feature POINT has to be inside the border -- here the whole SHARD must.
    *
-   * Reuses the per-scale domain offsets the filtered noise uses. They are shifts
-   * of a lattice here rather than of a simplex grid, but they serve the identical
-   * purpose: without them every scale would put a cell corner at the world origin
-   * and the three would agree there, which is a seam through the middle of the
-   * map.
+   * Reuses the per-scale domain offsets the filtered noise uses: without them
+   * every scale would put a cell corner at the world origin and the three would
+   * agree there, which is a seam through the middle of the map.
    */
   /**
    * The mean of scale `s`'s shard envelope at apex rounding `round`, linearly

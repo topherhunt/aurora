@@ -430,7 +430,7 @@ export const SHARED_GROUPS = [
       {
         key: 'horizonCut',
         label: 'horizon cut',
-        hint: 'Rays below this height are abandoned unmarched. Slightly negative so the aurora reaches a hair below the true horizon and the mountains cut it rather than the shader doing so.',
+        hint: 'The ray height where the sky proper ends. Slightly negative so the aurora reaches a hair below the true horizon and the mountains cut it rather than the shader doing so. The march frames abandon rays below it unmarched; the sky map instead carries its bottom row on down through the skirt below.',
         type: 'float', min: -0.2, max: 0.3, step: 0.002, value: -0.02,
       },
       {
@@ -440,9 +440,15 @@ export const SHARED_GROUPS = [
         type: 'float', min: 0, max: 1, step: 0.01, value: 0.80,
       },
       {
+        key: 'horizonSkirt',
+        label: 'below-horizon skirt',
+        hint: 'How far BELOW the cut, in the same ray-height units, the aurora keeps going before it reaches nothing. Sky-map frames only -- a downward ray has no slab to march, so the skirt is the map\'s horizon row carried down and rolled off. It exists for altitude: standing on the ground the mountains hide the cut, but from a few hundred metres up you see under it, and at 0 the aurora ends on a hard circle with lit sky underneath. 0.30 is about 17 degrees, and the schema maximum is what the dome in screen.js is cut to reach.',
+        type: 'float', min: 0, max: 0.35, step: 0.01, value: 0.30,
+      },
+      {
         key: 'edgeFade',
         label: 'screen edge fade',
-        hint: 'Fades the top and bottom bands of the dome so its two elevation edges can never be found -- the zenith and the few degrees below the horizon. It does NOT act in azimuth: the dome wraps, so due south is a seam rather than an edge and fading it would cut a dark wedge out of the sky.',
+        hint: 'Fades the top and bottom bands of the dome so its two elevation edges can never be found -- the zenith and the rim well below the horizon. It does NOT act in azimuth: the dome wraps, so due south is a seam rather than an edge and fading it would cut a dark wedge out of the sky.',
         type: 'float', min: 0, max: 0.35, step: 0.005, value: 0.06,
       },
       {

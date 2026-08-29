@@ -8,6 +8,9 @@ import {
 } from '../../props/grass-bank.js'
 import { geometryBytes } from '../../props/fern.js' // generic; it lives there for historical reasons
 import {
+  BLADE_DEFAULTS, bladeTipMul, buildBladeClump, createBladeMaterial,
+} from '../../props/grass-blades.js'
+import {
   createPropMaterial, setSnowLine, stripClumpScale,
   setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS,
 } from '../../material.js'
@@ -23,8 +26,8 @@ import { RimFade, RIM_PHASES } from './rim.js'
 // keep-or-drop placement rule, where a candidate rejected by a lake or a road
 // leaves a hole rather than being re-rolled onto its neighbour's patch.
 //
-// THE TWO STRATEGIES, AND WHICH ONE YOU WANT. Grass is asked for in two shapes
-// and they are not the same problem, so this file builds two beds and `style`
+// THE THREE STRATEGIES, AND WHICH ONE YOU WANT. Grass is asked for in shapes
+// that are not the same problem, so this file builds three beds and `style`
 // picks between them:
 //
 //   SCATTERED TUFTS ARE THE DEFAULT and what you should reach for. One instance
@@ -39,6 +42,14 @@ import { RimFade, RIM_PHASES } from './rim.js'
 //   instance is a flat card several metres long drawing the grass cutout 3 to 6
 //   times across its own length: two triangles for four and a half clumps of
 //   grass. See buildGrassStripBank and STRIP_MATCH below.
+//
+//   BLADES, `style: 'blades'`, are the one that is not a cutout. One instance is
+//   a clump of ten opaque triangles -- real geometry, no texture, no alpha
+//   channel -- coloured from the ground it stands in. It trades triangles for
+//   FILL, which is the binding budget on the headset: the card bed draws 20.6
+//   full eyes of alpha-tested fragments per eye per frame against a texture that
+//   is 18.9% opaque, and every one of those discards costs the draw its
+//   low-resolution-Z. See src/props/grass-blades.js and BLADE_DENSITY below.
 //
 // WHAT 6 INSTANCES PER SQUARE METRE ACTUALLY COSTS. That is 120 times a fern bed
 // and 24,000 times a forest, and at that multiplier nothing survives being done
@@ -286,17 +297,17 @@ const GROW_TO = 30
 const GROW_SCALE = 1.67
 const GROW_SINK = 0.3
 
-// Ceilings on the LOD cross-dissolve, in instances. Both are trees' constants
-// for trees' reasons (render/trees.js): FADE_MAX_INFLIGHT bounds the per-frame
+// Ceilings on the LOD cross-dissolve, in instances. Both are rocks' constants
+// for rocks' reasons (render/rocks.js): FADE_MAX_INFLIGHT bounds the per-frame
 // sweep and the extra geometry the batch draws, FADE_POOL_RESERVE keeps a swap
 // from eating the ids `_growTile` needs -- it THROWS on an empty pool, and a
 // scatter that starves its own growth to animate a band crossing has its
 // priorities backwards. Past either limit a swap simply pops, which is exactly
 // what every swap did before this existed.
 //
-// TWICE TREES' INFLIGHT CAP, because grass crosses its band far faster than a
-// forest crosses any of its. The 8 m ring at 6 tufts/m2 hands ~1,500 instances a
-// second across at a 5 m/s walk, which is ~375 in flight over the 250 ms window;
+// TWICE ROCKS' INFLIGHT CAP, because grass crosses its band far faster than a
+// stone field crosses any of its. The 8 m ring at 6 tufts/m2 hands ~1,500
+// instances a second across at a 5 m/s walk, ~375 in flight over the 250 ms;
 // a hard fly at 30 m/s is six times that. 2,048 covers the walk with a wide
 // margin and degrades to popping only in flight, where nobody is looking at the
 // grass 8 m in front of them.
@@ -411,6 +422,37 @@ const PLACEMENT = {
 // its share of the count. That is the right way round for a lush bed and it is
 // also the reason the range is not widened further.
 const HEIGHT = [0.5, 1.5]
+
+// ---------------------------------------------------------------------------
+// THE BLADE BED: `{ style: 'blades' }`. Ten opaque triangles a clump instead of
+// a cutout card, so the bed stops paying for the 81% of every tuft quad that is
+// transparent and stops costing the draw its low-resolution-Z. The model, the
+// argument for it and its tuning knobs are src/props/grass-blades.js; the
+// numbers below are only how the bed is SCATTERED, and they were tuned on the
+// headset on /gen-grass against the real ground.
+//
+// THE SHAPE OF THE SCATTER IS THE OPPOSITE OF THE CARD BED'S. Cards are cheap
+// per instance and dear per pixel, so they are spread thin and wide. Blades are
+// the reverse: 24 clumps a square metre is a mat you cannot see the ground
+// through, and it is affordable only because it holds for 2 m and then falls off
+// hard. Read all four together -- moving one alone is how the bed gets
+// expensive, and the reach in particular is only payable at the falloff below.
+const BLADE_DENSITY = 24
+const BLADE_FULL_RADIUS = 2
+const BLADE_DRAW_RADIUS = 30
+
+// The exponent p in the thinning law `keep = min(1, F/d)^p`. See _keepAt: 1 is
+// the halving-per-octave the card bed uses, and above it the far field thins
+// faster without ever emptying. At 3 the bed keeps a 512th of full density at
+// 8F, against the eighth that 1 leaves there, and that is what buys the 30 m
+// reach above: the far field reads as patches rather than a lawn, and the mat is
+// only ever under your feet.
+const BLADE_FALLOFF = 3
+
+// Per-clump size, either side of the model's own. UNIFORM, unlike the card
+// bed's sqrt: a clump is a bundle of blades and scaling it down should give a
+// smaller bundle, where a card scaled down would give a squat one.
+const BLADE_SCALE = [0.5, 1.5]
 
 // ---------------------------------------------------------------------------
 // THE STRIP BED: `{ style: 'strips' }`, and everything below is only read in
@@ -799,6 +841,22 @@ class InstancedArena extends THREE.InstancedMesh {
     return 0
   }
 
+  /**
+   * Add a per-instance float the bed's material reads as an attribute. Same
+   * reason `aPropFade` is created above and not by the caller: an
+   * InstancedBufferAttribute lives on the geometry, and the geometry the bed
+   * actually draws is the clone made here.
+   *
+   * @param {number} fill  the resting value, stamped on every instance, so an
+   *   id that no tile has grown yet still draws something sane.
+   */
+  addInstancedAttribute(name, fill) {
+    if (!this._geometrySet) throw new Error('InstancedArena: addGeometry first')
+    const attr = new THREE.InstancedBufferAttribute(new Float32Array(this._max).fill(fill), 1)
+    this.geometry.setAttribute(name, attr)
+    return attr
+  }
+
   addInstance(geometryId) {
     if (geometryId !== 0) throw new Error(`InstancedArena: unknown geometry ${geometryId}`)
     if (this._next >= this._max) throw new Error('InstancedArena: pool exhausted')
@@ -861,6 +919,21 @@ class InstancedArena extends THREE.InstancedMesh {
   }
 }
 
+/**
+ * A one-tier bank around the blade clump, so the tier bookkeeping in Grass reads
+ * the same for all three beds. There is nothing to choose between here -- a
+ * clump IS the model -- which is why grass-blades.js exports a builder and not a
+ * bank.
+ */
+function buildBladeBank() {
+  const geometry = buildBladeClump(BLADE_DEFAULTS, 1)
+  return {
+    tiers: [{ geometry, triangles: geometry.getAttribute('position').count / 3 }],
+    cardTier: 0,
+    bytes: geometryBytes(geometry),
+  }
+}
+
 export class Grass {
   /**
    * @param scene         THREE.Scene to add the single BatchedMesh to.
@@ -869,9 +942,12 @@ export class Grass {
    * @param paths         PathSet. Needs nearest.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param style         'tufts' for the clump-then-billboard ladder, 'strips'
-   *                      to carpet a REGION with tiled ribbons. See THE TWO
-   *                      STRATEGIES in the header -- the default is the one to
-   *                      reach for.
+   *                      to carpet a REGION with tiled ribbons, 'blades' for the
+   *                      opaque geometry bed. See THE TWO STRATEGIES in the
+   *                      header -- the default is the one to reach for.
+   * @param tint          a TerrainTint. Blades only, and required there: their
+   *                      whole look is that a blade's foot is the colour of the
+   *                      ground it is standing in.
    */
   constructor(
     scene,
@@ -881,11 +957,15 @@ export class Grass {
     textureArray,
     {
       seed = 1, style = 'tufts', density = null, height = null,
-      radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, spin = true, grow = true,
+      radius = null, fullRadius = null, falloff = null, spin = true, grow = true,
+      tint = null,
     } = {}
   ) {
-    if (style !== 'tufts' && style !== 'strips') {
-      throw new Error(`Grass: style must be 'tufts' or 'strips', got ${style}`)
+    if (style !== 'tufts' && style !== 'strips' && style !== 'blades') {
+      throw new Error(`Grass: style must be 'tufts', 'strips' or 'blades', got ${style}`)
+    }
+    if (style === 'blades' && (!tint || typeof tint.groundAt !== 'function')) {
+      throw new Error('Grass: blades need a TerrainTint with groundAt, to take their base colour from the ground')
     }
     if (!field || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Grass: needs a V2Height with heightAndSlopeAt')
@@ -917,19 +997,33 @@ export class Grass {
     this.spin = spin
     this.grow = grow
     this.strips = style === 'strips'
-    this.density = density === null ? (this.strips ? STRIP_DENSITY : DENSITY) : density
+    this.blades = style === 'blades'
+    this.tint = tint
+    this.density = density === null
+      ? (this.strips ? STRIP_DENSITY : this.blades ? BLADE_DENSITY : DENSITY)
+      : density
     density = this.density
-    this.height = height ?? (this.strips ? STRIP_HEIGHT : HEIGHT)
+    this.height = height ?? (this.strips ? STRIP_HEIGHT : this.blades ? BLADE_SCALE : HEIGHT)
     // The bank geometry's own height, which every instance scale is relative to.
-    this.baseHeight = this.strips ? STRIP_BASE.height : GRASS_BASE.height
-    this.sink = this.strips ? STRIP_SINK : PLACEMENT.sink
+    // A blade clump's is 1 because BLADE_SCALE is already a scale range and not
+    // a range of metres -- the model's own height is BLADE_DEFAULTS.height, and
+    // the bed has no business restating it.
+    this.baseHeight = this.strips ? STRIP_BASE.height : this.blades ? 1 : GRASS_BASE.height
+    this.sink = this.strips ? STRIP_SINK : this.blades ? BLADE_DEFAULTS.sink : PLACEMENT.sink
     // NEITHER BED HAS A LADDER NOW: a strip never had one (buildGrassStripBank)
     // and the tuft bed gave its up when it moved onto an InstancedMesh, which
     // holds one geometry. An empty band list makes the tier loop in update()
     // fall straight through to the coarsest -- and only -- tier, which costs
     // nothing. LOD_BANDS is already empty; the local is kept so that putting a
     // ladder back is one line rather than a search.
-    const bands = this.strips ? [] : LOD_BANDS
+    const bands = this.strips || this.blades ? [] : LOD_BANDS
+    // Resolved here rather than in the parameter list because each bed has its
+    // own pair and the style is not known until now. A caller that passes either
+    // one overrides it -- main.js's Quest sliders do.
+    radius = radius === null ? (this.blades ? BLADE_DRAW_RADIUS : DRAW_RADIUS) : radius
+    fullRadius = fullRadius === null ? (this.blades ? BLADE_FULL_RADIUS : FULL_RADIUS) : fullRadius
+    this.falloff = falloff === null ? (this.blades ? BLADE_FALLOFF : 1) : falloff
+    if (!(this.falloff > 0)) throw new Error(`Grass: falloff must be positive, got ${this.falloff}`)
     this.radius = radius
     // TWO RADII, because for a strip bed they are not the same number.
     // `fullRadius` is the DENSITY LAW's flat zone: inside it the law asks for
@@ -977,8 +1071,8 @@ export class Grass {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = this.strips ? buildGrassStripBank() : buildGrassBank()
-    if (!this.strips) {
+    const bank = this.strips ? buildGrassStripBank() : this.blades ? buildBladeBank() : buildGrassBank()
+    if (!this.strips && !this.blades) {
       // KEEP THE CARD, THROW THE CLUMP AWAY. One geometry is all the arena can
       // hold and the billboard is the one to keep: it is a photograph of the
       // clump, it is 2 triangles against 6, and it never goes edge-on.
@@ -1022,7 +1116,14 @@ export class Grass {
     // quad in the batch is a strip -- so `stripTiling` is unconditional in the
     // fragment stage rather than a per-layer branch, and nothing else in the
     // project compiles it. Still one material and one draw call.
-    this.material = this.strips
+    //
+    // BLADES: not a prop material at all. No atlas, no cutout, no billboard --
+    // the whole point is that nothing in the fragment stage discards, so the
+    // draw keeps its low-resolution-Z. `instancedFade` there is a SHRINK rather
+    // than the dither the other two use, for the same reason.
+    this.material = this.blades
+      ? createBladeMaterial({ wind: true, instancedFade: true })
+      : this.strips
       ? createPropMaterial(textureArray, { stripTiling: true, instancedFade: true, wind: 'grass' })
       // CYLINDRICAL, and it was spherical for one build. The spherical spin is
       // the better PICTURE -- a cylindrical card only turns about Y, so it is
@@ -1068,6 +1169,10 @@ export class Grass {
     // is the honest way to say "the ladder is one rung", not a special case.
     this.tierIds = bank.tiers.map((t) => this.batch.addGeometry(t.geometry))
     this.tierTris = bank.tiers.map((t) => t.triangles)
+    // Per-clump tip brightness, over the foot's terrain colour. 1 at rest, so an
+    // id no tile has grown yet would draw a clump with no gradient rather than a
+    // black one. See bladeTipMul.
+    this.tipMul = this.blades ? this.batch.addInstancedAttribute('aTipMul', 1) : null
     // The arena CLONES what it is given (InstancedArena.addGeometry), so the
     // bank's own copies are ours to drop.
     for (const t of bank.tiers) t.geometry.dispose()
@@ -1128,6 +1233,9 @@ export class Grass {
     this._q = new THREE.Quaternion()
     this._s = new THREE.Vector3()
     this._c = new THREE.Color()
+    // Scratch for TerrainTint, which works in a linear float triple rather than
+    // a THREE.Color because that is what the chunk mesher's `shade` writes into.
+    this._rgb = new Float32Array(3)
     this._up = new THREE.Vector3(0, 1, 0)
     // YZX so that setFromEuler composes R_y(yaw) * R_z(tilt): the strip is
     // yawed to its bearing and then rolled about its own long axis onto the
@@ -1175,11 +1283,17 @@ export class Grass {
    * The base law is FULL_RADIUS / d -- flat inside it, halving every octave
    * outside -- and for the tuft carpet that is the whole story, so uAt comes out
    * as exactly the 2^(-q/QUANT) it has always been. A strip bed divides it again
-   * by STRIP_THIN, which is why this is a function and not a power.
+   * by STRIP_THIN, and a blade bed raises it to `falloff`, which is why this is a
+   * function and not a power.
+   *
+   * RAISING THE WHOLE MIN, not just its right-hand branch: the base is already
+   * clamped to 1, so an exponent cannot lift the flat zone, and taking the power
+   * of the clamped value is one operation where a second branch would be two.
    */
   _keepAt(d) {
     const base = Math.min(1, this.fullRadius / d)
-    return this.strips ? base / stripThinAt(d) : base
+    if (this.strips) return base / stripThinAt(d)
+    return this.falloff === 1 ? base : Math.pow(base, this.falloff)
   }
 
   /**
@@ -1280,8 +1394,14 @@ export class Grass {
       // is a visible bald patch opening in front of the player -- but thin only
       // after it has fallen two whole steps behind, so a tile sitting on a level
       // boundary does not regrow every frame.
+      // `q > 0` because level 0 is EVERYTHING inside thinFrom and loSq[0] is
+      // thinFrom squared -- so a tile already at 0 and standing inside that
+      // radius reads as wanting to thicken on every frame forever, re-queues
+      // itself, and _growTile hands it straight back as a no-op. Harmless work,
+      // but it parks the queue depth the Quest panel reports as a thrashing LOD
+      // at the number of tiles under the player's feet.
       const q = tile.q
-      const thicken = near2 < this.loSq[q]
+      const thicken = q > 0 && near2 < this.loSq[q]
       const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
       if (!tile.queued && (thicken || thin)) {
         tile.queued = true
@@ -1571,6 +1691,10 @@ export class Grass {
       const lenRoll = this.strips ? rand() : 0
       const tintT = rand()
       const tintV = rand()
+      // A clump's tip brightness, drawn HERE and not where it is used, so it
+      // stays inside the block every candidate runs whether or not it survives.
+      // Two draws, and only when blades are standing -- see `lenRoll`.
+      const tipRoll = this.blades ? bladeTipMul(BLADE_DEFAULTS, rand) : 0
       const u = rand()
 
       if (u >= uNew || u < uOld) continue
@@ -1587,7 +1711,8 @@ export class Grass {
       // water rose by `freeboard`", which is the verge we want without a second
       // API. Covers lakes and river channels alike.
       if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
-      if (h > this.field.snowLineAt(x, z) - PLACEMENT.snowMargin) { rej.snow++; continue }
+      const snowLine = this.field.snowLineAt(x, z)
+      if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
       const road = this.paths.nearest(x, z, 'road')
       if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       const river = this.paths.nearest(x, z, 'river')
@@ -1641,13 +1766,16 @@ export class Grass {
         this._s.set(sx, sy, sx)
         this.instY[id] = (h0 + h1) * 0.5 - this.sink * sy
       } else {
-        // Height is the roll; width follows it by its SQUARE ROOT rather than
-        // linearly. A uniform scale would make a 1.5 m tuft 1.5 m across, which
-        // is a bush; sqrt keeps the short ones squat and lets the tall ones be
-        // tall and comparatively narrow, which is what long grass looks like. x
-        // and z take the same factor, so the horizontal scaling stays isotropic
-        // and the billboard's yaw-about-Y still commutes with it.
-        const sxz = Math.sqrt(sy)
+        // Height is the roll; for a CARD, width follows it by its SQUARE ROOT
+        // rather than linearly. A uniform scale would make a 1.5 m tuft 1.5 m
+        // across, which is a bush; sqrt keeps the short ones squat and lets the
+        // tall ones be tall and comparatively narrow, which is what long grass
+        // looks like. x and z take the same factor, so the horizontal scaling
+        // stays isotropic and the billboard's yaw-about-Y still commutes with
+        // it. A BLADE CLUMP scales uniformly instead: it is a bundle of plants
+        // rather than a picture of one, and a smaller bundle is what a smaller
+        // roll should mean.
+        const sxz = this.blades ? sy : Math.sqrt(sy)
         // A YAW ON A THING THAT BILLBOARDS IS NOT WASTED: up close it is what
         // stops a bed of one geometry reading as cloned; far away the shader
         // divides it back out, and its sign decides whether the card shows its
@@ -1662,12 +1790,24 @@ export class Grass {
       this._p.set(x, this.instY[id], z)
       this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
 
-      // The whole colour of this tuft, not a tint over coloured art -- see
-      // GRASS_TINTS. `tintT` is SQUARED before it picks a point on the
-      // lush->tall->dry line, which pushes the mass of the distribution toward
-      // the green end and leaves dry straw as the occasional tuft rather than a
-      // third of the meadow.
-      this._tintTo(this._c, tintT * tintT, VALUE[0] + tintV * (VALUE[1] - VALUE[0]))
+      if (this.blades) {
+        // A BLADE'S FOOT IS THE GROUND IT IS STANDING IN, and that is the whole
+        // look: the instance colour lands on the base vertices unmodified (they
+        // are (1,1,1)) and the tip ramp lifts or drops it from there. Anything
+        // drawn from a palette instead reads as a green carpet laid over the
+        // terrain rather than as the terrain growing.
+        this.tint.groundAt(this._rgb, x, z, h, 1 / Math.hypot(tan, 1), snowLine)
+        this._c.setRGB(this._rgb[0], this._rgb[1], this._rgb[2], THREE.LinearSRGBColorSpace)
+        this.tipMul.array[id] = tipRoll
+        this.tipMul.needsUpdate = true
+      } else {
+        // The whole colour of this tuft, not a tint over coloured art -- see
+        // GRASS_TINTS. `tintT` is SQUARED before it picks a point on the
+        // lush->tall->dry line, which pushes the mass of the distribution toward
+        // the green end and leaves dry straw as the occasional tuft rather than a
+        // third of the meadow.
+        this._tintTo(this._c, tintT * tintT, VALUE[0] + tintV * (VALUE[1] - VALUE[0]))
+      }
       this.batch.setColorAt(id, this._c)
 
       // Born as a card, and with no bands left that is also where it dies.
@@ -1791,11 +1931,12 @@ export class Grass {
   bakeCards(renderer) {
     // Strips have no impostor tier: they wear GRASS_TUFT itself, tiled. Nothing
     // to photograph, and baking anyway would write a layer nothing samples.
+    // Blades sample no texture at all, for the same answer.
     //
     // The tuft bed, by contrast, is now ENTIRELY impostor cards, so this is no
     // longer the far tier's setup step -- it is the bed's. Skip it and the whole
     // meadow is an empty layer, which alphaTest discards, which is no meadow.
-    if (this.strips) return null
+    if (this.strips || this.blades) return null
     const t0 = performance.now()
     const baked = bakeGrassImpostor(renderer, this.textureArray)
     this.cardBakeMs = performance.now() - t0
@@ -1828,6 +1969,7 @@ export class Grass {
       // thinFrom, not fullRadius: the HUD sentence is "N/m2 to X m, thinning to
       // Y", and what it wants is the distance full density actually holds to.
       fullRadius: this.thinFrom,
+      falloff: this.falloff,
       radius: this.radius,
       heightRange: this.height,
       bankKB: Math.round(this.bank.bytes / 1024),
@@ -1866,6 +2008,11 @@ export const GRASS_TUNING = {
   HEIGHT,
   PLACEMENT,
   GRASS_TINTS,
+  BLADE_DENSITY,
+  BLADE_FULL_RADIUS,
+  BLADE_DRAW_RADIUS,
+  BLADE_FALLOFF,
+  BLADE_SCALE,
   STRIP_MATCH,
   STRIP_DENSITY,
   STRIP_HEIGHT,

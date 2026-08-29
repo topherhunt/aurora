@@ -9,7 +9,6 @@ import { Layers } from './layers/layers.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
-import { C_GRASS } from './terrain/chunk-mesh-v2.js'
 import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
 import { RoadSurfaces } from './render/road-surfaces.js'
@@ -20,6 +19,7 @@ import * as persist from './edit/persist.js'
 import { Trees } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
+import { TerrainTint } from '../terrain/terrain-tint.js'
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood } from './render/deadwood.js'
@@ -200,13 +200,16 @@ let sceneEl = null, rigEl = null, leftHandEl = null, rightHandEl = null
 if (QUEST_MODE) {
   sceneEl = document.createElement('a-scene')
   sceneEl.setAttribute('vr-mode-ui', 'enabled: true')
-  // A-Frame 1.8's own renderer defaults (ACES filmic tone mapping,
-  // physically-correct lighting) diverge from normal mode's plain
-  // `new THREE.WebGLRenderer(...)` below, which never sets either -- so it
-  // runs on three's own defaults (NoToneMapping, legacy/non-physical light
-  // intensities). That divergence is what was lifting near-black areas (most
-  // visible on trees/terrain at night); match normal mode explicitly instead
-  // of taking A-Frame's opinion.
+  // A-Frame 1.8's renderer defaults already agree with normal mode's plain
+  // `new THREE.WebGLRenderer(...)` below: toneMapping defaults to 'no' and
+  // there is no physicallyCorrectLights property in the schema at all. What
+  // diverged was the LIGHTS, which are dealt with after appendChild below.
+  //
+  // `toneMapping: no` stays stated even though it is the default, because the
+  // value is interpolated straight into a THREE constant name with no
+  // validation: 'no' -> NoToneMapping, and the plausible-looking 'none' ->
+  // undefined, which three reports as unsupported and silently compiles as
+  // Linear.
   //
   // `antialias: true` is NOT redundant with A-Frame's default. A-Frame's
   // renderer schema defaults antialias to `auto`, which it resolves to FALSE on
@@ -221,7 +224,7 @@ if (QUEST_MODE) {
   // near/far fix below should make it unnecessary. It is here so the two can be
   // A/B'd in the headset without a code change, because depth precision is not
   // something a desktop can reproduce.
-  const questRenderer = ['toneMapping: none', 'physicallyCorrectLights: false', 'antialias: true']
+  const questRenderer = ['toneMapping: no', 'antialias: true']
   if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
   sceneEl.setAttribute('renderer', questRenderer.join('; '))
   // No movement-controls/look-controls/blink-controls: locomotion in quest
@@ -277,6 +280,35 @@ if (QUEST_MODE) {
     if (sceneEl.hasLoaded) resolve()
     else sceneEl.addEventListener('loaded', resolve, { once: true })
   })
+  // A-FRAME'S DEFAULT LIGHTS ARE THE WHOLE OF QUEST MODE'S LIGHTING DIVERGENCE.
+  // Its light system hangs two entities off any scene that has not declared a
+  // light of its own, on the 'loaded' event: an ambient #BBB at intensity 1 and
+  // a directional #FFF at 1.884 aimed down -0.5 1 1. This file builds its sun
+  // and hemi as bare THREE objects on scene.object3D, which that system cannot
+  // see, so it fired every time -- and the props and the terrain are
+  // MeshLambertMaterial, so a flat 0.46-linear ambient landed on all of them.
+  // It reads as bright, flat and fake because it is: a constant that noon
+  // merely dilutes and midnight has nothing to hide.
+  //
+  // BOTH CALLS, BECAUSE THE ORDER IS NOT OURS TO KNOW. The system builds the
+  // lights from its own 'loaded' listener, and whether that runs before this
+  // block depends on when A-Frame got round to initSystems -- which is NOT at
+  // appendChild: ANode.connectedCallback defers the whole of it to the
+  // `aframeready` event unless A-Frame is already up, so `sceneEl.systems` is
+  // still empty on the line after the append. So: the flag stops a setup that
+  // has not run, and removeDefaultLights clears one that has. Either way this
+  // is after 'loaded', by which point the system certainly exists.
+  //
+  // THE SYSTEM'S OWN DATA, and not the `light="defaultLightsEnabled: false"`
+  // attribute the docs suggest. `light` is a registered COMPONENT as well as a
+  // system, and A-Frame's entity code does not exempt the scene: the attribute
+  // would ALSO initialise a light component on <a-scene> itself, which warns
+  // about the unknown property, falls back to its own schema, and hangs a white
+  // directional light at intensity 1 on the scene root. That is the bug being
+  // fixed here, arrived at by the cure.
+  if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: its default lights would light the world a second time")
+  sceneEl.systems.light.data.defaultLightsEnabled = false
+  sceneEl.systems.light.removeDefaultLights()
   renderer = sceneEl.renderer
   scene = sceneEl.object3D
   camera = sceneEl.camera
@@ -400,10 +432,19 @@ SkyProbe.include(aurora.mesh)
 worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 
 if (QUEST_MODE) {
-  // Every world layer defaults off; see questToggles/applyQuestToggle below.
-  sky.mesh.visible = false
+  // LITERALS AND NOT questToggles, only because this runs at module scope and
+  // the toggles are declared further down -- reading them here is a temporal
+  // dead zone throw at boot. These four have to be kept agreeing with
+  // `dayNight`, `water` and `aurora` by hand; everything else the panel hides is
+  // hidden inside bootWorld, which can read them.
+  //
+  // `water.group` IS THE NODE THE `water` ROW OWNS, all the way through. Every
+  // v2 lake and river is a child of it -- WaterSurfaces parents its own group
+  // under this one -- so hiding it here and then toggling the CHILD is a lake
+  // that can never be shown, the parent flag still false underneath.
+  sky.mesh.visible = true
   water.group.visible = false
-  stars.points.visible = false
+  stars.points.visible = true
   aurora.mesh.visible = false
 }
 
@@ -432,8 +473,9 @@ const questControllerHits = new Map()
 
 // --- toggle panel ------------------------------------------------------------
 
-// Column order matters: the panel fills column-major, so these read as three
-// groups of six -- world layers, then systems, then one-shot actions.
+// Column order matters: the panel fills column-major over
+// QUEST_PANEL_COLS columns, so these read as world layers, then systems, then
+// one-shot actions, each group filling down a column.
 //
 // THERE IS NO `recall panel here` ROW, deliberately. It was here and it was
 // useless: the only way to press it is to already be standing in front of the
@@ -442,8 +484,6 @@ const questControllerHits = new Map()
 // reach when the panel is behind you.
 const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
-  { key: 'terrainShader', text: 'landscape shader', on: 'full', off: 'plain' },
-  { key: 'flatGround', text: 'flat ground' },
   { key: 'trees', text: 'trees' },
   { key: 'rocks', text: 'rocks' },
   { key: 'grass', text: 'grass' },
@@ -451,18 +491,20 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'grassGrow', text: 'grass grow', on: 'far 1.7x', off: 'flat' },
   { key: 'grassDensity', text: 'grass', action: () => cycleGrassDensity(), value: () => `${grass ? grass.density : '?'}/m2 >` },
   { key: 'grassRadius', text: 'grass reach', action: () => cycleGrassRadius(), value: () => `${grass ? grass.radius : '?'} m >` },
+  { key: 'grassFalloff', text: 'grass falloff', action: () => cycleGrassFalloff(), value: () => `${grass ? grass.falloff : '?'}^ >` },
   { key: 'ferns', text: 'ferns' },
   { key: 'instCull', text: 'per-instance cull' },
   { key: 'wind', text: 'wind' },
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
   { key: 'dayNight', text: 'day/night' },
   { key: 'lighting', text: 'terrain & prop lighting' },
+  { key: 'terrainShader', text: 'landscape shader', on: 'full', off: 'plain' },
+  { key: 'stats', text: 'stats readout' },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
   { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
-  { key: 'unstick', text: 'unstick', action: () => { questUnstickOnce = true } },
 ]
 
 function questToggleLabel(row) {
@@ -484,10 +526,12 @@ function applyQuestToggle(key) {
   const enabled = (questToggles[key] = !questToggles[key])
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
-    case 'terrainShader': setTerrainShader(enabled); break
-    case 'flatGround': setFlatGround(enabled); break
     case 'dayNight': sky.mesh.visible = enabled; stars.points.visible = enabled; break
     case 'lighting': break // no object of its own; gates the sun/hemi/lighting.update block in applySky()
+    case 'terrainShader': setTerrainShader(enabled); break
+    // Freezes the readout on its last numbers rather than blanking it, so the
+    // panel still says something while the upload is off. See updateQuestStats.
+    case 'stats': if (enabled) updateQuestStats(); break
     case 'trees': trees.batch.visible = enabled; break
     case 'rocks': rocks.beds.forEach((b) => { b.batch.visible = enabled }); break
     // A REBUILD, not a flag: the spin is compiled into the program (see
@@ -495,10 +539,16 @@ function applyQuestToggle(key) {
     // rescatter on the frame it is pressed -- the same one-off hitch the wind
     // row warns about. rebuildGrass carries the density and reach the other two
     // rows have set, so the three compose instead of resetting each other.
-    case 'grassSpin': rebuildGrass({ spin: enabled }); break
-    case 'grassGrow': rebuildGrass({ grow: enabled }); break
+    // Both are CARD-ONLY -- a blade clump is geometry, so it neither turns to
+    // face the eye nor grows in the far field. Rebuilding for them under the
+    // blade bed would be a 100 ms hitch that changes nothing on screen.
+    case 'grassSpin': if (grassStyle !== 'blades') rebuildGrass({ spin: enabled }); break
+    case 'grassGrow': if (grassStyle !== 'blades') rebuildGrass({ grow: enabled }); break
     case 'grass': grass.batch.visible = enabled; break
-    case 'ferns': ferns.batch.visible = enabled; break
+    // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
+    // beds are a mesh per species. See render/ferns.js on why an InstancedMesh
+    // cannot hold the ladder in one object.
+    case 'ferns': ferns.meshes.forEach((m) => { m.visible = enabled }); break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -510,8 +560,16 @@ function applyQuestToggle(key) {
       questTeleportArmed = false
       if (questTeleportMarker) questTeleportMarker.visible = false
       break
-    case 'water': waterSurfaces.group.visible = enabled; break
-    case 'reflections': break // no object of its own; gates the sky/world capture updates in tick()
+    case 'water': water.group.visible = enabled; break
+    // Two halves of one thing, and they have to move together: the row gates
+    // the two cube CAPTURES in tick(), and it compiles the water's fetches of
+    // them in or out. Off, the lake reflects the sky function alone and nobody
+    // renders a cube face for it; on, it costs the six-face sky probe, the
+    // world probe's face-per-frame, and three cube fetches per water pixel.
+    // Leaving the shader sampling captures that stopped updating is the state
+    // this row must never be in -- that is a lake mirroring last minute's
+    // world. Expect a one-off compile hitch on the frame you press it.
+    case 'reflections': water.setCubeReflections(enabled); break
     case 'aurora': aurora.mesh.visible = enabled; break
   }
 }
@@ -548,7 +606,7 @@ function questBatches() {
   const out = []
   if (terrain) out.push(terrain.batch)
   if (trees) out.push(trees.batch)
-  if (ferns) out.push(ferns.batch)
+  if (ferns) ferns.meshes.forEach((m) => out.push(m))
   if (grass) out.push(grass.batch)
   if (rocks) rocks.beds.forEach((b) => out.push(b.batch))
   if (litter) out.push(litter.batch)
@@ -575,9 +633,9 @@ function applyBatchCulling() {
 }
 
 // Repaint one row's label from the live toggle state. Separate from the click
-// handler because a toggle can now be flipped by something OTHER than its own
-// button -- flat ground forces terrain off -- and a row whose label disagreed
-// with the world would make the panel worse than no panel.
+// handler because a toggle can be flipped by something OTHER than its own
+// button, and a row whose label disagreed with the world would make the panel
+// worse than no panel.
 function refreshQuestRow(key) {
   const row = QUEST_TOGGLE_ROWS.find((r) => r.key === key)
   const mesh = questPanelMeshes.find((m) => m.userData.key === key)
@@ -782,7 +840,7 @@ function questPanelDesiredPosition(out) {
  * follow the head belongs PARENTED to the camera, where it moves continuously
  * and is visibly attached; anything that does not belongs in the world, at rest.
  * This is the second kind, so it is placed on demand -- when it opens, and when
- * flat ground moves the floor under it -- and never on a clock.
+ * something moves the floor under it -- and never on a clock.
  *
  * A no-op while the menu is closed, on purpose: opening always places it fresh,
  * so re-seating something nobody can see is work with no observer.
@@ -899,6 +957,10 @@ function updateQuestStats() {
   // the frame on. It redraws on the frame the menu opens, so the numbers are
   // current the instant they are visible.
   if (!questPanelGroup.visible) return
+  // The `stats readout` row. Everything below is skipped, so the texture keeps
+  // whatever it last held and the panel goes on drawing it -- see the row's
+  // note in questToggles for what that isolates.
+  if (!questToggles.stats) return
   const info = renderer.info
   const st = terrain.stats
   const fps = avgMs > 0 ? 1000 / avgMs : 0
@@ -981,6 +1043,7 @@ function currentPose() {
 let height = null
 let layers = null
 let terrain = null
+let terrainTint = null
 let player = null
 let markers = null
 let waterSurfaces = null
@@ -997,8 +1060,19 @@ let editor = null
 let panel = null
 let ready = false
 
-// Quest-mode toggle panel state -- every layer defaults off so the headset
-// can isolate one system's cost at a time. Non-quest mode never reads this.
+// Quest-mode toggle panel state. Most layers default off so the headset can
+// isolate one system's cost at a time; the ground and the sky do not, because
+// they are what everything else is measured ON -- a bed of grass floating over
+// a black void is not the picture anyone is judging. Non-quest mode never reads
+// this.
+//
+// `lighting` is in that second group for a stricter reason than composition:
+// off, the sun and hemi lights keep the fixed noon-ish rig they were
+// constructed with and never hear about the hour, so the headset shows a
+// brighter, flatter world than the desktop at every time of day and a wholly
+// fake one at night. Quest mode is supposed to be the same world seen through
+// a headset, so the day/night shading is on and the row is there to take it
+// away for a measurement.
 //
 // `instCull` is the one that does NOT default to the three.js default. See the
 // banner on applyBatchCulling: the per-instance frustum sweep runs once per EYE
@@ -1010,7 +1084,17 @@ let ready = false
 // already running. The scatter layers still submit everything when this is off.
 const questToggles = QUEST_MODE
   ? {
-      terrain: false, flatGround: false, dayNight: false, lighting: false,
+      terrain: true, dayNight: true, lighting: true,
+      // The ground ships on the full triplanar material, so this row measures
+      // what REMOVING it buys. See setTerrainShader.
+      terrainShader: true,
+      // On, because a panel with dead numbers on it is the wrong default. Off is
+      // the ISOLATION TEST for anything that only misbehaves while the panel is
+      // in view: with this off the panel still draws its 22 quads and its laser
+      // still hits them, but the 1280x240 canvas stops being re-uploaded every
+      // frame -- so an artefact that survives is the panel's DRAW and one that
+      // does not is the upload.
+      stats: true,
       trees: false, rocks: false, grass: false, ferns: false,
       instCull: false, water: false, reflections: false, aurora: false,
       // How the bed ships, so the measurement this row makes is what turning the
@@ -1027,10 +1111,6 @@ const questToggles = QUEST_MODE
       // buys. Starting it off would mean the panel's default state disagreed
       // with the world outside quest mode.
       wind: true,
-      // Same argument as `wind`, and the same direction: the landscape shader is
-      // how the world ships, so "full" is the default and the measurement is what
-      // REMOVING it buys. See setTerrainShader.
-      terrainShader: true,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
       // this panel exists to look at, which is what the world does to the frame
       // while you are moving continuously through it.
@@ -1078,14 +1158,17 @@ function loadRelief() {
   }
 }
 
-// Which grass system is standing. 'tufts' is what stands here -- one
-// camera-facing billboard per plant, at every distance. 'strips' is the flat
-// multi-metre card that draws the same cutout several times across itself; it
-// wins on triangles and loses on FILL, which is the budget a Quest actually runs
-// out of, and it is kept switchable (M key) so the two can be judged against the
-// same hillside in the same light. See THE TWO STRATEGIES in the header of
-// render/grass.js.
-let grassStyle = 'tufts'
+// Which grass system is standing, and the M key cycles all three so they can be
+// judged against the same hillside in the same light. 'tufts' is one
+// camera-facing billboard per plant at every distance; 'strips' is the flat
+// multi-metre card drawing the same cutout several times across itself, winning
+// on triangles and losing on FILL; 'blades' is opaque geometry that pays no fill
+// for transparency at all. See THE THREE STRATEGIES in render/grass.js.
+//
+// FILL IS THE BUDGET A QUEST RUNS OUT OF, so `?quest` -- which exists to be worn
+// and measured -- stands the blade bed and the desktop route keeps the cards.
+const GRASS_STYLES = ['tufts', 'strips', 'blades']
+let grassStyle = QUEST_MODE ? 'blades' : 'tufts'
 // Whether the prop atlas' PNGs have landed. The tuft's far tier is a photograph
 // of the tuft, so a Grass built after they land has to bake immediately rather
 // than waiting for a promise that has already resolved.
@@ -1108,7 +1191,7 @@ function buildGrass(style, cx, cz, opts = {}) {
   }
   grassStyle = style
   grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, {
-    seed: SEED, style, ...opts,
+    seed: SEED, style, tint: terrainTint, ...opts,
   })
   // The cache key carries the style: the two materials compile DIFFERENT
   // programs (one billboards, one tiles), and a shared key would hand the second
@@ -1130,7 +1213,7 @@ function buildGrass(style, cx, cz, opts = {}) {
   const gr = gs.rejected
   console.log(
     `[v2] grass (${gs.style}) ${gs.placed} of ${gs.samples} placed over ${gs.tiles} tiles in ` +
-    `${gs.placeMs.toFixed(0)} ms (${gs.density}/m^2 to ${gs.fullRadius} m, thinning to ` +
+    `${gs.placeMs.toFixed(0)} ms (${gs.density}/m^2 to ${gs.fullRadius} m, thinning ^${gs.falloff} to ` +
     `${gs.radius} m, pool ${gs.used}/${gs.pool}; dropped: ${gr.elev} elev, ${gr.slope} slope, ` +
     `${gr.water} water, ${gr.snow} snow, ${gr.path} path)`
   )
@@ -1252,6 +1335,12 @@ async function bootWorld() {
     worldPosVarying: 'vWorldPos',
   })
 
+  // What colour the ground is DRAWN, on the CPU, for anything that has to match
+  // it -- the blade bed's whole look. Built here because it holds the terrain's
+  // own uniform objects by reference, so it cannot exist before the material
+  // does and must not be rebuilt when the bed is. See terrain/terrain-tint.js.
+  terrainTint = new TerrainTint(terrain.material, layers, height.bands)
+
   // The authored surfaces. Water first, because the spawn search asks it what is
   // wet before the player is placed.
   waterSurfaces = new WaterSurfaces({ water, layers })
@@ -1287,7 +1376,7 @@ async function bootWorld() {
   // would be the one surface the night lift never reaches.
   // The cacheKey MUST differ from the ferns' below. three keys its program cache
   // on it, and these two materials compile DIFFERENT shader source -- the tree
-  // material's uBillboardLayers is four long, the ferns' is two -- so sharing a
+  // material's uBillboardLayers is four long, the ferns' is one -- so sharing a
   // key would hand one of them the other's program.
   lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb' })
   // So a tree and the ground it stands on cross the snow line together.
@@ -1300,13 +1389,17 @@ async function bootWorld() {
     `pool ${ts.used}/${ts.pool}), ${ts.bankKB} KB bank`
   )
 
-  // Ferns, as an undercarpet at ~1 per square metre. A SECOND BatchedMesh
-  // and a second material rather than instances in the tree batch, and that is
-  // not a violation of DESIGN.md §5's one-material rule -- the rule is that a
-  // batch cannot be split by material, and these are two batches. Ferns need
-  // their own program anyway: WHICH texture layers billboard is compiled into
-  // the shader, and the two lists differ -- four tree impostor layers against
-  // two fern ones -- so one shared material could not spin both correctly.
+  // Ferns, as an undercarpet at half a plant per square metre. Its own material
+  // rather than instances in the tree batch, and that is not a violation of
+  // DESIGN.md §5's one-material rule -- the rule is that one mesh cannot be split
+  // by material. Ferns need their own program anyway: WHICH texture layers
+  // billboard is compiled into the shader, and the two lists differ -- four tree
+  // impostor layers against the fern's one -- so one shared material could not
+  // spin both correctly.
+  //
+  // Three MESHES share that one material: the bed is an InstancedMesh per LOD
+  // ring, because BatchedMesh is unusable on the Quest 2 and an InstancedMesh
+  // holds one geometry. render/ferns.js's header has the argument.
   //
   // The whole Layers goes in, not just its paths: a fern takes a hue cue from
   // the terrain colour underfoot, which needs the snow band and the road
@@ -1320,14 +1413,17 @@ async function bootWorld() {
   console.log(
     `[v2] ferns ${fs.placed} placed over ${fs.tiles} tiles in ${fs.placeMs.toFixed(0)} ms ` +
     `(${fs.density}/m^2 to ${fs.fullRadius} m, thinning to ${fs.radius} m, ` +
-    `${fs.heightRange[0]}-${fs.heightRange[1]} m tall, pool ${fs.used}/${fs.pool}) ` +
+    `${fs.heightRange[0]}-${fs.heightRange[1]} m tall, pool ${fs.used}/${fs.pool}, ` +
+    `rings ${fs.rings.join(', ')}) ` +
     `(dropped: ${fr.elev} elev, ${fr.slope} slope, ${fr.water} water, ${fr.snow} snow, ${fr.path} path)`
   )
   window.v2ferns = ferns
 
   // Grass, at 3 tufts per square metre -- the densest thing in the world by a
-  // factor of sixty, and a THIRD batch for the same reason ferns are a second
-  // one: its billboard list is one layer long and neither of the others' is.
+  // factor of sixty, and a material of its own for the same reason the ferns
+  // have one: a mesh carries ONE material, and uBillboardLayers is a property of
+  // the material, so a scatter whose cards live on a different impostor layer
+  // needs its own. (Grass spins layer 34, ferns layer 31.)
   //
   // It follows the TREE pattern rather than the fern one, which is the whole
   // point of it: a tiled scatter that follows the camera, thinned so every
@@ -1586,16 +1682,18 @@ async function bootWorld() {
   if (!QUEST_MODE) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
 
   if (QUEST_MODE) {
-    // Every layer starts hidden; the world-space toggle panel below flips
-    // these on one at a time. litter/mushrooms/deadwood are always
-    // constructed (mushrooms anchors onto placed trees/rocks either way) but
-    // aren't among the 9 requested toggles, so they stay off with no button.
-    terrain.batch.visible = false
-    trees.batch.visible = false
-    rocks.beds.forEach((b) => { b.batch.visible = false })
-    grass.batch.visible = false
-    ferns.batch.visible = false
-    waterSurfaces.group.visible = false
+    // Each layer starts where its toggle says, READ FROM THE TOGGLE rather than
+    // from a literal, so a changed default takes effect instead of leaving the
+    // panel claiming a layer is on while the world shows none.
+    // litter/mushrooms/deadwood are always constructed (mushrooms anchors onto
+    // placed trees/rocks either way) but have no row, so they stay off outright.
+    terrain.batch.visible = questToggles.terrain
+    trees.batch.visible = questToggles.trees
+    rocks.beds.forEach((b) => { b.batch.visible = questToggles.rocks })
+    grass.batch.visible = questToggles.grass
+    ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
+    water.group.visible = questToggles.water
+    water.setCubeReflections(questToggles.reflections)
     litter.batch.visible = false
     mushrooms.batch.visible = false
     deadwood.batch.visible = false
@@ -1778,35 +1876,6 @@ function replacePropsOnMovedGround(cx, cz) {
   player.spawnAt(cx, cz)
 }
 
-// ---------------------------------------------------------------------------
-// FLAT GROUND: the isolation experiment, not a feature.
-//
-// THE QUESTION IT ANSWERS. "Is the grass expensive, or is standing the grass on
-// a streaming quadtree LOD terrain expensive?" Those two are impossible to tell
-// apart while the grass is on the terrain, because every candidate site the
-// scatter tests is a query into the same field the terrain streamer is meshing
-// against, and every chunk that swaps tier under a placed tuft moves the ground
-// out from under it.
-//
-// HOW IT WORKS. V2Height.setFlat replaces the whole composed field -- height AND
-// slope -- with one constant, so no scatter has to know it is being tested:
-// they all place themselves by asking the field, and the field answers "level,
-// at y". The terrain batch goes away and a TWO-TRIANGLE card the size of the
-// world stands in for it, which is one draw call and no streaming at all.
-//
-// WHAT IT IS NOT. It does not move anything already placed -- a prop's y is read
-// once -- so every layer has to be put down again, which is what
-// replacePropsOnMovedGround above is for. And it does not touch the authored
-// water or roads, which sit at authored elevations and would now be at the
-// wrong height relative to the card. That is acceptable for an ablation and
-// would not be for a feature.
-// ---------------------------------------------------------------------------
-
-let flatCard = null
-// Built on first use rather than at boot, so a session that never presses the row
-// never compiles a second terrain program.
-let plainTerrainMaterial = null
-
 // WHAT IS DRAWING BEFORE ANYTHING IS SWITCHED ON.
 //
 // The quest panel reports CALLS and TRIS off renderer.info, and those are totals
@@ -1856,10 +1925,14 @@ function logSceneCensus() {
   if (rows.length > 24) console.log(`      ... and ${rows.length - 24} more`)
 }
 
+// Built on first use rather than at boot, so a session that never presses the
+// `landscape shader` row never compiles a second terrain program.
+let plainTerrainMaterial = null
+
 // THE SHADER A/B, and it is deliberately the ONLY thing that changes.
 //
-// The question this row exists to answer: at ~100k triangles the headset sits at
-// 50-60 fps, and triangles that few are not what an Adreno 650 struggles with --
+// The question this row exists to answer: when the headset sits at 50-60 fps
+// instead of 90, triangles are rarely what an Adreno 650 is struggling with --
 // 7 Mpixel a frame at 72 Hz is 506 Mpix/s of fill against 7.3 M tri/s of setup,
 // two orders apart. So either the ground is fill bound in the FRAGMENT shader or
 // it is not, and nothing about the triangle count can tell you which.
@@ -1868,20 +1941,13 @@ function logSceneCensus() {
 // BatchedMesh, same slots, same selection, same draw calls, same vertex colours,
 // same fog, same Gouraud lighting -- so the delta is exactly terrain-material.js's
 // onBeforeCompile patch and its ~20 noise evaluations per fragment, and nothing
-// is confounding it. That is the difference from the `flat ground` row, which
-// measures a different thing and measures it on grassland, where auroraStoneK
-// never clears its gate and the triplanar block never ran to begin with.
+// is confounding it.
 //
 // NOT MeshBasicMaterial, though "flat colour" is what it would give. Lambert's
 // fragment shader is vColor times an already-interpolated irradiance plus fog --
 // a handful of instructions -- so Basic would buy a rounding error and cost the
 // A/B its meaning, because the ground would also stop being lit and the two
 // pictures would differ in a second way.
-//
-// The card wears it too. Under `flat ground` the terrain batch is hidden and the
-// card is the only ground there is, so leaving the card on the full material
-// would make this row silently do nothing in exactly the configuration someone
-// reaches for it in.
 function setTerrainShader(on) {
   if (!plainTerrainMaterial) {
     plainTerrainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
@@ -1890,61 +1956,7 @@ function setTerrainShader(on) {
     // fragment cost, and a control that carries half the thing being removed is
     // not a control.
   }
-  const mat = on ? terrain.material : plainTerrainMaterial
-  terrain.batch.material = mat
-  if (flatCard) flatCard.material = mat
-}
-
-function setFlatGround(on) {
-  const cx = player.rig.position.x
-  const cz = player.rig.position.z
-
-  if (on) {
-    // The level is HER ground at the moment of the flip, so the card arrives
-    // under her feet instead of dropping her off a mountain or burying her.
-    const y = height.heightAt(cx, cz)
-    height.setFlat(y)
-    if (!flatCard) {
-      // THE CARD WEARS THE TERRAIN'S OWN MATERIAL, the same object instance the
-      // chunk batch uses -- already lighting.patch'd, already carrying the
-      // grain/macro/micro uniforms. That works on two triangles because every
-      // layer in terrain-material.js is keyed to WORLD XZ in the fragment
-      // shader, not to UV or to vertex density: the grain does not know or care
-      // how big the triangle under it is, so an 8 km card reads exactly like
-      // meshed grassland and the ground keeps its sense of scale and distance.
-      //
-      // All it needs is the vertex colour the mesher would have written, since
-      // that is the only channel the shader classifies surfaces from.
-      const geo = new THREE.PlaneGeometry(WORLD_HALF * 2, WORLD_HALF * 2, 1, 1)
-      const colors = new Float32Array(4 * 3)
-      for (let i = 0; i < 4; i++) colors.set(C_GRASS, i * 3)
-      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-      // Whichever material the batch is currently wearing, so a card built while
-      // the `landscape shader` row is already on "plain" does not quietly bring
-      // the full one back and make the two rows fight.
-      flatCard = new THREE.Mesh(geo, terrain.batch.material)
-      flatCard.rotation.x = -Math.PI / 2
-      // Nothing about this plane is view-dependent and it is always underfoot,
-      // so the per-frame frustum test on it is pure overhead.
-      flatCard.frustumCulled = false
-      scene.add(flatCard)
-    }
-    flatCard.position.y = y
-    flatCard.visible = true
-    // The LOD terrain and a flat floor at the same time would be two grounds
-    // fighting, so the batch goes off and its toggle goes with it -- otherwise
-    // the panel would claim terrain was on while showing none.
-    terrain.batch.visible = false
-    questToggles.terrain = false
-    refreshQuestRow('terrain')
-  } else {
-    height.setFlat(null)
-    if (flatCard) flatCard.visible = false
-    terrain.batch.visible = questToggles.terrain
-  }
-
-  replacePropsOnMovedGround(cx, cz)
-  placeQuestPanel()
+  terrain.batch.material = on ? terrain.material : plainTerrainMaterial
 }
 
 /**
@@ -2217,8 +2229,26 @@ function cycleAurora() {
 // Both rebuild rather than reconfigure -- the pool, the tile candidate count and
 // the material's compiled ramp all depend on them -- so both cost a hitch on the
 // frame they are pressed. See buildGrass.
-const GRASS_DENSITY_CYCLE = [6, 3, 1.5, 0.75]
-const GRASS_RADIUS_CYCLE = [70, 40, 25, 15]
+// A BED PER CYCLE, because the two are an order of magnitude apart and a shared
+// list would jump the blade bed to a card bed's numbers on the first press: 6/m2
+// is a bald blade bed and 70 m at 24/m2 is a quarter of a million triangles.
+const GRASS_DENSITY_CYCLE = {
+  cards: [6, 3, 1.5, 0.75],
+  blades: [24, 12, 6, 3],
+}
+const GRASS_RADIUS_CYCLE = {
+  cards: [70, 40, 25, 15],
+  blades: [30, 20, 12, 8],
+}
+
+// The exponent p in the blade bed's thinning law -- see _keepAt in
+// render/grass.js. Cards are on 1 and have no reason not to be: their far field
+// is already the cheap end of the bed. What this row is for is the blade bed,
+// where the near mat is the whole cost and the question is how hard the far
+// field can be cut before the ground reads as bare. The bed ships at the hard
+// end of this list, so the row reads as loosening the far field, not tightening
+// it.
+const GRASS_FALLOFF_CYCLE = [3, 2, 1.5, 1]
 
 // The live overrides, carried across every rebuild so the three grass rows
 // compose. Without this, flipping the spin would silently restore the shipped
@@ -2231,16 +2261,32 @@ function rebuildGrass(patch) {
   buildGrass(grassStyle, headTmp.x, headTmp.z, grassOpts)
 }
 
+/**
+ * Step a cycle from wherever the bed currently sits. A value that is not on the
+ * list -- which is what a style swap leaves behind -- lands on the list's head,
+ * so the row always goes somewhere sensible rather than nowhere.
+ */
+function stepCycle(list, now) {
+  const i = list.findIndex((v) => Math.abs(v - now) < 1e-6)
+  return i < 0 ? list[0] : list[(i + 1) % list.length]
+}
+
+function grassCycle(table) {
+  return grassStyle === 'blades' ? table.blades : table.cards
+}
+
 function cycleGrassDensity() {
-  const now = grass ? grass.density : GRASS_DENSITY_CYCLE[0]
-  const i = GRASS_DENSITY_CYCLE.findIndex((d) => Math.abs(d - now) < 1e-6)
-  rebuildGrass({ density: GRASS_DENSITY_CYCLE[(i + 1) % GRASS_DENSITY_CYCLE.length] })
+  const list = grassCycle(GRASS_DENSITY_CYCLE)
+  rebuildGrass({ density: stepCycle(list, grass ? grass.density : NaN) })
 }
 
 function cycleGrassRadius() {
-  const now = grass ? grass.radius : GRASS_RADIUS_CYCLE[0]
-  const i = GRASS_RADIUS_CYCLE.findIndex((r) => Math.abs(r - now) < 1e-6)
-  rebuildGrass({ radius: GRASS_RADIUS_CYCLE[(i + 1) % GRASS_RADIUS_CYCLE.length] })
+  const list = grassCycle(GRASS_RADIUS_CYCLE)
+  rebuildGrass({ radius: stepCycle(list, grass ? grass.radius : NaN) })
+}
+
+function cycleGrassFalloff() {
+  rebuildGrass({ falloff: stepCycle(GRASS_FALLOFF_CYCLE, grass ? grass.falloff : NaN) })
 }
 
 addEventListener('keydown', (e) => {
@@ -2292,15 +2338,17 @@ addEventListener('keydown', (e) => {
 
   if (fresh.includes('timeSkip')) skipTime()
   if (fresh.includes('auroraPattern')) cycleAurora()
-  // M swaps the region bed for a carpet of the point clump under the player's
-  // feet, in place, so the two can be judged against the same hillside in the
-  // same light. Rebuilding the bed is ~100 ms of one frame; a swap is not
-  // something a player does.
+  // M cycles the three grass beds in place, under the player's feet, so they can
+  // be judged against the same hillside in the same light. Rebuilding a bed is
+  // ~100 ms of one frame; a swap is not something a player does.
   if (fresh.includes('grassStyle')) {
     player.headPosition(headTmp)
     // Through grassOpts so a style swap keeps whatever density and reach the
     // panel has set: the two beds are only comparable at the same numbers.
-    if (grass) buildGrass(grassStyle === 'strips' ? 'tufts' : 'strips', headTmp.x, headTmp.z, grassOpts)
+    if (grass) {
+      const next = GRASS_STYLES[(GRASS_STYLES.indexOf(grassStyle) + 1) % GRASS_STYLES.length]
+      buildGrass(next, headTmp.x, headTmp.z, grassOpts)
+    }
   }
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped multiplicatively
@@ -2644,12 +2692,6 @@ let shownError = ''
 const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null }
 const headTmp = new THREE.Vector3()
 
-// Unstick is a one-shot the panel row raises and the next readInput consumes.
-// It cannot be a straight call because Player reads it as a per-frame input
-// flag, and it lives on the panel rather than a button because with the grips
-// now inert there is no spare face button that both hands could carry.
-let questUnstickOnce = false
-
 // ---------------------------------------------------------------------------
 // VR LOCOMOTION. The binding, in one place, because a control scheme spread
 // across a switch statement is a control scheme nobody can read back.
@@ -2807,8 +2849,10 @@ function readInput() {
     moveInput.strafe = 0 // no strafing in VR, on purpose
     moveInput.lift = 0
     moveInput.turn = Math.abs(rTurn) > Math.abs(lTurn) ? rTurn : lTurn
-    moveInput.unstick = questUnstickOnce
-    questUnstickOnce = false
+    // NO UNSTICK IN THE HEADSET. It had a panel row and it is gone: flight
+    // reaches anywhere a wedged walker wants to be, and it does it without
+    // teleporting her 80 m sideways with no explanation.
+    moveInput.unstick = false
     moveInput.instant = false
     moveInput.flyDirection = null
 
@@ -2852,10 +2896,8 @@ function readInput() {
   moveInput.lift = (on('flyUp') ? 1 : 0) - (on('flyDown') ? 1 : 0)
   moveInput.instant = true
   moveInput.turn = (on('turnRight') ? 1 : 0) - (on('turnLeft') ? 1 : 0)
-  // The one-shot is honoured here too, so the panel's unstick row still works
-  // in desktop `?quest` testing where no controller is ever connected.
-  moveInput.unstick = on('unstick') || questUnstickOnce
-  questUnstickOnce = false
+  // U only, and only here: unstick is a keyboard escape hatch now.
+  moveInput.unstick = on('unstick')
   // Cleared explicitly: the VR branch above sets it, and a stale hand vector
   // left in place after the controllers drop out would steer desktop flight off
   // a quaternion nothing is updating any more.
@@ -3119,6 +3161,13 @@ function tick() {
   // finished fades and the shader that draws them read the same instant. It
   // wraps at 1024 s inside setPropClock -- see the packing note in material.js.
   setPropClock(now / 1000)
+  // THE BLADE BED CARRIES ITS OWN CLOCK, and it is not uPropClock. Every other
+  // wind material snaps its frequency to a whole number of cycles per 1024 s so
+  // the wrap above is invisible (windFreq in material.js); a blade's rate is a
+  // uniform the previewer slides, so that snap is unavailable to it and a
+  // wrapped clock would step the whole meadow every 17 minutes. Unwrapped
+  // seconds instead, and the bed is the only thing reading them.
+  if (grass && grass.style === 'blades') grass.material.userData.uniforms.uTime.value = now / 1000
 
   player.headPosition(headTmp)
   const [pose, hands] = currentPose()

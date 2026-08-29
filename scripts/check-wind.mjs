@@ -123,13 +123,14 @@ console.log('\n=== wind: pin lengths are shorter than the plants they pin ===\n'
 // every build so the tip lands at p.height -- so transformed.y is metres and the
 // pin can be compared against the bank directly. A pin longer than the plant
 // clamps that plant's weight under 1 for its whole length, and pow( wH, stiff )
-// then drives it toward nothing: a 3.0 m pin on the 1.98 m birch capped its tip
-// at 0.35 and moved it 8 mm against the 12 m pine's 140 mm.
+// then drives it toward nothing: a 3.0 m pin on a 2 m sapling capped its tip at
+// 0.35 and moved it 8 mm against the 12 m pine's 140 mm.
 //
-// ASK THE BANK for the floor rather than restating it. The shortest tree is not
-// the shortest species -- treeVariants crosses species with TREE_SIZES, and it is
-// that product that reaches down to 1.98 m. Hard-coding the number here would
-// have gone stale the first time anyone added a size or a species.
+// ASK THE BANK for the floor rather than restating it. The bank holds one
+// variant per species at that species' own default height, so the floor is the
+// 6 m birch; trees.js then scales a placement by 0.5x to 1.5x on top of that,
+// which is slack this check does not spend. Hard-coding the number here would
+// have gone stale the first time anyone changed a species height.
 const shortestTree = Math.min(...treeVariants().map((v) => v.height))
 for (const [label, pin, shortest, source] of [
   ['tree', WIND_PRESETS.tree.pin, shortestTree, 'shortest of treeVariants()'],

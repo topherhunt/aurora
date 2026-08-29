@@ -84,6 +84,8 @@ const REFERENCE_V1 = {
     fieldScale: 0.012,
     horizonCut: -0.02,
     extinct: 0.8,
+    // Zero for the same reason as zenFade above: the below-horizon skirt did not exist when this was captured, and 0 is what the pin WAS. It reads as nothing on all three builtins in any case -- they are leyline, and only the sky-map frame has a skirt -- but the pin has to survive being carried onto skymap by an algorithm switch.
+    horizonSkirt: 0,
     edgeFade: 0.06,
     fieldSeed: 1,
     steps: 40,

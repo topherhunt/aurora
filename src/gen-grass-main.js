@@ -8,11 +8,10 @@ import { RELIEF_DEFAULTS } from './v2/height/relief.js'
 import { Layers } from './v2/layers/layers.js'
 import { snowDefaults } from './v2/layers/doc.js'
 import { TerrainV2 } from './v2/terrain/terrain-v2.js'
-import { shade } from './v2/terrain/chunk-mesh-v2.js'
 import { WaterSurfaces } from './v2/render/water-surfaces.js'
 import * as persist from './v2/edit/persist.js'
 import { buildTextureArray } from './textures.js'
-import { terrainDetailTextures } from './terrain/grit-texture.js'
+import { TerrainTint } from './terrain/terrain-tint.js'
 import { BLADE_DEFAULTS, bladeTipMul, buildBladeClump, createBladeMaterial } from './props/grass-blades.js'
 import { WorldClock } from './clock.js'
 import { WorldLighting } from './lighting.js'
@@ -39,7 +38,7 @@ import { mulberry32 } from './sim/mathx.js'
 // authored layers document and TerrainV2's quadtree exactly as /v2 does, and
 // the blades take their base colour from the ground they stand on -- the chunk
 // mesher's own `shade`, carried through the terrain shader's colour chain by
-// `terrainTint` below.
+// `TerrainTint` in src/terrain/terrain-tint.js.
 //
 // WHAT IS DELIBERATELY SIMPLER THAN /v2:
 //   - the scatter is one disc around the camera, re-thrown when you have walked
@@ -111,8 +110,9 @@ const sky = new Sky(scene)
 
 const SLIDERS = [
   ['density', 0.5, 24, 0.5, 'Clumps per square metre inside the full radius. Multiply by `blades` for the number that decides lushness.'],
-  ['full', 2, 30, 1, 'Full radius F, metres. Density is flat inside it and falls as F/d outside, so it halves every doubling of distance.'],
+  ['full', 2, 30, 1, 'Full radius F, metres. Density is flat inside it and falls off outside it.'],
   ['cull', 20, 120, 5, 'Draw radius, metres. Nothing is placed past it.'],
+  ['falloff', 0.5, 3, 0.1, 'Exponent p in the outside-F law `(F/d)^p`. 1 halves the density every doubling of distance; higher thins the far field faster without ever emptying it.'],
   ['blades', 1, 20, 1, 'Triangles per clump. One triangle is one blade.'],
   ['height', 0.05, 0.8, 0.01, 'Mean blade height in metres.'],
   ['heightVary', 0, 0.6, 0.05, 'Fraction either side of the mean height, per blade.'],
@@ -121,20 +121,21 @@ const SLIDERS = [
   ['lean', 0, 1.2, 0.05, 'Outward splay of the tips, as a fraction of blade height at the rim of the clump.'],
   ['scaleVary', 0, 0.6, 0.05, 'Per-clump size variation, so neighbouring clumps are not clones.'],
   ['sink', 0, 0.15, 0.005, 'Metres of the clump buried, to hide the gap where a coarse chunk chords under the field.'],
-  ['normalUp', 0, 1, 0.05, 'How far the blade normal is bent toward straight up. 0 is the true face normal, which makes the bed shade like noise.'],
-  ['tipGain', 0.3, 2, 0.05, 'Mean tip brightness as a multiplier over the terrain base colour. Under 1 darkens the tips, over 1 lightens them.'],
-  ['tipVary', 0, 0.6, 0.05, 'Spread of tip brightness between clumps. Half go lighter and half darker, and no clump lands on 1, so every clump has a gradient.'],
+  ['normalUp', 0, 1, 0.05, 'How far the blade normal is bent toward straight up. 1 shades every blade in a clump alike, which is what keeps the base matching the ground. Below it the residual tilt splits neighbouring blades between lit and black whenever the sun is low, so turn it down only in daylight.'],
+  ['tipGain', 1.05, 3, 0.05, 'Minimum separation between a tip and its own base, as a multiplier. Half the clumps go at least this much lighter and half at least this much darker; nothing is drawn in between, so no tip can match its base.'],
+  ['tipVary', 0, 1.5, 0.05, 'How much further than tipGain a clump may go, so the lighter and darker halves are ranges rather than two flat tones.'],
   ['tipWarm', -0.5, 0.5, 0.05, 'Pushes the tip red up and blue down, for sun-bleached ends.'],
   ['windAmp', 0, 0.3, 0.01, 'Wind sway at the tip, metres.'],
   ['windSpeed', 0, 3, 0.1, 'Wind rate.'],
 ]
 
 const DEFAULTS = {
-  density: 6,
-  // 8 m, which is the player's own instinct and also where the card bed's fill
-  // measurement puts 65% of its cost.
-  full: 8,
-  cull: 70,
+  // Tuned on the headset against the real ground: a thick mat close in, held
+  // only 2 m out, then thinned hard so the far field is cheap but not bare.
+  density: 24,
+  full: 2,
+  cull: 30,
+  falloff: 3,
   scaleVary: 0.5,
   windAmp: 0.06,
   windSpeed: 0.9,
@@ -167,9 +168,7 @@ let height = null
 let layers = null
 let waterSurfaces = null
 let terrain = null
-let snowBand = 0
-let altLo = 0
-let altSpan = 1
+let tint = null
 
 const scatterCentre = new THREE.Vector3(0, 0, 0)
 let scatterMs = 0
@@ -216,118 +215,36 @@ function buildBed() {
   scene.add(bed)
 }
 
-// --- what colour the ground actually is ---------------------------------------
+// --- the density law ----------------------------------------------------------
 //
-// `shade` is NOT the answer, and that is the whole reason this block exists. It
-// is the terrain's VERTEX TINT -- the colour the chunk mesher writes into the
-// attribute -- and the fragment shader in terrain/terrain-material.js then puts
-// it through several more stages before anything reaches the eye. Painting a
-// blade with `shade` alone gives a clump that is flatly, uniformly the wrong
-// colour, most obviously because of the last stage: uGrassTone is (0.45, 0.92,
-// 0.45), so every green fragment in the world has its red and its blue halved
-// on the way out and a blade that skips it reads grey and waxy beside it.
+// `keep = min(1, (F/d)^falloff)`: flat inside the full radius F, then falling
+// off with distance at whatever rate the exponent asks for. 1 is the shipped
+// law -- density halves every doubling of distance -- and above it the far field
+// thins faster without ever emptying, which is the point of the knob: at 2 the
+// bed at 4F is a quarter of what the shipped law leaves there, and at 8F a
+// sixteenth, but it is never nothing.
 //
-// So this replays the three stages that MOVE THE AVERAGE, on the CPU, per
-// clump:
-//   1. the region layer, one kilometre per tile, a value swing plus a pull
-//      toward dirt at its high end and deep green at its low;
-//   2. the mid-range mottle, 137 m per tile and rotated, the same shape with a
-//      dry ochre at its high end;
-//   3. uGrassTone, the exposure multiply that lands last.
-// The amplitudes and the palette are READ LIVE off the terrain's own uniforms,
-// so retuning the ground retunes the grass with it. What is duplicated here is
-// only the geometry of the thing -- the two tile sizes, the rotation and the
-// four thresholds -- which live at MACRO_METRES, MACRO_FINE_METRES and ROT in
-// terrain-material.js, and in the two blocks there that read `auroraM.r` and
-// `auroraMF.r`. Grep those three names to find what this has to agree with.
-//
-// WHAT IS DELIBERATELY LEFT OUT, because none of it moves a clump's average:
-// the ground photograph is divided by its own mean and so is mean-preserving by
-// construction; the grit layers are 11.7 m and 2.3 m per tile, which is finer
-// than a clump and averages out under one; and the snow and rock mixes cannot
-// fire, because placement already rejects anything within 3 m of the snow line.
-//
-// It is a handful of array reads and a dozen multiplies per clump, which is
-// noise next to the two path queries placement already runs.
+// The count and the sampler below are the integral of that law over the disc,
+// so a `falloff` move re-throws a bed that is right by construction rather than
+// one that is thrown too dense and then rejected down.
 
-const REGION_METRES = 1024
-const MOTTLE_METRES = 137
-
-let macroData = null
-let macroSize = 0
-let tintU = null
-
-/** GLSL smoothstep, including the descending form where e1 < e0. */
-function smoothstep(e0, e1, x) {
-  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)))
-  return t * t * (3 - 2 * t)
+/** Clumps the law asks for inside F, and outside it, over the whole disc. */
+function discCounts(density, F, R, p) {
+  const inner = density * Math.PI * F * F
+  // The outer integral of density*(F/d)^p over the annulus. p = 2 is the pole
+  // where the antiderivative of d^(1-p) turns into a logarithm; every other
+  // exponent takes the power form, and the two agree in the limit.
+  const outer = Math.abs(p - 2) < 1e-6
+    ? density * 2 * Math.PI * F * F * Math.log(R / F)
+    : density * 2 * Math.PI * Math.pow(F, p) * (Math.pow(R, 2 - p) - Math.pow(F, 2 - p)) / (2 - p)
+  return { inner, outer }
 }
 
-/**
- * The macro field's red channel, bilinear and wrapping -- the same fetch the
- * shader's textureGrad makes, minus the mip selection, which at a metre-scale
- * lookup on a 4 m texel is the full-resolution level anyway.
- */
-function macroR(u, v) {
-  const s = macroSize
-  const px = u * s - 0.5
-  const py = v * s - 0.5
-  const x0 = Math.floor(px)
-  const y0 = Math.floor(py)
-  const fx = px - x0
-  const fy = py - y0
-  const xa = ((x0 % s) + s) % s
-  const ya = ((y0 % s) + s) % s
-  const xb = (xa + 1) % s
-  const yb = (ya + 1) % s
-  const c00 = macroData[(ya * s + xa) * 4]
-  const c10 = macroData[(ya * s + xb) * 4]
-  const c01 = macroData[(yb * s + xa) * 4]
-  const c11 = macroData[(yb * s + xb) * 4]
-  const top = c00 + (c10 - c00) * fx
-  const bot = c01 + (c11 - c01) * fx
-  return (top + (bot - top) * fy) / 255
-}
-
-function scaleRGB(rgb, k) {
-  rgb[0] *= k; rgb[1] *= k; rgb[2] *= k
-}
-
-function mixRGB(rgb, c, k) {
-  if (k <= 0) return
-  rgb[0] += (c.r - rgb[0]) * k
-  rgb[1] += (c.g - rgb[1]) * k
-  rgb[2] += (c.b - rgb[2]) * k
-}
-
-/**
- * Take a `shade` result to the colour the ground at (x, z) is drawn in. Mutates
- * `rgb` in place; values stay LINEAR throughout, as `shade`'s are.
- */
-function terrainTint(rgb, x, z) {
-  // How green the vertex tint is, which is the mask every colour stage below is
-  // weighted by -- terrain-material.js computes exactly this from vColor.
-  const green = smoothstep(0.004, 0.030, rgb[1] - Math.max(rgb[0], rgb[2]))
-
-  const region = macroR(x / REGION_METRES, z / REGION_METRES)
-  scaleRGB(rgb, 1 + (region - 0.5) * tintU.uRegionValue.value)
-  mixRGB(rgb, tintU.uDirt.value, smoothstep(0.752, 1.0, region) * green * tintU.uRegionTint.value)
-  mixRGB(rgb, tintU.uDeep.value, smoothstep(0.285, 0.0, region) * green * tintU.uRegionTint.value)
-
-  // ROT, column-major as GLSL reads mat2( 0.80, 0.60, -0.60, 0.80 ): the two
-  // macro fetches share one texture, and turning the fine one keeps its pattern
-  // from lining up with the coarse one's.
-  const fu = x / MOTTLE_METRES
-  const fv = z / MOTTLE_METRES
-  const mottle = macroR(0.8 * fu - 0.6 * fv, 0.6 * fu + 0.8 * fv)
-  scaleRGB(rgb, 1 + (mottle - 0.5) * tintU.uMacroValue.value)
-  mixRGB(rgb, tintU.uDry.value, smoothstep(0.856, 1.0, mottle) * green * tintU.uMacroTint.value)
-  mixRGB(rgb, tintU.uDeep.value, smoothstep(0.218, 0.0, mottle) * green * tintU.uMacroTint.value)
-
-  const tone = tintU.uGrassTone.value
-  rgb[0] *= 1 + (tone.r - 1) * green
-  rgb[1] *= 1 + (tone.g - 1) * green
-  rgb[2] *= 1 + (tone.b - 1) * green
+/** Inverse CDF of the outer field's radius, so `u` uniform in [0,1) lands on the law. */
+function outerRadius(u, F, R, p) {
+  if (Math.abs(p - 2) < 1e-6) return F * Math.pow(R / F, u)
+  const e = 2 - p
+  return Math.pow(Math.pow(F, e) + u * (Math.pow(R, e) - Math.pow(F, e)), 1 / e)
 }
 
 const _obj = new THREE.Object3D()
@@ -336,26 +253,26 @@ const _rgb = new Float32Array(3)
 
 /**
  * Throw the whole disc. The radius is IMPORTANCE-SAMPLED against the density
- * law rather than sampled uniformly and rejected: the law wants
- * `density * min(1, F/d)` clumps per square metre, which is `2*pi*density*d`
- * per metre of radius inside F and a CONSTANT `2*pi*density*F` outside it. So
- * the outer field is uniform in d, the inner disc is uniform in area, and the
- * split between them is by their totals. At the defaults that is 20k candidates
- * where uniform-then-reject would have needed 92k for the same bed.
+ * law rather than sampled uniformly and rejected: the inner disc is uniform in
+ * area, the outer field is drawn from the law's own inverse CDF, and the split
+ * between them is by their two integrals. At the defaults that is 1.4k
+ * candidates where uniform-then-reject would have needed 30k for the same bed,
+ * and the gap widens with every step of `falloff`.
  */
 function scatter(cx, cz) {
   if (!bed || !height) return
   const t0 = performance.now()
   const R = params.cull
   const F = Math.min(params.full, R)
+  const p = params.falloff
   const rand = mulberry32(Math.floor(cx * 31 + cz * 17) + SEED)
 
-  // density * pi * F * (2R - F), the integral of the law over the disc.
-  const want = Math.ceil(params.density * Math.PI * F * (2 * R - F))
+  const counts = discCounts(params.density, F, R, p)
+  const want = Math.ceil(counts.inner + counts.outer)
   clamped = want > POOL
   const n = Math.min(want, POOL)
   // Share of the total that lives inside F.
-  const inner = F / (2 * R - F)
+  const inner = counts.inner / (counts.inner + counts.outer)
 
   const maxSlopeTan = Math.tan((38 * Math.PI) / 180)
   let k = 0
@@ -363,7 +280,7 @@ function scatter(cx, cz) {
 
   for (let i = 0; i < n; i++) {
     const a = rand() * Math.PI * 2
-    const d = rand() < inner ? F * Math.sqrt(rand()) : F + rand() * (R - F)
+    const d = rand() < inner ? F * Math.sqrt(rand()) : outerRadius(rand(), F, R, p)
     const x = cx + Math.cos(a) * d
     const z = cz + Math.sin(a) * d
 
@@ -388,14 +305,11 @@ function scatter(cx, cz) {
     _obj.updateMatrix()
     bed.setMatrixAt(k, _obj.matrix)
 
-    // THE BASE COLOUR IS THE GROUND'S AS DRAWN. `shade` is the chunk mesher's
-    // own vertex tint -- `ny` is the classification normal's Y, which is what it
-    // wants and which heightAndSlopeAt's gradient magnitude gives directly --
-    // and `terrainTint` then carries it the rest of the way through the terrain
-    // shader's colour chain. See the block above it for what that chain is.
-    const ny = 1 / Math.hypot(tan, 1)
-    shade(h, ny, snowLine, snowBand, layers.flattenAt(x, z), altLo, altSpan, _rgb, 0)
-    terrainTint(_rgb, x, z)
+    // THE BASE COLOUR IS THE GROUND'S AS DRAWN -- the chunk mesher's vertex tint
+    // carried through the terrain shader's whole colour chain. See the header of
+    // src/terrain/terrain-tint.js for what that chain is and why `shade` alone
+    // is not it.
+    tint.groundAt(_rgb, x, z, h, 1 / Math.hypot(tan, 1), snowLine)
     _col.setRGB(_rgb[0], _rgb[1], _rgb[2], THREE.LinearSRGBColorSpace)
     bed.setColorAt(k, _col)
     tipMul.array[k] = bladeTipMul(params, rand)
@@ -438,9 +352,6 @@ async function bootWorld() {
   const { doc, from } = await persist.loadInitial(snow)
   layers = Layers.deserialize(doc)
   height.setLayers(layers)
-  snowBand = layers.snow.band
-  altLo = bands.altLo
-  altSpan = bands.altSpan
   console.log(`[gen-grass] world from ${from}, relief ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, snow ${snow.base.toFixed(0)} m`)
 
   bootSay('meshing &hellip;')
@@ -452,16 +363,9 @@ async function bootWorld() {
     mode: 'fragment', cacheKey: 'v2-terrain-shadow-stone', worldPosVarying: 'vWorldPos',
   })
 
-  // The live uniform objects and the field they read, borrowed BY REFERENCE so
-  // the blades follow the ground when the terrain palette is retuned. Both
-  // sides of the reference are the terrain's; nothing here writes to either.
-  tintU = terrain.material.userData.uniforms
-  for (const key of ['uRegionValue', 'uRegionTint', 'uMacroValue', 'uMacroTint', 'uDirt', 'uDeep', 'uDry', 'uGrassTone']) {
-    if (!tintU[key]) throw new Error(`gen-grass: the terrain material has no ${key}; terrainTint is out of date with terrain-material.js`)
-  }
-  const macro = terrainDetailTextures().macro
-  macroData = macro.image.data
-  macroSize = macro.image.width
+  // Holds the terrain's live uniform objects BY REFERENCE, so the blades follow
+  // the ground when its palette is retuned.
+  tint = new TerrainTint(terrain.material, layers, bands)
 
   // A STUB WATER, NOT src/water.js. WaterSurfaces reads exactly two things off
   // the object it is handed -- `water.material` for the lake and river meshes
@@ -735,7 +639,7 @@ const readouts = {}
 // written by the scatter, not baked into the model. Only the wind pair needs
 // neither: those ride in uniforms and are picked up on the next frame.
 const SHAPE_KEYS = new Set(['blades', 'height', 'heightVary', 'width', 'clumpRadius', 'lean', 'sink', 'normalUp', 'tipWarm'])
-const SCATTER_KEYS = new Set(['density', 'full', 'cull', 'scaleVary', 'tipGain', 'tipVary'])
+const SCATTER_KEYS = new Set(['density', 'full', 'cull', 'falloff', 'scaleVary', 'tipGain', 'tipVary'])
 
 function show(key) {
   const step = SLIDERS.find(([k]) => k === key)[3]

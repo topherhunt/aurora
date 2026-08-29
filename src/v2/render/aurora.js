@@ -30,7 +30,7 @@
 // The forty taps are paid on 32k texels once per frame instead of on every
 // fragment of the sky, and a screen pixel costs one bilinear fetch.
 //
-// So the per-frame cost here is four small offscreen passes and a dome of 162
+// So the per-frame cost here is four small offscreen passes and a dome of 198
 // triangles, and it is nearly independent of how much of the sky is in view.
 // That is what makes a full dome affordable where the raymarching algorithms in
 // the lab could only afford a northern sector.

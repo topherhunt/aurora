@@ -316,11 +316,20 @@ export const SKYMAP_FRAME_GLSL = `
   //
   // ro, uv and t are unused and stay in the signature because the frame's contract is one signature for every integrator. There is no ro to use: the map is built about the plan origin, which is where MAIN_GLSL marches from unconditionally. There is no t to use either -- the time is already in the map, which was rebuilt from the live field at this frame's t a fraction of a millisecond ago.
   vec3 auroraRadiance( vec3 ro, vec3 rd, vec2 uv, float t ) {
-    if ( rd.y < u_horizonCut ) return vec3( 0.0 );
+    // ---- The skirt: where this frame stops and glsl/frame.js does not.
+    //
+    // The march has to stop dead at u_horizonCut, because a ray pointing down never crosses the emitting slab and there is nothing for it to integrate. This frame is not marching -- it is reading a map indexed by log plan scale, and u_skyMap is ClampToEdge in x, so a ray below the cut lands past the end of that axis and comes back with the HORIZON ROW. That is the right answer to carry downward: it is the light of the same channels, seen from a viewpoint that has tipped a few degrees further over.
+    //
+    // Which matters only from altitude. On the ground the mountains cut the sky through the depth test and the horizon cut is never on screen; a few hundred metres up you see under it, and without the skirt the aurora ends on a hard circle with lit sky still underneath it. The dome in screen.js is cut low enough to hold the whole roll-off, so the skirt reaches zero before the geometry does.
+    //
+    // The early-out survives, moved to the foot: below it the skirt is zero, so returning zero there is the same number rather than a cut.
+    float foot = u_horizonCut - u_horizonSkirt;
+    if ( rd.y < foot ) return vec3( 0.0 );
+    float skirt = smoothstep( foot, u_horizonCut, rd.y );
 
     float s = smLogScale( rd.y );
 
-    // Atmospheric extinction, the same term and the same reasoning as glsl/frame.js: the far channels' feet sit low and their light crosses a great deal of air, and cutting them off at exactly the horizon instead would draw a hard line of aurora on the mountains.
+    // Atmospheric extinction, the same term and the same reasoning as glsl/frame.js: the far channels' feet sit low and their light crosses a great deal of air, and cutting them off at exactly the horizon instead would draw a hard line of aurora on the mountains. Below the cut the smoothstep clamps and this holds at its 1 - u_extinct floor, which is what makes the join continuous: the skirt is at 1 there too, so the two terms hand over without a step.
     float ext = mix( 1.0, smoothstep( u_horizonCut, u_horizonCut + 0.14, rd.y ), u_extinct );
 
     // ---- The zenith dissolve, the same term glsl/frame.js applies for the same reason, and it is EXACTLY the march's rather than an analogue of it: the march fades on length( pSp ) = |rd.xz| * ( altHigh - altLow ) / denom * fieldScale, and exp( s ) is |rd.xz| * fieldScale / denom by the identity this whole file rests on, so one multiply reproduces the number the march computes with a vector length.
@@ -329,7 +338,7 @@ export const SKYMAP_FRAME_GLSL = `
     float planTravel = exp( s ) * max( u_altHigh - u_altLow, 0.0 );
     float zen = mix( 1.0, smoothstep( 0.0, max( u_zenReach, 1e-3 ), planTravel ), u_zenFade );
 
-    return smRead( rd, s ) * ( ext * zen );
+    return smRead( rd, s ) * ( ext * zen * skirt );
   }
 
   #endif

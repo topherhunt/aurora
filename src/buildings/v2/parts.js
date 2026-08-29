@@ -10,60 +10,26 @@ import { wobble } from './warp.js'
 // ---------------------------------------------------------------------------
 // The v2 building vocabulary: everything v1 draws straight, drawn crooked.
 //
-// v1 is intact and untouched next door. This file re-exports the parts of it
-// that were already irregular enough (the plinth, the doorway, the broken
-// slabs) and REPLACES the ones that read as machined: the roof, the chimney,
-// the window, the wall. Nothing here is a wrapper around a v1 part with a
-// jitter bolted on -- the whole point is that the v1 versions have no interior
-// vertices to bend, so they had to be rebuilt with some.
+// v1 is intact next door. This file re-exports the parts of it that were
+// already irregular enough (the plinth, the doorway, the broken slabs) and
+// REPLACES the ones that read as machined: the roof, the chimney, the window,
+// the wall. The warp field supplies the character and is a pure function of
+// position, so it cannot open a seam -- but neither can it bow a surface drawn
+// as one quad, which has four corners and no middle. So every part here that is
+// meant to buckle carries a subdivision v1 had none of. Every irregularity is
+// seeded and scaled by the character's `strength`; at strength 0 this builds,
+// triangle for triangle, the same straight thing v1 does.
 //
-// THE DIVISION OF LABOUR WITH warp.js. The warp field supplies the character:
-// the lean, the wander, the fact that no two verticals are parallel. It is a
-// pure function of position, so it cannot open a seam. What it CANNOT do is bow
-// a surface that is drawn as one quad, because a quad has four corners and no
-// middle. So every part in this file that is meant to buckle carries a
-// subdivision that v1 did not have, and the subdivision is sized to what the
-// eye actually measures on it:
+// THE LOD CONTRACT is a budget line and not a suggestion. v1's detail 1 came
+// out at roughly a third of detail 2 and v2 targets an EIGHTH, under a rule
+// uniform enough to state in one line: at detail 1 nothing in the kit is a
+// solid of revolution and nothing has a broken arris. The saving is nearly all
+// in what ISN'T there rather than in coarser versions of what is, a member
+// being 20 to 32 triangles on a building that carries thirty of them. See
+// v2/building.js for which parts each tier asks for at all.
 //
-//   roof plane   nu x nv grid, nv = 3 -> the two horizontal seams a tiled roof
-//                buckles along under its own weight. Plus a sagging middle, an
-//                eave that reaches past its nominal overhang, and an eave line
-//                that sways along its length instead of ruling straight.
-//   chimney      ONE prism of four to six jittered corners, flaring OUT as it
-//                rises. v1's battered stack plus corbelled cap was two solids
-//                and ~48 triangles for a shape that still read as a post.
-//   window       four independently skewed corners rather than a rectangle, a
-//                surround mitred around that skewed path, and shutters whose
-//                free edge stands off the wall.
-//   wall         split along its length so the field can belly it out.
-//
-// EVERY IRREGULARITY IS SEEDED, never random, and every one of them is scaled
-// by the character's `strength`. At strength 0 this file builds, triangle for
-// triangle, the same straight thing v1 does -- which is the control the
-// previewer's slider needs at one end of its travel.
-//
-// THE LOD CONTRACT, which is a budget line and not a suggestion. v1's detail 1
-// came out at roughly a third of detail 2 and that is far too rich for a tier
-// whose whole job is to be cheap; v2 targets an EIGHTH. Everything that costs
-// its triangles on rounding, bevelling or sweeping is gone below detail 2, and
-// the rule is uniform enough to state in one line: at detail 1 nothing in the
-// kit is a solid of revolution and nothing has a broken arris.
-//
-//   detail 2   the grid, the sweeps, the broken slabs, the wander. ~900 tris on
-//              a cottage.
-//   detail 1   MASSING ONLY. Roof planes collapse to a single span with a
-//              single edge band; the plinth, the steps and the porch deck go
-//              back to boxes; every member -- log end, jamb, post, rail, ridge
-//              roll, king post -- is dropped outright; a window is a frame rect
-//              and a glass rect, and each shutter is one more rect, instead of
-//              a swept ring and a pair of splayed leaves. ~110 tris on the same
-//              cottage.
-//   detail 0   a box and a roof prism.
-//
-// The saving is nearly all in what ISN'T there rather than in coarser versions
-// of what is, because a member is 20 to 32 triangles and a building carries
-// thirty of them. See src/buildings/v2/building.js for which parts each tier
-// asks for at all.
+// DESIGN.md §19 has the rest: the subdivision each part carries and why, the
+// tier table with its measured counts, and what survives down the ladder.
 // ---------------------------------------------------------------------------
 
 export {
@@ -100,18 +66,15 @@ const flatDir = (p, q) => {
 // ---------------------------------------------------------------------------
 
 /**
- * A four-cornered section with the corners AT the corners.
+ * A four-cornered section with the corners AT the corners, each pushed in or
+ * out independently on each axis -- which is what "randomly-jittered corners"
+ * means on a stack of field stone: not a rotated square, four corners that do
+ * not agree.
  *
- * roughSection(4, ...) does not do this and is a trap worth naming: it places
- * its points at evenly spaced ANGLES, so at n = 4 they land at 0, 90, 180 and
- * 270 degrees, which on a rectangle are the EDGE MIDPOINTS. A four-sided
- * roughSection is a diamond, not a box. The chimney wants a box, so it gets one
- * here, with each corner pushed in or out independently on each axis -- which is
- * what "randomly-jittered corners" means on a stack of field stone: not a
- * rotated square, four corners that do not agree.
- *
- * Wound anticlockwise in (u, v), which is what prism() requires of a section:
- * its side winding and both cap fans are derived from that orientation.
+ * roughSection(4, ...) is the trap worth naming: it spaces its points by
+ * ANGLE, so on a rectangle they land at the EDGE MIDPOINTS and the section is a
+ * diamond. Wound anticlockwise in (u, v), which is what prism() requires -- its
+ * side winding and both cap fans are derived from that orientation.
  */
 export function boxSection(hu, hv, seed, jitter = 0.22) {
   const C = [[1, 1], [-1, 1], [-1, -1], [1, -1]]
@@ -124,25 +87,19 @@ export function boxSection(hu, hv, seed, jitter = 0.22) {
 /**
  * The same idea at five or six corners, for the stacks that are not square.
  *
- * boxSection cannot be generalised, because its whole trick is that it NAMES
- * the four corners of a rectangle and then shoves each one about. Past four
- * there are no named corners, so this walks the angles instead -- and it
+ * boxSection's trick is that it NAMES the four corners of a rectangle; past
+ * four there are none left to shove, so this walks the angles instead -- and
  * disturbs the ANGLE as well as the radius, because evenly spaced angles with
- * only the radii moved still read as a regular polygon somebody dented, which
- * is the one thing a pile of field stone is not.
+ * only the radii moved read as a regular polygon somebody dented. The half-step
+ * offset puts n = 4 back on the diagonals where boxSection's corners are, so
+ * the two are one family. Both jitters are capped tighter, and for a reason
+ * boxSection has not got: its corners are pinned one to a quadrant and cannot
+ * pass each other however hard they are shoved, while these are kept apart only
+ * by staying in angle order and by not denting deep enough to turn reflex, and
+ * either failure folds prism()'s cap fan back over itself. 0.40 of a step and
+ * 0.18 of the radius leave margin at n = 6 on the most eccentric stack drawn.
  *
- * The half-step offset puts n = 4 back on the diagonals, where boxSection's
- * corners are, so the two belong to one family. Both jitters are then capped
- * tighter than boxSection's, and for a reason boxSection does not have: its
- * corners are pinned one to a quadrant and cannot pass each other however hard
- * they are shoved, while these are only kept apart by staying in angle order
- * and by not denting so deep that a corner turns reflex. Either failure folds
- * prism()'s cap fan back over itself. 0.40 of a step and 0.18 of the radius
- * leave both with margin at n = 6 on the most eccentric stack the planner
- * draws, which is the case that runs out of room first.
- *
- * Wound anticlockwise in (u, v), which is what prism() requires and what
- * boxSection also gives it: here it follows from the angles increasing.
+ * Wound anticlockwise in (u, v), here by the angles increasing.
  */
 export function polySection(hu, hv, n, seed, jitter = 0.18) {
   const step = (Math.PI * 2) / n
@@ -169,26 +126,18 @@ export function scaleSection(sec, s) {
 /**
  * A ROOF IS A SHEET. It has no thickness, at any level of detail.
  *
- * v1 and the first cut of v2 both built a roof as a SOLID: a top surface, a
- * plumb-cut band around its whole perimeter, and a soffit fan closing the
- * underside. Three surfaces and a perimeter loop, about sixty triangles a plane,
- * to say one thing -- that a thatched roof is half a metre of packed straw --
- * which is only ever visible along a single line, the eave.
+ * A plane is `nu x nv` cells of DOUBLE-SIDED quad and nothing else. The 3x3
+ * grid costs 36 triangles where v1's solid spent about 76; it is still
+ * airtight, because a doubled quad seals its own four edges; and the half-metre
+ * of packed straw comes back as thatchFringe(), which always read better than
+ * the plumb band did.
  *
- * So a plane is now `nu x nv` cells of DOUBLE-SIDED quad and nothing else. The
- * 3x3 grid costs 36 triangles where the solid version spent about 76; it is
- * still airtight, because a doubled quad seals its own four edges (see
- * Builder.quad); and the half-metre of straw comes back as thatchFringe(), a
- * skirt hung off the eave line, which always read better than a plumb band did.
- *
- * WHAT THIS BUYS BEYOND THE TRIANGLES, and the real reason for it: a sheet has
- * one unambiguous height at every point, so THE WALLS CAN ASK WHERE IT IS. Every
- * slope built here is a surface object carrying a heightAt(x, z), the wall under
- * it takes its top edge from that instead of from the nominal eave height, and
- * the wall now stops just under the covering instead of stabbing through it.
- * That was the loudest defect in v2's first cut, it got worse the moment the sag
- * was scaled up to where it could be seen, and it was not fixable at all while
- * the underside of a roof was a fan over a loop rather than a function.
+ * The real reason is that a sheet has one unambiguous height at every point, so
+ * THE WALLS CAN ASK WHERE IT IS. Every slope built here carries a heightAt(x,
+ * z) and every part that has to stop under the covering takes its top from
+ * that instead of from the nominal eave. That was the loudest defect in v2's
+ * first cut and it was not fixable at all while the underside of a roof was a
+ * fan over a loop rather than a function. DESIGN.md §19.
  */
 
 /** How finely to grid a roof plane. `nv = 3` is not tuned -- it is the request:
@@ -248,36 +197,23 @@ function triY(a, b, c, x, z) {
  *   t   0..1 from one gable end to the other, along the top edge
  *   s   0 at the EAVE TIP, 1 at the top edge
  *
- * WHAT MOVES, and what deliberately does not:
+ * What moves: the eave line reaches OUT past its nominal overhang, continuing
+ * the pitch as it goes, and rises and falls along its length; the whole sheet
+ * bows down by `sag` and kinks at each interior seam by `buckle`; the verge
+ * splays between the top edge and the eave (`splayLo`/`splayHi`, signed); the
+ * top edge droops or humps by `ridgeSag`.
  *
- *   the eave line    reaches OUT past its nominal overhang by a wandering
- *                    amount, continuing the pitch as it goes (so a longer
- *                    overhang hangs lower, as it must), and rises and falls
- *                    along its length. This is the one line of a roof the eye
- *                    rules a straightedge against, so it is where the money
- *                    goes -- and about a third of buildings deliberately get
- *                    almost none of it, because a whole village of sinuous
- *                    eaves stops reading as character. See `sway` in warp.js.
- *   the whole sheet  bows down between eave and top edge by `sag`, and kinks up
- *                    and down at each interior seam by `buckle`.
- *   the verge        the gable-end overhang differs between the top edge and
- *                    the eave -- `splayLo`/`splayHi`, signed, so a gable can
- *                    flare toward the sky or bow out at the bottom.
- *   the top edge     droops (or humps: `ridgeSag` is signed) along its length,
- *                    AND IS COMPUTED FROM `t` ALONE. Two slopes share the ridge
- *                    line and walk it in opposite directions, so anything
- *                    applied there has to agree between them to the last bit or
- *                    the roof opens along its spine. `t`, the verge extents and
- *                    `ridgeSag` are all per-ROOF rather than per-slope, so both
- *                    slopes land on bit-identical ridge points; the per-slope
- *                    seed only ever reaches terms that vanish at s = 1.
+ * THE TOP EDGE IS COMPUTED FROM `t` ALONE. Two slopes share the ridge line and
+ * walk it in opposite directions, so anything applied there has to agree
+ * between them to the last bit or the roof opens along its spine. `t`, the
+ * verge extents and `ridgeSag` are all per-ROOF rather than per-slope; the
+ * per-slope seed only ever reaches terms that vanish at s = 1.
  *
- * UVS ARE EXPLICIT AND COME FROM THE UNWARPED PARAMETERISATION. U is the
- * absolute along-coordinate, so the two slopes' tiles line up across the ridge
- * and the verge splay shears nothing; V is arc length up the slope from the eave
- * tip. Letting quad() derive a frame per cell would give every cell a slightly
- * different one once the cell is no longer planar, and the tile would visibly
- * step at each seam.
+ * UVS ARE EXPLICIT AND COME FROM THE UNWARPED PARAMETERISATION: U the absolute
+ * along-coordinate, so the two slopes' tiles line up across the ridge and the
+ * splay shears nothing, V the arc length up the slope from the eave tip.
+ * Letting quad() derive a frame per cell would visibly step the tile at every
+ * seam once a cell is no longer planar. DESIGN.md §19.
  */
 function slopeSurface(o) {
   const {
@@ -305,19 +241,14 @@ function slopeSurface(o) {
    * Sample a function at the n + 1 grid lines and read it back as the CHORD
    * between them, which is what the triangles are.
    *
-   * Every shaping term here is a smooth curve, and the sheet holds nu + 1
-   * columns by nv + 1 rows of it and nothing in between. Ask a smooth term for a
-   * point mid-cell and the answer is the curve, not the roof: a 0.3 m ridge sag
-   * read at the middle of a two-column ridge is 6 cm above the triangles, and a
-   * 0.4 m slope sag is another 3 cm on a three-row sheet. That error lands
-   * ENTIRELY on the walls, which cut themselves to `heightAt` -- they stop short
-   * of the covering by it and leave a slot you can see up through from under the
-   * eave, which is exactly where a village street looks at a roof from.
-   *
-   * So every term is wrapped at the source rather than the callers being asked
-   * to allow for it. The values AT the grid lines are untouched, so the mesh is
-   * bit-identical; only the answer between them moves, onto the surface. Both
-   * slopes of a gable share nu, so the ridge still closes exactly.
+   * The sheet holds nu + 1 columns by nv + 1 rows of a smooth term and nothing
+   * in between, so asking one for a point mid-cell answers about the curve
+   * rather than about the roof -- and the error lands ENTIRELY on the walls,
+   * which cut themselves to `heightAt` and are left short of the covering by
+   * it. Wrapped at the source rather than the callers being asked to allow for
+   * it: the values AT the grid lines are untouched, so the mesh is
+   * bit-identical, and both slopes of a gable share nu so the ridge still
+   * closes exactly. DESIGN.md §19 has the measured error.
    */
   const chord = (n, f) => {
     const node = []
@@ -384,30 +315,21 @@ function slopeSurface(o) {
    * How high this slope is above the world point (x, z).
    *
    * ASKED OF THE TRIANGLES, not of the formula they were sampled from: drop a
-   * plumb line and read the cell it lands in. Everything on the building that
-   * has to stop at the roof -- the top of every wall, the corner posts, the
-   * king post, a window that would otherwise poke through the covering -- asks
-   * this question, and an answer that is even 2 cm optimistic is a 2 cm slot of
-   * daylight under the eave. Each quad is split on the P[j][i] -> P[j+1][i+1]
-   * diagonal, and the two triangles of the split do not agree with the smooth
-   * surface in the middle of a cell, so the split is followed exactly here.
+   * plumb line and read the cell it lands in, following the same P[j][i] ->
+   * P[j+1][i+1] split the quads are drawn on, because the two triangles of a
+   * split do not agree with the smooth surface mid-cell. An answer even 2 cm
+   * optimistic is a 2 cm slot of daylight under the eave. At most nine cells,
+   * so the cell is found by scanning rather than by inverting the
+   * parameterisation, which is circular (s depends on how far the eave reached
+   * at t, t on how far the verge splayed at s).
    *
-   * At most nine cells, so the cell is found by scanning rather than by
-   * inverting the parameterisation, which is circular (s depends on how far the
-   * eave reached at t, t depends on how far the verge splayed at s).
-   *
-   * OFF THE SHEET the plumb line misses everything, and the fallback is the
-   * surface continued analytically: the inversion by two fixed-point sweeps,
-   * then the smooth form. That is the right answer for a point that has no
-   * covering over it -- a wall of a mass whose own roof does not reach it -- and
-   * it is continuous with the exact answer at the edge.
-   *
-   * `coverAt` is the same question WITHOUT that continuation: the height of the
-   * covering over this point, or null where this sheet does not reach. A wall
-   * wants the extrapolation, because it has to keep rising to meet a roof that
-   * starts further along. Anything asking "is there a roof over my head" wants
-   * the null -- a window in one wing must duck under the OTHER wing's eave where
-   * it actually overhangs it, and must ignore that roof entirely everywhere else.
+   * OFF THE SHEET the plumb line misses everything and the fallback is the
+   * surface continued analytically -- the inversion by two fixed-point sweeps,
+   * then the smooth form -- which is the right answer for a wall of a mass
+   * whose own roof does not reach it, and is continuous with the exact answer
+   * at the edge. `coverAt` is the same question WITHOUT the continuation,
+   * returning null where this sheet does not reach: anything asking "is there a
+   * roof over my head" wants the null.
    */
   const coverOn = (G, x, z) => {
     for (let j = 0; j < G.length - 1; j++) {
@@ -426,13 +348,12 @@ function slopeSurface(o) {
    * The same sheet with the building's warp already applied to it, cached.
    *
    * Everything else in this file works in the space the building is DRAWN in,
-   * because the warp is a post-pass and two parts that meet before it still meet
-   * after it. A window head is the one thing that has to know better: the band of
-   * wall it reserves under the covering is a looking number, and the field slides
-   * a steep sheet sideways by half a metre -- which brings a metre of pitch over
-   * a window that the unwarped sheet says is nowhere near it. So that one
-   * question is asked of the warped grid. One cache line per slope, because the
-   * same field object is handed to every window on the building.
+   * the warp being a post-pass that moves two parts which met before it
+   * together. A window head is the one thing that has to know better: the band
+   * of wall it reserves under the covering is a looking number, and the field
+   * slides a steep sheet sideways by half a metre, which brings a metre of
+   * pitch over a window the unwarped sheet says is nowhere near it. One cache
+   * line per slope, because one field object serves every window.
    */
   let warpedFor = null
   let warpedGrid = null
@@ -461,23 +382,18 @@ function slopeSurface(o) {
    * The LOWEST this sheet gets anywhere over an axis-aligned patch of ground,
    * or Infinity where it does not reach the patch at all.
    *
-   * Asking `coverAt` at a handful of points across a window head is not the same
-   * question and gets a different answer, because the thing that comes down over
-   * a window is usually a sheet EDGE -- the verge of the next wing, ending in
-   * mid-air -- and the lowest covered point is the last millimetre before the
-   * edge, which no fixed set of samples lands on. Sample either side of it and
-   * the answer is either the sheet 10 cm back up the slope or null, and the
-   * window is set 10 cm too high.
+   * Sampling `coverAt` at a handful of points across a window head is a
+   * different question and gets a different answer, because what comes down
+   * over a window is usually a sheet EDGE -- the verge of the next wing, ending
+   * in mid-air -- and the lowest covered point is the last millimetre before
+   * it, which no fixed set of samples lands on.
    *
-   * A piecewise-linear surface takes its minimum over a rectangle at a vertex of
-   * the arrangement, so all three kinds of vertex are checked and nothing is
-   * approximated: the patch corners that the sheet covers, the sheet's own grid
-   * points standing inside the patch, and every crossing of a triangle edge --
-   * the split diagonals included -- with a side of the patch.
-   *
-   * `warp` asks it of the WARPED sheet instead: patch and answer both in the
-   * space the player sees, which is the only space in which a clearance under an
-   * eave means anything.
+   * A piecewise-linear surface takes its minimum over a rectangle at a vertex
+   * of the arrangement, so all three kinds are checked and nothing is
+   * approximated: the patch corners the sheet covers, the grid points standing
+   * inside the patch, and every crossing of a triangle edge -- split diagonals
+   * included -- with a side of the patch. `warp` asks it of the WARPED sheet,
+   * which is the only space a clearance under an eave means anything in.
    */
   const lowOver = (G, xa, za, xb, zb) => {
     const rows = G.length - 1
@@ -542,15 +458,13 @@ function slopeSurface(o) {
   /**
    * Every parameter along a plan segment where this sheet's profile KINKS.
    *
-   * `heightAt` is now exact, but a wall built from it is still a chord between
-   * wherever it happened to sample -- and the roof it is trying to meet is a
-   * fold, not a curve. Sample either side of a fold and the wall crosses it: too
-   * tall in the middle of the span or too short, by up to 6 cm, which is the slot
-   * under the eave. Hand the wall the folds instead and its top edge lands ON the
-   * covering for its whole length, because between two consecutive folds the
-   * segment stays inside ONE triangle, where the surface is a plane and a chord
-   * is the truth. The diagonals count: a quad is drawn as two triangles and the
-   * seam between them is as real a fold as the seam between two cells.
+   * `heightAt` is exact, but a wall built from it is a chord between wherever
+   * it happened to sample, and the roof it is trying to meet is a fold rather
+   * than a curve: sample either side of one and the wall crosses it by up to
+   * 6 cm, which is the slot under the eave. Hand it the folds instead and its
+   * top edge lands ON the covering for its whole length, because between two
+   * consecutive folds the segment stays inside ONE triangle, where the surface
+   * is a plane and a chord is the truth. The split diagonals count.
    */
   const breaksAlong = (x0, z0, x1, z1, out) => {
     const add = (u) => { if (u !== null) out.push(u) }
@@ -588,18 +502,15 @@ function slopeSurface(o) {
 /**
  * The frayed thatch eave, hung off the eave polyline the roof actually built.
  *
- * Now that the covering has no thickness this IS the thickness: a skirt of straw
- * hanging below the sheet, doubled so its back is in view from anywhere under
- * the eave line, which is most of a village street.
+ * Now that the covering has no thickness this IS the thickness: a skirt of
+ * straw hanging below the sheet, doubled so its back is in view from anywhere
+ * under the eave line, which is most of a village street.
  *
  * `rake` is what a roofer means by a raked eave cut. A real eave is trimmed
- * either PLUMB -- a vertical cut, the fringe hanging straight down -- or RAKED,
- * cut square to the pitch instead, so the cut face leans out with the slope. On
- * a covering with two surfaces you can see that as the difference between the
- * top edge and the underside overhanging by different amounts; on a sheet there
- * is only one surface, so it survives here as the lean of the skirt: positive
- * rake throws the fringe outward away from the wall, negative tucks it back
- * under the roof, and zero hangs it plumb. Drawn signed per building.
+ * either PLUMB or cut square to the pitch, and on a single-surface sheet that
+ * survives as the lean of the skirt: positive throws the fringe outward away
+ * from the wall, negative tucks it back under the roof, zero hangs it plumb.
+ * Drawn signed per building.
  */
 /** How far the straw hangs below the eave on a roof that has any -- 0 on one
  *  that has not. The condition is drawRoof()'s, kept in one place so that what a
@@ -654,19 +565,17 @@ export function planGableRoof(o) {
     layer = LAYER.THATCH, tint = TINT.thatchNew, moss = 0.35, age = 0.5,
     fringe = true, detail = 2, k = FLAT,
   } = o
-  // CHARACTER SURVIVES DOWN TO DETAIL 1, and it is free there. It used to stop
-  // at detail 2 and the middle tier read as a different, straighter village --
-  // the one thing a LOD is not allowed to be. What a 1x1 sheet can carry is
-  // whatever moves its CORNERS: the overhang multiplier, the verge splay, the
-  // eave's reach and its sway. What it cannot carry cancels itself here with no
-  // help -- sag, buckle and ridgeSag are all sin(pi * u) terms sampled only at
-  // the ends of their span, where they are zero -- so this passes the whole
-  // character and lets the grid decide what of it survives.
+  // CHARACTER SURVIVES DOWN TO DETAIL 1 and is free there: a 1x1 sheet carries
+  // whatever moves its CORNERS -- the overhang multiplier, the verge splay, the
+  // eave's reach and sway -- and what it cannot carry cancels itself, sag,
+  // buckle and ridgeSag being sin(pi * u) terms sampled only at the ends of
+  // their span. Stopping the character at detail 2 made the middle tier read as
+  // a different, straighter village, which is the one thing a LOD may not be.
   //
-  // Detail 0 stays dead straight on purpose: it is drawn with no overhang and no
-  // verge at all, and its gable triangle is filled against the flat top of a box
-  // rather than against a sheet, so an eave that reached or swayed there would
-  // open that joint rather than shape anything.
+  // Detail 0 stays dead straight on purpose: no overhang, no verge, and its
+  // gable triangle filled against the flat top of a box rather than a sheet, so
+  // an eave that reached there would open that joint rather than shape
+  // anything.
   const kk = detail >= 1 ? k : FLAT
   const ridgeY = eaveY + rise
   const alongHalf = (ridgeAxis === 'x' ? w : d) / 2
@@ -770,17 +679,13 @@ export function planLeanRoof(o) {
   const color = roofTint({ base: tint, eaveY: eave, ridgeY: highY, moss: 0.3, ageAtEave: age })
 
   // HOW FAR THE SHEET RUNS PAST THE WALL IT LEANS ON, up-slope, on the same
-  // plane. The plan pins the top edge at the main mass's NOMINAL eave and the
-  // two sheets are then planned to meet along an exact line with no overlap --
-  // which holds while both are straight and does not once the character terms
-  // move them, because the main gable's eave can sag a third of a metre and this
-  // free edge cannot follow it. A line that two independent sheets are supposed
-  // to arrive at is a line that opens; a quarter of a metre of overlap, buried
-  // inside the mass it leans on, is a line that cannot.
-  //
-  // Extending the run and raising the top by the same pitch keeps the pitch, the
-  // eave position and the eave height bit-identical: this adds sheet at the top
-  // and changes nothing else.
+  // plane. The plan pins the top edge at the main mass's NOMINAL eave, which
+  // the main gable's own sag then leaves by up to a third of a metre while this
+  // free edge cannot follow. A line that two independent sheets are supposed to
+  // arrive at is a line that opens; a quarter of a metre of overlap, buried
+  // inside the mass it leans on, is a line that cannot. Extending the run and
+  // raising the top by the same pitch keeps the pitch, the eave position and
+  // the eave height bit-identical: this adds sheet at the top and nothing else.
   const TOP_EXT = 0.25
   const pitchOf = (highY - lowY) / Math.max(0.001, runNominal)
   // ridgeSag is 0 and not a choice: a lean-to's top edge is buried in the wall
@@ -879,57 +784,41 @@ const DORMER_WALL_LAYER = {
  * A DORMER: a stub of roof driven out through the main slope, with a window in
  * the gablet it presents.
  *
- * IT IS ONE SOLID PUSHED THROUGH A SHEET, exactly as the chimney is, and for the
- * same reason: a building here is a union of interpenetrating closed solids and
- * nothing is ever cut, so the way to make a roof grow something is to drive a
- * closed thing through it and let the sheet pass in one side and out the other.
- * A five-sided section swept horizontally into the slope IS the dormer -- two
- * roof planes, two cheeks and a floor from the sides of the sweep, the gablet
- * and its buried twin from the two caps -- and it costs sixteen triangles, which
- * is four more than the chimney. Eight more go on the covering, which is a
- * separate oversailing sheet and not a face of the solid at all; the reason is
- * down at the end of the body, and it is that a roof with no thickness cannot
+ * IT IS ONE SOLID PUSHED THROUGH A SHEET, exactly as the chimney is: a building
+ * here is a union of interpenetrating closed solids and nothing is ever cut, so
+ * the way to make a roof grow something is to drive a closed thing through it
+ * and let the sheet pass in one side and out the other. A five-sided section
+ * swept horizontally into the slope IS the dormer -- two roof planes, two
+ * cheeks and a floor from the sides of the sweep, the gablet and its buried
+ * twin from the two caps -- for sixteen triangles, plus eight for the covering,
+ * which is a separate oversailing sheet because a roof with no thickness cannot
  * overhang and stay closed at the same time.
  *
- * IT IS SWEPT BY HAND RATHER THAN BY prism(), and the reason is entirely about
- * texture. prism() gives every face of a solid one layer and one frame, which is
- * right for a timber and wrong for a building: a dormer is a scrap of ROOF over a
- * scrap of WALL, and it has to be both. Drawn face by face it is the same sixteen
- * triangles, and each one gets the layer and the frame it should have had:
+ * IT IS SWEPT BY HAND RATHER THAN BY prism(), entirely for texture. prism()
+ * gives every face of a solid one layer and one frame, which is right for a
+ * timber and wrong here: a dormer is a scrap of ROOF over a scrap of WALL and
+ * has to be both. Drawn face by face it is the same sixteen triangles with the
+ * frame each should have had -- the two pitches and the sheet over them take
+ * the COVERING, U along the little ridge and V the arc length up from the
+ * little eave, so the straw laps downhill on the stub too; the gablet and the
+ * two cheeks take the WALL and measure V as ABSOLUTE WORLD HEIGHT, which is
+ * what lines a cheek's courses up with the wall three metres below it. The old
+ * version swept one prism with `vWorldY` set on a HORIZONTAL sweep, where world
+ * height is the same number at both ends, so V never moved and the covering was
+ * smeared the entire depth of the dormer.
  *
- *  - The two pitches, and the sheet that oversails them, take the COVERING, with
- *    U along the little ridge and V the arc length up from the little eave --
- *    the same frame slopeSurface() gives the roof this grew out of, so the straw
- *    runs the same way on both and laps downhill on the stub as well.
- *  - The gablet and the two cheeks take the WALL, in whatever layer the house is
- *    walled in, and they measure V as ABSOLUTE WORLD HEIGHT. That is the one
- *    thing that matters about the frame here: it is what makes the log courses of
- *    a dormer cheek line up with the log courses of the wall three metres below
- *    it, exactly as it does between one wall of the building and the next.
+ * WHAT KEEPS IT WATERTIGHT is a pair of tricks. The section drops `SINK` BELOW
+ * the sheet at the face, so everything under that line is behind the covering
+ * from every angle outside. And the sweep runs in until `sheetAt` says the
+ * covering has climbed `CLEAR` over the ridge of the stub -- marched rather
+ * than solved off the pitch, because the sag can be 40 cm and the buckle
+ * wanders, and a depth off the nominal plane puts the back gablet out through
+ * the covering on exactly the seeds where the roof is most interesting. Where
+ * the sheet never gets clear before the ridge there is no dormer, which is what
+ * a shallow-pitched hut gets and is correct.
  *
- * The old version swept a prism with `vWorldY` set, and the stub is swept
- * HORIZONTALLY: world height is the same number at both ends of a horizontal
- * sweep, so V never moved and the covering was smeared the entire depth of the
- * dormer. A horizontal sweep and `vWorldY` cannot both be right, and this file
- * has the same trap noted at the porch rail.
- *
- * WHAT KEEPS IT WATERTIGHT is the same pair of tricks:
- *
- *  - The section drops `SINK` BELOW the sheet at the face. Everything under that
- *    line is behind the covering from every angle outside, because the sheet
- *    falls away from the face on the only side you can see it from.
- *  - The sweep runs in until the sheet has climbed clear over the ridge of the
- *    stub, which is asked of `sheetAt` step by step rather than worked out from
- *    the pitch. The pitch is not the whole story: the sag can be 40 cm and the
- *    buckle wanders, and a depth computed from the nominal plane puts the back
- *    gablet out through the covering on exactly the seeds where the roof is most
- *    interesting. Where the sheet never gets clear before the ridge, there is no
- *    dormer -- which is what happens on a shallow-pitched hut, and correctly so.
- *
- * Returns the SEAT it drew -- where the stub met the sheet and how far back it
- * had to run to get under it -- or null if it drew nothing. The caller keeps
- * those so the gate can walk up to each one and measure it, rather than having
- * to find dormers in a finished vertex array by looking for shapes.
+ * Returns the SEAT it drew, or null if it drew nothing, so the gate can walk up
+ * to each one rather than hunt a finished vertex array for shapes.
  */
 export function dormer2(b, {
   x, z, nx, nz, sheetAt, ridgeLimit, layer, color, style = WALL_STYLE.LOG,
@@ -1047,19 +936,14 @@ export function dormer2(b, {
   face(2, 3, wallO)
 
   // THE COVERING IS A SHEET LAID OVER THE STUB rather than a face of it, and it
-  // has to be, because that is the only way an overhang can exist here. A roof
-  // in this kit has no thickness, so a face that oversails the solid it belongs
-  // to leaves that solid open along the edge it left behind, and the airtight
-  // check is exactly the check that catches it. So the five-sided solid keeps
-  // all five of its faces and stays closed -- its two pitches standing in for
-  // the boarding, in the covering's own layer so that what shows in the slot at
-  // the eave is more roof -- and the sheet floats LIFT above them and runs out
-  // past the eave corners and past the gablet.
-  //
-  // DOUBLED, for the same reason slopeSurface() doubles: a doubled quad seals
-  // its own four edges, so an oversailing sheet costs the airtight check
-  // nothing, and the underside of an overhang is the one piece of a roof you
-  // are guaranteed to see from the ground.
+  // has to be, because that is the only way an overhang can exist here: a face
+  // that oversails the solid it belongs to leaves that solid open along the
+  // edge it left behind, which is exactly what the airtight check catches. So
+  // the five-sided solid keeps all five faces, its two pitches standing in for
+  // the boarding in the covering's own layer so that what shows in the slot at
+  // the eave is more roof, and the sheet floats LIFT above them. DOUBLED, for
+  // slopeSurface()'s reason: a doubled quad seals its own four edges, so the
+  // oversail costs the airtight check nothing.
   const tipA = hw + eaveOut * (hw / rafter)
   const tipV = eaveH - eaveOut * ((apexH - eaveH) / rafter)
   const Q = (a, v, d) => [
@@ -1094,17 +978,15 @@ export function dormer2(b, {
  * How high a solid of radius `r` standing at (x, z) may go and still be UNDER
  * the covering, allowing `gap` for the warp.
  *
- * The distinction the naive answer misses is that a post is not a line. Ask the
- * roof how high it is over the post's AXIS and cap the post there and the post
- * is still through the roof, because a roof over a corner is falling away in
- * both directions at once: at 12 cm out along a 40 degree pitch the covering is
- * already 10 cm lower than it was over the middle of the post. So the question
- * is asked at the four extremes of the section and the LOWEST answer wins, which
- * is the near arris -- the one that would come through first.
+ * A post is not a line, which is what the naive answer misses. A roof over a
+ * corner is falling away in both directions at once -- 12 cm out along a 40
+ * degree pitch the covering is already 10 cm lower than over the middle of the
+ * post -- so the question is asked at the four extremes of the section and the
+ * LOWEST answer wins, which is the near arris.
  *
- * The post may still be cut off well below where it wants to end. That is
- * correct and is the whole instruction: a beam may touch the roof plane, meet
- * it, be swallowed by it, and never cross it.
+ * The post may still be cut off well below where it wants to end. That is the
+ * whole instruction: a beam may touch the roof plane, meet it, be swallowed by
+ * it, and never cross it.
  */
 export function clearUnder(topAt, x, z, r, gap = 0.03) {
   let y = topAt(x, z)
@@ -1118,21 +1000,16 @@ export function clearUnder(topAt, x, z, r, gap = 0.03) {
  * The tallest a doorway at `door` may be and still stay under the covering.
  *
  * A door is the one opening that cannot duck. A window is placed at a height
- * somebody chose and can be slid down until it fits; a door stands ON THE FLOOR,
- * so the only thing left to give is its head. On a small hut with a low eave --
- * seed 44043 is the one -- the wall line is under the slope's lowest part and a
- * nominal 1.95 m door puts its lintel straight through the thatch.
+ * somebody chose and can be slid down until it fits; a door stands ON THE
+ * FLOOR, so the only thing left to give is its head. Seed 44043 is the hut
+ * whose wall line sits under the slope's lowest part, where a nominal 1.95 m
+ * door puts its lintel straight through the thatch.
  *
- * What is measured is the SURROUND, not the opening: `HEAD` is the jamb width
- * plus the lintel's own thickness above it, the part that actually comes through.
- * And it is measured across the whole of the surround's footprint -- out to both
- * jambs and out to the lintel's front face -- for the reason `clearUnder` gives:
- * a roof over a doorway is falling away as it goes, and the corner nearest the
- * eave is the one that surfaces first.
- *
- * The floor of 1.4 m is deliberate and is a visible squat door, not a failure:
- * under an eave that low there is no honest full-height door to be had, and a
- * head-ducking door in a turf-roofed hut is the right answer anyway.
+ * What is measured is the SURROUND, not the opening -- `HEAD` is the jamb width
+ * plus the lintel's own thickness above it -- and across its whole footprint,
+ * out to both jambs and to the lintel's front face, for clearUnder()'s reason.
+ * The 1.4 m floor is a visible squat door and not a failure: under an eave that
+ * low there is no honest full-height door to be had.
  */
 export function doorHeight({ x, z, nx, nz, y0, width, height }, topAt) {
   if (!topAt) return height
@@ -1151,26 +1028,22 @@ export function doorHeight({ x, z, nx, nz, y0, width, height }, topAt) {
 /**
  * THE OPENINGS A WALL CARRIES, as boxes in that wall's own frame.
  *
- * The plan states a window or a door in world space and never says which wall it
- * belongs to, so the wall works it out. Not by asking which wall the opening was
- * MEANT for -- by asking what volume it clears and whether this wall's timbers
- * are in it. The two are not the same question, and the difference is the whole
- * reason this is a box and not a span: the wall a door is cut into is not the
- * only wall that can reach into the doorway. A log course runs 20 cm past its
- * corner as an interlock, and a door set a hand's width from that corner has the
- * SIDE wall's log ends standing in the opening -- at right angles to it,
- * invisible to any test that only knows about openings lying on the line.
+ * The plan states an opening in world space and never says which wall it
+ * belongs to, so the wall asks what volume it clears and whether this wall's
+ * timbers are in it. That is the whole reason this is a box and not a span: a
+ * log course runs 20 cm past its corner as an interlock, so a door set a hand's
+ * width from that corner has the SIDE wall's log ends standing in the opening,
+ * at right angles to any test that only knows about openings lying on the line.
  * Reduced to a box, both cases are the same arithmetic.
  *
- * Exported because the king post is raised in building.js, outside any wall, and
- * it stands exactly where a gable end's middle bay window wants to be.
+ * Exported because the king post is raised in building.js, outside any wall,
+ * exactly where a gable end's middle bay window wants to be.
  *
- * `blocked(a, pad, half)` asks whether the point `a` along the wall is inside an
- * opening, where `pad` is the clearance wanted either side and `half` is how far
- * the timber in question stands either side of the wall plane -- an opening the
- * timber never reaches into is not in its way. `dodge` answers the follow-up:
- * the nearest point that is NOT blocked, or null if there is no such point on
- * this wall.
+ * `blocked(a, pad, half)` asks whether the point `a` along the wall is inside
+ * an opening, `pad` being the clearance wanted either side and `half` how far
+ * the timber stands either side of the wall plane -- an opening the timber
+ * never reaches into is not in its way. `dodge` answers the follow-up: the
+ * nearest point that is NOT blocked, or null if there is none on this wall.
  */
 export function wallOpenings({ p0, p1, openings }) {
   const dx = p1[0] - p0[0]
@@ -1238,26 +1111,24 @@ export function wallOpenings({ p0, p1, openings }) {
  * and TOPPED BY THE ROOF IT STANDS UNDER rather than by a level line.
  *
  * Two structural changes from v1. First `face()`: one quad became `cols` of
- * them. A wall drawn as a single quad is the clearest case of the limit stated
- * at the top of warp.js -- the field moves its four corners and cannot touch
- * what is between them, so a ten-metre inn front stays a perfect plane no matter
- * how crooked everything standing on it has become. One seam every ~2.6 m is
- * enough for it to read as settled, and the wall face is the cheapest surface in
- * the kit to subdivide: it is doubled, so a column costs four triangles.
+ * them. A single quad has four corners and no middle, so a ten-metre inn front
+ * stays a perfect plane no matter how crooked everything standing on it has
+ * become. One seam every ~2.6 m is enough to read as settled, and a wall face
+ * is the cheapest surface in the kit to subdivide: it is doubled, so a column
+ * costs four triangles.
  *
- * Second, and the reason the roof became a sheet: `topAt`. Hand this a function
- * from world (x, z) to the height of the covering above it, and the wall's top
- * edge is sampled from that at every column boundary and tucked `TUCK` under it,
- * instead of being ruled flat at `y1` and left to be stabbed through by a roof
- * that sags 30 cm between its supports. THIS IS WHAT REPLACES gableEnd(): a
- * gable-end wall is not a wall plus a triangle, it is a wall whose top happens to
- * peak in the middle, and building it as one surface removes the seam between the
- * two as well as the triangle.
+ * Second, and the reason the roof became a sheet: `topAt`. Given a function
+ * from world (x, z) to the height of the covering, the top edge is sampled from
+ * it at every column boundary and tucked `TUCK` under, instead of being ruled
+ * flat at `y1` and stabbed through by a roof that sags 30 cm between its
+ * supports. THIS IS WHAT REPLACES gableEnd(): a gable-end wall is a wall whose
+ * top happens to peak in the middle, and building it as one surface removes the
+ * seam between the two as well as the triangle.
  *
- * `topCols` is how many columns the top profile needs to be sampled at, which is
- * a different question from how many the warp needs -- a 3 m gable end is short
- * enough to want one warp seam and still needs a column boundary exactly at the
- * ridge or the peak gets chopped off flat. The wall takes whichever is more.
+ * `topCols` is how many columns the TOP PROFILE needs, a different question
+ * from how many the warp needs -- a 3 m gable end wants one warp seam and still
+ * needs a boundary exactly at the ridge or the peak is chopped off flat. The
+ * wall takes whichever is more.
  *
  * The four styles, the half-timber bay rule and the stone course are v1's. The
  * log courses are not: see below.
@@ -1288,17 +1159,14 @@ export function wall2(b, {
   const { boxes: OP, blocked, dodge } = wallOpenings({ p0, p1, openings })
 
   // WHERE THE WALL IS SPLIT ALONG ITS LENGTH. Two independent demands, merged.
-  //
   // The warp wants columns at roughly even spacing and does not care where. The
-  // covering wants a column boundary at every fold in the roof it crosses, and
-  // cares exactly: between two folds the top edge is a chord of a plane, which
-  // is the covering itself, and either side of one it is a chord of a crease,
-  // which is a slot or a stab. `topBreaks` is what the roof answers with. It
-  // costs 4 triangles a column and the whole point of the roof being a sheet was
-  // to be able to afford them here.
-  //
-  // `topCols` remains the FLOOR, not the answer: a lean-to whose wall crosses no
-  // fold at all still wants a couple of seams for the field to work with.
+  // covering wants a boundary at every fold in the roof it crosses, and cares
+  // exactly: between two folds the top edge is a chord of a plane, which is the
+  // covering itself, and either side of one it is a chord of a crease, which is
+  // a slot or a stab. `topBreaks` is what the roof answers with, at 4 triangles
+  // a column, and being able to afford them here is what the roof gave up its
+  // soffit for. `topCols` remains the FLOOR, not the answer: a lean-to whose
+  // wall crosses no fold at all still wants a couple of seams to work with.
   const evenCols = Math.max(
     detail >= 2 ? Math.max(1, Math.min(4, Math.round(len / 2.6))) : 1,
     topAt ? topCols : 0,
@@ -1312,22 +1180,20 @@ export function wall2(b, {
   }
   wanted.sort((a, c) => a - c)
 
-  // How far under the covering the wall stops. Not zero, because the warp field
-  // is applied to the roof's vertices and to the wall's separately: they start
-  // life at the same place but the roof's are metres away at the corners of the
-  // triangle, and a field that is smooth is not a field that is linear, so the
+  // How far under the covering the wall stops. Not zero, because the field is
+  // applied to the roof's vertices and the wall's separately: they start life
+  // at the same place, but the roof's are metres away at the corners of its
+  // triangle and a field that is smooth is not one that is linear, so the
   // covering ends up a few millimetres off the plane its corners promised. That
-  // residual, and nothing else, is what this is for now that the top edge is
-  // sampled on the folds.
+  // residual is all this is for now that the top edge is sampled on the folds.
   //
-  // 12 mm, not the 25 mm it was. Being generous here is NOT free, which took a
-  // ray probe to see: the slot the tuck leaves is under the overhang, where a
+  // 12 mm, not the 25 mm it was, and BOUNDED AT BOTH ENDS -- which took a ray
+  // probe to see. The slot the tuck leaves is under the overhang, where a
   // grazing ray from inside goes out through it once the sagged eave drops to
-  // the height of the head that is looking. It is bounded at both ends, which is
-  // why it is this number and not zero -- go under about 10 mm and the worst
-  // flat wall reaches the covering exactly, with nothing left for the gate that
-  // says nothing but masonry stands through it; go back up and the daylight
-  // returns, three buildings' worth by 15 mm.
+  // the height of the head that is looking, so the daylight comes back three
+  // buildings' worth by 15 mm; go under about 10 mm and the worst flat wall
+  // reaches the covering exactly, with nothing left for the gate that says
+  // nothing but masonry stands through it.
   const TUCK = 0.012
   const heightOf = (u) => {
     if (!topAt) return y1
@@ -1487,14 +1353,12 @@ export function wall2(b, {
       // Not across an opening: a stud framed over a window is the single most
       // obviously-wrong thing a half-timber wall can do. `t + 0.02` is how far
       // the stud stands either side of the plane, which is what keeps a door on
-      // the NEXT wall along from deleting this wall's corner stud -- that door's
-      // box is beside the plane, not on it, so the stud is not in its way.
+      // the NEXT wall along from deleting this wall's corner stud -- that
+      // door's box is beside the plane, not on it.
       //
-      // Deleting the stud used to be the whole answer, and it left the frame
-      // visibly gappy while the window still sat hard against whatever stud
-      // survived next door. So SHIFT it instead: slide it to whichever side of
-      // the obstruction is nearer and stand it a hand's width clear. Only a stud
-      // with nowhere to go at all is dropped.
+      // SHIFT rather than delete: deleting was the first answer and it left the
+      // frame visibly gappy while the window still sat hard against whatever
+      // stud survived next door. Only a stud with nowhere to go is dropped.
       const bay = len * i / bays
       const a = dodge(bay, PAD, t + 0.02, CLEAR)
       // Nowhere on this wall to stand it, or so close to a stud already up that
@@ -1549,18 +1413,18 @@ export function wall2(b, {
   // WALL_STYLE.LOG
   //
   // v1 and v2's first cut both drew a log wall as a flat plane wearing a log
-  // texture, and then apologised for it with two or three stub log-ends poking
-  // past each corner so the SILHOUETTE would read as a cabin. That is a strange
-  // bargain -- 16 triangles each on six little stubs, about 96, spent on the only
-  // three courses anybody could see the end of, while the wall between them stays
-  // a painted-on stripe. Run the same log the whole length of the wall instead:
-  // five 5-sided sweeps at 16 triangles is 80, it is CHEAPER than the stubs were,
-  // and now the wall has real courses that catch light on their top halves, throw
-  // a shadow line under each one, and break the corner where two walls meet.
+  // texture, and apologised for it with two or three stub log-ends poking past
+  // each corner so the SILHOUETTE would read as a cabin: 16 triangles each on
+  // six little stubs, about 96, spent on the only three courses anybody could
+  // see the end of, while the wall between them stayed a painted-on stripe.
   //
-  // The flat backing face stays underneath. It is what makes the wall airtight
-  // and what covers the gaps at the very top where the courses run out under a
-  // sloping roof, and it costs 4 triangles a column.
+  // Running the same log the whole length of the wall instead is five 5-sided
+  // sweeps at 16 triangles, which is CHEAPER than the stubs were, and the wall
+  // gets real courses that catch light on their top halves, throw a shadow line
+  // under each one, and break the corner where two walls meet. The flat backing
+  // face stays underneath at 4 triangles a column: it is what makes the wall
+  // airtight and what covers the gaps at the top where the courses run out
+  // under a sloping roof.
   face(base, TOP, LAYER.TIMBER_BEAM, tint)
   if (!furniture) return info
 
@@ -1585,17 +1449,13 @@ export function wall2(b, {
     // is the reason the phase is taken from the seed rather than being fixed --
     // two walls meeting at a corner must not both stick out on the same course.
     const stick = (kk & 1) === phase ? 0.2 : 0.02
-    // WHERE THIS COURSE SURVIVES.
-    //
-    // A log stands 5 cm proud of the wall plane and a door leaf hangs at 3 cm, so
-    // a course crossing a doorway comes through the door -- from inside the house
-    // you can see five logs lying across the opening. Windows do not have the
-    // problem: their surround starts at 16 cm and their glass at 7 cm, both in
-    // front of the log, which is why only `solid` openings cut here.
-    //
-    // Cutting is the only option available. A stud can be moved because the bay
-    // beside it will do its job; a course IS the wall, and moving it up leaves a
-    // stripe of daylight.
+    // WHERE THIS COURSE SURVIVES. A log stands 5 cm proud of the wall plane and
+    // a door leaf hangs at 3 cm, so a course crossing a doorway comes through
+    // the door. Windows do not have the problem: their surround starts at 16 cm
+    // and their glass at 7, both in front of the log, which is why only `solid`
+    // openings cut here. Cutting is the only option available -- a stud can be
+    // moved because the bay beside it will do its job, but a course IS the wall
+    // and moving it up leaves a stripe of daylight.
     let spans = [[-stick, len + stick]]
     for (const o of OP) {
       if (!o.solid || y - r >= o.y1 || y + r <= o.y0) continue
@@ -1642,28 +1502,20 @@ export function wall2(b, {
  * it tilts, which is most of the way to "no column is quite plumb", but it can
  * never bow. `segments` inserts interior rings so it can, and `bow` gives it a
  * head start by pushing the middle off the straight line before the field ever
- * sees it.
+ * sees it. A bow needs a middle to happen at, so asking for one buys the
+ * segment it needs: it is sampled as bow * sin(PI * t) at the ring positions,
+ * and a member with `segments: 1` has rings only where that is exactly zero.
  *
  * Costs 2n more triangles per extra segment against member()'s 4n-4, so it is
  * NOT the default and is spent only on the timbers whose whole job is to be a
  * long straight line the eye can check: porch posts, stave corner posts, the
- * king post up a gable. Everything shorter than about a metre stays a plain
- * member, where a bow would be a rounding error with a price tag.
+ * king post up a gable. Anything shorter than about a metre stays a plain
+ * member, where a bow is a rounding error with a price tag.
  *
  * `path` overrides the straight line entirely: hand it t -> [x, y, z] and the
  * member is swept along whatever curve that describes -- a timber following a
- * line the field has already bent, rather than one drawn straight and bent after.
- *
- * WHY `bow` DID NOTHING until now, since it is a good illustration of how a
- * parameter can be live, threaded, documented and still inert. Two independent
- * faults. It was sampled as bow * sin(PI * t) at the ring positions -- and with
- * `segments: 1` the only rings are t = 0 and t = 1, where sin is exactly zero, so
- * the bow was applied twice per member, both times to a value of zero. Hence the
- * clamp below: asking for a bow now buys the segment needed to have one. And
- * separately it was drawn at 1.8 to 4 cm on posts 2 m long, which even once it
- * was reaching the geometry would have been a fraction of a pixel at any distance
- * the LOD keeps this tier for. Both halves had to be wrong for it to be
- * invisible, which is why it survived so long.
+ * line the field has already bent, rather than one drawn straight and bent
+ * after. DESIGN.md §19 has why this parameter was inert for so long.
  */
 export function member2(b, a, bEnd, o) {
   const seed = o.seed ?? 0
@@ -1728,31 +1580,25 @@ export function member2(b, a, bEnd, o) {
  *
  * `path` is the four corners of the frame's CENTRE LINE in the caller's flat
  * (along, up) frame, and `signs` says which corner of the opening each one is,
- * as a pair of +-1. The mitre falls out of the signs: offsetting a corner by `r`
- * on BOTH axes at once is where a rectangle grown by r puts its corner, and it
- * stays the right answer when the rectangle is no longer a rectangle.
- *
- * A closed tube has no caps and no boundary, so it is airtight by construction,
+ * as a pair of +-1. The mitre falls out of the signs: offsetting a corner by
+ * `r` on BOTH axes at once is where a rectangle grown by r puts its corner, and
+ * it stays the right answer when the rectangle is no longer a rectangle. A
+ * closed tube has no caps and no boundary, so it is airtight by construction,
  * and using the SAME section loop at all four corners is what keeps the mitre a
  * mitre rather than a lap joint.
  *
- * WINDING IS DERIVED, NOT EYEBALLED. (a, v, out) is a LEFT handed frame -- p()'s
- * tangent is (-nz, 0, nx) and t x up = -n -- so for this corner order the sweep
- * tangent T satisfies T = e_r x e_o, a side quad's normal is T x S, and that
- * points outward only when S turns CLOCKWISE in (r, o). boxSection() winds
+ * WINDING IS DERIVED, NOT EYEBALLED. (a, v, out) is a LEFT handed frame --
+ * p()'s tangent is (-nz, 0, nx) and t x up = -n -- so for this corner order the
+ * sweep tangent T satisfies T = e_r x e_o, a side quad's normal is T x S, and
+ * that points outward only when S turns CLOCKWISE in (r, o). boxSection() winds
  * anticlockwise, hence the reverse().
  *
- * A BOX SECTION, not a roughSection. This swept a roughSection(4 or 5) until a
- * shutter hung off it turned out to be hanging off nothing: a surround is a
- * 7 x 28 cm timber, a 1-to-4 rectangle, and roughSection spaces its corners by
- * ANGLE -- so four of them land near the diagonals, where the rectangle's own
- * boundary is only 5 cm out, and the section collapses to a diamond a quarter
- * of the depth it was asked for. The reveal it cut was a different depth on
- * every window for no reason anybody chose, and nothing outside the sliver could
- * be relied on to be inside the timber. boxSection puts the corners AT the
- * corners and jitters each one independently, which is the same variety, an
- * honest 7 x 28 section, and (at a flat 4 sides) never more triangles than
- * before.
+ * A BOX SECTION, not a roughSection. A surround is a 7 x 28 cm timber, a 1-to-4
+ * rectangle, and roughSection spaces its corners by ANGLE -- so four of them
+ * land near the diagonals and the section collapses to a diamond a quarter of
+ * the depth it was asked for, which is how a shutter came to be hinged on
+ * nothing. boxSection puts the corners AT the corners for the same variety and,
+ * at a flat 4 sides, never more triangles.
  */
 function frameRing2(b, { p, path, signs, width, back, front, seed = 0, layer, color }) {
   const oc = (back + front) / 2
@@ -1774,16 +1620,15 @@ function frameRing2(b, { p, path, signs, width, back, front, seed = 0, layer, co
  * world-space grid wherever the rectangle happens to sit.
  *
  * World UVs are right for a wall and are not negotiable there -- absolute world
- * height is what makes a log course run level round a corner instead of stepping
- * at it. They are wrong for everything that is a discrete OBJECT rather than a
- * piece of surface: a pane, a shutter leaf, a door. A window whose glazing bars
- * are cut off mid-pane, and cut off at a different place on the next window along
- * because the building landed on a different half-metre, reads as broken in a way
- * no amount of texture quality fixes. These get the tile squared up on them.
+ * height is what makes a log course run level round a corner instead of
+ * stepping at it. They are wrong for everything that is a discrete OBJECT
+ * rather than a piece of surface: a pane, a shutter leaf, a door. A window
+ * whose glazing bars are cut off mid-pane, and cut off somewhere else on the
+ * next window along, reads as broken in a way no texture quality fixes.
  *
- * Rounded to WHOLE repeats, and never below one, so the tile still meets itself
- * where two of these sit edge to edge and a small rectangle gets one tile rather
- * than a fragment of one.
+ * Rounded to WHOLE repeats and never below one, so the tile still meets itself
+ * where two of these sit edge to edge and a small rectangle gets one tile
+ * rather than a fragment of one.
  */
 function fitUV(layer, w, h) {
   const t = TILE_METRES[layer] ?? 1
@@ -1796,31 +1641,26 @@ function fitUV(layer, w, h) {
  * A window that was never a rectangle, but IS still symmetrical.
  *
  * v2's first cut strayed each of the four corners independently, which is the
- * obvious way to break a right angle and the wrong one. A quadrilateral with four
- * unrelated corners does not read as a window that has settled -- it reads as a
- * window that has MELTED, because a real opening deforms as a rigid frame does:
- * it racks, it leans, the head spreads wider than the sill as the wall bellies
- * out. What it never does is have one corner wander north-east while its
- * neighbour wanders south-west.
+ * obvious way to break a right angle and the wrong one: a quadrilateral with
+ * four unrelated corners reads as a window that has MELTED, where a real
+ * opening deforms as a rigid frame does -- it racks, it leans, the head spreads
+ * wider than the sill as the wall bellies out. What it never does is have one
+ * corner wander north-east while its neighbour wanders south-west.
  *
- * So the whole opening now goes through ONE transform, and every part of the
- * window goes through the same one:
+ * So the whole opening goes through ONE transform:
  *
- *   taper   signed. The head ends up wider than the sill, or narrower. This is
- *           the flare, and it is the thing that was actually being asked for.
+ *   taper   signed. The head ends up wider than the sill, or narrower.
  *   tilt    a rigid rotation about the middle of the opening. Rotation cannot
  *           make a shape melt: it preserves every angle in it.
  *
  * Both are drawn once per window and applied to the opening, the surround path
  * and both shutter leaves, so the leaves stay parallel to the jambs they hang
- * off. Left and right corners get the same treatment by construction, which is
- * what makes it symmetric -- there is no per-corner hash left to be asymmetric
- * with.
+ * off and there is no per-corner hash left to be asymmetric with.
  *
- * The surround ring is drawn with FOUR OR FIVE sides in v2 where v1 used five or
- * six. That is a deliberate trade and it pays for the roof: an inn carries
- * fifteen windows, the ring costs 8 triangles a side, and the corners the sixth
- * side was rounding off are now corners that are not square to begin with.
+ * The surround ring is FOUR OR FIVE sides where v1 used five or six. That pays
+ * for the roof: an inn carries fifteen windows, the ring costs 8 triangles a
+ * side, and the corners the sixth side was rounding off are corners that are
+ * not square to begin with.
  */
 export function windowUnit2(
   b,
@@ -1870,88 +1710,66 @@ export function windowUnit2(
   const ow = hw + frame
   const leafW = width * 0.52
 
-  // WHERE A LEAF IS HUNG, which used to be nowhere. The leaf stood at
-  // `depth + 0.03` with its inboard edge on the plane of the surround's outer
-  // face -- 1 cm in FRONT of that face, so the two never met: the shutter was a
-  // rectangle floating clear of the building with daylight all round it. A
-  // shutter is the one piece of a window that is visibly hung on something, and
-  // it has to touch the thing it is hung on.
-  //
-  // So the hinged edge is BURIED IN THE SURROUND: it laps `LAP` onto the ring in
-  // plan and hangs at `HANG` out, which is inside the ring's section -- the ring
-  // reaches from 12 cm behind the wall plane out to `depth + 0.02` -- and stays
-  // inside it however the rough section jitters and however the field moves the
-  // two of them. `HANG` also clears a log course, which stands 5 cm proud.
+  // WHERE A LEAF IS HUNG. The hinged edge is BURIED IN THE SURROUND: it laps
+  // `LAP` onto the ring in plan and hangs `HANG` out, which is inside the
+  // ring's section -- the ring reaches from 12 cm behind the wall plane out to
+  // `depth + 0.02` -- and stays inside it however the rough section jitters and
+  // however the field moves the two of them. It used to stand 1 cm in FRONT of
+  // that face, so the two never met and the shutter was a rectangle floating
+  // clear of the building with daylight all round it. `HANG` also clears a log
+  // course, which stands 5 cm proud.
   const LAP = 0.02
   const HANG = 0.1
   // HOW FAR OPEN, per leaf rather than per window, so a window can stand with
-  // one leaf back against the wall and the other swung out -- which is what
-  // shutters look like on a building somebody lives in. About a third are ajar.
-  //
-  // A ROTATION about the hinge, not a shear: the free edge swings out and comes
-  // back in along the wall by the cosine, so the leaf keeps its width. That
-  // matters beyond looks -- plan.js reserves `width * 0.52` of frontage for this
-  // leaf, and a leaf that rotates can only ever need less of it than a leaf
-  // lying flat.
-  //
-  // The warp's own `splay` rides on top as a further angle rather than as the
-  // sideways push it used to be, so a crooked building's shutters hang crooked
-  // and a straight one's still sometimes stand open. Drawn HERE, above the duck
-  // below, because how far a leaf reaches off the wall decides where the
-  // covering has to be sampled.
+  // one leaf back against the wall and the other swung out. About a third are
+  // ajar. A ROTATION about the hinge, not a shear: the free edge swings out and
+  // comes back in along the wall by the cosine, so the leaf keeps its width --
+  // which matters beyond looks, plan.js having reserved `width * 0.52` of
+  // frontage that a rotating leaf can only ever need less of. The warp's own
+  // `splay` rides on top as a further angle. Drawn HERE, above the duck below,
+  // because how far a leaf reaches off the wall decides where the covering has
+  // to be sampled.
   const swing = [-1, 1].map((s) => (hash(seed * 61, s + 6) < 0.34 ? 0.22 + hash(seed * 61, s + 8) * 0.4 : 0)
     + Math.atan2(k.splay * (0.6 + hash(seed * 61, s + 2)), leafW))
   const outReach = shutters
     ? Math.max(...swing.map((th) => HANG + leafW * Math.sin(th)))
     : 0
 
-  // DUCKING UNDER WHATEVER IS ABOVE IT. A window is placed against a wall by the
-  // plan, which knows the wall's nominal height and nothing about a roof that
-  // sags 30 cm between its supports, flares its eave out past the wall and tips
-  // its ridge sideways. High on a gable end that is the difference between a
-  // window and a window with a roof through it -- and a frame standing 16 cm
-  // proud of the wall crosses the covering well before its own head does, so the
-  // height is asked for at the OUTER face of the unit, not at the wall plane.
+  // DUCKING UNDER WHATEVER IS ABOVE IT. A window is placed against a wall by
+  // the plan, which knows the wall's nominal height and nothing about a roof
+  // that sags 30 cm between its supports, flares its eave past the wall and
+  // tips its ridge sideways. A frame standing 16 cm proud of the wall crosses
+  // the covering well before its own head does, so the height is asked for at
+  // the OUTER face of the unit, not at the wall plane.
   //
   // `capY` is the other thing above a window, and it is not the roof: on a
   // half-timber wall a plate 16 cm deep lies under the eaves for the whole
-  // length of the wall, and on a gable end the covering is metres above it. A
-  // window that has cleared the ROOF by a comfortable margin can still have that
-  // beam across its head, which is the same defect as a stud through its jamb
-  // seen from the other axis. wall2() hands the height back; Infinity means
-  // there is no such beam on this wall.
+  // length of the wall, and on a gable end the covering is metres above it, so
+  // a window that has cleared the ROOF can still have that beam across its
+  // head. wall2() hands the height back; Infinity means there is no such beam.
   //
-  // HEAD_CLEAR is a looking number, not a structural one. A window whose frame
-  // stops a centimetre under the eaves reads as jammed up into the roof however
-  // correct the geometry is, and 30 cm is about the band of wall that has to
-  // show above a window for it to sit on the elevation rather than be squeezed
-  // into it. plan.js reserves enough for it nominally; this is what enforces it
-  // once the field has moved the roof.
-  //
-  // Move the whole unit down rather than trimming it: a window is a rigid figure
-  // (that is the rule the transform above exists to keep) and a trimmed one is a
-  // window with a bite out of it. If it cannot be got under by less than three
-  // quarters of its own height, it is not a window on that wall at all and it is
-  // dropped -- better a blank gable than a sill at knee height.
+  // HEAD_CLEAR is a looking number, not a structural one: 30 cm is about the
+  // band of wall that has to show above a window for it to sit on the elevation
+  // rather than be squeezed into it. Move the whole unit DOWN rather than
+  // trimming it -- a window is a rigid figure and a trimmed one has a bite out
+  // of it -- and if it cannot be got under by less than three quarters of its
+  // own height it is not a window on that wall at all.
   const HEAD_CLEAR = 0.3
   const W3 = warp ?? ((px, py, pz) => [px, py, pz])
   if (topAt) {
     // TWO FIGURES DUCK, and they are different shapes. The frame is tall and
-    // shallow: it reaches `height + frame` up and 16 cm out. An open leaf is
-    // short and deep: it stops at the head of the glass and can stand 40 cm off
-    // the wall, out under an overhang where the covering has come down to meet
-    // it. Sampling one box around both would drop every shuttered window by the
+    // shallow; an open leaf is short and deep and can stand 40 cm off the wall,
+    // out under an overhang where the covering has come down to meet it.
+    // Sampling one box around both would drop every shuttered window by the
     // difference, so each asks its own question and the deeper drop wins.
     //
-    // MEASURED WARPED, both sides of the comparison. Everything here is drawn
-    // straight and bent afterwards, and the field is noise at a scale of a few
-    // metres: it slides the covering sideways over the window and moves the two
-    // vertically by different amounts. A 30 cm band reserved before the bend can
-    // be 3 cm of band after it, and the bent one is the only one anybody sees.
-    // So every point is put through the field -- the head of the frame, the
-    // covering, the beam -- and the patch the covering is asked about is the
-    // WARPED footprint of the warped head. `warp` is null at strength 0, where
-    // all of this collapses back to the identity.
+    // MEASURED WARPED, both sides of the comparison. The field slides the
+    // covering sideways over the window and moves the two vertically by
+    // different amounts: a 30 cm band reserved before the bend can be 3 cm
+    // after it, and the bent one is the only one anybody sees. So the head, the
+    // covering and the beam all go through the field, and the patch the
+    // covering is asked about is the WARPED footprint of the warped head.
+    // `warp` is null at strength 0, where this collapses to the identity.
     const clearance = (aMax, outMax, vTop) => {
       let vMax = vTop
       for (const sg of [-1, 1]) vMax = Math.max(vMax, W(sg * aMax, vTop)[1])
@@ -2007,18 +1825,17 @@ export function windowUnit2(
   }
 
   if (detail <= 0) {
-    // LOD2 KEEPS ITS WINDOWS. At the range this tier is drawn at, a cottage is a
-    // hundred pixels tall and the single thing that separates a building from a
-    // crate is the pattern of openings on its face -- an unfenestrated box reads
-    // as scenery. So this is the one ornament that survives all the way down.
+    // LOD2 KEEPS ITS WINDOWS. At this range a cottage is a hundred pixels tall
+    // and the pattern of openings on its face is the single thing that
+    // separates a building from a crate, so this is the one ornament that
+    // survives all the way down.
     //
-    // One doubled rect, four triangles, and it is GLASS across the whole opening
-    // including where the frame would be: a dark border drawn half a pixel wide
-    // does not read as a frame, it just reads as a smaller window. The shutters
-    // are gone at this tier. The transform is NOT -- it moves the four corners
-    // this rect is drawn from and costs nothing, and a lit pane leaning a couple
-    // of degrees out of square is most of what says "hand-built" at the range
-    // where it is the only ornament left.
+    // One doubled rect, four triangles, and it is GLASS across the whole
+    // opening including where the frame would be: a dark border half a pixel
+    // wide does not read as a frame, only as a smaller window. The shutters are
+    // gone; the transform is NOT, because it costs nothing and a village whose
+    // windows go square at the LOD line visibly changes shape as you walk
+    // toward it.
     const q = [[-ow, -frame], [ow, -frame], [ow, height + frame], [-ow, height + frame]]
       .map(([a, v]) => { const [wa, wv] = W(a, v); return p(wa, wv, 0.02) })
     b.quad(q[0], q[1], q[2], q[3], {
@@ -2132,20 +1949,19 @@ export function windowUnit2(
 /**
  * A chimney as ONE flared stack.
  *
- * v1 built two battered prisms of six to eight sides -- a stack and a corbelled
- * cap -- for about 48 triangles, and the result still read as a post with a
- * collar. This is ONE solid of four, five or six sides -- twelve, sixteen or
- * twenty triangles, two stacks in three of them square -- and it goes the other
- * way: WIDER at the crown than at the base, with every corner jittered
- * independently so no two faces are the same width and no corner is regular.
+ * v1 built two battered prisms -- a stack and a corbelled cap -- for about 48
+ * triangles, and it still read as a post with a collar. This is ONE solid of
+ * four, five or six sides, twelve to twenty triangles, going the other way:
+ * WIDER at the crown than at the base, with every corner jittered
+ * independently so no two faces are the same width.
  *
- * The odd five- and six-sided ones are a minority on purpose. A village where
- * every stack has the same corner count reads as a kit even when no two stacks
- * are the same shape, because the eye counts silhouettes before it measures
- * them; a village where none of them agree reads as a different kit. A third of
- * them breaking the pattern is what makes the pattern look unplanned.
+ * The odd five- and six-sided ones are a minority on purpose. The eye counts
+ * silhouettes before it measures them, so a village where every stack has the
+ * same corner count reads as a kit even when no two are the same shape, and one
+ * where none of them agree reads as a different kit. A third of them breaking
+ * the pattern is what makes the pattern look unplanned.
  *
- * Flaring outward is not masonry practice and is not meant to be. It is the one
+ * Flaring outward is not masonry practice and is not meant to be: it is the one
  * shape a real chimney never has, which is exactly why it reads as somewhere
  * else -- and it is the tallest thing on the building, so it is the silhouette
  * the whole village is identified by from across the valley. The 28 to 36
@@ -2161,27 +1977,21 @@ export function chimney2(b, { x, z, baseY, topY, w = 0.62, d = 0.62, seed = 0, k
   // free -- the extra length is inside the building, and a prism's cost is in
   // its section, not its length.
   const foot = baseY - 0.7
-  // THE FLARE IS KEPT AT EVERY TIER, and it costs nothing to keep. The lower
-  // tiers used to fall back to b.box() here, which is TWELVE triangles for six
-  // square faces -- exactly what this prism costs for a four-sided section, so
-  // the flare and the corner jitter were being given up for no saving at all.
-  // The chimney is the tallest thing on the building and the flare is the whole
-  // reason its silhouette reads as somewhere else; the tiers that most need to
-  // read from a distance are precisely the far ones.
+  // THE FLARE IS KEPT AT EVERY TIER, and it costs nothing to keep: the lower
+  // tiers used to fall back to b.box(), which is TWELVE triangles for six
+  // square faces -- exactly what this prism costs at four sides -- so the flare
+  // and the corner jitter were being given up for no saving at all, on the
+  // tallest thing on the building, at the ranges that most need to read.
   //
-  // For a VERTICAL sweep prism()'s section frame is (+z, +x), so the section's u
-  // is the world z half-extent and its v is the world x one.
+  // For a VERTICAL sweep prism()'s section frame is (+z, +x), so the section's
+  // u is the world z half-extent and its v is the world x one.
   //
   // THE CORNER COUNT IS DRAWN FROM `seed` AND FROM NOTHING ELSE -- not from the
   // detail tier, not from a counter, not once per end of the sweep. The stack
-  // has to come out identical every time the same plan is built and identical at
-  // every tier it is built at, and both ends of the prism have to be the SAME
-  // loop scaled, or the facets twist between base and crown.
-  //
-  // Four sides keeps its own generator rather than falling out of polySection at
-  // n = 4: boxSection puts its corners at the corners of the rectangle, where a
-  // polygon walked by angle puts them a factor of root two inside them, and the
-  // square majority is the shape the whole look was tuned on.
+  // has to come out identical at every tier it is built at, and both ends of
+  // the prism have to be the SAME loop scaled or the facets twist between base
+  // and crown. Four sides keeps boxSection rather than polySection at n = 4,
+  // which puts its corners a factor of root two inside the rectangle's.
   const roll = hash(seed, 11)
   const sides = roll < 0.66 ? 4 : roll < 0.84 ? 5 : 6
   const sec = sides === 4

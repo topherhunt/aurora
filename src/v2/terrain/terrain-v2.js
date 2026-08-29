@@ -33,127 +33,96 @@ import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.j
 // v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 10 tree, worker-fed
 // geometry, hole-free swaps, partial invalidation on an edit, and ONE draw call.
 //
-// This is src/terrain/terrain.js's sibling and it deliberately keeps everything
-// that file learned the hard way. The three things worth restating, because each
-// one shipped as a visible bug in v1 before it was written down:
+// The rendering argument is DESIGN.md §5; the streaming policy lives in
+// stream-policy.js, which owns the decisions. Three things restated here because
+// each shipped as a visible bug in src/terrain/terrain.js first:
 //
-//   ONE BatchedMesh, SLOT_COUNT geometry slots bound 1:1 to instances up front,
-//   and never added or deleted afterwards. The obvious implementation is a
-//   THREE.Mesh per chunk; measuring it killed it, because the quadtree selects
-//   hundreds of leaves and that is hundreds of draw calls for an empty world.
-//   Streaming a chunk in is setGeometryAt() on a recycled slot. This works only
-//   because every chunk has identical topology -- CHUNK_RES is fixed for every
-//   depth -- so a freed slot always fits whatever arrives next.
+//   ONE BatchedMesh, SLOT_COUNT slots bound 1:1 to instances up front and never
+//   added or deleted. Streaming in is setGeometryAt() on a recycled slot, legal
+//   only because CHUNK_RES is fixed at every depth so a freed slot always fits.
+//   A THREE.Mesh per chunk is hundreds of draw calls for an empty world.
 //
-//   FIVE separate mechanisms keep the world hole-free, and they are not
-//   alternatives to each other: the pinned depth 0-2 base layer on its own queue,
-//   the loaded-ancestor walk for refining, the loaded-descendant walk for
-//   coarsening, eviction counted in HELD SLOTS, and an invalidated chunk keeping
-//   its stale geometry until the replacement lands. Removing any one of them
-//   reintroduces a specific reported artifact. See stream-policy.js, which now
-//   owns the decisions, for what each one is for.
+//   FIVE mechanisms keep the world hole-free and none replaces another: the
+//   pinned depth 0-2 base layer on its own queue, the loaded-ancestor walk for
+//   refining, the loaded-descendant walk for coarsening, eviction counted in HELD
+//   SLOTS, and an invalidated chunk keeping stale geometry until its replacement
+//   lands. Remove any one and a specific reported artifact returns.
 //
-//   Invariant violations THROW. A slot pool that has run dry and a worker whose
-//   vertex count disagrees with CHUNK_RES both take the whole frame down with a
-//   legible message rather than degrading into a world with pieces missing.
+//   Invariant violations THROW -- a dry slot pool, a worker vertex count that
+//   disagrees with CHUNK_RES -- rather than degrading into a world with pieces
+//   missing.
 //
-// WHAT IS NEW IN v2, beyond depth and packed integer keys:
-//
-//   setLayers(doc, dirtyRect) replaces v1's retune(). v1 rebuilds the entire
-//   world on every tuning change because a tuning constant moves the entire
-//   world. An authored edit does not, and the editor's feel depends on that
-//   distinction: dragging one river control point must re-mesh a few hundred
-//   metres of ground, not the whole 8 km box. See setLayers.
-//
-//   The staleness gate is per-key rather than global, which is the direct
-//   consequence of partial invalidation. The reasoning is long enough to live
-//   next to the code that implements it, in stream-policy.js.
+// NEW IN v2, beyond depth and packed integer keys: setLayers(doc, dirtyRect)
+// replaces v1's retune(). A tuning constant moves the whole world; an authored
+// edit does not, and the editor's feel is that distinction -- dragging one river
+// control point re-meshes a few hundred metres, not the whole 8 km box. The
+// staleness gate is per-key rather than global for the same reason; see
+// stream-policy.js.
 // ---------------------------------------------------------------------------
 
-// Reselect the quadtree at ~12 Hz when nothing is streaming. At walking pace that
-// is 12 cm of movement between selections, and at depth 10 the leaf CELL is
-// 50 cm -- comfortably under a cell again, which it was not at the old depth 13.
-// It is still the right number: selection also reruns immediately whenever a chunk lands or
-// an edit invalidates something (`_dirty`), which is what actually drives the
-// settling of a new view, and the timer only covers the case where nothing is in
-// flight and she is walking through already-resident ground. Halving it would
-// double a measured 0.023 ms p50 / 0.044 ms p99 selection (check-v2-quadtree.mjs)
-// to buy sub-cell reselection of terrain that is already correct.
+// Reselect the quadtree at ~12 Hz when nothing is streaming: 12 cm of walking
+// between selections against a 50 cm leaf cell at depth 10. Selection also reruns
+// immediately when a chunk lands or an edit invalidates (`_dirty`), which is what
+// actually settles a new view; the timer only covers walking through resident
+// ground. Halving it would double a measured 0.023 ms p50 / 0.044 ms p99
+// selection (check-v2-quadtree.mjs) to reselect terrain that is already correct.
 const SELECT_EVERY_FRAMES = 6
 
 // The floor on how often `_dirty` may force a reselect, in frames.
 //
-// Without it the dirty path has no floor at all, and that is not a rare corner:
-// every landed chunk sets _dirty, and while the pipe is full chunks land on most
-// frames -- so through the whole settling of a new view, which is exactly when
-// the frame budget is tightest, selection runs at the FULL frame rate instead of
-// the 12 Hz the constant above claims. Two frames costs 28 ms of extra latency
-// on a stand-in swap at 72 Hz, which nobody can see, and it caps the burst at
-// half rate.
+// Every landed chunk sets _dirty and chunks land on most frames while the pipe is
+// full, so without a floor selection runs at FULL frame rate through the settling
+// of a new view -- exactly when the frame budget is tightest -- rather than at the
+// 12 Hz above. Two frames is 28 ms of extra stand-in-swap latency at 72 Hz, which
+// nobody can see, and caps the burst at half rate.
 const MIN_SELECT_FRAMES = 2
 
 // The near field the yaw cull is never allowed to touch, in metres, and the
 // multiple of her height above a node that counts as near when she is above it.
-// See _inSight for what these are defending against.
+// See _inSight for what these defend against.
 //
-// DOWN_K is the one doing the real work, and it is geometry rather than taste:
-// looking STRAIGHT down, the ground she can see is a disc of radius
+// DOWN_K is geometry, not taste: looking straight down she sees a disc of radius
 // `height above it * tan(half the horizontal FOV)`, and the Quest 2's ~96 degrees
 // makes that tangent 1.11. 1.5 is that with a third again of margin, and it
-// scales itself -- 2.5 m standing, 450 m at 300 m up.
+// scales -- 2.5 m standing, 450 m at 300 m up.
 //
-// NEAR_KEEP_M only covers the case DOWN_K cannot see: a node whose maxY is at or
-// above the eye, where `above` goes to zero and the scaled radius collapses. 12 m
-// is one and a half chunks at the 8 m floor. It was 24 first, and the sweep says
-// that cost 11k triangles both eyes for radius nothing was asking for -- 24 to 8
-// is a flat 113k -> 102k worst case walking, with the knee at 12.
+// NEAR_KEEP_M covers the one case DOWN_K cannot: a node whose maxY is at or above
+// the eye, where `above` goes to zero and the scaled radius collapses. 12 m is one
+// and a half chunks at the 8 m floor; 24 cost 11k triangles both eyes for radius
+// nothing asked for, and 24 -> 8 is a flat 113k -> 102k worst case walking with
+// the knee at 12.
 const NEAR_KEEP_M = 12
 const DOWN_K = 1.5
 
-// Requests allowed in flight per worker, and in v2 this number is bounded from
-// ABOVE by the slot pool rather than only from below by worker throughput.
+// Requests allowed in flight per worker, bounded from ABOVE by the slot pool in
+// v2 rather than only from below by worker throughput.
 //
-// v1 ships 32 and its comment explains why: an in-flight cap is a cap on chunks
-// per frame, buildChunk is 0.393 ms against setGeometryAt's 0.005 ms, so the
-// workers are the only thing doing real work and a low cap leaves them idle while
-// the player looks at coarse stand-ins. All of that still holds.
-//
-// What does not carry over is the headroom, because the eviction target is
+// v1 ships 32 because an in-flight cap is a cap on chunks per frame and buildChunk
+// is 0.393 ms against setGeometryAt's 0.005 ms -- the workers do all the real work
+// and a low cap leaves them idle while the player looks at coarse stand-ins. That
+// still holds. What does not carry over is the headroom: the eviction target is
 // SLOT_COUNT - workers * queueDepth and the current render set is EXEMPT from
-// eviction. So the worst set the knob can pin down at once has to fit under that
-// target, not merely under SLOT_COUNT. Measured in check-v2-terrain.mjs section
-// "slot budget" over 1200 selections at MIN_TRI_DEG 1.2, which is the finest the
-// [ ] keys reach:
+// eviction, so the worst set this knob can pin down at once must fit under that
+// target. Measured in check-v2-terrain.mjs "slot budget" over 1200 selections at
+// MIN_TRI_DEG 1.2, the finest the [ ] keys reach: worst selection 856 leaves + 21
+// pinned = 877 resident against SLOT_COUNT 1024, leaving a stand-in budget of 83
+// chunks at queueDepth 32, 99 at 24, 115 at 16.
 //
-//     worst selection 856 leaves + 21 pinned = 877 resident, against SLOT_COUNT 1024
+// Every row fits, which is the finding -- at an 8 km box the pool is not the
+// binding constraint, and the depth cap coming down from 13 to 10 removed exactly
+// the levels that packed leaves under the camera, widening every margin. So 24 is
+// chosen on margin: the 856 comes from a synthetic ground function, not from
+// `reference/skyrim-height-map.jpg`, and range is computed against the mesher's
+// measured minY/maxY, so a field with more vertical relief selects MORE leaves and
+// 83 spare chunks is a 9% margin against a field nobody has flown. Re-run that
+// section against the real heightmap; if 856 holds, 32 is free.
 //
-//     queueDepth   in flight   maxReady   stand-in budget at the worst selection
-//         32           64         960                83
-//         24           48         976                99
-//         16           32         992               115
-//
-// Every row fits, which is the useful finding: the world box moved twice during
-// this build (16 km, then 4 km, then 8 km) and at 8192 the pool is not the binding
-// constraint on this knob. The depth cap has since come DOWN from 13 to 10, which
-// only widens every margin in that table -- the levels it removed were the ones
-// packing leaves under the camera. So the choice is made on margin
-// rather than on arithmetic, and 24 is the conservative read of a number that is
-// not yet trustworthy: the 856 comes from a synthetic ground function, not from
-// `reference/skyrim-height-map.jpg`. Range is computed against the mesher's
-// measured minY/maxY, so a field with more vertical relief than the fixture selects
-// MORE leaves, and 83 spare chunks is a 9% margin against a field nobody has flown
-// yet. Re-run this section against the real heightmap once the import lands; if 856
-// holds, 32 is free.
-//
-// The cost of choosing 24 is 48 requests in flight rather than 64 -- at v1's
-// measured 0.393 ms per chunk that is a 6 ms shallower pipeline, which is nothing.
-// A full re-stream of the worst case is 877 chunks: about 18 frames at 48 per
-// frame if the workers keep up.
-//
-// Whether they keep up is NOT yet measurable: chunk-mesh-v2.js does a bicubic tap
-// plus the carve layers where v1 did fbm. This is the number to raise if the
-// workers ever measure idle, and raising it means taking those slots back out of
-// maxReady and re-running the ladder above.
+// Choosing 24 costs 48 requests in flight rather than 64 -- a 6 ms shallower
+// pipeline at v1's 0.393 ms per chunk, which is nothing. A full re-stream of the
+// worst case is 877 chunks, about 18 frames at 48 per frame if the workers keep
+// up. Whether they keep up is not yet measurable: chunk-mesh-v2.js does a bicubic
+// tap plus the carve layers where v1 did fbm. Raise this if the workers ever
+// measure idle, and take those slots back out of maxReady when you do.
 const WORKER_QUEUE_DEPTH = 24
 
 // The interior grid of a chunk: (CHUNK_RES + 1)^2 = 289 vertices, the first
@@ -193,22 +162,19 @@ export class TerrainV2 {
     this.scene = scene
     this.queueDepth = queueDepth
 
-    // Normalized HERE, once, and then shipped verbatim to every worker.
+    // Normalized HERE, once, then shipped verbatim to every worker.
     //
-    // The composed height field is evaluated in THREE places that do not share
-    // memory -- the main thread for player collision, the editor raycast and the
-    // prop scatter, and one V2Height per terrain worker for the mesher -- so the
-    // relief has to be the SAME OBJECT'S WORTH OF VALUES on all of them. If it
-    // reaches the mesher and not the main thread, the ground she is drawn
-    // standing on and the ground she collides with are two different surfaces and
-    // she hovers or sinks, silently; nothing throws anywhere. That is the same
-    // failure the WORLD_SEED banner in height/field.js describes, and it is why
-    // the knobs travel over the wire on the same footing as the layers document
-    // instead of being read out of a global on whichever thread looks.
+    // The composed field is evaluated in THREE places that do not share memory --
+    // the main thread for collision, the editor raycast and the prop scatter, and
+    // one V2Height per terrain worker -- so the relief must be the same values on
+    // all of them. Reach the mesher and not the main thread and the ground she is
+    // drawn on and the ground she collides with are different surfaces; she hovers
+    // or sinks and nothing throws. Same failure as the WORLD_SEED banner in
+    // height/field.js, and why the knobs travel over the wire on the same footing
+    // as the document rather than out of a global.
     //
-    // Normalizing before the postMessage rather than trusting each worker to do
-    // it means a misspelled knob throws once, here, at construction -- not N
-    // times inside N workers, or worse, on only some of them.
+    // Normalizing before the postMessage means a misspelled knob throws once,
+    // here, at construction -- not N times inside N workers, or on only some.
     this.relief = normalizeRelief(relief)
 
     const budget = slotBudget(workers, queueDepth)
@@ -263,30 +229,25 @@ export class TerrainV2 {
     // key (packed integer) -> {node, slot, state, lastUsed, tris, visible, pinned}
     this.cache = new Map()
 
-    // THREE queues, and none of them may be merged with another.
+    // THREE queues, and none may be merged with another.
     //
-    // `queue` is the selection's, and it is REBUILT from the desired set every
-    // selection rather than appended to. An append-only queue grows without bound
-    // while walking: requests for ground she left behind stay in it, keep their
-    // cache entries alive, and the workers spend their time generating terrain
-    // nobody is looking at (v1 measured 1002 cache entries against a 720 cap over
-    // an 18 km walk).
+    // `queue` is the selection's, REBUILT from the desired set every selection
+    // rather than appended to: an append-only queue grows without bound while
+    // walking, keeping cache entries for ground she left behind alive and spending
+    // the workers on terrain nobody looks at (v1 measured 1002 entries against a
+    // 720 cap over an 18 km walk).
     //
-    // `_baseQueue` is the pinned base layer's, and it is separate BECAUSE of that
-    // rebuild. _select never asks for a depth 0-2 node once it has been
-    // subdivided away, so a base-layer request parked in `queue` is discarded by
-    // the first selection before _pump has ever run. That is exactly what used to
-    // happen in v1: on a settled camera, depth 0 and 1 measured 0/1 and 0/4
-    // resident and depth 2 measured 4/16, so the ancestor fallback was finding
-    // nothing at all and returned null for ~2100 lookups over a 2 km back-away.
-    // Ground drawn as sky.
+    // `_baseQueue` is the pinned base layer's, separate BECAUSE of that rebuild.
+    // _select never asks for a depth 0-2 node once it has been subdivided away, so
+    // a base-layer request parked in `queue` is discarded before _pump ever runs.
+    // That is v1's bug: on a settled camera depth 0/1 measured 0/1 and 0/4 resident
+    // and depth 2 measured 4/16, so the ancestor fallback returned null for ~2100
+    // lookups over a 2 km back-away. Ground drawn as sky.
     //
-    // `_editQueue` is v2's own, and it is separate for the identical reason one
-    // level along. The chunks a partial invalidation just freed were on screen a
-    // moment ago and are holes right now, but many of them are stand-ins rather
-    // than members of the desired set, so the next _select would not re-request
-    // them and putting them in `queue` would simply discard them. Merging it into
-    // `queue` reproduces the base-layer bug with a different trigger.
+    // `_editQueue` is v2's own, separate one level along for the identical reason.
+    // The chunks a partial invalidation just freed are holes right now, but many
+    // are stand-ins rather than members of the desired set, so the next _select
+    // would not re-request them and `queue` would simply discard them.
     this.queue = []
     this._baseQueue = []
     this._editQueue = []
@@ -304,46 +265,37 @@ export class TerrainV2 {
     this._cam = { x: 0, y: 0, z: 0, yaw: 0 }
 
     // Half-angle, in RADIANS, of a yaw cone that chunks must touch to be flagged
-    // visible at all. null means no such cone -- every selected chunk is
-    // submitted and the GPU's per-instance frustum cull decides, which is the
-    // right answer on desktop and the ONLY answer when yaw is unknown.
+    // visible at all. null means no cone -- every selected chunk is submitted and
+    // the GPU's per-instance frustum cull decides, which is right on desktop and
+    // the ONLY answer when yaw is unknown.
     //
-    // It exists for XR, where BatchedMesh's per-instance culling is off (its
-    // per-instance bounds test runs on the main thread once per eye, and that is
-    // exactly the thread that has nothing to spare at 72 Hz). With it off the
-    // batch submits the full 360-degree selection to both eyes, and roughly half
-    // of those chunks are behind her. Testing yaw HERE costs nothing: the loop
-    // below was already computing this exact predicate to feed the drawnTris
-    // readout and then throwing the answer away.
+    // It exists for XR, where BatchedMesh's per-instance culling is off (its bounds
+    // test runs on the main thread once per eye, the thread with nothing to spare
+    // at 72 Hz), so the batch submits the full 360-degree selection to both eyes
+    // with roughly half of it behind her. Testing yaw here is free: the loop below
+    // already computed this predicate for the drawnTris readout and threw it away.
     //
-    // Set it WIDER than the eye actually sees. Selection runs at 12 Hz, so a
-    // chunk that enters the eye cone between two selections has to already be
-    // flagged visible or it pops in on a head turn. 70 degrees against a
-    // ~55-degree eye is about 15 degrees of slack, which covers a fast turn at
-    // 72 Hz frame rate.
+    // Set it WIDER than the eye sees. Selection runs at 12 Hz, so a chunk entering
+    // the eye cone between selections must already be flagged visible or it pops in
+    // on a head turn. 70 degrees against a ~55-degree eye is 15 degrees of slack,
+    // enough for a fast turn at 72 Hz.
     this.cullDeg = null
 
-    // `tris` is what is RESIDENT and flagged visible; `drawnTris` is the subset
-    // inside the eye cone, which is what the GPU actually rasterises. The gap is
-    // the streaming margin and it is large, so the budget question has to be
-    // asked of drawnTris.
+    // `tris` is what is RESIDENT and flagged visible; `drawnTris` the subset inside
+    // the eye cone, which is what the GPU rasterises. The gap is the streaming
+    // margin and it is large, so the budget question is asked of drawnTris.
     //
-    // `finestCell` is the cell size of the finest RENDERED chunk anywhere, in
-    // metres. Deliberately NOT of the finest selected node -- a selection that
-    // wants depth 13 while the streamer is still showing its depth 7 ancestor
-    // would print 6 cm for ground that is visibly 2 m.
+    // `finestCell` is the cell size of the finest RENDERED chunk anywhere, not of
+    // the finest selected node -- a selection wanting depth 13 while the streamer
+    // still shows its depth 7 ancestor would print 6 cm for ground visibly 2 m.
     //
-    // `cellUnderfoot` is the same number asked about the chunk she is STANDING
-    // ON, and it is the one the panel prints. The difference is not academic:
-    // the split rule refines by range, so whatever the camera is nearest to is
-    // almost always at the depth cap, and `finestCell` therefore reads 6.3 cm
-    // essentially forever -- a readout that is true, useless, and easy to
-    // mistake for a claim about the ground in front of you. cellUnderfoot moves:
-    // it coarsens as she climbs, it jumps while a chunk under her is streaming
-    // in, and it is null when nothing drawn covers her at all.
-    //
-    // Both are kept because they answer different questions and the probes read
-    // finestCell.
+    // `cellUnderfoot` asks the same of the chunk she is STANDING ON, and is what
+    // the panel prints. The split rule refines by range, so whatever the camera is
+    // nearest is almost always at the depth cap and `finestCell` reads 6.3 cm
+    // essentially forever -- true, useless, and easy to mistake for a claim about
+    // the ground in front of you. cellUnderfoot coarsens as she climbs, jumps while
+    // a chunk under her streams in, and is null when nothing drawn covers her.
+    // Both are kept; the probes read finestCell.
     this.stats = {
       desired: 0,
       rendered: 0,
@@ -368,19 +320,18 @@ export class TerrainV2 {
       triDeg: LOD.triDeg,
     }
 
-    // What the mesher has taught us about the world, key -> {minY, maxY}. It is
-    // the input to the range term in the split rule and it is LEARNED rather than
-    // precomputed: the worker samples the field to build the chunk anyway, so the
-    // vertical extent rides back on a reply that was being sent regardless. The
-    // bootstrapping question -- how do you decide to split a node before you have
-    // built it -- answers itself, because a node is built BEFORE the decision to
-    // split it is ever made, and the pinned base layer seeds the top of the tree.
+    // What the mesher has taught us about the world, key -> {minY, maxY}. Input to
+    // the range term in the split rule, and LEARNED rather than precomputed: the
+    // worker samples the field to build the chunk anyway, so the vertical extent
+    // rides back on a reply already being sent. The bootstrapping question answers
+    // itself -- a node is built BEFORE the decision to split it is made, and the
+    // pinned base layer seeds the top of the tree.
     //
     // Deliberately NOT the chunk cache and never evicted with it: two floats per
-    // node is nothing, and keeping it means walking back into a valley you left
-    // ten minutes ago has the right vertical extent immediately. It is dropped
-    // only for the keys an edit invalidates, because a carve genuinely moves a
-    // node's floor and a stale minY makes a node look nearer than it is.
+    // node is nothing, and walking back into a valley you left ten minutes ago has
+    // the right vertical extent immediately. Dropped only for the keys an edit
+    // invalidates, because a carve genuinely moves a node's floor and a stale minY
+    // makes a node look nearer than it is.
     this.info = new Map()
 
     // The staleness floors. See stream-policy.js for the full argument; the short
@@ -404,24 +355,21 @@ export class TerrainV2 {
       // THE HEIGHTMAP IS COPIED PER WORKER AND EACH COPY IS TRANSFERRED.
       //
       // `data` is one Float32Array and there are N workers. Transferring it
-      // DETACHES it, so the first worker would get the field and every other one
-      // would get a zero-length husk -- and a worker that meshes from an empty
-      // field produces a perfectly flat world with no error anywhere, which is
-      // the single worst failure shape available here. The alternatives were
-      // posting without a transfer list and letting structured clone copy it, or
-      // slicing per worker and transferring the slice.
+      // DETACHES it, so the first worker gets the field and every other one a
+      // zero-length husk -- and a worker meshing from an empty field produces a
+      // perfectly flat world with no error anywhere, the worst failure shape
+      // available here.
       //
-      // Slicing wins, and not because it is faster -- both end with N copies of
-      // 4 MB and both pay one memcpy each, once, at construction. It wins because
-      // the copy is VISIBLE. With a bare postMessage there is nothing on the page
-      // to tell a future reader that the buffer must not be transferred, and the
-      // obvious "optimisation" of adding [data.buffer] to the call reintroduces
-      // the flat-world bug silently. Here the thing in the transfer list is a
-      // buffer that provably nobody else holds.
+      // Slicing wins over a bare postMessage not because it is faster (both end
+      // with N copies of 4 MB and one memcpy each, at construction) but because
+      // the copy is VISIBLE: with a bare postMessage nothing on the page tells a
+      // future reader the buffer must not be transferred, and the obvious
+      // "optimisation" of adding [data.buffer] reintroduces the flat world
+      // silently. Here the thing in the transfer list provably nobody else holds.
       //
-      // SharedArrayBuffer would avoid the N copies outright, and it is not
-      // available: it needs COOP/COEP cross-origin isolation headers, which
-      // vite.config.js does not set and which are not this file's to add.
+      // SharedArrayBuffer would avoid the N copies and is not available: it needs
+      // COOP/COEP cross-origin isolation headers, which vite.config.js does not
+      // set and which are not this file's to add.
       const copy = data.slice()
       w.postMessage(
         { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, epoch: this.epoch },
@@ -443,25 +391,23 @@ export class TerrainV2 {
   /**
    * Apply an edited world document and invalidate the chunks it changed.
    *
-   * This replaces v1's retune(), and the difference is the whole point of the
-   * editor. v1 changes a noise constant, which moves every metre of the whole
-   * world, so it frees every slot and starts over. An authored edit moves a river
-   * bank or a snow point: `dirtyRect` is the XZ box outside which the field is
-   * bit-identical to what is already on the GPU, and everything outside it KEEPS
-   * ITS GEOMETRY AND STAYS VISIBLE. Dragging a control point therefore re-meshes
-   * a few hundred metres of ground rather than dissolving the world to the pinned
-   * base layer for the duration of the drag.
+   * This replaces v1's retune(), and the difference is the point of the editor.
+   * v1 changes a noise constant, which moves every metre of the world, so it frees
+   * every slot and starts over. An authored edit moves a river bank: `dirtyRect`
+   * is the XZ box outside which the field is bit-identical to what is already on
+   * the GPU, and everything outside it KEEPS ITS GEOMETRY AND STAYS VISIBLE, so
+   * dragging a control point re-meshes a few hundred metres rather than dissolving
+   * the world to the base layer for the length of the drag.
    *
-   * `dirtyRect === null` means "everything changed" -- a document load, an
-   * import, an undo across a base-elevation change, or a layer that could not
-   * bound its own edit. That is v1's behaviour exactly: free every slot, clear the
-   * bounds table, re-seed the base layer so the ancestor fallback still has
-   * something to find, and let the world go low-poly for a moment instead of
-   * going to sky.
+   * `dirtyRect === null` means everything changed -- a document load, an import, an
+   * undo across a base-elevation change, or a layer that could not bound its own
+   * edit. That is v1's behaviour: free every slot, clear the bounds table, re-seed
+   * the base layer so the ancestor fallback still finds something, and go low-poly
+   * for a moment instead of going to sky.
    *
    * The doc goes to every worker either way, and the epoch is bumped BEFORE the
-   * floors are stamped so that every request already in flight is strictly older
-   * than the invalidation it is being tested against.
+   * floors are stamped so every request in flight is strictly older than the
+   * invalidation it is tested against.
    */
   setLayers(doc, dirtyRect) {
     if (!doc) throw new Error('TerrainV2.setLayers: no doc')
@@ -485,30 +431,24 @@ export class TerrainV2 {
    * the world. Returns true if anything actually changed, so a HUD scrub that
    * lands back on the value it started from costs nothing.
    *
-   * THIS IS setLayers WITH dirtyRect === null AND IT CANNOT BE ANYTHING ELSE.
-   * setLayers exists to avoid exactly this: an authored edit moves a river bank
-   * and the ground a kilometre away is bit-identical, so it keeps its geometry. A
-   * relief knob is the other kind of change -- it is v1's retune(), a constant
-   * that moves every metre of the whole world -- and there is no rect that bounds
-   * it. So every slot is freed, the bounds table is cleared, the base layer is
-   * re-seeded so the ancestor fallback still resolves, and the world goes
-   * low-poly for a moment rather than going to sky.
+   * THIS IS setLayers WITH dirtyRect === null AND IT CANNOT BE ANYTHING ELSE. A
+   * relief knob is v1's retune() -- a constant that moves every metre of the world
+   * -- and no rect bounds it. So every slot is freed, the bounds table cleared, the
+   * base layer re-seeded so the ancestor fallback still resolves, and the world
+   * goes low-poly for a moment rather than to sky.
    *
-   * THE CALLER STILL OWES THE MAIN THREAD'S OWN FIELD THE SAME CALL. This posts
-   * the knobs to the workers, which mesh; it does not touch the V2Height that
-   * player collision, the editor raycast and the prop scatter read, because this
-   * object does not own it. Set one and not the other and the surface she is
-   * drawn standing on and the surface she collides with drift apart by metres,
-   * with nothing thrown -- see the constructor's note and the banner in
-   * height/relief.js. Set the field's first, if anything: it is the expensive
-   * half (V2Height.setRelief with `erode` up is a whole-field talus relaxation,
-   * about 190 ms of a 240 ms rebuild against 55 ms with erosion off), and the
-   * workers are doing the identical rebuild concurrently, so the wall-clock is
+   * THE CALLER STILL OWES THE MAIN THREAD'S OWN FIELD THE SAME CALL. This posts the
+   * knobs to the workers; it does not touch the V2Height that collision, the editor
+   * raycast and the prop scatter read, because this object does not own it. Set one
+   * and not the other and the two surfaces drift apart by metres with nothing
+   * thrown -- see the constructor's note and height/relief.js. Set the field's
+   * first: it is the expensive half (V2Height.setRelief with `erode` up is a
+   * whole-field talus relaxation, about 190 ms of a 240 ms rebuild against 55 ms
+   * with erosion off) and the workers rebuild concurrently, so the wall-clock is
    * one rebuild rather than three.
    *
-   * The epoch is bumped BEFORE _invalidateAll for the same reason setLayers does
-   * it in that order: every request already in flight has to be strictly older
-   * than the invalidation it is about to be tested against.
+   * Epoch bumped before _invalidateAll for setLayers' reason: every request in
+   * flight must be strictly older than the invalidation about to test it.
    */
   setRelief(relief) {
     const next = normalizeRelief(relief)
@@ -534,15 +474,14 @@ export class TerrainV2 {
    *
    * `rect` is a half-open texel box {i0, j0, i1, j1}, `data` its contents in
    * metres, row-major and tightly packed, and `worldRect` the XZ box those texels
-   * can influence -- which is WIDER than the texels themselves, because the
-   * coarse sample is bicubic and each texel is read by a 4x4 stencil. The caller
-   * passes it because the caller owns the heightmap this rect indexes into; the
-   * widening itself is `rectToWorld` in height/sculpt.js.
+   * can influence -- WIDER than the texels themselves, because the coarse sample is
+   * bicubic and each texel is read by a 4x4 stencil. The caller passes it because
+   * the caller owns the heightmap; the widening is `rectToWorld` in sculpt.js.
    *
-   * The per-worker slice is not an optimisation and not optional: see the
-   * transfer-list argument at the constructor. One array transferred to N workers
-   * leaves N-1 of them holding a husk, and a worker with a zero-length patch
-   * throws where a worker with a zero-length FIELD would silently mesh a plain.
+   * The per-worker slice is not optional: see the transfer-list argument at the
+   * constructor. One array transferred to N workers leaves N-1 holding a husk, and
+   * a worker with a zero-length patch throws where one with a zero-length FIELD
+   * would silently mesh a plain.
    */
   patchHeight(rect, data, worldRect) {
     if (!validRect(worldRect)) {
@@ -564,24 +503,20 @@ export class TerrainV2 {
     this._dirty = true
   }
 
-  // The full reset. Everything cached is now wrong, so free it rather than
-  // waiting for eviction to notice, and re-seed the base layer straight away so
-  // the coarse fallback still resolves.
+  // The full reset. Everything cached is now wrong, so free it rather than wait
+  // for eviction, and re-seed the base layer at once so the coarse fallback still
+  // resolves.
   //
-  // THE PINNED BASE LAYER IS HELD RATHER THAN FREED, and that one exception is
-  // the difference between this reading as a coarsening and reading as the world
-  // switching off. Freeing all 21 of them too meant the ancestor walk had nothing
-  // to find for the length of a whole rebuild -- with `erode` up that is a worker
-  // rebuild of about 240 ms before the first base chunk is even meshed -- so
-  // every relief change flashed the entire view to sky. `setRelief` is driven off
-  // a HUD scrub that commits on every 4 px tick, so that was not one blink but a
-  // view that stayed empty for as long as the drag lasted, which defeats the
-  // point of a knob you drag in order to watch the ridge line move.
+  // THE PINNED BASE LAYER IS HELD RATHER THAN FREED, and that exception is the
+  // difference between this reading as a coarsening and as the world switching
+  // off. Freeing all 21 too left the ancestor walk nothing to find for a whole
+  // rebuild -- with `erode` up, ~240 ms before the first base chunk is meshed -- so
+  // every relief change flashed the view to sky. setRelief is driven off a HUD
+  // scrub committing every 4 px, so that was not one blink but an empty view for
+  // the length of the drag, which defeats a knob you drag to watch the ridge move.
   //
-  // Holding costs no new slots: these entries keep the ones they already own and
-  // are re-meshed in place, exactly as _invalidateRect's 'hold' does. What is on
-  // screen meanwhile is one epoch stale and 64 m per cell -- far too coarse to
-  // look at, and the right shape, which is the whole argument for pinning them.
+  // Holding costs no new slots: these entries keep the ones they own and are
+  // re-meshed in place, exactly as _invalidateRect's 'hold' does.
   _invalidateAll() {
     invalidateAll(this._floors, this.epoch)
     // These bounds describe a world that no longer exists, and a stale maxY makes
@@ -628,32 +563,27 @@ export class TerrainV2 {
 
   // The partial reset, which has no v1 counterpart.
   //
-  // THE OLD CHUNK STAYS ON SCREEN UNTIL THE NEW ONE LANDS. This used to free the
-  // slot here and re-request into an empty one, which meant every invalidated
-  // chunk was a hole for as long as the bake took -- and the holes went all the
-  // way through, because an edit's rect also catches the PINNED depth 0-2 chunks
-  // that contain it, so the ancestor fallback had nothing to fall back to
-  // either. Dragging a snow point or a lake gizmo flashed sky at 60 Hz.
+  // THE OLD CHUNK STAYS ON SCREEN UNTIL THE NEW ONE LANDS. Freeing the slot here
+  // and re-requesting into an empty one made every invalidated chunk a hole for
+  // the length of the bake -- and the holes went all the way through, because an
+  // edit's rect also catches the PINNED depth 0-2 chunks containing it, so the
+  // ancestor fallback had nothing to fall back to. Dragging a snow point or a lake
+  // gizmo flashed sky at 60 Hz. Holding costs one slot per invalidated chunk for
+  // one bake, affordable only because eviction counts SLOTS rather than ready
+  // states (selectEvictions). What is on screen during the drag is one epoch stale,
+  // which is exactly what the author is trying to change.
   //
-  // Holding it instead costs one slot per invalidated chunk for the length of
-  // one bake, and that cost is inside the budget only because eviction now
-  // counts SLOTS rather than ready states -- see selectEvictions. What is on
-  // screen during the drag is one epoch stale, which is exactly what the author
-  // is trying to change; it is replaced in place, without a frame of nothing,
-  // when the reply arrives.
+  // The other three things per key, in order. The floor is stamped FIRST so any
+  // reply in flight for that key is dead on arrival. The bounds entry is dropped,
+  // because a carve moves a node's floor by metres and a stale minY over-refines
+  // the ground around it. And the entry goes back to 'queued', which is what lets
+  // _send pick it up again -- from 'pending' too, for a key invalidated twice
+  // inside one bake, whose first reply the raised floor has already condemned.
   //
-  // The other three things per key, and the order still matters. The floor is
-  // stamped first so any reply already in flight for that key is dead on arrival.
-  // The bounds entry is dropped, because a carve moves a node's floor by metres
-  // and a stale minY would over-refine the ground around it for as long as it
-  // survived. And the entry goes back to 'queued', which is what lets _send pick
-  // it up again -- from 'pending' too, for a key invalidated twice inside one
-  // bake, whose first reply the raised floor has already condemned.
-  //
-  // A key with NO slot -- merely queued, or in flight -- had nothing on screen,
-  // so it is dropped outright: no hole, and the next selection asks again if it
-  // still wants it. Except when pinned, because the base layer is the floor under
-  // every other fallback and it must not thin out just because an edit crossed it.
+  // A key with NO slot -- merely queued, or in flight -- had nothing on screen, so
+  // it is dropped outright: no hole, and the next selection asks again if it still
+  // wants it. Except when pinned: the base layer is the floor under every other
+  // fallback and must not thin out because an edit crossed it.
   _invalidateRect(rect) {
     const keys = invalidatedKeys(this.cache.keys(), rect)
     invalidateKeys(this._floors, keys, this.epoch)
@@ -695,17 +625,15 @@ export class TerrainV2 {
     return (n) => (n.x + n.size / 2 - cam.x) ** 2 + (n.z + n.size / 2 - cam.z) ** 2
   }
 
-  // Pin depths 0-2 (1 + 4 + 16 = 21 chunks) permanently.
+  // Pin depths 0-2 (1 + 4 + 16 = 21 chunks) permanently. Without them the ancestor
+  // fallback has nothing to find -- coarse nodes leave the desired set as soon as
+  // they are subdivided, so they would never be requested and every not-yet-loaded
+  // chunk would render as a hole through to the sky. A depth-2 chunk is 1 km across
+  // at 64 m per cell: too coarse to look at, but the right shape, and roughly
+  // correct ground beats a hole every time.
   //
-  // Without this the ancestor fallback has nothing to find: coarse nodes leave the
-  // desired set as soon as they are subdivided, so they would never be requested,
-  // and every not-yet-loaded chunk would render as a hole straight through to the
-  // sky. A depth-2 chunk is 1 km across at 64 m per cell -- far too coarse to
-  // look at, but it is the right shape, and roughly-correct ground beats a hole
-  // every time.
-  //
-  // Queued on _baseQueue rather than `queue`. See the constructor's note on the
-  // three queues for the measured reason.
+  // Queued on _baseQueue rather than `queue`; see the constructor's three-queue
+  // note for the measured reason.
   _seedBaseLayer() {
     for (let depth = 0; depth <= 2; depth++) {
       const n = 1 << depth
@@ -744,16 +672,12 @@ export class TerrainV2 {
       return
     }
 
-    // The relief acknowledgement, and it is recorded separately from lastBakeMs
-    // rather than sharing it. They are far apart in cost: a layers bake is a
-    // snow grid in a few milliseconds, a relief rebuild with `erode` up is a
-    // whole-field talus relaxation at about 240 ms. Folding a 240 into the field
-    // the panel labels "bake" would read as a bug in the layer bake rather than
-    // as the cost of the knob that was just turned on.
-    //
-    // Not waited on, exactly like 'layered': the chunk requests behind it are
-    // ordered after it on the same port, so the new relief is applied before any
-    // of them is meshed.
+    // The relief acknowledgement, recorded separately from lastBakeMs because the
+    // two are far apart in cost: a layers bake is a snow grid in a few
+    // milliseconds, a relief rebuild with `erode` up is a whole-field talus
+    // relaxation at about 240 ms. Folding a 240 into the field the panel labels
+    // "bake" would read as a bug in the layer bake. Not waited on, like 'layered':
+    // the chunk requests behind it are ordered after it on the same port.
     if (msg.type === 'relieved') {
       this.stats.lastReliefMs = msg.ms
       return
@@ -807,15 +731,13 @@ export class TerrainV2 {
     }
 
     // An entry that already holds a slot is an invalidated chunk that kept its old
-    // geometry on screen (see _invalidateRect); it is REPLACED IN PLACE, which is
-    // the whole point -- taking a fresh slot and freeing the old one would put a
-    // frame of nothing between the two and give back the flash this exists to
-    // prevent. It also needs no slot from the pool, which is what keeps the budget
-    // argument below true while stale chunks are being held.
-    //
-    // Otherwise: eviction runs every update and keeps slot-holding entries under
-    // maxReady, and the margin maxReady leaves under SLOT_COUNT is exactly the
-    // in-flight cap, so an empty pool can only mean that invariant has broken.
+    // geometry on screen (_invalidateRect); it is REPLACED IN PLACE, which is the
+    // point -- a fresh slot plus freeing the old one puts a frame of nothing
+    // between the two and gives back the flash this exists to prevent. It also
+    // needs no slot from the pool, which keeps the budget argument true while stale
+    // chunks are held. Otherwise: eviction keeps slot-holding entries under
+    // maxReady and that margin under SLOT_COUNT is exactly the in-flight cap, so an
+    // empty pool can only mean the invariant has broken.
     const held = entry.slot !== null
     const slot = held ? entry.slot : this._free.pop()
     if (!slot) {
@@ -998,17 +920,15 @@ export class TerrainV2 {
 
     // How many extra chunks the fine-stand-in path may retain this selection.
     //
-    // Retaining a chunk means putting it in `_render`, and eviction prefers to
-    // keep anything in `_render` -- that is what stops the swap being yanked out
-    // from under itself, and it is also why this cannot be unbounded. A cover is
-    // made of chunks that were already resident, so the union of (ready desired
-    // chunks + every descendant cover) measured no larger than the desired set
-    // itself during a v1 back-away, peaking 39 chunks over. The cap is here for
-    // the case that is not true of, and the last-resort reclaim in _evict is what
-    // makes exceeding it survivable rather than fatal.
-    //
-    // Spent nearest-node-first, so what keeps its detail under pressure is the
-    // ground in front of her rather than whatever the quadtree emitted first.
+    // Retaining means putting a chunk in `_render`, and eviction prefers to keep
+    // anything in `_render` -- what stops the swap being yanked out from under
+    // itself, and why this cannot be unbounded. A cover is made of already-resident
+    // chunks, so the union of (ready desired + every descendant cover) measured no
+    // larger than the desired set itself during a v1 back-away, peaking 39 chunks
+    // over. The cap covers the case that is not true of; _evict's last-resort
+    // reclaim makes exceeding it survivable rather than fatal. Spent
+    // nearest-node-first, so what keeps detail under pressure is the ground in
+    // front of her rather than whatever the quadtree emitted first.
     let standInBudget = Math.max(0, this.maxReady - desired.length - PINNED_CHUNKS)
 
     const misses = []
@@ -1099,17 +1019,16 @@ export class TerrainV2 {
    * The height of the DRAWN terrain surface at (x, z), or null if no chunk is
    * covering it yet.
    *
-   * This is deliberately NOT V2Height.heightAt. The field is the surface at
-   * infinite resolution; what the player sees is a triangle chord across a cell
-   * that runs from 6 cm underfoot to 64 m at a kilometre and a half, and the gap
-   * between the two is what makes a distant tree hang in the air. Measured on
-   * the shipped heightmap, that gap is 1 cm at 8 m and 4.6 m of MEAN error at
-   * 1.5 km, with a p95 of 14.7 m -- more than a tree's own height. Anything
-   * standing on the ground has to stand on the ground that is drawn.
+   * Deliberately NOT V2Height.heightAt. The field is the surface at infinite
+   * resolution; what she sees is a triangle chord across a cell running from 6 cm
+   * underfoot to 64 m at a kilometre and a half, and that gap is what leaves a
+   * distant tree hanging in the air -- measured on the shipped heightmap, 1 cm at
+   * 8 m and 4.6 m of MEAN error at 1.5 km, p95 14.7 m, more than a tree's own
+   * height. Anything standing on the ground stands on the ground that is DRAWN.
    *
-   * Both the grid spacing and the diagonal are chunk-mesh-v2's, not an
-   * approximation of them: same band-limited samples, same shorter-diagonal
-   * rule. Where a chunk is resident this returns the drawn surface exactly.
+   * Grid spacing and diagonal are chunk-mesh-v2's, not an approximation of them:
+   * same band-limited samples, same shorter-diagonal rule, so where a chunk is
+   * resident this returns the drawn surface exactly.
    *
    * `key` may be passed by a caller that already resolved it (see groundKeyAt)
    * to skip the depth walk.
@@ -1155,21 +1074,17 @@ export class TerrainV2 {
 
   // Should this node be flagged visible, given a yaw cone of `half` radians?
   //
-  // THE CONE ALONE IS NOT ENOUGH, and the failure is not subtle: `cam.yaw` has no
-  // pitch term, so looking DOWN does not move the cone at all -- while in a
-  // headset it swings a large disc of ground behind her feet straight into view.
-  // Culling on yaw alone punched a square hole under the player and left the
-  // ground behind her missing out of the corner of the eye. A yaw cone is a fair
-  // approximation of what the eye sees for ground near the horizon, and a
-  // completely wrong one for ground near the camera.
+  // THE CONE ALONE IS NOT ENOUGH: `cam.yaw` has no pitch term, so looking DOWN does
+  // not move the cone at all, while in a headset it swings a large disc of ground
+  // behind her feet into view. Culling on yaw alone punched a square hole under the
+  // player and left the ground behind her missing out of the corner of the eye. A
+  // yaw cone approximates what the eye sees near the horizon and is completely
+  // wrong near the camera.
   //
-  // So the cone governs the far field only, and everything NEAR is kept
-  // unconditionally. Near is measured against her height above the node rather
-  // than as a fixed radius, because the disc she can see looking down IS that
-  // height times a constant: two or three metres of ground behind her heels
-  // standing, hundreds of metres in every direction flying at 300 m. DOWN_K is
-  // that constant and NEAR_KEEP_M is the floor for when it degenerates -- see
-  // both constants for the arithmetic.
+  // So the cone governs the far field only and everything NEAR is kept
+  // unconditionally, measured against her height above the node rather than as a
+  // fixed radius, because the disc she sees looking down IS that height times a
+  // constant. DOWN_K is that constant, NEAR_KEEP_M the floor when it degenerates.
   _inSight(cam, n, key, half) {
     const dx = Math.max(n.x - cam.x, 0, cam.x - (n.x + n.size))
     const dz = Math.max(n.z - cam.z, 0, cam.z - (n.z + n.size))

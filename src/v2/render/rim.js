@@ -107,22 +107,58 @@ export const RIM_AT = (1 + FADE_BAND) / 2
 const RIM_SLACK_MIN = 0.25
 const RIM_SPEED_DECAY = 0.9
 
-// Metres of separation between the distance a prop starts fading OUT at and the
-// distance it is allowed to come back IN at.
+// The slack the BOUNDARIES use is quantised UP to a multiple of this, and that
+// is what keeps a deceleration from being visible.
 //
-// A DISTANCE IN METRES AND NOT A FRACTION OF THE RANGE, which is the whole
-// argument for the number. What this guards against is a prop parked on its own
-// boundary being re-triggered by the camera jittering across it, and the camera
-// jitters by an absolute amount -- head bob, a controller nudge, the last metre
-// of a walk that ends on the line. It has nothing to do with whether the prop is
-// 20 m away or 1,200. Two metres is over a third of a second of walking at 5 m/s
-// and is not something a player crosses back and forth by accident; the cost is
-// that the far field is up to two metres "sticky" in density depending on which
-// way you last walked, which is invisible at any range this fires at.
+// The slack only ever DELAYS a hide, so every metre of it is holding a ring of
+// props alive past their own boundary -- and the decay above gives that ring back
+// a centimetre at a time over some forty frames. Each of those frames evicts the
+// few props the boundary just passed, so a bed as dense as the blades retires a
+// handful every frame for a second after the player has already stopped. Measured
+// on the shipped blade bed, a 20 m walk then a standstill: 431 clumps over
+// 1,069 ms, against the 361 ms of sweep-phase-plus-fade latency that is inherent.
+//
+// Rounding UP means the slack gives the same distance back in two or three jumps
+// instead, so the churn ends with that latency rather than long after it. Up
+// rather than down because the slack is a safety margin against a stale sweep:
+// bigger is always sound, smaller is the thing that pops. A quarter metre is well
+// under the RIM_HYST floor, so a step can never on its own carry a prop across
+// both boundaries -- at half a metre it can, and check-trees catches it.
+const RIM_SLACK_STEP = 0.25
+
+// Separation between the distance a prop fades OUT at and the distance it is
+// allowed to come back IN at: whichever is WIDER of a fixed 2 m and 7.5% of the
+// prop's own gone-distance.
+//
+// THE FRACTION IS THE LOAD-BEARING HALF and the metres are only a floor under
+// it. A prop's boundary is `gone * RIM_AT`, and `gone` runs from 8 m for a tuft
+// of grass to 1,500 m for a tree, so a hysteresis in metres is a different
+// promise at each end -- 2 m is a quarter of the grass boundary and a seventh of
+// one per cent of the tree one. What toggles a prop is a distance change
+// PROPORTIONAL to how far away it is: flying past a tree standing 80 m off its
+// own rim moves it several metres in a second without the player going anywhere
+// near it. Measured on the boot forest at a 60 m/s fly, a flat 2 m produced
+// 1,935 trees that dissolved IN and then back OUT inside six seconds, 579 of
+// which never got properly inside their own boundary at all -- a steady trickle
+// of far foliage appearing and then thinking better of it, which is the artefact
+// this number exists to prevent. With the fraction, and with the slack held off
+// the show boundary below, those 579 are 62 at 60 m/s and none at 20; what is
+// left is trees the player flew genuinely past, which SHOULD go.
+//
+// 7.5% IS NOT A TUNED NUMBER: it is `RIM_AT - FADE_BAND`, the inner half of the
+// band the shader's smoothstep used to ramp over. So a prop still appears at the
+// distance the old ramp reached full coverage at and still goes at the midpoint,
+// and the population between those two distances is now whatever the player's
+// own approach put there rather than a fixed answer.
+//
+// The metres floor is for the near scatters, where 7.5% is centimetres: it is
+// over a third of a second of walking at 5 m/s, so head bob and a controller
+// nudge cannot cross it.
 //
 // Both boundaries carry the slack, so the ordering `show < hide` holds at every
-// speed and the separation stays exactly this number.
+// speed and the separation stays exactly this.
 export const RIM_HYST = 2
+export const RIM_HYST_FRAC = RIM_AT - FADE_BAND
 
 /**
  * The rim dissolve for one BatchedMesh: which instances are drawn, which are
@@ -155,7 +191,7 @@ export class RimFade {
 
     // Fades in flight, dense, with an index back per instance so a scatter
     // reclaiming an instance mid-fade can pull it out in O(1). Same shape as the
-    // cross-dissolve lists in trees.js and rocks.js, and for the same reason.
+    // cross-dissolve lists in rocks.js and grass.js, and for the same reason.
     this.flight = new Int32Array(maxInstances)
     this.flightAt = new Int32Array(maxInstances).fill(-1)
     this.flightN = 0
@@ -164,6 +200,7 @@ export class RimFade {
     this.camLast = null
     this.camSpeed = 0
     this.slack = RIM_SLACK_MIN
+    this.need = RIM_SLACK_MIN
     // How many resident instances are currently hidden by the rim. The scatter
     // reports it; it is also the number the triangle count has to leave out.
     this.hiddenCount = 0
@@ -237,6 +274,11 @@ export class RimFade {
       const moved = Math.hypot(
         camX - this.camLast[0], camY - this.camLast[1], camZ - this.camLast[2])
       this.camSpeed = Math.max(moved, this.camSpeed * RIM_SPEED_DECAY)
+      // A decayed peak never reaches zero, so without this the slack keeps a
+      // step's worth of props alive past their boundary forever after one walk.
+      // Motion this small over a whole sweep is already inside the standing
+      // floor, which is what the floor is for.
+      if (this.camSpeed * RIM_PHASES < RIM_SLACK_MIN) this.camSpeed = 0
       this.camLast[0] = camX
       this.camLast[1] = camY
       this.camLast[2] = camZ
@@ -246,7 +288,17 @@ export class RimFade {
     // Per FRAME rather than per second, because the sweep is counted in frames:
     // a slow frame widens the slack by exactly as much as it widens the
     // staleness it is covering for.
-    this.slack = RIM_SLACK_MIN + this.camSpeed * RIM_PHASES
+    //
+    // TWO NUMBERS AND NOT ONE. `need` is the raw requirement and is what decides
+    // a tile is DUE: a sweep has to be forced the instant the camera's motion
+    // outgrows the decision a tile is holding, and quantising that test lets a
+    // hard acceleration go up to RIM_PHASES frames without one -- 4 m of travel
+    // at a sprint, which leaves props hidden well inside their own trigger.
+    // `slack` is the rounded-up version and is what the BOUNDARIES use, which is
+    // where a shrinking margin is visible. It is never smaller than `need`.
+    this.need = RIM_SLACK_MIN + this.camSpeed * RIM_PHASES
+    this.slack = RIM_SLACK_MIN
+      + Math.ceil((this.camSpeed * RIM_PHASES) / RIM_SLACK_STEP) * RIM_SLACK_STEP
     this._retire(getPropClock())
   }
 
@@ -280,7 +332,7 @@ export class RimFade {
     // speeds up, and without this a player going from a standstill to a sprint
     // outruns those decisions and the props pop in when the sweep catches up.
     // A shrinking slack needs nothing -- the old wider one is conservative.
-    if (!(tile.rimDue || tile.rimPhase === this.phase || this.slack > tile.rimSlack)) {
+    if (!(tile.rimDue || tile.rimPhase === this.phase || this.need > tile.rimSlack)) {
       return tile.rimHidden
     }
 
@@ -315,7 +367,17 @@ export class RimFade {
       if (state === SOLID) {
         if (d2 > from * from) this._startFade(id, now, false)
       } else if (state === HIDDEN) {
-        const back = from - RIM_HYST
+        // THE SLACK DOES NOT REACH THIS BOUNDARY, which is the other half of
+        // never retracting a dissolve. The slack is there so a stale sweep
+        // cannot hide a prop the camera has just closed on, and pushing the SHOW
+        // boundary out with it admits props that are outside their own keep
+        // radius: fly at 60 m/s and 6.9 m of slack shows several hundred trees
+        // that belong to nobody, every one of which dissolves back out the
+        // moment the camera slows and the slack decays. A prop appears when it
+        // is genuinely inside its radius and never before.
+        const back = Math.min(
+          this.gone[id] * RIM_AT,
+          from - Math.max(RIM_HYST, this.gone[id] * RIM_HYST_FRAC))
         if (d2 < back * back) {
           this.batch.setVisibleAt(id, true)
           this._startFade(id, now, true)
@@ -332,7 +394,7 @@ export class RimFade {
       // RIM_HYST is what keeps that case rare.
     }
     tile.rimDue = false
-    tile.rimSlack = slack
+    tile.rimSlack = this.need
     this.hiddenCount += hidden - tile.rimHidden
     tile.rimHidden = hidden
     return hidden

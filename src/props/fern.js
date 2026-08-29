@@ -56,6 +56,8 @@ export const FERN_DEFAULTS = {
   arch: 0.95,         // total bend from launch to tip, radians. Bigger = more droop
   curve: 1.35,        // >1 concentrates the bend toward the tip (a real frond is
                       // stiff at the base and floppy at the end)
+  tipBias: 1.6,       // >1 crowds the segment seams toward the tip, where the bend
+                      // is. Set it equal to `curve` for equal turn per segment
   length: 1.0,        // frond length, relative -- absolute size comes from `height`
   lengthVar: 0.22,    // per-frond length jitter, fraction
   widthScale: 1.0,    // multiplies the frond's natural width (from texture aspect)
@@ -113,10 +115,21 @@ function addFrond(out, p) {
   const normal = new THREE.Vector3()
   const tmp = new THREE.Vector3()
 
-  const ds = 1 / p.segments
+  // Where the seams sit along the frond, 0 at the crown and 1 at the tip, and
+  // deliberately NOT evenly. The elevation angle bends by `arch * s^curve`, so
+  // the turn per unit of s grows as s^(curve-1) and a frond does nearly all of
+  // its arcing in the last third: even seams spend most of a small segment
+  // budget describing a stipe that is straight anyway, and then chord across
+  // the one part that is curved.
+  //
+  // s = t^(1/tipBias) inverts that power law, so at tipBias = curve every
+  // segment turns through the SAME angle, which is the distribution a fixed
+  // budget wants. tipBias 1 is even spacing; below 1 it crowds the base, which
+  // is what a curve under 1 would want.
+  const seamAt = (k) => Math.pow(k / p.segments, 1 / Math.max(0.2, p.tipBias))
 
   for (let k = 0; k <= p.segments; k++) {
-    const s = k * ds
+    const s = seamAt(k)
 
     // Elevation angle at this point: starts at `pitch`, bends over by `arch`.
     const ang = p.pitch - p.arch * Math.pow(s, p.curve)
@@ -168,8 +181,10 @@ function addFrond(out, p) {
       indices.push(a, a + 1, a + 3, a, a + 3, a + 2)
     }
 
-    // Step the centreline forward along the tangent we just computed.
-    pos.addScaledVector(tangent, p.length * ds)
+    // Step the centreline forward to the NEXT seam along the tangent we just
+    // computed. Uneven seams mean uneven steps -- a constant one would run the
+    // centreline off the end of the frond.
+    if (k < p.segments) pos.addScaledVector(tangent, p.length * (seamAt(k + 1) - s))
   }
 }
 
@@ -240,6 +255,7 @@ export function buildFern(options = {}) {
       pitch,
       arch,
       curve: Math.max(0.2, p.curve),
+      tipBias: p.tipBias,
       length,
       width,
       taper: p.taper,

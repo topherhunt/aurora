@@ -51,6 +51,39 @@ export const FERN_AXES = {
   taper: [0, 0.6],
 }
 
+// THE ONE VARIANT THAT SHIPS. The 16-way cross product above stays -- it is how
+// the axes were explored, it is what the previewer's gallery walks, and it costs
+// nothing while unreferenced -- but the bed draws through an InstancedMesh,
+// which holds exactly one geometry, so a second variant is a second draw call
+// rather than a second row in an arena.
+//
+// It is the MIDDLE of every axis except `fronds`. Taking an end value is the
+// mistake cardSubject already argues against below: variant 0 is the sparsest,
+// most upright fern in the bank, and shipping it would put every fern in the
+// world at that one silhouette. `fronds` takes the TOP of its axis instead,
+// because a bed of a single rosette is the one place a fuller plant earns its
+// triangles -- 9 x 6 x 2 = 108 at LOD0, against the 84 DESIGN.md §5 budgets for
+// the bush class, and only ~40 instances are ever inside the LOD0 ring.
+//
+// The four overrides of FERN_BASE below are not axis values, they are the
+// settling that a bank of sixteen could hide and a bed of one cannot. Sixteen
+// silhouettes at high jitter read as a species; one silhouette at high jitter
+// reads as a plant that cannot decide what it is, repeated four thousand times.
+// So: less roll and less length jitter for a tidier rosette, a small yawJitter
+// to keep the golden angle from reading as a pinwheel, and a crown that is a
+// crown rather than a single point.
+export const FERN_SHIP = {
+  ...FERN_BASE,
+  fronds: 9,
+  pitch: 1.2,
+  arch: 1.3,
+  taper: 0.3,
+  roll: 0.5,
+  lengthVar: 0.2,
+  yawJitter: 0.07,
+  crownRadius: 0.02,
+}
+
 // The scan each frond wears, and its measured aspect from
 // public/ferns/fern_fronds.json. The two arrays are parallel and both are
 // indexed by frond position within a fern -- a mismatch would texture a card at
@@ -141,9 +174,9 @@ function cardSubject(arch) {
  * height by more than a third, and framing to the subject means no texel is
  * spent on empty sky.
  */
-function cardFrame(arch, height) {
+function cardFrame(subject, height) {
   const geo = buildFern({
-    ...cardSubject(arch),
+    ...subject,
     height,
     frondLayers: FERN_LAYERS,
     frondAspect: FERN_ASPECTS,
@@ -208,7 +241,7 @@ export function fernCardGeometries({
 } = {}) {
   const layers = FERN_AXES.arch.map(fernCardLayer)
   const cards = FERN_AXES.arch.map((arch, i) => {
-    const { geo, frame } = cardFrame(arch, height)
+    const { geo, frame } = cardFrame(cardSubject(arch), height)
     geo.dispose()
     const ext = impostorCardExtents(frame)
     return buildImpostorCard(ext.width, ext.height, layers[i], planes, { upNormal: billboard })
@@ -234,7 +267,7 @@ export function fernCardGeometries({
 export function bakeFernImpostors(renderer, texArray, { height = FERN_DEFAULTS.height } = {}) {
   return FERN_AXES.arch.map((arch) => {
     const layer = fernCardLayer(arch)
-    const { geo, frame } = cardFrame(arch, height)
+    const { geo, frame } = cardFrame(cardSubject(arch), height)
     const ext = bakeImpostor(renderer, geo, texArray, layer, frame)
     geo.dispose()
     return { layer, ...ext }
@@ -290,4 +323,98 @@ export function buildFernBank({ seed = 1 } = {}) {
   }))
 
   return { tiers, variants, bytes }
+}
+
+// ---------------------------------------------------------------------------
+// THE SHIPPING FERN. One variant, three tiers, one card.
+//
+// Everything above this line builds the sixteen-way cross product, and the /v2
+// world no longer draws it: an InstancedMesh holds exactly one geometry, so a
+// bank of sixteen is a bill for sixteen draw calls per ring rather than variety
+// for free. What the player sees instead varies by yaw, uniform scale, a small
+// tilt off vertical and the ground-colour cue -- all per instance, all in the
+// matrix and the instance colour, none of them a second geometry.
+//
+// The cross product stays because it is not dead weight. gen-fern.html's gallery
+// walks it, props/scatter.js (v1) still draws it, and it is the record of how
+// FERN_SHIP's numbers were arrived at. Deleting it would save nothing at runtime
+// -- nothing here runs unless it is called -- and would throw away the only
+// argument for why the shipping fern is the fern it is.
+// ---------------------------------------------------------------------------
+
+/** The shipping fern's full parameter set at one tier's segment count. */
+export function shipFernParams(segments = FERN_TIERS[FERN_TIERS.length - 1].segments) {
+  return {
+    ...FERN_DEFAULTS,
+    ...FERN_SHIP,
+    segments,
+    frondLayers: FERN_LAYERS,
+    frondAspect: FERN_ASPECTS,
+  }
+}
+
+/** Which impostor layer the shipping fern's card is photographed into. */
+export const SHIP_CARD_LAYER = fernCardLayer(FERN_SHIP.arch)
+
+/**
+ * The shipping fern's mesh tiers: one geometry each, coarsest first, matching
+ * FERN_TIERS. Returns `{ tiers, bytes }` with `tiers[t].geometry`.
+ *
+ * ONE SEED ACROSS ALL THREE TIERS, for the reason buildFernBank spells out: a
+ * fern that reshuffles its fronds when it crosses an LOD boundary reads as the
+ * plant twitching rather than as detail arriving.
+ *
+ * The caller owns the geometries and must dispose them once they are in the
+ * arena -- a BatchedMesh copies into its own vertex buffers, and InstancedArena
+ * clones, so in both cases holding the originals is a second copy with no reader.
+ */
+export function buildShipFernTiers({ seed = 1 } = {}) {
+  let bytes = 0
+  const tiers = FERN_TIERS.map(({ name, segments }) => {
+    const geometry = buildFern({ ...shipFernParams(segments), seed })
+    bytes += geometryBytes(geometry)
+    return { name, segments, geometry }
+  })
+  return { tiers, bytes }
+}
+
+/**
+ * The shipping fern's card geometry and the layer it will wear. No renderer and
+ * no pixels, so it is safe in a constructor and in node -- same two-halves split
+ * as fernCardGeometries, and the note above that function is the reason.
+ *
+ * `billboard` asks for the single quad with a vertical normal that material.js's
+ * billboardVertex spins toward the eye. One plane is ONLY legal with it: a lone
+ * fixed quad seen along its own plane is gone, not merely flat.
+ */
+export function shipFernCard({
+  height = FERN_DEFAULTS.height,
+  planes = 1,
+  billboard = true,
+} = {}) {
+  const { geo, frame } = cardFrame(shipFernParams(), height)
+  geo.dispose()
+  const ext = impostorCardExtents(frame)
+  const geometry = buildImpostorCard(
+    ext.width, ext.height, SHIP_CARD_LAYER, planes, { upNormal: billboard })
+  return { layer: SHIP_CARD_LAYER, geometry, bytes: geometryBytes(geometry) }
+}
+
+/**
+ * Photograph the shipping fern into its impostor layer, in place.
+ *
+ * Call ONCE, after `loadImageLayers()` has resolved and with the same `height`
+ * shipFernCard was given -- both measure their own framing from a fresh build of
+ * the subject and cannot check each other. Until it runs the card draws an empty
+ * layer, which alphaTest discards, so distant ferns fade in rather than flashing.
+ *
+ * THE SUBJECT IS FERN_SHIP ITSELF, not cardSubject's average. That average
+ * exists because one card had to stand in for eight variants; there is one
+ * variant now, so the card can be a photograph of the very mesh it replaces.
+ */
+export function bakeShipFernImpostor(renderer, texArray, { height = FERN_DEFAULTS.height } = {}) {
+  const { geo, frame } = cardFrame(shipFernParams(), height)
+  const ext = bakeImpostor(renderer, geo, texArray, SHIP_CARD_LAYER, frame)
+  geo.dispose()
+  return { layer: SHIP_CARD_LAYER, ...ext }
 }

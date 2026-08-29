@@ -2,15 +2,7 @@ import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
-import {
-  createPropMaterial,
-  setSnowLine,
-  setLeafSnowVary,
-  setPropSolidAt,
-  setPropFadeTimerAt,
-  getPropClock,
-  PROP_FADE_SECONDS,
-} from '../../material.js'
+import { createPropMaterial, setSnowLine, setLeafSnowVary } from '../../material.js'
 import { RimFade } from './rim.js'
 
 // ---------------------------------------------------------------------------
@@ -19,8 +11,8 @@ import { RimFade } from './rim.js'
 //
 // THE WHOLE MAP IS CARPETED, and the way that is true is worth being precise
 // about, because it is not "every tree exists". At the density this ships,
-// 8192 x 8192 m holds 3.4 MILLION trees, which is not a number of BatchedMesh
-// instances anyone has. What is true instead is that the forest is a pure
+// 8192 x 8192 m holds 3.4 MILLION trees, which is not a number of instances
+// anyone has. What is true instead is that the forest is a pure
 // function of position -- tile (tx, tz) always grows the same trees, derived by
 // hash from its own coordinates and the world seed -- and only the tiles near
 // the player are ever materialised. Walk anywhere and there is forest; walk
@@ -84,29 +76,15 @@ import { RimFade } from './rim.js'
 // distance it used to be, and material.js's dissolve header for why the channel
 // is free and why the dissolve is a dither rather than a blend.
 //
-// NOTHING POPS AT A BAND EITHER, and it is the same mechanism. A tier swap
-// happens at a fixed range, so the pair has to be driven by that same clock.
-// `_crossFade`
-// takes a SECOND instance out of the pool, gives it the departing tier and the
-// same matrix, and stamps a start time into both halves -- the arriving tier
-// dithering in, the ghost dithering out, against complementary thresholds so
-// exactly one of them owns each pixel. `_sweepFades` hands the ghost back when
-// the clock says the fade is up.
-//
-// IT RESOLVES, which is the property that made it worth the state. Standing
-// still after crossing a band leaves neither a permanent duplicate nor
-// permanent stipple, because the timer runs out whether or not the player moves
-// again. The cost is bounded twice over -- FADE_MAX_INFLIGHT and a reserve on
-// the pool -- and both limits degrade to a plain pop rather than to anything
-// worse. Measured in flight: a handful walking, ~250 flying at 36 m/s, against
-// ~15,700 free instances.
-//
-// TWO SMALL AND ACCEPTED ARTEFACTS. A fading instance's channel is holding a
-// timer, so for half a second it is not holding its gone-distance and its rim
-// dissolve is suspended; that can only be noticed at the 100 m band by a tree
-// whose gone-distance is in [100, 118], which is a fraction of the trees that
-// cross it. And a `_reground` during a fade moves the original but not the
-// ghost, so the ghost stands at the old height until the fade ends.
+// A BAND SWAP, BY CONTRAST, POPS, and that is a deliberate loss. Dissolving one
+// tier into another means drawing both at once on complementary dither
+// thresholds, which takes a DUPLICATE instance carrying its own fade slot. The
+// arena below has no per-instance geometry, so that duplicate would have to live
+// in the departing TIER'S OWN MESH and be tracked through the same swap-remove
+// packing as everything else, for an effect lasting a quarter second at 8 and
+// 22.5 m. So the swap is a cut: limbs lose their barrel at 8 m and a mesh
+// becomes a card at 22.5 m, both against LOD_HYSTERESIS's dead band. The rim dissolve,
+// which is per instance and needs no duplicate, is untouched.
 //
 // TILES, and why the rebuild is affordable. A jittered grid pays one hash per
 // candidate and one field evaluation per SURVIVING candidate, so a full boot is
@@ -134,26 +112,27 @@ import { RimFade } from './rim.js'
 //
 // THE FAR TIER IS A REAL CAMERA-FACING BILLBOARD, spun about its own trunk in
 // the vertex shader (material.js, billboardVertex), so it costs no CPU, no
-// second material and no per-frame matrix write, and the whole forest stays ONE
-// DRAW CALL. ONE triangle against the crossed card's six -- apex up for a
-// conifer, apex down for a crown on a bare trunk, which is the shape each
+// second material and no per-frame matrix write, and the far field stays ONE
+// DRAW CALL PER SPECIES. ONE triangle against the crossed card's six -- apex up
+// for a conifer, apex down for a crown on a bare trunk, which is the shape each
 // species already is. What it gives up is two corners of its photograph; the
 // measured cost per species is the `tri` note in props/impostor.js.
 //
 // THE LADDER. Four tiers, and the far one carries almost every instance.
 // Measured on a flat headless world at the standing eye height, 40,972 trees
-// placed inside 1500 m:
+// placed inside 1500 m of which the rim is dissolving 9,880 away:
 //
-//   tier 0   LOD0 mesh    < 8 m             8 instances    2.8k
-//   tier 1   LOD1 mesh    8 - 15 m         25              8.3k
-//   tier 2   crossed card 15 - 100 m    1,527              9.2k
-//   tier 3   billboard    to 1500 m     39,412             39.4k
+//   tier 0   LOD0 mesh    < 8 m             8 instances     3.6k
+//   tier 1   LOD1 mesh    8 - 22.5 m       64              23.4k
+//   tier 2   crossed card 22.5 - 100 m  1,380               8.3k
+//   tier 3   billboard    to 1500 m     29,640              29.6k
 //
-// 59.7k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. Five
-// other camera spots on the same flat world give 58 to 61k. The mesh tiers cost
-// 480 and 338 triangles a tree averaged over the bank; what a given spot pays
-// is which variants happen to be standing near it, which is why those two rows
-// wander by a third between spots and the card rows do not.
+// 64.9k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. Five
+// other camera spots on the same flat world give 46.4 to 75.0k, the spread
+// being how much forest happens to stand within 22.5 m of the camera. The mesh tiers
+// cost 550 and 380 triangles a tree averaged over the bank; what a given spot
+// pays is which species happen to be standing near it, which is why those two
+// rows wander by a third between spots and the card rows do not.
 //
 // THE TWO MESH TIERS DIFFER ONLY IN WOOD. LOD1 is LOD0 with `trunkSides` 3,
 // `branchSides` 1 -- a three-sided trunk and one flat fin per limb -- and
@@ -162,25 +141,25 @@ import { RimFade } from './rim.js'
 // to measure the same. So the 8 m boundary is the cheapest swap in the project:
 // nothing about the canopy changes, and what pops is limbs losing their barrel
 // at a range where a limb is about 15 px wide and mostly behind its own leaves.
-// The 30% it saves is all sticks, which is why it can be spent this close in.
+// The 31% it saves is all sticks, which is why it can be spent this close in.
 //
-// WHY THE MESH STOPS AT 15 m rather than being pushed further. The next saving
+// WHY THE MESH STOPS AT 22.5 m rather than being pushed further. The next saving
 // after the wood is the crown, and there is no honest cut in a crown: a card is
 // already one triangle at its true world size, so fewer sprays thins the tree
 // and bigger ones put a two-foot needle on a spruce. A tier past LOD1 has to
 // stop drawing the crown as geometry, and that is what the cross IS.
 //
-// THE FAR BAND IS 66% OF THE FOREST and there is no third halving in it -- one
-// triangle is the floor for one tree. What takes it further is a clump card, one
-// picture per patch of canopy rather than per tree, which is the named next
-// piece below.
+// THE FAR BAND IS 95% OF THE INSTANCES AND 46% OF THE BILL, and there is no
+// third halving in it -- one triangle is the floor for one tree. What takes it
+// further is a clump card, one picture per patch of canopy rather than per tree,
+// which is the named next piece below.
 //
 // THE CROSS TIER IS FREE IN EVERYTHING BUT TRIANGLES, and cheap in those. Both
 // card tiers hang on the SAME baked impostor layer -- one photograph per species
 // -- so the cross costs no second bake, no duplicate texture layer and no
-// texture memory. It costs 9.2k triangles, because the 15-100 m annulus holds
-// about fifteen hundred trees where the far field holds forty thousand; putting
-// the cross at 1500 m instead would cost 240k. That asymmetry is the whole
+// texture memory. It costs 8.3k triangles, because the 22.5-100 m annulus holds
+// about fourteen hundred trees where the far field holds thirty thousand; putting
+// the cross at 1500 m instead would cost 186k. That asymmetry is the whole
 // reason the ladder splits here rather than anywhere else.
 //
 // WHAT THE CROSS BUYS is depth, and it matters most in the headset. A billboard
@@ -200,11 +179,56 @@ import { RimFade } from './rim.js'
 // next piece if the horizon has to read as solid forest rather than as a
 // thinning one. Nothing here blocks it.
 //
-// THE KNOWN SCALING RISK at this radius is not the triangles, it is three's
-// BatchedMesh: setting needsUpdate on the matrices texture re-uploads the WHOLE
-// texture, which at the ~57k the pool is sized for is ~3.6 MB, and any tile
-// growing dirties it.
-// Walking dirties it most frames. It has not been measured on the headset.
+// ---------------------------------------------------------------------------
+// THE ARENA: SIXTEEN InstancedMeshes, four tiers by four species, and NOT a
+// BatchedMesh.
+//
+// A BatchedMesh IS NOT USABLE ON A QUEST 2. Measured on the same headset that
+// made grass.js drop it (see its arena header): a batched bed ran at 5 fps where
+// the same instances ran at 50-60 instanced. It leans on WEBGL_multi_draw and on
+// a per-instance matrix TEXTURE, and neither is fast there. Everything below is
+// downstream of that one measurement.
+//
+// AN InstancedMesh DRAWS ONE GEOMETRY, so a four-rung LOD ladder over four
+// species is 16 meshes and 16 draw calls -- against DESIGN.md §5's rule of one
+// draw per prop layer, and worth it because the alternative is the layer being
+// unshippable. All 16 share ONE MATERIAL and therefore one program: the tier and
+// the species are which mesh an instance sits in, not a uniform, so nothing is
+// rebound between the calls but a vertex buffer.
+//
+// IT IS 16 AND NOT 64, and that is what the bank collapse next door bought. The
+// old bank was species x a four-rung SIZE ladder, and every one of those 64
+// combinations would have needed its own mesh -- 64 thin draws, most of them
+// holding a handful of instances. tree-bank.js now ships one variant per species
+// and the size lives on the instance matrix (SCALE, 0.5 to 1.5).
+//
+// PACKING IS DENSE AND THE SWAP IS A SWAP-REMOVE. An InstancedMesh draws a
+// contiguous `count`, so a hidden or wrong-tier instance left in place still
+// runs its vertices. Instead each mesh keeps `owner`, slot -> pool id, and
+// `count` IS its live population: changing tier frees the slot in one mesh and
+// takes one in another, and freeing moves the last slot's instance down into the
+// hole. Two consequences worth knowing. A rim-hidden tree costs NOTHING here,
+// where the grass bed pays degenerate vertices for one. And an instance's slot
+// is not stable, so every per-instance value has a shadow copy in this file --
+// matrix, tint and fade -- and a moved instance is rewritten from it.
+//
+// NO PER-INSTANCE FRUSTUM CULLING, because an InstancedMesh has none to have.
+// The two thirds of the disc behind the player are submitted every frame. The
+// far tier is one triangle a tree, so that costs ~26k vertex invocations of
+// waste; the /?quest panel's cull row does nothing to this layer.
+//
+// NO PER-INSTANCE DITHER ACROSS A TIER SWAP, for the reason in the band note
+// above: the two tiers are different meshes and a dissolve needs both halves
+// alive at once.
+//
+// WHAT THE UPLOADS COST, which is the known lever if this is still slow. Any
+// write dirties a whole InstancedBufferAttribute, so a tile growing re-uploads
+// its mesh's entire matrix buffer. That is per MESH now rather than one 3.6 MB
+// texture for the batch, so a near-tier write costs kilobytes; the far tier's
+// four meshes are the expensive ones at ~1 MB each. three's `addUpdateRange`
+// would narrow it and is deliberately not used yet -- the writes within a frame
+// are scattered across the buffer, so a merged min/max range would cover most of
+// it anyway.
 // ---------------------------------------------------------------------------
 
 // Trees per square metre at full density: one per 20 m^2. This is the near-field
@@ -217,59 +241,32 @@ const DENSITY = 0.05
 // starts where a tree is already a one-triangle card.
 const FULL_RADIUS = 80
 
-// Metres. LOD0 inside 8, LOD1 to 15, crossed card to 100, billboard out to the
-// draw
-// radius. The cross band is where the billboard's total lack of depth would
-// still read -- a 9 m tree at 60 m is 90 px tall in a headset and a flat cutout
+// Metres. LOD0 inside 8, LOD1 to 22.5, crossed card to 100, billboard out to
+// the draw radius. The cross band is where the billboard's total lack of depth
+// would still read -- a 9 m tree at 60 m is 90 px tall in a headset and a flat cutout
 // at that size is obvious, especially in stereo, where a card has no disparity
 // across its own surface. Past 100 m it stops mattering and the billboard's 2
 // triangles against the cross's 6 start to.
 //
 // THE FIRST TWO NUMBERS ARE THE NEAR FIELD'S QUALITY KNOBS and they are priced
 // very differently. Both bands grow as the SQUARE of their reach, but a tree in
-// the first costs 480 triangles and one in the second 338, so widening the
-// SECOND is what buys geometry cheaply: 15 m holds 32 mesh trees for 11k
-// between the two tiers, where putting LOD0 alone out to 15 m cost 14k for the
-// same trees. Measured on the flat world, tier by tier: 8 m holds 8 LOD0 trees,
-// the 8-15 m shell holds another 24, and 100 m holds 1,526 crosses.
+// the first costs 550 triangles and one in the second 380, so widening the
+// SECOND is what buys geometry cheaply: 22.5 m holds 72 mesh trees for 27.0k
+// across the two tiers, where putting LOD0 alone out to 22.5 m costs 37.1k for
+// the same trees. Measured on the flat world, tier by tier: 8 m holds 8 LOD0
+// trees, the 8-22.5 m shell holds another 64, and 100 m holds 1,380 crosses.
 //
 // Moving the FIRST number is nearly free in both directions, because the two
-// mesh tiers are within 28% of each other -- that is what makes it safe to keep
-// LOD0 as tight as this. Moving the SECOND is the real spend: 20 m instead of
-// 15 would add ~25 more LOD1 trees and 8k.
+// mesh tiers are within 31% of each other -- that is what makes it safe to keep
+// LOD0 as tight as this. Moving the SECOND is the real spend, and 22.5 is the
+// far end of what the budget wants: it holds 39 more mesh trees than 15 m did
+// and costs 14.0k more triangles at the origin spot, 17.1k at the densest of the
+// six, taking the whole forest from 50.9k to 64.9k. It is bought against the
+// pop it removes -- 15 m put a crossed card close enough to walk up to.
 //
 // Three entries here, four tiers in tree-bank.js; they have to keep agreeing and
 // check-trees asserts that they do.
-const LOD_BANDS = [8, 15, 100]
-const QUEST_LOD_BANDS = [8]
-const QUEST_CROSS_TIER = 2
-
-function buildSimpleTreeBank(seed) {
-  const source = buildTreeBank({ seed, billboard: false })
-  const geometries = source.tiers[0].geometries.map((sourceGeo) => {
-    const u = sourceGeo.userData.tree
-    const geo = new THREE.ConeGeometry(u.crownWidth / 2, u.height, 4, 1, false)
-    geo.translate(0, u.height / 2, 0)
-    geo.userData.tree = { ...u }
-    return geo
-  })
-  for (const tier of source.tiers) {
-    for (const geo of tier.geometries) geo.dispose()
-  }
-  const tiers = Array.from({ length: 4 }, () => ({
-    geometries: geometries.map((geo) => geo.clone()),
-  }))
-  for (const tier of tiers) {
-    tier.triangles = tier.geometries.map((geo) => geo.index.count / 3)
-  }
-  for (const geo of geometries) geo.dispose()
-  return {
-    variants: source.variants,
-    tiers,
-    bytes: 0,
-    triangles: tiers.reduce((sum, tier) => sum + tier.triangles.reduce((a, n) => a + n, 0), 0),
-  }
-}
+const LOD_BANDS = [8, 22.5, 100]
 
 // The band test measures to a tree's ROOT, and a tree is not at its root -- it
 // is nine metres of canopy standing on it. So the sphere is centred low, and
@@ -310,17 +307,7 @@ function buildSimpleTreeBank(seed) {
 // this constant is deliberately local to this file rather than shared out.
 const Y_SQUASH = 0.5
 
-// Ceilings on the cross-dissolve, in instances. FADE_MAX_INFLIGHT bounds the
-// work `_sweepFades` does per frame and the extra geometry the batch draws;
-// FADE_POOL_RESERVE is the more important one, because `_growTile` THROWS on an
-// empty pool and a scatter that starves its own growth to animate a band
-// crossing has its priorities backwards. Past either limit a swap simply pops,
-// which is exactly the behaviour this replaced -- so the degradation is a loss
-// of polish and never a loss of trees.
-const FADE_MAX_INFLIGHT = 1024
-const FADE_POOL_RESERVE = 1024
 const DRAW_RADIUS = 1500
-
 
 // How far past a band an instance must travel before it drops to the coarser
 // tier. Without it an instance sitting exactly on a boundary swaps geometry
@@ -380,12 +367,16 @@ const PLACEMENT_CELL = 4.0
 // frame. Raising it does not buy accuracy, only latency.
 const GROUND_SWEEP = 16
 
-// Per-instance height, on top of the variant's own size multiplier. This is a
-// true SCALE -- the matrix, not a rebuild -- so it does not change a tree's
-// branch count the way TREE_SIZES does, and it is kept narrow for that reason:
-// it is the jitter that stops two trees of one variant being the same tree, not
-// the size ladder. The ladder is TREE_SIZES and it is four entries wide.
-const SCALE = [0.80, 1.20]
+// Per-instance height multiplier on the variant's own default -- so a 9 m pine
+// stands anywhere from 4.5 to 13.5 m. THIS IS THE WHOLE SIZE LADDER NOW: the
+// bank used to carry four rungs per species and REGENERATE each one, and it
+// carries one (see tree-bank.js for why, and for what a matrix scale costs
+// against a rebuild -- a half-size tree has half-size leaves).
+//
+// It is applied UNIFORMLY on all three axes, which the card tiers depend on: a
+// billboard is a photograph of the tree at its default height and only stays
+// honest if it is stretched evenly.
+const SCALE = [0.5, 1.5]
 
 // How much of the snow slider one CANOPY may take, rolled per tree. See
 // syncSnowLine for why it is neither 0 nor 1 at either end.
@@ -419,9 +410,217 @@ function tileSeed(tx, tz, seed) {
   return (h ^ (h >>> 15)) >>> 0
 }
 
+/**
+ * A BatchedMesh-shaped facade over a GROUP of InstancedMeshes, one per (tier,
+ * variant), so that Trees -- which touches the arena API from a dozen places
+ * here and four in rim.js -- does not have to know which it is holding. See the
+ * arena note in the header for why it is instanced and what the shape costs.
+ *
+ * A geometry id is `tier * variantCount + variant`, which is also the index of
+ * the mesh that draws it. An instance id is a POOL id, owned by Trees and
+ * unrelated to the slot it currently occupies inside a mesh -- so every
+ * per-instance value is shadowed here and rewritten when a slot moves.
+ */
+class TreeArena extends THREE.Group {
+  /**
+   * @param maxInstances  the pool size, and the length of every shadow array.
+   * @param tiers         bank.tiers -- `tiers[t].geometries[v]`. TAKEN, not
+   *                      copied: an InstancedMesh draws the object it is given,
+   *                      so the caller must not dispose these.
+   * @param caps          per-tier instance capacity of ONE mesh. Exceeding it
+   *                      throws rather than silently dropping a tree.
+   */
+  constructor(maxInstances, tiers, caps, material) {
+    super()
+    this.name = 'v2-trees'
+    this.frustumCulled = false
+    // Neither is real on an InstancedMesh, but main.js's applyBatchCulling reads
+    // both off every batch it is handed and would otherwise record `undefined`
+    // as this layer's default.
+    this.perObjectFrustumCulled = false
+    this.sortObjects = false
+
+    const variantCount = tiers[0].geometries.length
+    this.variantCount = variantCount
+    this.meshes = []
+    this.owner = []
+    this.capAt = []
+    for (let t = 0; t < tiers.length; t++) {
+      for (let v = 0; v < variantCount; v++) {
+        const cap = caps[t]
+        const geo = tiers[t].geometries[v]
+        // aPropFade lives on the GEOMETRY, so it can only be attached once the
+        // geometry is spoken for. 1 is "never fade", the resting value
+        // setPropSolidAt writes and the one a batch's colour alpha starts at.
+        geo.setAttribute(
+          'aPropFade',
+          new THREE.InstancedBufferAttribute(new Float32Array(cap).fill(1), 1)
+        )
+        const mesh = new THREE.InstancedMesh(geo, material, cap)
+        mesh.name = `v2-trees-t${t}-v${v}`
+        // Nothing is drawn until an instance takes a slot; `count` is the live
+        // population from here on.
+        mesh.count = 0
+        // An InstancedMesh's own frustum test computes a bounding sphere over
+        // every instance matrix, which is both expensive and stale the moment a
+        // tile grows. The scatter follows the camera and the answer would be yes
+        // in any case.
+        mesh.frustumCulled = false
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        // Created here rather than left to three's lazy path inside setColorAt,
+        // so USE_INSTANCING_COLOR is defined on the FIRST compile -- a material
+        // that compiled without it would drop the stand tint until something
+        // forced a rebuild.
+        mesh.instanceColor = new THREE.InstancedBufferAttribute(
+          new Float32Array(cap * 3).fill(1), 3
+        )
+        mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
+        this.meshes.push(mesh)
+        this.owner.push(new Int32Array(cap))
+        this.capAt.push(cap)
+        this.add(mesh)
+      }
+    }
+
+    this._max = maxInstances
+    this._next = 0
+    this.geoAt = new Int32Array(maxInstances).fill(-1)
+    this.slot = new Int32Array(maxInstances).fill(-1)
+    this.vis = new Uint8Array(maxInstances)
+    this.mat = new Float32Array(maxInstances * 16)
+    this.col = new Float32Array(maxInstances * 3).fill(1)
+    this.fade = new Float32Array(maxInstances).fill(1)
+  }
+
+  addInstance(geometryId) {
+    if (this._next >= this._max) throw new Error('TreeArena: pool exhausted')
+    const id = this._next++
+    this.geoAt[id] = geometryId
+    return id
+  }
+
+  setGeometryIdAt(instanceId, geometryId) {
+    if (this.geoAt[instanceId] === geometryId) return
+    if (this.slot[instanceId] >= 0) this._free(instanceId)
+    this.geoAt[instanceId] = geometryId
+    if (this.vis[instanceId]) this._alloc(instanceId)
+  }
+
+  setVisibleAt(instanceId, visible) {
+    const want = visible ? 1 : 0
+    if (this.vis[instanceId] === want) return
+    this.vis[instanceId] = want
+    if (want) {
+      if (this.geoAt[instanceId] >= 0) this._alloc(instanceId)
+    } else if (this.slot[instanceId] >= 0) {
+      this._free(instanceId)
+    }
+  }
+
+  getVisibleAt(instanceId) {
+    return this.vis[instanceId] === 1
+  }
+
+  setMatrixAt(instanceId, matrix) {
+    matrix.toArray(this.mat, instanceId * 16)
+    const s = this.slot[instanceId]
+    if (s < 0) return
+    const mesh = this.meshes[this.geoAt[instanceId]]
+    matrix.toArray(mesh.instanceMatrix.array, s * 16)
+    mesh.instanceMatrix.needsUpdate = true
+  }
+
+  getMatrixAt(instanceId, matrix) {
+    matrix.fromArray(this.mat, instanceId * 16)
+    return matrix
+  }
+
+  setColorAt(instanceId, color) {
+    color.toArray(this.col, instanceId * 3)
+    const s = this.slot[instanceId]
+    if (s < 0) return
+    const mesh = this.meshes[this.geoAt[instanceId]]
+    color.toArray(mesh.instanceColor.array, s * 3)
+    mesh.instanceColor.needsUpdate = true
+  }
+
+  getColorAt(instanceId, color) {
+    return color.fromArray(this.col, instanceId * 3)
+  }
+
+  /** The write side of material.js's writeFadeSlot; see the hook there. */
+  setFadeSlotAt(instanceId, value) {
+    this.fade[instanceId] = value
+    const s = this.slot[instanceId]
+    if (s < 0) return
+    const attr = this.meshes[this.geoAt[instanceId]].geometry.getAttribute('aPropFade')
+    attr.array[s] = value
+    attr.needsUpdate = true
+  }
+
+  /** Take the next free slot in this instance's mesh and fill it from shadow. */
+  _alloc(instanceId) {
+    const g = this.geoAt[instanceId]
+    const mesh = this.meshes[g]
+    const s = mesh.count
+    if (s >= this.capAt[g]) {
+      throw new Error(`TreeArena: mesh ${mesh.name} is full at ${this.capAt[g]} instances`)
+    }
+    mesh.count = s + 1
+    this.owner[g][s] = instanceId
+    this.slot[instanceId] = s
+    this._writeSlot(instanceId)
+  }
+
+  /**
+   * Give the slot back, moving the mesh's LAST instance down into the hole so
+   * the drawn range stays contiguous. The mover is rewritten from shadow rather
+   * than copied slot-to-slot, because that is one code path for both the move
+   * and the initial fill and cannot disagree with itself.
+   */
+  _free(instanceId) {
+    const g = this.geoAt[instanceId]
+    const mesh = this.meshes[g]
+    const s = this.slot[instanceId]
+    const last = mesh.count - 1
+    mesh.count = last
+    this.slot[instanceId] = -1
+    if (s === last) return
+    const moved = this.owner[g][last]
+    this.owner[g][s] = moved
+    this.slot[moved] = s
+    this._writeSlot(moved)
+  }
+
+  _writeSlot(instanceId) {
+    const g = this.geoAt[instanceId]
+    const mesh = this.meshes[g]
+    const s = this.slot[instanceId]
+    mesh.instanceMatrix.array.set(
+      this.mat.subarray(instanceId * 16, instanceId * 16 + 16), s * 16
+    )
+    mesh.instanceMatrix.needsUpdate = true
+    mesh.instanceColor.array.set(
+      this.col.subarray(instanceId * 3, instanceId * 3 + 3), s * 3
+    )
+    mesh.instanceColor.needsUpdate = true
+    const attr = mesh.geometry.getAttribute('aPropFade')
+    attr.array[s] = this.fade[instanceId]
+    attr.needsUpdate = true
+  }
+
+  dispose() {
+    for (const mesh of this.meshes) {
+      mesh.geometry.dispose()
+      mesh.dispose()
+    }
+    return this
+  }
+}
+
 export class Trees {
   /**
-   * @param scene         THREE.Scene to add the single BatchedMesh to.
+   * @param scene         THREE.Scene to add the tree arena to.
    * @param field         V2Height. Needs scatterAt, heightAt and snowLineAt.
    * @param water         WaterSurfaces. Needs isSubmerged.
    * @param textureArray  The shared prop atlas from buildTextureArray().
@@ -440,8 +639,6 @@ export class Trees {
       radius = DRAW_RADIUS,
       fullRadius = FULL_RADIUS,
       ground = null,
-      quest = false,
-      simple = false,
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -467,9 +664,7 @@ export class Trees {
     this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
-    this.quest = quest
-    this.simple = simple
-    this.lodBands = quest ? QUEST_LOD_BANDS : LOD_BANDS
+    this.lodBands = LOD_BANDS
 
     // Candidates per tile at FULL density. Far tiles walk the same candidate
     // list and cut most of it on rank before paying for a field sample.
@@ -498,52 +693,40 @@ export class Trees {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = simple ? buildSimpleTreeBank(seed) : buildTreeBank({ seed, billboard: true })
+    const bank = buildTreeBank({ seed, billboard: true })
     this.bank = bank
     this.variantCount = bank.variants.length
     this.tierCount = bank.tiers.length
     this.cardTier = this.tierCount - 1
 
     // The billboard list is what ties the material to the impostor layers. Every
-    // other geometry in this batch wears a bark or leaf layer and is left alone,
-    // so the mesh tiers and the billboards share one material and therefore one
-    // draw call -- DESIGN.md §5's rule, and the whole reason this is a shader
-    // trick rather than a second mesh with a second material.
-    this.material = simple
-      ? new THREE.MeshBasicMaterial({ color: 0x185c22, vertexColors: false })
-      : createPropMaterial(textureArray, {
-        billboardLayers: treeImpostorLayers(),
-        wind: 'tree',
-      })
+    // other geometry in this arena wears a bark or leaf layer and is left alone,
+    // so all sixteen meshes share ONE material and therefore one program --
+    // DESIGN.md §5's rule as far as an instanced ladder can keep it, and the
+    // whole reason this is a shader trick rather than a second material.
+    this.material = createPropMaterial(textureArray, {
+      billboardLayers: treeImpostorLayers(),
+      wind: 'tree',
+      // No colour alpha to hide a fade timer in on an InstancedMesh; the arena
+      // carries a per-instance float instead. See material.js's FADE_VERTEX.
+      instancedFade: true,
+    })
 
-    const geos = bank.tiers.flatMap((t) => t.geometries)
-    this.batch = new THREE.BatchedMesh(
-      this.maxInstances,
-      geos.reduce((n, g) => n + g.attributes.position.count, 0),
-      geos.reduce((n, g) => n + g.index.count, 0),
-      this.material
-    )
-    this.batch.name = 'v2-trees'
-    // Whole-batch test only. The scatter follows the camera and is always in
-    // front of it, so the batch-level test can only ever answer yes. Per
-    // INSTANCE culling inside BatchedMesh stays on and earns its CPU here -- it
-    // is what keeps the two thirds of the disc behind the player off the GPU --
-    // and it stays CORRECT under billboarding, because a billboard turns about
-    // its own Y axis and the card's bounding sphere is centred on that axis, so
-    // the sphere three tested is the sphere that reaches the screen.
-    this.batch.frustumCulled = false
-    // Nothing here is alpha-BLENDED -- the material is alphaTest 0.5 and opaque
-    // -- so per-instance depth sorting buys nothing, and at this instance count
-    // a per-frame sort of the whole batch is milliseconds of pure waste.
-    this.batch.sortObjects = false
-
-    // tierIds[t][v] -> the arena id for tier t of variant v.
+    // tierIds[t][v] -> the arena's geometry id for tier t of variant v, which is
+    // also the index of the mesh that draws it.
     this.tierIds = []
     this.tierTris = []
-    for (const tier of bank.tiers) {
-      this.tierIds.push(tier.geometries.map((g) => this.batch.addGeometry(g)))
-      this.tierTris.push(tier.triangles.slice())
+    for (let t = 0; t < this.tierCount; t++) {
+      this.tierIds.push(bank.tiers[t].geometries.map((_, v) => t * this.variantCount + v))
+      this.tierTris.push(bank.tiers[t].triangles.slice())
     }
+
+    this.batch = new TreeArena(
+      this.maxInstances,
+      bank.tiers,
+      this._tierCaps(),
+      this.material
+    )
 
     // The trunk's world radius WHERE IT MEETS THE GROUND, per variant, at
     // instance scale 1. `anchorsInto` is the only reader; see there for what it
@@ -567,12 +750,10 @@ export class Trees {
     // the trunk is stated against.
     //
     // IT IS NOT crownWidth, and the difference is the whole point of the
-    // number: for the size-1.0 oak the trunk is about 0.35 m and the crown
-    // reaches about 3.5 m, so anything seated off the crown would be placed ten
-    // trunk radii out in the open where there is no tree to be at the foot of.
+    // number: for the oak the trunk is about 0.35 m and the crown reaches about
+    // 3.5 m, so anything seated off the crown would be placed ten trunk radii
+    // out in the open where there is no tree to be at the foot of.
     //
-    // Read here, INSIDE the constructor and before the dispose below, because
-    // this is the last moment the bank's own geometries are unambiguously live.
     // A missing or zero diameter throws rather than defaulting: a footprint of
     // nought reads downstream as "this tree has no trunk", which is a silent
     // wrong answer of exactly the kind that only shows up as mushrooms
@@ -599,16 +780,13 @@ export class Trees {
       this.unitHeight[v] = u.height
     }
 
-    // What to CALL each variant in the cursor readout: `oak-2` and not `11`.
+    // What to CALL each variant in the cursor readout: `oak` and not `2`.
     this.variantName = bank.variants.map(treeVariantId)
 
-    // BatchedMesh has copied every vertex into its arena; the originals are now
-    // a second copy with no reader.
-    for (const g of geos) g.dispose()
-
     // The instance pool. Every id is allocated up front and hidden; tiles take
-    // from `free` and hand back on eviction. Allocating on demand instead would
-    // grow the batch's matrix texture in the middle of a frame.
+    // from `free` and hand back on eviction. These are POOL ids and not slots in
+    // any mesh -- the arena packs its meshes densely and moves instances around
+    // inside them, which nothing outside the arena can see.
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
     for (let i = 0; i < this.maxInstances; i++) {
@@ -629,23 +807,10 @@ export class Trees {
     // read back and has its Y translation overwritten in place.
     this.instScale = new Float32Array(this.maxInstances)
 
-    // Cross-dissolves in flight: { orig, dup, start, tris }. `fadeAt` maps an
-    // ORIGINAL's instance id back to its index here, so a second swap, an
-    // eviction or a thin can finish a fade already running on that instance in
-    // O(1) instead of scanning. Duplicates are not in any tile and so are never
-    // reached by those paths, which is why only the original needs the map.
-    this.fades = []
-    this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
-    this.fadeTris = 0
-
-    // The outer dissolve. It shares the fade slot with the cross-dissolves
-    // above, so the two have to agree about who owns an instance: the rim
-    // preempts a running cross-dissolve through this callback, and _crossFade
-    // refuses to start one on an instance the rim is already moving.
-    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
-      const running = this.fadeAt[id]
-      if (running >= 0) this._endFade(running)
-    })
+    // The outer dissolve, and the only owner of the fade slot -- a tier swap is
+    // a plain cut now, so nothing here contends with the rim and it needs no
+    // preemption callback.
+    this.rim = new RimFade(this.batch, this.maxInstances)
 
     this.bandSq = Float32Array.from(this.lodBands, (b) => b * b)
     this.bandSqOut = Float32Array.from(this.lodBands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
@@ -694,6 +859,39 @@ export class Trees {
       (d2) => this.perTile * this.uAt[this._levelFor(d2)])
   }
 
+  /**
+   * How many instances ONE mesh of each tier has to hold. Sixteen meshes, so
+   * over-sizing costs sixteen times what it looks like it costs.
+   *
+   * THE CARD TIER IS THE POOL, split four ways plus slack: every resident tree
+   * that is not in a mesh band is a billboard, so in the limit -- the camera in
+   * open ground with no near tiles -- one mesh holds a quarter of the pool.
+   * Species is drawn uniformly per tree, so the split is binomial with a
+   * standard deviation of ~90 at this pool size and 1024 of slack is over ten
+   * sigma.
+   *
+   * THE FINER TIERS ARE SIZED FROM THEIR OWN DISC, at FULL density, pushed out
+   * by the hysteresis and then multiplied by four. The disc is the honest bound
+   * rather than the annulus: the ellipsoid bands are widest where they meet the
+   * ground (see Y_SQUASH), so a horizontal section can never hold more than the
+   * flat disc of the same radius. The 4x on top is for the terrain being lumpy
+   * and the scatter being jittered rather than even -- it is a handful of
+   * kilobytes on the two bands that matter and buys the throw never firing.
+   */
+  _tierCaps() {
+    const caps = []
+    for (let t = 0; t < this.tierCount; t++) {
+      if (t === this.cardTier) {
+        caps.push(Math.ceil(this.maxInstances / this.variantCount) + 1024)
+        continue
+      }
+      const r = this.lodBands[t] * (1 + LOD_HYSTERESIS)
+      const inBand = Math.PI * r * r * this.density
+      caps.push(Math.max(64, Math.ceil((inBand / this.variantCount) * 4)))
+    }
+    return caps
+  }
+
   /** The quantised thinning level for a tile whose nearest point is at d2. */
   _levelFor(d2) {
     return levelFor(d2, this.fullSq, this.fullRadius, this.maxQ)
@@ -728,15 +926,9 @@ export class Trees {
     }
     this.lastBuildMs = performance.now() - t0
 
-    // Retire finished cross-dissolves BEFORE the tile loop starts new ones, so
-    // an instance that swaps a band on the same frame its previous fade expires
-    // gets its duplicate back rather than being refused for want of one.
-    const now = getPropClock()
-    this._sweepFades(now)
     // Retires expired rim transitions and re-measures the camera speed the
-    // sweep's slack is sized from. Before the tile loop, for _sweepFades' own
-    // reason: an instance whose fade expires this frame has to be free to start
-    // another one in the same frame rather than waiting a whole sweep.
+    // sweep's slack is sized from. Before the tile loop, which is where the
+    // per-tile sweeps that read that slack run.
     this.rim.beginFrame(camX, camY, camZ)
 
     const cardTier = this.cardTier
@@ -804,9 +996,9 @@ export class Trees {
       nearCount++
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
-        // Dissolved away and invisible. Skipping it here also keeps it from
-        // being re-tiered, which would set a geometry id on a hidden instance
-        // and start a cross-dissolve nobody could see.
+        // Dissolved away and invisible. Skipping it here also keeps it out of
+        // the arena's meshes -- a hidden instance holds no slot, and re-tiering
+        // one would move it between meshes it is not in.
         if (this.rim.isHidden(i)) continue
         const ex = this.instX[i] - camX
         // Y_SQUASH is the whole vertical correction: the bands are ellipsoids,
@@ -822,16 +1014,11 @@ export class Trees {
         // That asymmetry is the dead band -- getting it the wrong way round
         // widens the tier instead of sticking it, and the instance oscillates.
         let tier = cardTier
-        if (this.quest) {
-          const sticky = cur === QUEST_CROSS_TIER
-          if (d2 < (sticky ? this.bandSqOut[0] : this.bandSq[0])) tier = QUEST_CROSS_TIER
-        } else {
-          for (let t = 0; t < this.bandSq.length; t++) {
-            const sticky = cur >= 0 && cur <= t
-            if (d2 < (sticky ? this.bandSqOut[t] : this.bandSq[t])) {
-              tier = t
-              break
-            }
+        for (let t = 0; t < this.bandSq.length; t++) {
+          const sticky = cur >= 0 && cur <= t
+          if (d2 < (sticky ? this.bandSqOut[t] : this.bandSq[t])) {
+            tier = t
+            break
           }
         }
 
@@ -839,15 +1026,11 @@ export class Trees {
         if (tier !== cur) {
           this.tierAt[i] = tier
           this.batch.setGeometryIdAt(i, this.tierIds[tier][variant])
-          this._crossFade(i, cur, variant, now)
         }
         tris += this.tierTris[tier][variant]
       }
     }
-    // The cross-dissolve duplicates are drawn too, and they are counted after
-    // the loop rather than before it so the ones this frame's swaps just created
-    // are in the number the panel shows for this frame.
-    this.tris = tris + this.fadeTris
+    this.tris = tris
     this.nearTiles = nearCount
   }
 
@@ -874,7 +1057,7 @@ export class Trees {
    *                       which for a tree is the trunk's own base radius in
    *                       metres -- about 0.03 m for an aspen sapling up to
    *                       about 0.47 m for a large oak, times the instance's own
-   *                       0.80-1.20 scale, and NOT the 1.4-8.5 m the crowns
+   *                       0.5-1.5 scale, and NOT the 1.4-8.5 m the crowns
    *                       reach
    *
    * Returns the number of anchors written.
@@ -914,8 +1097,8 @@ export class Trees {
    *   under you. Stay inside the full-density band.
    *
    *   THE y IS THE TRUNK'S OWN ORIGIN AND NOT THE SURFACE. instY is
-   *   `_groundFor(x, z) - PLACEMENT.sink * scale`, so it sits 12 to 18 cm
-   *   BELOW the drawn ground, by however much this instance's own 0.80-1.20
+   *   `_groundFor(x, z) - PLACEMENT.sink * scale`, so it sits 7 to 23 cm
+   *   BELOW the drawn ground, by however much this instance's own 0.5-1.5
    *   scale sinks it. A prop written flush at this y is underground -- for a
    *   13 cm mushroom, entirely underground. A caller placing something at an
    *   anchor should take the ground height at its own x, z, exactly as
@@ -923,10 +1106,6 @@ export class Trees {
    *   the tile on a re-split chunk, so an anchor read once is a snapshot rather
    *   than a fact.
    *
-   * Cross-dissolve GHOSTS are not reported, which is correct rather than
-   * incidental: a duplicate is the same tree at a departing tier and belongs to
-   * no tile, so the loop below cannot reach it and no trunk is ever counted
-   * twice during a band swap.
    */
   anchorsInto(x0, z0, x1, z1, out) {
     // Floored, so an `out` whose length is not a multiple of the stride simply
@@ -968,8 +1147,8 @@ export class Trees {
   }
 
   /**
-   * The id to QUOTE for one instance: `oak-2`, the same string /gen-tree's
-   * species picker and size ladder are indexed by.
+   * The id to QUOTE for one instance: `oak`, the same string /gen-tree's
+   * species picker is indexed by.
    */
   nameAt(id) {
     const name = this.variantName[this.variantAt[id]]
@@ -980,8 +1159,8 @@ export class Trees {
   /**
    * The cursor pick volumes, WHICH ARE TWO CYLINDERS AND NOT ONE.
    *
-   * A tree is a thin pole with a wide lump on top of it -- for the size-1.0 oak
-   * a 0.35 m trunk under a 3.5 m crown, a factor of ten -- and no single
+   * A tree is a thin pole with a wide lump on top of it -- for the oak a 0.35 m
+   * trunk under a 3.5 m crown, a factor of ten -- and no single
    * cylinder is honest about both. The wide one puts three metres of empty air
    * around the trunk at eye height, which is where the player stands and points,
    * and pick.js ranks a volume the eye is INSIDE by its far wall, so the tree
@@ -994,8 +1173,8 @@ export class Trees {
    * Every number is the generator's OWN published measurement carried through
    * `instScale`, not a constant kept in step by hand: `trunkDiameter`,
    * `firstBranchHeight`, `crownWidth` and `height` off `geo.userData.tree`. A
-   * sapling is a third the height of its full-grown variant and gets a third
-   * the pick volume without anything here knowing that it exists.
+   * tree placed at half scale gets half the pick volume without anything here
+   * knowing that it is small.
    *
    * The trunk is widened by TRUNK_PICK_SLACK because it is a CONE, published at
    * its base: without slack the pick surface is inside the bark for the whole
@@ -1285,105 +1464,6 @@ export class Trees {
     }
   }
 
-  /**
-   * Start a cross-dissolve: instance `i` has just taken a new tier, so a
-   * duplicate takes the tier it left and the two dither past each other.
-   *
-   * Called with the ORIGINAL already switched, so everything here is about the
-   * ghost. Both halves are stamped with the same start -- their thresholds are
-   * complements of each other and only sum to full coverage if their clocks
-   * agree (material.js, setPropFadeTimerAt).
-   */
-  _crossFade(i, oldTier, variant, now) {
-    // A second band crossing while the first is still running. Finish the first:
-    // its duplicate would otherwise leak, and its start time is about to be
-    // written over by this one's.
-    const running = this.fadeAt[i]
-    if (running >= 0) this._endFade(running)
-
-    // The rim outranks a tier swap, because there is one fade slot and only one
-    // of the two can have it. A tree that is on its way out of the world, or
-    // back into it, cuts between tiers instead -- which nobody can see, since
-    // the thing the eye is tracking is the tree arriving or leaving.
-    if (this.rim.isBusy(i)) { this._popped('rim busy'); return }
-
-    // Both ceilings degrade to a pop, which is what a swap did before this
-    // existed. See FADE_POOL_RESERVE for why growth outranks polish.
-    if (this.fades.length >= FADE_MAX_INFLIGHT) { this._popped('inflight cap'); return }
-    if (this.freeCount <= FADE_POOL_RESERVE) { this._popped('pool reserve'); return }
-    this.crossFadeStarts = (this.crossFadeStarts || 0) + 1
-
-    const dup = this.free[--this.freeCount]
-    this.batch.getMatrixAt(i, this._m)
-    this.batch.setMatrixAt(dup, this._m)
-    // The stand tint too, or the ghost is a different colour from the tree it is
-    // standing in and the pair reads as two trees rather than one. setColorAt
-    // writes .rgb only, so the timer below is safe to stamp after it.
-    this.batch.getColorAt(i, this._c)
-    this.batch.setColorAt(dup, this._c)
-    this.batch.setGeometryIdAt(dup, this.tierIds[oldTier][variant])
-    this.batch.setVisibleAt(dup, true)
-    setPropFadeTimerAt(this.batch, dup, now, false)
-    setPropFadeTimerAt(this.batch, i, now, true)
-
-    const tris = this.tierTris[oldTier][variant]
-    this.fadeTris += tris
-    this.fadeAt[i] = this.fades.length
-    this.fades.push({ orig: i, dup, start: now, tris })
-  }
-
-  /**
-   * TEMPORARY diagnostic for the "swaps are popping instead of dithering"
-   * report: counts and throttle-logs which of _crossFade's three refusal
-   * branches is actually firing at runtime, since the JS/GLSL math itself
-   * checks out clean under scripts/check-trees.mjs and the refusal reason
-   * can't be told apart by eye. Remove once the live cause is confirmed.
-   */
-  _popped(reason) {
-    this.poppedCounts = this.poppedCounts || {}
-    this.poppedCounts[reason] = (this.poppedCounts[reason] || 0) + 1
-    const now = performance.now()
-    if (!this._lastPopLog || now - this._lastPopLog > 2000) {
-      this._lastPopLog = now
-      console.warn(`[trees] tier swap popped instead of dithering: ${JSON.stringify(this.poppedCounts)} (${this.crossFadeStarts || 0} started cleanly)`)
-    }
-  }
-
-  /**
-   * Finish the fade at index `k`: hand the ghost back and put the original's
-   * fade slot to rest.
-   */
-  _endFade(k) {
-    const f = this.fades[k]
-    this.batch.setVisibleAt(f.dup, false)
-    this.free[this.freeCount++] = f.dup
-    this.fadeTris -= f.tris
-    // Back to never-fade rather than back to a gone-distance: the rim is a clock
-    // now and keeps its own state, so the slot's resting value is just 1.
-    setPropSolidAt(this.batch, f.orig)
-    this.fadeAt[f.orig] = -1
-    // Swap-remove, so the list stays dense and the sweep stays a linear scan.
-    const last = this.fades.pop()
-    if (k < this.fades.length) {
-      this.fades[k] = last
-      this.fadeAt[last.orig] = k
-    }
-  }
-
-  /** Retire every cross-dissolve whose window is up. Once per frame. */
-  _sweepFades(now) {
-    let k = 0
-    while (k < this.fades.length) {
-      const age = now - this.fades[k].start
-      // Outside the window in EITHER direction. Negative means the prop clock
-      // wrapped underneath this fade, which cannot be resumed -- and must not be
-      // allowed to restart from zero, or a wrap would freeze every fade in
-      // flight at its opening frame until the clock came back round.
-      if (age >= PROP_FADE_SECONDS || age < 0) this._endFade(k)
-      else k++
-    }
-  }
-
   /** Cut every tree in the tile whose rank has fallen above the keep-fraction. */
   _thin(tile, uNew) {
     let w = 0
@@ -1395,7 +1475,6 @@ export class Trees {
         w++
         continue
       }
-      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
       this.rim.drop(id)
       this.batch.setVisibleAt(id, false)
       this.tierAt[id] = -1
@@ -1421,8 +1500,6 @@ export class Trees {
   _release(tile) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      // A tree being evicted mid-fade would strand its ghost visible forever.
-      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
       this.rim.drop(id)
       this.batch.setVisibleAt(id, false)
       this.tierAt[id] = -1
@@ -1438,7 +1515,6 @@ export class Trees {
    * deliberate one-off stall at load and not an offline asset.
    */
   bakeCards(renderer) {
-    if (this.simple) return []
     const t0 = performance.now()
     const baked = bakeTreeImpostors(renderer, this.textureArray)
     this.cardBakeMs = performance.now() - t0
@@ -1466,12 +1542,11 @@ export class Trees {
    * still has leaves in it.
    *
    * The roll is per instance and hashes the tree's own root position, so it is
-   * stable across all four tiers and across a cross-dissolve -- both of those
-   * swap the geometry id and never the matrix -- and a tree does not change its
-   * snow load when it changes LOD.
+   * stable across all four tiers -- a tier swap moves the instance between
+   * meshes and never touches its matrix -- so a tree does not change its snow
+   * load when it changes LOD.
    */
   syncSnowLine(layers) {
-    if (this.simple) return
     setSnowLine(layers.snow.base, layers.snow.band)
     setLeafSnowVary(LEAF_SNOW_CAP[0], LEAF_SNOW_CAP[1])
   }
@@ -1483,7 +1558,6 @@ export class Trees {
       tiles: this.tiles.size,
       nearTiles: this.nearTiles,
       queued: this.queue.length,
-      fading: this.fades.length,
       rimHidden: this.rim.hiddenCount,
       rimFading: this.rim.flightN,
       regrows: this.regrows,
@@ -1502,6 +1576,8 @@ export class Trees {
   }
 
   dispose() {
+    // The arena OWNS the bank's geometries -- an InstancedMesh draws the object
+    // it was handed rather than a copy -- so disposing it disposes them.
     this.batch.dispose()
     this.material.dispose()
   }

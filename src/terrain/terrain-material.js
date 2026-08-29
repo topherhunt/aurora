@@ -479,16 +479,28 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     //
     //     0.40   216   193..239    0%      grey. reads as dirty snow
     //     0.50   238   213..255   15%
-    //     0.55   245   223..255   35%      white, and the spread survives
-    //     0.60   250   231..255   56%
-    //     0.65   253   240..255   74%      most of the field is one value
+    //     0.55   245   223..255   35%
+    //     0.65   253   240..255   74%      HERE
+    //     0.70   254   248..255   87%
+    //     0.75   255   255..255   95%      washout: level snow is ONE value
     //
-    // The clipped share is not waste up to a point: snow SHOULD have glare, and
-    // what clips first is the sparkle, which is a specular stand-in and belongs
-    // at white. Past ~0.55 it stops being glare and starts being the surface.
+    // Washout is not a matter of taste, it is the row where the spread reaches
+    // zero, and that is 0.75. 0.65 is the midpoint to it, by the parameter and
+    // by the surviving spread alike (32 steps at 0.55, 15 here, 0 there).
+    //
+    // The clipped share is not waste: what clips first is the sparkle, a
+    // specular stand-in that belongs at white, and the rows that clip hardest
+    // are the faces square to the sun, which is where real snow IS one value.
+    // Read the share against slope rather than as a single number -- at 0.65,
+    // N.L 0.95 / 0.75 / 0.55 / 0.35 keep a spread of 0 / 15 / 37 / 46 steps, so
+    // the sunward faces blow out and everything turned away from the sun, which
+    // is most of a mountain and all of the part whose texture you can read,
+    // still has its full surface.
+    //
     // Nothing about the texture's shape buys headroom here -- skewing the value
     // swings below 1.0 and raising this to compensate lands on the same mean at
-    // the same clipped share, because it is the mean's distance from the ceiling
+    // the same clipped share, and trimming the snow speckle at this level makes
+    // the clipping WORSE, not better. It is the mean's distance from the ceiling
     // that sets how much texture fits, and nothing else.
     //
     // READ THAT TABLE TOGETHER WITH THE ALBEDO REPAINT in <color_fragment>. It
@@ -498,12 +510,12 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // this number did not make the mountains white. Raising the exposure could
     // not fix it, because the exposure was never the thing taking it away.
     //
-    // 0.55 also keeps the ANGULAR range, which is the larger shape signal: N.L
-    // 0.95 / 0.75 / 0.45 / 0.20 read 253 / 245 / 211 / 171, so a mountain is
-    // still modelled by its own faces. At the 1.0 this shipped with, that row
-    // was flat white from noon down to a 66-degree face, which is the
-    // "everything at one brightness" the clamp produces and the reason any of
-    // this is here.
+    // 0.65 also keeps the ANGULAR range, which is the larger shape signal: N.L
+    // 0.95 / 0.75 / 0.45 / 0.20 read 255 / 253 / 230 / 192, so a mountain is
+    // still modelled by its own faces. At the 1.0 this shipped with, the same
+    // row was 255 / 255 / 254 / 233 -- flat white from noon down to a
+    // 76-degree face, which is the "everything at one brightness" the clamp
+    // produces and the reason any of this is here.
     //
     // WHY THIS IS NOT A FIX IN chunk-mesh's C_SNOW. That constant does two jobs:
     // it is the snow albedo AND it is the classification channel this shader
@@ -526,7 +538,7 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     //
     // It also does most of the work on the brown flecks in the ground tile: a
     // dirt-coloured blotch needs red, and this halves red everywhere on grass.
-    uSnowAlbedo: { value: 0.55 },
+    uSnowAlbedo: { value: 0.65 },
     uGrassTone: { value: new THREE.Color(0.45, 0.92, 0.45) },
   }
 

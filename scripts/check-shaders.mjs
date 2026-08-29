@@ -444,6 +444,13 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
 // are what three would actually emit. COLOR_FNS is in the prologue because the
 // shader ends on <colorspace_fragment>, which calls linearToOutputTexel -- a
 // function three generates into the prologue rather than into a chunk.
+//
+// AND THE FRAGMENT STAGE IS COMPILED TWICE, once per state of WATER_CUBES,
+// because both of them ship: the desktop draws with the cube captures and quest
+// mode's `cubemap reflections` row compiles them out. Three injects
+// material.defines into the prologue, so an untested variant here is a variant
+// nothing compiles until the button is pressed in a headset -- and a
+// ShaderMaterial that fails to compile draws no lake at all.
 {
   const waterScene = new THREE.Scene()
   const water = new Water(waterScene, {
@@ -465,8 +472,13 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
   const vert = finish(water.material.vertexShader)
   const frag = finish(water.material.fragmentShader)
   SHADERS.push(['water.js       VERT', 'vert', V_PRE + FOG, vert])
-  SHADERS.push(['water.js       FRAG', 'frag', F_PRE + GLSL1_OUT + FOG + COLOR_FNS + '\n', frag])
-  CROSS_STAGE.push(['water.js', vert, frag])
+  for (const [label, cubes] of [['cubes', '#define WATER_CUBES\n'], ['sky only', '']]) {
+    SHADERS.push([`water.js       FRAG ${label}`, 'frag', F_PRE + GLSL1_OUT + FOG + cubes + COLOR_FNS + '\n', frag])
+    // The vertex stage has no WATER_CUBES in it, so the varyings it hands over
+    // are the same pair either way -- but the fragment stage's READS of them
+    // move between branches, which is exactly what this check is for.
+    CROSS_STAGE.push([`water.js ${label}`, vert, cubes + frag])
+  }
 }
 
 // --- src/lighting.js: the terrain's fragment patch ---------------------------

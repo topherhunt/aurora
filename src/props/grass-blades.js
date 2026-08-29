@@ -1,5 +1,6 @@
 import THREE from '../three-instance.js'
 import { mulberry32 } from '../sim/mathx.js'
+import { FADE_DECODE, getWindEnabled, propClockUniform, registerWindMaterial } from '../material.js'
 
 // ---------------------------------------------------------------------------
 // GRASS AS GEOMETRY, NOT AS A CUTOUT.
@@ -51,8 +52,9 @@ import { mulberry32 } from '../sim/mathx.js'
 //
 // Sampling that colour is the caller's job and not this module's, because the
 // terrain's own drawn colour is a shader chain and not a function -- see
-// `terrainTint` in src/gen-grass-main.js. The contract here is only that the
-// FEET are (1,1,1), so whatever colour arrives lands on them untouched.
+// TerrainTint in src/terrain/terrain-tint.js, which replays it on the CPU. The
+// contract here is only that the FEET are (1,1,1), so whatever colour arrives
+// lands on them untouched.
 //
 // THE THREE THINGS THAT MAKE A TIP DIFFERENT FROM A FOOT, and where each lives:
 //   - the RAMP is geometry: `aBladeT` is 0 at the feet and 1 at the apex, and
@@ -108,25 +110,43 @@ export const BLADE_DEFAULTS = {
   // HOW FAR THE NORMAL IS BENT TOWARD STRAIGHT UP, 0 = the true face normal.
   // A blade lit by its own normal goes black whenever it turns edge-on to the
   // sun, and a field of them turns into salt-and-pepper noise that no amount of
-  // density fixes. Leaning the normal toward the ground's up-vector is the
-  // standard dodge: the clump then shades like the hillside it is standing on,
-  // which is also what the eye expects from grass seen at any distance.
-  normalUp: 0.70,
-  // The MEAN tip brightness, as a multiplier over the terrain base colour, and
-  // the spread either side of it. Per clump, not per blade: a clump is one
-  // plant and its blades are the same age.
+  // density fixes.
   //
-  // 1.0 +/- 0.35 means no clump gets a tip the same brightness as its own foot
-  // -- the sign is drawn per clump but the MAGNITUDE never lands near zero, so
-  // every clump has a gradient in it and the bed as a whole has no single
-  // direction. The spread is read in LINEAR light and shown through a tone map
-  // and an sRGB encode, both of which compress it: a 20% linear step is under
-  // 10% of a code value by the time it reaches the eye, which is why the floor
-  // sits where it does rather than somewhere politer. Set tipVary to 0 and
-  // tipGain above 1 for the plainer reading: every tip lighter than its own
-  // base by the same amount.
-  tipGain: 1.0,
-  tipVary: 0.35,
+  // 1.0, ALL THE WAY, and the reason is the low sun. Anything short of 1 leaves
+  // a share of the face normal in, and the residual tilt is much larger than it
+  // sounds: 0.70 leaves blades 20-25 degrees off vertical. That is invisible at
+  // noon -- dotNL spans 0.58 to 0.98 across a clump, a 1.7x ratio the eye reads
+  // as shape -- and ruinous at dawn, where the sun's own elevation is smaller
+  // than the tilt: at 10 degrees the same ten blades span 0.00 to 0.49, so one
+  // blade is black and the blade touching it is fully lit. The world clock here
+  // runs an hour a minute, so the bed spends most of its time in that regime.
+  //
+  // At 1 every blade normal is exactly (0,1,0) and the whole clump shades as
+  // one, which is the point: the base of a blade is meant to be the ground it
+  // is standing in, and the tip ramp is where the bed gets its relief instead.
+  normalUp: 1.0,
+  // TIP BRIGHTNESS, AS TWO RANGES AND NOTHING BETWEEN THEM. Per clump, not per
+  // blade: a clump is one plant and its blades are the same age.
+  //
+  // A clump is either LIGHTER than its own foot by at least tipGain, or DARKER
+  // by at least the same factor -- 1.5 and 1/1.5 here -- and tipVary is how much
+  // further than that floor it may go. The gap around 1.0 is the whole design:
+  // a tip the same colour as its base is a flat triangle, which is what the bed
+  // must never draw, and a distribution centred anywhere puts a share of the
+  // clumps there no matter how wide it is.
+  //
+  // THE DARK SIDE IS THE RECIPROCAL, not `2 - tipGain`. Brightness is read
+  // multiplicatively, so 1/1.5 is as far below the base as 1.5 is above it and
+  // the bed has no overall direction. It also cannot go negative, which a
+  // subtraction can.
+  //
+  // The separation is read in LINEAR light and shown through a tone map and an
+  // sRGB encode, both of which compress it: a 20% linear step is under 10% of a
+  // code value by the time it reaches the eye, which is why the floor sits at
+  // 1.5x rather than somewhere politer. tipGain must exceed 1 -- at 1 the two
+  // ranges meet at the base colour and the guarantee is gone.
+  tipGain: 1.5,
+  tipVary: 0.4,
   // Pushes red up and blue down at the tip, for sun-bleached ends.
   tipWarm: 0.0,
 }
@@ -135,18 +155,22 @@ export const BLADE_DEFAULTS = {
  * The per-clump tip brightness, as a multiplier over the base colour. Feed it
  * to the bed as the `aTipMul` instanced attribute.
  *
- * The sign is a coin flip and the magnitude covers only the top half of
- * `tipVary`, which is what guarantees contrast: drawing the whole multiplier
- * uniformly from `1 +/- tipVary` puts a share of the clumps at ~1.0, and a
- * clump whose tip matches its foot has no gradient at all.
+ * TWO RANGES, NOT ONE SPREAD. A coin flip picks lighter or darker and the
+ * magnitude is drawn from `[tipGain, tipGain + tipVary]`, taken as itself or as
+ * its reciprocal. Nothing is ever drawn between them, so the returned
+ * multiplier cannot land near 1 and no clump can be handed a tip the colour of
+ * its own foot -- see BLADE_DEFAULTS.tipGain.
  *
  * @param {object} params  BLADE_DEFAULTS, or an override of it
  * @param {() => number} rand  a 0..1 source; two draws are taken
  */
 export function bladeTipMul(params, rand) {
   const p = { ...BLADE_DEFAULTS, ...params }
-  const sign = rand() < 0.5 ? -1 : 1
-  return Math.max(0, 1 + sign * p.tipVary * (0.55 + 0.45 * rand())) * p.tipGain
+  if (!(p.tipGain > 1)) throw new Error(`grass-blades: tipGain must exceed 1, got ${p.tipGain}`)
+  if (!(p.tipVary >= 0)) throw new Error(`grass-blades: tipVary cannot be negative, got ${p.tipVary}`)
+  const lighter = rand() < 0.5
+  const step = p.tipGain + p.tipVary * rand()
+  return lighter ? step : 1 / step
 }
 
 /**
@@ -263,10 +287,13 @@ export function buildBladeClump(params = {}, seed = 1) {
  * instanced bed without the `aTipMul` block draws every tip at exactly its
  * foot's colour, which is not a crash but is the whole gradient gone.
  *
- * @param {{wind?: boolean}} opts
+ * `instancedFade` compiles the rim's dissolve in. See the fade block below for
+ * why it is a shrink rather than the dither every other prop in the world uses.
+ *
+ * @param {{wind?: boolean, instancedFade?: boolean}} opts
  * @returns {THREE.MeshLambertMaterial} with `.userData.uniforms` for the wind
  */
-export function createBladeMaterial({ wind = true } = {}) {
+export function createBladeMaterial({ wind = true, instancedFade = false } = {}) {
   const material = new THREE.MeshLambertMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
@@ -281,7 +308,12 @@ export function createBladeMaterial({ wind = true } = {}) {
   material.userData.uniforms = uniforms
 
   material.onBeforeCompile = (shader) => {
+    // The panel's wind row compiles the block out of every material in the
+    // world at once (setWindEnabled), so the switch is read HERE, per compile,
+    // and not folded into `wind` -- which only says whether this bed ever winds.
+    const windOn = wind && getWindEnabled()
     Object.assign(shader.uniforms, uniforms)
+    if (instancedFade) shader.uniforms.uPropClock = propClockUniform()
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */ `
         #include <common>
@@ -289,7 +321,13 @@ export function createBladeMaterial({ wind = true } = {}) {
         #ifdef USE_INSTANCING
         attribute float aTipMul;
         #endif
-        ${wind ? /* glsl */ `
+        ${instancedFade ? /* glsl */ `
+        uniform float uPropClock;
+        #ifdef PROP_FADE_ATTRIBUTE
+        attribute float aPropFade;
+        #endif
+        ` : ''}
+        ${windOn ? /* glsl */ `
         uniform float uTime;
         uniform float uWindAmp;
         uniform float uWindFreq;
@@ -325,16 +363,15 @@ export function createBladeMaterial({ wind = true } = {}) {
         normal *= faceDirection;
       `)
 
-    if (!wind) return
-
     // AFTER begin_vertex, which is where `transformed` is created, and BEFORE
     // project_vertex, which is where three multiplies the instance matrix in.
     // Bending `transformed` therefore bends the blade in the CLUMP's local
     // space and inherits the instance's yaw and scale, so a bigger clump
-    // sways further and a rotated one sways in its own frame.
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <begin_vertex>', /* glsl */ `
-        #include <begin_vertex>
+    // sways further and a rotated one sways in its own frame. The shrink is
+    // applied to the bent position for the same reason: both are the clump's
+    // own shape, and scaling after the bend keeps a dissolving clump's sway
+    // proportional to what is left of it.
+    const bendGLSL = windOn ? /* glsl */ `
         #ifdef USE_INSTANCING
         {
           // The clump's world origin, which is what gives neighbouring clumps
@@ -350,10 +387,56 @@ export function createBladeMaterial({ wind = true } = {}) {
           transformed.z += bend * 0.6;
         }
         #endif
+    ` : ''
+
+    // THE RIM DISSOLVE, AS A SHRINK RATHER THAN A DITHER, and the reason is the
+    // whole reason this material exists. Every other prop in the world fades by
+    // stippling and `discard`ing the stippled-out fragments (see FADE_VERTEX in
+    // material.js), and one `discard` anywhere in a program turns off
+    // low-resolution-Z for the entire draw on a tiled Adreno -- so compiling the
+    // standard dissolve into the blade bed would hand back the exact saving the
+    // bed was built to win, in exchange for a quarter of a second of prettiness
+    // at the cull radius.
+    //
+    // A clump scaled toward zero covers no fragments and needs no alpha, and
+    // because `sink` is 0 the feet sit exactly on y = 0 -- so the shrink pulls
+    // the blades down into the ground they are standing in rather than toward a
+    // point in mid air, which is the read we want anyway.
+    //
+    // THE SIGN CONVENTION IS ALREADY RIGHT. FADE_DECODE leaves `propFade` at
+    // -p while fading in and 1-p while fading out, and 1.0 at rest, so the
+    // magnitude of that one number is the scale ramp for both directions and
+    // for the resting state with no branch: |1.0| = full, |-p| = p in, |1-p| =
+    // 1-p out. Any change to that packing has to keep this true.
+    //
+    // `propFade` and `fadeSlot` are the caller's to declare -- FADE_DECODE reads
+    // the one and assigns the other, exactly as FADE_VERTEX does around it.
+    const fadeGLSL = instancedFade ? /* glsl */ `
+        {
+          float propFade = 1.0;
+          #if defined( USE_INSTANCING ) && defined( PROP_FADE_ATTRIBUTE )
+          float fadeSlot = aPropFade;
+${FADE_DECODE}
+          #endif
+          transformed *= abs( propFade );
+        }
+    ` : ''
+
+    if (bendGLSL || fadeGLSL) {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <begin_vertex>', /* glsl */ `
+        #include <begin_vertex>
+        ${bendGLSL}
+        ${fadeGLSL}
       `)
+    }
   }
   // three keys its program cache on this alone, so the wind and no-wind builds
   // must not share it.
-  material.customProgramCacheKey = () => (wind ? 'grass-blade-v3-wind' : 'grass-blade-v3-nowind')
+  material.customProgramCacheKey = () =>
+    `grass-blade-v3${wind && getWindEnabled() ? '-wind' : '-nowind'}${instancedFade ? '-ifade' : ''}`
+  // On the panel's wind switch, so pressing it recompiles the blades along with
+  // the props. Without this the row would measure the world minus its meadow.
+  if (wind) registerWindMaterial(material)
   return material
 }

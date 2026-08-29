@@ -22,7 +22,7 @@ import { SKY_GLSL, makeSkyUniforms, writeSkyUniforms } from './sky-glsl.js'
 //   - No texture, so nothing to author, load, or spend a KTX2 round trip on.
 //   - A gradient sampled per-fragment from the view ray has no banding to speak
 //     of, where an 8-bit cubemap of a smooth gradient bands badly on a headset.
-//   - It costs one draw of 300-odd triangles with no depth write.
+//   - It costs one draw of 80 triangles with no depth write.
 //
 // The dome follows the camera each frame (see update). It has to: at a 9000 m
 // radius inside a 16 km world, walking a kilometre would visibly slide the sun
@@ -91,10 +91,20 @@ export class Sky {
       fog: false,
     })
 
-    // Enough segments that the sun disc's silhouette is a circle rather than a
-    // polygon: the disc is computed per fragment, so this only has to be dense
-    // enough that `position` interpolates smoothly, and 32x16 is plenty.
-    this.mesh = new THREE.Mesh(new THREE.SphereGeometry(RADIUS, 32, 16), this.material)
+    // 80 TRIANGLES, AND THE TESSELLATION IS VISUALLY FREE. The camera sits at
+    // the dome's exact centre (update() puts it there every frame), so a
+    // fragment's perspective-correct `vDir` is the point on the chord that the
+    // pixel actually looks at, and the direction from the centre to that point
+    // IS the view ray -- exactly, at any density. Nothing here is shaded from
+    // the geometry; the gradient, the sun disc and the moon are all computed
+    // per fragment from that direction. A denser dome buys literally nothing.
+    //
+    // Detail 1 rather than a bare icosahedron because the chords cut the sphere
+    // inward: 20 faces put the nearest surface at 7152 m, 80 at 8408 m, against
+    // the 8914 m of the 960-triangle UV sphere this replaces. The dome has to
+    // stay outside everything the world draws, and holding that clearance is
+    // worth 60 triangles.
+    this.mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(RADIUS, 1), this.material)
     // Drawn first, and never culled -- the camera is always inside it, which
     // frustum culling against its bounding sphere handles correctly, but the
     // flag costs nothing and removes a class of surprise.

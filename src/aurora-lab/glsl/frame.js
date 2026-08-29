@@ -447,8 +447,8 @@ export const MAIN_GLSL = `
 
     // The screen's border must never be findable, and it now has only one.
     //
-    // vUv.y runs along elevation and does have two real ends -- the zenith and a
-    // few degrees under the horizon -- so both are faded. vUv.x runs along
+    // vUv.y runs along elevation and does have two real ends -- the zenith and
+    // the rim well under the horizon -- so both are faded. vUv.x runs along
     // azimuth, and since screen.js made the mesh a full dome that seam is a WRAP
     // rather than an edge: due south is where u = 1 meets u = 0, the sky is
     // continuous across it, and fading it would have carved a dark wedge some

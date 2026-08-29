@@ -119,14 +119,25 @@ const DIST = 5200
 // 0.85 leaves the southern sky at fifteen percent, 1.0 extinguishes it.
 const AZIMUTH_DEG = 360
 
-// Elevation runs from a little under the horizon -- the march's own horizon cut
-// wants to be the thing that ends the sky, not the geometry -- to the zenith.
-// The last twelve degrees used to be cut off as the most expensive
-// per-solid-angle part of a sphere's tessellation with no aurora in them; that
-// was true of the geometry and false of the picture, because cutting them left a
-// disc of missing sky overhead. The zenith dissolve (u_zenFade) is what handles
-// them now, and it fades brightness rather than removing the surface.
-const ELEV_LOW_DEG = -6
+// Elevation runs from well under the horizon to the zenith, and neither end is
+// where the sky stops -- the shader ends the sky at both, and the geometry only
+// has to stay out of its way.
+//
+// The low end is cut to hold the sky map's below-horizon skirt. That skirt rolls
+// off over u_horizonSkirt, at most 0.35 of ray height below a cut at -0.02, so
+// the last lit ray is at asin(-0.37) = -21.7 degrees; -24 clears it, and the
+// bottom band of u_edgeFade then lands in sky the skirt has already taken to
+// nothing at the default and to a tenth at the maximum, so it only ever dims
+// what is dim. Cutting higher puts the rim back inside the skirt, where a player a few
+// hundred metres up finds it as a hard circle. See the skirt in skymap/glsl.js.
+//
+// The high end is the zenith because the last twelve degrees used to be cut off
+// as the most expensive per-solid-angle part of a sphere's tessellation with no
+// aurora in them; that was true of the geometry and false of the picture,
+// because cutting them left a disc of missing sky overhead. The zenith dissolve
+// (u_zenFade) handles them now, and it fades brightness rather than removing the
+// surface.
+const ELEV_LOW_DEG = -24
 const ELEV_HIGH_DEG = 90
 
 // The mesh is a SCREEN, not the aurora: the shader recovers a ray direction per
@@ -149,8 +160,8 @@ const ELEV_HIGH_DEG = 90
 //
 // Twenty degrees per face is where the error goes under one headset pixel, so the
 // dome is tessellated to roughly that in both axes: 360/18 is exactly 20, and the
-// 96 degrees of elevation over 5 rows is 19.2. The pole row degenerates to one
-// triangle per segment rather than two, so the whole sky is 18*5*2 - 18 = 162
+// 114 degrees of elevation over 6 rows is 19. The pole row degenerates to one
+// triangle per segment rather than two, so the whole sky is 18*6*2 - 18 = 198
 // triangles. That is a fifth of a percent of the 200k the landscape spends, and
 // it will not move the frame rate in either direction -- this shader is
 // fragment-bound to about three decimal places -- but the triangle budget is
@@ -160,7 +171,7 @@ const ELEV_HIGH_DEG = 90
 // over about 30 the sky visibly warps, because the error is quartic in the face
 // angle and 33 degrees is already 3.75 px.
 const SEG_AZ = 18
-const SEG_EL = 5
+const SEG_EL = 6
 
 // three's SphereGeometry puts phi = 0 at -x (west) and winds toward +z (south),
 // so north (-z) is at -PI/2. Everything else here is measured off that.

@@ -479,11 +479,12 @@ export function dilate(px) {
  *
  * WHAT IT COSTS AND WHY IT IS PAID. The clip is not diffuse -- it is a straight
  * slice off each lower shoulder of a round crown, which at the 100 m band edge
- * is a wedge about 12 px wide and 18 px deep on an oak. It is affordable
- * because the swap into this tier is a CROSS-DISSOLVE, not a cut: trees.js
- * dithers the outgoing cross against the incoming card over half a second, so
- * the shoulder thins out rather than vanishing between two frames. Past 300 m
- * the same wedge is 4-7 px and the mip chain has eaten it.
+ * is a wedge about 12 px wide and 18 px deep on an oak. The swap into this tier
+ * is a CUT -- trees.js draws its tiers as InstancedMeshes, which cannot dither
+ * past each other -- so that wedge does leave between two frames; it is
+ * affordable because 12 px of shoulder is the loudest thing in a swap that is
+ * already exchanging a whole mesh for a picture of one. Past 300 m the same
+ * wedge is 4-7 px and the mip chain has eaten it.
  *
  * THE OTHER TRIANGLE IS NOT WORTH LOOKING FOR. The world triangle and the uv
  * triangle are joined by one affine map, so overhanging the square samples a

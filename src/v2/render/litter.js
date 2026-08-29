@@ -9,92 +9,27 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
 // STREWN LITTER on the /v2 route: the small stones, drawn as pictures of small
-// stones instead of as small stones.
+// stones instead of as small stones. The argument is DESIGN.md §22 -- why this is
+// a texture rather than props, the two passes, the density-is-a-spacing rule and
+// where each ENV_DENSITY rate caps.
 //
-// WHAT THIS IS FOR. The rock scatter's `underfoot` bed used to put a modelled
-// pebble on the ground every 1.7 m across every wood and every cliffside, at
-// about 11 cm across. That is forty-one specks for every rock big enough to
-// read as a rock, and a BatchedMesh instance costs the same whether it is a
-// four-face pebble or a seven-metre lip -- so nearly the whole prop budget was
-// being spent on things smaller than a boot. The look was right and the
-// mechanism was wrong. Ground scattered with small stones is a TEXTURE, and
-// props/litter.js bakes four photographs of exactly that; this file stamps them
-// on the hill. Two triangles buy what eighty instances used to.
+// The standard scatter machine (render/trees.js's header) at its smallest cut: one
+// BatchedMesh, one material, tiled camera-following scatter keyed on tileSeed,
+// graded thinning, incremental regrow, rim dissolve -- and no variant bank, no
+// tier ladder, no LOD bands, because a quad is already the floor of every ladder.
+// Four geometries, one per baked layer, because texLayer is a per-VERTEX attribute
+// (material.js), not per instance: 16 vertices for the whole system.
 //
-// IT IS THE SAME MACHINE AS ITS FOUR SIBLINGS and deliberately the smallest cut
-// of it: one BatchedMesh, one material, a tiled camera-following scatter keyed
-// on tileSeed, graded thinning by per-candidate rank, rank-based incremental
-// regrow, and the rim dissolve. render/trees.js's header explains all of that
-// and none of it is re-argued here. What this file DOESN'T have is the part
-// that is usually the bulk of a scatter: there is no variant bank, no tier
-// ladder, no LOD bands and no promote/demote loop in `update`, because a quad
-// is already the floor of every ladder. A patch is born at its only tier and
-// stays there until it is evicted.
-//
-// FOUR GEOMETRIES, ONE PER BAKED LAYER. The atlas layer a prop samples is a
-// per-VERTEX attribute (`texLayer`, see material.js), not per instance, so
-// "which of the four pictures" has to be a choice of geometry. They are four
-// copies of the same 2-triangle quad differing in one float. That is also why
-// they cost nothing: BatchedMesh de-duplicates by geometry identity but these
-// are genuinely four distinct 4-vertex buffers, which is 16 vertices in the
-// arena for the whole system.
-//
-// FOUR PICTURES IS MORE THAN FOUR PATCHES. Each stamp also rolls a continuous
-// yaw, so the repeat the eye can actually catch is a picture seen at a random
-// rotation next to the same picture at a different one. A litter patch has no
-// orientation of its own -- no up, no grain, no silhouette against the sky --
-// which is exactly the condition under which rotation defeats recognition, and
-// it is why four bakes was judged enough where four TREES would not be.
-//
-// THE RIVERBED IS THE DENSEST GROUND IN THE WORLD, AND IT COSTS A SECOND PASS.
-// This file used to refuse submerged ground outright, on the grounds that stone
-// under water was the riverbed's business. That was backwards. A riverbed and a
-// lake floor are exactly where loose stone collects and stays -- it is washed
-// there, it is sorted there, and nothing grows over it -- so the one ground that
-// had no litter at all should have had the most of it.
-//
-// Making it the most is not a matter of turning a number up, and that is why
-// there are two candidate loops in _growTile instead of one. ENV_DENSITY is an
-// accept RATE (see rocks.js's BEDS, which argues this at length): `river` is
-// already saturated, so every candidate offered on shingle is already being
-// taken and no multiplier can produce another one. The only lever left is how
-// many candidates are OFFERED, and candidates are per-pass -- which is rocks.js's
-// own conclusion when it wanted a scree PILE rather than a scree ratio and gave
-// it a bed of its own. THE WET PASS IS THAT BED. It rolls WET_DENSITY more
-// candidates per square metre out of a SEPARATE random stream, throws away
-// everything that is not standing under water, and puts the survivors through
-// the identical drift, slope and rate tests the dry pass uses. The two passes
-// differ in exactly two things: how many candidates they offer, and whether they
-// demand water.
-//
-// A SEPARATE STREAM IS THE WHOLE REASON THIS IS AFFORDABLE TO ADD. The dry
-// pass's draw order is the most fragile line in the file -- every candidate
-// draws the same randoms whether or not it survives, so one extra draw
-// reshuffles every patch in the world. The wet pass draws from tileSeed slot 1
-// where the dry pass draws from slot 0, so not one dry candidate moves. What it
-// costs is a second loop over ground that is nearly all dry, and that is bought
-// back by testing water FIRST: WaterSurfaces.levelAt is an AABB reject and a
-// bucket scan, and it returns null on dry land long before anything pays the
-// ~4.9 us terrain sample. See the pass itself.
-//
-// THE QUAD'S NORMAL IS EXACTLY (0, 1, 0), which is the marker material.js uses
-// to decide a card wants spinning toward the camera (see CARD_UP_MARK). It is
-// safe here and it is worth saying why rather than leaving it to be discovered:
-// that test is ANDed with a per-material list of billboard layers, this
-// material is built without one, and a ground stamp is the one prop in the
-// project that must never turn. If litter is ever merged into a material that
-// does billboard, this is the line that breaks.
-//
-// WHAT IT CANNOT DO, and it is the honest limit of stamping a flat picture on a
-// hill: the patch is a PLANE and the ground is not. It is laid on the field's
-// own normal at the patch centre and lifted LITTER_LIFT above the drawn
-// surface, so on ground that curves inside 1.6 m one corner rides higher than
-// the lift and another tries to sink through. The lift is set from the worst
-// curvature the scatter's slope limit still admits rather than from taste; see
-// LITTER_LIFT. Past that limit the answer is not a bigger lift -- a stamp that
-// floats is worse than a stamp that clips -- it is the slope test, which is why
-// MAX_SLOPE_DEG here, at 34, is well under the 42 of the underfoot rock bed
-// whose pebbles it replaces.
+// Three lines that break silently if moved:
+//   - THE QUAD'S NORMAL IS EXACTLY (0, 1, 0), material.js's CARD_UP_MARK. Safe only
+//     because this material carries no billboard-layer list, and a ground stamp is
+//     the one prop that must never turn.
+//   - THE DRY PASS'S DRAW ORDER: every candidate draws the same randoms whether or
+//     not it survives, so one extra draw reshuffles every patch in the world. The
+//     wet pass takes tileSeed slot 1 to leave slot 0 untouched.
+//   - THE PATCH IS A PLANE AND THE GROUND IS NOT. Laid on the field normal at the
+//     centre, lifted LITTER_LIFT; curvature inside 1.6 m is answered by the slope
+//     test, never by a bigger lift.
 // ---------------------------------------------------------------------------
 
 // The side of one stamp, in metres, and the range it is scaled by. The size
@@ -106,91 +41,59 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // before the stones stop matching the modelled rocks standing next to them.
 const SCALE = [0.85, 1.4]
 
-// How far above the DRAWN ground a stamp floats, in metres, plus the jitter
-// that separates two stamps lying on each other.
+// How far above the DRAWN ground a stamp floats, in metres, plus the jitter that
+// separates two stamps lying on each other.
 //
-// The base figure is ribbon.js's ROAD_LIFT, and for the same reason: it is the
-// smallest lift that clears the depth buffer's disagreement with itself over a
-// terrain triangle at this range. The jitter is not decoration. Litter is
-// scattered without any overlap test, so patches DO land on each other, and two
-// coplanar quads at the same height z-fight over their whole intersection --
-// which is the one artefact on this ground that reads instantly as broken. A
-// couple of centimetres of spread is invisible from standing height and is
-// several depth-buffer steps at 60 m.
+// The base figure is ribbon.js's ROAD_LIFT, for the same reason: the smallest lift
+// that clears the depth buffer's disagreement with itself over a terrain triangle
+// at this range. The jitter is not decoration -- litter is scattered with no
+// overlap test, so patches DO land on each other, and two coplanar quads at the
+// same height z-fight over their whole intersection, the one artefact on this
+// ground that reads instantly as broken. A couple of centimetres is invisible from
+// standing height and several depth-buffer steps at 60 m.
 //
-// THE LIFT IS NOT A CURVATURE ALLOWANCE AND CANNOT BE ONE. A stamp is planar;
-// the hill under it is not. SCALE runs to 1.4, so the largest stamp is 2.24 m
-// across and reaches 1.58 m from centre to corner -- ground whose slope differs
-// by only 5 degrees from the patch centre's carries that corner 14 cm off the
-// plane, three times the whole lift. No lift small enough to stay invisible can
-// cover that. What keeps it rare is the slope test, not this number.
+// THE LIFT IS NOT A CURVATURE ALLOWANCE AND CANNOT BE ONE: the largest stamp
+// carries a corner 14 cm off plane over a 5-degree slope change, three times the
+// lift (§22). What keeps it rare is the slope test.
 const LITTER_LIFT = 0.05
 const LITTER_LIFT_VARY = 0.025
 
 // Stamps per square metre at full density, and the tile they are rolled in.
 //
-// THE FIGURE THAT MATTERS IS THE ONE AFTER THE REJECTIONS, not this one, and
-// that is worth stating because getting it wrong is exactly the mistake this
-// whole change was made to fix: the last attempt at "more stone" doubled a
-// ratio inside one bed and moved the actual sight from a rock every 15 m to a
-// rock every 10.6 m, which is arithmetically a doubling and visually nothing.
-// So the number to check is METRES BETWEEN STAMPS on real ground, and 0.14 is
-// what it takes to land there: the drift floor throws away a measured 25.5% of
-// the candidates before anything else looks at them, and ENV_DENSITY throws away
-// more than half again in a wood. Measured on the gate's own stubs, inside the
-// full-density radius, 0.14 gives a stamp every 3.7 m in a wood, 3.4 m on a
-// peak and 3.3 m on a shore, against the 6.1 / 4.6 / 3.3 m that 0.08 gave. On
-// the sine ridge, where half the ground is past the slope limit, it is 6.7 m --
-// which is the answer wanted there: a face is not strewn ground.
+// THE FIGURE THAT MATTERS IS THE ONE AFTER THE REJECTIONS, not this one: the drift
+// floor alone throws away a measured 25.5% of candidates and ENV_DENSITY more than
+// half again in a wood, so the number to check is METRES BETWEEN STAMPS on real
+// ground. 0.14 gives 3.7 m in a wood, 3.4 m on a peak, 3.3 m on a shore and 6.7 m
+// on the sine ridge; §22 carries the table against 0.08 and the reasoning.
 //
-// At 1.6 m a side, a stamp every 3.7 m puts litter on about a fifth of the ground
-// -- and rather less than that carrying stone, since the picture is mostly
-// transparent. That is what the eye reads as "there are stones about" rather
-// than "the ground is paved": much denser and the square stamps start meeting
-// edge to edge, which is the point at which the trick stops working, because
-// two overlapping rectangles of gravel show their corners in a way one never
-// does.
+// At 1.6 m a side, a stamp every 3.7 m puts litter on about a fifth of the ground,
+// and rather less carrying stone since the picture is mostly transparent. That
+// reads as "there are stones about" rather than "the ground is paved": much denser
+// and the square stamps meet edge to edge, which is where the trick stops working,
+// because two overlapping rectangles of gravel show their corners in a way one
+// never does.
 //
-// The tile is 8 m, so a full-density tile rolls nine candidates. Small tiles
-// keep the regrow granular and the per-tile arrays short; the only reason not
-// to shrink it further is that the clump lattice below has to stay coarser than
-// the tile or the drifts line up with the grid.
+// The tile is 8 m, so a full-density tile rolls nine candidates. Small tiles keep
+// the regrow granular and the per-tile arrays short; the only reason not to shrink
+// further is that the clump lattice must stay coarser than the tile or the drifts
+// line up with the grid.
 const DENSITY = 0.14
 const TILE = 8
 
 // EXTRA candidates per square metre, offered by the wet pass and thrown away
-// everywhere that is not under water. Added to DENSITY rather than replacing it:
-// the dry pass places on the bed too -- submerged ground is `river` to _envAt and
-// river is saturated, so every dry-pass candidate that lands in the water is
-// already accepted -- and this is what is laid on top of that.
+// everywhere not under water. ADDED to DENSITY rather than replacing it: the dry
+// pass places on the bed too -- submerged ground is `river` to _envAt and river is
+// saturated, so every dry-pass candidate landing in water is already accepted.
 //
-// SO THE NUMBER TO READ IS THE SUM, AND IT IS A SPACING RATHER THAN A RATIO,
-// for the reason DENSITY's own note gives at length. At 8 m the tile rolls
-// round(64 * 0.09) = 6 wet candidates against the dry pass's 9, so a lake bed is
-// offered 15/9 of what a shore is offered and both pass the same drift floor and
-// the same saturated `river` rate. Measured on the gate's own stubs inside the
-// full-density radius: a stamp every 2.6 m on a lake bed against 3.3 m on a
-// shore, 3.4 m on a peak and 3.7 m in a wood. That is 1.6x the stone per square
-// metre of the next densest ground in the world, which is what a riverbed is.
+// SO THE NUMBER TO READ IS THE SUM, AND IT IS A SPACING RATHER THAN A RATIO, for
+// the reason DENSITY's note gives. At 8 m the tile rolls round(64 * 0.09) = 6 wet
+// candidates against the dry pass's 9, so a lake bed is offered 15/9 of what a
+// shore is and both face the same drift floor and the same saturated `river` rate.
 //
-// DOUBLED ON REQUEST, AND IT IS NOW THROUGH THE FLOOR THIS COMMENT USED TO
-// DEFEND. That is a deliberate call and not an oversight, so here is exactly
-// what was traded and how to put it back.
-//
-// A stamp is LITTER_PATCH_M x SCALE across -- 1.8 m a side at the middle of the
-// range. At 0.09 the wet bed sat at 2.57 m mean spacing, comfortably clear of
-// its own stamps. At 0.18 it sits near 1.82 m, which is the stamp width: the
-// squares now meet edge to edge and in places overlap, and two overlapping
-// rectangles of gravel show their corners in a way one never does. The old
-// comment here called even 0.14 "through it" and that judgement still stands on
-// the merits -- what changed is that riverbed coverage was wanted more than the
-// margin was.
-//
-// It is least bad here of anywhere it could have happened: this is the WET pass
-// only, so it is ground seen through moving water and refraction, never the
-// walked forest floor the 2.5 m paved floor in check-litter.mjs was measured
-// for. If the corners do show, this number is the whole fix -- 0.13 buys most of
-// the coverage back at 2.13 m, and 0.09 is where it was.
+// 0.18 IS DELIBERATELY THROUGH ITS OWN MARGIN -- 1.82 m mean spacing against an
+// 1.8 m stamp, so squares meet edge to edge. Bought knowingly, and least bad here
+// of anywhere: wet pass only, seen through moving water. If the corners show, this
+// number is the whole fix -- 0.13 is 2.13 m, 0.09 is 2.57 m (§22).
 const WET_DENSITY = 0.18
 
 // Where the litter stops. `FULL_RADIUS` is the distance inside which every
@@ -198,11 +101,10 @@ const WET_DENSITY = 0.18
 // is the graded thinning every scatter in /v2 uses.
 //
 // 64 m is not the parallax rule -- a 1.6 m patch stays several pixels wide well
-// past a kilometre -- it is the range at which litter stops being information.
-// These are the stones you see because you are walking on them. At 64 m the
-// stamp is a smudge a couple of texels' worth of contrast away from the ground
-// it is drawn on, and the whole 900-odd instances of it are being paid for
-// something nobody can name. The rim dissolve hides the boundary.
+// past a kilometre -- it is where litter stops being information. These are the
+// stones you see because you are walking on them; at 64 m the stamp is a smudge a
+// couple of texels of contrast from the ground under it, and the 900-odd instances
+// of it are paid for something nobody can name. The rim dissolve hides the edge.
 const FULL_RADIUS = 26
 const RADIUS = 64
 
@@ -220,39 +122,18 @@ const MAX_SLOPE_DEG = 34
 // multiplier). A wood floor has plenty of loose stone but much of it is under
 // leaf litter; a peak is scoured rock and gravel and carries a lot.
 //
-// RIVER IS SATURATED, ON PURPOSE, AND IT IS THE ONLY ONE ALLOWED TO BE. Every
-// candidate that reaches this test has already cleared CLUMP_FLOOR, so the rate
-// it faces is at least 0.9 * (1 + 0.55 * 0.34) = 1.068: on shingle nothing is
-// ever refused here and CLUMP_GAIN is inert. That is worth saying plainly
-// because it is the failure check-rocks.mjs gates against on the scree bed --
-// a rate so high the drift field stops mattering. Here it is the intent rather
-// than an accident: river shingle IS the ground where loose stone collects, and
-// the drift still carves swept lanes through it because the FLOOR still bites
-// (a measured quarter of all candidates, on every environment alike). What is
-// given up is only the gradation inside a drift, and buying it back would mean
-// dropping river under 1 / (1 + 0.55 * 0.34) = 0.842, which is below the peak
-// and gives up the thing the entry exists to say.
+// RIVER IS SATURATED, ON PURPOSE, AND THE ONLY ONE ALLOWED TO BE: past
+// CLUMP_FLOOR the rate it faces is at least 0.9 * (1 + 0.55 * 0.34) = 1.068, so
+// nothing is refused on shingle and CLUMP_GAIN is inert there. `forest` 0.6 tops
+// out at 0.930 and never caps; `peak` 0.75 caps above clump 0.606, 34 refusals per
+// thousand. §22 argues why the saturation is wanted here and what it costs.
 //
-// The other two cap at different places and it is worth being exact, because
-// "saturated" is not one condition. `forest` at 0.6 tops out at 0.930 and is
-// never capped at all, so the gain is live across its whole range. `peak` at
-// 0.75 reaches 1.0 at clump 0.606, so the gain is live over the lower two
-// thirds of the drift and inert above that -- a partial cap, and 34 refusals
-// in a thousand candidates is what that looks like from outside. Only river is
-// capped everywhere. check-litter.mjs holds each of those three claims
-// separately, so a change to any one of them has to be made on purpose.
-//
-// `cliff` IS ZERO AND IT IS ALSO UNREACHABLE, which are two different facts and
-// both are wanted. _envAt only says `cliff` past CLIFF_TAN (42 degrees) and
-// MAX_SLOPE_DEG refuses everything past 34, so no candidate can ever arrive
-// here carrying that name -- the slope test has already said no. The entry is
-// kept, at zero, for what happens if someone later raises MAX_SLOPE_DEG: the
-// branch would come alive, and a plausible-looking 0.22 sitting here would
-// start quietly stamping flat pictures of gravel onto vertical rock. A zero
-// makes that a deliberate edit rather than a side effect. Ground between the
-// two limits is classified `forest` or `peak` and gets litter accordingly, and
-// the loose stone that genuinely belongs at the base of a face is the rock
-// scatter's own scree bed, which is real geometry rather than a picture.
+// `cliff` IS ZERO AND ALSO UNREACHABLE, two different facts and both wanted.
+// _envAt only says `cliff` past CLIFF_TAN (42 degrees) and MAX_SLOPE_DEG refuses
+// past 34, so no candidate can arrive carrying that name. The entry is kept at
+// zero for what happens if someone raises MAX_SLOPE_DEG: the branch would come
+// alive, and a plausible-looking 0.22 here would quietly stamp flat pictures of
+// gravel onto vertical rock.
 const ENV_DENSITY = { river: 0.9, forest: 0.6, cliff: 0, peak: 0.75 }
 
 // The drift field: the same value-noise lattice the scree pile uses, at its own
@@ -299,25 +180,16 @@ const CLIFF_TAN = Math.tan((42 * Math.PI) / 180)
 // clamped. Without any of it the four pictures read as four rectangles of the
 // same gravel dropped on every ground in the world.
 //
-// THE CEILING IS A SNOW SETTING AND NOTHING ELSE, which is worth knowing before
-// touching it. Every un-snowed entry in the mesher's palette sits between 0.059
-// (dirt) and 0.082 (rock) in luminance, so the compressed ratio lands between
-// 0.81 and 0.96 for all of them -- inside both bounds, and the floor below is
-// therefore a guard against a repalette rather than something that bites on any
-// ground in the world today. C_SNOW is 0.879,
-// a factor of eleven above the rest of the table, and the only thing the top of
-// this range decides is what litter looks like lying in snow. At 1.6 it was
-// clamped to less than half of what the ground under it was doing and read as
-// wet coal on a snowfield. 2.7 puts the mean stone at about 0.57 albedo against
-// snow's 0.879 -- still darker, because stone in snow IS darker, but by a
-// stone's worth rather than a hole's worth. Partial snow ramps through it
-// smoothly rather than stepping, since half-snowed ground compresses to 2.3 and
-// is still under the clamp.
+// THE CEILING IS A SNOW SETTING AND NOTHING ELSE. Every un-snowed palette entry
+// compresses to between 0.81 and 0.96, so the floor guards against a repalette
+// rather than biting on any ground today; C_SNOW is 0.879, eleven times the rest of
+// the table, and the top of this range decides only what litter looks like lying in
+// snow. 2.7 puts the mean stone near 0.57 albedo against it -- darker by a stone's
+// worth rather than a hole's, where 1.6 read as wet coal (§22).
 //
 // The hue fraction is deliberately NOT ramped alongside it: C_SNOW normalised to
-// unit luminance is [0.98, 1.00, 1.06], so at any fraction between a half and all
-// of it the tint moves by under 3% and the whole of the snow problem is the
-// magnitude.
+// unit luminance is [0.98, 1.00, 1.06], so the tint moves under 3% at any fraction
+// and the whole of the snow problem is the magnitude.
 const GROUND_HUE = 0.55
 const GROUND_REF = 0.09
 const GROUND_BRIGHT = [0.75, 2.7]
@@ -495,17 +367,15 @@ export class Litter {
     this.samplesWet = 0
     this.regrows = 0
     this.regrounds = 0
-    // TWO PASSES, TWO TALLIES, and they are kept apart rather than summed for
-    // the same reason the two random streams are: every one of these numbers
-    // means something only about the population it counts. `rejected` is the dry
-    // pass alone, so `samples` still reads "candidates that reached the terrain
-    // on ordinary ground" and the drift share still reads as the drift's own
-    // doing. `rejectedWet.dry` is the wet pass's own bulk -- candidates that fell
-    // on land, which on any real world is nearly all of them -- and it is the
-    // number to watch if the second pass ever looks expensive.
-    //
-    // There is no `water` bucket in `rejected` any more, and its absence is the
-    // change: the dry pass no longer refuses anything for standing in a river.
+    // TWO PASSES, TWO TALLIES, kept apart rather than summed for the reason the two
+    // random streams are: each number means something only about the population it
+    // counts. `rejected` is the dry pass alone, so `samples` still reads
+    // "candidates that reached the terrain on ordinary ground" and the drift share
+    // still reads as the drift's own doing. `rejectedWet.dry` is the wet pass's
+    // bulk -- candidates that fell on land, nearly all of them on any real world --
+    // and is the number to watch if the second pass ever looks expensive. There is
+    // no `water` bucket in `rejected`: the dry pass refuses nothing for standing in
+    // a river.
     this.rejected = { slope: 0, env: 0, clump: 0 }
     this.rejectedWet = { dry: 0, clump: 0, slope: 0, env: 0 }
     this.placeMs = 0

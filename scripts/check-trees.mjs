@@ -10,7 +10,7 @@
 // them. In the order they cost the most:
 //
 //   THE COARSE MESH STOPS BEING THE SAME TREE. treeLod(p, 1) is the tier the
-//   world draws between 8 and 15 m, and it is LOD0 with cheaper WOOD and nothing
+//   world draws between 8 and 22.5 m, and it is LOD0 with cheaper WOOD and nothing
 //   else: a 3-sided trunk, one fin per limb, the same card per spray. Two
 //   parameters move and no count does, so buildTree walks an identical rng
 //   stream and lays out an identical tree, which is what makes the swap at 8 m
@@ -93,9 +93,9 @@ import * as THREE from 'three'
 import {
   TREE_DEFAULTS, TREE_SPECIES, treeLod, resolveTree, buildTree, crownProfile,
 } from '../src/props/tree.js'
-import { TREE_SIZES, buildTreeBank, treeVariants, treeImpostorLayers } from '../src/props/tree-bank.js'
+import { buildTreeBank, treeVariants, treeImpostorLayers } from '../src/props/tree-bank.js'
 import { buildImpostorCard } from '../src/props/impostor.js'
-import { CARD_UP_MARK, PROP_FADE_SECONDS } from '../src/material.js'
+import { CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock } from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
 import { RIM_AT } from '../src/v2/render/rim.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
@@ -198,7 +198,7 @@ console.log('\n-- the triangle law --')
       `law ${lawTris(p1, r1)}, resolveTree ${r1.triangles}, built ${a1}`)
     // The shape of the LOD1 bill, spelled out: a 3-sided trunk, one fin per
     // limb, and the crown LOD0 draws, untouched. The whole saving is wood, and
-    // that is deliberate -- the cards are the tree's silhouette at 8 to 15 m and
+    // that is deliberate -- the cards are the tree's silhouette at 8 to 22.5 m and
     // there is no cheaper way to draw them that is still the same plant.
     check(r1.triangles === r1.trunkTris + r1.limbs + r1.sprayTris
       && r1.trunkTris === 3 && r1.sprayTris === r0.sprayTris && r1.rootTris === 0,
@@ -387,7 +387,11 @@ console.log('\n-- crown and height parity --')
 for (const s of species) {
   const d = []
   let worstHeight = 0
-  for (const size of TREE_SIZES) {
+  // Swept across heights as well as seeds even though the bank now ships one
+  // height per species: the parity is a property of treeLod's rng streams, and a
+  // sweep that only ever asks at the shipped height would not notice a rescale
+  // that had started depending on it.
+  for (const size of [0.5, 1.0, 1.5]) {
     for (let k = 0; k < 16; k++) {
       const p = paramsFor(s, 3 + k * 101, size)
       const g0 = buildTree(p)
@@ -591,18 +595,17 @@ const bank = buildTreeBank({ seed: 1, billboard: true })
 const variants = treeVariants()
 
 {
-  check(bank.variants.length === species.length * TREE_SIZES.length,
-    'the bank is exactly species x size', `${species.length} x ${TREE_SIZES.length} = ${bank.variants.length}`)
+  check(bank.variants.length === species.length,
+    'the bank is exactly one variant per species', `${bank.variants.length} variants, ${species.length} species`)
   check(bank.tiers.every((t) => t.geometries.length === bank.variants.length),
     'every tier holds one geometry per variant',
     bank.tiers.map((t) => t.geometries.length).join(' / '))
 
-  // Strictly cheaper at every step, PER VARIANT -- the only form of the claim
-  // that survives a bank spanning saplings to big oaks. Across the whole set the
-  // ranges overlap by construction (a big pine's LOD1 is 601 triangles against a
-  // birch sapling's 210 at LOD0), and that is not a ladder fault: no instance is
-  // ever both. What would be a fault is one tree getting dearer as it recedes,
-  // so each variant is walked down its own rungs.
+  // Strictly cheaper at every step, PER VARIANT. Across the whole set the ranges
+  // can overlap -- a pine's LOD1 against a birch's LOD0 -- and that is not a
+  // ladder fault, since no instance is ever both. What would be a fault is one
+  // tree getting dearer as it recedes, so each variant is walked down its own
+  // rungs.
   const lo = bank.tiers.map((t) => Math.min(...t.triangles))
   const hi = bank.tiers.map((t) => Math.max(...t.triangles))
   let descends = true
@@ -611,7 +614,7 @@ const variants = treeVariants()
     for (let v = 0; v < bank.variants.length; v++) {
       if (bank.tiers[t].triangles[v] >= bank.tiers[t - 1].triangles[v]) {
         descends = false
-        worstStep = ` -- ${bank.variants[v].species} ${bank.variants[v].size} tier ${t - 1}->${t}: ` +
+        worstStep = ` -- ${bank.variants[v].species} tier ${t - 1}->${t}: ` +
           `${bank.tiers[t - 1].triangles[v]} -> ${bank.tiers[t].triangles[v]}`
       }
     }
@@ -1119,9 +1122,9 @@ trees.place(0, 0)
   for (let t = 1; t < counts.length; t++) if (counts[t] <= counts[t - 1]) widens = false
   check(widens, 'every tier holds more instances than the tier finer than it',
     counts.join(' / '))
-  check(s.tris - trees.fadeTris === bill,
+  check(s.tris === bill,
     'the reported triangle bill is the sum of what each instance actually draws',
-    `${s.tris} reported, ${bill} from the ladder, ${trees.fadeTris} in cross-dissolves`)
+    `${s.tris} reported, ${bill} from the ladder`)
   // WHAT THE RIM ACTUALLY DRAWS, which is the number the player sees and is a
   // constant RIM_AT under the law measured above -- the rim takes a tree at the
   // midpoint of the old dissolve band, so the drawn density is that fraction of
@@ -1158,21 +1161,152 @@ trees.place(0, 0)
       if (trees.batch.getVisibleAt(id) === trees.rim.isHidden(id)) visibleMismatch++
     }
   }
-  check(visibleMismatch === 0, 'and every tree it hides is actually invisible in the batch',
+  check(visibleMismatch === 0, 'and every tree it hides is actually invisible in the arena',
     `${visibleMismatch} of ${s.placed} disagree`)
+
+  // THE ARENA'S OWN BOOKKEEPING, which nothing above can see: sixteen meshes,
+  // each drawing a dense prefix, and every visible instance in exactly one of
+  // them at the tier it thinks it holds.
+  {
+    const arena = trees.batch
+    let live = 0
+    for (const mesh of arena.meshes) live += mesh.count
+    let shown = 0
+    let misplaced = 0
+    for (const tile of trees.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (trees.rim.isHidden(id)) continue
+        shown++
+        const want = trees.tierIds[trees.tierAt[id]][trees.variantAt[id]]
+        if (arena.geoAt[id] !== want || arena.slot[id] < 0) misplaced++
+      }
+    }
+    check(live === shown && misplaced === 0,
+      'every drawn tree occupies exactly one slot, in the mesh for its own tier and species',
+      `${live} slots across ${arena.meshes.length} meshes, ${shown} trees drawn, ${misplaced} misplaced`)
+
+    // The slot map is a bijection both ways -- the swap-remove in _free is where
+    // that would break, and it would break as one tree wearing another's matrix.
+    let brokenOwner = 0
+    for (let g = 0; g < arena.meshes.length; g++) {
+      for (let sIdx = 0; sIdx < arena.meshes[g].count; sIdx++) {
+        const id = arena.owner[g][sIdx]
+        if (arena.slot[id] !== sIdx || arena.geoAt[id] !== g) brokenOwner++
+      }
+    }
+    check(brokenOwner === 0, 'and every slot names the instance that names it back',
+      `${brokenOwner} of ${live} slots disagree`)
+
+    // Nothing is near its ceiling. A mesh that filled would THROW, so this is
+    // the early warning rather than the failure.
+    const worst = arena.meshes.reduce((w, mesh, g) =>
+      Math.max(w, mesh.count / arena.capAt[g]), 0)
+    check(worst < 0.9, 'and no mesh is within a tenth of the capacity _tierCaps gave it',
+      `fullest mesh at ${(worst * 100).toFixed(0)}% of its cap`)
+  }
   check(s.tris < 200000, 'a kilometre and a half of forest stays under 200k triangles',
     `${s.tris} triangles for ${s.placed} trees`)
   note('boot cost', `bank ${s.buildMs.toFixed(0)} ms, place ${s.placeMs.toFixed(0)} ms, ` +
     `${s.tiles} tiles of which ${s.nearTiles} near, ${s.bankKB} KB of geometry`)
-  // FADE_MAX_INFLIGHT, hit exactly once: every tree is born a card and the
-  // whole near field is promoted on the first frame there is. It degrades to a
-  // plain pop, which at boot nobody sees.
-  note('cross-dissolves in flight after the first update', `${s.fading}`)
+  note('draw calls', `${trees.batch.meshes.length} meshes, ` +
+    `${trees.batch.meshes.filter((m) => m.count > 0).length} of them non-empty`)
+}
+
+// --- 9b2. a dissolve never retracts -----------------------------------------
+//
+// THE ARTEFACT THIS EXISTS FOR, reported from the headset: fly forward and far
+// trees dissolve IN and then, a second later, dissolve back OUT again. It reads
+// as the world rubber-banding away from the player, and it is worse than a
+// pop-in, because a pop-in at least resolves. A prop that has been shown has
+// made a promise; the only honest way to take it back is for the player to
+// travel far enough that the prop is genuinely behind them.
+//
+// Two things caused it and both are boundary arithmetic in rim.js -- a
+// hysteresis quoted in METRES against gone-distances that run from 8 m to
+// 1.5 km, and the sweep's motion slack pushing the SHOW boundary outward, which
+// admits props that are outside their own keep radius and hands them back when
+// the slack decays. Neither throws, both are invisible standing still, and the
+// second only appears above about 20 m/s. So the camera is flown here.
+//
+// WHAT IS MEASURED is not "did anything dissolve out" -- flying past a tree and
+// leaving it behind is the mechanism working. It is whether a tree that
+// dissolved IN ever got properly inside its own trigger radius before it went:
+// one that only ever grazed the boundary was shown by the slack or by the
+// hysteresis being too narrow at its distance, and is exactly the churn above.
+//
+// 20 m/s IS THE SPEED THE ZERO HOLDS AT. The slack scales with camera speed, so
+// flying faster widens the very thing being gated: at 20 m/s the fixed rim shows
+// none of this in six seconds and the boundary arithmetic it replaced shows 15,
+// which is the signal this gate is for. At 60 m/s a few dozen still slip through
+// and nothing here claims otherwise.
+
+console.log('\n-- a dissolve does not retract --')
+{
+  const SPEED = 20
+  const FLY_S = 4
+  const TOTAL_S = 6
+  const DT = 1 / 72
+  const fly = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: DRAW_RADIUS })
+  fly.place(0, 0)
+  const n = fly.maxInstances
+  const wasHidden = new Uint8Array(n)
+  const shown = new Uint8Array(n)
+  const minD = new Float32Array(n).fill(Infinity)
+  let ins = 0
+  let outs = 0
+  let grazed = 0
+  let z = 0
+  // Settle first, and take the standing-still picture as the baseline: at boot
+  // every instance is FRESH and resolves with no transition at all, which is not
+  // a dissolve and must not be counted as one.
+  setPropClock(0)
+  fly.update(0, EYE, 0)
+  for (let i = 0; i < n; i++) wasHidden[i] = fly.rim.isHidden(i) ? 1 : 0
+  for (let f = 1; f * DT < TOTAL_S; f++) {
+    const t = f * DT
+    if (t < FLY_S) z -= SPEED * DT
+    setPropClock(t)
+    fly.update(0, EYE, z)
+    for (let i = 0; i < n; i++) {
+      const hidden = fly.rim.isHidden(i) ? 1 : 0
+      if (!hidden) {
+        const dx = fly.instX[i]
+        const dy = fly.instY[i] - EYE
+        const dz = fly.instZ[i] - z
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (d < minD[i]) minD[i] = d
+      }
+      if (hidden !== wasHidden[i]) {
+        if (hidden) {
+          outs++
+          // A retraction only counts against the rim if the tree never came
+          // properly inside its own trigger. 5% of the trigger is the margin,
+          // an order under the hysteresis this is gating.
+          if (shown[i] && minD[i] > fly.rim.gone[i] * RIM_AT * 0.95) grazed++
+        } else {
+          ins++
+          shown[i] = 1
+          minD[i] = Infinity
+        }
+        wasHidden[i] = hidden
+      }
+    }
+  }
+  check(ins > 200, 'flying forward brings trees in through the rim, so this gate has something to say',
+    `${ins} dissolved in over ${FLY_S} s at ${SPEED} m/s`)
+  check(grazed === 0,
+    'and not one of them dissolved back out without the camera having gone properly past it',
+    `${outs} dissolved out, ${grazed} of them never inside their own trigger`)
 }
 
 // --- 9c. the shape of the cross-dissolve ramp -------------------------------
 //
-// WHAT THIS IS FOR. A cross-dissolve conserves coverage -- the two halves take
+// WHAT THIS IS FOR. The ramp is material.js's, shared by every dissolve in the
+// world: the forest's own rim fade, and the LOD cross-dissolves that rocks and
+// grass run (the forest has none -- its tiers are separate InstancedMeshes and
+// cannot dither past each other). It is gated here because this is where the
+// shader's numbers are read. A cross-dissolve conserves coverage -- the two halves take
 // complementary thresholds, so the prop is fully covered from the first frame to
 // the last and the only visible signal is the MIX. That is what stops the
 // silhouette thinning, and it is also why the opening of the ramp is invisible:
@@ -1239,8 +1373,8 @@ trees.place(0, 0)
 // --- 10b. what the cursor calls a tree, and where it thinks the tree is ------
 //
 // The /v2 readout names whatever is under the cursor. Two promises here: the
-// NAME is one somebody can act on -- `oak-2`, a species and which of the four
-// sizes, not the bank index 11 -- and the pick VOLUME is the tree's own trunk
+// NAME is one somebody can act on -- `oak`, not the bank index 2 -- and the
+// pick VOLUME is the tree's own trunk
 // and crown rather than a species constant. The second is what stopped the
 // cursor pointing through a trunk at the fern behind it: a 3 m radius column
 // from the ground up put the eye INSIDE the tree at any range you would inspect
@@ -1251,9 +1385,9 @@ console.log('\n-- the cursor names a tree --')
 {
   const names = trees.variantName
   check(names.length === trees.variantCount, 'every variant has a name', `${names.length} of ${trees.variantCount}`)
-  check(names[0] === 'pine-0' && names[6] === 'oak-2' && names[15] === 'aspen-3',
-    'and the name is the species and which size it is, not the bank index',
-    `variant 0/6/15 are ${names[0]}/${names[6]}/${names[15]}`)
+  check(names.every((n, i) => n === species[i]),
+    'and the name is the species itself, not the bank index',
+    names.join(' / '))
   check(new Set(names).size === names.length, 'and no two variants answer to the same name')
 
   // A real instance out of the placed bed, so this is the path pickProp walks.
