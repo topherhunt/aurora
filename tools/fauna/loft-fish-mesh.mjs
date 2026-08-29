@@ -38,23 +38,22 @@
 // driving that offset each frame is a render-time concern, not this file's.
 // ---------------------------------------------------------------------------
 
-// Body-loft t-positions (nose / mid-body / peduncle, i.e. the narrow point
-// just before the tail fin) and how much of the mid ring's real measured
-// half-height becomes the oval body vs. is left over for the dorsal/ventral
-// fins to fill in as separate triangles. Nose and peduncle use their full
-// measured half-height (already thin, no fin there); only the mid ring is
-// deliberately undersized relative to the real contour.
-const BODY_T = [0, 0.5, 0.82]
-const MID_RING_INDEX = 1
-const BODY_CAP_FRACTION = 0.6 // mid ring's oval half-height = 60% of the real measured half-height there
+// Body-loft t-positions, nose (0) to peduncle (the narrow point just before
+// the tail fin). Every ring except the one nearest the dorsal/ventral fin
+// uses its real measured half-height directly, so it matches the source
+// silhouette essentially exactly (well within 1%) -- see buildFishMesh's
+// fin-ring detection below for the one ring that's deliberately capped to
+// let the fin triangles carry the local bump instead of the loft.
+const BODY_T = [0, 0.16, 0.32, 0.5, 0.66, 0.82]
+const BODY_T_LOD1 = [0, 0.32, 0.5, 0.82]
 
-// Tri count for a capped 3-ring loft is 2*segments*3 (two side bands of
-// segments*2 each, plus segments*2 for the two single-vertex caps). Adding
-// three 1-triangle fins (dorsal, ventral, caudal) on top: LOD0's 36 + 3 = 39,
-// LOD1's 30 + 3 = 33.
+// Tri count for a capped N-ring loft is 2*segments*N (side bands contribute
+// (N-1)*segments*2, the two single-vertex caps add segments*2 more). Adding
+// three 1-triangle fins (dorsal, ventral, caudal) on top: LOD0's 6 rings * 6
+// segments = 72 + 3 fins = 75 tris; LOD1's 4 rings * 5 segments = 40 + 3 = 43.
 const LOD_PARAMS = [
-  { segments: 6 }, // LOD0, 39 tris (36 body + 3 fins)
-  { segments: 5 }, // LOD1, 33 tris (30 body + 3 fins)
+  { bodyT: BODY_T, segments: 6 },      // LOD0, 75 tris (72 body + 3 fins)
+  { bodyT: BODY_T_LOD1, segments: 5 }, // LOD1, 43 tris (40 body + 3 fins)
 ]
 
 /** A column's {min,max} nearest to pixel x (within 30px) in a chromakey.columnProfile. */
@@ -155,15 +154,21 @@ export function buildFishMesh(sideColumnProfile, { lengthM = 0.3, lod = 0 } = {}
   const pxToM = lengthM / (cp.right - cp.left)
   const segments = p.segments
 
-  // Body rings: nose, mid, peduncle. Mid ring's oval half-height is capped
-  // to BODY_CAP_FRACTION of its real measured half-height -- the leftover
-  // (real - capped) becomes the dorsal/ventral fin height below. Nose and
-  // peduncle keep their full measured half-height; they're already thin and
-  // have no fin of their own.
-  const rawRings = BODY_T.map((t) => measureAt(cp, pxToM, lengthM, t))
-  const midFull = rawRings[MID_RING_INDEX]
-  const midCapped = midFull.ry * BODY_CAP_FRACTION
-  const finHeight = midFull.ry - midCapped
+  // Body rings: every interior ring's real measured half-height, straight
+  // off the silhouette, EXCEPT the one ring nearest the dorsal/ventral fin's
+  // peak -- found as the tallest interior ring (excluding nose and peduncle,
+  // which have no fin) -- whose oval half-height is instead interpolated
+  // from its two neighbours (the torso trend without the fin bump). The
+  // leftover (real - interpolated) becomes the dorsal/ventral fin height
+  // below, so the loft+fins together still reach the real contour there too.
+  const rawRings = p.bodyT.map((t) => measureAt(cp, pxToM, lengthM, t))
+  let finRingIndex = 1
+  for (let i = 2; i < rawRings.length - 1; i++) {
+    if (rawRings[i].ry > rawRings[finRingIndex].ry) finRingIndex = i
+  }
+  const finRing = rawRings[finRingIndex]
+  const torsoRy = (rawRings[finRingIndex - 1].ry + rawRings[finRingIndex + 1].ry) / 2
+  const finHeight = Math.max(0, finRing.ry - torsoRy)
 
   // Caudal (tail) fin tip: the tallest column in the tail-fin span beyond the
   // peduncle (t > last body ring), not just the very last pixel column,
@@ -176,7 +181,6 @@ export function buildFishMesh(sideColumnProfile, { lengthM = 0.3, lod = 0 } = {}
   // doesn't need the caller to know its source image's incidental framing.
   const yExtents = [
     ...rawRings.map((r) => [r.cy - r.ry, r.cy + r.ry]),
-    [midFull.cy - midFull.ry, midFull.cy + midFull.ry], // dorsal/ventral fin tips reach the real extent
     [tail.cy - tail.ry, tail.cy + tail.ry],
   ].flat()
   const yShift = -(Math.min(...yExtents) + Math.max(...yExtents)) / 2
@@ -193,10 +197,10 @@ export function buildFishMesh(sideColumnProfile, { lengthM = 0.3, lod = 0 } = {}
     return geo.pos.length / 3 - 1
   }
 
-  // --- body loft: 3 rings, plain oval cross-section ---
+  // --- body loft: N rings, plain oval cross-section, each following the
+  // real measured contour except finRingIndex (see above) ---
   const ringStart = rawRings.map((r, i) => {
-    const isMid = i === MID_RING_INDEX
-    const ry = isMid ? midCapped : r.ry
+    const ry = i === finRingIndex ? torsoRy : r.ry
     const rx = r.ry * bulgeFactor(r.t) // lateral bulge stays tied to the real (uncapped) contour scale
     const pts = ring(0, r.cy, r.z, rx, ry, segments)
     const start = geo.pos.length / 3
@@ -247,9 +251,9 @@ export function buildFishMesh(sideColumnProfile, { lengthM = 0.3, lod = 0 } = {}
     const c = pushVertex(0, tipY, z, 0.5, tt, tt)
     geo.idx.push(a, b, c)
   }
-  // dorsal (up) and ventral (down), both at the mid ring where the body was capped
-  addSpikeFin(midFull.cy + midCapped, midFull.cy + midCapped + finHeight, midFull.z)
-  addSpikeFin(midFull.cy - midCapped, midFull.cy - midCapped - finHeight, midFull.z)
+  // dorsal (up) and ventral (down), both at the ring where the body was capped to torsoRy
+  addSpikeFin(finRing.cy + torsoRy, finRing.cy + torsoRy + finHeight, finRing.z)
+  addSpikeFin(finRing.cy - torsoRy, finRing.cy - torsoRy - finHeight, finRing.z)
   // caudal (tail): base at the peduncle centre, tip spans the tail's full real height
   {
     const peduncle = rawRings[rawRings.length - 1]

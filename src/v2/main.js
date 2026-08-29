@@ -443,10 +443,15 @@ const questControllerHits = new Map()
 // reach when the panel is behind you.
 const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
+  { key: 'terrainShader', text: 'landscape shader', on: 'full', off: 'plain' },
   { key: 'flatGround', text: 'flat ground' },
   { key: 'trees', text: 'trees' },
   { key: 'rocks', text: 'rocks' },
   { key: 'grass', text: 'grass' },
+  { key: 'grassSpin', text: 'grass cards', on: 'billboard', off: 'fixed' },
+  { key: 'grassGrow', text: 'grass grow', on: 'far 1.7x', off: 'flat' },
+  { key: 'grassDensity', text: 'grass', action: () => cycleGrassDensity(), value: () => `${grass ? grass.density : '?'}/m2 >` },
+  { key: 'grassRadius', text: 'grass reach', action: () => cycleGrassRadius(), value: () => `${grass ? grass.radius : '?'} m >` },
   { key: 'ferns', text: 'ferns' },
   { key: 'instCull', text: 'per-instance cull' },
   { key: 'wind', text: 'wind' },
@@ -462,6 +467,9 @@ const QUEST_TOGGLE_ROWS = [
 ]
 
 function questToggleLabel(row) {
+  // A cycling row has to SHOW where it currently is, or the wearer is counting
+  // presses to work out what they are looking at.
+  if (row.value) return `${row.text}: ${row.value()}`
   if (row.action) return row.text
   const on = questToggles[row.key]
   // `on`/`off` let a row name its two STATES instead of reporting a boolean.
@@ -477,11 +485,19 @@ function applyQuestToggle(key) {
   const enabled = (questToggles[key] = !questToggles[key])
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
+    case 'terrainShader': setTerrainShader(enabled); break
     case 'flatGround': setFlatGround(enabled); break
     case 'dayNight': sky.mesh.visible = enabled; stars.points.visible = enabled; break
     case 'lighting': break // no object of its own; gates the sun/hemi/lighting.update block in applySky()
     case 'trees': trees.batch.visible = enabled; break
     case 'rocks': rocks.beds.forEach((b) => { b.batch.visible = enabled }); break
+    // A REBUILD, not a flag: the spin is compiled into the program (see
+    // billboardVertex in material.js), so this costs a shader compile and a
+    // rescatter on the frame it is pressed -- the same one-off hitch the wind
+    // row warns about. rebuildGrass carries the density and reach the other two
+    // rows have set, so the three compose instead of resetting each other.
+    case 'grassSpin': rebuildGrass({ spin: enabled }); break
+    case 'grassGrow': rebuildGrass({ grow: enabled }); break
     case 'grass': grass.batch.visible = enabled; break
     case 'ferns': ferns.batch.visible = enabled; break
     case 'instCull': applyBatchCulling(); break
@@ -593,6 +609,12 @@ const QUEST_PANEL_COL_W = 0.86
 const QUEST_PANEL_COL_GAP = 0.06
 const PANEL_W = QUEST_PANEL_COLS * QUEST_PANEL_COL_W + (QUEST_PANEL_COLS - 1) * QUEST_PANEL_COL_GAP
 
+// Button grid metrics, shared by the grid itself and by the backdrop that has
+// to be tall enough for it.
+const QUEST_ROW_H = 0.20
+const QUEST_ROW_TOP = 0.30
+const questRowsPerCol = () => Math.ceil(QUEST_TOGGLE_ROWS.length / QUEST_PANEL_COLS)
+
 const QUEST_STATS_W = 1280
 const QUEST_STATS_H = 240
 let questStatsCanvas = null
@@ -622,16 +644,34 @@ function buildQuestPanel() {
   questPanelGroup = new THREE.Group()
   scene.add(questPanelGroup)
 
+  // BUILT HIDDEN, AND HIDDEN IS THE RESTING STATE. 22 meshes with 22 unshared
+  // basic materials is 22 draw calls, and the two label atlases behind them are
+  // the widest textures in the scene -- all of it for a menu that is wanted for
+  // a few seconds at a time. `visible = false` is the whole saving: three's
+  // projectObject returns early on an invisible object and never descends, so
+  // the group's children are not culled, not sorted, and not drawn, and their
+  // triangles never reach the render list at all.
+  questPanelGroup.visible = false
+
+  // GROWS DOWNWARD WITH THE GRID rather than being a constant to forget. The
+  // buttons run from QUEST_ROW_TOP down at QUEST_ROW_H each, so the tallest
+  // column's last row sits at top - (rowsPerCol - 1) * h and its own bottom edge
+  // half a button below that; the title at 1.05 fixes the top. Three columns of
+  // seven is where the panel is now, and a fourth column would be the wrong fix
+  // for a longer list: at 2.8 m the three already subtend 51 degrees, and a
+  // fourth would put its outer edge where a Quest 2's lenses go soft.
+  const gridBottom = QUEST_ROW_TOP - (questRowsPerCol() - 1) * QUEST_ROW_H - 0.14
+  const bgTop = 1.20
   const bg = new THREE.Mesh(
-    new THREE.PlaneGeometry(PANEL_W + 0.1, 2.1),
+    new THREE.PlaneGeometry(PANEL_W + 0.1, bgTop - gridBottom),
     new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: 0.94, side: THREE.DoubleSide })
   )
-  bg.position.set(0, 0.15, -0.01)
+  bg.position.set(0, (bgTop + gridBottom) / 2, -0.01)
   questPanelGroup.add(bg)
 
   const title = new THREE.Mesh(
     new THREE.PlaneGeometry(PANEL_W, 0.13),
-    new THREE.MeshBasicMaterial({ map: labelTexture('sticks move & turn -- A/X fly -- B/Y or esc recalls this panel -- stick click recenters', null, '#8fd48f', 1560), transparent: true, toneMapped: false, side: THREE.DoubleSide })
+    new THREE.MeshBasicMaterial({ map: labelTexture('sticks move & turn -- A/X fly -- B/Y or esc closes this menu -- stick click recenters', null, '#8fd48f', 1560), transparent: true, toneMapped: false, side: THREE.DoubleSide })
   )
   title.position.set(0, 1.05, 0.02)
   questPanelGroup.add(title)
@@ -653,9 +693,9 @@ function buildQuestPanel() {
   // Three side-by-side columns rather than one tall stack, so the panel stays a
   // comfortable height regardless of how many toggles it grows to. Column-major
   // fill, so QUEST_TOGGLE_ROWS reads top-to-bottom in source order.
-  const rowsPerCol = Math.ceil(QUEST_TOGGLE_ROWS.length / QUEST_PANEL_COLS)
-  const rowHeight = 0.20
-  const top = 0.30
+  const rowsPerCol = questRowsPerCol()
+  const rowHeight = QUEST_ROW_H
+  const top = QUEST_ROW_TOP
   QUEST_TOGGLE_ROWS.forEach((row, i) => {
     const col = Math.floor(i / rowsPerCol)
     const rowInCol = i % rowsPerCol
@@ -691,18 +731,23 @@ function buildQuestPanel() {
     if (sceneEl.is('vr-mode')) return
     const cam = sceneEl.camera
     if (!cam) return
+    // THE VISIBILITY CHECK IS NOT BELT AND BRACES. Raycaster does not consult
+    // `visible` -- it tests layers and then calls raycast() -- so a closed menu
+    // is still fully clickable unless the caller says otherwise, and a stray
+    // click on empty ground would toggle whatever button happened to be behind
+    // it. Same reason the hover loop below bails.
+    if (!questPanelGroup.visible) return
     pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
     raycaster.setFromCamera(pointer, cam)
     const hit = raycaster.intersectObjects(questPanelMeshes)[0]
     if (hit) activateQuestButton(hit.object.userData.key)
   })
-
-  placeQuestPanel()
 }
 
 function updateQuestControllerHover() {
+  const open = questPanelGroup.visible
   for (const [el, entry] of questControllerHits) {
-    const raycasterComp = el.components.raycaster
+    const raycasterComp = open ? el.components.raycaster : null
     const hit = raycasterComp ? (raycasterComp.raycaster.intersectObjects(questPanelMeshes)[0] || null) : null
     entry.hit = hit
     entry.dot.visible = !!hit
@@ -729,7 +774,7 @@ function questPanelDesiredPosition(out) {
 }
 
 /**
- * Put the panel in front of her, once, and leave it there.
+ * Put the panel in front of her, and leave it there.
  *
  * THE PANEL IS WORLD-FURNITURE, NOT A HUD. It used to re-seat itself every five
  * seconds to follow her, and that reads terrible for a reason worth writing
@@ -737,21 +782,54 @@ function questPanelDesiredPosition(out) {
  * eye reads it as the world breaking rather than as a menu. Anything that must
  * follow the head belongs PARENTED to the camera, where it moves continuously
  * and is visibly attached; anything that does not belongs in the world, at rest.
- * This is the second kind, so it is placed on demand -- at boot, from the B / Y
- * button on either controller, and when flat ground moves the floor -- and
- * never on a clock.
+ * This is the second kind, so it is placed on demand -- when it opens, and when
+ * flat ground moves the floor under it -- and never on a clock.
+ *
+ * A no-op while the menu is closed, on purpose: opening always places it fresh,
+ * so re-seating something nobody can see is work with no observer.
  */
 function placeQuestPanel() {
-  if (!questPanelGroup) return
+  if (!questPanelGroup || !questPanelGroup.visible) return
   questPanelDesiredPosition(questPanelGroup.position)
   questPanelGroup.lookAt(rig.position.x, questPanelGroup.position.y, rig.position.z)
+}
+
+/**
+ * B / Y, or Escape: open the menu here, or close it.
+ *
+ * This used to be "recall", which only ever moved the panel -- so the menu was
+ * always in the world and the button just decided where. It is a MENU SCREEN
+ * now: closed is the resting state, opening seats it at wherever she is
+ * standing at that moment, and pressing again takes it away rather than
+ * teleporting it to her feet.
+ *
+ * The saving is the point. 22 meshes, 22 materials, 22 draw calls and two wide
+ * label atlases were being drawn every frame of a session in which the menu is
+ * looked at for a few seconds -- and in VR that is 44 draw calls, since both
+ * eyes pay. Hidden, three's projectObject skips the whole subtree.
+ */
+function toggleQuestPanel() {
+  if (!questPanelGroup) return
+  questPanelGroup.visible = !questPanelGroup.visible
+  // Placed AFTER the flag, not before: placeQuestPanel bails on a closed menu,
+  // so seating it first would seat nothing.
+  placeQuestPanel()
+  if (!questPanelGroup.visible) {
+    // Drop the laser dots with it. They are separate scene children, so nothing
+    // about the group's visibility reaches them, and a red dot hanging in mid
+    // air pointing at a menu that is no longer there is exactly the kind of
+    // stranded artefact that reads as a bug.
+    for (const entry of questControllerHits.values()) {
+      entry.hit = null
+      entry.dot.visible = false
+    }
+  }
 }
 
 function updateQuestPanel() {
   updateQuestControllerHover()
 }
 
-// Short forms, because the panel is 2.7 m wide read from 2.8 m away and a raw
 // WHETHER BatchedMesh IS ONE DRAW CALL OR N OF THEM, which is a property of the
 // DRIVER and not of anything in this repo, so it can only be read on device.
 //
@@ -764,9 +842,13 @@ function updateQuestPanel() {
 // grass toggle produces: framerate collapses, triangles and calls stay flat, and
 // standing still does not help.
 //
-// If this reads NO, the BatchedMesh -> InstancedMesh rewrite in grass.js is
-// worth its cost. If it reads yes, the cause is elsewhere and the rewrite would
-// buy nothing -- so read it before rewriting anything.
+// IT READS YES ON THE QUEST, so that fallback is not what is happening and the
+// row is now here to keep the answer visible rather than to find it. What it
+// does NOT settle is whether the driver's multi-draw is a hardware path or its
+// own loop over the same 21,000 descriptors, and there is no extension to ask.
+// The headset A/B answered that by elimination: the same bed as an InstancedMesh
+// ran 50-60 fps at three times the triangles, so whatever the driver does with a
+// multi-draw here, it is not free. See THE ARENA in render/grass.js.
 //
 // Memoised on first read rather than answered at module scope, because `renderer`
 // is not built until boot() runs and the answer never changes after it is.
@@ -776,6 +858,7 @@ function hasMultiDraw() {
   return multiDraw
 }
 
+// Short forms, because the panel is 2.7 m wide read from 2.8 m away and a raw
 // 1043968 is a number nobody in a headset is going to parse.
 function kilo(n) {
   if (n === null || n === undefined) return '-'
@@ -793,9 +876,10 @@ function kilo(n) {
  *      supposed to explain it. When fps collapses while both of those stay flat
  *      -- which is what the grass toggle actually does -- the cost is CPU-side,
  *      and that alone rules out "too many triangles" without a second test.
- *      MDRAW is the first suspect that test leaves standing: `calls` counts a
- *      BatchedMesh as one, and without WEBGL_multi_draw it is one per instance.
- *      See hasMultiDraw above.
+ *      MDRAW was the first suspect that test left standing -- `calls` counts a
+ *      BatchedMesh as one, and without WEBGL_multi_draw it is one per instance --
+ *      and it reads yes, so the row is now a standing answer rather than an open
+ *      question. See hasMultiDraw above.
  *   2. geometries/textures/programs catch the other shape of the same bug: a
  *      count that climbs while nothing is being created is a per-frame
  *      allocation, and it is the reason the stats canvas above is reused.
@@ -810,6 +894,12 @@ function kilo(n) {
  */
 function updateQuestStats() {
   if (!questStatsTexture || !ready) return
+  // Nothing to read while the menu is closed, and this is not free: it lays out
+  // six lines of canvas text and then sets needsUpdate, which re-uploads a
+  // 1024-wide texture EVERY FRAME. Measuring the frame is not worth spending
+  // the frame on. It redraws on the frame the menu opens, so the numbers are
+  // current the instant they are visible.
+  if (!questPanelGroup.visible) return
   const info = renderer.info
   const st = terrain.stats
   const fps = avgMs > 0 ? 1000 / avgMs : 0
@@ -924,12 +1014,24 @@ const questToggles = QUEST_MODE
       terrain: false, flatGround: false, dayNight: false, lighting: false,
       trees: false, rocks: false, grass: false, ferns: false,
       instCull: false, water: false, reflections: false, aurora: false,
+      // How the bed ships, so the measurement this row makes is what turning the
+      // spin OFF buys -- both in frame time and in how the near field reads when
+      // you look down at your feet. Costs a rebuild to flip; see grassSpin in
+      // applyQuestToggle.
+      grassSpin: true,
+      // The far-field 1.7x. Off is the cheaper bed by about 15% of its total
+      // fill -- the grow is priced in fill here, not in triangles.
+      grassGrow: true,
       // The one toggle that starts ON, because unlike every layer above it the
       // wind is not a thing being added to an empty world -- it is how the world
       // already ships, and the measurement being made here is what REMOVING it
       // buys. Starting it off would mean the panel's default state disagreed
       // with the world outside quest mode.
       wind: true,
+      // Same argument as `wind`, and the same direction: the landscape shader is
+      // how the world ships, so "full" is the default and the measurement is what
+      // REMOVING it buys. See setTerrainShader.
+      terrainShader: true,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
       // this panel exists to look at, which is what the world does to the frame
       // while you are moving continuously through it.
@@ -977,13 +1079,13 @@ function loadRelief() {
   }
 }
 
-// Which grass system is standing. 'tufts' is what stands here -- the 3-card
-// crossed clump inside 8 m, a camera-facing billboard everywhere beyond it.
-// 'strips' is the flat multi-metre card that draws the same cutout several
-// times across itself; it wins on triangles and loses on FILL, which is the
-// budget a Quest actually runs out of, and it is kept switchable (M key) so the
-// two can be judged against the same hillside in the same light. See THE TWO
-// STRATEGIES in the header of render/grass.js.
+// Which grass system is standing. 'tufts' is what stands here -- one
+// camera-facing billboard per plant, at every distance. 'strips' is the flat
+// multi-metre card that draws the same cutout several times across itself; it
+// wins on triangles and loses on FILL, which is the budget a Quest actually runs
+// out of, and it is kept switchable (M key) so the two can be judged against the
+// same hillside in the same light. See THE TWO STRATEGIES in the header of
+// render/grass.js.
 let grassStyle = 'tufts'
 // Whether the prop atlas' PNGs have landed. The tuft's far tier is a photograph
 // of the tuft, so a Grass built after they land has to bake immediately rather
@@ -1006,17 +1108,24 @@ function buildGrass(style, cx, cz, opts = {}) {
     grass = null
   }
   grassStyle = style
-  grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, { seed: SEED, style, ...opts })
+  grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, {
+    seed: SEED, style, ...opts,
+  })
   // The cache key carries the style: the two materials compile DIFFERENT
   // programs (one billboards, one tiles), and a shared key would hand the second
   // one the first one's.
   lighting.patch(grass.material, { mode: 'vertex', cacheKey: `v2-grass-${style}` })
   grass.syncSnowLine(layers)
   grass.place(cx, cz)
-  // A rebuilt batch is a NEW BatchedMesh, so it arrives with three's defaults
-  // rather than whatever the panel's cull switch is currently set to. Without
-  // this, swapping grass style silently un-does the toggle.
-  if (QUEST_MODE) applyBatchCulling()
+  // A rebuilt bed is a NEW mesh, so it arrives with three's defaults rather than
+  // whatever the panel's cull switch is currently set to. Without this, swapping
+  // grass style silently un-does the toggle.
+  if (QUEST_MODE) {
+    applyBatchCulling()
+    // A rebuilt bed is a new mesh and arrives visible. Without this, changing
+    // the density while the grass row is OFF turns the grass back on.
+    grass.batch.visible = questToggles.grass
+  }
   if (propLayersReady) grass.bakeCards(renderer)
   const gs = grass.stats
   const gr = gs.rejected
@@ -1491,6 +1600,19 @@ async function bootWorld() {
     litter.batch.visible = false
     mushrooms.batch.visible = false
     deadwood.batch.visible = false
+    // THE EDITOR OVERLAY, which had no business being in the headset and was the
+    // single largest thing drawing before any layer is switched on. Markers is
+    // three InstancedMeshes of authoring handles -- 96 triangles a spline point,
+    // 8 a snow point, 168 a lake -- and the shipped document carries 37 river
+    // points, 77 snow points and 2 lakes, so it is ~4.5k triangles and 3 draw
+    // calls per eye of pure editor furniture.
+    //
+    // Worse, it was drawing them WRONG. Markers.update() writes the instance
+    // matrices and its only caller is `editor.update`, which quest mode never
+    // runs because it has no editor -- so every handle sat at the origin at unit
+    // scale, and the material is depthTest:false, so they drew over the world
+    // from wherever the camera was. That is the speck at the horizon.
+    markers.group.visible = false
     // The quadtree's own header says the XR route wants 4.0 degrees or coarser
     // and that 3.0 -- the desktop default this route was inheriting -- spends
     // 91% of terrain's whole triangle share, against 68% at 4.0. Quest mode was
@@ -1508,8 +1630,12 @@ async function bootWorld() {
     // loop was already running this test for a stats readout. Worst case over the
     // same sweep: 224k submitted becomes 108k.
     terrain.cullDeg = (70 * Math.PI) / 180
+    // The 8 m chunk floor is NOT set here. It was, briefly, and it is config.js's
+    // MAX_DEPTH now: one world, one cap, desktop and headset alike. See the note
+    // on that constant for why a per-route override was the wrong trade.
     applyBatchCulling()
     buildQuestPanel()
+    logSceneCensus()
   }
 
   ready = true
@@ -1678,6 +1804,97 @@ function replacePropsOnMovedGround(cx, cz) {
 // ---------------------------------------------------------------------------
 
 let flatCard = null
+// Built on first use rather than at boot, so a session that never presses the row
+// never compiles a second terrain program.
+let plainTerrainMaterial = null
+
+// WHAT IS DRAWING BEFORE ANYTHING IS SWITCHED ON.
+//
+// The quest panel reports CALLS and TRIS off renderer.info, and those are totals
+// with no names attached -- "88 draw calls and 8000 triangles on an empty world"
+// is a question the panel cannot answer, and the headset has no console to poke
+// at. This walks the graph once at boot and names every drawable that is actually
+// visible, so the boot number is an inventory rather than a mystery.
+//
+// TWO THINGS THIS DELIBERATELY DOES NOT DO. It does not filter by frustum -- an
+// object out of view still costs its slot in this inventory the moment you turn
+// towards it, and hiding it here would make the census disagree with the panel
+// depending on which way the wearer happened to be facing. And it counts three's
+// side of the graph only: A-Frame's own entities (the laser-controls lines, and
+// the controller models once a controller connects) live in the same scene and
+// are counted like anything else, which is the point -- they are draw calls too.
+//
+// One line per drawable, coarsest first, and a total that should match the
+// panel's CALLS on the flatscreen. In XR the panel's number is the TWO-EYE sum
+// (three resets info once per render() and then loops camera.cameras), so expect
+// the panel to read double this.
+function logSceneCensus() {
+  const rows = []
+  scene.traverseVisible((o) => {
+    const geo = o.geometry
+    if (!geo || !o.isMesh) return
+    const index = geo.getIndex()
+    const position = geo.getAttribute('position')
+    if (!index && !position) throw new Error(`scene census: ${o.name || o.type} is a mesh with neither an index nor a position attribute`)
+    const verts = index ? index.count : position.count
+    const instances = o.isInstancedMesh ? o.count : 1
+    rows.push({
+      name: o.name || o.type,
+      tris: Math.floor(verts / 3) * instances,
+      // A BatchedMesh's index buffer is its whole ALLOCATION -- SLOT_COUNT chunks
+      // worth -- not what a frame draws, so its row is an upper bound and says so
+      // rather than being silently wrong. Every batch is hidden at boot, which is
+      // the only reason this is a footnote and not a correction.
+      note: o.isInstancedMesh ? `${instances} instances` : o.isBatchedMesh ? 'batched, whole allocation' : '',
+    })
+  })
+  rows.sort((a, b) => b.tris - a.tris)
+  const tris = rows.reduce((s, r) => s + r.tris, 0)
+  console.log(`[v2] scene census at boot: ${rows.length} visible meshes = ${rows.length} draw calls, ${tris} triangles (one eye)`)
+  for (const r of rows.slice(0, 24)) {
+    console.log(`      ${String(r.tris).padStart(7)} tris  ${r.name}${r.note ? `  (${r.note})` : ''}`)
+  }
+  if (rows.length > 24) console.log(`      ... and ${rows.length - 24} more`)
+}
+
+// THE SHADER A/B, and it is deliberately the ONLY thing that changes.
+//
+// The question this row exists to answer: at ~100k triangles the headset sits at
+// 50-60 fps, and triangles that few are not what an Adreno 650 struggles with --
+// 7 Mpixel a frame at 72 Hz is 506 Mpix/s of fill against 7.3 M tri/s of setup,
+// two orders apart. So either the ground is fill bound in the FRAGMENT shader or
+// it is not, and nothing about the triangle count can tell you which.
+//
+// "plain" swaps in a stock MeshLambertMaterial and swaps nothing else. Same
+// BatchedMesh, same slots, same selection, same draw calls, same vertex colours,
+// same fog, same Gouraud lighting -- so the delta is exactly terrain-material.js's
+// onBeforeCompile patch and its ~20 noise evaluations per fragment, and nothing
+// is confounding it. That is the difference from the `flat ground` row, which
+// measures a different thing and measures it on grassland, where auroraStoneK
+// never clears its gate and the triplanar block never ran to begin with.
+//
+// NOT MeshBasicMaterial, though "flat colour" is what it would give. Lambert's
+// fragment shader is vColor times an already-interpolated irradiance plus fog --
+// a handful of instructions -- so Basic would buy a rounding error and cost the
+// A/B its meaning, because the ground would also stop being lit and the two
+// pictures would differ in a second way.
+//
+// The card wears it too. Under `flat ground` the terrain batch is hidden and the
+// card is the only ground there is, so leaving the card on the full material
+// would make this row silently do nothing in exactly the configuration someone
+// reaches for it in.
+function setTerrainShader(on) {
+  if (!plainTerrainMaterial) {
+    plainTerrainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
+    // The full material is lighting.patch'd; this one is not, on purpose. The
+    // patch is the night lift and the shadow lookup, which is more of the same
+    // fragment cost, and a control that carries half the thing being removed is
+    // not a control.
+  }
+  const mat = on ? terrain.material : plainTerrainMaterial
+  terrain.batch.material = mat
+  if (flatCard) flatCard.material = mat
+}
 
 function setFlatGround(on) {
   const cx = player.rig.position.x
@@ -1703,7 +1920,10 @@ function setFlatGround(on) {
       const colors = new Float32Array(4 * 3)
       for (let i = 0; i < 4; i++) colors.set(C_GRASS, i * 3)
       geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-      flatCard = new THREE.Mesh(geo, terrain.material)
+      // Whichever material the batch is currently wearing, so a card built while
+      // the `landscape shader` row is already on "plain" does not quietly bring
+      // the full one back and make the two rows fight.
+      flatCard = new THREE.Mesh(geo, terrain.batch.material)
       flatCard.rotation.x = -Math.PI / 2
       // Nothing about this plane is view-dependent and it is always underfoot,
       // so the per-frame frustum test on it is pure overhead.
@@ -1980,16 +2200,60 @@ function cycleAurora() {
   console.log(`[aurora] ${aurora.label}${aurora.blurb ? `  --  ${aurora.blurb}` : ''}`, i)
 }
 
+// --- the grass knobs, on the panel because grass is the layer under suspicion --
+//
+// WHAT THESE TWO ARE FOR, and it is worth being blunt because they do not cost
+// the same thing. Measured on the settled bed, the fill a grass card costs goes
+// as its facing area over its distance squared, and that puts 53% of the whole
+// bed's fill inside FIVE METRES and 70% inside ten. So:
+//
+//   REACH is nearly free to cut and nearly worthless. Going from 70 m to 20 m
+//   drops 72% of the instances and 17% of the fill. It is the right knob if the
+//   bed is ever CPU-bound on its scatter, and the wrong one if it is fill-bound,
+//   which every headset measurement so far says it is.
+//
+//   DENSITY is the knob that moves the number. It scales every ring at once, so
+//   half the density is half the fill wherever the fill happens to be.
+//
+// Both rebuild rather than reconfigure -- the pool, the tile candidate count and
+// the material's compiled ramp all depend on them -- so both cost a hitch on the
+// frame they are pressed. See buildGrass.
+const GRASS_DENSITY_CYCLE = [6, 3, 1.5, 0.75]
+const GRASS_RADIUS_CYCLE = [70, 40, 25, 15]
+
+// The live overrides, carried across every rebuild so the three grass rows
+// compose. Without this, flipping the spin would silently restore the shipped
+// density, and the wearer would read the frame-time change as the spin's.
+const grassOpts = {}
+
+function rebuildGrass(patch) {
+  Object.assign(grassOpts, patch)
+  player.headPosition(headTmp)
+  buildGrass(grassStyle, headTmp.x, headTmp.z, grassOpts)
+}
+
+function cycleGrassDensity() {
+  const now = grass ? grass.density : GRASS_DENSITY_CYCLE[0]
+  const i = GRASS_DENSITY_CYCLE.findIndex((d) => Math.abs(d - now) < 1e-6)
+  rebuildGrass({ density: GRASS_DENSITY_CYCLE[(i + 1) % GRASS_DENSITY_CYCLE.length] })
+}
+
+function cycleGrassRadius() {
+  const now = grass ? grass.radius : GRASS_RADIUS_CYCLE[0]
+  const i = GRASS_RADIUS_CYCLE.findIndex((r) => Math.abs(r - now) < 1e-6)
+  rebuildGrass({ radius: GRASS_RADIUS_CYCLE[(i + 1) % GRASS_RADIUS_CYCLE.length] })
+}
+
 addEventListener('keydown', (e) => {
   if (!ready || typing(e)) return
 
-  // Escape recalls the quest panel, the keyboard twin of B / Y. On a desktop
-  // there is no controller to press, and `?quest` is regularly driven from a
-  // laptop -- so without this the panel is unrecoverable the moment you walk
-  // past it. Gated on QUEST_MODE so Escape keeps whatever it means to the
-  // editor in the normal route, where this panel does not exist.
+  // Escape opens and closes the quest menu, the keyboard twin of B / Y. On a
+  // desktop there is no controller to press, and `?quest` is regularly driven
+  // from a laptop -- so without this the menu is unreachable. Gated on
+  // QUEST_MODE so Escape keeps whatever it means to the editor in the normal
+  // route, where this menu does not exist.
   if (QUEST_MODE && e.code === 'Escape') {
-    placeQuestPanel()
+    toggleQuestPanel()
     return
   }
 
@@ -2035,7 +2299,9 @@ addEventListener('keydown', (e) => {
   // something a player does.
   if (fresh.includes('grassStyle')) {
     player.headPosition(headTmp)
-    if (grass) buildGrass(grassStyle === 'strips' ? 'tufts' : 'strips', headTmp.x, headTmp.z)
+    // Through grassOpts so a style swap keeps whatever density and reach the
+    // panel has set: the two beds are only comparable at the same numbers.
+    if (grass) buildGrass(grassStyle === 'strips' ? 'tufts' : 'strips', headTmp.x, headTmp.z, grassOpts)
   }
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
   // triDeg is a size budget, so finer means smaller. Stepped multiplicatively
@@ -2549,7 +2815,7 @@ function readInput() {
 
     // Mirrored, and NOTHING on the grips. +5h and aurora-cycle moved to the
     // panel, where they cannot go off in your hand.
-    if (st.left.buttons.SECONDARY?.justPressed || st.right.buttons.SECONDARY?.justPressed) placeQuestPanel()
+    if (st.left.buttons.SECONDARY?.justPressed || st.right.buttons.SECONDARY?.justPressed) toggleQuestPanel()
     if (st.left.buttons.STICK?.justPressed || st.right.buttons.STICK?.justPressed) player.recenterXR(renderer)
     if (st.left.buttons.PRIMARY?.justPressed || st.right.buttons.PRIMARY?.justPressed) {
       setFlying(!player.flying)

@@ -381,19 +381,21 @@ export async function run() {
   }
   {
     const fits = ladder.get(MIN_TRI_DEG)
-    const finer = ladder.get(Number((MIN_TRI_DEG - 0.1).toFixed(2)))
-    if (!fits || !finer) throw new Error('the ladder must contain MIN_TRI_DEG and one 0.1 step finer')
+    if (!fits) throw new Error('the ladder must contain MIN_TRI_DEG')
     check(
       fits.unbounded + PINNED_CHUNKS <= SLOT_COUNT,
       `the pool covers the finest reachable setting (${MIN_TRI_DEG} deg) for ANY height field`,
       `unbounded ${fits.unbounded} + ${PINNED_CHUNKS} vs ${SLOT_COUNT}  [bounded worst at ${fits.at}]`
     )
-    // Tested on the SAME column the floor is set against. Using the bounded column here would be picking whichever column happens to make the claim pass: at 1.0 the bounded worst is 1003, which plus 21 pinned is exactly 1024 -- it "fits" by the strict inequality with zero LRU headroom, for one particular stand-in field. The unbounded column is the one that holds for any field, and there 1.0 does not fit.
+    // WHICH WALL BINDS, and the answer CHANGED when MAX_DEPTH came down from 13 to 10.
+    //
+    // This check used to read the other way: `finer.unbounded + PINNED > SLOT_COUNT`, i.e. one 0.1 step finer than the floor overflows the pool, therefore the floor is tight and MIN_TRI_DEG is the edge of what 1024 slots can hold. That was true at the deeper cap. It is false now -- the whole sweep fits, 0.9 included -- because a shallower cap removes exactly the levels that pack leaves near the camera, so the pool gained slack across the entire knob range at once.
+    //
+    // So the honest claim is no longer "the floor is tight" but "the pool is not the wall". There are two walls, they behave differently, and MIN_TRI_DEG now sits far inside the pool one: SLOT_COUNT is a hard throw, while §0's triangle third is a frame rate you can choose to spend, and at the floor the ladder is already drawing multiples of that third. Asserting which wall binds is worth more than asserting a tightness that a cap change can silently retire, and it is the number a reader moving MIN_TRI_DEG actually needs.
     check(
-      finer.unbounded + PINNED_CHUNKS > SLOT_COUNT,
-      `and does NOT cover one step finer (${(MIN_TRI_DEG - 0.1).toFixed(1)} deg), so the floor is tight`,
-      `unbounded ${finer.unbounded} + ${PINNED_CHUNKS} vs ${SLOT_COUNT}` +
-        ` (bounded ${finer.worst} + ${PINNED_CHUNKS} = exactly ${finer.worst + PINNED_CHUNKS}, no headroom either)`
+      fits.uTris > (TRI_BUDGET / 3) * 1.5,
+      `and the wall at the floor is the TRIANGLE budget, not the pool`,
+      `${(fits.uTris / 1000).toFixed(0)}k drawn = ${((fits.uTris / (TRI_BUDGET / 3)) * 100).toFixed(0)}% of terrain's third, while the pool has ${SLOT_COUNT - fits.unbounded - PINNED_CHUNKS} slots spare`
     )
     const dflt = ladder.get(LOD.triDeg)
     check(
@@ -415,23 +417,26 @@ export async function run() {
         `${((ladder.get(4.0).uTris / (TRI_BUDGET / 3)) * 100).toFixed(0)}%) or coarser.`
     )
 
-    // The periphery grading. Priced at BOTH ends of the knob, because how much it buys is a function of the cap, and at the default it is headroom while at the floor it is the difference between fitting and throwing.
+    // The periphery grading. Priced at BOTH ends of the knob, because how much it buys is a function of the cap.
+    //
+    // WHAT IT BUYS ALSO CHANGED WITH THE CAP. At MAX_DEPTH 13 flat periphery overflowed the pool at the floor, so grading was the difference between fitting and throwing and this check asserted exactly that. At 10 flat fits everywhere, so grading is no longer rescuing the pool -- it is saving leaves, and a leaf is 640 triangles whatever it costs in slots. That makes it a TRIANGLE saving now, which is the currency that is actually short, so it is priced in triangles here rather than in slots.
     console.log('')
-    let gradingLoadBearing = false
+    let worstSaving = 1
     for (const cap of [LOD.triDeg, MIN_TRI_DEG]) {
       const g = ladder.get(cap)
       const flat = worstAt(cap, { periphDeg: cap })
-      const bearing = flat.worst + PINNED_CHUNKS > SLOT_COUNT
-      if (cap === MIN_TRI_DEG) gradingLoadBearing = bearing && g.worst + PINNED_CHUNKS <= SLOT_COUNT
+      const saved = 1 - g.worst / flat.worst
+      if (saved < worstSaving) worstSaving = saved
       console.log(
         `        periphery grading at ${cap.toFixed(1)} deg: ${g.worst} graded vs ${flat.worst} flat ` +
-          `(${((1 - g.worst / flat.worst) * 100).toFixed(0)}% saved) -- flat ${bearing ? 'OVERFLOWS' : 'still fits'} the pool`
+          `(${(saved * 100).toFixed(0)}% saved = ${(((flat.worst - g.worst) * 640) / 1000).toFixed(0)}k triangles) -- ` +
+          `flat ${flat.worst + PINNED_CHUNKS > SLOT_COUNT ? 'OVERFLOWS' : 'still fits'} the pool`
       )
     }
     check(
-      gradingLoadBearing,
-      'the graded periphery is what makes MIN_TRI_DEG reachable, not decoration',
-      `without it the floor would have to move coarser`
+      worstSaving > 0.1,
+      'the graded periphery pays for itself in triangles at both ends of the knob, not just at the floor',
+      `worst of the two ends saves ${(worstSaving * 100).toFixed(0)}% of leaves`
     )
 
     // What the four extra levels actually cost. This is the measurement SLOT_COUNT 1024 rests on, and config.js states it in prose.
@@ -445,11 +450,13 @@ export async function run() {
     )
   }
 
-  // --- 5. does it actually reach 10 cm? -----------------------------------
+  // --- 5. does it actually reach the cap underfoot? ------------------------
   //
-  // The headline claim of §18. MAX_DEPTH is a CAP, not a target -- the angular rule decides what is reached -- so "the cap allows 6.25 cm cells" is not the same statement as "standing on the ground you get them", and only the second one is the feature.
+  // MAX_DEPTH is a CAP, not a target -- the angular rule decides what is reached -- so "the cap allows a 50 cm cell" is not the same statement as "standing on the ground you get one", and only the second one is the feature.
+  //
+  // The direction of this section INVERTED when the cap came down from 13 to 10. At 13 the interesting risk was falling short: the rule wanted 8.6 cm underfoot, the cap allowed 6.25 cm, and the question was whether selection actually got there. At 10 the cap is well coarser than anything the rule wants at eye height, so reaching it is not in doubt -- what this now pins is that the cap SATURATES, i.e. the ground under her feet is always at the finest tier the tree has, and no closer camera, finer triDeg or flatter patch can talk it into another level. That saturation is the whole reason the cap is the triangle lever it is.
 
-  console.log('\nreaches 10 cm underfoot')
+  console.log('\nreaches the cap underfoot')
   {
     let worstCell = 0
     let worstAtPos = null
@@ -481,17 +488,18 @@ export async function run() {
         worstAtPos = `${x.toFixed(0)},${z.toFixed(0)}`
       }
     }
+    const capCell = WORLD_SIZE / 2 ** MAX_DEPTH / CHUNK_RES
     check(
-      worstCell <= 0.125,
-      'at eye height on the ground the finest cell is <= 12.5 cm',
+      worstCell <= capCell,
+      `at eye height on the ground the finest cell is the cap's own ${(capCell * 100).toFixed(0)} cm`,
       `worst of the five spots ${worstCell.toFixed(4)}m at ${worstAtPos}`
     )
-    // The cap has to be the binding constraint down there, otherwise raising it was pointless. At triDeg 3.0 and 1.65 m of eye height the rule wants 1.65 * tan(3) = 8.6 cm, which is between depth 13 (12.5 cm) and 14 (6.25 cm), so it lands on 14 and stops because it is not allowed lower.
+    // And the cap is what STOPPED it, not the rule running out of appetite. At triDeg 3.0 and 1.65 m of eye height the rule wants 1.65 * tan(3) = 8.6 cm, comfortably finer than the 50 cm the cap allows, so selection saturates against the cap rather than converging under it. If this ever inverts -- the rule wanting coarser than the cap at eye height -- then lowering MAX_DEPTH further would stop buying triangles and the lever moves to triDeg.
     const want = 1.65 * Math.tan((LOD.triDeg * Math.PI) / 180)
     check(
-      want < 0.125 && want > WORLD_SIZE / 2 ** MAX_DEPTH / CHUNK_RES,
-      `the rule's target underfoot (${(want * 100).toFixed(1)}cm) sits between depth ${MAX_DEPTH - 1} and the cap`,
-      `${(want * 100).toFixed(2)}cm`
+      want < capCell,
+      `the rule's target underfoot (${(want * 100).toFixed(1)}cm) is finer than the cap, so the cap binds`,
+      `${(want * 100).toFixed(2)}cm wanted vs ${(capCell * 100).toFixed(1)}cm allowed`
     )
   }
 

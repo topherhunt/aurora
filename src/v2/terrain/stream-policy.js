@@ -46,9 +46,9 @@ export function nodeBoxFromKey(key) {
 }
 
 // The cell size a chunk at this depth resolves, in metres. This is the number the
-// panel puts front and centre -- "am I actually seeing 10 cm" -- so it is derived
-// here from WORLD_SIZE and CHUNK_RES rather than written down anywhere as a
-// literal. At MAX_DEPTH 13 it is 8192 / 2^13 / 16 = 6.25 cm.
+// panel puts front and centre -- how fine the ground underfoot actually is -- so
+// it is derived here from WORLD_SIZE and CHUNK_RES rather than written down
+// anywhere as a literal. At MAX_DEPTH 10 it is 8192 / 2^10 / 16 = 50 cm.
 export function cellSize(depth) {
   if (!Number.isInteger(depth) || depth < 0 || depth > MAX_DEPTH) {
     throw new Error(`cellSize: depth ${depth} is outside 0..${MAX_DEPTH}`)

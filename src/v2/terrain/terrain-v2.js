@@ -30,7 +30,7 @@ import { createTerrainMaterial } from '../../terrain/terrain-material.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.js'
 
 // ---------------------------------------------------------------------------
-// v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 13 tree, worker-fed
+// v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 10 tree, worker-fed
 // geometry, hole-free swaps, partial invalidation on an edit, and ONE draw call.
 //
 // This is src/terrain/terrain.js's sibling and it deliberately keeps everything
@@ -71,9 +71,9 @@ import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.j
 // ---------------------------------------------------------------------------
 
 // Reselect the quadtree at ~12 Hz when nothing is streaming. At walking pace that
-// is 12 cm of movement between selections, and at depth 13 the leaf CELL is
-// 6.25 cm -- so unlike v1 this is no longer comfortably under a cell. It is still
-// the right number: selection also reruns immediately whenever a chunk lands or
+// is 12 cm of movement between selections, and at depth 10 the leaf CELL is
+// 50 cm -- comfortably under a cell again, which it was not at the old depth 13.
+// It is still the right number: selection also reruns immediately whenever a chunk lands or
 // an edit invalidates something (`_dirty`), which is what actually drives the
 // settling of a new view, and the timer only covers the case where nothing is in
 // flight and she is walking through already-resident ground. Halving it would
@@ -91,6 +91,24 @@ const SELECT_EVERY_FRAMES = 6
 // on a stand-in swap at 72 Hz, which nobody can see, and it caps the burst at
 // half rate.
 const MIN_SELECT_FRAMES = 2
+
+// The near field the yaw cull is never allowed to touch, in metres, and the
+// multiple of her height above a node that counts as near when she is above it.
+// See _inSight for what these are defending against.
+//
+// DOWN_K is the one doing the real work, and it is geometry rather than taste:
+// looking STRAIGHT down, the ground she can see is a disc of radius
+// `height above it * tan(half the horizontal FOV)`, and the Quest 2's ~96 degrees
+// makes that tangent 1.11. 1.5 is that with a third again of margin, and it
+// scales itself -- 2.5 m standing, 450 m at 300 m up.
+//
+// NEAR_KEEP_M only covers the case DOWN_K cannot see: a node whose maxY is at or
+// above the eye, where `above` goes to zero and the scaled radius collapses. 12 m
+// is one and a half chunks at the 8 m floor. It was 24 first, and the sweep says
+// that cost 11k triangles both eyes for radius nothing was asking for -- 24 to 8
+// is a flat 113k -> 102k worst case walking, with the knee at 12.
+const NEAR_KEEP_M = 12
+const DOWN_K = 1.5
 
 // Requests allowed in flight per worker, and in v2 this number is bounded from
 // ABOVE by the slot pool rather than only from below by worker throughput.
@@ -115,8 +133,10 @@ const MIN_SELECT_FRAMES = 2
 //         16           32         992               115
 //
 // Every row fits, which is the useful finding: the world box moved twice during
-// this build (16 km, then 4 km, then 8 km) and at the settled 8192 / depth 13 the
-// pool is not the binding constraint on this knob. So the choice is made on margin
+// this build (16 km, then 4 km, then 8 km) and at 8192 the pool is not the binding
+// constraint on this knob. The depth cap has since come DOWN from 13 to 10, which
+// only widens every margin in that table -- the levels it removed were the ones
+// packing leaves under the camera. So the choice is made on margin
 // rather than on arithmetic, and 24 is the conservative read of a number that is
 // not yet trustworthy: the 856 comes from a synthetic ground function, not from
 // `reference/skyrim-height-map.jpg`. Range is computed against the mesher's
@@ -970,7 +990,7 @@ export class TerrainV2 {
   _select(cam) {
     if (!cam) throw new Error('TerrainV2.update: no camera')
     this._cam = cam
-    const desired = selectNodes(cam, { maxDepth: MAX_DEPTH, info: this.info })
+    const desired = selectNodes(cam, { info: this.info })
     const render = new Set()
     const standIns = new Set()
     const queue = []
@@ -1133,6 +1153,41 @@ export class TerrainV2 {
       : d + (b - d) * (1 - fj) + (c - d) * (1 - fi)
   }
 
+  // Should this node be flagged visible, given a yaw cone of `half` radians?
+  //
+  // THE CONE ALONE IS NOT ENOUGH, and the failure is not subtle: `cam.yaw` has no
+  // pitch term, so looking DOWN does not move the cone at all -- while in a
+  // headset it swings a large disc of ground behind her feet straight into view.
+  // Culling on yaw alone punched a square hole under the player and left the
+  // ground behind her missing out of the corner of the eye. A yaw cone is a fair
+  // approximation of what the eye sees for ground near the horizon, and a
+  // completely wrong one for ground near the camera.
+  //
+  // So the cone governs the far field only, and everything NEAR is kept
+  // unconditionally. Near is measured against her height above the node rather
+  // than as a fixed radius, because the disc she can see looking down IS that
+  // height times a constant: two or three metres of ground behind her heels
+  // standing, hundreds of metres in every direction flying at 300 m. DOWN_K is
+  // that constant and NEAR_KEEP_M is the floor for when it degenerates -- see
+  // both constants for the arithmetic.
+  _inSight(cam, n, key, half) {
+    const dx = Math.max(n.x - cam.x, 0, cam.x - (n.x + n.size))
+    const dz = Math.max(n.z - cam.z, 0, cam.z - (n.z + n.size))
+    // Horizontal distance to the node's box, zero when she is standing over it.
+    const dxz = Math.hypot(dx, dz)
+    if (dxz <= NEAR_KEEP_M) return true
+    if (cam.y !== undefined) {
+      const b = this.info.get(key)
+      // Bounds are absent only until a node has been meshed once. Treating that
+      // as "no height above it" keeps the cone in charge, which is the cheap
+      // answer, not the safe one -- but an unmeshed node has no geometry to draw
+      // and so cannot be the hole this guards against.
+      const above = b ? cam.y - b.maxY : 0
+      if (above > 0 && dxz <= above * DOWN_K) return true
+    }
+    return inCone(cam, n.x, n.z, n.size, half)
+  }
+
   _syncVisibility() {
     const render = this._render
     const cam = this._cam
@@ -1154,7 +1209,7 @@ export class TerrainV2 {
       // cone is applied to VISIBILITY only, never to selection or streaming --
       // the chunk stays resident and keeps its slot, so turning around costs a
       // setVisibleAt and not a round trip through the mesher.
-      const want = render.has(key) && (cullHalf === null || inCone(cam, n.x, n.z, n.size, cullHalf))
+      const want = render.has(key) && (cullHalf === null || this._inSight(cam, n, key, cullHalf))
       if (entry.visible !== want) {
         entry.visible = want
         this.batch.setVisibleAt(entry.slot.instanceId, want)

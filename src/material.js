@@ -1106,15 +1106,124 @@ function propCardMask(layerCount) {
     float propSpun = propCard * step( ${CARD_UP_MARK}, normal.y );`
 }
 
-function billboardVertex(spherical) {
-  // Screen right and screen up, in world space: rows 0 and 1 of the view
-  // matrix's rotation. VIEW-PLANE aligned rather than a true look-at, which is
-  // both cheaper and steadier -- a look-at billboard swings as the card crosses
-  // the screen, and on a hillside covered in them that swing is a shimmer.
-  const spin = spherical
+/**
+ * DISTANT CARDS GROW AND SINK, and it is a density trade rather than a look.
+ *
+ * A scatter that thins as `F / d` halves its instances every octave, so the far
+ * field goes sparse exactly where the eye still reads a continuous carpet. The
+ * cheap answer is to stop thinning, which is the expensive answer. This is the
+ * other one: keep halving the COUNT and grow each survivor to cover for the ones
+ * that went. Linear size `s` buys `s^2` of facing area, so 2x cards against half
+ * the instances is DOUBLE the coverage for HALF the triangles -- which is the
+ * whole reason the knob exists, and why `scale` wants to be read together with
+ * whatever thinning constant was just loosened.
+ *
+ * AND THE SINK IS WHAT KEEPS IT FROM READING AS GIANT GRASS. A 2x card is 2x
+ * TALL as well as 2x wide, and a meadow whose far half is chest-high on a
+ * distant walker reads as a scale error immediately. Burying `sink` of the grown
+ * card puts the extra height back underground and leaves the extra WIDTH, which
+ * is the half that was buying the coverage: at scale 2 and sink 0.3 the card
+ * stands 1.4x as tall as its neighbours and twice as wide, which reads as one
+ * clump of several plants -- which is what it is standing in for.
+ *
+ * RAMPED, NOT SWITCHED. `from` and `to` are metres of eye distance and the
+ * smoothstep between them is what stops a growth ring following the player
+ * around. It is per VERTEX and per FRAME, so nothing has to be re-placed when
+ * the player walks -- which is the only reason this is in the shader at all: a
+ * CPU version would have to rewrite matrices on a scatter that regrows in
+ * quantised steps, and the size would jump at every step.
+ *
+ * ORDERED BEFORE THE SPIN, because both spins consume `transformed` to build the
+ * card, so growing afterwards would grow a card already resolved into world
+ * offsets and undo the spherical branch's careful scale bookkeeping.
+ */
+// THE GROW IS ABOUT THE VISIBLE CARD, NOT THE WHOLE QUAD, and that distinction
+// is the whole of this function.
+//
+// The obvious version -- scale the quad by g, then subtract a sink -- was what
+// shipped first, and it SQUASHES: the scale takes the width to g and the sink
+// then comes off the height only, so a card at the far end of the ramp is g
+// wide and g * (1 - sink) tall. At g = 2 and sink = 0.3 that is 2.0 by 1.4, a
+// 30% flatter tuft than the one the bake drew, and the bed reads as a field of
+// rectangles rather than as grass.
+//
+// So the sink is expressed as a fraction of the GROWN card and solved for
+// instead. `scale` means what it says: the part still above ground comes out
+// exactly `scale` times bigger in BOTH dimensions, and `sink` of the card's
+// height is buried at every point on the ramp rather than only at its end.
+//
+//   y' = ( y - top * s ) * g / ( 1 - s )   with s = sink * t
+//
+// which sends y = top to top * g and y = 0 to -top * g * s / ( 1 - s ), so the
+// buried share of the total is exactly s. Facing area above ground is therefore
+// g^2 -- read that when pricing fill, because the old form's was g^2 * (1 - s).
+function billboardGrowVertex({ from, to, scale, sink, top }) {
+  return /* glsl */ `
+      float bbT = smoothstep( ${from.toFixed(3)}, ${to.toFixed(3)},
+        distance( cameraPosition, bbOrigin.xyz ) );
+      float bbG = 1.0 + ${(scale - 1).toFixed(4)} * bbT;
+      // The buried FRACTION at this point on the ramp, and the height scale that
+      // leaves bbG times the card standing once that fraction is taken off.
+      float bbS = ${sink.toFixed(5)} * bbT;
+      float bbYs = bbG / ( 1.0 - bbS );
+      // The card stands on y = 0 (buildGrassTuft, buildImpostorCard), which is
+      // what lets the pivot be a plain subtraction.
+      transformed = vec3(
+        transformed.x * bbG,
+        ( transformed.y - ${top.toFixed(5)} * bbS ) * bbYs,
+        transformed.z * bbG );`
+}
+
+// `spin` false compiles the SAME block with the yaw-to-camera rotation taken
+// out: the grow ramp still runs, the u-flip still runs, and the card is left
+// standing at whatever yaw its instance matrix gave it.
+//
+// IT IS A LOOK SWITCH BEFORE IT IS A PERFORMANCE ONE. A cylindrical billboard
+// is correct from eye level and wrong from above -- it cannot pitch, so looking
+// down at a bed makes every card lie back toward you at once, which reads as the
+// meadow fawning at your feet, and the two eyes disagree about the yaw of a card
+// close enough to have parallax. A fixed card has neither fault and pays for it
+// by going edge-on: at a random yaw a flat quad presents |cos| of its width,
+// which averages 2/pi, so a fixed bed is 64% of a billboarded bed's projected
+// area and some fraction of it is invisible at any moment.
+//
+// That 0.64 is also the whole of its GPU saving, and it is a FILL saving rather
+// than a vertex one -- the spin is a 2D complex multiply on four vertices, which
+// is nothing next to what a bed of alpha-tested cards costs per pixel.
+function billboardVertex(spherical, grow, spin = true) {
+  // VIEWPOINT-ORIENTED, NOT VIEW-PLANE ALIGNED, and it was the other way round
+  // first. Taking screen-right and screen-up straight off the view matrix's rows
+  // is one instruction cheaper and it is wrong away from the centre of the
+  // frame: every card in the bed comes out parallel to the display, so a card
+  // out at the edge of a wide FOV is seen at a slant it was never turned to
+  // account for, and the whole field reads as one flat sheet of decals pasted on
+  // the window rather than as objects turned to face you. The cylindrical branch
+  // below has always aimed at the eye per instance and has never had that look.
+  //
+  // Built from the SAME horizontal face the cylindrical branch computes, then
+  // pitched back by the elevation of the eye. That ordering is the point: the
+  // card's right stays horizontal, so it never rolls. A look-at built off the
+  // camera's own up vector would roll instead, and in VR the head is a gimbal --
+  // tilt it and every card in the bed would counter-rotate at once.
+  const spinBody = spherical
     ? /* glsl */ `
-      vec3 bbRw = vec3( viewMatrix[ 0 ][ 0 ], viewMatrix[ 1 ][ 0 ], viewMatrix[ 2 ][ 0 ] );
-      vec3 bbUw = vec3( viewMatrix[ 0 ][ 1 ], viewMatrix[ 1 ][ 1 ], viewMatrix[ 2 ][ 1 ] );
+      // The horizontal direction from the card to the eye. Degenerate only when
+      // the camera is directly overhead, where any yaw is as good as another.
+      vec2 bbTo = cameraPosition.xz - bbOrigin.xz;
+      float bbLen = length( bbTo );
+      vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
+
+      // Card right: world up crossed with the face, which is (f.z, 0, -f.x).
+      // Horizontal by construction and already unit, since bbF is.
+      vec3 bbRw = vec3( bbF.y, 0.0, -bbF.x );
+      // Card up: the full 3D direction to the eye crossed with that right. bbRw
+      // is perpendicular to the horizontal part of bbFw and has no y, so it is
+      // perpendicular to bbFw itself -- the cross is unit and needs no second
+      // normalize. Level eye gives exactly (0, 1, 0); an eye above tips the top
+      // of the card away from the viewer, which is what makes a bed seen from a
+      // hilltop read as ground cover instead of as crop circles.
+      vec3 bbFw = normalize( cameraPosition - bbOrigin.xyz );
+      vec3 bbUw = cross( bbFw, bbRw );
 
       // The world-from-object linear map for this instance. We are about to
       // build the answer in WORLD space and have to hand it back in the object
@@ -1213,7 +1322,8 @@ function billboardVertex(spherical) {
       // divides it out; the spherical one throws it away entirely. Both want it
       // for the u-flip below.
       vec2 bbA = normalize( vec2( bbAxis.x, bbAxis.z ) );
-${spin}
+${grow ? billboardGrowVertex(grow) : ''}
+${spin ? spinBody : ''}
 
       // One free bit of variety: the instance's own yaw, which the spin has
       // just thrown away, decides whether this card reads its picture
@@ -1406,21 +1516,11 @@ export function getPropClock() {
 }
 
 /**
- * The per-instance dissolve, computed at vertex rate and dithered at fragment
- * rate. Both halves are no-ops when the instance's channel holds three's
- * default of 1, which is what keeps every existing caller unchanged.
- *
- * The index expression mirrors what `color_vertex` uses for getBatchingColor,
- * because it is the same texel -- we are reading the channel beside the tint.
+ * The dissolve itself, given a `fadeSlot` the caller has already fetched from
+ * wherever this arena keeps it. Shared verbatim by both branches of FADE_VERTEX
+ * so the two arenas cannot drift into animating at different rates.
  */
-const FADE_VERTEX = /* glsl */ `
-  float propFade = 1.0;
-  #if defined( USE_BATCHING ) && defined( USE_BATCHING_COLOR )
-  {
-    int fadeIdx = int( getIndirectIndex( gl_DrawID ) );
-    int fadeSize = textureSize( batchingColorTexture, 0 ).x;
-    float fadeSlot = texelFetch( batchingColorTexture,
-      ivec2( fadeIdx % fadeSize, fadeIdx / fadeSize ), 0 ).a;
+const FADE_DECODE = /* glsl */ `
     // NEGATIVE is a biased clock reading, and it is now the ONLY thing this slot
     // carries apart from the never-fade 1.0 every instance starts at. Both
     // dissolves are stamped starts: the LOD cross-fade and the rim. See
@@ -1449,7 +1549,45 @@ const FADE_VERTEX = /* glsl */ `
       // 1-p of its pixels while the arriving one keeps p -- and the SIGN is how
       // the fragment stage knows which of the two thresholds to test against.
       propFade = fadeIn ? -fadeP : 1.0 - fadeP;
-    }
+    }`
+
+/**
+ * The per-instance dissolve, computed at vertex rate and dithered at fragment
+ * rate. Both halves are no-ops when the instance's slot holds three's default of
+ * 1, which is what keeps every existing caller unchanged.
+ *
+ * WHERE THE SLOT LIVES, and it is two different places because the two arenas
+ * have different room for it.
+ *
+ * The batched index expression mirrors what `color_vertex` uses for
+ * getBatchingColor, because it is the same texel -- we are reading the channel
+ * beside the tint.
+ *
+ * A BatchedMesh keeps its per-instance colours in a float DATA TEXTURE, so the
+ * timer rides in the alpha channel beside the tint and costs no new storage at
+ * all. An InstancedMesh's `instanceColor` is itemSize 3 in three r180 -- there is
+ * no fourth channel -- so the instanced beds carry `aPropFade`, an
+ * InstancedBufferAttribute of one float, and read it as a plain attribute. That
+ * is CHEAPER than the batched path rather than a fallback: an attribute fetch
+ * against a vertex texture fetch, on a chip that hates the second one.
+ *
+ * `#elif`, not a second `#if`: a mesh is one or the other, and writing it as a
+ * chain means the batched branch keeps compiling to exactly what it always did.
+ */
+const FADE_VERTEX = /* glsl */ `
+  float propFade = 1.0;
+  #if defined( USE_BATCHING ) && defined( USE_BATCHING_COLOR )
+  {
+    int fadeIdx = int( getIndirectIndex( gl_DrawID ) );
+    int fadeSize = textureSize( batchingColorTexture, 0 ).x;
+    float fadeSlot = texelFetch( batchingColorTexture,
+      ivec2( fadeIdx % fadeSize, fadeIdx / fadeSize ), 0 ).a;
+${FADE_DECODE}
+  }
+  #elif defined( USE_INSTANCING ) && defined( PROP_FADE_ATTRIBUTE )
+  {
+    float fadeSlot = aPropFade;
+${FADE_DECODE}
   }
   #endif
   vPropFade = propFade;`
@@ -1556,18 +1694,37 @@ const COLOR_FRAGMENT = /* glsl */ `
  * next time the pool hands that id out; clearing it means the only two values
  * the slot ever holds at rest are 1.0 and nothing.
  *
- * The batch must already have a colour texture -- BatchedMesh creates it lazily
- * on the first setColorAt -- because there is no public way to make one, and
+ * A BatchedMesh must already have a colour texture -- it creates one lazily on
+ * the first setColorAt -- because there is no public way to make one, and
  * conjuring it here would mean duplicating three's sizing rule.
  */
 export function setPropSolidAt(batch, instanceId) {
+  writeFadeSlot(batch, instanceId, 1, 'setPropSolidAt')
+}
+
+/**
+ * The one place that knows where an arena keeps its fade slot. See FADE_VERTEX
+ * for the two homes and why they are different; this is the write side of that
+ * same split, and keeping it in one function is what stops a caller having to
+ * know which arena it was handed.
+ */
+function writeFadeSlot(batch, instanceId, value, who) {
+  if (batch.isInstancedMesh) {
+    const attr = batch.geometry.getAttribute('aPropFade')
+    if (!attr) {
+      throw new Error(`${who}: instanced arena has no aPropFade attribute to stamp`)
+    }
+    attr.array[instanceId] = value
+    attr.needsUpdate = true
+    return
+  }
   const tex = batch._colorsTexture
   if (!tex || !(tex.image.data instanceof Float32Array)) {
     throw new Error(
-      'setPropSolidAt: batch has no float colour texture -- call setColorAt at least once first'
+      `${who}: batch has no float colour texture -- call setColorAt at least once first`
     )
   }
-  tex.image.data[instanceId * 4 + 3] = 1
+  tex.image.data[instanceId * 4 + 3] = value
   tex.needsUpdate = true
 }
 
@@ -1589,14 +1746,8 @@ export function setPropSolidAt(batch, instanceId) {
  * see RimFade._startFade and the `running` check at the top of _crossFade.
  */
 export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
-  const tex = batch._colorsTexture
-  if (!tex || !(tex.image.data instanceof Float32Array)) {
-    throw new Error(
-      'setPropFadeTimerAt: batch has no float colour texture -- call setColorAt at least once first'
-    )
-  }
-  tex.image.data[instanceId * 4 + 3] = -(startTime + (fadeIn ? FADE_IN_BIAS : FADE_OUT_BIAS))
-  tex.needsUpdate = true
+  const slot = -(startTime + (fadeIn ? FADE_IN_BIAS : FADE_OUT_BIAS))
+  writeFadeSlot(batch, instanceId, slot, 'setPropFadeTimerAt')
 }
 
 // ---------------------------------------------------------------------------
@@ -2256,7 +2407,7 @@ export function createPropMaterial(
   textureArray,
   {
     vertexColors = false, billboardLayers = null, sphericalBillboard = false, stripTiling = false,
-    wind = null,
+    billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
@@ -2264,6 +2415,35 @@ export function createPropMaterial(
   // spun differently and is looking at unchanged pixels. Say so instead.
   if (sphericalBillboard && !billboards) {
     throw new Error('createPropMaterial: sphericalBillboard needs billboardLayers to spin')
+  }
+  // Two ways of saying which spin, and one of them saying there is none. A
+  // caller asking for both has a bug rather than a preference, and the symptom
+  // would be silent -- spherical simply never compiled.
+  if (sphericalBillboard && !billboardSpin) {
+    throw new Error('createPropMaterial: sphericalBillboard and billboardSpin:false contradict')
+  }
+  // The layer list is what SELECTS the block; without it there is nothing to
+  // turn off, so a caller passing this alone thinks they changed something.
+  if (!billboardSpin && !billboards) {
+    throw new Error('createPropMaterial: billboardSpin:false needs billboardLayers to act on')
+  }
+  if (billboardGrow) {
+    if (!billboards) {
+      throw new Error('createPropMaterial: billboardGrow needs billboardLayers to grow')
+    }
+    for (const k of ['from', 'to', 'scale', 'sink', 'top']) {
+      if (!Number.isFinite(billboardGrow[k])) {
+        throw new Error(`createPropMaterial: billboardGrow.${k} must be a number`)
+      }
+    }
+    // A backwards ramp is a smoothstep that never leaves 0 on one side of the
+    // world and never leaves 1 on the other, which is silently no growth or
+    // uniform growth rather than an error the caller would ever notice.
+    if (!(billboardGrow.to > billboardGrow.from)) {
+      throw new Error(
+        `createPropMaterial: billboardGrow needs to > from, got ${billboardGrow.from}..${billboardGrow.to}`
+      )
+    }
   }
   // A preset NAME is the normal way to ask; an object is for a caller tuning one
   // off the presets. A typo in the name would otherwise compile a material that
@@ -2321,6 +2501,9 @@ export function createPropMaterial(
         `#include <common>
         attribute float texLayer;
         attribute vec2 uvProj;
+        ${instancedFade ? `
+        #define PROP_FADE_ATTRIBUTE
+        attribute float aPropFade;` : ''}
         varying float vTexLayer;
         varying vec2 vUvProj;
         uniform float uSnow;
@@ -2369,7 +2552,7 @@ export function createPropMaterial(
         ${propCardMask(billboards ? billboards.length : 0)}
         ${FADE_VERTEX}
         ${windSpec && windCompiled ? windVertex(windSpec, { strip: stripTiling, cards: !!billboards }) : ''}
-        ${billboards ? billboardVertex(sphericalBillboard) : ''}
+        ${billboards ? billboardVertex(sphericalBillboard, billboardGrow, billboardSpin) : ''}
         ${stripTiling ? STRIP_VERTEX : ''}`
       )
       // Snow is placed in WORLD space so that two instances of the same tree
@@ -2584,9 +2767,28 @@ export function createPropMaterial(
   // the symptom is a hillside of rocks spinning like trees, or a forest lying
   // its trunks down, depending on the order they happened to be built in.
   //
+  // billboardGrow is in for a third time over: its four numbers are GLSL
+  // LITERALS, so two materials differing only in the ramp are two programs and
+  // sharing one would put the wrong meadow's growth curve on the other's cards.
+  // `instancedFade` compiles an attribute declaration, which is the sharpest of
+  // the three -- a program declaring `aPropFade` bound to a mesh that has no
+  // such attribute reads garbage timers and dissolves at random.
+  //
   // The wind suffix is evaluated per CALL and not folded into `key`, because
   // setWindEnabled flips it under a material that is already built.
-  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${stripTiling ? '-strip' : ''}`
+  // `top` is in the key alongside the other three because it is a GLSL literal
+  // like them: two beds agreeing on the ramp and differing only in how tall
+  // their card is would otherwise share a program and bury the wrong fraction.
+  const growKey = billboardGrow
+    ? `-grow${billboardGrow.from}.${billboardGrow.to}.${billboardGrow.scale}.`
+      + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
+    : ''
+  // `-nospin` is in the key for the same reason `-sph` is, and with the same
+  // failure: it selects a different BODY for the same branch, so two materials
+  // agreeing on everything else and differing only here would silently share
+  // whichever compiled first -- a bed that stopped facing you, or one that
+  // started, depending on boot order.
+  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}`
   material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
 
   if (windSpec) windMaterials.add(material)

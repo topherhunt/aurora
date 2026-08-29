@@ -1,6 +1,6 @@
 ## 5. Rendering architecture
 
-> **Covers:** the quadtree LOD scheme, `LOD.triDeg`, the triangle budget table, `BatchedMesh` vs `InstancedMesh`, and the prop LOD ladder.
+> **Covers:** the quadtree LOD scheme, `LOD.triDeg`, the triangle budget table, `BatchedMesh` vs `InstancedMesh` (and why the Quest 2 answers that question differently), and the prop LOD ladder.
 > **Read this when:** anything renders more or fewer triangles than it did. This is where the budget lives.
 
 ### The load-bearing decisions
@@ -68,6 +68,18 @@ So the rule is not "batched is better", it is:
 The near bands are hundreds of instances across dozens of variants: `BatchedMesh`, as built. The far card bands are tens of thousands of instances of *one* geometry: `InstancedMesh`, one per world tile so the scene graph culls whole tiles for free. At 128 m tiles a 510 m reach is ~64 tiles, of which ~20 are in frustum -- about 20 draw calls against the 40-50 Quest 2 allows, and **zero** per-frame per-instance cost. Rewriting a tile's matrices costs 32 ns each and is paid only when that tile is rebuilt, one tile per frame (§6).
 
 This is the regime §0 flagged as untested and guessed wrong about: it assumed batching's win was "thousands of cheap objects", and thousands of cheap objects is precisely where batching loses.
+
+### And on a Quest 2 the crossover is not a crossover -- it is at zero
+
+**Measured in the headset, on the grass bed, with nothing else in the scene and nothing else changed: 5 fps as a `BatchedMesh`, 50-60 fps as an `InstancedMesh` at three times the triangles.** That is not the 37 ns argument above scaled up. It is a different finding, and it overrides the rule for anything that ships to the headset:
+
+> **On Quest 2, a** `BatchedMesh` **buys nothing.** Individual meshes for the handful of things the player is close to, `InstancedMesh` for everything scattered. Do not spend effort tuning a `BatchedMesh`, and do not treat a multi-geometry LOD ladder as a reason to keep one -- the ladder is the cheaper thing to give up.
+
+**`MDRAW` reads `yes` on the Quest browser, so the fallback loop is not the explanation** -- that was the first suspect and it was wrong. `WEBGL_multi_draw` being *present* does not promise a *hardware* path: `glMultiDrawElements` is free to be a driver-side loop over the same tens of thousands of descriptors, and on a mobile tiler it evidently is. Two further costs are `BatchedMesh`'s alone and survive even a hardware multi-draw: the vertex stage resolves `getIndirectIndex(gl_DrawID)` and then fetches its matrix and colour out of data **textures**, which is vertex texture fetch on a chip that hates it; and `onBeforeRender` rebuilds the multi-draw arrays on the CPU **twice per frame in XR**, because `WebGLRenderer`'s XR path calls `renderScene` once per eye. The A/B could not separate which of the three dominates and did not need to: all three are gone together on the instanced path.
+
+**What it costs to give up, honestly:** the LOD ladder (one geometry per mesh), per-instance frustum culling, and the sub-`count` skip for hidden instances. The last two are recoverable -- an `InstancedMesh` culls whole tiles for free and `count` still truncates the tail -- and a per-instance dissolve that used to ride on `BatchedMesh`'s colour alpha rebuilds on an ordinary `InstancedBufferAttribute` (`aPropFade`, `instancedFade` in `src/material.js`). The ladder is the real loss, and on the beds measured so far a far-field size ramp in the vertex shader has bought back more than the ladder did: see `GROW_SCALE` in `src/v2/render/grass.js`, where 2x cards at half the density are more coverage for half the triangles.
+
+**Only the grass bed has been converted.** Trees, rocks, ferns, mushrooms and deadwood are still `BatchedMesh` and still carry LOD ladders, so the numbers in the tables above stand for them and this finding is the reason to expect them not to.
 
 ### Budget
 

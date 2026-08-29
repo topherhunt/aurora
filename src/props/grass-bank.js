@@ -170,40 +170,28 @@ const TUFT_TWIST_DEG = 22
 /** The twist in radians, exported so scripts/check-grass.mjs gates the shape. */
 export const TUFT_TWIST = (TUFT_TWIST_DEG * Math.PI) / 180
 
-// SPLAY: the cards lean OUTWARD from a gathered base, so a tuft reads as one
-// plant instead of three flats meeting at a hub.
+// THE CARDS DO NOT SPLAY, and this was tried and reverted rather than never
+// considered. Leaning them outward from a gathered base -- top ring at width/2,
+// base ring pulled in to width/2 - height*tan(20 deg) -- was an attempt to break
+// up the Triforce silhouette the straight prism has at three planes. It made the
+// bed visibly worse and the reason is the UV.
 //
-// Straight-up cards on a regular polygon give the tuft the same footprint at the
-// root as at the tip, which is the shape of nothing that grows: real grass comes
-// out of one crown and opens as it rises. At three planes the straight prism is
-// also the specific silhouette this was reported as -- a Triforce, three
-// verticals with a hole in the middle -- because the base edges are as far apart
-// as the tops and the eye can see daylight between them at every height.
+// uvProj is an explicit 0..1 across the quad, so gathering the two bottom
+// corners does not shear the cutout, it COMPRESSES it horizontally, and by a
+// factor that grows toward the root (0.27x at 20 deg). The texture is not one
+// blade, it is a whole tuft of them, so squeezing it squeezes the blades and the
+// gaps between them together: every blade reads thin and elongated, like the
+// tuft was scaled up in y and down in x. On top of that the trapezoid carries
+// only 0.64x the area of the rectangle, so the bed thins out at the same time it
+// distorts.
 //
-// HOW IT IS APPLIED, and the choice matters for the bake. The TOP ring keeps the
-// full `width / 2` and the BASE ring is pulled in to `width / 2 - height *
-// tan(splay)`, rather than opening the top outward or splitting the difference.
-// That leaves the tuft's bounding circle exactly `width` -- which is what
-// bakeGrassImpostor frames the camera to, so the photograph still contains the
-// whole plant. Splaying about the middle would put the tips outside the frame
-// and crop them, and the crop would show up only in the far tier, where it is
-// hardest to notice and hardest to explain.
-//
-// The card becomes a TRAPEZOID (narrower at the root), not a rotated rectangle
-// the way the twist leaves it. That is deliberate and it is free for the same
-// reason the twist is: uvProj is an explicit 0..1 UV, so pulling the two bottom
-// corners together compresses the cutout toward the stem instead of shearing it
-// -- which is the direction real blades go anyway.
-//
-// 20 degrees at the default 0.55 x 0.55 tuft pulls the base circumradius from
-// 0.275 m to 0.075 m: a tight crown under a full-width canopy. The hard ceiling
-// is the angle at which the base radius reaches zero (45 degrees at this aspect,
-// where all three cards meet in a point); buildGrassTuft throws past it rather
-// than folding the polygon inside out.
-const TUFT_SPLAY_DEG = 20
-
-/** The splay in radians, exported so scripts/check-grass.mjs gates the shape. */
-export const TUFT_SPLAY = (TUFT_SPLAY_DEG * Math.PI) / 180
+// The mechanism that WOULD fix the distortion already exists, in STRIP_VERTEX's
+// flare (material.js): widen the quad and displace the texture coordinate by the
+// same amount the vertex moved, so a texel stays a fixed number of metres wide at
+// every height. Run backwards for a gather it does not compress the cutout -- it
+// CROPS it, so the root loses blades instead of pinching them. That is a better
+// artefact but it is still a worse tuft, and it does nothing about the lost area.
+// Not worth it for a silhouette that per-instance yaw already scatters.
 
 /**
  * A grass tuft: `planes` quads seated at y = 0, in the batch's attribute layout.
@@ -245,28 +233,15 @@ export const TUFT_SPLAY = (TUFT_SPLAY_DEG * Math.PI) / 180
  * 20 m boundary, and at this density that boundary has a few thousand tufts
  * sitting on it. One normal for the ladder, no swap artefact.
  *
- * @param {number} width  footprint DIAMETER at the TOP -- the circle the tips
- *   inscribe, and the tuft's bounding circle at any splay. See TUFT_SPLAY.
+ * @param {number} width  the tuft's footprint DIAMETER -- the circle the cards
+ *   inscribe, and its bounding circle
  * @param {number} twist  radians the top edge is turned from the base edge
- * @param {number} splay  radians the cards lean outward from a gathered base
  */
-function buildGrassTuft(width, height, layer, planes, { twist = 0, splay = 0 } = {}) {
+function buildGrassTuft(width, height, layer, planes, { twist = 0 } = {}) {
   const n = Math.max(1, Math.round(planes))
   const r = width / 2
 
-  // How far in the base ring sits from the top ring. Only a polygon can splay:
-  // at n < 3 the cards cross through the centre, so pulling their feet in gives
-  // an hourglass rather than a crown and there is no gathered base to make.
-  const inset = n >= 3 ? height * Math.tan(splay) : 0
-  const rBase = r - inset
-  if (rBase <= 0) {
-    throw new Error(
-      `buildGrassTuft: splay ${((splay * 180) / Math.PI).toFixed(1)} deg collapses the base of a ` +
-      `${width.toFixed(3)} x ${height.toFixed(3)} tuft (base radius ${rBase.toFixed(3)})`
-    )
-  }
-
-  // The card edges, as pairs of xz points at the TOP ring's radius. The polygon
+  // The card edges, as pairs of xz points on the footprint circle. The polygon
   // is phased so that one edge is square-on to +z, which is the azimuth
   // bakeGrassImpostor photographs from -- that is the tuft's widest profile, so
   // the card gets the fullest silhouette on offer rather than a vertex-on one.
@@ -287,10 +262,6 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0, splay = 0 } =
     }
   }
 
-  // Base ring / top ring. Scaling the whole ring keeps the base polygon regular
-  // and concentric, so every card leans out by the same angle.
-  const k = rBase / r
-
   const positions = []
   const normals = []
   const uvs = []
@@ -310,14 +281,10 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0, splay = 0 } =
     // framing correct at any twist.
     const ta = [a[0] * ct - a[1] * st, a[0] * st + a[1] * ct]
     const tb = [b[0] * ct - b[1] * st, b[0] * st + b[1] * ct]
-    // ...and the base edge is the same edge pulled in toward the axis by the
-    // splay, which is the only place the two rings differ in size.
-    const ba = [a[0] * k, a[1] * k]
-    const bb = [b[0] * k, b[1] * k]
     // v = 0 at the top -- see the note by flipY in bakeImpostor.
     const corners = [
-      [ba[0], 0, ba[1], 0, 1],
-      [bb[0], 0, bb[1], 1, 1],
+      [a[0], 0, a[1], 0, 1],
+      [b[0], 0, b[1], 1, 1],
       [tb[0], height, tb[1], 1, 0],
       [ta[0], height, ta[1], 0, 0],
     ]
@@ -340,7 +307,6 @@ function buildGrassTuft(width, height, layer, planes, { twist = 0, splay = 0 } =
   geo.computeBoundingSphere()
   geo.userData.tuft = {
     width, height, planes: n, layer, triangles: n * 2, twist, polygon: n >= 3,
-    splay: n >= 3 ? splay : 0, baseWidth: 2 * rBase,
   }
   return geo
 }
@@ -564,15 +530,12 @@ export function buildGrassBank({ height = GRASS_BASE.height } = {}) {
     // by texture layer and nothing else. See LAYER.IMPOSTOR_GRASS.
     const layer = billboard ? LAYER.IMPOSTOR_GRASS : LAYER.GRASS_TUFT
     const size = billboard ? ext : frame
-    // The card is NEITHER twisted NOR splayed, and it is the one tier that must
-    // be neither. It is a photograph of the tuft, so both are already in the
-    // picture; applying them to the quad the picture hangs on would apply them a
-    // second time, and would do it to a surface the vertex shader is busy
-    // turning to face the camera. (The splay would not even survive: a single
-    // plane is n < 3, where buildGrassTuft ignores it anyway.)
+    // The card is NOT twisted, and it is the one tier that must not be. It is a
+    // photograph of the tuft, so the twist is already in the picture; applying it
+    // to the quad the picture hangs on would apply it a second time, and would do
+    // it to a surface the vertex shader is busy turning to face the camera.
     const geometry = buildGrassTuft(size.width, size.height, layer, planes, {
       twist: billboard ? 0 : TUFT_TWIST,
-      splay: billboard ? 0 : TUFT_SPLAY,
     })
     bytes += geometryBytes(geometry)
     return { name, planes, billboard, layer, geometry, triangles: planes * 2 }
@@ -621,7 +584,7 @@ export function bakeGrassImpostor(renderer, texArray, { height = GRASS_BASE.heig
     frame.height,
     LAYER.GRASS_TUFT,
     GRASS_TIERS[0].planes,
-    { twist: TUFT_TWIST, splay: TUFT_SPLAY }
+    { twist: TUFT_TWIST }
   )
   const baked = bakeImpostor(renderer, subject, texArray, LAYER.IMPOSTOR_GRASS, frame)
   subject.dispose()

@@ -49,24 +49,36 @@ export const CHUNK_RES = 16
 export const CHUNK_VERTS = (CHUNK_RES + 1) * (CHUNK_RES + 1) + 4 * (CHUNK_RES + 1)
 export const CHUNK_INDICES = (CHUNK_RES * CHUNK_RES * 2 + 4 * CHUNK_RES * 2) * 3
 
-// THE "10 CM" NUMBER, in the units this file actually works in.
+// THE 8 METRE CHUNK, and the reason there is no smaller one.
 //
-// 8192 / 2^13 = 1 m leaf NODE, and a node holds CHUNK_RES cells, so the finest
-// CELL is 6.25 cm. v1 stops at depth 10 (16 m nodes, 1 m cells) because v1 has
-// nothing to say below a metre -- its field is fbm all the way down and more
-// triangles only buy more of the same noise. v2 has an authored coarse field
-// with procedural detail carried down to a 25 cm wavelength, so the extra three
-// levels are resolving something that is actually there.
+// 8192 / 2^10 = 8 m leaf NODE, and a node holds CHUNK_RES cells, so the finest
+// CELL is 50 cm.
 //
-// This is a CAP, not a target. The split rule is unchanged from v1 -- refine
-// while cell > range * tan(triDeg) -- so what depth a chunk reaches is decided
-// by its range. At eye height 1.65 m and triDeg 3.0 the target cell is 8.6 cm,
-// which lands on depth 12 or 13. Raising the cap does not spend triangles; it
-// removes a floor that would otherwise clamp the ground under her feet.
+// THIS WAS 13 -- a 1 m node with 6.25 cm cells -- and the argument for it was
+// that detail.js carries procedural relief down to a 25 cm wavelength, so the
+// extra levels resolve something that is actually there. That argument is true
+// and it is not sufficient, because of what the split rule does at close range.
+// The rule floors range at the node's own half-size (see quadtree-v2.js), which
+// means the node CONTAINING the camera splits all the way to the cap no matter
+// how flat it is. At 13 that is a permanent staircase of 1 m chunks dragged
+// everywhere she walks, and a chunk is 640 triangles whatever its size -- so the
+// deepest tier was spending 640 triangles on one square metre of ground, and
+// spending it on the ground already closest to being flat under her feet.
+// Measured over a 72-camera sweep of the real field, capping at 10 takes the
+// worst-case selection from 152k triangles both eyes to 102k.
 //
-// One level fewer than a 16 km world would need for the same 6.25 cm cell: the
-// depth cap tracks the SIZE of the box, not the resolution wanted at her feet.
-export const MAX_DEPTH = 13
+// The cap is now the SAME on desktop and in XR, deliberately. It was briefly a
+// per-route override (13 on desktop, 10 in the headset) and that is the wrong
+// trade for this project: a desktop that renders ground the headset cannot is a
+// second fidelity story to keep in sync, and §18's whole premise is one world
+// that looks the same in both. Consistency beats a better desktop.
+//
+// Still a CAP, not a target. The split rule decides what depth is actually
+// reached from range; this only says where refining stops. What the cap costs is
+// the sub-50 cm end of detail.js's band, which is one octave -- the fractal's
+// floor is 25 cm, so at 50 cm cells the field is one doubling short of exhausted
+// rather than many.
+export const MAX_DEPTH = 10
 
 // Hard ceiling on simultaneously-resident chunks, and a fixed ~17 MB of GPU
 // buffers. Overflow THROWS in terrain-v2.js rather than degrading, so this has

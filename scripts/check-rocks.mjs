@@ -3097,18 +3097,18 @@ console.log('\nscatter')
       return s.vertexShader
     }
     // Read off the two branches' load-bearing lines rather than off a comment:
-    // the spherical one builds a world basis out of the view matrix and inverts
+    // the spherical one builds a world basis aimed at the eye and inverts it
     // through the instance's own 3x3, the cylindrical one rotates transformed.xz
-    // in place and never mentions viewMatrix at all. Both materials are handed
-    // the SAME layer list, so the spin is the only thing that differs.
-    const SPHERE = 'transformed = ( bbW * bbM ) * inversesqrt( bbS2 );'
+    // in place and never leaves object space. Both materials are handed the SAME
+    // layer list, so the spin is the only thing that differs.
+    const SPHERE = 'transformed = ( bbW * bbM ) / bbS2;'
     const YAW = 'transformed.xz = vec2('
     const rockVs = emit({ billboardLayers: rockImpostorLayers(), sphericalBillboard: true })
     const treeVs = emit({ billboardLayers: rockImpostorLayers() })
     check(rockVs.includes(SPHERE) && !rockVs.includes(YAW),
       'the rock card is spun spherically -- it lies back as the view tips over the hillside',
       rockVs.includes(SPHERE) ? 'world basis, inverted through the instance' : 'still yawing about Y')
-    check(treeVs.includes(YAW) && !treeVs.includes(SPHERE) && !treeVs.includes('viewMatrix[ 0 ][ 1 ]'),
+    check(treeVs.includes(YAW) && !treeVs.includes(SPHERE) && !treeVs.includes('cross( bbFw, bbRw )'),
       'and every other prop card still yaws about world Y, because a trunk IS vertical')
 
     // AND THE TWO CANNOT SHARE A COMPILED PROGRAM. The branch is compiled in,
@@ -3406,46 +3406,71 @@ console.log('\nscatter')
     // scale s come out s times as big? A model and not the GPU, so the shader
     // text is checked against it below; the two together are what stop this
     // silently going back to a divide.
-    const spun = (scale, local) => {
+    const EYE = new THREE.Vector3(3, 9, 21)
+    const spun = (sx, sy, sz, local) => {
       const batching = new THREE.Matrix4().compose(
         new THREE.Vector3(10, 2, 30),
         new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0.64, 0)),
-        new THREE.Vector3(scale, scale, scale)
+        new THREE.Vector3(sx, sy, sz)
       )
       const bbM = new THREE.Matrix3().setFromMatrix4(batching)
-      const cam = new THREE.Object3D()
-      cam.rotation.set(-0.26, 0.44, 0, 'YXZ')
-      cam.updateMatrixWorld()
-      const v = cam.matrixWorld.clone().invert().elements
-      const bbRw = new THREE.Vector3(v[0], v[4], v[8])
-      const bbUw = new THREE.Vector3(v[1], v[5], v[9])
+      // The basis, aimed at the eye from the instance's own origin. Horizontal
+      // face first, then card-right off world up, then card-up off the full 3D
+      // direction -- so it is the eye's position that turns the card, not the
+      // screen's orientation.
+      const origin = new THREE.Vector3().setFromMatrixPosition(batching)
+      const bbF = new THREE.Vector2(EYE.x - origin.x, EYE.z - origin.z).normalize()
+      const bbRw = new THREE.Vector3(bbF.y, 0, -bbF.x)
+      const bbFw = EYE.clone().sub(origin).normalize()
+      const bbUw = bbFw.clone().cross(bbRw)
       const e = bbM.elements
-      const bbS2 = e[0] * e[0] + e[1] * e[1] + e[2] * e[2]
-      const bbW = bbRw.clone().multiplyScalar(local.x).add(bbUw.clone().multiplyScalar(local.y))
+      // Per-axis: the squared length of each COLUMN, not one number off column 0.
+      const bbS2 = [
+        e[0] * e[0] + e[1] * e[1] + e[2] * e[2],
+        e[3] * e[3] + e[4] * e[4] + e[5] * e[5],
+        e[6] * e[6] + e[7] * e[7] + e[8] * e[8],
+      ]
+      const bbW = bbRw.clone().multiplyScalar(local.x * Math.sqrt(bbS2[0]))
+        .add(bbUw.clone().multiplyScalar(local.y * Math.sqrt(bbS2[1])))
       // v * M in GLSL is M-transpose * v.
       const transformed = new THREE.Vector3(
-        e[0] * bbW.x + e[1] * bbW.y + e[2] * bbW.z,
-        e[3] * bbW.x + e[4] * bbW.y + e[5] * bbW.z,
-        e[6] * bbW.x + e[7] * bbW.y + e[8] * bbW.z
-      ).multiplyScalar(1 / Math.sqrt(bbS2))
+        (e[0] * bbW.x + e[1] * bbW.y + e[2] * bbW.z) / bbS2[0],
+        (e[3] * bbW.x + e[4] * bbW.y + e[5] * bbW.z) / bbS2[1],
+        (e[6] * bbW.x + e[7] * bbW.y + e[8] * bbW.z) / bbS2[2]
+      )
       return transformed.applyMatrix3(new THREE.Matrix3().setFromMatrix4(batching)).length()
     }
     // 0.16 and 8.33 are the real extremes of instScale over the placed beds.
     const SCALES = [0.16, 0.5, 1, 2, 4.1, 8.33]
-    const err = SCALES.map((s) => Math.abs(spun(s, { x: 1, y: 0 }) / s - 1))
+    const err = SCALES.map((s) => Math.abs(spun(s, s, s, { x: 1, y: 0 }) / s - 1))
     check(amax(err) < 1e-6,
       'and the spherical spin draws it at the instance scale instead of dividing that scale out',
       `scale ${SCALES[0]} .. ${SCALES[SCALES.length - 1]}, worst error ${amax(err).toExponential(1)}`)
-    const stillSquare = Math.abs(spun(3, { x: 0, y: 1 }) / 3 - 1) < 1e-6
+    const stillSquare = Math.abs(spun(3, 3, 3, { x: 0, y: 1 }) / 3 - 1) < 1e-6
     check(stillSquare, 'and the card height rides the same scale as its width, so it is not sheared',
-      `height at scale 3 is ${spun(3, { x: 0, y: 1 }).toFixed(4)} m per local metre`)
+      `height at scale 3 is ${spun(3, 3, 3, { x: 0, y: 1 }).toFixed(4)} m per local metre`)
 
-    // The model above is only worth anything while the shader still says what
-    // it says. `/ bbS2` is the plain inverse and is the bug; `inversesqrt` is
-    // the inverse with the instance scale rolled back in.
+    // AND THE INVERSE IS PER-AXIS, which only a non-uniform scale can tell you.
+    // Grass is the caller that needs it -- render/grass.js scales a tuft
+    // (sqrt(h), h, sqrt(h)) so tall grass stays narrow -- and folding an
+    // anisotropic matrix through a single-column inverse stretches the card by
+    // the ratio between the axes. h = 1.6 is inside the roll, and one number off
+    // column 0 would draw its height 1.26x too tall.
+    const ANI = [Math.sqrt(1.6), 1.6, Math.sqrt(1.6)]
+    const aniW = Math.abs(spun(...ANI, { x: 1, y: 0 }) / ANI[0] - 1)
+    const aniH = Math.abs(spun(...ANI, { x: 0, y: 1 }) / ANI[1] - 1)
+    check(aniW < 1e-6 && aniH < 1e-6,
+      'and a card on a non-uniformly scaled instance keeps both of its own axes',
+      `width err ${aniW.toExponential(1)}, height err ${aniH.toExponential(1)}`)
+
+    // The model above is only worth anything while the shader still says what it
+    // says: the per-axis divide, and a basis built from the instance's position
+    // rather than from the view matrix's rows.
     const shaderText = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8')
-    check(shaderText.includes('inversesqrt( bbS2 )') && !shaderText.includes('/ bbS2'),
-      'and the shipped shader divides by the scale once, not twice, so the model is not describing dead code')
+    check(shaderText.includes('transformed = ( bbW * bbM ) / bbS2;') &&
+      shaderText.includes('vec3 bbUw = cross( bbFw, bbRw );') &&
+      !shaderText.includes('inversesqrt( bbS2 )'),
+      'and the shipped shader is the one the model describes, so this is not testing dead code')
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

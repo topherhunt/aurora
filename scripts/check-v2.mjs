@@ -103,14 +103,23 @@ function extentAgreement() {
     else if (Number(m[1]) !== want) out.push(`design/18-v2-world.md says ${name} = ${m[1]}, config.js says ${want}`)
   }
 
-  // The one relationship that makes MAX_DEPTH mean "10 cm". A leaf node of
-  // WORLD_SIZE / 2^MAX_DEPTH holds CHUNK_RES cells, so the finest cell is
-  // that over CHUNK_RES. §18 promises 6.25 cm; anything coarser than 10 cm
-  // breaks the promise the section is named for.
+  // THE LEAF NODE IS 8 METRES, and that is what MAX_DEPTH means now -- not the
+  // retired "down to 10 cm". A leaf node of WORLD_SIZE / 2^MAX_DEPTH holds
+  // CHUNK_RES cells, so the finest CELL is that over CHUNK_RES.
+  //
+  // The bound is two-sided on purpose and the interesting half is the LOWER one.
+  // A cap that is too DEEP is not a fidelity win, it is the failure §18 records:
+  // the split rule floors range at a node's own half-size, so the node holding
+  // the camera splits to the cap however flat it is, and a chunk costs 640
+  // triangles whatever its size. Depth 13 meant 640 triangles per square metre
+  // underfoot. A one-sided "not too coarse" check is what let that ship.
   const chunkRes = cfgNum('CHUNK_RES')
-  const finestCell = worldSize / 2 ** maxDepth / chunkRes
-  if (finestCell > 0.1) {
-    out.push(`finest cell is ${(finestCell * 100).toFixed(1)} cm -- §18 promises down to 10 cm, so MAX_DEPTH is too low for a ${worldSize} m world`)
+  const leafNode = worldSize / 2 ** maxDepth
+  const finestCell = leafNode / chunkRes
+  if (leafNode > 8) {
+    out.push(`leaf node is ${leafNode} m -- §18 fixes the smallest chunk at 8 m, so MAX_DEPTH is too low for a ${worldSize} m world`)
+  } else if (leafNode < 8) {
+    out.push(`leaf node is ${leafNode} m -- §18 fixes the smallest chunk at 8 m, and a deeper cap spends 640 triangles on ${leafNode * leafNode} m2 of ground under the camera`)
   }
   return { out, worldSize, maxDepth, finestCell }
 }

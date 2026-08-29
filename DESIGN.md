@@ -26,7 +26,7 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 2 | `design/02-world-and-hydrology.md` | World size, grid resolutions, Phase A as built (flood, flow, breach, biomes, villages) |
 | 3 | `design/03-terrain-character.md` | Noise construction, scale, `SHRINK`, creases, the slope ladder |
 | 4 | `design/04-traversability.md` | No traps by construction; the walkability limiter |
-| 5 | `design/05-rendering.md` | Quadtree LOD, `LOD.triDeg`, the triangle budget table, prop LOD ladder |
+| 5 | `design/05-rendering.md` | Quadtree LOD, `LOD.triDeg`, the triangle budget table, prop LOD ladder, why a `BatchedMesh` buys nothing on Quest 2 |
 | 6 | `design/06-placement.md` | Scatter density, jitter, biome rules |
 | 7 | `design/07-terrain-material.md` | Ground shader, palette, speckle, snow line |
 | 8 | `design/08-lighting.md` | Horizon maps, AO bake, day/night palette, night lighting and fog |

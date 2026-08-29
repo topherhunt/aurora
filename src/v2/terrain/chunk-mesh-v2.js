@@ -101,8 +101,8 @@ const DIRT_MAX = 0.85
 //
 // shade() decides rock-vs-grass and, far more visibly, snow-vs-no-snow off
 // steepness. The mesh normal is a central difference over the chunk's OWN cell,
-// and in v2 that ranges from 6.25 cm at a leaf to 512 m at the root -- a factor
-// of 8192. An alpine face standing at 74 deg over a metre averages to 24 deg
+// and in v2 that ranges from 50 cm at a leaf to 512 m at the root -- a factor
+// of 1024. An alpine face standing at 74 deg over a metre averages to 24 deg
 // over 128 m, so the identical ground classified itself as bare rock up close
 // and as solid snow from far away, and since chunks coarsen one at a time as you
 // fly away the world flashed white in chunk-shaped squares. Measuring over a
@@ -118,7 +118,7 @@ const DIRT_MAX = 0.85
 // leaf the mesh normal already IS the fixed-scale slope. That argument holds
 // only where step EQUALS CLASS_EPS, which in v1 was true of the leaf by
 // construction. It is false in v2: below a metre the field still has real
-// energy -- that is what detail.js is for -- so a 6.25 cm central difference
+// energy -- that is what detail.js is for -- so a 50 cm central difference
 // reports a systematically steeper slope than a 1 m one, and taking the skip
 // would reintroduce the very repaint it was written to fix, running the other
 // way (fine chunks too dark rather than coarse chunks too white). So the skip
@@ -415,7 +415,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   const idx = (i, j) => j * vpr + i
 
   // Skirt depth scales with cell size -- coarse chunks have bigger vertical gaps
-  // to hide -- with a 2 m floor so a leaf's 6.25 cm cell does not produce a 19 cm
+  // to hide -- with a 2 m floor so a leaf's 50 cm cell does not produce a 1.5 m
   // flange that a one-level LOD difference can see straight past.
   const skirtDepth = Math.max(2, step * 3)
 

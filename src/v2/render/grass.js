@@ -5,6 +5,7 @@ import {
   buildGrassStripBank, STRIP_BASE, STRIP_TILE_ASPECT, GRASS_CLUMP, GRASS_HEIGHT_REF,
   GRASS_TIERS,
 } from '../../props/grass-bank.js'
+import { geometryBytes } from '../../props/fern.js' // generic; it lives there for historical reasons
 import {
   createPropMaterial, setSnowLine, stripClumpScale,
   setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS,
@@ -25,11 +26,13 @@ import { RimFade, RIM_PHASES } from './rim.js'
 // and they are not the same problem, so this file builds two beds and `style`
 // picks between them:
 //
-//   SCATTERED CLUMPS ARE THE DEFAULT and what you should reach for. One
-//   instance is one plant: inside 8 m, three quads crossed at 60 degrees, so
-//   the clump reads solid from whatever angle it is walked past at; beyond 8 m,
-//   a single billboard that turns to face the camera. Two tiers, 6 triangles
-//   then 2. See buildGrassBank in props/grass-bank.js.
+//   SCATTERED TUFTS ARE THE DEFAULT and what you should reach for. One instance
+//   is one plant, drawn as a single billboard card that turns to face the
+//   camera: two triangles, at every distance, with no ladder. The card is a
+//   PHOTOGRAPH of a 3-quad crossed clump (bakeGrassImpostor), so what a player
+//   sees is still a tuft with depth in it -- it just costs a third of one. See
+//   buildGrassBank in props/grass-bank.js, and LOD_BANDS for what dropping the
+//   near clump gave up.
 //
 //   SCATTERED STRIPS are the alternative, `style: 'strips'`, on the M key. One
 //   instance is a flat card several metres long drawing the grass cutout 3 to 6
@@ -44,24 +47,26 @@ import { RimFade, RIM_PHASES } from './rim.js'
 // scripts/check-grass.mjs, which is where every number in this header comes
 // from:
 //
-//   ring      clumps          strips          facing area, clumps vs strips
-//   0-8 m      1,193 x 6 tri    1,208 x 2 tri   4.84 vs 18.92 m2/m2
-//   8-10 m       687 x 2          552            5.45 vs 15.98
-//   10-40 m   10,476 x 2        4,395           2.02 vs  3.04
-//   40-70 m    8,779 x 2        2,531           0.76 vs  0.79
-//             21,135 drawn      8,686 drawn
-//                46.8k tri        17.4k tri
-//             19,021 m2         28,100 m2       total facing area
+//   ring      cards            strips          facing area, cards vs strips
+//   0-5 m        485 x 2 tri      472 x 2 tri    3.46 vs 18.78 m2/m2
+//   5-10 m       880 x 2          832            2.17 vs 11.03
+//   10-40 m    5,191 x 2        2,183           1.43 vs  1.45
+//   40-70 m    4,437 x 2        1,261           0.67 vs  0.38
+//             10,993 drawn      4,748 drawn
+//                22.0k tri        9.5k tri
+//             14,473 m2         14,836 m2       total facing area
 //
-// AND THAT LAST ROW IS WHY THE DEFAULT IS BACK ON CLUMPS. A strip is 0.41x the
-// instances and 0.37x the triangles -- and 1.48x the RASTERISED AREA, because
-// the way it buys its cheapness is by making each instance a bigger sheet. On a
-// desktop that is a good trade and every number below was written believing it.
-// On a Quest it is the wrong one: a tile-based mobile GPU has triangles to spare
-// and runs out of FRAGMENTS, and a strip's fragments are individually dearer too
-// -- a textureGrad, four screen-space derivatives and a hash per pixel, none of
-// which a plain card pays. Measured on the headset, a strip bed alone held the
-// frame at 5-10 fps with per-instance culling and wind both proved irrelevant.
+// THE TWO BEDS ARE NOW AT THE SAME TOTAL COVERAGE FOR HALF AGAIN THE TRIANGLES,
+// and the shape of the difference is what matters: the strip bed piles its
+// coverage into the near field (18.78 against 3.46 at the player's feet) and
+// runs out in the far one, while the card bed is nearly flat because the cards
+// GROW as they recede (see GROW_SCALE). Fill is the budget a headset runs out of
+// first, so a bed that spends it where the player is looking rather than where
+// they are standing is the better shape -- and a strip's fragments are
+// individually dearer too, a textureGrad, four screen-space derivatives and a
+// hash per pixel, none of which a plain card pays. Measured on the headset, a
+// strip bed alone held the frame at 5-10 fps with per-instance culling and wind
+// both proved irrelevant.
 //
 // The strip bed stays, switchable, because it is still the right answer wherever
 // the binding budget is triangles rather than fill -- and because everything
@@ -69,71 +74,86 @@ import { RimFade, RIM_PHASES } from './rim.js'
 // number above can be trusted.
 //
 // AND THE COST IS ALMOST ALL IN THE FAR FIELD, which is the thing to know
-// before reaching for a knob. 91% of the clump carpet's instances stand past
-// 10 m and 42% past 40 m; ferns.js found the same shape. So DRAW_RADIUS is the
-// lever with the most in it, DENSITY is the one that moves everything at once
-// (see the pairing with FULL_RADIUS), and the near field -- where all the mesh
-// tiers and all the visible detail are -- is 6% of the bed and not worth cutting.
+// before reaching for a knob. 88% of the carpet's instances stand past 10 m and
+// 40% past 40 m; ferns.js found the same shape. So DRAW_RADIUS is the lever with
+// the most in it, DENSITY is the one that moves everything at once (see the
+// pairing with FULL_RADIUS), and the near field is 4% of the bed and not worth
+// cutting -- it is the ring the bed is THINNEST in, not the one it is fattest in.
 //
-// THE CONTINUOUS INTEGRAL SAYS 24,504 AND THE SCATTER PLACES 28,088. The 15%
+// THE CONTINUOUS INTEGRAL SAYS 12,723 AND THE SCATTER PLACES 14,977. The 18%
 // between them is not slop, it is the tile grid, and it is worth knowing where
 // it goes. A tile is thinned ONCE, from its nearest corner, so a tuft on its far
 // edge is kept as though it stood a tile-diagonal closer than it does -- and at
-// TILE/F = 0.4 that diagonal is a fair slice of the flat zone. The per-instance fade
-// then dissolves it anyway, because that distance is exact and per tuft: 6,953
+// TILE/F = 0.8 that diagonal is most of the flat zone. The per-instance fade then
+// dissolves it anyway, because that distance is exact and per tuft: 3,984
 // instances are resident and already fully dithered away. What comes out of that
 // pairing is the RIGHT picture -- the visible density is the smooth F/d law with
-// no step at any tile boundary -- bought with instances the batch would
-// otherwise transform and discard. The RIM takes those instances back off the
-// GPU without touching the picture, which is why the table above ends at 21,135
-// rather than 28,088; they stay RESIDENT, because they are also the tufts that
-// appear as the player walks toward them and re-showing one is a byte where
-// regrowing the tile is a job. Smaller tiles would shrink the over-keep itself
-// and cost more jobs; 4 m is where that trade was left, and the rim is what
-// makes leaving it there cheap.
+// no step at any tile boundary -- bought with instances the mesh would otherwise
+// transform and discard. The RIM takes those instances back off the GPU without
+// touching the picture, which is why the table above ends at 10,993 rather than
+// 14,977; they stay RESIDENT, because they are also the tufts that appear as the
+// player walks toward them and re-showing one is a byte where regrowing the tile
+// is a job. Smaller tiles would shrink the over-keep itself and cost more jobs;
+// 4 m is where that trade was left, and the rim is what makes leaving it there
+// cheap.
 //
 // AGAINST THE BUDGET. DESIGN.md §5 gives the scene 350k triangles. Terrain is
-// ~45k, trees ~137k, ferns ~31k, and the clump carpet is 47k: ~260k, or 74% of
-// the ceiling, where the strip bed left 66%. Eight points of triangle budget is
-// what the fill saving and the doubled near field cost, and it was worth paying.
+// ~45k, trees ~137k, ferns ~31k, and the carpet is 22k: ~235k, or 67% of the
+// ceiling. It was 47k before the far field was halved and the ladder dropped.
 // It is worth noticing WHERE the margin came from -- the fern bed was 99k until
 // it was converted to this same thinned scatter and its density halved twice,
 // which is what left room for a carpet at twelve times its density. The
-// remaining 90k is what the next layer has to fit in, and DENSITY here is still
+// remaining 115k is what the next layer has to fit in, and DENSITY here is still
 // the largest single lever over it, because it scales the whole bed where the
 // other knobs each move one ring.
 //
-// PER-INSTANCE CPU, AND IT IS THE PRICE OF THE FILL SAVING. §5 prices
-// BatchedMesh at ~37 ns per instance per frame, so 21,135 drawn clumps is
-// ~0.78 ms before a triangle is drawn, against 8,686 strips and ~0.32 ms. That
-// half-millisecond is the whole of what going back to clumps costs on a desktop.
-// Grass's own update() measures 0.064 ms on the clump carpet, rim and LOD
-// cross-dissolves included. The re-tiering pass got CHEAPER with the ladder cut
-// to two tiers, not dearer: nothing past 8 m can change tier now, where the old
-// 3-tier ladder had to re-tier out to 20.
+// PER-INSTANCE CPU. Grass's own update() measures 0.049 ms on the settled
+// carpet, rim and cross-dissolves included, and neither pass walks everything:
+// there is no re-tiering left to do (LOD_BANDS is empty), and the rim sweeps an
+// eighth of the tiles a frame. What the DRAW costs per instance is not a number
+// this file can price any more -- DESIGN.md §5's ~37 ns was BatchedMesh's, and
+// that arena is gone. See THE ARENA IS AN InstancedMesh, below.
 //
-// AND ON A QUEST THAT PER-INSTANCE PRICE IS NOT 37 ns. See WHY THIS IS STILL A
-// BatchedMesh, below.
-// Neither pass walks everything anyway -- re-tiering only touches tiles inside
-// NEAR_MARGIN of the last mesh band, and the rim only an eighth of the rest.
+// ---------------------------------------------------------------------------
+// THE ARENA IS AN InstancedMesh, AND A BatchedMesh IS NOT AN OPTION HERE. This
+// is the single most expensive thing this file has learned and it generalises
+// past grass, so it is written here in full:
 //
-// WHY THIS IS STILL A BatchedMesh, and the caveat that may yet unseat it. Two
-// tiers means two geometries, and one BatchedMesh draws both in ONE call while
-// two InstancedMeshes would be two -- plus a per-instance migration between them
-// on every band crossing, which is exactly the work the batch's
-// setGeometryIdAt makes free. That is the argument, and on a desktop it holds.
+//   A BatchedMesh BUYS NOTHING ON A QUEST 2. Measured, in the headset, on this
+//   bed and nothing else changed: 5 fps batched, 50-60 fps as an InstancedMesh
+//   at THREE TIMES the triangles. Reach for individual meshes for the handful of
+//   things the player is close to and an InstancedMesh for everything scattered;
+//   do not spend effort tuning a BatchedMesh, and do not read a multi-geometry
+//   ladder as a reason to keep one.
 //
-// IT DOES NOT HOLD WITHOUT WEBGL_multi_draw. three implements BatchedMesh on
-// that extension; where it is missing (three.module.js, WebGLRenderer's
-// BatchedMesh branch) it falls back to a JS loop of one `_gl_DrawID` uniform
-// upload plus one drawElements PER VISIBLE INSTANCE. At 21,135 drawn that is
-// ~21,000 draw calls per eye per frame instead of one, which is not a
-// performance characteristic, it is a different program. If the Quest browser's
-// XR context does not expose the extension, that alone accounts for a bed that
-// runs fine as an InstancedMesh in the test arena and at 5 fps here at half the
-// instances, for why per-instance culling and wind both made no difference, and
-// for why standing perfectly still does not help. The /?quest panel reports
-// whether the extension is present; read it before rewriting anything.
+// WHAT THE OLD ARGUMENT WAS, since it is a good argument and it is still true on
+// a desktop: two tiers means two geometries, one BatchedMesh draws both in ONE
+// call where two InstancedMeshes would be two, and setGeometryIdAt migrates an
+// instance between them for free at a band crossing.
+//
+// AND "ONE CALL" IS A CLAIM ABOUT THE DRIVER, NOT ABOUT THIS FILE, which is
+// where it came apart. three implements BatchedMesh on WEBGL_multi_draw; where
+// the extension is missing it falls back to a JS loop of one `_gl_DrawID`
+// uniform upload plus one drawElements PER VISIBLE INSTANCE, which at the
+// 21,135 that bed drew would be ~21,000 draw calls per eye per frame. That was the first
+// suspect and it was WRONG: the /?quest panel's MDRAW row reads yes on the Quest
+// browser, so the fallback loop was never running. What the extension being
+// present does not promise is a HARDWARE path -- `glMultiDrawElements` is
+// allowed to be a driver-side loop over the same 21,000 descriptors, and on
+// mobile tilers it evidently is. Two further costs are BatchedMesh's alone and
+// survive even a hardware multi-draw: the vertex stage resolves
+// `getIndirectIndex( gl_DrawID )` and then fetches its matrix and colour out of
+// data TEXTURES, which is vertex texture fetch on a chip that hates it; and
+// `onBeforeRender` rebuilds the multi-draw arrays on the CPU, twice per frame in
+// XR because WebGLRenderer's XR path calls renderScene once per eye.
+//
+// The A/B could not separate which of the three it was, and did not need to:
+// all three are gone together, and none of them exists on the instanced path.
+//
+// WHAT IT COST TO GIVE UP, honestly: the LOD ladder (LOD_BANDS), per-instance
+// frustum culling (THE ARENA), and the sub-`count` skip for hidden instances.
+// What it did NOT cost is the rim's dissolve, which was rebuilt on an attribute
+// -- see THE ARENA.
 //
 // WHAT RimFade IS, since it is the other thing in here that costs per instance.
 // It is the OUTER dissolve and nothing to do with the ladder: every tuft carries
@@ -142,30 +162,34 @@ import { RimFade, RIM_PHASES } from './rim.js'
 // two frames. It is not optional in the sense of being decoration -- without it
 // the graded thinning pops a few thousand tufts in and out of existence as the
 // player walks -- but it EARNS its CPU rather than spending it: a tuft past its
-// dissolve is set invisible, so the batch never submits it, which is 6,953 of
-// the 28,088 resident instances taken off the GPU entirely. Turning it off would
+// dissolve is set invisible, so the mesh never submits it, which is 3,984 of
+// the 14,977 resident instances taken off the GPU entirely. Turning it off would
 // make the bed both uglier and slower.
 //
-// WHY THE FULL-DENSITY RADIUS IS ONLY 10 m. Trees hold full density to 80,
+// WHY THE FULL-DENSITY RADIUS IS ONLY 5 m. Trees hold full density to 80,
 // comfortably past their last mesh band at 45, so the forest you walk through is
 // uniform. Grass cannot afford that: F enters the instance count linearly in
 // BOTH terms, so F = 80 here would be 200,000 instances. What sets it is the
-// product DENSITY * F, which is the whole far field, and the ladder, which puts
-// a floor under F -- see the pair of constants for the argument. Past F the bed
-// is 1.5 tufts/m2 at 40 m and 0.9 at 70, where a tuft is about 8 screen pixels
-// and the thinning is not something an eye can find. THE STRIP BED THINS FROM 8
-// instead: the ladder constraint is a constraint on a bed that has one, and a
-// strip has none. See STRIP_FULL_RADIUS.
+// product DENSITY * F, which is the whole far field. There used to be a second
+// constraint -- a mesh ladder needs its last band inside the flat zone or the
+// swap lands on already-thinned ground -- and that put a floor under F at 10.
+// The ladder is gone (LOD_BANDS is empty), the floor went with it, and halving F
+// is what halved the far field. Past F the bed is 0.75 tufts/m2 at 40 m and 0.43
+// at 70, where a tuft is about 8 screen pixels and the thinning is not something
+// an eye can find -- and the far-field GROWTH is what keeps that from reading as
+// bare ground. See GROW_SCALE.
 //
 // TILES ARE 4 m, NOT trees' 25. Two reasons, and they pull the same way. The
 // keep-fraction is evaluated once per tile from its NEAREST corner, so a tile
 // wide relative to F is thinned as though its far edge were at its near edge --
-// at TILE/F = 25/10 that over-keep would be the whole tile and then some. And 25
-// m at this density is 3,750 candidates in one job, which is a visible hitch
-// every time the queue reaches one. 4 m gives 96 candidates a tile, TILE/F =
-// 0.4, and ~1,300 resident tiles at ~0.8 KB each. It halved when FULL_RADIUS
-// did: the ratio is what matters, not the metres, and 8 m against a 10 m flat
-// zone would have over-kept a quarter of the bed instead of a sixth.
+// at TILE/F = 25/5 that over-keep would be five tiles' worth. And 25 m at this
+// density is 3,750 candidates in one job, which is a visible hitch every time
+// the queue reaches one. 4 m gives 96 candidates a tile and ~1,300 resident
+// tiles at ~0.8 KB each. TILE/F is 0.8 now, up from 0.4, because F halved and
+// the tile did not: that is where the 18% over-keep in the integral above comes
+// from, and it is the rim rather than a smaller tile that pays for it. Going to
+// 2 m tiles would quarter the over-keep and quadruple the job count, and the
+// job count is the thing that hitches.
 //
 // PLACEMENT IS LOOSER THAN A FERN'S, ON PURPOSE. Grass is what the world is
 // made of when nothing more interesting is growing there: it goes lower, holds
@@ -182,44 +206,84 @@ const DENSITY = 6
 // FULL_RADIUS / d, so every doubling of distance halves it. The strip bed keeps
 // this law and cuts further on top of it -- STRIP_FULL_RADIUS and STRIP_THIN.
 //
-// DENSITY * FULL_RADIUS IS THE FAR FIELD, and it is unchanged. Past the flat
-// zone the law is DENSITY * FULL_RADIUS / d, so 6 at 10 m and 3 at 20 m are the
-// same 60/d curve and every tuft past 10 m is exactly where it was. What moved
-// is the near field, which doubles, and the 10-20 m band, which was flat at 3
-// and now rides the curve down from 6 -- so it gets denser too, out to the point
-// where the two laws meet at 20 m.
+// FIVE, AND IT USED TO BE TEN, which is the whole of "halve the density of the
+// distant grass". F scales the keep-fraction at every distance the law is
+// actually cutting at -- keep = min(1, F/d) -- so halving F halves the density
+// everywhere past F and touches nothing inside it. Continuously, with no ring:
+// a flat multiplier applied past a boundary would step the density by 2x in one
+// metre and draw a circle on the ground around the player. The whole-bed count
+// is pi*D*F*(2R - F), which goes from 24,504 to 12,723.
 //
-// WHY THE NEAR FIELD IS WHERE THE DENSITY GOES. Up close a tuft is a 6-triangle
-// clump the player can see the shape of, and lushness underfoot is the whole
-// impression the bed exists to make; at 40 m a tuft is a 2-triangle card about 8
-// screen pixels across and doubling them buys nothing an eye can find. Inside 10
-// m there are only ~1,900 instances, against ~17,000 in the rest of the disc, so
-// this is a few hundred more clumps -- it does not move the bill.
+// The 5-10 m band is thinned too, and that is the honest cost of doing it with
+// one constant. GROW_SCALE is what pays it back: the survivors out there are
+// 2x cards, which is 4x the facing area each, so the coverage in that band goes
+// UP while its instance count halves.
 //
-// WHY 10 AND NOT 20. F enters the instance count linearly in BOTH terms (the
-// flat disc and the tail), so F is the lever that pays for DENSITY: halving it
-// while doubling DENSITY holds the total. The floor under F is the ladder --
-// thinning must never remove a tuft that is still carrying real geometry, or a
-// hole opens in the part of the bed the player is walking on -- and the last
-// mesh band is LOD_BANDS[0] = 8 m, pushed to 8.96 by LOD_HYSTERESIS. 10 clears
-// that; it is not much clearance, and it is why the pair is commented as a pair.
-const FULL_RADIUS = 10
+// WHAT UNLOCKED IT WAS LOSING THE LADDER. The floor under F used to be the last
+// mesh band -- thinning must never remove a tuft that is still carrying real
+// geometry, or a hole opens in the part of the bed the player is walking on --
+// and at LOD_BANDS = [8] pushed to 8.96 by hysteresis, 10 was barely clear of
+// it. Every tuft is a billboard now, so there is no mesh tier to protect and
+// nothing holding F above the distance the player's own footprint occupies.
+//
+// TILE/F IS NOW 0.8, WHERE IT WAS 0.4, and that is the one thing this costs. A
+// tile is thinned once from its nearest corner, so a wide tile relative to F
+// over-keeps; see the header's arithmetic. The over-kept tufts are RESIDENT and
+// dissolved, not drawn -- the rim takes them off the GPU -- so what grows is
+// pool size and sweep, both of which halved along with everything else.
+const FULL_RADIUS = 5
 
-// Metres. The crossed clump inside 8, the billboard everywhere beyond it.
+// Metres, the distance bands of the mesh LOD ladder. THERE IS NO LADDER: every
+// tuft in the bed is the billboard card, at every distance, so this is empty and
+// the tier loop in update() falls straight through to the only tier there is.
 //
-// ONE BAND, because the ladder is two tiers (GRASS_TIERS). 8 m is where a tuft
-// stops being something the player is standing among and starts being part of
-// the carpet, and past that point a card that always faces the camera is both
-// cheaper and lusher than two that face wherever they were yawed to -- see the
-// note over GRASS_TIERS for the arithmetic.
+// The crossed 3-plane clump is still built -- it is the impostor's SUBJECT, and
+// grass-bank.js still describes both tiers -- but no instance ever wears it.
+// See THE ARENA IS AN InstancedMesh in the header for why: an InstancedMesh has
+// exactly one geometry, and the measurement that put grass on one was worth
+// more than the ladder was.
 //
-// The last mesh band must not reach past FULL_RADIUS: thinning must never
-// remove a tuft that is still carrying real geometry, or a hole opens in the
-// part of the bed the player is walking on. At 8 against 20 there is now a lot
-// of room, where the old 2-band ladder sat exactly on the limit. That is a
-// constraint on a bed WITH a ladder, which is why the strip bed is free to thin
-// from the FIRST band instead -- see STRIP_FULL_RADIUS.
-const LOD_BANDS = [8]
+// WHAT THE CLUMP WAS BUYING, so restoring it is a decision and not an oversight:
+// three quads crossed at 60 degrees read solid from any azimuth at arm's length,
+// where a single card is a photograph seen flat. At 6 triangles against 2, over
+// the ~1,900 instances inside 8 m, that was a cheap 8k triangles. What it is not
+// worth is a second geometry, because a second geometry is a second draw call
+// and a per-instance migration between two meshes at every band crossing.
+const LOD_BANDS = []
+
+// The far-field card growth, handed to createPropMaterial as `billboardGrow` and
+// applied in the vertex stage -- see billboardGrowVertex in material.js for the
+// argument and the arithmetic. Metres, metres, a multiplier, and a fraction of
+// the card that ends up underground.
+//
+// GROW_SCALE IS LINEAR ON THE PART STILL ABOVE GROUND, so the far-field facing
+// area is GROW_SCALE squared and the card keeps the bake's proportions. The
+// first version scaled the quad and then subtracted the sink from the result,
+// which took the width to 2.0 and the visible height to 1.4 and made the far
+// field read as a field of squat rectangles. billboardGrowVertex carries the
+// arithmetic that fixed it.
+//
+// 1.67 IS 2.8x THE FACING AREA, which is what the squashing version happened to
+// draw (2.0 * 2.0 * 0.7), and holding the number there is deliberate: the grow
+// is priced in FILL on this headset, not in triangles. Half the instances at
+// 2.8x the area is 1.4x the far-field fill, so the halved density past F does
+// not actually save anything out there -- it buys back lushness with the one
+// resource a Quest 2 has none of. Raising this to 2.0 costs another 43% of
+// far-field fill; setting it to 1.0 turns the grow off and takes about 15% off
+// the bed's total fill, which is the trade to make if the frame needs it. The
+// quest panel's "grass grow" row flips exactly that, at runtime.
+//
+// THE RAMP STARTS AT 6 AND NOT AT FULL_RADIUS. F is where THINNING starts, and
+// growing from there would put visibly oversized grass inside the radius the
+// player is standing in, where a tuft is a metre of screen and its size is
+// legible. 6 m is past arm's reach and past the tile the player occupies; by 30
+// m the local density is down to a sixth and a tuft is under 10 screen pixels,
+// which is where nothing about its size can be read except how much ground it
+// covers.
+const GROW_FROM = 6
+const GROW_TO = 30
+const GROW_SCALE = 1.67
+const GROW_SINK = 0.3
 
 // Ceilings on the LOD cross-dissolve, in instances. Both are trees' constants
 // for trees' reasons (render/trees.js): FADE_MAX_INFLIGHT bounds the per-frame
@@ -250,22 +314,25 @@ const DRAW_RADIUS = 70
 const QUANT = 4
 
 // How far past a band an instance must travel before it drops a tier. Same
-// value and same reason as trees.js and ferns.js -- and it matters most here,
-// because a band at this density has several thousand tufts sitting on it.
+// value and same reason as trees.js and ferns.js. IT MOVES NOTHING TODAY: both
+// beds ship one geometry, LOD_BANDS is empty, and the re-tiering pass has no
+// boundary to find. It is kept because the machinery it tunes is kept -- put a
+// band back and this is the number that stops the swap flickering on it.
 const LOD_HYSTERESIS = 0.12
 
-// Metres per tile. See the header. It is FOUR and not eight because
-// FULL_RADIUS came down to 10: the over-keep this grid causes scales with
-// TILE/F, and 8/10 would have been most of the flat zone.
+// Metres per tile. See the header. The over-keep this grid causes scales with
+// TILE/F, which is 0.8 now that FULL_RADIUS is 5 -- the rim is what pays for
+// that rather than a finer grid, because halving the tile quadruples the jobs.
 const TILE = 4
 
 // Milliseconds per frame allowed for growing and regrowing tiles.
 const BUILD_BUDGET_MS = 2.0
 
 // Only tiles this close to the last mesh band are re-tiered every frame.
-// Everything beyond it is a billboard and cannot change tier. The margin is
-// more than a tile's half-diagonal, so a tile joins the near set before any tuft
-// inside it can need a mesh tier.
+// Everything beyond it cannot change tier. The margin is more than a tile's
+// half-diagonal, so a tile joins the near set before any tuft inside it can
+// need a nearer tier. WITH NO BANDS the last band is 0, so this is a 6 m disc
+// around the player that finds nothing to do -- see LOD_HYSTERESIS.
 const NEAR_MARGIN = TILE * 1.5
 
 // Where grass may grow. Every one of these is a rejection and never a retry --
@@ -490,13 +557,22 @@ const STRIP_DENSITY = {
   cards: (DENSITY * GRASS_TIERS[0].planes) / ((STRIP_TILES[0] + STRIP_TILES[1]) / 2),
 }[STRIP_MATCH]
 
-// WHERE THE STRIP BED STARTS THINNING. FULL_RADIUS is 20 for tufts because
-// thinning must never take a tuft that is still carrying a mesh tier, and 20 is
-// the last band -- see LOD_BANDS. A STRIP HAS NO LADDER: one tier, billboard
-// cheap at every distance, nothing to be caught half-built. So the constraint
-// that pins the tuft bed's number simply does not apply, and the strip bed can
-// start thinning at the FIRST band instead of the last.
-const STRIP_FULL_RADIUS = LOD_BANDS[0]
+// WHERE THE STRIP BED'S QUANTISER GRID STARTS. Level 0 is everything inside
+// this, sampled at this radius, so the grid must begin no LATER than the first
+// point at which the bed's keep-fraction stops being 1 -- otherwise level 0
+// thins ground the law says is still full, uniformly, across the whole near
+// field.
+//
+// SO IT IS FULL_RADIUS, and it used to be 8. A strip bed's keep-fraction is the
+// tuft law divided again by STRIP_THIN, and STRIP_THIN's first cut is at 8, so
+// while FULL_RADIUS was 10 the product was still flat at 8 and starting the grid
+// there cost nothing and bought resolution where the strip law actually bends.
+// FULL_RADIUS is 5 now (see the note over it), the product bends at 5, and a
+// grid from 8 would have kept only _keepAt(8) = 62% of the candidates standing
+// at the player's feet. The distinction between the two radii is kept -- it is
+// real, and it comes back the moment STRIP_THIN cuts before FULL_RADIUS does --
+// but the number is one number again.
+const STRIP_FULL_RADIUS = FULL_RADIUS
 
 // ...and, on top of the FULL_RADIUS / d law, an explicit divisor from each named
 // radius outward. These are the edges of the rings check-grass reports on, so
@@ -646,6 +722,148 @@ function tileSeed(tx, tz, seed) {
   return (h ^ (h >>> 15)) >>> 0
 }
 
+// ---------------------------------------------------------------------------
+// THE ARENA. A BatchedMesh-shaped facade over a plain THREE.InstancedMesh, so
+// that Grass -- which touches the arena API from about twenty places here and
+// four in rim.js -- does not have to know which it is holding.
+//
+// IT IS AN InstancedMesh BECAUSE A BatchedMesh IS NOT FASTER ON A QUEST 2, and
+// that is the measurement, not a preference. See the header.
+//
+// WHAT THE SHAPE COSTS, since a facade over a narrower thing always costs
+// something:
+//
+//   ONE GEOMETRY, so there is no LOD ladder to have -- see LOD_BANDS.
+//   addGeometry throws on a second, rather than quietly drawing the first for
+//   every tier and leaving someone to wonder why the near grass looks flat.
+//
+//   NO PER-INSTANCE CULLING. There is none to have, so the /?quest panel's cull
+//   row does nothing to this layer. Hidden instances are not SKIPPED either: an
+//   InstancedMesh draws a contiguous `count`, so hiding writes a ZERO MATRIX and
+//   the tuft collapses to a point. Its triangles are degenerate and never
+//   rasterise, but its vertices still run. `count` is held at one past the
+//   highest id ever shown rather than at the pool size, which keeps that waste
+//   to the pool's high-water mark instead of all of it.
+//
+//   The rim's dissolve is NOT on that list, and getting it back is what made
+//   this shippable rather than a diagnostic. instanceColor is itemSize 3 in
+//   three r180, so there is no alpha beside the tint to hide a timer in; the
+//   arena carries `aPropFade` instead, one float per instance, and material.js
+//   reads it through FADE_VERTEX's instancing branch. That is cheaper than the
+//   batched path it replaces -- an attribute fetch where the batch did a vertex
+//   TEXTURE fetch -- so the bed dissolves at the rim exactly as it always did,
+//   for less.
+class InstancedArena extends THREE.InstancedMesh {
+  constructor(maxInstances, material) {
+    // Geometry arrives through addGeometry, to keep the call order in Grass's
+    // constructor identical for both arenas. An empty placeholder until then.
+    super(new THREE.BufferGeometry(), material, maxInstances)
+    this._max = maxInstances
+    this._next = 0
+    this._geometrySet = false
+    // instanceMatrix holds the ZEROED matrix while an instance is hidden, so it
+    // cannot be the source of truth: rim.js hides a tuft and later shows the
+    // same one again, and getMatrixAt has to answer with the matrix it was
+    // placed with. This shadow copy is that answer.
+    this._shadow = new Float32Array(maxInstances * 16)
+    this._visible = new Uint8Array(maxInstances)
+    this._highWater = 0
+    this.count = 0
+    this.frustumCulled = false
+    // Not real on an InstancedMesh, but main.js's applyBatchCulling reads both
+    // off every batch it is handed and would otherwise record `undefined` as
+    // this layer's default.
+    this.perObjectFrustumCulled = false
+    this.sortObjects = false
+  }
+
+  /**
+   * Take the bed's one geometry. CLONED, because Grass disposes every bank
+   * geometry as soon as it has handed it over -- correct against a BatchedMesh,
+   * which copies into its own buffers, and fatal against an InstancedMesh, which
+   * draws the very object it was given.
+   *
+   * The clone is also where `aPropFade` goes, because an InstancedBufferAttribute
+   * lives on the GEOMETRY rather than on the mesh -- so there is nowhere to put
+   * it until this call, and every instance is stamped 1.0 (never fade), which is
+   * the same resting value three gives a batch's colour alpha.
+   */
+  addGeometry(geometry) {
+    if (this._geometrySet) {
+      throw new Error('InstancedArena: one geometry only -- an instanced bed has no LOD ladder')
+    }
+    this._geometrySet = true
+    this.geometry.dispose()
+    this.geometry = geometry.clone()
+    this.geometry.setAttribute(
+      'aPropFade',
+      new THREE.InstancedBufferAttribute(new Float32Array(this._max).fill(1), 1)
+    )
+    return 0
+  }
+
+  addInstance(geometryId) {
+    if (geometryId !== 0) throw new Error(`InstancedArena: unknown geometry ${geometryId}`)
+    if (this._next >= this._max) throw new Error('InstancedArena: pool exhausted')
+    return this._next++
+  }
+
+  setGeometryIdAt(instanceId, geometryId) {
+    if (geometryId !== 0) throw new Error(`InstancedArena: unknown geometry ${geometryId}`)
+  }
+
+  setMatrixAt(instanceId, matrix) {
+    // THREE.InstancedMesh's OWN CONSTRUCTOR calls this once per instance to seed
+    // the buffer with identity, and by the language's rules it does so before any
+    // field below exists -- super() runs to completion first. Dropping those
+    // writes is not tolerating a bug, it is the state this class wants: every
+    // instance starts hidden, hidden means a ZERO matrix here, and a fresh
+    // Float32Array is already zero.
+    if (this._shadow === undefined) return
+    matrix.toArray(this._shadow, instanceId * 16)
+    if (this._visible[instanceId]) {
+      super.setMatrixAt(instanceId, matrix)
+      this.instanceMatrix.needsUpdate = true
+    }
+  }
+
+  getMatrixAt(instanceId, matrix) {
+    matrix.fromArray(this._shadow, instanceId * 16)
+  }
+
+  setColorAt(instanceId, color) {
+    super.setColorAt(instanceId, color)
+    this.instanceColor.needsUpdate = true
+  }
+
+  setVisibleAt(instanceId, visible) {
+    const was = this._visible[instanceId]
+    if (was === (visible ? 1 : 0)) return
+    this._visible[instanceId] = visible ? 1 : 0
+    const dst = this.instanceMatrix.array
+    if (visible) {
+      dst.set(this._shadow.subarray(instanceId * 16, instanceId * 16 + 16), instanceId * 16)
+      if (instanceId >= this._highWater) {
+        this._highWater = instanceId + 1
+        this.count = this._highWater
+      }
+    } else {
+      dst.fill(0, instanceId * 16, instanceId * 16 + 16)
+    }
+    this.instanceMatrix.needsUpdate = true
+  }
+
+  getVisibleAt(instanceId) {
+    return this._visible[instanceId] === 1
+  }
+
+  dispose() {
+    this.geometry.dispose()
+    super.dispose()
+    return this
+  }
+}
+
 export class Grass {
   /**
    * @param scene         THREE.Scene to add the single BatchedMesh to.
@@ -666,7 +884,7 @@ export class Grass {
     textureArray,
     {
       seed = 1, style = 'tufts', density = null, height = null,
-      radius = DRAW_RADIUS, fullRadius = FULL_RADIUS,
+      radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, spin = true, grow = true,
     } = {}
   ) {
     if (style !== 'tufts' && style !== 'strips') {
@@ -694,6 +912,13 @@ export class Grass {
     this.textureArray = textureArray
     this.seed = seed
     this.style = style
+    // Whether the cards turn to face the eye. See billboardVertex in
+    // material.js -- `false` leaves each card at the random yaw its instance
+    // matrix already carries, which is the near-field look and about two thirds
+    // of the fill. Compiled into the program, so it is a REBUILD and not a
+    // uniform; main.js's buildGrass is the only caller that flips it.
+    this.spin = spin
+    this.grow = grow
     this.strips = style === 'strips'
     this.density = density === null ? (this.strips ? STRIP_DENSITY : DENSITY) : density
     density = this.density
@@ -701,9 +926,12 @@ export class Grass {
     // The bank geometry's own height, which every instance scale is relative to.
     this.baseHeight = this.strips ? STRIP_BASE.height : GRASS_BASE.height
     this.sink = this.strips ? STRIP_SINK : PLACEMENT.sink
-    // A strip has no ladder to climb -- see buildGrassStripBank. An empty band
-    // list makes the tier loop in update() fall straight through to the coarsest
-    // (and only) tier, which is what we want and costs nothing.
+    // NEITHER BED HAS A LADDER NOW: a strip never had one (buildGrassStripBank)
+    // and the tuft bed gave its up when it moved onto an InstancedMesh, which
+    // holds one geometry. An empty band list makes the tier loop in update()
+    // fall straight through to the coarsest -- and only -- tier, which costs
+    // nothing. LOD_BANDS is already empty; the local is kept so that putting a
+    // ladder back is one line rather than a search.
     const bands = this.strips ? [] : LOD_BANDS
     this.radius = radius
     // TWO RADII, because for a strip bed they are not the same number.
@@ -753,8 +981,26 @@ export class Grass {
 
     const t0 = performance.now()
     const bank = this.strips ? buildGrassStripBank() : buildGrassBank()
+    if (!this.strips) {
+      // KEEP THE CARD, THROW THE CLUMP AWAY. One geometry is all the arena can
+      // hold and the billboard is the one to keep: it is a photograph of the
+      // clump, it is 2 triangles against 6, and it never goes edge-on.
+      //
+      // The whole bank is built and then cut, rather than asked for short. The
+      // clump is not dead code -- bakeGrassImpostor builds the same three planes
+      // as the impostor's SUBJECT -- so grass-bank.js still describes both, and
+      // cutting here keeps the two tiers defined in one place against the day a
+      // ladder is worth having again.
+      const card = bank.tiers[bank.cardTier]
+      for (const t of bank.tiers) if (t !== card) t.geometry.dispose()
+      bank.tiers = [card]
+      bank.cardTier = 0
+      bank.bytes = geometryBytes(card.geometry)
+    }
     this.bank = bank
     this.tierCount = bank.tiers.length
+    // The sole tier, which is what the tier loop wants `cardTier` to mean: the
+    // coarsest thing there is.
     this.cardTier = bank.cardTier
     if (this.cardTier !== this.tierCount - 1) {
       throw new Error(`Grass: the coarsest tier must be last, got ${this.cardTier} of ${this.tierCount}`)
@@ -763,10 +1009,16 @@ export class Grass {
       throw new Error(`Grass: ${this.tierCount} tiers need ${this.tierCount - 1} bands, got ${bands.length}`)
     }
 
+    // How far up the card's own local space its top edge is. The far-field sink
+    // is a fraction of THAT (see GROW_SINK), and it is read off the geometry
+    // rather than recomputed from GRASS_BASE and the impostor margin so the two
+    // cannot drift.
+    const cardGeo = bank.tiers[this.cardTier].geometry
+    cardGeo.computeBoundingBox()
+    const cardTop = cardGeo.boundingBox.max.y
+
     // TUFTS: the billboard list is what ties the material to
-    // LAYER.IMPOSTOR_GRASS. Every crossed quad in this batch wears GRASS_TUFT
-    // and is left alone, so the mesh tiers and the billboards share one material
-    // and therefore one draw call -- DESIGN.md §5's rule.
+    // LAYER.IMPOSTOR_GRASS, and every quad in the bed is on it.
     //
     // STRIPS: nothing billboards (a spinning strip sweeps its ends through the
     // hillside, and not spinning is where the whole saving came from), and every
@@ -774,44 +1026,54 @@ export class Grass {
     // fragment stage rather than a per-layer branch, and nothing else in the
     // project compiles it. Still one material and one draw call.
     this.material = this.strips
-      ? createPropMaterial(textureArray, { stripTiling: true, wind: 'grass' })
-      // SPHERICAL, not cylindrical, and grass is the one bed in the project that
-      // needs it. A cylindrical card only spins about Y, so it is correct from
-      // eye level and edge-on from above -- and a carpet seen from above is
-      // exactly what this bed is. Flying over a cylindrically-billboarded meadow
-      // shows concentric rings of cards going to slivers as their normals swing
-      // through the view direction: crop circles, drawn by the player's own
-      // altitude. Tipping the card back to meet the camera costs two more
-      // vector reads in the vertex stage and nothing at all in fragments.
+      ? createPropMaterial(textureArray, { stripTiling: true, instancedFade: true, wind: 'grass' })
+      // CYLINDRICAL, and it was spherical for one build. The spherical spin is
+      // the better PICTURE -- a cylindrical card only turns about Y, so it is
+      // correct from eye level and goes to a sliver from above, and a meadow
+      // flown over in the spherical build stopped drawing the concentric crop
+      // circles that artefact makes. It is also the dearer branch by some way: a
+      // normalize, a cross, and a per-axis inverse of the instance matrix, per
+      // vertex, against the cylindrical branch's 2D complex multiply in object
+      // space. Measured in the headset the frame did not survive it, and a
+      // meadow is looked at from eye level approximately always. Rocks keep the
+      // spherical spin, which is where it earns its cost -- there are hundreds
+      // of them, not thirty thousand.
       : createPropMaterial(textureArray, {
-        billboardLayers: grassBillboardLayers(), sphericalBillboard: true, wind: 'grass',
+        billboardLayers: grassBillboardLayers(),
+        billboardSpin: this.spin,
+        // THE GROW IS INDEPENDENT OF THE SPIN and stays on either way, so the
+        // billboard toggle is a one-variable A/B. It is applied in the same
+        // block only because that block is where the card's world origin is
+        // already to hand, not because a card has to turn in order to grow.
+        // `sink` is the buried FRACTION and `top` is the card's height in its
+        // own local metres; billboardGrowVertex needs both because it solves for
+        // the height scale that leaves `scale` times the card standing.
+        billboardGrow: this.grow
+          ? { from: GROW_FROM, to: GROW_TO, scale: GROW_SCALE, sink: GROW_SINK, top: cardTop }
+          : null,
+        instancedFade: true,
+        wind: 'grass',
       })
 
-    const geos = bank.tiers.map((t) => t.geometry)
-    this.batch = new THREE.BatchedMesh(
-      this.maxInstances,
-      geos.reduce((n, g) => n + g.attributes.position.count, 0),
-      geos.reduce((n, g) => n + g.index.count, 0),
-      this.material
-    )
+    this.batch = new InstancedArena(this.maxInstances, this.material)
     this.batch.name = 'v2-grass'
     // Whole-batch test only: the scatter follows the camera and is always in
-    // front of it. Per-INSTANCE culling inside BatchedMesh stays on and earns
-    // its CPU -- it is what keeps the two thirds of the disc behind the player
-    // off the GPU -- and it stays correct under billboarding, because a
-    // billboard turns about its own Y axis and the card's bounding sphere is
-    // centred on that axis.
+    // front of it. There is no per-INSTANCE cull to have on an InstancedMesh --
+    // see THE ARENA -- and the far-field grow would break its bounding sphere
+    // anyway, since a card at 30 m draws at twice the size its matrix says.
     this.batch.frustumCulled = false
     // Nothing here is alpha-BLENDED, so per-instance depth sorting buys nothing
     // and at 22,000 instances a per-frame sort is milliseconds of pure waste.
     this.batch.sortObjects = false
 
-    // tierIds[t] -> the arena id for tier t. No variant axis: a tuft has no
-    // axes to vary along (grass-bank.js), so the ladder is three geometries and
-    // every difference a player sees is per instance.
+    // tierIds[t] -> the arena id for tier t, and there is exactly one t. Kept as
+    // arrays because the tier loop in update() indexes them and a one-entry array
+    // is the honest way to say "the ladder is one rung", not a special case.
     this.tierIds = bank.tiers.map((t) => this.batch.addGeometry(t.geometry))
     this.tierTris = bank.tiers.map((t) => t.triangles)
-    for (const g of geos) g.dispose()
+    // The arena CLONES what it is given (InstancedArena.addGeometry), so the
+    // bank's own copies are ours to drop.
+    for (const t of bank.tiers) t.geometry.dispose()
 
     // The instance pool. Every id is allocated up front and hidden; tiles take
     // from `free` and hand back on eviction. Allocating on demand would grow the
@@ -987,6 +1249,29 @@ export class Grass {
     this._reseat(camX, camZ)
 
     const t0 = performance.now()
+    // A THIN IS NOT BUILD WORK AND MUST NOT BE STARVED BY IT. The budgeted loop
+    // below drains NEAREST first, and a thin job is by construction the farthest
+    // thing in the queue -- so on a bed that cannot keep up, thickens run every
+    // frame and thins never do, and the pool fills until _growTile throws. That
+    // is not hypothetical: at 4 m tiles a fast walk crosses a tile most frames,
+    // _reseat drops the level-change jobs it finds each time, and the tile loop
+    // re-pushes the same thins to be dropped again.
+    //
+    // Running them unbudgeted is safe because a thin is not the expensive half
+    // of the operation: it walks the tile's own ids and hands the ones above the
+    // new keep-fraction back, where a thicken replays the tile's whole RNG
+    // stream. And it is the half that RETURNS pool ids, so doing it first gives
+    // the grows below room they would otherwise not have.
+    {
+      let w = 0
+      for (let k = 0; k < this.queue.length; k++) {
+        const job = this.queue[k]
+        const tile = this.tiles.get(job.key)
+        if (tile && this.uAt[job.q] < tile.u) this._growTile(job)
+        else this.queue[w++] = job
+      }
+      this.queue.length = w
+    }
     while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
       this._growTile(this.queue.pop())
     }
@@ -1227,7 +1512,9 @@ export class Grass {
     }
     // FARTHEST first, because the consumers pop from the END -- so the queue
     // drains nearest first, and a budget that runs out leaves the gap at the
-    // horizon rather than underfoot.
+    // horizon rather than underfoot. THAT ORDER IS FOR GROWS ONLY: `update`
+    // runs the thins first and unbudgeted, because nearest-first starves them by
+    // construction and a starved thin leaks the pool. See the note there.
     this.queue.sort((a, b) => b.d2 - a.d2)
   }
 
@@ -1401,16 +1688,19 @@ export class Grass {
       this._tintTo(this._c, tintT * tintT, VALUE[0] + tintV * (VALUE[1] - VALUE[0]))
       this.batch.setColorAt(id, this._c)
 
-      // Born as a card. `update` promotes the near ones on the very next frame,
-      // and being briefly a billboard at 3 m is invisible next to the
-      // alternative, which is a frame where the tier is undefined.
+      // Born as a card, and with no bands left that is also where it dies.
+      // `update` would promote the near ones on the very next frame if there
+      // were anything to promote to; the point of setting a real tier here is
+      // that a frame with an undefined tier is not a thing this code allows.
       //
       // IT HAS TO BE A REAL TIER AND NOT A "NOT YET" SENTINEL, which is the
       // tempting way to keep the first promotion from dithering: `update` walks
       // instances only inside NEAR_MARGIN of the last band, so a tuft born in a
       // far tile would keep the sentinel for as long as it stood there, and the
-      // card-to-clump swap it eventually makes on walking into range -- the one
-      // swap the player actually sees -- is exactly the one that would then pop.
+      // swap it eventually makes on walking into range -- the one swap the
+      // player would actually see -- is exactly the one that would then pop.
+      // Moot while LOD_BANDS is empty and the card is the only tier, and cheap
+      // enough to leave correct for the day it is not.
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier])
 
@@ -1519,6 +1809,10 @@ export class Grass {
   bakeCards(renderer) {
     // Strips have no impostor tier: they wear GRASS_TUFT itself, tiled. Nothing
     // to photograph, and baking anyway would write a layer nothing samples.
+    //
+    // The tuft bed, by contrast, is now ENTIRELY impostor cards, so this is no
+    // longer the far tier's setup step -- it is the bed's. Skip it and the whole
+    // meadow is an empty layer, which alphaTest discards, which is no meadow.
     if (this.strips) return null
     const t0 = performance.now()
     const baked = bakeGrassImpostor(renderer, this.textureArray)
@@ -1534,6 +1828,8 @@ export class Grass {
   get stats() {
     return {
       style: this.style,
+      spin: this.spin,
+      grow: this.grow,
       placed: this.placed,
       // Resident but hidden because the rim has dissolved them away -- see
       // rim.js. `placed - rimHidden` is what actually reaches the GPU.
@@ -1578,6 +1874,10 @@ export const GRASS_TUNING = {
   DRAW_RADIUS,
   LOD_BANDS,
   LOD_HYSTERESIS,
+  GROW_FROM,
+  GROW_TO,
+  GROW_SCALE,
+  GROW_SINK,
   RIM_PHASES,
   TILE,
   QUANT,

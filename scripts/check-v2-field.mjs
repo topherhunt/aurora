@@ -38,8 +38,8 @@
 //
 //   VERTEX COLOUR VS LOD. v1 paid for this once already: shade() took the MESH
 //   normal, so coarsening a chunk repainted its rock as snow and the world
-//   flashed white in chunk-shaped squares. v2's cells span 6.25 cm to 512 m, a
-//   factor of 8192, so it is a worse problem here. Same 400-site methodology as
+//   flashed white in chunk-shaped squares. v2's cells span 50 cm to 512 m, a
+//   factor of 1024, so it is a worse problem here. Same 400-site methodology as
 //   scripts/check-terrain.mjs so the two numbers can be read side by side.
 
 import { readFile } from 'node:fs/promises'
@@ -215,7 +215,7 @@ export async function run({ heightmap } = {}) {
   //
   // The claim `cell` band-limits detail and nothing else, tested where it matters:
   // the residual against the exact field must fall monotonically as the cell
-  // shrinks, and vanish at the leaf. This is what says the LOD ladder is a
+  // shrinks, and vanish in the limit. This is what says the LOD ladder is a
   // low-pass sequence converging on the collision surface rather than a set of
   // independent approximations.
   console.log('\nband limit')
@@ -236,9 +236,34 @@ export async function run({ heightmap } = {}) {
     let monotone = true
     for (let i = 1; i < rms.length; i++) if (!(rms[i] > rms[i - 1])) monotone = false
     check(monotone, 'residual grows monotonically with cell size')
-    // At the leaf every octave down to LAMBDA_MIN is at least 4x the cell, so the
-    // weights are all exactly 1 and the two evaluations are the same arithmetic.
-    check(rms[0] === 0, 'the leaf cell IS the exact field, bit for bit', `${leafCell.toFixed(4)} m cell, residual ${rms[0]}`)
+    // WHAT THE 8 M CHUNK COSTS, in metres, measured rather than argued.
+    //
+    // This check used to read `rms[0] === 0`: the leaf cell IS the exact field,
+    // bit for bit. That was TRUE at the old MAX_DEPTH 13, where a 6.25 cm cell
+    // puts the band edges at lo = 12.5 cm and hi = 25 cm, so even LAMBDA_MIN's
+    // 25 cm octave sat at the top edge with weight exactly 1 and the two
+    // evaluations were the same arithmetic. At the 50 cm cell the edges are 1 m
+    // and 2 m, which kills the 1 m, 50 cm and 25 cm octaves outright -- three,
+    // not the one the depth ladder alone suggests, because the limiter is two
+    // octaves wide.
+    //
+    // So the leaf is now an APPROXIMATION and the honest question is how good
+    // one. The bound is the cell it came from: a residual comparable to the cell
+    // would mean the mesh is missing relief it could have drawn, while a
+    // residual an order of magnitude under it is relief no 50 cm mesh could
+    // represent anyway. A tenth is the line. Measured it comes out near 1 cm.
+    check(rms[0] < leafCell / 10, 'the leaf cell costs an order of magnitude less than the cell itself', `${leafCell.toFixed(4)} m cell, residual ${(rms[0] * 100).toFixed(2)} cm, bound ${((leafCell / 10) * 100).toFixed(1)} cm`)
+    // And the exact field is still a genuine LIMIT of the band-limited one rather
+    // than a separate code path: below LAMBDA_MIN / 4 every octave is over 4x the
+    // cell again and the residual returns to bit-exact zero. That is the property
+    // the old leaf check was really protecting, and it survives the cap change.
+    let s2 = 0
+    for (let i = 0; i < 800; i++) {
+      const p = site(i)
+      const d = field.heightAt(p.x, p.z, LAMBDA_MIN / 4) - field.heightAt(p.x, p.z, 0)
+      s2 += d * d
+    }
+    check(s2 === 0, 'and a cell under LAMBDA_MIN / 4 IS the exact field, bit for bit', `${(LAMBDA_MIN / 4).toFixed(4)} m cell, residual ${Math.sqrt(s2 / 800)}`)
     // The coarsest residual must still be bounded by the detail term's own total
     // amplitude -- if it exceeded that, the band limit would be adding energy
     // rather than removing it, which is what the transposed smoothstep does.
@@ -692,7 +717,7 @@ export async function run({ heightmap } = {}) {
     check(sites.length === 400, 'there is ground above the snow line to measure', `found ${sites.length} of 400 sites -- a snow base above the terrain puts snow nowhere at all, which is exactly the failure v1 hit twice`)
 
     if (sites.length === 400) {
-      const DEPTHS = [MAX_DEPTH, 10, 7, 4, 2]
+      const DEPTHS = [MAX_DEPTH, 8, 6, 4, 2]
       const white = new Map()
       const flags = new Map()
       for (const d of DEPTHS) {

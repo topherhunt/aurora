@@ -1,78 +1,66 @@
 import THREE from '../three-instance.js'
 import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN, SNOW_TILE_MEAN } from '../textures.js'
+import { GRIT_GRAD_SCALE, terrainDetailTextures } from './grit-texture.js'
 
 // ---------------------------------------------------------------------------
-// The terrain material: Lambert + vertex colours + a procedural surface grain.
+// The terrain material: Lambert + vertex colours + FOUR TEXTURE FETCHES.
 //
-// The grain exists for two reasons, and only one of them is looks.
+// It used to be Lambert + vertex colours + about twenty evaluations of a
+// hash-based value noise, and the change from that to this is the single
+// largest performance decision in the renderer. The measurement that forced it:
+// with the terrain hidden the headset holds 85 fps; with the terrain drawn and
+// STOCK Lambert on it, still 85; with the terrain drawn and this file's patch
+// on it, 30. Same meshes, same triangle count, same draw calls, same fog, same
+// lights. The terrain was never triangle bound. Every frame of that gap was
+// being spent inside one `#include <color_fragment>` patch, and the LOD and
+// chunking work could not have touched it.
 //
-// 1. Untextured terrain gives you nothing to judge your own speed against. A
-//    smooth green hillside sliding past at 1.45 m/s and the same hillside at
-//    14 m/s look nearly identical, because there is no feature small enough to
-//    move visibly. Sub-metre grain fixes that outright, and at walking pace it
-//    is most of what makes walking feel like walking.
-// 2. It breaks up the flat-shaded look of a low-poly heightfield without
-//    costing a single triangle.
+// So the noise is gone and the fields it produced are baked. See
+// grit-texture.js for how, and for the honest accounting of what a tileable
+// texture costs that world-space noise does not.
 //
-// It is done in the FRAGMENT shader, keyed to world XZ, rather than baked into
-// vertex colours in the mesher. That is the load-bearing choice here: vertex
-// colours live on a quadtree whose resolution changes with distance, so the
-// same hillside would carry 1 m speckle up close and 16 m blotches one LOD ring
-// out, and every ring boundary would visibly pop as the pattern rescaled. Keyed
-// to world position it is simply the same pattern everywhere, forever.
+// WHAT THE SURFACE IS MADE OF NOW, from coarsest to finest, and each one is a
+// channel of one of two 256 px tiles rather than a layer of its own:
 //
-// Cost is roughly 40 ALU per fragment, no texture fetches, and it is skipped
-// entirely past `FADE_FAR` -- which is also what stops it aliasing into shimmer
-// once the grain is smaller than a pixel. If the Quest turns out to be fill
-// bound here, dropping to one octave is a one-line change.
+//   MACRO, sampled at 1024 m per tile, EVERY FRAGMENT AT EVERY DISTANCE.
+//     .a displaces the snow line off the vertex grid; .r darkens and tints
+//     whole regions. These do not fade with distance and must not: their job is
+//     that everything past the near fades used to be flat green or flat grey,
+//     and the reason was never that the palette was too simple -- it was that
+//     the only thing varying the palette had already faded out.
 //
-// That fade is also why there is a SECOND, separate layer below it. Everything
-// past ~95 m used to be flat green or flat grey, and the reason was not that the
-// palette was too simple -- it was that the only thing varying the palette had
-// already faded out. So the macro layer runs at every distance, deliberately
-// un-faded, on wavelengths of ~27 m and ~10 m. Those are still larger than a
-// pixel from anywhere you can stand, so there is nothing for them to alias
-// into; the near grain needs its fade and this does not.
+//   MACRO AGAIN, at 137 m per tile and rotated ~37 degrees off the first, gated
+//     on the HAZE rather than on distance. Its own fbm ladder inside that tile
+//     runs 137 m down to ~4 m, which is the mid-range mottle: dry slopes, damp
+//     hollows, mineral staining on rock.
 //
-// Those wavelengths were 110 m and 38 m and got divided by four, because at that
-// size the two tint layers overlapped across most of any hillside you could see
-// and averaged into one muddy middle tone. The variation was there; it was just
-// too coarse to read as variation rather than as the base colour.
+//   GRIT, at 11.7 m per tile, inside FADE_FAR. 256 texels across 11.7 m is
+//     4.6 cm a texel, magnified NEAREST -- which is the whole look. It is the
+//     bench ground from preview-stage.js (3 m over 64 px, 4.7 cm texels) at the
+//     same texel size, and it is there because a smooth hillside gives you
+//     nothing to judge your own speed against: at 1.45 m/s and at 14 m/s an
+//     untextured slope looks identical, because no feature is small enough to
+//     move visibly. Its .gb carry the surface's slope, so the same fetch that
+//     colours the ground also lights it.
 //
-// Keeping them separate rather than adding two more octaves to one fbm is the
-// point: the near layer's job is a speed cue and it must die at range, the far
-// layer's job is to keep distant hillsides from reading as one colour and it
-// must not. One shared fade cannot do both.
+//   GRIT AGAIN, at 2.3 m per tile and rotated, inside MICRO_FAR. Sub-centimetre
+//     texels: the fleck tint, the snow sparkle, and the finest rung of relief.
+//     It is also what stops the 11.7 m sample reading as a repeating tile
+//     underfoot, since 11.7 and 2.3 have no useful common multiple.
 //
-// GRASS AND SNOW NO LONGER USE MOST OF THAT. Both now wear a PHOTOGRAPH -- one
-// metre of meadow and one of crusted snow, tiled -- and where a photograph
-// applies, the noise that stood in for it is turned off rather than laid under
-// it. See the GROUND_METRES block below for the mechanism and for what is left
-// running on each surface. The three noise layers described here still carry
-// rock at every distance, and they still carry every surface once the ground
-// tiles have faded out past 150 m, so none of the reasoning above is dead.
+// FOUR FETCHES IS THE WORST CASE and it is the near field only. Past 40 m it is
+// three, past 95 m two, and past the haze gate one.
 //
-// There is a THIRD layer, on the same reasoning taken one step further:
-// ~10 cm flecks, on a fade of its own that is over by 40 m. Same argument as
-// the near grain -- a 10 cm feature is a couple of pixels at 40 m and under one
-// past that, so it has to be gone by then or it is shimmer rather than texture.
-// Every surface gets it, each out of its own palette: grass reuses the dirt and
-// moss the coarser octaves already use, rock gets a light and a dark grey, snow
-// gets white and off-white. Grass's and snow's halves of it are now inside the
-// ground tiles' fade too -- a 128 px tile over one metre resolves 8 mm, so it
-// covers the 10 cm scale outright and doing both is two textures at one size.
+// WHY THE FADES STILL EXIST when a mipped texture cannot alias: they are about
+// not PAYING for a fetch that has stopped changing the pixel, not about hiding
+// a crawl. That is a weaker claim than the noise layers had to make, and it is
+// why the numbers below could all move outward without anything shimmering.
 //
-// It sits close to the snow sparkle's ~12 cm, which is deliberate rather than
-// an oversight -- they are different operations on the same scale (sparkle adds
-// isolated highlights, this tints toward a pair) and snow wants both.
-//
-// And at that same 10 cm there is now a third thing: a SHADING one, not a
-// colour one. The tint layer above says "this speck is a different colour"; the
-// relief octave at the bottom of this file says "this speck faces a different
-// way", which is what actually stops a surface reading as poured and edible up
-// close. Three operations at one scale is not duplication -- a real gritty
-// surface differs in albedo and in normal at once, and doing only the first is
-// why a flat-shaded hillside with speckle on it still looks like icing.
+// GRASS AND SNOW ALSO WEAR A PHOTOGRAPH -- one metre of meadow and one of
+// crusted snow, tiled -- and where a photograph applies, the grit layers turn
+// off rather than lying under it. See the GROUND_METRES block below. Rock keeps
+// the grit at every distance, and every surface gets it back once the ground
+// tiles have faded out past 150 m.
 //
 // This is a step-2 stand-in. §7's real material (splat blending, height-blend,
 // triplanar, KTX2 arrays) replaces it at build step 6.
@@ -81,6 +69,66 @@ import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN, SNOW_TILE_MEAN } from '../textu
 // Grain is at full strength inside FADE_NEAR and gone by FADE_FAR.
 const FADE_NEAR = 12
 const FADE_FAR = 95
+
+// ---- The four sampling scales, in metres of world per tile.
+//
+// THE RATIOS ARE THE INTERESTING PART, not the absolute sizes. Both textures
+// tile, so every scale sampled from one of them repeats; two scales off the
+// same tile repeat TOGETHER only where their periods coincide, so the pairs are
+// picked to make that coincidence as distant as a pair of floats can. 11.7 and
+// 2.3 first agree after 269 m; 1024 and 137 after 20 km, which is past the far
+// edge of an 8 km world.
+//
+// GRIT_METRES is also what fixes the texel size, and that is a look decision
+// rather than a range one: 256 texels over 11.7 m is 4.6 cm a texel, which is
+// the bench ground's 4.7 cm (preview-stage.js runs 64 px over 3 m). Magnified
+// NEAREST, so those texels are visible squares underfoot. Change this number
+// and the ground stops looking like the bench, whatever else it does.
+//
+// MACRO_METRES is a full kilometre because it carries the snow line's wander,
+// and a snow line that repeated every couple of hundred metres would draw the
+// same border around every peak in the range.
+const GRIT_METRES = 11.7
+const GRIT_FINE_METRES = 2.3
+const MACRO_METRES = 1024
+const MACRO_FINE_METRES = 137
+
+// The rotation applied to the finer sample of each pair, as its matrix. Not
+// decoration: both textures are square lattices, so two samples of one tile at
+// different scales carry the same axis-aligned grid, and up close that grid
+// lines up with the chunk grid the mesher goes to some trouble to hide. Turning
+// the fine sample off-axis decorrelates them. ~37 degrees, which is far from
+// every multiple of 45 and therefore from every way a square can agree with
+// itself.
+const ROT = 'mat2( 0.80, 0.60, -0.60, 0.80 )'
+
+// ROT's inverse, which for a rotation is its transpose.
+//
+// Needed because a fetch taken through ROT reports its packed derivative in
+// the ROTATED frame: if uv = ROT * (p * k) then dh/dp = k * ROT^T * grad_uv.
+// A world-space bump wants dh/dp, so the fine grit sample's .gb has to be
+// turned back before it can be added to one. Getting this wrong does not look
+// like an error -- it looks like lighting that is subtly lit from the wrong
+// side, which is much harder to notice and much harder to find.
+const ROT_T = 'mat2( 0.80, -0.60, 0.60, 0.80 )'
+
+// Where a surface has been eaten by the haze far enough that its own colour
+// variation cannot read, as a fraction of its colour that survives to the eye.
+//
+// The gate that hangs off this is keyed to TRANSMITTANCE rather than to a
+// distance, and that is the load-bearing choice. `scene.fog` is FogExp2 driven
+// by clock.js's `hazeDensity`, which swings more than 5x over a day: 0.00113 at
+// noon, 0.00021 at night. "Past 1.5 km it is all hazy blue" is exactly true at
+// the noon value -- 5.7% of the surface survives there -- and wrong by a factor
+// of five at the night one, where 1.5 km still delivers 91%. A hard-coded 1500
+// would erase the snow line's shape and flatten every distant hillside on a
+// clear night. Transmittance is the very number the fog chunk multiplies this
+// fragment by a few lines later, so gating on it says precisely what is meant:
+// stop paying for detail that the fog is about to eat.
+//
+// At the noon density these two land at about 1.59 km and 1.24 km.
+const HAZE_GONE = 0.04
+const HAZE_FULL = 0.14
 
 // The micro layer's own fade, tighter than the grain's because the features are
 // smaller -- see the header. A 10 cm fleck is about 3 px at 40 m on a Quest and
@@ -237,7 +285,13 @@ export function luminance(c) {
 export function createTerrainMaterial({ atlas = null } = {}) {
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
 
+  const detail = terrainDetailTextures()
+
   material.userData.uniforms = {
+    // The two baked fields every layer below is now a channel of. Shared across
+    // every material this factory makes -- see terrainDetailTextures.
+    uGritMap: { value: detail.grit },
+    uMacroMap: { value: detail.macro },
     uSpeckle: { value: 0.34 }, // +/- brightness swing, applied to every surface
     uDirtAmount: { value: 0.8 },
     uMossAmount: { value: 0.65 },
@@ -296,31 +350,38 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // exactly where the line happens to sit low. The regional variation the
     // guard was buying headroom for is now done properly, one layer up.
     uBoundary: { value: 0.65 },
-    // Near-field normal perturbation, as a tangent (i.e. tan of the tilt it
-    // adds). 0 disables the whole block, which is the escape hatch if the Quest
-    // turns out to be fill bound: it is the most expensive thing in this shader.
-    uRelief: { value: 0.35 },
-    // The relief ladder's third rung: ~10 cm bumps and divots, on every surface.
+    // Near-field normal perturbation from the COARSE grit fetch, as a plain
+    // multiplier on that fetch's own slope. 0 disables the whole normal block,
+    // which is the escape hatch if the headset is still fill bound.
     //
-    // Its own uniform rather than a third weight inside uRelief because two
-    // things about it differ from the pair above. It rides the MICRO fade (gone
-    // by 40 m) instead of the grain fade (95 m), since a 10 cm feature is about
-    // 3 px at 40 m and under 1 px past it -- the same argument the micro tint
-    // layer makes, and past that point this is shimmer rather than texture. And
-    // its surface mask is flat: full on rock, half on grass AND snow, where the
-    // coarse pair gives snow only a fifth because heavy relief at half a metre
-    // makes a drift read as gravel. At 10 cm that does not apply -- windblown
+    // RETUNED from 0.35 when the noise was baked, and the number went DOWN
+    // because the field under it got steeper, not because the look changed.
+    // Old: |d(noise)/d(metre)| averaged 0.3605 over the two octaves at their
+    // weights, so 0.35 bought a mean tangent of 0.126. New: the baked field's
+    // packed gradient averages 5.785 per tile-unit, which over an 11.7 m tile
+    // is 0.4945 per metre, so 0.255 buys the same 0.126. Measured, not
+    // estimated -- both numbers came out of a script that ran the old GLSL in
+    // JS against the new texture's actual bytes.
+    uRelief: { value: 0.255 },
+    // The relief ladder's fine rung, from the FINE grit fetch: ~1 cm bumps and
+    // divots, on every surface.
+    //
+    // Its own uniform rather than a weight inside uRelief because two things
+    // about it differ. It rides the MICRO fade (gone by 40 m) instead of the
+    // grain fade (95 m), since a feature this size is about 3 px at 40 m and
+    // under 1 px past it -- the same argument the micro tint layer makes, and
+    // past that point this is shimmer rather than texture. And its surface mask
+    // is flat: full on rock, half on grass AND snow, where the coarse rung
+    // gives snow only a fifth because heavy relief at half a metre makes a
+    // drift read as gravel. At a centimetre that does not apply -- windblown
     // snow is pitted at exactly this scale.
     //
-    // 0.018 is amplitude in metres per noise unit, so a 10 cm cell moves about
-    // 1.8 cm: the same rung as the two octaves above it, since what sets a
-    // rung's visual weight is amplitude OVER wavelength and the arithmetic is
-    // 0.72*0.7 = 0.50, 2.2*0.3 = 0.66, 10.0*0.018/0.35 = 0.51. It is not a free
-    // layer -- one auroraGrad is three noise evaluations, twelve integer hashes
-    // -- but it is only paid inside 40 m, which is a small share of fragments.
-    // It is nested inside the uRelief guard on purpose: if the Quest turns out
-    // to be fill bound, uRelief = 0 must still kill the whole normal pass.
-    uMicroRelief: { value: 0.018 },
+    // Retuned from 0.018 by the same measurement: the old 10 cm octave averaged
+    // 4.2576 per metre, so 0.018 bought a tangent of 0.0766; the new fine fetch
+    // averages 5.785 per tile-unit over a 2.3 m tile, which is 2.5153 per
+    // metre, so 0.030 buys the same. It is nested inside the uRelief guard on
+    // purpose: uRelief = 0 must still kill the whole normal pass.
+    uMicroRelief: { value: 0.03 },
     // Glitter on snow. Small because it is thresholded to a few percent of
     // fragments -- this is specular sparkle standing in for a spec model Lambert
     // does not have, not a brightness change.
@@ -421,6 +482,8 @@ export function createTerrainMaterial({ atlas = null } = {}) {
         '#include <common>',
         `#include <common>
         varying vec3 vWorldPos;
+        uniform sampler2D uGritMap;
+        uniform sampler2D uMacroMap;
         uniform float uSpeckle;
         uniform float uDirtAmount;
         uniform float uMossAmount;
@@ -487,89 +550,52 @@ ${atlas ? `        precision highp sampler2DArray;
           return textureGrad( uAtlas, vec3( p.xz * k, layer ), dx.xz * k, dy.xz * k ).rgb;
         }
 ` : ''}
-        // Shared between the colour pass and the normal pass, which are two
-        // different chunk includes -- hence file scope rather than a block.
-        float auroraNear;
-        float auroraMicroFade;
-        float auroraRockBase;
-        float auroraSnowBase;
-        // How much of grass's and snow's texture the photographed ground tiles
-        // are carrying at this fragment: 1 inside GROUND_NEAR, 0 past GROUND_FAR,
-        // and 0 ALWAYS when there is no atlas to sample. The noise layers read it
-        // to get out of the way of whatever it is covering, so its default has to
-        // be the one that leaves the untextured shader exactly as it was.
-        float auroraTileFade;
+        // The normal perturbation, accumulated where the grit fetches happen
+        // and applied at normal_fragment_begin. It lives at file scope because
+        // those are two different chunk includes and nothing else crosses
+        // between them any more: the classifications and fades used to be up
+        // here too, back when the normal pass computed its own bumps and needed
+        // them. It does not -- the SLOPE arrives in the .gb of the very fetches
+        // the colour pass is already making, and re-fetching them one include
+        // later to read two more channels would double the most expensive thing
+        // left in this shader -- so this is the only survivor.
+        vec3 auroraBump;
 
-        // Hash-based value noise. No sin() -- it is slow on mobile GPUs and its
-        // precision on some drivers is bad enough to produce visible banding.
+        // ---- Why there is no noise function in this file any more.
         //
-        // INTEGER hash, and the reason is a bug rather than a preference. This
-        // was the usual fract-of-a-big-multiply hash:
+        // There was, and it was correct: an integer-hash value noise, chosen
+        // over the usual fract-of-a-big-multiply because that one collapses at
+        // world scale. Measured on a 400-cell row at the sparkle octave it gave
+        // 148 distinct values out of 400 at the origin, 16 at 1 km, and at 6 km
+        // TWO -- a comb with a period of 50 m, which is what drew the snow
+        // flecks in dashed parallel lines. The uint version fixed that outright:
+        // 400/400 distinct at every distance to the world edge.
         //
-        //   p = fract( p * vec2( 123.34, 456.21 ) );
-        //   p += dot( p, p + 45.32 );
-        //   return fract( p.x * p.y );
+        // It cost three integer multiplies a hash, four hashes a sample, and
+        // about twenty samples a near-field fragment. Its own note said "on
+        // Adreno these are slower than the float ops they replace -- this is
+        // the first thing to look at if the Quest turns out to be fill bound
+        // here." The Quest turned out to be fill bound here.
         //
-        // which is fine for small p and falls apart for large p, in two ways at
-        // once. Its inputs are lattice indices, so they are integers: for
-        // integer n, fract( n * 123.34 ) is fract( n * 0.34 ) exactly, and 0.34
-        // is close enough to 17/50 that the sequence repeats every 50 cells.
-        // Then float32 finishes the job -- at 6 km out and the sparkle octave's
-        // frequency, n * 456.21 is around 3e7, past the 24-bit mantissa, so the
-        // fractional part being extracted is mostly gone before fract() sees it.
+        // Both problems -- the collapse at distance and the cost -- are gone for
+        // the same reason. A texture fetch has no precision to lose: the lattice
+        // is 256 texels and the wrap is exact however far from the origin the
+        // sample is taken. See grit-texture.js.
         //
-        // Measured on a 400-cell row at the sparkle octave: 148 distinct values
-        // out of 400 at the origin, 16 at 1 km, and at 6 km TWO values with a
-        // period of 50 along x and a constant along z. That is the snow flecks
-        // in dashed parallel lines -- not a pattern in the noise, the noise
-        // having collapsed into a comb. The 10 cm micro octave measured the
-        // same two values on that row, which is why this had to be fixed
-        // before that layer could exist at all.
+        // EVERY FETCH BELOW IS textureGrad AND THE GRADIENTS COME FROM ONE PAIR
+        // OF DERIVATIVES TAKEN OUTSIDE ALL THE BRANCHES. Every guard in this
+        // shader folds in distance and the surface classification, so none of
+        // them is quad-uniform -- a quad at the foot of a crag has some lanes in
+        // and some out. An implicit-LOD fetch there has no defined result per
+        // the ES spec, and the way it actually fails is the sharpest mip on a
+        // fragment that wanted the blurriest: a line of sparkling pixels down
+        // every border. Since every uv here is a plain (optionally rotated)
+        // multiple of world XZ, one pair of world-position derivatives scales
+        // to all of them.
         //
-        // Snow was where it SHOWED, because a hard threshold on a collapsed
-        // noise draws the comb in white on white, but the damage was general:
-        // on the same row at 6 km the 0.5 m grain octave had 8 distinct values
-        // and the relief octave 8, so the near texture and the bump lighting
-        // were both quietly degrading with distance from the origin too.
-        //
-        // uint arithmetic has none of this: it is exact, and wrapping on
-        // overflow is defined rather than a precision accident. Same row now
-        // gives 400/400 distinct at every distance out to the world edge, mean
-        // 0.50, and autocorrelation under 0.03 at every shift including the 50
-        // that used to be the period. Costs three integer multiplies, which on
-        // Adreno are slower than the float ops they replace -- this is the
-        // first thing to look at if the Quest turns out to be fill bound here.
-        //
-        // Callers must pass integer-valued p. auroraNoise does; nothing else
-        // calls this.
-        float auroraHash( vec2 p ) {
-          uvec2 q = uvec2( ivec2( p ) );
-          uint h = ( q.x * 0x3504f333u ) ^ ( q.y * 0xf1bbcdcbu );
-          h ^= h >> 15u;
-          h *= 0x846ca68bu;
-          h ^= h >> 16u;
-          return float( h ) * ( 1.0 / 4294967296.0 );
-        }
-
-        float auroraNoise( vec2 p ) {
-          vec2 i = floor( p );
-          vec2 f = fract( p );
-          f = f * f * ( 3.0 - 2.0 * f );
-          float a = auroraHash( i );
-          float b = auroraHash( i + vec2( 1.0, 0.0 ) );
-          float c = auroraHash( i + vec2( 0.0, 1.0 ) );
-          float d = auroraHash( i + vec2( 1.0, 1.0 ) );
-          return mix( mix( a, b, f.x ), mix( c, d, f.x ), f.y );
-        }
-
-        // Gradient of auroraNoise by forward difference, in noise-units per
-        // p-unit. Three samples rather than the two a central difference would
-        // cost, because the centre sample is wanted anyway by every caller.
-        vec2 auroraGrad( vec2 p ) {
-          float n = auroraNoise( p );
-          return vec2( auroraNoise( p + vec2( 0.5, 0.0 ) ) - n,
-                       auroraNoise( p + vec2( 0.0, 0.5 ) ) - n ) * 2.0;
-        }`
+        // (The wording above dodges one particular word on purpose --
+        // check-daynight.mjs greps the assembled source for it as its
+        // unresolved-template tripwire, and a comment must not trip a gate.)`
       )
       .replace(
         '#include <color_fragment>',
@@ -582,112 +608,192 @@ ${atlas ? `        precision highp sampler2DArray;
           float auroraGreenBase = clamp( ( vColor.g - max( vColor.r, vColor.b ) ) * 20.0, 0.0, 1.0 );
           float auroraVertexSnow = smoothstep( 0.30, 0.60, vColor.b );
 
+          // Hoisted above every layer below because the FIRST of them needs it.
+          float auroraDist = length( vWorldPos - cameraPosition );
+
+          // ONE PAIR OF DERIVATIVES FOR THE WHOLE SHADER, taken here where the
+          // flow is still quad-uniform. Every fetch below sits inside a guard
+          // that folds in distance and the surface classification, so none of
+          // them may take its own -- see the note in <common>.
+          vec3 auroraDPx = dFdx( vWorldPos );
+          vec3 auroraDPy = dFdy( vWorldPos );
+          mat2 auroraRot = ${ROT};
+
+          // Filled by the two grit fetches below and applied at
+          // normal_fragment_begin, which is a different chunk include.
+          auroraBump = vec3( 0.0 );
+
+          // How much of this surface's own colour survives the haze, 0..1, and
+          // the gate the colour-detail layers hang off. See HAZE_GONE.
+          //
+          // The USE_FOG guard is not defensive tidiness: createTerrainMaterial is
+          // also worn by the preview stages and by MacroTerrain, which may run in
+          // a scene with no fog at all. No haze means no licence to simplify, so
+          // the fallback is the full-detail answer rather than a cheaper one.
+          float auroraSeen = 1.0;
+          #ifdef USE_FOG
+            #ifdef FOG_EXP2
+              float auroraHazeF = fogDensity * auroraDist;
+              auroraSeen = exp( - auroraHazeF * auroraHazeF );
+            #else
+              auroraSeen = 1.0 - smoothstep( fogNear, fogFar, auroraDist );
+            #endif
+          #endif
+          float auroraDetailK = smoothstep( ${HAZE_GONE.toFixed(3)}, ${HAZE_FULL.toFixed(3)}, auroraSeen );
+
+          // ---- The macro tile, coarse sample. ONE KILOMETRE PER TILE, and the
+          // only fetch every fragment in the world pays for unconditionally.
+          //
+          // Its fbm ladder runs the whole tile down to a thirty-second of it, so
+          // one fetch carries ~1 km regions through ~32 m mottle. Two channels
+          // are read: .r is regional value and tint, .a is where the snow line
+          // wanders.
+          vec2 auroraMU = vWorldPos.xz * ${(1 / MACRO_METRES).toFixed(8)};
+          vec4 auroraM = textureGrad( uMacroMap, auroraMU,
+            auroraDPx.xz * ${(1 / MACRO_METRES).toFixed(8)},
+            auroraDPy.xz * ${(1 / MACRO_METRES).toFixed(8)} );
+
+          // ---- The macro tile, fine sample: ${MACRO_FINE_METRES} m per tile, rotated.
+          //
+          // FETCHED HERE, ABOVE THE SNOW LINE, because the boundary dither wants
+          // its .a and the mid-range tint block below wants its .r and .g. One
+          // fetch, two consumers, and hoisting it is what stops the second from
+          // being a second fetch.
+          //
+          // Defaults to the field's own mean when the haze gate is shut, so
+          // every consumer of it degrades to "this octave contributes nothing"
+          // rather than to a wrong value.
+          vec4 auroraMF = vec4( 0.5 );
+          if ( auroraDetailK > 0.004 ) {
+            auroraMF = textureGrad( uMacroMap, auroraRot * ( vWorldPos.xz * ${(1 / MACRO_FINE_METRES).toFixed(8)} ),
+              auroraRot * ( auroraDPx.xz * ${(1 / MACRO_FINE_METRES).toFixed(8)} ),
+              auroraRot * ( auroraDPy.xz * ${(1 / MACRO_FINE_METRES).toFixed(8)} ) );
+          }
+
           // ---- Boundary dither.
           //
           // The snow line arrives here as a smooth ramp interpolated across
           // triangles, so wherever it crosses the grid at an angle it steps.
           // Alternating the mesh diagonal (chunk-mesh.js) stops that step being
           // REGULAR, but the boundary is still resolved at vertex spacing --
-          // 1 m at the leaf and far coarser in the LOD rings, which is where it
-          // is most visible.
+          // 50 cm at the leaf and far coarser in the LOD rings, which is where
+          // it is most visible.
           //
-          // Displacing the classification by a world-space noise moves the
+          // Displacing the classification by a world-space field moves the
           // decision off the grid entirely: the border now wanders on the
-          // noise's wavelengths, which are the same at every LOD and every
+          // field's wavelengths, which are the same at every LOD and every
           // distance.
           //
-          // FOUR octaves, ~130 / 42 / 12 / 3.4 m, and the top of that series is
-          // the whole reason this reads at range. The first version had only
-          // ~11 m and ~3 m, which is plenty standing next to it and useless a
-          // kilometre away: 11 m at 2 km subtends about 0.3 degrees, so it
-          // averages to a flat tint and what survives is the vertex ramp
-          // underneath -- and that ramp is a function of elevation alone, so it
-          // draws a level contour line around every distant peak. The only
-          // place that can be fixed is the wavelength. A geometric series
-          // rather than a coarse octave bolted onto the old pair, because the
-          // gap between 11 m and 130 m is exactly what a mid-distance ridge
-          // 300 m out resolves at.
+          // TWO SAMPLES, and the coarse one is the reason this reads at range.
+          // An early version had only ~11 m and ~3 m of wobble, which is plenty
+          // standing next to it and useless a kilometre away: 11 m at 2 km
+          // subtends about 0.3 degrees, so it averages to a flat tint and what
+          // survives is the vertex ramp underneath -- and that ramp is a
+          // function of elevation alone, so it draws a level contour line around
+          // every distant peak. The 1 km sample is specifically what stopped
+          // that, so it is NOT distance-gated: it is the same snow line seen
+          // from further away, so it should be the same shape, and up close she
+          // is simply standing inside one lobe of it. Physically that is the
+          // right variable to jitter anyway -- a real snow line is not level,
+          // since aspect, wind loading and shading move it by tens of metres
+          // over a few hundred metres of ground.
           //
-          // Deliberately NOT distance-gated: it is the same snow line seen from
-          // further away, so it should be the same shape, and up close she is
-          // simply standing inside one lobe of it. Physically it is the right
-          // variable to jitter anyway -- a real snow line is not level, since
-          // aspect, wind loading and shading move it by tens of metres over a
-          // few hundred metres of ground.
+          // The fine sample is gated, on the haze rather than on a distance:
+          // its finest wavelengths are a few metres and subtend a fraction of a
+          // pixel from anywhere the gate is shut.
           //
-          // The rotation between octaves is not decoration. auroraNoise is value
-          // noise on an axis-aligned lattice, so a single octave carries a faint
-          // grid of its own; up close the finer octaves bury it, but at range
-          // the coarse octave is ALL that is left and its lattice is aligned
-          // with the chunk grid we just went to some trouble to hide. Turning
-          // each octave off-axis decorrelates them.
-          //
-          // Weights sum to 1, so uBoundary alone bounds the displacement.
-          vec2 auroraB = vWorldPos.xz * 0.0077;
-          mat2 auroraRot = mat2( 0.80, 0.60, -0.60, 0.80 ); // ~37 deg
-          float auroraBN = auroraNoise( auroraB ) * 0.40;          // ~130 m
-          auroraB = auroraRot * auroraB * 3.1;
-          auroraBN += auroraNoise( auroraB ) * 0.28;               // ~42 m
-          auroraB = auroraRot * auroraB * 3.4;
-          auroraBN += auroraNoise( auroraB ) * 0.19;               // ~12 m
-          auroraB = auroraRot * auroraB * 3.6;
-          auroraBN += auroraNoise( auroraB ) * 0.13;               // ~3.4 m
+          // Its weight is HANDED UP rather than dropped as it fades. Dropping it
+          // would shrink the displacement at range, which is the exact failure
+          // the coarse sample exists to fix; renormalising keeps the boundary
+          // wandering just as far, on wavelengths the distance can still
+          // resolve. With the gate open the arithmetic is the same as the
+          // ungated version, term for term.
+          float auroraBW = 0.72 + 0.28 * auroraDetailK;
+          float auroraBN = 0.5 + ( ( auroraM.a - 0.5 ) * 0.72
+                                 + ( auroraMF.a - 0.5 ) * 0.28 * auroraDetailK ) / auroraBW;
 
           float auroraSnowD = clamp( auroraVertexSnow + ( auroraBN - 0.5 ) * uBoundary, 0.0, 1.0 );
-          auroraSnowBase = smoothstep( 0.25, 0.75, auroraSnowD );
+          float auroraSnowBase = smoothstep( 0.25, 0.75, auroraSnowD );
           diffuseColor.rgb = mix( diffuseColor.rgb, uSnow, clamp( auroraSnowBase - auroraVertexSnow, 0.0, 1.0 ) );
           diffuseColor.rgb = mix( diffuseColor.rgb, uRock, clamp( auroraVertexSnow - auroraSnowBase, 0.0, 1.0 ) * ( 1.0 - auroraGreenBase ) );
 
-          auroraRockBase = ( 1.0 - auroraGreenBase ) * ( 1.0 - auroraSnowBase );
+          float auroraRockBase = ( 1.0 - auroraGreenBase ) * ( 1.0 - auroraSnowBase );
 
-          // ---- Macro layer: no distance fade, on purpose. See the note above.
-          {
-            vec2 auroraM = vWorldPos.xz;
-            float auroraM1 = auroraNoise( auroraM * 0.0368 ); // ~27 m regions
-            float auroraM2 = auroraNoise( auroraM * 0.104 );  // ~10 m within them
-            float auroraMacro = auroraM1 * 0.65 + auroraM2 * 0.35;
+          // ---- The region layer: the coarsest colour variation in the world,
+          // and UNGATED, on purpose.
+          //
+          // It runs at every distance because that is the whole job: everything
+          // past the near fades used to be flat green or flat grey, and the
+          // reason was never that the palette was too simple -- it was that the
+          // only thing varying the palette had already faded out. A distance
+          // fade would put the flatness back exactly where this exists to
+          // remove it.
+          //
+          // It is also free, which is what changed. It used to be its own
+          // auroraNoise call and one of the three that survived the haze gate;
+          // now it is two more channels of a fetch the snow line has already
+          // paid for, so gating it would save six multiplies and a smoothstep.
+          //
+          // Three destinations from one field, which is what "browner, darker,
+          // greener" is: the value multiply darkens and lifts whole regions, the
+          // high end pulls toward uDirt and the low end toward uDeep. Wide
+          // thresholds, because a region is either dry or it is lush or it is
+          // neither, and a smoothstep that started at the mean would tint every
+          // fragment in the world and average back to the base colour -- which
+          // is the flat green this is here to break.
+          //
+          // Snow gets the value swing at half weight (wind scours a drift into
+          // bright and dull ground and that reads as snow) and none of the tint
+          // (brown snow reads as dirty snow).
+          diffuseColor.rgb *= 1.0 + ( auroraM.r - 0.5 ) * uRegionValue * ( 1.0 - auroraSnowBase * 0.5 );
+          diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.62, 0.96, auroraM.r ) * auroraGreenBase * uRegionTint );
+          diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.38, 0.04, auroraM.r ) * auroraGreenBase * uRegionTint );
 
+          // ---- The mid-range mottle: ~30 m down to ~4 m, off the fine macro
+          // sample fetched above the snow line.
+          //
+          // Gated on the HAZE and not on a distance, and the difference matters.
+          // Its job is the same as the region layer's -- keep a hillside from
+          // reading as one colour -- so a distance fade would put the flatness
+          // back exactly where it exists to remove it. Transmittance is not that
+          // gate. At auroraDetailK zero the fog has already replaced this
+          // fragment with its own colour to within a few percent, so there is no
+          // flatness left to reveal: the layer is not being faded out, it is
+          // being skipped where it can no longer change the pixel.
+          //
+          // These wavelengths were once 110 m and 38 m and got divided by four,
+          // because at that size the two tint layers overlapped across most of
+          // any hillside you could see and averaged into one muddy middle tone.
+          // The variation was there; it was just too coarse to read as variation
+          // rather than as the base colour. The coarse end came back later as
+          // the region layer above, which is a separate sample rather than a
+          // resizing of this one, so the mid-range mottle is untouched and the
+          // gap above it is what got filled.
+          if ( auroraDetailK > 0.004 ) {
             // Snow gets a fraction of the brightness swing and none of the tint.
             // Blotchy snow reads as dirty snow, and the shading already gives it
             // all the form it needs.
-            diffuseColor.rgb *= 1.0 + ( auroraMacro - 0.5 ) * uMacroValue * ( 1.0 - auroraSnowBase * 0.6 );
+            diffuseColor.rgb *= 1.0 + ( auroraMF.r - 0.5 ) * uMacroValue * ( 1.0 - auroraSnowBase * 0.6 );
 
-            diffuseColor.rgb = mix( diffuseColor.rgb, uDry, smoothstep( 0.58, 0.94, auroraMacro ) * auroraGreenBase * uMacroTint );
-            diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.42, 0.08, auroraMacro ) * auroraGreenBase * uMacroTint );
-            // Rock stains on the finer octave alone: mineral banding follows the
-            // face, not the valley, so it should not track the coarser regions.
-            diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.52, 0.95, auroraM2 ) * auroraRockBase * uMacroTint * 0.8 );
-
-            // ---- The region octave, ~90 m: browner, darker, greener.
-            //
-            // See uRegionValue for what it is for. Turned off-axis by the same
-            // rotation the boundary dither uses, and for the same reason: at the
-            // range this octave exists to serve it is the ONLY variation left,
-            // so its value-noise lattice would be the only pattern on a distant
-            // hillside, aligned with the chunk grid.
-            float auroraRegion = auroraNoise( auroraRot * auroraM * 0.0111 + vec2( 53.2, 17.9 ) );
-
-            diffuseColor.rgb *= 1.0 + ( auroraRegion - 0.5 ) * uRegionValue * ( 1.0 - auroraSnowBase * 0.5 );
-
-            // Wider thresholds than the 27 m pair's -- a region is either dry or
-            // it is lush or it is neither, and a smoothstep that starts at the
-            // mean would tint every fragment in the world and average back to
-            // the base colour, which is the flat green this is here to break.
-            diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.62, 0.96, auroraRegion ) * auroraGreenBase * uRegionTint );
-            diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.38, 0.04, auroraRegion ) * auroraGreenBase * uRegionTint );
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDry, smoothstep( 0.58, 0.94, auroraMF.r ) * auroraGreenBase * uMacroTint );
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.42, 0.08, auroraMF.r ) * auroraGreenBase * uMacroTint );
+            // Rock stains on a DECORRELATED channel of the same fetch, not on
+            // the one that just tinted the grass: mineral banding follows the
+            // face, not the valley, so it should not track the meadow's dry
+            // patches. Free, because the fetch returned it either way.
+            diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.52, 0.95, auroraMF.g ) * auroraRockBase * uMacroTint * 0.8 );
           }
 
-          float auroraDist = length( vWorldPos - cameraPosition );
-          auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, auroraDist );
-          // Computed here and UNCONDITIONALLY, even though the tint layer that
-          // used to own it sits two blocks deeper: the relief pass at
-          // normal_fragment_begin reads it too, and it runs whether or not the
-          // near block was entered.
-          auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
-          // Overwritten by the ground-tile block below wherever there is an
-          // atlas to sample. Without one there is no photograph, so nothing is
-          // covered and the noise layers keep every surface they ever had.
-          auroraTileFade = 0.0;
+          float auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, auroraDist );
+          float auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
+          // How much of grass's and snow's texture the photographed ground tiles
+          // are carrying at this fragment: 1 inside GROUND_NEAR, 0 past
+          // GROUND_FAR, and 0 ALWAYS when there is no atlas to sample. The grit
+          // layers read it to get out of the way of whatever it is covering, so
+          // its default has to be the one that leaves the untextured shader
+          // exactly as it was. Overwritten by the ground-tile block below
+          // wherever there is an atlas.
+          float auroraTileFade = 0.0;
 ${atlas ? `
           // ---- Stone. See the header block above STONE_METRES.
           //
@@ -700,10 +806,9 @@ ${atlas ? `
           // entirely on grass and on snow -- which, below the snow line and
           // outside the crags, is nearly every fragment.
           float auroraStoneK = ( 1.0 - smoothstep( ${STONE_NEAR.toFixed(1)}, ${STONE_FAR.toFixed(1)}, auroraDist ) ) * auroraRockBase;
-          // Outside the guard because a derivative is only defined in
-          // quad-uniform flow, and this guard is not. See auroraStone.
-          vec3 auroraDPx = dFdx( vWorldPos );
-          vec3 auroraDPy = dFdy( vWorldPos );
+          // The derivatives these fetches need were taken at the top of the
+          // block, outside every guard -- a derivative is only defined in
+          // quad-uniform flow and this guard is not. See auroraStone.
           if ( auroraStoneK > 0.004 ) {
             // The GEOMETRIC normal, deliberately: this runs before
             // normal_fragment_begin, so the relief pass has not perturbed
@@ -753,20 +858,31 @@ ${atlas ? `
           }
 ` : ''}
           if ( auroraNear > 0.004 ) {
-            vec2 auroraP = vWorldPos.xz;
-            // Two scales: ~0.5 m grit for the speed cue, ~3.5 m patches so the
-            // ground reads as varied rather than as uniform sandpaper.
-            float auroraGrain = auroraNoise( auroraP * 1.9 ) * 0.6 + auroraNoise( auroraP * 0.28 ) * 0.4;
-            auroraGrain = mix( 0.5, auroraGrain, auroraNear );
-
             // HOW MUCH OF THIS FRAGMENT THE PHOTOGRAPHS ARE NOT CARRYING. Rock
             // is always 1 -- it has a tile of its own but that one is bedding at
             // 16 m, which says nothing at half a metre. Grass and snow fall to 0
             // inside GROUND_NEAR and come back as their tiles fade out, so the
-            // noise below is what the surface reverts TO rather than a layer
+            // grit below is what the surface reverts TO rather than a layer
             // stacked under a photograph. Clamped because the two
             // classifications are near-exclusive rather than provably so.
             float auroraProc = clamp( 1.0 - auroraTileFade * ( auroraGreenBase + auroraSnowBase ), 0.0, 1.0 );
+
+            // ---- THE GRIT TILE, COARSE SAMPLE: ${GRIT_METRES} m, 4.6 cm texels, NEAREST.
+            //
+            // This one fetch is what four auroraNoise calls and two auroraGrad
+            // calls used to be -- a ~3.5 m patch noise, a ~0.5 m grain, and two
+            // octaves of normal relief at ~1.4 m and ~0.45 m. Its baked fbm
+            // covers 2.9 m down to 18 cm and its per-texel speckle covers 4.6 cm,
+            // which is that whole ladder; its .gb are the slope of the very
+            // field its .r colours, so the surface is lit by the thing it is
+            // made of instead of by a second, independent noise.
+            vec4 auroraG = textureGrad( uGritMap, vWorldPos.xz * ${(1 / GRIT_METRES).toFixed(8)},
+              auroraDPx.xz * ${(1 / GRIT_METRES).toFixed(8)},
+              auroraDPy.xz * ${(1 / GRIT_METRES).toFixed(8)} );
+
+            // Faded toward the field's own mean rather than toward zero, so the
+            // layer leaves the surface where it found it as it goes.
+            float auroraGrain = mix( 0.5, auroraG.r, auroraNear );
 
             // Brightness speckle. Applies to grass, rock and snow alike -- snow
             // without it is a flat white void with no readable surface at all.
@@ -775,54 +891,75 @@ ${atlas ? `
             // Dirt and moss only show through on green ground, and only close
             // enough to see them -- and only where the meadow tile is not
             // already drawing the soil between the blades, which up close is
-            // everywhere.
+            // everywhere. The thresholds mean exactly what they read as: the
+            // grit field is rank-equalised, so 0.56..0.88 is the top 44% of
+            // texels ramping to the top 12%. See equalise() in grit-texture.js.
             float auroraGreen = auroraGreenBase * auroraNear * ( 1.0 - auroraTileFade );
             diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.56, 0.88, auroraGrain ) * auroraGreen * uDirtAmount );
             diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, smoothstep( 0.44, 0.12, auroraGrain ) * auroraGreen * uMossAmount );
 
-            // ---- Snow glitter.
+            // ---- Relief, coarse rung. See uRelief.
             //
-            // Snow's problem is the opposite of grass's: it is already bright,
-            // so darkening it with grain reads as dirt rather than as texture.
-            // What real snow gives you at walking distance is individual
-            // crystals catching the sun -- isolated points BRIGHTER than the
-            // surface, on a surface that is otherwise smooth.
-            //
-            // So: one high-frequency octave (~12 cm), thresholded hard so only
-            // the top few percent survive, added rather than multiplied. The
-            // threshold is what makes it read as discrete points; a smooth
-            // version of this is just noise and looks like static.
-            //
-            // It fades on the same curve as everything else here, which also
-            // keeps 12 cm features from aliasing once they go sub-pixel.
-            float auroraSparkle = auroraNoise( auroraP * 8.3 );
-            diffuseColor.rgb += smoothstep( 0.86, 1.0, auroraSparkle ) * auroraSnowBase * auroraNear * uSnowSparkle;
+            // .gb is dh/du in TILE units, so dividing by the tile's size in
+            // metres is what turns it into a real slope -- and it is why the two
+            // rungs can share one amplitude convention despite being five times
+            // apart in size.
+            if ( uRelief > 0.0 ) {
+              float auroraReliefAmt = auroraNear * uRelief *
+                ( auroraRockBase + auroraSnowBase * 0.2 + ( 1.0 - auroraRockBase - auroraSnowBase ) * 0.5 );
+              vec2 auroraS = ( auroraG.gb - 0.5 ) * ${(GRIT_GRAD_SCALE / GRIT_METRES).toFixed(6)};
+              auroraBump += vec3( -auroraS.x, 0.0, -auroraS.y ) * auroraReliefAmt;
+            }
 
-            // ---- Micro layer: ~10 cm flecks, on every surface, near only.
+            // ---- THE GRIT TILE, FINE SAMPLE: ${GRIT_FINE_METRES} m, 9 mm texels, rotated.
             //
-            // Nested inside the near block because the micro fade is strictly
-            // inside the grain fade -- auroraNear is still ~0.72 at MICRO_FAR
-            // and does not reach the 0.004 cutoff until about 90 m -- so there
-            // is no distance at which the micro layer is wanted and the grain
-            // is not. It costs one noise evaluation and six mixes, and it is
-            // skipped for every fragment past 40 m, which is most of them.
+            // Nested inside the near block because its fade is strictly inside
+            // the near fade -- auroraNear is still ~0.72 at MICRO_FAR -- so there
+            // is no distance at which this is wanted and the coarse sample is
+            // not. It replaces the sparkle, the fleck tint and the 10 cm relief
+            // octave, which between them were five auroraNoise calls.
             //
-            // ONE octave feeding both ends of each pair: the light fleck sits
-            // where the noise peaks and the dark fleck in the valleys between,
-            // which is how the grain layer above already works. A second
-            // decorrelated octave would double the cost to separate two
-            // features that are a centimetre apart and never seen apart.
-            //
-            // The thresholds are tighter than the grain's -- 0.62/0.90 rather
-            // than 0.56/0.88 -- so this reads as discrete specks scattered over
-            // the coarser mottling rather than as a second wash of it. That is
-            // the whole difference between "speckled" and "muddy" at this size.
+            // It is also what stops the coarse sample reading as a repeating
+            // 11.7 m tile underfoot. Rotated ~37 degrees off it for the same
+            // reason, and the rotation is why the slope it returns has to be
+            // turned BACK before it can be added to a world-space bump: the
+            // gradient a rotated fetch reports is in the rotated frame, and the
+            // transpose of a rotation is its inverse.
             if ( auroraMicroFade > 0.004 ) {
-              // ~10 cm cells. World-keyed like everything else here, so it does
-              // not swim when she walks and does not rescale across LOD rings.
-              // vWorldPos resolves about 1 mm at the far edge of a 16 km world,
-              // which is a hundred samples across one fleck -- ample.
-              float auroraMicroN = auroraNoise( auroraP * 10.0 );
+              vec4 auroraGF = textureGrad( uGritMap, auroraRot * ( vWorldPos.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ),
+                auroraRot * ( auroraDPx.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ),
+                auroraRot * ( auroraDPy.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ) );
+
+              // ---- Snow glitter.
+              //
+              // Snow's problem is the opposite of grass's: it is already bright,
+              // so darkening it with grain reads as dirt rather than as texture.
+              // What real snow gives you at walking distance is individual
+              // crystals catching the sun -- isolated points BRIGHTER than the
+              // surface, on a surface that is otherwise smooth.
+              //
+              // So: the fine tile's DECORRELATED channel, thresholded hard so
+              // only the top few percent survive, added rather than multiplied.
+              // The threshold is what makes it read as discrete points; a smooth
+              // version of this is just noise and looks like static. Equalised,
+              // so 0.93 is exactly the top 7% of texels rather than whatever a
+              // bell curve happened to leave above the line.
+              //
+              // .a and not .r because .r is quantised to six steps for the
+              // pixelated look, and a hard threshold on a staircase either
+              // catches a whole tread or none of it.
+              diffuseColor.rgb += smoothstep( 0.93, 1.0, auroraGF.a ) * auroraSnowBase * auroraNear * uSnowSparkle;
+
+              // ---- Micro layer: ~4 cm flecks, on every surface, near only.
+              //
+              // ONE FIELD FEEDING BOTH ENDS OF EACH PAIR: the light fleck sits
+              // where it peaks and the dark fleck in the valleys between, which
+              // is how the grain layer above already works. The thresholds are
+              // tighter than the grain's -- 0.62/0.90 rather than 0.56/0.88 --
+              // so this reads as discrete specks scattered over the coarser
+              // mottling rather than as a second wash of it. That is the whole
+              // difference between "speckled" and "muddy" at this size.
+              float auroraMicroN = auroraGF.r;
               float auroraMicroHi = smoothstep( 0.62, 0.90, auroraMicroN );
               float auroraMicroLo = smoothstep( 0.38, 0.10, auroraMicroN );
               float auroraMicroK = auroraMicroFade * uMicroTint;
@@ -842,83 +979,73 @@ ${atlas ? `
               diffuseColor.rgb = mix( diffuseColor.rgb, uSoot, auroraMicroLo * auroraRockBase * auroraMicroK );
               diffuseColor.rgb = mix( diffuseColor.rgb, uFrost, auroraMicroHi * auroraSnowBase * auroraMicroK * auroraMicroProc );
               diffuseColor.rgb = mix( diffuseColor.rgb, uShade, auroraMicroLo * auroraSnowBase * auroraMicroK * auroraMicroProc );
+
+              // ---- Relief, fine rung. Added to the same bump vector rather
+              // than applied as a second normalize: two successive normalizes
+              // would let the coarse tilt swallow the fine one wherever the
+              // coarse tilt is large, which is on rock -- precisely where this
+              // rung is meant to be strongest.
+              //
+              // Nested inside the uRelief guard on purpose: if the headset ever
+              // needs the whole normal pass gone, uRelief = 0 must still kill it.
+              if ( uRelief > 0.0 && uMicroRelief > 0.0 ) {
+                float auroraMicroAmt = auroraMicroFade * uMicroRelief *
+                  ( auroraRockBase + ( 1.0 - auroraRockBase ) * 0.5 );
+                vec2 auroraMS = ${ROT_T} * ( ( auroraGF.gb - 0.5 ) * ${(GRIT_GRAD_SCALE / GRIT_FINE_METRES).toFixed(6)} );
+                auroraBump += vec3( -auroraMS.x, 0.0, -auroraMS.y ) * auroraMicroAmt;
+              }
             }
           }
         }`
       )
-      // ---- Near-field relief.
+      // ---- Near-field relief: APPLY ONLY. The slopes were accumulated into
+      // auroraBump up in <color_fragment>, by the same two grit fetches that
+      // coloured the fragment.
       //
-      // The ask was another layer of micro variation, "minorly jagged and
-      // rocky", for the immediate region only. It deliberately does NOT go in
-      // the height field. The leaf chunk resolves 1.00 m cells, so a seventh
+      // That sharing is the entire reason this is cheap now. It used to call
+      // auroraGrad three times here -- nine value-noise evaluations, thirty-six
+      // integer hashes, on top of the twelve noise calls the colour block had
+      // already run -- and it computed its bumps from fields that had nothing
+      // to do with the ones doing the colouring, so the surface was lit as
+      // though it were made of something other than what it looked like. Now
+      // .gb of each grit fetch IS the derivative of the .r that coloured it, so
+      // the lighting and the albedo describe the same rock.
+      //
+      // The ask this exists for was micro variation, "minorly jagged and
+      // rocky", for the immediate region only, and it deliberately does NOT go
+      // in the height field. The leaf chunk resolves 1.00 m cells, so a seventh
       // detail octave would land at ~0.7 m wavelength, below Nyquist for the
       // mesh that has to carry it: it would alias into a crawling pattern that
       // changes every time a chunk rebuilds, and it would cost five more field
       // evaluations on the collision path, which is already the frame's most
       // expensive query. It would also feed straight into the slope limiter and
-      // manufacture exactly the sub-metre refusals this round exists to remove.
+      // manufacture exactly the sub-metre refusals that round existed to remove.
       //
       // Perturbing the shading normal instead buys the look with none of that.
       // It is geometry-free, so nothing rebuilds and nothing can block her; it
       // is keyed to world XZ, so it does not rescale across LOD rings; and it
-      // is inside the same near fade as the grain, so it is gone before it can
+      // rides the same near fades as the colour, so it is gone before it can
       // alias.
       //
-      // THREE octaves now, at ~1.4 m, ~0.45 m and ~10 cm, which is the "different
-      // octaves" the rock ask wanted -- the coarse one gives a face its lumps,
-      // the middle one gives those lumps a surface, and the fine one is what
-      // stops that surface reading as poured and edible at arm's length.
+      // Placed at normal_fragment_begin, which runs after color_fragment, so
+      // auroraBump is already filled. `normal` is in VIEW space at this point,
+      // hence the viewMatrix on the perturbation -- as a direction, so
+      // translation drops out.
       //
-      // The coarse pair share a mask: rock gets all of it, snow a fifth (it
-      // drapes and smooths, and heavy relief at half a metre makes a drift read
-      // as gravel), grass the remainder at half strength. The 10 cm octave has
-      // its own, flat mask -- full on rock, half on grass and snow alike -- and
-      // its own tighter fade. See uMicroRelief for why both differ.
-      //
-      // Note what is NOT happening here: this is not a seventh octave of the
-      // height field. The leaf chunk resolves 1.00 m cells, so 10 cm is a fifth
-      // of Nyquist for the mesh -- it would alias into a pattern that crawls
-      // whenever a chunk rebuilds, cost five field evaluations on the collision
-      // path, and hand the slope limiter sub-metre walls. Perturbing the shading
-      // normal buys the look with none of that: geometry-free, world-keyed so it
-      // does not rescale across LOD rings, and faded out before it can alias.
-      //
-      // Placed at normal_fragment_begin, which runs after color_fragment, so the
-      // classification and fade computed there are already in scope. `normal` is
-      // in VIEW space at this point, hence the viewMatrix on the perturbation --
-      // as a direction, so translation drops out.
+      // No guard on uRelief here: the two blocks that write auroraBump are
+      // themselves guarded, so with relief off this is normalize() of an
+      // unchanged normal, which is what the chunk just did anyway.
       .replace(
         '#include <normal_fragment_begin>',
         `#include <normal_fragment_begin>
-        if ( uRelief > 0.0 && auroraNear > 0.004 ) {
-          float auroraReliefAmt = auroraNear * uRelief *
-            ( auroraRockBase + auroraSnowBase * 0.2 + ( 1.0 - auroraRockBase - auroraSnowBase ) * 0.5 );
-          vec2 auroraR = vWorldPos.xz;
-          vec2 auroraG = auroraGrad( auroraR * 0.72 ) * 0.72 * 0.7
-                       + auroraGrad( auroraR * 2.2 ) * 2.2 * 0.3;
-          vec3 auroraBump = vec3( -auroraG.x, 0.0, -auroraG.y ) * auroraReliefAmt;
-
-          // ~10 cm bumps and divots. Added to the same bump vector rather than
-          // applied as a second normalize: two successive normalizes would let
-          // the coarse tilt swallow the fine one wherever the coarse tilt is
-          // large, which is on rock -- precisely where this octave is meant to
-          // be strongest.
-          if ( uMicroRelief > 0.0 && auroraMicroFade > 0.004 ) {
-            float auroraMicroAmt = auroraMicroFade * uMicroRelief *
-              ( auroraRockBase + ( 1.0 - auroraRockBase ) * 0.5 );
-            vec2 auroraMG = auroraGrad( auroraR * 10.0 ) * 10.0;
-            auroraBump += vec3( -auroraMG.x, 0.0, -auroraMG.y ) * auroraMicroAmt;
-          }
-
-          normal = normalize( normal + ( viewMatrix * vec4( auroraBump, 0.0 ) ).xyz );
-        }`
+        normal = normalize( normal + ( viewMatrix * vec4( auroraBump, 0.0 ) ).xyz );`
       )
   }
 
   // Distinct cache key so this never gets conflated with an unpatched Lambert,
   // and distinct BETWEEN the two variants: whether the atlas was passed changes
   // the compiled source, so the two must never share a program.
-  const key = `aurora-terrain-v8${atlas ? '-stone' : ''}`
+  const key = `aurora-terrain-v9${atlas ? '-stone' : ''}`
   material.customProgramCacheKey = () => key
 
   return material

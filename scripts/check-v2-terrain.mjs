@@ -413,14 +413,22 @@ export async function run() {
 
     // -- ancestor walk.
     {
+      // Indices DERIVED from the span rather than written down. They were literal
+      // 1234, 2345 -- in range on the old MAX_DEPTH 13 grid and out of range the
+      // moment the cap moved to 10, where nodeKey throws above 1024. The fractions
+      // are arbitrary and deliberately not power-of-two aligned, so the walk has to
+      // shift its way up rather than landing on a boundary for free.
+      const SPAN = 1 << MAX_DEPTH
+      const AIX = Math.floor(SPAN * 0.61)
+      const AIZ = Math.floor(SPAN * 0.29)
       probes = 0
-      const anc = loadedAncestorKey(MAX_DEPTH, 1234, 2345, isReady)
+      const anc = loadedAncestorKey(MAX_DEPTH, AIX, AIZ, isReady)
       const u = anc === null ? null : unpackKey(anc)
       check(anc !== null && u.depth === 2, 'the ancestor walk finds the NEAREST loaded ancestor, not the root', `depth ${u ? u.depth : 'none'}`)
       check(
-        u !== null && u.ix === 1234 >> (MAX_DEPTH - 2) && u.iz === 2345 >> (MAX_DEPTH - 2),
+        u !== null && u.ix === AIX >> (MAX_DEPTH - 2) && u.iz === AIZ >> (MAX_DEPTH - 2),
         'and it is the ancestor that actually contains the node',
-        `${u.ix},${u.iz} vs ${1234 >> (MAX_DEPTH - 2)},${2345 >> (MAX_DEPTH - 2)}`
+        `${u.ix},${u.iz} vs ${AIX >> (MAX_DEPTH - 2)},${AIZ >> (MAX_DEPTH - 2)}`
       )
       console.log(`        ancestor walk from depth ${MAX_DEPTH}: ${probes} probes (bound is MAX_DEPTH = ${MAX_DEPTH})`)
       check(probes <= MAX_DEPTH, 'the ancestor walk costs at most MAX_DEPTH probes', `${probes}`)
@@ -787,9 +795,9 @@ export async function run() {
 
   // --- 7. the panel's headline number --------------------------------------
   //
-  // finestCell is what the panel puts front and centre -- "am I actually seeing
-  // 10 cm" -- so it is worth pinning that the arithmetic behind it says what
-  // config.js claims.
+  // finestCell is what the panel puts front and centre -- "how fine is the ground
+  // I am standing on" -- so it is worth pinning that the arithmetic behind it says
+  // what config.js claims.
 
   console.log('\ncell sizes')
   {
@@ -797,8 +805,8 @@ export async function run() {
       `        ${[0, 2, MAX_DEPTH - 2, MAX_DEPTH].map((d) => `depth ${d}: ${cellSize(d) >= 1 ? `${cellSize(d)} m` : `${(cellSize(d) * 100).toFixed(2)} cm`}`).join('   ')}`
     )
     check(
-      Math.abs(cellSize(MAX_DEPTH) - 0.0625) < 1e-12,
-      'the leaf cell is 6.25 cm, which is what "down to 10 cm" means in these units',
+      Math.abs(cellSize(MAX_DEPTH) - 0.5) < 1e-12,
+      'the leaf cell is 50 cm, which is what an 8 m smallest chunk means in these units',
       `${cellSize(MAX_DEPTH)} m at depth ${MAX_DEPTH}`
     )
     check(cellSize(0) === WORLD_SIZE / CHUNK_RES, 'the root chunk spans the world', `${cellSize(0)} m cells`)

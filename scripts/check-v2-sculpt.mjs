@@ -10,7 +10,7 @@
 // is merely slow, which is why they are asserted here rather than eyeballed:
 //
 //   a falloff with a non-zero derivative at the rim -- a crease ring per stamp,
-//     invisible at chunk LOD and obvious at 6.25 cm cells
+//     invisible at chunk LOD and obvious at 50 cm cells
 //   a rect that is too small -- a ring of ground still meshed against heights
 //     that are no longer there, right where the brush edge draws the eye
 //   smooth blurring IN PLACE -- a directional smear that runs whichever way the

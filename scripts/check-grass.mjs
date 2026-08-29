@@ -49,7 +49,6 @@ import * as THREE from 'three'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_TIERS, GRASS_BASE, TUFT_TWIST,
-  TUFT_SPLAY,
   buildGrassStripBank, stripTiles, STRIP_BASE, STRIP_TILE_ASPECT, grassCardAspect,
   GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
@@ -74,6 +73,7 @@ const check = (ok, label, detail = '') => {
 const near = (a, b, tol) => Math.abs(a - b) <= tol
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, RIM_PHASES, TILE, HEIGHT, PLACEMENT,
+  GROW_FROM, GROW_TO, GROW_SCALE, GROW_SINK,
   STRIP_MATCH, STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK,
   STRIP_FULL_RADIUS, STRIP_THIN, STRIP_THIN_OCTAVES, stripThinAt } = GRASS_TUNING
 
@@ -104,10 +104,16 @@ check(
 // and throws if it is not, but the throw is at construction on the route, and
 // here it is one line.
 check(bank.cardTier === bank.tiers.length - 1, 'the billboard is the coarsest tier')
+// AND THE SHIPPED BED CLIMBS NONE OF IT. LOD_BANDS is empty because an
+// InstancedMesh holds exactly one geometry -- see THE ARENA IS AN InstancedMesh
+// in render/grass.js. The bank still builds the clump because the clump is the
+// impostor's SUBJECT, so the two-tier assertions above are about the BAKE and
+// this one is about the bed. A band reappearing here means someone put a ladder
+// back on a mesh that cannot hold one, and section 12 would then fail too.
 check(
-  LOD_BANDS.length === bank.tiers.length - 1,
-  'one band per tier boundary',
-  `${LOD_BANDS.length} bands, ${bank.tiers.length} tiers`
+  LOD_BANDS.length === 0,
+  'and the shipped bed has no bands at all -- one geometry, the card, everywhere',
+  `${LOD_BANDS.length} bands, ${bank.tiers.length} tiers in the bank`
 )
 
 // THE ONE THAT MATTERS. Mesh tiers on the tuft layer, the card alone on the
@@ -180,36 +186,30 @@ for (const t of bank.tiers) {
 check(ext.width > GRASS_BASE.width, 'the card is wider than the tuft it replaces',
   `${ext.width.toFixed(3)} vs ${GRASS_BASE.width}`)
 
-// THE TUFT IS A SPLAYED TRIANGLE, NOT AN ASTERISK AND NOT A PRISM. Two
-// distinguishing facts, and the gates below are one apiece. No card touches the
-// tuft's axis -- on the asterisk every plane ran through it, so half of all
-// vertices sat at radius 0. And the two rings are DIFFERENT SIZES: the tips
-// inscribe the full footprint circle and the roots are gathered into a smaller
-// one, which is what makes a clump rather than three flats meeting at a hub.
+// THE TUFT IS A TRIANGLE, NOT AN ASTERISK. The distinguishing fact is that no
+// card touches the tuft's axis: on the asterisk every plane ran through it, so
+// half of all vertices sat at radius 0. Here every base vertex is a corner of
+// the polygon, so all of them sit on the rim.
 //
-// THE TOP RING IS THE ONE THAT CARRIES THE FOOTPRINT, and that is a constraint
-// and not a convention: bakeGrassImpostor frames its camera to GRASS_BASE, so
-// anything outside that circle is cropped out of the far tier's photograph.
+// ONE RING, NOT TWO, and the gate below says so because a splayed tuft was tried
+// and reverted -- see THE CARDS DO NOT SPLAY in grass-bank.js. Every vertex on
+// the one circle is also what keeps the bake honest: bakeGrassImpostor frames its
+// camera to GRASS_BASE, so anything outside that circle is cropped out of the far
+// tier's photograph.
 {
   const lod0 = bank.tiers[0].geometry
   const p = lod0.attributes.position
-  const rTop = GRASS_BASE.width / 2
-  const rBase = rTop - GRASS_BASE.height * Math.tan(TUFT_SPLAY)
   let onAxis = 0
-  let placed = 0
+  let onRim = 0
   const baseCorners = []
-  const topCorners = []
   for (let i = 0; i < p.count; i++) {
     const r = Math.hypot(p.getX(i), p.getZ(i))
-    const top = Math.abs(p.getY(i)) >= 1e-5
     if (r < 1e-4) onAxis++
-    if (near(r, top ? rTop : rBase, 1e-4)) placed++
-    ;(top ? topCorners : baseCorners).push([p.getX(i), p.getZ(i)])
-    check(r <= rTop + 1e-4, `LOD0: vertex ${i} is inside the bake framing`, r.toFixed(4))
+    if (near(r, GRASS_BASE.width / 2, 1e-4)) onRim++
+    if (Math.abs(p.getY(i)) < 1e-5) baseCorners.push([p.getX(i), p.getZ(i)])
   }
   check(onAxis === 0, 'LOD0: no card passes through the tuft axis', `${onAxis} vertices at r = 0`)
-  check(placed === p.count, 'LOD0: tips on the footprint circle, roots on the gathered one',
-    `${placed}/${p.count}`)
+  check(onRim === p.count, 'LOD0: every vertex sits on the footprint circle', `${onRim}/${p.count}`)
 
   // Base to base: the six base vertices are three COINCIDENT PAIRS, because
   // each card ends where the next one starts. An asterisk would give six
@@ -225,35 +225,10 @@ check(ext.width > GRASS_BASE.width, 'the card is wider than the tuft it replaces
   check(joins === 3, 'LOD0: the three cards join base to base, closing a triangle',
     `${joins} shared corners`)
 
-  // Each edge is a chord of its own circle, so sqrt(3) times that radius. The
-  // card is a TRAPEZOID: wide at the tip, gathered at the root.
-  const side = (c) => Math.hypot(c[0][0] - c[1][0], c[0][1] - c[1][1])
-  check(near(side(topCorners), rTop * Math.sqrt(3), 1e-4),
-    'LOD0: the tip of each card is the triangle side, 0.476 m', side(topCorners).toFixed(4))
-  check(near(side(baseCorners), rBase * Math.sqrt(3), 1e-4),
-    'LOD0: the root of each card is gathered to 0.130 m', side(baseCorners).toFixed(4))
-
-  // ...and the lean that trapezoid implies is the splay it was asked for. Read
-  // off the geometry rather than off the constant, so a card that leaned by
-  // some other construction would still have to lean by this much.
-  const lean = Math.atan2(rTop - rBase, GRASS_BASE.height)
-  check(near(lean, TUFT_SPLAY, 1e-6), 'LOD0: the cards lean out by TUFT_SPLAY',
-    `${((lean * 180) / Math.PI).toFixed(1)} deg`)
-  check(TUFT_SPLAY > 0 && rBase > 0,
-    'the splay gathers the base without collapsing it',
-    `base radius ${rBase.toFixed(4)} of ${rTop.toFixed(4)}`)
-}
-
-// THE CARD IS NEITHER TWISTED NOR SPLAYED. It is a photograph of a tuft that is
-// both, so applying either to the quad the picture hangs on applies it twice --
-// and the vertex stage is busy turning that quad to face the camera besides.
-{
-  const card = bank.tiers[bank.cardTier].geometry
-  const p = card.attributes.position
-  const rs = []
-  for (let i = 0; i < p.count; i++) rs.push(Math.hypot(p.getX(i), p.getZ(i)))
-  check(rs.every((r) => near(r, rs[0], 1e-6)), 'the card has one ring, not two',
-    rs.map((r) => r.toFixed(4)).join(' '))
+  // Each card is a chord of the circle, so sqrt(3)/2 of the footprint.
+  const side = Math.hypot(baseCorners[0][0] - baseCorners[1][0], baseCorners[0][1] - baseCorners[1][1])
+  check(near(side, (GRASS_BASE.width / 2) * Math.sqrt(3), 1e-4),
+    'LOD0: each card is the triangle side, 0.476 m', side.toFixed(4))
 }
 
 // THE TWIST, on the mesh tiers and NOT on the card. Measured as the angle
@@ -537,7 +512,11 @@ const sigma = (r0, r1) => {
   }
   return n / (Math.PI * (r1 * r1 - r0 * r0))
 }
-const inner = sigma(4, FULL_RADIUS * 0.8)
+// The whole flat zone bar its outer fifth. F is 5 m now, which is barely wider
+// than a tile, so there is no room left to skip the innermost metres the way
+// this used to -- and no need: keep is exactly 1 everywhere inside F, so the
+// disc from the player's feet outward is the same measurement.
+const inner = sigma(0, FULL_RADIUS * 0.8)
 check(near(inner, DENSITY, DENSITY * 0.12), `full density inside ${FULL_RADIUS} m`,
   `${inner.toFixed(2)}/m^2, want ${DENSITY}`)
 for (const r of [30, 60]) {
@@ -561,7 +540,17 @@ check(st.tris > 0 && st.tris < 70_000, 'the carpet is under 70k triangles',
 
 // Tiles small enough that a tile's own width does not defeat the thinning, and
 // small enough that one build job is not a hitch.
-check(TILE / FULL_RADIUS < 0.5, 'a tile is under half the full-density radius',
+//
+// THE BOUND IS 1.0 AND IT USED TO BE 0.5, because FULL_RADIUS halved and TILE
+// did not. What the ratio prices is the over-keep: a tile is thinned once from
+// its NEAREST corner, so its far edge is kept as though it stood a tile closer
+// than it does. At 0.8 that over-keep is real, and it is paid for in RESIDENT
+// instances rather than drawn ones -- the per-instance fade distance is exact,
+// so the rim dissolves the surplus and the batch never submits it. The gates
+// above are what actually protect the picture: the F/r law is measured on the
+// ground at 30 and 60 m, and it holds. This one is only here to stop the ratio
+// climbing to where a tile is thinned as a single point.
+check(TILE / FULL_RADIUS <= 1, 'a tile is no wider than the full-density radius',
   `${TILE}/${FULL_RADIUS} = ${(TILE / FULL_RADIUS).toFixed(2)}`)
 check(TILE * TILE * DENSITY <= 256, 'a tile is at most 256 candidates', `${TILE * TILE * DENSITY}`)
 
@@ -578,11 +567,20 @@ let standingPastRim = 0
 let standingPastSlack = 0
 
 {
-  // THE GONE-DISTANCE IS NOT IN THE TEXTURE ANY MORE. The alpha slot the shader
-  // reads carries a clock stamp now (see the DISSOLVE header in material.js), so
-  // the distances come off the rim's own array and the texture is checked
-  // separately, for being the never-fade sentinel everywhere at rest.
-  const fade = grass.batch._colorsTexture.image.data
+  // THE GONE-DISTANCE IS NOT IN THE SLOT ANY MORE. The slot the shader reads
+  // carries a clock stamp now (see the DISSOLVE header in material.js), so the
+  // distances come off the rim's own array and the slot is checked separately,
+  // for being the never-fade sentinel everywhere at rest.
+  //
+  // ON AN INSTANCED BED THAT SLOT IS AN ATTRIBUTE, not the alpha lane of a
+  // colour texture -- an InstancedMesh's instanceColor is itemSize 3 in r180 and
+  // has no fourth channel to hide a timer in. One float per instance, indexed
+  // directly rather than at stride 4. See aPropFade in render/grass.js.
+  const fadeAttr = grass.batch.geometry.getAttribute('aPropFade')
+  check(!!fadeAttr && fadeAttr.itemSize === 1 && fadeAttr.count >= grass.maxInstances,
+    'the dissolve rides on a per-instance attribute, one float wide',
+    `${fadeAttr ? `${fadeAttr.count} x ${fadeAttr.itemSize}` : 'missing'} for ${grass.maxInstances} instances`)
+  const fade = fadeAttr.array
   let minGone = Infinity
   let maxGone = -Infinity
   let atRim = 0
@@ -591,7 +589,7 @@ let standingPastSlack = 0
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       const gone = grass.rim.gone[id]
-      if (fade[id * 4 + 3] !== 1) stamped++
+      if (fade[id] !== 1) stamped++
       // 3D, because that is what the shader compares against: the fade reads
       // distance(cameraPosition, fadeRoot), and at 1.6 m of eye height over a
       // 20 m full-density radius the vertical leg is not a rounding.
@@ -686,10 +684,9 @@ console.log('\n-- rim --')
       if (!vis) hidden++
       if (!vis && d < trigger) hiddenButVisible++
       if (vis && d > trigger + slack) shownButGone++
-      const band = LOD_BANDS.findIndex((b) => d < b)
-      const tris = bank.tiers[band < 0 ? bank.cardTier : band].triangles
-      billFull += tris
-      if (vis) billDrawn += tris
+      // Two, unconditionally: there is no ladder, so distance does not enter it.
+      billFull += 2
+      if (vis) billDrawn += 2
     }
   }
   // THE ONE THAT MATTERS. Nothing is hidden while any of it would still have
@@ -732,12 +729,13 @@ console.log('\n-- rim --')
   // NOTHING IS HIDDEN NEAR THE PLAYER, and that is a proof rather than a
   // measurement: no tuft is given a dissolve distance under FULL_RADIUS (rank
   // u < 1, so fullRadius/u > fullRadius), so the closest trigger any tuft in the
-  // world can carry is FULL_RADIUS * RIM_AT. Nothing may be hidden inside that,
-  // and it breaks the moment LOD_BANDS is allowed to reach past FULL_RADIUS.
-  check(LOD_BANDS[LOD_BANDS.length - 1] <= FULL_RADIUS,
-    'the last LOD band does not reach past the full-density radius',
-    `${LOD_BANDS[LOD_BANDS.length - 1]} m band, ${FULL_RADIUS} m full`)
-  let hiddenMesh = 0
+  // world can carry is FULL_RADIUS * RIM_AT. Nothing may be hidden inside that.
+  //
+  // IT USED TO ALSO GUARD THE LADDER -- a mesh tier hidden by the rim is a hole
+  // in geometry the player is standing on -- and there is no ladder to guard now
+  // (LOD_BANDS is empty). What is left is the floor itself, which is the part
+  // that protects the picture: at F = 5 and RIM_AT the floor is 4.63 m, so the
+  // nearest dissolve in the world is still outside arm's reach.
   let nearestHidden = Infinity
   for (const tile of grass.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
@@ -745,21 +743,11 @@ console.log('\n-- rim --')
       if (grass.batch.getVisibleAt(id)) continue
       const d = Math.hypot(grass.instX[id], grass.instZ[id], grass.instY[id] - EYE)
       nearestHidden = Math.min(nearestHidden, d)
-      if (LOD_BANDS.some((b) => d < b)) hiddenMesh++
     }
   }
   check(nearestHidden >= FULL_RADIUS * RIM_AT - 1e-6,
     'nothing is hidden inside the closest trigger any tuft can carry',
     `nearest hidden ${nearestHidden.toFixed(2)} m, floor ${(FULL_RADIUS * RIM_AT).toFixed(2)} m`)
-  // The sliver between that floor and the last LOD band is the only place a
-  // still-meshed tuft can be hidden, and only the top few percent of ranks reach
-  // it. Bounded rather than forbidden: the alternative is flooring every
-  // gone-distance at FULL_RADIUS / RIM_AT, which would bend the thinning law
-  // near the full-density radius to buy back a handful of 6-triangle tufts at
-  // eighteen metres.
-  check(hiddenMesh < grass.placed * 0.005,
-    'the mesh tiers are all but untouched by the rim',
-    `${hiddenMesh} of ${grass.placed} hidden inside ${LOD_BANDS[LOD_BANDS.length - 1]} m`)
 
   // Ids are NOT freed. Re-showing a tuft the player is walking toward has to be
   // a byte, not a regrown tile -- and a freed id would have to be re-placed
@@ -848,8 +836,9 @@ console.log('\n-- rim --')
 
   setPropClock(0.05)
   g.rim._startFade(id, getPropClock(), false)
-  check(g.rim.isBusy(id) && g.batch._colorsTexture.image.data[id * 4 + 3] < 0,
-    'a rim fade stamped just after a wrap is in flight', `slot ${g.batch._colorsTexture.image.data[id * 4 + 3].toFixed(3)}`)
+  const slot = g.batch.geometry.getAttribute('aPropFade').array
+  check(g.rim.isBusy(id) && slot[id] < 0,
+    'a rim fade stamped just after a wrap is in flight', `slot ${slot[id].toFixed(3)}`)
   // The clock has gone BACKWARDS relative to the stamp, which is what a wrap
   // looks like from inside a transition that straddles it.
   setPropClock(1023.9)
@@ -857,9 +846,9 @@ console.log('\n-- rim --')
   check(!g.rim.isBusy(id) && g.rim.flightN === 0,
     'and the wrap retires it instead of freezing it at its opening frame',
     `state resolved, ${g.rim.flightN} still in flight`)
-  check(g.batch._colorsTexture.image.data[id * 4 + 3] === 1,
+  check(slot[id] === 1,
     'and the slot goes back to the never-fade sentinel',
-    `slot ${g.batch._colorsTexture.image.data[id * 4 + 3]}`)
+    `slot ${slot[id]}`)
   // It was a fade OUT, so the resolved state is hidden -- the wrap must not turn
   // a departure into an arrival.
   check(g.rim.isHidden(id) && !g.batch.getVisibleAt(id),
@@ -940,39 +929,48 @@ console.log('\n-- variation --')
   check(greenest < 0.4, 'the tint is linear, not sRGB', `brightest green ${greenest.toFixed(3)}`)
 }
 
-// --- 6. the LOD ladder ------------------------------------------------------
+// --- 6. the one tier --------------------------------------------------------
+//
+// There is no ladder any more -- see THE ARENA IS AN InstancedMesh in
+// render/grass.js -- so what used to be a band-crossing gate is now a gate on
+// the ladder STAYING gone. An InstancedMesh has exactly one geometry, and the
+// two ways that breaks are both silent in Node: the bed keeping a second tier
+// it can never draw (every instance on it would render as the wrong plant), and
+// the surviving tier being the CLUMP rather than the card (three times the
+// triangles, and the clump does not billboard because the billboard list names
+// IMPOSTOR_GRASS alone).
 
-console.log('\n-- lod --')
+console.log('\n-- one tier --')
 
 {
-  const counts = new Array(bank.tiers.length).fill(0)
+  check(grass.tierCount === 1 && grass.cardTier === 0,
+    'the bed has exactly one tier and it is the card',
+    `${grass.tierCount} tier, cardTier ${grass.cardTier}`)
+  check(grass.tierTris.length === 1 && grass.tierTris[0] === 2,
+    'and that tier is two triangles, at every distance',
+    `${grass.tierTris.join(',')} triangles a tier`)
+  // Read off the geometry the arena actually holds rather than off the bank, so
+  // a bank that kept the clump and an arena that took it cannot both pass.
+  check(grass.batch.geometry.index.count / 3 === 2,
+    'and the geometry in the arena is the card, not the clump it was baked from',
+    `${grass.batch.geometry.index.count / 3} triangles against the clump's ${bank.tiers[0].triangles}`)
   let wrongTier = 0
+  let n = 0
   for (const tile of grass.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      // A VEILED instance keeps whatever tier it last held -- the near loop
-      // skips the tier work once it has decided not to draw it, because the
-      // geometry id of an invisible instance is not a thing anyone reads. Count
-      // them here and the gate would be measuring a number nobody maintains.
       if (!grass.batch.getVisibleAt(id)) continue
-      const t = grass.tierAt[id]
-      counts[t]++
-      const d = Math.hypot(grass.instX[id], grass.instZ[id], grass.instY[id] - EYE)
-      // Hysteresis only ever pushes a boundary OUT, and only for an instance
-      // that already held the finer tier -- on the frame after `place` nothing
-      // has moved, so the true bands hold exactly.
-      const want = LOD_BANDS.findIndex((b) => d < b)
-      if (t !== (want < 0 ? bank.cardTier : want)) wrongTier++
+      n++
+      if (grass.tierAt[id] !== 0) wrongTier++
     }
   }
-  check(wrongTier === 0, 'every tuft is on the tier its distance names', `${wrongTier} off`)
-  // Over the DRAWN carpet, not the resident one -- all but a handful of what the
-  // rim hid was a card (see the rim section), so counting those would flatter
-  // this.
-  const drawn = st.placed - st.rimHidden
-  check(counts[bank.cardTier] / drawn > 0.75, 'the card tier carries most of the carpet',
-    `${((counts[bank.cardTier] / drawn) * 100).toFixed(0)}% of ${drawn} drawn`)
-  console.log(`       tiers: ${counts.map((c, i) => `${bank.tiers[i].name} ${c}`).join('   ')}`)
+  check(n > 1000 && wrongTier === 0, 'and every drawn tuft is on it',
+    `${wrongTier} off over ${n} drawn`)
+  // The bill follows from that: two triangles times what the rim left standing,
+  // with nothing on a 6-triangle tier to pad it.
+  check(st.tris === (st.placed - st.rimHidden) * 2,
+    'so the whole bill is two triangles a drawn tuft',
+    `${st.tris} over ${st.placed - st.rimHidden} drawn`)
 }
 
 // --- 7. placement exclusions ------------------------------------------------
@@ -1228,20 +1226,18 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
 
 // WHERE THE PLAYER IS STANDING, which is the ring neither gate above can see.
 //
-// Both of them compare a strip against the tuft carpet's BILLBOARD -- the right
-// baseline for "is this worth two triangles", because that is what 70% of the
-// tuft bill is spent on. But a player is not standing in the far field. Inside
-// LOD_BANDS[0] the tuft bed is running its 3-plane LOD0 and spending six
-// triangles a tuft, and a strip bed has no ladder to climb: it is flat and two
-// triangles everywhere. So the bed can be at matched coverage on the far-field
+// Both of them compare a strip against ONE tuft card at its authored size, and
+// neither of those is what the bed actually draws across a ring: the thinning
+// falls as 1/d and the card GROWS to meet it, so coverage is a product of two
+// functions of distance. A bed can be at matched coverage on the whole-bed
 // arithmetic and still be half the grass in the ring the player occupies, which
 // is exactly what "it looks sparser" turned out to be.
 //
-// Measured per ring off the real scatter, so the graded thinning and the rim
-// are in it. Facing area is summed from the tier geometry itself: every quad is
-// a vertical card of horizontal width w, and a FIXED card seen from a uniform
-// yaw shows 2/pi of its width, which is the same factor the far-field
-// comparison uses.
+// Measured per ring off the real scatter, so the graded thinning, the rim and
+// the far-field grow are all in it. Facing area is summed from the tier geometry
+// itself: every quad is a vertical card of horizontal width w, and a FIXED card
+// seen from a uniform yaw shows 2/pi of its width, which is the same factor the
+// far-field comparison uses.
 {
   const facingOf = (geo) => {
     const p = geo.getAttribute('position').array
@@ -1257,11 +1253,26 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
     return sum
   }
   const tierFace = bank.tiers.map((t) => facingOf(t.geometry) * Math.sqrt(tuftSy) * tuftSy)
-  // The 20 m boundary is FULL_RADIUS -- where the density law stops being flat
-  // and starts falling as FULL_RADIUS / d. It used to be spelled LOD_BANDS[1],
-  // which was the same number for a different reason; the ladder is two tiers
-  // now and the ring that matters here was always the thinning knee.
-  const RINGS = [0, LOD_BANDS[0], FULL_RADIUS, 40, DRAW_RADIUS]
+  // THE GROW, PRICED THE WAY THE VERTEX SHADER APPLIES IT (billboardGrowVertex
+  // in material.js): g is linear on the part of the card still ABOVE ground, in
+  // both dimensions, so the visible facing area is g squared. The sink does not
+  // enter -- it is taken as a fraction of the grown card and the height scale is
+  // solved to leave g times the card standing, which is the fix for the squat
+  // rectangles the first version drew.
+  const smooth = (a, b, x) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
+    return t * t * (3 - 2 * t)
+  }
+  const growFace = (d) => {
+    const t = smooth(GROW_FROM, GROW_TO, d)
+    const g = 1 + (GROW_SCALE - 1) * t
+    return g * g
+  }
+  // The rings are the knees of the two laws that shape the bed: FULL_RADIUS is
+  // where the thinning starts biting, and GROW_FROM..GROW_TO is the ramp that
+  // pays it back. The last ring is the fully-grown far field, which is where
+  // most of the instances and all of the fill actually are.
+  const RINGS = [0, FULL_RADIUS, GROW_FROM, GROW_TO, DRAW_RADIUS]
   const ringOf = (d) => {
     for (let i = 0; i < RINGS.length - 1; i++) if (d >= RINGS[i] && d < RINGS[i + 1]) return i
     return -1
@@ -1276,7 +1287,7 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
     }
     return f.map((v, i) => v / (Math.PI * (RINGS[i + 1] ** 2 - RINGS[i] ** 2)))
   }
-  const tuftRings = sweep(grass, (d) => tierFace[d < LOD_BANDS[0] ? 0 : bank.cardTier])
+  const tuftRings = sweep(grass, (d) => tierFace[bank.cardTier] * growFace(d))
   const stripRings = sweep(strips, () => stripFace)
   const ratios = stripRings.map((v, i) => v / tuftRings[i])
   const report = ratios.map((r, i) => `${RINGS[i]}-${RINGS[i + 1]}m ${r.toFixed(2)}x`).join('  ')
@@ -1285,11 +1296,37 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
   // (a crossed pair is 4 triangles and never goes edge-on) rather than more
   // instances. What this gate is for is stopping it slide further while nobody
   // is measuring that ring.
-  check(ratios[0] > 0.5, 'and the ring the player stands in is not half the grass it was',
-    report)
-  check(ratios[ratios.length - 1] > 1,
-    'while the far field, which is where the triangles actually are, is ahead',
-    `${stripRings[stripRings.length - 1].toFixed(2)} m2/m2 vs ${tuftRings[tuftRings.length - 1].toFixed(2)}`)
+  check(ratios[0] > 0.5 && Number.isFinite(ratios[0]),
+    'and the ring the player stands in is not half the grass it was', report)
+  // AND THE FAR FIELD IS THE TUFT BED'S NOW, which is the whole point of halving
+  // the distant density and growing the survivors. The strip bed used to win
+  // this ring by 1.5x on the argument that one big sheet covers ground more
+  // cheaply than many small cards; a card that grows to GROW_SCALE past GROW_TO
+  // is the same argument applied to the card, and it wins because it does not
+  // also pay the strip's per-pixel textureGrad.
+  //
+  // Stated against the un-grown bed at TWICE the density, because that is the
+  // trade the user asked for -- half the instances, bigger cards, "preserve the
+  // perceived lushness with less tris". A mean grow factor over the outer ring
+  // above 2 means the coverage went UP while the instance count halved.
+  const outer = RINGS.length - 2
+  let growSum = 0
+  let growN = 0
+  for (let id = 0; id < grass.maxInstances; id++) {
+    if (!grass.batch.getVisibleAt(id)) continue
+    const d = Math.hypot(grass.instX[id], grass.instZ[id])
+    if (d < RINGS[outer] || d >= RINGS[outer + 1]) continue
+    growSum += growFace(d)
+    growN++
+  }
+  const meanGrow = growSum / growN
+  check(growN > 1000 && meanGrow > 2,
+    'and the grow more than pays back the halving in the ring it was aimed at',
+    `${meanGrow.toFixed(2)}x facing area over ${growN} tufts in ${RINGS[outer]}-${RINGS[outer + 1]} m, ` +
+    `against the 2x the density lost`)
+  check(tuftRings[outer] > stripRings[outer],
+    'so the far field, where the fill actually is, is the tuft bed\'s',
+    `${tuftRings[outer].toFixed(2)} m2/m2 vs the strips' ${stripRings[outer].toFixed(2)}`)
 }
 
 // THE STRIP BED'S EXTRA THINNING, DELIVERED AGAINST ASKED.
@@ -1422,9 +1459,14 @@ check(stripCover / tuftCover > 0.3 && stripCover / tuftCover < 3,
   check(worstTuft < 1e-6, 'while the tuft carpet still dissolves at exactly fullRadius / u',
     `worst ${(worstTuft * 100).toExponential(1)}%, thinning from ${grass.thinFrom} m vs the strips' ${strips.thinFrom}`)
 
-  check(strips.thinFrom === STRIP_FULL_RADIUS && strips.thinFrom < grass.thinFrom,
-    'and the strip bed starts thinning earlier than a bed with a ladder may',
-    `${strips.thinFrom} m vs ${grass.thinFrom} m, on ${strips.bank.tiers.length} tier`)
+  // The two grids start together now -- see STRIP_FULL_RADIUS. What has to hold
+  // is that NEITHER bed's grid starts after its own law bends, because level 0
+  // is sampled at thinFrom and applied to everything inside it: a grid that
+  // starts late thins the ground the player is standing on, uniformly, and it
+  // reads as a thin patch around the camera rather than as a bug.
+  check(strips.thinFrom <= FULL_RADIUS && grass.thinFrom <= FULL_RADIUS,
+    'and neither bed quantises from further out than its law stays flat',
+    `strips ${strips.thinFrom} m, tufts ${grass.thinFrom} m, law flat to ${FULL_RADIUS} m`)
 }
 
 check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', `${ss.placed} strips`)
@@ -1439,11 +1481,16 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
 // a same-count uniform control drawn over the same box, and gates on the ratio --
 // which is scale-free, so it does not move when the density does.
 //
-// Inside FULL_RADIUS every candidate is kept, which is where this has to hold:
-// past it the graded thinning takes a RANDOM subset and no low-discrepancy
-// sequence survives that. Near is also where the complaint was.
+// THE WINDOW REACHES PAST FULL_RADIUS, which it did not have to when that radius
+// was 10 m. A 5 m flat zone holds about 300 strips, and at 300 points in a box
+// the Poisson estimate is boundary-dominated -- the control reads 10% high and
+// the gate would be measuring the sample size. So the window stays at 10 m and
+// its outer half is thinned, which costs some evenness (the thinning drops a
+// rank-ordered subset, and no low-discrepancy sequence survives that intact) and
+// still leaves the real bed 1.3x the control. Near is also where the complaint
+// was.
 {
-  const HALF = 10 // metres either side of the origin, well inside FULL_RADIUS
+  const HALF = 10 // metres either side of the origin
   const pts = []
   const m = new THREE.Matrix4()
   for (const tile of strips.tiles.values()) {
@@ -1561,16 +1608,19 @@ check(ss.style === 'strips' && ss.placed > 0, 'the strip scatter places grass', 
 }
 check(ss.tris === (ss.placed - ss.rimHidden) * 2, 'every drawn strip costs exactly two triangles',
   `${(ss.tris / 1000).toFixed(1)}k`)
-// The whole claim, end to end and measured rather than derived. Stated PER
-// INSTANCE, because that is the part of it that does not move when STRIP_MATCH
-// does: a strip is two triangles flat, where a tuft averages its ladder, and how
-// far apart the two BEDS end up is then a consequence of the density the
-// invariant asks for rather than a property of the system. Both are printed.
+// The whole claim, end to end and measured rather than derived.
+//
+// PER INSTANCE THE TWO ARE NOW LEVEL, and that is the interesting half. The
+// strip's original argument was that it is two flat triangles where a tuft
+// averages a 6-and-2 ladder; the tuft bed has no ladder any more, so both beds
+// are exactly two triangles an instance and the strip's remaining win is
+// entirely in how many instances it puts down. Gated as EQUAL rather than
+// deleted, because a tuft bill that climbs off 2.00 means a ladder came back on
+// a mesh that cannot hold one.
 const tuftPer = st.tris / (st.placed - st.rimHidden)
 const stripPer = ss.tris / (ss.placed - ss.rimHidden)
-check(stripPer < tuftPer, 'a strip instance costs less than a tuft instance',
-  `${stripPer.toFixed(2)} tri vs ${tuftPer.toFixed(2)} across the tuft ladder ` +
-  `(${(stripPer / tuftPer).toFixed(2)}x)`)
+check(stripPer === 2 && tuftPer === 2, 'a strip and a tuft cost the same two triangles',
+  `${stripPer.toFixed(2)} tri vs ${tuftPer.toFixed(2)}`)
 check(ss.tris < st.tris, `and at STRIP_MATCH = ${STRIP_MATCH} the whole carpet is cheaper too`,
   `${(ss.tris / 1000).toFixed(1)}k vs ${(st.tris / 1000).toFixed(1)}k ` +
   `(${(ss.tris / st.tris).toFixed(2)}x)`)
@@ -1619,6 +1669,168 @@ tilted.place(0, 0)
 }
 tilted.dispose()
 strips.dispose()
+
+// --- 12. the arena, and the far-field grow -----------------------------------
+//
+// The bed draws through InstancedArena, a BatchedMesh-shaped facade over
+// THREE.InstancedMesh -- see THE ARENA IS AN InstancedMesh in render/grass.js for
+// the measurement that put it there (5 fps batched, 50-60 fps instanced at three
+// times the triangles, same headset, same bed). What is gated here is the part
+// of that shape which is silent when it breaks:
+//
+//   HIDDEN MUST MEAN ZEROED. An InstancedMesh draws a contiguous `count` and has
+//   no per-instance visibility, so the shim hides by writing a zero matrix and
+//   keeps the real one in a shadow array. Two ways that breaks silently: a hidden
+//   tuft whose matrix was never cleared draws at full size where the rim just
+//   dissolved it, and a shown tuft whose matrix was never restored is a hole.
+//   Both are invisible in Node except by asking, so this asks.
+//
+//   count MUST COVER EVERY VISIBLE ID. It is a high-water mark, and if it ever
+//   lagged an id that was made visible, that tuft would silently not draw.
+//
+//   THE BILLBOARD MUST STAY CYLINDRICAL. Rocks are viewpoint-oriented and grass
+//   is not: a spherical billboard tips the whole carpet to face an eye 1.6 m up,
+//   which from any altitude reads as crop circles. It is one boolean in
+//   createPropMaterial and it changes nothing that throws.
+//
+//   THE GROW MUST BE WIRED, AND WIRED IN THE VERTEX STAGE. Halving the far-field
+//   density is only affordable because the survivors are twice the size out
+//   there; a bed that lost the grow would be half the grass with nothing paying
+//   it back, and the only visible symptom is "it looks thinner than it did".
+
+console.log('\n-- arena --')
+{
+  check(grass.batch.isInstancedMesh === true && !grass.batch.isBatchedMesh,
+    'the bed draws through an InstancedMesh, which is one hardware draw',
+    `${grass.batch.constructor.name}, ${st.style}`)
+
+  // THE MATERIAL, READ OFF THE PROGRAM CACHE KEY, which is the one string that
+  // has to name every compile-time branch in the shader -- if a flag is missing
+  // from it, two arenas share a program and the bug is far worse than this gate.
+  // So checking it is checking the shader, not a label beside it.
+  const key = grass.material.customProgramCacheKey()
+  check(!key.includes('-sph'), 'and grass billboards cylindrically, not at the viewpoint', key)
+  check(key.includes('-ifade'),
+    'and its dissolve is compiled against the attribute, not a batch colour texture', key)
+  check(key.includes(`-grow${GROW_FROM}.${GROW_TO}.${GROW_SCALE}.`),
+    'and the far-field grow is compiled in', key)
+  check(!key.includes('-nospin'), 'and the shipped bed does spin its cards', key)
+
+  // THE BILLBOARD TOGGLE IS ONE VARIABLE, and this is the gate that says so.
+  // main.js's `grass cards: billboard/fixed` row exists to price the spin, and
+  // it can only do that if the spin is the ONLY thing it changes -- so the
+  // no-spin build has to keep the grow ramp and the u-flip and drop nothing but
+  // the yaw-to-camera rotate. Read off the compiled GLSL rather than the flag,
+  // because the failure this guards against is a flag that stops reaching the
+  // shader, which no amount of reading the flag can find.
+  {
+    const CHUNKS = ['common', 'begin_vertex', 'project_vertex']
+    const compile = (m) => {
+      const shader = {
+        uniforms: {},
+        vertexShader: CHUNKS.map((c) => `#include <${c}>`).join('\n'),
+        fragmentShader: '#include <common>\n#include <color_fragment>\n#include <normal_fragment_begin>\n'
+          + 'vec4 diffuseColor = vec4( diffuse, opacity );',
+      }
+      m.onBeforeCompile(shader)
+      return m.userData.shader.vertexShader
+    }
+    const fixed = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
+      { seed: 7, style: 'tufts', spin: false })
+    const spunSrc = compile(grass.material)
+    const fixedSrc = compile(fixed.material)
+    const ROTATE = 'transformed.x * bbC.x'
+    const GROW = 'float bbG'
+    const FLIP = 'vUvProj.x = 1.0 - vUvProj.x'
+    check(spunSrc.includes(ROTATE) && !fixedSrc.includes(ROTATE),
+      'and spin:false is the yaw-to-camera rotate gone from the compiled source',
+      `rotate present ${spunSrc.includes(ROTATE)} -> ${fixedSrc.includes(ROTATE)}`)
+    check(fixedSrc.includes(GROW) && fixedSrc.includes(FLIP),
+      'and nothing else goes with it -- the grow ramp and the u-flip survive',
+      `grow ${fixedSrc.includes(GROW)}, u-flip ${fixedSrc.includes(FLIP)}`)
+    check(fixed.material.customProgramCacheKey().includes('-nospin'),
+      'and the two builds cannot share a compiled program',
+      fixed.material.customProgramCacheKey())
+    fixed.dispose()
+  }
+
+  // The tuning itself, stated as the ask was: half the density, twice the size,
+  // 30% underground. FULL_RADIUS is gated against its old value because the
+  // halving is the whole reason the other three exist.
+  check(FULL_RADIUS === 5 && GROW_SCALE > 1.6 && GROW_SINK === 0.3,
+    'and the far field is half as dense, bigger, and 30% sunk',
+    `F ${FULL_RADIUS} m, ${GROW_SCALE}x over ${GROW_FROM}-${GROW_TO} m, ${GROW_SINK * 100}% sunk`)
+  // AND THE GROW DOES NOT SQUASH. The complaint that sent this constant here was
+  // that the far field read as flat rectangles, which it did: the old form took
+  // the width to GROW_SCALE and the visible height to GROW_SCALE * (1 - sink).
+  // Both dimensions have to grow by the same factor for the bake's proportions
+  // to survive the ramp, so assert the shader's two scales against each other
+  // rather than the constant they are built from.
+  {
+    const t = 1
+    const g = 1 + (GROW_SCALE - 1) * t
+    const s = GROW_SINK * t
+    const ys = g / (1 - s)
+    // Visible height: the card's top lands at top * ys * (1 - s), its foot at a
+    // negative y. Width is a flat g. The two must agree.
+    const visible = ys * (1 - s)
+    check(Math.abs(visible - g) < 1e-9,
+      'and the grow keeps the card\'s proportions rather than flattening it',
+      `width ${g.toFixed(3)}x, visible height ${visible.toFixed(3)}x, ${(s * 100).toFixed(0)}% buried`)
+  }
+  // The sink is a fraction of the CARD, resolved against the real geometry, so a
+  // taller card sinks further and the buried fraction does not drift.
+  {
+    const geo = grass.batch.geometry
+    geo.computeBoundingBox()
+    check(near(geo.boundingBox.min.y, 0, 1e-6),
+      'and the card stands on y = 0, which is what makes the sink a subtraction',
+      `foot at ${geo.boundingBox.min.y.toFixed(6)} m`)
+  }
+
+  // NOW WALK IT, because a stationary bed never evicts, never regrows and never
+  // re-shows an id the rim had hidden -- which is exactly where the shadow
+  // matrix is load-bearing. Nothing below counts instances, so the wall-clock
+  // regrow budget does not reach it.
+  const walk = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+  walk.place(0, 0)
+  for (let f = 0; f <= RIM_PHASES; f++) {
+    setPropClock(f * PROP_FADE_SECONDS)
+    walk.update(0, EYE, 0)
+  }
+  for (let i = 1; i <= 40; i++) {
+    setPropClock(((RIM_PHASES + i) * PROP_FADE_SECONDS) % 1024)
+    walk.update(i * 2, EYE, i * 2)
+  }
+  let liveZero = 0
+  let hiddenSet = 0
+  let overCount = 0
+  const m = walk.batch.instanceMatrix.array
+  for (let i = 0; i < walk.maxInstances; i++) {
+    // Element 15 is the homogeneous w, which is 1 in every matrix compose() can
+    // produce and 0 only in the zeroed one -- so it alone separates the two.
+    const zeroed = m[i * 16 + 15] === 0
+    if (walk.batch.getVisibleAt(i)) {
+      if (zeroed) liveZero++
+      if (i >= walk.batch.count) overCount++
+    } else if (!zeroed) hiddenSet++
+  }
+  check(liveZero === 0 && hiddenSet === 0,
+    'a shown tuft carries its own matrix and a hidden one carries a zero',
+    `${walk.maxInstances} instances, ${liveZero} shown-but-zeroed, ${hiddenSet} hidden-but-drawn`)
+  check(overCount === 0 && walk.batch.count <= walk.maxInstances,
+    'and the draw count reaches every visible one without reaching the whole pool',
+    `count ${walk.batch.count} of ${walk.maxInstances}, ${overCount} visible past it`)
+  // The pool has to survive the walk with room left. It is sized by _poolBound
+  // from the same level table the tiles grow from, plus 35%, and the margin is
+  // what absorbs a camera standing off-centre in its tile grid while eviction
+  // lags a tile and a half behind the draw radius.
+  const used = walk.maxInstances - walk.freeCount
+  check(used < walk.maxInstances * 0.9, 'and the pool still has room after 113 m of walking',
+    `${used} of ${walk.maxInstances} held`)
+  setPropClock(0)
+  walk.dispose()
+}
 
 grass.dispose()
 

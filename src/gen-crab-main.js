@@ -266,7 +266,8 @@ function refresh() {
     ['shapes reachable', `${SLIDERS.length - 6} knobs`],
   ])
   document.getElementById('sourcenote').textContent =
-    'Mesh and texture only -- animation is a later phase, so the legs stand in a fixed pose.'
+    'Mesh and texture, plus a handful of zero-default pose params -- animation panel above ' +
+    'drives them, no skeleton.'
 }
 
 // --- the sheets panel -----------------------------------------------------
@@ -412,6 +413,65 @@ const shellAccent = colorRow('mottle', () => hex(palette[LAYER.CRAB_SHELL][param
   repaint(LAYER.CRAB_SHELL, params.shellCell)
 }, 'the blotches over the base colour')
 
+// --- animation ------------------------------------------------------------
+// Pure pose, no skeleton: each mode drives the same zero-default pose params
+// crab.js already reads (walkPhase/walkStride/..., see its SCOPE note),
+// advanced every frame and rebuilt. Ground scroll only applies to `walk`,
+// since grabbing and idling don't move the crab across the ground.
+const ANIM = {
+  none: { rate: 0, amps: {} },
+  walk: { rate: TAU * 0.9, amps: { walkStride: 0.5, walkLift: 0.7 } },
+  grab: { rate: TAU * 0.6, amps: { grabAmp: 0.32 } },
+  idle: { rate: TAU * 0.25, amps: { idleSway: 0.35 } },
+}
+const ANIM_PHASE_KEY = { walk: 'walkPhase', grab: 'grabPhase', idle: 'idlePhase' }
+// Purely illustrative -- how many metres of ground one full walk cycle
+// represents, so the scroll speed reads as roughly matching the leg swing
+// rather than claiming a physically derived stride length.
+const GROUND_METRES_PER_CYCLE = 0.5
+
+let animMode = 'none'
+let animSpeed = 1
+
+const animEl = document.getElementById('anim')
+const animButtonsEl = document.createElement('div')
+animButtonsEl.style.cssText = 'display:flex;gap:4px;margin-bottom:6px'
+for (const mode of ['none', 'walk', 'grab', 'idle']) {
+  const b = document.createElement('button')
+  b.textContent = mode
+  b.dataset.mode = mode
+  b.style.flex = '1 1 auto'
+  b.addEventListener('click', () => setAnimMode(mode))
+  animButtonsEl.appendChild(b)
+}
+animEl.appendChild(animButtonsEl)
+
+const speedRow = document.createElement('div')
+speedRow.className = 'row'
+speedRow.innerHTML =
+  `<label title="scales the pose's animation rate and the ground scroll together">speed</label>` +
+  `<input type="range" min="0.25" max="3" step="0.05" value="1" />` +
+  `<span class="v">1.00x</span>`
+const speedInput = speedRow.querySelector('input')
+const speedOut = speedRow.querySelector('.v')
+speedInput.addEventListener('input', () => {
+  animSpeed = Number(speedInput.value)
+  speedOut.textContent = animSpeed.toFixed(2) + 'x'
+})
+animEl.appendChild(speedRow)
+
+function setAnimMode(mode) {
+  // Zero every pose param first so switching modes clears the last one's
+  // amplitude and phase instead of leaving it frozen mid-swing.
+  for (const key of ['walkStride', 'walkLift', 'grabAmp', 'idleSway', 'walkPhase', 'grabPhase', 'idlePhase']) {
+    params[key] = 0
+  }
+  animMode = mode
+  Object.assign(params, ANIM[mode].amps)
+  ;[...animButtonsEl.children].forEach((b) => b.classList.toggle('on', b.dataset.mode === mode))
+  refresh()
+}
+
 function syncPalette() {
   ;[...speciesChips.children].forEach((b, i) => {
     paintChip(b, palette[LAYER.CRAB_SHELL][i], i === params.shellCell)
@@ -468,7 +528,7 @@ document.getElementById('reset').addEventListener('click', () => {
   syncSliders()
   syncPalette()
   frame()
-  refresh()
+  setAnimMode('none')
 })
 
 // --- run --------------------------------------------------------------------
@@ -485,7 +545,7 @@ resize()
 
 syncPalette()
 frame()
-refresh()
+setAnimMode('none')
 measureDisk().then(refresh)
 
 let last = performance.now()
@@ -497,6 +557,17 @@ renderer.setAnimationLoop(() => {
     atlas.needsUpdate = true
     uploadQueued = false
   }
+
+  if (animMode !== 'none') {
+    const cfg = ANIM[animMode]
+    params[ANIM_PHASE_KEY[animMode]] += cfg.rate * animSpeed * dt
+    rebuild()
+    if (animMode === 'walk') {
+      const metres = ((cfg.rate * animSpeed * dt) / TAU) * GROUND_METRES_PER_CYCLE
+      groundTex.offset.y += metres / GROUND_TILE
+    }
+  }
+
   controls.update(dt)
   renderer.render(scene, camera)
 })

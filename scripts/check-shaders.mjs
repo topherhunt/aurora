@@ -23,6 +23,7 @@ import { Sky } from '../src/sky.js'
 import { WorldLighting } from '../src/lighting.js'
 import { SkyProbe } from '../src/sky-probe.js'
 import { WorldProbe } from '../src/world-probe.js'
+import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
@@ -555,6 +556,69 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
   // absence is visible from anywhere but a lake bed.
   for (const mark of ['float wlCaustic( vec2 p, float t )', 'uCaustic.x > 0.0', 'aerialKeep', 'wlSun( vWorldPos.xz )']) {
     if (!frag.includes(mark)) MISSING_MARKS.push(`lighting.js fragment patch frag: ${mark}`)
+  }
+}
+
+// --- src/terrain/terrain-material.js: the ground itself ----------------------
+//
+// THE LARGEST onBeforeCompile PATCH IN THE PROJECT and, until this block, the
+// only one compiled for the first time by the headset it was deployed to. That
+// is a bad loop to be in: the edit-to-error path ran through a build, a deploy
+// and a Quest, and a terrain shader that fails to link does not draw a plainer
+// hillside, it draws nothing at all.
+//
+// Both variants, because the atlas branch is not a small addition -- it carries
+// the triplanar stone fetches, the fine layer and the ground tiles, all of it
+// inside `${atlas ? ... : ''}` and therefore INVISIBLE to a check that only ever
+// passes null. The two are separate programs in the real renderer too; see the
+// cacheKey at the bottom of terrain-material.js.
+//
+// USE_COLOR because the material is built with vertexColors, and the fog pair
+// because v2's scene carries FogExp2 -- which is now load-bearing rather than
+// incidental, since auroraDetailK reads `fogDensity` out of the fog chunk.
+for (const withAtlas of [false, true]) {
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  const atlas = withAtlas ? new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1) : null
+  const mat = createTerrainMaterial({ atlas })
+  mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+
+  const defines = ['#define USE_COLOR', '#define USE_FOG', '#define FOG_EXP2']
+  const label = `terrain-material ${withAtlas ? 'with atlas' : 'no atlas   '}`
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+  SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+  CROSS_STAGE.push([label, vert, frag])
+
+  // Anchors, not prose. Each one is a replace target that would take a whole
+  // layer out silently if it ever went stale: the two baked detail fields
+  // everything is built on, the snow line, the haze gate that decides what the
+  // far field pays for, the bump the normal pass consumes from the colour pass,
+  // and -- for the atlas variant only -- the triplanar block.
+  //
+  // The grit and macro marks include `textureGrad(` deliberately. Every fetch
+  // in this shader sits inside a guard that folds in distance and the surface
+  // classification, so none is quad-uniform and an implicit-LOD `texture()`
+  // there is undefined -- it compiles, it looks right on desktop, and it draws
+  // a line of sparkling pixels down every snow border on the headset. The mark
+  // is what makes that a gate failure rather than a bug report.
+  const marks = [
+    'textureGrad( uGritMap',
+    'textureGrad( uMacroMap',
+    'auroraSnowD',
+    'auroraDetailK',
+    'auroraBW',
+    'normal + ( viewMatrix * vec4( auroraBump, 0.0 ) )',
+  ]
+  if (withAtlas) marks.push('auroraStoneK > 0.004')
+  for (const mark of marks) {
+    if (!frag.includes(mark)) MISSING_MARKS.push(`${label} frag: ${mark}`)
   }
 }
 

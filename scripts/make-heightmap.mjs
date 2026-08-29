@@ -239,7 +239,7 @@ export async function decodeSource(dir) {
 // ---------------------------------------------------------------------------
 // 2. Deblocking.
 //
-// WHY THIS MATTERS AT ALL: v2's finest cell is 6.25 cm (config.js MAX_DEPTH), and
+// WHY THIS MATTERS AT ALL: v2's finest cell is 50 cm (config.js MAX_DEPTH), and
 // bicubic interpolation reproduces whatever is in the samples. An 8-px DCT
 // artifact in a 1024-px image is a 64 m period on an 8 km world -- corduroy
 // running the full width of the map, at an amplitude of a metre or two, which is

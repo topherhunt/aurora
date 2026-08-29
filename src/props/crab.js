@@ -24,9 +24,16 @@ import { LAYER } from '../textures.js'
 // the shared prop material's fixed layout and BatchedMesh rejects a geometry
 // that disagrees.
 //
-// SCOPE: mesh and texture only. Animation/rigging is a later phase and
-// nothing here builds toward a skeleton -- the legs are static geometry in a
-// standing pose.
+// SCOPE: mesh and texture, plus a small set of POSE parameters (the "pose"
+// section of CRAB_DEFAULTS) that drive motion without a skeleton: a walk
+// gait swings each leg's mount angle and lift, a grab pulse swings the claw
+// gape, and an idle sway swivels the eyestalks. Every pose knob defaults to
+// zero amplitude, so a plain `buildCrab()` call is bit-for-bit the static
+// rest pose -- something (the bench, later the world) has to dial an
+// amplitude up and animate the matching phase to see it move. This works
+// because the whole crab is cheap to rebuild (168 triangles at the shipped
+// defaults) -- rebuilding the geometry every frame is the animation, no
+// bones or blend shapes needed.
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2
@@ -90,6 +97,15 @@ export const CRAB_DEFAULTS = {
   // --- material -------------------------------------------------------------
   shellLayer: LAYER.CRAB_SHELL,
   shellCell: 0, // which cell of the shell sheet (0..3) -- worn by the whole crab
+
+  // --- pose (all zero -- see the SCOPE note above) ---------------------------
+  walkPhase: 0,   // radians, position in the gait cycle
+  walkStride: 0,  // radians, how far each leg's mount angle sweeps fore/aft
+  walkLift: 0,    // radians, extra ground clearance added during the swing half
+  grabPhase: 0,   // radians, position in the claw open/close cycle
+  grabAmp: 0,     // radians, how far clawGape swings around its resting value
+  idlePhase: 0,   // radians, position in the idle sway cycle
+  idleSway: 0,    // radians, how far each eyestalk swivels around eyeLift
 }
 
 // The crab sheet is a 2x2 grid of 64 px cells in a 128 px layer, same shape
@@ -391,7 +407,10 @@ function addEyestalks(out, p) {
     const theta = Math.PI / 2 - side * (p.eyeSpread / 2)
     const { pos: rimPos, radial } = rimMount(p, theta)
     const bendAxis = verticalBendAxis(radial)
-    const dir = radial.clone().applyAxisAngle(bendAxis, -p.eyeLift)
+    // Idle sway: each stalk swivels around its resting lift, phase-offset
+    // between the two so they don't move in perfect lockstep.
+    const eyeLiftEff = p.eyeLift - p.idleSway * Math.sin(p.idlePhase + side * 1.3)
+    const dir = radial.clone().applyAxisAngle(bendAxis, -eyeLiftEff)
     const start = rimPos.clone().addScaledVector(dir, -embed)
 
     const radiusFn = (s) => {
@@ -495,9 +514,12 @@ function addPincer(out, p, side, scale) {
   // splay apart left/right (in the arm's own side/fwd plane) rather than up
   // and down.
   const clawRadiusFn = (s) => Math.max(0.001, p.clawRadius * scale * (1 - 0.75 * s))
+  // Grab pulse: the gape oscillates around its resting value instead of
+  // sitting fixed -- both prongs together, so the claw opens and closes.
+  const gape = Math.max(0.02, p.clawGape + p.grabAmp * Math.sin(p.grabPhase))
   for (const prongSide of [-1, 1]) {
     // Splay the prong direction about the vertical axis through the tip.
-    const dirP = armTip.tangent.clone().applyAxisAngle(UP, prongSide * p.clawGape)
+    const dirP = armTip.tangent.clone().applyAxisAngle(UP, prongSide * gape)
     const framesP = limbFrames(armTip.pos, dirP, UP, 0, clawLength, clawSegments, clawRadiusFn)
     emitTube(out, framesP, cols, clawLength, p.shellLayer, p.shellCell, clawRadiusFn)
   }
@@ -538,11 +560,20 @@ function addLegs(out, p) {
     for (let i = 0; i < pairs; i++) {
       const spanT = pairs === 1 ? 0.5 : i / (pairs - 1)
       const offset = (spanT - 0.5) * p.legSpan
-      const theta = side === 1 ? offset : Math.PI - offset
+
+      // Tripod gait: alternating legs (by index and side) swing in opposite
+      // phase, so the crab always has a stable tripod of legs on the ground.
+      // Mount angle sweeps fore/aft with the swing; lift only kicks in for
+      // the forward half of the swing (when the leg is off the ground).
+      const parity = (i + (side === 1 ? 0 : 1)) % 2
+      const legPhase = p.walkPhase + parity * Math.PI
+      const stride = -Math.cos(legPhase) * p.walkStride
+      const lift = Math.max(0, Math.sin(legPhase)) * p.walkLift
+      const theta = (side === 1 ? offset : Math.PI - offset) + stride
 
       const { pos: rimPos, radial } = rimMount(p, theta)
       const bendAxis = verticalBendAxis(radial)
-      const dir = radial.clone().applyAxisAngle(bendAxis, -p.legLift0)
+      const dir = radial.clone().applyAxisAngle(bendAxis, -(p.legLift0 + lift))
       const start = rimPos.clone().addScaledVector(dir, -embed)
 
       const innerRadiusFn = (s) => radiusFn((s * innerLen - embed) / length)
