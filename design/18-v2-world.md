@@ -1,8 +1,8 @@
 # §18 -- v2: baked heightmap + authored content layers
 
-The v1 world (`src/sim/`, `src/terrain/`, `index.html`) is fully procedural: `TerrainHeight.heightAt` is the only author, and the only way to move a mountain is to move a noise constant and watch the whole world move with it. v2 is the alternative: **the coarse shape is an imported image, the fine shape is procedural, and everything a human wants to place by hand is a CONTENT LAYER on top.**
+The retired v1 world was fully procedural: `TerrainHeight.heightAt` was the only author, and the only way to move a mountain was to move a noise constant and watch the whole world move with it. v2 is what replaced it: **the coarse shape is an imported image, the fine shape is procedural, and everything a human wants to place by hand is a CONTENT LAYER on top.**
 
-v2 does not replace v1 and does not import from `src/terrain/`. It lives entirely under `src/v2/` behind `v2.html`, and it may freely import the leaf modules v1 also uses (`src/sim/noise.js`, `src/sim/mathx.js`, `src/clock.js`, `src/sky.js`, `src/stars.js`, `src/aurora.js`, `src/lighting.js`, `src/player.js`, `src/input.js`, `src/water.js`, `src/terrain/terrain-material.js`) -- those are shared, not v1-owned. It must not import `src/sim/terrain-height.js` or `src/sim/phase-a.js`; the whole point is that the height field comes from somewhere else.
+v2 does not import from `src/terrain/` beyond the shared leaf modules. It lives entirely under `src/v2/` behind `index.html`, and it may freely import the shared leaves (`src/sim/noise.js`, `src/sim/mathx.js`, `src/clock.js`, `src/sky.js`, `src/stars.js`, `src/aurora.js`, `src/lighting.js`, `src/player.js`, `src/input.js`, `src/water.js`, `src/terrain/terrain-material.js`). It must not import `src/sim/terrain-height.js` or `src/sim/phase-a.js`; the whole point is that the height field comes from somewhere else.
 
 **Constraint 3 from DESIGN.md still binds.** Everything under `src/v2/height/` and `src/v2/layers/` imports no three.js and runs in node, which is what lets `scripts/check-v2.mjs` gate it headlessly. three.js starts at `src/v2/terrain/`, `src/v2/render/`, `src/v2/edit/`, `src/v2/ui/`.
 
@@ -20,7 +20,7 @@ The bridge between them is a **bake step** keyed on an integer `epoch`. Editing 
 ## Module layout
 
 ```
-v2.html                            route
+index.html                         route
 src/v2/config.js                   all v2 constants in one place (three-free)
 src/v2/height/png.js               zero-dep PNG decode AND encode, browser + node (three-free)
 src/v2/height/heightmap.js         Heightmap: bicubic sample of the imported coarse field, and the one choke point `crease` swaps (three-free)

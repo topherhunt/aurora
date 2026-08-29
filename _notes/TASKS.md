@@ -91,13 +91,14 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Later
 
-- 
+- Ensure inward faces are culled as appropriate. (Tree trunks & branches, boulders, etc?)
 - Underwater shader
 - Lakebed seaweed!!! Some very tall
-- Lakebed boulders
+- Lakeside & lakebed boulders
 - Terrain LOD: How to preserve toothy peaks while minimizing triangles used in terrain rendering?
   - Idea 1: define billboard triangles for distant peaks (1 "layer" that provides 1 "resolution" more of terrain than what the actual LOD allows for at that distance, created only when the lower LOD loses a hill/protrusion that's added when you get closer)
   - Idea 2: "skyline backdrop" ???
+- https://192.168.178.75:5173/map.html 
 
 ## Props -- follow-ups
 
@@ -136,7 +137,7 @@ The Nordic building kit is built and gated (`src/buildings/*`, DESIGN.md §19). 
 
 Content and layout are done and gated by `scripts/check-village.mjs` (see DESIGN.md §6). What is left:
 
-- [ ] Replace the stand-in village site in `src/main.js` (`devVillageSite()`) with Phase A's scored villages, once the macro pass is wired into the runtime rather than only into `map.html`. `villages.setSites(phaseA.villages)` and delete the block -- the village content does not change, it just moves to where the water is.
+- [ ] Wire Phase A's scored villages into the v2 runtime. The macro pass currently reaches only `map.html`, and the v1 host that carried the stand-in `devVillageSite()` has been retired, so v2 has no village placement at all -- `villages.setSites(phaseA.villages)` is still the shape of the answer.
 - [ ] Connect villages to the §6 long-distance path network. Arteries currently end at the village edge; they should hand off to the A\* routes between villages so a road actually goes somewhere.
 - [ ] Villagers. The plan already knows where the market, the fires, the fields and the doors are, which is the hard half of a schedule.
 - [ ] Swap the remaining placeholder geometry -- wells, fences, drying racks, market stalls -- for the §9 asset pipeline. The dwellings are handled separately by the §19 kit; see Buildings above.

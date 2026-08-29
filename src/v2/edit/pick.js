@@ -15,15 +15,13 @@ import { WORLD_SIZE } from '../config.js'
 // ground the player can see -- and it would MOVE as she walked toward it and the
 // LOD refined. `V2Height.heightAt(x, z, 0)` is the exact field everywhere at any
 // range and is LOD-independent by construction, so it is the only surface an
-// editor may pick against. src/measure.js reached the same conclusion for the
-// measuring beam; this is that routine adapted to v2's much finer world.
+// editor may pick against.
 //
 // THE STEP SCHEDULE, and why these numbers:
 //
 //   step(t) = clamp(t * 0.01, 0.05 m, 64 m)
 //
-// The 5 cm floor is the v2-specific part. v1's measure.js floors at 1 m because
-// v1's leaf CELL is 1 m and there is nothing finer to step over. v2's finest
+// The 5 cm floor follows the field's own resolution. The finest
 // cell is 50 cm (config.js: 8192 m over MAX_DEPTH 10 is an 8 m leaf node, and a
 // node holds CHUNK_RES = 16 cells) and its finest detail octave has a 25 cm
 // wavelength (§18 LAMBDA_MIN), so the narrowest real feature in the field is
@@ -70,9 +68,8 @@ import { WORLD_SIZE } from '../config.js'
 
 const DEFAULTS = {
   // Corner to corner of the world box (11585 m at WORLD_SIZE 8192), which is the
-  // longest ray that can touch anything. v1's measure.js says a flat 8000; this
-  // is the same quantity derived rather than typed, which is what keeps it right
-  // across a world size that has already been restated twice mid-build.
+  // longest ray that can touch anything. Derived rather than typed, which is
+  // what keeps it right across a world size that has been restated twice.
   maxDist: Math.hypot(WORLD_SIZE, WORLD_SIZE),
   nearStep: 0.05,
   growth: 0.01,

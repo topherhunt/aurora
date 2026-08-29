@@ -105,7 +105,7 @@ const ACT_HI = 1.0
 //
 // The storm end is therefore swept rather than chosen. Mean screen brightness
 // facing north over mean facing south, averaged over four instants at a = 1.0
-// (v2-aurora-probe.html#sweep):
+// (swept on a real WebGL2 context under headless Chrome and SwiftShader):
 //
 //     belt  width  amt 0.66   amt 0.80
 //     -260    620      0.98       1.03

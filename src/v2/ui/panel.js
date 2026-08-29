@@ -5,25 +5,16 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 // ---------------------------------------------------------------------------
 // The v2 status + tools panel. Replaces v1's `#desktop-hud` on the v2 route.
 //
-// v1's HUD is a column of prose lines -- one fact per line, roughly twenty of
-// them, running a third of the way down a 1080p screen. That shape exists
-// because its OTHER surface is a canvas texture read at arm's length inside a
-// headset (src/hud.js), where a dense grid is unreadable. On a monitor it is the
-// wrong shape twice over: it wastes the horizontal axis entirely, and it makes
-// finding one number a linear scan.
+// A two-column key/value GRID, plus the tool row and the selected object's
+// editable fields. The predecessor was a column of prose lines -- one fact per
+// line, roughly twenty of them -- a shape that suited a canvas texture read at
+// arm's length in a headset but wastes the horizontal axis on a monitor and
+// makes finding one number a linear scan.
 //
-// So this panel is a two-column key/value GRID -- the same facts in about a
-// third of the height -- plus the two zones v1 has nowhere to put: the tool row
-// and the selected object's editable fields. It is desktop-only by design. §18:
-// "The XR canvas mirror keeps showing status only. Editing is a desktop
-// activity and the gizmo has no controller binding." The host keeps v1's `Hud`
-// for the headset; there is deliberately no XR mirror in here.
+// Desktop-only by design. §18: "The XR canvas mirror keeps showing status only.
+// Editing is a desktop activity and the gizmo has no controller binding."
 //
-// COLOURS ARE v1's, and the duplication is on purpose. `##` heading, `!!`
-// wrong, `++` good, `%%` measurement -- the exact table and the exact meanings
-// from PREFIX_COLORS in src/hud.js, which does not export them. Two panels that
-// disagree about what red means are worse than one ugly panel, so if that table
-// moves, this copy moves with it.
+// `##` heading, `!!` wrong, `++` good, `%%` measurement.
 //
 // POINTER-EVENTS ARE OFF except on the widgets. Mouse-look starts anywhere on
 // the canvas, and a panel that eats a drag beginning over the fps readout feels
@@ -76,8 +67,8 @@ const COLORS = {
 // Blue is pushed well past the head blue so `z=` cannot be mistaken for a label.
 const AXIS = { x: '#ff8f8f', y: '#9dffb0', z: '#8fbcff' }
 
-// Same one line as src/hud.js. Ids come out of a document that may have been
-// imported from a file, so every interpolated string goes through it.
+// Ids come out of a document that may have been imported from a file, so every
+// interpolated string goes through it.
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
@@ -213,7 +204,7 @@ export class Panel {
     this.relief = normalizeRelief(relief)
 
     this.root = document.getElementById('v2-panel')
-    if (!this.root) throw new Error('Panel: v2.html must contain <div id="v2-panel">')
+    if (!this.root) throw new Error('Panel: index.html must contain <div id="v2-panel">')
 
     const style = document.createElement('style')
     style.textContent = CSS
@@ -765,10 +756,9 @@ export class Panel {
       input.className = 'p-num p-i'
       input.value = String(row.value)
       if (row.step !== undefined) input.step = String(row.step)
-      // Deliberately NOT clamped by the input's own min/max: the same reasoning
-      // as tuner.js's number boxes -- the range is a guess at what is useful and
-      // typing past it is how you find out the guess was wrong. The setter
-      // clamps where a value would actually be invalid.
+      // Deliberately NOT clamped by the input's own min/max: the range is a
+      // guess at what is useful and typing past it is how you find out the guess
+      // was wrong. The setter clamps where a value would actually be invalid.
       input.onchange = () => {
         const v = parseFloat(input.value)
         if (Number.isFinite(v)) row.set(v, true)
@@ -791,9 +781,9 @@ export class Panel {
   }
 
   /**
-   * Drag the LABEL to scrub the value, the way tuner.js gives every knob a
-   * slider: the useful range of `radius` is 10 m to 4 km and typing four digits
-   * to find out what 900 looks like is not tuning, it is arithmetic.
+   * Drag the LABEL to scrub the value: the useful range of `radius` is 10 m to
+   * 4 km and typing four digits to find out what 900 looks like is not tuning,
+   * it is arithmetic.
    *
    * Ticks call `set(v, false)` -- change the document, do NOT push undo -- and
    * the release calls `set(v, true)`. A commit per tick would put fifty entries

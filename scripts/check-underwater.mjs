@@ -536,11 +536,11 @@ check(
   )
 }
 
-// The five things the capture must not contain, asserted at the call site in
-// both worlds. Each is a bug that draws perfectly: the water reflecting itself,
-// or a sky dome filling every face with alpha 1 so that "is there land along
-// this ray" answers yes everywhere and the lake turns to flat slate.
-for (const [label, file] of [['v2', 'src/v2/main.js'], ['phase A', 'src/main.js']]) {
+// The five things the capture must not contain, asserted at the call site. Each
+// is a bug that draws perfectly: the water reflecting itself, or a sky dome
+// filling every face with alpha 1 so that "is there land along this ray" answers
+// yes everywhere and the lake turns to flat slate.
+for (const [label, file] of [['v2', 'src/v2/main.js']]) {
   const src = fs.readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
   check(
     /worldProbe\.exclude\(\s*water\.group,\s*sky\.mesh,\s*stars\.points,\s*aurora\.mesh\s*\)/.test(src),

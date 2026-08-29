@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- grass as geometry</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; --bad: #d98c8c; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+
+      /* --- left: the controls ------------------------------------------ */
+      #panel {
+        flex: 0 0 306px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      .row { display: grid; grid-template-columns: 84px 1fr 50px; gap: 6px; align-items: center; margin-bottom: 3px; }
+      .row label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+      .row input[type=range] { width: 100%; padding: 0; background: none; border: none; }
+      .row .v { text-align: right; font-variant-numeric: tabular-nums; }
+
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
+      #buttons button { flex: 1 1 auto; padding: 4px 6px; }
+
+      /* --- centre: viewport -------------------------------------------- */
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #hint {
+        position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none;
+        text-shadow: 0 1px 2px #000;
+      }
+      #boot {
+        position: absolute; inset: 0; display: grid; place-items: center;
+        background: #05080f; color: var(--dim); transition: opacity .4s; z-index: 5;
+        padding: 20px;
+      }
+      #boot.gone { opacity: 0; pointer-events: none; }
+      #boot pre { color: var(--bad); white-space: pre-wrap; max-width: 70ch; }
+
+      /* --- right: the budget ------------------------------------------- */
+      #budget {
+        flex: 0 0 340px; overflow-y: auto; overflow-x: clip; padding: 8px 10px;
+        border-left: 1px solid var(--edge); background: var(--panel);
+      }
+      table { width: 100%; border-collapse: collapse; }
+      td, th { padding: 1px 0; vertical-align: baseline; }
+      th { color: var(--dim); font-weight: normal; text-align: right; border-bottom: 1px solid #1b2c44; }
+      th:first-child { text-align: left; }
+      td.k { color: var(--dim); }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .note em { color: #a9c2e6; font-style: normal; }
+      .big { font-size: 15px; color: #eaf3ff; }
+      .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">GRASS AS GEOMETRY</div>
+        <div class="s">ten opaque triangles, no texture, no alpha</div>
+      </header>
+      <div id="controls">
+        <div id="sliders"></div>
+      </div>
+      <div id="buttons">
+        <button id="grass" class="on">grass</button>
+        <button id="wind" class="on">wind</button>
+        <button id="terrain" class="on">terrain</button>
+        <button id="wire">wireframe</button>
+        <button id="walk">walk</button>
+        <button id="reset">defaults</button>
+      </div>
+    </div>
+
+    <div id="stage">
+      <div id="hint">click to look &middot; WASD to move &middot; QE up/down &middot; shift to sprint &middot; <em>walk</em> puts you in the grass</div>
+      <div id="boot">loading the world&hellip;</div>
+    </div>
+
+    <div id="budget">
+      <h2>this frame</h2>
+      <table id="frame"></table>
+      <p class="note">Frame ms is the <em>main thread</em>, top of the animation callback to the bottom of <em>render()</em>. Desktop numbers, so read them as a ratio between settings rather than as a Quest prediction -- the point of this page is the geometry, and the headset is where the frame gets judged.</p>
+
+      <h2>the bed</h2>
+      <table id="bed"></table>
+      <p class="note" id="bednote"></p>
+
+      <h2>density by ring</h2>
+      <table id="rings"></table>
+      <p class="note">The law is <em>keep = min(1, F / d)</em>: full density inside <em>full radius</em>, then halving every time the distance doubles. That is already what <em>src/v2/render/grass.js</em> does, so the ring counts here are directly comparable to the card bed's. <em>blades/m&sup2;</em> is the number that decides whether a ring reads as lush.</p>
+
+      <h2>against the card bed</h2>
+      <table id="versus"></table>
+      <p class="note">The card bed's figures are measured, from <em>scripts/check-grass.mjs</em> and the fill probe: 10,993 cards, 22.0k triangles, and <em>20.6 full eyes of alpha-tested fragments</em> against a tuft texture that is 18.9% opaque. Fill is what a Quest 2 runs out of; the geometry bed spends triangles instead, and the triangle line is the one to watch.</p>
+
+      <h2>what is not being tested here</h2>
+      <p class="note"><em>Aliasing.</em> A blade goes under a pixel at about 5 m on a Quest 2, and an opaque sub-pixel triangle has no mip chain, so the far field will crawl in the headset in a way a desktop monitor at this resolution will not show you. That, and not fill, is the thing that may still want a ring of distant cards. <em>Also not here:</em> the tiled camera-following scatter and the regrow queue -- this page re-scatters the whole disc when you have walked far enough, and reports the cost when it does.</p>
+    </div>
+
+    <script type="module" src="/src/gen-grass-main.js"></script>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 ## 12. Locomotion and comfort
 
 > **Covers:** VR and desktop movement, comfort settings, and the survey tools (fly mode, click-to-measure, double-click travel).
-> **Read this when:** touching `src/player.js` input or `src/vignette.js`.
+> **Read this when:** touching `src/player.js` input.
 
 She is a first-time-ish VR user. Comfort outranks capability.
 

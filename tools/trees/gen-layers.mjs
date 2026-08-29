@@ -46,8 +46,8 @@ const BARK = ['oak', 'birch', 'pine']
 // survives that on its own merits: the plain `leaf_pine` cut is cropped to its
 // alpha bounds, so opaque pixels run hard into all four edges and the card
 // reads as a slab of needles rather than as one twig with air around it. It
-// cannot be the same file as `leaf_pine`, which the scanned props in
-// src/props.js still want cropped tight.
+// cannot be the same file as `leaf_pine`, which the scanned props still want
+// cropped tight.
 const TILING = [{ name: 'pine', out: 'spray_pine', pad: 0.09 }]
 
 const ALPHA = 128 // the alphaTest the props material uses; the cutout is judged at this

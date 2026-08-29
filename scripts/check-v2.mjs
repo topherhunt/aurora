@@ -141,7 +141,7 @@ function hostWiring() {
   const out = []
   const mainPath = join(root, 'src', 'v2', 'main.js')
   if (!statSync(mainPath, { throwIfNoEntry: false })) {
-    return ['src/v2/main.js is missing -- v2.html loads it and /v2 renders nothing without it']
+    return ['src/v2/main.js is missing -- index.html loads it and the world renders nothing without it']
   }
   // COMMENT LINES ARE DROPPED FIRST, and finding that out cost a false failure:
   // main.js explains in prose why it must not call markers.update(), and the
@@ -153,9 +153,9 @@ function hostWiring() {
     .split('\n')
     .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
     .join('\n')
-  const html = readFileSync(join(root, 'v2.html'), 'utf8')
+  const html = readFileSync(join(root, 'index.html'), 'utf8')
 
-  if (!html.includes('/src/v2/main.js')) out.push('v2.html no longer loads /src/v2/main.js')
+  if (!html.includes('/src/v2/main.js')) out.push('index.html no longer loads /src/v2/main.js')
 
   // editor.js: "the host must NOT also call markers.update()". The handles are
   // scaled to a constant ANGULAR size from the camera, so a second call sizes

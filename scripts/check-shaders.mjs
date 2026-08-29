@@ -1,5 +1,5 @@
-// Compile every shader on /v2-new-grass -- plus the one shared prop material --
-// with a real GLSL ES 3.00 front end.
+// Compile the world's shaders -- the shared prop material, the terrain, the
+// water, the sky and the probes -- with a real GLSL ES 3.00 front end.
 //
 // There is no WebGL in node, so this reconstructs what three actually hands the
 // driver: the shader source with the prologue WebGLProgram.js prepends for a
@@ -12,7 +12,7 @@
 // separately below: its GLSL does not exist as a literal anywhere, so it has to
 // be ASSEMBLED by actually running the onBeforeCompile hook.
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,7 +25,6 @@ import { SkyProbe } from '../src/sky-probe.js'
 import { WorldProbe } from '../src/world-probe.js'
 import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
 // glslang is a native binary, not something npm can install, and making the
@@ -39,40 +38,6 @@ try {
   console.log('SKIP  check-shaders: glslangValidator not on PATH (brew install glslang)')
   process.exit(0)
 }
-
-// --- pull the shader template literals out of the modules -------------------
-// They are module-private consts, and importing the modules would drag in three
-// and a fetch for the heightmap. The literals only interpolate four simple
-// values, so lifting the text and evaluating it in a tiny scope is exact.
-function literal(src, name) {
-  const m = new RegExp(`const ${name} = (?:/\\* glsl \\*/ )?\``).exec(src)
-  if (!m) throw new Error(`no const ${name}`)
-  const start = m.index + m[0].length
-  let i = start
-  while (src[i] !== '`') {
-    if (src[i] === '\\') i++
-    i++
-    if (i > src.length) throw new Error(`unterminated ${name}`)
-  }
-  return src.slice(start, i)
-}
-
-const heightSrc = readFileSync(`${ROOT}/src/newgrass/gpu-height.js`, 'utf8')
-const groundSrc = readFileSync(`${ROOT}/src/newgrass/ground.js`, 'utf8')
-const grassSrc = readFileSync(`${ROOT}/src/newgrass/grass-field.js`, 'utf8')
-
-const scope = {
-  HEIGHT_UNIFORMS: null,
-  HEIGHT_GLSL: null,
-  PROBE_LO: Number(/const PROBE_LO = ([-\d.]+)/.exec(heightSrc)[1]),
-  PROBE_SPAN: Number(/const PROBE_SPAN = ([-\d.]+)/.exec(heightSrc)[1]),
-  CULL_FADE: Number(/const CULL_FADE = ([-\d.]+)/.exec(grassSrc)[1]),
-}
-const bake = (raw) =>
-  new Function(...Object.keys(scope), `return \`${raw}\``)(...Object.values(scope))
-
-scope.HEIGHT_UNIFORMS = bake(literal(heightSrc, 'HEIGHT_UNIFORMS'))
-scope.HEIGHT_GLSL = bake(literal(heightSrc, 'HEIGHT_GLSL'))
 
 // --- three's prologue -------------------------------------------------------
 const V_PRE = `#version 300 es
@@ -111,24 +76,7 @@ uniform vec3 cameraPosition;
 uniform bool isOrthographic;
 `
 
-// A RawShaderMaterial gets only the #version line -- three injects no precision
-// qualifiers and no built-ins, which is why PROBE_FRAG declares its own.
-const RAW_PRE = `#version 300 es\n`
-
-const SHADERS = [
-  ['gpu-height.js  PROBE_FRAG', 'frag', RAW_PRE, bake(literal(heightSrc, 'PROBE_FRAG')), true],
-  ['ground.js      GROUND_VERT', 'vert', V_PRE, bake(literal(groundSrc, 'GROUND_VERT'))],
-  ['ground.js      GROUND_FRAG', 'frag', F_PRE, bake(literal(groundSrc, 'GROUND_FRAG'))],
-  ['ground.js      SHELL_VERT', 'vert', V_PRE, bake(literal(groundSrc, 'SHELL_VERT'))],
-  ['ground.js      SHELL_FRAG', 'frag', F_PRE, bake(literal(groundSrc, 'SHELL_FRAG'))],
-  ['grass-field.js VERT', 'vert', V_PRE, bake(literal(grassSrc, 'VERT'))],
-  ['grass-field.js FRAG', 'frag', F_PRE, bake(literal(grassSrc, 'FRAG'))],
-]
-
-// PROBE_VERT is built inline in the HeightProbe constructor rather than as a
-// named const, so it is matched separately.
-const pv = /vertexShader: (?:\/\* glsl \*\/ )?`([\s\S]*?)`/.exec(heightSrc)
-if (pv) SHADERS.unshift(['gpu-height.js  PROBE_VERT', 'vert', RAW_PRE, bake(pv[1]), true])
+const SHADERS = []
 
 // --- src/material.js: the one shared prop material --------------------------
 // Nothing above can reach this shader. It is not a template literal: it is

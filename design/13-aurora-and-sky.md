@@ -2,7 +2,7 @@
 
 > **Covers:** both auroras -- the eleven curtain meshes `/` draws and the shader lab `/v2` now draws out of -- plus the sky dome, stars, night-sky banding, and the aurora's fill-rate budget.
 > **Read this when:** touching `src/aurora.js`, `src/aurora-patterns.js`, `src/aurora-lab/*`, `src/v2/render/aurora.js`, or `scripts/check-daynight.mjs`.
-> **There are two auroras in this tree and the worlds no longer agree.** `src/aurora.js` -- eleven parametric curtain meshes -- is what `index.html` draws. `v2.html` draws `src/v2/render/aurora.js`, which is the lab's `skymap` algorithm on a full sky dome, wired to the world clock. The lab itself is still at `/test-aurora` and is still where the tuning happens.
+> **The world draws `src/v2/render/aurora.js`** -- the lab's `skymap` algorithm on a full sky dome, wired to the world clock. `src/aurora.js`, the eleven parametric curtain meshes the retired v1 world drew, is no longer on any page; only `scripts/check-daynight.mjs` still imports it. The lab is at `/test-aurora` and is where the tuning happens.
 > **Reverted work lives in** `design/history/aurora-rounds-4-6.md` **and is not in the tree.** Everything below is.
 
 **The aurora appears randomly at night, anywhere in the world** -- not gated on altitude. Summits simply give a better view: less terrain occlusion, less atmospheric haze, and a modest intensity boost with elevation.
@@ -195,7 +195,7 @@ The ceiling is **topological**, not a matter of tuning. A curtain can fold and i
 
 ### The replacement: the raymarch lab at `/test-aurora`
 
-`src/aurora-lab/*` plus `src/test-aurora-main.js` and `test-aurora.html`, gated by `scripts/check-aurora-lab.mjs`. A separate page rather than a mode inside `v2.html`, for the reason the grass bench is separate: what it needs is an empty sky over a nominal skyline and seventy sliders, and putting that behind a terrain load, a document fetch and a walk to a vantage point would mean paying all three every time you want to see what one exponent does. It is also the only page with nothing in it but sky, which is what makes it honest about the shader's cost.
+`src/aurora-lab/*` plus `src/test-aurora-main.js` and `test-aurora.html`, gated by `scripts/check-aurora-lab.mjs`. A separate page rather than a mode inside the world, for the reason the grass bench is separate: what it needs is an empty sky over a nominal skyline and seventy sliders, and putting that behind a terrain load, a document fetch and a walk to a vantage point would mean paying all three every time you want to see what one exponent does. It is also the only page with nothing in it but sky, which is what makes it honest about the shader's cost.
 
 **One of these ships.** `/v2` draws the lab's `skymap` algorithm through `src/v2/render/aurora.js` -- see "The sky map in `/v2`" below. The lab is still where the tuning happens, and `src/aurora.js` at `index.html` is still the eleven curtain meshes, untouched.
 
@@ -375,7 +375,7 @@ It gets `SCENE_GROUPS` and nothing else shared. There is no march, so step count
 
 #### What is verified, and what is not
 
-`node scripts/check-aurora-lab.mjs` passes and `npx vite build` passes. `aurora-probe.html` links **every** algorithm including `sine` on a real WebGL2 context under SwiftShader, captures a frame of each, and exercises `LowResAurora` at divisors 1, 2, 4, 6 and 10 -- counting lit pixels rather than only watching for a compile error, because a wrong viewport rect or a stale material gives a clean compile and an empty sky. It also carries a regression for **`AuroraScreen.setAlgorithm` disposing the material out from under a captured reference**, which was a real bug the low-res work found: the symptom was a black sector after an algorithm switch with nothing in the console, and the fix is re-borrowing the material every frame.
+`node scripts/check-aurora-lab.mjs` passes and `npx vite build` passes. A since-retired probe page linked **every** algorithm including `sine` on a real WebGL2 context under SwiftShader, captured a frame of each, and exercises `LowResAurora` at divisors 1, 2, 4, 6 and 10 -- counting lit pixels rather than only watching for a compile error, because a wrong viewport rect or a stale material gives a clean compile and an empty sky. It also carries a regression for **`AuroraScreen.setAlgorithm` disposing the material out from under a captured reference**, which was a real bug the low-res work found: the symptom was a black sector after an algorithm switch with nothing in the console, and the fix is re-borrowing the material every frame.
 
 Nothing below has been checked anywhere.
 
@@ -389,7 +389,7 @@ See TASKS.md for the order that work goes in.
 
 ### The sky map in `/v2`
 
-`src/v2/render/aurora.js`, constructed in `src/v2/main.js` and driven from the world clock. **This is what `v2.html` draws.** It is the lab's `skymap` algorithm with nothing added to the shader: the file is a wiring layer, and the only thing it invents is how the clock's weather becomes the lab's knobs.
+`src/v2/render/aurora.js`, constructed in `src/v2/main.js` and driven from the world clock. **This is what the world draws.** It is the lab's `skymap` algorithm with nothing added to the shader: the file is a wiring layer, and the only thing it invents is how the clock's weather becomes the lab's knobs.
 
 #### What it is wired to
 
@@ -420,7 +420,7 @@ That measurement has one trap in it worth recording. An earlier version compared
 
 #### What is verified, and what is not
 
-`node scripts/check-aurora-lab.mjs` and `npx vite build` pass. `v2-aurora-probe.html` builds the same `SkyAurora` `/v2` builds, in an empty scene, on a real WebGL2 context under headless Chrome with SwiftShader -- `/v2` itself is not a viable probe target, since booting it means terrain generation, prop atlas fetches and a walk to a vantage point, none of which say anything about the aurora. Eight checks pass: the assembled shader **links**, the four prepasses run and **leave the render target where they found it**, the dome lights at night and draws **zero** lit pixels at noon, the zenith stays lit and finite now the dome reaches 90 degrees, the oval moves in and widens monotonically while a quiet night stays markedly dimmer than an active one at the same intensity, the north stays brighter than the south at every activity, `p` cycles auto through four forms and back, and the dome rides the head 5.6 km out. `#sweep` runs the belt table above instead.
+`node scripts/check-aurora-lab.mjs` and `npx vite build` pass. A since-retired probe page built the same `SkyAurora` the world builds, in an empty scene, on a real WebGL2 context under headless Chrome with SwiftShader -- the world itself is not a viable probe target, since booting it means terrain generation, prop atlas fetches and a walk to a vantage point, none of which say anything about the aurora. Eight checks pass: the assembled shader **links**, the four prepasses run and **leave the render target where they found it**, the dome lights at night and draws **zero** lit pixels at noon, the zenith stays lit and finite now the dome reaches 90 degrees, the oval moves in and widens monotonically while a quiet night stays markedly dimmer than an active one at the same intensity, the north stays brighter than the south at every activity, `p` cycles auto through four forms and back, and the dome rides the head 5.6 km out. `#sweep` runs the belt table above instead.
 
 Not checked:
 

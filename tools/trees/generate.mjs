@@ -81,7 +81,7 @@ const OUT = path.join(ROOT, 'tmp/generated-props')
 //
 // This costs the leaf art 32 of 128 rows. It buys back all of them the day the
 // prop runtime adopts createPropMaterial, whose per-vertex `texLayer` attribute
-// (src/material.js, proven in spike-main.js) lets bark and leaf index DIFFERENT
+// (src/material.js) lets bark and leaf index DIFFERENT
 // array layers from within one primitive -- no patch, no bleed, no shared image.
 // The previewer and scatter.js both still use a single-`map` MeshLambertMaterial,
 // so that is a later step, not this one.

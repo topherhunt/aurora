@@ -749,10 +749,10 @@ function unknownRouteGuard() {
 
 // --- bare paths as routes rather than filenames (dev only) ------------------
 //
-// The world pages have explicit routes: `/` is v2 and `/v1` is the old prototype.
-// The named HTML files remain useful direct build artifacts, while these rewrites make
-// the local dev server match production, where Caddy's `try_files {path} {path}.html`
-// does the same append-if-it-exists match against dist/ for any bare path.
+// `/` is the world. The named HTML files remain useful direct build artifacts,
+// while these rewrites make the local dev server match production, where Caddy's
+// `try_files {path} {path}.html` does the same append-if-it-exists match against
+// dist/ for any bare path.
 //
 // A list rather than a blanket "append .html to anything that misses": Caddy's
 // try_files only rewrites when the .html file actually exists on disk, so it never
@@ -763,7 +763,7 @@ function unknownRouteGuard() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['v1', 'v2', 'avatar-preview', 'v2-new-grass', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'test-aurora', 'quest', 'questv2', 'questv3']
+const BARE_ROUTES = ['avatar-preview', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-grass', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'test-aurora', 'quest', 'questv2', 'questv3']
 
 function bareRoutes() {
   return {
@@ -791,18 +791,11 @@ function bareRoutes() {
 //
 // `base` is relative so the built output works from any subpath, including
 // topherhunt.com/games/aurora.
-// The root index.html is the current v2 world; v1.html preserves the earlier prototype.
-// The remaining pages are measurement and authoring harnesses.
-// (which still has unread numbers on it and stays deployed alongside), map.html
-// is the §14 step 3 Phase A map view -- the only place the global pass can be
-// inspected whole, and the "eye" that every "tune it by eye" constant in
-// phase-a.js refers to -- and props.html is the same kind of eye for the §9
-// asset library: 160 built props that check-props.mjs can assert are correct and
-// nothing could actually show you. gen-fern.html, gen-tree.html, gen-rock.html,
-// gen-deadwood.html and gen-building.html are the tuning benches for the procedural content
-// (src/props/fern.js, tree.js, rock.js, deadwood.js, src/buildings/), which has no built asset to
-// inspect -- the "library" for a generated asset is the range its parameters
-// cover, and the only way to see a range is to put twenty seeds side by side.
+// index.html is the world; every other page is a bench. map.html is the §14
+// step 3 Phase A map -- the "eye" the tune-by-eye constants in phase-a.js refer
+// to -- and props.html is the same eye for the §9 asset library. The gen-*.html
+// pages tune the procedural content, whose "library" is the range its parameters
+// cover, so the only way to see one is twenty seeds side by side.
 export default defineConfig({
   base: './',
   plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), bareRoutes(), unknownRouteGuard()],
@@ -830,12 +823,17 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
-        v1: resolve(__dirname, 'v1.html'),
         avatarPreview: resolve(__dirname, 'avatar-preview.html'),
-        spike: resolve(__dirname, 'spike.html'),
         map: resolve(__dirname, 'map.html'),
         props: resolve(__dirname, 'props.html'),
         genFern: resolve(__dirname, 'gen-fern.html'),
+        // The grass bench, served at /gen-grass. The only generator that boots
+        // the REAL world -- V2Height, the layers document and TerrainV2's
+        // quadtree -- because the two questions it exists to answer (how fast
+        // density may fall off with distance, and whether opaque blades still
+        // read as grass on a hillside, in snow and from above) do not survive
+        // being asked on a flat test plane.
+        genGrass: resolve(__dirname, 'gen-grass.html'),
         genTree: resolve(__dirname, 'gen-tree.html'),
         // The rock bench, served at /gen-rock. Its job is narrower than the
         // others': the tree and fern generators ship a settled bank, this one is
@@ -873,18 +871,6 @@ export default defineConfig({
         // The fish bench, served at /gen-fish: the fauna analogue of
         // gen-sheet.html, cut down to one sideview per species (tools/fauna/).
         genFish: resolve(__dirname, 'gen-fish.html'),
-        // §18. The alternative world: coarse shape imported from an image, fine
-        // shape procedural down to 10 cm, and everything a human wants to place
-        // by hand authored as a content layer on top. Shares the coordinate box
-        // with index.html and nothing else.
-        v2: resolve(__dirname, 'v2.html'),
-        // The grass bench, served at /v2-new-grass. Not a mode inside v2: the
-        // comparison it exists to make is between two carpets on one hill under
-        // one light, and it needs its own world -- GPU-placed blades out to
-        // 72 m and a ground material that IS the grass past it -- standing
-        // beside the shipped scatter's measured numbers rather than replacing
-        // it. See the header of src/newgrass/grass-field.js.
-        v2NewGrass: resolve(__dirname, 'v2-new-grass.html'),
         // The aurora shader lab, served at /test-aurora. A separate page rather
         // than a mode inside v2 for the same reason the grass bench is: what it
         // needs is an empty sky over a nominal skyline and sixty sliders, and

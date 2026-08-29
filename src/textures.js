@@ -45,8 +45,7 @@ import { butterflyWingSheet } from './props/butterfly-texture.js'
 // per-object uniform, so a single geometry in a single batch can wear different
 // textures on different parts of itself. A tree's trunk vertices carry BARK
 // while its canopy cards carry NEEDLES or LEAVES; one draw call, one material,
-// no split. `src/props.js` already assigns layers this way per material group.
-// Adding a species means adding a layer, not a material.
+// no split. Adding a species means adding a layer, not a material.
 //
 // THE ONE REAL CONSTRAINT: every layer in a DataArrayTexture must share
 // dimensions and format. TEX_SIZE is therefore an invariant of the whole asset
@@ -161,7 +160,7 @@ export const LAYER = {
   // transparent side margin, which is left over from a tiled-branch scheme that
   // is gone (see tree.js) and is still the better card of the two: a spray with
   // air around it reads as one twig rather than as a slab. NEEDLES stays,
-  // cropped tight, because the scanned props in src/props.js address it.
+  // cropped tight, because the scanned props address it.
   SPRAY_PINE: 22,
 
   // --- buildings, second pass (real photographic sources) -------------------

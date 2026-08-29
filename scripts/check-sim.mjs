@@ -381,9 +381,9 @@ console.log('\nquadtree LOD budget')
     `${fine.worst + 21} vs ${SLOT_COUNT}`
   )
 
-  // The tuner backs off by 1.1x when the selection overruns (tuner.js), which
-  // only terminates if coarsening actually costs fewer leaves. That is the
-  // property worth asserting -- not the exact exponent.
+  // A caller that backs off by 1.1x when the selection overruns only terminates
+  // if coarsening actually costs fewer leaves. That is the property worth
+  // asserting -- not the exact exponent.
   //
   // For the record it is about 2x per halving rather than the 4x the area
   // argument suggests, because MAX_DEPTH clamps the near field: at a 1.2 deg cap

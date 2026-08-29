@@ -1,5 +1,5 @@
 import THREE from '../three-instance.js'
-import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN, SNOW_TILE_MEAN } from '../textures.js'
+import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN } from '../textures.js'
 import { GRIT_GRAD_SCALE, terrainDetailTextures } from './grit-texture.js'
 
 // ---------------------------------------------------------------------------
@@ -170,21 +170,31 @@ const STONE_FAR = 650
 const FINE_NEAR = 30
 const FINE_FAR = 130
 
-// ---- The ground tiles: the meadow and the snowfield, photographed.
+// ---- The ground tile: the meadow, photographed.
 //
 // Same trick as the stone above and for the same reason -- noise is isotropic
 // and self-similar, and a lawn is not: it has blades, and they lie in
 // directions, and they clump. What replaced it was three octaves of value noise
 // that made grass out of speckle, and speckle at three scales is still speckle.
-// LAYER.TERRAIN_GRASS and LAYER.TERRAIN_SNOW are one square metre each, cut from
-// photographs by tools/props/cut-terrain.mjs.
+// LAYER.TERRAIN_GRASS is one square metre cut from a photograph by
+// tools/props/cut-terrain.mjs.
 //
-// A CONTRAST FIELD, NOT AN ALBEDO. Each tile is divided by its own linear
-// per-channel mean (GRASS_TILE_MEAN / SNOW_TILE_MEAN in textures.js) before it
-// multiplies anything, so it averages (1,1,1) and adds the photograph's grain
-// and its blade-to-soil colour swing without moving the palette. That is what
-// lets a photograph land on a surface whose every colour was tuned untextured,
-// and it is the only reason none of the constants in this file had to move.
+// THERE WAS A SNOW TILE HERE AND IT DID NOT WORK. The argument above is an
+// argument about STRUCTURE -- a photograph beats noise where the surface has
+// real structure at the scale being drawn -- and snow has almost none. What a
+// square metre of snow carries is a faint grey shading, so the tile contributed
+// little except the one artefact a tile cannot avoid: at one metre a period, on
+// a surface with no high-frequency detail to distract from it, the repeat was
+// the most visible thing on the snowfield. Grass hides its period behind blade
+// frequency; snow had nothing to hide it behind. The grit tile's speckle draws
+// snow now, at two incommensurate and mutually rotated scales, which is exactly
+// the property the photograph could not have.
+//
+// A CONTRAST FIELD, NOT AN ALBEDO. The tile is divided by its own linear
+// per-channel mean (GRASS_TILE_MEAN in textures.js) before it multiplies
+// anything, so it averages (1,1,1) and adds the photograph's grain and its
+// blade-to-soil colour swing without moving the palette. That is what lets a
+// photograph land on a surface whose every colour was tuned untextured.
 //
 // ONE METRE PER TILE, which is the ask and is also about right: at 128 px that
 // is 8 mm a texel, so a blade is a texel or two and a clump is a dozen. It is
@@ -201,14 +211,14 @@ const FINE_FAR = 130
 // 1/cos(slope) -- 15% at 30 degrees -- and by the angle where that would start
 // to show, chunk-mesh has already classified the fragment as rock.
 //
-// WHAT THE TILES TURN OFF, inside their fade and on their own surface only: the
-// brightness speckle, the dirt/moss mottle on grass, and the grass and snow
-// halves of the 10 cm micro-tint layer. All of them are the same job done worse,
-// and running both is two textures at one scale, which reads as mud. What stays:
-// the snow SPARKLE (a specular stand-in, not a texture), the macro layers (they
-// are regional and the tile is not), and the whole normal-perturbation pass at
-// the bottom of this file (the tiles carry no relief, and a lit surface needs
-// both).
+// WHAT THE TILE TURNS OFF, inside its fade and ON GRASS ONLY: the brightness
+// speckle, the dirt/moss mottle, and the grass half of the 10 cm micro-tint
+// layer. All of them are the same job done worse, and running both is two
+// textures at one scale, which reads as mud. What stays: the snow SPARKLE (a
+// specular stand-in, not a texture), the macro layers (they are regional and the
+// tile is not), and the whole normal-perturbation pass at the bottom of this
+// file (the tile carries no relief, and a lit surface needs both). Snow and rock
+// now suppress nothing at all, because neither has a tile at this scale.
 const GROUND_METRES = 1
 // The tiles' own fade. Far shorter than the stone's because the tile is a
 // sixteenth of its size: 60 m is where a 1 m tile is starting to be carried by
@@ -220,14 +230,39 @@ const GROUND_FAR = 150
 
 // Values are LINEAR, not sRGB -- three treats vertex colours and plain Color
 // uniforms as working-space. Roughly: linear 0.05 reads as sRGB 0.25.
-const DIRT = new THREE.Color(0.075, 0.052, 0.028) // exposed soil and grit
-const MOSS = new THREE.Color(0.022, 0.038, 0.016) // the darker green in the mix
+//
+// THE GRASS FOUR ARE TUNED AGAINST A MEASURED MEAN, not by eye. Every one of
+// them is a mix DESTINATION on green ground, so what the meadow actually reads
+// as is the average of the whole tint chain, not any one of these. Running that
+// chain over the baked fields (scratch: the four field samples a near fragment
+// gets, 200k of them) gives, for C_GRASS = (0.048, 0.088, 0.030), with SD/lum
+// as the contrast the eye actually reads:
+//
+//   base, untinted    lum 0.0753  g-max(r,b) 0.0400  g/r 1.83  SD/lum   --
+//   pre-bake              0.0652             0.0249      1.51       0.138
+//   the grey wash         0.0550             0.0105      1.21       0.218
+//   these values          0.0483             0.0239      1.74       0.294
+//
+// The grey-wash row is the "waxy white saran wrap" -- red held still while green
+// collapsed, and r converging on g IS a grey wash however dark it is. DIRT and
+// DRY are the only two members with g <= r, so over-firing them neutralises the
+// meadow, and the equalised fields WERE over-firing them (see the threshold
+// block in the fragment shader).
+//
+// The shipped row is then 26% darker than the pre-bake look with more than twice
+// its contrast, which is what "darker and more textured" costs in numbers. Note
+// where the darkening comes from: a third of it is these four getting deeper,
+// and the rest is uGrassShade below. It has to be split that way -- the mixes
+// only reach ~40% of a fragment between them, so no palette this side of black
+// can pull the mean down alone without painting the meadow one flat colour.
+const DIRT = new THREE.Color(0.044, 0.036, 0.019) // exposed soil and grit
+const MOSS = new THREE.Color(0.005, 0.026, 0.005) // the darker green in the mix
 
 // The macro palette. Each one is a plausible neighbour of the base colour it
 // tints, not a different material -- these read as "that slope is drier" and
 // "that face is stained", not as painted patches.
-const DRY = new THREE.Color(0.072, 0.062, 0.026) // sun-bleached ochre grass
-const DEEP = new THREE.Color(0.026, 0.05, 0.022) // damp, shadowed green
+const DRY = new THREE.Color(0.042, 0.044, 0.017) // sun-bleached ochre grass
+const DEEP = new THREE.Color(0.009, 0.04, 0.009) // damp, shadowed green
 const STAIN = new THREE.Color(0.062, 0.05, 0.042) // warm mineral staining on rock
 
 // The two ends of the boundary dither. These must track C_SNOW and C_ROCK in
@@ -292,12 +327,12 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // every material this factory makes -- see terrainDetailTextures.
     uGritMap: { value: detail.grit },
     uMacroMap: { value: detail.macro },
-    uSpeckle: { value: 0.34 }, // +/- brightness swing, applied to every surface
+    uSpeckle: { value: 0.46 }, // +/- brightness swing, applied to every surface
     uDirtAmount: { value: 0.8 },
     uMossAmount: { value: 0.65 },
     uDirt: { value: DIRT },
     uMoss: { value: MOSS },
-    uMacroValue: { value: 0.3 }, // +/- brightness swing at every distance
+    uMacroValue: { value: 0.38 }, // +/- brightness swing at every distance
     uMacroTint: { value: 0.55 }, // how far the macro palette pulls the hue
     // ---- The REGION octave: one more macro wavelength, ~90 m, and the coarsest
     // colour variation in the shader.
@@ -323,7 +358,7 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // Snow gets the value swing at half weight (wind scours a drift into bright
     // and dull ground and that reads as snow) and none of the tint (brown snow
     // reads as dirty snow), which is the same split the 27/10 m pair makes.
-    uRegionValue: { value: 0.26 }, // +/- brightness swing over ~90 m regions
+    uRegionValue: { value: 0.32 }, // +/- brightness swing over ~90 m regions
     uRegionTint: { value: 0.5 }, // how far a region pulls toward dirt or deep green
     uDry: { value: DRY },
     uDeep: { value: DEEP },
@@ -408,11 +443,48 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // it still reads pixelly with the tint at 0.275, that layer is the next
     // one to pull down.
     uMicroTint: { value: 0.275 },
-    uMicroValue: { value: 0.07 },
+    uMicroValue: { value: 0.1 },
     uGrit: { value: GRIT },
     uSoot: { value: SOOT },
     uFrost: { value: FROST },
     uShade: { value: SHADE },
+
+    // ---- EXPOSURE. Two scale factors applied to the finished albedo, keyed on
+    // the surface, and the only two numbers in this file that are about the
+    // renderer rather than about the ground.
+    //
+    // THE RENDERER HAS NO TONE MAPPING (`toneMapping: none` in v2's main, by
+    // choice -- the Quest cannot spare the pass and every colour in the game was
+    // tuned without one). So the transfer curve is: linear albedo times light,
+    // hard-clipped at 1.0, then sRGB. There is no shoulder. Anything that lands
+    // above 1.0 is not "bright", it is GONE -- and everything drawn on top of it
+    // is gone with it.
+    //
+    // Snow was landing there. C_SNOW is 0.88 in the mesher, the sun runs 2.1 at
+    // noon and the hemisphere another 0.85, so a lit snow face computed roughly
+    // 0.88 * (2.1 * 0.8 + 0.85 * 0.9) = 2.15 -- clipped by more than a factor of
+    // two, and clipped at EVERY daylight angle down to a grazing one. That is
+    // why the snowfield read as a flat white sheet with no texture on it: the
+    // sparkle, the flecks, the grain and the entire relief pass were all being
+    // computed correctly and then thrown away by the clamp. 0.40 puts a lit face
+    // at ~0.86 and a shaded one at ~0.43, which is a range the eye can read as
+    // shape, and leaves the very brightest face square to the sun just touching
+    // 1.0 -- snow should be the thing in this world that reaches white.
+    //
+    // WHY THIS IS NOT A FIX IN chunk-mesh's C_SNOW. That constant does two jobs:
+    // it is the snow albedo AND it is the classification channel this shader
+    // reads (auroraVertexSnow thresholds vColor.b). Darkening it there would
+    // silently stop the shader recognising snow as snow. The mesher's colour is
+    // the classification; this stage owns the shading. Note the consequence:
+    // props carry their own snow (SNOW_TINT in material.js) and it is clipped
+    // exactly the same way, so a snow-capped boulder will now read brighter than
+    // the ground under it until that one is scaled to match.
+    //
+    // uGrassShade is a LOOK choice and not a clipping one -- grass at 0.088 was
+    // never near the clamp. See the note above the palette for the split between
+    // this and the four constants.
+    uSnowAlbedo: { value: 0.4 },
+    uGrassShade: { value: 0.85 },
   }
 
   if (atlas) {
@@ -436,26 +508,19 @@ export function createTerrainMaterial({ atlas = null } = {}) {
       value: new THREE.Vector3(ROCK_TILE_MEAN[0], ROCK_TILE_MEAN[1], ROCK_TILE_MEAN[2]),
     }
 
-    // How far each ground tile is allowed to swing its surface. Same units as
-    // uStone -- a fraction of the fully-applied contrast field -- and the two
-    // differ because the TILES differ, not because grass wants more texture than
-    // snow does: cut-terrain.mjs grades the meadow to a relative sd of 0.60 and
-    // the snowfield to 0.15, so equal weights here would ship a quarter of the
-    // crumple. Turn either to 0 to see the noise layers this replaced, which is
-    // the comparison the whole GROUND_METRES block above is making.
+    // How far the ground tile is allowed to swing its surface. Same units as
+    // uStone -- a fraction of the fully-applied contrast field. Turn it to 0 to
+    // see the noise layers this replaced, which is the comparison the whole
+    // GROUND_METRES block above is making.
     //
-    // WHAT SHIPS IS THE PRODUCT of the weight here and that sd, so the meadow
-    // lands at 0.48 and the snowfield at 0.135. Push the CONTRAST from the cut
-    // rather than from here: past 1.0 this mix() extrapolates, and an
-    // extrapolated field goes negative in its low tail, which clamps to black
-    // specks rather than to deep shadow.
+    // WHAT SHIPS IS THE PRODUCT of the weight here and the cut's relative sd,
+    // which cut-terrain.mjs grades to 0.60, so the meadow lands at 0.48. Push
+    // the CONTRAST from the cut rather than from here: past 1.0 this mix()
+    // extrapolates, and an extrapolated field goes negative in its low tail,
+    // which clamps to black specks rather than to deep shadow.
     material.userData.uniforms.uGrassTile = { value: 0.8 }
-    material.userData.uniforms.uSnowTile = { value: 0.9 }
     material.userData.uniforms.uGrassTileMean = {
       value: new THREE.Vector3(GRASS_TILE_MEAN[0], GRASS_TILE_MEAN[1], GRASS_TILE_MEAN[2]),
-    }
-    material.userData.uniforms.uSnowTileMean = {
-      value: new THREE.Vector3(SNOW_TILE_MEAN[0], SNOW_TILE_MEAN[1], SNOW_TILE_MEAN[2]),
     }
   }
 
@@ -508,15 +573,15 @@ export function createTerrainMaterial({ atlas = null } = {}) {
         uniform vec3 uSoot;
         uniform vec3 uFrost;
         uniform vec3 uShade;
+        uniform float uSnowAlbedo;
+        uniform float uGrassShade;
 ${atlas ? `        precision highp sampler2DArray;
         uniform sampler2DArray uAtlas;
         uniform float uStone;
         uniform float uStoneFine;
         uniform vec3 uStoneMean;
         uniform float uGrassTile;
-        uniform float uSnowTile;
         uniform vec3 uGrassTileMean;
-        uniform vec3 uSnowTileMean;
 
         // One triplanar sample of LAYER.ROCK at 1/\`k\` metres per tile, blended
         // by pre-normalised world-axis weights. Three fetches, and there is no
@@ -745,9 +810,40 @@ ${atlas ? `        precision highp sampler2DArray;
           // Snow gets the value swing at half weight (wind scours a drift into
           // bright and dull ground and that reads as snow) and none of the tint
           // (brown snow reads as dirty snow).
+          //
+          // ---- WHY THESE THRESHOLDS ARE NOT THE ONES THE COMMENTS DESCRIBE
+          //
+          // Every tint pair in this shader -- here, the mottle below, the grain
+          // and the micro flecks -- was tuned against value noise, whose
+          // distribution is centrally concentrated: p01 0.16, p99 0.84 for a
+          // two-octave sum. The baked fields are RANK-EQUALISED, so they are
+          // exactly uniform on [0,1], and every threshold that had been sitting
+          // out in a thin tail suddenly had two to three times as many
+          // fragments past it. Measured over 200k fragments, coverage went
+          // 12.5% -> 21.0% for the pair on this line alone, and 7.6% -> 24.0%
+          // for the mottle's dry end.
+          //
+          // The visible result was the meadow going grey: DIRT and DRY are the
+          // only palette members with g <= r, and tripling their share pulls
+          // the average straight off green without changing the brightness much
+          // at all. See the measured rows above the palette constants.
+          //
+          // So each pair was RE-SOLVED for the coverage the palette was tuned
+          // against, numerically, on the shipped texture's own bytes -- outer
+          // edge pinned where the old field's tail effectively ended (which is
+          // 1.0 or 0.0 in rank terms, since the old noise almost never reached
+          // its own extremes), inner edge bisected until the mean weight came
+          // back. The green ends (uDeep, uMoss) are then deliberately let out
+          // to ~1.35x the old coverage: they are the layers that make the
+          // ground read as grass rather than as tinted ground, and they are the
+          // cheap half of "darker and more verdant".
+          //
+          // The numbers are therefore NOT hand-picked and NOT meaningful to
+          // read as fractions of anything. Change the bake and they are wrong;
+          // re-solve them rather than nudging them.
           diffuseColor.rgb *= 1.0 + ( auroraM.r - 0.5 ) * uRegionValue * ( 1.0 - auroraSnowBase * 0.5 );
-          diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.62, 0.96, auroraM.r ) * auroraGreenBase * uRegionTint );
-          diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.38, 0.04, auroraM.r ) * auroraGreenBase * uRegionTint );
+          diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.752, 1.0, auroraM.r ) * auroraGreenBase * uRegionTint );
+          diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.285, 0.0, auroraM.r ) * auroraGreenBase * uRegionTint );
 
           // ---- The mid-range mottle: ~30 m down to ~4 m, off the fine macro
           // sample fetched above the snow line.
@@ -775,13 +871,19 @@ ${atlas ? `        precision highp sampler2DArray;
             // all the form it needs.
             diffuseColor.rgb *= 1.0 + ( auroraMF.r - 0.5 ) * uMacroValue * ( 1.0 - auroraSnowBase * 0.6 );
 
-            diffuseColor.rgb = mix( diffuseColor.rgb, uDry, smoothstep( 0.58, 0.94, auroraMF.r ) * auroraGreenBase * uMacroTint );
-            diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.42, 0.08, auroraMF.r ) * auroraGreenBase * uMacroTint );
+            // Re-solved for an equalised field. See the region layer's
+            // threshold note above; the old pair here was 0.58/0.94.
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDry, smoothstep( 0.856, 1.0, auroraMF.r ) * auroraGreenBase * uMacroTint );
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDeep, smoothstep( 0.218, 0.0, auroraMF.r ) * auroraGreenBase * uMacroTint );
             // Rock stains on a DECORRELATED channel of the same fetch, not on
             // the one that just tinted the grass: mineral banding follows the
             // face, not the valley, so it should not track the meadow's dry
             // patches. Free, because the fetch returned it either way.
-            diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.52, 0.95, auroraMF.g ) * auroraRockBase * uMacroTint * 0.8 );
+            // Re-solved for an equalised field like the grass pairs above --
+            // 0.52/0.95 caught 17.5% of a rock face under value noise and 26.5%
+            // under this one. No coverage boost here: rock was not the surface
+            // that read wrong, so it just goes back to where it was.
+            diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.65, 1.0, auroraMF.g ) * auroraRockBase * uMacroTint * 0.8 );
           }
 
           float auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, auroraDist );
@@ -836,13 +938,29 @@ ${atlas ? `
             }
           }
 
-          // ---- The ground tiles. See the GROUND_METRES block above.
+          // ---- The ground tile. See the GROUND_METRES block above.
           //
-          // Same shape as the stone block, one fetch instead of three, and each
-          // guard folds in its own surface so a grass fragment never pays for
-          // the snow tile and neither pays anything above the snow line's crags.
-          // Both reuse the derivatives taken outside the stone guard: the uv is a
-          // plain multiple of world position, so its derivative is one too.
+          // GRASS ONLY. There was a snow tile here too and it is gone: a
+          // photograph of snow is a photograph of an almost-featureless white
+          // surface, so nearly all of what it carried was the one thing a tile
+          // cannot hide -- its own repeat. Grass gets away with tiling because
+          // blades are high-frequency and the eye reads the frequency rather
+          // than the period; snow has no such cover, and a 4 m square of subtle
+          // grey shading laid end to end is a visible grid.
+          //
+          // What replaces it is nothing new: the grain, fleck and sparkle
+          // layers below already draw snow, and were merely being SUPPRESSED
+          // wherever the tile claimed to be carrying that scale already (see
+          // auroraProc). Dropping the tile hands snow back to them, and they do
+          // not tile -- the grit tile's two scales are incommensurate and
+          // mutually rotated. It is also one fewer fetch on every snow fragment
+          // inside 150 m.
+          //
+          // Same shape as the stone block, one fetch instead of three, and the
+          // guard folds the surface in so nothing above the snow line pays for
+          // it at all. It reuses the derivatives taken outside the stone guard:
+          // the uv is a plain multiple of world position, so its derivative is
+          // one too.
           auroraTileFade = 1.0 - smoothstep( ${GROUND_NEAR.toFixed(1)}, ${GROUND_FAR.toFixed(1)}, auroraDist );
 
           float auroraGrassK = auroraTileFade * auroraGreenBase;
@@ -850,22 +968,16 @@ ${atlas ? `
             vec3 auroraGrassTex = auroraGroundTile( vWorldPos, auroraDPx, auroraDPy, ${LAYER.TERRAIN_GRASS}.0, ${(1 / GROUND_METRES).toFixed(6)} ) / uGrassTileMean;
             diffuseColor.rgb *= mix( vec3( 1.0 ), auroraGrassTex, uGrassTile * auroraGrassK );
           }
-
-          float auroraSnowK = auroraTileFade * auroraSnowBase;
-          if ( auroraSnowK > 0.004 ) {
-            vec3 auroraSnowTex = auroraGroundTile( vWorldPos, auroraDPx, auroraDPy, ${LAYER.TERRAIN_SNOW}.0, ${(1 / GROUND_METRES).toFixed(6)} ) / uSnowTileMean;
-            diffuseColor.rgb *= mix( vec3( 1.0 ), auroraSnowTex, uSnowTile * auroraSnowK );
-          }
 ` : ''}
           if ( auroraNear > 0.004 ) {
-            // HOW MUCH OF THIS FRAGMENT THE PHOTOGRAPHS ARE NOT CARRYING. Rock
-            // is always 1 -- it has a tile of its own but that one is bedding at
-            // 16 m, which says nothing at half a metre. Grass and snow fall to 0
-            // inside GROUND_NEAR and come back as their tiles fade out, so the
-            // grit below is what the surface reverts TO rather than a layer
-            // stacked under a photograph. Clamped because the two
-            // classifications are near-exclusive rather than provably so.
-            float auroraProc = clamp( 1.0 - auroraTileFade * ( auroraGreenBase + auroraSnowBase ), 0.0, 1.0 );
+            // HOW MUCH OF THIS FRAGMENT THE PHOTOGRAPH IS NOT CARRYING. Rock is
+            // always 1 -- it has a tile of its own but that one is bedding at
+            // 16 m, which says nothing at half a metre. SNOW IS ALSO ALWAYS 1
+            // NOW: its tile is gone (see the ground-tile block), so the grit
+            // below is not standing in for a photograph on snow, it is the only
+            // thing drawing snow at this scale. Only grass falls to 0 inside
+            // GROUND_NEAR and comes back as its tile fades out.
+            float auroraProc = clamp( 1.0 - auroraTileFade * auroraGreenBase, 0.0, 1.0 );
 
             // ---- THE GRIT TILE, COARSE SAMPLE: ${GRIT_METRES} m, 4.6 cm texels, NEAREST.
             //
@@ -895,8 +1007,10 @@ ${atlas ? `
             // grit field is rank-equalised, so 0.56..0.88 is the top 44% of
             // texels ramping to the top 12%. See equalise() in grit-texture.js.
             float auroraGreen = auroraGreenBase * auroraNear * ( 1.0 - auroraTileFade );
-            diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.56, 0.88, auroraGrain ) * auroraGreen * uDirtAmount );
-            diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, smoothstep( 0.44, 0.12, auroraGrain ) * auroraGreen * uMossAmount );
+            // Re-solved for an equalised field. See the region layer's
+            // threshold note; the old pair here was 0.56/0.88.
+            diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.813, 1.0, auroraGrain ) * auroraGreen * uDirtAmount );
+            diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, smoothstep( 0.292, 0.0, auroraGrain ) * auroraGreen * uMossAmount );
 
             // ---- Relief, coarse rung. See uRelief.
             //
@@ -941,14 +1055,21 @@ ${atlas ? `
               // So: the fine tile's DECORRELATED channel, thresholded hard so
               // only the top few percent survive, added rather than multiplied.
               // The threshold is what makes it read as discrete points; a smooth
-              // version of this is just noise and looks like static. Equalised,
-              // so 0.93 is exactly the top 7% of texels rather than whatever a
-              // bell curve happened to leave above the line.
+              // version of this is just noise and looks like static.
+              //
+              // 0.93 was the WRONG number and it is worth saying why, because
+              // the reasoning that produced it was backwards: "equalised, so
+              // 0.93 is exactly the top 7%" is true and is exactly the bug. The
+              // old field was value noise at 8.3 m and 0.93 caught 0.33% of it,
+              // not 7% -- a bell curve barely reaches its own extremes. Twenty
+              // times as many crystals is not a sparkle, it is a sheen, and a
+              // sheen that ADDS is a white film over the snow. 0.994 puts the
+              // count back where uSnowSparkle was set for it.
               //
               // .a and not .r because .r is quantised to six steps for the
               // pixelated look, and a hard threshold on a staircase either
               // catches a whole tread or none of it.
-              diffuseColor.rgb += smoothstep( 0.93, 1.0, auroraGF.a ) * auroraSnowBase * auroraNear * uSnowSparkle;
+              diffuseColor.rgb += smoothstep( 0.994, 1.0, auroraGF.a ) * auroraSnowBase * auroraNear * uSnowSparkle;
 
               // ---- Micro layer: ~4 cm flecks, on every surface, near only.
               //
@@ -959,15 +1080,23 @@ ${atlas ? `
               // so this reads as discrete specks scattered over the coarser
               // mottling rather than as a second wash of it. That is the whole
               // difference between "speckled" and "muddy" at this size.
+              //
+              // Re-solved for an equalised field. See the region layer's
+              // threshold note; the old pair here was 0.62/0.90, and the gap
+              // between the two pairs is preserved in coverage rather than in
+              // value -- what "tighter than the grain's" has to mean once the
+              // field underneath is uniform.
               float auroraMicroN = auroraGF.r;
-              float auroraMicroHi = smoothstep( 0.62, 0.90, auroraMicroN );
-              float auroraMicroLo = smoothstep( 0.38, 0.10, auroraMicroN );
+              float auroraMicroHi = smoothstep( 0.747, 0.98, auroraMicroN );
+              float auroraMicroLo = smoothstep( 0.351, 0.02, auroraMicroN );
               float auroraMicroK = auroraMicroFade * uMicroTint;
-              // The tiles resolve 8 mm, so on grass and snow they have already
-              // drawn this scale and drawn it from a photograph. Rock keeps its
-              // pair whole -- the stone tile it wears is 16 m of bedding, which
-              // is four scales coarser than a fleck.
-              float auroraMicroProc = 1.0 - auroraTileFade;
+              // The grass tile resolves 8 mm, so on grass it has already drawn
+              // this scale and drawn it from a photograph. Rock keeps its pair
+              // whole -- the stone tile it wears is 16 m of bedding, which is
+              // four scales coarser than a fleck -- and so does SNOW, which no
+              // longer has a tile at all, and for which this pair plus the
+              // sparkle is now the entire near-field surface.
+              float auroraMicroProc = 1.0 - auroraTileFade * auroraGreenBase;
 
               diffuseColor.rgb *= 1.0 + ( auroraMicroN - 0.5 ) * uMicroValue * auroraMicroFade * auroraProc;
 
@@ -996,6 +1125,18 @@ ${atlas ? `
               }
             }
           }
+
+          // ---- Exposure, LAST. See uSnowAlbedo.
+          //
+          // At the very end and as a plain scale on the finished colour, which
+          // is what makes it safe: every layer above it -- the tints, the tile,
+          // the flecks, the sparkle -- is scaled by the same factor, so the
+          // whole chain keeps its ratios and only the absolute level moves. Put
+          // this anywhere earlier and each subsequent mix() toward an absolute
+          // palette colour would drag the surface back up, and the sparkle,
+          // which ADDS, would drag it up hardest of all.
+          diffuseColor.rgb *= mix( 1.0, uSnowAlbedo, auroraSnowBase );
+          diffuseColor.rgb *= mix( 1.0, uGrassShade, auroraGreenBase );
         }`
       )
       // ---- Near-field relief: APPLY ONLY. The slopes were accumulated into

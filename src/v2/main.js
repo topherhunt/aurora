@@ -61,10 +61,10 @@ const QUEST_MODE = new URLSearchParams(location.search).has('quest')
 // The /v2 route (DESIGN.md §18): the imported world, walkable, with the
 // authoring tools on top of it.
 //
-// This file is v1's src/main.js with the procedural half cut out and the
-// editing half grafted on. What it keeps from v1 is the day-night wiring, which
-// is unchanged and must STAY unchanged -- the ordering inside applySky() below
-// is load-bearing and the reasons are written there. What it drops is
+// This file grew out of the retired v1 host, with the procedural half cut out
+// and the editing half grafted on. What it keeps is the day-night wiring, which
+// must STAY unchanged -- the ordering inside applySky() below is load-bearing
+// and the reasons are written there. What it drops is
 // everything downstream of Phase A: no props, no villages, no horizon maps, no
 // measure beam, no HUD panel in the headset.
 //
@@ -184,7 +184,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // locals, never the construction details, so it's unmodified by which branch
 // ran.
 // three-instance.js already resolves to AFRAME.THREE once A-Frame's own
-// <script> tag has run (v2.html loads it unconditionally, before this
+// <script> tag has run (index.html loads it unconditionally, before this
 // module), so objects built below are native to whichever THREE actually
 // owns the live scene -- no foreign objects, no shim.
 

@@ -33,7 +33,7 @@
 // OVERDRAW, MEASURED
 // ===========================================================================
 //
-// Overdraw is the only cost here that matters, so it gets a number. These are counted layer-by-layer off a real draw at the schema defaults, facing north, over seven values of t, by aurora-curtain-probe.html under headless Chrome and SwiftShader. They are LAYER COUNTS, not times: nothing in this repository has been run on a headset, and nothing here should be read as a frame-time prediction.
+// Overdraw is the only cost here that matters, so it gets a number. These are counted layer-by-layer off a real draw at the schema defaults, facing north, over seven values of t, under headless Chrome and SwiftShader. They are LAYER COUNTS, not times: nothing in this repository has been run on a headset, and nothing here should be read as a frame-time prediction.
 //
 //   worst pixel .................... 26 layers
 //   mean over covered pixels ....... 8.93

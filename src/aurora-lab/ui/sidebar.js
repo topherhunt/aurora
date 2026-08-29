@@ -9,12 +9,12 @@
 // lab exists to hold SEVERAL aurora algorithms side by side and switch between
 // them, and each one has a different set of knobs. A hand-written row per knob
 // goes stale the first time a shader grows a term, and a term with no widget is
-// a term nobody ever tunes -- the same failure src/tuner.js records at length.
+// a term nobody ever tunes.
 // So: the host hands over groups of params, this file draws whatever it is
 // given, and every edit leaves through `onParam(key, value)`.
 //
-// THE NUMBER BOX IS NOT CLAMPED to the slider's range, deliberately, and for
-// tuner.js's reason: the range is a guess at what is useful and typing past it
+// THE NUMBER BOX IS NOT CLAMPED to the slider's range, deliberately: the range
+// is a guess at what is useful and typing past it
 // is how you find out the guess was wrong. The range input pins to its end in
 // that case, which is honest -- the slider cannot show a value it has no room
 // for -- and the number box keeps the truth.
@@ -71,8 +71,7 @@ const C = {
   bad: '#ff9a7a',
 }
 
-// The row grid. v2-new-grass.html uses 88px 1fr 46px -- label, slider, and a
-// read-only value. Here the third column IS the number box, so it has to be
+// The row grid. The third column IS the number box, so it has to be
 // typed into rather than read, and it has to hold four decimals plus a sign
 // ("-0.0031") without ellipsing. 56px does that at 12px monospace once the
 // spinner arrows are gone, and the arrows go anyway: they eat 14px of a 56px

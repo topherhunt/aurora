@@ -36,4 +36,4 @@ if [ "${health_ok}" -ne 1 ]; then
   echo >&2 "ERROR: public health check failed. Inspect: sudo systemctl status ${SERVICE_NAME}.service"
   exit 1
 fi
-echo "==> Deployed: https://${DOMAIN}/ (v2); legacy prototype: https://${DOMAIN}/v1"
+echo "==> Deployed: https://${DOMAIN}/"

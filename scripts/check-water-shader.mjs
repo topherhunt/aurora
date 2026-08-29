@@ -556,7 +556,7 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   // leaves scene.background set gives a lake full of flat fog grey. All of them
   // still look like water.
   const { SkyProbe: Probe, PROBE_LAYER, PROBE } = await import('../src/sky-probe.js')
-  const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'main.js'), 'utf8')
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'v2', 'main.js'), 'utf8')
   const probeSrc = fs.readFileSync(path.join(ROOT, 'src', 'sky-probe.js'), 'utf8')
   const p = new Probe()
 
@@ -585,7 +585,7 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   // real star has. 2400 of those is a lake reflecting gravel. Asserted negatively
   // as well, because putting them back is a one-word edit that looks harmless.
   check(/SkyProbe\.include\(\s*aurora\.mesh\s*\)/.test(mainSrc),
-    'main.js captures the aurora, which is the only thing worth capturing')
+    'v2/main.js captures the aurora, which is the only thing worth capturing')
   check(!/stars\.points/.test(mainSrc.slice(mainSrc.indexOf('SkyProbe.include'), mainSrc.indexOf('SkyProbe.include') + 60)),
     'and not the stars, which have no angular size a 64 px face can represent')
 
@@ -659,7 +659,9 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   // Ordering in the frame loop. The probe binds a render target and toggles xr
   // off; doing that after the XR framebuffer is bound puts the frame in the
   // wrong buffer, and on a desktop canvas it would look completely fine.
-  check(mainSrc.indexOf('probe.update(') < mainSrc.indexOf('renderer.render(scene, camera)'),
+  // lastIndexOf, because the first `renderer.render` in the file is the
+  // not-ready early-out that returns before the probe exists to be updated.
+  check(mainSrc.indexOf('probe.update(') < mainSrc.lastIndexOf('renderer.render(scene, camera)'),
     'the probe runs before the frame is drawn, not after')
 
   // --- the mountain silhouette's darkness --------------------------------------
