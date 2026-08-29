@@ -2,8 +2,12 @@ import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
-import { createPropMaterial, setSnowLine, setLeafSnowVary } from '../../material.js'
+import {
+  createPropMaterial, setSnowLine, setLeafSnowVary,
+  getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS,
+} from '../../material.js'
 import { RimFade } from './rim.js'
+import { PropArena } from './prop-arena.js'
 
 // ---------------------------------------------------------------------------
 // The forest on the /v2 route: a tiled, camera-following scatter whose density
@@ -76,15 +80,16 @@ import { RimFade } from './rim.js'
 // distance it used to be, and material.js's dissolve header for why the channel
 // is free and why the dissolve is a dither rather than a blend.
 //
-// A BAND SWAP, BY CONTRAST, POPS, and that is a deliberate loss. Dissolving one
-// tier into another means drawing both at once on complementary dither
-// thresholds, which takes a DUPLICATE instance carrying its own fade slot. The
-// arena below has no per-instance geometry, so that duplicate would have to live
-// in the departing TIER'S OWN MESH and be tracked through the same swap-remove
-// packing as everything else, for an effect lasting a quarter second at 8 and
-// 22.5 m. So the swap is a cut: limbs lose their barrel at 8 m and a mesh
-// becomes a card at 22.5 m, both against LOD_HYSTERESIS's dead band. The rim dissolve,
-// which is per instance and needs no duplicate, is untouched.
+// AND NEITHER DOES A BAND SWAP. Dissolving one tier into another means drawing
+// both at once on complementary dither thresholds, which takes a DUPLICATE
+// instance carrying its own fade slot: the arena below has no per-instance
+// geometry, so the departing tier has to be held by a second instance living in
+// THAT TIER'S OWN MESH, tracked through the same swap-remove packing as
+// everything else, for a quarter second. `_crossFade` is that duplicate, at all
+// three boundaries -- the barrel leaving the limbs at 8 m is as visible as the
+// mesh becoming a card at 22.5 m. It costs one extra tree's triangles per swap
+// in flight (26 at a walk, ceilinged at FADE_MAX_INFLIGHT under a fast flight,
+// where the refusals go back to being the cut this used to be everywhere).
 //
 // TILES, and why the rebuild is affordable. A jittered grid pays one hash per
 // candidate and one field evaluation per SURVIVING candidate, so a full boot is
@@ -314,6 +319,25 @@ const DRAW_RADIUS = 1500
 // every time the player sways. Same value and same reason as v1's scatter.
 const LOD_HYSTERESIS = 0.12
 
+// Ceilings on the LOD cross-dissolve, in instances. rocks.js carries the same
+// pair for the same reason -- past either one a swap simply pops, which is a
+// loss of polish and never a loss of trees.
+//
+// THIS ARENA HAS A THIRD CEILING THE OTHER BEDS DO NOT, and it is the one that
+// actually binds. A duplicate lives in the DEPARTING tier's own mesh, whose cap
+// was sized from that band's population and nothing else: the tier-1 meshes hold
+// about 100 trees each and run half full, so a fly-through that carried four
+// hundred trees across 22.5 m at once would fill one. `_crossFade` asks the
+// arena for room and refuses rather than throwing -- see PropArena.roomAt.
+//
+// The numbers are what a sweep of the boundary actually needs. At 60 m/s the
+// 22.5 m band sweeps 2 * 22.5 * 60 * 0.25 = 675 m^2 in one fade window, ~34
+// trees at full density spread over four species meshes. 256 is an order above
+// that and still an order under any mesh's headroom.
+const FADE_MAX_INFLIGHT = 256
+const FADE_POOL_RESERVE = 1024
+const FADE_MESH_RESERVE = 8
+
 // Metres per tile. Sized so a tile holds ~31 trees at full density: small enough
 // that crossing a boundary invalidates a thin row and that the keep-fraction is
 // evaluated finely, large enough that the resident set is ~2000 Map entries
@@ -408,214 +432,6 @@ function tileSeed(tx, tz, seed) {
   h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d)
   h = Math.imul(h ^ (h >>> 12), 0x297a2d39)
   return (h ^ (h >>> 15)) >>> 0
-}
-
-/**
- * A BatchedMesh-shaped facade over a GROUP of InstancedMeshes, one per (tier,
- * variant), so that Trees -- which touches the arena API from a dozen places
- * here and four in rim.js -- does not have to know which it is holding. See the
- * arena note in the header for why it is instanced and what the shape costs.
- *
- * A geometry id is `tier * variantCount + variant`, which is also the index of
- * the mesh that draws it. An instance id is a POOL id, owned by Trees and
- * unrelated to the slot it currently occupies inside a mesh -- so every
- * per-instance value is shadowed here and rewritten when a slot moves.
- */
-class TreeArena extends THREE.Group {
-  /**
-   * @param maxInstances  the pool size, and the length of every shadow array.
-   * @param tiers         bank.tiers -- `tiers[t].geometries[v]`. TAKEN, not
-   *                      copied: an InstancedMesh draws the object it is given,
-   *                      so the caller must not dispose these.
-   * @param caps          per-tier instance capacity of ONE mesh. Exceeding it
-   *                      throws rather than silently dropping a tree.
-   */
-  constructor(maxInstances, tiers, caps, material) {
-    super()
-    this.name = 'v2-trees'
-    this.frustumCulled = false
-    // Neither is real on an InstancedMesh, but main.js's applyBatchCulling reads
-    // both off every batch it is handed and would otherwise record `undefined`
-    // as this layer's default.
-    this.perObjectFrustumCulled = false
-    this.sortObjects = false
-
-    const variantCount = tiers[0].geometries.length
-    this.variantCount = variantCount
-    this.meshes = []
-    this.owner = []
-    this.capAt = []
-    for (let t = 0; t < tiers.length; t++) {
-      for (let v = 0; v < variantCount; v++) {
-        const cap = caps[t]
-        const geo = tiers[t].geometries[v]
-        // aPropFade lives on the GEOMETRY, so it can only be attached once the
-        // geometry is spoken for. 1 is "never fade", the resting value
-        // setPropSolidAt writes and the one a batch's colour alpha starts at.
-        geo.setAttribute(
-          'aPropFade',
-          new THREE.InstancedBufferAttribute(new Float32Array(cap).fill(1), 1)
-        )
-        const mesh = new THREE.InstancedMesh(geo, material, cap)
-        mesh.name = `v2-trees-t${t}-v${v}`
-        // Nothing is drawn until an instance takes a slot; `count` is the live
-        // population from here on.
-        mesh.count = 0
-        // An InstancedMesh's own frustum test computes a bounding sphere over
-        // every instance matrix, which is both expensive and stale the moment a
-        // tile grows. The scatter follows the camera and the answer would be yes
-        // in any case.
-        mesh.frustumCulled = false
-        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-        // Created here rather than left to three's lazy path inside setColorAt,
-        // so USE_INSTANCING_COLOR is defined on the FIRST compile -- a material
-        // that compiled without it would drop the stand tint until something
-        // forced a rebuild.
-        mesh.instanceColor = new THREE.InstancedBufferAttribute(
-          new Float32Array(cap * 3).fill(1), 3
-        )
-        mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
-        this.meshes.push(mesh)
-        this.owner.push(new Int32Array(cap))
-        this.capAt.push(cap)
-        this.add(mesh)
-      }
-    }
-
-    this._max = maxInstances
-    this._next = 0
-    this.geoAt = new Int32Array(maxInstances).fill(-1)
-    this.slot = new Int32Array(maxInstances).fill(-1)
-    this.vis = new Uint8Array(maxInstances)
-    this.mat = new Float32Array(maxInstances * 16)
-    this.col = new Float32Array(maxInstances * 3).fill(1)
-    this.fade = new Float32Array(maxInstances).fill(1)
-  }
-
-  addInstance(geometryId) {
-    if (this._next >= this._max) throw new Error('TreeArena: pool exhausted')
-    const id = this._next++
-    this.geoAt[id] = geometryId
-    return id
-  }
-
-  setGeometryIdAt(instanceId, geometryId) {
-    if (this.geoAt[instanceId] === geometryId) return
-    if (this.slot[instanceId] >= 0) this._free(instanceId)
-    this.geoAt[instanceId] = geometryId
-    if (this.vis[instanceId]) this._alloc(instanceId)
-  }
-
-  setVisibleAt(instanceId, visible) {
-    const want = visible ? 1 : 0
-    if (this.vis[instanceId] === want) return
-    this.vis[instanceId] = want
-    if (want) {
-      if (this.geoAt[instanceId] >= 0) this._alloc(instanceId)
-    } else if (this.slot[instanceId] >= 0) {
-      this._free(instanceId)
-    }
-  }
-
-  getVisibleAt(instanceId) {
-    return this.vis[instanceId] === 1
-  }
-
-  setMatrixAt(instanceId, matrix) {
-    matrix.toArray(this.mat, instanceId * 16)
-    const s = this.slot[instanceId]
-    if (s < 0) return
-    const mesh = this.meshes[this.geoAt[instanceId]]
-    matrix.toArray(mesh.instanceMatrix.array, s * 16)
-    mesh.instanceMatrix.needsUpdate = true
-  }
-
-  getMatrixAt(instanceId, matrix) {
-    matrix.fromArray(this.mat, instanceId * 16)
-    return matrix
-  }
-
-  setColorAt(instanceId, color) {
-    color.toArray(this.col, instanceId * 3)
-    const s = this.slot[instanceId]
-    if (s < 0) return
-    const mesh = this.meshes[this.geoAt[instanceId]]
-    color.toArray(mesh.instanceColor.array, s * 3)
-    mesh.instanceColor.needsUpdate = true
-  }
-
-  getColorAt(instanceId, color) {
-    return color.fromArray(this.col, instanceId * 3)
-  }
-
-  /** The write side of material.js's writeFadeSlot; see the hook there. */
-  setFadeSlotAt(instanceId, value) {
-    this.fade[instanceId] = value
-    const s = this.slot[instanceId]
-    if (s < 0) return
-    const attr = this.meshes[this.geoAt[instanceId]].geometry.getAttribute('aPropFade')
-    attr.array[s] = value
-    attr.needsUpdate = true
-  }
-
-  /** Take the next free slot in this instance's mesh and fill it from shadow. */
-  _alloc(instanceId) {
-    const g = this.geoAt[instanceId]
-    const mesh = this.meshes[g]
-    const s = mesh.count
-    if (s >= this.capAt[g]) {
-      throw new Error(`TreeArena: mesh ${mesh.name} is full at ${this.capAt[g]} instances`)
-    }
-    mesh.count = s + 1
-    this.owner[g][s] = instanceId
-    this.slot[instanceId] = s
-    this._writeSlot(instanceId)
-  }
-
-  /**
-   * Give the slot back, moving the mesh's LAST instance down into the hole so
-   * the drawn range stays contiguous. The mover is rewritten from shadow rather
-   * than copied slot-to-slot, because that is one code path for both the move
-   * and the initial fill and cannot disagree with itself.
-   */
-  _free(instanceId) {
-    const g = this.geoAt[instanceId]
-    const mesh = this.meshes[g]
-    const s = this.slot[instanceId]
-    const last = mesh.count - 1
-    mesh.count = last
-    this.slot[instanceId] = -1
-    if (s === last) return
-    const moved = this.owner[g][last]
-    this.owner[g][s] = moved
-    this.slot[moved] = s
-    this._writeSlot(moved)
-  }
-
-  _writeSlot(instanceId) {
-    const g = this.geoAt[instanceId]
-    const mesh = this.meshes[g]
-    const s = this.slot[instanceId]
-    mesh.instanceMatrix.array.set(
-      this.mat.subarray(instanceId * 16, instanceId * 16 + 16), s * 16
-    )
-    mesh.instanceMatrix.needsUpdate = true
-    mesh.instanceColor.array.set(
-      this.col.subarray(instanceId * 3, instanceId * 3 + 3), s * 3
-    )
-    mesh.instanceColor.needsUpdate = true
-    const attr = mesh.geometry.getAttribute('aPropFade')
-    attr.array[s] = this.fade[instanceId]
-    attr.needsUpdate = true
-  }
-
-  dispose() {
-    for (const mesh of this.meshes) {
-      mesh.geometry.dispose()
-      mesh.dispose()
-    }
-    return this
-  }
 }
 
 export class Trees {
@@ -721,11 +537,12 @@ export class Trees {
       this.tierTris.push(bank.tiers[t].triangles.slice())
     }
 
-    this.batch = new TreeArena(
+    this.batch = new PropArena(
       this.maxInstances,
       bank.tiers,
       this._tierCaps(),
-      this.material
+      this.material,
+      'v2-trees'
     )
 
     // The trunk's world radius WHERE IT MEETS THE GROUND, per variant, at
@@ -807,10 +624,26 @@ export class Trees {
     // read back and has its Y translation overwritten in place.
     this.instScale = new Float32Array(this.maxInstances)
 
-    // The outer dissolve, and the only owner of the fade slot -- a tier swap is
-    // a plain cut now, so nothing here contends with the rim and it needs no
-    // preemption callback.
-    this.rim = new RimFade(this.batch, this.maxInstances)
+    // The outer dissolve: which trees are drawn, which are hidden, and the
+    // quarter second between. There is ONE fade slot per instance and the tier
+    // cross-dissolve below wants it too, so the rim is handed the callback that
+    // retires a swap it is about to write over, and `_crossFade` asks `isBusy`
+    // before starting one the rim would immediately clobber. The rim outranks
+    // it: which tier a tree was wearing on its way out of the world is not a
+    // question anybody is asking.
+    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
+      const running = this.fadeAt[id]
+      if (running >= 0) this._endFade(running)
+    })
+
+    // Cross-dissolves in flight: { orig, dup, start, tris }. `fadeAt` maps an
+    // instance to its entry, so a second band crossing can finish the first and
+    // a tree being thinned or evicted can take its duplicate with it. Same
+    // shape, field for field, as rocks.js and grass.js -- see the arena header
+    // in prop-arena.js on how much of this is now the same code three times.
+    this.fades = []
+    this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
+    this.fadeTris = 0
 
     this.bandSq = Float32Array.from(this.lodBands, (b) => b * b)
     this.bandSqOut = Float32Array.from(this.lodBands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
@@ -926,6 +759,12 @@ export class Trees {
     }
     this.lastBuildMs = performance.now() - t0
 
+    // Retire finished cross-dissolves BEFORE the tile loop starts new ones, so a
+    // tree that swaps a band on the same frame its previous fade expires gets
+    // its duplicate back rather than being refused for want of one.
+    const now = getPropClock()
+    this._sweepFades(now)
+
     // Retires expired rim transitions and re-measures the camera speed the
     // sweep's slack is sized from. Before the tile loop, which is where the
     // per-tile sweeps that read that slack run.
@@ -1026,11 +865,17 @@ export class Trees {
         if (tier !== cur) {
           this.tierAt[i] = tier
           this.batch.setGeometryIdAt(i, this.tierIds[tier][variant])
+          // `cur < 0` is an instance that has never been tiered -- a tree
+          // arriving through the rim or through a tile that has just grown --
+          // so there is no departing mesh to hold and nothing to dissolve past.
+          if (cur >= 0) this._crossFade(i, cur, variant, now)
         }
         tris += this.tierTris[tier][variant]
       }
     }
-    this.tris = tris
+    // The duplicates are drawn too, and are counted after the loop rather than
+    // inside it so this frame's own swaps are in this frame's number.
+    this.tris = tris + this.fadeTris
     this.nearTiles = nearCount
   }
 
@@ -1465,6 +1310,96 @@ export class Trees {
   }
 
   /** Cut every tree in the tile whose rank has fallen above the keep-fraction. */
+  /**
+   * Start a cross-dissolve: instance `i` has just taken a new tier, so a
+   * duplicate takes the tier it left and the two dither past each other on
+   * complementary thresholds. Called with the ORIGINAL already switched, so
+   * everything here is about the ghost.
+   *
+   * EVERY BOUNDARY GETS ONE, the 8 m LOD0/LOD1 swap included. The wood is the
+   * only thing that changes there -- a five-sided limb becoming a flat fin --
+   * and the limb is 15-19 px wide at that range, which is small but is a hard
+   * edge appearing between two frames on the tree the player is standing under.
+   * A quarter second of dither is the cheapest place in the ladder to spend it:
+   * the near bands hold tens of trees, not thousands, so their ghosts are the
+   * ghosts that cost the least.
+   *
+   * THE DUPLICATE IS AN ORDINARY POOL ID and the arena does the rest -- it is
+   * given the departing tier's geometry, which is what puts it in the departing
+   * tier's mesh, and it is packed and moved there like any other instance. Both
+   * halves are stamped with the same start; their thresholds only sum to full
+   * coverage if their clocks agree.
+   */
+  _crossFade(i, oldTier, variant, now) {
+    // A second band crossing while the first is still running. Finish the first:
+    // its duplicate would otherwise leak, and its start time is about to be
+    // written over by this one's.
+    const running = this.fadeAt[i]
+    if (running >= 0) this._endFade(running)
+
+    // A rim transition owns the slot while it runs and outranks this one. See
+    // the RimFade constructed above for the other half of the deal.
+    if (this.rim.isBusy(i)) return
+
+    // Three ceilings, all of which degrade to the pop a swap was before this
+    // existed. The third is this arena's alone: a mesh that fills THROWS.
+    if (this.fades.length >= FADE_MAX_INFLIGHT) return
+    if (this.freeCount <= FADE_POOL_RESERVE) return
+    const geo = this.tierIds[oldTier][variant]
+    if (this.batch.roomAt(geo) <= FADE_MESH_RESERVE) return
+
+    const dup = this.free[--this.freeCount]
+    this.batch.getMatrixAt(i, this._m)
+    this.batch.setMatrixAt(dup, this._m)
+    // The tint too, or the ghost is a differently-lit tree standing inside the
+    // one it is dissolving out of. setColorAt writes .rgb only, so the timer
+    // below is safe to stamp after it.
+    this.batch.getColorAt(i, this._c)
+    this.batch.setColorAt(dup, this._c)
+    this.batch.setGeometryIdAt(dup, geo)
+    this.batch.setVisibleAt(dup, true)
+    setPropFadeTimerAt(this.batch, dup, now, false)
+    setPropFadeTimerAt(this.batch, i, now, true)
+
+    const tris = this.tierTris[oldTier][variant]
+    this.fadeTris += tris
+    this.fadeAt[i] = this.fades.length
+    this.fades.push({ orig: i, dup, start: now, tris })
+  }
+
+  /**
+   * Finish the fade at index `k`: hand the ghost back and put the original's
+   * slot back to the never-fade default, since the timer was written into it.
+   */
+  _endFade(k) {
+    const f = this.fades[k]
+    this.batch.setVisibleAt(f.dup, false)
+    this.free[this.freeCount++] = f.dup
+    this.fadeTris -= f.tris
+    setPropSolidAt(this.batch, f.orig)
+    this.fadeAt[f.orig] = -1
+    // Swap-remove, so the list stays dense and the sweep stays a linear scan.
+    const last = this.fades.pop()
+    if (k < this.fades.length) {
+      this.fades[k] = last
+      this.fadeAt[last.orig] = k
+    }
+  }
+
+  /** Retire every cross-dissolve whose window is up. Once per frame. */
+  _sweepFades(now) {
+    let k = 0
+    while (k < this.fades.length) {
+      const age = now - this.fades[k].start
+      // Outside the window in EITHER direction. Negative means the prop clock
+      // wrapped underneath this fade, which cannot be resumed -- and must not be
+      // allowed to restart from zero, or a wrap would freeze every fade in
+      // flight at its opening frame until the clock came back round.
+      if (age >= PROP_FADE_SECONDS || age < 0) this._endFade(k)
+      else k++
+    }
+  }
+
   _thin(tile, uNew) {
     let w = 0
     for (let k = 0; k < tile.n; k++) {
@@ -1475,6 +1410,8 @@ export class Trees {
         w++
         continue
       }
+      // A tree thinned out mid-fade would strand its ghost visible forever.
+      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
       this.rim.drop(id)
       this.batch.setVisibleAt(id, false)
       this.tierAt[id] = -1
@@ -1491,6 +1428,10 @@ export class Trees {
     for (let k = 0; k < tile.n; k++) {
       const i = tile.ids[k]
       if (this.tierAt[i] === cardTier) continue
+      // A tile leaving the near set is 137 m away and this is a bulk cut, not a
+      // swap anybody can see -- but a fade left running would hold a ghost in a
+      // mesh whose tier the original no longer wears, so it ends here.
+      if (this.fadeAt[i] >= 0) this._endFade(this.fadeAt[i])
       this.tierAt[i] = cardTier
       this.batch.setGeometryIdAt(i, this.tierIds[cardTier][this.variantAt[i]])
     }
@@ -1500,6 +1441,8 @@ export class Trees {
   _release(tile) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
+      // Same as _thin: an evicted tree has to take its ghost with it.
+      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
       this.rim.drop(id)
       this.batch.setVisibleAt(id, false)
       this.tierAt[id] = -1
@@ -1560,6 +1503,7 @@ export class Trees {
       queued: this.queue.length,
       rimHidden: this.rim.hiddenCount,
       rimFading: this.rim.flightN,
+      fading: this.fades.length,
       regrows: this.regrows,
       regrounds: this.regrounds,
       pool: this.maxInstances,
@@ -1605,4 +1549,5 @@ export const TREE_TUNING = {
   NEAR_MARGIN,
   PLACEMENT,
   PLACEMENT_CELL,
+  FADE_MAX_INFLIGHT,
 }

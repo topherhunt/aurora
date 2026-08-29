@@ -72,20 +72,25 @@ import {
 // camera moving that fast is outrunning the tile eviction too.
 // ---------------------------------------------------------------------------
 
-// Per-instance state. FRESH is 0 because Uint8Array starts there and because an
-// instance that has never been drawn must not fade IN when it is first swept:
-// its tile was just built, and a tile built inside the show boundary is the
-// spawn/teleport case, where a quarter second of every prop in the world
-// dithering up out of nothing is a worse picture than simply being there. FRESH
-// resolves on its first sweep to SOLID or HIDDEN with no transition; every
-// crossing after that is a fade. Keeping it per INSTANCE rather than as a flag
-// on the tile is what makes a THICKENED tile behave -- it gains instances
-// without losing the ones already mid-fade, and only the new ones snap.
+// Per-instance state. Both FRESH states mean never drawn, and they differ only
+// in what happens on the first sweep that finds one inside its boundary: FRESH
+// snaps to SOLID, FRESH_FADE dissolves in. Which one an instance gets is the
+// PLACER's call, because only the scatter knows whether the world is being
+// built or merely extended -- a quarter second of every prop dithering up out of
+// nothing is a worse picture than simply being there at spawn, and is the right
+// picture for a tile that joins a world already standing. Neither state widens
+// or narrows the distance a prop appears at; see the FRESH branch in sweepTile.
+//
+// FRESH is 0 because Uint8Array starts there and `drop` returns an id to it.
+// Keeping the state per INSTANCE rather than as a flag on the tile is what makes
+// a THICKENED tile behave -- it gains instances without losing the ones already
+// mid-fade.
 const FRESH = 0
 const SOLID = 1
 const OUT = 2
 const HIDDEN = 3
 const IN = 4
+const FRESH_FADE = 5
 
 // How many frames a full sweep of the resident set takes. Lifted from grass's
 // veil, where the number was measured: eight phases is 133 ms of latency at
@@ -210,16 +215,20 @@ export class RimFade {
    * An instance has just been placed. `gone` is the distance at which it should
    * be completely away; the dissolve fires at RIM_AT of it.
    *
-   * Starts hidden and FRESH rather than visible: the sweep decides, so there is
-   * exactly one piece of code that knows where the boundary is. The scatter must
+   * Starts hidden rather than visible: the sweep decides, so there is exactly
+   * one piece of code that knows where the boundary is. The scatter must
    * `markDue` the tile once it has one -- a tile object does not exist yet while
    * its instances are being placed -- or a freshly thickened tile is a hole in
    * the ground for up to RIM_PHASES frames.
+   *
+   * `fade` asks for the instance to dissolve in rather than snap when that sweep
+   * finds it inside the boundary. Pass it for a tile joining a world that is
+   * already standing, and leave it off while the world is being built.
    */
-  place(id, gone) {
+  place(id, gone, fade = false) {
     this.gone[id] = gone
     this._unflight(id)
-    this.state[id] = FRESH
+    this.state[id] = fade ? FRESH_FADE : FRESH
     this.batch.setVisibleAt(id, false)
     setPropSolidAt(this.batch, id)
   }
@@ -242,6 +251,17 @@ export class RimFade {
   }
 
   /**
+   * Take a drawn instance off screen with a dissolve, for a scatter that wants
+   * an instance back before the boundary would have asked for it. A transition
+   * already in flight is left to finish -- including one going the other way,
+   * for the reason at the foot of sweepTile -- so the caller has to be able to
+   * ask again on a later frame rather than treating this as done.
+   */
+  retire(id, now) {
+    if (this.state[id] === SOLID) this._startFade(id, now, false)
+  }
+
+  /**
    * An instance is going back to the pool. Clears its fade so the id can be
    * handed out again without carrying a stale transition into its next life.
    */
@@ -253,7 +273,7 @@ export class RimFade {
   /** Is this instance currently hidden by the rim, and so drawing nothing? */
   isHidden(id) {
     const s = this.state[id]
-    return s === HIDDEN || s === FRESH
+    return s === HIDDEN || s === FRESH || s === FRESH_FADE
   }
 
   /** Is a rim transition in flight on this instance, and so is the slot spoken for? */
@@ -352,11 +372,17 @@ export class RimFade {
       const from = this.gone[id] * RIM_AT + slack
       const state = this.state[id]
 
-      if (state === FRESH) {
-        // Never drawn. Resolve with no transition -- see FRESH.
+      if (state === FRESH || state === FRESH_FADE) {
+        // Never drawn. Both resolve against `from`, the same boundary a SOLID
+        // instance would be held to -- NOT against the HIDDEN branch's `back`,
+        // which is 2 m nearer. Routing an arrival through the hysteresis would
+        // hold every newly grown clump out for a couple of metres past the
+        // distance the density law says it stands at, which reads as a ring of
+        // bare ground that fills in as you walk into it.
         if (d2 < from * from) {
-          this.state[id] = SOLID
           this.batch.setVisibleAt(id, true)
+          if (state === FRESH_FADE) this._startFade(id, now, true)
+          else this.state[id] = SOLID
         } else {
           this.state[id] = HIDDEN
           hidden++

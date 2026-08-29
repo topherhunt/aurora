@@ -64,6 +64,14 @@
       .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
       .big { font-size: 15px; color: #eaf3ff; }
       .ok { color: var(--good); } .warn { color: var(--warn); }
+      /* The ladder: four columns rather than the key/value shape every other
+         table here uses, because a ring is only legible beside its neighbours. */
+      table.lod td { padding: 2px 0; }
+      table.lod th { color: var(--dim); font-weight: normal; text-align: right; padding-bottom: 3px; border-bottom: 1px solid #1b2c44; }
+      table.lod th:first-child, table.lod td:first-child { text-align: left; }
+      table.lod td { text-align: right; font-variant-numeric: tabular-nums; }
+      table.lod tr.here td { background: #16283f; color: #eaf3ff; }
+      table.lod tr.off td { color: #52678a; }
       #swatch { width: 100%; image-rendering: pixelated; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; margin-top: 4px; }
     </style>
   </head>
@@ -79,6 +87,11 @@
           <input type="number" id="seed" value="1" min="0" step="1" />
           <button id="reroll">reroll</button>
         </div>
+
+        <h2>LOD tier</h2>
+        <div id="tierrow"></div>
+        <p class="note">Which rung of the shipping ladder you are looking at. It drives <em>segments</em> below, so dragging that one off a named tier reads as <em>custom</em> here. The world ships the outer two rungs and skips LOD1 -- see the ladder on the right.</p>
+
         <div id="sliders"></div>
       </div>
       <div id="buttons">
@@ -97,9 +110,10 @@
       <h2>this fern</h2>
       <table id="geo"></table>
 
-      <h2>can it be a card?</h2>
-      <table id="parallax"></table>
-      <p class="note">A billboard's defect is <em>parallax</em>, not detail: it refuses to turn, and the error that leaves is an angle. Under ~2&deg; it stops reading as wrong at walking pace, which puts the crossover at <em>depth &times; 28.6</em>. The card only has to be honest from 26 m out, where the mesh tiers give out -- so crossover under 26 m is the whole test.</p>
+      <h2>the LOD ladder</h2>
+      <table id="ladder" class="lod"></table>
+      <table id="ladderfoot"></table>
+      <p class="note" id="laddernote"></p>
 
       <h2>what ships</h2>
       <table id="disk"></table>

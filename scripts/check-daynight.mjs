@@ -426,7 +426,14 @@ console.log('\n--- shader patches actually land ------------------------------')
 // still renders, shadows quietly gone. So: run the patches against three's real
 // shader source and assert the code arrived.
 {
+  // WITH MAPS, because that is the variant these assertions are about. The
+  // patch has two compile-time axes (see lighting.js): with no maps the horizon
+  // lookup is deliberately absent, and asserting its presence against an
+  // unready WorldLighting would be asserting the wrong build. Four texels of
+  // flat ground is enough -- nothing here reads a value out of them.
   const lighting = new WorldLighting()
+  const MAP_N = 4
+  lighting.setMaps(new Uint8Array(MAP_N * MAP_N * AZIMUTHS), new Uint8Array(MAP_N * MAP_N), MAP_N)
   const compile = (material) => {
     const shader = {
       uniforms: {},
@@ -483,6 +490,45 @@ console.log('\n--- shader patches actually land ------------------------------')
       'so compiling the wind out still moves the key three caches on',
       `${patched} -> ${grass.customProgramCacheKey()}`)
     setWindEnabled(true)
+  }
+
+  // THE TWO COMPILE-TIME AXES, and both of them are the silent-failure shape
+  // this section exists for: a switch that flips a flag, recompiles nothing,
+  // and reports "no difference" from a headset.
+  //
+  //   UNREADY is what the whole /v2 route ships as today -- nothing calls
+  //   setMaps() there -- so the horizon lookup can only ever return its
+  //   constant, and emitting it anyway is two sampler declarations and two dead
+  //   fetches per terrain fragment and per prop vertex, in every material.
+  //
+  //   OFF is the headset panel's `terrain & prop lighting` row. It has to emit
+  //   NOTHING: the row's whole job is an A/B for what this system costs, and a
+  //   row that leaves the instructions running measures zero and reads as a
+  //   switch that does not work. It did exactly that until it grew this axis.
+  {
+    const flat = new WorldLighting()
+    const ft = flat.patch(createTerrainMaterial(), { mode: 'fragment', cacheKey: 'gate-flat-t', worldPosVarying: 'vWorldPos' })
+    const fp = flat.patch(new THREE.MeshLambertMaterial(), { mode: 'vertex', cacheKey: 'gate-flat-p' })
+    const ftc = compile(ft), fpc = compile(fp)
+    check(!ftc.fragmentShader.includes('uHorizonMap'), 'unready: the terrain declares no horizon sampler')
+    check(ftc.fragmentShader.includes('aerialKeep'), 'unready: but keeps the aerial ramp, which needs no map')
+    check(!fpc.vertexShader.includes('wlSun('), 'unready: and a prop vertex samples nothing')
+    check(fpc.vertexShader.includes('vWlNear ='), 'unready: carrying only the near-field envelope across')
+    check(ft.customProgramCacheKey() !== terrain.customProgramCacheKey(),
+      'unready and ready are two entries in three\'s program cache',
+      `${ft.customProgramCacheKey()} vs ${terrain.customProgramCacheKey()}`)
+
+    const before = ft.customProgramCacheKey()
+    flat.setEnabled(false)
+    const offc = compile(ft)
+    check(!offc.fragmentShader.includes('aerialKeep') && !offc.fragmentShader.includes('uCaustic'),
+      'off: the terrain gets back stock fog and no caustic net')
+    check(!compile(fp).vertexShader.includes('vWlNear'), 'off: and a prop vertex carries nothing')
+    check(offc.fragmentShader.includes('uSpeckle'), "off: the material's own patch still ran")
+    check(ft.customProgramCacheKey() !== before, 'off moves the key, so the recompile is not handed the old program',
+      `${before} -> ${ft.customProgramCacheKey()}`)
+    flat.setEnabled(true)
+    check(compile(ft).fragmentShader.includes('aerialKeep'), 'and back on restores it')
   }
 
   // No unresolved template holes anywhere -- `${WORLD_HALF}` interpolating to

@@ -18,27 +18,37 @@ import THREE from '../../three-instance.js'
 //   tiers holds ONE ARENA PER TIER and moves an instance between them, which is
 //   a draw call per tier -- see render/ferns.js, which does exactly that.
 //
-//   NO PER-INSTANCE CULLING. There is none to have, so the /?quest panel's cull
-//   row does nothing to a layer built on this. Hidden instances are not SKIPPED
-//   either: an InstancedMesh draws a contiguous `count`, so hiding writes a ZERO
-//   MATRIX and the prop collapses to a point. Its triangles are degenerate and
-//   never rasterise, but its vertices still run. `count` is held at one past the
-//   highest id ever shown rather than at the pool size, which keeps that waste to
-//   the pool's high-water mark instead of all of it -- and it is the reason a
-//   per-tier pool wants to be sized to what its own ring holds and no more.
+//   NO PER-INSTANCE FRUSTUM CULLING. There is none to have, so the /?quest
+//   panel's cull row does nothing to a layer built on this: the two thirds of
+//   the disc behind the player are submitted every frame.
 //
-//   The rim's dissolve is NOT on that list, and getting it back is what made this
-//   shippable rather than a diagnostic. instanceColor is itemSize 3 in three
-//   r180, so there is no alpha beside the tint to hide a timer in; the arena
-//   carries `aPropFade` instead, one float per instance, and material.js reads it
-//   through FADE_VERTEX's instancing branch. That is cheaper than the batched
-//   path it replaces -- an attribute fetch where the batch did a vertex TEXTURE
-//   fetch.
+//   PACKING IS DENSE AND HIDING IS A SWAP-REMOVE. An InstancedMesh draws a
+//   contiguous `count`, so the only way to skip a hidden instance is for it not
+//   to be inside it. The arena keeps `_owner`, slot -> id, and `count` IS the
+//   live population: hiding an instance moves the last slot's instance down into
+//   the hole. So `renderer.info` reports the props actually on screen, a
+//   rim-hidden prop costs nothing at all, and a pool sized for the worst case
+//   does not bill for its headroom.
 //
-// A NOTE FOR ANYONE ADDING A SECOND ARENA TO ONE MATERIAL: three compiles a
+//   WHAT THAT COSTS is that an instance's slot is not stable, so every
+//   per-instance value needs a shadow copy here and a moved instance is
+//   rewritten from it -- matrix, tint, fade stamp and any extra attribute.
+//   Nothing outside may index a GPU buffer by instance id; go through the
+//   setters, which know the difference.
+//
+//   The rim's dissolve is NOT on that list, and getting it back is what made
+//   this shippable rather than a diagnostic. instanceColor is itemSize 3 in
+//   three r180, so there is no alpha beside the tint to hide a timer in; the
+//   arena carries `aPropFade` instead, one float per instance, and material.js
+//   reads it through FADE_VERTEX's instancing branch. That is cheaper than the
+//   batched path it replaces -- an attribute fetch where the batch did a vertex
+//   TEXTURE fetch.
+//
+// A NOTE FOR ANYONE PUTTING A SECOND ARENA ON ONE MATERIAL: three compiles a
 // different program for an InstancedMesh whose `instanceColor` is null than for
-// one whose is not, so two arenas sharing a material must AGREE. Give every one
-// of them a `setColorAt` before its first render.
+// one whose is not. Every arena makes its own in the constructor, so they agree
+// by construction and a tiered scatter costs one compile rather than one per
+// ring.
 // ---------------------------------------------------------------------------
 export class InstancedArena extends THREE.InstancedMesh {
   constructor(maxInstances, material) {
@@ -48,14 +58,27 @@ export class InstancedArena extends THREE.InstancedMesh {
     this._max = maxInstances
     this._next = 0
     this._geometrySet = false
-    // instanceMatrix holds the ZEROED matrix while an instance is hidden, so it
-    // cannot be the source of truth: rim.js hides a prop and later shows the
-    // same one again, and getMatrixAt has to answer with the matrix it was
-    // placed with. This shadow copy is that answer.
+    // THE SHADOWS, one per value the GPU buffers hold. A slot is not stable --
+    // _free moves the last live instance down into the hole -- so no buffer can
+    // be the source of truth for anything, and a moved instance is rewritten
+    // from here. `_extra` carries whatever addInstancedAttribute hands out.
     this._shadow = new Float32Array(maxInstances * 16)
+    this._tint = new Float32Array(maxInstances * 3).fill(1)
+    this._fade = new Float32Array(maxInstances).fill(1)
+    this._extra = []
+    this._fadeAttr = null
     this._visible = new Uint8Array(maxInstances)
-    this._highWater = 0
+    // id -> slot, -1 while the instance is not drawn, and slot -> id over the
+    // live range [0, count).
+    this._slot = new Int32Array(maxInstances).fill(-1)
+    this._owner = new Int32Array(maxInstances).fill(-1)
     this.count = 0
+    this.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    // Made here rather than left to three's lazy path inside setColorAt, because
+    // _writeSlot has to be able to move a tint before anyone has set one.
+    this.instanceColor =
+      new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3).fill(1), 3)
+    this.instanceColor.setUsage(THREE.DynamicDrawUsage)
     this.frustumCulled = false
     // Not real on an InstancedMesh, but main.js's applyBatchCulling reads both
     // off every batch it is handed and would otherwise record `undefined` as
@@ -82,10 +105,8 @@ export class InstancedArena extends THREE.InstancedMesh {
     this._geometrySet = true
     this.geometry.dispose()
     this.geometry = geometry.clone()
-    this.geometry.setAttribute(
-      'aPropFade',
-      new THREE.InstancedBufferAttribute(new Float32Array(this._max).fill(1), 1)
-    )
+    this._fadeAttr = new THREE.InstancedBufferAttribute(new Float32Array(this._max).fill(1), 1)
+    this.geometry.setAttribute('aPropFade', this._fadeAttr)
     return 0
   }
 
@@ -97,12 +118,45 @@ export class InstancedArena extends THREE.InstancedMesh {
    *
    * @param {number} fill  the resting value, stamped on every instance, so an
    *   id that no tile has grown yet still draws something sane.
+   *
+   * Write it through setAttrAt and never into `.array` directly: the returned
+   * attribute is indexed by SLOT, and only the shadow registered here survives
+   * the instance being moved.
    */
   addInstancedAttribute(name, fill) {
     if (!this._geometrySet) throw new Error('InstancedArena: addGeometry first')
     const attr = new THREE.InstancedBufferAttribute(new Float32Array(this._max).fill(fill), 1)
     this.geometry.setAttribute(name, attr)
+    this._extra.push({ attr, shadow: new Float32Array(this._max).fill(fill) })
     return attr
+  }
+
+  /** Set one of addInstancedAttribute's floats for an instance ID. */
+  setAttrAt(attr, instanceId, value) {
+    const extra = this._extra.find((e) => e.attr === attr)
+    if (!extra) {
+      throw new Error('InstancedArena: setAttrAt on an attribute it did not make')
+    }
+    extra.shadow[instanceId] = value
+    const s = this._slot[instanceId]
+    if (s >= 0) {
+      extra.attr.array[s] = value
+      extra.attr.needsUpdate = true
+    }
+  }
+
+  /** Read one back by instance ID, from the shadow rather than the buffer. */
+  getAttrAt(attr, instanceId) {
+    const extra = this._extra.find((e) => e.attr === attr)
+    if (!extra) {
+      throw new Error('InstancedArena: getAttrAt on an attribute it did not make')
+    }
+    return extra.shadow[instanceId]
+  }
+
+  /** Where an instance's data currently sits, or -1 while it is not drawn. */
+  slotOf(instanceId) {
+    return this._slot[instanceId]
   }
 
   addInstance(geometryId) {
@@ -119,13 +173,14 @@ export class InstancedArena extends THREE.InstancedMesh {
     // THREE.InstancedMesh's OWN CONSTRUCTOR calls this once per instance to seed
     // the buffer with identity, and by the language's rules it does so before any
     // field below exists -- super() runs to completion first. Dropping those
-    // writes is not tolerating a bug, it is the state this class wants: every
-    // instance starts hidden, hidden means a ZERO matrix here, and a fresh
-    // Float32Array is already zero.
+    // writes is not tolerating a bug, it is the state this class wants: nothing
+    // is drawn until a slot is taken, and an untaken instance has no slot to
+    // seed.
     if (this._shadow === undefined) return
     matrix.toArray(this._shadow, instanceId * 16)
-    if (this._visible[instanceId]) {
-      super.setMatrixAt(instanceId, matrix)
+    const s = this._slot[instanceId]
+    if (s >= 0) {
+      matrix.toArray(this.instanceMatrix.array, s * 16)
       this.instanceMatrix.needsUpdate = true
     }
   }
@@ -135,29 +190,84 @@ export class InstancedArena extends THREE.InstancedMesh {
   }
 
   setColorAt(instanceId, color) {
-    super.setColorAt(instanceId, color)
-    this.instanceColor.needsUpdate = true
+    color.toArray(this._tint, instanceId * 3)
+    const s = this._slot[instanceId]
+    if (s >= 0) {
+      color.toArray(this.instanceColor.array, s * 3)
+      this.instanceColor.needsUpdate = true
+    }
+  }
+
+  getColorAt(instanceId, color) {
+    color.fromArray(this._tint, instanceId * 3)
+  }
+
+  /**
+   * The dissolve stamp. material.js's writeFadeSlot routes through this rather
+   * than writing `aPropFade` itself, exactly as it does for TreeArena, because
+   * only the arena knows which slot an instance is standing in.
+   */
+  setFadeSlotAt(instanceId, value) {
+    this._fade[instanceId] = value
+    const s = this._slot[instanceId]
+    if (s >= 0) {
+      this._fadeAttr.array[s] = value
+      this._fadeAttr.needsUpdate = true
+    }
   }
 
   setVisibleAt(instanceId, visible) {
-    const was = this._visible[instanceId]
-    if (was === (visible ? 1 : 0)) return
-    this._visible[instanceId] = visible ? 1 : 0
-    const dst = this.instanceMatrix.array
-    if (visible) {
-      dst.set(this._shadow.subarray(instanceId * 16, instanceId * 16 + 16), instanceId * 16)
-      if (instanceId >= this._highWater) {
-        this._highWater = instanceId + 1
-        this.count = this._highWater
-      }
-    } else {
-      dst.fill(0, instanceId * 16, instanceId * 16 + 16)
-    }
-    this.instanceMatrix.needsUpdate = true
+    const want = visible ? 1 : 0
+    if (this._visible[instanceId] === want) return
+    this._visible[instanceId] = want
+    if (want) this._alloc(instanceId)
+    else this._free(instanceId)
   }
 
   getVisibleAt(instanceId) {
     return this._visible[instanceId] === 1
+  }
+
+  /** Take the slot at the top of the live range and fill it from the shadows. */
+  _alloc(instanceId) {
+    const s = this.count
+    if (s >= this._max) {
+      throw new Error(`InstancedArena: more than ${this._max} instances visible at once`)
+    }
+    this.count = s + 1
+    this._owner[s] = instanceId
+    this._slot[instanceId] = s
+    this._writeSlot(instanceId)
+  }
+
+  /** Give a slot back, moving the last live instance down into the hole. */
+  _free(instanceId) {
+    const s = this._slot[instanceId]
+    const last = this.count - 1
+    this.count = last
+    this._slot[instanceId] = -1
+    if (s === last) return
+    const moved = this._owner[last]
+    this._owner[s] = moved
+    this._slot[moved] = s
+    this._writeSlot(moved)
+  }
+
+  /** Every per-instance buffer, rewritten from the shadows at the current slot. */
+  _writeSlot(instanceId) {
+    const s = this._slot[instanceId]
+    this.instanceMatrix.array.set(
+      this._shadow.subarray(instanceId * 16, instanceId * 16 + 16), s * 16)
+    this.instanceMatrix.needsUpdate = true
+    this.instanceColor.array.set(
+      this._tint.subarray(instanceId * 3, instanceId * 3 + 3), s * 3)
+    this.instanceColor.needsUpdate = true
+    this._fadeAttr.array[s] = this._fade[instanceId]
+    this._fadeAttr.needsUpdate = true
+    for (const e of this._extra) {
+      e.attr.array[s] = e.shadow[instanceId]
+      e.attr.needsUpdate = true
+    }
   }
 
   dispose() {

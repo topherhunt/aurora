@@ -443,7 +443,7 @@ console.log('\n-- the frayed foot --')
 console.log('\n-- scatter --')
 
 const flat = {
-  heightAndSlopeAt: () => ({ h: 60, tan: 0 }),
+  heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }),
   // Strips sample their two ends through this to roll onto the slope; on flat
   // ground it is the same 60 the tufts get.
   heightAt: () => 60,
@@ -993,9 +993,9 @@ console.log('\n-- placement --')
 {
   const wet = { isSubmerged: (x, z, y) => y < 61 }
   const roaded = { nearest: (x, z, kind) => (kind === 'road' ? { dist: 0.1, halfWidth: 2 } : null) }
-  const snowy = { heightAndSlopeAt: () => ({ h: 60, tan: 0 }), snowLineAt: () => 60 }
-  const cliff = { heightAndSlopeAt: () => ({ h: 60, tan: 9 }), snowLineAt: () => 9999 }
-  const sunk = { heightAndSlopeAt: () => ({ h: 1, tan: 0 }), snowLineAt: () => 9999 }
+  const snowy = { heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 60 }
+  const cliff = { heightAndSlopeAt: () => ({ h: 60, tan: 9, gx: 9, gz: 0 }), snowLineAt: () => 9999 }
+  const sunk = { heightAndSlopeAt: () => ({ h: 1, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 9999 }
 
   const one = (field, water, paths) => {
     const g = new Grass(new THREE.Scene(), field, water, paths, texArray, { seed: 7, style: 'tufts' })
@@ -1641,7 +1641,7 @@ check(ss.tris < st.tris, `and at STRIP_MATCH = ${STRIP_MATCH} the whole carpet i
 const RISE = 0.4 // metres per metre, ~22 degrees
 const ramp = {
   heightAt: (x) => 60 + x * RISE,
-  heightAndSlopeAt: (x) => ({ h: 60 + x * RISE, tan: RISE }),
+  heightAndSlopeAt: (x) => ({ h: 60 + x * RISE, tan: RISE, gx: RISE, gz: 0 }),
   snowLineAt: () => 9999,
 }
 const tilted = new Grass(new THREE.Scene(), ramp, dry, clear, texArray, { seed: 7, style: 'strips' })
@@ -1811,25 +1811,37 @@ console.log('\n-- arena --')
     setPropClock(((RIM_PHASES + i) * PROP_FADE_SECONDS) % 1024)
     walk.update(i * 2, EYE, i * 2)
   }
-  let liveZero = 0
-  let hiddenSet = 0
-  let overCount = 0
+  let wrongMatrix = 0
+  let visible = 0
+  let misfiled = 0
   const m = walk.batch.instanceMatrix.array
+  const mm = new THREE.Matrix4()
+  const seen = new Uint8Array(walk.batch.count)
   for (let i = 0; i < walk.maxInstances; i++) {
-    // Element 15 is the homogeneous w, which is 1 in every matrix compose() can
-    // produce and 0 only in the zeroed one -- so it alone separates the two.
-    const zeroed = m[i * 16 + 15] === 0
-    if (walk.batch.getVisibleAt(i)) {
-      if (zeroed) liveZero++
-      if (i >= walk.batch.count) overCount++
-    } else if (!zeroed) hiddenSet++
+    const s = walk.batch.slotOf(i)
+    if (!walk.batch.getVisibleAt(i)) {
+      // Not drawn means not holding a slot -- there is no zero matrix any more,
+      // an instance is simply outside [0, count).
+      if (s !== -1) misfiled++
+      continue
+    }
+    visible++
+    if (s < 0 || s >= walk.batch.count || seen[s]) { misfiled++; continue }
+    seen[s] = 1
+    // The slot holds what the tuft was PLACED with. This is what the shadow is
+    // for: a walk moves instances between slots on every eviction, and each move
+    // rewrites the buffer from the shadow rather than from whatever was there.
+    walk.batch.getMatrixAt(i, mm)
+    for (let k = 0; k < 16; k++) {
+      if (Math.abs(m[s * 16 + k] - mm.elements[k]) > 1e-9) { wrongMatrix++; break }
+    }
   }
-  check(liveZero === 0 && hiddenSet === 0,
-    'a shown tuft carries its own matrix and a hidden one carries a zero',
-    `${walk.maxInstances} instances, ${liveZero} shown-but-zeroed, ${hiddenSet} hidden-but-drawn`)
-  check(overCount === 0 && walk.batch.count <= walk.maxInstances,
-    'and the draw count reaches every visible one without reaching the whole pool',
-    `count ${walk.batch.count} of ${walk.maxInstances}, ${overCount} visible past it`)
+  check(wrongMatrix === 0,
+    'a shown tuft carries its own matrix into whatever slot it was moved to',
+    `${walk.maxInstances} instances, ${visible} shown, ${wrongMatrix} holding the wrong matrix`)
+  check(misfiled === 0 && walk.batch.count === visible,
+    'and the draw count is exactly the tufts on screen, with no slot used twice',
+    `count ${walk.batch.count}, ${visible} visible, ${misfiled} misfiled`)
   // The pool has to survive the walk with room left. It is sized by _poolBound
   // from the same level table the tiles grow from, plus 35%, and the margin is
   // what absorbs a camera standing off-centre in its tile grid while eviction
@@ -1882,6 +1894,218 @@ console.log('\n-- blades --')
     && blades.falloff === BLADE_FALLOFF,
   'the shipped bed stands at the tuned knobs',
   `${blades.density}/m2, full ${blades.fullRadius} m, cull ${blades.radius} m, p ${blades.falloff}`)
+
+  // THE ARENA SUBMITS WHAT IT DRAWS AND NOTHING ELSE. An InstancedMesh draws a
+  // contiguous `count`, so this is the whole of what stops a rim-hidden clump
+  // from costing its ten triangles anyway -- and the number renderer.info gives
+  // the /?quest panel is exactly this `count`. Checked after a settle, after a
+  // walk, and after a CLIMB, because the rim measures 3D distance while tile
+  // residency measures XZ: going up hides nearly the whole resident set and is
+  // where an unpacked arena bills its worst.
+  {
+    // Walked at 0.25 m a frame with the clock running, not teleported: a jump
+    // lands the whole new disc on the pool before the old one has faded off it.
+    // Then held still long enough for the rim's speed slack to decay, or the
+    // counts read as three times the standing bed for no reason a reader could
+    // see.
+    const cur = [0, EYE, 0]
+    const SETTLE = 80
+    let tick = 0
+    const at = (label, x, y, z) => {
+      const moving = Math.ceil(Math.max(Math.abs(x - cur[0]), Math.abs(y - cur[1]),
+        Math.abs(z - cur[2])) / 0.25)
+      for (let i = 1; i <= moving + SETTLE; i++) {
+        const t = Math.min(1, i / Math.max(1, moving))
+        setPropClock((tick++ * PROP_FADE_SECONDS) % 1024)
+        blades.update(cur[0] + (x - cur[0]) * t, cur[1] + (y - cur[1]) * t,
+          cur[2] + (z - cur[2]) * t)
+      }
+      cur[0] = x; cur[1] = y; cur[2] = z
+      const b = blades.batch
+      let visible = 0
+      let misfiled = 0
+      const seen = new Uint8Array(b.count)
+      for (let id = 0; id < blades.maxInstances; id++) {
+        const s = b.slotOf(id)
+        if (!b.getVisibleAt(id)) { if (s !== -1) misfiled++; continue }
+        visible++
+        // In the live range, and no two instances sharing a slot.
+        if (s < 0 || s >= b.count || seen[s]) misfiled++
+        else seen[s] = 1
+      }
+      return { label, count: b.count, visible, misfiled }
+    }
+    const runs = [
+      at('standing', 0, EYE, 0),
+      at('after a 30 m walk', 30, EYE, 0),
+      at('12 m up', 30, EYE + 12, 0),
+      at('back down', 0, EYE, 0),
+    ]
+    const bad = runs.filter((r) => r.count !== r.visible || r.misfiled > 0)
+    check(bad.length === 0,
+      'and submits exactly the clumps it draws, walking and climbing',
+      runs.map((r) => `${r.label} ${r.count}/${r.visible}`).join(', ')
+      + (bad.length ? ` -- ${bad[0].misfiled} misfiled` : ''))
+  }
+
+  // NOTHING CHANGES STATE UNDERFOOT, AND NOTHING SNAPS. The two promises the
+  // blade bed's full radius is set by -- see BLADE_FULL_RADIUS -- walked rather
+  // than derived, because the distance a clump comes BACK at is the rim's
+  // innermost boundary and it is three constants deep.
+  {
+    const g = bladeBed()
+    // 40 m at 0.05 m a frame. Slow on purpose: the rim's speed slack pushes both
+    // boundaries OUTWARD, so a stroll is the worst case for the near promise and
+    // a sprint would pass it by accident.
+    const STEP = 0.05
+    let tick = 0
+    const drawn = new Uint8Array(g.maxInstances)
+    const busy = new Uint8Array(g.maxInstances)
+    // A clump's own position, so an id RECYCLED by a thin into a different tile
+    // is not read as the clump it used to be popping.
+    const wasX = new Float32Array(g.maxInstances)
+    const wasZ = new Float32Array(g.maxInstances)
+    const snap = () => {
+      for (let i = 0; i < g.maxInstances; i++) {
+        drawn[i] = g.batch.getVisibleAt(i) ? 1 : 0
+        busy[i] = g.rim.isBusy(i) ? 1 : 0
+        wasX[i] = g.instX[i]
+        wasZ[i] = g.instZ[i]
+      }
+    }
+    snap()
+
+    let nearest = Infinity
+    let snapped = 0
+    let changes = 0
+    // The other end of the same wire: a dissolve the rim believes in has to have
+    // reached the buffer the shader reads. Every slot resting at 1 while the rim
+    // reports fades in flight is the bed popping with the CPU none the wiser.
+    let stampedFrames = 0
+    let busyFrames = 0
+    for (let k = 1; k <= 800; k++) {
+      const x = k * STEP
+      setPropClock((tick++ * PROP_FADE_SECONDS) % 1024)
+      g.update(x, EYE, 0)
+      for (let i = 0; i < g.maxInstances; i++) {
+        const now = g.batch.getVisibleAt(i) ? 1 : 0
+        const here = g.instX[i] === wasX[i] && g.instZ[i] === wasZ[i]
+        if (now !== drawn[i] && here) {
+          changes++
+          nearest = Math.min(nearest, Math.hypot(g.instX[i] - x, g.instZ[i]))
+          // Arriving, the dissolve is running NOW; leaving, it ran and retired on
+          // the frame that took the clump off, so the previous frame is where it
+          // shows. Either way an instance that changed without one snapped.
+          if (!(now ? g.rim.isBusy(i) : busy[i])) snapped++
+        }
+        drawn[i] = now
+        busy[i] = g.rim.isBusy(i) ? 1 : 0
+        wasX[i] = g.instX[i]
+        wasZ[i] = g.instZ[i]
+      }
+      if (g.rim.stats().fading > 0) {
+        busyFrames++
+        const slots = g.batch.geometry.getAttribute('aPropFade').array
+        for (let s = 0; s < g.batch.count; s++) {
+          if (slots[s] !== 1) { stampedFrames++; break }
+        }
+      }
+    }
+    check(nearest > 4, 'no blade appears or disappears within 4 m of the player',
+      `nearest state change ${nearest.toFixed(2)} m over a 40 m walk`)
+    check(changes > 0 && snapped === 0,
+      'and every one of them dissolves rather than snapping',
+      `${changes} state changes, ${snapped} without a fade`)
+    check(busyFrames > 0 && stampedFrames === busyFrames,
+      'and the dissolve reaches the buffer the shader reads',
+      `${stampedFrames} of ${busyFrames} frames with a fade in flight carry a stamp`)
+    g.dispose()
+  }
+
+  // THE WORLD IS BUILT WITHOUT DITHERING, which is the other half of the same
+  // switch: a player standing in a meadow the instant it appears must not watch
+  // it stipple up out of nothing. Only tiles that join a world already standing
+  // fade in.
+  {
+    const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
+      { seed: 7, style: 'blades', tint })
+    g.place(0, 0)
+    for (let i = 0; i < RIM_PHASES; i++) g.update(0, EYE, 0)
+    check(g.rim.stats().fading === 0 && g.batch.count > 0,
+      'a bed grown at boot stands solid with no dissolve in flight',
+      `${g.batch.count} clumps drawn, ${g.rim.stats().fading} fading`)
+    g.dispose()
+  }
+
+  // A CLUMP STANDS ON THE GROUND RATHER THAN STRAIGHT UP. A bundle of blades is
+  // a couple of handspans across, so a vertical clump on a hillside plants its
+  // middle and holds the downhill blades in the air. The tilt is the fix and the
+  // normal is the target -- and it has to arrive WITHOUT eating the yaw, which is
+  // the whole of what stops a bed of one geometry reading as cloned.
+  {
+    const G = 0.4 // dh/dx, about 22 degrees, inside the placement limit
+    const ramp = {
+      heightAt: (x) => 60 + x * G,
+      heightAndSlopeAt: (x) => ({ h: 60 + x * G, tan: G, gx: G, gz: 0 }),
+      snowLineAt: () => 9999,
+    }
+    const want = new THREE.Vector3(-G, 1, 0).normalize()
+    const sample = (field) => {
+      const g = new Grass(new THREE.Scene(), field, dry, clear, texArray,
+        { seed: 7, style: 'blades', tint })
+      g.place(0, 0)
+      const m = new THREE.Matrix4()
+      const p = new THREE.Vector3()
+      const q = new THREE.Quaternion()
+      const s = new THREE.Vector3()
+      const up = new THREE.Vector3()
+      const side = new THREE.Vector3()
+      const mean = new THREE.Vector3()
+      let worst = 0
+      let n = 0
+      for (let i = 0; i < g.maxInstances && n < 500; i++) {
+        if (g.instX[i] === 0 && g.instZ[i] === 0) continue
+        g.batch.getMatrixAt(i, m)
+        m.decompose(p, q, s)
+        up.set(0, 1, 0).applyQuaternion(q)
+        worst = Math.max(worst, up.angleTo(want))
+        mean.add(side.set(1, 0, 0).applyQuaternion(q))
+        n++
+      }
+      g.dispose()
+      return { worst, n, spread: mean.length() / Math.max(1, n) }
+    }
+    const tiltedBlades = sample(ramp)
+    check(tiltedBlades.n > 100 && tiltedBlades.worst < 1e-6,
+      'a blade clump stands on the terrain normal, not straight up',
+      `worst ${(tiltedBlades.worst * 180 / Math.PI).toExponential(1)} deg`
+      + ` from the ${(Math.atan(G) * 180 / Math.PI).toFixed(1)} deg normal, over ${tiltedBlades.n} clumps`)
+    // A tilt applied around the wrong axis order collapses the yaw onto one
+    // bearing, which this catches and the angle above cannot: every clump would
+    // still be standing perfectly on the slope.
+    check(tiltedBlades.spread < 0.15,
+      'and keeps its own yaw once it is standing there',
+      `mean heading vector ${tiltedBlades.spread.toFixed(3)} of 1 over ${tiltedBlades.n} clumps`)
+    const flatBlades = sample({
+      heightAt: () => 60,
+      heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }),
+      snowLineAt: () => 9999,
+    })
+    check(flatBlades.worst > Math.atan(G) - 1e-6,
+      'and is upright on flat ground, so the tilt is the slope and not a constant',
+      `${(flatBlades.worst * 180 / Math.PI).toFixed(1)} deg from the sloped normal`)
+  }
+
+  // AND A FIELD THAT CANNOT SAY WHICH WAY THE GROUND FALLS IS AN ERROR, not a
+  // meadow of NaN matrices that draws nothing and logs nothing.
+  {
+    let threw = false
+    try {
+      new Grass(new THREE.Scene(), { heightAndSlopeAt: () => ({ h: 60, tan: 0 }), snowLineAt: () => 9999 },
+        dry, clear, texArray, { seed: 7, style: 'blades', tint })
+    } catch { threw = true }
+    check(threw, 'blades on a field with no gradient throw rather than drawing nothing')
+  }
 
   // THE THINNING LAW, `keep = min(1, F/d)^p`, sampled either side of F. This is
   // the only definition of the bill: _growTile grows from it, _thin cuts to it
@@ -1956,11 +2180,15 @@ console.log('\n-- blades --')
     check(attr && attr.isInstancedBufferAttribute && attr.itemSize === 1,
       'the tip multiplier rides an instanced attribute on the drawn geometry',
       attr ? `${attr.array.length} slots, itemSize ${attr.itemSize}` : 'missing')
+    // Read at the instance's SLOT, not at its id. The arena packs the live set
+    // down to [0, count) and moves instances to do it, so the buffer is indexed
+    // by slot and only slotOf knows where a given clump ended up.
     const set = new Set()
     let outOfRange = 0
-    for (let i = 0; attr && i < blades.batch.count; i++) {
-      if (!blades.batch.getVisibleAt(i)) continue
-      const v = attr.array[i]
+    for (let i = 0; attr && i < blades.maxInstances; i++) {
+      const s = blades.batch.slotOf(i)
+      if (s < 0) continue
+      const v = attr.array[s]
       set.add(Math.round(v * 1e4))
       if (!(v > 0)) outOfRange++
     }
@@ -1976,10 +2204,12 @@ console.log('\n-- blades --')
     let worst = 0
     let sampled = 0
     const c = blades.batch.instanceColor.array
-    for (let i = 0; i < blades.batch.count && sampled < 500; i++) {
-      if (!blades.batch.getVisibleAt(i)) continue
+    for (let i = 0; i < blades.maxInstances && sampled < 500; i++) {
+      // Via slotOf, for the reason in the aTipMul check above.
+      const s = blades.batch.slotOf(i)
+      if (s < 0) continue
       const want = groundOf(blades.instX[i], blades.instZ[i])
-      for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(c[i * 3 + k] - want[k]))
+      for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(c[s * 3 + k] - want[k]))
       sampled++
     }
     check(sampled > 0 && worst < 1e-6, 'and wears the ground colour under its own feet',

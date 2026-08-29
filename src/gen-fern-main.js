@@ -5,6 +5,7 @@ import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import {
   FERN_CARD_PLANES, FERN_LAYERS, FERN_ASPECTS, FERN_SHIP, FERN_TIERS, fernCardLayer,
 } from './props/fern-bank.js'
+import { FERN_LOD } from './v2/render/ferns.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
 import { createPropMaterial } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
@@ -27,8 +28,15 @@ import impostorSource from './props/impostor.js?raw'
 // three separate, because conflating them is how a procedural asset gets
 // wrongly described as free.
 //
+// THE LADDER is what the tier slider and the right-hand ladder table are for.
+// The world draws this plant at three distances and the previewer has to be
+// able to show you all three, so the slider snaps `segments` to the shipping
+// rungs and the table reports the metres each one covers. Both read
+// render/ferns.js's own FERN_LOD rather than a copy: a bench that disagrees
+// with the game about where LOD1 ends is worse than no bench.
+//
 // THE CARD is the third thing this page does, and it is why the material
-// changed. A fern past 26 m is four triangles wearing a photograph of itself
+// changed. A fern past 14 m is two triangles wearing a photograph of itself
 // (props/impostor.js, props/fern-bank.js), and that photograph is a layer of
 // the shared DataArrayTexture -- so a bench drawing ferns through a single
 // bound `map` could not render one at all. This page now uses the REAL prop
@@ -91,10 +99,16 @@ const SLIDERS = [
 // brightness 2.0, not 1.0. The cutout is a forest-floor scan (mean RGB 28,41,4
 // over its own coverage) and at 1.0 it renders near-black against the ground.
 // This is a material setting, not geometry -- see the note in fern.js.
+// FINEST FIRST, which is the order the ladder is walked in and the reverse of
+// how FERN_TIERS is authored -- it reads as a cost curve there. LOD2 is in this
+// list even though the world stopped drawing it: the bank still builds it, and
+// "what did we give up" is a question the previewer should be able to answer.
+const MESH_TIERS = FERN_TIERS.slice().reverse()
+
 const shipParams = () => ({
   ...FERN_DEFAULTS,
   ...FERN_SHIP,
-  segments: FERN_TIERS[FERN_TIERS.length - 1].segments,
+  segments: MESH_TIERS[0].segments,
   alphaTest: 0.5,
   brightness: 2.0,
   planes: FERN_CARD_PLANES,
@@ -399,6 +413,96 @@ function table(el, rows) {
 // Triangles are exactly fronds x segments x 2, so `segments` IS the tier.
 const TIER_BUDGET = { 6: 84, 4: 56, 2: 28 }
 
+// --- the LOD ladder ---------------------------------------------------------
+
+// Quest 2's default eye buffer, in pixels per degree. The one number that turns
+// "this ring ends at 14 m" into something you can judge: how big the plant
+// actually is on screen where the next rung takes over.
+const PX_PER_DEG = 16.2
+
+const apparentPx = (metres, distance) =>
+  ((Math.atan(metres / distance) * 180) / Math.PI) * PX_PER_DEG
+
+/**
+ * One row per rung of the ladder the world actually draws, plus any tier the
+ * bank still builds and the world has dropped -- greyed rather than omitted,
+ * because a rung that was deleted from the world is a decision the bench should
+ * show rather than hide.
+ *
+ * The triangle column is what THIS fern would cost at that rung, not what the
+ * shipping fern costs, so pushing `fronds` up prices every ring at once.
+ */
+function ladderRows(measured) {
+  const shipped = new Map(FERN_LOD.rings.filter((r) => r.tier).map((r) => [r.tier, r]))
+  const card = FERN_LOD.rings.find((r) => r.tier === null)
+  const seg = Math.round(params.segments)
+  const rows = MESH_TIERS.map(({ name, segments }) => {
+    const ring = shipped.get(name)
+    return {
+      name,
+      range: ring ? `${ring.from}-${ring.to} m` : 'not drawn',
+      tris: Math.round(params.fronds) * segments * 2,
+      px: ring ? apparentPx(measured.height, ring.to) : null,
+      here: !cardMode && segments === seg,
+      off: !ring,
+    }
+  })
+  rows.push({
+    name: 'card',
+    range: `${card.from}-${card.to} m`,
+    tris: Math.round(params.planes) * 2,
+    px: apparentPx(measured.height, card.to),
+    here: cardMode,
+    off: false,
+  })
+  return rows
+}
+
+function drawLadder(s) {
+  const m = s.measured
+  const card = FERN_LOD.rings.find((r) => r.tier === null)
+
+  document.getElementById('ladder').innerHTML =
+    '<tr><th>ring</th><th>covers</th><th>tris</th><th>px at far edge</th></tr>' +
+    ladderRows(m)
+      .map(
+        (r) =>
+          `<tr class="${r.here ? 'here' : r.off ? 'off' : ''}">` +
+          `<td>${r.name}</td><td>${r.range}</td><td>${r.tris}</td>` +
+          `<td>${r.px === null ? '--' : r.px.toFixed(0)}</td></tr>`
+      )
+      .join('')
+
+  // §5's rule is that a billboard's defect is PARALLAX, not detail -- the error
+  // is an angle, atan(depth / distance), and under ~2 deg it stops reading as
+  // wrong at walking pace. That gives `crossover = depth x 28.6`, and the card
+  // only has to be honest from where the mesh rings give out.
+  const crossover = m.spread * 28.6
+  table(document.getElementById('ladderfoot'), [
+    ['height', `${m.height.toFixed(2)} m`],
+    ['spread (= depth)', `${m.spread.toFixed(2)} m`],
+    ['card honest past', `${crossover.toFixed(0)} m`, crossover <= card.from ? 'ok' : 'warn'],
+    ['boundary hysteresis', `+${(FERN_LOD.hysteresis * 100).toFixed(0)}%`],
+    [
+      'bed',
+      `${FERN_LOD.density}/m&sup2; to ${FERN_LOD.fullRadius} m, thinning to ${FERN_LOD.drawRadius} m`,
+    ],
+  ])
+
+  const verdict =
+    crossover <= card.from
+      ? `Its ${m.spread.toFixed(2)} m spread puts that at ${crossover.toFixed(0)} m, inside where the mesh gives out, so the card is legal the moment it takes over.`
+      : `Its ${m.spread.toFixed(2)} m spread puts that at ${crossover.toFixed(0)} m, so the card is taken ${(crossover - card.from).toFixed(0)} m early and a fern between ${card.from} and ${crossover.toFixed(0)} m fails to turn by more than 2&deg;. The bed takes it anyway on density: that annulus alone is ~${Math.round(Math.PI * (crossover * crossover - card.from * card.from) * FERN_LOD.density)} plants. It survives because a rosette is near enough radially symmetric that there is no feature to watch stay put -- the same property that lets the card cancel the instance's yaw.`
+
+  document.getElementById('laddernote').innerHTML =
+    `Distances are from render/ferns.js, not copied here. Each ring is its own InstancedMesh -- ` +
+    `a fern changes rung by moving between them -- so a rung costs a draw call, which is why ` +
+    `LOD2 was dropped rather than kept for its ~5k triangles. <em>Hysteresis</em> is the dead band ` +
+    `on every boundary: a fern already at a ring holds it out to ${(1 + FERN_LOD.hysteresis).toFixed(2)}&times; ` +
+    `the distance, so a few hundred plants sitting on a boundary cannot oscillate. ` +
+    `<em>Card honest past</em> is &sect;5's parallax rule, <code>depth &times; 28.6</code>. ${verdict}`
+}
+
 function refresh() {
   const s = rebuild()
   const per = Math.round(s.tris / s.count)
@@ -428,24 +532,7 @@ function refresh() {
     [label, `${per} / ${budget} tris`, per <= budget ? 'ok' : 'warn'],
   ])
 
-  // The numbers that decide whether a card is legal at all. §5's rule is that a
-  // billboard's defect is PARALLAX, not detail -- the error is an angle,
-  // atan(depth / distance), and under ~2 deg it stops reading as wrong at
-  // walking pace. That gives `crossover = depth x 28.6`, and the card only has
-  // to be honest from where the mesh tiers give out, which is 26 m.
-  const m = s.measured
-  const crossover = m.spread * 28.6
-  table(document.getElementById('parallax'), [
-    ['height', `${m.height.toFixed(2)} m`],
-    ['spread (= depth)', `${m.spread.toFixed(2)} m`],
-    ['crown / height', (m.spread / m.height).toFixed(2)],
-    ['parallax crossover', `${crossover.toFixed(0)} m`, crossover <= 26 ? 'ok' : 'warn'],
-    ['mesh gives out at', '26 m'],
-    // How big the thing actually is where the card takes over, on Quest 2's
-    // default eye buffer (~16.2 px/deg). This is the number the two-layer
-    // decision in textures.js rests on, so it is worth having on screen.
-    ['card is this tall at 26 m', `${((Math.atan(m.height / 26) * 180) / Math.PI * 16.2).toFixed(0)} px`],
-  ])
+  drawLadder(s)
 
   drawSwatch(
     s.card ? s.card.layer : LAYER.FROND_0,
@@ -566,11 +653,42 @@ for (const [key, min, max, step, help] of SLIDERS) {
   input.addEventListener('input', () => {
     params[key] = Number(input.value)
     show()
+    if (key === 'segments') showTier()
     refresh()
   })
   show()
   slidersEl.appendChild(row)
 }
+
+// THE TIER SLIDER IS NOT A PARAMETER. It writes `segments`, because that is the
+// whole of what a mesh tier is -- the three rungs are re-generations of one
+// plant at 6, 4 and 2 quads a frond. Keeping it as a view over `segments`
+// rather than as state of its own is what stops the two disagreeing: drag
+// `segments` to a value no rung uses and this says `custom` instead of naming a
+// tier the fern on screen is not.
+const tierRow = document.getElementById('tierrow')
+tierRow.className = 'row'
+tierRow.innerHTML =
+  `<label title="the shipping ladder's rungs, finest first -- sets segments">tier</label>` +
+  `<input type="range" min="0" max="${MESH_TIERS.length - 1}" step="1" value="0" />` +
+  `<span class="v"></span>`
+const tierInput = tierRow.querySelector('input')
+const tierOut = tierRow.querySelector('.v')
+
+function showTier() {
+  const i = MESH_TIERS.findIndex((t) => t.segments === Math.round(params.segments))
+  if (i >= 0) tierInput.value = i
+  tierOut.textContent = i >= 0 ? MESH_TIERS[i].name : 'custom'
+}
+
+tierInput.addEventListener('input', () => {
+  params.segments = MESH_TIERS[Number(tierInput.value)].segments
+  readouts.segments.input.value = params.segments
+  readouts.segments.out.textContent = params.segments
+  showTier()
+  refresh()
+})
+showTier()
 
 const seedInput = document.getElementById('seed')
 seedInput.addEventListener('input', () => {
@@ -623,6 +741,7 @@ document.getElementById('reset').addEventListener('click', () => {
     readouts[key].out.textContent =
       Number.isInteger(params[key]) ? params[key] : Number(params[key]).toFixed(2)
   }
+  showTier()
   refresh()
 })
 

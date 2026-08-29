@@ -8,7 +8,7 @@ The rock scatter's `underfoot` bed put a modelled pebble on the ground every 1.7
 
 ## The smallest cut of the standard scatter
 
-Same machine as its four siblings, deliberately reduced: one `BatchedMesh`, one material, a tiled camera-following scatter keyed on `tileSeed`, graded thinning by per-candidate rank, rank-based incremental regrow, and the rim dissolve -- all argued in `render/trees.js`'s header. What it does NOT have is the usual bulk: no variant bank, no tier ladder, no LOD bands, no promote/demote loop, because a quad is already the floor of every ladder. A patch is born at its only tier and stays there until evicted.
+Same machine as its four siblings, deliberately reduced: one `InstancedArena` over a single `InstancedMesh` -- all four baked pictures ride one quad, choosing between them with a per-instance `texLayer` attribute -- one material, a tiled camera-following scatter keyed on `tileSeed`, graded thinning by per-candidate rank, rank-based incremental regrow, and the rim dissolve -- all argued in `render/trees.js`'s header. What it does NOT have is the usual bulk: no variant bank, no tier ladder, no LOD bands, no promote/demote loop, because a quad is already the floor of every ladder. A patch is born at its only tier and stays there until evicted.
 
 **Four geometries, one per baked layer.** The atlas layer a prop samples is a per-VERTEX attribute (`texLayer`, `material.js`), not per instance, so "which of the four pictures" has to be a choice of geometry: four copies of the same 2-triangle quad differing in one float, 16 vertices in the arena for the whole system.
 

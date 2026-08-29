@@ -3,64 +3,47 @@ import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN } from '../textures.js'
 import { GRIT_GRAD_SCALE, terrainDetailTextures } from './grit-texture.js'
 
 // ---------------------------------------------------------------------------
-// The terrain material: Lambert + vertex colours + FOUR TEXTURE FETCHES.
+// The terrain material: Lambert + vertex colours + FOUR TEXTURE FETCHES. The
+// argument is DESIGN.md §7, which carries the measurements; this is the contract.
 //
-// It used to be Lambert + vertex colours + about twenty evaluations of a
-// hash-based value noise, and the change from that to this is the single
-// largest performance decision in the renderer. The measurement that forced it:
-// with the terrain hidden the headset holds 85 fps; with the terrain drawn and
-// STOCK Lambert on it, still 85; with the terrain drawn and this file's patch
-// on it, 30. Same meshes, same triangle count, same draw calls, same fog, same
-// lights. The terrain was never triangle bound. Every frame of that gap was
-// being spent inside one `#include <color_fragment>` patch, and the LOD and
-// chunking work could not have touched it.
+// THE FIELDS ARE BAKED, AND THAT WAS THE LARGEST PERFORMANCE DECISION IN THE
+// RENDERER. It used to be ~20 evaluations of a hash-based value noise per
+// fragment. On device: terrain hidden 85 fps, terrain drawn with STOCK Lambert
+// 85, terrain drawn with this file's patch 30 -- same meshes, triangles, draw
+// calls, fog and lights. The terrain was never triangle bound. See
+// grit-texture.js for how the noise was baked and what a tileable texture costs
+// that world-space noise does not.
 //
-// So the noise is gone and the fields it produced are baked. See
-// grit-texture.js for how, and for the honest accounting of what a tileable
-// texture costs that world-space noise does not.
+// WHAT THE SURFACE IS MADE OF, coarsest to finest, each a channel of one of two
+// 256 px tiles rather than a layer of its own:
 //
-// WHAT THE SURFACE IS MADE OF NOW, from coarsest to finest, and each one is a
-// channel of one of two 256 px tiles rather than a layer of its own:
+//   MACRO      1024 m/tile, EVERY FRAGMENT AT EVERY DISTANCE. .a wanders the
+//              snow line off the vertex grid, .r darkens and tints regions.
+//   MACRO      137 m/tile, rotated ~37 deg, gated on the HAZE. Its own fbm runs
+//              137 m down to ~4 m: the mid-range mottle.
+//   GRIT       11.7 m/tile inside FADE_FAR. 4.6 cm a texel magnified NEAREST --
+//              preview-stage.js's bench ground at the same texel size -- which is
+//              the whole look, and the only thing on a hillside small enough to
+//              move visibly, so it is what makes speed legible (1.45 m/s and
+//              14 m/s look identical on a smooth slope). Its .gb carry the slope,
+//              so the fetch that colours also lights.
+//   GRIT       2.3 m/tile, rotated, inside MICRO_FAR. Sub-centimetre texels: the
+//              fleck tint, the snow sparkle, the finest rung of relief. Also
+//              what stops the 11.7 m sample reading as a repeating tile.
 //
-//   MACRO, sampled at 1024 m per tile, EVERY FRAGMENT AT EVERY DISTANCE.
-//     .a displaces the snow line off the vertex grid; .r darkens and tints
-//     whole regions. These do not fade with distance and must not: their job is
-//     that everything past the near fades used to be flat green or flat grey,
-//     and the reason was never that the palette was too simple -- it was that
-//     the only thing varying the palette had already faded out.
+// FOUR FETCHES IS THE WORST CASE, near field only: three past 40 m, two past
+// 95 m, one past the haze gate. THE FADES ARE ABOUT NOT PAYING for a fetch that
+// has stopped changing the pixel, not about hiding a crawl -- a mipped texture
+// cannot alias -- which is why every number below could move outward safely.
 //
-//   MACRO AGAIN, at 137 m per tile and rotated ~37 degrees off the first, gated
-//     on the HAZE rather than on distance. Its own fbm ladder inside that tile
-//     runs 137 m down to ~4 m, which is the mid-range mottle: dry slopes, damp
-//     hollows, mineral staining on rock.
+// THE MACRO PAIR DOES NOT FADE AND MUST NOT: everything past the near fades used
+// to read flat green or flat grey, and the cause was never a thin palette, it
+// was that the only thing varying the palette had already faded out.
 //
-//   GRIT, at 11.7 m per tile, inside FADE_FAR. 256 texels across 11.7 m is
-//     4.6 cm a texel, magnified NEAREST -- which is the whole look. It is the
-//     bench ground from preview-stage.js (3 m over 64 px, 4.7 cm texels) at the
-//     same texel size, and it is there because a smooth hillside gives you
-//     nothing to judge your own speed against: at 1.45 m/s and at 14 m/s an
-//     untextured slope looks identical, because no feature is small enough to
-//     move visibly. Its .gb carry the surface's slope, so the same fetch that
-//     colours the ground also lights it.
-//
-//   GRIT AGAIN, at 2.3 m per tile and rotated, inside MICRO_FAR. Sub-centimetre
-//     texels: the fleck tint, the snow sparkle, and the finest rung of relief.
-//     It is also what stops the 11.7 m sample reading as a repeating tile
-//     underfoot, since 11.7 and 2.3 have no useful common multiple.
-//
-// FOUR FETCHES IS THE WORST CASE and it is the near field only. Past 40 m it is
-// three, past 95 m two, and past the haze gate one.
-//
-// WHY THE FADES STILL EXIST when a mipped texture cannot alias: they are about
-// not PAYING for a fetch that has stopped changing the pixel, not about hiding
-// a crawl. That is a weaker claim than the noise layers had to make, and it is
-// why the numbers below could all move outward without anything shimmering.
-//
-// GRASS AND SNOW ALSO WEAR A PHOTOGRAPH -- one metre of meadow and one of
-// crusted snow, tiled -- and where a photograph applies, the grit layers turn
-// off rather than lying under it. See the GROUND_METRES block below. Rock keeps
-// the grit at every distance, and every surface gets it back once the ground
-// tiles have faded out past 150 m.
+// GRASS ALSO WEARS A PHOTOGRAPH -- one metre of meadow, tiled -- and where it
+// applies the grit layers turn off rather than lying under it. See the
+// GROUND_METRES block for why snow does not get one. Snow and rock keep the grit
+// at every distance, and grass gets it back past GROUND_FAR at 150 m.
 //
 // This is a step-2 stand-in. §7's real material (splat blending, height-blend,
 // triplanar, KTX2 arrays) replaces it at build step 6.
@@ -170,58 +153,42 @@ const STONE_FAR = 650
 const FINE_NEAR = 30
 const FINE_FAR = 130
 
-// ---- The ground tile: the meadow, photographed.
+// ---- The ground tile: the meadow, photographed. §7 has the argument.
 //
-// Same trick as the stone above and for the same reason -- noise is isotropic
-// and self-similar, and a lawn is not: it has blades, and they lie in
-// directions, and they clump. What replaced it was three octaves of value noise
-// that made grass out of speckle, and speckle at three scales is still speckle.
+// Same trick as the stone above: noise is isotropic and self-similar and a lawn
+// is not -- it has blades, they lie in directions, and they clump.
 // LAYER.TERRAIN_GRASS is one square metre cut from a photograph by
 // tools/props/cut-terrain.mjs.
 //
-// THERE WAS A SNOW TILE HERE AND IT DID NOT WORK. The argument above is an
-// argument about STRUCTURE -- a photograph beats noise where the surface has
-// real structure at the scale being drawn -- and snow has almost none. What a
-// square metre of snow carries is a faint grey shading, so the tile contributed
-// little except the one artefact a tile cannot avoid: at one metre a period, on
-// a surface with no high-frequency detail to distract from it, the repeat was
-// the most visible thing on the snowfield. Grass hides its period behind blade
-// frequency; snow had nothing to hide it behind. The grit tile's speckle draws
-// snow now, at two incommensurate and mutually rotated scales, which is exactly
-// the property the photograph could not have.
+// A CONTRAST FIELD, NOT AN ALBEDO: divided by its own linear per-channel mean
+// (GRASS_TILE_MEAN in textures.js) so it averages (1,1,1) and adds grain and
+// blade-to-soil swing without moving a palette that was tuned untextured.
 //
-// A CONTRAST FIELD, NOT AN ALBEDO. The tile is divided by its own linear
-// per-channel mean (GRASS_TILE_MEAN in textures.js) before it multiplies
-// anything, so it averages (1,1,1) and adds the photograph's grain and its
-// blade-to-soil colour swing without moving the palette. That is what lets a
-// photograph land on a surface whose every colour was tuned untextured.
+// ONE METRE PER TILE at 128 px is 8 mm a texel -- a blade is a texel or two, a
+// clump a dozen -- so this is by far the finest layer here. It cannot alias: as
+// it goes sub-pixel its mips converge to its own mean, the divide takes that to
+// 1.0, and the layer fades itself out. GROUND_FAR is about not PAYING for that
+// fetch, not about hiding a pop.
 //
-// ONE METRE PER TILE, which is the ask and is also about right: at 128 px that
-// is 8 mm a texel, so a blade is a texel or two and a clump is a dozen. It is
-// therefore the finest layer in the shader by a wide margin, and everything the
-// noise layers say about aliasing applies here twice over -- except that a
-// mipped texture solves it for free, which noise cannot. As the tile goes
-// sub-pixel its mips converge to its own mean, the divide takes that to 1.0, and
-// the layer fades itself out. GROUND_FAR is therefore about not PAYING for a
-// fetch that has stopped changing pixels, not about hiding a pop.
+// PLANAR, where the stone is triplanar, and that is fill rate rather than
+// quality: ground is most of the screen. The xz projection stretches by
+// 1/cos(slope), 15% at 30 degrees, and by the angle where that would show
+// chunk-mesh has already classified the fragment as rock.
 //
-// PLANAR, where the stone is triplanar, and that is a fill-rate decision rather
-// than a quality one: ground is most of the screen and three fetches over most
-// of the screen is not a price a Quest can pay. The xz projection stretches by
-// 1/cos(slope) -- 15% at 30 degrees -- and by the angle where that would start
-// to show, chunk-mesh has already classified the fragment as rock.
+// THERE WAS A SNOW TILE HERE AND IT DID NOT WORK -- a photograph beats noise
+// only where the surface has real STRUCTURE at the scale drawn, and snow has
+// almost none, so all the tile contributed was its own 1 m repeat with nothing
+// to hide it behind. The grit tile draws snow now at two incommensurate,
+// mutually rotated scales, which is the property the photograph could not have.
 //
 // WHAT THE TILE TURNS OFF, inside its fade and ON GRASS ONLY: the brightness
-// speckle, the dirt/moss mottle, and the grass half of the 10 cm micro-tint
-// layer. All of them are the same job done worse, and running both is two
-// textures at one scale, which reads as mud. It turns them off THROUGH
-// auroraGreenBase, which is why that value has to reach a true 1.0 -- see the
-// block on it in the fragment shader for what a classifier that topped out at
-// 0.8 was quietly leaving switched on. What stays: the snow SPARKLE (a
-// specular stand-in, not a texture), the macro layers (they are regional and the
-// tile is not), and the whole normal-perturbation pass at the bottom of this
-// file (the tile carries no relief, and a lit surface needs both). Snow and rock
-// now suppress nothing at all, because neither has a tile at this scale.
+// speckle, the dirt/moss mottle, and the grass half of the 10 cm micro tint --
+// the same job done worse, and running both is two textures at one scale, which
+// reads as mud. It turns them off THROUGH auroraGreenBase, which is why that
+// value has to reach a true 1.0; see the block on it in the fragment shader.
+// What stays: the snow SPARKLE (a specular stand-in), the macro layers (they are
+// regional and the tile is not), and the whole normal pass (the tile carries no
+// relief). Snow and rock now suppress nothing, having no tile at this scale.
 const GROUND_METRES = 1
 // The tiles' own fade. Far shorter than the stone's because the tile is a
 // sixteenth of its size: 60 m is where a 1 m tile is starting to be carried by
@@ -234,26 +201,16 @@ const GROUND_FAR = 150
 // Values are LINEAR, not sRGB -- three treats vertex colours and plain Color
 // uniforms as working-space. Roughly: linear 0.05 reads as sRGB 0.25.
 //
-// THE GRASS FOUR ARE TUNED AGAINST A MEASURED MEAN, not by eye. Every one of
-// them is a mix DESTINATION on green ground, so what the meadow actually reads
-// as is the average of the whole tint chain, not any one of these.
-//
-// AND THE MEAN THAT MATTERS IS THE ONE ON SCREEN, not the albedo. Two whole
-// rounds of this were tuned on albedo and both missed, because albedo is half
-// the transfer: the light is 2.1 sun plus 0.85 sky, a multiplier near (2.12,
-// 2.05, 1.93), and sRGB at the end is where the eye reads the answer. The
-// scratch harness runs the real chain over the real baked fields and the real
-// tile bytes, lights it and encodes it, and prints 8-bit sRGB. On distant grass,
-// where the ground tile has faded and only the palette is left:
-//
-//   screen 80,105,60   g/r 1.81   -- a flat uGrassShade of 0.85. Olive.
-//   screen 56,106,41   g/r 3.71   -- these four with uGrassTone. Verdant.
-//
-// The green channel is the SAME in both. Nothing got brighter or darker; red
-// and blue came down by a third. That is the whole difference between "waxy"
-// and "vivid", and it is why the knob at the bottom of the shader is a vec3 and
-// not a float: a scalar moves the meadow along the grey axis it is already too
-// close to, which is the axis the complaint was never about.
+// THE GRASS FOUR ARE TUNED AGAINST A MEASURED MEAN, not by eye, and the mean
+// that matters is THE ONE ON SCREEN. Every one of them is a mix DESTINATION, so
+// what the meadow reads as is the average of the whole tint chain -- then
+// multiplied by a light near (2.12, 2.05, 1.93) and encoded to sRGB, which is
+// where the eye reads the answer. Two rounds were tuned on albedo and both
+// missed. On distant grass, where only the palette is left: a flat uGrassShade
+// of 0.85 gives screen 80,105,60 at g/r 1.81 (olive); these four with uGrassTone
+// give 56,106,41 at g/r 3.71 (verdant). The green channel is the SAME in both --
+// red and blue came down by a third, which is the whole difference between waxy
+// and vivid, and why the knob is a vec3 and not a float.
 //
 // DIRT and DRY are the only two members with g <= r, so over-firing them
 // neutralises the meadow -- and the equalised fields WERE over-firing them, see
@@ -337,30 +294,21 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     uMoss: { value: MOSS },
     uMacroValue: { value: 0.38 }, // +/- brightness swing at every distance
     uMacroTint: { value: 0.55 }, // how far the macro palette pulls the hue
-    // ---- The REGION octave: one more macro wavelength, ~90 m, and the coarsest
-    // colour variation in the shader.
+    // ---- The REGION octave: a THIRD macro wavelength at ~90 m, and the coarsest
+    // colour variation in the shader. §7 has the argument.
     //
-    // It exists because of what the ground tiles above it did. A tiled
-    // photograph is by construction the same square metre everywhere, so
-    // whatever it buys up close it buys nothing at all at range -- and the two
-    // macro octaves that used to carry the far field are 27 m and 10 m, which
-    // is a wavelength that has averaged itself to a flat tint by the time a
-    // hillside is 300 m away. The note above this file's FADE_NEAR records that
-    // those two were divided down FROM 110 m and 38 m because at that size they
-    // overlapped into one muddy middle tone; this is the coarse end coming back
-    // as a THIRD octave rather than as a resizing of the pair, so the mid-range
-    // mottle they buy is untouched and the gap above them is what gets filled.
+    // A tiled photograph is the same square metre everywhere, so whatever it buys
+    // up close it buys nothing at range, and the 27 m / 10 m pair below has
+    // averaged itself flat by the time a hillside is 300 m off. A new octave
+    // rather than resizing that pair, which was itself divided down FROM 110 m and
+    // 38 m because at that size the two overlapped into one muddy middle tone.
     //
-    // Three destinations from one field, which is what "browner, darker,
-    // greener" is: the value multiply darkens and lifts whole regions, the high
-    // end pulls toward uDirt and the low end toward uDeep. It reuses those two
-    // rather than introducing a coarse palette of its own, on the same argument
-    // the micro layer reuses them -- one colour family at every scale is what
-    // keeps a hillside reading as one material seen at three distances.
-    //
-    // Snow gets the value swing at half weight (wind scours a drift into bright
-    // and dull ground and that reads as snow) and none of the tint (brown snow
-    // reads as dirty snow), which is the same split the 27/10 m pair makes.
+    // Three destinations from one field: the value multiply darkens and lifts
+    // whole regions, the high end pulls toward uDirt and the low end toward uDeep.
+    // Reusing those two rather than a coarse palette of its own, on the same
+    // argument the micro layer reuses them. Snow gets the value swing at half
+    // weight (wind scours a drift into bright and dull ground, which reads as
+    // snow) and none of the tint (brown snow reads as dirty snow).
     uRegionValue: { value: 0.32 }, // +/- brightness swing over ~90 m regions
     uRegionTint: { value: 0.5 }, // how far a region pulls toward dirt or deep green
     uDry: { value: DRY },
@@ -369,24 +317,23 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     uSnow: { value: SNOW },
     uRock: { value: ROCK },
     // How far the snow/rock border is allowed to wander from where the vertex
-    // colours put it, in units of the classification's own 0..1 range. 0
-    // restores the old hard interpolated edge.
+    // colours put it, in units of the classification's own 0..1 range. 0 restores
+    // the old hard interpolated edge.
     //
-    // The ceiling is not a taste call. Half the amplitude has to stay inside the
+    // THE CEILING IS NOT A TASTE CALL. Half the amplitude has to stay inside the
     // dead zone of the sharpening smoothstep( 0.25, 0.75 ) below, because that
     // dead zone is the only thing confining the dither to the transition band:
-    // vColor saturates to "no snow" somewhat below the line and then reads the
-    // same for the whole rest of the world, so past that point the noise starts
-    // flecking valley floors it has no business touching. At 0.65 the extreme
-    // excursion lands at 0.325 and comes out under a tenth white, which is a
-    // stranded patch rather than a dissolved border.
+    // vColor saturates to "no snow" somewhat below the line and reads the same for
+    // the whole rest of the world, so past that point the noise starts flecking
+    // valley floors. At 0.65 the extreme excursion lands at 0.325 and comes out
+    // under a tenth white -- a stranded patch rather than a dissolved border.
     //
-    // An earlier pass ran this at 1.0 behind an explicit world-height guard.
-    // That is gone, and deliberately: the snow line is a FIELD now
-    // (SNOW.swing in sim/terrain-height.js), so any fixed height window is
-    // wrong by up to 22 m in both directions -- it would shut the dither off
-    // exactly where the line happens to sit low. The regional variation the
-    // guard was buying headroom for is now done properly, one layer up.
+    // An earlier pass ran 1.0 behind an explicit world-height guard. That is gone
+    // deliberately: the snow line is a FIELD now (SNOW.swing in
+    // sim/terrain-height.js), so any fixed height window is wrong by up to 22 m in
+    // both directions and would shut the dither off exactly where the line sits
+    // low. The regional variation it bought headroom for is done properly one
+    // layer up.
     uBoundary: { value: 0.65 },
     // Near-field normal perturbation from the COARSE grit fetch, as a plain
     // multiplier on that fetch's own slope. 0 disables the whole normal block,
@@ -405,46 +352,41 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // divots, on every surface.
     //
     // Its own uniform rather than a weight inside uRelief because two things
-    // about it differ. It rides the MICRO fade (gone by 40 m) instead of the
-    // grain fade (95 m), since a feature this size is about 3 px at 40 m and
-    // under 1 px past it -- the same argument the micro tint layer makes, and
-    // past that point this is shimmer rather than texture. And its surface mask
-    // is flat: full on rock, half on grass AND snow, where the coarse rung
-    // gives snow only a fifth because heavy relief at half a metre makes a
-    // drift read as gravel. At a centimetre that does not apply -- windblown
-    // snow is pitted at exactly this scale.
+    // differ. It rides the MICRO fade (gone by 40 m) instead of the grain fade
+    // (95 m), since a feature this size is ~3 px at 40 m and under 1 px past it.
+    // And its surface mask is flat -- full on rock, half on grass AND snow, where
+    // the coarse rung gives snow only a fifth because half-metre relief makes a
+    // drift read as gravel. At a centimetre that does not apply: windblown snow is
+    // pitted at exactly this scale.
     //
-    // Retuned from 0.018 by the same measurement: the old 10 cm octave averaged
-    // 4.2576 per metre, so 0.018 bought a tangent of 0.0766; the new fine fetch
-    // averages 5.785 per tile-unit over a 2.3 m tile, which is 2.5153 per
-    // metre, so 0.030 buys the same. It is nested inside the uRelief guard on
-    // purpose: uRelief = 0 must still kill the whole normal pass.
+    // Retuned from 0.018 by measurement (§7): the old 10 cm octave averaged 4.2576
+    // per metre, so 0.018 bought a tangent of 0.0766; the fine fetch averages
+    // 5.785 per tile-unit over a 2.3 m tile, which is 2.5153 per metre, so 0.030
+    // buys the same. Nested inside the uRelief guard on purpose -- uRelief = 0
+    // must still kill the whole normal pass.
     uMicroRelief: { value: 0.03 },
     // Glitter on snow. Small because it is thresholded to a few percent of
     // fragments -- this is specular sparkle standing in for a spec model Lambert
     // does not have, not a brightness change.
     uSnowSparkle: { value: 0.3 },
     // The ~10 cm layer. uMicroTint is how far a fleck pulls toward its palette
-    // colour, uMicroValue the brightness swing underneath it. 0 on uMicroTint
-    // does NOT disable the layer -- uMicroValue is independent; set both to 0.
+    // colour, uMicroValue the brightness swing underneath it. 0 on uMicroTint does
+    // NOT disable the layer -- uMicroValue is independent; set both to 0.
     //
-    // Both are HALF what the first pass shipped (0.55 and 0.14), because at
-    // full strength the flecks read as garish and pixelly rather than as grit.
-    // Halving the knob rather than moving GRIT/SOOT/FROST/SHADE halfway to
-    // their base colours, which is what it looks like it should have been:
-    // these are only ever applied as mix( base, C, t ), and
-    // mix( base, C, t/2 ) == mix( base, (base+C)/2, t ) exactly. Same pixels,
-    // one number instead of four, and the constants stay legible as the
-    // extreme each surface is tinting TOWARD rather than as a pre-diluted
-    // value that cannot be reasoned about. It also covers grass, whose targets
-    // are the shared DIRT and MOSS and so cannot be moved without dragging the
-    // macro and grain layers along with them.
+    // Both are HALF what the first pass shipped (0.55 and 0.14), because at full
+    // strength the flecks read as garish and pixelly rather than as grit. Halving
+    // the KNOB rather than moving GRIT/SOOT/FROST/SHADE halfway to their base
+    // colours: these are only ever applied as mix( base, C, t ), and
+    // mix( base, C, t/2 ) == mix( base, (base+C)/2, t ) exactly. Same pixels, one
+    // number instead of four, and the constants stay legible as the extreme each
+    // surface tints TOWARD. It also covers grass, whose targets are the shared
+    // DIRT and MOSS and cannot be moved without dragging the macro and grain
+    // layers along.
     //
-    // The 10 cm normal perturbation below (uMicroRelief) is deliberately NOT
-    // halved with these: shading and albedo are what make a surface read as
-    // gritty at this scale, and the complaint was about colour intensity. If
-    // it still reads pixelly with the tint at 0.275, that layer is the next
-    // one to pull down.
+    // uMicroRelief is deliberately NOT halved with these: shading and albedo are
+    // what make a surface read as gritty at this scale, and the complaint was
+    // about colour intensity. If it still reads pixelly at 0.275, that layer is
+    // the next one to pull down.
     uMicroTint: { value: 0.275 },
     uMicroValue: { value: 0.1 },
     uGrit: { value: GRIT },
@@ -454,90 +396,42 @@ export function createTerrainMaterial({ atlas = null } = {}) {
 
     // ---- EXPOSURE. Two scale factors applied to the finished albedo, keyed on
     // the surface, and the only two numbers in this file that are about the
-    // renderer rather than about the ground.
+    // renderer rather than about the ground. §7 carries the full table.
     //
     // THE RENDERER HAS NO TONE MAPPING (`toneMapping: none` in v2's main, by
-    // choice -- the Quest cannot spare the pass and every colour in the game was
-    // tuned without one). So the transfer curve is: linear albedo times light,
-    // hard-clipped at 1.0, then sRGB. There is no shoulder. Anything that lands
-    // above 1.0 is not "bright", it is GONE -- and everything drawn on top of it
-    // is gone with it.
+    // choice), so the transfer curve is linear albedo times light, hard-clipped at
+    // 1.0, then sRGB. There is no shoulder: anything above 1.0 is not "bright", it
+    // is GONE, and everything drawn on top of it is gone with it. Snow was landing
+    // there -- C_SNOW 0.88 against a 2.1 sun and 0.85 hemisphere computes ~2.15,
+    // clipped by more than 2x at every daylight angle -- which is why the
+    // snowfield read as a flat white sheet with the sparkle, flecks, grain and
+    // relief all computed correctly and then thrown away.
     //
-    // Snow was landing there. C_SNOW is 0.88 in the mesher, the sun runs 2.1 at
-    // noon and the hemisphere another 0.85, so a lit snow face computed roughly
-    // 0.88 * (2.1 * 0.8 + 0.85 * 0.9) = 2.15 -- clipped by more than a factor of
-    // two, and clipped at EVERY daylight angle down to a grazing one. That is
-    // why the snowfield read as a flat white sheet with no texture on it: the
-    // sparkle, the flecks, the grain and the entire relief pass were all being
-    // computed correctly and then thrown away by the clamp.
+    // WITH NO SHOULDER, LEVEL AND TEXTURE ARE THE SAME KNOB. At N.L 0.75 (level
+    // ground under this scene's 49-degree sun), as mean screen grey / 5th-to-95th
+    // spread / share the clamp flattens: 0.40 -> 216, 193..239, 0% (grey, reads as
+    // dirty snow); 0.55 -> 245, 223..255, 35%; 0.65 -> 253, 240..255, 74% (HERE);
+    // 0.75 -> 255, 255..255, 95% (washout). Washout is not taste, it is the row
+    // where the spread reaches zero; 0.65 is the midpoint to it by the parameter
+    // and by the surviving spread alike. Read the clipped share against SLOPE, not
+    // as one number: what clips first is the sparkle, and the faces that clip
+    // hardest are square to the sun, which is where real snow IS one value.
     //
-    // WITH NO SHOULDER, LEVEL AND TEXTURE ARE THE SAME KNOB, and this number is
-    // where they are traded. Measured at N.L 0.75, which is what this scene's
-    // sun (49 degrees up) gives level ground, as mean screen grey, the
-    // 5th-to-95th percentile spread around it, and the share of fragments the
-    // clamp flattens:
-    //
-    //     0.40   216   193..239    0%      grey. reads as dirty snow
-    //     0.50   238   213..255   15%
-    //     0.55   245   223..255   35%
-    //     0.65   253   240..255   74%      HERE
-    //     0.70   254   248..255   87%
-    //     0.75   255   255..255   95%      washout: level snow is ONE value
-    //
-    // Washout is not a matter of taste, it is the row where the spread reaches
-    // zero, and that is 0.75. 0.65 is the midpoint to it, by the parameter and
-    // by the surviving spread alike (32 steps at 0.55, 15 here, 0 there).
-    //
-    // The clipped share is not waste: what clips first is the sparkle, a
-    // specular stand-in that belongs at white, and the rows that clip hardest
-    // are the faces square to the sun, which is where real snow IS one value.
-    // Read the share against slope rather than as a single number -- at 0.65,
-    // N.L 0.95 / 0.75 / 0.55 / 0.35 keep a spread of 0 / 15 / 37 / 46 steps, so
-    // the sunward faces blow out and everything turned away from the sun, which
-    // is most of a mountain and all of the part whose texture you can read,
-    // still has its full surface.
-    //
-    // Nothing about the texture's shape buys headroom here -- skewing the value
-    // swings below 1.0 and raising this to compensate lands on the same mean at
-    // the same clipped share, and trimming the snow speckle at this level makes
-    // the clipping WORSE, not better. It is the mean's distance from the ceiling
-    // that sets how much texture fits, and nothing else.
-    //
-    // READ THAT TABLE TOGETHER WITH THE ALBEDO REPAINT in <color_fragment>. It
-    // assumes the fragment starts at C_SNOW, and until that repaint existed only
-    // ground flatter than ~30 degrees did: a 40 degree flank started 26% darker
-    // and read 212 where this table says 238, which is why two rounds of raising
-    // this number did not make the mountains white. Raising the exposure could
-    // not fix it, because the exposure was never the thing taking it away.
-    //
-    // 0.65 also keeps the ANGULAR range, which is the larger shape signal: N.L
-    // 0.95 / 0.75 / 0.45 / 0.20 read 255 / 253 / 230 / 192, so a mountain is
-    // still modelled by its own faces. At the 1.0 this shipped with, the same
-    // row was 255 / 255 / 254 / 233 -- flat white from noon down to a
-    // 76-degree face, which is the "everything at one brightness" the clamp
-    // produces and the reason any of this is here.
-    //
-    // WHY THIS IS NOT A FIX IN chunk-mesh's C_SNOW. That constant does two jobs:
-    // it is the snow albedo AND it is the classification channel this shader
-    // reads (auroraVertexSnow thresholds vColor.b). Darkening it there would
-    // silently stop the shader recognising snow as snow. The mesher's colour is
-    // the classification; this stage owns the shading. Note the consequence:
-    // props carry their own snow (SNOW_TINT in material.js) and it is clipped
-    // exactly the same way, so a snow-capped boulder will now read brighter than
-    // the ground under it until that one is scaled to match.
+    // WHY THIS IS NOT A FIX IN chunk-mesh's C_SNOW: that constant is the snow
+    // albedo AND the classification channel this shader reads (auroraVertexSnow
+    // thresholds vColor.b), so darkening it would silently stop the shader
+    // recognising snow as snow. The mesher's colour is the classification; this
+    // stage owns the shading. Consequence to watch: props carry their own snow
+    // (SNOW_TINT in material.js) and are clipped the same way, so a snow-capped
+    // boulder reads brighter than the ground until that one is scaled to match.
     //
     // uGrassTone is a LOOK choice and not a clipping one -- grass at 0.088 was
-    // never near the clamp -- and it is PER CHANNEL because the complaint it
-    // answers was never about level. A scalar can only slide the meadow up and
-    // down a grey axis it is already too close to; what reads as "waxy" is low
-    // chroma, and the only cure for low chroma is to take red and blue down
-    // while green stays. Measured on screen (the chain, the real tile, the 2.1
-    // sun and 0.85 sky, sRGB at the end): a flat 0.85 landed on 80,105,60 --
-    // an olive with g/r 1.81 -- and these three land on 56,106,41 with g/r 3.71
-    // at the same green. Same brightness, twice the chroma.
-    //
-    // It also does most of the work on the brown flecks in the ground tile: a
-    // dirt-coloured blotch needs red, and this halves red everywhere on grass.
+    // never near the clamp -- and it is PER CHANNEL because what reads as "waxy"
+    // is low chroma, and the only cure is to take red and blue down while green
+    // stays. Measured on screen: a flat 0.85 landed on 80,105,60 (g/r 1.81), these
+    // three land on 56,106,41 (g/r 3.71) at the same green. It also does most of
+    // the work on the brown flecks in the ground tile: a dirt-coloured blotch
+    // needs red, and this halves red everywhere on grass.
     uSnowAlbedo: { value: 0.65 },
     uGrassTone: { value: new THREE.Color(0.45, 0.92, 0.45) },
   }
@@ -1240,39 +1134,27 @@ ${atlas ? `
       )
       // ---- Near-field relief: APPLY ONLY. The slopes were accumulated into
       // auroraBump up in <color_fragment>, by the same two grit fetches that
-      // coloured the fragment.
+      // coloured the fragment -- which is the entire reason this is cheap now.
+      // It used to call auroraGrad three times here, nine value-noise evaluations
+      // and thirty-six integer hashes, off fields that had nothing to do with the
+      // ones doing the colouring, so the surface was lit as though it were made of
+      // something other than what it looked like. Now .gb of each grit fetch IS
+      // the derivative of the .r that coloured it.
       //
-      // That sharing is the entire reason this is cheap now. It used to call
-      // auroraGrad three times here -- nine value-noise evaluations, thirty-six
-      // integer hashes, on top of the twelve noise calls the colour block had
-      // already run -- and it computed its bumps from fields that had nothing
-      // to do with the ones doing the colouring, so the surface was lit as
-      // though it were made of something other than what it looked like. Now
-      // .gb of each grit fetch IS the derivative of the .r that coloured it, so
-      // the lighting and the albedo describe the same rock.
-      //
-      // The ask this exists for was micro variation, "minorly jagged and
-      // rocky", for the immediate region only, and it deliberately does NOT go
-      // in the height field. The leaf chunk resolves 1.00 m cells, so a seventh
-      // detail octave would land at ~0.7 m wavelength, below Nyquist for the
-      // mesh that has to carry it: it would alias into a crawling pattern that
-      // changes every time a chunk rebuilds, and it would cost five more field
-      // evaluations on the collision path, which is already the frame's most
-      // expensive query. It would also feed straight into the slope limiter and
-      // manufacture exactly the sub-metre refusals that round existed to remove.
-      //
-      // Perturbing the shading normal instead buys the look with none of that.
-      // It is geometry-free, so nothing rebuilds and nothing can block her; it
-      // is keyed to world XZ, so it does not rescale across LOD rings; and it
-      // rides the same near fades as the colour, so it is gone before it can
-      // alias.
+      // IT DELIBERATELY DOES NOT GO IN THE HEIGHT FIELD. The leaf chunk resolves
+      // 1.00 m cells, so a seventh detail octave would land at ~0.7 m wavelength,
+      // below Nyquist for the mesh that has to carry it: it would alias into a
+      // crawling pattern that changes every time a chunk rebuilds, cost five more
+      // field evaluations on the collision path, and manufacture exactly the
+      // sub-metre slope refusals §4 removed. Perturbing the shading normal buys
+      // the look with none of that -- geometry-free, keyed to world XZ so it does
+      // not rescale across LOD rings, and riding the same near fades as the colour
+      // so it is gone before it can alias. §7 has the amplitude derivations.
       //
       // Placed at normal_fragment_begin, which runs after color_fragment, so
-      // auroraBump is already filled. `normal` is in VIEW space at this point,
-      // hence the viewMatrix on the perturbation -- as a direction, so
-      // translation drops out.
-      //
-      // No guard on uRelief here: the two blocks that write auroraBump are
+      // auroraBump is already filled. `normal` is in VIEW space here, hence the
+      // viewMatrix on the perturbation -- as a direction, so translation drops
+      // out. No guard on uRelief: the two blocks that write auroraBump are
       // themselves guarded, so with relief off this is normalize() of an
       // unchanged normal, which is what the chunk just did anyway.
       .replace(

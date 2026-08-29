@@ -15,27 +15,19 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
 // The stone on the /v2 route: pebbles underfoot, boulders through the wood and
-// across the cliffsides, and giants on the crags and the summits.
+// across the cliffsides, giants on the crags and the summits. The argument is
+// DESIGN.md §25; this is the contract.
 //
-// THE SCATTER IS render/trees.js's, deliberately -- a tiled, camera-following,
-// graded-thinning scatter whose density falls off as FULL_RADIUS / d so the
-// instance count grows linearly in the draw radius rather than quadratically.
-// Everything that file's header argues about tiles, ranks, quantised
-// keep-fractions, incremental regrow, standing props on the DRAWN ground rather
-// than on the field, and dissolving at each instance's own cull distance holds
-// here and is not repeated. What follows is only what is different about rock.
+// THE SCATTER IS render/trees.js's, deliberately -- tiled, camera-following,
+// graded thinning at FULL_RADIUS / d so the instance count grows linearly in the
+// draw radius rather than quadratically. Everything that header argues about
+// tiles, ranks, quantised keep-fractions, incremental regrow, standing props on
+// the DRAWN ground and dissolving at each instance's own cull distance holds here
+// and is not repeated.
 //
-// ONE THING IS DIFFERENT, AND IT IS THE WHOLE FILE: A ROCK'S SIZE SPANS TWO
-// ORDERS OF MAGNITUDE. A pebble is 11 cm and a cliff-top lip is 7 m, and no
-// single density-and-radius pair carries both. A pebble wants one per few square
-// metres out to fifty; a lip wants one per two thousand square metres out to a
-// kilometre and a half. Run the pebble's numbers to the lip's horizon and it is
-// millions of instances; run the lip's numbers underfoot and there are no
-// pebbles.
-//
-// So there are FIVE BEDS, each a complete independent scatter with its own
-// tile grid, its own density, its own radius, its own LOD bands and its own
-// instance pool:
+// FIVE BEDS, because a rock's size spans two orders of magnitude and no single
+// density-and-radius pair carries both ends. Each is a complete independent
+// scatter with its own tile grid, density, radius, LOD bands and instance pool:
 //
 //   UNDERFOOT   0.11 - 0.75 m  dense, 60 m      river stones, cobbles, caps
 //   BOULDERS    0.34 - 3.4 m   medium, 460 m    the forest and cliffside rocks
@@ -44,155 +36,73 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //   GIANTS      3.2 - 7.0 m    sparse, 1250 m   tors, shelves, buttresses, lips
 //
 // EACH BED EXISTS BECAUSE SOMETHING IT NEEDS IS PER-BED AND CANNOT BE VARIED
-// WITHIN ONE, which is the only test a new bed has to pass. For SCREE it is the
-// candidate count, `envDensity` being an accept rate that caps at 1 -- a
-// saturated site cannot be made denser by any multiplier. For CRUST it is the
-// slope limit and the submersion flag. Neither could have been a table entry.
+// WITHIN ONE -- the only test a new bed has to pass. Scree needs the candidate
+// count (`envDensity` is an accept rate capped at 1, so a saturated site cannot be
+// made denser by any multiplier); crust needs the slope limit and the submersion
+// flag. Six beds are six BatchedMeshes and six draw calls, which does not break
+// §5's one-material rule -- that rule forbids splitting a BATCH by material. They
+// share ONE material object, unlike trees, ferns and grass, because every bed here
+// billboards the same single layer and one program serves them all.
 //
-// Six beds are six BatchedMeshes and six draw calls, which does not violate
-// DESIGN.md §5's one-material rule: that rule is that a BATCH cannot be split by
-// material, and these are six batches. They share ONE material object -- unlike
-// trees, ferns and grass, which cannot, because which layers billboard is
-// compiled into the shader and their lists differ. Every bed here billboards the
-// same single layer, the card tier, so one program serves them all.
+// WHERE A ROCK GOES IS DECIDED BY WHERE IT IS, not by a roll. A candidate is
+// classified into one of four ENVIRONMENTS -- river, peak, cliff, forest -- from
+// the field sample the placement test already pays for (`_envAt`), then picks its
+// shape from the variants tagged for it in props/rock-bank.js. A pure function of
+// position, exactly as existence is, so a rock does not change species as the
+// player walks toward it. `_relief` adds a finer test on top: the second
+// difference of the height field along the fall line tags a site `foot` or `brow`,
+// the only way to tell the bottom of a cliff from the top of one, and site-tagged
+// variants are held out of the ordinary pools entirely.
 //
-// WHERE A ROCK GOES IS DECIDED BY WHERE IT IS, not by a roll. Each candidate is
-// classified into one of four ENVIRONMENTS from the field sample the placement
-// test already pays for, and then picks its shape from the variants tagged for
-// that environment (see props/rock-bank.js):
+// ROCKS SIT IN THE GROUND AND LEAN WITH IT, and both halves matter: bedded by a
+// fraction of their own height that GROWS WITH THE SLOPE, and tilted toward the
+// ground normal, which trees deliberately are not -- a tree on a slope grows up, a
+// rock lies the way it fell. The tilt costs four field samples per PLACED rock and
+// is off for the underfoot bed. Snow and moss are the material's, not this file's:
+// both derive in the vertex shader from the instance's own root height against a
+// line, so a boulder is green in a damp wood, bare on a ridge and white on a
+// summit at no per-instance data and no per-frame CPU. See syncBands.
 //
-//   river   inside a lake or river footprint, or standing barely out of it.
-//           Riverbed and shore: flat, worn, sunk, wet-shaded.
-//   peak    within PEAK_BELOW_SNOW metres of the snow line or above it.
-//           Tors, blocks, whalebacks, talus -- and, rarely, a spire.
-//   cliff   steeper than CLIFF_SLOPE_DEG and below the peak band. Shelves,
-//           buttresses, blocks -- things that stick out of a face.
-//   forest  everything else. Boulders, erratics, mossy humps.
-//
-// The classification is a pure function of position, exactly as existence is, so
-// a rock does not change species as the player walks toward it.
-//
-// AND THEN A SECOND, FINER TEST: THE RELIEF. An environment says what KIND of
-// country this is, not where in that country you are standing, and two of the
-// shapes asked for are defined entirely by that. Scree piles at the BASE of a
-// face and nowhere else; a lip you can stand on is on the BROW of one. Both are
-// invisible to slope -- the ground at the foot of a cliff and the ground on top
-// of it are equally flat -- and what distinguishes them is the SECOND difference
-// of the height field along the fall line, which _relief measures and the `site`
-// tag on a variant demands. Site-tagged variants are held out of the ordinary
-// pools entirely, so a talus chip cannot turn up in a meadow, and a foot site
-// additionally runs DENSER than its environment by a smooth clump field (see
-// _clump). That is the difference between scree scattered evenly along the base
-// of every cliff in the world and scree lying in piles.
-//
-// ROCKS SIT IN THE GROUND AND LEAN WITH IT, and both halves matter. A rock is
-// bedded by a fraction of its own height that GROWS WITH THE SLOPE -- on a cliff
-// a giant is a third buried, which makes it read as protruding from the face
-// instead of balanced on it -- and it is tilted toward the ground normal, which
-// trees deliberately are not: a tree on a slope grows up, a rock lies the way it
-// fell. The tilt costs four extra field samples per PLACED rock and is off for
-// the underfoot bed, whose rocks are four centimetres tall.
-//
-// SNOW AND MOSS ARE NOT THIS FILE'S, which is the point of them being in the
-// material. Both are derived in the vertex shader from the instance's own root
-// height against a line -- snow filling in above its line, moss thinning out
-// above its own -- so a boulder in a damp wood is green, the same boulder on a
-// ridge bare stone, and one on a summit white, with no per-instance data and no
-// per-frame CPU. See material.js's header, and syncBands for where the lines
-// come from.
-//
-// ONE LOD LADDER, AND THE THRESHOLDS ARE PER ROCK RATHER THAN PER BED -- the
-// thing to understand about this file if you are here about LOD at all. Every
-// shape in the bank ships T180/T80/T20 and a two-triangle billboard card, in
-// that order, and every instance steps between them at `ROCK_LOD_AT` metres per
-// metre of its OWN LADDER SIZE, the longest of its three box axes (see
-// rockLodSize in props/rock.js for why the longest and not a blend). That is 4 m
-// per metre to T80, 7.5 to T20 and 25 to the card, so a two-metre rock holds
-// real geometry out to 50 m, a cobble to 8.5, and a twelve-metre spire to 300.
-//
-// A TABLE OF METRES PER BED was wrong in both directions at once, because a bed
-// is not one size of rock: the crust bed places caps from 1 m to 10 m across and
-// handed every one to T20 at 40 m, so a six-metre swelling on a cliff face
-// became twenty triangles while it still filled a quarter of the screen, and the
-// underfoot bed carried 180 faces on a 25 cm pebble out to 8 m. Nothing about a
-// bed knows how big its rocks are; the instance does, at one Float32Array.
+// ONE LOD LADDER, AND THE THRESHOLDS ARE PER ROCK RATHER THAN PER BED -- the thing
+// to understand about this file if you are here about LOD at all. Every shape
+// ships T180/T80/T20 and a two-triangle card, and every instance steps between
+// them at `ROCK_LOD_AT` metres per metre of its OWN ladder size (`rockLodSize`):
+// 4 to T80, 7.5 to T20, 25 to the card, so a 2 m rock holds real geometry out to
+// 50 m, a cobble to 8.5, a 12 m spire to 300. A table of metres per bed was wrong
+// in both directions at once, because a bed is not one size of rock.
 //
 // AND NOTHING IS CULLED BEFORE IT HAS BEEN A BILLBOARD -- A WHOLE ONE, FOR A
-// WHILE. The thinning that takes the far tail is keyed on a rank the rock drew,
-// which knows nothing about how big it is, so it used to reach up and dissolve
-// rocks that were still meshes: rocks went at 37 m. `_rankOf` floors that rank
-// so a gone-distance can never come in ahead of the rock's own card distance,
-// and the bed constructor refuses a `radius` too short to hold one. Flooring at
-// EXACTLY the card distance was the same bug one step out -- 60% of the crust
-// caps then began dithering in the metre their card appeared, indistinguishable
-// from the ground from the mesh dithering out. `ROCK_CARD_LIFE` is the band the
-// card is whole for before any of that starts, and every bed's `radius` is sized
-// to hold it. See `_fadeFloor`.
+// WHILE. Thinning is keyed on a rank that knows nothing about how big a rock is,
+// so it used to reach up and dissolve rocks that were still meshes: rocks went at
+// 37 m. `_rankOf` floors that rank at the rock's own card distance and
+// `ROCK_CARD_LIFE` holds the card whole for a doubling past it. A ROCK
+// DISAPPEARING IS STILL NOT ITS LADDER RUNNING OUT -- the ladder is a function of
+// SIZE and picks the mesh, the graded thinning is a function of the instance's
+// random RANK and decides whether the rock is there at all.
 //
-// A ROCK DISAPPEARING IS STILL NOT ITS LADDER RUNNING OUT. The two look like one
-// from inside the world and are separate here: the ladder is a function of SIZE
-// and decides which mesh, the graded thinning is a function of the instance's
-// random RANK and decides whether the rock is there at all. Most rocks dissolve
-// well before they reach their card, the sooner the higher their rank. See
-// `rim.place` in _growTile.
-//
-// THERE IS A CARD TIER, and the argument that used to stand against one is still
-// true and is now what the card is judged against: a rock's impostor is
-// photographed from the side, its normals horizontal by construction, so the
-// lean that makes a tree card read has nothing to bite on, and a flat picture of
-// a boulder is a flat picture of a boulder. That mattered while the coarsest
-// mesh tier was an eight-triangle octahedron, because the card then saved SIX
-// TRIANGLES and triangles are not what a distant rock costs -- a visible
-// BatchedMesh slot is about 41.5 ns per frame whatever geometry it points at.
-//
-// The octahedron is gone (see ROCK_TIERS), which settles it the other way: the
-// choice at the bottom of the ladder is now a photograph of the real rock
-// against TWENTY triangles of it, over the outermost ring where the giants bed
-// runs to 1250 m, an annulus of two square kilometres. A 128 px photograph of
-// the fine tier carries more silhouette at that range than a T20 does.
-//
-// NO BED DECLINES IT. The crust bed used to, soundly at the time: billboarding
-// spun the quad about its object Y with the instance matrix on top, so a card
-// reclined by exactly the instance's tilt and a cap bedded flat into a 75-degree
-// face was a photograph lying against the cliff. The material now spins its
-// cards SPHERICALLY (see material.js), discarding the instance orientation
-// entirely, so that failure cannot happen. What is left is smaller and worth a
-// number: a crust cap is an open shell bedded INTO its surface and a card is a
-// photograph of the whole shape stood at the shell's foot, so on a vertical face
-// the buried half pokes out of the rock instead of hiding behind it. Every cap
-// reaches card range -- a cap is judged on its longest box axis, which for a
-// shape a seventh as tall as it is wide is the width, so the 1 m ones card at
-// 25 m and the 10 m ones at 250, both inside the bed's 300 m reach. At most half
-// of that seventh is buried and every rock is the same apparent size when it
-// cards, so the swap shows about six pixels of extra stone on a thirty-seven
-// pixel sprite, and less every metre after.
+// THERE IS A CARD TIER AND NO BED DECLINES IT. §25 carries the argument, the
+// spherical spin that retired the crust bed's opt-out, and the six pixels of
+// buried shell that swap costs.
 // ---------------------------------------------------------------------------
 
 // The beds. Each is an independent scatter; `names` are the variants from
 // props/rock-bank.js it may place, and the environment tags on those variants
 // then decide which of them can stand at any given point.
 //
-// DENSITIES ARE AT FULL RADIUS and decay past it. Inside the full radius a bed
-// puts down `density * envDensity[env]` rocks per square metre, which is the
-// number to read when you want to know what the ground LOOKS like: 0.0084 with a
-// forest multiplier of 0.5 is one boulder per 240 m2, so about one every 15 m.
+// DENSITIES ARE AT FULL RADIUS and decay past it. Inside it a bed puts down
+// `density * envDensity[env]` rocks per square metre, which is the number to read
+// when you want to know what the ground LOOKS like: 0.0084 with a forest
+// multiplier of 0.5 is one boulder per 240 m2, about one every 15 m.
 //
 // `envDensity` is the second half of the environment gate and the more important
 // half. WITHOUT IT A BED IS EQUALLY DENSE EVERYWHERE and only its shapes change,
-// putting a house-sized block every forty metres through a wood -- the four
-// environments differ in how much stone is lying about at least as much as in
-// what kind.
+// putting a house-sized block every forty metres through a wood.
 //
 // IT IS AN ACCEPT RATE AND CANNOT EXCEED 1, which is the constraint that shapes
-// the boulders bed's numbers. A site whose rate reaches 1 accepts every
-// candidate offered, and no multiplier on the rate -- the foot clump included --
-// gets it another rock. The only way to make a saturated place denser is to
-// offer more candidates there, and candidates are per-bed rather than per-site,
-// so they are bought globally and refunded through these rates.
-//
-// The roll it costs is drawn UNCONDITIONALLY alongside the others, before the
-// environment is even known, for the same reason every other draw is -- see
-// _growTile.
+// the boulders bed's numbers below. The only way to make a saturated place denser
+// is to offer more CANDIDATES there, and candidates are per-bed rather than
+// per-site. The roll it costs is drawn unconditionally alongside the others,
+// before the environment is even known -- see _growTile.
 const BEDS = [
   {
     name: 'underfoot',
@@ -259,29 +169,18 @@ const BEDS = [
     // RAISED 2.5x, AND EVERY envDensity BELOW DIVIDED BY 2.5 TO PAY FOR IT -- a
     // no-op everywhere except at the foot of a cliff, which is the whole reason
     // for it. `envDensity` is an accept RATE and cannot push a site past 100%: a
-    // cliff foot ran `1.0 * (1 + CLUMP_GAIN * clump)`, which is >= 1 for every
-    // clump value there is, so it already accepted every candidate offered and
-    // raising CLUMP_GAIN would have done nothing. The only lever is how many
-    // candidates get OFFERED, which is this number.
-    //
-    // WHY NOT SIMPLY HALVE THE RATES: the cap truncates, and what it truncates
-    // is precisely the gain. The foot multiplier averages 1 + GAIN/2 = 2.1, but
-    // only if nothing clips. `_clump` is bilinear value noise piled around 0.5
-    // (10-90 band 0.21 to 0.79), so at a rate of 0.5 the foot lands at or above
-    // 1.0 for 57% of its candidates and the delivered ratio is 1.85x rather than
-    // 2.1x. Measured over the real field: 0.50 -> 1.85x, 0.45 -> 1.96x, 0.40 ->
-    // 2.05x, 0.30 -> 2.10x with nothing clipped.
-    //
-    // 0.40 is the knee -- all but 23% of the truncation cleared, a genuine
-    // doubling bought, and going further pays 1.67x the candidates for another
-    // 2%. Not free: this bed pays 2.5 `heightAndSlopeAt` lookups where it paid
-    // one, over a 460 m radius, and its instance pool scales with it
-    // (_poolBound).
+    // cliff foot ran `1.0 * (1 + CLUMP_GAIN * clump)`, already >= 1 for every
+    // clump value there is, so the only lever left is how many candidates get
+    // OFFERED. Halving the rates instead does not work because the cap truncates
+    // exactly the gain: measured over the real field, 0.50 -> 1.85x, 0.45 ->
+    // 1.96x, 0.40 -> 2.05x, 0.30 -> 2.10x with nothing clipped. 0.40 is the knee.
+    // Not free -- 2.5 `heightAndSlopeAt` lookups where it paid one, over a 460 m
+    // radius, and the pool scales with it (_poolBound). §25 has the derivation.
     density: 0.0105,
-    // Each is the old rate divided by 2.5, so every environment's rocks per
-    // square metre is what it was and only the foot ratio moved. At the
-    // effective 0.0042 a forest boulder is one per 240 m2, roughly every 15 m,
-    // and closer in practice because graded thinning packs the near field.
+    // Each is the old rate divided by 2.5, so every environment's rocks per square
+    // metre is what it was and only the foot ratio moved. At the effective 0.0042 a
+    // forest boulder is one per 240 m2, roughly every 15 m, and closer in practice
+    // because graded thinning packs the near field.
     envDensity: { river: 0.28, forest: 0.4, cliff: 0.4, peak: 0.32 },
     fullRadius: 95,
     radius: 460,
@@ -308,75 +207,53 @@ const BEDS = [
   {
     // A BED THAT EXISTS ONLY AT THE FOOT OF A FACE, separate rather than another
     // multiplier on the one above because the architecture cannot get here from
-    // there. `envDensity` is an accept RATE capped at 1, so the most the clump
-    // multiplier can do is accept every candidate the boulders bed offers -- and
-    // that bed offers 0.0105 per square metre spread over a 460 m radius so a
-    // 7 m cleft is visible from far away. Accepting all of it is a rock every
-    // 10.6 m: a doubling, and still not a pile. The ratio was never the problem,
-    // the absolute figure was, and a pile is made of candidates, which are
-    // per-bed.
+    // there: an accept rate capped at 1 can at most take every candidate the
+    // boulders bed offers, which at 0.0105 per square metre is a rock every 10.6 m
+    // -- a doubling, and still not a pile. The ratio was never the problem, the
+    // absolute figure was, and a pile is made of candidates, which are per-bed.
     //
-    // What that buys is the freedom to be dense and SHORT-SIGHTED at once. Talus
-    // is only a pile from close up -- at 150 m it is texture on the bottom of a
-    // cliff, which the boulders bed already draws -- so this runs to 140 m
-    // instead of 460 and the area falls by 11x, which pays for offering 95x the
-    // boulders bed's candidates per square metre inside 13x its pool.
+    // What that buys is the freedom to be dense and SHORT-SIGHTED at once. Talus is
+    // only a pile from close up, so this runs to 140 m instead of 460 and the area
+    // falls by 11x, which pays for offering 95x the boulders bed's candidates per
+    // square metre inside 13x its pool.
     //
     // It places NOTHING except where `_relief` says foot (see `footOnly`), and
-    // nothing on flat river or forest ground. A scree slope is a cliff and peak
-    // feature; a wood at the base of a crag gets its stone from the boulders
-    // bed, which has forest shapes and this one deliberately does not.
+    // nothing on flat river or forest ground: a wood at the base of a crag gets its
+    // stone from the boulders bed, which has forest shapes and this one does not.
     name: 'scree',
     // Three shapes, 0.6 to 3.6 m at p10/p90 once scaled, and no small ones:
     // `grit` or `cobble` here would rebuild the speck carpet inside the one
     // place the rocks are supposed to be big.
     names: ['talus', 'rubble', 'scree'],
     // HALVED, AND THE ROCKS MADE BIGGER TO PAY FOR IT -- see `scale` and
-    // `sizeBias`. At 2.0 the foot of a cliff was a rock every metre, all about
-    // the same modest size: a gravel path rather than a talus cone. Fewer and
-    // larger covers the same ground with a size range in it, and the two numbers
-    // are one decision -- moving either alone undoes it.
+    // `sizeBias`; the two numbers are one decision and moving either alone undoes
+    // it. At 2.0 the foot of a cliff was a rock every metre, all about the same
+    // modest size: a gravel path rather than a talus cone. Now it is one rock every
+    // 1.8 m inside the full radius, median 1.7 m across, and the gate reads one
+    // every 2.1 m over the whole 140 m reach where thinning has begun grading it
+    // away. Scree does essentially all of that alone -- the other four beds
+    // contribute a flat ~230 rocks at the foot whatever this number is.
     //
-    // ONE ROCK PER METRE OF CLIFF FOOT WAS THE OLD TARGET, averaged over ALL of
-    // it, and the averaging ground is the load-bearing half: the complaint was
-    // swathes of foot with almost nothing on them, so a figure taken only over
-    // the drifts would be scored on ground that was never the problem. On the
-    // ridge world inside the full radius it is now one rock every 1.8 m, median
-    // 1.7 m across. Scree does essentially all of that alone -- the other four
-    // beds contribute a flat ~230 rocks at the foot whatever this number is --
-    // so the bed's count IS the gate's count, and the gate reads one every 2.1 m
-    // over the whole 140 m reach where thinning has begun grading it away.
-    //
-    // WHAT "PILED" MEANS HERE CHANGED WITH THE DART. At density 2.0 with nothing
-    // stopping interpenetration the pile was CLUSTERED at short range -- nearest
-    // neighbour tighter than a Poisson scatter of the same count -- and that was
-    // the evidence it read as a pile. `minGap` forbids exactly that clustering,
-    // so the number inverts: nearest neighbour now runs 0.85 / 1.34 / 1.91 m at
-    // p10/median/p90 where Poisson at the same rate gives 0.33 / 0.84 / 1.54.
-    // The pile is now MORE evenly spread than random at the scale of one rock,
-    // which is what "no rock inside another rock" necessarily means. The piling
-    // has moved up a scale, where it belongs: the clump floor decides where the
-    // drifts are and the density fills them, while the dart only stops two rocks
-    // inside one drift occupying the same ground. Coverage is better for it --
-    // no part of the foot is more than 3 m from a rock and only 6% is clear
-    // inside 1.5 m, against 12% and 28% before.
+    // WHAT "PILED" MEANS HERE CHANGED WITH THE DART. `minGap` forbids the
+    // short-range clustering that used to be the evidence of a pile, so nearest
+    // neighbour now runs 0.85 / 1.34 / 1.91 m at p10/median/p90 where Poisson at
+    // the same rate gives 0.33 / 0.84 / 1.54. The piling has moved up a scale,
+    // where it belongs: the clump floor decides where the drifts are and the
+    // density fills them. Coverage is better for it -- only 6% of the foot is clear
+    // inside 1.5 m, against 28% before.
     //
     // DENSITY AND `clumpFloor` ARE INDEPENDENT AND ONLY DENSITY FILLS GROUND.
-    // Spacing INSIDE the drifts is flat across the whole floor range -- 0.98 /
-    // 0.97 / 0.96 / 0.97 m at floors 0.42 / 0.50 / 0.58 / 0.65 -- so the floor is
-    // a purely spatial mask that moves where rocks may stand, never how tightly.
-    // Raising it to buy "bunching" only trades away coverage.
+    // Spacing inside the drifts is flat at 0.96-0.98 m across floors 0.42 to 0.65,
+    // so the floor is a purely spatial mask; raising it to buy "bunching" only
+    // trades away coverage.
     //
     // WHAT IT COSTS: 17 ms of one-time `place()` and an instance pool of 56,602,
     // both half what density 2.0 asked for. The pool is the uglier number -- a
     // traverse peaks at 785 instances in it -- but `_poolBound` is position blind
-    // by necessity, having to hold for a camera standing anywhere where a tile
-    // can be entirely inside a drift and entirely at the foot of a face. Running
-    // dry THROWS, so the bound cannot be tightened by guessing at an average.
-    // Placement after the first call is incremental at BUILD_BUDGET_MS a frame.
-    // Most of that time is `_relief`, not the terrain sample -- see the note at
-    // the clump test in _growTile for the memo that would take it down and why
-    // it is not free.
+    // by necessity and running dry THROWS, so it cannot be tightened by guessing at
+    // an average. Most of the placement time is `_relief`, not the terrain sample;
+    // see the note at the clump test in _growTile for the memo that would take it
+    // down and why it is not free. §25 has the measurements.
     density: 1.0,
     envDensity: { river: 0, forest: 0, cliff: 1, peak: 1 },
     fullRadius: 40,
@@ -452,30 +329,26 @@ const BEDS = [
   {
     // THE CRUST: caps stuck to surfaces no other bed is allowed to stand on.
     //
-    // Two jobs that look unrelated and are one. A lake floor and a cliff face
-    // are both SURFACES THAT NEED BUMPS, and what gives a surface bumps for
-    // almost nothing is an `openBottom` shell -- a dome with no underside, sat
-    // into the surface so the surface closes it. Half the triangles of a closed
-    // rock and it can never be seen from behind, because there is no behind.
-    // `cap` (0.75 m) and `capslab` (2.0 m) are the bank's two of these and
-    // neither had a bed that could put them where they are wanted.
+    // Two jobs that look unrelated and are one. A lake floor and a cliff face are
+    // both SURFACES THAT NEED BUMPS, and what gives a surface bumps for almost
+    // nothing is an `openBottom` shell -- a dome with no underside, sat into the
+    // surface so the surface closes it. Half the triangles of a closed rock, and it
+    // can never be seen from behind because there is no behind.
     //
-    // WHY IT IS A FIFTH BED AND A FIFTH DRAW CALL: not density this time, the
-    // SLOPE LIMIT, which is per-bed and which nothing else can vary. Every other
-    // bed refuses ground past 42 to 62 degrees because a pebble on a vertical
-    // face is a pebble falling off it, and a real cliff face is past all of
-    // those limits -- so the `cliff` rate in every bed above is spent on the
-    // 34-to-42-degree apron and never on the face itself, which is why the faces
-    // are smooth. A cap is the one shape with business up there, and its own bed
-    // is the only way to say so without inviting grit onto a wall. The
+    // WHY IT IS A FIFTH BED AND A FIFTH DRAW CALL: not density this time, the SLOPE
+    // LIMIT, which is per-bed and which nothing else can vary. Every other bed
+    // refuses ground past 42 to 62 degrees, so the `cliff` rate in all of them is
+    // spent on the 34-to-42-degree apron and never on the face itself -- which is
+    // why the faces are smooth. A cap is the one shape with business up there, and
+    // its own bed is the only way to say so without inviting grit onto a wall. The
     // submersion flag is per-bed for the same reason.
     //
     // `forest` IS ZERO ON PURPOSE AND IS NOT UNREACHABLE, unlike the litter
-    // scatter's `cliff`: ordinary sloping woodland is reachable here and would
-    // accept caps if the rate allowed. It is zero because a cap on flat ground
-    // is a rock with its bottom cut off -- the shape only reads where the
-    // surface it is stuck to does the work of closing it -- and flat ground
-    // already has the boulders bed and the litter stamps.
+    // scatter's `cliff` (§22): ordinary sloping woodland is reachable here and would
+    // accept caps if the rate allowed. It is zero because a cap on flat ground is a
+    // rock with its bottom cut off -- the shape only reads where the surface it is
+    // stuck to closes it -- and flat ground already has the boulders bed and the
+    // litter stamps.
     name: 'crust',
     // The bank's three `openBottom` shells carrying more than one of this bed's
     // environments. `shingle` is here for the peaks: `cap` and `capslab` alone
@@ -550,35 +423,22 @@ const BEDS = [
     tintDim: 0.78,
     // TWO SIZES FOR ONE BED, which is the whole reason `sizeByEnv` exists.
     //
-    // On a wall these are COARSE-GRAINED COVER: 1 to 10 m, no small end at all.
-    // The old range bottomed out near 0.3 m, and a third of a metre of stone on
-    // a cliff face is invisible from anywhere you can stand to look at the
-    // cliff -- instance memory and triangles spent on a speck. The job is to
-    // break the silhouette of a face, and only metres do that.
+    // On a wall these are COARSE-GRAINED COVER: 1 to 10 m, no small end at all. The
+    // job is to break the silhouette of a face and only metres do that; the old
+    // range bottomed out near 0.3 m, which is invisible from anywhere you can stand
+    // to look at the cliff. On a lake floor the same shell is a stone you would
+    // step on, 0.5 to 6 m, with the pebble stamps carrying everything finer. Wide
+    // in both cases, because bumpiness all one size is a pattern rather than a
+    // surface.
     //
-    // On a lake floor the same shell is a stone you would step on, 0.5 to 6 m,
-    // with the pebble stamps carrying everything finer. Wide in both cases,
-    // because bumpiness all one size is a pattern rather than a surface.
-    //
-    // THE RIVER TOP DOUBLED AND THE OTHER TWO DID NOT, a budget result rather
-    // than a taste one. `hi` in the bed constructor is the max over every
-    // reachable environment, so the RIVER band moves freely under the cliff
-    // band's 10 m: it changes what a lake floor looks like and costs nothing,
-    // the reach already being sized for the cliff. 0.5-6 m is a bed you wade
-    // through rather than scuff -- a stone you step over among the ones you step
-    // on, which makes the shallows read as a place with a bottom.
-    //
-    // The cliff and peak are a different question, because there `radius` is
-    // downstream of this number and reach is quadratic in cost. Measured by
-    // taking the top to 20 m and letting `minReach` pick the reach it demands:
-    // 600 m becomes 1,200, and a cliff camera goes from 15,243 rock instances
-    // and 61k rock triangles to 60,680 and 224k. Section 5 budgets ~190k
-    // triangles for ALL props and records 49k as what the whole rock ladder was
-    // retuned to reach, so a bigger cliff cap is not 10 m -> 20 m, it is the
-    // frame. It becomes affordable the moment the count pays for it -- a quarter
-    // the `envDensity` at twice the size holds both the bill and the fraction of
-    // face under stone flat, coarsening only the GRAIN -- but that is a
-    // deliberate trade, not a knob to turn on the way past.
+    // THE RIVER TOP DOUBLED AND THE OTHER TWO DID NOT, a budget result rather than
+    // a taste one. `hi` in the bed constructor is the max over every reachable
+    // environment, so the RIVER band moves freely under the cliff band's 10 m and
+    // costs nothing. The cliff and peak are downstream of `radius` and reach is
+    // quadratic: taking the top to 20 m makes `minReach` demand 1200 m instead of
+    // 600, and a cliff camera goes from 15,243 instances and 61k triangles to
+    // 60,680 and 224k, against §5's ~190k for ALL props. A bigger cliff cap is not
+    // 10 m -> 20 m, it is the frame -- affordable only if the count pays for it.
     sizeByEnv: {
       river: [0.5, 6.0],
       cliff: [1.0, 10.0],
@@ -795,54 +655,32 @@ const SITE_SHARE = 0.75
 // metres. Without it density is uniform along the base of every cliff in the
 // world, which reads as gravel spread with a rake. The 26 m cell is just under the
 // boulder bed's 28 m tile -- the only bed rostering a `foot` shape -- so a pile is
-// about one tile across. It never inherits the tile grid's edges: the lattice has
-// its own origin and its own seed (`tileSeed(cx, cz, seed, -1)`). Raise this to
-// make a drift a landform rather than a patch.
+// about one tile across, and the lattice has its own origin and seed
+// (`tileSeed(cx, cz, seed, -1)`) so it never inherits the tile grid's edges. Raise
+// this to make a drift a landform rather than a patch.
 const CLUMP_CELL = 26
 const CLUMP_GAIN = 2.2
 
 // How far a rock's tint is pulled toward the terrain colour underfoot, on exactly
-// render/ferns.js's terms: the terrain's own vertex colour from the chunk
-// mesher's `shade`, RENORMALISED TO UNIT LUMINANCE so what survives is hue and
-// not magnitude.
+// render/ferns.js's terms: the terrain's own vertex colour from the chunk mesher's
+// `shade`, RENORMALISED TO UNIT LUMINANCE so what survives is hue and not
+// magnitude. Magnitude has to go because a rock's tint is a DESTINATION
+// (ENV_TINTS, rock-bank.js), so multiplying by the terrain's near-black palette
+// would delete the rock rather than darken it.
 //
-// Magnitude has to go because a rock's tint is a DESTINATION -- ENV_TINTS says
-// what the stone averages out to once the gain has white-balanced the photograph
-// (rock-bank.js) -- so multiplying by the terrain's near-black palette would
-// delete the rock rather than darken it. The complaint behind this ("boulders
-// shouldn't be bright white") was really that neutral grey against saturated
-// forest green reads as a cutout, and hue is the whole of that. A rock the sun is
-// not reaching is not this file's problem: v2/main.js patches the material with
-// lighting.patch({ mode: 'vertex' }), so every rock takes the terrain's own sun
-// and sky shadow per vertex.
-//
-// ABOVE the ferns' 0.35, reversing the old argument that a rock genuinely is a
-// different material from the ground a fern grows out of. True of a boulder at
-// arm's length, false of the population that matters: most stone in the world is
-// far enough away to be a two-triangle billboard, a flat photograph with none of
-// the self-shadowing or silhouette that says "separate object" up close. Hue is
-// all that is left at that range, so a cue tuned on the near case leaves the far
-// case reading as grey confetti over the hillside -- and once the eye has caught
-// that, the tier swap that produced it is visible too.
+// ABOVE THE FERNS' 0.35, reversing the old argument that a rock is a different
+// material from the ground a fern grows out of. True of a boulder at arm's length,
+// false of the population that matters: most stone in the world is far enough away
+// to be a flat photograph, and hue is all that is left at that range. A cue tuned
+// on the near case leaves the far case reading as grey confetti.
 //
 // PER ENVIRONMENT, AND THE ORDER OF THE FOUR IS THE WHOLE POINT: it runs from the
 // ground a rock is made OF to the ground it is merely standing on. River highest
-// -- a rock on a river bottom IS the river bottom, sorted by the current into
-// pieces big enough to see, wet, under a few centimetres of water tinting
-// everything below it the same way, off the same bed as the silt around it. Cliff
-// and peak next, the same case one step weaker: the crust bed is literally the
-// cliff, caps a few centimetres proud of the face and cut from the stone the face
-// is cut from, and matching the face's own hue is what stops a crag reading as a
-// grey rash on coloured rock. Forest lowest, the one environment where the old
-// argument still holds -- granite on green loam genuinely is a different material
-// and the hue gap is the largest in the world, so the cue costs most and buys
-// least here.
-//
-// None of the four reaches 1: the stones still have to be findable (a riverbed of
-// rocks the exact colour of the riverbed is a flat brown plane), and the
-// per-instance jitter below keeps them apart from each other rather than from the
-// ground. Free either way -- three multiplies per rock, chosen once at placement
-// and baked into the instance colour.
+// (a rock on a river bottom IS the river bottom), cliff and peak next (the crust
+// bed is literally the cliff), forest lowest -- granite on green loam genuinely is
+// a different material, so the cue costs most and buys least there. None reaches
+// 1: the stones still have to be findable. Free either way -- three multiplies per
+// rock, chosen once at placement and baked into the instance colour. §25.
 const GROUND_CUE = { river: 0.75, forest: 0.45, cliff: 0.55, peak: 0.55 }
 
 // Everything below is render/trees.js's, unchanged, and its header is the
@@ -883,25 +721,16 @@ const LOD_SQ_OUT = Float32Array.from(ROCK_LOD_AT, (k) => (k * (1 + LOD_HYSTERESI
 // HOW LONG A ROCK IS A WHOLE BILLBOARD FOR, as a multiple of the distance its
 // card takes over at.
 //
-// Flooring the gone-distance at exactly the card distance (over FADE_BAND) is the
-// least that can be called correct -- nothing dissolves while it is still a mesh
-// -- and least is what it delivered. Measured over a placed world, 60% of the
-// crust caps on cliffs and at peaks and 39% of the river underfoot rocks started
-// dissolving in the same metre their card appeared: the floor was binding, so the
-// card showed up already dithering and was gone before it had ever been opaque.
-// From inside the world that is indistinguishable from the mesh dithering out,
-// which is exactly what it was reported as.
+// Flooring the gone-distance at exactly the card distance is the least that can be
+// called correct, and least is what it delivered: 60% of the crust caps and 39% of
+// the river underfoot rocks started dissolving in the same metre their card
+// appeared, so the card showed up already dithering -- from inside the world
+// indistinguishable from the mesh dithering out, which is what it was reported as.
 //
-// So the floor is a BAND, not a point: a rock is a whole billboard from its card
-// distance out to this multiple of it, and only then dissolves. 2.0 is one full
-// doubling, the span the ladder gives the other tiers (ROCK_LOD_AT steps
-// 4 -> 7.5 -> 25, so 1.9x then 3.3x) and the span the thinning law is written in
-// -- population halves as distance doubles, so over one doubling half the
-// billboards you can see are still there.
-//
-// NOT FREE, and the price is bed reach: a bed may not end before its own ladder
-// does (the `minReach` check below), so this multiplies the radius every bed has
-// to carry and the pool with it. Crust and giants both had to be widened for 2.0.
+// So the floor is a BAND. 2.0 is one full doubling, the span the ladder gives the
+// other tiers (ROCK_LOD_AT steps 4 -> 7.5 -> 25, so 1.9x then 3.3x) and the span
+// the thinning law is written in. NOT FREE: a bed may not end before its own
+// ladder does (`minReach`), so this multiplies every bed's radius and its pool.
 // Do not raise it without re-running scripts/check-rocks.mjs, which bounds both.
 const ROCK_CARD_LIFE = 2.0
 
@@ -953,35 +782,28 @@ function tileSeed(tx, tz, seed, bed) {
  * The horizontal reach of a built rock at height `y` above its own bed plane, in
  * the geometry's own metres (instance scale 1). Called once per shape at boot to
  * fill a bed's `footRadius`; see Rocks.anchorsInto for what a caller does with it.
+ * The argument is DESIGN.md §25.
  *
- * WHY A CROSS-SECTION AND NOT `measured`: rock.js publishes the WHOLE seated
- * shape's width, depth and height, and a rock's widest part is its equator, which
- * on a rock bedded a third of its height into the hill sits well ABOVE the dirt.
- * A caller needs the outline where stone meets ground, which nothing publishes,
- * so it is measured off the geometry that actually ships -- every triangle edge
- * straddling the plane gives one boundary point, since the cross-section
- * polygon's vertices are exactly those crossings. The geometry is non-indexed by
- * construction (rock.js writes an identity index for BatchedMesh's sake only), so
- * consecutive triples of vertices are triangles.
+ * A CROSS-SECTION AND NOT `measured`: rock.js publishes the whole seated shape's
+ * extents, and a rock's widest part is its equator, which on a bedded rock sits
+ * well ABOVE the dirt. The outline where stone meets ground is measured off the
+ * geometry that actually ships -- every triangle edge straddling the plane gives
+ * one boundary point, since the cross-section polygon's vertices are exactly those
+ * crossings. The geometry is non-indexed by construction (rock.js writes an
+ * identity index for BatchedMesh's sake only), so consecutive triples are
+ * triangles.
  *
- * THE FURTHEST BOUNDARY POINT FROM THE LOCAL ORIGIN: the smallest circle about
- * the anchor that CONTAINS the stone at the ground line, not any average of it.
- * That is the caller's requirement rather than this file's taste -- a scatter
- * asking where the rocks are is asking so it can stand something clear of them,
- * and it adds its own small gap on top. An average radius would put a mushroom
- * inside the boulder along whichever direction the rock happens to be long in,
- * and half-extents about the section's own centre would do the same, because a
- * shard's section at ankle height can sit half a radius off centre.
+ * IT RETURNS THE FURTHEST BOUNDARY POINT FROM THE LOCAL ORIGIN: the smallest
+ * circle about the anchor that CONTAINS the stone at the ground line, not any
+ * average of it, because a caller asking where the rocks are is asking so it can
+ * stand something clear of them. Containment costs a stand-off on the narrow axis
+ * of a long rock -- the bank's sections run to about 3:1 -- and that is the cheap
+ * error: a mushroom a foot from a boulder still reads as a mushroom by a boulder,
+ * and one growing through it reads as nothing.
  *
  * `what` NAMES THE SHAPE FOR THE THROW BELOW and nothing else: the geometry knows
  * only which LOD tier it is, and "T180" is no help to somebody looking for which
  * of thirty-nine boulders stopped the world from booting.
- *
- * CONTAINMENT COSTS a stand-off on the narrow axis of a long rock. The bank's
- * sections run to about 3 : 1, so at the ends of a cleft or a shelf a caller's
- * ring sits against the stone and along its flanks up to a radius clear of it.
- * That is the cheap error: a mushroom a foot from a boulder still reads as a
- * mushroom by a boulder, and one growing through it reads as nothing.
  */
 function sectionRadius(geo, y, what) {
   const pos = geo.attributes.position.array
@@ -1186,66 +1008,28 @@ class RockBed {
     }
 
     // WHAT EACH SHAPE COVERS OF THE GROUND, at instance scale 1, for
-    // Rocks.anchorsInto, which multiplies by the instance's own scale and hands
-    // the result out. Measured here rather than at query time because it is a scan
-    // of the shape's triangles (sectionRadius) and the shapes are fixed for the
-    // life of the bed: 39 shapes at boot against a per-frame loop over thousands of
+    // Rocks.anchorsInto, which multiplies by the instance's own scale and hands the
+    // result out. Measured here rather than at query time because it is a scan of
+    // the shape's triangles (sectionRadius) and the shapes are fixed for the life
+    // of the bed: 39 shapes at boot against a per-frame loop over thousands of
     // instances. It must be the constructor for a second reason -- Rocks disposes
-    // the bank's geometries the moment the beds are built, and this is the last
-    // point at which they are unambiguously ours to read.
+    // the bank's geometries the moment the beds are built.
     //
-    // ONLY AN ANCHOR BED IS MEASURED. Rocks.anchorsInto never asks a bed whose
-    // `anchor` flag is false, so scanning one buys a number with no reader -- and
-    // since sectionRadius throws rather than reporting a footprint of zero, that
-    // scan is also a boot-time abort of the whole world on behalf of a bed nobody
-    // can query. `footRadius` stays null on those beds rather than zero-filled, for
-    // the same reason the throw is there at all: a bed asked anyway should fail
-    // where it is asked instead of answering that its rocks cover no ground.
+    // ONLY AN ANCHOR BED IS MEASURED, since sectionRadius throws rather than
+    // reporting a footprint of zero, so scanning a bed nobody can query is a
+    // boot-time abort of the world on its behalf. `footRadius` stays null on those
+    // beds rather than zero-filled: a bed asked anyway should fail where it is
+    // asked instead of answering that its rocks cover no ground.
     //
-    // THREE THINGS ARE APPROXIMATED IN THIS NUMBER, not one. Two are two-sided and
-    // land close to the truth on the average shape, costing wasted clearance on the
-    // shapes they over-report and lost containment on the ones they under-report.
-    // The third leans the stone off the reported circle downhill, every time.
-    //
-    // THE BURIAL. A rock's ground line is `frac` of its own height up its side and
-    // `frac` is per instance: _growTile takes a slope floor of SINK_MIN +
-    // SINK_SLOPE * (tan / maxSlopeTan) and then, on a `sinkVary` bed, rolls upward
-    // from that floor towards SINK_DEEP. One section per shape cannot be all of
-    // that, so a single representative `frac` is cached -- 0.28 on a varying bed
-    // (the middle of SINK_MIN..SINK_DEEP, hence the middle of the roll ON FLAT
-    // GROUND ONLY, since it drops the slope floor entirely); 0.20 on a bed that
-    // does not vary (the floor at half that bed's slope limit, with no roll to
-    // miss). Both anchor beds vary today, so 0.28 is the number in force, and it is
-    // not a bound: a boulder at the boulders bed's own 48 degree limit has
-    // floor = 0.34, so its real `frac` runs [0.34, 0.5] and 0.28 sits below all of
-    // it.
-    //
-    // WHAT THE BURIAL COSTS, as the real section over the cached one: the mean
-    // shape stays within 9% at either end of the roll, with tails both ways.
-    // Outward and harmless -- a barely-bedded `boulder` on its own cut disc at
-    // 0.37x, a half-buried `slab` with five centimetres above the dirt at 0.23x.
-    // Inward and not -- 22 of the boulders bed's 39 shapes reach past the cached
-    // radius somewhere in that steep-ground range, worst a `cobble` at 1.62x, and
-    // at the shallow end an open `capslab` at about 1.5x.
-    //
-    // THE TILT is the one that opens a real gap. sectionRadius cuts a horizontal
-    // plane in the geometry's OWN frame, and _growTile then leans the rock towards
-    // the ground normal about that same origin (`tilt` 0.7 on the boulders, 0.55 on
-    // the giants). The section measured `y` up the rock's side is carried about
-    // y * sin(lean) sideways, downhill every time rather than scattered around the
-    // anchor. A boulder whose ground line sits half a metre up its own side, on 40
-    // degree ground, leans about 28 degrees and takes its footprint some 23 cm off
-    // the anchor this file reports -- so on the downhill side the circle no longer
-    // contains the stone, however exactly its radius was measured.
-    //
-    // THE TIER. The scan runs on `tiers[0]`, the finest LOD, but each tier carries
-    // its own `gain` (props/rock.js), so the coarse solid actually DRAWN past the
-    // outer band edge cuts a different section at the same height: across the
-    // boulders bed 0.56x to 1.29x of the fine tier's, mean 0.86x, and across the
-    // giants 0.78x to 1.14x, mean 1.02x. It bites only past that edge -- 130 m on
-    // the boulders, 300 m on the giants -- a long way outside anywhere a caller has
-    // business seating clumps, which is why it is the cheapest of the three to
-    // leave alone rather than because it is the smallest.
+    // THREE THINGS ARE APPROXIMATED IN THIS NUMBER, not one, and §25 has the
+    // measurements. The BURIAL caches one representative `frac` per bed (0.28
+    // varying, 0.20 not) where the real value is per instance and runs [0.34, 0.5]
+    // on steep ground -- mean shape within 9%, worst `cobble` 1.62x inward. The
+    // TILT is the one that opens a real gap: the section is cut in the geometry's
+    // own frame and _growTile then leans the rock downhill about the same origin,
+    // carrying the footprint some 23 cm off the reported anchor on 40 degree
+    // ground. The TIER scans `tiers[0]` while a coarser solid is drawn past the
+    // outer band edge, 0.56x to 1.29x of it, and bites only past 130 m / 300 m.
     //
     // IF ANY OF IT EVER SHOWS AS MUSHROOMS STANDING IN STONE, the fix is a
     // per-instance section rather than a bigger constant: instSink and instScale
@@ -1284,22 +1068,10 @@ class RockBed {
     const idOf = new Map()
     for (const g of unique) idOf.set(g, this.batch.addGeometry(g))
 
-    // THE TIER TABLE.
-    //
-    // The last slot of every shape's `tiers` is the 2-triangle card, and the last
-    // slot of every bed's table too. NO BED DECLINES IT, and the opt-out that let
-    // one is gone with the per-bed bands that justified it.
-    //
-    // The crust bed was the one that used it, for a reason that has expired twice
-    // over. First: billboarding used to spin the quad about its OBJECT Y with the
-    // instance matrix applied afterwards, so a card reclined by exactly the
-    // instance's tilt -- at that bed's `tilt: 1` on a 75-degree face, a photograph
-    // lying flat against the cliff. The spherical spin the rock material now takes
-    // discards the instance orientation entirely, so a card faces the camera
-    // however deeply its rock is bedded into a wall. Second: with per-bed bands its
-    // whole outer annulus was coarsest-MESH ground and the card was unreachable
-    // there anyway. Now the threshold is the rock's own size, and a 1 m cap on a
-    // lake floor cards at 25 m whatever bed put it there.
+    // THE TIER TABLE. The last slot of every shape's `tiers` is the 2-triangle
+    // card, and the last slot of every bed's table too. NO BED DECLINES IT, and the
+    // opt-out that let the crust bed decline is gone with the per-bed bands that
+    // justified it -- see §25 for both reasons that expired.
     //
     // WHAT IS STILL TRUE is that a card is a flat photograph and a rock bedded deep
     // into a face has most of itself underground, so the quad stands taller than
@@ -1336,39 +1108,26 @@ class RockBed {
     // FORCE THE COLOURS TEXTURE INTO EXISTENCE NOW, EVEN FOR A BED THAT NEVER
     // PLACES A ROCK. Not tidiness: this is the fix for rocks blinking furiously at
     // particular camera angles, and nothing about the symptom points at this line.
+    // §25 traces it end to end; the short form:
     //
-    // `setColorAt` is otherwise the FIRST thing to allocate `_colorsTexture`, and
-    // it only runs when an instance is actually placed. A bed that places nothing
-    // near the camera -- `scree` on most terrain -- therefore had no colours
-    // texture while its siblings did.
+    // `setColorAt` is otherwise the FIRST thing to allocate `_colorsTexture`, so a
+    // bed that places nothing near the camera (`scree` on most terrain) had none
+    // while its siblings did. Every bed shares ONE material, hence one program and
+    // one set of sampler assignments, and three assigns `batchingColorTexture` only
+    // `if (object._colorsTexture !== null)` -- so that bed took units 0 and 1 where
+    // its siblings took 0, 1 and 2. When the depth sort put it FIRST (hence the
+    // dependence on camera angle), `refreshMaterial` was still true, the material's
+    // samplers were handed 2, 3, 4, and `uAtlas` (sampler2DArray) landed on unit 2
+    // still bound as `batchingColorTexture` (sampler2D) by a program compiled WITH
+    // USE_BATCHING_COLOR for a sibling. Two texture types on one sampler location
+    // is a hard GL error: ANGLE rejects the draw with `GL_INVALID_OPERATION:
+    // glMultiDrawElementsANGLE` while the CPU still counts it as submitted, so
+    // every rock on that program vanished for the frame and the draw counts looked
+    // healthy throughout.
     //
-    // Every bed shares ONE material instance, so they share one program and one set
-    // of sampler assignments. Per object, three assigns texture units in this
-    // order: the batching block first (batchingTexture, batchingIdTexture, and
-    // batchingColorTexture ONLY `if (object._colorsTexture !== null)`), then the
-    // material's own uniforms -- but that second half is gated on
-    // `refreshMaterial`, false once the same material has already been set up for
-    // an earlier object in the same frame.
-    //
-    // So a bed with no colours texture took units 0 and 1 where its siblings took
-    // 0, 1 and 2. When it happened to be the first rock bed in the draw order --
-    // which three decides by depth-sorting opaque objects, hence the dependence on
-    // camera ANGLE and the frame-to-frame flip when two beds sit at nearly equal
-    // depth -- `refreshMaterial` was true and the material's samplers were handed
-    // units 2, 3, 4. `uAtlas` (sampler2DArray) then landed on unit 2, still bound
-    // by the program's `batchingColorTexture` (sampler2D), because the program had
-    // been compiled WITH USE_BATCHING_COLOR for a sibling that does have the
-    // texture. Two textures of different types on one sampler location is a hard GL
-    // error: ANGLE rejects the draw with `GL_INVALID_OPERATION:
-    // glMultiDrawElementsANGLE` and the driver drops it while the CPU still counts
-    // it as submitted. Every rock sharing that program vanished for the frame,
-    // which is why ALL of them blinked at once and why the draw counts looked
-    // perfectly healthy throughout.
-    //
-    // three has a guard meant to force a program change for exactly this case, but
-    // it tests `object.colorTexture`, and BatchedMesh only ever defines
-    // `_colorsTexture`. `undefined === null` is false, so the guard is dead and the
-    // mismatched program is reused. We cannot rely on it.
+    // THREE'S GUARD FOR THIS CASE IS DEAD and cannot be relied on: it tests
+    // `object.colorTexture`, BatchedMesh only ever defines `_colorsTexture`, and
+    // `undefined === null` is false, so the mismatched program is reused.
     //
     // Giving every bed the texture makes them all consume the same three batching
     // units, so the shared material's samplers always start at 3 and the collision
@@ -1505,14 +1264,11 @@ class RockBed {
    * billboard takes over at.
    *
    * Three terms, all in `cardGoneAt`. `size * ROCK_LOD_AT.at(-1)` is how far the
-   * rock can still be a mesh, the distance at which it finally becomes a
-   * two-triangle card. `ROCK_CARD_LIFE` is the span the card is then whole for.
-   * The `/ FADE_BAND` is not a fudge: the rim takes the distance at which a prop is
-   * GONE and starts its dissolve short of that, so handing it the card distance
-   * would have the rock dithering before it ever cards -- dissolving as a mesh and
-   * never showing a billboard at all, which is the complaint this whole path exists
-   * to answer. See `cardGoneAt` for why the divisor is the old band rather than the
-   * rim's actual `RIM_AT` trigger.
+   * rock can still be a mesh; `ROCK_CARD_LIFE` is the span the card is then whole
+   * for; the `/ FADE_BAND` is not a fudge -- the rim starts its dissolve SHORT of
+   * the gone-distance it is handed, so handing it the card distance would have the
+   * rock dithering before it ever cards. See `cardGoneAt` for why the divisor is
+   * the old band rather than the rim's actual `RIM_AT` trigger.
    *
    * An upper bound rather than the exact figure, because the exact one needs the
    * shape, the shape needs a field sample to pick an environment, and this is
@@ -1530,24 +1286,18 @@ class RockBed {
    *
    * `u` is the thinning rank, uniform on 0..1: a tile at level q keeps exactly
    * `{u < uAt[q]}`, and since `uAt[q] = fullRadius / d_q` the surviving fraction at
-   * distance d is exactly `fullRadius / d` -- density halving every time the
-   * distance doubles, the law this bed is built on, unchanged here.
+   * distance d is exactly `fullRadius / d` -- the halving law this bed is built on,
+   * unchanged here.
    *
    * What changes is the FLOOR. The rank alone knows nothing about how big a rock
    * is, so a bed whose `fullRadius` is shorter than its own ladder would dissolve
-   * rocks still carrying a mesh: the underfoot bed's `fullRadius` is 18 m and its
-   * biggest rock does not card until 50 m, so a high-ranked one used to vanish at
-   * 20-odd metres having never been a billboard at all. That is a cull rather than
-   * thinning, and it is what a rock popping out of existence in the middle
-   * distance actually was.
-   *
-   * So the rank is capped at the one that survives to the rock's OWN card
-   * distance. `fullRadius / reach` is the rank whose tile drops it exactly at
-   * `reach`; taking the smaller of that and the drawn `u` means every rock lives
-   * at least until it is a card, after which the drawn rank takes over and the
-   * halving resumes unchanged. Rocks small enough to card inside `fullRadius` --
-   * most of them -- are untouched, because there the cap is above 1 and `u` is
-   * already smaller.
+   * rocks still carrying a mesh: underfoot's is 18 m and its biggest rock does not
+   * card until 50, so a high-ranked one used to vanish at 20-odd metres having
+   * never been a billboard. Capping the rank at `fullRadius / reach` -- the rank
+   * whose tile drops it exactly at its own card distance -- means every rock lives
+   * until it is a card, after which the drawn rank takes over and the halving
+   * resumes. Rocks small enough to card inside `fullRadius`, most of them, are
+   * untouched: there the cap is above 1 and `u` is already smaller.
    *
    * ONE NUMBER FOR ALL THREE CONSUMERS: the tile ladder (`_thin`), the pool bound
    * and the shader's dissolve distance all read this and nothing else, so the
@@ -1581,20 +1331,19 @@ class RockBed {
    *
    * A SECOND DIFFERENCE ALONG THE FALL LINE, and it has to be: the ground at the
    * base of a cliff and the ground on its top are both flat, so neither slope nor
-   * height can tell them apart. What separates them is what the hill does NEXT.
-   * Take the local gradient, walk RELIEF_PROBE metres up it and the same distance
-   * down it, and compare each against what the local slope alone predicted. Ground
-   * above you that outclimbs the prediction means something steep is standing over
-   * you; ground below you that outfalls it means you are on the edge of something.
-   * A uniform slope of any steepness scores zero at both ends, which is exactly
-   * right -- a 40 degree hillside is not the foot of anything.
+   * height can tell them apart. Take the local gradient, walk RELIEF_PROBE metres
+   * up it and the same distance down, and compare each against what the local slope
+   * alone predicted. Ground above you that outclimbs the prediction means something
+   * steep is standing over you; ground below you that outfalls it means you are on
+   * the edge of something. A uniform slope of any steepness scores zero at both
+   * ends, which is exactly right -- a 40 degree hillside is not the foot of
+   * anything.
    *
    * FOUR FIELD SAMPLES, and they are the reason siteEnvs exists: two on the fall
    * line (forward differences against the `h` the caller already has, not central
    * ones -- half the cost, and the direction is all that is wanted) and two on the
-   * probe itself. Same order as _groundTilt's, paid on a smaller set: only
-   * candidates that have already survived elevation and slope, and only in
-   * environments this bed has tagged shapes for.
+   * probe. Paid only on candidates that have already survived elevation and slope,
+   * and only in environments this bed has tagged shapes for.
    *
    * Off the FIELD rather than the drawn mesh, for _groundTilt's reason: the drawn
    * surface re-splits as the player moves, and a rock that changed species when the
@@ -1829,21 +1578,21 @@ class RockBed {
     // Trees._growTile. What is new is that the draws are separated from the work,
     // and the reason is RANK ORDER.
     //
-    // A tile is grown incrementally: `q` falls as the camera approaches, `uAt[q]`
-    // rises, and the survivor set is always exactly `{u < uAt[q]}`, so growing in
-    // only ever ADDS candidates, each with a higher `u` than everything already
-    // standing. That is what makes the scatter stable under walking -- but only for
-    // tests that look at one candidate at a time. The moment a candidate is tested
-    // against its NEIGHBOURS (`minGap` below) the answer depends on which of them
-    // were placed first, and in stream order that is an arbitrary interleaving of
-    // ranks: walk away and back, and the pile rearranges itself.
+    // A tile is grown incrementally and the survivor set is always exactly
+    // `{u < uAt[q]}`, so growing in only ever ADDS candidates, each with a higher
+    // `u` than everything already standing. That is what makes the scatter stable
+    // under walking -- but only for tests that look at one candidate at a time. The
+    // moment a candidate is tested against its NEIGHBOURS (`minGap` below) the
+    // answer depends on which of them were placed first, and in stream order that
+    // is an arbitrary interleaving of ranks: walk away and back, and the pile
+    // rearranges itself.
     //
-    // So pass two runs in ASCENDING `u` instead. Every candidate is then darted
-    // only against lower-ranked ones -- exactly those already there at every
-    // coarser level -- and a tile settles into the same layout whether it was grown
-    // in one step or in six. The sort is over the survivors of the rank test alone
-    // (196 on the densest bed, single digits on the sparsest) and runs
-    // unconditionally, so there is one placement order in this file rather than two.
+    // So pass two runs in ASCENDING `u`. Every candidate is then darted only
+    // against lower-ranked ones -- exactly those already there at every coarser
+    // level -- and a tile settles into the same layout whether it was grown in one
+    // step or in six. The sort is over the survivors of the rank test alone (196 on
+    // the densest bed, single digits on the sparsest) and runs unconditionally, so
+    // there is one placement order in this file rather than two.
     const c = this._cand
     const order = this._order
     let m = 0
@@ -1924,19 +1673,17 @@ class RockBed {
       // deterministic stream is untouched -- see the draw block above.
       //
       // IT IS NOT WHAT MAKES A DENSE BED AFFORDABLE. On a `footOnly` bed the
-      // dominant cost is not the terrain sample below but `_relief`: FOUR more
-      // field samples at ~4.3 us the set, paid on every candidate that clears both
-      // this floor and the slope test, then thrown away for 91% of them when the
-      // site turns out not to be a foot. On the scree bed that is 81% of placement
+      // dominant cost is `_relief`: four more field samples at ~4.3 us the set,
+      // paid on every candidate that clears both this floor and the slope test,
+      // then thrown away for 91% of them. On the scree bed that is 81% of placement
       // against `scatterAt`'s 18%. The cheap fix would be to memoize `_relief` on
-      // the PLACEMENT_CELL grid -- the count of distinct cells it probes plateaus
-      // near 2100 whatever the density, so the memo would take that bed from
-      // ~200 ms to ~80 ms, cheaper than it cost at a seventh of the density. Not
-      // free: candidate positions are not quantised (PLACEMENT_CELL is only the
-      // `cell` hint handed to scatterAt), so it would reclassify candidates near a
-      // foot/brow edge. That is well inside the signal's own resolution
-      // (RELIEF_STEP 6 m, RELIEF_PROBE 16 m) but it is a real change to where rocks
-      // stand, not an optimisation you can land without re-reading the gate.
+      // the PLACEMENT_CELL grid -- distinct cells plateau near 2100 whatever the
+      // density, so that bed goes from ~200 ms to ~80 ms. NOT FREE: candidate
+      // positions are not quantised (PLACEMENT_CELL is only the `cell` hint handed
+      // to scatterAt), so it would reclassify candidates near a foot/brow edge.
+      // Well inside the signal's own resolution (RELIEF_STEP 6 m, RELIEF_PROBE
+      // 16 m), but a real change to where rocks stand rather than an optimisation
+      // you can land without re-reading the gate.
       const clump = cfg.clumpFloor > 0 || this.siteEnvs.size > 0 ? this._clump(x, z) : 0
       if (cfg.clumpFloor > 0 && clump < cfg.clumpFloor) {
         this.rejected.clump++
@@ -2020,23 +1767,17 @@ class RockBed {
       const s = this.shapes[shape]
 
       // THE SCALE, RESOLVED. Two ways of saying how big a rock is, not
-      // interchangeable.
+      // interchangeable; §25 has the crust bed's worked case.
       //
       // `scale` is a MULTIPLIER on whatever the variant was authored at, so a bed
       // using it spans as many absolute sizes as it has shapes -- fine when the
       // shapes are all of a kind and the bank's own proportions should survive.
       //
       // `sizeByEnv` is a range in METRES, per environment, divided back through the
-      // shape's own measured footprint. Use it when the ask is about the world
-      // rather than the bank ("caps on a cliff run 1 to 10 m"), and especially when
-      // ONE bed has to be two sizes in two places: the crust bed is a 1-10 m
-      // swelling on a wall and a 0.5-3 m stone on a lake floor, and no single
-      // multiplier says both.
-      //
-      // Measured WIDTH and not the authored `size`, which the shape does not carry
-      // and which is a parameter to the generator rather than a promise about the
-      // result. Width is the longest horizontal extent, so "length" in the ask
-      // reads straight across.
+      // shape's own measured WIDTH -- not the authored `size`, which is a parameter
+      // to the generator rather than a promise about the result. Use it when the ask
+      // is about the world rather than the bank, and especially when ONE bed has to
+      // be two sizes in two places.
       //
       // `sizeBias` bends the roll before either branch reads it. Under 1 it weights
       // the range towards its top, the only way to ask for "more big ones" without
@@ -2189,20 +1930,17 @@ class RockBed {
 
       // WHERE THIS ROCK DISSOLVES, AND WHY IT CANNOT BE BEFORE ITS LADDER ENDS.
       //
-      // `rankU` is the effective rank from `_rankOf`: the raw draw `u` floored at
-      // `fullRadius / fadeFloor`. The tile ladder keeps exactly `{rankU < uAt[q]}`
-      // and `uAt[q] = fullRadius / d_q`, so handing the same number to the material
-      // makes the CPU's decision and the shader's agree -- a rock the tile is about
-      // to drop has already faded out, and thinning is a dither rather than a pop.
+      // `rankU` is the effective rank from `_rankOf`. The tile ladder keeps exactly
+      // `{rankU < uAt[q]}` and `uAt[q] = fullRadius / d_q`, so handing the same
+      // number to the material makes the CPU's decision and the shader's agree -- a
+      // rock the tile is about to drop has already faded out.
       //
-      // `fullRadius / rankU` is the distance at which this rock's own tile drops
-      // it, and because `rankU = min(u, fullRadius / fadeFloor)` that quotient is
-      // exactly `max(fullRadius / u, fadeFloor)`. The floor is therefore not an
-      // approximation of the guarantee, it IS the guarantee: no rock starts
-      // dissolving before it has finished the tier ladder and become a card.
-      // Thinning takes the tail of rocks that are already two triangles apiece
-      // rather than reaching up and taking meshes, which is what read as rocks
-      // culling without degrading.
+      // Because `rankU = min(u, fullRadius / fadeFloor)`, the dissolve distance
+      // `fullRadius / rankU` is exactly `max(fullRadius / u, fadeFloor)`. The floor
+      // is therefore not an approximation of the guarantee, it IS the guarantee: no
+      // rock starts dissolving before it has become a card, so thinning takes the
+      // tail of rocks that are already two triangles apiece rather than reaching up
+      // and taking meshes -- which is what read as rocks culling without degrading.
       //
       // The `radius` clamp is the bed's outer reach, past which its tiles are not
       // resident at all, so the dissolve finishes before the tile evicts. It cannot
@@ -2413,18 +2151,17 @@ class RockBed {
    * which beds are asked at all.
    *
    * OVER THE RESIDENT TILES AND THEIR OWN `ids`, exactly the way update() walks
-   * them, and NEVER over the instance pool. A freed id keeps the coordinates of
+   * them, and NEVER over the instance pool: a freed id keeps the coordinates of
    * whatever rock last held it -- nothing clears instX/instZ on release -- so a
-   * sweep of the pool would hand a caller anchors for rocks thinned out or evicted
-   * a kilometre back, at positions now inside a hill.
+   * sweep of the pool would hand a caller anchors for rocks evicted a kilometre
+   * back, at positions now inside a hill.
    *
    * THE TILE REJECT IS THE WHOLE COST STORY. A bed's resident set is its entire
    * draw radius, 1250 m of tiles for the giants, while a caller's box is a few tens
-   * of metres; four compares throw out all but a handful of tiles and the
-   * per-instance test is paid only inside those. Both extents are half-open in the
-   * same sense as the box, so a tile whose far edge lands exactly on x0 holds
-   * nothing inside it -- the literal truth about the tile, since _growTile draws a
-   * rock's x from [tx * tile, (tx + 1) * tile) and never the far edge.
+   * of metres; four compares throw out all but a handful. Both extents are
+   * half-open in the same sense as the box, which is the literal truth about a tile
+   * since _growTile draws a rock's x from [tx * tile, (tx + 1) * tile) and never
+   * the far edge.
    */
   _anchorsInto(x0, z0, x1, z1, out, w, cap) {
     const tile = this.tile
@@ -2618,26 +2355,21 @@ export class Rocks {
    * together -- the same call Trees.syncSnowLine makes, and calling both is
    * harmless because the uniforms are global and the value is identical.
    *
-   * Moss gets a line of its own, derived from the snow's: MOSS_DROP metres below
-   * it, fading over a band twice as wide. Moss is about damp rather than cold,
-   * so it gives out well before the snow starts, and it gives out gradually --
-   * a hard moss contour halfway up a mountain would read as a paint line.
+   * Moss gets a line of its own, MOSS_DROP metres below the snow's and fading over
+   * a band twice as wide: moss is about damp rather than cold, so it gives out well
+   * before the snow starts, and gradually -- a hard moss contour halfway up a
+   * mountain would read as a paint line.
    *
    * AND THE TWO CEILINGS ARE CAPPED WELL SHORT OF 1, per instance, which is the
    * other half of making stone read as stone. Both are stone-only knobs (see
-   * setSnowVary), hence set here rather than next to the world's setSnow/setMoss:
-   *
-   *   SNOW 0.3 - 0.5. A rock at a full load is not a snowy rock, it is a white
-   *   one -- stone leans on the surface normal twice as hard as foliage does, so
-   *   by the time the mask has taken the crown it is well down the sides, and the
-   *   last of the slider takes the undersides and throws the granite away. A third
-   *   to a half is a dusted crown with stone through it, and the spread between
-   *   neighbours stops a snowfield of boulders reading as one poured material.
-   *
-   *   MOSS 0 - 0.5. The bottom of the range is load bearing where the top is not:
-   *   a wood wants bare boulders as much as green ones, and the roll is shaped so
-   *   a real share land exactly on 0. The top at half means the greenest rock in
-   *   the wood still shows the stone it grew on.
+   * setSnowVary), hence set here rather than next to the world's setSnow/setMoss.
+   * SNOW 0.3-0.5: stone leans on the surface normal twice as hard as foliage does,
+   * so a full load is not a snowy rock but a white one, and the spread between
+   * neighbours stops a snowfield of boulders reading as one poured material. MOSS
+   * 0-0.5, where the BOTTOM is the load-bearing end -- a wood wants bare boulders
+   * as much as green ones, and the roll is shaped so a real share land exactly on
+   * 0. The top at half means the greenest rock in the wood still shows the stone it
+   * grew on.
    */
   syncBands(layers) {
     setSnowLine(layers.snow.base, layers.snow.band)
@@ -2656,51 +2388,38 @@ export class Rocks {
    *   out[i * 4 + 3]  radius    world-space radius of its footprint at the
    *                             ground, in metres
    *
-   * WHAT THIS IS FOR. Another prop scatter -- mushrooms, at the time of writing --
-   * wants its clumps at the foot of REAL stone rather than at points that merely
-   * score like it, and it cannot re-derive that from the field: where a rock is is
-   * not a pure function of position, since which candidates survive depends on the
-   * graded thinning and that depends on where the camera stands. The only honest
-   * source is this file's own resident set. A caller is expected to tile the
-   * ground into boxes and call once per box.
+   * WHAT THIS IS FOR: another prop scatter -- mushrooms (§24) -- wants its clumps
+   * at the foot of REAL stone rather than at points that merely score like it, and
+   * it cannot re-derive that from the field, since which candidates survive depends
+   * on the graded thinning and that depends on where the camera stands. A caller
+   * tiles the ground into boxes and calls once per box.
    *
-   * THE BOX IS HALF-OPEN ON BOTH AXES, `>= x0 && < x1` AND `>= z0 && < z1`, and a
-   * tiling caller depends on it exactly: a rock on a shared boundary must fall
-   * into exactly one of the two boxes. Closed at both ends would give it two
-   * owners and two clumps of mushrooms; open at both ends would drop it and leave
-   * a gap that moves as the world does.
+   * THE BOX IS HALF-OPEN ON BOTH AXES and a tiling caller depends on it exactly: a
+   * rock on a shared boundary must fall into exactly one of the two boxes. Closed
+   * at both ends would give it two owners and two clumps of mushrooms; open at both
+   * would drop it and leave a gap that moves as the world does.
    *
    * ONLY THE BEDS FLAGGED `anchor` ANSWER -- the boulders and the giants, not the
-   * pebbles underfoot; the argument is on the flags in BEDS. They fill `out` in
-   * bed order on one cursor, so the boulders come first and the buffer is sorted
-   * by nothing else.
+   * pebbles underfoot; the argument is on the flags in BEDS. They fill `out` in bed
+   * order on one cursor, so the buffer is sorted by nothing else.
    *
-   * SATURATION IS THE CALLER'S TO NOTICE, since this cannot know what a short
-   * answer means to it. Nothing is ever written past `out`: a box with more
-   * anchors than room fills it and returns out.length / 4 exactly, the rest
-   * silently absent, and because the beds are walked in order what goes missing is
-   * the giants. A caller handed back its own capacity should treat the answer as
-   * truncated.
+   * SATURATION IS THE CALLER'S TO NOTICE. Nothing is ever written past `out`: a box
+   * with more anchors than room fills it and returns out.length / 4 exactly, and
+   * because the beds are walked in order what goes missing is the giants. A caller
+   * handed back its own capacity should treat the answer as truncated.
    *
-   * NO PER-INSTANCE ALLOCATION -- no closures, no temporaries, no iterator over
-   * instances, since this runs per tile while the player walks. It allocates one
-   * iterator per collection loop: the outer `for...of` over the beds, and in each
-   * bed asked the Map iterator over its resident tiles, the same one that bed's
-   * `update()` already makes every frame.
+   * NO PER-INSTANCE ALLOCATION, since this runs per tile while the player walks --
+   * one iterator per collection loop and none inside them.
    *
-   * THE y IS THE ROCK'S OWN ORIGIN AND NOT THE SURFACE. instY is where the
-   * instance matrix stands the rock: its bed plane, `sink` metres BELOW the drawn
-   * ground by a per-instance fraction of the rock's height (see SINK_MIN and
-   * SINK_DEEP). Right for comparing two rocks, wrong for standing a mushroom on --
-   * a caller placing something at the anchor should take the ground height at its
-   * own x, z the way it does for every other prop.
+   * THE y IS THE ROCK'S OWN ORIGIN AND NOT THE SURFACE: instY is its bed plane,
+   * `sink` metres BELOW the drawn ground. Right for comparing two rocks, wrong for
+   * standing a mushroom on -- take the ground height at your own x, z.
    *
-   * THE RADIUS IS A SOLID CIRCLE AT THE GROUND LINE: the smallest circle about the
-   * anchor containing the stone where it meets the dirt, so a caller may treat the
-   * disc as occupied and add its own clearance. NOT the rock's widest half-extent,
-   * which on a bedded rock is its equator and well above the ground. See
-   * sectionRadius for how it is measured and RockBed's `footRadius` for the three
-   * approximations in it -- burial, tilt, drawn tier -- and how far each can be out.
+   * THE RADIUS IS A SOLID CIRCLE AT THE GROUND LINE, so a caller may treat the disc
+   * as occupied and add its own clearance. NOT the rock's widest half-extent, which
+   * on a bedded rock is its equator and well above the ground. See sectionRadius
+   * for how it is measured and RockBed's `footRadius` for the three approximations
+   * in it -- burial, tilt, drawn tier -- and how far each can be out.
    *
    * @param out  Float32Array, stride 4. Sized by the caller; see saturation.
    */
@@ -2720,14 +2439,10 @@ export class Rocks {
   /**
    * Every rock near a point and what it is currently doing, for the console.
    *
-   * A BLINK IS NOT REPRODUCIBLE HEADLESSLY. Every mechanism that could make one
-   * has been eliminated on paper or by measurement -- per-instance frustum culling
-   * over a full yaw sweep, the geometry bounding spheres, the spherical card's
-   * hand-built sphere, the indirect index the fade shader reads, the dither's own
-   * coverage, and the thinning reaching a rock that is still a mesh -- and one is
-   * still reported at a specific spot. The next step is a readout from the browser
-   * standing where it happens: `window.v2rocks.describeNear(camX, camY, camZ)`,
-   * `console.table` on the result, and turn on the spot.
+   * A BLINK IS NOT REPRODUCIBLE HEADLESSLY, and every mechanism that could make one
+   * has been eliminated on paper or by measurement (§25). This is the readout from
+   * the browser standing where it happens:
+   * `window.v2rocks.describeNear(camX, camY, camZ)`, `console.table` the result.
    *
    * `dissolving` is the flag to watch, and it is a QUARTER-SECOND state rather than
    * a band: the rim stamps a clock when the camera crosses `dissolveFrom` and the
@@ -2789,24 +2504,19 @@ export class Rocks {
    * before sampling, because the console takes pointer lock and a watch starting
    * the instant it is called can only record a player standing still.
    *
-   * The blink is not reproducible outside a browser and every mechanism arguable
-   * from Node has been argued. What is left needs a number per frame, and there
-   * are two branches worth telling apart:
+   * Two branches worth telling apart, and §25 argues both:
    *
    *   THE DRAW LIST COLLAPSES. `n` for a bed halves or goes to zero on alternate
-   *   frames, so the rocks really are not being submitted, and the cause is the
-   *   per-instance frustum cull in BatchedMesh.onBeforeRender -- the only thing in
-   *   the rock pipeline that reads the camera's ORIENTATION. RockBed.update takes
-   *   x, y, z and no gaze, so standing still and turning cannot change a tier, a
-   *   matrix, a fade slot or a visible flag: that is what makes a steady `n`
-   *   informative.
+   *   frames, so the cause is the per-instance frustum cull in
+   *   BatchedMesh.onBeforeRender -- the only thing in the rock pipeline that reads
+   *   the camera's ORIENTATION. RockBed.update takes x, y, z and no gaze, which is
+   *   what makes a steady `n` informative.
    *
-   *   THE DRAW LIST IS STEADY AND THE ROCK MOVES. The rocks are drawn and
-   *   something is swallowing them; `y` and `ground` say which. Rocks are BEDDED,
-   *   so a drawn surface stepping up by a fraction of a metre buries one and a
-   *   surface stepping back down returns it -- the one way a half-buried prop can
-   *   blink while a tree beside it does not, and the terrain's own selection is
-   *   gaze-dependent (quadtree-v2.js inCone) where this file is not.
+   *   THE DRAW LIST IS STEADY AND THE ROCK MOVES. `y` and `ground` say which. Rocks
+   *   are BEDDED, so a drawn surface stepping up by a fraction of a metre buries
+   *   one and a surface stepping back down returns it -- the one way a half-buried
+   *   prop can blink while a tree beside it does not, and the terrain's own
+   *   selection is gaze-dependent (quadtree-v2.js inCone) where this file is not.
    *
    * `passes` is how many times each bed was culled that frame: three when both
    * probes fire, one when neither does. The MAIN render is always last -- main.js

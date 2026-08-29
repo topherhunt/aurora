@@ -1382,8 +1382,8 @@ export function getPropClock() {
  * it holds runs for one frame and sticks.
  *
  * props/grass-blades.js is the caller. It decodes the same slot with FADE_DECODE
- * and then does something different with the answer -- see the fade block there
- * for why a blade cannot use the dither every other prop uses.
+ * and then dithers a blade at a time instead of a fragment at a time -- see the
+ * fade block there for why a bed of blades cannot afford this one's `discard`.
  */
 export function propClockUniform() {
   return propClock
@@ -1440,7 +1440,7 @@ export const FADE_DECODE = /* glsl */ `
  * `#elif`, not a second `#if`: a mesh is one or the other, and writing it as a
  * chain means the batched branch keeps compiling to exactly what it always did.
  */
-const FADE_VERTEX = /* glsl */ `
+export const FADE_VERTEX = /* glsl */ `
   float propFade = 1.0;
   #if defined( USE_BATCHING ) && defined( USE_BATCHING_COLOR )
   {
@@ -1502,12 +1502,12 @@ ${FADE_DECODE}
  * binocular rivalry. Keying off the card's own UV instead would fix it and make
  * the stipple swim with the object. Not decided; wants a headset.
  */
-const IGN_GLSL = /* glsl */ `
+export const IGN_GLSL = /* glsl */ `
   float ign( vec2 p ) {
     return fract( 52.9829189 * fract( dot( p, vec2( 0.06711056, 0.00583715 ) ) ) );
   }`
 
-const FADE_FRAGMENT = /* glsl */ `
+export const FADE_FRAGMENT = /* glsl */ `
   if ( vPropFade < 1.0 ) {
     float fadeT = ign( gl_FragCoord.xy );
     // A NEGATIVE fade is the arriving half of a cross-dissolve and takes the

@@ -602,9 +602,15 @@ export class V2Height {
    * which world it is placing trees on. A third convention, and a tangent because
    * that is what scatter compares against; see slopeAt. Exact rather than v1's
    * documented approximation -- there is no scarp in v2.
+   *
+   * `gx` and `gz` are the two halves `tan` is the magnitude of -- dh/dx and
+   * dh/dz. They are returned because they are already in hand and because a prop
+   * that has to SIT on the ground rather than merely be admitted onto it needs
+   * the direction as well as the steepness: the surface normal is
+   * `(-gx, 1, -gz)` normalised. The blade bed is the caller.
    */
   heightAndSlopeAt(x, z) {
-    if (this.flatY !== null) return { h: this.flatY, tan: 0 }
+    if (this.flatY !== null) return { h: this.flatY, tan: 0, gx: 0, gz: 0 }
     const e = 0.75
     const h = this.heightAt(x, z)
     const xm = this.heightAt(x - e, z)
@@ -612,7 +618,9 @@ export class V2Height {
     const zm = this.heightAt(x, z - e)
     const zp = this.heightAt(x, z + e)
     const d = 2 * e
-    return { h, tan: Math.hypot((xp - xm) / d, (zp - zm) / d) }
+    const gx = (xp - xm) / d
+    const gz = (zp - zm) / d
+    return { h, tan: Math.hypot(gx, gz), gx, gz }
   }
 
   /**

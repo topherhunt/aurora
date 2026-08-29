@@ -95,7 +95,9 @@ import {
 } from '../src/props/tree.js'
 import { buildTreeBank, treeVariants, treeImpostorLayers } from '../src/props/tree-bank.js'
 import { buildImpostorCard } from '../src/props/impostor.js'
-import { CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock } from '../src/material.js'
+import {
+  CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock, getPropClock, setPropFadeTimerAt, setPropSolidAt,
+} from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
 import { RIM_AT } from '../src/v2/render/rim.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
@@ -1122,9 +1124,12 @@ trees.place(0, 0)
   for (let t = 1; t < counts.length; t++) if (counts[t] <= counts[t - 1]) widens = false
   check(widens, 'every tier holds more instances than the tier finer than it',
     counts.join(' / '))
-  check(s.tris === bill,
+  // Plus the cross-dissolve ghosts, which are drawn and are deliberately not in
+  // the ladder walk above: a duplicate is not a tree, it is the tier a tree has
+  // just left, still on screen for a quarter second.
+  check(s.tris === bill + trees.fadeTris,
     'the reported triangle bill is the sum of what each instance actually draws',
-    `${s.tris} reported, ${bill} from the ladder`)
+    `${s.tris} reported, ${bill} from the ladder plus ${trees.fadeTris} in flight`)
   // WHAT THE RIM ACTUALLY DRAWS, which is the number the player sees and is a
   // constant RIM_AT under the law measured above -- the rim takes a tree at the
   // midpoint of the old dissolve band, so the drawn density is that fraction of
@@ -1182,9 +1187,13 @@ trees.place(0, 0)
         if (arena.geoAt[id] !== want || arena.slot[id] < 0) misplaced++
       }
     }
-    check(live === shown && misplaced === 0,
+    // Every ghost holds a slot of its own, in the mesh of the tier its original
+    // has just left -- that IS the cross-dissolve -- so the slot count runs one
+    // ahead of the tree count per fade in flight.
+    check(live === shown + trees.fades.length && misplaced === 0,
       'every drawn tree occupies exactly one slot, in the mesh for its own tier and species',
-      `${live} slots across ${arena.meshes.length} meshes, ${shown} trees drawn, ${misplaced} misplaced`)
+      `${live} slots across ${arena.meshes.length} meshes, ${shown} trees drawn, ` +
+      `${trees.fades.length} dissolving duplicates, ${misplaced} misplaced`)
 
     // The slot map is a bijection both ways -- the swap-remove in _free is where
     // that would break, and it would break as one tree wearing another's matrix.
@@ -1240,6 +1249,9 @@ trees.place(0, 0)
 // none of this in six seconds and the boundary arithmetic it replaced shows 15,
 // which is the signal this gate is for. At 60 m/s a few dozen still slip through
 // and nothing here claims otherwise.
+
+const mOrig = new THREE.Matrix4()
+const mDup = new THREE.Matrix4()
 
 console.log('\n-- a dissolve does not retract --')
 {
@@ -1300,12 +1312,218 @@ console.log('\n-- a dissolve does not retract --')
     `${outs} dissolved out, ${grazed} of them never inside their own trigger`)
 }
 
+// --- 9b3. the LOD swap dissolves rather than cutting ------------------------
+//
+// EVERY BAND CROSSING IS A CROSS-DISSOLVE, at all three boundaries. The arena
+// has no per-instance geometry, so the departing tier has to be held by a
+// DUPLICATE INSTANCE living in the departing tier's own mesh, stamped with the
+// same start as the original and the opposite direction. Which makes the failure
+// modes bookkeeping rather than looks:
+//
+//   THE GHOST LEAKS. A duplicate whose fade is never retired is a second tree
+//   standing inside the first forever, drawn, holding a pool id and a mesh slot.
+//   A slow leak empties the pool, and running dry THROWS in _growTile.
+//   THE HALVES DISAGREE ON THE START. The two thresholds are complements of one
+//   clock reading; different readings mean coverage that does not sum to one,
+//   and the tree flickers thin or doubles its silhouette for the window.
+//   THE GHOST IS THE WRONG TREE. It carries its own matrix and tint, copied at
+//   the moment of the swap, and a copy that missed either draws a differently
+//   sized or differently lit tree inside the one dissolving.
+//
+// So the camera is walked and the invariant `placed + in flight + free = pool`
+// is checked as it goes: that closes over all three.
+
+console.log('\n-- the LOD swap dissolves --')
+{
+  // Far enough to carry a tree out through the 100 m boundary, which the dead
+  // band puts at 112 m going that way: a walk shorter than 12 m never sees the
+  // outward half of the far swap at all.
+  const SPEED = 4
+  const SECONDS = 5
+  const walk = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: DRAW_RADIUS })
+  walk.place(0, 0)
+  const n = walk.maxInstances
+  const prevTier = new Int8Array(n).fill(-1)
+  // A pool id outlives the tree that held it, so a swap is only a swap for an id
+  // that was standing in a tile on the previous frame too. Without this, an id
+  // recycled into a new tile reads as its predecessor's tier changing.
+  let seen = new Uint8Array(n)
+  let prevSeen = new Uint8Array(n)
+  const pairs = new Set()
+  let swaps = 0
+  let missed = 0
+  let peakFlight = 0
+  let leaks = 0
+  let indexBroken = 0
+  let wrongGhost = 0
+  let startsDisagree = 0
+  let gap = null
+  let z = 0
+  // BOOT IS NOT A SWAP, but it looks exactly like one: _growTile hands every new
+  // tree the card tier, so the first update inside the near ring re-tiers a few
+  // hundred at once and pins the in-flight ceiling for a fade window. The whole
+  // burst is let through and retired before the walk starts.
+  for (let f = 0; f < 24; f++) {
+    setPropClock(f / 72)
+    walk.update(0, EYE, 0)
+  }
+  for (let i = 0; i < n; i++) prevTier[i] = walk.tierAt[i]
+  for (const tile of walk.tiles.values()) for (let k = 0; k < tile.n; k++) prevSeen[tile.ids[k]] = 1
+  // What "the same start, opposite directions" looks like once material.js has
+  // packed the two into one float. Taken from the fade API itself on a spare id
+  // rather than typed in, so the gate keeps meaning that when the packing moves.
+  const spare = walk.tiles.values().next().value.ids[0]
+  setPropFadeTimerAt(walk.batch, spare, 12, true)
+  const stampIn = walk.batch.fade[spare]
+  setPropFadeTimerAt(walk.batch, spare, 12, false)
+  const wantGap = stampIn - walk.batch.fade[spare]
+  setPropSolidAt(walk.batch, spare)
+
+  const FRAMES = Math.round(SECONDS * 72)
+  for (let f = 1; f <= FRAMES; f++) {
+    z -= SPEED / 72
+    setPropClock(0.5 + f / 72)
+    walk.update(0, EYE, z)
+
+    seen.fill(0)
+    for (const tile of walk.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const i = tile.ids[k]
+        seen[i] = 1
+        const tier = walk.tierAt[i]
+        if (tier === prevTier[i]) continue
+        if (prevSeen[i] && prevTier[i] >= 0 && tier >= 0) {
+          swaps++
+          pairs.add(`${prevTier[i]}>${tier}`)
+          // The rim outranks the swap and owns the slot while it runs; every
+          // other refusal is a ceiling, and the walk is slow enough not to reach
+          // one (asserted separately through peakFlight).
+          if (walk.fadeAt[i] < 0 && !walk.rim.isBusy(i)) missed++
+        }
+        prevTier[i] = tier
+      }
+    }
+    const swap = prevSeen
+    prevSeen = seen
+    seen = swap
+
+    peakFlight = Math.max(peakFlight, walk.fades.length)
+    if (walk.placed + walk.fades.length + walk.freeCount !== walk.maxInstances) leaks++
+    // fadeAt is the index back, and the swap-remove that keeps `fades` dense
+    // rewrites it. An entry it no longer names is a fade nothing can end early:
+    // the rim cannot preempt it and a second crossing cannot finish it, so the
+    // duplicate outlives its window and the sweep hands back a slot whose
+    // original has already moved on.
+    for (let k = 0; k < walk.fades.length; k++) if (walk.fadeAt[walk.fades[k].orig] !== k) indexBroken++
+
+    // The ghosts, while they are up: same species, a tier the original is not
+    // wearing, the original's own matrix, and a pair of stamps that differ by
+    // one fixed bias -- which is what "the same start, opposite directions"
+    // reduces to once material.js has packed them.
+    for (const fade of walk.fades) {
+      const g = walk.batch.geoAt[fade.dup]
+      const vc = walk.variantCount
+      if (g % vc !== walk.variantAt[fade.orig] || Math.floor(g / vc) === walk.tierAt[fade.orig]) {
+        wrongGhost++
+        continue
+      }
+      walk.batch.getMatrixAt(fade.orig, mOrig)
+      walk.batch.getMatrixAt(fade.dup, mDup)
+      for (let e = 0; e < 16; e++) if (mOrig.elements[e] !== mDup.elements[e]) wrongGhost++
+      gap = walk.batch.fade[fade.orig] - walk.batch.fade[fade.dup]
+      // A millisecond of slack: the fade-in half is packed against a bias of
+      // 4096 and a float32 resolves half a millisecond there, so the two halves'
+      // stamps quantize differently even when the start is the same reading.
+      if (Math.abs(gap - wantGap) > 1e-3) startsDisagree++
+    }
+  }
+
+  check(swaps > 50 && pairs.size === 6,
+    'walking crosses every band in both directions, so this gate covers the whole ladder',
+    `${swaps} swaps: ${[...pairs].sort().join(' ')}`)
+  check(missed === 0,
+    'and every one of them dissolved rather than cut -- including the 8 m wood swap',
+    `${missed} swaps with no duplicate and no rim fade to explain it`)
+  check(peakFlight > 0 && peakFlight < TREE_TUNING.FADE_MAX_INFLIGHT,
+    'a walking player never reaches the in-flight ceiling, so no swap of theirs pops',
+    `${peakFlight} duplicates at the peak against a ceiling of ${TREE_TUNING.FADE_MAX_INFLIGHT}`)
+  check(wrongGhost === 0,
+    'and every duplicate is the same tree, at the same matrix, wearing the tier its original left',
+    `${wrongGhost} mismatched`)
+  check(startsDisagree === 0,
+    'and both halves carry the same start, so their thresholds sum to full coverage',
+    `${walk.fades.length} in flight, stamps ${gap === null ? 'n/a' : gap.toFixed(3)} apart, ${wantGap.toFixed(3)} wanted`)
+  check(indexBroken === 0, 'and every fade in flight is the one its original names, so any of them can be ended early',
+    `${indexBroken} entries orphaned from fadeAt`)
+  check(leaks === 0, 'the pool closes every frame: placed + in flight + free = pool',
+    `${walk.placed} + ${walk.fades.length} + ${walk.freeCount} = ${walk.maxInstances}`)
+
+  // THE RIM OUTRANKS THE SWAP and the callback that enforces it is easy to lose:
+  // nothing throws without it, the ghost simply stays lit while its original
+  // dithers away underneath, and what the player sees is a tree that will not
+  // leave. Provoked directly rather than waited for.
+  {
+    const busy = walk.fades[0]
+    const freeBefore = walk.freeCount
+    walk.rim.retire(busy.orig, getPropClock())
+    check(walk.fadeAt[busy.orig] === -1 && walk.freeCount === freeBefore + 1,
+      'a rim dissolve starting mid-swap takes the duplicate back rather than stranding it',
+      `pool ${freeBefore} -> ${walk.freeCount}`)
+  }
+
+  // A FLIGHT, WHICH IS WHERE THE CEILINGS ACTUALLY BIND. Half the forest changes
+  // tier in a frame at this speed, so `_crossFade` spends most of it refusing:
+  // the refusals have to be refusals -- a pop, which is what the swap was before
+  // any of this -- and not a mesh filling up, which THROWS in _alloc and takes
+  // the frame with it. Same invariants, so a fade orphaned by a second crossing
+  // inside one window shows up here even though a walker never crosses twice
+  // that fast.
+  let flightLeaks = 0
+  let flightOrphans = 0
+  let flightPeak = 0
+  for (let f = 1; f <= 144; f++) {
+    z -= 60 / 72
+    setPropClock(0.5 + (FRAMES + f) / 72)
+    walk.update(0, EYE, z)
+    flightPeak = Math.max(flightPeak, walk.fades.length)
+    if (walk.placed + walk.fades.length + walk.freeCount !== walk.maxInstances) flightLeaks++
+    for (let k = 0; k < walk.fades.length; k++) if (walk.fadeAt[walk.fades[k].orig] !== k) flightOrphans++
+  }
+  check(flightPeak === TREE_TUNING.FADE_MAX_INFLIGHT,
+    'flying fills the in-flight ceiling, and the swaps past it pop rather than throw',
+    `${flightPeak} duplicates at 60 m/s against a ceiling of ${TREE_TUNING.FADE_MAX_INFLIGHT}`)
+  check(flightLeaks === 0 && flightOrphans === 0,
+    'and the books still close at that speed',
+    `${flightLeaks} frames out of balance, ${flightOrphans} orphaned entries`)
+
+  // And everything retires. The clock is advanced past the window with the
+  // camera standing still, which is the state a player is in most of the time.
+  for (let f = 0; f < 40; f++) {
+    setPropClock(0.5 + (FRAMES + 144 + f) / 72)
+    walk.update(0, EYE, z)
+  }
+  let stamped = 0
+  for (const tile of walk.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      if (walk.batch.fade[tile.ids[k]] !== 1 && !walk.rim.isBusy(tile.ids[k])) stamped++
+    }
+  }
+  check(walk.fades.length === 0 && walk.fadeTris === 0,
+    'standing still for longer than the window leaves no duplicate and no ghost triangles',
+    `${walk.fades.length} in flight, ${walk.fadeTris} triangles`)
+  check(stamped === 0,
+    'and every tree is back to the never-fade default, so no id carries a stale clock reading',
+    `${stamped} still stamped`)
+  check(walk.placed + walk.freeCount === walk.maxInstances,
+    'and the pool is whole again',
+    `${walk.placed} placed, ${walk.freeCount} free, ${walk.maxInstances} pool`)
+}
+
 // --- 9c. the shape of the cross-dissolve ramp -------------------------------
 //
 // WHAT THIS IS FOR. The ramp is material.js's, shared by every dissolve in the
-// world: the forest's own rim fade, and the LOD cross-dissolves that rocks and
-// grass run (the forest has none -- its tiers are separate InstancedMeshes and
-// cannot dither past each other). It is gated here because this is where the
+// world: every rim fade, and the LOD cross-dissolves the forest, rocks, grass
+// and ferns all run. It is gated here because this is where the
 // shader's numbers are read. A cross-dissolve conserves coverage -- the two halves take
 // complementary thresholds, so the prop is fully covered from the first frame to
 // the last and the only visible signal is the MIX. That is what stops the

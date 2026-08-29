@@ -292,23 +292,27 @@ export const DEADWOOD_DEFAULTS = {
 // because a preset table only the previewer could see would let the shape signed
 // off and the shape placed drift apart. rock-bank.js argues that at length.
 //
-// COMBINATORIAL, NOT HAND-AUTHORED, which is the opposite of rock-bank.js: a
-// rock's entries each answer a question about a PLACE, and no product of axes
-// would have produced a riverbed rock. Dead wood has no such spread -- every
-// piece is the same swept surface, and the three things that distinguish two of
-// them in a forest are length, species and how badly the break is chewed. Those
-// are axes, so they are written as axes; the rest comes from the SEED.
+// TWO SHAPES, ONE PER ATTITUDE, and the count is set by the ARENA rather than by
+// the generator. The bank ships on render/prop-arena.js, one InstancedMesh per
+// (tier, variant), so the layer costs `tiers x variants x seeds` draw calls:
+// two shapes at one seed over three tiers is six. The length x species cross
+// this table used to be was twelve names at two seeds -- seventy-two draw calls
+// for the rarest prop in the wood.
 //
-// The two families do not share axes because they are not the same object seen
-// twice. A stump is what is left in the ground after something took the tree; a
-// log is the tree. See the two tables.
-
-/** The three bark tiles a dead piece can wear, and the name the bench shows. */
-export const DEADWOOD_SPECIES = [
-  ['oak', LAYER.BARK],
-  ['birch', LAYER.BARK_BIRCH],
-  ['pine', LAYER.BARK_PINE],
-]
+// The two families stay because a stump and a log share nothing: a stump is what
+// is left in the ground after something took the tree, a log is the tree, and no
+// yaw or scale turns one into the other. Everything else that used to be an axis
+// is either rolled per seed (how chewed the ends are, where the stubs sit, the
+// kink in the spine -- see LOG_ROLLS) or bought per instance by the scatter,
+// which rescales a stump between SNAG_HEIGHT and a log between LOG_LENGTH and
+// gives each its own yaw.
+//
+// WHAT IS ACTUALLY LOST IS THE BARK. Birch and pine were a `barkLayer` swap on
+// an identical mesh, so they cost nothing to author and four more meshes a tier
+// to draw; a dead piece is oak now. If they are wanted back, the cheap route is
+// the one render/litter.js takes -- `texLayer` is a plain attribute in
+// material.js, so a per-instance InstancedBufferAttribute would carry three
+// barks on one geometry -- and not three more variants.
 
 // What changes when the piece is lying down rather than standing up.
 //
@@ -354,50 +358,41 @@ const LOG_ROLLS = {
   stubs: [4, 6],
 }
 
-// LOGS: length x species. The short one is the piece a forest floor is actually
-// littered with; the long one is a trunk you walk round rather than over. The
-// scatter rescales both -- LOG_LENGTH runs to 34.8 m -- so what this axis really
-// sets is the PROPORTION the shape was authored at: a 4 m log at its authored
-// butt diameter is slimmer than a 2.5 m one, and that survives the rescale.
-const LOG_LENGTHS = [2.5, 4]
+// THE LOG, at 4 m. The length is the PROPORTION the shape is authored at rather
+// than the length it is drawn at -- the scatter rescales every piece and
+// LOG_LENGTH runs to 34.8 m -- and 4 m is the slimmer end of what this generator
+// makes at its authored butt diameter, which is what a fallen trunk is. A 2.5 m
+// piece is the same swept surface a quarter fatter, which the per-instance scale
+// covers.
+const LOG_LENGTH_M = 4
 
-// STUMPS: species x length. A metre and a half is a stump somebody cut; two is a
-// trunk that snapped in a storm and left a standing spar. They read very
-// differently at range, which is the only test a variant axis has to pass.
-//
-// The floor is 1.5 and not 1 because the top of a stump is where all its detail
-// is, and `jag1` eats up to MAX_JAG of the LENGTH getting there: a 1 m stump
-// gives up 40 cm of itself to its own broken rim and has 60 cm left to be a
-// trunk in.
-const STUMP_LENGTHS = [1.5, 2]
+// THE STUMP, at 3 m. Tall enough to be a spar a storm snapped rather than
+// something somebody cut, which is the silhouette worth having at range, and
+// well clear of the floor this generator has: `jag1` eats up to MAX_JAG of the
+// LENGTH getting to the broken rim, so a 1 m stump gives 40 cm of itself away to
+// its own top and has 60 cm left to be a trunk in.
+const STUMP_LENGTH_M = 3
 
 function buildVariantTable() {
-  const out = {}
-  for (const len of LOG_LENGTHS) {
-    for (const [species, layer] of DEADWOOD_SPECIES) {
-      out[`log-${len}m-${species}`] = {
-        envs: ['wood', 'old growth', 'path side'],
-        p: { ...LOG_DEFAULTS, length: len, barkLayer: layer },
-      }
-    }
+  return {
+    [`log-${LOG_LENGTH_M}m-oak`]: {
+      envs: ['wood', 'old growth', 'path side'],
+      p: { ...LOG_DEFAULTS, length: LOG_LENGTH_M, barkLayer: LAYER.BARK },
+    },
+    [`stump-${STUMP_LENGTH_M}m-oak`]: {
+      envs: ['wood', 'clearing', 'burn'],
+      p: { kind: 'snag', length: STUMP_LENGTH_M, barkLayer: LAYER.BARK },
+    },
   }
-  for (const len of STUMP_LENGTHS) {
-    for (const [species, layer] of DEADWOOD_SPECIES) {
-      out[`stump-${len}m-${species}`] = {
-        envs: ['wood', 'clearing', 'burn'],
-        p: { kind: 'snag', length: len, barkLayer: layer },
-      }
-    }
-  }
-  return out
 }
 
 /**
  * Every shipping deadwood shape, by name.
  *
- * Six logs and six stumps. The bench reads this as its preset list and the
- * world's scatter reads the same object, so a shape signed off on /gen-deadwood
- * is bit-identical to the one that ships.
+ * One log and one stump; see the bank header for why it is two and not twelve.
+ * The bench reads this as its preset list and the world's scatter reads the same
+ * object, so a shape signed off on /gen-deadwood is bit-identical to the one
+ * that ships.
  */
 export const DEADWOOD_VARIANTS = buildVariantTable()
 

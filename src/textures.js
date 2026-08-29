@@ -17,44 +17,30 @@ import { butterflyWingSheet } from './props/butterfly-texture.js'
 
 // ---------------------------------------------------------------------------
 // The one prop texture. Every prop texture in the world is a layer of this.
+// DESIGN.md §9 carries the argument and the sizing tables; this is the registry.
 //
-// The shipping art direction is low-poly geometry with N64-resolution textures
-// (Ocarina of Time / a lower-res Skyrim), NOT flat-shaded untextured low-poly.
+// The art direction is low-poly geometry with N64-resolution textures (Ocarina
+// of Time / a lower-res Skyrim), NOT flat-shaded untextured low-poly.
 //
-// WHY AN ARRAY AND NOT A PACKED ATLAS PNG. This is the load-bearing decision of
-// the whole texture pipeline, and packing everything into one big image is the
-// obvious idea that does not work:
+// A DataArrayTexture, NOT a packed atlas, and that is the load-bearing decision
+// of the whole pipeline. An atlas mips over the WHOLE image, so at coarse levels
+// a leaf averages with its neighbour and turns bark-brown; and a sub-rectangle
+// has no repeat mode, so bark cannot tile up a trunk. Array layers mip
+// independently and get the full [0,1] space with real RepeatWrapping. It costs
+// the same as an atlas at the thing atlases exist for: ONE binding, one
+// material, so BatchedMesh collapses everything into one multi-draw call (§5).
 //
-//   Mips bleed. In a packed atlas the mip chain is built over the WHOLE image,
-//   so at coarse levels a leaf averages with whatever tile sits next to it.
-//   That is not "blurry at distance", which is fine and expected -- it is a
-//   leaf turning bark-brown. Array layers each mip independently, so distance
-//   blur stays within one texture and never picks up a neighbour's colour.
+// ONE MESH, SEVERAL LAYERS. `texLayer` is per-VERTEX, not a per-object uniform,
+// so one geometry in one batch wears different textures on different parts of
+// itself -- a trunk in BARK, its canopy cards in NEEDLES, one draw call. Adding
+// a species means adding a layer, not a material.
 //
-//   Atlas tiles cannot wrap. A sub-rectangle has no repeat mode, so bark cannot
-//   tile up a trunk -- UVs past 1.0 walk into the next tile. Array layers get
-//   the full [0,1] space and real RepeatWrapping, which is exactly what a trunk
-//   needs and a frond card does not.
+// THE ONE REAL CONSTRAINT: every layer must share dimensions and format, so
+// TEX_SIZE is an invariant of the asset pipeline, not a knob. See below.
 //
-// And an array costs the same as an atlas at the thing atlases exist for: ONE
-// texture binding, so one material, so BatchedMesh collapses everything into a
-// single multi-draw call (DESIGN.md §5). We get the draw-call win without the
-// two costs above.
-//
-// ONE MESH, SEVERAL LAYERS. `texLayer` is a per-VERTEX attribute, not a
-// per-object uniform, so a single geometry in a single batch can wear different
-// textures on different parts of itself. A tree's trunk vertices carry BARK
-// while its canopy cards carry NEEDLES or LEAVES; one draw call, one material,
-// no split. Adding a species means adding a layer, not a material.
-//
-// THE ONE REAL CONSTRAINT: every layer in a DataArrayTexture must share
-// dimensions and format. TEX_SIZE is therefore an invariant of the whole asset
-// pipeline, not a knob -- see the note on it below.
-//
-// Layers come from two places. Procedural tiles (below) are placeholders that
-// exist so the spike exercises the real path -- one sampler2DArray, alphaTest,
-// mipmaps -- and are not meant to look good. Image layers are real PNGs loaded
-// from `public/`, which is where the fern fronds and the baked prop layers live.
+// Procedural tiles below are placeholders that exist so the spike exercises the
+// real path (one sampler2DArray, alphaTest, mipmaps) and are not meant to look
+// good. Image layers are real PNGs loaded from `public/`.
 // ---------------------------------------------------------------------------
 
 // INVARIANT, not a preference. A DataArrayTexture is one allocation of
@@ -77,58 +63,45 @@ export const LAYER = {
   // Real scan, cut by tools/props/extract-frond.mjs.
   //
   // ONE, not the three the extractor produced. All three are the same Lady Fern
-  // sheet: coverage 31.2/36.3/30.3%, mean RGB (28,41,4)/(28,40,4)/(29,44,1),
-  // and side by side the only differences are that one is slightly gappier at
-  // the top and another slightly blunter at the tip. On a card 0.38 as wide as
-  // it is tall, at 128px, from two metres, that is nothing.
+  // sheet: coverage 31.2/36.3/30.3%, mean RGB (28,41,4)/(28,40,4)/(29,44,1), and
+  // the only differences are that one is gappier at the top and another blunter
+  // at the tip. On a card 0.38 as wide as tall, at 128 px, from two metres, that
+  // is nothing.
   //
-  // THE RULE THIS SETS, because trees and grass are next: a layer has to earn
-  // itself by reading as different AT THE DISTANCE IT WILL BE SEEN. Scan-to-scan
-  // noise between two photographs of the same plant does not. Species-to-species
-  // leaf shape does. So: one leaf layer per tree SPECIES, one shared bark, one
-  // grass -- not three variants of each. The variety a player actually sees
-  // comes from geometry (16 mesh variants x yaw x scale x per-frond jitter),
-  // and geometry is where it should be bought.
-  //
-  // The cost of being wrong here is small in both directions: another layer is
-  // 64 KB, no draw call and no per-frame cost, so if three fronds that genuinely
-  // differ ever turn up, adding them back is a two-line change.
+  // THE RULE THIS SETS, cited all through this file: A LAYER HAS TO EARN ITSELF
+  // BY READING AS DIFFERENT AT THE DISTANCE IT WILL BE SEEN. Scan-to-scan noise
+  // between two photographs of the same plant does not; species-to-species leaf
+  // shape does. So one leaf layer per tree SPECIES, one shared bark, one grass.
+  // The variety a player sees comes from geometry (16 mesh variants x yaw x
+  // scale x per-frond jitter), which is where it should be bought. Being wrong
+  // is cheap either way: a layer is 64 KB, no draw call, no per-frame cost.
   FROND_0: 8,
 
   // --- buildings (DESIGN.md §19) -------------------------------------------
   //
-  // Ten layers here, plus ROOF_TILE, DOOR and TIMBER_BEAM appended at the end
-  // of the registry once real photographic sources for them turned up. Thirteen
-  // is what it takes to make a building read as ONE object rather than as a
-  // pile of parts. The test each of them passed is the one FROND_0 sets -- a
-  // layer has to read as different at the distance it will be seen -- and three
-  // candidates failed it and are not here:
+  // Ten here, plus ROOF_TILE, DOOR and TIMBER_BEAM appended at the end of the
+  // registry when real photographic sources turned up. Thirteen is what it takes
+  // to make a building read as ONE object rather than a pile of parts. Three
+  // candidates failed FROND_0's rule and are not here:
   //
-  //   Slate roof. It is SHINGLE at a colder tint and a lower value. At 128 px
-  //   from the 15 m a roof is normally seen at, the shake pattern is what you
-  //   read and the hue is what tells you the material, and hue is free.
+  //   Slate roof. SHINGLE at a colder tint and lower value. At 128 px from the
+  //   15 m a roof is seen at, the shake pattern is what you read and the hue is
+  //   what names the material -- and hue is free.
   //
-  //   Chimney masonry. It is STONE. A chimney and a plinth are the same rubble
-  //   laid by the same hands on the same building; if we later want dressed
-  //   ashlar for a manor chimney that is a new layer for a new BUILDING class,
-  //   not a second version of this one.
+  //   Chimney masonry. STONE. Same rubble, same hands, same building. Dressed
+  //   ashlar for a manor would be a new layer for a new BUILDING class.
   //
-  //   Moss on thatch. Not a texture -- it is a per-vertex colour multiply
-  //   driven by roof height, normal and distance from the eave, which costs
-  //   zero layers and zero triangles and varies per building for free.
+  //   Moss on thatch. A per-vertex colour multiply keyed on roof height, normal
+  //   and distance from the eave: zero layers, zero triangles, varies per
+  //   building for free. There IS a LAYER.MOSS now and a roof could join
+  //   MOSS_LAYERS any day -- the blended second pass costs a branch and a fetch
+  //   inside the shared material, not a second material. The multiply stays
+  //   regardless, because it is doing a different job: a WEATHERING gradient,
+  //   damp at the eave and bleached at the ridge, which a tiled photograph
+  //   cannot express. A roof wanting real clumps wants BOTH.
   //
-  //   There IS a moss texture now (LAYER.MOSS), and a roof could join
-  //   MOSS_LAYERS the day somebody wants it: the second blended pass it needs
-  //   turned out to cost a branch and a fetch inside the one shared material
-  //   rather than a second material, so the batch-splitting argument that used
-  //   to end this paragraph was wrong. The per-vertex multiply stays anyway,
-  //   because what it is doing on a roof is not what moss does on a rock: it is
-  //   a WEATHERING gradient -- damp at the eave, bleached at the ridge -- and a
-  //   tiled photograph cannot express a gradient that runs the length of a
-  //   surface. If a roof ever wants real moss clumps, it wants BOTH.
-  //
-  // 13 building layers x 64 KB = 832 KB, taking the array from 9 to 26 of the
-  // 256 layers §9 measured as available.
+  // 13 x 64 KB = 832 KB, taking the array from 9 to 26 of the 256 layers §9
+  // measured as available.
   TIMBER_HEWN: 9, // rough-sawn boarding -- porch decks, soffits, wide planking
   TIMBER_PLANK: 10, // sawn boards -- stave walls, shutters, window frames, rails
   THATCH: 11, // straw roof
@@ -165,58 +138,51 @@ export const LAYER = {
 
   // --- buildings, second pass (real photographic sources) -------------------
   //
-  // Three layers the first nine could not cover, appended for the same reason
-  // the tree layers were: an index is baked into every shipped `texLayer`, so
-  // this list only ever grows at the end.
+  // Three the first nine could not cover, appended: an index is baked into every
+  // shipped `texLayer`, so this list only ever grows at the end.
   //
-  // ROOF_TILE is the one that contradicts the argument made above for slate.
-  // That argument stands -- slate is a shake in a colder hue, and hue is free
-  // -- and it is precisely why a scalloped pantile is NOT: its silhouette is a
-  // row of half-circles where a shake roof is a row of rectangles, and
-  // silhouette is the thing that survives 128 px from fifteen metres. A tint
-  // cannot round a corner.
+  // ROOF_TILE contradicts the slate argument above only in appearance. That
+  // argument stands -- slate is a shake in a colder hue -- and it is exactly why
+  // a scalloped pantile is NOT: its silhouette is a row of half-circles where a
+  // shake roof is rectangles, and silhouette is what survives 128 px from
+  // fifteen metres. A tint cannot round a corner.
   //
   // DOOR is a decal sheet, not a tiling layer: one photographed leaf addressed
-  // 0..1 by island, the way IRON and RUNE are. It pays for itself in triangles
-  // rather than costing them -- the scan already has its hinge straps and its
-  // ring pull painted on, so doorway() stopped emitting six doubled decal quads
-  // when this landed.
+  // 0..1 by island, like IRON and RUNE. It pays for itself in TRIANGLES -- the
+  // scan already has its hinge straps and ring pull painted on, so doorway()
+  // stopped emitting six doubled decal quads when this landed.
   //
-  // TIMBER_BEAM is the split of what used to be one wood layer into the two
-  // things a Nordic building is actually made of. TIMBER_HEWN was cut from a
-  // squared beam and then had log-course shading multiplied into it, which made
-  // it serve as round logs, as posts and as boarding all at once and read as
-  // none of them well. The photograph here is a weathered baulk with the checks
-  // and the splits still in it, and it is what every raw member wears -- log
-  // courses, log ends, posts, rails, jambs. TIMBER_HEWN kept its own source and
-  // is now rough-SAWN boarding: the porch deck, the soffit under an eave, the
-  // wide planking that is cut but not planed. The distinction is worth 64 KB
-  // because it is a silhouette distinction as much as a texture one; the beam
-  // tile is what prism() members are lit by, and a plank tile on a five-sided
-  // log is the one combination that makes the rounding look like a mistake.
+  // TIMBER_BEAM splits what was one wood layer into the two things a Nordic
+  // building is made of. TIMBER_HEWN was a squared beam with log-course shading
+  // multiplied in, serving as round logs, posts and boarding at once and reading
+  // as none well. TIMBER_BEAM is a weathered baulk with its checks and splits,
+  // worn by every raw member -- log courses, log ends, posts, rails, jambs.
+  // TIMBER_HEWN kept its own source and is now rough-SAWN boarding: porch decks,
+  // soffits, planking that is cut but not planed. Worth 64 KB because it is a
+  // silhouette distinction as much as a texture one -- the beam tile is what
+  // prism() members are lit by, and a plank tile on a five-sided log is the one
+  // combination that makes the rounding look like a mistake.
   ROOF_TILE: 23, // red scalloped pantile -- the roof a prosperous inn has
   DOOR: 24, // decal sheet: one plank door leaf, ironwork included
   TIMBER_BEAM: 25, // raw uncut baulk -- log courses, posts, rails, every member
 
   // --- tree impostors (src/props/impostor.js) -------------------------------
   //
-  // NOT ART. These four are the only layers in the registry with no source of
-  // their own: they are written at load, by rendering the LOD0 tree of each
-  // species side-on into a 128x128 target and reading the pixels back. That is
-  // the same argument fern-bank.js makes for having no offline bake step --
-  // an impostor generated from the mesh cannot disagree with the mesh, and a
-  // PNG on disk can, silently, for as long as nobody looks.
+  // NOT ART. The only layers here with no source of their own: written at load
+  // by rendering each species' LOD0 tree side-on into a 128x128 target and
+  // reading the pixels back. Same argument fern-bank.js makes against an offline
+  // bake -- an impostor generated from the mesh cannot disagree with the mesh,
+  // and a PNG on disk can, silently, for as long as nobody looks.
   //
-  // They pass the FROND_0 rule easily and in the opposite direction from
-  // everything else here: what a player sees at 30 m IS this layer, so a pine
-  // impostor and a birch impostor are not merely different textures, they are
-  // different trees. One per SPECIES rather than per variant, because the
-  // scatter already gives every instance a yaw and the card is three planes --
-  // spinning it is three apparent silhouettes from one bake.
+  // They pass the FROND_0 rule in the opposite direction from everything else
+  // here: what a player sees at 30 m IS this layer, so a pine impostor and a
+  // birch impostor are different TREES, not merely different textures. One per
+  // SPECIES, because the scatter gives every instance a yaw and the card is
+  // three planes -- spinning it is three apparent silhouettes from one bake.
   //
-  // They are also the only layers whose UVs are not tiled: an impostor is
-  // addressed 0..1 exactly once, so RepeatWrapping must never reach them. The
-  // bake leaves a transparent margin on three sides for exactly that reason.
+  // The only layers whose UVs are NOT tiled: addressed 0..1 exactly once, so
+  // RepeatWrapping must never reach them. The bake leaves a transparent margin
+  // on three sides for that reason.
   IMPOSTOR_PINE: 26,
   IMPOSTOR_OAK: 27,
   IMPOSTOR_BIRCH: 28,
@@ -224,51 +190,46 @@ export const LAYER = {
 
   // --- fern impostors (src/props/fern-bank.js) ------------------------------
   //
-  // Same machinery as the four above and the same "written at load, never on
-  // disk" argument. What is different is the UNIT: a tree impostor is one per
-  // SPECIES, and there is only one fern species, so the question becomes which
-  // slice of a 16-variant bank earns a bake of its own.
+  // Same machinery and the same "written at load, never on disk" argument as the
+  // four above. What differs is the UNIT: a tree impostor is one per SPECIES and
+  // there is only one fern species, so the question is which slice of a
+  // 16-variant bank earns a bake.
   //
-  // TWO, cut on `arch`, and the FROND_0 rule is what picks the axis. The card
-  // takes over at 26 m (DESIGN.md §5), where a 0.55 m fern is about 20 px tall
-  // -- small, but nowhere near the 3 px where everything is a smudge. At 20 px
-  // an `arch` 0.6 fern is a narrow upright shuttlecock and an `arch` 2 one is a
-  // wide flat spray, which is a silhouette apart and therefore earns a layer.
-  // The other three axes do not: `pitch` 1.0 vs 1.4 tilts fronds a few degrees,
-  // `fronds` 5 vs 9 changes coverage inside an outline that stays the same
-  // shape, and `taper` only ever touched the last centimetre of a tip. Baking
-  // all sixteen would spend 1 MB to redraw the same two outlines eight times
-  // each; baking one would put every fern in the world at one silhouette.
+  // TWO, cut on `arch`, and the FROND_0 rule picks the axis. The card takes over
+  // at 26 m (§5), where a 0.55 m fern is ~20 px tall -- small, but nowhere near
+  // the 3 px where everything is a smudge. At 20 px an `arch` 0.6 fern is a
+  // narrow upright shuttlecock and an `arch` 2 one is a wide flat spray: a
+  // silhouette apart, so it earns a layer. The other three axes do not. `pitch`
+  // 1.0 vs 1.4 tilts fronds a few degrees, `fronds` 5 vs 9 changes coverage
+  // inside an unchanged outline, and `taper` only touches the last centimetre of
+  // a tip. Sixteen bakes would spend 1 MB redrawing the same two outlines eight
+  // times each; one would put every fern in the world at one silhouette. The
+  // rest of the variety at this range is per-instance and free: yaw spins a
+  // crossed pair through four apparent silhouettes, `scale` is drawn from
+  // [0.75, 1.35] (props/scatter.js).
   //
-  // The variety a player sees at this range is still mostly per-instance: yaw
-  // spins a crossed pair through four apparent silhouettes and `scale` is drawn
-  // from [0.75, 1.35] (props/scatter.js), both of which cost nothing.
-  //
-  // The 20 px figure -- and so this whole call -- is arithmetic, not a looked-at
-  // judgement. `gen-fern.html`'s `card` button is where it gets confirmed.
+  // The 20 px figure is arithmetic, not a looked-at judgement.
+  // `gen-fern.html`'s `card` button is where it gets confirmed.
   IMPOSTOR_FERN_UPRIGHT: 30, // baked from the low-`arch` half of the bank
   IMPOSTOR_FERN_ARCHED: 31, // ...and the high-`arch` half
 
   // --- the ground itself (src/terrain/terrain-material.js) ------------------
   //
-  // The meadow tile. 32 was the rock card's old scratch layer and has been free
-  // since the bank moved to the per-shape run at the bottom of this table, with
-  // a note saying to take the slot rather than grow LAYER_COUNT -- so this took
-  // it. Its pair, TERRAIN_SNOW, is at the far end of the table for want of a
-  // second hole; the two are read together and neither is ever worn as a
-  // `texLayer`, so their indices being apart costs nothing but this sentence.
+  // The meadow tile. 32 was the rock card's old scratch layer, free since the
+  // bank moved to the per-shape run at the bottom of this table. Its pair,
+  // TERRAIN_SNOW, sits at the far end of the table for want of a second hole;
+  // the two are read together and neither is ever worn as a `texLayer`, so their
+  // indices being apart costs nothing but this sentence.
   //
-  // NOT AN ALBEDO, which is what makes one tile enough for a whole world of
-  // grass. The terrain shader divides it by its own linear mean (GRASS_TILE_MEAN
+  // NOT AN ALBEDO, which is what makes one tile enough for a world of grass.
+  // terrain-material.js divides it by its own linear mean (GRASS_TILE_MEAN
   // below) and multiplies the palette by the result, so what ships is a contrast
-  // field averaging (1,1,1): it adds the photograph's grain and its
-  // blade-to-soil colour variation without moving the green that every other
-  // colour in terrain-material.js was tuned against. Same trick, same reasons,
-  // as LAYER.ROCK on a cliff face.
+  // field averaging (1,1,1): the photograph's grain and its blade-to-soil colour
+  // swing, without moving the green everything else there was tuned against.
+  // Same trick and same reasons as LAYER.ROCK on a cliff face.
   //
   // Cut from tmp/grass.jpg by tools/props/cut-terrain.mjs, which is where the
-  // grade -- and in particular what `spread` and `desaturate` decide -- is
-  // argued.
+  // grade -- and what `spread` and `desaturate` decide -- is argued.
   TERRAIN_GRASS: 32,
 
   // --- grass (src/props/grass-bank.js, src/v2/render/grass.js) --------------
@@ -306,75 +267,65 @@ export const LAYER = {
 
   // --- moss (src/material.js MOSS_APPLY) ------------------------------------
   //
-  // Cut from a photograph by tools/props/cut-moss.mjs. Not a prop and not worn
-  // by any geometry: nothing in the world carries MOSS as its `texLayer`. It is
-  // sampled by the SHADER, as a second fetch laid over whatever the surface
-  // already is, wherever MOSS_LAYERS says moss grows.
+  // Cut from a photograph by tools/props/cut-moss.mjs. Not a prop: nothing in
+  // the world carries MOSS as its `texLayer`. The SHADER samples it, as a second
+  // fetch over whatever the surface already is, wherever MOSS_LAYERS says moss
+  // grows. That is what earns it a slot under §9's rule, and the arithmetic is
+  // unusually good: ONE layer puts moss on every rock, trunk, snag, fallen log
+  // and building member in the world, at no triangles, no second material and no
+  // per-prop authoring. Mossy VARIANTS of the tiles that want moss would cost a
+  // layer each and still could not vary within one surface.
   //
-  // That is what makes it worth a slot under §9's earns-its-layer rule, and the
-  // arithmetic is unusually good: ONE layer puts moss on every rock in the
-  // world, and on every trunk, snag, fallen log and building member with them,
-  // at no triangles, no second material and no per-prop authoring. The
-  // alternative -- mossy VARIANTS of the tiles that want moss -- costs a layer
-  // per tile and still cannot vary within one surface.
-  //
-  // It is also the first layer that is deliberately NOT tintable. stone.png is
-  // graded bright and neutral so a per-instance tint decides its hue; moss is
-  // graded to its final colour, because moss on basalt and moss on sandstone are
-  // the same green.
+  // The first layer deliberately NOT tintable. stone.png is graded bright and
+  // neutral so a per-instance tint decides its hue; moss is graded to its final
+  // colour, because moss on basalt and moss on sandstone are the same green.
   MOSS: 35,
 
   // --- mushrooms (src/props/mushroom-texture.js) -----------------------------
   //
-  // Three SHEETS, not three textures: each is a 2x2 grid of 64 px cells, and a
-  // mushroom picks its cell by UV offset. So these three slots carry eight cap
-  // colours and four fleshes -- twelve materials' worth of variety inside the
-  // one shared prop material, at no extra draw call and no extra vertex
-  // attribute. That is the whole reason mushrooms went this way instead of
-  // getting a material of their own: they will be the most numerous and the
-  // smallest prop in the world, and the smallest prop is the worst possible
-  // thing to spend a draw call on.
+  // Three SHEETS, not three textures: each is a 2x2 grid of 64 px cells and a
+  // mushroom picks its cell by UV offset, so three slots carry eight cap colours
+  // and four fleshes inside the one shared prop material -- no extra draw call,
+  // no extra vertex attribute. That is why mushrooms did not get a material of
+  // their own: they will be the most numerous and smallest prop in the world,
+  // and the smallest prop is the worst thing to spend a draw call on.
   //
-  // They are also the first layers with NO photograph behind them and none
-  // coming. Everything else here that looks generated is a stand-in waiting for
-  // loadImageLayers(); these are the shipping art, because a cap is a flat
-  // colour, a rim shade and one pattern, and storing a photo of that would be
-  // storing the output of a function. Zero bytes on disk, no `npm run props`,
-  // and a new colour is an edit to an array rather than a trip through Blender.
+  // The first layers with NO photograph behind them and none coming. Everything
+  // else here that looks generated is a stand-in waiting for loadImageLayers();
+  // these are the shipping art, because a cap is a flat colour, a rim shade and
+  // one pattern, and a photo of that would be storing the output of a function.
+  // Zero bytes on disk, no `npm run props`, and a new colour is an array edit.
   //
-  // Split forest/cave by WHERE rather than by hue because that is the decision
-  // the scatter makes, and because it keeps a cave's palette from bleeding into
-  // a forest one across a mip boundary. FLESH is shared: gills and stalks are
-  // the same picture at different contrast, argued in mushroom-texture.js.
+  // Split forest/cave by WHERE rather than by hue, because that is the decision
+  // the scatter makes and it keeps a cave palette from bleeding into a forest
+  // one across a mip boundary. FLESH is shared: gills and stalks are the same
+  // picture at different contrast, argued in mushroom-texture.js.
   MUSHROOM_CAP: 36,
   MUSHROOM_CAP_CAVE: 37,
   MUSHROOM_FLESH: 38,
 
   // The mushroom's card tiers, ONE PHOTOGRAPH PER SPECIES. Written at load by
-  // photographing the mesh, like the fern and grass impostors, so they are RAM
-  // and zero bytes of disk and they cannot disagree with the geometry they stand
-  // in for.
+  // photographing the mesh, like the fern and grass impostors: RAM, zero bytes
+  // of disk, and they cannot disagree with the geometry they stand in for.
   //
-  // Per SPECIES and not per variant, which is the whole reason there are five of
-  // these and not thirty. mushroom-bank.js builds six shape variants of each
-  // species and every one of them wears its species' single card at its own
-  // width and height -- the same trade tree-bank makes for four sizes of pine,
-  // and it costs less here, because a mushroom's variants differ by stem length
-  // and cap dish rather than by having a different number of parts.
+  // Per SPECIES, not per variant, which is why there are five and not thirty.
+  // mushroom-bank.js builds six shape variants of each and every one wears its
+  // species' single card at its own width and height -- the same trade
+  // tree-bank makes for four sizes of pine, and cheaper here, because a
+  // mushroom's variants differ by stem length and cap dish rather than by having
+  // a different number of parts.
   //
-  // Per species and not one for ALL of them, though, and that is the line worth
-  // holding: at the range the card comes in these five are still five COLOURS --
-  // a scarlet cap, a chestnut one, an amber funnel, a pale parasol and a dark
-  // ink cap -- and colour is the last thing to survive as a prop shrinks. Shape
-  // is what a card gives up; hue is what it is for. Five layers is 320 KB of the
-  // array against 256 KB saved by sharing one, and sharing would put one hue on
-  // the whole forest floor.
+  // Per species and not one for ALL of them, which is the line worth holding: at
+  // card range these five are still five COLOURS -- scarlet cap, chestnut, amber
+  // funnel, pale parasol, dark ink cap -- and colour is the last thing to
+  // survive as a prop shrinks. Shape is what a card gives up; hue is what it is
+  // for. Five layers is 320 KB against 256 KB saved by sharing one, and sharing
+  // would put one hue on the whole forest floor.
   //
   // Both card tiers of a species share its layer -- the two-plane cross at LOD1
-  // and the spun billboard at LOD2 -- exactly as the four tree impostors do, and
-  // for the same reason: they are the same photograph seen two ways, and
-  // material.js's billboardVertex tells them apart by their vertex NORMAL rather
-  // than by their layer. See the note on treeImpostorLayers.
+  // and the spun billboard at LOD2 -- exactly as the four tree impostors do:
+  // same photograph seen two ways, and material.js's billboardVertex tells them
+  // apart by vertex NORMAL rather than by layer. See treeImpostorLayers.
   IMPOSTOR_MUSHROOM_AGARIC: 39,
   IMPOSTOR_MUSHROOM_PORCINI: 40,
   IMPOSTOR_MUSHROOM_CHANTERELLE: 41,
@@ -383,32 +334,29 @@ export const LAYER = {
 
   // --- strewn litter (src/props/litter.js) ----------------------------------
   //
-  // Written at load like the impostors above, and by the same argument, but
-  // photographing something that never exists as a mesh at all: a few dozen
-  // small stones dropped at random on a patch of ground, shot from STRAIGHT
-  // ABOVE. The result is stamped on the terrain as a flat quad, so one layer
-  // buys a whole square metre of stony ground for two triangles.
+  // Written at load like the impostors, by the same argument, but photographing
+  // something that never exists as a mesh: a few dozen small stones dropped at
+  // random on a patch of ground, shot from STRAIGHT ABOVE, stamped on the
+  // terrain as a flat quad. One layer buys a square metre of stony ground for
+  // two triangles.
   //
-  // WHY THIS EXISTS AT ALL: the scatter used to draw that look as geometry, at
-  // a stone every 1.7 m across every cliff and every wood, and the stones were
-  // 11 cm across. Forty-one of them for every rock big enough to read as a
-  // rock, each costing a full BatchedMesh instance whatever its triangle count,
-  // and the whole budget going to things too small to see. The look is worth
-  // having and the geometry was not, which is exactly the trade a texture is
-  // for. See the underfoot bed in v2/render/rocks.js for the other half.
+  // WHY IT EXISTS: the scatter used to draw that look as geometry -- an 11 cm
+  // stone every 1.7 m across every cliff and wood, forty-one of them for every
+  // rock big enough to read as a rock, each a full BatchedMesh instance whatever
+  // its triangle count. The look is worth having and the geometry was not, which
+  // is exactly what a texture is for. See the underfoot bed in
+  // v2/render/rocks.js for the other half.
   //
-  // FOUR AND NOT ONE, because a single patch stamped over a hillside is a
-  // repeat the eye finds immediately -- the same argument the mushroom cards
-  // make for five layers over one, and it is cheaper here: the scatter gives
-  // each stamp a yaw as well, so four layers times four right-angle turns is
+  // FOUR AND NOT ONE, because a single patch stamped over a hillside is a repeat
+  // the eye finds immediately -- the mushroom cards' argument, and cheaper here:
+  // the scatter yaws each stamp, so four layers x four right-angle turns is
   // sixteen apparent patches before mirroring. 256 KB for the set.
   //
-  // NOT IN ANY SNOW LIST, and that is a decision rather than an oversight. The
-  // ground under a litter patch is terrain, and terrain does its own snow in
-  // its own shader; whitening the patch as well would put a second, differently
-  // shaped snow line on top of the first one at the exact place they are
-  // guaranteed to be compared. Bare stone showing through the ground's snow is
-  // both the cheaper answer and the one that looks like wind-scoured scree.
+  // NOT IN ANY SNOW LIST, deliberately. The ground under a patch is terrain, and
+  // terrain does its own snow in its own shader; whitening the patch too would
+  // put a second, differently shaped snow line on top of the first at the exact
+  // place they are guaranteed to be compared. Bare stone showing through the
+  // ground's snow is cheaper and reads as wind-scoured scree.
   LITTER_0: 44,
   LITTER_1: 45,
   LITTER_2: 46,
@@ -435,49 +383,40 @@ export const LAYER = {
 
   // --- building impostors (src/buildings/v2/card.js) ------------------------
   //
-  // A BLOCK OF 20, NOT ONE PER VARIANT, and the block is indexed by MATERIAL
-  // rather than by building: one photograph per wall style x roof kind, and
-  // every building wearing that pair borrows it. `IMPOSTOR_BUILDING` is the
-  // base of the run and `IMPOSTOR_BUILDING + CARD_COMBOS.length - 1` is the top;
-  // card.js owns the order and `LAYER_COUNT` below has to leave room for all of
-  // it.
+  // A BLOCK OF 20, indexed by MATERIAL rather than by building: one photograph
+  // per wall style x roof kind, borrowed by every building wearing that pair.
+  // The run is `IMPOSTOR_BUILDING` to `IMPOSTOR_BUILDING + CARD_COMBOS.length-1`;
+  // card.js owns the order and LAYER_COUNT has to leave room for all of it.
   //
-  // The arithmetic is the whole argument. A photograph per variant is 148
-  // slices of 64 KB -- 9.3 MB of texture to put 4-triangle specks on a
-  // hillside, and 19 MB back when a card took two. Per material pair it is 20
-  // slices, 1.25 MB, and it is complete: the four kinds' legal style x roof
-  // grids union to exactly 20 and a cottage can be built for every one of them,
-  // so a cottage is what gets photographed. What a distant building then wears
-  // is the right WALL and the right ROOF at the wrong proportions, which is the
-  // trade named in card.js and is worth about three pixels at the range the
-  // card comes in.
-  //
-  // The cross still stands its two planes at the real building's own TRUE
-  // widths and height, so the silhouette is the building's; only the picture
-  // inside it is borrowed, and stretched to fit.
+  // The arithmetic is the whole argument. Per variant is 148 slices of 64 KB --
+  // 9.3 MB to put 4-triangle specks on a hillside, and 19 MB when a card took
+  // two planes. Per material pair it is 20 slices, 1.25 MB, and it is complete:
+  // the four kinds' legal style x roof grids union to exactly 20 and a cottage
+  // can be built for every one, so a cottage is what gets photographed. A
+  // distant building then wears the right WALL and right ROOF at the wrong
+  // proportions -- the trade named in card.js, worth about three pixels at card
+  // range. The cross still stands its planes at the real building's TRUE widths
+  // and height, so the silhouette is the building's; only the picture inside it
+  // is borrowed, and stretched to fit.
   IMPOSTOR_BUILDING: 50, // base of a 20-layer run, one per wall style x roof kind
 
   // --- rock impostors (src/props/rock-bank.js, src/v2/render/rocks.js) ------
   //
-  // ONE PHOTOGRAPH PER VARIANT, twenty-five of them, and unlike the building
-  // run above this one really is per shape rather than per material. The
-  // arithmetic that ruled it out for buildings rules it IN here: 25 slices is
-  // 1.6 MB against the 9.3 MB a per-variant building run would have cost, and a
-  // rock has no wall-style x roof-kind grid to collapse along -- its variants
-  // differ in SILHOUETTE, which is the one thing a card is.
+  // ONE PHOTOGRAPH PER VARIANT, twenty-five of them, and unlike the building run
+  // this one really is per shape. The arithmetic that ruled it out there rules
+  // it in here: 25 slices is 1.6 MB against 9.3 MB, and a rock has no wall-style
+  // x roof-kind grid to collapse along -- its variants differ in SILHOUETTE,
+  // which is the one thing a card is.
   //
-  // WHAT IT REPLACES. This was a single layer holding one photograph of one
-  // `boulder`, stretched onto all twenty-five shapes' quads. Measured over the
-  // bank, that stretch ran from 0.29x on a `capslab` -- a boulder squashed to
-  // under a third of its height -- to 4.00x on a `spire`. Every distant rock
-  // that was not roughly boulder-shaped was drawn as a boulder pulled or
-  // crushed into its outline. `rockImpostorLayer` in rock-bank.js is what
-  // indexes this run, and THE CARD in that file carries the rest of the
-  // argument.
+  // WHAT IT REPLACES: a single layer holding one photograph of one `boulder`,
+  // stretched onto all twenty-five shapes' quads. Measured over the bank that
+  // stretch ran 0.29x on a `capslab` (a boulder squashed under a third of its
+  // height) to 4.00x on a `spire`, so every distant rock that was not roughly
+  // boulder-shaped was drawn as a boulder pulled or crushed into its outline.
   //
-  // Base of a 25-layer run: `IMPOSTOR_ROCK + ROCK_NAMES.length - 1` is the top,
-  // rock-bank.js owns the order (it is `ROCK_NAMES`, which is the variant table
-  // in table order), and LAYER_COUNT below has to leave room for all of it.
+  // Base of a 25-layer run ending at `IMPOSTOR_ROCK + ROCK_NAMES.length - 1`;
+  // rock-bank.js owns the order (ROCK_NAMES, the variant table in table order)
+  // and `rockImpostorLayer` there indexes it. LAYER_COUNT must leave room.
   IMPOSTOR_ROCK: 70,
 
   // Crab sheet, same reasoning as the mushroom's: a crab's shape is geometry
@@ -502,33 +441,29 @@ export const LAYER_COUNT = 99
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
-// Snow is a global uniform on the one shared prop material, so the shader has
-// no idea what it is drawing except the layer index it was handed -- and that
-// turns out to be exactly enough, because "is this foliage" IS a property of
-// the layer. No vertex attribute, no second material, no geometry change.
+// Snow is a global uniform on the one shared prop material, so the shader knows
+// nothing about what it is drawing except the layer index -- and that is exactly
+// enough, because "is this foliage" IS a property of the layer. No vertex
+// attribute, no second material, no geometry change.
 //
-// The four IMPOSTOR layers are in the list on purpose. They are pictures of a
-// whole tree, trunk included, so snowing one whitens its trunk too -- which is
-// now what the mesh tiers do as well, because the bark layers snow as wood (see
-// SNOW_WOOD_LAYERS below). It was the right call even when they did not: a green
-// tree at 130 m standing in a white forest is the worse error by a wide margin,
-// and snow does sit along real branches anyway. The impostor bake is unlit and
-// snow-free, so the card stays dynamic: turning snow up whitens LOD2 without
-// rebaking. How MUCH it whitens them is SNOW_CARD_LAYERS' business, below --
-// being in this list buys a card the foliage recipe, not the mesh's threshold.
+// The four TREE IMPOSTORS are in on purpose. They are pictures of a whole tree,
+// trunk included, so snowing one whitens its trunk -- which is what the mesh
+// tiers do too now (see SNOW_WOOD_LAYERS). It was right even before that: a
+// green tree at 130 m in a white forest is the worse error by a wide margin, and
+// snow does sit along real branches. The bake is unlit and snow-free, so the
+// card stays dynamic -- turning snow up whitens LOD2 without rebaking. How MUCH
+// is SNOW_CARD_LAYERS' business: being in this list buys a card the foliage
+// recipe, not the mesh's threshold.
 //
-// DELIBERATELY OUT, and each is one line to add: FROND_0, GRASS, GRASS_TUFT,
-// and the fern and grass impostors. All of them would snow in a real winter,
-// but they sit ON the ground, and the ground is a separate argument (a snowy
-// world wants a snow-covered TERRAIN shader, not white ferns on green grass)
-// that has not been had yet. A tree is IN because a canopy reads against the
-// sky and can be believed on its own; nothing at ankle height can.
-//
-// An impostor always moves with the art it replaces. IMPOSTOR_FERN_* are out
-// because FROND_0 is out and IMPOSTOR_GRASS is out because GRASS_TUFT is: a
-// mesh plant and a card plant standing either side of an LOD boundary would
-// otherwise be green and white. That is the same reasoning that puts the four
-// TREE impostors IN -- they match the foliage they replace.
+// DELIBERATELY OUT, each one line to add: FROND_0, GRASS, GRASS_TUFT, and the
+// fern and grass impostors. All would snow in a real winter, but they sit ON the
+// ground, and the ground is a separate argument (a snowy world wants a snow
+// TERRAIN shader, not white ferns on green grass) that has not been had. A tree
+// is IN because a canopy reads against the sky and can be believed on its own;
+// nothing at ankle height can. An impostor always moves with the art it
+// replaces, which is why IMPOSTOR_FERN_* follow FROND_0 out and IMPOSTOR_GRASS
+// follows GRASS_TUFT: a mesh plant and a card plant either side of an LOD
+// boundary would otherwise be green and white.
 export const SNOW_LAYERS = [
   LAYER.NEEDLES,
   LAYER.LEAVES,
@@ -557,35 +492,32 @@ export const SNOW_LAYERS = [
 
 // --- and which of those are FLAT PHOTOGRAPHS rather than cut foliage ----------
 //
-// A subset of SNOW_LAYERS, not a rival to it: everything here is foliage and
-// snows as foliage. What this list changes is HOW the snow is applied, and it
-// exists because the ordinary recipe has a failure mode that only a card can
-// hit.
+// A subset of SNOW_LAYERS, not a rival: everything here is foliage and snows as
+// foliage. What changes is HOW, because the ordinary recipe has a failure mode
+// only a card can hit.
 //
-// SNOW ON FOLIAGE IS A THRESHOLD, not a blend -- `drift > cut`, with a
-// one-pixel rim. That works because drift VARIES across a real canopy: every
-// leaf card faces its own way, and the blob field varies over the crown. A
-// flat card has neither. Past SNOW_FADE_FAR the blob field is switched off for
-// a constant 0.5 (it is invisible at that range and costs ~145 ALU), and an
-// impostor's normal is uniform over the whole quad by construction -- exactly
-// vertical on the spun billboard. So both terms of drift are constant, the
-// quad crosses the threshold as ONE UNIT, and a tree is either pure white or
-// pure green with nothing between. At the shipping constants that flips at a
-// load of 0.306, so with the foliage cap at 0.25-0.6 it whitens about five
-// trees in six.
+// SNOW ON FOLIAGE IS A THRESHOLD, not a blend -- `drift > cut`, with a one-pixel
+// rim -- and it works because drift VARIES across a real canopy: every leaf card
+// faces its own way and the blob field varies over the crown. A flat card has
+// neither. Past SNOW_FADE_FAR the blob field is switched off for a constant 0.5
+// (invisible at that range, ~145 ALU), and an impostor's normal is uniform over
+// the quad by construction -- exactly vertical on the spun billboard. Both terms
+// of drift go constant, the quad crosses the threshold as ONE UNIT, and a tree
+// is pure white or pure green with nothing between. At the shipping constants
+// that flips at a load of 0.306, so with the foliage cap at 0.25-0.6 it whitens
+// about five trees in six.
 //
 // SO A CARD TAKES ITS OWN INSTANCE'S SNOW LOAD AS A COVERAGE FRACTION instead,
-// once the noise that would have broken it up is gone. That load already
-// carries the per-tree roll, so the far forest varies tree to tree the way it
-// did up close, and it is free: the shader has the number in hand either way.
-// Near enough for the blob field to still be running, the threshold is still
-// the better picture and still what draws -- the two are crossfaded on the
-// same `snowNear` that fades the noise, so nothing pops at the boundary.
+// once the noise that would have broken it up is gone. That load already carries
+// the per-tree roll, so the far forest varies tree to tree the way it did up
+// close, and it is free -- the shader has the number either way. Near enough for
+// the blob field to still run, the threshold is still the better picture and
+// still what draws; the two crossfade on the same `snowNear` that fades the
+// noise, so nothing pops.
 //
-// This is the one thing the SNOW_LAYERS note above got wrong when it said a
-// noise-dominated recipe survives being flattened onto a card. It survives
-// while there is noise. The recipe and the fade were tuned against meshes, and
-// past 40 m there is no noise left to dominate.
+// The recipe and the fade were tuned against meshes, and a noise-dominated
+// recipe survives being flattened onto a card only while there IS noise. Past
+// 40 m there is none left to dominate.
 export const SNOW_CARD_LAYERS = [
   LAYER.IMPOSTOR_PINE,
   LAYER.IMPOSTOR_OAK,
@@ -598,80 +530,70 @@ export const SNOW_CARD_LAYERS = [
 // --- and which layers snow settles on AS STONE rather than as foliage --------
 //
 // Same uniform, same noise at the same size, same one material -- a second list
-// rather than more entries in the first one, because a boulder fills in from the
-// top down more decisively than a canopy does. Both are patches of noise; stone
-// simply leans twice as hard on which way the surface faces, so the top whitens
-// first and an underside goes last. That is ONE weight, SNOW_ROCK_UP in
-// src/material.js, and the reasoning lives with it -- including why leaning it
-// any harder than that is the wrong answer on a faceted rock.
+// rather than more entries in the first, because a boulder fills in from the top
+// down more decisively than a canopy does. Both are patches of noise; stone
+// leans twice as hard on which way the surface faces, so the top whitens first
+// and an underside goes last. That is ONE weight, SNOW_ROCK_UP in
+// src/material.js, where the reasoning lives -- including why leaning harder
+// than that is wrong on a faceted rock.
 //
-// The lists must stay DISJOINT. A layer in both would be counted by both masks
-// and take the foliage weight, which is silently the wrong look rather than an
-// error; scripts/check-rocks.mjs gates it.
+// The lists must stay DISJOINT: a layer in both is counted by both masks and
+// takes the foliage weight, which is silently the wrong look rather than an
+// error. scripts/check-rocks.mjs gates it.
 //
-// IMPOSTOR_ROCK is deliberately not here, and the reason is sharper than the one
-// that keeps the fern cards out. A rock card cannot wear the stone lean at all:
-// its normals are outward and horizontal by construction (impostor.js), so every
-// fragment of it reads as a sheer face and the lean has nothing to bite on. The
-// four TREE impostors are in the foliage list because a noise-dominated recipe
-// does survive being flattened onto a card. So a snowed rock's LOD2 shows bare
-// stone, which is one more entry on the bench's running case against a rock card
-// (see LAYER.IMPOSTOR_ROCK above); if the ladder ever ships one, the card has to
-// bake its snow in.
+// IMPOSTOR_ROCK is out for a sharper reason than the fern cards. A rock card
+// cannot wear the stone lean at all -- its normals are outward and horizontal by
+// construction (impostor.js), so every fragment reads as a sheer face and the
+// lean has nothing to bite on. So a snowed rock's LOD2 shows bare stone, one
+// more entry on the bench's case against a rock card; if the ladder ever ships
+// one, the card has to bake its snow in.
 export const SNOW_ROCK_LAYERS = [LAYER.ROCK]
 
 // --- and the same recipe again, on WOOD --------------------------------------
 //
 // Wood fills in from the top down exactly as stone does, and the brief stone was
-// written against fits a log word for word: a fallen log's upper surface
-// whitens first, its flanks are about half covered by the time that top is
-// solid, and its underside is the last thing to go. So this list takes the SAME
-// weight as stone -- SNOW_ROCK_UP, in src/material.js -- and it is a separate
-// NAME rather than a separate recipe. material.js concatenates the two into one
-// uniform because "surfaces that fill in from the top down" is ONE family; they
-// are two lists here because "stone" and "wood" are two facts, and the day one
-// of them wants its own weight the split is already made.
+// written against fits a log word for word: the upper surface whitens first, the
+// flanks are about half covered by the time the top is solid, the underside goes
+// last. So this takes the SAME weight -- SNOW_ROCK_UP in src/material.js -- and
+// is a separate NAME rather than a separate recipe. material.js concatenates the
+// two into one uniform because "surfaces that fill in from the top down" is ONE
+// family; they are two lists because "stone" and "wood" are two facts, and the
+// day one wants its own weight the split is already made.
 //
-// THIS IS A REAL CHANGE TO WHAT SHIPS, and the honest way to put it is that tree
-// TRUNKS now snow. What a winter forest looked like before was white canopies
-// standing on bare brown trunks -- while the LOD2 impostor of the same tree,
-// which is a photograph of the WHOLE tree, trunk included, whitened as one
-// picture. So the mesh tiers and the card tier disagreed with each other across
-// an LOD boundary, and this removes an inconsistency that was already shipping
-// rather than inventing a look.
+// THIS IS A REAL CHANGE TO WHAT SHIPS: tree TRUNKS now snow. Before, a winter
+// forest was white canopies on bare brown trunks -- while the LOD2 impostor of
+// the same tree, a photograph of the WHOLE tree, whitened as one picture. The
+// mesh tiers and the card tier disagreed across an LOD boundary; this removes an
+// inconsistency that was already shipping rather than inventing a look.
 //
-// TIMBER_BEAM carries the change onto buildings as well, because it is what
-// every raw member of one wears -- log courses, posts, rails, jambs. That is the
-// same answer for the same reason: a log wall is a stack of logs, and snow on a
-// log is snow on a log whether somebody built with it or it fell over.
+// TIMBER_BEAM carries it onto buildings, since it is what every raw member wears
+// -- log courses, posts, rails, jambs. A log wall is a stack of logs, and snow on
+// a log is snow on a log whether somebody built with it or it fell over.
 //
-// Must stay DISJOINT from SNOW_LAYERS, on exactly the terms the stone list is: a
-// layer in both is counted by both masks and then silently takes the foliage
-// weight, which is a wrong picture rather than an error.
+// Must stay DISJOINT from SNOW_LAYERS on exactly the stone list's terms: a layer
+// in both is counted twice and silently takes the foliage weight.
 export const SNOW_WOOD_LAYERS = [LAYER.BARK, LAYER.BARK_BIRCH, LAYER.BARK_PINE, LAYER.TIMBER_BEAM]
 
 // --- and which layers moss grows on ------------------------------------------
 //
-// A third list, and unlike the two above it does not select weights -- it
-// selects whether MOSS_APPLY runs at all. Snow recolours what is already there;
-// moss lays a SECOND TEXTURE over it, so this list is the set of surfaces that
-// pay an extra atlas fetch, and that is a reason to keep it short.
+// A third list, and unlike the two above it selects whether MOSS_APPLY runs at
+// all rather than which weight. Snow recolours what is already there; moss lays
+// a SECOND TEXTURE over it, so this is the set of surfaces paying an extra atlas
+// fetch -- a reason to keep it short.
 //
-// STONE AND WOOD. Bark was out of this list for one stated reason -- moss up a
-// trunk wants a HEIGHT cue, because it grows at the foot and gives out a metre
-// or two up, and the rock recipe had no notion of one -- and that reason is now
-// answered: MOSS_RISE in src/material.js is the cue, measured from the
-// instance's OWN root rather than from sea level, so a standing trunk is green
-// at the foot and clean at the break.
+// STONE AND WOOD. Bark was out for one stated reason -- moss up a trunk wants a
+// HEIGHT cue, because it grows at the foot and gives out a metre or two up, and
+// the rock recipe had none -- and that is now answered: MOSS_RISE in
+// src/material.js measures from the instance's OWN root rather than sea level,
+// so a standing trunk is green at the foot and clean at the break. A FALLEN LOG
+// then needs no special case, which is what makes the cue worth having rather
+// than bolted on for snags: every part of a log on the ground is within a
+// diameter of its own root height, so the cue reads ~1 end to end and it is
+// mossy the whole way.
 //
-// A FALLEN LOG then needs no special case at all, which is what makes the cue
-// worth having rather than a thing bolted on for snags: every part of a log
-// lying on the ground is within a diameter of its own root height, so the cue
-// reads ~1 down the log's whole length and it is mossy end to end.
-//
-// IMPOSTOR_ROCK is out for a duller reason than it is out of the snow lists: a
-// card is photographed from the mesh, so if the mesh was mossy when it was
-// baked, the moss is already in the picture. Mossing it again would double it.
+// IMPOSTOR_ROCK is out for a duller reason than in the snow lists: a card is
+// photographed from the mesh, so if the mesh was mossy when baked, the moss is
+// already in the picture and mossing it again would double it.
 export const MOSS_LAYERS = [LAYER.ROCK, LAYER.BARK, LAYER.BARK_BIRCH, LAYER.BARK_PINE, LAYER.TIMBER_BEAM]
 
 // --- what LAYER.ROCK actually looks like -------------------------------------
@@ -694,23 +616,21 @@ export const ROCK_TILE_MEAN = [0.1148, 0.0933, 0.077]
 // --- and the same number for the two GROUND tiles ----------------------------
 //
 // Measured off the shipped files by tools/props/cut-terrain.mjs, which prints
-// them at the end of every run so they can be copied here. They serve exactly
-// one purpose and it is the same one ROCK_TILE_MEAN serves: terrain-material.js
-// divides the tile by this, which turns a photograph into a contrast field
-// averaging (1,1,1), so the tile adds grain and colour VARIATION and moves the
-// terrain palette neither darker nor warmer.
+// them at the end of every run to be copied here. Same purpose as
+// ROCK_TILE_MEAN: terrain-material.js divides the tile by this, turning a
+// photograph into a contrast field averaging (1,1,1), so the tile adds grain and
+// colour VARIATION and moves the palette neither darker nor warmer.
 //
-// A STALE VALUE HERE DOES NOT FAIL, it quietly regrades every metre of ground in
-// the world -- the divide is a multiply by 1/mean, so a copy that is 20% low
-// makes the whole meadow 20% brighter. That is why these are gated:
-// scripts/check-rocks.mjs re-measures both PNGs and fails on more than 2% drift,
-// the same guard ROCK_TILE_MEAN has.
+// A STALE VALUE DOES NOT FAIL, it quietly regrades every metre of ground in the
+// world -- the divide is a multiply by 1/mean, so a copy 20% low makes the whole
+// meadow 20% brighter. Hence the gate: scripts/check-rocks.mjs re-measures both
+// PNGs and fails on more than 2% drift, the same guard ROCK_TILE_MEAN has.
 //
-// TERRAIN_GRASS_PLACEHOLDER and TERRAIN_SNOW_PLACEHOLDER are the sRGB bytes
-// these means decode from. buildTextureArray fills the two slices with them flat
-// so that, for the few frames before loadImageLayers lands, the field is exactly
-// 1.0 and the ground is the untextured palette rather than -- as an unpatched
-// transparent-black slice would make it -- black.
+// The two PLACEHOLDER constants are the sRGB bytes these means decode from.
+// buildTextureArray fills the slices with them flat, so for the few frames
+// before loadImageLayers lands the field is exactly 1.0 and the ground is the
+// untextured palette rather than -- as an unpatched transparent-black slice
+// would make it -- black.
 export const GRASS_TILE_MEAN = [0.0502, 0.0813, 0.0177]
 export const SNOW_TILE_MEAN = [0.3419, 0.3467, 0.3663]
 export const TERRAIN_GRASS_PLACEHOLDER = [63, 81, 36]
@@ -719,22 +639,18 @@ export const TERRAIN_SNOW_PLACEHOLDER = [158, 159, 163]
 // ---------------------------------------------------------------------------
 // How many world METRES one [0,1] UV span of a tiling layer covers.
 //
-// This table is why buildings do not need per-face UV unwrapping. Every surface
-// the parts kit emits takes its UVs straight from world-space extents divided
-// by the entry here, so a 3.6 m log wall gets u from 0 to 4 and RepeatWrapping
-// does the rest. Two consequences worth stating because they are the payoff:
+// This table is why buildings need no per-face UV unwrapping: every surface the
+// parts kit emits takes its UVs from world-space extents divided by the entry
+// here, so a 3.6 m log wall gets u from 0 to 4 and RepeatWrapping does the rest.
+// The payoff is two things. Texel density is automatically constant -- a cottage
+// wall and an inn wall get the same log courses per metre without anyone
+// deciding, which is what most makes a procedural kit look authored. And nothing
+// has to be re-UV'd when a mass is resized; the previewer's sliders change
+// extents freely and the texture covers more wall.
 //
-//   Texel density is automatically constant. A cottage wall and an inn wall get
-//   the same number of log courses per metre without anyone deciding, which is
-//   the single thing that most makes a procedural kit look authored.
-//
-//   Nothing has to be re-UV'd when a mass is resized. The previewer's sliders
-//   change extents freely and the texture simply covers more of the wall.
-//
-// The NUMBERS are art direction and belong to the previewer, not to a spec:
-// they are the answer to "how big is one log", and they are meant to be tuned
-// by eye against a 1.75 m door. Layers absent from this table are decal sheets,
-// which are addressed by island and never scaled.
+// The NUMBERS are art direction and belong to the previewer, not to a spec: they
+// answer "how big is one log", tuned by eye against a 1.75 m door. Layers absent
+// from this table are decal sheets, addressed by island and never scaled.
 // ---------------------------------------------------------------------------
 export const TILE_METRES = {
   // These follow the SHIPPED tile, not the generator that stands in for it for
@@ -1042,40 +958,36 @@ async function decodeLayer(url) {
 // disk stays the art as EZ-Tree drew it.
 // ---------------------------------------------------------------------------
 
-// The tuft PNG's bottom quarter is its densest and its darkest -- 45-52% of
-// each row opaque against 4-20% higher up, mean luminance 81-120 against
-// 160-190 -- and it ends in a straight cut at the last row. Every card in the
-// carpet wears that same picture, so a bed of them shares ONE horizontal dark
-// line, which is the most obviously synthetic thing about the grass.
+// The tuft PNG's bottom quarter is its densest and darkest -- 45-52% of each row
+// opaque against 4-20% higher up, mean luminance 81-120 against 160-190 -- and
+// it ends in a straight cut at the last row. Every card in the carpet wears that
+// same picture, so the bed shares ONE horizontal dark line, the most obviously
+// synthetic thing about the grass.
 //
-// THE LINE THE EYE FINDS IS NOT THE CARD'S OWN EDGE. render/grass.js sinks
-// every tuft by PLACEMENT.sink scaled with the instance, which is a constant
-// 0.04 / 0.55 = 7.3% of the card's height at any size, so the terrain cuts the
-// picture at v = 0.927 and the rows below that are buried whatever we do here.
-// The fray therefore has to bite WELL above that line to be worth anything,
-// which is what `top` is set against: the deepest column is cut 25 texels clear
-// of the ground line, so that most of the band the fray works in is a band the
-// player can see. Confined to the card's own bottom eighth it was work done
-// underground, and the hem survived.
+// THE LINE THE EYE FINDS IS NOT THE CARD'S OWN EDGE. render/grass.js sinks every
+// tuft by PLACEMENT.sink scaled with the instance -- a constant 0.04 / 0.55 =
+// 7.3% of card height at any size -- so the terrain cuts the picture at v = 0.927
+// and everything below is buried whatever we do here. The fray has to bite WELL
+// above that line, which is what `top` is set against: the deepest column is cut
+// 25 texels clear of the ground line. Confined to the bottom eighth it was work
+// done underground, and the hem survived.
 //
-// EACH COLUMN OF THE PICTURE GETS ITS OWN CUT HEIGHT and THE TEXEL'S OWN
-// BRIGHTNESS LIFTS IT BACK, so the foot of the card becomes a row of separate
-// stalks instead of a hem: 21.5% of the tuft's opaque texels go, and at the
-// ground row 33 of 58 survive, in clumps rather than in a line. The two terms
-// are not weighted against each other: the column
-// roll sets a floor and brightness raises the texel from there toward the foot
-// of the card, so a fully lit blade reaches the bottom of the square in ANY
-// column. That is what makes this eat the dark away rather than shorten the
-// card -- the shadowed mass at the base of the clump goes and the lit blades
-// running through it stay, standing on the ground rather than hovering over it.
+// EACH COLUMN GETS ITS OWN CUT HEIGHT and THE TEXEL'S OWN BRIGHTNESS LIFTS IT
+// BACK, so the foot becomes a row of separate stalks instead of a hem: 21.5% of
+// the tuft's opaque texels go, and at the ground row 33 of 58 survive, in clumps
+// rather than a line. The terms are not weighted against each other -- the column
+// roll sets a floor and brightness raises the texel from there toward the foot,
+// so a fully lit blade reaches the bottom of the square in ANY column. That is
+// what eats the dark away rather than shortening the card: the shadowed mass at
+// the base of the clump goes and the lit blades through it stay, standing on the
+// ground rather than hovering over it.
 //
-// AT LOAD, NOT IN THE FRAGMENT SHADER, and the density is what settles it.
-// Grass is about 45% of the world's rasterised pixels (render/grass.js), so a
-// per-fragment fray would recompute a decision that never changes some two
-// million times a frame. Doing it once into the layer also carries it into the
-// far tier for nothing: bakeGrassImpostor photographs THIS layer after this has
-// run, so the billboard is a picture of a frayed tuft and the silhouette does
-// not change across the LOD swap.
+// AT LOAD, NOT IN THE FRAGMENT SHADER, and density settles it: grass is ~45% of
+// the world's rasterised pixels (render/grass.js), so a per-fragment fray would
+// recompute an unchanging decision some two million times a frame. Baking it
+// into the layer also carries it into the far tier for nothing --
+// bakeGrassImpostor photographs THIS layer after this has run, so the silhouette
+// does not change across the LOD swap.
 //
 // WHAT THAT COSTS is that all 23,000 tufts are frayed identically. The same
 // argument grass-bank.js makes for TUFT_TWIST being a constant applies unchanged

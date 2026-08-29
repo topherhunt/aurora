@@ -158,8 +158,8 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
   // triangles. That is not a hole in the claim: the check above builds every
   // variant and compares the formula against the mesh, so what is being ruled out
   // here is the cost reading state it should not, and a snag says it cleanly.
-  const a = deadwoodCost(deadwoodParams('stump-2m-oak', 1), 0)
-  const b = deadwoodCost(deadwoodParams('stump-2m-oak', 999), 0)
+  const a = deadwoodCost(deadwoodParams('stump-3m-oak', 1), 0)
+  const b = deadwoodCost(deadwoodParams('stump-3m-oak', 999), 0)
   check(a.triangles === b.triangles, 'and a snag\'s cost does not depend on the seed', `${a.triangles} == ${b.triangles}`)
   // The other half of the same coin: the log's roll has to be VISIBLE to the
   // formula, or the bench's budget table would print one number while the world
@@ -1392,7 +1392,7 @@ const EMPTY_FOREST = mockForest([])
 
   const ANGLES = 720
   const SEEDS = 200
-  const stumpP = { ...deadwoodParams('stump-2m-oak', 1), tier: 0 }
+  const stumpP = { ...deadwoodParams('stump-3m-oak', 1), tier: 0 }
   const depthOf = (rim) => rim.reduce((a, t) => a + (1 - t), 0) / rim.length
   const rims = []
   for (let seed = 1; seed <= SEEDS; seed++) rims.push(deadwoodRim({ ...stumpP, seed }, 1, ANGLES))
@@ -1535,7 +1535,7 @@ const EMPTY_FOREST = mockForest([])
   // And it is a real displacement rather than a millimetre nobody would see.
   check(reach > 0.05 && pinch < -0.005,
     'and the fins reach out while the gaps pinch in',
-    `out ${(reach * 100).toFixed(1)} cm, in ${(pinch * 100).toFixed(1)} cm, on stumps built at 1.5-2 m`)
+    `out ${(reach * 100).toFixed(1)} cm, in ${(pinch * 100).toFixed(1)} cm, on ${stumps.join(', ')}`)
 
   // A LOG HAS NO CROWN. Buttresses are what a trunk does where it dives into
   // soil; a piece broken out of the middle of one never had them, and a ring of

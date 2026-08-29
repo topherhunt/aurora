@@ -17,11 +17,10 @@ import { LAYER } from '../textures.js'
 // the two differ, because the differences are all consequences of one fact:
 // A PIECE OF DEAD WOOD IS LONG AND LIES DOWN.
 //
-//   ONE PHOTOGRAPH PER ATTITUDE, not per species. A stump and a log share
-//   nothing in silhouette and a billboard carries nothing but silhouette; an oak
-//   log and a birch log share everything except a bark tile the card is 20 m too
-//   far away to resolve. So two layers rather than eighteen. The argument and
-//   the one case it costs (birch) are written out at LAYER.IMPOSTOR_DEADWOOD_*.
+//   ONE PHOTOGRAPH PER ATTITUDE. A stump and a log share nothing in silhouette
+//   and a billboard carries nothing but silhouette, so two layers. The argument
+//   and the one case it costs (birch, back when a piece could be birch) are
+//   written out at LAYER.IMPOSTOR_DEADWOOD_*.
 //
 //   THE QUAD IS SCALED TO THE VARIANT'S OWN ASPECT, which is exactly what
 //   mushroom-bank refuses to do -- it scales its quads by a single ratio so a
@@ -37,26 +36,26 @@ import { LAYER } from '../textures.js'
 //   tiers cover everything inside 20 m, where a crossed pair would still be
 //   worse than the 44-triangle T1 it would be replacing.
 //
-// The bank is built at construction, handed to BatchedMesh.addGeometry() and
-// disposed. No offline bake step, exactly as the other three banks.
+// The bank is built at construction and handed to render/prop-arena.js, which
+// TAKES the geometries -- an InstancedMesh draws the very object it was given,
+// so the caller must not dispose them. No offline bake step, exactly as the
+// other three banks.
 // ---------------------------------------------------------------------------
 
 /**
  * How many seeds each named variant is rolled at.
  *
- * The named table is combinatorial and deliberately coarse -- length and species
- * -- so it says nothing about the bend, the kink, where the bark came off, or
- * where the stubs are, and all of those are seeded. On a LOG the seed now also
- * decides how chewed both ends are and how many stubs it carries (see
- * LOG_ROLLS), which is what let that axis come out of the name. Two rolls per
- * name is 24 slots, and the scatter's own yaw and per-instance scale multiply
- * that out again.
+ * ONE, and the reason is the arena rather than the generator. A slot is a
+ * separate InstancedMesh in every tier (render/prop-arena.js), so a second seed
+ * is three more draw calls per name for a difference -- the bend, the kink,
+ * where the bark came off, how chewed the ends are -- that a player meets one
+ * piece at a time and reads as the same log twice as readily as two.
  *
- * Two and not three because a slot is a real cost here in a way it is not for a
- * mushroom: dead wood is 70-odd triangles at T0 against a mushroom's handful, so
- * 24 slots is already a third of the whole mushroom bank's 90.
+ * The constant stays rather than being folded away because it is the honest
+ * dial: dead wood is the rarest prop in the wood, and if a walk through it ever
+ * looks stamped this is the number to turn up, at three draw calls a name.
  */
-export const DEADWOOD_SEEDS = 2
+export const DEADWOOD_SEEDS = 1
 
 /**
  * The subject each attitude's photograph is taken of, and the layer it lands in.
@@ -67,7 +66,7 @@ export const DEADWOOD_SEEDS = 2
  * thing the layer stands in for, not the average one.
  */
 const CARD_SUBJECTS = {
-  snag: { name: 'stump-2m-oak', layer: LAYER.IMPOSTOR_DEADWOOD_SNAG },
+  snag: { name: 'stump-3m-oak', layer: LAYER.IMPOSTOR_DEADWOOD_SNAG },
   log: { name: 'log-4m-oak', layer: LAYER.IMPOSTOR_DEADWOOD_LOG },
 }
 
@@ -170,8 +169,8 @@ function geometryBytes(geo) {
  * the geometry for tier `t` and variant id `v`. All three tiers are the same
  * length, so a band index and a variant id are independent lookups.
  *
- * The caller owns the geometries and MUST dispose them once they are in the
- * batch -- BatchedMesh copies the vertex data into its own arena.
+ * The arena TAKES the geometries; the caller must NOT dispose them. See the
+ * header.
  *
  * The CARD tier arrives as quads with no pixels behind them; the photograph
  * needs a live renderer and this runs in a constructor and in node. See

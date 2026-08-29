@@ -165,7 +165,7 @@ console.log('\n-- wind --')
 
   // Bending must happen after begin_vertex creates `transformed` and before
   // project_vertex applies the instance matrix.
-  check(v.indexOf('#include <begin_vertex>') < v.indexOf('transformed.x += bend'),
+  check(v.indexOf('#include <begin_vertex>') < v.indexOf('transformed.xz += bladeDir * bend'),
     'the bend is applied after transformed exists')
 
   // The whole bed is instanced. Without the guard this is a compile error on
@@ -183,6 +183,18 @@ console.log('\n-- wind --')
   // Phase off the clump's world origin, or the whole field nods in unison.
   check(v.includes('bladeRoot.x') && v.includes('bladeRoot.z'),
     'and the phase comes from the clump\'s world position, so the gust travels')
+
+  // A CLUMP IS TEN PLANTS, NOT ONE OBJECT. Every term below is what stops the
+  // bundle moving rigidly: without them the ten blades share a phase, a rate, an
+  // axis and a reach, and a clump dances rather than sways. The seed is per
+  // blade and the clump seed is per instance, so both halves have to be in.
+  check(v.includes('aBladeSeed') && v.includes('clumpSeed'),
+    'each blade sways off its own seed, mixed with the clump\'s')
+  check(v.includes('+ bladeA * 6.2831853'), 'with its own phase offset')
+  check(v.includes('uTime * uWindSpeed * ( 0.7 + 0.6 * bladeA )'), 'and its own cadence')
+  check(v.includes('vec2 bladeDir'), 'and its own axis, off a second decorrelated seed')
+  check(!v.includes('sin( dot('),
+    'and none of the jitter costs a sin -- this is the densest bed in the world')
 
   // THE MEADOW IS ON THE GLOBAL WIND SWITCH. setWindEnabled walks a private set
   // that only registered materials are in, and a material has to read the flag
@@ -223,8 +235,31 @@ check(b.length === 10, 'ten blades, one triangle each -- the entire budget argum
 // A stray attribute is not free: the bed is one InstancedMesh, so every extra
 // float here is multiplied by 30 vertices and then by every clump in the disc.
 const attrs = Object.keys(geo.attributes).sort().join(' ')
-check(attrs === 'aBladeT color normal position', 'four attributes and no uv', attrs)
+check(attrs === 'aBladeSeed aBladeT color normal position',
+  'five attributes and no uv', attrs)
 check(geo.getAttribute('aBladeT').itemSize === 1, 'the ramp is a scalar')
+
+// The wind needs to tell blade from blade. A seed that repeats inside a clump is
+// two blades moving as one; a seed that varies across a triangle tears the blade
+// apart between its corners.
+{
+  const seed = geo.getAttribute('aBladeSeed').array
+  check(geo.getAttribute('aBladeSeed').itemSize === 1, 'the blade seed is a scalar')
+  let torn = 0
+  const seen = new Set()
+  for (let i = 0; i < BLADE_DEFAULTS.blades; i++) {
+    const s0 = seed[i * 3]
+    if (seed[i * 3 + 1] !== s0 || seed[i * 3 + 2] !== s0) torn++
+    seen.add(s0)
+  }
+  check(torn === 0, 'and it is constant across each blade', `${torn} blades torn`)
+  check(seen.size === BLADE_DEFAULTS.blades,
+    'and no two blades of a clump share it', `${seen.size} distinct of ${BLADE_DEFAULTS.blades}`)
+  let outOfRange = 0
+  for (const s of seen) if (!(s >= 0 && s < 1)) outOfRange++
+  check(outOfRange === 0, 'and every seed lands in 0..1, which is what the shader assumes',
+    `${outOfRange} outside`)
+}
 
 check(!!geo.boundingSphere && geo.boundingSphere.radius > 0,
   'and the bounding sphere is computed at build time',

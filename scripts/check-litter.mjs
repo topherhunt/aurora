@@ -769,17 +769,17 @@ console.log('\nstamps')
 // 11. All four baked pictures reach the hill.
 // ---------------------------------------------------------------------------
 //
-// The atlas layer a prop samples is a per-VERTEX attribute, so "which of the four pictures" is a choice of GEOMETRY: four copies of the same quad differing in one float, picked with `Math.min(3, (layerRoll * 4) | 0)`. Nothing else in the system would notice if that roll collapsed -- three of the four bakes would simply never be seen, the hill would be stamped with one photograph, and every count, spacing and matrix check above would stay green.
+// "Which of the four pictures" is one per-instance float, `texLayer`, picked with `Math.min(3, (layerRoll * 4) | 0)` over the arena's single quad. Nothing else in the system would notice if that roll collapsed -- three of the four bakes would simply never be seen, the hill would be stamped with one photograph, and every count, spacing and matrix check above would stay green.
 
 console.log('\nlayers')
 
 {
   const SHARE_BAND = [0.2, 0.3]
   const l = worlds.shore
-  const counts = new Array(l.quadIds.length).fill(0)
+  const counts = new Array(LITTER_LAYERS.length).fill(0)
   for (const id of liveIds(l)) {
-    const slot = l.quadIds.indexOf(l.batch.getGeometryIdAt(id))
-    if (slot < 0) throw new Error(`a litter instance is drawing a geometry that is not one of the ${l.quadIds.length} quads`)
+    const slot = LITTER_LAYERS.indexOf(l.batch.getAttrAt(l.texLayerAttr, id))
+    if (slot < 0) throw new Error('a litter instance is wearing a texLayer that is not one of the four baked pictures')
     counts[slot]++
   }
   const total = counts.reduce((a, b) => a + b, 0)

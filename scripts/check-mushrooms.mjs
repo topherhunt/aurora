@@ -241,7 +241,7 @@ const LAYOUT = ['normal', 'position', 'texLayer', 'uvProj'] // sorted
   }
   check(wrongAttrs === 0, 'every geometry is exactly { position, normal, uvProj, texLayer }',
     wrongAttrs === 0 ? `${SHAPES.length} shapes` : `${wrongAttrs} wrong -- ${firstWrong}`)
-  check(unindexed === 0, 'every geometry is indexed (BatchedMesh refuses otherwise)', `${unindexed} not`)
+  check(unindexed === 0, 'every geometry is indexed (the triangle count the scatter prices with needs it)', `${unindexed} not`)
   check(nan === 0, 'no NaN in any attribute', `${nan} shapes with NaN`)
   check(wrongCount === 0, 'the vertex layout this file assumes is the one addMushroom emits',
     wrongCount === 0 ? 'cap / underside / blades / stem / ring, per member' : firstWrong)
@@ -1197,7 +1197,7 @@ const DISTINCT = []
   }
   check(wrongAttrs === '', 'every bank geometry is exactly { position, normal, uvProj, texLayer }',
     wrongAttrs === '' ? `${DISTINCT.length} distinct geometries, meshes and cards alike` : `first wrong set: ${wrongAttrs}`)
-  check(unindexed === 0, 'and every one of them is indexed (BatchedMesh refuses otherwise)',
+  check(unindexed === 0, 'and every one of them is indexed (the triangle count the scatter prices with needs it)',
     `${unindexed} not`)
 
   // Section 2 proves the formula against buildMushroom's own output; this
@@ -1297,7 +1297,7 @@ const DISTINCT = []
   })
   check(worstPop < 0.10,
     'and no card is more than 10% the wrong height for the mesh it replaces, so the LOD swap does not resize the mushroom',
-    `worst ${(worstPop * 100).toFixed(1)}% at ${worstPopAt}; a card shared across MUSHROOM_SIZES would be 25%`)
+    `worst ${(worstPop * 100).toFixed(1)}% at ${worstPopAt}; a card cut for one size and worn by a 0.8 one would be 25%`)
 
   // The coarse mesh tier is held to a far tighter line than a card, because it
   // is the SAME mesh with fewer columns rather than a stand-in: height comes off

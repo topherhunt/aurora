@@ -3,7 +3,10 @@ import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { buildShipFernTiers, shipFernCard, bakeShipFernImpostor } from '../../props/fern-bank.js'
 import { FERN_DEFAULTS } from '../../props/fern.js'
-import { createPropMaterial, setSnowLine } from '../../material.js'
+import {
+  createPropMaterial, setSnowLine,
+  setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS,
+} from '../../material.js'
 import { InstancedArena } from './instanced-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -32,50 +35,56 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //   uniform scale over SCALE_RANGE, a small tilt off vertical, and the ground
 //   cue below.
 //
-//   ONE ARENA PER RING. Three meshes -- LOD0, LOD1, card -- where the forest has
+//   ONE ARENA PER RING. Three meshes -- LOD0, LOD2, card -- where the forest has
 //   one, and an instance CHANGES TIER BY MOVING between them. Three draw calls
 //   for the layer, which is the price of the fifty fps.
 //
 //   THE CARD ARENA IS EVERY FERN'S HOME. Its ids are the bed's ids: `tile.ids`,
 //   instX/instY/instZ and the rim all address it and nothing else, and a fern is
-//   only ever on LOAN to a mesh ring. The two ring pools are therefore tiny --
-//   sized to their own ring rather than to the bed -- and that matters because an
-//   InstancedMesh draws a contiguous `count` and cannot skip a hidden instance.
+//   only ever on LOAN to a mesh ring.
+//
+//   NOTHING HIDDEN IS BILLED. The arena packs its live instances densely and
+//   `count` is the population actually on screen, so a fern the rim has
+//   dissolved away, or one waiting in a pool, costs nothing at all. Half the
+//   card ring is rim-hidden at any moment -- that IS the graded thinning -- and
+//   the triangle numbers below are what is drawn rather than what is placed.
 //
 // A tree scatter is 500 stems per hectare. This is 5,000. At that multiplier
 // the cheap parts of the tree design stop being cheap and the expensive part
 // (the far tier) stops being optional.
 //
-// WHAT HALF A FERN PER SQUARE METRE COSTS. With DENSITY 0.5, FULL_RADIUS 35 and
-// DRAW_RADIUS 90 the graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = ~1,900 inside
-// plus ~6,000 beyond. Measured over flat unrejecting ground it comes out at
-// 9,144 across 172 tiles -- above the closed form, which is the deliberate
-// over-keep the forest's header explains -- and they land in the rings like
-// this:
+// WHAT HALF A FERN PER SQUARE METRE COSTS. With DENSITY 0.5, FULL_RADIUS 35,
+// DRAW_RADIUS 90 and FALLOFF 3 the graded law integrates to
+// pi*F^2*D + 2*pi*D*F^2*(1 - F/R) = ~1,900 inside plus ~2,400 beyond. Measured
+// over flat unrejecting ground it comes out at ~6,700 placed -- well above the
+// closed form, which is the deliberate over-keep the forest's header explains,
+// and the rim then dissolves the surplus away rather than drawing it. What a
+// walking camera actually SUBMITS, averaged over a 40 m walk:
 //
 //   0-5 m    LOD0 (6 seg)          36 x 108 =  3.9k tri
-//   5-14 m   LOD1 (4 seg)         272 x 72  = 19.6k tri
-//   14-90 m  billboard          8,836 x 2   = 17.7k tri
-//                                             ~41k tri
+//   5-10 m   LOD2 (2 seg)         133 x 36  =  4.8k tri
+//   10-90 m  billboard          3,205 x 2   =  6.4k tri
+//                                             ~15.1k tri
 //
 // and the shape of that table is the whole argument. The three rows are within a
-// factor of five of each other in TRIANGLES and nowhere near it in INSTANCES:
-// 97% of the bed is in the last row, and that ratio is a property of the
+// factor of two of each other in TRIANGLES and nowhere near it in INSTANCES:
+// 95% of what is drawn is in the last row, and that ratio is a property of the
 // geometry rather than of the density -- it does not move when DENSITY does,
 // because the mesh rings and the card ring scale together. So the far ring is
 // what the bed costs in everything that is priced per instance, and the two mesh
 // rings are what it costs in fill. Take the billboard away and the arithmetic
 // stops being survivable at all: at v1's four-triangle crossed card the last row
-// doubles, and at LOD2 held all the way out it is ~329k and there is no scene
+// doubles, and at LOD0 held all the way out it is ~360k and there is no scene
 // left. The billboard is not a micro-optimisation here the way it is for trees,
 // it is the design.
 //
-// WHY TWO MESH RINGS AND NOT THREE. The bank still builds LOD2 and the world no
-// longer ships it. Under a BatchedMesh a third tier was free -- another row in
-// the arena -- and here it is a third draw call and a third pool, for the ~145
-// ferns standing in the 10-14 m band. Drawing them at LOD1 instead of LOD2 is
-// 10.4k triangles where it was 5.2k, and the Quest has 5k triangles far more
-// readily than it has a draw call.
+// WHY TWO MESH RINGS AND NOT THREE. The bank builds LOD0, LOD1 and LOD2 and the
+// world draws the outer pair of that ladder, skipping the middle rung entirely.
+// Under a BatchedMesh a third tier was free -- another row in the arena -- and
+// here it is a third draw call and a third pool. What it would buy is 4-segment
+// fronds somewhere inside 10 m, where a 0.55 m plant subtends 3 to 6 degrees;
+// LOD1 stays in the bank because /gen-fern's tier slider is where that claim is
+// checked, and the Quest has 5k triangles far more readily than a draw call.
 //
 // WHY 0.5 AND NOT THE 2.0 DESIGN.md §5 PRICES. Both halvings were look calls,
 // not budget calls -- §5's fill-rate argument says 2/m² is affordable and the
@@ -86,24 +95,52 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // Density is the one number here set by eye, and it is cheap to move: every
 // other quantity in this header is linear in it.
 //
-// THE CROSSOVER IS 14 m, NOT v1's 26. Same rule, different answer, because the
-// rule is about depth and not about the plant: DESIGN.md §5 puts a flat card's
-// honest range at `depth x 28.6`, which for a 0.5 m-deep fern is 14 m. v1 takes
-// its card late because it can afford to -- its ferns are sparse, so the 14-26 m
-// ring costs it almost nothing in mesh. Here that ring alone holds ~850 ferns.
-// The parallax rule permitted 14 m all along; density is what makes us take it.
+// THE CROSSOVER IS 10 m AND THE PARALLAX RULE ASKS FOR 35. DESIGN.md §5 puts a
+// flat card's honest range at `depth x 28.6` and quotes 14 m for "a 0.5 m deep
+// fern", but 0.5 m is this plant's HEIGHT: the canonical nine-frond rosette
+// measures 1.22 m across its enclosing cylinder, and for a rosette that width IS
+// the depth, so the rule wants 35 m. We take the card 25 m early because density
+// makes the alternative expensive -- at 0.5/m2 the 10-35 m annulus alone holds
+// ~1,700 ferns, which is a quarter of the bed on mesh to hold one ring. What
+// makes the overrun survivable is the property §5 already leans on when it
+// cancels instance yaw here: a rosette is near enough radially symmetric that
+// there is no feature to watch fail to swing round. /gen-fern's ladder shows the
+// two numbers side by side rather than hiding the gap.
 //
-// PER-INSTANCE COST IS THE REAL CEILING, NOT TRIANGLES. There is no per-instance
-// culling to pay for on an arena, but there is no per-instance SKIPPING either:
-// the card mesh submits every vertex up to its high-water mark whether the
-// instance is standing or collapsed to a point, and this class's own update
-// walks the near tiles every frame regardless (0.09 ms mean, 0.42 ms worst over
-// a 400 m walk). That is what sets DRAW_RADIUS at 90 m rather than the forest's
-// 1500: the thinning law makes cost linear in radius, so a kilometre of ferns
-// would be affordable in TRIANGLES and would cost eleven times this in
-// instances. If the bed ever has to reach further, the piece to build is clump
-// cards -- one quad per square metre of BED rather than per plant -- which is the
-// same unbuilt work DESIGN.md §5 already names.
+// PER-INSTANCE COST IS THE REAL CEILING, NOT TRIANGLES. A hidden instance is no
+// longer submitted -- the arena packs densely -- but there is no per-instance
+// frustum culling to be had either, so the two thirds of the disc behind the
+// player are drawn, and this class's own update walks the near tiles every frame
+// regardless (0.09 ms mean, 0.42 ms worst over a 400 m walk). That is what sets
+// DRAW_RADIUS at 90 m rather than the forest's 1500: FALLOFF 3 makes the far
+// field cheap in triangles long before it is cheap in instances, so a kilometre
+// of ferns would cost almost nothing to DRAW and would still walk eleven times
+// this many tiles. If the bed ever has to reach further, the piece to build is
+// clump cards -- one quad per square metre of BED rather than per plant -- which
+// is the same unbuilt work DESIGN.md §5 already names.
+//
+// NOTHING POPS, AND IT COSTS ONE ATTRIBUTE. Every way a fern can appear or
+// change on screen dithers, through the one `aPropFade` float per instance that
+// material.js already reads -- an attribute fetch and a `discard`, with no
+// second draw and no sorting:
+//
+//   ARRIVING AND LEAVING the bed is the RIM's dissolve, on the card arena. It
+//   covers the whole of the graded thinning: _thin and _release only ever cut a
+//   fern the rim has already faded out, because a cut fern's rank puts its `gone`
+//   radius inside the camera and the rim hides at 0.925 of that. `settled` is
+//   what stops the first frame dissolving nine thousand cards in at once.
+//
+//   CHANGING TIER is the cross-fade below. A fern's two tiers live in two
+//   different arenas, so -- unlike grass, which has to duplicate the instance --
+//   the departing representation is already drawn somewhere the arrival does not
+//   touch: hold it, stamp the pair with one shared start, and let the shader do
+//   the rest. The only cost is a ring slot held for a quarter second after its
+//   fern has left it, about six of them at walking pace.
+//
+// The two never collide. The rim's hide boundary is at least 0.925 x
+// FULL_RADIUS = 32.4 m and the outermost tier boundary is 11.2 m, which the
+// constructor asserts -- so this scatter, alone among the three, needs no
+// onPreempt callback to arbitrate the shared fade slot.
 //
 // PLACEMENT LEAVES HOLES ON PURPOSE. Every candidate is kept or dropped, never
 // re-rolled against a target count. Re-rolling would mean every fern rejected
@@ -132,37 +169,92 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // ---------------------------------------------------------------------------
 
 // Ferns per square metre at full density. This is the NEAR-FIELD density; past
-// FULL_RADIUS it decays as FULL_RADIUS / d, exactly as the forest's does.
+// FULL_RADIUS it decays as (FULL_RADIUS / d)^FALLOFF.
 const DENSITY = 0.5
 
 // Metres. Inside this every fern stands. It wants to be comfortably past the
-// last mesh band (14 m) so the bed you walk through and look across is uniform
+// last mesh band (10 m) so the bed you walk through and look across is uniform
 // and the thinning only starts where a fern is already a two-triangle card.
 const FULL_RADIUS = 35
 
-// Metres. LOD0 inside 5, LOD1 to 14, billboard to the draw radius. The 5 is
-// v1's and was judged in the previewer; the 14 is the parallax rule's.
+// The exponent p in the thinning law `keep = min(1, F/d)^p`, and the single
+// biggest lever on what this layer costs. 1 is the halving-per-octave the tree
+// and card beds use; 3 is the blade bed's, and it is here for the blade bed's
+// reason -- 96% of this scatter is in the far tier, so an exponent on the far
+// field is worth more than any saving available per instance. At the 90 m rim it
+// keeps (35/90)^3 = 5.9% of full density where 1 left 39%, which is the far
+// field reading as patches of fern rather than as a lawn of them.
+const FALLOFF = 3
+
+// Metres. LOD0 inside 5, LOD2 to 10, billboard to the draw radius.
+//
+// BOTH ARE BUDGET CALLS AND NEITHER IS THE PARALLAX RULE'S -- that rule asks for
+// 35 m and gets 10; see THE CROSSOVER in the header for the size of the overrun
+// and why the bed takes it.
 //
 // One entry per MESH ring, in the same order as RING_TIERS, and the two lists
 // have to stay the same length -- the card ring is the one past the end.
-const LOD_BANDS = [5, 14]
+const LOD_BANDS = [5, 10]
 const DRAW_RADIUS = 90
 
 // Which of fern-bank.js's tiers each mesh ring draws, finest first. By NAME
-// because FERN_TIERS is authored coarsest-first, where it reads as a cost curve,
-// and because LOD2 is built by the bank and deliberately not shipped here -- see
-// the header on why the third ring is not worth its draw call.
-const RING_TIERS = ['LOD0', 'LOD1']
+// because FERN_TIERS is authored coarsest-first, where it reads as a cost curve.
+//
+// THE LADDER SKIPS LOD1 RATHER THAN SHORTENING IT. The bank builds three tiers
+// and the world draws the outer two of them: the second ring runs 5-10 m, which
+// is 4 to 8 degrees of arc on a 0.55 m plant, and at that size the difference
+// between 4 segments a frond and 2 is a curve nobody can resolve. Taking the
+// coarse tier for that ring halves its triangles for no visible change, and
+// LOD1 stays in the bank because the previewer's ladder is the place that
+// argument is checked.
+const RING_TIERS = ['LOD0', 'LOD2']
 
 // Headroom over the closed-form instance count of a mesh ring's own disc. The
 // same 1.35 the tile pool uses, plus a flat 32 so the smallest ring is not one
-// unlucky tile away from throwing.
+// unlucky tile away from throwing -- and so a handful of cross-dissolves, which
+// hold a departing ring's slot for a quarter second after the fern has left it,
+// fit without touching FADE_RING_RESERVE.
 const RING_SLACK = 1.35
 const RING_FLOOR = 32
+
+// Ceilings on the LOD cross-dissolve, in instances. A swap holds the slot of the
+// ring it is LEAVING for PROP_FADE_SECONDS, so a player crossing a band at speed
+// can ask for far more of them than the ring was sized for: the 5 m boundary
+// hands 200 ferns a second across at a 20 m/s fly, which is 50 in flight against
+// a 66-slot pool. FADE_MAX_INFLIGHT bounds the per-frame sweep and the extra
+// geometry drawn; FADE_RING_RESERVE keeps a swap from eating the slots a fern
+// arriving in that ring needs, because _setTier THROWS on an exhausted ring and
+// a bed that starves its own LOD ladder to animate a band crossing has its
+// priorities backwards. Past either limit a swap simply pops, which is what
+// every swap did before this existed.
+const FADE_MAX_INFLIGHT = 256
+const FADE_RING_RESERVE = 8
 
 // The dead band on a tier boundary. The forest's value, and it matters MORE
 // here, because at this density a boundary has a few hundred ferns sitting on it.
 const LOD_HYSTERESIS = 0.12
+
+/**
+ * The shipping ladder, flattened into the form a reader outside this file wants:
+ * one row per ring, in draw order, with the metres it covers. gen-fern.html
+ * reports these, and it imports them rather than keeping its own copy so the
+ * previewer cannot quietly disagree with the world about where a tier ends.
+ *
+ * `tier` names the fern-bank.js row a ring draws, or null for the card, which is
+ * a photograph and has no segment count.
+ */
+export const FERN_LOD = {
+  rings: [
+    ...RING_TIERS.map((tier, t) => ({
+      tier, from: t === 0 ? 0 : LOD_BANDS[t - 1], to: LOD_BANDS[t],
+    })),
+    { tier: null, from: LOD_BANDS[LOD_BANDS.length - 1], to: DRAW_RADIUS },
+  ],
+  hysteresis: LOD_HYSTERESIS,
+  density: DENSITY,
+  fullRadius: FULL_RADIUS,
+  drawRadius: DRAW_RADIUS,
+}
 
 // Metres per tile. Half the forest's, and sized against FULL_RADIUS rather than
 // against density: the keep-fraction is evaluated once per tile from its nearest
@@ -350,7 +442,10 @@ export class Ferns {
     this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / fullRadius) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
     this.loSq = new Float32Array(this.maxQ + 2)
-    for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
+    // Level q's near edge is fullRadius * 2^(q/QUANT), so the law
+    // `keep = (fullRadius / d)^FALLOFF` sampled there is exactly this. Sampled
+    // at the NEAR edge, so a level never thins ground the law says is still full.
+    for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, (-q / QUANT) * FALLOFF)
     for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (fullRadius * Math.pow(2, q / QUANT)) ** 2
 
     this.maxInstances = this._poolBound()
@@ -378,8 +473,13 @@ export class Ferns {
     // 100 m reach, so every fern sways -- billboards included. A spun card takes
     // the screen-parallel cheat (material.js's windVertex explains why it is the
     // right one on a 0.5 m plant at 14 m and out).
+    // `instancedFade` declares `aPropFade`, which is what both dissolves write
+    // through: the rim's, and the LOD cross-fade below. It is a program cache
+    // key, so it has to be on for every arena wearing this material -- and every
+    // arena is an InstancedArena, which makes the attribute in addGeometry.
     this.material = createPropMaterial(textureArray, {
       billboardLayers: [card.layer],
+      instancedFade: true,
       wind: 'fern',
     })
 
@@ -415,12 +515,6 @@ export class Ferns {
     })
 
     this.meshes = [...this.rings.map((r) => r.mesh), this.cards]
-    // FORCE instanceColor INTO EXISTENCE ON ALL THREE, before anything renders.
-    // `instancingColor` is a three PROGRAM parameter -- an InstancedMesh whose
-    // instanceColor is null compiles a different shader from one whose is not --
-    // so three arenas sharing this material must agree or the layer costs two
-    // compiles and two program binds instead of one.
-    for (const mesh of this.meshes) mesh.setColorAt(0, new THREE.Color(1, 1, 1))
 
     // Each arena CLONED the geometry it was handed; the originals are now a
     // second copy with no reader.
@@ -447,12 +541,31 @@ export class Ferns {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // LOD cross-dissolves in flight: { id, tier, slot, start, tris }, where
+    // `tier` is the ring the fern LEFT and is still being drawn on. `fadeAt`
+    // maps a fern's id back to its index here so a second band crossing, or a
+    // retire, can finish the running one in O(1) instead of scanning.
+    this.fades = []
+    this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
+    this.fadeTris = 0
+
     // The rim dissolve: which ferns are drawn, which are hidden, and the
-    // quarter second between. No LOD cross-fade in this bed for it to preempt.
-    // It drives the CARD arena only, which is legal because of the boundary
-    // assertion at the top of this constructor: a fern near enough to be on loan
-    // to a mesh ring is always far inside the rim and always solid.
+    // quarter second between. It drives the CARD arena only, which is legal
+    // because of the boundary assertion at the top of this constructor: a fern
+    // near enough to be on loan to a mesh ring is always far inside the rim and
+    // always solid.
+    //
+    // THAT ASSERTION IS ALSO WHY THERE IS NO onPreempt CALLBACK HERE, where
+    // grass and rocks both need one. The rim and a cross-dissolve share the one
+    // fade slot, so a scatter whose two dissolves can reach the same instance has
+    // to arbitrate; here they cannot -- the rim only ever fires past 32.4 m and a
+    // tier only ever changes inside 11.2 m.
     this.rim = new RimFade(this.cards, this.maxInstances)
+
+    // Whether the bed has been through a frame yet: until it has, a fern grown
+    // inside its own rim boundary simply stands there, and after it, it dissolves
+    // in. See the rim.place call in _growTile.
+    this.settled = false
 
     this.bandSq = Float32Array.from(LOD_BANDS, (b) => b * b)
     this.bandSqOut = Float32Array.from(LOD_BANDS, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
@@ -505,6 +618,21 @@ export class Ferns {
   }
 
   /**
+   * The distance at which a fern of rank `u` stops standing -- the point where
+   * the local keep-fraction falls to u -- clamped to the draw radius.
+   *
+   * The closed-form inverse of `_growTile`'s law, which is legal here because the
+   * law is a pure power: `(F/d)^p = u` gives `d = F * u^(-1/p)`. Grass walks its
+   * level table instead because a strip bed's law is a product and has no
+   * inverse. Getting this wrong does not fail loudly -- it leaves ferns standing
+   * invisible, or dissolves ferns still on the books -- so it is written as the
+   * inverse of the law rather than as a curve that looks like it.
+   */
+  _goneFor(u) {
+    return Math.min(this.fullRadius * Math.pow(u, -1 / FALLOFF), this.radius)
+  }
+
+  /**
    * Grow every tile inside the radius at once, ignoring the frame budget.
    * For BOOT only: a carpet that oozes in over a second reads as broken. Every
    * later tile arrives through the queue in `update`.
@@ -530,6 +658,11 @@ export class Ferns {
       this._growTile(this.queue.pop())
     }
     this.lastBuildMs = performance.now() - t0
+
+    // The prop clock, read once: it stamps the swaps started below and retires
+    // the ones whose quarter second is up.
+    const now = getPropClock()
+    this._sweepFades(now)
 
     const cardTier = this.cardTier
     const cardTris = this.cardTris
@@ -565,7 +698,7 @@ export class Ferns {
         // A tile that has just LEFT the near set has to have its instances put
         // back to cards here -- otherwise a fern keeps whatever mesh tier it
         // held at the moment it went out of range, and keeps it forever.
-        if (tile.near) this._demote(tile)
+        if (tile.near) this._demote(tile, now)
         tile.near = false
         const hidden = this.rim.sweepTile(
           tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
@@ -601,12 +734,16 @@ export class Ferns {
           }
         }
 
-        if (tier !== cur) this._setTier(i, tier)
+        if (tier !== cur) this._setTier(i, tier, now)
         tris += tier === cardTier ? cardTris : this.rings[tier].tris
       }
     }
-    this.tris = tris
+    // The cross-dissolve ghosts are drawn too, and they are counted after the
+    // loop rather than inside it so the ones this frame's swaps just created are
+    // in the number the panel shows for this frame.
+    this.tris = tris + this.fadeTris
     this.nearTiles = nearCount
+    this.settled = true
   }
 
   /**
@@ -816,12 +953,14 @@ export class Ferns {
       // invisible next to the alternative, a frame where the tier is undefined.
       this.tierAt[id] = this.cardTier
 
-      // The distance at which this particular fern stops existing. A fern of
-      // rank u survives while the local keep-fraction fullRadius/d exceeds u, so
-      // it goes at fullRadius/u -- or at the draw radius, whichever comes first
-      // for the densest ranks. The rim dissolves it over the last 15% of that
-      // distance, so nothing pops at the rim and nothing pops as the bed thins.
-      this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
+      // The distance at which this particular fern stops existing, and whether
+      // it dithers in or is simply there. `settled` is the line between BUILDING
+      // the bed and EXTENDING it: the whole world arrives in the first frame --
+      // `place` drains the queue unbudgeted -- and a quarter second of every fern
+      // stippling up out of nothing is a worse picture than the bed being there
+      // at spawn. Every tile after that joins a world the player is standing in
+      // and watching, so it fades.
+      this.rim.place(id, this._goneFor(u), this.settled)
     }
 
     this.placed += n - (tile ? tile.n : 0)
@@ -857,8 +996,8 @@ export class Ferns {
   }
 
   /** Put a whole tile back to the card ring in one pass. */
-  _demote(tile) {
-    for (let k = 0; k < tile.n; k++) this._setTier(tile.ids[k], this.cardTier)
+  _demote(tile, now) {
+    for (let k = 0; k < tile.n; k++) this._setTier(tile.ids[k], this.cardTier, now)
   }
 
   /** Hide a tile's instances and return their ids to the pool. */
@@ -875,54 +1014,174 @@ export class Ferns {
   /**
    * Move one fern between rings. This is the whole LOD ladder: where a batch
    * pointed an instance at a different geometry id in place, an arena holds ONE
-   * geometry, so changing tier means giving back the slot in the old ring and
-   * copying the fern's matrix and colour into a slot in the new one.
+   * geometry, so changing tier means taking a slot in the new ring, copying the
+   * fern's matrix and colour into it, and giving the old one back.
    *
    * The matrix comes from the CARD arena in both directions, and it has to: it
-   * is the only copy that is always valid. A ring's own instanceMatrix is zeroed
-   * the moment its slot is handed back, and the card's is zeroed while the fern
-   * is on loan -- but the arena's shadow buffer under getMatrixAt is not, which
-   * is what that buffer is for.
+   * is the only copy that is always valid. A ring's slot is reused by whatever
+   * fern takes it next, and a ring's buffers are packed by SLOT rather than by
+   * id -- the card arena's shadow, under getMatrixAt, is indexed by the fern's
+   * own id and outlives every loan.
    */
-  _setTier(i, tier) {
+  _setTier(i, tier, now) {
     const cur = this.tierAt[i]
     if (cur === tier) return
-    if (cur >= 0 && cur < this.ringCount) this._freeSlot(cur, i)
+
+    // A second boundary crossed while the first swap is still dithering. Finish
+    // it NOW: its ghost would otherwise leak a ring slot, and there is one fade
+    // slot per instance, so this swap's stamp is about to overwrite its start.
+    const running = this.fadeAt[i]
+    if (running >= 0) this._endFade(running)
+
+    const oldSlot = cur >= 0 && cur < this.ringCount ? this.slotAt[i] : -1
+    const fade = this._canFade(i, cur)
     this.tierAt[i] = tier
 
+    // ARRIVE first, so the fern is never undrawn for even one frame.
     if (tier === this.cardTier) {
       // Back to the card, unless the rim has this one dissolved away -- it owns
       // the card arena's visibility and must not be overruled here. The rim
       // shows an instance on a state TRANSITION rather than every sweep, so a
       // card shown by mistake would stay shown.
       if (!this.rim.isHidden(i)) this.cards.setVisibleAt(i, true)
-      return
+      this.slotAt[i] = -1
+    } else {
+      const slot = this._takeSlot(tier)
+      const ring = this.rings[tier]
+      this.slotAt[i] = slot
+      this.cards.getMatrixAt(i, this._m)
+      ring.mesh.setMatrixAt(slot, this._m)
+      this.cards.getColorAt(i, this._c)
+      ring.mesh.setColorAt(slot, this._c)
+      ring.mesh.setVisibleAt(slot, true)
     }
 
+    // ...then DEPART, either dithering out under the arrival or cutting.
+    if (fade) {
+      this._startFade(i, cur, oldSlot, now)
+      return
+    }
+    if (cur === this.cardTier) this.cards.setVisibleAt(i, false)
+    else if (oldSlot >= 0) this._returnSlot(cur, oldSlot)
+  }
+
+  /**
+   * Whether the swap about to happen can afford to cross-dissolve. Everything
+   * here is a REASON TO POP, and popping is what every swap did before, so a no
+   * costs a hitch at one boundary rather than a stall or a throw.
+   */
+  _canFade(i, cur) {
+    // Nothing to dissolve out of on a fern being tiered for the first time, and
+    // nothing worth dissolving while the whole bed is being built at once.
+    if (cur < 0 || !this.settled) return false
+    // The rim owns this instance's one fade slot while it is running its own
+    // dissolve, and a hidden fern has nothing on screen to blend past.
+    if (this.rim.isBusy(i) || this.rim.isHidden(i)) return false
+    if (this.fades.length >= FADE_MAX_INFLIGHT) return false
+    // A ghost holds its ring slot for the length of the fade. Fly fast enough
+    // and the boundary hands ferns across faster than they come back, so the
+    // last few slots are kept for arrivals rather than left to _takeSlot to
+    // claw back one ghost at a time.
+    if (cur < this.ringCount && this.rings[cur].freeCount <= FADE_RING_RESERVE) return false
+    return true
+  }
+
+  /**
+   * Hold the representation being LEFT on screen, dissolving out, while the one
+   * just taken dissolves in. Both stamps carry the same start, so their
+   * complementary thresholds sum to full coverage for the whole quarter second.
+   *
+   * Unlike grass's cross-fade this needs no duplicate instance: a fern's two
+   * tiers live in two different arenas, so the departing one is already drawn
+   * somewhere the arrival does not touch.
+   */
+  _startFade(i, oldTier, oldSlot, now) {
+    const ghostTris = oldTier === this.cardTier ? this.cardTris : this.rings[oldTier].tris
+    if (oldTier === this.cardTier) setPropFadeTimerAt(this.cards, i, now, false)
+    else setPropFadeTimerAt(this.rings[oldTier].mesh, oldSlot, now, false)
+
+    const tier = this.tierAt[i]
+    if (tier === this.cardTier) setPropFadeTimerAt(this.cards, i, now, true)
+    else setPropFadeTimerAt(this.rings[tier].mesh, this.slotAt[i], now, true)
+
+    this.fadeTris += ghostTris
+    this.fadeAt[i] = this.fades.length
+    this.fades.push({ id: i, tier: oldTier, slot: oldSlot, start: now, tris: ghostTris })
+  }
+
+  /** Retire one ghost: drop what it was holding, and put the arrival to solid. */
+  _endFade(k) {
+    const f = this.fades[k]
+    if (f.tier === this.cardTier) {
+      this.cards.setVisibleAt(f.id, false)
+      setPropSolidAt(this.cards, f.id)
+    } else {
+      this._returnSlot(f.tier, f.slot)
+    }
+    this.fadeTris -= f.tris
+
+    const tier = this.tierAt[f.id]
+    if (tier === this.cardTier) setPropSolidAt(this.cards, f.id)
+    else if (tier >= 0) setPropSolidAt(this.rings[tier].mesh, this.slotAt[f.id])
+
+    this.fadeAt[f.id] = -1
+    const last = this.fades.pop()
+    if (k < this.fades.length) {
+      this.fades[k] = last
+      this.fadeAt[last.id] = k
+    }
+  }
+
+  /**
+   * Borrow a slot in a mesh ring, giving up a cross-dissolve to get one if the
+   * pool is dry. A ghost is COSMETIC and an arrival is not, so a ring under
+   * pressure sacrifices the dither rather than throwing -- which is what makes a
+   * teleport survivable, where FADE_RING_RESERVE only handles a fast walk.
+   *
+   * The ring pools are bounded by geometry -- a disc of known radius at a known
+   * density -- so running dry with no ghost to reclaim means a band, the density
+   * or RING_SLACK is wrong, and the quiet version of that is near ferns that
+   * stop appearing.
+   */
+  _takeSlot(tier) {
     const ring = this.rings[tier]
-    // The ring pools are bounded by geometry -- a disc of known radius at a known
-    // density -- so running one dry means a band, the density or RING_SLACK is
-    // wrong, and the quiet version of that is near ferns that stop appearing.
+    if (ring.freeCount === 0) {
+      // Whichever ghost this ring holds; `fades` is kept dense by swap-remove,
+      // so there is no order in it to prefer.
+      for (let k = 0; k < this.fades.length; k++) {
+        if (this.fades[k].tier !== tier) continue
+        this._endFade(k)
+        break
+      }
+    }
     if (ring.freeCount === 0) {
       throw new Error(`Ferns: the ${ring.name} ring's pool is exhausted at ${ring.cap}`)
     }
-    const slot = ring.free[--ring.freeCount]
-    this.slotAt[i] = slot
-    this.cards.getMatrixAt(i, this._m)
-    ring.mesh.setMatrixAt(slot, this._m)
-    this.cards.getColorAt(i, this._c)
-    ring.mesh.setColorAt(slot, this._c)
-    ring.mesh.setVisibleAt(slot, true)
-    this.cards.setVisibleAt(i, false)
+    return ring.free[--ring.freeCount]
   }
 
   /** Hand a borrowed ring slot back. */
-  _freeSlot(tier, i) {
+  _returnSlot(tier, slot) {
     const ring = this.rings[tier]
-    const slot = this.slotAt[i]
     ring.mesh.setVisibleAt(slot, false)
+    // Cleared here rather than on the way in, so the only value a resting slot
+    // holds is 1.0 and a stale clock reading cannot ride into its next tenant.
+    setPropSolidAt(ring.mesh, slot)
     ring.free[ring.freeCount++] = slot
-    this.slotAt[i] = -1
+  }
+
+  /**
+   * End every ghost whose quarter second is up. Walked without advancing on a
+   * hit, because _endFade swaps the last entry down into k.
+   */
+  _sweepFades(now) {
+    let k = 0
+    while (k < this.fades.length) {
+      const age = now - this.fades[k].start
+      // A negative age is the prop clock having wrapped under the ghost.
+      if (age >= PROP_FADE_SECONDS || age < 0) this._endFade(k)
+      else k++
+    }
   }
 
   /**
@@ -930,8 +1189,14 @@ export class Ferns {
    * of the card arena, and out of the rim. The caller returns the id to `free`.
    */
   _retire(id) {
+    // FIRST, while tierAt and slotAt still describe this fern -- _endFade reads
+    // both to put the arrival back to solid.
+    const running = this.fadeAt[id]
+    if (running >= 0) this._endFade(running)
+
     const cur = this.tierAt[id]
-    if (cur >= 0 && cur < this.ringCount) this._freeSlot(cur, id)
+    if (cur >= 0 && cur < this.ringCount) this._returnSlot(cur, this.slotAt[id])
+    this.slotAt[id] = -1
     this.cards.setVisibleAt(id, false)
     this.rim.drop(id)
     this.tierAt[id] = -1
@@ -967,6 +1232,11 @@ export class Ferns {
       regrows: this.regrows,
       pool: this.maxInstances,
       used: this.maxInstances - this.freeCount,
+      // `drawn` is the arenas' own live counts, so it is what the GPU was
+      // handed rather than what this class thinks it asked for -- the two
+      // disagreeing is the bug the dense packing exists to make visible.
+      drawn: this.meshes.reduce((n, m) => n + m.count, 0),
+      fading: this.fades.length,
       rings: this.rings.map((r) => `${r.name} ${r.cap - r.freeCount}/${r.cap}`),
       density: this.density,
       fullRadius: this.fullRadius,

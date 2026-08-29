@@ -9,6 +9,7 @@ import {
   MUSHROOM_NAMES,
 } from '../../props/mushroom-bank.js'
 import { createPropMaterial, setSnowLine } from '../../material.js'
+import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
@@ -16,7 +17,7 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // Mushroom clumps on the /v2 route. The argument is DESIGN.md §24.
 //
 // Fourth sibling of render/trees.js, ferns.js and rocks.js, reusing their machine
-// wholesale -- one BatchedMesh, one material, a variant bank, a tier ladder, a tiled
+// wholesale -- one prop arena, one material, a variant bank, a tier ladder, a tiled
 // camera-following scatter, graded thinning by rank, rank-based incremental regrow,
 // the rim dissolve. trees.js's header argues all of it; none is re-argued here.
 //
@@ -219,7 +220,7 @@ function triangleCount(geo) {
 /**
  * The mushroom layer.
  *
- * @param scene         THREE.Scene to add the single BatchedMesh to.
+ * @param scene         THREE.Scene to add the arena's Group to.
  * @param field         V2Height. Needs heightAndSlopeAt, snowLineAt and bands.
  * @param water         WaterSurfaces. Needs isSubmerged.
  * @param layers        Layers. Needs `paths`, `snow.band` and flattenAt.
@@ -355,40 +356,31 @@ export class Mushrooms {
     // the billboard, nothing here relies on the shader's second test to be held
     // still. That test, a vertex normal at or over CARD_UP_MARK in material.js,
     // still has to pass for the spin to happen at all.
-    this.material = createPropMaterial(textureArray, { billboardLayers: mushroomImpostorLayers() })
+    // `instancedFade` because the rim dissolve's timer has nowhere else to live
+    // on an InstancedMesh: instanceColor is itemSize 3 in r180, so there is no
+    // alpha beside the tint and the arena carries `aPropFade` instead. See
+    // material.js's FADE_VERTEX.
+    this.material = createPropMaterial(textureArray, {
+      billboardLayers: mushroomImpostorLayers(),
+      instancedFade: true,
+    })
 
     // Unlike the fern and tree banks this one hands back its tiers ALREADY
     // finest-first and already expanded per variant, so there is no reverse and
-    // no perVariant indirection. The identity dedupe below is still done, and it
-    // is defensive rather than load-bearing: nothing in the bank shares a buffer
-    // today -- the card is per variant so a size-0.8 instance does not wear a
-    // size-1.0 picture -- but a bank that ever hoisted a per-species card out of
-    // the variant loop would otherwise land eighteen copies of one triangle in
-    // the arena, silently and with nothing to see.
-    const unique = []
-    const idOf = new Map()
-    for (const tier of bank.tiers) {
-      for (const g of tier.geometries) {
-        if (idOf.has(g)) continue
-        idOf.set(g, unique.length)
-        unique.push(g)
-      }
-    }
-
-    this.batch = new THREE.BatchedMesh(
+    // no perVariant indirection: a geometry id is just `tier * variantCount +
+    // variant`, which is the arena's own layout.
+    this.tierCount = bank.tiers.length
+    this.batch = new PropArena(
       this.maxInstances,
-      unique.reduce((n, g) => n + g.attributes.position.count, 0),
-      unique.reduce((n, g) => n + g.index.count, 0),
-      this.material
+      bank.tiers,
+      this._tierCaps(),
+      this.material,
+      'v2-mushrooms'
     )
-    this.batch.name = 'v2-mushrooms'
-    this.batch.frustumCulled = false
-    this.batch.sortObjects = false
-
-    const geoIds = unique.map((g) => this.batch.addGeometry(g))
-    this.tierIds = bank.tiers.map((tier) => tier.geometries.map((g) => geoIds[idOf.get(g)]))
+    this.tierIds = bank.tiers.map((_, t) =>
+      bank.tiers[t].geometries.map((_g, v) => t * this.variantCount + v))
     this.tierTris = bank.tiers.map((tier) => tier.geometries.map(triangleCount))
-    this.cardTier = this.tierIds.length - 1
+    this.cardTier = this.tierCount - 1
     // The A/B control: hand the far band the real MESH instead of the spun
     // triangle, so the impostor can be judged against ground truth at the
     // distance the swap actually happens. Tier 0 is the FINEST mesh, not the
@@ -401,11 +393,9 @@ export class Mushrooms {
     // one spun triangle -- and NOT for a mesh tier. Derived rather than
     // assumed, so that a card tier which ever stops being uniform prices itself
     // per instance instead of quietly billing the whole world as variant 0.
-    const cardTris = this.tierTris[this.tierIds.length - 1]
+    const cardTris = this.tierTris[this.cardTier]
     this.cardTrisFlat = cardTris.every((n) => n === cardTris[0]) ? cardTris[0] : 0
     this.farTier = 'card'
-    this.tierCount = this.tierIds.length
-    for (const g of unique) g.dispose()
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
@@ -481,6 +471,27 @@ export class Mushrooms {
   _poolBound() {
     return poolBound(TILE, this.tileSpan, this.evictSq, 2.0,
       (d2) => this.perTile * this.uAt[this._levelFor(d2)])
+  }
+
+  /**
+   * Instance capacity of ONE mesh in each tier -- the arena holds a separate
+   * InstancedMesh per (tier, variant) and exceeding a cap throws.
+   *
+   * The whole pool over the species count, times four for clumping. A clump is
+   * one species, so a tile that happens to sit under five agaric-hosting trees
+   * puts every one of its mushrooms in the same five meshes: an even fifth is
+   * the expectation and nowhere near a bound.
+   *
+   * FLAT ACROSS THE TIERS even though the mesh tiers reach a few metres and hold
+   * a handful. Fifteen meshes at this cap is about 2.4 MB of instance buffer
+   * against maybe 200 kB for a per-band table, and the band a mushroom is in is
+   * a multiple of ITS OWN SPAN -- so the table would have to be derived from the
+   * bank's spans and the scatter's size jitter, and being a few instances short
+   * of the truth throws in the middle of a walk.
+   */
+  _tierCaps() {
+    const per = Math.ceil((this.maxInstances / this.variantCount) * 4) + 64
+    return new Array(this.tierCount).fill(per)
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */

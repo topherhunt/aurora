@@ -133,7 +133,7 @@ const DEFAULTS = {
   // Tuned on the headset against the real ground: a thick mat close in, held
   // only 2 m out, then thinned hard so the far field is cheap but not bare.
   density: 24,
-  full: 2,
+  full: 6.5,
   cull: 30,
   falloff: 3,
   scaleVary: 0.5,

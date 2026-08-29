@@ -30,7 +30,10 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - Grass.
     - [x] Remove the strips system. Instead randomly scatter grass. LOD0 is 3-card tufts; beyond 8m, grass is a cylindrical billboard.
     - [x] Will this give us a blatant sphere of grass instances, cutting off at a hard cull seam?
-    - [ ] What if we create a 3d grass model that's a scattering of 10 tris, and use those at every distance with a terrain-matching color, instead of the 2-tri cards? = no opacity masking
+    - [x] What if we create a 3d grass model that's a scattering of 10 tris, and use those at every distance with a terrain-matching color, instead of the 2-tri cards? = no opacity masking
+  - [ ] Rocks
+  - [ ] How many draw calls am I doing? Where do they come from? Try to get them down to 20 for the whole world.
+    - [ ] How many does the terrain LOD system use?
 
 - Assess code length, comment length, etc. Can anything be refactored or trimmed to save token count for future claude agent readers?
 - Tame rock counts. Currently way too many. In valley forests, should be 1/5th current volume.

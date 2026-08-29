@@ -3,6 +3,7 @@ import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { LITTER_LAYERS, LITTER_PATCH_M } from '../../props/litter.js'
 import { createPropMaterial } from '../../material.js'
+import { InstancedArena } from './instanced-arena.js'
 import { RimFade } from './rim.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -14,11 +15,16 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // where each ENV_DENSITY rate caps.
 //
 // The standard scatter machine (render/trees.js's header) at its smallest cut: one
-// BatchedMesh, one material, tiled camera-following scatter keyed on tileSeed,
+// InstancedMesh, one material, tiled camera-following scatter keyed on tileSeed,
 // graded thinning, incremental regrow, rim dissolve -- and no variant bank, no
 // tier ladder, no LOD bands, because a quad is already the floor of every ladder.
-// Four geometries, one per baked layer, because texLayer is a per-VERTEX attribute
-// (material.js), not per instance: 16 vertices for the whole system.
+//
+// ONE GEOMETRY FOR ALL FOUR BAKED LAYERS, which is what lets the whole layer sit
+// on render/instanced-arena.js (an arena holds exactly one). material.js declares
+// `texLayer` as a plain attribute and never says at what RATE, so the four
+// pictures are told apart by an InstancedBufferAttribute of that name instead of
+// by four copies of one quad -- a divisor of 1 on the same declaration, no shader
+// change, and four vertices for the whole system rather than sixteen.
 //
 // Three lines that break silently if moved:
 //   - THE QUAD'S NORMAL IS EXACTLY (0, 1, 0), material.js's CARD_UP_MARK. Safe only
@@ -223,14 +229,17 @@ function tileSeed(tx, tz, seed, slot) {
 }
 
 /**
- * One 2-triangle quad lying in the XZ plane, centred on its origin, carrying
- * `layer` on every vertex.
+ * One 2-triangle quad lying in the XZ plane, centred on its origin.
+ *
+ * NO texLayer HERE: it is per instance (see the header), and the arena attaches
+ * it to the geometry it actually draws. A per-vertex one written here would win
+ * the name and stamp every stamp in the world with the same picture.
  *
  * Built at side 1 so the instance matrix's scale is in metres of patch: see
  * SCALE. Wound counter-clockwise seen from above, and the normal is exactly up
  * -- see the header note on CARD_UP_MARK for why "exactly" matters.
  */
-function buildLitterQuad(layer) {
+function buildLitterQuad() {
   const h = 0.5
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(
@@ -240,7 +249,6 @@ function buildLitterQuad(layer) {
     [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3
   ))
   geo.setAttribute('uvProj', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2))
-  geo.setAttribute('texLayer', new THREE.Float32BufferAttribute([layer, layer, layer, layer], 1))
   geo.setIndex([0, 1, 2, 0, 2, 3])
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
@@ -249,7 +257,7 @@ function buildLitterQuad(layer) {
 
 export class Litter {
   /**
-   * @param scene         THREE.Scene. Gets one BatchedMesh.
+   * @param scene         THREE.Scene. Gets one InstancedMesh.
    * @param field         V2Height. Needs scatterAt, heightAt, snowLineAt, bands.
    * @param water         WaterSurfaces. Needs levelAt, which both the
    *                      environment test and the wet pass go through --
@@ -303,26 +311,28 @@ export class Litter {
     for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
     for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (FULL_RADIUS * Math.pow(2, q / QUANT)) ** 2
 
-    this.material = createPropMaterial(textureArray)
+    // `instancedFade` because the rim dissolve's timer has nowhere else to live
+    // on an InstancedMesh: instanceColor is itemSize 3 in r180, so there is no
+    // alpha beside the tint and the arena carries `aPropFade` instead. See
+    // material.js's FADE_VERTEX.
+    this.material = createPropMaterial(textureArray, { instancedFade: true })
 
-    this.quads = LITTER_LAYERS.map(buildLitterQuad)
+    this.quad = buildLitterQuad()
     this.maxInstances = this._poolBound()
 
-    this.batch = new THREE.BatchedMesh(
-      this.maxInstances,
-      this.quads.reduce((n, g) => n + g.attributes.position.count, 0),
-      this.quads.reduce((n, g) => n + g.index.count, 0),
-      this.material
-    )
+    this.batch = new InstancedArena(this.maxInstances, this.material)
     this.batch.name = 'v2-litter'
-    this.batch.frustumCulled = false
-    this.batch.sortObjects = false
-    this.quadIds = this.quads.map((g) => this.batch.addGeometry(g))
+    this.quadId = this.batch.addGeometry(this.quad)
+    // WHICH OF THE FOUR BAKED PICTURES a stamp wears, one float per instance.
+    // The fill is layer 0 rather than -1: an id no tile has stamped yet is not
+    // drawn, but a resting value that named no layer would sample outside the
+    // atlas the moment one ever were.
+    this.texLayerAttr = this.batch.addInstancedAttribute('texLayer', LITTER_LAYERS[0])
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
     for (let i = 0; i < this.maxInstances; i++) {
-      const id = this.batch.addInstance(this.quadIds[0])
+      const id = this.batch.addInstance(this.quadId)
       this.batch.setVisibleAt(id, false)
       this.free[this.maxInstances - 1 - i] = id
     }
@@ -642,7 +652,8 @@ export class Litter {
     )
     this.batch.setColorAt(id, this._c)
 
-    this.batch.setGeometryIdAt(id, this.quadIds[Math.min(3, (layerRoll * 4) | 0)])
+    // The picture, per instance rather than per geometry -- see the header.
+    this.batch.setAttrAt(this.texLayerAttr, id, LITTER_LAYERS[Math.min(3, (layerRoll * 4) | 0)])
     // Hidden and FRESH until the rim has looked at it -- see rim.js. The caller
     // marks the tile due, because a stamp is laid before its tile exists.
     this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
@@ -913,6 +924,7 @@ export class Litter {
     this.batch.removeFromParent()
     this.batch.dispose()
     this.material.dispose()
-    for (const g of this.quads) g.dispose()
+    // The arena CLONED the quad and owns the clone; this is the original.
+    this.quad.dispose()
   }
 }

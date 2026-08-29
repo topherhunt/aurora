@@ -13,9 +13,25 @@ import { AZIMUTHS, HORIZON_SOFT } from './sim/horizon.js'
 // tractable: the objects in `this.uniforms` are handed BY REFERENCE into each
 // material's compiled shader.uniforms. So there are five materials reading the
 // sun's position and exactly one place that writes it, and no per-material
-// update loop that can fall out of step. It also means the textures can arrive
-// LATE -- Phase A takes four seconds and the world is already on screen -- and
-// every material picks them up on the frame they land, with no recompile.
+// update loop that can fall out of step.
+//
+// WHAT IS COMPILED IN IS A DECISION, NOT A UNIFORM, and there are two axes of
+// it. See the registry on the class: a uniform whose value says "do nothing"
+// still pays for every instruction guarded by it, which on a Quest 2 is the
+// whole cost and none of the effect.
+//
+//   `enabled`, which the headset panel's `terrain & prop lighting` row owns.
+//   Off, the patch emits NOTHING -- stock Lambert, stock fog -- so the A/B
+//   against on is this system's price in milliseconds.
+//
+//   `ready`, which is whether setMaps() has been called. Until it has, wlSun
+//   and wlSky can only ever return 1.0, so emitting them means two sampler
+//   declarations, an atan, an asin and two dead texture fetches per terrain
+//   FRAGMENT and two dead varying components per prop VERTEX, in every material
+//   in the world, for a constant. Unready compiles the constant instead.
+//
+// Both cost a recompile of every patched material on the frame they flip, which
+// is a one-off hitch and is the price of not paying for them every frame.
 //
 // TWO GRANULARITIES, on purpose:
 //
@@ -421,6 +437,16 @@ const AERIAL_GLSL = /* glsl */ `
 export class WorldLighting {
   constructor() {
     this.ready = false
+    // Whether the patch emits anything at all. See the two axes in the header.
+    this.enabled = true
+    // THE MATERIALS, held as hard references for the reason material.js's
+    // windMaterials are: a uniform reaches every program for free, a PROGRAM
+    // change reaches none of them -- three only recompiles a material whose
+    // needsUpdate is set, and these are built in a dozen different modules.
+    // Bounded by the number of lit materials in the world, and nothing else
+    // keeps them alive at the moment we need to walk them, so a WeakSet would
+    // be wrong.
+    this.materials = new Set()
 
     this.uniforms = {
       uHorizonMap: { value: null },
@@ -504,6 +530,40 @@ export class WorldLighting {
     this.uniforms.uSkyView.value = skyTex
     this.uniforms.uSunSky.value.z = 1
     this.ready = true
+    // The maps are a COMPILE-TIME axis, so their arrival is a recompile rather
+    // than an upload -- see the header. One hitch, on the frame Phase A lands.
+    this.recompile()
+  }
+
+  /**
+   * Compile this whole system in or out of every material it has patched.
+   *
+   * Off is stock Lambert with stock fog: no shadow or occlusion lookup, no
+   * night lift, no near-field envelope, no aerial ramp, no caustics. The lights
+   * themselves are not ours -- the host owns whether the sun and hemi still
+   * hear about the hour, and has to say so separately.
+   *
+   * Costs a shader recompile per material on the frame it is called, which on a
+   * headset is one visible hitch and is the price of the measurement.
+   */
+  setEnabled(on) {
+    if (typeof on !== 'boolean') throw new Error(`setEnabled: need a boolean, got ${on}`)
+    if (on === this.enabled) return
+    this.enabled = on
+    this.recompile()
+  }
+
+  // The two compile-time axes, as three's program cache sees them. Composed
+  // into every patched material's customProgramCacheKey, or a recompile would
+  // find the program the other variant already built and hand that back --
+  // which is how the wind switch once measured "no difference". See patch().
+  variantKey() {
+    if (!this.enabled) return 'wl-off'
+    return this.ready ? 'wl-maps' : 'wl-flat'
+  }
+
+  recompile() {
+    for (const material of this.materials) material.needsUpdate = true
   }
 
   // Once per frame, from the clock state.
@@ -604,13 +664,21 @@ export class WorldLighting {
    * result up under the unchanged key, finds the program it compiled the first
    * time and hands that back. The new source is never compiled and the toggle
    * silently does nothing -- which is exactly how the /?quest wind switch came
-   * to read "no difference" on a headset.
+   * to read "no difference" on a headset. variantKey() rides in the same key
+   * for the same reason: this file's own two axes are three programs.
    */
   patch(material, { mode, cacheKey, worldPosVarying = null }) {
     if (mode !== 'fragment' && mode !== 'vertex') throw new Error(`patch: bad mode ${mode}`)
 
     const prev = material.onBeforeCompile
-    const uniforms = this.uniforms
+    const self = this
+    this.materials.add(material)
+    // Hard references, so the registry has to be told when one dies or a
+    // session spent cycling grass styles accumulates a disposed material per
+    // press -- buildGrass tears the whole bed down and patches a fresh one.
+    // three's Material dispatches this from dispose(), so no caller owes us
+    // anything.
+    material.addEventListener('dispose', () => self.materials.delete(material))
 
     material.onBeforeCompile = (shader, renderer) => {
       // Chained, not replaced. Every material this is applied to already has an
@@ -618,18 +686,26 @@ export class WorldLighting {
       // -- and silently dropping it would remove the textures from every tree
       // in the world.
       if (prev) prev.call(material, shader, renderer)
-      Object.assign(shader.uniforms, uniforms)
+      // Read here and not captured at patch() time, so a material built before
+      // the first flip still compiles the current state.
+      if (!self.enabled) return
+      Object.assign(shader.uniforms, self.uniforms)
+
+      // The horizon axis, spelled out once for both stages: with no maps the
+      // two lookups ARE the constant 1.0, so they are folded in as one and
+      // nothing that would have sampled them is emitted.
+      const maps = self.ready
 
       if (mode === 'fragment') {
         if (!worldPosVarying) throw new Error('patch: fragment mode needs worldPosVarying')
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\n${NIGHT_GLSL}\n${CAUSTIC_DEFS}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}\n${CAUSTIC_DEFS}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
             ${APPLY(
-              `wlSun( ${worldPosVarying}.xz )`,
-              `wlSky( ${worldPosVarying}.xz )`,
+              maps ? `wlSun( ${worldPosVarying}.xz )` : '1.0',
+              maps ? `wlSky( ${worldPosVarying}.xz )` : '1.0',
               NEAR_GLSL(`${worldPosVarying}.xyz`)
             )}`
           )
@@ -637,28 +713,39 @@ export class WorldLighting {
           // gets the last word on a bed at range.
           .replace('#include <fog_fragment>', `${CAUSTIC_APPLY(worldPosVarying)}\n${AERIAL_GLSL}`)
       } else {
+        // A vec3 of (sun, sky, near) when there are maps to sample, a bare
+        // float of `near` when there are not -- the point of the unready build
+        // is that the other two components are interpolated constants, and a
+        // varying is paid for at every vertex in the forest.
+        const varying = maps ? 'varying vec3 vWlShade;' : 'varying float vWlNear;'
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${SAMPLE_GLSL}\nvarying vec3 vWlShade;`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}`)
           .replace(
             '#include <project_vertex>',
             `#include <project_vertex>
             ${WORLD_POS_GLSL}
-            vWlShade = vec3( wlSun( wlWorld.xz ), wlSky( wlWorld.xz ),
+            ${maps
+              ? `vWlShade = vec3( wlSun( wlWorld.xz ), wlSky( wlWorld.xz ),
                              ${NEAR_GLSL('wlWorld')} );`
+              : `vWlNear = ${NEAR_GLSL('wlWorld')};`}`
           )
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\nvarying vec3 vWlShade;\n${NIGHT_GLSL}`)
+          .replace('#include <common>', `#include <common>\n${varying}\n${NIGHT_GLSL}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
-            ${APPLY('vWlShade.x', 'vWlShade.y', 'vWlShade.z')}`
+            ${APPLY(
+              maps ? 'vWlShade.x' : '1.0',
+              maps ? 'vWlShade.y' : '1.0',
+              maps ? 'vWlShade.z' : 'vWlNear'
+            )}`
           )
           .replace('#include <fog_fragment>', AERIAL_GLSL)
       }
     }
 
     const prevKey = material.customProgramCacheKey
-    material.customProgramCacheKey = () => `${cacheKey}|${prevKey.call(material)}`
+    material.customProgramCacheKey = () => `${cacheKey}|${self.variantKey()}|${prevKey.call(material)}`
     return material
   }
 

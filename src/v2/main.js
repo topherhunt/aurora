@@ -72,8 +72,10 @@ const QUEST_MODE = new URLSearchParams(location.search).has('quest')
 //   No terrain shadows. WorldLighting is constructed and every material is
 //   patched, but nothing calls lighting.setMaps() -- the horizon map is baked by
 //   Phase A, which is v1's macro pass over v1's procedural field. Until v2 grows
-//   its own, uSunSky.z stays 0 and every shaded material returns full sun. The
-//   mountains light correctly and cast nothing.
+//   its own, the patch compiles its unready variant: full sun and open sky as
+//   constants, with the samplers, the trig and the two dead texture fetches left
+//   out of every material in the world rather than branched around at
+//   fragment rate. The mountains light correctly and cast nothing.
 //
 //   No Phase A water. water.setFromPhaseA() is never called, so water.levelAt()
 //   is null everywhere and the v1 lake mesh does not exist. All water on this
@@ -392,10 +394,22 @@ if (QUEST_MODE) {
 scene.background = new THREE.Color(FOG_COLOR)
 scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00022)
 
-const sun = new THREE.DirectionalLight(SUN_COLOR, 2.1)
-sun.position.set(-0.45, 0.62, 0.3).normalize()
+// The fixed noon-ish rig, held rather than inlined into the two constructors
+// because applySky overwrites all six values from the palette every frame. The
+// `terrain & prop lighting` row turning off is the host ceasing to write them,
+// so "off" has to be able to RESTATE them -- see setLightingEnabled.
+const FIXED_RIG = {
+  sunDir: new THREE.Vector3(-0.45, 0.62, 0.3).normalize(),
+  sunColor: SUN_COLOR,
+  sunIntensity: 2.1,
+  hemiSky: 0xbfd4ee,
+  hemiGround: 0x2c3140,
+  hemiIntensity: 0.85,
+}
+const sun = new THREE.DirectionalLight(FIXED_RIG.sunColor, FIXED_RIG.sunIntensity)
+sun.position.copy(FIXED_RIG.sunDir)
 scene.add(sun)
-const hemi = new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85)
+const hemi = new THREE.HemisphereLight(FIXED_RIG.hemiSky, FIXED_RIG.hemiGround, FIXED_RIG.hemiIntensity)
 scene.add(hemi)
 
 const clock = new WorldClock({ seed: SEED })
@@ -487,12 +501,15 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'trees', text: 'trees' },
   { key: 'rocks', text: 'rocks' },
   { key: 'grass', text: 'grass' },
-  { key: 'grassSpin', text: 'grass cards', on: 'billboard', off: 'fixed' },
-  { key: 'grassGrow', text: 'grass grow', on: 'far 1.7x', off: 'flat' },
+  { key: 'ferns', text: 'ferns' },
+  // ONE ROW FOR THREE LAYERS, because they are one thing to the wearer: the
+  // small stuff lying on the forest floor. They also share a cost profile --
+  // all three are ground scatters that only exist inside ~100 m -- so a
+  // measurement that separated them would be three readings of the same number.
+  { key: 'litter', text: 'litter, fungi & deadfall' },
   { key: 'grassDensity', text: 'grass', action: () => cycleGrassDensity(), value: () => `${grass ? grass.density : '?'}/m2 >` },
   { key: 'grassRadius', text: 'grass reach', action: () => cycleGrassRadius(), value: () => `${grass ? grass.radius : '?'} m >` },
   { key: 'grassFalloff', text: 'grass falloff', action: () => cycleGrassFalloff(), value: () => `${grass ? grass.falloff : '?'}^ >` },
-  { key: 'ferns', text: 'ferns' },
   { key: 'instCull', text: 'per-instance cull' },
   { key: 'wind', text: 'wind' },
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
@@ -527,28 +544,32 @@ function applyQuestToggle(key) {
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
     case 'dayNight': sky.mesh.visible = enabled; stars.points.visible = enabled; break
-    case 'lighting': break // no object of its own; gates the sun/hemi/lighting.update block in applySky()
+    // A REAL OFF SWITCH, and it has to be one. This row used to gate only the
+    // sun/hemi/lighting.update block in applySky(), which turned nothing off:
+    // every one of those is a LATER WRITER with no restore, so "off" froze the
+    // rig and the uniforms at the hour it was pressed and left every
+    // instruction the patch compiles into every lit material still running.
+    // The row read as permanently on because it WAS. Expect a one-off compile
+    // hitch on the frame you press it, as with wind and reflections.
+    case 'lighting': setLightingEnabled(enabled); break
     case 'terrainShader': setTerrainShader(enabled); break
     // Freezes the readout on its last numbers rather than blanking it, so the
     // panel still says something while the upload is off. See updateQuestStats.
     case 'stats': if (enabled) updateQuestStats(); break
     case 'trees': trees.batch.visible = enabled; break
     case 'rocks': rocks.beds.forEach((b) => { b.batch.visible = enabled }); break
-    // A REBUILD, not a flag: the spin is compiled into the program (see
-    // billboardVertex in material.js), so this costs a shader compile and a
-    // rescatter on the frame it is pressed -- the same one-off hitch the wind
-    // row warns about. rebuildGrass carries the density and reach the other two
-    // rows have set, so the three compose instead of resetting each other.
-    // Both are CARD-ONLY -- a blade clump is geometry, so it neither turns to
-    // face the eye nor grows in the far field. Rebuilding for them under the
-    // blade bed would be a 100 ms hitch that changes nothing on screen.
-    case 'grassSpin': if (grassStyle !== 'blades') rebuildGrass({ spin: enabled }); break
-    case 'grassGrow': if (grassStyle !== 'blades') rebuildGrass({ grow: enabled }); break
     case 'grass': grass.batch.visible = enabled; break
     // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
     // beds are a mesh per species. See render/ferns.js on why an InstancedMesh
     // cannot hold the ladder in one object.
     case 'ferns': ferns.meshes.forEach((m) => { m.visible = enabled }); break
+    // Three layers on one row. Each is a prop arena -- a Group of
+    // InstancedMeshes -- so `visible` on the group is the whole layer.
+    case 'litter':
+      litter.batch.visible = enabled
+      mushrooms.batch.visible = enabled
+      deadwood.batch.visible = enabled
+      break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -587,15 +608,22 @@ function applyQuestToggle(key) {
 //
 // IN XR THAT SWEEP RUNS TWICE PER FRAME. WebGLRenderer's XR path loops
 // `for (const camera2 of camera.cameras) renderScene(...)`, once per eye, and
-// onBeforeRender is called inside renderScene -- so grass at ~22k instances is
-// 44k matrix reads and sphere transforms per frame, the forest another 82k, and
-// the terrain batch adds a full 1024-element SORT on top because terrain-v2.js
-// sets sortObjects. That is CPU work on a mobile core, and CPU work is exactly
-// what the headset has least of. It also explains the shape of the symptom:
-// stalls long enough to miss the compositor's deadline make the runtime
-// reproject a stale frame, which is the "furious blinking" -- not a shader
-// crash, and not the GPU, which the same headset happily feeds a million alpha
-// -masked triangles.
+// onBeforeRender is called inside renderScene. That is CPU work on a mobile
+// core, and CPU work is exactly what the headset has least of. It also explains
+// the shape of the symptom: stalls long enough to miss the compositor's
+// deadline make the runtime reproject a stale frame, which is the "furious
+// blinking" -- not a shader crash, and not the GPU, which the same headset
+// happily feeds a million alpha-masked triangles.
+//
+// WHAT IT STILL REACHES IS TERRAIN AND ROCKS, and nothing else. Every scatter is
+// on an InstancedMesh arena now -- trees, ferns, grass, litter, mushrooms and
+// dead wood -- and those carry the two flags only so applyBatchCulling records a
+// default rather than `undefined` (see the notes in trees.js / grass.js /
+// instanced-arena.js / prop-arena.js); writing them changes no rendering, and
+// there is no per-instance cull on an InstancedMesh to have. That leaves
+// terrain.batch, which sorts its 1024 chunks as well as culling them, and the
+// six rock beds, which cull only. Both are on three's defaults, so "on" is what
+// the world ships.
 //
 // Turning it OFF trades draw-time (every instance is submitted) for frame-time
 // (no sweep). The user's own /quest measurements say this world is nowhere near
@@ -632,18 +660,14 @@ function applyBatchCulling() {
   }
 }
 
-// Repaint one row's label from the live toggle state. Separate from the click
-// handler because a toggle can be flipped by something OTHER than its own
-// button, and a row whose label disagreed with the world would make the panel
-// worse than no panel.
+// Repaint one row's cell in the shared atlas from the live toggle state.
+// Separate from the click handler because a toggle can be flipped by something
+// OTHER than its own button, and a row whose label disagreed with the world
+// would make the panel worse than no panel.
 function refreshQuestRow(key) {
-  const row = QUEST_TOGGLE_ROWS.find((r) => r.key === key)
-  const mesh = questPanelMeshes.find((m) => m.userData.key === key)
-  if (!mesh || !row) return
-  const width = mesh.geometry.parameters.width
-  mesh.material.map?.dispose()
-  mesh.material.map = labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96))
-  mesh.material.needsUpdate = true
+  const i = QUEST_TOGGLE_ROWS.findIndex((r) => r.key === key)
+  if (i < 0 || !questRowsCtx) return
+  drawQuestRowCell(i)
 }
 
 function activateQuestButton(key) {
@@ -671,6 +695,45 @@ const PANEL_W = QUEST_PANEL_COLS * QUEST_PANEL_COL_W + (QUEST_PANEL_COLS - 1) * 
 const QUEST_ROW_H = 0.20
 const QUEST_ROW_TOP = 0.30
 const questRowsPerCol = () => Math.ceil(QUEST_TOGGLE_ROWS.length / QUEST_PANEL_COLS)
+
+// THE BUTTON GRID IS ONE MESH OVER ONE ATLAS, and that is a draw-call decision
+// rather than a tidiness one. A quad per row, each with its own CanvasTexture
+// and its own material, is a draw call per row -- and because those materials
+// are `transparent` AND `DoubleSide`, three splits every one of them into a
+// back pass and a front pass (WebGLRenderer, `material.transparent === true &&
+// material.side === DoubleSide && material.forceSinglePass === false`), so the
+// bill was TWO calls a button. Twenty rows plus the backdrop, title and stats
+// came to 49 calls per eye for a menu with nothing behind it.
+//
+// One geometry holding all the quads, one atlas holding all the labels, one
+// material: 1 call. The cells are laid out on the same grid the quads are, at
+// the same 459x96 each row's own texture used to be, so this is pixel-for-pixel
+// what was there. A click identifies its row from the hit's faceIndex (two
+// triangles per quad) instead of from the mesh it landed on, and a label change
+// repaints ONE cell in place and re-uploads the atlas -- a click is a
+// human-rate event, so that upload is affordable where the stats readout's
+// 4 Hz one would not be.
+const QUEST_CELL_W_PX = Math.round(QUEST_PANEL_COL_W / 0.18 * 96)
+const QUEST_CELL_H_PX = 96
+let questRowsCanvas = null
+let questRowsCtx = null
+let questRowsTexture = null
+
+function drawQuestRowCell(i) {
+  const row = QUEST_TOGGLE_ROWS[i]
+  const rowsPerCol = questRowsPerCol()
+  const x = Math.floor(i / rowsPerCol) * QUEST_CELL_W_PX
+  const y = (i % rowsPerCol) * QUEST_CELL_H_PX
+  const ctx = questRowsCtx
+  ctx.fillStyle = '#173154'
+  ctx.fillRect(x, y, QUEST_CELL_W_PX, QUEST_CELL_H_PX)
+  ctx.fillStyle = '#ffffff'
+  ctx.font = 'bold 26px monospace'
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'center'
+  ctx.fillText(questToggleLabel(row), x + QUEST_CELL_W_PX / 2, y + QUEST_CELL_H_PX / 2)
+  questRowsTexture.needsUpdate = true
+}
 
 const QUEST_STATS_W = 1280
 const QUEST_STATS_H = 240
@@ -701,10 +764,9 @@ function buildQuestPanel() {
   questPanelGroup = new THREE.Group()
   scene.add(questPanelGroup)
 
-  // BUILT HIDDEN, AND HIDDEN IS THE RESTING STATE. 22 meshes with 22 unshared
-  // basic materials is 22 draw calls, and the two label atlases behind them are
-  // the widest textures in the scene -- all of it for a menu that is wanted for
-  // a few seconds at a time. `visible = false` is the whole saving: three's
+  // BUILT HIDDEN, AND HIDDEN IS THE RESTING STATE. Four meshes and the three
+  // widest textures in the scene, all of it for a menu that is wanted for a few
+  // seconds at a time. `visible = false` is the whole saving: three's
   // projectObject returns early on an invisible object and never descends, so
   // the group's children are not culled, not sorted, and not drawn, and their
   // triangles never reach the render list at all.
@@ -721,14 +783,14 @@ function buildQuestPanel() {
   const bgTop = 1.20
   const bg = new THREE.Mesh(
     new THREE.PlaneGeometry(PANEL_W + 0.1, bgTop - gridBottom),
-    new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: 0.94, side: THREE.DoubleSide })
+    new THREE.MeshBasicMaterial({ color: 0x091321, transparent: true, opacity: 0.94, side: THREE.DoubleSide, forceSinglePass: true })
   )
   bg.position.set(0, (bgTop + gridBottom) / 2, -0.01)
   questPanelGroup.add(bg)
 
   const title = new THREE.Mesh(
     new THREE.PlaneGeometry(PANEL_W, 0.13),
-    new THREE.MeshBasicMaterial({ map: labelTexture('sticks move & turn -- A/X fly -- B/Y or esc closes this menu -- stick click recenters', null, '#8fd48f', 1560), transparent: true, toneMapped: false, side: THREE.DoubleSide })
+    new THREE.MeshBasicMaterial({ map: labelTexture('sticks move & turn -- A/X fly -- B/Y or esc closes this menu -- stick click recenters', null, '#8fd48f', 1560), transparent: true, toneMapped: false, side: THREE.DoubleSide, forceSinglePass: true })
   )
   title.position.set(0, 1.05, 0.02)
   questPanelGroup.add(title)
@@ -750,22 +812,54 @@ function buildQuestPanel() {
   // Three side-by-side columns rather than one tall stack, so the panel stays a
   // comfortable height regardless of how many toggles it grows to. Column-major
   // fill, so QUEST_TOGGLE_ROWS reads top-to-bottom in source order.
+  //
+  // ONE geometry of loose quads, at the positions a mesh per row used to sit at.
+  // Loose and not a PlaneGeometry grid, because the gaps between the buttons are
+  // the backdrop showing through -- a continuous sheet would have to carry them
+  // as transparent margin in every cell instead.
   const rowsPerCol = questRowsPerCol()
-  const rowHeight = QUEST_ROW_H
-  const top = QUEST_ROW_TOP
-  QUEST_TOGGLE_ROWS.forEach((row, i) => {
+  const n = QUEST_TOGGLE_ROWS.length
+  const atlasW = QUEST_PANEL_COLS * QUEST_CELL_W_PX
+  const atlasH = rowsPerCol * QUEST_CELL_H_PX
+  questRowsCanvas = document.createElement('canvas')
+  questRowsCanvas.width = atlasW
+  questRowsCanvas.height = atlasH
+  questRowsCtx = questRowsCanvas.getContext('2d')
+  questRowsTexture = new THREE.CanvasTexture(questRowsCanvas)
+  questRowsTexture.colorSpace = THREE.SRGBColorSpace
+
+  const positions = new Float32Array(n * 4 * 3)
+  const uvs = new Float32Array(n * 4 * 2)
+  const indices = new Uint16Array(n * 6)
+  for (let i = 0; i < n; i++) {
     const col = Math.floor(i / rowsPerCol)
     const rowInCol = i % rowsPerCol
-    const width = QUEST_PANEL_COL_W
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, 0.18),
-      new THREE.MeshBasicMaterial({ map: labelTexture(questToggleLabel(row), '#173154', '#ffffff', Math.round(width / .18 * 96)), side: THREE.DoubleSide, transparent: true, toneMapped: false })
-    )
-    mesh.position.set((col - (QUEST_PANEL_COLS - 1) / 2) * (QUEST_PANEL_COL_W + QUEST_PANEL_COL_GAP), top - rowInCol * rowHeight, 0.03)
-    mesh.userData.key = row.key
-    questPanelGroup.add(mesh)
-    questPanelMeshes.push(mesh)
-  })
+    const cx = (col - (QUEST_PANEL_COLS - 1) / 2) * (QUEST_PANEL_COL_W + QUEST_PANEL_COL_GAP)
+    const cy = QUEST_ROW_TOP - rowInCol * QUEST_ROW_H
+    const x0 = cx - QUEST_PANEL_COL_W / 2, x1 = cx + QUEST_PANEL_COL_W / 2
+    const y0 = cy - 0.09, y1 = cy + 0.09
+    // The atlas cell, in UV. Canvas rows run downward and CanvasTexture flips Y,
+    // so the cell's TOP edge is the larger v.
+    const u0 = col * QUEST_CELL_W_PX / atlasW, u1 = (col + 1) * QUEST_CELL_W_PX / atlasW
+    const v1 = 1 - rowInCol * QUEST_CELL_H_PX / atlasH, v0 = 1 - (rowInCol + 1) * QUEST_CELL_H_PX / atlasH
+    positions.set([x0, y0, 0.03, x1, y0, 0.03, x1, y1, 0.03, x0, y1, 0.03], i * 12)
+    uvs.set([u0, v0, u1, v0, u1, v1, u0, v1], i * 8)
+    const v = i * 4
+    indices.set([v, v + 1, v + 2, v + 2, v + 3, v], i * 6)
+    drawQuestRowCell(i)
+  }
+  const rowsGeometry = new THREE.BufferGeometry()
+  rowsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  rowsGeometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+  rowsGeometry.setIndex(new THREE.BufferAttribute(indices, 1))
+  const rowsMesh = new THREE.Mesh(
+    rowsGeometry,
+    // forceSinglePass, or three draws the whole grid twice -- see the atlas note
+    // above drawQuestRowCell.
+    new THREE.MeshBasicMaterial({ map: questRowsTexture, side: THREE.DoubleSide, transparent: true, toneMapped: false, forceSinglePass: true })
+  )
+  questPanelGroup.add(rowsMesh)
+  questPanelMeshes.push(rowsMesh)
 
   const dotGeometry = new THREE.SphereGeometry(0.012, 12, 8)
   const dotMaterial = new THREE.MeshBasicMaterial({ color: 0xff3b3b, toneMapped: false, depthTest: false })
@@ -775,8 +869,8 @@ function buildQuestPanel() {
     scene.add(dot)
     questControllerHits.set(el, { hit: null, dot })
     el.addEventListener('triggerdown', () => {
-      const hit = questControllerHits.get(el)?.hit
-      if (hit) activateQuestButton(hit.object.userData.key)
+      const key = questKeyAt(questControllerHits.get(el)?.hit)
+      if (key) activateQuestButton(key)
     })
   }
   ;[leftHandEl, rightHandEl].forEach(wireQuestController)
@@ -796,9 +890,17 @@ function buildQuestPanel() {
     if (!questPanelGroup.visible) return
     pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
     raycaster.setFromCamera(pointer, cam)
-    const hit = raycaster.intersectObjects(questPanelMeshes)[0]
-    if (hit) activateQuestButton(hit.object.userData.key)
+    const key = questKeyAt(raycaster.intersectObjects(questPanelMeshes)[0])
+    if (key) activateQuestButton(key)
   })
+}
+
+// Which row a raycast landed on. The grid is ONE mesh, so the answer is not on
+// the hit object -- it is the quad the hit triangle belongs to, and the quads
+// are laid out in QUEST_TOGGLE_ROWS order at two triangles each.
+function questKeyAt(hit) {
+  if (!hit || hit.faceIndex === undefined || hit.faceIndex === null) return null
+  return QUEST_TOGGLE_ROWS[Math.floor(hit.faceIndex / 2)]?.key ?? null
 }
 
 function updateQuestControllerHover() {
@@ -860,10 +962,10 @@ function placeQuestPanel() {
  * standing at that moment, and pressing again takes it away rather than
  * teleporting it to her feet.
  *
- * The saving is the point. 22 meshes, 22 materials, 22 draw calls and two wide
- * label atlases were being drawn every frame of a session in which the menu is
- * looked at for a few seconds -- and in VR that is 44 draw calls, since both
- * eyes pay. Hidden, three's projectObject skips the whole subtree.
+ * The saving is the point. Four meshes and three wide canvas textures were being
+ * drawn every frame of a session in which the menu is looked at for a few
+ * seconds -- and in VR that is eight draw calls, since both eyes pay. Hidden,
+ * three's projectObject skips the whole subtree.
  */
 function toggleQuestPanel() {
   if (!questPanelGroup) return
@@ -1090,21 +1192,13 @@ const questToggles = QUEST_MODE
       terrainShader: true,
       // On, because a panel with dead numbers on it is the wrong default. Off is
       // the ISOLATION TEST for anything that only misbehaves while the panel is
-      // in view: with this off the panel still draws its 22 quads and its laser
+      // in view: with this off the panel still draws its button grid and its laser
       // still hits them, but the 1280x240 canvas stops being re-uploaded every
       // frame -- so an artefact that survives is the panel's DRAW and one that
       // does not is the upload.
       stats: true,
-      trees: false, rocks: false, grass: false, ferns: false,
+      trees: false, rocks: false, grass: false, ferns: false, litter: false,
       instCull: false, water: false, reflections: false, aurora: false,
-      // How the bed ships, so the measurement this row makes is what turning the
-      // spin OFF buys -- both in frame time and in how the near field reads when
-      // you look down at your feet. Costs a rebuild to flip; see grassSpin in
-      // applyQuestToggle.
-      grassSpin: true,
-      // The far-field 1.7x. Off is the cheaper bed by about 15% of its total
-      // fill -- the grow is priced in fill here, not in triangles.
-      grassGrow: true,
       // The one toggle that starts ON, because unlike every layer above it the
       // wind is not a thing being added to an empty world -- it is how the world
       // already ships, and the measurement being made here is what REMOVING it
@@ -1685,8 +1779,9 @@ async function bootWorld() {
     // Each layer starts where its toggle says, READ FROM THE TOGGLE rather than
     // from a literal, so a changed default takes effect instead of leaving the
     // panel claiming a layer is on while the world shows none.
-    // litter/mushrooms/deadwood are always constructed (mushrooms anchors onto
-    // placed trees/rocks either way) but have no row, so they stay off outright.
+    // litter/mushrooms/deadwood share the one `litter` row -- see
+    // QUEST_TOGGLE_ROWS -- and are always constructed either way, because
+    // mushrooms anchors onto placed trees and rocks whether it is drawn or not.
     terrain.batch.visible = questToggles.terrain
     trees.batch.visible = questToggles.trees
     rocks.beds.forEach((b) => { b.batch.visible = questToggles.rocks })
@@ -1694,9 +1789,9 @@ async function bootWorld() {
     ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
     water.group.visible = questToggles.water
     water.setCubeReflections(questToggles.reflections)
-    litter.batch.visible = false
-    mushrooms.batch.visible = false
-    deadwood.batch.visible = false
+    litter.batch.visible = questToggles.litter
+    mushrooms.batch.visible = questToggles.litter
+    deadwood.batch.visible = questToggles.litter
     // THE EDITOR OVERLAY, which had no business being in the headset and was the
     // single largest thing drawing before any layer is switched on. Markers is
     // three InstancedMeshes of authoring handles -- 96 triangles a spline point,
@@ -2251,8 +2346,8 @@ const GRASS_RADIUS_CYCLE = {
 const GRASS_FALLOFF_CYCLE = [3, 2, 1.5, 1]
 
 // The live overrides, carried across every rebuild so the three grass rows
-// compose. Without this, flipping the spin would silently restore the shipped
-// density, and the wearer would read the frame-time change as the spin's.
+// compose. Without this, changing the reach would silently restore the shipped
+// density, and the wearer would read the frame-time change as the reach's.
 const grassOpts = {}
 
 function rebuildGrass(patch) {
@@ -2442,16 +2537,41 @@ addEventListener('resize', () => {
 const tmpCol = new THREE.Color()
 const setSRGB = (col, rgb) => col.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
 
+/**
+ * The `terrain & prop lighting` row, both halves of it.
+ *
+ * TWO HALVES BECAUSE THERE ARE TWO COSTS, and only one of them is ours to
+ * compile out. lighting.setEnabled rebuilds every lit material in the world
+ * with the shadow lookup, the night lift, the near-field envelope, the aerial
+ * ramp and the caustics ABSENT, so the A/B against on is this system's price in
+ * milliseconds and nothing else. The rig is the other half: applySky's writes
+ * of sun and hemi stop, so this restates the fixed noon-ish one the two lights
+ * were constructed with. Without that restore, "off" leaves the palette's last
+ * answer standing in both lights and the row reads as having done nothing --
+ * which is what it did for its whole life before this.
+ */
+function setLightingEnabled(enabled) {
+  lighting.setEnabled(enabled)
+  if (enabled) return
+  sun.position.copy(FIXED_RIG.sunDir)
+  sun.color.setHex(FIXED_RIG.sunColor)
+  sun.intensity = FIXED_RIG.sunIntensity
+  hemi.color.setHex(FIXED_RIG.hemiSky)
+  hemi.groundColor.setHex(FIXED_RIG.hemiGround)
+  hemi.intensity = FIXED_RIG.hemiIntensity
+}
+
 // Unchanged from v1, ordering included. The comments there explain each step;
 // what matters when reading this file is that the order is a dependency chain
 // and not a list: lighting writes the night terms the water reads, sky.update
 // writes the reflection the water bends, and hemi is set before water.update
 // because it is the ambient the water's silhouettes are matched to.
 function applySky(state, head, elapsedReal) {
-  // Gated in quest mode like every other layer: off by default so the sun/
-  // hemi lights and the WorldLighting shader patch (the day/night shading
-  // terrain, trees, rocks etc. all read) can be isolated from the rest of
-  // the atmosphere (fog/background/sky dome, which stay always-on below).
+  // Gated in quest mode like every other layer, so the sun/hemi lights and the
+  // WorldLighting shader patch (the day/night shading terrain, trees, rocks etc.
+  // all read) can be isolated from the rest of the atmosphere (fog/background/
+  // sky dome, which stay always-on below). setLightingEnabled owns the other
+  // half of the row and is where the isolation is actually paid for.
   if (!QUEST_MODE || questToggles.lighting) {
     sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
     setSRGB(sun.color, state.lightColor)

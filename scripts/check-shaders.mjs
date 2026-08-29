@@ -21,6 +21,7 @@ import { createPropMaterial, createImpostorBakeMaterial } from '../src/material.
 import { Water } from '../src/water.js'
 import { Sky } from '../src/sky.js'
 import { WorldLighting } from '../src/lighting.js'
+import { AZIMUTHS } from '../src/sim/horizon.js'
 import { SkyProbe } from '../src/sky-probe.js'
 import { WorldProbe } from '../src/world-probe.js'
 import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
@@ -498,25 +499,87 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
 // where it comes from in the real thing -- terrain-material.js has carried the
 // varying since v1's surface grain, which is why the patch takes its name as an
 // argument instead of declaring one of its own.
-{
+//
+// AND BOTH MODES ACROSS ALL THREE VARIANTS, which is nine programs and is the
+// point. The patch has two compile-time axes now (see the header of
+// lighting.js): `maps`, which the whole /v2 route currently runs on the unready
+// side of, and `enabled`, which the headset's `terrain & prop lighting` row
+// flips at runtime. A variant nothing compiles here is a variant first compiled
+// by a headset the moment someone presses that button -- and the unready one is
+// what every material in the world actually ships as today.
+//
+// The vertex mode is here in its own right rather than only under the blade bed
+// below, because the two variants declare a DIFFERENT VARYING -- vec3 vWlShade
+// with maps, float vWlNear without -- and a cross-stage mismatch there is a link
+// error, which is the one class of failure a per-stage compile cannot see.
+const WL_MAPS_N = 4
+for (const variant of ['maps', 'unready', 'off']) {
+  const lighting = new WorldLighting()
+  if (variant === 'maps') {
+    lighting.setMaps(
+      new Uint8Array(WL_MAPS_N * WL_MAPS_N * AZIMUTHS),
+      new Uint8Array(WL_MAPS_N * WL_MAPS_N),
+      WL_MAPS_N
+    )
+  }
+  if (variant === 'off') lighting.setEnabled(false)
+
   const lib = THREE.ShaderLib.lambert
-  const shader = {
+  const fragStub = {
     uniforms: THREE.UniformsUtils.clone(lib.uniforms),
     vertexShader: lib.vertexShader,
     fragmentShader: `varying vec3 vWorldPos;\n${lib.fragmentShader}`,
     defines: {},
   }
-  const mat = new THREE.MeshLambertMaterial()
-  new WorldLighting().patch(mat, { mode: 'fragment', cacheKey: 'check', worldPosVarying: 'vWorldPos' })
-  mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+  const fragMat = new THREE.MeshLambertMaterial()
+  lighting.patch(fragMat, { mode: 'fragment', cacheKey: 'check', worldPosVarying: 'vWorldPos' })
+  fragMat.onBeforeCompile(fragStub, { capabilities: { isWebGL2: true } })
 
-  const frag = finish(shader.fragmentShader)
-  SHADERS.push(['lighting.js    fragment patch     frag', 'frag', builtinPrologue('frag', ['#define USE_FOG', '#define FOG_EXP2']), frag])
-  // Three replaces, three markers. The aerial mix and the caustic net share the
-  // fog slot, so one anchor going stale takes both out at once and neither
-  // absence is visible from anywhere but a lake bed.
-  for (const mark of ['float wlCaustic( vec2 p, float t )', 'uCaustic.x > 0.0', 'aerialKeep', 'wlSun( vWorldPos.xz )']) {
-    if (!frag.includes(mark)) MISSING_MARKS.push(`lighting.js fragment patch frag: ${mark}`)
+  const defines = ['#define USE_FOG', '#define FOG_EXP2']
+  const frag = finish(fragStub.fragmentShader)
+  SHADERS.push([`lighting.js    fragment ${variant.padEnd(7)}   frag`, 'frag', builtinPrologue('frag', defines), frag])
+
+  const vertStub = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  const vertMat = new THREE.MeshLambertMaterial()
+  lighting.patch(vertMat, { mode: 'vertex', cacheKey: 'check-vertex' })
+  vertMat.onBeforeCompile(vertStub, { capabilities: { isWebGL2: true } })
+
+  const vsrc = finish(vertStub.vertexShader)
+  const fsrc = finish(vertStub.fragmentShader)
+  SHADERS.push([`lighting.js    vertex   ${variant.padEnd(7)}   vert`, 'vert', builtinPrologue('vert', defines), vsrc])
+  SHADERS.push([`lighting.js    vertex   ${variant.padEnd(7)}   frag`, 'frag', builtinPrologue('frag', defines), fsrc])
+  CROSS_STAGE.push([`lighting.js vertex ${variant}`, vsrc, fsrc])
+
+  // The marks, per variant, and the ABSENCES are as load-bearing as the
+  // presences: a horizon lookup surviving into the unready build is the dead
+  // fetch this variant exists to remove, and anything at all surviving into the
+  // `off` build is a row that cannot be switched off -- which is exactly the
+  // state this axis was added to get out of.
+  //
+  // The aerial mix and the caustic net share the fog slot, so one anchor going
+  // stale takes both out at once and neither absence is visible from anywhere
+  // but a lake bed.
+  const wlCore = ['float wlCaustic( vec2 p, float t )', 'uCaustic.x > 0.0', 'aerialKeep']
+  const expectFrag = variant === 'off' ? [] : [...wlCore, ...(variant === 'maps' ? ['wlSun( vWorldPos.xz )'] : [])]
+  const banFrag = variant === 'off' ? [...wlCore, 'wlSun'] : (variant === 'unready' ? ['wlSun', 'uHorizonMap'] : [])
+  for (const mark of expectFrag) {
+    if (!frag.includes(mark)) MISSING_MARKS.push(`lighting.js fragment ${variant} frag: ${mark}`)
+  }
+  for (const mark of banFrag) {
+    if (frag.includes(mark)) MISSING_MARKS.push(`lighting.js fragment ${variant} frag: emitted ${mark}, should not`)
+  }
+  const expectVert = { maps: ['vWlShade'], unready: ['vWlNear'], off: [] }[variant]
+  const banVert = { maps: [], unready: ['uHorizonMap', 'wlSun'], off: ['vWlShade', 'vWlNear'] }[variant]
+  for (const mark of expectVert) {
+    if (!vsrc.includes(mark) || !fsrc.includes(mark)) MISSING_MARKS.push(`lighting.js vertex ${variant}: ${mark}`)
+  }
+  for (const mark of banVert) {
+    if (vsrc.includes(mark)) MISSING_MARKS.push(`lighting.js vertex ${variant} vert: emitted ${mark}, should not`)
   }
 }
 
@@ -533,7 +596,15 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
 // this material adds -- the wind bend, the per-clump tip brightness -- lives
 // inside `#ifdef USE_INSTANCING`, so a compile without them type-checks an
 // empty patch and reports success.
-for (const wind of [true, false]) {
+// AND BOTH FADE BUILDS, which is a separate program again and is the one the
+// bed actually ships. The dissolve spans both stages -- FADE_VERTEX resolves the
+// coverage, FADE_FRAGMENT stipples against it -- and the vertex half sits behind
+// PROP_FADE_ATTRIBUTE, a define this material has to make for itself because the
+// card beds get theirs from createPropMaterial. Compiling only the
+// `instancedFade: false` build type-checks the bed with its dissolve deleted,
+// which is exactly the shape of failure the marks below are here to name: a
+// program that compiles, links, draws, and pops.
+for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   const lib = THREE.ShaderLib.lambert
   const shader = {
     uniforms: THREE.UniformsUtils.clone(lib.uniforms),
@@ -541,7 +612,7 @@ for (const wind of [true, false]) {
     fragmentShader: lib.fragmentShader,
     defines: {},
   }
-  const mat = createBladeMaterial({ wind })
+  const mat = createBladeMaterial({ wind, instancedFade })
   new WorldLighting().patch(mat, { mode: 'vertex', cacheKey: 'check-blade' })
   mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
 
@@ -549,7 +620,7 @@ for (const wind of [true, false]) {
     '#define USE_COLOR', '#define USE_INSTANCING', '#define USE_INSTANCING_COLOR',
     '#define USE_FOG', '#define FOG_EXP2', '#define DOUBLE_SIDED',
   ]
-  const label = `grass-blades ${wind ? 'wind   ' : 'no wind'}`
+  const label = `grass-blades ${wind ? 'wind   ' : 'no wind'}${instancedFade ? ' fade' : '     '}`
   const vert = finish(shader.vertexShader)
   const frag = finish(shader.fragmentShader)
   SHADERS.push([`${label}       vert`, 'vert', builtinPrologue('vert', defines), vert])
@@ -560,7 +631,14 @@ for (const wind of [true, false]) {
   // reordering <color_vertex> takes the gradient out of every blade in the bed
   // and leaves a shader that compiles and draws a flat clump.
   const marks = ['vColor.rgb *= mix( 1.0, aTipMul, aBladeT )', 'attribute float aTipMul']
-  if (wind) marks.push('transformed.x += bend')
+  if (wind) marks.push('transformed.xz += bladeDir * bend', 'attribute float aBladeSeed')
+  // The dissolve, named at all three ends: the define that makes the block live
+  // GLSL, the slot it reads, and the collapse that is the whole visible effect
+  // of it. The mix in particular is the difference between a bed that thins out
+  // a blade at a time and one that grows back out of the ground.
+  if (instancedFade) {
+    marks.push('#define PROP_FADE_ATTRIBUTE', 'float fadeSlot = aPropFade', 'vPropFade = propFade')
+  }
   for (const mark of marks) {
     if (!vert.includes(mark)) MISSING_MARKS.push(`${label} vert: ${mark}`)
   }
@@ -568,6 +646,17 @@ for (const wind of [true, false]) {
   // silent at runtime: the bed still draws, and half of every clump is black.
   if (!frag.includes('normal *= faceDirection')) {
     MISSING_MARKS.push(`${label} frag: normal *= faceDirection`)
+  }
+  // The half that is actually visible. A vertex stage that resolves vPropFade
+  // and a fragment stage that never tests it is a bed that pops, and the
+  // varying check below will not catch it -- vPropFade would be declared in
+  // both stages and simply unused in one.
+  if (instancedFade) {
+    for (const mark of ['float fadeT = ign( gl_FragCoord.xy )', 'abs( vPropFade ) <= fadeT ) discard']) {
+      if (!frag.includes(mark)) MISSING_MARKS.push(`${label} frag: ${mark}`)
+    }
+  } else if (frag.includes('vPropFade')) {
+    MISSING_MARKS.push(`${label} frag: the dissolve leaked into the build that is meant to have none`)
   }
   if (!wind && vert.includes('uWindAmp')) MISSING_MARKS.push(`${label} vert: wind leaked into the still build`)
 }

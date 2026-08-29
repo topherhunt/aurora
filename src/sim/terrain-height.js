@@ -1019,7 +1019,18 @@ export class TerrainHeight {
     const zm = this._field(x * SHRINK, (z - e) * SHRINK) / SHRINK
     const zp = this._field(x * SHRINK, (z + e) * SHRINK) / SHRINK
     const d = 2 * e
-    const tan = Math.hypot((xp - xm) / d, (zp - zm) / d)
-    return { h: SCARP.enabled ? h + this._scarpFrom(x, z, h, xm, xp, zm, zp) : h, tan }
+    // gx and gz are the two halves `tan` is the magnitude of, kept because they
+    // are already in hand and because a prop that has to SIT on the ground needs
+    // the direction as well as the steepness -- the normal is (-gx, 1, -gz)
+    // normalised. Same shape as v2's field, so a caller need not know which
+    // world it is on.
+    const gx = (xp - xm) / d
+    const gz = (zp - zm) / d
+    return {
+      h: SCARP.enabled ? h + this._scarpFrom(x, z, h, xm, xp, zm, zp) : h,
+      tan: Math.hypot(gx, gz),
+      gx,
+      gz,
+    }
   }
 }

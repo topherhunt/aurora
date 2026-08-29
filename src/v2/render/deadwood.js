@@ -8,6 +8,7 @@ import {
 } from '../../props/deadwood-bank.js'
 import { DEADWOOD_LOD_AT, DEADWOOD_CULL, DEADWOOD_TINT } from '../../props/deadwood.js'
 import { createPropMaterial, setSnowLine } from '../../material.js'
+import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
@@ -16,7 +17,7 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // its ladder and its budget are DESIGN.md §21.
 //
 // Fifth sibling of render/trees.js, render/ferns.js, render/rocks.js and
-// render/mushrooms.js, and the same machine again: one BatchedMesh, one material,
+// render/mushrooms.js, and the same machine again: one prop arena, one material,
 // a variant bank, a tier ladder, a tiled camera-following scatter, graded
 // thinning by per-candidate rank, rank-based incremental regrow and the rim
 // dissolve. Read trees.js's header for all of that; it is not re-argued. This is
@@ -267,7 +268,7 @@ function triangleCount(geo) {
 
 export class Deadwood {
   /**
-   * @param scene         THREE.Scene to add the single BatchedMesh to.
+   * @param scene         THREE.Scene to add the arena's Group to.
    * @param field         V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt, bands.
    * @param water         WaterSurfaces. Needs isSubmerged.
    * @param layers        Layers. Needs `paths`, `snow.band` and flattenAt.
@@ -391,7 +392,14 @@ export class Deadwood {
     // what decides the spin: the shader's other test is the vertex normal, and
     // only the SNAG's card carries the vertical one. A log's card is fixed and
     // sits on this list all the same. See CARD_UP_MARK and deadwood-bank.js.
-    this.material = createPropMaterial(textureArray, { billboardLayers: deadwoodImpostorLayers() })
+    // `instancedFade` because the rim dissolve's timer has nowhere else to live
+    // on an InstancedMesh: instanceColor is itemSize 3 in r180, so there is no
+    // alpha beside the tint and the arena carries `aPropFade` instead. See
+    // material.js's FADE_VERTEX.
+    this.material = createPropMaterial(textureArray, {
+      billboardLayers: deadwoodImpostorLayers(),
+      instancedFade: true,
+    })
     // THE WHOLE FAMILY IS ROTTING, so the whole family is tinted, once, on the
     // material. This multiplies diffuseColor BEFORE MOSS_APPLY and SNOW_APPLY
     // mix their own colours over the top, so the wood ages and the moss stays
@@ -401,31 +409,28 @@ export class Deadwood {
     this.material.color.setHex(DEADWOOD_TINT)
 
     // The bank hands its tiers back finest-first and already expanded per
-    // variant, so there is no reverse and no perVariant indirection. Every slot
-    // is its own geometry -- unlike the mushroom bank, whose species share card
-    // geometries -- because a card here is sized to its own variant's extents.
-    const geos = bank.tiers.flatMap((t) => t.geometries)
-
-    this.batch = new THREE.BatchedMesh(
+    // variant, so there is no reverse and no perVariant indirection: a geometry
+    // id is just `tier * variantCount + variant`, which is the arena's own
+    // layout. Every slot is its own geometry -- unlike the mushroom bank, whose
+    // species share card geometries -- because a card here is sized to its own
+    // variant's extents.
+    this.tierCount = bank.tiers.length
+    this.batch = new PropArena(
       this.maxInstances,
-      geos.reduce((n, g) => n + g.attributes.position.count, 0),
-      geos.reduce((n, g) => n + g.index.count, 0),
-      this.material
+      bank.tiers,
+      this._tierCaps(),
+      this.material,
+      'v2-deadwood'
     )
-    this.batch.name = 'v2-deadwood'
-    this.batch.frustumCulled = false
-    this.batch.sortObjects = false
-
-    this.tierIds = bank.tiers.map((t) => t.geometries.map((g) => this.batch.addGeometry(g)))
+    this.tierIds = bank.tiers.map((_t, t) =>
+      bank.tiers[t].geometries.map((_g, v) => t * this.variantCount + v))
     this.tierTris = bank.tiers.map((t) => t.geometries.map(triangleCount))
-    this.cardTier = this.tierIds.length - 1
+    this.cardTier = this.tierCount - 1
     // The A/B control: hand the far band the real T0 mesh so the card can be
     // judged against ground truth at the distance the swap happens.
     this.farMeshIds = this.tierIds[0].slice()
     this.farMeshTris = this.tierTris[0].slice()
     this.farTier = 'card'
-    this.tierCount = this.tierIds.length
-    for (const g of geos) g.dispose()
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
@@ -486,6 +491,22 @@ export class Deadwood {
   _poolBound() {
     return poolBound(TILE, this.tileSpan, this.evictSq, 1.35,
       (d2) => this.perTile * this.uAt[this._levelFor(d2)])
+  }
+
+  /**
+   * Instance capacity of ONE mesh in each tier -- the arena holds a separate
+   * InstancedMesh per (tier, variant) and exceeding a cap throws.
+   *
+   * The whole pool over the variant count, times four, on every tier. Dead wood
+   * rolls its variant uniformly, so an even split is the expectation and four
+   * times it is a long way past any run of luck; and the pool is small enough
+   * (hundreds, not the grass bed's hundreds of thousands) that pricing the mesh
+   * tiers by their own bands would save kilobytes and risk a throw in the middle
+   * of a walk.
+   */
+  _tierCaps() {
+    const per = Math.ceil((this.maxInstances / this.variantCount) * 4) + 64
+    return new Array(this.tierCount).fill(per)
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */

@@ -32,7 +32,7 @@ It also gets the rim crease right for free: cap top and cap underside are separa
 
 ### 3. Colour lives in the texture, not in the tint
 
-The shared prop material tints PER INSTANCE (`BatchedMesh.setColorAt`, see `props/rock.js`), a scalar multiply over the whole instance. A rock is one material throughout, so a multiply is exactly right for it. A mushroom is two: what makes a fly agaric read as a fly agaric is a SCARLET CAP ON A WHITE STEM, and no per-instance multiply can produce two hues.
+The shared prop material tints PER INSTANCE (the arena's `setColorAt`, see `props/rock.js`), a scalar multiply over the whole instance. A rock is one material throughout, so a multiply is exactly right for it. A mushroom is two: what makes a fly agaric read as a fly agaric is a SCARLET CAP ON A WHITE STEM, and no per-instance multiply can produce two hues.
 
 So the cap sheet and the flesh sheet carry colour, addressed per vertex by which cell of the sheet a surface samples -- `capCell` for the top, `fleshCell` for underside, stem and ring. Cap and stem are coloured INDEPENDENTLY at zero cost: no extra attribute, no extra material, no extra draw call. The per-instance tint is left to do what a tint is good at, a gentle value and warmth jitter so no two mushrooms in a clump are the same mushroom twice.
 
@@ -74,11 +74,11 @@ The cap top is the odd one out because its innermost ring collapses to a point, 
 
 Mushrooms come in troops. One mushroom alone reads as a placed object; six of staggered ages around one patch of mycelium reads as something that grew. So `cluster` builds them into ONE geometry, which is also cheaper: §5's binding cost for small props is 37 ns per visible INSTANCE regardless of triangles, so six caps in one instance is a sixth of the per-frame CPU of six instances. Same argument as `shards` in `props/rock.js`.
 
-**Attributes** are always `{ position, normal, uvProj, texLayer }`, indexed -- the shared prop material's layout (`src/material.js`), which `BatchedMesh` rejects a geometry for disagreeing with. Unlike `buildFern` there is no second `uv` layout, because the bench renders the real material: a mushroom without its two sheets is a grey lamp.
+**Attributes** are always `{ position, normal, uvProj, texLayer }`, indexed -- the shared prop material's layout (`src/material.js`). An `InstancedMesh` does not validate that the way `BatchedMesh` did, so a geometry short an attribute now draws wrong rather than throwing. Unlike `buildFern` there is no second `uv` layout, because the bench renders the real material: a mushroom without its two sheets is a grey lamp.
 
 ## The scatter
 
-Fourth sibling of `render/trees.js`, `render/ferns.js` and `render/rocks.js`, reusing their machine wholesale: one `BatchedMesh`, one material, a variant bank, a tier ladder, a tiled camera-following scatter, graded thinning by per-candidate rank, rank-based incremental regrow, and the rim dissolve. `trees.js`'s header argues all of that.
+Fourth sibling of `render/trees.js`, `render/ferns.js` and `render/rocks.js`, reusing their machine wholesale: one `PropArena` -- a group of fifteen `InstancedMesh`es, one per (tier, species) -- one material, a variant bank, a tier ladder, a tiled camera-following scatter, graded thinning by per-candidate rank, rank-based incremental regrow, and the rim dissolve. `trees.js`'s header argues all of that.
 
 Two things are genuinely different, and both come from the same fact: **a mushroom is not scattered over ground, it is scattered over OTHER PROPS.**
 

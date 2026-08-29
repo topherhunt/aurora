@@ -1,6 +1,6 @@
 import THREE from '../three-instance.js'
 import { mulberry32 } from '../sim/mathx.js'
-import { FADE_DECODE, getWindEnabled, propClockUniform, registerWindMaterial } from '../material.js'
+import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, getWindEnabled, propClockUniform, registerWindMaterial } from '../material.js'
 
 // ---------------------------------------------------------------------------
 // GRASS AS GEOMETRY, NOT AS A CUTOUT.
@@ -17,9 +17,14 @@ import { FADE_DECODE, getWindEnabled, propClockUniform, registerWindMaterial } f
 // This module is the other end of the trade: a clump is ten triangles, one per
 // blade, opaque, untextured, no alpha channel anywhere in the material. The
 // covered area is only the part that used to be opaque, ~3.9 eyes rather than
-// 20.6, and because nothing discards, LRZ comes back and the hidden ones die
-// before they are shaded. The bill moves from fill, which this headset has none
-// of, to vertices and triangles, which it has plenty of.
+// 20.6. The bill moves from fill, which this headset has none of, to vertices
+// and triangles, which it has plenty of.
+//
+// The bed does carry ONE `discard`, in the rim dissolve, and it costs the draw
+// its low-resolution-Z -- see the fade block in createBladeMaterial for the
+// trade and the way out of it if the headset objects. The 3.9-against-20.6 win
+// is a geometry fact and survives it; what is given up is the early rejection of
+// blades that a nearer blade covers.
 //
 // WHAT ELSE GOES AWAY WITH THE CARD, none of which is a bonus so much as the
 // reason the card was the problem:
@@ -67,7 +72,7 @@ import { FADE_DECODE, getWindEnabled, propClockUniform, registerWindMaterial } f
 //     half a darker one -- see `bladeTipMul`.
 // No fragment work in any of it: the vertex stage multiplies, the interpolator
 // blends, and the fragment stage is a Lambert term over a varying. There is no
-// texture to sample and no alpha to test.
+// texture to sample and no alpha channel anywhere.
 // ---------------------------------------------------------------------------
 
 export const BLADE_DEFAULTS = {
@@ -184,7 +189,8 @@ export function bladeTipMul(params, rand) {
  *
  * @param {object} params  BLADE_DEFAULTS, or an override of it
  * @param {number} seed
- * @returns {THREE.BufferGeometry} with position, normal, color and aBladeT
+ * @returns {THREE.BufferGeometry} with position, normal, color, aBladeT and
+ *   aBladeSeed
  */
 export function buildBladeClump(params = {}, seed = 1) {
   const p = { ...BLADE_DEFAULTS, ...params }
@@ -197,6 +203,7 @@ export function buildBladeClump(params = {}, seed = 1) {
   const nrm = new Float32Array(n * 9)
   const col = new Float32Array(n * 9)
   const ramp = new Float32Array(n * 3)
+  const jitter = new Float32Array(n * 3)
 
   // The tip colour, resolved once. HUE ONLY -- warm pushes red up and blue down
   // about a green of exactly 1, so the tip is bleached without being brighter.
@@ -260,6 +267,17 @@ export function buildBladeClump(params = {}, seed = 1) {
     col[o + 6] = tipR; col[o + 7] = tipG; col[o + 8] = tipB
 
     ramp[b * 3] = 0; ramp[b * 3 + 1] = 0; ramp[b * 3 + 2] = 1
+
+    // The blade's own number in 0..1, so the wind can tell one blade of a
+    // bundle from another. It has to be constant across the triangle -- a value
+    // that varies between the three corners tears the blade apart -- which is
+    // why it cannot be hashed from the vertex position in the shader.
+    //
+    // It is the yaw draw rather than a fresh rand(): another call would shift
+    // the stream and reshape every blade after this one, and a blade whose
+    // stroke is tied to the plane it faces is the natural correlation anyway --
+    // a blade bends across its width, not along it.
+    jitter[b * 3] = jitter[b * 3 + 1] = jitter[b * 3 + 2] = yaw / (Math.PI * 2)
   }
 
   const geo = new THREE.BufferGeometry()
@@ -270,6 +288,7 @@ export function buildBladeClump(params = {}, seed = 1) {
   // and the wind squares it so a blade pivots about its foot instead of
   // shearing.
   geo.setAttribute('aBladeT', new THREE.BufferAttribute(ramp, 1))
+  geo.setAttribute('aBladeSeed', new THREE.BufferAttribute(jitter, 1))
   geo.computeBoundingSphere()
   return geo
 }
@@ -279,16 +298,16 @@ export function buildBladeClump(params = {}, seed = 1) {
  * alpha of any kind.
  *
  * DoubleSide because a blade has a back and you will be standing among them.
- * That is free here in a way it is not for the card bed: with no alphaTest
- * there is no `discard`, so the tiler keeps its hidden-surface removal and a
- * back face that is behind something never reaches the fragment stage.
+ * That is cheaper here than it is for the card bed either way: a blade's back
+ * face is the same few pixels as its front, where a card's is a full quad.
  *
  * PATCHED EITHER WAY. The wind is optional but the tip brightness is not: an
  * instanced bed without the `aTipMul` block draws every tip at exactly its
  * foot's colour, which is not a crash but is the whole gradient gone.
  *
  * `instancedFade` compiles the rim's dissolve in. See the fade block below for
- * why it is a shrink rather than the dither every other prop in the world uses.
+ * why it dithers a blade at a time rather than a fragment at a time, the way
+ * every other prop in the world does.
  *
  * @param {{wind?: boolean, instancedFade?: boolean}} opts
  * @returns {THREE.MeshLambertMaterial} with `.userData.uniforms` for the wind
@@ -321,9 +340,25 @@ export function createBladeMaterial({ wind = true, instancedFade = false } = {})
         #ifdef USE_INSTANCING
         attribute float aTipMul;
         #endif
+        ${windOn ? /* glsl */ `
+        // One number per blade, constant across its three vertices, so the wind
+        // can tell one blade of a bundle from another. Not hashable from the
+        // vertex position: the three corners of a blade disagree.
+        attribute float aBladeSeed;
+        ` : ''}
         ${instancedFade ? /* glsl */ `
         uniform float uPropClock;
-        #ifdef PROP_FADE_ATTRIBUTE
+        varying float vPropFade;
+        // THE DEFINE IS MADE HERE, not inherited. createPropMaterial declares
+        // the same attribute behind the same name for the card beds, and this
+        // material is not built by it -- so without this line the fade block
+        // below is dead GLSL and the bed pops instead of dissolving, silently
+        // and with everything still compiling and linking.
+        //
+        // Behind USE_INSTANCING because the attribute is InstancedArena's:
+        // undeclared it would read 0, and 0 is a clump scaled to nothing.
+        #ifdef USE_INSTANCING
+        #define PROP_FADE_ATTRIBUTE
         attribute float aPropFade;
         #endif
         ` : ''}
@@ -362,15 +397,27 @@ export function createBladeMaterial({ wind = true, instancedFade = false } = {})
         #include <normal_fragment_begin>
         normal *= faceDirection;
       `)
+    if (instancedFade) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', /* glsl */ `
+        #include <common>
+        varying float vPropFade;
+${IGN_GLSL}
+      `)
+        // AT color_fragment, the earliest point where diffuseColor exists. The
+        // discard is worth putting as early as the chunk order allows: every
+        // stipple hole that leaves here skips the Lambert term and the fog.
+        .replace('#include <color_fragment>', /* glsl */ `
+        #include <color_fragment>
+${FADE_FRAGMENT}
+      `)
+    }
 
     // AFTER begin_vertex, which is where `transformed` is created, and BEFORE
     // project_vertex, which is where three multiplies the instance matrix in.
     // Bending `transformed` therefore bends the blade in the CLUMP's local
     // space and inherits the instance's yaw and scale, so a bigger clump
-    // sways further and a rotated one sways in its own frame. The shrink is
-    // applied to the bent position for the same reason: both are the clump's
-    // own shape, and scaling after the bend keeps a dissolving clump's sway
-    // proportional to what is left of it.
+    // sways further and a rotated one sways in its own frame.
     const bendGLSL = windOn ? /* glsl */ `
         #ifdef USE_INSTANCING
         {
@@ -378,49 +425,60 @@ export function createBladeMaterial({ wind = true, instancedFade = false } = {})
           // different phases and makes the gust travel across the field rather
           // than every blade in the world nodding together.
           vec3 bladeRoot = ( modelMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
-          float bladePhase = ( bladeRoot.x + bladeRoot.z * 0.7 ) * uWindFreq + uTime * uWindSpeed;
+          // ONE NUMBER PER CLUMP, WITH NO sin IN IT. The fractional part of a
+          // dot against an irrational pair decorrelates neighbouring positions
+          // well enough for jitter and costs two ops, where the usual
+          // sin-fract hash costs a transcendental on every vertex of the
+          // densest bed in the world. Two of them, because a blade whose
+          // stroke, rate, aim and reach all came off one number is a blade
+          // whose four properties visibly move together.
+          float clumpSeed = fract( dot( bladeRoot.xz, vec2( 0.7548776641, 0.5698402909 ) ) );
+          float bladeA = fract( aBladeSeed + clumpSeed );
+          float bladeB = fract( aBladeSeed * 3.77 + clumpSeed * 1.61 );
+          // The clump's position still sets the base phase, which is what makes
+          // a gust TRAVEL across the meadow rather than the whole field nodding
+          // at once. Everything added to it is per blade: an offset, so no two
+          // blades of a bundle are at the same point of the same stroke, and a
+          // rate, so they do not fall back into step once they are out of it.
+          float bladePhase = ( bladeRoot.x + bladeRoot.z * 0.7 ) * uWindFreq
+            + bladeA * 6.2831853
+            + uTime * uWindSpeed * ( 0.7 + 0.6 * bladeA );
+          // AND ITS OWN AXIS, mostly downwind. The shared (1, 0.6) keeps the bed
+          // reading as one wind; the crosswind term, signed and scaled per
+          // blade, is what stops a clump moving like one rigid tuft. Not
+          // normalised on purpose -- the varying length is per-blade reach,
+          // which is the fourth thing that separates two blades of one plant.
+          vec2 bladeDir = vec2( 1.0, 0.6 ) + vec2( -0.6, 1.0 ) * ( bladeB * 2.0 - 1.0 ) * 0.7;
           // SQUARED, so the feet do not move at all and the displacement grows
           // toward the tip. A linear ramp slides the whole blade sideways and
           // the bed looks like it is being dragged rather than blown.
-          float bend = sin( bladePhase ) * uWindAmp * aBladeT * aBladeT;
-          transformed.x += bend;
-          transformed.z += bend * 0.6;
+          float bend = sin( bladePhase ) * uWindAmp * ( 0.65 + 0.7 * bladeB ) * aBladeT * aBladeT;
+          transformed.xz += bladeDir * bend;
         }
         #endif
     ` : ''
 
-    // THE RIM DISSOLVE, AS A SHRINK RATHER THAN A DITHER, and the reason is the
-    // whole reason this material exists. Every other prop in the world fades by
-    // stippling and `discard`ing the stippled-out fragments (see FADE_VERTEX in
-    // material.js), and one `discard` anywhere in a program turns off
-    // low-resolution-Z for the entire draw on a tiled Adreno -- so compiling the
-    // standard dissolve into the blade bed would hand back the exact saving the
-    // bed was built to win, in exchange for a quarter of a second of prettiness
-    // at the cull radius.
+    // THE RIM DISSOLVE IS THE SAME STIPPLE EVERY OTHER PROP USES, verbatim --
+    // FADE_VERTEX resolves the instance's slot to a coverage fraction, and
+    // FADE_FRAGMENT discards the fragments that fall outside it against
+    // screen-space blue-ish noise. A clump therefore dissolves in place, at full
+    // size, which is the only reading that looks like grass: a bundle scaled up
+    // from nothing looks like it is growing, and shedding blade by blade looks
+    // like it is being eaten.
     //
-    // A clump scaled toward zero covers no fragments and needs no alpha, and
-    // because `sink` is 0 the feet sit exactly on y = 0 -- so the shrink pulls
-    // the blades down into the ground they are standing in rather than toward a
-    // point in mid air, which is the read we want anyway.
+    // WHAT THAT COSTS, because this material exists to avoid exactly this: one
+    // `discard` anywhere in a program turns off low-resolution-Z for the whole
+    // draw on a tiled Adreno, so the bed loses the early rejection of its own
+    // hidden blades. The overdraw win over the card bed is untouched -- the
+    // blades cover ~3.9 eyes against the card's 20.6, and that is a geometry
+    // fact, not a Z fact -- but the bed now shades some blades that a nearer one
+    // covers. If the headset says no, the escape hatch is a SECOND draw for the
+    // fading instances alone, with the discard compiled only into that program,
+    // which needs the arena to keep the mid-fade slots contiguous.
     //
-    // THE SIGN CONVENTION IS ALREADY RIGHT. FADE_DECODE leaves `propFade` at
-    // -p while fading in and 1-p while fading out, and 1.0 at rest, so the
-    // magnitude of that one number is the scale ramp for both directions and
-    // for the resting state with no branch: |1.0| = full, |-p| = p in, |1-p| =
-    // 1-p out. Any change to that packing has to keep this true.
-    //
-    // `propFade` and `fadeSlot` are the caller's to declare -- FADE_DECODE reads
-    // the one and assigns the other, exactly as FADE_VERTEX does around it.
-    const fadeGLSL = instancedFade ? /* glsl */ `
-        {
-          float propFade = 1.0;
-          #if defined( USE_INSTANCING ) && defined( PROP_FADE_ATTRIBUTE )
-          float fadeSlot = aPropFade;
-${FADE_DECODE}
-          #endif
-          transformed *= abs( propFade );
-        }
-    ` : ''
+    // The two halves have to agree on `vPropFade`, which is why both are pulled
+    // from material.js rather than written out here.
+    const fadeGLSL = instancedFade ? FADE_VERTEX : ''
 
     if (bendGLSL || fadeGLSL) {
       shader.vertexShader = shader.vertexShader
