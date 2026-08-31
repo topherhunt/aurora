@@ -130,9 +130,11 @@ const SLIDERS = [
 ]
 
 const DEFAULTS = {
-  // Tuned on the headset against the real ground: a thick mat close in, held
-  // only 2 m out, then thinned hard so the far field is cheap but not bare.
-  density: 24,
+  // The shipped bed (BLADE_DENSITY and friends in v2/render/grass.js): tufted
+  // ground close in, held only 2 m out, then thinned hard so the far field is
+  // cheap but not bare. Slide `density` up to see what coverage the frame time
+  // would buy -- the game shipped at 3/m2 because 24 cost 10 fps on the headset.
+  density: 3,
   full: 6.5,
   cull: 30,
   falloff: 3,

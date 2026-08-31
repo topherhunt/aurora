@@ -13,227 +13,210 @@ import { PropArena } from './prop-arena.js'
 // The forest on the /v2 route: a tiled, camera-following scatter whose density
 // FALLS OFF WITH DISTANCE instead of stopping at a wall.
 //
-// THE WHOLE MAP IS CARPETED, and the way that is true is worth being precise
-// about, because it is not "every tree exists". At the density this ships,
-// 8192 x 8192 m holds 3.4 MILLION trees, which is not a number of instances
-// anyone has. What is true instead is that the forest is a pure
-// function of position -- tile (tx, tz) always grows the same trees, derived by
-// hash from its own coordinates and the world seed -- and only the tiles near
-// the player are ever materialised. Walk anywhere and there is forest; walk
-// away and back and it is the SAME forest. Nothing is stored.
+// THE WHOLE MAP IS CARPETED, and not by every tree existing: at this density
+// 8192 x 8192 m holds 3.4 MILLION trees. What is true instead is that the forest
+// is a PURE FUNCTION OF POSITION -- tile (tx, tz) always grows the same trees,
+// hashed from its own coordinates and the world seed -- and only the tiles near
+// the player are materialised. Walk anywhere and there is forest; walk away and
+// back and it is the SAME forest. Nothing is stored. This replaced a fixed disc
+// placed once at boot, which could not cover the map at any density, because the
+// disc IS the draw distance and instance count goes as radius squared.
 //
-// THIS REPLACED A FIXED DISC PLACED ONCE AT BOOT. That version could not cover
-// the map at any density, because the disc IS the draw distance: covering 8 km
-// meant an 8 km radius, and the instance count goes as the radius squared.
-//
-// GRADED THINNING, and why it is what makes a 1.5 km horizon affordable. Inside
-// FULL_RADIUS every tree stands. Beyond it the surface density is scaled by
-// FULL_RADIUS / d, so EVERY DOUBLING OF DISTANCE HALVES THE DENSITY. The
-// instance count then grows LINEARLY in the radius rather than quadratically:
+// GRADED THINNING is what makes a 1.5 km horizon affordable. Inside FULL_RADIUS
+// every tree stands; beyond it surface density scales by (FULL_RADIUS / d)^p,
+// p being FALLOFF and shipping at 1, so EVERY DOUBLING OF DISTANCE HALVES THE
+// DENSITY and the instance count grows LINEARLY in radius rather than
+// quadratically. The counts below are that p = 1 case:
 //
 //   inside      pi * F^2       * D
 //   beyond      2 * pi * F * D * (R - F)
 //
-// which at D = 0.05, F = 80, R = 1500 is ~1000 + ~35,700 = ~36,700 instances for
-// a kilometre and a half of forest -- ~41,000 measured, the difference being the
-// deliberate over-keep below. A hard-edged disc at the same density and radius
-// would be 353,000. The thinning is what buys the horizon, not a bigger budget:
-// the last kilometre of it costs about as much as the first hundred metres,
+// At D = 0.05, F = 80, R = 1500 that is ~1000 + ~35,700 = ~36,700 for a
+// kilometre and a half of forest (~41,000 measured, the difference being the
+// over-keep below). A hard-edged disc at the same density and radius would be
+// 353,000. The last kilometre costs about as much as the first hundred metres,
 // because cost is linear in radius and area is not.
 //
 // WHICH trees are dropped is decided per tree and never changes: each candidate
-// draws a rank u in [0,1) from its tile's stream, and stands only where the
-// local keep-fraction exceeds u. u is a property of the tree, like its species,
-// so a tree that is present at 300 m is present at 299 m, and nothing flickers.
+// draws a rank u in [0,1) from its tile's stream and stands only where the local
+// keep-fraction exceeds u. u is a property of the tree, like its species, so a
+// tree present at 300 m is present at 299 m and nothing flickers.
 //
-// The keep-fraction is evaluated PER TILE, from the tile's nearest corner, and
-// quantised in steps of 2^(1/4) so a tile only regrows when its level actually
-// moves. Two consequences, both deliberate:
+// The keep-fraction is evaluated PER TILE from its nearest corner, quantised in
+// steps of 2^(1/4) so a tile only regrows when its level actually moves. Three
+// consequences, all deliberate:
 //
-//   The scatter PLACES slightly denser than the law just past F -- a tile's far
-//   corner is thinned as though it were at the tile's near corner, and the
-//   quantisation always rounds toward keeping. Erring dense is the safe
-//   direction, because too few trees reads as a hole.
+//   The scatter PLACES denser than the law just past F -- a tile's far corner is
+//   thinned as though at its near corner, and quantisation always rounds toward
+//   keeping. Erring dense is the safe direction; too few trees reads as a hole.
 //
-//   But the over-keep never reaches the picture, and it took a gate to notice:
-//   the rim dissolve below is per tree and per distance, so it cuts the surplus
-//   back out again. Measured at boot, 40,972 instances are PLACED against an
-//   ideal 36,694 (1.117x), and 36,367 are DRAWN -- within 1% of the law, at
-//   0.0201 / 0.0098 / 0.0051 / 0.0034 per m^2 against 0.0200 / 0.0100 / 0.0050 /
-//   0.0033 at 200, 400, 800 and 1200 m. So about 4,600 instances, 11% of the
-//   scatter, are fully dithered out at any moment. That is a cost in POOL and in
-//   placement work, not in what the forest looks like, which is the opposite way
-//   round from how it reads -- the quantisation buys its safety margin out of
-//   headroom rather than out of density.
+//   The over-keep never reaches the picture, and it took a gate to notice: the
+//   rim dissolve is per tree and per distance, so it cuts the surplus back out.
+//   Measured at boot, 40,972 instances PLACED against an ideal 36,694 (1.117x),
+//   36,367 DRAWN -- within 1% of the law, at 0.0201 / 0.0098 / 0.0051 / 0.0034
+//   per m^2 against 0.0200 / 0.0100 / 0.0050 / 0.0033 at 200, 400, 800, 1200 m.
+//   So ~4,600 instances, 11% of the scatter, are fully dithered out at any
+//   moment: a cost in POOL and in placement work, not in what the forest looks
+//   like. The quantisation buys its safety margin out of headroom, not density.
 //
-//   Regrowing is INCREMENTAL, not a rebuild. Replaying a tile's stream is
-//   deterministic, so a tile moving from keep 0.25 to keep 0.30 only has to
-//   consider candidates whose rank lands in that band -- everything below it is
-//   already standing, everything above is still cut. Only the new band pays a
-//   field sample.
+//   Regrowing is INCREMENTAL. Replaying a tile's stream is deterministic, so a
+//   tile moving from keep 0.25 to 0.30 only considers candidates whose rank
+//   lands in that band; only the new band pays a field sample.
 //
-// NOTHING POPS AT THE RIM. A tree's rank u fixes exactly where it stops existing
-// -- fullRadius / u -- and render/rim.js watches for the camera crossing 85% of
+// NOTHING POPS AT THE RIM. A tree's rank fixes where it stops existing --
+// `_goneFor(u)` -- and render/rim.js watches for the camera crossing 85% of
 // that, then stamps a quarter-second dither. It covers the outer rim AND every
 // thinning band, since a band is just where a set of ranks reaches its own
-// distance. See rim.js for why this is a clock rather than the smoothstep on
-// distance it used to be, and material.js's dissolve header for why the channel
-// is free and why the dissolve is a dither rather than a blend.
+// distance. See rim.js for why it is a clock rather than a smoothstep, and
+// material.js's dissolve header for why the channel is free and the dissolve is
+// a dither rather than a blend.
 //
 // AND NEITHER DOES A BAND SWAP. Dissolving one tier into another means drawing
-// both at once on complementary dither thresholds, which takes a DUPLICATE
-// instance carrying its own fade slot: the arena below has no per-instance
-// geometry, so the departing tier has to be held by a second instance living in
-// THAT TIER'S OWN MESH, tracked through the same swap-remove packing as
-// everything else, for a quarter second. `_crossFade` is that duplicate, at all
-// three boundaries -- the barrel leaving the limbs at 8 m is as visible as the
-// mesh becoming a card at 22.5 m. It costs one extra tree's triangles per swap
-// in flight (26 at a walk, ceilinged at FADE_MAX_INFLIGHT under a fast flight,
-// where the refusals go back to being the cut this used to be everywhere).
+// both at once on complementary dither thresholds, which needs a DUPLICATE
+// instance with its own fade slot: the arena has no per-instance geometry, so
+// the departing tier is held by a second instance in THAT TIER'S OWN MESH for a
+// quarter second, tracked through the same swap-remove packing as everything
+// else. `_crossFade` is that duplicate, at both boundaries -- the barrel
+// leaving the limbs at 8 m is as visible as the mesh becoming a card at 24 m.
+// It costs one extra tree's triangles per swap in flight (26 at a walk,
+// ceilinged at FADE_MAX_INFLIGHT under a fast flight, where refusals go back to
+// being the cut this used to be everywhere).
 //
-// TILES, and why the rebuild is affordable. A jittered grid pays one hash per
-// candidate and one field evaluation per SURVIVING candidate, so a full boot is
-// ~41,000 samples -- 29 ms, which as a hitch every time the player crossed a
-// line would be worse than no forest at all. Tiles turn that into an increment:
-// crossing a tile boundary invalidates one row, and those tiles are queued
-// nearest-first against a per-frame millisecond budget.
+// TILES make the rebuild affordable. A jittered grid pays one hash per candidate
+// and one field evaluation per SURVIVING candidate, so a full boot is ~41,000
+// samples -- 29 ms, which as a hitch every time the player crossed a line would
+// be worse than no forest at all. Crossing a tile boundary invalidates one row,
+// queued nearest-first against a per-frame millisecond budget.
 //
-// A TREE STANDS ON THE GROUND THAT IS DRAWN, not on the field. Those are two
-// different surfaces and the gap between them is what makes a distant tree hang
-// in the air: the terrain a kilometre out is triangles chording across a 64 m
-// cell, and the field is that same ground at infinite resolution. Measured on
-// the shipped heightmap, placing off the field alone floats a tree by 4.6 m on
-// average at 1.5 km, p95 14.7 m -- more than the tree is tall -- against 1 cm at
-// 8 m. So `_groundFor` reads the height off the chunk mesh TerrainV2 is actually
-// drawing (its retained grid, its shorter-diagonal rule, exact to 1e-13 m), and
-// `update` re-checks a sixteenth of the resident tiles each frame so a tree
-// follows its chunk when the terrain re-splits under it.
+// A TREE STANDS ON THE GROUND THAT IS DRAWN, not on the field, and the gap
+// between those two surfaces is what makes a distant tree hang in the air: the
+// terrain a kilometre out is triangles chording across a 64 m cell, the field is
+// that ground at infinite resolution. Measured on the shipped heightmap, placing
+// off the field alone floats a tree by 4.6 m on average at 1.5 km, p95 14.7 m --
+// more than the tree is tall -- against 1 cm at 8 m. So `_groundFor` reads the
+// height off the chunk mesh TerrainV2 is drawing (its retained grid, its
+// shorter-diagonal rule, exact to 1e-13 m), and `update` re-checks a sixteenth
+// of the resident tiles each frame so a tree follows its chunk when the terrain
+// re-splits under it.
 //
 // EXISTENCE DOES NOT FOLLOW THE LOD, only the Y does, and that split is load
 // bearing. "Is there a tree here" stays a pure function of position at a fixed
-// band limit (PLACEMENT_CELL); if it tracked the terrain's cell instead, a tree
-// near the elevation floor or the slope limit would appear and vanish as chunks
-// re-split under it, and the whole walk-away-and-come-back property would go.
+// band limit (PLACEMENT_CELL); if it tracked the terrain's cell, a tree near the
+// elevation floor or the slope limit would appear and vanish as chunks re-split
+// under it, and the walk-away-and-come-back property would go.
 //
-// THE FAR TIER IS A REAL CAMERA-FACING BILLBOARD, spun about its own trunk in
-// the vertex shader (material.js, billboardVertex), so it costs no CPU, no
-// second material and no per-frame matrix write, and the far field stays ONE
-// DRAW CALL PER SPECIES. ONE triangle against the crossed card's six -- apex up
-// for a conifer, apex down for a crown on a bare trunk, which is the shape each
-// species already is. What it gives up is two corners of its photograph; the
-// measured cost per species is the `tri` note in props/impostor.js.
-//
-// THE LADDER. Four tiers, and the far one carries almost every instance.
-// Measured on a flat headless world at the standing eye height, 40,972 trees
-// placed inside 1500 m of which the rim is dissolving 9,880 away:
+// THE LADDER. Three tiers, and the far one carries almost every instance.
+// Measured on a flat headless world at standing eye height, 40,972 trees placed
+// inside 1500 m of which the rim dissolves 9,880 away:
 //
 //   tier 0   LOD0 mesh    < 8 m             8 instances     3.6k
-//   tier 1   LOD1 mesh    8 - 22.5 m       64              23.4k
-//   tier 2   crossed card 22.5 - 100 m  1,380               8.3k
-//   tier 3   billboard    to 1500 m     29,640              29.6k
+//   tier 1   LOD1 mesh    8 - 24 m         77              28.8k
+//   tier 2   billboard    to 1500 m     31,007              31.0k
 //
-// 64.9k, against DESIGN.md §5's 350k ceiling with terrain taking 45k. Five
-// other camera spots on the same flat world give 46.4 to 75.0k, the spread
-// being how much forest happens to stand within 22.5 m of the camera. The mesh tiers
-// cost 550 and 380 triangles a tree averaged over the bank; what a given spot
-// pays is which species happen to be standing near it, which is why those two
-// rows wander by a third between spots and the card rows do not.
+// 63.4k against §5's 350k ceiling with terrain taking 45k. The mesh tiers cost
+// 550 and 380 triangles a tree averaged over the bank, so what a spot pays is
+// which species stand near it -- which is why those two rows wander by a third
+// and the card row does not.
+//
+// TRIANGLES WERE NEVER THE PROBLEM ON THE HEADSET, FILL WAS, and that is what
+// sets the rung count. The A/B on the device: raising the thinning exponent to 3
+// halved the tree cost while cutting the cull radius from 1500 m to 400 m barely
+// moved it. Distance was not the bill; shaded pixels were. The fourth rung, a
+// three-plane cross, was 46% of the layer's shaded area on 4% of its instances
+// for 8 of its draw calls, and tree-bank.js has the argument that retired it.
+// Without it the layer's shaded area falls 45%, and what is left splits
+// 52 / 33 / 15 across the three tiers -- solid angle, so 85 near meshes outweigh
+// 31,007 cards three to one, which is the shape a LOD ladder should have.
 //
 // THE TWO MESH TIERS DIFFER ONLY IN WOOD. LOD1 is LOD0 with `trunkSides` 3,
-// `branchSides` 1 -- a three-sided trunk and one flat fin per limb -- and
-// `roots` 0, dropping the root crown that only reads when you stand on it. Its
-// FOLIAGE IS THE SAME CARDS IN THE SAME SEATS, not a coarser crown that happens
-// to measure the same. So the 8 m boundary is the cheapest swap in the project:
-// nothing about the canopy changes, and what pops is limbs losing their barrel
-// at a range where a limb is about 15 px wide and mostly behind its own leaves.
-// The 31% it saves is all sticks, which is why it can be spent this close in.
+// `branchSides` 1 (a three-sided trunk, one flat fin per limb) and `roots` 0,
+// dropping the root crown that only reads when you stand on it. Its FOLIAGE IS
+// THE SAME CARDS IN THE SAME SEATS. So the 8 m boundary is the cheapest swap in
+// the project: nothing about the canopy changes, and what pops is limbs losing
+// their barrel where a limb is ~15 px wide and mostly behind its own leaves. The
+// 31% it saves is all sticks, which is why it can be spent this close in.
 //
-// WHY THE MESH STOPS AT 22.5 m rather than being pushed further. The next saving
-// after the wood is the crown, and there is no honest cut in a crown: a card is
-// already one triangle at its true world size, so fewer sprays thins the tree
-// and bigger ones put a two-foot needle on a spruce. A tier past LOD1 has to
-// stop drawing the crown as geometry, and that is what the cross IS.
+// WHY THE MESH STOPS AT 24 m. The next saving after the wood is the crown, and
+// there is no honest cut in a crown: a card is already one triangle at its true
+// world size, so fewer sprays thins the tree and bigger ones put a two-foot
+// needle on a spruce. A tier past LOD1 has to stop drawing the crown as
+// geometry, and once it does, the cheapest thing that draws a crown at all is
+// also the best one available -- so there is nothing between LOD1 and the card.
 //
-// THE FAR BAND IS 95% OF THE INSTANCES AND 46% OF THE BILL, and there is no
-// third halving in it -- one triangle is the floor for one tree. What takes it
-// further is a clump card, one picture per patch of canopy rather than per tree,
-// which is the named next piece below.
+// 24 m IS WHERE FLATNESS STOPS BEING FREE, which is what sets it. Stereo acuity
+// of half an arcminute over a 65 mm baseline resolves depth to about d^2 x
+// eta / IPD: 1.3 m at 24 m, 5.6 m at 50 m. A crown is 3 to 6 m deep, so a flat
+// card is detectable AS flat at 24 m and not at 50. The band is set at the near
+// end of that and left as a knob (`setMeshBand`, the /?quest `tree mesh` row)
+// because the honest test is a headset, not this arithmetic.
 //
-// THE CROSS TIER IS FREE IN EVERYTHING BUT TRIANGLES, and cheap in those. Both
-// card tiers hang on the SAME baked impostor layer -- one photograph per species
-// -- so the cross costs no second bake, no duplicate texture layer and no
-// texture memory. It costs 8.3k triangles, because the 22.5-100 m annulus holds
-// about fourteen hundred trees where the far field holds thirty thousand; putting
-// the cross at 1500 m instead would cost 186k. That asymmetry is the whole
-// reason the ladder splits here rather than anywhere else.
+// THE FAR TIER IS A REAL CAMERA-FACING BILLBOARD, spun about its own trunk in
+// the vertex shader (material.js, billboardVertex): no CPU, no second material,
+// no per-frame matrix write, and the far field stays ONE DRAW CALL PER SPECIES.
+// ONE triangle -- apex up for a conifer, apex down for a crown on a bare trunk,
+// the shape each species already is, and SUNK below the ground on the apex-down
+// ones so the trunk does not taper to a point where it meets the terrain. It
+// gives up two corners of its photograph; the per-species cost and the sink are
+// the `tri` note in props/impostor.js. This band is 99% of the instances and
+// nearly all of the bill, and there is no second halving in it -- one triangle is
+// the floor for one tree.
 //
-// WHAT THE CROSS BUYS is depth, and it matters most in the headset. A billboard
-// has no binocular disparity across its own surface, so it reads as a cutout
-// pinned at one distance; at 60 m a 9 m tree is still large enough on screen for
-// the eye to notice. Three planes carry real disparity between them. Past 100 m
-// the tree is small enough that it stops reading and the triangle count starts.
+// HOW THE SHADER KNOWS TO SPIN IT: by the vertex NORMAL, not by corner count --
+// billboardVertex never sees how many vertices a geometry has. A card meant to
+// be spun is authored with a vertical normal and it masks on layer AND normal.
+// See tree-bank.js.
 //
-// HOW THE SHADER TELLS THEM APART on one layer: by the vertex normal, and not
-// by the corner count -- billboardVertex never sees how many vertices a geometry
-// has. A card meant to be spun is authored with a vertical normal, a fixed cross
-// keeps its planes' horizontal ones, and it masks on both. See tree-bank.js.
-//
-// WHAT IS STILL NOT BUILT: forest clump cards (DESIGN.md §5 has a row for them
-// which reads "not built"). One card depicting a patch of canopy instead of one
-// per tree is what would carry the far field past 1.5 km, and it is the named
-// next piece if the horizon has to read as solid forest rather than as a
-// thinning one. Nothing here blocks it.
+// STILL NOT BUILT: forest clump cards (§5 has a row for them reading "not
+// built"). One card per patch of canopy rather than per tree is what would carry
+// the far field past 1.5 km, and it is the named next piece if the horizon has
+// to read as solid forest rather than a thinning one. Nothing here blocks it.
 //
 // ---------------------------------------------------------------------------
-// THE ARENA: SIXTEEN InstancedMeshes, four tiers by four species, and NOT a
-// BatchedMesh.
+// THE ARENA: TWELVE InstancedMeshes, three tiers by four species, and NOT a
+// BatchedMesh -- which on a Quest 2 ran the same instances at 5 fps against
+// 50-60. DESIGN.md §5 carries that measurement and why it holds; everything
+// below is downstream of it.
 //
-// A BatchedMesh IS NOT USABLE ON A QUEST 2. Measured on the same headset that
-// made grass.js drop it (see its arena header): a batched bed ran at 5 fps where
-// the same instances ran at 50-60 instanced. It leans on WEBGL_multi_draw and on
-// a per-instance matrix TEXTURE, and neither is fast there. Everything below is
-// downstream of that one measurement.
+// TWELVE DRAW CALLS -- TWENTY-FOUR IN THE HEADSET, because three.js renders XR
+// by looping `camera.cameras` and calling renderScene once per eye, so every
+// count `info.render` reports is doubled. Against §5's rule of one per prop
+// layer, and worth it because the alternative is the layer being unshippable.
+// All 12 share ONE MATERIAL and one program: tier and species are which mesh an
+// instance sits in, not a uniform, so nothing is rebound between calls but a
+// vertex buffer. A mesh holding zero instances costs no call at all --
+// WebGLBufferRenderer.renderInstances returns before the draw when `primcount`
+// is 0 -- which is what makes an emptied tier really free.
 //
-// AN InstancedMesh DRAWS ONE GEOMETRY, so a four-rung LOD ladder over four
-// species is 16 meshes and 16 draw calls -- against DESIGN.md §5's rule of one
-// draw per prop layer, and worth it because the alternative is the layer being
-// unshippable. All 16 share ONE MATERIAL and therefore one program: the tier and
-// the species are which mesh an instance sits in, not a uniform, so nothing is
-// rebound between the calls but a vertex buffer.
-//
-// IT IS 16 AND NOT 64, and that is what the bank collapse next door bought. The
-// old bank was species x a four-rung SIZE ladder, and every one of those 64
-// combinations would have needed its own mesh -- 64 thin draws, most of them
-// holding a handful of instances. tree-bank.js now ships one variant per species
-// and the size lives on the instance matrix (SCALE, 0.5 to 1.5).
+// IT IS 12 AND NOT 64, which is what the bank collapse next door bought. The old
+// bank was species x a four-rung SIZE ladder, and all 64 combinations would have
+// needed a mesh -- 64 thin draws, most holding a handful of instances.
+// tree-bank.js ships one variant per species and the size lives on the instance
+// matrix (SCALE, 0.5 to 1.5).
 //
 // PACKING IS DENSE AND THE SWAP IS A SWAP-REMOVE. An InstancedMesh draws a
 // contiguous `count`, so a hidden or wrong-tier instance left in place still
-// runs its vertices. Instead each mesh keeps `owner`, slot -> pool id, and
-// `count` IS its live population: changing tier frees the slot in one mesh and
-// takes one in another, and freeing moves the last slot's instance down into the
-// hole. Two consequences worth knowing. A rim-hidden tree costs NOTHING here,
-// where the grass bed pays degenerate vertices for one. And an instance's slot
-// is not stable, so every per-instance value has a shadow copy in this file --
-// matrix, tint and fade -- and a moved instance is rewritten from it.
+// runs its vertices. Each mesh keeps `owner` (slot -> pool id) and `count` IS its
+// live population: changing tier frees a slot in one mesh and takes one in
+// another, and freeing moves the last slot down into the hole. So a rim-hidden
+// tree costs NOTHING here, where the grass bed pays degenerate vertices for one
+// -- and an instance's slot is not stable, so every per-instance value has a
+// shadow copy in this file (matrix, tint, fade) and a moved instance is
+// rewritten from it.
 //
-// NO PER-INSTANCE FRUSTUM CULLING, because an InstancedMesh has none to have.
-// The two thirds of the disc behind the player are submitted every frame. The
-// far tier is one triangle a tree, so that costs ~26k vertex invocations of
-// waste; the /?quest panel's cull row does nothing to this layer.
+// NO PER-INSTANCE FRUSTUM CULLING, because an InstancedMesh has none to have:
+// the two thirds of the disc behind the player are submitted every frame. The
+// far tier is one triangle a tree, so that is ~26k wasted vertex invocations;
+// the /?quest panel's cull row does nothing to this layer. And NO per-instance
+// dither across a tier swap, for the reason in the band note above.
 //
-// NO PER-INSTANCE DITHER ACROSS A TIER SWAP, for the reason in the band note
-// above: the two tiers are different meshes and a dissolve needs both halves
-// alive at once.
-//
-// WHAT THE UPLOADS COST, which is the known lever if this is still slow. Any
-// write dirties a whole InstancedBufferAttribute, so a tile growing re-uploads
-// its mesh's entire matrix buffer. That is per MESH now rather than one 3.6 MB
-// texture for the batch, so a near-tier write costs kilobytes; the far tier's
+// WHAT THE UPLOADS COST, the known lever if this is still slow. Any write
+// dirties a whole InstancedBufferAttribute, so a growing tile re-uploads its
+// mesh's entire matrix buffer. That is per MESH now rather than one 3.6 MB
+// texture for the batch, so a near-tier write costs kilobytes and the far tier's
 // four meshes are the expensive ones at ~1 MB each. three's `addUpdateRange`
-// would narrow it and is deliberately not used yet -- the writes within a frame
-// are scattered across the buffer, so a merged min/max range would cover most of
-// it anyway.
+// would narrow it and is deliberately unused: the writes within a frame are
+// scattered across the buffer, so a merged min/max range would cover most of it
+// anyway.
 // ---------------------------------------------------------------------------
 
 // Trees per square metre at full density: one per 20 m^2. This is the near-field
@@ -246,32 +229,31 @@ const DENSITY = 0.05
 // starts where a tree is already a one-triangle card.
 const FULL_RADIUS = 80
 
-// Metres. LOD0 inside 8, LOD1 to 22.5, crossed card to 100, billboard out to
-// the draw radius. The cross band is where the billboard's total lack of depth
-// would still read -- a 9 m tree at 60 m is 90 px tall in a headset and a flat cutout
-// at that size is obvious, especially in stereo, where a card has no disparity
-// across its own surface. Past 100 m it stops mattering and the billboard's 2
-// triangles against the cross's 6 start to.
+// Metres. LOD0 inside 8, LOD1 to 24, billboard out to the draw radius.
 //
-// THE FIRST TWO NUMBERS ARE THE NEAR FIELD'S QUALITY KNOBS and they are priced
-// very differently. Both bands grow as the SQUARE of their reach, but a tree in
-// the first costs 550 triangles and one in the second 380, so widening the
-// SECOND is what buys geometry cheaply: 22.5 m holds 72 mesh trees for 27.0k
-// across the two tiers, where putting LOD0 alone out to 22.5 m costs 37.1k for
-// the same trees. Measured on the flat world, tier by tier: 8 m holds 8 LOD0
-// trees, the 8-22.5 m shell holds another 64, and 100 m holds 1,380 crosses.
+// BOTH NUMBERS ARE THE NEAR FIELD'S QUALITY KNOBS and they are priced very
+// differently. Both bands grow as the SQUARE of their reach, but a tree in the
+// first costs 550 triangles and one in the second 380, so widening the SECOND is
+// what buys geometry cheaply: putting LOD0 alone out to 24 m costs about a third
+// more than the two tiers do for the same trees.
 //
 // Moving the FIRST number is nearly free in both directions, because the two
 // mesh tiers are within 31% of each other -- that is what makes it safe to keep
-// LOD0 as tight as this. Moving the SECOND is the real spend, and 22.5 is the
-// far end of what the budget wants: it holds 39 more mesh trees than 15 m did
-// and costs 14.0k more triangles at the origin spot, 17.1k at the densest of the
-// six, taking the whole forest from 50.9k to 64.9k. It is bought against the
-// pop it removes -- 15 m put a crossed card close enough to walk up to.
+// LOD0 as tight as this. Moving the SECOND is the real spend and it is the one
+// the /?quest `tree mesh` row exists to A/B, because it is now the ONLY boundary
+// between a real tree and a flat picture of one. `setMeshBand` moves it; the
+// tier caps are sized for MESH_BAND_MAX so it can travel outward as well as in.
 //
-// Three entries here, four tiers in tree-bank.js; they have to keep agreeing and
+// Two entries here, three tiers in tree-bank.js; they have to keep agreeing and
 // check-trees asserts that they do.
-const LOD_BANDS = [8, 22.5, 100]
+const LOD_BANDS = [8, 24]
+
+// The furthest out `setMeshBand` may push LOD1, and therefore the radius
+// `_tierCaps` sizes the mesh tiers against. It is a MEMORY bound and nothing
+// else -- a 45 m disc at full density is a few hundred trees split four ways, so
+// sizing for it rather than for the shipped 24 m costs kilobytes and buys the
+// knob its outward half.
+const MESH_BAND_MAX = 45
 
 // The band test measures to a tree's ROOT, and a tree is not at its root -- it
 // is nine metres of canopy standing on it. So the sphere is centred low, and
@@ -314,6 +296,20 @@ const Y_SQUASH = 0.5
 
 const DRAW_RADIUS = 1500
 
+// The exponent p in the thinning law `keep = (FULL_RADIUS / d)^p`. At 1 every
+// doubling of distance halves the density, which is what makes the instance
+// count LINEAR in the radius rather than quadratic; higher thins the far field
+// harder without ever emptying it. The ferns run 3 and the blade bed runs 3,
+// both because their near mat is the whole cost -- the forest runs 1 because its
+// far field IS the picture.
+//
+// IT DOES NOT TOUCH THE TILE COUNT, which is the thing to know before reaching
+// for it: tiles go as the radius SQUARED whatever this is, so a bed that is slow
+// in `update`'s per-tile walk is not helped by any exponent. `setScatter` moves
+// this and the radius together for that reason, and /?quest carries a row for
+// each so the two can be told apart on the headset.
+const FALLOFF = 1
+
 // How far past a band an instance must travel before it drops to the coarser
 // tier. Without it an instance sitting exactly on a boundary swaps geometry
 // every time the player sways. Same value and same reason as v1's scatter.
@@ -326,13 +322,13 @@ const LOD_HYSTERESIS = 0.12
 // THIS ARENA HAS A THIRD CEILING THE OTHER BEDS DO NOT, and it is the one that
 // actually binds. A duplicate lives in the DEPARTING tier's own mesh, whose cap
 // was sized from that band's population and nothing else: the tier-1 meshes hold
-// about 100 trees each and run half full, so a fly-through that carried four
-// hundred trees across 22.5 m at once would fill one. `_crossFade` asks the
+// a few hundred trees each and run a fraction full, so a fly-through that
+// carried every tree across 24 m at once would fill one. `_crossFade` asks the
 // arena for room and refuses rather than throwing -- see PropArena.roomAt.
 //
 // The numbers are what a sweep of the boundary actually needs. At 60 m/s the
-// 22.5 m band sweeps 2 * 22.5 * 60 * 0.25 = 675 m^2 in one fade window, ~34
-// trees at full density spread over four species meshes. 256 is an order above
+// 24 m band sweeps 2 * 24 * 60 * 0.25 = 720 m^2 in one fade window, ~36 trees at
+// full density spread over four species meshes. 256 is an order above
 // that and still an order under any mesh's headroom.
 const FADE_MAX_INFLIGHT = 256
 const FADE_POOL_RESERVE = 1024
@@ -454,6 +450,7 @@ export class Trees {
       density = DENSITY,
       radius = DRAW_RADIUS,
       fullRadius = FULL_RADIUS,
+      falloff = FALLOFF,
       ground = null,
     } = {}
   ) {
@@ -477,35 +474,22 @@ export class Trees {
     this.textureArray = textureArray
     this.seed = seed
     this.density = density
-    this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
-    this.lodBands = LOD_BANDS
+    // Copied, not shared: `setMeshBand` writes the last entry in place.
+    this.lodBands = LOD_BANDS.slice()
 
     // Candidates per tile at FULL density. Far tiles walk the same candidate
     // list and cut most of it on rank before paying for a field sample.
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
-    this.tileSpan = Math.ceil(radius / TILE) + 1
-    this.radiusSq = radius * radius
-    // Evict only once a tile is well outside the radius, so a player pacing back
-    // and forth across one line does not rebuild the same row every crossing.
-    this.evictSq = (radius + TILE * 1.5) ** 2
-    this.nearSq = (this.lodBands[this.lodBands.length - 1] + NEAR_MARGIN) ** 2
+    // The diagnostic switch behind `setCardsOnly`, read by `_near`.
+    this.cardsOnly = false
+    this.nearSq = this._near(this.lodBands[this.lodBands.length - 1])
+    this._ladder(radius, falloff)
 
-    // Keep-fraction per quantised level: uAt[q] = 2^(-q/QUANT). Level 0 keeps
-    // everything; the coarsest level is the one the eviction rim needs.
-    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / fullRadius) * QUANT))
-    this.uAt = new Float32Array(this.maxQ + 1)
-    // The squared distance at which each level BEGINS. The per-frame tile loop
-    // decides whether a tile's level has moved by comparing against two entries
-    // of this table rather than by calling _levelFor, which costs a sqrt and a
-    // log2 -- at 1.5 km there are ~12,000 resident tiles and that is a
-    // transcendental per tile per frame for an answer that is almost always
-    // "unchanged". Two array reads and two compares instead.
-    this.loSq = new Float32Array(this.maxQ + 2)
-    for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
-    for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (fullRadius * Math.pow(2, q / QUANT)) ** 2
-
+    // Sized ONCE, from the ladder this was booted on. `setScatter` may only move
+    // to a ladder that fits inside this: the arena's twelve meshes are
+    // allocated against it and cannot grow afterwards.
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
@@ -517,7 +501,7 @@ export class Trees {
 
     // The billboard list is what ties the material to the impostor layers. Every
     // other geometry in this arena wears a bark or leaf layer and is left alone,
-    // so all sixteen meshes share ONE material and therefore one program --
+    // so all twelve meshes share ONE material and therefore one program --
     // DESIGN.md §5's rule as far as an instanced ladder can keep it, and the
     // whole reason this is a shader trick rather than a second material.
     this.material = createPropMaterial(textureArray, {
@@ -527,6 +511,9 @@ export class Trees {
       // carries a per-instance float instead. See material.js's FADE_VERTEX.
       instancedFade: true,
     })
+    // What the layer SHIPS at, so `setCutout` restores the material's own
+    // threshold rather than a number typed here that could drift from it.
+    this.shippedAlphaTest = this.material.alphaTest
 
     // tierIds[t][v] -> the arena's geometry id for tier t of variant v, which is
     // also the index of the mesh that draws it.
@@ -536,6 +523,11 @@ export class Trees {
       this.tierIds.push(bank.tiers[t].geometries.map((_, v) => t * this.variantCount + v))
       this.tierTris.push(bank.tiers[t].triangles.slice())
     }
+
+    // How many instances each tier is DRAWING, refilled by `update`. The one
+    // number that says whether a band is earning its meshes, which is a
+    // question the headset has to answer -- see /?quest's tree row.
+    this.tierN = new Int32Array(this.tierCount)
 
     this.batch = new PropArena(
       this.maxInstances,
@@ -678,6 +670,189 @@ export class Trees {
   }
 
   /**
+   * The distance ladder: everything derived from the draw radius and the
+   * thinning exponent, and nothing derived from the bank or the pool. The
+   * constructor calls it once and `setScatter` calls it again.
+   */
+  _ladder(radius, falloff) {
+    if (!(radius > this.fullRadius)) {
+      throw new Error(`Trees: radius ${radius} must be past fullRadius ${this.fullRadius}`)
+    }
+    if (!(falloff > 0)) throw new Error(`Trees: falloff must be positive, got ${falloff}`)
+    this.radius = radius
+    this.falloff = falloff
+    this.tileSpan = Math.ceil(radius / TILE) + 1
+    this.radiusSq = radius * radius
+    // Evict only once a tile is well outside the radius, so a player pacing back
+    // and forth across one line does not rebuild the same row every crossing.
+    this.evictSq = (radius + TILE * 1.5) ** 2
+
+    // Keep-fraction per quantised level: uAt[q] = 2^(-q*falloff/QUANT), which is
+    // `(fullRadius / d)^falloff` sampled at the level's own distance. Level 0
+    // keeps everything; the coarsest level is the one the eviction rim needs.
+    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / this.fullRadius) * QUANT))
+    this.uAt = new Float32Array(this.maxQ + 1)
+    // The squared distance at which each level BEGINS. The per-frame tile loop
+    // decides whether a tile's level has moved by comparing against two entries
+    // of this table rather than by calling _levelFor, which costs a sqrt and a
+    // log2 -- at 1.5 km there are ~12,000 resident tiles and that is a
+    // transcendental per tile per frame for an answer that is almost always
+    // "unchanged". Two array reads and two compares instead.
+    this.loSq = new Float32Array(this.maxQ + 2)
+    for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, (-q / QUANT) * falloff)
+    for (let q = 0; q <= this.maxQ + 1; q++) {
+      this.loSq[q] = (this.fullRadius * Math.pow(2, q / QUANT)) ** 2
+    }
+  }
+
+  /**
+   * The distance at which a tree of rank u stops existing: its tile's
+   * keep-fraction `(fullRadius / d)^falloff` falls to u there. Clamped to the
+   * draw radius, which is what the densest ranks meet first.
+   */
+  _goneFor(u) {
+    const d = this.falloff === 1
+      ? this.fullRadius / u
+      : this.fullRadius * Math.pow(u, -1 / this.falloff)
+    return d < this.radius ? d : this.radius
+  }
+
+  /**
+   * Move the draw radius and the thinning exponent, and regrow the forest on the
+   * new ladder. /?quest's two tree rows are the caller.
+   *
+   * REGROWN AND NOT RECONFIGURED: every tile's keep-fraction and every tree's
+   * gone-distance come off these two numbers, so there is nothing to patch in
+   * place. The tiles are released and re-placed, which costs the hitch a boot
+   * costs. What is NOT rebuilt is the bank, the impostor bake, the material and
+   * the arena -- which is what makes this a button press rather than a reload.
+   *
+   * A ladder needing more instances than the boot one THROWS, here, rather than
+   * running the pool dry inside _growTile a few seconds later; the old ladder is
+   * restored first so a refused change leaves a working forest.
+   */
+  setScatter(camX, camZ, { radius = this.radius, falloff = this.falloff } = {}) {
+    const wasRadius = this.radius
+    const wasFalloff = this.falloff
+    this._ladder(radius, falloff)
+    const need = this._poolBound()
+    if (need > this.maxInstances) {
+      this._ladder(wasRadius, wasFalloff)
+      throw new Error(
+        `Trees: ${radius} m at falloff ${falloff} needs ${need} instances, pool holds ${this.maxInstances}`
+      )
+    }
+    for (const tile of this.tiles.values()) this._release(tile)
+    this.tiles.clear()
+    this.camTileX = null
+    this.camTileZ = null
+    this.place(camX, camZ)
+  }
+
+  /**
+   * Move the LOD1 band's outer edge. /?quest's `tree mesh` row.
+   *
+   * THE ONE BOUNDARY LEFT BETWEEN A TREE AND A PICTURE OF ONE, and the lever
+   * neither `setScatter` row reaches. Outward buys depth on trees that are still
+   * big enough for stereo to catch a flat card (see the band note above: the
+   * threshold is ~1.3 m of depth at 24 m and a crown is 3 to 6 m deep) and pays
+   * ~380 triangles a tree over an area that grows as the square. Inward is
+   * nearly free in triangles and is where the honest test of `is 24 m actually
+   * needed` lives.
+   *
+   * Passing the band's INNER edge switches the tier off: `update`'s tier walk
+   * takes the first band an instance falls inside, so a tier whose band starts
+   * where it ends is never claimed. The arena's four LOD1 meshes then carry zero
+   * instances, and three.js returns out of `renderInstances` before the draw --
+   * so an off band really is four fewer calls per eye, not four empty ones.
+   *
+   * Bounded OUTWARD by MESH_BAND_MAX, which is what `_tierCaps` sized the mesh
+   * meshes against; past it a sweep would run one out of slots. Re-tiering is
+   * what `update` already does to every near instance every frame, so there is
+   * no regrow here and no hitch beyond the one frame that demotes the tiles
+   * leaving the near set.
+   */
+  setMeshBand(end) {
+    const inner = LOD_BANDS[LOD_BANDS.length - 2]
+    if (end > MESH_BAND_MAX) {
+      throw new Error(`Trees: a ${end} m mesh band exceeds the ${MESH_BAND_MAX} m the meshes were sized for`)
+    }
+    if (end < inner) throw new Error(`Trees: a ${end} m mesh band falls inside the ${inner} m LOD0 band`)
+    const last = this.lodBands.length - 1
+    this.lodBands[last] = end
+    this.bandSq = Float32Array.from(this.lodBands, (b) => b * b)
+    this.bandSqOut = Float32Array.from(this.lodBands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
+    // A BAND WITH NO WIDTH HAS NO DEAD BAND EITHER. Leaving the pushed-out edge
+    // where the hysteresis puts it strands every instance already standing in
+    // the shell between `inner` and `inner * 1.12`: it is too far out to be
+    // claimed back by the finer tier and sticky enough to hold its own, so it
+    // keeps the tier -- and the four meshes drawing it -- alive forever on a band
+    // that is supposed to be off.
+    if (end === inner) this.bandSqOut[last] = this.bandSq[last]
+    this.nearSq = this._near(end)
+  }
+
+  /**
+   * The near set is the tiles `update` is willing to re-tier at all, and it is
+   * the mesh band plus a margin -- or NOTHING when `cardsOnly` is set, which is
+   * what makes that switch a one-line change rather than a second tier walk.
+   */
+  _near(end) {
+    return this.cardsOnly ? 0 : (end + NEAR_MARGIN) ** 2
+  }
+
+  /**
+   * Draw the whole forest as billboards. /?quest's `tree tiers` row.
+   *
+   * A DIAGNOSTIC, NOT A QUALITY SETTING -- every tree you can touch becomes a
+   * spun triangle. What it isolates is the two mesh tiers' share of the bill,
+   * which is 85 instances carrying 85% of the layer's shaded area, against a
+   * card ring that can then be swept through the reach and falloff rows without
+   * the near meshes underneath it moving.
+   *
+   * Zeroing the near radius is the whole switch: `update` demotes every tile
+   * that leaves the near set, and with the set empty that path runs once for
+   * each tile and then the tier walk is never reached. The four LOD0 and four
+   * LOD1 meshes end the frame at zero instances, and three.js returns out of
+   * `renderInstances` before the draw -- so this is 8 fewer calls an eye rather
+   * than 8 empty ones. Turning it back on re-tiers through the same
+   * `_crossFade` every band crossing uses, so the meshes dissolve back in.
+   */
+  setCardsOnly(on) {
+    this.cardsOnly = !!on
+    this.nearSq = this._near(this.lodBands[this.lodBands.length - 1])
+  }
+
+  /**
+   * Turn the leaf CUTOUT off. /?quest's `tree leaf cutout` row.
+   *
+   * A tree is mostly alpha: every foliage card and every billboard is a
+   * rectangle whose silhouette exists only in the texture's alpha, rejected per
+   * fragment by `alphaTest`. Off, the cards draw as solid rectangles -- which
+   * looks like nothing at all, and is the point: it prices the cutout.
+   *
+   * WHAT THE A/B ACTUALLY MEASURES IS TWO THINGS, and they pull opposite ways.
+   * The reject itself goes away, and so does the transparency: an opaque card
+   * writes depth over its whole rectangle, so a near tree starts occluding the
+   * forest behind it and the layer's overdraw collapses. A win here is not
+   * evidence that the reject is expensive; it is evidence that the layer is
+   * overdraw-bound, which is the question worth asking.
+   *
+   * EARLY-Z IS OFF ON BOTH SIDES OF THE TEST, so it is not the variable. The
+   * dissolve's own `discard` (FADE_FRAGMENT) is compiled into this material
+   * whatever `alphaTest` is, and a shader that can discard anywhere cannot be
+   * depth-tested before it runs.
+   *
+   * Recompiles rather than setting the threshold to zero -- three keys
+   * USE_ALPHATEST off `alphaTest > 0`, so this really does remove the
+   * instruction. Expect a one-off hitch on the frame you press it, as with wind.
+   */
+  setCutout(on) {
+    this.material.alphaTest = on ? this.shippedAlphaTest : 0
+    this.material.needsUpdate = true
+  }
+
+  /**
    * How many instances the pool has to hold.
    *
    * Summed over the ACTUAL tile grid rather than from the continuous integral,
@@ -693,8 +868,8 @@ export class Trees {
   }
 
   /**
-   * How many instances ONE mesh of each tier has to hold. Sixteen meshes, so
-   * over-sizing costs sixteen times what it looks like it costs.
+   * How many instances ONE mesh of each tier has to hold. Twelve meshes, so
+   * over-sizing costs twelve times what it looks like it costs.
    *
    * THE CARD TIER IS THE POOL, split four ways plus slack: every resident tree
    * that is not in a mesh band is a billboard, so in the limit -- the camera in
@@ -703,8 +878,9 @@ export class Trees {
    * standard deviation of ~90 at this pool size and 1024 of slack is over ten
    * sigma.
    *
-   * THE FINER TIERS ARE SIZED FROM THEIR OWN DISC, at FULL density, pushed out
-   * by the hysteresis and then multiplied by four. The disc is the honest bound
+   * THE FINER TIERS ARE SIZED FROM THEIR OWN DISC at the furthest out
+   * `setMeshBand` may push them, at FULL density, pushed out by the hysteresis
+   * and then multiplied by four. The disc is the honest bound
    * rather than the annulus: the ellipsoid bands are widest where they meet the
    * ground (see Y_SQUASH), so a horizontal section can never hold more than the
    * flat disc of the same radius. The 4x on top is for the terrain being lumpy
@@ -718,7 +894,9 @@ export class Trees {
         caps.push(Math.ceil(this.maxInstances / this.variantCount) + 1024)
         continue
       }
-      const r = this.lodBands[t] * (1 + LOD_HYSTERESIS)
+      // Only the LAST mesh band moves, so only it is sized for the ceiling.
+      const movable = t === this.lodBands.length - 1
+      const r = (movable ? Math.max(this.lodBands[t], MESH_BAND_MAX) : this.lodBands[t]) * (1 + LOD_HYSTERESIS)
       const inBand = Math.PI * r * r * this.density
       caps.push(Math.max(64, Math.ceil((inBand / this.variantCount) * 4)))
     }
@@ -771,6 +949,8 @@ export class Trees {
     this.rim.beginFrame(camX, camY, camZ)
 
     const cardTier = this.cardTier
+    const tierN = this.tierN
+    tierN.fill(0)
     let tris = 0
     let nearCount = 0
     // Which slice of the tile set gets its ground re-checked this frame. Folded
@@ -829,6 +1009,7 @@ export class Trees {
         if (tile.near) this._demote(tile, cardTier)
         tile.near = false
         tris += (tile.n - gone) * this.tierTris[cardTier][0]
+        tierN[cardTier] += tile.n - gone
         continue
       }
       tile.near = true
@@ -871,6 +1052,7 @@ export class Trees {
           if (cur >= 0) this._crossFade(i, cur, variant, now)
         }
         tris += this.tierTris[tier][variant]
+        tierN[tier]++
       }
     }
     // The duplicates are drawn too, and are counted after the loop rather than
@@ -1220,15 +1402,13 @@ export class Trees {
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier][variant])
 
-      // The distance at which this particular tree stops existing. A tree of
-      // rank u survives while the local keep-fraction fullRadius/d exceeds u, so
-      // it goes at fullRadius/u -- or at the draw radius, whichever comes first
-      // for the densest ranks. The rim dissolves it over the last 15% of that
-      // distance, so nothing pops at the rim and nothing pops as the forest
-      // thins. LAST, and after the geometry and the tint, because it also takes
-      // the tree's VISIBILITY: a tree is placed hidden and the sweep below turns
-      // it on, so there is one piece of code deciding what is drawn out there.
-      this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
+      // The distance at which this particular tree stops existing -- see
+      // _goneFor. The rim dissolves it over the last 15% of that distance, so
+      // nothing pops at the rim and nothing pops as the forest thins. LAST, and
+      // after the geometry and the tint, because it also takes the tree's
+      // VISIBILITY: a tree is placed hidden and the sweep below turns it on, so
+      // there is one piece of code deciding what is drawn out there.
+      this.rim.place(id, this._goneFor(u))
     }
 
     this.placed += n - (tile ? tile.n : 0)
@@ -1485,7 +1665,7 @@ export class Trees {
    * still has leaves in it.
    *
    * The roll is per instance and hashes the tree's own root position, so it is
-   * stable across all four tiers -- a tier swap moves the instance between
+   * stable across all three tiers -- a tier swap moves the instance between
    * meshes and never touches its matrix -- so a tree does not change its snow
    * load when it changes LOD.
    */
@@ -1511,6 +1691,11 @@ export class Trees {
       density: this.density,
       fullRadius: this.fullRadius,
       radius: this.radius,
+      falloff: this.falloff,
+      meshBand: this.lodBands[this.lodBands.length - 1],
+      cardsOnly: this.cardsOnly,
+      cutout: this.material.alphaTest > 0,
+      tiers: Array.from(this.tierN),
       bankKB: Math.round(this.bank.bytes / 1024),
       buildMs: this.buildMs,
       placeMs: this.placeMs,
@@ -1541,6 +1726,7 @@ export const TREE_TUNING = {
   DENSITY,
   FULL_RADIUS,
   DRAW_RADIUS,
+  FALLOFF,
   LOD_BANDS,
   LOD_HYSTERESIS,
   Y_SQUASH,

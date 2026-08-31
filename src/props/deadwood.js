@@ -58,6 +58,21 @@ const JAG_SHALLOW = 0.3 // the shallowest rung of the notch-depth ladder, the de
 const JAG_SLAB_LO = 0.6 // the narrowest a splinter gets: a spike, one vertex wide
 const JAG_SLAB_HI = 2.0 // ...and the broadest: a slab with a shoulder either side
 
+// THE STUB TIP, at T0 only. A stub is a branch that BROKE, and the break is the
+// only part of it anybody stands close enough to read -- the barrel behind it is
+// a smooth taper whatever you spend on it. So the tip gets the detail: the ring
+// wanders along the axis (STUB_TIP_JAG, a fraction of the stub's own length) and
+// then closes on a point that is either PROUD of that ring or sunk behind it
+// (STUB_TIP_POINT). Proud is a splinter left standing where the branch tore;
+// sunk is the socket a rotted branch leaves. Both are real and the roll is even.
+//
+// The taper is what makes the sides quads rather than a cone: a broken branch
+// base is a short barrel, and a cone converging on a single apex is the one
+// thing it never looks like.
+const STUB_TIP_TAPER = 0.78 // tip radius as a fraction of the base's
+const STUB_TIP_JAG = 0.22 // how far a tip vertex wanders along the axis, of `len`
+const STUB_TIP_POINT = 0.35 // how far the point stands past the mean rim, of `len`
+
 // The mesh tiers, finest first. Not different SOLIDS the way the rock ladder is:
 // the same swept surface at different sampling rates. `sides` is how many facets
 // go round, `ringMul` scales the rings along the spine, and `stubMul` is what
@@ -75,10 +90,13 @@ const JAG_SLAB_HI = 2.0 // ...and the broadest: a slab with a shoulder either si
 // with no throw and no change to the triangle count. Fifteen gives each lobe
 // three samples. Change one of the two and change the other.
 //
-// STUBS SURVIVE TO T1, as one triangle each: a stub breaks the silhouette
-// OUTWARD, which reads far past the range where its thickness does.
+// A T0 STUB IS A SOLID with a broken end -- a five-sided prism, 3 x `stubSides`
+// triangles -- and STUBS SURVIVE TO T1 as one triangle each. Both follow from
+// the same fact: a stub breaks the silhouette OUTWARD, so it reads far past the
+// range where its thickness does, and near enough to matter it is the thing the
+// eye lands on. A cone was the cheap version and looked like a spike.
 //
-// DESIGN.md §21 argues all four, with the measurements.
+// DESIGN.md §21 argues all five, with the measurements.
 export const DEADWOOD_TIERS = [
   { name: 'T0', sides: 15, ringMul: 1.0, stubMul: 1.0, stubFlat: false },
   { name: 'T1', sides: 5, ringMul: 1.0, stubMul: 1.0, stubFlat: true },
@@ -87,9 +105,12 @@ export const DEADWOOD_TIERS = [
 // DESIGN.md §5's prop table puts stumps and logs in the `bush` row -- a target
 // and not a law, but the number the world was budgeted against, so the bench
 // prints it beside what was actually built. T0 WENT OVER ON PURPOSE: fifteen
-// sides and a fourth ring take a stump from 76 triangles to 162, and what makes
-// that affordable is the BAND rather than the count. §21 has the arithmetic.
-export const BUDGET_TRIS = [168, 56]
+// sides, a fourth ring and solid stubs take a stump from 76 triangles to 210,
+// and what makes that affordable is the BAND rather than the count -- the bank
+// is two entries, so T0 exists in a shell a few tens of metres deep and there
+// are rarely more than a handful of pieces inside it. 216 is the ceiling with
+// the stump, the worse of the two, at 210. §21 has the arithmetic.
+export const BUDGET_TRIS = [216, 56]
 
 // WHERE EACH TIER ENDS, in metres of camera distance PER METRE of the piece's
 // own size -- `deadwoodLodSize` below says which metre that is. T0 inside the
@@ -258,7 +279,13 @@ export const DEADWOOD_DEFAULTS = {
   stubLength: 4, // as a multiple of the local DIAMETER
   stubRadius: 0.32, // as a fraction of the local trunk radius
   stubRise: 0.28, // radians above horizontal. Dead stubs droop toward horizontal; live branches rise
-  stubSides: 3,
+  // FIVE, and the odd count is the point: a stub is looked at from one side, and
+  // an even prism puts a vertex directly opposite every other vertex so the
+  // silhouette is two parallel lines whatever angle you walk round to. Five
+  // never presents the same pair twice. It is also the count the tip fan needs
+  // to read as broken rather than as a cut -- three facets round a break is a
+  // dart. T1 draws the stub as one card and ignores this entirely.
+  stubSides: 5,
 
   // --- how it meets the ground -----------------------------------------------
   sink: 0.22, // fraction of the butt RADIUS pushed below y = 0 and clamped back up
@@ -1061,10 +1088,10 @@ export function buildDeadwood(options = {}) {
   // --- branch stubs ---------------------------------------------------------
   //
   // Not growLimb and not a branch: a stub is a broken-off base, so it is a short
-  // cone with a jagged end and no curve at all. The one thing worth copying from
-  // tree.js is where it STARTS -- 0.6 of the local radius INSIDE the drawn
-  // surface, so the cone is seated in the wood rather than balanced on its skin.
-  // A stub that starts on the surface hovers beside the trunk the moment
+  // straight prism with a torn end and no curve at all. The one thing worth
+  // copying from tree.js is where it STARTS -- 0.6 of the local radius INSIDE the
+  // drawn surface, so the stub is seated in the wood rather than balanced on its
+  // skin. A stub that starts on the surface hovers beside the trunk the moment
   // anything bends.
   const nStubs = Math.round(p.stubs * tier.stubMul)
   const stubSides = Math.max(3, Math.round(p.stubSides))
@@ -1073,6 +1100,9 @@ export function buildDeadwood(options = {}) {
   const stubE1 = new THREE.Vector3()
   const stubE2 = new THREE.Vector3()
   const stubRing = Array.from({ length: stubSides + 1 }, vert)
+  // Named for the break rather than for the end, because `p.stubEnd` is a
+  // different thing entirely -- the top of the band a stub may grow from.
+  const stubCrown = Array.from({ length: stubSides + 1 }, vert)
   const stubTip = vert()
 
   // The band a stub may emit from. `stubEnd` is a ceiling and not just a scale,
@@ -1120,6 +1150,14 @@ export function buildDeadwood(options = {}) {
     const rad = Math.max(0.012, r * p.stubRadius)
     const len = rad * 2 * p.stubLength * (0.7 + stubRand() * 0.6)
     const layer = s.barkAt(tc, a) >= 0.5 ? p.barkLayer : p.woodLayer
+
+    // The torn end gets a stream of its own, seeded here and SPENT ONLY AT T0.
+    // The seed is drawn at every tier regardless, because `stubRand` is one
+    // stream walked across all the stubs in order: a tier that took a different
+    // number of draws would shift every stub after this one, and the tiers would
+    // stop being the same solid at different sampling rates. check-deadwood
+    // measures exactly that, tier against tier, on all three axes.
+    const tipRand = mulberry32((stubRand() * 0xffffffff) >>> 0)
 
     // T1 DRAWS THE STUB AS ONE VERTICAL TRIANGLE. Not a thinner cone and not a
     // cross: a single card standing in the plane that holds both the stub's own
@@ -1169,26 +1207,74 @@ export function buildDeadwood(options = {}) {
       continue
     }
 
+    // T0: A SHORT PRISM WITH A BROKEN END. `stubSides` quads up the barrel and a
+    // fan of the same count closing the tip -- 3 x stubSides triangles, which
+    // deadwoodCost repeats and check-deadwood holds it to.
+    //
+    // The tip ring is rolled BEFORE the sides are emitted, because a jagged rim
+    // is a property of the whole stub: the quads have to reach the wandering
+    // ring, not a flat one with a jag stuck on afterwards.
+    const stubURep = Math.max(1, Math.round((TAU * rad) / p.texMetres))
+    const tipRad = rad * STUB_TIP_TAPER
+    // Even odds. A branch that tore leaves a splinter standing proud; one that
+    // rotted through leaves a socket. Rolled once per stub so the whole tip
+    // commits to being one or the other -- a rim that is half spike and half
+    // hollow reads as noise rather than as a break.
+    const outie = tipRand() < 0.5
     for (let k = 0; k <= stubSides; k++) {
       const ang = (k / stubSides) * TAU
-      const v = stubRing[k]
       const ox = stubE1.x * Math.cos(ang) + stubE2.x * Math.sin(ang)
       const oy = stubE1.y * Math.cos(ang) + stubE2.y * Math.sin(ang)
       const oz = stubE1.z * Math.cos(ang) + stubE2.z * Math.sin(ang)
-      v.pos.set(base.x + ox * rad, base.y + oy * rad, base.z + oz * rad)
-      v.nor.set(ox, oy, oz)
-      v.u = (k / stubSides) * Math.max(1, Math.round((TAU * rad) / p.texMetres))
-      v.v = 0
-    }
-    // The tip is a point rather than a rim: at this size a capped stub spends
-    // three more triangles on an end face under a centimetre across.
-    stubTip.pos.copy(base).addScaledVector(stubAxis, len)
-    stubTip.nor.copy(stubAxis)
-    stubTip.v = len / p.texMetres
+      const uk = (k / stubSides) * stubURep
 
+      const ring = stubRing[k]
+      ring.pos.set(base.x + ox * rad, base.y + oy * rad, base.z + oz * rad)
+      ring.nor.set(ox, oy, oz)
+      ring.u = uk
+      ring.v = 0
+
+      // The wrap vertex is the seam and must be the SAME point as k = 0, so it
+      // takes that vertex's roll rather than its own. Rolling it again opens a
+      // gap along one facet of every stub in the world -- silent, because the
+      // geometry is non-indexed and nothing checks that the seam closes.
+      const jag = k === stubSides
+        ? stubCrown[0].v * p.texMetres - len
+        : (tipRand() - 0.5) * 2 * STUB_TIP_JAG * len
+      const crown = stubCrown[k]
+      const reach = len + jag
+      crown.pos.set(
+        base.x + stubAxis.x * reach + ox * tipRad,
+        base.y + stubAxis.y * reach + oy * tipRad,
+        base.z + stubAxis.z * reach + oz * tipRad,
+      )
+      crown.nor.set(ox, oy, oz)
+      crown.u = uk
+      crown.v = reach / p.texMetres
+    }
+
+    // The barrel: one quad per side, split on the diagonal that runs from the
+    // base to the FURTHER of the two tip vertices, so neither triangle of a quad
+    // spanning a deep notch collapses.
     for (let k = 0; k < stubSides; k++) {
-      stubTip.u = ((k + 0.5) / stubSides) * Math.max(1, Math.round((TAU * rad) / p.texMetres))
-      emitTri(out, stubRing[k], stubRing[k + 1], stubTip, layer, smooth * 0.5)
+      emitTri(out, stubRing[k], stubRing[k + 1], stubCrown[k + 1], layer, smooth * 0.5)
+      emitTri(out, stubRing[k], stubCrown[k + 1], stubCrown[k], layer, smooth * 0.5)
+    }
+
+    // The break. The point sits on the axis, past the mean rim or behind it, and
+    // the fan is FLAT -- a broken end is facets, and blending the ring's radial
+    // normals into it would round the one feature the extra triangles bought.
+    const point = len + (outie ? STUB_TIP_POINT : -STUB_TIP_POINT) * len
+    stubTip.pos.copy(base).addScaledVector(stubAxis, point)
+    stubTip.nor.copy(stubAxis)
+    stubTip.v = point / p.texMetres
+    for (let k = 0; k < stubSides; k++) {
+      stubTip.u = ((k + 0.5) / stubSides) * stubURep
+      // Wound so the fan faces out whichever way the point went: a sunk point
+      // turns the cap inside out, and a socket lit from behind is a black hole
+      // in the side of the trunk.
+      if (outie) emitTri(out, stubCrown[k], stubCrown[k + 1], stubTip, layer, 0)
+      else emitTri(out, stubCrown[k + 1], stubCrown[k], stubTip, layer, 0)
     }
   }
 
@@ -1361,11 +1447,12 @@ export function buildDeadwood(options = {}) {
     // below it -- and a check of that rule has to be able to see the same line.
     trunkVertices: trunkFloats / 3,
     // Split out so the bench can say where the budget went. The barrel is the
-    // only part that scales with `rings`; the caps are fixed at 2 x sides and
-    // the stubs cost their own count x sides.
+    // only part that scales with `rings`; the caps are fixed at 2 x sides and a
+    // T0 stub costs 3 x stubSides -- two triangles a side up the prism and a fan
+    // of one more per side closing the broken tip.
     barrelTris: sides * rings * 2,
     capTris: sides * 2,
-    stubTris: nStubs * (tier.stubFlat ? 1 : stubSides),
+    stubTris: nStubs * (tier.stubFlat ? 1 : stubSides * 3),
     barkFraction: covered / (SAMPLES * SAMPLES),
     uRepeat,
     texMetres: p.texMetres,
@@ -1428,6 +1515,6 @@ export function deadwoodCost(options = {}, tierIndex = 0) {
   const stubSides = Math.max(3, Math.round(p.stubSides))
   const barrel = sides * rings * 2
   const caps = sides * 2
-  const stubTris = stubs * (tier.stubFlat ? 1 : stubSides)
+  const stubTris = stubs * (tier.stubFlat ? 1 : stubSides * 3)
   return { tier: tier.name, sides, rings, stubs, barrel, caps, stubTris, triangles: barrel + caps + stubTris }
 }

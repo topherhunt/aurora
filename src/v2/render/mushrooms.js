@@ -318,12 +318,11 @@ export class Mushrooms {
       }
     }
 
-    // The tallest variant each species has, MEASURED rather than taken as the
-    // last slot in the list. It is the last slot today, because MUSHROOM_SIZES
-    // ascends and size is the innermost axis of mushroomVariants() -- two facts
-    // in another file that nothing here controls. Reordering either would have
-    // silently sized every clump's ring off a middling variant, which is the
-    // kind of wrong that never throws and never looks obviously broken.
+    // The tallest variant each species has, MEASURED rather than assumed. A
+    // species has exactly one variant today, so the loop reads one height and is
+    // never wrong; it stays because the alternative -- indexing a slot and
+    // trusting the bank's ordering -- is the kind of wrong that never throws and
+    // never looks obviously broken, and it would size every clump's ring.
     this.speciesTallest = this.speciesList.map((list) => {
       let h = 0
       for (let k = 0; k < list.length; k++) {

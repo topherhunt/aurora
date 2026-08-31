@@ -46,10 +46,11 @@ import THREE from '../../three-instance.js'
 // stands. The piece most worth lifting out next is the cross-dissolve, which is
 // the same sixty lines of pool-and-clock bookkeeping in every bed and holds the
 // only invariant that is expensive to get wrong (a ghost that outlives its
-// window is a leaked slot, and a pool running dry throws). The placement and
-// ladder halves are NOT the same and should not be forced together -- see the
-// class header in rocks.js for a ladder measured in object sizes against the
-// metre bands here.
+// window is a leaked slot, and a pool running dry throws) -- the shape it would
+// take, and what each bed does differently, is worked out in
+// design/attic/lod-cross-fade-extraction.md. The placement and ladder halves are
+// NOT the same and should not be forced together -- see the class header in
+// rocks.js for a ladder measured in object sizes against the metre bands here.
 //
 // A NOTE FOR ANYONE ADDING A MESH: three compiles a different program for an
 // InstancedMesh whose `instanceColor` is null than for one whose is not. Every

@@ -25,7 +25,7 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // the DRAWN ground and dissolving at each instance's own cull distance holds here
 // and is not repeated.
 //
-// FIVE BEDS, because a rock's size spans two orders of magnitude and no single
+// SIX BEDS, because a rock's size spans two orders of magnitude and no single
 // density-and-radius pair carries both ends. Each is a complete independent
 // scatter with its own tile grid, density, radius, LOD bands and instance pool:
 //
@@ -33,16 +33,18 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //   BOULDERS    0.34 - 3.4 m   medium, 460 m    the forest and cliffside rocks
 //   SCREE       0.5 - 3 m      dense, 140 m     the pile at the foot of a face
 //   CRUST       0.45 - 4.8 m   medium, 300 m    caps on lake floors and faces
+//   SUNKEN      0.5 - 5 m      sparse, 320 m    closed stones on the lake floor
 //   GIANTS      3.2 - 7.0 m    sparse, 1250 m   tors, shelves, buttresses, lips
 //
 // EACH BED EXISTS BECAUSE SOMETHING IT NEEDS IS PER-BED AND CANNOT BE VARIED
 // WITHIN ONE -- the only test a new bed has to pass. Scree needs the candidate
 // count (`envDensity` is an accept rate capped at 1, so a saturated site cannot be
 // made denser by any multiplier); crust needs the slope limit and the submersion
-// flag. Six beds are six BatchedMeshes and six draw calls, which does not break
-// §5's one-material rule -- that rule forbids splitting a BATCH by material. They
-// share ONE material object, unlike trees, ferns and grass, because every bed here
-// billboards the same single layer and one program serves them all.
+// flag; sunken needs `submergedOnly` and a size range of its own. Six beds are six
+// BatchedMeshes and six draw calls, which does not break §5's one-material rule --
+// that rule forbids splitting a BATCH by material. They share ONE material object,
+// unlike trees, ferns and grass, because every bed here billboards the same single
+// layer and one program serves them all.
 //
 // WHERE A ROCK GOES IS DECIDED BY WHERE IT IS, not by a roll. A candidate is
 // classified into one of four ENVIRONMENTS -- river, peak, cliff, forest -- from
@@ -231,8 +233,8 @@ const BEDS = [
     // modest size: a gravel path rather than a talus cone. Now it is one rock every
     // 1.8 m inside the full radius, median 1.7 m across, and the gate reads one
     // every 2.1 m over the whole 140 m reach where thinning has begun grading it
-    // away. Scree does essentially all of that alone -- the other four beds
-    // contribute a flat ~230 rocks at the foot whatever this number is.
+    // away. Scree does essentially all of that alone -- the other beds contribute a
+    // flat ~230 rocks at the foot whatever this number is.
     //
     // WHAT "PILED" MEANS HERE CHANGED WITH THE DART. `minGap` forbids the
     // short-range clustering that used to be the evidence of a pile, so nearest
@@ -240,12 +242,10 @@ const BEDS = [
     // the same rate gives 0.33 / 0.84 / 1.54. The piling has moved up a scale,
     // where it belongs: the clump floor decides where the drifts are and the
     // density fills them. Coverage is better for it -- only 6% of the foot is clear
-    // inside 1.5 m, against 28% before.
-    //
-    // DENSITY AND `clumpFloor` ARE INDEPENDENT AND ONLY DENSITY FILLS GROUND.
-    // Spacing inside the drifts is flat at 0.96-0.98 m across floors 0.42 to 0.65,
-    // so the floor is a purely spatial mask; raising it to buy "bunching" only
-    // trades away coverage.
+    // inside 1.5 m, against 28% before. DENSITY AND `clumpFloor` ARE INDEPENDENT
+    // AND ONLY DENSITY FILLS GROUND: spacing inside the drifts is flat at
+    // 0.96-0.98 m across floors 0.42 to 0.65, so the floor is a purely spatial
+    // mask and raising it to buy "bunching" only trades away coverage.
     //
     // WHAT IT COSTS: 17 ms of one-time `place()` and an instance pool of 56,602,
     // both half what density 2.0 asked for. The pool is the uglier number -- a
@@ -335,7 +335,7 @@ const BEDS = [
     // surface so the surface closes it. Half the triangles of a closed rock, and it
     // can never be seen from behind because there is no behind.
     //
-    // WHY IT IS A FIFTH BED AND A FIFTH DRAW CALL: not density this time, the SLOPE
+    // WHY IT IS ITS OWN BED AND ITS OWN DRAW CALL: not density this time, the SLOPE
     // LIMIT, which is per-bed and which nothing else can vary. Every other bed
     // refuses ground past 42 to 62 degrees, so the `cliff` rate in all of them is
     // spent on the 34-to-42-degree apron and never on the face itself -- which is
@@ -1022,14 +1022,14 @@ class RockBed {
     // asked instead of answering that its rocks cover no ground.
     //
     // THREE THINGS ARE APPROXIMATED IN THIS NUMBER, not one, and §25 has the
-    // measurements. The BURIAL caches one representative `frac` per bed (0.28
-    // varying, 0.20 not) where the real value is per instance and runs [0.34, 0.5]
-    // on steep ground -- mean shape within 9%, worst `cobble` 1.62x inward. The
-    // TILT is the one that opens a real gap: the section is cut in the geometry's
-    // own frame and _growTile then leans the rock downhill about the same origin,
-    // carrying the footprint some 23 cm off the reported anchor on 40 degree
-    // ground. The TIER scans `tiers[0]` while a coarser solid is drawn past the
-    // outer band edge, 0.56x to 1.29x of it, and bites only past 130 m / 300 m.
+    // measurements. BURIAL caches one representative `frac` per bed (0.28 varying,
+    // 0.20 not) where the real value is per instance and runs [0.34, 0.5] on steep
+    // ground -- mean shape within 9%, worst `cobble` 1.62x inward. TILT is the one
+    // that opens a real gap: the section is cut in the geometry's own frame and
+    // _growTile then leans the rock downhill about the same origin, carrying the
+    // footprint some 23 cm off the reported anchor on 40 degree ground. TIER scans
+    // `tiers[0]` while a coarser solid is drawn past the outer band edge, 0.56x to
+    // 1.29x of it, and bites only past 130 m / 300 m.
     //
     // IF ANY OF IT EVER SHOWS AS MUSHROOMS STANDING IN STONE, the fix is a
     // per-instance section rather than a bigger constant: instSink and instScale

@@ -1,7 +1,8 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildTree, resolveTree, treeLod, crownProfile, TREE_DEFAULTS, TREE_SPECIES, BUSH_OVERRIDES } from './props/tree.js'
-import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
+import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './props/impostor.js'
+import { cardFoot, treeImpostorLayers } from './props/tree-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers, IMAGE_LAYERS, TEX_SIZE } from './textures.js'
 import { createPropMaterial, setSnow } from './material.js'
@@ -131,17 +132,18 @@ const SLIDERS = [
   ['#', 'material'],
   ['alphaTest', 0.05, 0.95, 0.01, 'cutout threshold. Low = lacy and aliased, high = eats the leaf edges'],
   ['brightness', 0.4, 3, 0.05, 'multiplies the albedo. A material property, not geometry'],
-  ['snow', 0, 1, 0.01, 'snow on the FOLIAGE, in world-space blobs leaning toward whatever faces the sky. A global uniform on the shared material -- it costs no triangles, no layers and nothing at all at 0, and it reaches the LOD2 impostor too'],
+  ['snow', 0, 1, 0.01, 'snow on the FOLIAGE, in world-space blobs leaning toward whatever faces the sky. A global uniform on the shared material -- it costs no triangles, no layers and nothing at all at 0, and it reaches the impostor card too'],
 ]
 
 // DESIGN.md §5's prop ladder, per class and per mesh tier, which is what the
-// panel checks against. Two mesh numbers for trees, three for bushes. The tree
+// panel checks against. Two mesh numbers for trees and then the card, which its
+// builder fixes at one triangle; three mesh numbers for bushes. The tree
 // pair is what the bank was budgeted at and very nearly its MEAN over all
 // sixteen variants -- 480 / 338 since the LOD0-only root crown, which costs its
 // 10 triangles at every size -- so a big pine (802 / 547) reads warn and a
 // sapling (462 / 287) reads ok, which is the honest way round: the bank
 // averages to about these and the forest is budgeted on the average.
-const CLASS_BUDGET = { tree: [470, 340, 6], bush: [84, 56, 2] }
+const CLASS_BUDGET = { tree: [470, 340, 1], bush: [84, 56, 2] }
 
 let speciesKey = 'pine'
 let bushMode = false
@@ -216,8 +218,12 @@ scene.add(rule)
 // array sampler from material.js, then wrap diffuse chained on top. Chained,
 // not replaced -- assigning over onBeforeCompile would drop the sampler2DArray
 // patch and every prop would render untextured white.
+// `billboardLayers` because the far tier is ONE triangle that the vertex shader
+// turns to the eye. Without the spin compiled in, the card here would be a fixed
+// plane and would vanish edge-on the moment you orbited past it -- the bench
+// would be showing a card the game does not draw.
 const atlas = buildTextureArray()
-const material = createPropMaterial(atlas)
+const material = createPropMaterial(atlas, { billboardLayers: treeImpostorLayers() })
 const arrayPatch = material.onBeforeCompile
 material.onBeforeCompile = (shader, r) => {
   arrayPatch(shader, r)
@@ -264,7 +270,7 @@ const ROWS = 4
 const SIZE_LADDER = [0.2, 0.45, 1, 1.8, 3]
 
 let view = 'single' // 'single' | 'gallery' | 'sizes'
-// Which tier to draw: 0 and 1 are meshes, 2 is the impostor. LOD1 is not a
+// Which tier to draw: 0 and 1 are meshes, 2 is the card. LOD1 is not a
 // separate parameter set to tune -- it is `treeLod` applied to whatever the
 // sliders currently say, so a change to LOD0 moves LOD1 with it and the two
 // cannot drift apart.
@@ -303,7 +309,7 @@ function rebuild() {
   material.needsUpdate = true
 
   const sp = TREE_SPECIES[speciesKey]
-  // LOD2 has no parameter set of its own: it is a photograph of LOD0, so that is
+  // The card has no parameter set of its own: it is a photograph of LOD0, so that is
   // what gets built and then baked.
   const meshTier = Math.min(lodTier, 1)
   const base = treeLod({ ...params, leafLayer: sp.leafLayer, barkLayer: sp.barkLayer }, meshTier)
@@ -353,17 +359,26 @@ function rebuild() {
   lastWidth = Math.max(0.2, width)
   const spacing = lastWidth * 1.25
 
-  // At LOD2 the trees were built only to be photographed. ONE bake feeds every
-  // card on screen, which is not a shortcut but the shipping arrangement: there
-  // is one impostor layer per species, so a seed gallery at this tier really
-  // does show fifteen instances of one picture, and the size ladder really does
-  // show one picture scaled. Seeing that is the point of looking.
+  // At the card tier the trees were built only to be photographed. ONE bake
+  // feeds every card on screen, which is not a shortcut but the shipping
+  // arrangement: there is one impostor layer per species, so a seed gallery at
+  // this tier really does show fifteen instances of one picture, and the size
+  // ladder really does show one picture scaled. Seeing that is the point of
+  // looking.
+  //
+  // Framed and built exactly as buildTreeBank frames and builds it -- same
+  // `foot`, same one plane, same `tri` and `sink` -- because a bench card that
+  // is a different shape from the shipped one prices a tier the world does not
+  // draw. The bake's own extents feed the geometry, so the picture and the
+  // triangle cannot disagree about where the ground is.
   let drawn = geos
   if (lodTier === 2) {
     const src = geos[0]
     const u0 = src.userData.tree
-    const layer = TREE_SPECIES[speciesKey].impostorLayer
-    const card = bakeImpostor(renderer, src, atlas, layer, { width: u0.crownWidth, height: u0.height })
+    const layer = sp.impostorLayer
+    const card = bakeImpostor(renderer, src, atlas, layer, {
+      width: u0.crownWidth, height: u0.height, foot: cardFoot(u0, sp.billboardTri),
+    })
     agg.tris = 0
     agg.verts = 0
     agg.bytes = 0
@@ -372,7 +387,8 @@ function rebuild() {
     agg.spray = 0
     drawn = geos.map((geo) => {
       const k = geo.userData.tree.height / u0.height
-      const hex = buildImpostorCard(card.width * k, card.height * k, layer)
+      const hex = buildImpostorCard(card.width * k, card.height * k, layer, 1,
+        { upNormal: true, tri: sp.billboardTri, sink: card.sink * k })
       agg.tris += hex.userData.impostor.triangles
       agg.verts += hex.getAttribute('position').count
       agg.bytes += geometryBytes(hex)
@@ -444,32 +460,66 @@ function frame() {
 const fmt = (b) =>
   b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`
 
-// The ladder the world actually runs, priced for the tree on the stage. Every
-// distance comes from LOD_BANDS and DRAW_RADIUS, and every triangle count from
-// resolveTree -- the same function buildTree grows from -- so the only numbers
-// typed in here are the two card tiers, which are fixed by their builders (three
-// crossed quads, then one spun triangle) rather than by these parameters.
+// The ladder the world actually runs, priced for the tree on the stage.
+//
+// NOTHING HERE IS TYPED. The rung count is LOD_BANDS' own length, the distances
+// are LOD_BANDS and DRAW_RADIUS, the mesh triangles come from resolveTree -- the
+// same function buildTree grows from -- and the card's shape and triangle come
+// from building the card. A rung added or retired in trees.js moves this table
+// with it, and if the two ever disagree about how many rungs there are the page
+// dies rather than printing a band nothing draws in. That is what the old table
+// did: it stated four rungs against a three-rung ladder, so the card's row
+// showed no band at all and the row above it claimed everything past 24 m.
 //
 // It is per-tier for THIS tree rather than a class average because that is the
 // question the bench is open to answer: a 3 m sapling and a 25 m pine sit at
 // opposite ends of a 4x spread, and the class number describes neither.
-function lodTable(el, active) {
+function ladderRows(u) {
+  const rows = []
+  for (let t = 0; t < TREE_TUNING.LOD_BANDS.length; t++) {
+    const p = treeLod(params, t)
+    const bs = Math.round(p.branchSides)
+    rows.push({
+      name: `LOD${t}`,
+      what: `${Math.round(p.trunkSides)}-side trunk, ${bs === 1 ? 'fin' : `${bs}-side`} limbs`,
+      tris: resolveTree(p).triangles,
+    })
+  }
+  // The last rung is the photograph, and it is priced by building it: its
+  // triangle count is a property of the builder and its sink is a property of
+  // this species' trunk, so both are asked for rather than asserted.
+  const sp = TREE_SPECIES[speciesKey]
+  const ext = impostorCardExtents({
+    width: u.crownWidth, height: u.height, foot: cardFoot(u, sp.billboardTri),
+  })
+  const geo = buildImpostorCard(ext.width, ext.height, sp.impostorLayer, 1,
+    { upNormal: true, tri: sp.billboardTri, sink: ext.sink })
+  // Against the TREE's height, which is how impostor.js states every sink it
+  // measured -- the card is taller than the tree it frames, so quoting it
+  // against the card would be a second scale for the same number.
+  const sunk = ext.sink > 0 ? `, ${((ext.sink / u.height) * 100).toFixed(0)}% sunk` : ''
+  rows.push({
+    name: 'card',
+    what: `spun apex-${sp.billboardTri}${sunk}`,
+    tris: geo.userData.impostor.triangles,
+  })
+  geo.dispose()
+  return rows
+}
+
+function lodTable(el, rows, active) {
   const { LOD_BANDS, DRAW_RADIUS } = TREE_TUNING
   const m = (d) => (d >= 1000 ? `${d / 1000} km` : `${d} m`)
   const edges = [0, ...LOD_BANDS, DRAW_RADIUS]
-  const rows = [
-    ['LOD0', 'full mesh', resolveTree(treeLod(params, 0)).triangles],
-    ['LOD1', '3-side trunk, fin limbs', resolveTree(treeLod(params, 1)).triangles],
-    ['LOD2', '3 crossed quads', 6],
-    ['card', '1 spun triangle', 1],
-  ]
+  if (rows.length !== edges.length - 1) {
+    throw new Error(`lodTable: ${rows.length} tiers against ${edges.length - 1} bands`)
+  }
   el.innerHTML = rows
-    .map(([tier, what, tris], i) => {
-      const band = i < edges.length - 1 ? `${edges[i]}-${m(edges[i + 1])}` : '&mdash;'
-      return `<tr class="${i === active ? 'here' : ''}">` +
-        `<td class="k">${tier} <span class="s">${what}</span></td>` +
-        `<td class="band">${band}</td><td class="n">${tris}</td></tr>`
-    })
+    .map(({ name, what, tris }, i) =>
+      `<tr class="${i === active ? 'here' : ''}">` +
+        `<td class="k">${name} <span class="s">${what}</span></td>` +
+        `<td class="band">${edges[i]}-${m(edges[i + 1])}</td><td class="n">${tris}</td></tr>`
+    )
     .join('')
 }
 
@@ -519,6 +569,10 @@ function refresh() {
   const s = rebuild()
   const per = Math.round(s.tris / s.count)
   const budget = (bushMode ? CLASS_BUDGET.bush : CLASS_BUDGET.tree)[lodTier]
+  // Priced for the tree the metre readouts describe, which at the size ladder is
+  // the one the height slider names. The panel below borrows this tier's NAME
+  // from it too, so the two tables cannot call the same rung different things.
+  const ladder = ladderRows(s.measured)
   // What the tier actually builds, which at LOD1 is not what the sliders say.
   const shown = treeLod(params, Math.min(lodTier, 1))
 
@@ -556,13 +610,13 @@ function refresh() {
       res.heightScale === 1 ? 'at heightRef' : `${nb} br, ${ns} sprays/limb`,
     ],
     ...(s.card
-      ? [['&nbsp;&nbsp;impostor 3 planes&times;2', `${s.card} &mdash; one layer, one bake`]]
+      ? [[`&nbsp;&nbsp;impostor ${ladder[ladder.length - 1].what}`, `${s.card} &mdash; one layer, one bake`]]
       : []),
     ['vertices', Math.round(s.verts / s.count)],
     ['drawn here', s.count],
     ['geometry in RAM', fmt(s.bytes)],
     [
-      `${bushMode ? 'bush' : 'tree'}-class LOD${lodTier}`,
+      `${bushMode ? 'bush' : 'tree'}-class ${ladder[lodTier].name}`,
       `${per} / ${budget} tris`,
       per <= budget ? 'ok' : 'warn',
     ],
@@ -575,7 +629,7 @@ function refresh() {
   if (bushMode) {
     lodEl.innerHTML = '<tr><td class="k">bush class &mdash; its own ladder, priced in gen-fern</td></tr>'
   } else {
-    lodTable(lodEl, lodTier)
+    lodTable(lodEl, ladder, lodTier)
   }
 
   // The numbers that say whether a SIZE is believable, in metres. Every shape

@@ -2,8 +2,8 @@ import THREE from '../three-instance.js'
 import { mulberry32 } from '../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
-// THE TWO TEXTURES THE TERRAIN'S SURFACE DETAIL IS MADE OF, BAKED ONCE ON THE
-// CPU INSTEAD OF EVALUATED PER FRAGMENT.
+// THE TEXTURES THE TERRAIN'S SURFACE DETAIL IS MADE OF, BAKED ONCE ON THE CPU
+// INSTEAD OF EVALUATED PER FRAGMENT.
 //
 // This file exists because of one measurement. With the terrain hidden the
 // headset holds 85 fps; with the terrain drawn and its stock Lambert material
@@ -24,10 +24,11 @@ import { mulberry32 } from '../sim/mathx.js'
 // noise field sampled at world XZ.
 //
 // A band-limited noise field sampled at world XZ is a TEXTURE. So it is one
-// now: the fields are generated once at boot into two small tileable RGBA
-// images and read back with texture fetches, which is the operation a GPU has
-// dedicated silicon and a cache for. Four fetches replace twenty noises in the
-// worst case; one fetch replaces two in the far field.
+// now: the fields are generated once at boot into a three-layer tileable RGBA
+// array (one layer per surface) plus one RGBA macro tile, and read back with
+// texture fetches, which is the operation a GPU has dedicated silicon and a
+// cache for. Four fetches replace twenty noises in the worst case; one fetch
+// replaces two in the far field.
 //
 // WHAT IS LOST, honestly: a tileable texture repeats and world-space noise does
 // not. That is bought back three ways rather than hidden -- the two textures are
@@ -45,10 +46,12 @@ import { mulberry32 } from '../sim/mathx.js'
 // rather than to hide a crawl.
 // ---------------------------------------------------------------------------
 
-// Both textures are 256 square. The number is not arbitrary at either end: it
+// Every layer here is 256 square. The number is not arbitrary at either end: it
 // is what makes the coarse grit tile land on ~4.6 cm texels (see GRIT_METRES in
-// terrain-material.js), and it is small enough that four decorrelated fbm grids
-// generate in a few tens of milliseconds and cost 256 KB of VRAM each.
+// terrain-material.js), and it is small enough that the ten decorrelated fbm
+// grids behind the four tiles generate in well under a tenth of a second. The
+// whole set is 1 MB of VRAM: 256 KB for the macro tile and 256 KB per grit
+// layer.
 export const GRIT_SIZE = 256
 
 // How the gradient channels are packed. The generator stores
@@ -59,20 +62,37 @@ export const GRIT_SIZE = 256
 // than as a bare number in the shader is the point: the two constants are one
 // decision and they must move together.
 //
-// 16 is MEASURED, not chosen. On the shipped field |dh/du| runs p50 2.7, p90
-// 8.3, p99 14.6, max 24.3, so a range of 16 clips 0.55% of texels -- the tail
-// of the tail, where a clipped slope reads as a slightly flatter fleck. The
-// numbers below it are worse than they look: at 8 the clip is 11% of texels,
-// which is a visible plateau across every steep face. Going the other way costs
-// resolution, since the pack is 8 bits: at 16 one step is 0.125 of dh/du, which
-// over the 11.7 m tile is 0.2 degrees of normal tilt and invisible.
-export const GRIT_GRAD_RANGE = 16
+// 32 is MEASURED, not chosen, and it is set by the ROCK layer -- a ridged field
+// creases at every half-level, so its slopes are roughly twice the smooth
+// fields' at the same octave count. Measured |dh/du| on the three shipped
+// fields, and the share each range clips:
+//
+//            mean   p50    p90    p99    max     @16     @24     @32
+//   grass    4.86   3.5   11.3   19.8   34.2   3.15%   0.21%   0.01%
+//   rock     5.94   3.7   14.9   29.3   61.0   8.67%   2.66%   0.61%
+//   snow     4.66   2.9   11.5   24.5   43.0   4.76%   1.10%   0.13%
+//
+// 16 was right for the single smooth field this replaced and is wrong now: it
+// flattens 8.7% of every cliff, and a clipped slope is a PLATEAU -- a facet of
+// dead-flat lighting in the middle of a crag, which is the one artefact this
+// layer exists to avoid. 32 puts all three back in the tail of the tail.
+//
+// What it costs is resolution, since the pack is 8 bits: one step is 0.251 of
+// dh/du, which over the 11.7 m tile at uRelief is 0.4 degrees of normal tilt.
+// That is double what 16 gave and still under the ~1 degree where banding on a
+// smooth slope starts to be visible.
+export const GRIT_GRAD_RANGE = 32
 export const GRIT_GRAD_SCALE = GRIT_GRAD_RANGE * 2
 
-// Tileable value noise on a g x g lattice, over uv in 0..1. Wrapping the
+// Tileable value noise on a gx x gy lattice, over uv in 0..1. Wrapping the
 // lattice indices is the whole trick -- without the wrap every sample of these
 // textures would seam along its tile edges, which on terrain means a visible
 // grid at whatever the sampling scale happens to be.
+//
+// gx and gy are separate so a field can be ANISOTROPIC, which is the only way
+// to bake a direction into noise. Rock needs one: bedding, fracture lines and
+// gouges all run along a face, and an isotropic field cannot express "along".
+// Both axes still wrap independently, so the tile stays seamless at any ratio.
 //
 // Same construction as preview-stage.js's bench ground, and deliberately so:
 // that ground is the look this file is aiming at ("speckled pixelated Perlin
@@ -80,25 +100,25 @@ export const GRIT_GRAD_SCALE = GRIT_GRAD_RANGE * 2
 // rather than imported because preview-stage is a tuning-bench module that also
 // pulls in a renderer and a lighting patch, and the game's terrain should not
 // depend on a bench.
-function lattice(rand, g) {
-  const v = new Float32Array(g * g)
+function lattice(rand, gx, gy = gx) {
+  const v = new Float32Array(gx * gy)
   for (let i = 0; i < v.length; i++) v[i] = rand()
   const smooth = (t) => t * t * (3 - 2 * t)
   return (x, y) => {
-    const fx = x * g
-    const fy = y * g
+    const fx = x * gx
+    const fy = y * gy
     const ix = Math.floor(fx)
     const iy = Math.floor(fy)
-    const x0 = ((ix % g) + g) % g
-    const y0 = ((iy % g) + g) % g
-    const x1 = (x0 + 1) % g
-    const y1 = (y0 + 1) % g
+    const x0 = ((ix % gx) + gx) % gx
+    const y0 = ((iy % gy) + gy) % gy
+    const x1 = (x0 + 1) % gx
+    const y1 = (y0 + 1) % gy
     const tx = smooth(fx - ix)
     const ty = smooth(fy - iy)
-    const a = v[y0 * g + x0]
-    const b = v[y0 * g + x1]
-    const c = v[y1 * g + x0]
-    const d = v[y1 * g + x1]
+    const a = v[y0 * gx + x0]
+    const b = v[y0 * gx + x1]
+    const c = v[y1 * gx + x0]
+    const d = v[y1 * gx + x1]
     return (a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty
   }
 }
@@ -110,14 +130,28 @@ function lattice(rand, g) {
  * gradient channels are finite differences of this field, and differencing a
  * grid that already exists is free where re-evaluating five lattices per
  * neighbour would quadruple the generation cost.
+ *
+ * `spec` is the whole character of a surface, and the three that ship are the
+ * three ways this generator can be pointed:
+ *
+ *   g0       the coarsest lattice, in cells across the tile. Small = big
+ *            blotches, and `gain` decides how much of the field they carry.
+ *   aspect   cells along y as a multiple of cells along x. 1 is isotropic;
+ *            anything else bakes in a DIRECTION, which is what makes rock read
+ *            as bedded rather than as speckle.
+ *   ridged   fold each octave through 1 - |2v - 1| before summing. A smooth
+ *            field has its features in the middle of its range and its
+ *            boundaries are soft; a ridged one has a CREASE along every
+ *            half-level, so the result is full of hard lines and gouges. This
+ *            is the single knob that separates "cliff" from "lawn".
  */
-function fbmGrid(rand, size, g0, octaves, gain) {
+function fbmGrid(rand, size, { g0, aspect = 1, octaves, gain, ridged = false }) {
   const layers = []
   let g = g0
   let amp = 1
   let norm = 0
   for (let i = 0; i < octaves; i++) {
-    layers.push([lattice(rand, g), amp])
+    layers.push([lattice(rand, g, Math.max(1, Math.round(g * aspect))), amp])
     norm += amp
     g *= 2
     amp *= gain
@@ -128,7 +162,10 @@ function fbmGrid(rand, size, g0, octaves, gain) {
       const u = x / size
       const v = y / size
       let s = 0
-      for (const [f, a] of layers) s += f(u, v) * a
+      for (const [f, a] of layers) {
+        const n = f(u, v)
+        s += (ridged ? 1 - Math.abs(n * 2 - 1) : n) * a
+      }
       out[y * size + x] = s / norm
     }
   }
@@ -178,8 +215,76 @@ function gradAt(grid, size, x, y) {
 
 const pack = (v) => Math.max(0, Math.min(255, Math.round(v * 255)))
 
+// ---------------------------------------------------------------------------
+// THE GRIT ARRAY: three near-field surfaces, one fetch.
+//
+// It used to be a single sampler2D and every surface wore the same field,
+// distinguished only by which palette pair the shader ran it through. That is
+// enough to say "this is rock and that is grass" and not enough to say what
+// either is MADE of: a lawn and a cliff had the same blotches in the same
+// places at the same size, in two colour schemes.
+//
+// Three layers of a DataArrayTexture fixes that for the price of an index.
+// `texture( arr, vec3( uv, layer ) )` is ONE fetch whatever the layer is, so a
+// grass field with clumps, a rock field with fracture lines and a snow field
+// with wind-scour cost exactly what one shared field cost. The alternative --
+// three sampler2Ds and a blend -- is three fetches to draw one surface.
+//
+// WHAT THE INDEX COSTS: the layer is chosen per fragment from the surface
+// classification, so the transition from grass to rock is a HARD SWITCH rather
+// than a blend. That is a deliberate trade (a blend is a second fetch, i.e. the
+// entire saving), and the seam is broken up rather than hidden -- see the
+// dither on the selection in terrain-material.js.
+// ---------------------------------------------------------------------------
+
+export const GRIT_LAYER = { GRASS: 0, ROCK: 1, SNOW: 2 }
+export const GRIT_LAYER_COUNT = 3
+
+// The three characters, and this table IS the difference between the surfaces.
+// See fbmGrid for what each field means; the sizes below are quoted over the
+// coarse sample's 11.7 m tile (GRIT_METRES), which is where they are read.
+const GRIT_SPECS = [
+  {
+    // GRASS: chaotic, non-repeating blotches. g0 = 3 puts the coarsest clump at
+    // ~3.9 m and the finest at ~24 cm, and the gain is well above the usual 0.5
+    // so most of the field's energy sits in the COARSE octaves -- which is what
+    // makes it read as patches of meadow rather than as uniform green fizz.
+    // Isotropic, because a lawn has no grain.
+    h: { g0: 3, octaves: 5, gain: 0.62 },
+    alt: { g0: 8, octaves: 4, gain: 0.5 },
+    speckle: 0.18,
+  },
+  {
+    // ROCK: crags, gouges and bedding. Both of this generator's two shape knobs
+    // are turned on here and neither is decoration. `ridged` puts a crease along
+    // every half-level, which is what a fracture line is; `aspect` stretches the
+    // lattice 3.5:1 so those creases run in a DIRECTION, which is what bedding
+    // is. Without the pair, rock is grass in grey.
+    // Coarsest cell is ~5.9 x 1.7 m, finest ~37 x 10 cm.
+    h: { g0: 2, aspect: 3.5, octaves: 5, gain: 0.55, ridged: true },
+    alt: { g0: 6, aspect: 3.5, octaves: 4, gain: 0.5, ridged: true },
+    // Grittier than the other two on purpose: this is the mineral grain between
+    // the crags, and it is the finest thing on a cliff.
+    speckle: 0.26,
+  },
+  {
+    // SNOW: wind-scoured drift. Smooth (gain 0.45 drops the fine octaves fast,
+    // and there are only four), directional (a drift is laid down across the
+    // wind), and NOT ridged -- snow has no fracture lines and a creased snow
+    // field reads as crumpled paper.
+    //
+    // Its ALT channel is the sparkle, and that one wants the opposite: a fine,
+    // isotropic field, because a crystal catching the sun is a point and points
+    // must not line up in rows. The threshold that reads it (0.994) is only
+    // meaningful because equalise() makes it exactly the top 0.6% of texels.
+    h: { g0: 4, aspect: 2.2, octaves: 4, gain: 0.45 },
+    alt: { g0: 20, octaves: 3, gain: 0.5 },
+    speckle: 0.1,
+  },
+]
+
 /**
- * THE GRIT TILE: the near-field surface itself.
+ * ONE LAYER OF THE GRIT ARRAY, written into `data` at `layer`.
  *
  *   R  the albedo field, QUANTISED to six steps and then speckled per texel
  *   G  0.5 + dh/du of the SMOOTH field, packed by GRIT_GRAD_RANGE
@@ -202,33 +307,57 @@ const pack = (v) => Math.max(0, Math.min(255, Math.round(v * 255)))
  * same field stack their peaks in the same places, and the whole reason there
  * are two is to break that up: R decides how bright a speck is and A decides
  * which way it is tinted, and they should not agree.
+ *
+ * @returns {number} the share of texels whose gradient clipped at
+ *   GRIT_GRAD_RANGE, which is the number gritArrayTexture reports.
  */
-export function gritTexture() {
+function bakeGritLayer(data, layer, spec, seed) {
   const size = GRIT_SIZE
-  const rand = mulberry32(0x6717)
-  // Five octaves from a 4x4 lattice, so the coarsest wavelength is a quarter of
-  // the tile and the finest is a sixty-fourth of it -- with the per-texel
-  // speckle a further two octaves below that. Over the coarse sample's 11.7 m
-  // tile that ladder is 2.9 m down to 18 cm, which is where the two layers this
-  // replaces (a ~3.5 m patch noise and a ~0.5 m grain) both lived.
-  const h = equalise(fbmGrid(rand, size, 4, 5, 0.5))
-  const alt = equalise(fbmGrid(rand, size, 4, 5, 0.5))
+  const rand = mulberry32(seed)
+  const h = equalise(fbmGrid(rand, size, spec.h))
+  const alt = equalise(fbmGrid(rand, size, spec.alt))
 
-  const data = new Uint8Array(size * size * 4)
+  const base = layer * size * size * 4
+  let clipped = 0
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const i = y * size + x
-      const o = i * 4
+      const o = base + i * 4
       let n = Math.round(h[i] * 5) / 5
-      n = Math.min(1, Math.max(0, n + (rand() - 0.5) * 0.18))
+      n = Math.min(1, Math.max(0, n + (rand() - 0.5) * spec.speckle))
       const [gx, gy] = gradAt(h, size, x, y)
+      if (Math.abs(gx) > GRIT_GRAD_RANGE || Math.abs(gy) > GRIT_GRAD_RANGE) clipped++
       data[o] = pack(n)
       data[o + 1] = pack(0.5 + gx / GRIT_GRAD_SCALE)
       data[o + 2] = pack(0.5 + gy / GRIT_GRAD_SCALE)
       data[o + 3] = pack(alt[i])
     }
   }
-  return finish(data, size, THREE.NearestFilter, THREE.NearestMipmapLinearFilter)
+  return clipped / (size * size)
+}
+
+/** The three-layer grit array. See the block above GRIT_LAYER. */
+export function gritArrayTexture() {
+  const size = GRIT_SIZE
+  const data = new Uint8Array(size * size * 4 * GRIT_LAYER_COUNT)
+  // Distinct seeds, so the three fields are independent rather than three
+  // filters over one -- otherwise a boulder in a meadow would sit in a dip that
+  // the grass around it also has.
+  const seeds = [0x6717, 0x1d3b, 0x40a9]
+  const clip = GRIT_SPECS.map((spec, i) => bakeGritLayer(data, i, spec, seeds[i]))
+  if (clip.some((c) => c > 0.02)) {
+    console.warn(
+      `[grit] gradient clipping over 2%: grass ${(clip[0] * 100).toFixed(2)}%, ` +
+        `rock ${(clip[1] * 100).toFixed(2)}%, snow ${(clip[2] * 100).toFixed(2)}% ` +
+        '-- raise GRIT_GRAD_RANGE'
+    )
+  }
+
+  const tex = new THREE.DataArrayTexture(data, size, size, GRIT_LAYER_COUNT)
+  tex.format = THREE.RGBAFormat
+  tex.type = THREE.UnsignedByteType
+  applyFieldSampling(tex, THREE.NearestFilter, THREE.NearestMipmapLinearFilter)
+  return tex
 }
 
 /**
@@ -258,10 +387,11 @@ export function macroTexture() {
   // wavelength has to be the whole tile to give the 1 km regions their shape,
   // and it needs one more octave underneath to reach the ~16 m mottle at the
   // fine sample.
-  const r = equalise(fbmGrid(rand, size, 1, 6, 0.5))
-  const g = equalise(fbmGrid(rand, size, 1, 6, 0.5))
-  const b = equalise(fbmGrid(rand, size, 1, 6, 0.5))
-  const a = equalise(fbmGrid(rand, size, 1, 6, 0.5))
+  const macro = { g0: 1, octaves: 6, gain: 0.5 }
+  const r = equalise(fbmGrid(rand, size, macro))
+  const g = equalise(fbmGrid(rand, size, macro))
+  const b = equalise(fbmGrid(rand, size, macro))
+  const a = equalise(fbmGrid(rand, size, macro))
 
   const data = new Uint8Array(size * size * 4)
   for (let i = 0; i < size * size; i++) {
@@ -271,7 +401,9 @@ export function macroTexture() {
     data[o + 2] = pack(b[i])
     data[o + 3] = pack(a[i])
   }
-  return finish(data, size, THREE.LinearFilter, THREE.LinearMipmapLinearFilter)
+  const tex = new THREE.DataTexture(data, size, size)
+  applyFieldSampling(tex, THREE.LinearFilter, THREE.LinearMipmapLinearFilter)
+  return tex
 }
 
 // NoColorSpace, and this is the one line in the file that would fail silently
@@ -280,8 +412,7 @@ export function macroTexture() {
 // texture sRGB would put three.js's decode on the fetch, which would bend the
 // value field through a gamma curve, recentre the gradient channels away from
 // 0.5, and leave the terrain looking merely mis-tuned.
-function finish(data, size, magFilter, minFilter) {
-  const tex = new THREE.DataTexture(data, size, size)
+function applyFieldSampling(tex, magFilter, minFilter) {
   tex.colorSpace = THREE.NoColorSpace
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
   tex.magFilter = magFilter
@@ -299,6 +430,6 @@ function finish(data, size, magFilter, minFilter) {
 let cached = null
 
 export function terrainDetailTextures() {
-  if (!cached) cached = { grit: gritTexture(), macro: macroTexture() }
+  if (!cached) cached = { grit: gritArrayTexture(), macro: macroTexture() }
   return cached
 }

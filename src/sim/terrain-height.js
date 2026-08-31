@@ -30,9 +30,9 @@ export const SHRINK = 2
 
 // Tunables -- the "what does this world look like" knobs (§17).
 //
-// EVERY NUMBER AND WAVELENGTH IN THIS BLOCK IS PRE-SHRINK: read every metre as
+// EVERY NUMBER AND WAVELENGTH HERE IS PRE-SHRINK: read every metre as
 // metre/SHRINK in the world. Ratios, and therefore every slope angle, are
-// unaffected -- which is the whole point of scaling there rather than here.
+// unaffected -- the whole point of scaling there rather than here.
 //
 // TWO INDEPENDENT SCALES, easy to conflate. HORIZONTAL is every *Freq (halving
 // doubles ridgeline spacing); VERTICAL is every relief/amp. Steepness is the
@@ -53,16 +53,13 @@ export const SHRINK = 2
 // gives the snow line something to mean.
 //
 // FOUR WAYS THIS FIELD LOOKS WRONG WHILE MEASURING RIGHT, all four found by
-// rendering it shaded rather than by any percentile. §3 "Four ways a height
-// field can look wrong while measuring right" has each in full:
-//
-//   RIDGED NOISE MAKES FILAMENTS -- 1-abs(n) puts its maxima on the noise's zero
-//     contour, which is a curvilinear network. Appeared here twice.
-//   A WARP ONLY WORKS ABOVE ITS OWN AMPLITUDE -- below it, it shears. See step 1.
-//   GAIN ABOVE 0.5 IS FUR -- octave k carries slope (2*gain)^k, so 0.55 makes the
-//     finest octave the roughest. Exactly 0.5 is the 1/f law.
-//   HARD CLAMPS MAKE CREASES -- C0 but not C1, along a level set of smooth noise,
-//     which is a closed curve. See softFloor().
+// rendering it shaded rather than by any percentile; §3 has each in full.
+// RIDGED NOISE MAKES FILAMENTS (1-abs(n) puts its maxima on the noise's zero
+// contour, a curvilinear network -- appeared here twice). A WARP ONLY WORKS
+// ABOVE ITS OWN AMPLITUDE, below it shears (step 1). GAIN ABOVE 0.5 IS FUR --
+// octave k carries slope (2*gain)^k, so 0.55 makes the finest octave the
+// roughest; exactly 0.5 is the 1/f law. HARD CLAMPS MAKE CREASES, C0 but not C1
+// along a level set of smooth noise, which is a closed curve (softFloor()).
 //
 // Check changes with `node scripts/probe-terrain.mjs` and LOOK at the result
 // with `node scripts/heightmap-png.mjs`. Numbers catch scale errors; only the
@@ -73,17 +70,16 @@ export const TUNING = {
   // (the mountain terms contribute a median 0.3 m down there), so it alone
   // decides how much low heath the world has.
   //
-  // FLOORED, NOT CURVED, and the reason is not obvious. Valleys are local minima
-  // of the MOUNTAIN layers at a ~140 m scale, and a 5 km swell has no local
-  // minima at that scale -- so valleys sample `base` essentially at random
-  // (p50 0.482 against 0.513 world-wide). "Half of valleys reach 0-5 m" is
-  // therefore "half the world's swell sits near zero", and no monotone curve on
-  // a bell-shaped fbm does that: base^3.2 still left valley p50 at 28 m while
-  // dragging the mid-elevation world down with it. Flooring decouples the two.
-  //
-  // softFloor rather than max(0,..) for the usual reason -- a hard floor makes
-  // the lowlands dead flat with a crease where they meet the rise. No ceiling,
-  // so high ground keeps climbing past valleyHi rather than forming a mesa.
+  // FLOORED, NOT CURVED. Valleys are local minima of the MOUNTAIN layers at a
+  // ~140 m scale, and a 5 km swell has no local minima at that scale -- so
+  // valleys sample `base` essentially at random (p50 0.482 against 0.513
+  // world-wide). "Half of valleys reach 0-5 m" is therefore "half the world's
+  // swell sits near zero", and no monotone curve on a bell-shaped fbm does that:
+  // base^3.2 still left valley p50 at 28 m while dragging the mid-elevation
+  // world down with it. Flooring decouples the two. softFloor rather than
+  // max(0,..) for the usual reason -- a hard floor makes the lowlands dead flat
+  // with a crease where they meet the rise. No ceiling, so high ground keeps
+  // climbing past valleyHi rather than forming a mesa.
   //
   // valleyLo is solved from the target, not from the input distribution, and it
   // sits well above base's median because the knee delays the floor and the
@@ -170,21 +166,19 @@ export const TUNING = {
   // it replaced could only ever produce clay lowlands AND shattered high saddles
   // at the same time.
   //
-  // Rockiness is landform POSITION. Convex ground -- crests, spurs, ribs --
-  // sheds its debris and stands as bare rock; concave ground -- hollows,
-  // saddles, gullies, valley floors -- collects it and fills smooth. That is
-  // real geomorphology and it is SCALE-FREE: the same rule juts a summit and a
-  // 15 m outcrop in a meadow, smooths a valley floor and an alpine saddle.
+  // Rockiness is landform POSITION: convex ground -- crests, spurs, ribs --
+  // sheds its debris and stands as bare rock, concave ground -- hollows,
+  // saddles, gullies, valley floors -- collects it and fills smooth. Real
+  // geomorphology, and SCALE-FREE: the same rule juts a summit and a 15 m
+  // outcrop in a meadow, smooths a valley floor and an alpine saddle.
   //
   // IT COSTS NOTHING, which is what makes it affordable in the hottest function
   // in the project. A true convexity is a Laplacian, four extra field
-  // evaluations. Not needed: an fbm normalised to 0..1 is its own
-  // local-relative-height signal -- near 0.5 at its local mean, high on local
-  // maxima, low on local minima, with no absolute elevation in it at all. So
-  // (lump - 0.5) already says "how far above its surroundings is this point at
-  // 476 m scale", and massifLump says the same at 862 m. Sum the two.
-  //
-  // The weights pick which scale of landform decides. Weighted toward the
+  // evaluations -- not needed, because an fbm normalised to 0..1 is its own
+  // local-relative-height signal, near 0.5 at its local mean and high/low on
+  // local maxima/minima with no absolute elevation in it. So (lump - 0.5)
+  // already says "how far above its surroundings is this point at 476 m scale",
+  // and massifLump says the same at 862 m. Sum the two, weighted toward the
   // backbone, so a rib on a mid-height massif flank is rock and a hollow near a
   // summit is smooth.
   exposureMassif: 0.5,
@@ -300,13 +294,13 @@ export const TUNING = {
   // slider is still on the panel -- drag cliffAmp up and it is back.
   //
   // It was asked four times to do something its structure cannot do, and the
-  // fourth attempt is what settled it: the face angle does not come from the
-  // mosaic, it comes from the GATE. Deep inside a cell the term already sits at
-  // full plateau height, so wherever the gate opens under such a cell the ground
+  // fourth attempt settled it: the face angle does not come from the mosaic, it
+  // comes from the GATE. Deep inside a cell the term already sits at full
+  // plateau height, so wherever the gate opens under such a cell the ground
   // climbs the entire cliff over the gate's transition distance -- at a place
-  // set by three composed smoothsteps on unrelated noise, unrelated to the
-  // mosaic. `mid` keeps the surface continuous across CELL boundaries; nothing
-  // keeps it continuous across GATE boundaries, and that is where the walls are.
+  // set by three composed smoothsteps on unrelated noise. `mid` keeps the
+  // surface continuous across CELL boundaries; nothing keeps it continuous
+  // across GATE boundaries, and that is where the walls are.
   //
   // Retiring it cost all of the genuinely vertical ground and ~60% of everything
   // past 70 deg, over 2.9% of the world; the skyline did not move. What is left
@@ -324,16 +318,15 @@ export const TUNING = {
   // Shape of the blend across that width, and the whole of "a sharp lip rather
   // than a rounded shoulder". The blend runs t=0 on the cell boundary to t=1
   // deep inside, CLAMPED at 1, and the lip is where that clamp bites -- so what
-  // matters there is the DERIVATIVE, not the value:
+  // matters there is the DERIVATIVE, not the value. smoothstep has b'(1) = 0,
+  // arriving at the plateau with no change of slope, which is a rounded shoulder
+  // BY CONSTRUCTION; t^p with p > 1 has b'(1) = p, so the surface leaves the
+  // plateau at a finite angle and the clamp puts a genuine C1 kink there, while
+  // b'(0) is still 0 so the FOOT stays smooth and the base of a wall is
+  // walkable.
   //
-  //   smoothstep  b'(1) = 0, arriving at the plateau with no change of slope,
-  //               which is a rounded shoulder BY CONSTRUCTION.
-  //   t^p, p > 1  b'(1) = p, so the surface leaves the plateau at a finite angle
-  //               and the clamp puts a genuine C1 kink there. b'(0) is still 0,
-  //               so the FOOT stays smooth and the base of a wall is walkable.
-  //
-  // Measured on the ISOLATED layer, which is the only way the numbers mean
-  // anything -- against the whole field this layer sits inside the noise:
+  // Measured on the ISOLATED layer, the only way the numbers mean anything --
+  // against the whole field this layer sits inside the noise:
   //
   //   pow    1.0    1.8    2.5    3.0    4.0    6.0
   //   face  43.8   49.7   52.5   53.9   55.9   57.9  deg
@@ -358,16 +351,15 @@ export const TUNING = {
   // step does not help, since 15 m of relief across one 16 m sim cell is still
   // 43 deg -- and it must be WIDE, because the reachability fill samples at 16 m
   // and cannot see a pass narrower than two or three cells. Measured, only
-  // ~83 m passes (five sim cells) cleared the summit check; 11 m passes through
-  // a wall sampled every 16 m are not passes. This is the knob to reach for if
-  // that check ever fails again -- it is cheaper than amplitude, and cutting
+  // ~83 m passes (five sim cells) cleared the summit check. This is the knob to
+  // reach for if that check fails again -- cheaper than amplitude, and cutting
   // amplitude or widening cliffEdge did NOT reopen the summit.
   //
   // The window is narrow and centred on the input's real distribution, because
-  // the input is a 2-octave fbm that is bell-shaped about 0.5. A band out on its
-  // upper tail runs at mean 0.15, and a partially-gated cliff is not a small
-  // cliff -- scaling a step down rounds it off. A wide band spends most of the
-  // map at partial strength, which is the mush.
+  // the input is a 2-octave fbm bell-shaped about 0.5. A band out on its upper
+  // tail runs at mean 0.15, and a partially-gated cliff is not a small cliff --
+  // scaling a step down rounds it off. A wide band spends most of the map at
+  // partial strength, which is the mush.
   cliffBreakFreq: 0.005,
   cliffBreakLo: 0.4,
   cliffBreakHi: 0.52,
@@ -436,21 +428,17 @@ function softCeil(v, k) {
 // sits at its angle of repose, ~34-38 deg, and anything steeper has shed its
 // debris and is bare rock at 55 deg and up. The gap is a real thing.
 //
-// THREE OPERATORS, ALL FAILED, and the failures are the value here:
-//
-//   A CONSTANT DROP has no gradient, so it cannot steepen anything -- it moves
-//   the whole face down, and the face still has to rejoin untouched ground at
-//   its foot. Every ledge sat in its own pit.
-//
-//   AN UNSHARP MASK (height minus a blur of itself) fixed the pits, because it
-//   displaces nothing on a planar surface. That is also fatal: a smooth planar
-//   over-steep ramp is the WORST case in the system -- she is refused with no
-//   visual cue at all -- and it is exactly the case a Laplacian cannot touch.
-//
-//   BENCH cut the upper half of each elevation band onto the lower half. Best
-//   metrics of the three (refused ground 21.2% -> ~15%) and it looked like rice
-//   paddies. Softening, widening, jittering and masking each thinned the stripes
-//   without changing what they were.
+// THREE OPERATORS, ALL FAILED, and the failures are the value here. A CONSTANT
+// DROP has no gradient, so it cannot steepen anything -- it moves the whole face
+// down and the face still has to rejoin untouched ground at its foot, so every
+// ledge sat in its own pit. AN UNSHARP MASK (height minus a blur of itself)
+// fixed the pits because it displaces nothing on a planar surface, which is also
+// fatal: a smooth planar over-steep ramp is the WORST case in the system -- she
+// is refused with no visual cue at all -- and it is exactly the case a Laplacian
+// cannot touch. BENCH cut the upper half of each elevation band onto the lower
+// half; best metrics of the three (refused ground 21.2% -> ~15%) and it looked
+// like rice paddies, with softening, widening, jittering and masking each
+// thinning the stripes without changing what they were.
 //
 // THE STANDING LESSON, worth more than the code: CLIFFS ARE NOT PERIODIC IN
 // ANYTHING. Bench is keyed to absolute elevation, so its output is by definition
@@ -766,17 +754,13 @@ export class TerrainHeight {
       ridge = T.ridgeKnee + over / (1 + over * 2.2)
     }
 
-    // 3c. EXPOSURE -- how rocky this piece of ground is. See the block in TUNING
-    //     for the full argument; the short version is that this is the ONE rule
-    //     every rock layer below is gated on, it is a function of landform
-    //     POSITION rather than of elevation, and it is therefore the same rule
-    //     on a low knoll as on a summit.
-    //
-    //     `massifLump` and `lump` are 0..1 fbm, each near 0.5 at its own local
-    //     mean and high/low on local maxima/minima with no reference to absolute
-    //     height. Their zero-centred weighted sum is a FREE convexity estimate at
-    //     the two scales that matter -- no extra field evaluations, which is what
-    //     makes it affordable in the hottest function in the project.
+    // 3c. EXPOSURE -- how rocky this piece of ground is. The full argument is
+    //     in the TUNING block; the short version is that this is the ONE rule
+    //     every rock layer below is gated on, and it is a function of landform
+    //     POSITION rather than of elevation, so it is the same rule on a low
+    //     knoll as on a summit. `massifLump` and `lump` are 0..1 fbm, each near
+    //     0.5 at its own local mean, so their zero-centred weighted sum is a FREE
+    //     convexity estimate at the two scales that matter.
     //
     //     Positive => spur, rib, crest, outcrop: bare rock, jagged.
     //     Negative => hollow, saddle, gully, valley floor: filled, smooth.
@@ -883,11 +867,10 @@ export class TerrainHeight {
     //     gullies and rock ribs. Same operator, different scale, opposite verdict.
     //
     //     Centred on 0.5 so it cuts as often as it lifts -- moving mean elevation
-    //     would drag the snow line and every biome band with it.
-    //
-    //     Masked onto high ground as a walkability requirement: a crease IS a
-    //     slope discontinuity and _walkable() reads local gradient, so creasing a
-    //     meadow refuses steps across it.
+    //     would drag the snow line and every biome band with it. Masked onto high
+    //     ground as a walkability requirement: a crease IS a slope discontinuity
+    //     and _walkable() reads local gradient, so creasing a meadow refuses
+    //     steps across it.
     const creaseMask = lerp(T.creaseFloor, 1, smoothstep(T.creaseLo, T.creaseHi, rockAmp))
     if (creaseMask > 0.001) {
       const cr = 1 - Math.abs(this.nCrease.fbm(wx * T.creaseFreq, wz * T.creaseFreq, T.creaseOctaves))
@@ -912,10 +895,9 @@ export class TerrainHeight {
     //    that is a gorge, and gorges were cut for looking fake. `mid` is what
     //    keeps it continuous: both cells agree on the average exactly on the
     //    boundary, so nothing tears however tight cliffEdge gets or however the
-    //    gate varies, including at gate 0.
-    //
-    //    Zero-mean by construction (o1, o2 symmetric about 0) -- required, not a
-    //    bonus: a layer this large would otherwise drag the snow line with it.
+    //    gate varies, including at gate 0. Zero-mean by construction (o1, o2
+    //    symmetric about 0) -- required, not a bonus: a layer this large would
+    //    otherwise drag the snow line with it.
     //
     //    TWO gates, both load-bearing. `range` is the UNfloored mountain mask;
     //    gating on floored `mountain` put a shallow Worley crack through every

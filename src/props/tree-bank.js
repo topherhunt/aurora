@@ -28,19 +28,18 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // That reads at arm's length on the one tree you are standing under and nowhere
 // else; four species times four tiers is the trade.
 //
-// FOUR TIERS, FINEST FIRST -- tier 0 is the one you stand under:
+// THREE TIERS, FINEST FIRST -- tier 0 is the one you stand under:
 //
 //   0  LOD0   the full tree, resolveTree's own numbers, root crown included.
 //             480 triangles mean.
 //   1  LOD1   the same tree with cheap wood: a 3-sided trunk and one flat fin
 //             per limb, and FOLIAGE THAT IS BIT-IDENTICAL TO TIER 0's. 338
 //             triangles mean, a 28% cut, all of it out of sticks.
-//   2  cross  the impostor as THREE fixed planes. Six triangles.
-//   3  card   the same impostor as ONE spun plane, and that plane is ONE
-//             triangle: apex up for the pine, apex down for the three
-//             broadleaves, which is the shape each species already is. Only
-//             built when `billboard` is set; without it tier 2 is the last
-//             tier.
+//   2  card   the impostor as ONE spun plane, and that plane is ONE triangle:
+//             apex up for the pine, apex down for the three broadleaves, which
+//             is the shape each species already is. Only built when `billboard`
+//             is set; without it tier 1 is the last tier and the bank is a
+//             mesh-only ladder.
 //
 // THE TWO MESH TIERS ARE THE SAME TREE AND THAT IS LITERAL HERE, not a claim
 // about silhouettes. They are built from one seed through one rng stream, and
@@ -58,52 +57,46 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // like a tree there. Cheap and well-nested is not the same as convincing. The
 // bundle is still in tree.js and no tier asks for it.
 //
-// BOTH CARD TIERS ARE THE SAME PHOTOGRAPH, one baked texture layer per SPECIES,
-// so the second tier costs geometry and nothing else -- no second bake, no
-// duplicate layer, no extra texture memory.
+// ONE CARD TIER, AND THERE USED TO BE TWO. A three-plane CROSS held 22.5-100 m
+// and the billboard took everything past it, on the argument that a cross
+// carries real depth between its planes where a flat card carries none. The
+// measurement that retired it: three untrimmed quads is 3.0 rectangles of shaded
+// area against the billboard's ~0.52, and on the headset that mid band was HALF
+// the forest's fill on four percent of its instances, for eight of its draw
+// calls. What it was buying is worth less than it sounds -- stereo acuity of
+// half an arcminute over a 65 mm baseline resolves about 1.3 m of depth at 24 m
+// and 5.6 m at 50 m, so a crown 3 to 6 m deep reads flat over most of the range
+// the cross was covering anyway. It is 6 draws' worth of geometry in
+// buildImpostorCard still (`planes: 3, canopy: true`) if a mid rung is ever
+// wanted back; ferns and rocks use the same call.
 //
-// THE CROSS EARNS THE MIDDLE BAND AND THE BILLBOARD EARNS THE FAR ONE, and the
-// split is about parallax against density. A cross is rotation-invariant
-// because it carries three silhouettes and real depth between them; a billboard
-// is one flat picture with no depth at all, which in a headset means no
-// binocular disparity across its own surface -- it reads as a cutout at a fixed
-// distance. So the cross goes where a tree is still big enough for that to
-// matter, and the billboard takes the far field where it is not.
-//
-// The billboard is SIX times cheaper and that is why it cannot be the middle
-// band's answer OR the far band's loss. At a forest -- tens of thousands of
-// cards past the mid band -- the far tier IS the triangle budget, and 6 vs 1
-// triangles there is the difference between a forest that fits and one that
-// does not. In the mid band there are only a thousand or so trees, so the cross
-// costs a few thousand triangles and buys back the depth.
-//
-// WHAT THE FAR CARD GIVES UP FOR THAT SIXTH is two corners of its photograph,
-// and the argument for why a triangle is the right shape for a tree -- with the
-// measured fraction of each species' silhouette it keeps -- is the `tri` note in
-// impostor.js. `billboardTri` on each species record is where the up-or-down
-// choice is made; it is a fact about the species' outline, not a taste knob.
+// WHAT THE CARD GIVES UP FOR ITS SIXTH OF THE FILL is two corners of its
+// photograph, and the argument for why a triangle is the right shape for a tree
+// -- with the measured fraction of each species' silhouette it keeps, and the
+// SINK that keeps an apex-down card from standing on its point -- is the `tri`
+// note in impostor.js. `billboardTri` on each species record is where the
+// up-or-down choice is made; it is a fact about the species' outline, not a
+// taste knob.
 //
 // A ONE-PLANE CARD IS ONLY LEGAL IF SOMETHING TURNS IT, and material.js's
 // billboardVertex is that something -- it spins the card about its own trunk in
 // the VERTEX SHADER, so the turning costs no CPU, no second material and no
-// per-frame matrix write, and the tier stays one draw call. It also looks
-// better than a fixed cross seen from far away: it always presents the
-// silhouette the photograph was actually taken from.
+// per-frame matrix write, and the tier stays one draw call. It also looks better
+// than a fixed cross seen from far away: it always presents the silhouette the
+// photograph was actually taken from.
 //
-// HOW THE SHADER TELLS THE TWO CARD TIERS APART, given they share a layer: by
-// the NORMAL, not by the vertex count -- billboardVertex never sees how many
-// corners a geometry has. `upNormal` rides with `billboard`, so a card meant to
-// be spun has an EXACTLY vertical normal, and it masks on `layer match AND
-// normal.y > CARD_UP_MARK`. The cross wears canopy normals, which lean mostly
-// up but top out at 0.876, comfortably under the 0.99 marker; buildImpostorCard
-// asserts both sides of that rather than leaving it to be discovered when a
-// forest starts rotating. It is why the cross tier needed no new vertex
-// attribute and no duplicate impostor layer.
+// HOW THE SHADER KNOWS TO SPIN IT: by the NORMAL, not by the vertex count --
+// billboardVertex never sees how many corners a geometry has. `upNormal` rides
+// with `billboard`, so a card meant to be spun has an EXACTLY vertical normal,
+// and the shader masks on `layer match AND normal.y > CARD_UP_MARK`. Every other
+// normal buildImpostorCard authors stays under that 0.99 marker by construction
+// and it asserts both sides of it, which is what let the cross share this tier's
+// layer and bake for as long as it existed.
 //
 // `crownWidth` IS READ OFF TIER 0 AND USED FOR EVERY TIER, and it is exact
 // rather than approximate: tier 1 measures the same crown to every digit, and
-// both card tiers are framed on it. The impostor is a photograph OF that tree,
-// so no tier can disagree with any other about how wide the crown is.
+// the card is framed on it. The impostor is a photograph OF that tree, so no
+// tier can disagree with any other about how wide the crown is.
 // ---------------------------------------------------------------------------
 
 /**
@@ -153,11 +146,12 @@ export function treeVariantId(v) {
  * carries -- one prop material serves ferns, rocks and trees, so a dedicated
  * `isBillboard` attribute would be a change to every generator in the project.
  *
- * The layer list is NOT sufficient on its own, and deliberately so: both card
- * tiers wear the same impostor layer, and a three-plane cross spun about its
- * own axis is visibly wrong. The shader takes a second condition -- the vertex
- * normal, vertical only on the tier that wants spinning -- so the two tiers can
- * share a layer and a bake. See material.js's billboardVertex.
+ * The layer list is NOT sufficient on its own, and deliberately so: a fixed card
+ * spun about its own axis is visibly wrong, and this array is also where the
+ * bake rig's own subjects live. The shader takes a second condition -- the
+ * vertex normal, vertical only on a card that wants spinning -- so a fixed card
+ * and a spun one can share a layer and a bake. See material.js's
+ * billboardVertex.
  */
 export function treeImpostorLayers() {
   return [...new Set(Object.keys(TREE_SPECIES).map((s) => TREE_SPECIES[s].impostorLayer))]
@@ -174,6 +168,27 @@ function paramsFor(v, seed) {
     height: v.height,
     seed,
   }
+}
+
+// How much fatter the bark gets than the mean. `trunkDiameter` on a built tree
+// is the MEAN diameter at the foot and `trunkLobe` takes the skin to roughly
+// this much of it, so a card framed against the mean would leave the fat side of
+// the trunk hanging outside its own silhouette.
+const TRUNK_LOBE = 1.11
+
+/**
+ * The width a species' card has to keep where the tree stands, which is its
+ * trunk for an apex-down triangle and nothing at all for anything else -- an
+ * apex-up card is already full width on the ground and a quad always is.
+ *
+ * Every caller MUST agree on this to the last texel: one builds the geometry and
+ * one takes the photograph, and impostorCardExtents turns it into the same sink
+ * for both. Disagree and the picture slides up or down the card. Exported for
+ * gen-tree.html, which frames its own card off the tree on its stage and would
+ * otherwise be a second copy of this line.
+ */
+export function cardFoot(u, billboardTri) {
+  return billboardTri === 'down' ? u.trunkDiameter * TRUNK_LOBE : 0
 }
 
 function geometryBytes(geo) {
@@ -194,17 +209,16 @@ function geometryBytes(geo) {
  * disposing one that is still in the scene deletes the buffers out from under
  * a live draw.
  *
- * The CARD tiers arrive as quads with no pixels behind them. Their layers are
- * not photographed here because the bake needs a renderer and a loaded atlas,
- * and neither exists at construction -- see bakeTreeImpostors. Until that runs
- * the cards sample an empty layer and alphaTest discards them, so distant trees
- * fade in rather than flashing.
+ * The CARD tier arrives with no pixels behind it. Its layers are not
+ * photographed here because the bake needs a renderer and a loaded atlas, and
+ * neither exists at construction -- see bakeTreeImpostors. Until that runs the
+ * cards sample an empty layer and alphaTest discards them, so distant trees fade
+ * in rather than flashing.
  */
 export function buildTreeBank({ seed = 1, billboard = true } = {}) {
   const variants = treeVariants()
   const lod0 = []
   const lod1 = []
-  const crosses = []
   const cards = []
 
   variants.forEach((v, i) => {
@@ -219,19 +233,10 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
     // the same size, it is the same cards in the same seats.
     lod1.push(buildTree(treeLod(p, 1)))
 
-    // The card is framed on tier 0's measured crown, which is the tree the
-    // impostor is a photograph OF and what bakeTreeImpostors points its camera
-    // at.
+    // The card is framed on tier 0's measured crown AND on its measured trunk,
+    // which is the tree the impostor is a photograph OF and what
+    // bakeTreeImpostors points its camera at.
     const u = g0.userData.tree
-    const ext = impostorCardExtents({ width: u.crownWidth, height: u.height })
-    // The CROSS tier: three fixed planes wearing CANOPY normals, which fan out
-    // and up from the trunk axis so that a crown reads as a blob rather than as
-    // three slabs meeting at a line. `canopy` is what makes a crossed tree look
-    // like a tree instead of like three quads -- the long version is the normal
-    // note in impostor.js. It also keeps this quad below CARD_UP_MARK, which is
-    // what tells material.js's billboardVertex to leave it ALONE even though it
-    // wears the same impostor layer the billboard does.
-    crosses.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 3, { canopy: true }))
 
     // `upNormal` rides with `billboard` deliberately: a quad that turns toward
     // the eye must NOT also turn its normal, or N.L becomes a function of where
@@ -247,6 +252,12 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
     // species picks which way up. It is asked for by name rather than defaulted
     // on, because the same function builds the fern billboard, which is a
     // ROSETTE and has no corner it can spare.
+    //
+    // `sink` is the other half of `tri`, and comes out of the same call that
+    // sized the card: an apex-down triangle hangs below the ground so that it
+    // still has the trunk's width where the trunk is. bakeTreeImpostors asks
+    // `cardFoot` the same question so the photograph is framed on the same
+    // strip.
     if (billboard) {
       // A missing `billboardTri` would quietly fall back to a quad and double
       // the far band's bill, which is the one number nobody would notice going
@@ -254,16 +265,18 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
       if (!v.billboardTri) {
         throw new Error(`buildTreeBank: ${v.species} has no billboardTri`)
       }
+      const ext = impostorCardExtents({
+        width: u.crownWidth, height: u.height, foot: cardFoot(u, v.billboardTri),
+      })
       cards.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1,
-        { upNormal: true, tri: v.billboardTri }))
+        { upNormal: true, tri: v.billboardTri, sink: ext.sink }))
     }
   })
 
-  // Four tiers when the far one is a billboard, three when it is not -- without
-  // a vertex shader to turn it, a one-plane card is not a tier anyone can ship,
-  // so the cross IS the last tier. Same photograph either way: both card tiers
-  // hang on the species' one impostor layer and neither costs a second bake.
-  const tiers = [{ geometries: lod0 }, { geometries: lod1 }, { geometries: crosses }]
+  // Three tiers when the far one is a billboard, two when it is not -- without a
+  // vertex shader to turn it, a one-plane card is not a tier anyone can ship, so
+  // LOD1 IS the last tier and the ladder is mesh all the way out.
+  const tiers = [{ geometries: lod0 }, { geometries: lod1 }]
   if (billboard) tiers.push({ geometries: cards })
   let bytes = 0
   let triangles = 0
@@ -302,6 +315,9 @@ export function bakeTreeImpostors(renderer, texArray, { seed = 1 } = {}) {
     const ext = bakeImpostor(renderer, geo, texArray, v.impostorLayer, {
       width: u.crownWidth,
       height: u.height,
+      // The same strip of empty ground the card's apex hangs into. Framed here
+      // and not just in the geometry, or the picture sits `sink` too high on it.
+      foot: cardFoot(u, v.billboardTri),
     })
     geo.dispose()
     done.push({ species, layer: v.impostorLayer, ...ext })

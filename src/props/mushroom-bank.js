@@ -42,8 +42,8 @@ import { LAYER } from '../textures.js'
 // tier after the coarse mesh is the spun billboard, and the billboard runs until
 // the scatter's rim dissolve takes it.
 //
-// ONE CARD PER SPECIES, which is now also one card per variant -- see
-// MUSHROOM_VARIANTS. The long version is on LAYER.IMPOSTOR_MUSHROOM_AGARIC in
+// ONE CARD PER SPECIES, which is also one card per variant -- see
+// mushroomVariants. The long version is on LAYER.IMPOSTOR_MUSHROOM_AGARIC in
 // textures.js; the short version is that a card gives up shape and keeps hue,
 // and hue is the one thing that still separates a scarlet cap from an ink cap
 // at 8 m.
@@ -88,11 +88,6 @@ export const MUSHROOM_SPECIES = {
   },
   chanterelle: {
     impostorLayer: LAYER.IMPOSTOR_MUSHROOM_CHANTERELLE,
-    // The lobe count is rolled per variant rather than fixed, because on the one
-    // species whose rim undulation is 0.30 of its radius the lobe count IS the
-    // silhouette -- three chanterelles side by side with five lobes each read as
-    // three castings of one mould in a way three fly agarics never do.
-    lobesVary: [3, 4, 5],
     params: {
       // capRise NEGATIVE. This is the case the profile function was written for:
       // the same formula that domes a cap dishes it when the sign flips, so a
@@ -123,8 +118,12 @@ export const MUSHROOM_SPECIES = {
       // The one that is nearly all stem: capRadius 0.21 against the agaric's
       // 0.46, on a stalk that is four fifths of the height. A cone on a wire is
       // a silhouette no amount of dragging turns any of the other four into.
+      // `wavy` 0.06 on 8 lobes: an ink cap's rim splits and curls rather than
+      // undulating, and a cap 21 cm across at full scale has no room for a wave
+      // wide enough to read as one -- past about 0.08 the eight lobes stop being
+      // a rim and start being a flower.
       height: 0.12, capRadius: 0.21, capRise: 0.55, capCurve: 1.3, margin: -0.03,
-      wavy: 0.12, lobes: 8, umbo: 0, inroll: 0.12,
+      wavy: 0.06, lobes: 8, umbo: 0, inroll: 0.12,
       stemHeight: 0.82, stemRadius: 0.026, stemTaper: 0.2, bulb: 0.1,
       ring: 0, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 2, fleshCell: 3,
     },
@@ -134,42 +133,31 @@ export const MUSHROOM_SPECIES = {
 export const MUSHROOM_NAMES = Object.keys(MUSHROOM_SPECIES)
 
 // ---------------------------------------------------------------------------
-// ONE SHAPE PER SPECIES, AND ONE SIZE.
+// ONE VARIANT PER SPECIES, AND MUSHROOM_SPECIES IS ALL OF IT.
 //
-// These two tables are a cross product -- species x shape x size -- and what
-// decides how many rows they may hold is not the generator but the ARENA. The
-// bank ships on render/prop-arena.js, one InstancedMesh per (tier, variant), so
-// the layer costs `tiers x variants` draw calls: five species over three tiers
-// is fifteen, which is the forest's sixteen. The six shapes and three sizes this
-// file used to cross were ninety variants and would have been two hundred and
-// seventy draw calls for a prop that is 13 cm tall.
+// There is no shape axis and no size axis. A variant IS a species, built at the
+// numbers written above and at no multiple of them, so the table a preset is
+// read from, the mesh the world draws and the mushroom the impostor is
+// photographed from are one set of numbers rather than three that have to agree.
+//
+// WHAT DECIDES THAT is not the generator but the ARENA. The bank ships on
+// render/prop-arena.js, one InstancedMesh per (tier, variant), so the layer
+// costs `tiers x variants` draw calls: five species over three tiers is fifteen,
+// which is the forest's sixteen. A six-shape by three-size cross product over
+// the same five species is ninety variants and two hundred and seventy draw
+// calls, for a prop that is 13 cm tall.
 //
 // WHAT PAYS FOR THE VARIETY INSTEAD is the instance matrix, which is free: the
 // scatter rolls a yaw, a lean and a scale of 0.82 to 1.18 on every mushroom it
 // places (SIZE_JITTER in render/mushrooms.js), and a clump is 1 to 5 members
 // each rolled separately. What that cannot buy is a change of PROPORTION -- a
 // shorter stalk under a wider cap -- because a matrix scales the whole prop at
-// once. That is the real loss here and it is the same one the forest and the
-// fern beds already take: trees.js ships exactly one variant per species too.
+// once. That is the real loss, and it is the one the forest and the fern beds
+// already take: trees.js ships exactly one variant per species too.
 //
-// The row that survives is the all-ones one, the species exactly as
-// MUSHROOM_SPECIES declares it, which is also the row the impostor card is
-// photographed from -- so the mesh and the card are now the same mushroom by
-// construction rather than by agreement.
-//
-// The bench still crosses all fifty-four cells (gen-mushroom.html): it is where
-// the question "which cell is worth baking" is asked, and the answer being one
-// cell does not make the question go away.
-export const MUSHROOM_VARIANTS = [
-  { stemHeight: 1, capRadius: 1, capRise: 1, stemCurve: 0.3 },
-]
-
-// Height multipliers on the species' own default. One, for the reason above:
-// each extra row is five more species times three more tiers of InstancedMesh,
-// and plain size is exactly what the scatter's per-instance jitter already
-// covers. Regenerating at a second height would buy real shape variation --
-// measured at an 8% spread in proportion -- but not fifteen draw calls' worth.
-export const MUSHROOM_SIZES = [1.0]
+// The bench still crosses fifty-four cells (gen-mushroom.html) and should: it is
+// where the question "which proportions are worth baking" is asked, and the
+// answer being the middle cell does not make the question go away.
 
 // Columns around the cap, one entry per MESH tier, finest first. Everything else
 // about the two meshes is identical -- same species, same variant, same seed --
@@ -237,39 +225,27 @@ export const MUSHROOM_LOD_SPANS = [20, 40]
 // assumed to follow the others.
 export const MUSHROOM_BILLBOARD_TRI = 'down'
 
-/** Every species x shape x size combination -- five, today. Index into this is a variant id. */
+/** One variant per species -- five. Index into this is a variant id. */
 export function mushroomVariants() {
-  const out = []
-  for (const species of MUSHROOM_NAMES) {
+  return MUSHROOM_NAMES.map((species) => {
     const sp = MUSHROOM_SPECIES[species]
     const base = { ...MUSHROOM_DEFAULTS, ...sp.params }
-    MUSHROOM_VARIANTS.forEach((shape, shapeIndex) => {
-      MUSHROOM_SIZES.forEach((size, sizeIndex) => {
-        // Walked across the species' lobe counts rather than rolled from a
-        // seed, so a variant stays a pure function of its coordinates. With one
-        // shape and one size the chanterelle takes the first entry and the
-        // other two lobe counts go unbuilt; the walk stays because it is what
-        // makes that a consequence of the table rather than of a die.
-        const ordinal = shapeIndex * MUSHROOM_SIZES.length + sizeIndex
-        out.push({
-          species,
-          shapeIndex,
-          size,
-          impostorLayer: sp.impostorLayer,
-          height: base.height * size,
-          lobes: sp.lobesVary ? sp.lobesVary[ordinal % sp.lobesVary.length] : base.lobes,
-          // Multipliers resolved here rather than at build time, so a variant is
-          // a complete description of a mushroom and the bank, the bench and the
-          // gate cannot each apply them slightly differently.
-          stemHeight: base.stemHeight * shape.stemHeight,
-          capRadius: base.capRadius * shape.capRadius,
-          capRise: base.capRise * shape.capRise,
-          stemCurve: shape.stemCurve,
-        })
-      })
-    })
-  }
-  return out
+    // Flattened rather than left as a species name for mushroomParams to look
+    // up, because the scatter, the gate and the bench all read a variant record
+    // directly and a record that only half-describes its mushroom is the thing
+    // that lets the three of them disagree. `span` is measured onto it by
+    // buildMushroomBank; everything else is here.
+    return {
+      species,
+      impostorLayer: sp.impostorLayer,
+      height: base.height,
+      lobes: base.lobes,
+      stemHeight: base.stemHeight,
+      capRadius: base.capRadius,
+      capRise: base.capRise,
+      stemCurve: base.stemCurve,
+    }
+  })
 }
 
 /**
@@ -319,8 +295,7 @@ function geometryBytes(geo) {
 }
 
 /**
- * What one species' card has to be framed to: the size-1.0, shape-0 mushroom's
- * own extents.
+ * What one species' card has to be framed to: that species' own extents.
  *
  * Measured off a real build rather than derived from `capRadius`, because
  * `buildMushroom` rescales to hit `height` at the end -- so the world width of a
@@ -329,8 +304,8 @@ function geometryBytes(geo) {
  * measured instead of a second build of it.
  */
 function cardFrame(species, seed) {
-  const v = mushroomVariants().find((x) => x.species === species && x.shapeIndex === 0 && x.size === 1.0)
-  if (!v) throw new Error(`mushroom-bank: no size-1.0 shape-0 variant for ${species}`)
+  const v = mushroomVariants().find((x) => x.species === species)
+  if (!v) throw new Error(`mushroom-bank: no variant for ${species}`)
   const geo = buildMushroom(mushroomParams(v, seed))
   const u = geo.userData.mushroom
   return { geo, frame: { width: u.spread, height: u.height } }
@@ -343,10 +318,9 @@ function cardFrame(species, seed) {
  * is the geometry for tier `t` and variant `v`, and each entry of `variants` has
  * picked up a measured `span` -- max(height, spread) -- that mushroomVariants()
  * on its own cannot supply. Every tier is the same length, so a band index and a
- * variant id are independent lookups. What is SHARED five ways is the
- * photograph, not the geometry: the card tier still holds a triangle of its own
- * per variant, sized to that variant's measured height, because a card cut for
- * the middle size makes a size-0.8 instance grow 25% at the swap.
+ * variant id are independent lookups. The card tier holds a triangle of its own
+ * per variant, sized to that variant's measured height, so a mesh and the card
+ * that replaces it are the same size at the instant they swap.
  *
  * The arena TAKES the geometries -- render/prop-arena.js hands each one to an
  * InstancedMesh, which draws the very object it was given -- so the caller must
@@ -363,11 +337,10 @@ export function buildMushroomBank({ seed = 1 } = {}) {
   const meshes = MUSHROOM_MESH_RADIAL.map(() => [])
   const cards = []
 
-  // ONE PHOTOGRAPH PER SPECIES, and one QUAD PER VARIANT -- the same five, while
-  // a species has one variant, but they are two different economies and are kept
-  // apart. The photograph is an atlas layer, which is the budget capped at five;
-  // the quad is four triangles and is nearly free, so it is cut to each
-  // variant's own height rather than made to stand in for a size it is not.
+  // ONE PHOTOGRAPH AND ONE QUAD PER SPECIES. They are still built apart because
+  // they are different economies -- the photograph is an atlas layer, which is
+  // the budget capped at five, and the quad is four triangles -- but with one
+  // variant per species there is one of each and they describe one mushroom.
   //
   // Framed on the shape-0, size-1.0 build -- the only build there is, and the
   // same subject bakeMushroomImpostors photographs. The two MUST
@@ -385,10 +358,9 @@ export function buildMushroomBank({ seed = 1 } = {}) {
   }
 
   variants.forEach((v, i) => {
-    // One seed per VARIANT, not per species, so that a second shape or size row
-    // rolls its own rim rather than being the first one rescaled.
-    // Both mesh tiers off the SAME seed, so the coarse one is the fine one with
-    // fewer columns rather than a second roll of the rim.
+    // A seed of its own per species, so five mushrooms built from five presets
+    // do not all roll the same rim. Both mesh tiers off the SAME seed, so the
+    // coarse one is the fine one with fewer columns rather than a second roll.
     const mesh = buildMushroom(mushroomParams(v, seed + i * 101, 0))
     meshes[0].push(mesh)
     for (let t = 1; t < MUSHROOM_MESH_RADIAL.length; t++) {
@@ -409,10 +381,11 @@ export function buildMushroomBank({ seed = 1 } = {}) {
     // variant's own aspect would stretch a shared photograph across it, and a
     // stretched cap is a worse artefact than a slightly wrong outline.
     //
-    // It is 1.0 on every variant today, because there is one size. It stays
-    // because the failure it prevents is silent: a size-0.8 instance wearing a
-    // size-1.0 card grows 25% at the instant it crosses the band, and update()
-    // swaps geometry ids with nothing to cross-dissolve it.
+    // It is 1.0 on every variant, because `buildMushroom` rescales to hit
+    // `height` exactly and both builds asked for the same one. It stays because
+    // the failure it prevents is silent: a mesh built shorter than the card cut
+    // for it grows at the instant it crosses the band, and update() swaps
+    // geometry ids with nothing to cross-dissolve it.
     const k = mesh.userData.mushroom.height / s.frameHeight
 
     // The billboard: one triangle with a vertical normal, spun toward the eye by
@@ -482,10 +455,8 @@ export function mushroomBankTriangles({ seed = 1 } = {}) {
   const variants = mushroomVariants()
   const mesh = MUSHROOM_MESH_RADIAL.map((_, t) =>
     variants.reduce((n, v, i) => n + mushroomTriangles(mushroomParams(v, seed + i * 101, t)), 0))
-  // The card tier is priced per VARIANT, not per species: the photograph is
-  // shared five ways but the triangle is built at each variant's own size. Those
-  // are the same count today; see buildMushroomBank on why they are still two
-  // numbers.
+  // The card tier is priced per VARIANT, which is per species: one triangle
+  // each, built at that species' own measured size.
   return {
     // Per MESH TIER, finest first, because the two are separate bands in the
     // arena and a caller pricing "the mesh" has to say which one it means.

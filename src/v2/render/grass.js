@@ -365,9 +365,14 @@ const HEIGHT = [0.5, 1.5]
 //
 // THE SHAPE OF THE SCATTER IS THE OPPOSITE OF THE CARD BED'S. Cards are cheap
 // per instance and dear per pixel, so they spread thin and wide. Blades are the
-// reverse: 24 clumps a square metre is a mat you cannot see the ground through,
-// affordable only because it holds for the full radius and then falls off hard.
-// Read all four together -- moving one alone is how the bed gets expensive.
+// reverse: a clump is ten opaque triangles wherever it stands, so the density is
+// what the headset feels. It holds flat for the full radius and then falls off
+// hard. Read all four together -- moving one alone is how the bed gets expensive.
+//
+// THE DENSITY IS A FRAME-TIME BUDGET AND NOT A LOOK. The bed ran at 24/m2 while
+// it was being tuned for coverage, which on the headset cost 10 fps of an 85 and
+// ~100k triangles both eyes at this reach. 3/m2 is what the frame has room for,
+// and it reads as tufted ground rather than a mat.
 //
 // THE FULL RADIUS IS SET BY A PROMISE, NOT BY TASTE: nothing appears or
 // disappears within 4 m of the player, because grass changing state underfoot is
@@ -379,11 +384,11 @@ const HEIGHT = [0.5, 1.5]
 // 4.31 = R * 0.925 - 2 wants R = 6.8. Measured on the shipped bed with a walk,
 // the nearest state change is at 4.12 m of ground.
 //
-// Not a cheap promise -- it puts most of the bed's triangles on screen, 6,200
-// clumps of the 15,000 placed -- and the two ways to cheapen it are a smaller
+// Not a cheap promise -- it puts most of the bed's triangles on screen, two
+// clumps in five of those placed -- and the two ways to cheapen it are a smaller
 // radius or a smaller RIM_HYST, which is 2 m for scatters whose gone-distances
 // run to hundreds of metres and is over half of a near clump's here.
-const BLADE_DENSITY = 24
+const BLADE_DENSITY = 3
 const BLADE_FULL_RADIUS = 6.5
 const BLADE_DRAW_RADIUS = 30
 

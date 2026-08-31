@@ -544,7 +544,7 @@ export const BUSH_OVERRIDES = {
  * tier is a re-run of the generator with different numbers, the way the fern
  * bank's three tiers are 6, 4 and 2 segments per frond.
  *
- * THREE NUMBERS MOVE AND NOTHING ELSE DOES. The tier covers 8-22.5 m (LOD_BANDS in
+ * THREE NUMBERS MOVE AND NOTHING ELSE DOES. The tier covers 8-24 m (LOD_BANDS in
  * v2/render/trees.js), close enough that the tree is still a tree, so the only
  * cuts it can afford come out of the parts you are not looking at -- the wood:
  *
@@ -564,7 +564,7 @@ export const BUSH_OVERRIDES = {
  * THE FOLIAGE IS NOT TOUCHED AND THAT IS THE DESIGN. A card is already one
  * triangle at its true world size, so there is no cut left to make at this
  * range: fewer sprays thins the tree and bigger ones put a two-foot needle on a
- * spruce. That is also why the tier stops at 22.5 m and a photograph takes over.
+ * spruce. That is also why the tier stops at 24 m and a photograph takes over.
  *
  * IT NESTS EXACTLY, which is what makes the swap at 8 m invisible. Every count
  * is inherited, so buildTree walks the identical rng stream and the sprays are
@@ -577,12 +577,12 @@ export const BUSH_OVERRIDES = {
 export function treeLod(options, tier) {
   if (tier === 0) return { ...options }
   // Fail loudly rather than silently handing back LOD1 for a tier that does not
-  // exist yet: LOD2 is the impostor, and it is not a mesh.
+  // exist yet: the last tier is the impostor, and it is not a mesh.
   if (tier !== 1) {
     throw new Error(
-      `treeLod: no MESH tier ${tier}; trees have LOD0 and LOD1. LOD2 is the ` +
-        'three-plane impostor, which is a baked card rather than a parameter set -- ' +
-        'see buildImpostorCard in props/impostor.js'
+      `treeLod: no MESH tier ${tier}; trees have LOD0 and LOD1. The tier past ` +
+        'them is one spun triangle carrying a baked photograph, not a parameter ' +
+        'set -- see buildImpostorCard in props/impostor.js'
     )
   }
   const p = { ...TREE_DEFAULTS, ...options }

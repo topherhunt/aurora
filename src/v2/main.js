@@ -20,6 +20,7 @@ import { Trees } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
+import { createTerrainMaterial } from '../terrain/terrain-material.js'
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood } from './render/deadwood.js'
@@ -60,12 +61,11 @@ const QUEST_MODE = new URLSearchParams(location.search).has('quest')
 // The /v2 route (DESIGN.md §18): the imported world, walkable, with the
 // authoring tools on top of it.
 //
-// This file grew out of the retired v1 host, with the procedural half cut out
-// and the editing half grafted on. What it keeps is the day-night wiring, which
-// must STAY unchanged -- the ordering inside applySky() below is load-bearing
-// and the reasons are written there. What it drops is
-// everything downstream of Phase A: no props, no villages, no horizon maps, no
-// measure beam, no HUD panel in the headset.
+// This file grew out of the retired v1 host with the procedural half cut out and
+// the editing half grafted on. What it KEEPS is the day-night wiring, and the
+// ordering inside applySky() below must stay unchanged -- the reasons are
+// written there. What it DROPS is everything downstream of Phase A: no villages,
+// no horizon maps, no measure beam, no HUD panel in the headset.
 //
 // THREE THINGS ARE VISIBLY DIFFERENT FROM v1 AND ARE NOT BUGS:
 //
@@ -74,55 +74,45 @@ const QUEST_MODE = new URLSearchParams(location.search).has('quest')
 //   Phase A, which is v1's macro pass over v1's procedural field. Until v2 grows
 //   its own, the patch compiles its unready variant: full sun and open sky as
 //   constants, with the samplers, the trig and the two dead texture fetches left
-//   out of every material in the world rather than branched around at
-//   fragment rate. The mountains light correctly and cast nothing.
+//   out of every material rather than branched around at fragment rate. The
+//   mountains light correctly and cast nothing.
 //
 //   No Phase A water. water.setFromPhaseA() is never called, so water.levelAt()
-//   is null everywhere and the v1 lake mesh does not exist. All water on this
-//   route is AUTHORED -- lakes and rivers out of the document, built by
-//   WaterSurfaces onto the same shared water material, so they wave and reflect
-//   exactly like v1's does.
+//   is null everywhere and the v1 lake mesh does not exist. All water here is
+//   AUTHORED -- lakes and rivers out of the document, built by WaterSurfaces
+//   onto the same shared water material, so they wave and reflect exactly like
+//   v1's does.
 //
-//   The prop scatter is TREES, GRASS, FERNS, ROCKS AND MUSHROOMS. The first
-//   four are TILED, camera-following scatters that THIN WITH DISTANCE -- full
-//   density inside 80 m for trees, 8 m for grass and 35 m for ferns, then
-//   halving every time the distance doubles, out to 1.5 km, 70 m and 90 m
-//   respectively. Those three are pure functions of position, so they cover the
-//   whole map and the same plants come back when you walk away and return, and
-//   the thinning is what makes a 1.5 km forest cost ~41k instances instead of
-//   the 350k a uniform disc would need, a 3/m^2 grass bed 11k instead of 46k,
-//   and a 0.5/m^2 fern bed ~9k instead of the 13k a 90 m disc would need. Grass
-//   thins hardest of the three, and earliest, because it is the only one whose
-//   bed is made of STRIPS -- see THE TWO STRATEGIES in render/grass.js. Each
-//   instance also carries the distance at which it stops existing, and the prop
-//   shader dissolves it over the last 15% of that, so the rim and the thinning
-//   bands fade rather than pop. The plants' far tiers are camera-facing
-//   billboards spun in the vertex shader; the rocks' is real geometry, because
-//   a boulder photographed from the side has nothing to lean into. See the
-//   headers of render/trees.js, render/grass.js, render/ferns.js and
-//   render/rocks.js.
+//   The prop scatter is TREES, GRASS, FERNS, ROCKS, MUSHROOMS, DEADWOOD and
+//   LITTER. Each is a TILED, camera-following scatter that THINS WITH DISTANCE:
+//   full density inside its own radius, then halving every time the distance
+//   doubles. They are pure functions of position, so they cover the whole map
+//   and the same plants come back when you walk away and return, and the
+//   thinning is what buys a 1.5 km forest for ~41k instances instead of the 350k
+//   a uniform disc would need. Every instance carries the distance at which it
+//   stops existing and render/rim.js stamps a quarter-second dither as it
+//   crosses, so rims and thinning bands dissolve rather than pop. The plants'
+//   far tiers are camera-facing billboards spun in the vertex shader. Each bed's
+//   own radii, densities and ladder live in its own header and are deliberately
+//   NOT restated here -- render/trees.js, grass.js, ferns.js, rocks.js.
 //
-//   ROCKS RUN THREE OF THAT SAME SCATTER AT ONCE, because a pebble is 11 cm and
-//   a summit fang is 7.5 m and no one density-and-radius pair can carry both:
-//   an underfoot bed to 55 m, a boulder bed to 460 m and a giants bed to 1.25
-//   km. What stands where is a function of the GROUND -- each site is classified
-//   river / forest / cliff / peak, and that decides both which of the sixteen
-//   variants may stand there and how many. Snow and moss then arrive from two
-//   world lines running in opposite directions, so a rock on a summit is white,
-//   the same rock in a damp wood is green, and neither costs a byte per
-//   instance. See props/rock-bank.js for the sixteen and material.js for the
-//   two lines.
+//   ROCKS RUN SIX OF THAT SAME SCATTER AT ONCE, because a pebble is 11 cm and a
+//   summit fang is 7 m and no one density-and-radius pair carries both. What
+//   stands where is a function of the GROUND: each site is classified river /
+//   forest / cliff / peak, and that decides both which variants may stand there
+//   and how many. Snow and moss then arrive from two world lines running in
+//   opposite directions, so a rock on a summit is white and the same rock in a
+//   damp wood is green, neither costing a byte per instance. See DESIGN.md §25,
+//   props/rock-bank.js for the variants and material.js for the two lines.
 //
 //   MUSHROOMS ARE THE ONE LAYER THAT IS NOT A SCATTER OVER OPEN GROUND. A clump
 //   grows at the foot of something, so where it goes is read back out of the
-//   trees and the rocks that are ALREADY standing rather than rolled from
-//   position alone. That is the whole reason this file builds, re-places and
-//   steps them LAST everywhere -- see the note at their construction. They are
-//   the cheapest layer in the world by a wide margin, a few thousand triangles
-//   against the forest's 37k. See render/mushrooms.js.
+//   trees and rocks ALREADY standing rather than rolled from position alone.
+//   That is why this file builds, re-places and steps them LAST everywhere --
+//   see the note at their construction. They are the cheapest layer in the world
+//   by a wide margin. See render/mushrooms.js.
 //
-// BOOT IS ASYNCHRONOUS AND ORDERED, and the order is forced by a real
-// dependency, not by taste:
+// BOOT IS ASYNCHRONOUS AND ORDERED, forced by a real dependency:
 //
 //   heightmap -> V2Height (with a scratch empty document, because the
 //   constructor requires one) -> bands, which are measured off the image ->
@@ -192,6 +182,37 @@ window.addEventListener('unhandledrejection', (e) => {
 let renderer, scene, camera, rig, leftGrip, rightGrip
 let sceneEl = null, rigEl = null, leftHandEl = null, rightHandEl = null
 
+// FIXED FOVEATED RENDERING, a cycle starting where the stack already had it.
+//
+// BOTH of the stacks under this file ship it at MAXIMUM and neither says so.
+// three r180's WebXRManager opens with `let foveation = 1.0` under the comment
+// "Set default foveation to maximum", and A-Frame 1.8's renderer schema carries
+// `foveationLevel: {default: 1}`, which it pushes through `xr.setFoveation` in
+// the component's update AND again on session start. So a scene that never
+// mentions foveation gets all of it. three's own doc line for the parameter:
+// "1 means maximum foveation (the edges render at lower resolution)".
+//
+// WHAT IT DOES is render everything outside a central disc at a fraction of
+// full resolution and let the compositor upscale it, per eye, with each eye's
+// high-resolution disc centred on ITS OWN lens -- so the two eyes' cheap regions
+// are mirrored rather than matched. That is a poor trade for this world and an
+// actively bad one for the blade bed: a grass blade is about a pixel wide, so
+// in a quarter-rate tile it either lands on a sample or misses one, and the
+// answer changes with sub-pixel head motion. The blade's edge column flips
+// between the blade and whatever is behind it every frame, it flips in ONE EYE
+// before the other because the maps are mirrored, and the Quest browser moves
+// the level under GPU load, which is why more grass makes it worse. Bilinear
+// upscaling of the panel's white-on-navy text is the bloom that comes with it.
+//
+// STARTS AT 1, which is what the stack was silently doing before any of this
+// existed, so the world still boots at the framerate it has been measured at and
+// the first click is the A/B rather than the regression. 0 is no foveation;
+// three maps 1 to the driver's most aggressive setting. Turning it off costs
+// real fps and only a headset can price that, so the cycle asks instead of
+// deciding.
+const FOVEATION_CYCLE = [1, 0, 0.25, 0.5]
+let foveationLevel = FOVEATION_CYCLE[0]
+
 // Everything from here to the end of the file is wrapped in an async IIFE
 // (rather than using a top-level `await`) because Vite's default esbuild
 // build target predates ES2022 top-level await -- and every line below this
@@ -226,7 +247,7 @@ if (QUEST_MODE) {
   // near/far fix below should make it unnecessary. It is here so the two can be
   // A/B'd in the headset without a code change, because depth precision is not
   // something a desktop can reproduce.
-  const questRenderer = ['toneMapping: no', 'antialias: true']
+  const questRenderer = ['toneMapping: no', 'antialias: true', `foveationLevel: ${foveationLevel}`]
   if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
   sceneEl.setAttribute('renderer', questRenderer.join('; '))
   // No movement-controls/look-controls/blink-controls: locomotion in quest
@@ -329,13 +350,17 @@ if (QUEST_MODE) {
   rig = rigEl.object3D
   leftGrip = leftHandEl.object3D
   rightGrip = rightHandEl.object3D
+  // The session is what carries foveation, so anything set before the headset
+  // goes on lands on nothing, and A-Frame overwrites it from its own attribute
+  // on the way in besides. See applyFoveation.
+  sceneEl.addEventListener('enter-vr', () => applyFoveation())
 } else {
   renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
   renderer.setPixelRatio(1) // never above 1 in XR; the headset controls its own resolution
   renderer.setSize(innerWidth, innerHeight)
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.xr.enabled = true
-  renderer.xr.setFoveation(1.0)
+  renderer.xr.setFoveation(foveationLevel)
   document.body.appendChild(renderer.domElement)
   document.body.appendChild(VRButton.createButton(renderer))
 
@@ -510,13 +535,26 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'grassDensity', text: 'grass', action: () => cycleGrassDensity(), value: () => `${grass ? grass.density : '?'}/m2 >` },
   { key: 'grassRadius', text: 'grass reach', action: () => cycleGrassRadius(), value: () => `${grass ? grass.radius : '?'} m >` },
   { key: 'grassFalloff', text: 'grass falloff', action: () => cycleGrassFalloff(), value: () => `${grass ? grass.falloff : '?'}^ >` },
+  { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
+  { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
+  { key: 'treeMesh', text: 'tree mesh', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
+  // The two ABLATIONS on the tree layer, both starting where the world ships so
+  // that "off" is the measurement. `tree tiers` takes the mesh ladder away and
+  // leaves the card ring, which is what makes the reach and falloff rows above
+  // readable on their own; `tree leaf cutout` takes the alpha reject away and
+  // with it the layer's transparency. See Trees.setCardsOnly and setCutout for
+  // what each number does and does not prove.
+  { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
+  { key: 'treeCutout', text: 'tree leaf cutout', on: 'masked', off: 'opaque' },
   { key: 'instCull', text: 'per-instance cull' },
+  { key: 'foveation', text: 'foveation', action: () => cycleFoveation(), value: () => foveationRowLabel() },
   { key: 'wind', text: 'wind' },
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
   { key: 'dayNight', text: 'day/night' },
   { key: 'lighting', text: 'terrain & prop lighting' },
-  { key: 'terrainShader', text: 'landscape shader', on: 'full', off: 'plain' },
-  { key: 'stats', text: 'stats readout' },
+  // A CYCLE and not a switch, because there are three rungs now and the middle
+  // one is the answer: see the block above TERRAIN_SHADERS.
+  { key: 'terrainShader', text: 'landscape shader', action: () => cycleTerrainShader(), value: () => `${TERRAIN_SHADERS[terrainShaderMode]} >` },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
@@ -552,11 +590,11 @@ function applyQuestToggle(key) {
     // The row read as permanently on because it WAS. Expect a one-off compile
     // hitch on the frame you press it, as with wind and reflections.
     case 'lighting': setLightingEnabled(enabled); break
-    case 'terrainShader': setTerrainShader(enabled); break
-    // Freezes the readout on its last numbers rather than blanking it, so the
-    // panel still says something while the upload is off. See updateQuestStats.
-    case 'stats': if (enabled) updateQuestStats(); break
     case 'trees': trees.batch.visible = enabled; break
+    // Both rows read "the world as it ships" as ON, so the toggle is what gets
+    // REMOVED -- the same polarity as `wind` and `landscape shader`.
+    case 'treeTiers': trees.setCardsOnly(!enabled); break
+    case 'treeCutout': trees.setCutout(enabled); break
     case 'rocks': rocks.beds.forEach((b) => { b.batch.visible = enabled }); break
     case 'grass': grass.batch.visible = enabled; break
     // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
@@ -1031,7 +1069,10 @@ function kilo(n) {
  *
  * WHY EACH LINE IS HERE rather than "everything renderer.info has": the panel
  * exists to tell one failure mode from another in a headset with no console.
- *   1. fps/ms is the symptom, and `tris`/`calls` are the two things that are
+ *   1. fps reads `now→5s avg` with `LOW` beside it, the worst single frame of
+ *      those five seconds. Three numbers and not one because "is this stable"
+ *      is a question about a window: the mean says where the frame sits and the
+ *      low says whether the mean is hiding a stutter inside it. `tris`/`calls`
  *      supposed to explain it. When fps collapses while both of those stay flat
  *      -- which is what the grass toggle actually does -- the cost is CPU-side,
  *      and that alone rules out "too many triangles" without a second test.
@@ -1045,8 +1086,11 @@ function kilo(n) {
  *   3. the terrain line separates RESIDENT chunks from DRAWN ones. The gap is
  *      the streaming margin, and `q` (queued) going non-zero and staying there
  *      is what a thrashing LOD looks like from inside.
- *   4. the per-layer line is instances/triangles per scatter, so "which layer"
- *      is answerable without toggling each one off in turn.
+ *   4. the per-layer lines are instances/triangles per scatter, so "which layer"
+ *      is answerable without toggling each one off in turn. The forest gets its
+ *      own, split by tier, because "which layer" stopped being a fine enough
+ *      question once one of its four bands turned out to cost more than the
+ *      other three together.
  *   5. the input line is a DIAGNOSTIC, not a stat. If locomotion is dead, the
  *      first question is whether the gamepads are even being seen, and there is
  *      no other way to ask it on-device.
@@ -1055,24 +1099,27 @@ function updateQuestStats() {
   if (!questStatsTexture || !ready) return
   // Nothing to read while the menu is closed, and this is not free: it lays out
   // six lines of canvas text and then sets needsUpdate, which re-uploads a
-  // 1024-wide texture EVERY FRAME. Measuring the frame is not worth spending
+  // 1280-wide texture EVERY FRAME. Measuring the frame is not worth spending
   // the frame on. It redraws on the frame the menu opens, so the numbers are
   // current the instant they are visible.
   if (!questPanelGroup.visible) return
-  // The `stats readout` row. Everything below is skipped, so the texture keeps
-  // whatever it last held and the panel goes on drawing it -- see the row's
-  // note in questToggles for what that isolates.
-  if (!questToggles.stats) return
   const info = renderer.info
   const st = terrain.stats
+  const ts = trees.stats
   const fps = avgMs > 0 ? 1000 / avgMs : 0
-  const fpsColor = fps >= 65 ? '#8fd48f' : fps >= 45 ? '#ffd27a' : '#ff6b6b'
+  const fps5 = avgMs5 > 0 ? 1000 / avgMs5 : 0
+  const low5 = worstMs5 > 0 ? 1000 / worstMs5 : 0
+  const rate = (v) => (v >= 65 ? '#8fd48f' : v >= 45 ? '#ffd27a' : '#ff6b6b')
+  const fpsColor = rate(fps)
   const inp = input.state
   const la = inp.left.axes
   const ra = inp.right.axes
   drawQuestStats([
     [
-      ['FPS ', '#7f95b4'], [fps.toFixed(0).padEnd(4), fpsColor],
+      ['FPS ', '#7f95b4'], [`${fps.toFixed(0)}→${fps5.toFixed(0)}`.padEnd(8), fpsColor],
+      // The worst single frame in the same five seconds. A mean that holds while
+      // this sits twenty below it is a stutter, not a stable frame.
+      ['LOW ', '#7f95b4'], [low5.toFixed(0).padEnd(5), rate(low5)],
       ['MS ', '#7f95b4'], [avgMs.toFixed(1).padEnd(6), fpsColor],
       ['TRIS ', '#7f95b4'], [kilo(info.render.triangles).padEnd(8), '#7fd7ff'],
       ['CALLS ', '#7f95b4'], [String(info.render.calls), '#ff9a7a'],
@@ -1091,14 +1138,29 @@ function updateQuestStats() {
       ['q ', '#7f95b4'], [String(st.queued).padEnd(4), st.queued > 0 ? '#ffd27a' : '#cfe3ff'],
       ['deg ', '#7f95b4'], [st.triDeg.toFixed(1), '#cfe3ff'],
     ],
+    // The forest gets a line to itself, broken out BY TIER, because the whole
+    // performance question about it is which band is spending the frame and a
+    // combined placed/tris pair cannot say. `lod1` is the expensive row -- 380
+    // triangles a tree over an area that grows as the square of the band it is
+    // printed beside -- and `card` is one triangle a tree and almost all of the
+    // instances.
     [
-      ['tree ', '#7f95b4'], [`${kilo(trees.stats.placed)}/${kilo(trees.stats.tris)}`.padEnd(12), '#8fd48f'],
-      ['grass ', '#7f95b4'], [`${kilo(grass.stats.placed)}/${kilo(grass.stats.tris)}`.padEnd(12), '#8fd48f'],
-      ['rock ', '#7f95b4'], [`${kilo(rocks.stats.placed)}/${kilo(rocks.stats.tris)}`, '#8fd48f'],
+      ['tree ', '#7f95b4'], [`${kilo(ts.placed)}/${kilo(ts.tris)}`.padEnd(11), '#8fd48f'],
+      ['lod0 ', '#7f95b4'], [String(ts.tiers[0]).padEnd(4), '#cfe3ff'],
+      ['lod1 ', '#7f95b4'], [`${ts.tiers[1]}@${ts.meshBand}m`.padEnd(11), ts.tiers[1] > 0 ? '#cfe3ff' : '#8fd48f'],
+      ['card ', '#7f95b4'], [kilo(ts.tiers[2]).padEnd(8), '#cfe3ff'],
+      ['tiles ', '#7f95b4'], [`${ts.nearTiles}/${kilo(ts.tiles)}`.padEnd(11), '#cfe3ff'],
+      // Present ONLY while an ablation is on. The row describes the shipped
+      // forest unless it says otherwise, and a flag that is always there stops
+      // being read -- so nothing is spent on the case that needs no warning.
+      ...(ts.cardsOnly ? [['CARDS ONLY ', '#ffd27a']] : []),
+      ...(ts.cutout ? [] : [['NO CUTOUT', '#ffd27a']]),
     ],
     [
-      ['fern ', '#7f95b4'], [`${kilo(ferns.stats.placed)}/${kilo(ferns.stats.tris)}`.padEnd(12), '#8fd48f'],
-      ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(7), '#8fd48f'],
+      ['grass ', '#7f95b4'], [`${kilo(grass.stats.placed)}/${kilo(grass.stats.tris)}`.padEnd(10), '#8fd48f'],
+      ['rock ', '#7f95b4'], [`${kilo(rocks.stats.placed)}/${kilo(rocks.stats.tris)}`.padEnd(10), '#8fd48f'],
+      ['fern ', '#7f95b4'], [`${kilo(ferns.stats.placed)}/${kilo(ferns.stats.tris)}`.padEnd(10), '#8fd48f'],
+      ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(6), '#8fd48f'],
       ['mode ', '#7f95b4'], [player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk', '#8fd48f'],
     ],
     [
@@ -1187,24 +1249,14 @@ let ready = false
 const questToggles = QUEST_MODE
   ? {
       terrain: true, dayNight: true, lighting: true,
-      // The ground ships on the full triplanar material, so this row measures
-      // what REMOVING it buys. See setTerrainShader.
-      terrainShader: true,
-      // On, because a panel with dead numbers on it is the wrong default. Off is
-      // the ISOLATION TEST for anything that only misbehaves while the panel is
-      // in view: with this off the panel still draws its button grid and its laser
-      // still hits them, but the 1280x240 canvas stops being re-uploaded every
-      // frame -- so an artefact that survives is the panel's DRAW and one that
-      // does not is the upload.
-      stats: true,
       trees: false, rocks: false, grass: false, ferns: false, litter: false,
       instCull: false, water: false, reflections: false, aurora: false,
-      // The one toggle that starts ON, because unlike every layer above it the
-      // wind is not a thing being added to an empty world -- it is how the world
-      // already ships, and the measurement being made here is what REMOVING it
-      // buys. Starting it off would mean the panel's default state disagreed
+      // The toggles that start ON, because unlike every layer above them these
+      // are not things being added to an empty world -- they are how the world
+      // already ships, and the measurement being made is what REMOVING them
+      // buys. Starting one off would mean the panel's default state disagreed
       // with the world outside quest mode.
-      wind: true,
+      wind: true, treeTiers: true, treeCutout: true,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
       // this panel exists to look at, which is what the world does to the frame
       // while you are moving continuously through it.
@@ -1479,7 +1531,7 @@ async function bootWorld() {
   const ts = trees.stats
   console.log(
     `[v2] trees ${ts.placed} placed over ${ts.tiles} tiles in ${ts.placeMs.toFixed(0)} ms ` +
-    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning to ${ts.radius} m, ` +
+    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius} m, ` +
     `pool ${ts.used}/${ts.pool}), ${ts.bankKB} KB bank`
   )
 
@@ -1784,6 +1836,8 @@ async function bootWorld() {
     // mushrooms anchors onto placed trees and rocks whether it is drawn or not.
     terrain.batch.visible = questToggles.terrain
     trees.batch.visible = questToggles.trees
+    trees.setCardsOnly(!questToggles.treeTiers)
+    trees.setCutout(questToggles.treeCutout)
     rocks.beds.forEach((b) => { b.batch.visible = questToggles.rocks })
     grass.batch.visible = questToggles.grass
     ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
@@ -2020,38 +2074,77 @@ function logSceneCensus() {
   if (rows.length > 24) console.log(`      ... and ${rows.length - 24} more`)
 }
 
-// Built on first use rather than at boot, so a session that never presses the
-// `landscape shader` row never compiles a second terrain program.
+// Each built on first use rather than at boot, so a session that never presses
+// the `landscape shader` row never compiles a second terrain program.
 let plainTerrainMaterial = null
+let lofiTerrainMaterial = null
 
-// THE SHADER A/B, and it is deliberately the ONLY thing that changes.
+// THREE RUNGS, and the row cycles between them in cost order.
 //
 // The question this row exists to answer: when the headset sits at 50-60 fps
 // instead of 90, triangles are rarely what an Adreno 650 is struggling with --
 // 7 Mpixel a frame at 72 Hz is 506 Mpix/s of fill against 7.3 M tri/s of setup,
 // two orders apart. So either the ground is fill bound in the FRAGMENT shader or
-// it is not, and nothing about the triangle count can tell you which.
+// it is not, and nothing about the triangle count can tell you which. It IS: the
+// measured answer on a Quest was ~20 fps between `full` and `plain`.
 //
-// "plain" swaps in a stock MeshLambertMaterial and swaps nothing else. Same
-// BatchedMesh, same slots, same selection, same draw calls, same vertex colours,
-// same fog, same Gouraud lighting -- so the delta is exactly terrain-material.js's
-// onBeforeCompile patch and its ~20 noise evaluations per fragment, and nothing
-// is confounding it.
+// `full` is what the desktop ships. `plain` is the CONTROL and swaps nothing
+// else -- same BatchedMesh, same slots, same selection, same draw calls, same
+// vertex colours, same fog, same Gouraud lighting -- so the delta is exactly
+// terrain-material.js's patch and nothing is confounding it.
 //
-// NOT MeshBasicMaterial, though "flat colour" is what it would give. Lambert's
-// fragment shader is vColor times an already-interpolated irradiance plus fog --
-// a handful of instructions -- so Basic would buy a rounding error and cost the
-// A/B its meaning, because the ground would also stop being lit and the two
-// pictures would differ in a second way.
-function setTerrainShader(on) {
+// `lofi` is the rung between them and the one meant to actually ship on a
+// headset: the same shader with the two photographic tile layers compiled out,
+// so the near field costs two array fetches instead of up to ten. See the LO-FI
+// block in terrain-material.js for what it keeps and what it drops.
+//
+// `plain` is NOT MeshBasicMaterial, though "flat colour" is what it would give.
+// Lambert's fragment shader is vColor times an already-interpolated irradiance
+// plus fog -- a handful of instructions -- so Basic would buy a rounding error
+// and cost the A/B its meaning, because the ground would also stop being lit and
+// the two pictures would differ in a second way.
+const TERRAIN_SHADERS = ['full', 'lofi', 'plain']
+let terrainShaderMode = 0
+
+function terrainShaderMaterial() {
+  const mode = TERRAIN_SHADERS[terrainShaderMode]
+  if (mode === 'full') return terrain.material
+  if (mode === 'lofi') {
+    if (!lofiTerrainMaterial) {
+      // The atlas goes in even though this variant will not sample it: `lofi`
+      // wins over it inside the factory, and passing it keeps this call the same
+      // shape as the one in TerrainV2 so the two cannot drift apart.
+      lofiTerrainMaterial = createTerrainMaterial({ atlas: propTextures, lofi: true })
+      // Patched like the full material and unlike `plain`. This rung is a
+      // QUALITY setting rather than a control, so it has to keep the night lift
+      // and the shadow lookup or pressing it would change the time of day. Its
+      // own cache key, because three keys its program cache on that string
+      // alone and the two variants compile different source.
+      lighting.patch(lofiTerrainMaterial, {
+        mode: 'fragment',
+        cacheKey: 'v2-terrain-shadow-lofi',
+        worldPosVarying: 'vWorldPos',
+      })
+      // No uniform sync needed: nothing in the world writes the terrain
+      // material's own uniforms after construction, so this one's defaults are
+      // the same numbers the full material is still holding. The only live
+      // uniforms on either are lighting.patch's, and patch() is what subscribes
+      // this material to them.
+    }
+    return lofiTerrainMaterial
+  }
   if (!plainTerrainMaterial) {
     plainTerrainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
-    // The full material is lighting.patch'd; this one is not, on purpose. The
-    // patch is the night lift and the shadow lookup, which is more of the same
-    // fragment cost, and a control that carries half the thing being removed is
-    // not a control.
+    // Deliberately NOT lighting.patch'd. The patch is the night lift and the
+    // shadow lookup, which is more of the same fragment cost, and a control that
+    // carries half the thing being removed is not a control.
   }
-  terrain.batch.material = on ? terrain.material : plainTerrainMaterial
+  return plainTerrainMaterial
+}
+
+function cycleTerrainShader() {
+  terrainShaderMode = (terrainShaderMode + 1) % TERRAIN_SHADERS.length
+  terrain.batch.material = terrainShaderMaterial()
 }
 
 /**
@@ -2324,12 +2417,12 @@ function cycleAurora() {
 // Both rebuild rather than reconfigure -- the pool, the tile candidate count and
 // the material's compiled ramp all depend on them -- so both cost a hitch on the
 // frame they are pressed. See buildGrass.
-// A BED PER CYCLE, because the two are an order of magnitude apart and a shared
-// list would jump the blade bed to a card bed's numbers on the first press: 6/m2
-// is a bald blade bed and 70 m at 24/m2 is a quarter of a million triangles.
+// A BED PER CYCLE, because the same number buys a different bill on each: a card
+// is two triangles out to 70 m, a blade clump is ten out to 30 m. A shared list
+// would step one of them off the end of its own useful range on the first press.
 const GRASS_DENSITY_CYCLE = {
   cards: [6, 3, 1.5, 0.75],
-  blades: [24, 12, 6, 3],
+  blades: [3, 1.5, 0.75, 0.375],
 }
 const GRASS_RADIUS_CYCLE = {
   cards: [70, 40, 25, 15],
@@ -2382,6 +2475,117 @@ function cycleGrassRadius() {
 
 function cycleGrassFalloff() {
   rebuildGrass({ falloff: stepCycle(GRASS_FALLOFF_CYCLE, grass ? grass.falloff : NaN) })
+}
+
+// --- the tree knobs, and WHY THERE ARE THREE OF THEM -------------------------
+//
+// The forest's per-frame bill has two halves that the shipped numbers move
+// together, and these rows exist to pull them apart on the headset:
+//
+//   REACH moves BOTH. Resident tiles go as the radius SQUARED -- 1500 m is
+//   ~11,300 of them, and `update` walks every one every frame whether or not
+//   anything about it has changed -- while INSTANCES go as the radius linearly,
+//   because of the graded thinning. Halving the reach quarters the tile walk and
+//   halves the billboards.
+//
+//   FALLOFF moves only the instances. The tile set is identical at every
+//   exponent; what changes is how many trees each far tile keeps. ^3 cuts the
+//   far field by roughly 94% and leaves the walk exactly where it was.
+//
+// So falloff pressed ALONE is the measurement: if the headset recovers at a
+// fixed 1500 m reach, the bill is instances, which is the GPU; if it barely
+// moves and only reach helps, the bill is the per-tile CPU walk.
+//
+// Both regrow the whole scatter and cost a hitch on the frame they are pressed,
+// but NEITHER rebuilds the bank, the impostor bake, the material or the arena --
+// so unlike the grass rows these keep the panel's cull and visibility flags,
+// because the meshes are the same objects afterwards. See Trees.setScatter.
+//
+//   MESH moves NEITHER, and it is the only row that trades quality for cost
+//   rather than lushness for cost. It moves where a tree stops being a MESH and
+//   becomes one flat spun card, which is the only remaining boundary in the
+//   ladder and the one place a Quest wearer can catch the forest being made of
+//   pictures -- stereo resolves about 1.3 m of depth at 24 m against a crown 3
+//   to 6 m deep. Outward costs ~380 triangles a tree over an area growing as the
+//   square; inward is nearly free and is how you find out whether 24 m was ever
+//   needed. `off` puts the band at LOD0's edge, which empties the arena's four
+//   LOD1 meshes -- and three.js skips an instanced draw of zero, so `off` is
+//   genuinely four fewer calls per eye.
+//
+// Only this row re-tiers in place; there is no regrow behind it. See
+// Trees.setMeshBand.
+const TREE_RADIUS_CYCLE = [1500, 1000, 750, 400]
+const TREE_FALLOFF_CYCLE = [1, 1.5, 2, 3]
+// Shipped, then out to the ceiling the meshes were sized for, then down to
+// LOD_BANDS[0], which is the tier's inner edge and therefore `off`.
+const TREE_MESH_CYCLE = [24, 32, 45, 8]
+
+const meshBandLabel = (b) => (b <= TREE_MESH_CYCLE[TREE_MESH_CYCLE.length - 1] ? 'off' : `${b} m`)
+
+function cycleTreeMesh() {
+  if (!trees) return
+  trees.setMeshBand(stepCycle(TREE_MESH_CYCLE, trees.lodBands[1]))
+  console.log(`[v2] tree mesh band: ${meshBandLabel(trees.lodBands[1])}`)
+}
+
+/**
+ * Push the current level at the XR layer. STRAIGHT AT `renderer.xr`, because the
+ * obvious A-Frame spelling is a trap: `renderer` is a registered SYSTEM, and
+ * AScene.setAttribute branches on that before it ever reaches the entity code
+ * that implements the three-argument form. The system branch takes `(attr,
+ * value)` and silently DROPS the third argument, so
+ * `setAttribute('renderer', 'foveationLevel', 0.5)` does not set foveation to
+ * 0.5 -- it overwrites the whole renderer attribute with the literal string
+ * "foveationLevel", taking toneMapping and antialias with it and resetting the
+ * level to the schema default of 1. It is not a weaker way to spell this; it is
+ * the opposite of it.
+ *
+ * The catch that made the attribute look necessary is real, and `enter-vr`
+ * handles it instead: A-Frame re-applies the attribute's level once the session
+ * resolves, so a value set before the headset goes on is reverted. `enter-vr` is
+ * emitted at the END of that sequence, so re-asserting there lands after it.
+ */
+function applyFoveation() {
+  renderer.xr.setFoveation(foveationLevel)
+}
+
+/** Step the foveation level, live. See FOVEATION_CYCLE for what it costs. */
+function cycleFoveation() {
+  foveationLevel = stepCycle(FOVEATION_CYCLE, foveationLevel)
+  applyFoveation()
+}
+
+/**
+ * WANT/GOT, and the second half is the point. three keeps whatever value it was
+ * handed whether or not there was a layer to put it on, and `getFoveation`
+ * returns undefined until there is one -- so a row printing only the request
+ * cannot tell "the button did nothing" from "the driver refused the number".
+ * Reading it back off renderer.xr makes the row answer that on its own.
+ */
+function foveationRowLabel() {
+  const show = (v) => (v === 0 ? 'off' : v)
+  const got = renderer.xr.getFoveation()
+  return `${show(foveationLevel)}/${got === undefined ? '-' : show(got)} >`
+}
+
+function cycleTreeRadius() {
+  setTreeScatter({ radius: stepCycle(TREE_RADIUS_CYCLE, trees ? trees.radius : NaN) })
+}
+
+function cycleTreeFalloff() {
+  setTreeScatter({ falloff: stepCycle(TREE_FALLOFF_CYCLE, trees ? trees.falloff : NaN) })
+}
+
+function setTreeScatter(patch) {
+  if (!trees) return
+  player.headPosition(headTmp)
+  trees.setScatter(headTmp.x, headTmp.z, patch)
+  const ts = trees.stats
+  console.log(
+    `[v2] trees regrown: ${ts.placed} over ${ts.tiles} tiles in ${ts.placeMs.toFixed(0)} ms ` +
+    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius} m, ` +
+    `pool ${ts.used}/${ts.pool})`
+  )
 }
 
 addEventListener('keydown', (e) => {
@@ -2807,6 +3011,28 @@ let last = performance.now()
 let frames = 0
 let acc = 0
 let avgMs = 0
+
+// A FIVE-SECOND WINDOW on the frame, in ten half-second buckets, because the
+// question actually being asked of the FPS number in a headset is "is this
+// stable", and that is a question about the window rather than the frame. Three
+// numbers answer it and one does not: the 30-frame reading swings with whatever
+// the head is pointed at, the five-second mean says where it sits, and the
+// WORST frame in those five seconds says whether the mean is honest -- a 70 fps
+// average with one 40 ms frame in fifty is a stutter you can feel and a mean
+// that will not show you.
+//
+// Buckets rather than a ring of frame times so the cost is ten adds a frame at
+// any refresh rate, and so a bucket that ages out takes its whole contribution
+// with it instead of decaying forever the way an EMA would.
+const FPS_BUCKET_MS = 500
+const FPS_BUCKETS = 10
+const fpsSum = new Float64Array(FPS_BUCKETS)
+const fpsCount = new Int32Array(FPS_BUCKETS)
+const fpsWorst = new Float64Array(FPS_BUCKETS)
+let fpsBucket = 0
+let fpsBucketAt = last
+let avgMs5 = 0
+let worstMs5 = 0
 let lastPanelAt = 0
 let shownError = ''
 const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null }
@@ -3246,6 +3472,38 @@ function tick() {
     frames = 0
     acc = 0
   }
+
+  // Advance past EVERY bucket the gap covers, clearing each. Stepping only one
+  // would let a session that was backgrounded for a minute carry five seconds of
+  // stale frames back into the window; a gap longer than the whole window
+  // empties it outright rather than spinning the loop a hundred times.
+  if (now - fpsBucketAt >= FPS_BUCKET_MS * FPS_BUCKETS) {
+    fpsSum.fill(0)
+    fpsCount.fill(0)
+    fpsWorst.fill(0)
+    fpsBucketAt = now
+  } else {
+    while (now - fpsBucketAt >= FPS_BUCKET_MS) {
+      fpsBucketAt += FPS_BUCKET_MS
+      fpsBucket = (fpsBucket + 1) % FPS_BUCKETS
+      fpsSum[fpsBucket] = 0
+      fpsCount[fpsBucket] = 0
+      fpsWorst[fpsBucket] = 0
+    }
+  }
+  fpsSum[fpsBucket] += raw
+  fpsCount[fpsBucket]++
+  if (raw > fpsWorst[fpsBucket]) fpsWorst[fpsBucket] = raw
+  let winMs = 0
+  let winN = 0
+  let winWorst = 0
+  for (let i = 0; i < FPS_BUCKETS; i++) {
+    winMs += fpsSum[i]
+    winN += fpsCount[i]
+    if (fpsWorst[i] > winWorst) winWorst = fpsWorst[i]
+  }
+  avgMs5 = winN > 0 ? winMs / winN : 0
+  worstMs5 = winWorst
 
   if (!ready) {
     if (!QUEST_MODE) renderer.render(scene, camera)

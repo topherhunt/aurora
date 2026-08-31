@@ -84,7 +84,7 @@ import {
   capCell, fleshCell, CAP_FOREST, CAP_CAVE, FLESH,
 } from '../src/props/mushroom-texture.js'
 import {
-  MUSHROOM_NAMES, MUSHROOM_SPECIES, MUSHROOM_VARIANTS, MUSHROOM_SIZES,
+  MUSHROOM_NAMES, MUSHROOM_SPECIES,
   MUSHROOM_BILLBOARD_TRI,
   MUSHROOM_MESH_RADIAL, MUSHROOM_LOD_SPANS,
   mushroomVariants, mushroomImpostorLayers, mushroomParams,
@@ -1186,7 +1186,7 @@ const DISTINCT = []
   const want = VARIANTS.length
   check(BANK.tiers.length === MUSHROOM_MESH_RADIAL.length + 1 && lens.every((n) => n === want),
     `the bank is ${MUSHROOM_MESH_RADIAL.length + 1} tiers deep -- ${MUSHROOM_MESH_RADIAL.length} mesh and the billboard -- and every tier holds one slot per variant`,
-    `${BANK.tiers.length} tiers of ${lens.join('/')}; mushroomVariants() is ${want} = ${MUSHROOM_NAMES.length} species x ${MUSHROOM_VARIANTS.length} shapes x ${MUSHROOM_SIZES.length} sizes`)
+    `${BANK.tiers.length} tiers of ${lens.join('/')}; mushroomVariants() is ${want}, one per species, and MUSHROOM_NAMES holds ${MUSHROOM_NAMES.length}`)
 
   let wrongAttrs = ''
   let unindexed = 0
@@ -1214,7 +1214,7 @@ const DISTINCT = []
       const predicted = mushroomTriangles(mushroomParams(v, BANK_SEED + i * 101, t))
       meshTris[t] += built
       if (built !== predicted && offBy === null) {
-        offBy = `tier ${t} (radial ${radial}) variant ${i} (${v.species} shape ${v.shapeIndex} size ${v.size}): built ${built}, mushroomTriangles says ${predicted}`
+        offBy = `tier ${t} (radial ${radial}) variant ${i} (${v.species}): built ${built}, mushroomTriangles says ${predicted}`
       }
     })
   })
@@ -1565,13 +1565,13 @@ function coverage(grid, tri) {
   return covered === 0 ? 0 : kept / covered
 }
 
-// The five subjects the cards are photographed from: shape 0, size 1.0, at the
-// bank's own seed. Built here rather than taken out of BANK.tiers[0], because
-// the bank seeds each variant slot `seed + i * 101` while `cardFrame` -- and
-// therefore the bake -- uses `seed` bare.
+// The five subjects the cards are photographed from: the species' one variant,
+// at the bank's own seed. Built here rather than taken out of BANK.tiers[0],
+// because the bank seeds each variant slot `seed + i * 101` while `cardFrame`
+// -- and therefore the bake -- uses `seed` bare.
 const SUBJECTS = MUSHROOM_NAMES.map((species) => {
-  const v = VARIANTS.find((x) => x.species === species && x.shapeIndex === 0 && x.size === 1.0)
-  if (!v) throw new Error(`no shape-0 size-1.0 variant for ${species}`)
+  const v = VARIANTS.find((x) => x.species === species)
+  if (!v) throw new Error(`no variant for ${species}`)
   return { species, geo: buildMushroom(mushroomParams(v, BANK_SEED)) }
 })
 
@@ -1657,8 +1657,6 @@ const PARALLAX = 28.6
     geo.dispose()
     return {
       species: v.species,
-      shape: v.shapeIndex,
-      size: v.size,
       height: u.height,
       spread: u.spread,
       span: Math.max(u.height, u.spread),
@@ -1672,20 +1670,20 @@ const PARALLAX = 28.6
   }
   for (const r of bySpecies.values()) {
     const needs = (r.spread / r.height) * PARALLAX
-    console.log(`        ${r.species.padEnd(13)} flattest is shape ${r.shape} size ${r.size}: spread ${r.spread.toFixed(3)} / height ${r.height.toFixed(3)} = ${(r.spread / r.height).toFixed(2)}   ${needs.toFixed(1)} heights but ${((r.spread / r.span) * PARALLAX).toFixed(1)} spans`)
+    console.log(`        ${r.species.padEnd(13)} flattest: spread ${r.spread.toFixed(3)} / height ${r.height.toFixed(3)} = ${(r.spread / r.height).toFixed(2)}   ${needs.toFixed(1)} heights but ${((r.spread / r.span) * PARALLAX).toFixed(1)} spans`)
   }
 
   const flattest = [...rows].sort((a, b) => b.spread / b.height - a.spread / a.height)[0]
   check((flattest.spread / flattest.height) * PARALLAX > cardBand,
     'and the max in max(height, spread) is load-bearing -- the flattest variant would break a height-relative table of the same numbers',
-    `${flattest.species} shape ${flattest.shape} size ${flattest.size} needs ${((flattest.spread / flattest.height) * PARALLAX).toFixed(1)} heights against a band of ${cardBand}`)
+    `${flattest.species} needs ${((flattest.spread / flattest.height) * PARALLAX).toFixed(1)} heights against a band of ${cardBand}`)
 
   const short = rows.filter((r) => !(r.span * cardBand >= r.spread * PARALLAX))
   check(short.length === 0,
     `so every one of the ${rows.length} variants gets its card no closer than spread x ${PARALLAX}`,
     short.length === 0
-      ? `tightest ${flattest.species} shape ${flattest.shape} size ${flattest.size}: card at ${(flattest.span * cardBand).toFixed(1)} m, rule wants ${(flattest.spread * PARALLAX).toFixed(1)} m`
-      : short.map((r) => `${r.species} shape ${r.shape} size ${r.size}`).join('; '))
+      ? `tightest ${flattest.species}: card at ${(flattest.span * cardBand).toFixed(1)} m, rule wants ${(flattest.spread * PARALLAX).toFixed(1)} m`
+      : short.map((r) => r.species).join('; '))
 
   // The far end of the same table against the scatter's own draw radius. The
   // billboard tier has to START inside the radius or it is a tier nothing is
@@ -1707,7 +1705,7 @@ const PARALLAX = 28.6
   const billboardAt = biggest.span * maxJitter * lastBand
   check(billboardAt < drawRadius,
     'and the billboard tier starts inside the draw radius even for the biggest thing the bank can grow',
-    `${biggest.species} shape ${biggest.shape} size ${biggest.size} spans ${biggest.span.toFixed(3)} m x ${maxJitter} jitter x ${lastBand} = ${billboardAt.toFixed(1)} m, draw radius ${drawRadius} m`)
+    `${biggest.species} spans ${biggest.span.toFixed(3)} m x ${maxJitter} jitter x ${lastBand} = ${billboardAt.toFixed(1)} m, draw radius ${drawRadius} m`)
 }
 
 for (const s of SUBJECTS) s.geo.dispose()

@@ -1,6 +1,6 @@
 import THREE from '../three-instance.js'
 import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN } from '../textures.js'
-import { GRIT_GRAD_SCALE, terrainDetailTextures } from './grit-texture.js'
+import { GRIT_GRAD_SCALE, GRIT_LAYER, terrainDetailTextures } from './grit-texture.js'
 
 // ---------------------------------------------------------------------------
 // The terrain material: Lambert + vertex colours + FOUR TEXTURE FETCHES. The
@@ -49,9 +49,31 @@ import { GRIT_GRAD_SCALE, terrainDetailTextures } from './grit-texture.js'
 // triplanar, KTX2 arrays) replaces it at build step 6.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// THE NEAR FADES, and why they are so much tighter than they were.
+//
+// They used to run out to 95 m (grain), 40 m (micro) and 150 m (the meadow
+// photograph), on the argument quoted below: a mipped texture cannot alias, so
+// the only thing a fade buys is not PAYING for a fetch. That argument is sound
+// about aliasing and it missed the other failure -- a TILE CAN REPEAT. The
+// meadow photograph is one square metre; from fifty metres up, a hundred copies
+// of it are on screen at once and the eye reads the lattice, not the blades. A
+// mip cannot help with that, because the pattern is still perfectly resolved,
+// it is just visibly periodic.
+//
+// So the rule now is: a layer's fade ends where its TILE would start reading as
+// a grid, which is roughly where one repeat drops under about a degree of arc.
+// For the 11.7 m grit that is ~26 m, for the 2.3 m fine grit ~16 m, and for the
+// 1 m meadow ~30 m. Everything past those distances is carried by the macro
+// pair, whose repeats are 137 m and 1 km.
+//
+// This is also the single biggest fill saving in the file, and it is free in
+// the sense that matters: it removes fetches from fragments that were being
+// made WORSE by them.
+//
 // Grain is at full strength inside FADE_NEAR and gone by FADE_FAR.
-const FADE_NEAR = 12
-const FADE_FAR = 95
+const FADE_NEAR = 8
+const FADE_FAR = 26
 
 // ---- The four sampling scales, in metres of world per tile.
 //
@@ -113,14 +135,13 @@ const ROT_T = 'mat2( 0.80, -0.60, 0.60, 0.80 )'
 const HAZE_GONE = 0.04
 const HAZE_FULL = 0.14
 
-// The micro layer's own fade, tighter than the grain's because the features are
-// smaller -- see the header. A 10 cm fleck is about 3 px at 40 m on a Quest and
-// on a desktop both, and about 1 px by 90 m, so 40 is the conservative end of
-// where it stops being texture. MICRO_FAR is the number to lower if the speckle
-// ever reads as a disc of detail travelling with the camera rather than as
-// detail resolving when you get close to it.
-const MICRO_NEAR = 10
-const MICRO_FAR = 40
+// The micro layer's own fade, tighter than the grain's because its TILE is
+// smaller -- 2.3 m, which is a visible lattice from much closer than the coarse
+// sample's 11.7 m. See the block above FADE_NEAR. MICRO_FAR is the number to
+// lower if the speckle ever reads as a disc of detail travelling with the
+// camera rather than as detail resolving when you get close to it.
+const MICRO_NEAR = 6
+const MICRO_FAR = 16
 
 // ---- The stone layer, and the one place a photograph gets into the terrain.
 //
@@ -190,13 +211,14 @@ const FINE_FAR = 130
 // regional and the tile is not), and the whole normal pass (the tile carries no
 // relief). Snow and rock now suppress nothing, having no tile at this scale.
 const GROUND_METRES = 1
-// The tiles' own fade. Far shorter than the stone's because the tile is a
-// sixteenth of its size: 60 m is where a 1 m tile is starting to be carried by
-// its coarser mips anyway, and by 150 m it is several mips deep and worth
-// nothing at all. Lower GROUND_FAR first if the Quest turns out to be fill bound
-// on ground -- it is one fetch over a large share of the frame's fragments.
-const GROUND_NEAR = 60
-const GROUND_FAR = 150
+// The tile's own fade, and by far the tightest here because the tile is by far
+// the smallest. At 60/150 this was the layer drawing the visible grid across
+// every hillside seen from any height -- one square metre, repeated, a hundred
+// times inside one view. 12/30 keeps it to the range where a repeat is still
+// several degrees of arc and the blades read as blades. See the block above
+// FADE_NEAR.
+const GROUND_NEAR = 12
+const GROUND_FAR = 30
 
 // Values are LINEAR, not sRGB -- three treats vertex colours and plain Color
 // uniforms as working-space. Roughly: linear 0.05 reads as sRGB 0.25.
@@ -276,16 +298,65 @@ export function luminance(c) {
  *   standalone material are byte-identical to what they were. Pass the SAME
  *   array the props use -- the point is that a cliff and the boulders on it are
  *   sampling one tile.
+ * @param {boolean} [opts.lofi] Compile the TWO-FETCH variant. See the LO-FI
+ *   block below. Implies no atlas: the stone and meadow photographs are the
+ *   layers it exists to remove.
  */
-export function createTerrainMaterial({ atlas = null } = {}) {
+export function createTerrainMaterial({ atlas = null, lofi = false } = {}) {
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
+
+  // ---- LO-FI: the same world, with the photographs taken out.
+  //
+  // THE MEASURED PROBLEM: on a Quest the `landscape shader` row is worth ~20 fps
+  // between `full` and a stock Lambert. At 7 Mpixel a frame the ground is fill
+  // bound in this fragment shader, and the fetches are most of it.
+  //
+  // The budget, per fragment, not counting lighting.js's fragment patch (which
+  // adds 3 to every one of these):
+  //
+  //                     full            lo-fi
+  //   far / mid          2               1
+  //   near grass         5               2, or 3 inside MICRO_FAR
+  //   near rock         10               2, or 3 -- 4 and 5 on a steep face
+  //
+  // It is not a different world. Same palette, same snow line, same regions,
+  // same grit, same relief. It is the same world with the layers that cost the
+  // most per unit of visible difference removed.
+  //
+  // WHAT IT DROPS, and why each is the right thing to lose first:
+  //
+  //   the stone photograph   6 fetches on near rock and 3 out to 650 m, the
+  //                          most expensive thing in the file, because triplanar
+  //                          triples every octave. What replaces it is the grit
+  //                          array's ROCK layer, baked with ridged fracture
+  //                          lines and a 3.5:1 bedding anisotropy of its own --
+  //                          so the character survives at a third of the price,
+  //                          and it goes triplanar HERE, on the one octave that
+  //                          needs it, instead of on two.
+  //   the meadow photograph  1 fetch over most of the near ground, and the layer
+  //                          that was drawing the visible 1 m grid.
+  //   the fine macro sample  1 fetch on every fragment the haze has not eaten,
+  //                          which is most of the screen. Its mid-range mottle
+  //                          is the smallest visible difference per fetch here:
+  //                          the region octave above it and the grit below it
+  //                          both still run.
+  //
+  // WHAT IT KEEPS: the coarse macro fetch (the snow line and the 1 km regions --
+  // one fetch, and the only one every fragment in the world pays), and BOTH grit
+  // rungs. The fine grit rung stays because it is the cheapest layer in the file
+  // by a wide margin -- one array fetch, inside 16 m, on a fraction of the
+  // screen -- and because it is what stops the coarse rung reading as a
+  // repeating 11.7 m tile underfoot. Dropping it would save almost nothing and
+  // put the tiling straight back.
+  const stone = atlas && !lofi
 
   const detail = terrainDetailTextures()
 
   material.userData.uniforms = {
     // The two baked fields every layer below is now a channel of. Shared across
-    // every material this factory makes -- see terrainDetailTextures.
-    uGritMap: { value: detail.grit },
+    // every material this factory makes -- see terrainDetailTextures. The grit
+    // one is a THREE-LAYER ARRAY, one field per surface; see GRIT_LAYER.
+    uGritArr: { value: detail.grit },
     uMacroMap: { value: detail.macro },
     uSpeckle: { value: 0.46 }, // +/- brightness swing, applied to every surface
     uDirtAmount: { value: 0.8 },
@@ -335,36 +406,56 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     // low. The regional variation it bought headroom for is done properly one
     // layer up.
     uBoundary: { value: 0.65 },
-    // Near-field normal perturbation from the COARSE grit fetch, as a plain
-    // multiplier on that fetch's own slope. 0 disables the whole normal block,
-    // which is the escape hatch if the headset is still fill bound.
+    // ---- THE NORMAL PASS, which is what makes a dimple deepen as the sun goes
+    // down, and the reason it is worth more than its cost.
     //
-    // RETUNED from 0.35 when the noise was baked, and the number went DOWN
-    // because the field under it got steeper, not because the look changed.
-    // Old: |d(noise)/d(metre)| averaged 0.3605 over the two octaves at their
-    // weights, so 0.35 bought a mean tangent of 0.126. New: the baked field's
-    // packed gradient averages 5.785 per tile-unit, which over an 11.7 m tile
-    // is 0.4945 per metre, so 0.255 buys the same 0.126. Measured, not
-    // estimated -- both numbers came out of a script that ran the old GLSL in
-    // JS against the new texture's actual bytes.
-    uRelief: { value: 0.255 },
+    // The grit fetch's .gb IS the derivative of the .r that coloured the
+    // fragment (grit-texture.js bakes them together), so a bump here is not a
+    // second texture bolted on -- it is the SAME field, read as a slope. That
+    // slope perturbs the shading normal at normal_fragment_begin, which feeds
+    // Lambert's N.L, which is a function of the sun direction. So the relief is
+    // lit rather than painted: at noon a pit is a faint darkening and at a low
+    // sun it is a hard-edged shadow with a bright rim, and nothing in the
+    // shader has to know what time it is.
+    //
+    // It is also the cheapest thing in this file per unit of look. The fetch is
+    // already paid for by the colour pass; the whole normal pass is two
+    // subtracts, a multiply and a normalize.
+    //
+    // 0 disables the whole block, which is the escape hatch if the headset is
+    // still fill bound.
+    //
+    // RETUNED for the three-layer array. The old single field's packed gradient
+    // averaged 5.785 per tile-unit; the three that ship average 4.86 (grass),
+    // 5.94 (rock) and 4.66 (snow), so 5.15 across them. 0.126 was the mean
+    // tangent the look was tuned at, and 0.126 * 11.7 / 5.15 is 0.286.
+    uRelief: { value: 0.286 },
+    // How much of the coarse rung each surface gets. FLAT NOW, and that is a
+    // change: it used to be rock 1.0, grass 0.5, snow 0.2, because one shared
+    // field had to stand in for three materials and a half-metre lump of it on
+    // snow read as gravel rather than as drift. The field is per-surface now --
+    // snow's is a smooth, directional wind-scour with no half-metre fizz in it
+    // at all -- so the weight that was compensating for the wrong field is
+    // compensating for nothing, and the drifts, blade clumps and crags all
+    // catch the light at the strength their own field was baked with.
+    //
+    // Left as a uniform rather than deleted because it is the knob to reach for
+    // if snow at a low sun turns out to read as too busy.
+    uReliefSnow: { value: 1.0 },
     // The relief ladder's fine rung, from the FINE grit fetch: ~1 cm bumps and
     // divots, on every surface.
     //
-    // Its own uniform rather than a weight inside uRelief because two things
-    // differ. It rides the MICRO fade (gone by 40 m) instead of the grain fade
-    // (95 m), since a feature this size is ~3 px at 40 m and under 1 px past it.
-    // And its surface mask is flat -- full on rock, half on grass AND snow, where
-    // the coarse rung gives snow only a fifth because half-metre relief makes a
-    // drift read as gravel. At a centimetre that does not apply: windblown snow is
-    // pitted at exactly this scale.
+    // Its own uniform rather than a weight inside uRelief because it rides the
+    // MICRO fade (gone by 16 m) instead of the grain fade (26 m), its tile being
+    // five times smaller and so five times closer to reading as a lattice.
+    // Flat across all three surfaces, like the coarse rung above.
     //
-    // Retuned from 0.018 by measurement (§7): the old 10 cm octave averaged 4.2576
-    // per metre, so 0.018 bought a tangent of 0.0766; the fine fetch averages
-    // 5.785 per tile-unit over a 2.3 m tile, which is 2.5153 per metre, so 0.030
-    // buys the same. Nested inside the uRelief guard on purpose -- uRelief = 0
-    // must still kill the whole normal pass.
-    uMicroRelief: { value: 0.03 },
+    // Retuned twice. The old 10 cm octave averaged 4.2576 per metre, so 0.018
+    // bought a tangent of 0.0766; against the three-layer array's 5.15 mean per
+    // tile-unit over a 2.3 m tile, which is 2.2391 per metre, 0.034 buys the
+    // same. Nested inside the uRelief guard on purpose -- uRelief = 0 must still
+    // kill the whole normal pass.
+    uMicroRelief: { value: 0.034 },
     // Glitter on snow. Small because it is thresholded to a few percent of
     // fragments -- this is specular sparkle standing in for a spec model Lambert
     // does not have, not a brightness change.
@@ -436,7 +527,7 @@ export function createTerrainMaterial({ atlas = null } = {}) {
     uGrassTone: { value: new THREE.Color(0.45, 0.92, 0.45) },
   }
 
-  if (atlas) {
+  if (stone) {
     material.userData.uniforms.uAtlas = { value: atlas }
     // How far each stone octave is allowed to swing the surface, as a fraction
     // of the fully-applied tile. The tile is a photograph with a lot of contrast
@@ -496,7 +587,8 @@ export function createTerrainMaterial({ atlas = null } = {}) {
         '#include <common>',
         `#include <common>
         varying vec3 vWorldPos;
-        uniform sampler2D uGritMap;
+        precision highp sampler2DArray;
+        uniform sampler2DArray uGritArr;
         uniform sampler2D uMacroMap;
         uniform float uSpeckle;
         uniform float uDirtAmount;
@@ -514,6 +606,7 @@ export function createTerrainMaterial({ atlas = null } = {}) {
         uniform vec3 uRock;
         uniform float uBoundary;
         uniform float uRelief;
+        uniform float uReliefSnow;
         uniform float uMicroRelief;
         uniform float uSnowSparkle;
         uniform float uMicroTint;
@@ -524,8 +617,7 @@ export function createTerrainMaterial({ atlas = null } = {}) {
         uniform vec3 uShade;
         uniform float uSnowAlbedo;
         uniform vec3 uGrassTone;
-${atlas ? `        precision highp sampler2DArray;
-        uniform sampler2DArray uAtlas;
+${stone ? `        uniform sampler2DArray uAtlas;
         uniform float uStone;
         uniform float uStoneFine;
         uniform vec3 uStoneMean;
@@ -562,6 +654,63 @@ ${atlas ? `        precision highp sampler2DArray;
         // implicit LOD there is undefined.
         vec3 auroraGroundTile( vec3 p, vec3 dx, vec3 dy, float layer, float k ) {
           return textureGrad( uAtlas, vec3( p.xz * k, layer ), dx.xz * k, dy.xz * k ).rgb;
+        }
+` : ''}
+        // ---- ONE GRIT FETCH, PLANAR, on the xz plane.
+        //
+        // The layer index is the SURFACE, and it is what makes grass, rock and
+        // snow three different materials rather than three tints of one field.
+        // Costs nothing: a sampler2DArray fetch is one fetch whatever the layer.
+        //
+        // textureGrad for the reason every fetch in this file has it -- see the
+        // note further down. The gradients are the caller's, taken once outside
+        // every branch.
+        vec4 auroraGritP( vec2 uv, vec2 dx, vec2 dy, float layer ) {
+          return textureGrad( uGritArr, vec3( uv, layer ), dx, dy );
+        }
+${lofi ? `
+        // ---- THE SAME FETCH, TRIPLANAR, and rock only. Three fetches.
+        //
+        // The lo-fi variant drops the stone photograph, which was the only
+        // triplanar thing in the shader, and a cliff is exactly where a flat xz
+        // projection fails: it stretches a tile into vertical smears down every
+        // steep face. So the triplanar moves onto the layer that replaced it.
+        // It is affordable here in a way it was not there because it is ONE
+        // octave rather than two, and because the guard folds in both the
+        // surface and the near fade -- outside the crags and past ${FADE_FAR} m
+        // nothing pays for it.
+        //
+        // THE BUMP IS BLENDED IN THE THREE PLANES, not in one. Each tap's .gb is
+        // dh/du and dh/dv measured IN ITS OWN PROJECTION, so each perturbs the
+        // two world axes that lie in that plane and leaves the projection axis
+        // alone. Getting a swizzle wrong here does not look like an error, it
+        // looks like a cliff lit from slightly the wrong side, so the mapping is
+        // spelled out per line.
+        //
+        // THE ROCK LAYER'S ANISOTROPY LANDS CORRECTLY HERE FOR FREE, and it is
+        // worth knowing why before anyone "fixes" a swizzle. Its features are
+        // 3.5x longer along the tile's u than its v, and in all three
+        // projections u is a HORIZONTAL world axis (z, x, x) while v is the
+        // other horizontal one or y. So on a vertical face the long axis is
+        // horizontal and the short one runs up the wall, which is bedding.
+        //
+        // Returns the VALUE channel only. The decorrelated .a has no reader on
+        // the coarse rung -- the sparkle and the flecks are the fine rung's --
+        // and blending a channel nothing reads is three multiply-adds a
+        // fragment on the most expensive path in the file.
+        //
+        // \`bump\` is in world space, ready to add to auroraBump.
+        float auroraGritTri( vec3 p, vec3 dx, vec3 dy, vec3 w, float k, float layer, float gk, out vec3 bump ) {
+          vec4 tx = textureGrad( uGritArr, vec3( p.zy * k, layer ), dx.zy * k, dy.zy * k );
+          vec4 ty = textureGrad( uGritArr, vec3( p.xz * k, layer ), dx.xz * k, dy.xz * k );
+          vec4 tz = textureGrad( uGritArr, vec3( p.xy * k, layer ), dx.xy * k, dy.xy * k );
+          vec2 sx = ( tx.gb - 0.5 ) * gk; // u = z, v = y  -> perturbs z and y
+          vec2 sy = ( ty.gb - 0.5 ) * gk; // u = x, v = z  -> perturbs x and z
+          vec2 sz = ( tz.gb - 0.5 ) * gk; // u = x, v = y  -> perturbs x and y
+          bump = vec3( 0.0, -sx.y, -sx.x ) * w.x
+               + vec3( -sy.x, 0.0, -sy.y ) * w.y
+               + vec3( -sz.x, -sz.y, 0.0 ) * w.z;
+          return tx.r * w.x + ty.r * w.y + tz.r * w.z;
         }
 ` : ''}
         // The normal perturbation, accumulated where the grit fetches happen
@@ -695,11 +844,11 @@ ${atlas ? `        precision highp sampler2DArray;
           // every consumer of it degrades to "this octave contributes nothing"
           // rather than to a wrong value.
           vec4 auroraMF = vec4( 0.5 );
-          if ( auroraDetailK > 0.004 ) {
+${lofi ? '' : `          if ( auroraDetailK > 0.004 ) {
             auroraMF = textureGrad( uMacroMap, auroraRot * ( vWorldPos.xz * ${(1 / MACRO_FINE_METRES).toFixed(8)} ),
               auroraRot * ( auroraDPx.xz * ${(1 / MACRO_FINE_METRES).toFixed(8)} ),
               auroraRot * ( auroraDPy.xz * ${(1 / MACRO_FINE_METRES).toFixed(8)} ) );
-          }
+          }`}
 
           // ---- Boundary dither.
           //
@@ -739,7 +888,7 @@ ${atlas ? `        precision highp sampler2DArray;
           // wandering just as far, on wavelengths the distance can still
           // resolve. With the gate open the arithmetic is the same as the
           // ungated version, term for term.
-          float auroraBW = 0.72 + 0.28 * auroraDetailK;
+          float auroraBW = ${lofi ? '0.72' : '0.72 + 0.28 * auroraDetailK'};
           float auroraBN = 0.5 + ( ( auroraM.a - 0.5 ) * 0.72
                                  + ( auroraMF.a - 0.5 ) * 0.28 * auroraDetailK ) / auroraBW;
 
@@ -858,7 +1007,7 @@ ${atlas ? `        precision highp sampler2DArray;
           // the region layer above, which is a separate sample rather than a
           // resizing of this one, so the mid-range mottle is untouched and the
           // gap above it is what got filled.
-          if ( auroraDetailK > 0.004 ) {
+${lofi ? '' : `          if ( auroraDetailK > 0.004 ) {
             // Snow gets a fraction of the brightness swing and none of the tint.
             // Blotchy snow reads as dirty snow, and the shading already gives it
             // all the form it needs.
@@ -877,7 +1026,7 @@ ${atlas ? `        precision highp sampler2DArray;
             // under this one. No coverage boost here: rock was not the surface
             // that read wrong, so it just goes back to where it was.
             diffuseColor.rgb = mix( diffuseColor.rgb, uStain, smoothstep( 0.65, 1.0, auroraMF.g ) * auroraRockBase * uMacroTint * 0.8 );
-          }
+          }`}
 
           float auroraNear = 1.0 - smoothstep( ${FADE_NEAR.toFixed(1)}, ${FADE_FAR.toFixed(1)}, auroraDist );
           float auroraMicroFade = 1.0 - smoothstep( ${MICRO_NEAR.toFixed(1)}, ${MICRO_FAR.toFixed(1)}, auroraDist );
@@ -889,7 +1038,7 @@ ${atlas ? `        precision highp sampler2DArray;
           // exactly as it was. Overwritten by the ground-tile block below
           // wherever there is an atlas.
           float auroraTileFade = 0.0;
-${atlas ? `
+${stone ? `
           // ---- Stone. See the header block above STONE_METRES.
           //
           // BEFORE the grain and micro layers rather than after, so those keep
@@ -972,6 +1121,20 @@ ${atlas ? `
             // GROUND_NEAR and comes back as its tile fades out.
             float auroraProc = clamp( 1.0 - auroraTileFade * auroraGreenBase, 0.0, 1.0 );
 
+            // ---- WHICH GRIT. Three baked fields live in one sampler2DArray --
+            // blotchy grass, ridged anisotropic rock, fine drifted snow -- and
+            // a layer index costs nothing: an array fetch reads one layer, so
+            // three characters of surface arrive at the price of the one field
+            // that used to serve all three.
+            //
+            // A HARD SWITCH, not a blend. Blending would mean two fetches on
+            // every fragment near a boundary to hide a seam that lands
+            // mid-ramp, where auroraGreenBase is already swinging the palette
+            // from green to grey; the palette change reads as the transition
+            // and the grain change rides along under it.
+            float auroraGritLayer = auroraSnowBase > 0.5 ? ${GRIT_LAYER.SNOW}.0
+              : ( auroraGreenBase > 0.5 ? ${GRIT_LAYER.GRASS}.0 : ${GRIT_LAYER.ROCK}.0 );
+
             // ---- THE GRIT TILE, COARSE SAMPLE: ${GRIT_METRES} m, 4.6 cm texels, NEAREST.
             //
             // This one fetch is what four auroraNoise calls and two auroraGrad
@@ -981,13 +1144,53 @@ ${atlas ? `
             // which is that whole ladder; its .gb are the slope of the very
             // field its .r colours, so the surface is lit by the thing it is
             // made of instead of by a second, independent noise.
-            vec4 auroraG = textureGrad( uGritMap, vWorldPos.xz * ${(1 / GRIT_METRES).toFixed(8)},
-              auroraDPx.xz * ${(1 / GRIT_METRES).toFixed(8)},
-              auroraDPy.xz * ${(1 / GRIT_METRES).toFixed(8)} );
-
+            //
+            // auroraGSlope is the world-space tilt this sample asks for, at unit
+            // amplitude. The planar path builds it from .gb; the triplanar path
+            // below returns it already assembled, because there the tilt has to
+            // come out of three differently-oriented fetches.
+            float auroraGR;
+            vec3 auroraGSlope;
+${lofi ? `            // The GEOMETRIC normal, deliberately: this runs before
+            // normal_fragment_begin, so nothing has perturbed it yet, and a
+            // triplanar blend keyed off bump normals would make the projection
+            // swim over a surface that is not moving.
+            vec3 auroraWN = normalize( inverseTransformDirection( normalize( vNormal ), viewMatrix ) );
+            // TRIPLANAR, ROCK ONLY, AND ONLY WHERE ROCK IS ACTUALLY STEEP.
+            // Without an atlas this is the only thing keeping a cliff from
+            // wearing a vertically smeared xz projection, and the whole reason
+            // it is affordable is that the guard is narrow twice over: rock
+            // fragments only, steep ones only, inside FADE_FAR only. A flat
+            // rock shelf takes the planar path because at auroraWN.y near 1 the
+            // triplanar blend IS the xz projection, at three times the price.
+            if ( auroraGritLayer == ${GRIT_LAYER.ROCK}.0 && auroraWN.y < 0.86 ) {
+              vec3 auroraTri = pow( abs( auroraWN ), vec3( 4.0 ) );
+              auroraTri /= ( auroraTri.x + auroraTri.y + auroraTri.z );
+              vec3 auroraTB;
+              auroraGR = auroraGritTri( vWorldPos, auroraDPx, auroraDPy, auroraTri,
+                ${(1 / GRIT_METRES).toFixed(8)}, ${GRIT_LAYER.ROCK}.0,
+                ${(GRIT_GRAD_SCALE / GRIT_METRES).toFixed(6)}, auroraTB );
+              auroraGSlope = auroraTB;
+            } else {
+              vec4 auroraG = auroraGritP( vWorldPos.xz * ${(1 / GRIT_METRES).toFixed(8)},
+                auroraDPx.xz * ${(1 / GRIT_METRES).toFixed(8)},
+                auroraDPy.xz * ${(1 / GRIT_METRES).toFixed(8)}, auroraGritLayer );
+              auroraGR = auroraG.r;
+              vec2 auroraS = ( auroraG.gb - 0.5 ) * ${(GRIT_GRAD_SCALE / GRIT_METRES).toFixed(6)};
+              auroraGSlope = vec3( -auroraS.x, 0.0, -auroraS.y );
+            }
+` : `            {
+              vec4 auroraG = auroraGritP( vWorldPos.xz * ${(1 / GRIT_METRES).toFixed(8)},
+                auroraDPx.xz * ${(1 / GRIT_METRES).toFixed(8)},
+                auroraDPy.xz * ${(1 / GRIT_METRES).toFixed(8)}, auroraGritLayer );
+              auroraGR = auroraG.r;
+              vec2 auroraS = ( auroraG.gb - 0.5 ) * ${(GRIT_GRAD_SCALE / GRIT_METRES).toFixed(6)};
+              auroraGSlope = vec3( -auroraS.x, 0.0, -auroraS.y );
+            }
+`}
             // Faded toward the field's own mean rather than toward zero, so the
             // layer leaves the surface where it found it as it goes.
-            float auroraGrain = mix( 0.5, auroraG.r, auroraNear );
+            float auroraGrain = mix( 0.5, auroraGR, auroraNear );
 
             // Brightness speckle. Applies to grass, rock and snow alike -- snow
             // without it is a flat white void with no readable surface at all.
@@ -1010,12 +1213,19 @@ ${atlas ? `
             // .gb is dh/du in TILE units, so dividing by the tile's size in
             // metres is what turns it into a real slope -- and it is why the two
             // rungs can share one amplitude convention despite being five times
-            // apart in size.
+            // apart in size. That division is folded into auroraGSlope above.
+            //
+            // FLAT ACROSS SURFACES. Each layer now carries its own relief in its
+            // own baked field -- grass is blotchy, rock is ridged, snow is
+            // drifted -- so weighting the three differently here would be
+            // fighting the bake for control of the same quantity. uReliefSnow is
+            // the one knob left, and it exists because snow is the surface where
+            // a wrong answer is loudest: it is nearly white, so N.L is the only
+            // thing drawing it and any relief error is the whole pixel.
             if ( uRelief > 0.0 ) {
               float auroraReliefAmt = auroraNear * uRelief *
-                ( auroraRockBase + auroraSnowBase * 0.2 + ( 1.0 - auroraRockBase - auroraSnowBase ) * 0.5 );
-              vec2 auroraS = ( auroraG.gb - 0.5 ) * ${(GRIT_GRAD_SCALE / GRIT_METRES).toFixed(6)};
-              auroraBump += vec3( -auroraS.x, 0.0, -auroraS.y ) * auroraReliefAmt;
+                ( 1.0 - auroraSnowBase * ( 1.0 - uReliefSnow ) );
+              auroraBump += auroraGSlope * auroraReliefAmt;
             }
 
             // ---- THE GRIT TILE, FINE SAMPLE: ${GRIT_FINE_METRES} m, 9 mm texels, rotated.
@@ -1032,10 +1242,16 @@ ${atlas ? `
             // turned BACK before it can be added to a world-space bump: the
             // gradient a rotated fetch reports is in the rotated frame, and the
             // transpose of a rotation is its inverse.
+            //
+            // PLANAR even where the coarse rung went triplanar. At ${GRIT_FINE_METRES} m the
+            // features are 4 cm flecks; the vertical smear a wall would give
+            // them is a smear of specks, which is still specks. Triplanar here
+            // would triple the cost of the near-field's second fetch to fix
+            // something nobody can see.
             if ( auroraMicroFade > 0.004 ) {
-              vec4 auroraGF = textureGrad( uGritMap, auroraRot * ( vWorldPos.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ),
+              vec4 auroraGF = auroraGritP( auroraRot * ( vWorldPos.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ),
                 auroraRot * ( auroraDPx.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ),
-                auroraRot * ( auroraDPy.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ) );
+                auroraRot * ( auroraDPy.xz * ${(1 / GRIT_FINE_METRES).toFixed(8)} ), auroraGritLayer );
 
               // ---- Snow glitter.
               //
@@ -1111,8 +1327,8 @@ ${atlas ? `
               // Nested inside the uRelief guard on purpose: if the headset ever
               // needs the whole normal pass gone, uRelief = 0 must still kill it.
               if ( uRelief > 0.0 && uMicroRelief > 0.0 ) {
-                float auroraMicroAmt = auroraMicroFade * uMicroRelief *
-                  ( auroraRockBase + ( 1.0 - auroraRockBase ) * 0.5 );
+                // Flat across surfaces, for the reason given on the coarse rung.
+                float auroraMicroAmt = auroraMicroFade * uMicroRelief;
                 vec2 auroraMS = ${ROT_T} * ( ( auroraGF.gb - 0.5 ) * ${(GRIT_GRAD_SCALE / GRIT_FINE_METRES).toFixed(6)} );
                 auroraBump += vec3( -auroraMS.x, 0.0, -auroraMS.y ) * auroraMicroAmt;
               }
@@ -1165,9 +1381,9 @@ ${atlas ? `
   }
 
   // Distinct cache key so this never gets conflated with an unpatched Lambert,
-  // and distinct BETWEEN the two variants: whether the atlas was passed changes
-  // the compiled source, so the two must never share a program.
-  const key = `aurora-terrain-v9${atlas ? '-stone' : ''}`
+  // and distinct BETWEEN the variants: both the atlas and the lofi flag change
+  // the compiled source, so no two of them may share a program.
+  const key = `aurora-terrain-v10${stone ? '-stone' : ''}${lofi ? '-lofi' : ''}`
   material.customProgramCacheKey = () => key
 
   return material

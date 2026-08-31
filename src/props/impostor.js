@@ -45,8 +45,12 @@ import { createImpostorBakeMaterial, CARD_UP_MARK } from '../material.js'
 // The atlas is RepeatWrapping -- barkRepeat needs it -- so a leaf touching the
 // edge of the slice would be bilinearly blended with whatever is on the far
 // side, which is the other side of the same tree. The margin is on the sides
-// and the top; the bottom is the ground line, and what sits against it is an
-// opaque trunk rather than a leaf.
+// and the top only; by default the bottom is the ground line, and what sits
+// against it is an opaque trunk rather than a leaf.
+//
+// A CALLER CAN BUY BOTTOM MARGIN with `foot`, and pays for it by sinking the
+// card below y = 0 -- see impostorCardExtents. Only the apex-down triangle
+// asks; a quad has nothing to gain, since its bottom edge is already full width.
 //
 // A FERN puts leaves against that bottom edge -- a drooping frond tip really
 // does reach the ground -- so there the wrap blends the last row of tips with
@@ -54,8 +58,7 @@ import { createImpostorBakeMaterial, CARD_UP_MARK } from '../material.js'
 // rather than the geometry: the card only ever draws from 26 m out, where the
 // whole 128-texel slice covers about 20 screen pixels, so the affected texel is
 // a sixth of a pixel wide and the mip chain has averaged it away before it gets
-// there. A bottom margin would have to be paid for by sinking the card below
-// y = 0, which is a real change to every caller for an artefact nobody can see.
+// there.
 const MARGIN = 0.06
 
 // How far colour is pushed outward into fully transparent texels before the
@@ -115,7 +118,8 @@ const BAKE_SKY = 1.0
  */
 /**
  * The card size a subject of `width` x `height` gets framed into: its own
- * extents plus the transparent MARGIN.
+ * extents plus the transparent MARGIN, and how far below the subject's feet the
+ * card's bottom edge sits.
  *
  * Exported because the card GEOMETRY and the card PIXELS do not have to be made
  * at the same moment, and in the game they are not -- the quads go into the
@@ -123,14 +127,35 @@ const BAKE_SKY = 1.0
  * taken until the frond PNG has landed in the array. Both have to agree about
  * the framing to the last texel or the picture is stretched across the quad, so
  * both ask this rather than each applying the margin themselves.
+ *
+ * `foot` IS THE WIDTH THE CARD MUST STILL HAVE WHERE THE SUBJECT STANDS, in the
+ * same units as `width`, and it exists for exactly one shape: the apex-down
+ * triangle. That card is a point at y = 0, so the bottom of a trunk tapers to
+ * nothing and a lollipop tree reads as a pencil standing on its tip. A triangle
+ * `cardW` wide at its top and a point at its apex is `cardW * (y + sink) /
+ * (top + sink)` wide at y, so asking it to be `foot` wide at y = 0 solves for
+ * one number: how far to drop the apex BELOW the ground. The bake then frames
+ * that extra strip of empty ground into the picture and the card draws it, so
+ * the subject's own feet land where they belong with a real trunk under them.
+ *
+ * It costs card height, which for a triangle is fill: a 12% sink is a 6% bigger
+ * card. Everything else is a gain -- the triangle is wider at every height below
+ * its top, so it keeps MORE of the silhouette, not less.
  */
-export function impostorCardExtents({ width, height }) {
-  return { width: width * (1 + MARGIN * 2), height: height * (1 + MARGIN) }
+export function impostorCardExtents({ width, height, foot = 0 }) {
+  const cardW = width * (1 + MARGIN * 2)
+  if (foot < 0) throw new Error(`impostorCardExtents: foot is a width, got ${foot}`)
+  if (foot >= cardW) {
+    throw new Error(`impostorCardExtents: a ${foot} foot does not fit inside a ${cardW.toFixed(3)} card`)
+  }
+  const top = height * (1 + MARGIN)
+  const sink = foot > 0 ? (foot * top) / (cardW - foot) : 0
+  return { width: cardW, height: top + sink, sink }
 }
 
 export function bakeImpostor(
   renderer, geometry, texArray, layer,
-  { width, height, azimuth = 0, tint = null, vertexColors = false }
+  { width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false }
 ) {
   if (!(width > 0) || !(height > 0)) {
     throw new Error(`bakeImpostor: need a positive width and height, got ${width}x${height}`)
@@ -139,7 +164,7 @@ export function bakeImpostor(
     throw new Error(`bakeImpostor: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
 
-  const { width: cardW, height: cardH } = impostorCardExtents({ width, height })
+  const { width: cardW, height: cardH, sink } = impostorCardExtents({ width, height, foot })
 
   // How far back to stand and how deep to see. An ortho capture does not care
   // about the distance -- that is the point of it -- so this only has to put
@@ -152,11 +177,12 @@ export function bakeImpostor(
   // Ortho, because an impostor seen from 30 m and from 130 m has to be the same
   // picture. A perspective capture bakes in one distance's worth of convergence
   // and is visibly wrong at every other.
-  const cam = new THREE.OrthographicCamera(-cardW / 2, cardW / 2, cardH, 0, 0.01, reach * 8)
+  const cam = new THREE.OrthographicCamera(-cardW / 2, cardW / 2, cardH - sink, -sink, 0.01, reach * 8)
   // Level with the ground and looking horizontally, so camera-y IS world-y and
-  // the frustum's [bottom, top] of [0, cardH] is the tree standing on the
-  // texture's bottom edge. Any tilt here bakes a worm's- or bird's-eye view
-  // into a card that will be seen from neither.
+  // the frustum's [bottom, top] of [-sink, cardH - sink] puts the subject's feet
+  // exactly `sink` above the texture's bottom edge -- on the edge itself when no
+  // `foot` was asked for. Any tilt here bakes a worm's- or bird's-eye view into
+  // a card that will be seen from neither.
   cam.position.set(Math.sin(azimuth) * reach * 2, 0, Math.cos(azimuth) * reach * 2)
   cam.lookAt(0, 0, 0)
   cam.updateMatrixWorld()
@@ -241,7 +267,7 @@ export function bakeImpostor(
   texArray.image.data.set(pixels, layer * stride)
   texArray.needsUpdate = true
 
-  return { width: cardW, height: cardH, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
+  return { width: cardW, height: cardH, sink, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
 }
 
 // Mean luminance over the texels the prop actually COVERS, 0..1 in sRGB, and
@@ -464,27 +490,39 @@ export function dilate(px) {
  *
  * THE FIT IS A SPECIES FACT, not a taste one. A conifer IS a triangle apex-up,
  * and a lollipop -- a round crown over a bare trunk -- is close to one apex-down,
- * because the ground corners either side of a trunk hold nothing. Rasterized
- * against the real LOD0 silhouette over 4 species x 3 sizes x 6 seeds, the
- * fraction of foliage the card keeps is:
+ * because the ground corners either side of a trunk hold nothing.
  *
- *            apex-up   apex-down
- *   pine       89.2%      60.8%
- *   oak        60.7%      83.8%
- *   birch      66.6%      73.9%
- *   aspen      65.9%      85.2%
+ * APEX-DOWN NEEDS `sink` TO BE HONEST, and that is not a refinement, it is the
+ * difference between a tree and a pencil standing on its tip. Collapsed all the
+ * way, the card has ZERO width at y = 0, so the bottom of the trunk tapers to a
+ * point -- the one part of a distant tree the eye is guaranteed to be looking at,
+ * because it is where the tree meets the ground. Dropping the apex below the
+ * ground gives the card real width where the trunk is; `foot` on
+ * impostorCardExtents is the end that computes how far, and the bake frames the
+ * same strip so the picture and the geometry agree. Rasterized against the real
+ * LOD0 silhouette over 6 seeds, apex-down at the sink each species' own trunk
+ * asks for, against the un-sunk card and the apex-up alternative:
  *
- * Wood is a non-issue at either: the trunk stands on u = 0.5, which both
- * triangles contain at every height, and the worst case is 84%.
+ *            apex-up   apex-down   apex-down, sunk   sink   card area
+ *   pine       89.2%      60.8%     -- (apex-up)      --      0.500
+ *   oak        60.7%      81.9%          87.4%       12.2%    0.558
+ *   birch      66.6%      82.7%          84.9%        4.5%    0.521
+ *   aspen      65.9%      91.8%          93.2%        4.7%    0.522
  *
- * WHAT IT COSTS AND WHY IT IS PAID. The clip is not diffuse -- it is a straight
- * slice off each lower shoulder of a round crown, which at the 100 m band edge
- * is a wedge about 12 px wide and 18 px deep on an oak. trees.js cross-dissolves
- * the swap into this tier over a quarter second, so the wedge goes the way the
- * rest of the mesh does rather than between two frames; it would be affordable
- * either way, because 12 px of shoulder is the loudest thing in a swap that is
- * already exchanging a whole mesh for a picture of one. Past 300 m the same
- * wedge is 4-7 px and the mip chain has eaten it.
+ * (`sink` as a fraction of tree height; card area against the w x h rectangle a
+ * quad would have covered, so a quad is 1.000.) The sink is not a trade -- it
+ * widens the triangle at EVERY height below its top, so foliage coverage goes up
+ * with it. Wood is where it really tells: the oak's trunk goes from 72.1% to
+ * 87.0% covered, and the missing part was all of it at the ground.
+ *
+ * WHAT THE CLIP COSTS AND WHY IT IS PAID. It is not diffuse -- it is a straight
+ * slice off each lower shoulder of a round crown, which at 50 m is a wedge about
+ * 24 px wide and 36 px deep on an oak. trees.js cross-dissolves the swap into
+ * this tier over a quarter second, so the wedge goes the way the rest of the
+ * mesh does rather than between two frames; it would be affordable either way,
+ * because that shoulder is the loudest thing in a swap that is already
+ * exchanging a whole mesh for a picture of one. Past 300 m it is 4-7 px and the
+ * mip chain has eaten it.
  *
  * THE OTHER TRIANGLE IS NOT WORTH LOOKING FOR. The world triangle and the uv
  * triangle are joined by one affine map, so overhanging the square samples a
@@ -492,11 +530,12 @@ export function dilate(px) {
  * proposal reduces to "which triangle inside [0,1]^2". Searched exhaustively
  * against the same silhouettes and restricted to the u-symmetric shapes the
  * mirror trick allows, the best found is within a few points of the inscribed
- * one everywhere (pine 90.2, oak 87.2, birch 77.9, aspen 88.6). The lever that
- * DOES move is the bake's margin: widening it shrinks the tree inside the same
- * square, and at +0.20 a pine's apex-up card keeps 99.8%. It is not taken,
- * because the margin is shared with the CROSS tier, which at 45 m is already
- * only about one texel per pixel and would go soft to buy it.
+ * one everywhere (pine 90.2, oak 87.2, birch 77.9, aspen 88.6). Widening the
+ * bake's MARGIN is the same lever the sink pulls, on the other axis: it shrinks
+ * the tree inside the same square, and at +0.20 a pine's apex-up card keeps
+ * 99.8%. It costs texel density on every tier that shares the layer, and the
+ * card now starts at 24 m where there is none to spare -- so it is spent only
+ * where the artefact is structural, which is the foot.
  *
  * ONE THING THIS DOES NOT SOLVE: mip coverage. The impostor's alpha is binary
  * out of the bake, and each mip averages it, so a canopy that is half holes
@@ -511,8 +550,15 @@ export function buildImpostorCard(
   height,
   layer,
   planes = 3,
-  { upNormal = false, canopy = false, tri = false, spherical = false, azimuth = 0 } = {}
+  { upNormal = false, canopy = false, tri = false, sink = 0, spherical = false, azimuth = 0 } = {}
 ) {
+  // `sink` comes out of impostorCardExtents and is already counted INSIDE
+  // `height` -- it says how much of that height hangs below y = 0, not how much
+  // to add. Taking it as an addition instead would stretch every card that asks
+  // for one, which is a thing you would notice only by measuring a tree.
+  if (sink < 0 || sink >= height) {
+    throw new Error(`buildImpostorCard: sink is part of the card's ${height} height, got ${sink}`)
+  }
   if (upNormal && canopy) {
     throw new Error('buildImpostorCard: upNormal and canopy are two answers to the same question')
   }
@@ -566,21 +612,30 @@ export function buildImpostorCard(
     const flip = i % 2 === 1
     // v = 0 at the top -- see the note by flipY in bakeImpostor.
     //
-    // A `tri` card is the same rectangle with one corner pair collapsed to a
-    // point on the trunk line: HALF the triangles for the corners of the
-    // picture the tree was never in. Wound the same way round as the quad, and
-    // still symmetric about u = 0.5, which billboardVertex's per-instance u-flip
+    // A `tri` card is the same rectangle with one corner pair collapsed toward
+    // the trunk line: HALF the triangles for the corners of the picture the
+    // tree was never in. Wound the same way round as the quad, and still
+    // symmetric about u = 0.5, which billboardVertex's per-instance u-flip
     // requires -- an asymmetric uv triple would show half the forest a sheared
     // photograph. See the triangle note above for what each species gives up.
+    //
+    // The bottom edge is at `-sink` rather than at 0, which is the whole of what
+    // a sink is: the card hangs below the ground and the picture hangs with it,
+    // so an apex-down triangle has real width where the subject's feet are. The
+    // buried part is empty in every bake -- there is nothing under a tree -- so
+    // it costs the fill of a strip the depth buffer mostly rejects against the
+    // terrain in front of it.
+    const y0 = -sink
+    const y1 = height - sink
     const corners = tri === 'up'
-      ? [[-hw, 0, 0, 1], [hw, 0, 1, 1], [0, height, 0.5, 0]]
+      ? [[-hw, y0, 0, 1], [hw, y0, 1, 1], [0, y1, 0.5, 0]]
       : tri === 'down'
-        ? [[0, 0, 0.5, 1], [hw, height, 1, 0], [-hw, height, 0, 0]]
+        ? [[0, y0, 0.5, 1], [hw, y1, 1, 0], [-hw, y1, 0, 0]]
         : [
-          [-hw, 0, 0, 1],
-          [hw, 0, 1, 1],
-          [hw, height, 1, 0],
-          [-hw, height, 0, 0],
+          [-hw, y0, 0, 1],
+          [hw, y0, 1, 1],
+          [hw, y1, 1, 0],
+          [-hw, y1, 0, 0],
         ]
     for (const [x, y, u0, v] of corners) {
       const u = flip ? 1 - u0 : u0
@@ -593,7 +648,7 @@ export function buildImpostorCard(
         // direction, so the two vertical edges of a quad lean opposite ways and
         // the shading sweeps across the card instead of stepping at its seam.
         const s = x < 0 ? -CANOPY_SPREAD : CANOPY_SPREAD
-        const ny = CANOPY_SKIRT_UP + (1 - CANOPY_SKIRT_UP) * (y / height)
+        const ny = CANOPY_SKIRT_UP + (1 - CANOPY_SKIRT_UP) * ((y - y0) / height)
         const len = Math.hypot(s, ny)
         normals.push((dx * s) / len, ny / len, (dz * s) / len)
       } else {
@@ -665,7 +720,7 @@ export function buildImpostorCard(
 
   geo.userData.impostor = {
     width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
-    upNormal, canopy, tri, spherical, azimuth,
+    upNormal, canopy, tri, sink, spherical, azimuth,
   }
   return geo
 }

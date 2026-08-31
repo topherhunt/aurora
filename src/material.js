@@ -7,25 +7,23 @@ import { LAYER, SNOW_LAYERS, SNOW_CARD_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYER
 // A handful of uniforms for the whole world, shared by reference into every
 // program this module compiles, so `setSnow` and `setMoss` drive props and
 // buildings together and cost nothing per frame. There is no per-object snow or
-// moss DATA and none is needed: what a prop wears is derived in the vertex
-// shader from where it STANDS, by testing its own root against a line. Two pines
-// a hundred metres apart in elevation wear visibly different loads from the same
-// uniform, and a boulder in a damp wood is green where one on a ridge is bare.
+// moss DATA and none is needed: what a prop wears is derived in the VERTEX stage
+// from where it STANDS, by testing its own root against a line. Two pines a
+// hundred metres apart in elevation wear visibly different loads from the same
+// uniform; a boulder in a damp wood is green where one on a ridge is bare.
 //
-// The two lines run in opposite directions -- snow fills IN above its line, moss
+// The two lines run in OPPOSITE DIRECTIONS -- snow fills IN above its line, moss
 // thins OUT above its own -- and they are separate numbers because they are
 // separate facts: snow is about cold, moss is about damp, and the height that
 // strips moss off a rock is where the wind takes the soil, well below the snow.
 //
-// The test uses the instance ORIGIN, not the fragment's own height. With a 47 m
+// The test uses the instance ORIGIN, not the fragment's own height: with a 47 m
 // band a 25 m tree spans half of it, so per-fragment would paint a gradient up a
 // single trunk -- white crown, green skirt. A tree is snowed by where it grows,
-// as a whole.
-//
-// It does NOT read the PAINTED snow-line delta (SnowField.deltaAt): where a
-// delta has been painted a tree disagrees with the ground under it by that
-// delta. The fix is a per-instance channel, and since BatchedMesh's colour is
-// spent on stand tinting it would be a new DataTexture indexed by batchId --
+// as a whole. It does NOT read the PAINTED snow-line delta (SnowField.deltaAt),
+// so where a delta has been painted a tree disagrees with the ground under it by
+// that delta; the fix is a per-instance channel, and with BatchedMesh's colour
+// spent on stand tinting that means a new DataTexture indexed by batchId --
 // worth it only if painted deltas get large.
 //
 // It lands only on the layers textures.js lists, and DIFFERENTLY on the two
@@ -35,15 +33,14 @@ import { LAYER, SNOW_LAYERS, SNOW_CARD_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYER
 // lists there and one uniform here, because "which layers are stone" and "which
 // are wood" are two facts while "fills in from the top down" is one recipe; see
 // SNOW_HARD_LAYERS. Both families are tested with a fixed loop rather than by
-// indexing a mask array with vTexLayer -- three emits `#version 300 es` for
-// every non-raw material and shims the ES 1.00 spelling with #defines
+// indexing a mask array with vTexLayer: three emits `#version 300 es` for every
+// non-raw material and shims the ES 1.00 spelling with #defines
 // (WebGLProgram.js), so a dynamic index WOULD be legal, but at ten iterations of
 // abs+step, unrolled by any compiler, the loops cost the same and say what they
-// mean. The whole block sits inside a `uSnow > 0.0` branch that is uniform
-// across the draw and therefore free when the sun is out.
-//
-// That ES 3.00 fact is also what lets the edge use fwidth() without an extension
-// guard -- see SNOW_EDGE_MIN.
+// mean. That same ES 3.00 fact is what lets the edge use fwidth() with no
+// extension guard -- see SNOW_EDGE_MIN. The whole block sits inside a
+// `uSnow > 0.0` branch that is uniform across the draw and free when the sun is
+// out.
 // ---------------------------------------------------------------------------
 
 const snowAmount = { value: 0 }
@@ -317,47 +314,38 @@ const SNOW_CUT_SPAN = 1.16
 
 // --- and the ONE number that differs between the two families ---------------
 //
-// Everything above serves a boulder as written. The only thing SNOW_HARD_LAYERS
-// changes is how hard the drift leans on `up`: 0.65 for stone and wood against
-// 0.45 for a canopy. Same blob size, same cutover rim, same span, same ramp. The
-// hard number is named for stone because stone is what it was argued against; a
-// log wears it unchanged.
+// SNOW_HARD_LAYERS changes exactly one thing: how hard the drift leans on `up`,
+// 0.65 for stone and wood against 0.45 for a canopy. Same blob size, cutover rim,
+// span and ramp. The hard number is named for stone because stone is what it was
+// argued against; a log wears it unchanged.
 //
-// BOTH LEAN UPWARD MOSTLY AND NEITHER LEANS COMPLETELY, which is the constraint
-// the pair is tuned against. Lean `up` to 0.8 and you get a clean white cap
-// whose rim is a contour of the surface normal -- wrong here for a reason a
-// smooth surface never exposes: A ROCK HAS FLAT FACES. `up` is CONSTANT across a
-// cut facet, so a mask `up` dominates puts the whole facet on one side of the
-// cut, every facet flips as a unit, and the snowline runs along facet edges as a
-// hard straight seam. Softening the rim cannot fix it -- the seam is in the mask,
-// not the edge -- and only noise carrying enough weight to vary WITHIN a face
-// breaks it.
+// BOTH LEAN UPWARD MOSTLY AND NEITHER LEANS COMPLETELY. Lean `up` to 0.8 and you
+// get a clean white cap whose rim is a contour of the surface normal -- wrong
+// here because A ROCK HAS FLAT FACES. `up` is CONSTANT across a cut facet, so a
+// mask `up` dominates flips each facet as a unit and the snowline runs along
+// facet edges as a hard straight seam. Softening the rim cannot fix it (the seam
+// is in the mask, not the edge); only noise heavy enough to vary WITHIN a face
+// breaks it. A LEAF CARD IS ALSO A FLAT QUAD with one authored normal, so this
+// is a constant-normal argument rather than a stone one.
 //
-// WHERE THE FLIP STARTS IS 0.83. blobField() spans the whole of [0,1] (see
-// BLOB_CONTRAST), so on a facet of fixed `up` the only thing moving `drift` is
-// the noise, over a span of exactly (1 - w). The facet is therefore PART covered
-// across a stretch of the load slider worth (1 - w + 2 * SNOW_EDGE_MAX) /
-// SNOW_CUT_SPAN, and check-rocks holds that stretch to a quarter of the travel;
-// solving for the quarter gives w = 0.83. Past there a facet snaps bare to white
-// in one step, which IS the straight-seam artefact written as a number. 0.65
-// leaves 40% of the travel patchy and 0.45 leaves 58%.
-//
-// A LEAF CARD IS ALSO A FLAT QUAD -- one quad, ONE authored normal -- so this is
-// a constant-normal argument rather than a stone one, and foliage is
-// constant-normal at card scale. Foliage stays the lighter of the two because a
-// canopy is a stack of cards at every angle where a rock is a solid, so the same
-// weight reads as a heavier cap on it; 0.45 puts snow ON the leaves rather than
-// mixing evenly THROUGH them, leaving the noise the larger share.
+// THE FLIP STARTS AT 0.83. blobField() spans all of [0,1] (see BLOB_CONTRAST),
+// so on a facet of fixed `up` only the noise moves `drift`, over a span of
+// (1 - w). The facet is part-covered across a stretch of the load slider worth
+// (1 - w + 2 * SNOW_EDGE_MAX) / SNOW_CUT_SPAN, and check-rocks holds that to a
+// quarter of the travel -- solving gives w = 0.83, past which a facet snaps bare
+// to white in one step. 0.65 leaves 40% of the travel patchy, 0.45 leaves 58%.
+// Foliage stays the lighter of the two because a canopy is a stack of cards at
+// every angle where a rock is a solid, so the same weight reads as a heavier cap
+// on it; 0.45 puts snow ON the leaves rather than mixing evenly THROUGH them.
 //
 // The brief the pair buys: the top whitens first, a sheer side is well short of
-// covered when the top is solid, an underside goes last -- and a full winter
-// still covers everything. There is no face the slider cannot reach.
+// covered when the top is solid, an underside goes last, and a full winter still
+// covers everything.
 //
-// WHERE THE NOISE IS SAMPLED is vSnowPos.xyz, WORLD POSITION and not UV. rock.js
-// gives each face its own dominant-axis projection with a seam at every facet
-// edge, and the snow does not care because the noise field is continuous through
-// the solid. Nothing here needs a UV unwrap, a second projection or a baked
-// variant.
+// THE NOISE IS SAMPLED AT vSnowPos.xyz, WORLD POSITION and not UV. rock.js gives
+// each face its own dominant-axis projection with a seam at every facet edge,
+// and the snow does not care because the field is continuous through the solid.
+// No UV unwrap, no second projection, no baked variant.
 const SNOW_ROCK_UP = 0.65
 const SNOW_FOLIAGE_UP = 0.45
 
@@ -521,54 +509,43 @@ const MOSS_RISE_BAND = 2.2
 
 // MOSS LOAD IS A COVERAGE FRACTION, AND THE CUT HAS TO EARN THAT.
 //
-// A linear cut -- `bias - load * span`, which is what snow still uses -- does
-// NOT give a load that means anything, because it assumes `creep` is spread
-// evenly over its range. It is not: creep is blob*0.65 + down*0.35 with blob a
-// smoothed value noise, so it piles up around its median and thins fast at both
-// tails, reaching both ends of [0,1] but sitting between 0.23 and 0.77 over
-// eight tenths of a boulder. A linear sweep therefore spends its travel outside
-// where creep lives -- a load of 0.2 covered 0.2% of the rock and 0.5 jumped to
-// 50%, so a plausible-sounding world range of 0 - 0.5 bought a forest of bare
-// stone.
+// A linear cut -- `bias - load * span`, which snow still uses -- assumes `creep`
+// is spread evenly over its range. It is not: creep is blob*0.65 + down*0.35
+// with blob a smoothed value noise, so it piles up around its median and sits
+// between 0.23 and 0.77 over eight tenths of a boulder. A load of 0.2 covered
+// 0.2% of the rock and 0.5 jumped to 50%, so a plausible world range of 0 - 0.5
+// bought a forest of bare stone.
 //
-// What is wanted is coverage(load) = load. Coverage at a given cut IS the
+// What is wanted is coverage(load) = load. Coverage at a cut IS the
 // complementary CDF of creep, so the cut yielding coverage c is creep's (1 - c)
 // quantile -- and that CDF is very nearly LOGISTIC: sampled at 200k points the
 // quantiles fit `MOSS_CUT_MID - MOSS_CUT_WIDTH * log(c / (1 - c))` to within
 // 0.01 across the usable range, for one log and one divide in the shader.
 //
-// The logit hands over both end promises for free, and keeps them against the
-// far end of the BLEND rather than the cut itself -- what must clear creep's
-// range is where the ramp starts, not its midpoint. As load -> 0 the cut runs to
-// 1.679 at the guard and the ramp starts MOSS_BLEND below at 1.539, against a
-// ceiling of 1.0, so no moss means no moss. As load -> 1 the cut runs to -0.679
-// and the ramp ENDS at -0.637, against a floor of 0.0, so a fully mossed rock is
-// fully mossed. The guard keeps log() off its asymptote; moving it moves both
-// ends.
-//
-// The height cue folds in HERE, multiplying the load rather than shifting the
-// cut (see MOSS_RISE) -- the only place that keeps those promises, since
+// The logit hands over both end promises for free, held against the far end of
+// the BLEND rather than the cut itself -- what must clear creep's range is where
+// the ramp STARTS. As load -> 0 the cut runs to 1.679 at the guard and the ramp
+// starts MOSS_BLEND below at 1.539 against a ceiling of 1.0, so no moss means no
+// moss; as load -> 1 the cut runs to -0.679 and the ramp ENDS at -0.637 against
+// a floor of 0.0. The guard keeps log() off its asymptote; moving it moves both
+// ends. The height cue folds in HERE, multiplying the load rather than shifting
+// the cut (see MOSS_RISE) -- the only place that keeps those promises, since
 // coverage is load * rise and a fragment above the band has an effective load of
 // 0, the same bare stone a world setting of 0 gives.
 //
 // BOTH NUMBERS ARE MEASURED, NOT CHOSEN, and each is tied to something else.
-//
-// THE WIDTH IS creep's logistic scale, so it belongs to blobField, not to moss:
-// anything changing that field's SPREAD -- BLOB_CONTRAST, the warp, an octave --
-// invalidates it. The 0.082 fitted to the older narrower field overshot badly
-// here (a load of 0.1 painted 22%, 0.2 painted 32%).
-//
-// THE MID BELONGS TO THE MASK'S EDGE, which is ASYMMETRIC: the cover term is
+// THE WIDTH is creep's logistic scale, so it belongs to blobField: anything
+// changing that field's SPREAD -- BLOB_CONTRAST, the warp, an octave --
+// invalidates it (0.082, fitted to the older narrower field, painted 22% at a
+// load of 0.1). THE MID belongs to the mask's ASYMMETRIC edge: the cover term is
 // smoothstep( cut - MOSS_BLEND, cut + MOSS_BLEND * MOSS_BLEND_SKEW ), whose
-// midpoint sits MOSS_BLEND * (1 - SKEW) / 2 = 0.049 BELOW the cut. The mask
-// turns on earlier than the cut nominally says, so a mid of 0.50 -- correct for
-// a symmetric edge -- ran coverage a third high through the middle (load 0.3
-// painted 0.40). Raising the mid by that offset puts it back; change MOSS_BLEND
-// or MOSS_BLEND_SKEW and this moves with them.
+// midpoint sits MOSS_BLEND * (1 - SKEW) / 2 = 0.049 BELOW the cut, so a mid of
+// 0.50 -- correct for a symmetric edge -- ran coverage a third high through the
+// middle (load 0.3 painted 0.40). Change MOSS_BLEND or MOSS_BLEND_SKEW and this
+// moves with them.
 //
-// Solved against the real mask rather than the hard-threshold approximation:
-// rms error 0.007 over loads 0.1 to 0.85, and the two end promises still clear
-// with room (see above). scratchpad/moss-refit.mjs does the fit.
+// Solved against the real mask rather than the hard-threshold approximation: rms
+// error 0.007 over loads 0.1 to 0.85. scratchpad/moss-refit.mjs does the fit.
 const MOSS_CUT_MID = 0.550
 const MOSS_CUT_WIDTH = 0.134
 const MOSS_CUT_GUARD = 1e-4
@@ -707,25 +684,22 @@ const SNOW_COMMON = /* glsl */ `
   }
 
   // Domain warp, then contrast. Two things this fixes about a single octave of
-  // value noise, neither of them fixable by changing its frequency.
+  // value noise, neither fixable by changing its frequency.
   //
   // A raw value-noise blob is ROUND and every blob is the same size, the field
   // being an interpolation over one lattice, so snow reads as spots and moss as
   // green polka dots. Warping the SAMPLE POINT by a coarser copy of the same
-  // field drags each rim sideways by an amount that varies over a scale LARGER
-  // than the blob, so rims wander, neighbours reach for each other and merge,
-  // and runs stretch -- which is what a drift and a colony look like.
+  // field drags each rim sideways by an amount varying over a scale LARGER than
+  // the blob, so rims wander, neighbours reach for each other and merge, and
+  // runs stretch -- which is what a drift and a colony look like.
   //
-  // Then contrast, symmetric about 0.5. Value noise spends most of its range
+  // Then contrast, SYMMETRIC about 0.5. Value noise spends most of its range
   // near its mean, so a threshold in the middle cuts through a soft gradient and
-  // leaves a lot of half-covered surface; stretching about the midpoint puts
-  // more of the field at the extremes, which is what makes a patch read as a
-  // PATCH with an interior rather than a smear.
-  //
-  // SYMMETRIC IS LOAD BEARING, because the mean is preserved exactly and two
-  // things depend on that: the distance fade mixes toward 0.5 as its stand-in
-  // for the mip a procedural field has not got, and every end promise below is
-  // sized against a field spanning [0,1].
+  // leaves a lot of half-covered surface; stretching about the midpoint makes a
+  // patch read as a PATCH with an interior rather than a smear. Symmetric is
+  // load bearing: the mean is preserved exactly, and the distance fade mixes
+  // toward 0.5 as its stand-in for the mip a procedural field has not got while
+  // every end promise below is sized against a field spanning [0,1].
   //
   // A SECOND OCTAVE IS NOT WORTH IT. One at 2.07x and 28% weight used to supply
   // the ragged rim; the long warp buys that back on its own, because at nearly
@@ -859,40 +833,35 @@ const SNOW_APPLY = /* glsl */ `
 // TRUE CAMERA-FACING BILLBOARDS, and why they are a shader patch rather than a
 // rotation anybody writes down.
 //
-// A billboard is not a world transform computed per instance on the CPU and
-// pushed into the batch every frame -- that is 22,000 matrix writes a frame for
-// a fern carpet, and it is what makes people think billboards are expensive. It
-// is a VERTEX PROGRAM: the quad is authored in object space and the shader spins
-// it about its own Y axis toward the eye as it transforms it. Zero CPU, zero
-// per-frame writes, and it composes with whatever instancing the draw uses
-// because it happens strictly before the projection.
+// Not a world transform computed per instance on the CPU and pushed into the
+// batch every frame -- that is 22,000 matrix writes a frame for a fern carpet,
+// and it is what makes people think billboards are expensive. It is a VERTEX
+// PROGRAM: the quad is authored in object space and the shader spins it about
+// its own Y axis toward the eye as it transforms it. Zero CPU, zero per-frame
+// writes, and it composes with whatever instancing the draw uses because it
+// happens strictly before the projection.
 //
 // IT CANCELS THE INSTANCE'S OWN YAW rather than requiring unrotated placement.
 // The same instance is a MESH close up -- where a random yaw is the only thing
 // stopping a carpet reading as cloned -- and a billboard far away, so the shader
-// has to undo the yaw baked into the matrix. That is the `axis` term: the
-// instance's own object +X in world space, used as a unit complex number and
-// divided out.
+// undoes the yaw baked into the matrix. That is the `axis` term: the instance's
+// object +X in world space, used as a unit complex number and divided out.
 //
-// SELECTION IS BY TEXTURE LAYER, per-MATERIAL rather than global. The
-// `uvProj`/`texLayer` layout every prop already carries says which geometries
-// are billboards, so this needs no new vertex attribute -- which matters because
-// BatchedMesh throws if a geometry entering the arena is missing an attribute
-// the arena has, making a new attribute a change to every generator in the
-// project. Same mechanism `uSnowLayers` uses. Per-material because v1's scatter
-// draws the SAME impostor layers as fixed crossed cards, and spinning a cross
-// about its own axis is visibly wrong, so v1 opts out by not asking.
-//
-// LAYER AND THEN NORMAL, since a layer is no longer enough: v2's tree ladder
-// draws a crossed card AND a billboard of one species off the same baked layer
-// in the same batch. A card meant to be spun is authored with an exactly
-// vertical normal and a fixed cross is not, so the mask is `layer match AND
-// normal.y > CARD_UP_MARK` -- no new attribute, no duplicate layer, no second
-// bake.
+// SELECTION IS BY TEXTURE LAYER AND THEN NORMAL, per-MATERIAL rather than
+// global. The `uvProj`/`texLayer` layout every prop already carries says which
+// geometries are billboards, so this needs no new vertex attribute -- which
+// matters because BatchedMesh throws if a geometry entering the arena lacks an
+// attribute the arena has, making a new attribute a change to every generator in
+// the project. Same mechanism `uSnowLayers` uses. Per-material because v1's
+// scatter draws the SAME impostor layers as fixed crossed cards, and spinning a
+// cross about its own axis is visibly wrong, so v1 opts out by not asking. The
+// layer alone is no longer enough either: v2's tree ladder draws a crossed card
+// AND a billboard of one species off the same baked layer in the same batch, so
+// the mask is `layer match AND normal.y > CARD_UP_MARK` -- a spun card is
+// authored with an exactly vertical normal and a fixed cross is not.
 //
 // WHAT IT COSTS: 2 triangles per instance against the crossed card's 4. Nothing
 // at a sparse tree scatter (DESIGN.md §5); ~18,000 quads at a 2/m^2 fern carpet.
-//
 // WHAT IT GIVES UP: one silhouette and no depth, so it becomes legal at the
 // parallax rule's range rather than the crossed card's. In a headset it is flat
 // in the strong sense -- a screen-facing quad has no binocular disparity across
@@ -923,28 +892,26 @@ export const CARD_UP_MARK = 0.99
 // spherical tree card seen from a hillside above would lie its trunk back along
 // the ground, which is worse than the foreshortening it fixes.
 //
-// A ROCK IS NOT A TREE -- it has no up. Look down at a boulder field from a
-// ridge, which is most of the time anyone sees one since the beds that reach
-// card range are the scree and the giants and both live on slopes, and every
-// cylindrical card is a vertical signboard presenting the rock's SIDE elevation
-// to a camera that should be seeing its top. They read as cardboard standees the
-// moment the view tips, and the tell is that they all tip together.
+// A ROCK IS NOT A TREE -- it has no up. Looking down at a boulder field from a
+// ridge is most of the time anyone sees one, since the beds that reach card
+// range are the scree and the giants and both live on slopes, and every
+// cylindrical card there is a vertical signboard showing the rock's SIDE to a
+// camera that should see its top. They read as cardboard standees the moment the
+// view tips, and the tell is that they all tip together.
 //
 // A GRASS CARPET IS NOT A TREE EITHER, for a different reason: the player gets
-// ABOVE it. A tuft is ankle-high, so any view from a couple of metres up looks
-// down on the bed at a steep angle, and a cylindrical card at a steep angle is a
-// sliver. The slivers are not scattered, either -- foreshortening depends only
-// on the angle between a card's yaw and the view, so at a fixed altitude the bed
+// ABOVE it. A tuft is ankle-high, and a cylindrical card at a steep angle is a
+// sliver -- not scattered slivers either, since foreshortening depends only on
+// the angle between a card's yaw and the view, so at a fixed altitude the bed
 // thins in CONCENTRIC RINGS around the player. Spherical tips each card back to
 // meet the eye and the rings go.
 //
 // THE PIVOT IS THE CARD'S FOOT, not its middle, which is why this needs no extra
 // attribute. A centre pivot would keep the rock's mass over its map position and
 // swing the bottom half of the card under the hill; a foot pivot keeps the
-// ground contact and lays the rock back away from the eye as the view tips.
-// Ground contact is the cue that matters here -- a rock unstuck from the
-// hillside is visible at a kilometre, one displaced half its own height along
-// the ground is not.
+// ground contact and lays the rock back away from the eye as the view tips. A
+// rock unstuck from the hillside is visible at a kilometre; one displaced half
+// its own height along the ground is not.
 //
 // COST: a 2D rotation becomes a 3x3, about a dozen more vertex ops on four
 // vertices per rock. Not measurable.
@@ -957,13 +924,12 @@ export const CARD_UP_MARK = 0.99
  * the wind whether `uvProj.y` is a height fraction it can trust or a bark
  * repeat it cannot.
  *
- * `propSpun` -- is it a card that WANTS SPINNING? A crossed card and a
- * billboard of one species share a baked layer, so the layer alone cannot
- * separate them, but the normal does and for free: a spun card is authored with
- * an exactly vertical normal (buildImpostorCard's `upNormal`, set exactly when
- * `billboard` is) and a fixed cross leans its normals off vertical. So
- * `normal.y` IS the marker for "turn me", at no attribute and no second layer --
- * see CARD_UP_MARK. Grass is unaffected; its tuft tiers are on another layer.
+ * `propSpun` -- is it a card that WANTS SPINNING? A crossed card and a billboard
+ * of one species share a baked layer, so the layer alone cannot separate them,
+ * but the normal does and for free: a spun card is authored with an exactly
+ * vertical normal (buildImpostorCard's `upNormal`, set exactly when `billboard`
+ * is) and a fixed cross leans its normals off vertical -- see CARD_UP_MARK.
+ * Grass is unaffected; its tuft tiers are on another layer.
  *
  * Hoisting these out of billboardVertex keeps the wind from paying for a second
  * copy of the layer loop. A material with no billboard layers gets the constants
@@ -1003,8 +969,7 @@ function propCardMask(layerCount) {
  * error immediately. Burying `sink` of the grown card puts the extra height back
  * underground and keeps the extra WIDTH, which is the half buying the coverage.
  * At scale 2 and sink 0.3 the card stands 1.4x as tall as its neighbours and
- * twice as wide, reading as one clump of several plants -- which is what it
- * stands in for.
+ * twice as wide, reading as one clump of several plants.
  *
  * RAMPED, NOT SWITCHED: `from` and `to` are metres of eye distance and the
  * smoothstep between them stops a growth ring following the player around. Per
@@ -1017,13 +982,10 @@ function propCardMask(layerCount) {
  * card, so growing afterwards would grow a card already resolved into world
  * offsets and undo the spherical branch's careful scale bookkeeping.
  */
-// THE GROW IS ABOUT THE VISIBLE CARD, NOT THE WHOLE QUAD, which is the whole of
-// this function.
-//
-// Scaling the quad by g and then subtracting a sink SQUASHES: the scale takes
-// the width to g and the sink comes off the height only, so the far end of the
-// ramp is g wide and g * (1 - sink) tall -- at g = 2, sink = 0.3 that is a 30%
-// flatter tuft than the bake drew, and the bed reads as rectangles.
+// THE GROW IS ABOUT THE VISIBLE CARD, NOT THE WHOLE QUAD. Scaling the quad by g
+// and then subtracting a sink SQUASHES -- the scale takes the width to g while
+// the sink comes off the height only, so at g = 2, sink = 0.3 the far end of the
+// ramp is 30% flatter than the bake drew and the bed reads as rectangles.
 //
 // So the sink is a fraction of the GROWN card, solved for. `scale` means what it
 // says: the part above ground is exactly `scale` times bigger in BOTH
@@ -1227,71 +1189,68 @@ ${spin ? spinBody : ''}
 //
 // The problem is not the LOD ladder, it is the OUTER EDGE of a scatter. A tree
 // that materialises the instant it comes inside the draw radius is a black dot
-// switching on in the middle of an empty hillside, and the eye catches it every
-// time even at a kilometre. Same for a scatter that thins with distance: every
-// tree has a range at which it stops being drawn, and crossing it is a pop.
+// switching on in an empty hillside, and the eye catches it even at a kilometre.
+// Same for a scatter that thins with distance: every tree has a range at which
+// it stops being drawn, and crossing it is a pop.
 //
 // HOW IT IS FED: A CLOCK, NOT A DISTANCE. A per-instance gone-distance compared
-// against the live camera distance is as cheap as this can be and writes nothing
+// against the live camera distance is as cheap as this gets and writes nothing
 // per frame, but it has one steady state nothing in the shader can fix: A PROP
 // PARKED IN ITS OWN FADE BAND IS PARKED IN A STIPPLE. Stand still and it dithers
-// forever, and since the band is a fixed FRACTION of each instance's range
+// forever -- and since the band was a fixed FRACTION of each instance's range
 // rather than a shell at the horizon, a flat 15% of every prop past the
 // full-density radius sat in one at every distance. The crossing now stamps a
-// start time and the transition RESOLVES; src/v2/render/rim.js owns that.
-//
-// So both dissolves are clocks, and the CPU's job in each is the same: watch for
+// start time and the transition RESOLVES; src/v2/render/rim.js owns that. So
+// both dissolves are clocks, and the CPU's job in each is the same: watch for
 // the crossing, stamp both ends, reclaim when the window is up.
 //
 // WHERE THE NUMBER LIVES: the alpha channel of BatchedMesh's per-instance colour
-// texture, which three allocates as RGBA-float, fills with 1, and which nothing
-// here ever writes (setColorAt takes a THREE.Color, which has no alpha). So the
-// channel is present, per-instance and already uploaded, and using it needs no
-// new vertex attribute -- which matters because BatchedMesh throws if a geometry
-// entering the arena lacks an attribute the arena has, making a new attribute a
-// change to every generator in the project. `_colorsTexture` is a private field,
-// so the two writers below validate it loudly.
+// texture, which three allocates RGBA-float, fills with 1, and which nothing
+// here ever writes (setColorAt takes a THREE.Color, which has no alpha). Present
+// and already uploaded, so it needs no new vertex attribute -- which matters
+// because BatchedMesh THROWS if a geometry entering the arena lacks an attribute
+// the arena has, making a new attribute a change to every generator in the
+// project. `_colorsTexture` is a private field, so the two writers below
+// validate it loudly.
 //
-// THREE ITSELF NOW CLAIMS THAT CHANNEL and the fragment stage has to take it
-// back -- see COLOR_FRAGMENT, which is the whole of the defence. Through r180
+// THREE ITSELF NOW CLAIMS THAT CHANNEL and the fragment stage takes it back --
+// see COLOR_FRAGMENT, which is the whole defence. Through r180
 // `getBatchingColor` returned a vec3 and `color_fragment` did
-// `diffuseColor.rgb *= vColor`, so the alpha was spare. The three A-Frame 1.8
-// ships -- the three every page here runs, see three-instance.js -- returns a
-// vec4, defines USE_COLOR_ALPHA for any batch with a colour texture, and does
+// `diffuseColor.rgb *= vColor`, leaving alpha spare. The three A-Frame 1.8 ships
+// -- the three every page here runs, see three-instance.js -- returns a vec4,
+// defines USE_COLOR_ALPHA for any batch with a colour texture, and does
 // `diffuseColor *= vColor`, multiplying a stamped clock reading of about -4096
 // into diffuseColor.a for alphaTest 0.5 to discard. Every dissolving prop went
 // fully INVISIBLE for the 250 ms of its fade instead of dithering through it.
 // Overriding the include is cheaper and more durable than moving the fade to a
 // texture of our own, and costs nothing real: a per-instance opacity has nothing
-// to blend with in a binary cutout.
-//
-// 1.0 MEANS NEVER FADE, three's own initial value, so every caller that does not
-// opt in compiles the branch to a constant 1.
+// to blend with in a binary cutout. 1.0 MEANS NEVER FADE -- three's own initial
+// value -- so every caller that does not opt in compiles the branch to a
+// constant 1.
 //
 // WHY DITHER RATHER THAN BLEND: this material is a binary cutout by architecture
-// (DESIGN.md §7 -- alpha blending cannot be sorted inside a batched draw call),
-// so a real alpha ramp is not available at any price. A per-pixel threshold
-// gives a raster dissolve needing no sorting, no second pass, no MSAA and no
-// blend state, reusing the discard alphaTest already pays for. The stipple is
-// visible only close enough to resolve its pixels, and nothing fades close.
-//
-// WHY NOT SHRINK, which is what v1's scatter.js does at its rim: a shrinking
-// tree reads as a GROWING tree when you walk toward it, and these bands sit at a
-// few hundred metres where a tree is still tens of pixels tall. Shrinking is the
-// cheaper trick and the right one for a 26 m grass disc.
+// (§7 -- alpha blending cannot be sorted inside a batched draw call), so a real
+// alpha ramp is not available at any price. A per-pixel threshold gives a raster
+// dissolve needing no sorting, no second pass, no MSAA and no blend state,
+// reusing the discard alphaTest already pays for. The stipple is visible only
+// close enough to resolve its pixels, and nothing fades close. WHY NOT SHRINK,
+// which is what v1's scatter.js does at its rim: a shrinking tree reads as a
+// GROWING tree when you walk toward it, and these bands sit at a few hundred
+// metres where a tree is still tens of pixels tall. Shrinking is the cheaper
+// trick and the right one for a 26 m grass disc.
 //
 // THE CHANNEL ALSO CARRIES THE LOD TIER SWAP, which is where the clock came
 // from. A swap never had a distance version to fall back on: the instance is at
-// a fixed range when it happens and the point is that it RESOLVES -- stand still
-// after crossing a band and the duplicate must be evicted and the stipple must
-// go, or standing still costs a permanent second mesh and permanent dots. That
-// turned out to be the rim's argument too, hence one mechanism rather than two.
+// a fixed range when it happens, and the point is that it RESOLVES -- stand
+// still after crossing a band and the duplicate must be evicted and the stipple
+// must go, or standing still costs a permanent second mesh and permanent dots.
+// That turned out to be the rim's argument too, hence one mechanism.
 //
-// The scheme is symmetric and costs one CPU write per instance per swap, not per
+// The scheme is symmetric and costs one CPU write per instance PER SWAP, not per
 // frame: the caller stamps a START TIME into both halves -- the arriving tier
 // fading IN, a duplicate holding the departing tier fading OUT -- and the shader
 // turns `uPropClock - t0` into the fade. The CPU's only other job is to notice
-// the fade has run out and hand the duplicate back.
+// the window has run out and hand the duplicate back.
 //
 // A RIM FADE IS THE SAME STAMP WITH NO SECOND HALF: no duplicate, no arriving
 // tier, so one threshold goes unused and the prop dithers against an empty
@@ -1300,8 +1259,8 @@ ${spin ? spinBody : ''}
 // which tier a departing prop wore is not a question anybody is asking.
 //
 // THE TWO HALVES TAKE COMPLEMENTARY THRESHOLDS (`ign` and `1 - ign`), so exactly
-// one survives at every pixel. Coverage is conserved and the silhouette never
-// thins or doubles -- both halves on the same threshold would be solid where the
+// one survives at every pixel: coverage is conserved and the silhouette never
+// thins or doubles. Both halves on the same threshold would be solid where the
 // noise is low and holed where it is high, in both halves at once.
 // ---------------------------------------------------------------------------
 
@@ -1463,44 +1422,40 @@ ${FADE_DECODE}
  * of Duty: Advanced Warfare", SIGGRAPH 2014), the dissolve's threshold source.
  *
  * Three ALU ops and no texture, and it REPLACED a mat4 constant, so it is at
- * worst a wash on cost and probably cheaper.
- *
- * WHAT IT BUYS over the 4x4 Bayer it replaced, measured in float32 over
- * 512x512:
+ * worst a wash on cost and probably cheaper. What it buys over the 4x4 Bayer it
+ * replaced, measured in float32 over 512x512:
  *
  *   COVERAGE. Bayer has 16 threshold levels and can only quantise the fade to
- *   sixteenths -- asked for 5% it keeps 6.25%, a 25% relative error, and the
+ *   sixteenths -- asked for 5% it keeps 6.25%, a 25% relative error, so the
  *   dissolve advances in visible steps at the ends of its ramp. IGN's worst
  *   coverage error over the same sweep is 0.03%.
  *
  *   STRUCTURE, which was the reason for the change. Bayer's 50% level set is
- *   EXACTLY a period-2 checkerboard (100% self-similarity at a 2 px horizontal
- *   shift), and that lattice is the diagonal diamond cross-hatch that is Bayer's
- *   signature at every size. IGN is not structureless either -- 98.3%
- *   self-similar under a 15 px diagonal shift -- but 15 px of faint diagonal is
- *   perceptually a different thing from 2 px of hard lattice, and its longest
- *   same-state run at 50% is 2 px, so it stays evenly spread.
+ *   EXACTLY a period-2 checkerboard (100% self-similar at a 2 px horizontal
+ *   shift), the diagonal cross-hatch that is Bayer's signature at every size.
+ *   IGN is not structureless either -- 98.3% self-similar under a 15 px diagonal
+ *   shift -- but 15 px of faint diagonal is perceptually a different thing from
+ *   2 px of hard lattice, and its longest same-state run at 50% is 2 px.
  *
  * A plain hash of gl_FragCoord is free and genuinely structureless (50.4%) but
  * it is WHITE noise, which clumps: 16 px same-state runs at half coverage, so
  * blobs and holes rather than an even spread. Blue noise is both structureless
  * AND evenly spaced, and IGN is the cheapest way to get most of it. The step up
  * is a tiled 64x64 blue-noise texture -- one texelFetch inside the branch that
- * already exists -- and it is the only reason to spend a texture unit here. The
- * R2 pair (0.7548776662, 0.5698402909) measures slightly better on coverage and
+ * already exists -- and the only reason to spend a texture unit here. The R2
+ * pair (0.7548776662, 0.5698402909) measures slightly better on coverage and
  * slightly worse on run length; it was a coin toss.
  *
- * SCREEN SPACE AND FIXED, as the Bayer matrix was, and for the same reason: the
- * threshold is a function of gl_FragCoord and nothing else, so the stipple sits
- * still while the object slides across it. Feeding it time or view direction
- * makes it boil as the head moves, which is far more visible than the pop it is
- * replacing.
+ * SCREEN SPACE AND FIXED, as the Bayer matrix was: the threshold is a function
+ * of gl_FragCoord and nothing else, so the stipple sits still while the object
+ * slides across it. Feeding it time or view direction makes it boil as the head
+ * moves, far more visible than the pop it is replacing.
  *
  * IN STEREO the fixed screen-space pattern is a known compromise, unchanged by
  * this: both eyes sample DIFFERENT thresholds at the same surface point, so a
- * half-dissolved prop is solid to one eye and holed to the other, which is
- * binocular rivalry. Keying off the card's own UV instead would fix it and make
- * the stipple swim with the object. Not decided; wants a headset.
+ * half-dissolved prop is solid to one eye and holed to the other -- binocular
+ * rivalry. Keying off the card's own UV instead would fix it and make the
+ * stipple swim with the object. Not decided; wants a headset.
  */
 export const IGN_GLSL = /* glsl */ `
   float ign( vec2 p ) {
@@ -1626,38 +1581,37 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
 // handful of ALU per fragment mirroring, sliding, shortening and occasionally
 // dropping each one.
 //
-// WHAT EACH LINE COSTS IN COVERAGE, which decides the economics of the whole
-// strip system. A strip is TWO TRIANGLES whatever this does to it, so `discard`
-// saves nothing on the triangle bill -- it only removes grass, which has to be
-// bought back by scattering more strips. Dropping two tiles in three costs a
-// factor of three in strips, which is exactly what the strip system was worth.
+// WHAT EACH LINE COSTS IN COVERAGE decides the economics of the whole strip
+// system. A strip is TWO TRIANGLES whatever this does to it, so `discard` saves
+// nothing on the triangle bill -- it only removes grass, which has to be bought
+// back by scattering more strips. Dropping two tiles in three costs a factor of
+// three in strips, which is exactly what the strip system was worth.
 //
 //   MIRROR is FREE: one compare, no coverage lost, and the highest-value line
-//   here -- it halves the number of distinct silhouettes the eye has to notice
-//   before it decides the row repeats.
-//   FLARE is BETTER than free, it ADDS area. The top of the card is widened
+//   here -- it halves the distinct silhouettes the eye must notice before it
+//   decides the row repeats.
+//   FLARE is BETTER than free, it ADDS area: the top of the card is widened
 //   about its own centre, so a strip is an upside-down trapezoid and the clumps
-//   fan out as they rise instead of standing in a column. Vertex-stage, so free
-//   per fragment -- but only once the TILE GRID IS FLARED WITH IT. Widening the
-//   quad alone draws the same clumps over more metres, a horizontal stretch of
-//   up to uStripFlare at the top of every card; STRIP_VERTEX displaces the
-//   coordinate by the same amount the vertex moved, so the extra width is extra
-//   grass instead.
+//   fan out as they rise. Vertex-stage, so free per fragment -- but only once
+//   THE TILE GRID IS FLARED WITH IT. Widening the quad alone draws the same
+//   clumps over more metres, a horizontal stretch of up to uStripFlare at the
+//   top of every card; STRIP_VERTEX displaces the coordinate by the same amount
+//   the vertex moved, so the extra width is extra grass instead.
 //   SHRINK costs its own SQUARE. Each tile is scaled about its FOOT so the
 //   skyline is ragged rather than the same outline N times -- in BOTH AXES,
 //   which is the subtlety: scaling v alone squashes the clump wide and short,
 //   and the picture has to lose width at the rate it loses height or the grass
-//   reads as trodden. Two axes means s^2, so this is the second most expensive
-//   line here and not the near-free one it looks like.
+//   reads as trodden. Two axes means s^2, the second most expensive line here
+//   and not the near-free one it looks like.
 //   SLIDE is FREE, and free BECAUSE of the shrink: a tile scaled to s has 1-s of
 //   slack to sit anywhere in, so neighbours stop sharing a vertical seam with no
-//   wrapping. A wrapped slide cannot work here -- an inset tile no longer meets
-//   its neighbours, so the wrap cuts a hard vertical edge through the tuft with
+//   wrapping. A wrapped slide cannot work -- an inset tile no longer meets its
+//   neighbours, so the wrap cuts a hard vertical edge through the tuft with
 //   nothing beside it to complete the picture.
 //   MASK is EXPENSIVE, 1:1 against the point of the system. OFF by default
 //   (uKeep 1.0): the variety it bought is now free from the per-instance TILE
 //   COUNT -- a strip is 3 to 6 tiles long (STRIP_TILES in v2/render/grass.js),
-//   so runs already break up and the gaps fall between strips rather than being
+//   so runs already break up and the gaps fall BETWEEN strips rather than being
 //   punched out of paid-for card. Left as a knob because the first few gaps are
 //   worth more than the last few.
 //
@@ -1675,7 +1629,7 @@ export function setPropFadeTimerAt(batch, instanceId, startTime, fadeIn) {
 //
 // WHY textureGrad AND NOT texture. The mirror and the slide are done on `u`
 // AFTER it is wrapped into the tile, so the coordinate the sampler sees jumps at
-// every tile boundary. Implicit derivatives across that jump are huge, the
+// every tile boundary: implicit derivatives across that jump are huge, the
 // hardware picks the coarsest mip for that pixel column, and every boundary
 // becomes a bright blurred vertical line. Taking the gradients from the
 // CONTINUOUS coordinate and sampling explicitly fixes it. Plain tiling would NOT
@@ -1932,21 +1886,17 @@ const STRIP_SAMPLE = /* glsl */ `
 // out of `batchingMatrix`; the height fraction is `1 - uvProj.y` on any card
 // (buildImpostorCard authors v = 0 at the top) and object-space y on a mesh. So
 // the effect is arithmetic on values already being carried, which is why it is
-// affordable at 50,000 instances.
-//
-// AND IT HAD TO BE. The normal way to do this is a per-vertex stiffness weight,
-// and it is unavailable: BatchedMesh throws if a geometry entering the arena
-// lacks an attribute the arena has, so one new attribute is a change to every
-// generator in the project. Same constraint that shaped billboardVertex's layer
-// mask and the fade slot's packing, and the same answer -- derive it from what
-// is already there.
+// affordable at 50,000 instances -- AND IT HAD TO BE, because the normal way to
+// do this is a per-vertex stiffness weight and BatchedMesh throws if a geometry
+// entering the arena lacks an attribute the arena has, making one new attribute
+// a change to every generator in the project. Same constraint that shaped
+// billboardVertex's layer mask and the fade slot's packing.
 //
 // BEND AS AN ANGLE, NOT A DISTANCE. The displacement is `amp * y`, so it is
-// dimensionless: the instance matrix scales it afterwards along with everything
-// else, and a 12 m spruce and a 0.3 m tuft lean by the same ANGLE with no
-// per-instance height uniform. src/props-main.js's preview sway needs `uHeight`
-// only because it builds one material per asset; a batch cannot and does not
-// have to.
+// dimensionless: the instance matrix scales it afterwards, and a 12 m spruce and
+// a 0.3 m tuft lean by the same ANGLE with no per-instance height uniform.
+// src/props-main.js's preview sway needs `uHeight` only because it builds one
+// material per asset; a batch cannot and does not have to.
 //
 // A TRAVELLING WAVE, NOT A PER-INSTANCE PHASE. The phase is
 // `dot(rootXZ, windDir) * k - t * w`, so a gust crosses the meadow instead of
@@ -1959,10 +1909,10 @@ const STRIP_SAMPLE = /* glsl */ `
 // that line falls exactly on trees.js LOD_BANDS[2] where the billboard tier
 // starts -- so gating on the tier looks obvious and is wrong. A tier swap is
 // CROSS-DISSOLVED over PROP_FADE_SECONDS with both tiers at the same matrix, so
-// gating on tier makes the departing crossed card sway while the arriving
+// gating on tier would make the departing crossed card sway while the arriving
 // billboard stands still, as a double image, every time a tree crosses 100 m.
 // Amplitude off the root's DISTANCE gives both halves the same number from the
-// same root, so the dissolve stays coherent for free. It also generalises where
+// same root, so the dissolve stays coherent for free -- and it generalises where
 // a tier test would not: ferns draw to 90 m and grass to 70, so those beds are
 // entirely inside the ramp and every instance sways, billboards included.
 //
@@ -2454,7 +2404,7 @@ export function createPropMaterial(
         // particular kind of surface, so each asks its own question:
         //
         //   rockV -- "does this wear the ROCK RECIPE", which since wood joined
-        //   SNOW_HARD_LAYERS means stone AND wood. The right gate for uSnowVary,
+        //   SNOW_HARD_LAYERS means stone AND wood. The right gate for uSnowVary
         //   because the problem is the recipe's: a surface leaning on 'up'
         //   harder than foliage takes its undersides at a full load and stops
         //   being stone, or being wood (see setSnowVary).
@@ -2462,11 +2412,10 @@ export function createPropMaterial(
         //   leafV -- "is this FOLIAGE", over SNOW_LAYERS, a genuine membership
         //   test rather than the complement of rockV on purpose: "not a hard
         //   surface" also catches grass, fronds, the terrain and every building
-        //   layer, none of which is a canopy. Its problem is a different one,
-        //   and the difference is how many trees you are looking at. ONE canopy
-        //   at a full load is a loaded tree; a whole STAND at a full load is
+        //   layer, none of which is a canopy. Its problem is scale -- ONE canopy
+        //   at a full load is a loaded tree, a whole STAND at a full load is
         //   every tree wearing the identical ceiling, because the ceiling is a
-        //   scene uniform -- paint over the forest rather than weather that fell
+        //   scene uniform. Paint over the forest rather than weather that fell
         //   on it. Separate from uSnowVary because stone's band is tuned against
         //   a rock going white and is the wrong band here (see setLeafSnowVary).
         //
@@ -2642,7 +2591,7 @@ export function createPropMaterial(
  * LAMBERT, NOT BASIC. The argument for Basic was that an impostor is shaded
  * TWICE if you let it be -- once when the tree is captured, again when the card
  * carrying that capture is lit -- so bake flat albedo and leave the shading to
- * the card's own normals. What that misses is that a CARD HAS FOUR NORMALS AND A
+ * the card's own normals. What that misses is that A CARD HAS FOUR NORMALS AND A
  * TREE HAS THOUSANDS: a card's normals give one smooth gradient across a quad,
  * standing in for a crown of ten thousand leaves most of which are behind other
  * leaves. Flat albedo does not remove the second kind of shading, it deletes it,

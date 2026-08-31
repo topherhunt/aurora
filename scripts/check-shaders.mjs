@@ -669,16 +669,26 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
 // and a Quest, and a terrain shader that fails to link does not draw a plainer
 // hillside, it draws nothing at all.
 //
-// Both variants, because the atlas branch is not a small addition -- it carries
-// the triplanar stone fetches, the fine layer and the ground tiles, all of it
-// inside `${atlas ? ... : ''}` and therefore INVISIBLE to a check that only ever
-// passes null. The two are separate programs in the real renderer too; see the
-// cacheKey at the bottom of terrain-material.js.
+// ALL THREE VARIANTS, because each one is a different body of GLSL and each is
+// invisible to a check that compiles the others. The atlas branch carries the
+// triplanar stone fetches, the fine stone layer and the ground tiles, all inside
+// `${stone ? ... : ''}`. The LO-FI branch is the headset's middle rung: it
+// deletes those and grows a triplanar grit path and a set of `${lofi ? ...}`
+// gates that exist under no other option. All three are separate programs in the
+// real renderer too; see the cacheKey at the bottom of terrain-material.js.
 //
 // USE_COLOR because the material is built with vertexColors, and the fog pair
 // because v2's scene carries FogExp2 -- which is now load-bearing rather than
 // incidental, since auroraDetailK reads `fogDensity` out of the fog chunk.
-for (const withAtlas of [false, true]) {
+const TERRAIN_VARIANTS = [
+  ['no atlas   ', { atlas: false, lofi: false }],
+  ['with atlas ', { atlas: true, lofi: false }],
+  // Built WITH an atlas on purpose: that is how main.js builds it, and `lofi`
+  // has to win over a non-null atlas or the headset compiles the stone fetches
+  // it asked to be rid of. The banned marks below are what hold that.
+  ['lo-fi      ', { atlas: true, lofi: true }],
+]
+for (const [variant, opts] of TERRAIN_VARIANTS) {
   const lib = THREE.ShaderLib.lambert
   const shader = {
     uniforms: THREE.UniformsUtils.clone(lib.uniforms),
@@ -686,12 +696,12 @@ for (const withAtlas of [false, true]) {
     fragmentShader: lib.fragmentShader,
     defines: {},
   }
-  const atlas = withAtlas ? new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1) : null
-  const mat = createTerrainMaterial({ atlas })
+  const atlas = opts.atlas ? new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1) : null
+  const mat = createTerrainMaterial({ atlas, lofi: opts.lofi })
   mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
 
   const defines = ['#define USE_COLOR', '#define USE_FOG', '#define FOG_EXP2']
-  const label = `terrain-material ${withAtlas ? 'with atlas' : 'no atlas   '}`
+  const label = `terrain-material ${variant}`
   const vert = finish(shader.vertexShader)
   const frag = finish(shader.fragmentShader)
   SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
@@ -711,16 +721,31 @@ for (const withAtlas of [false, true]) {
   // a line of sparkling pixels down every snow border on the headset. The mark
   // is what makes that a gate failure rather than a bug report.
   const marks = [
-    'textureGrad( uGritMap',
+    'textureGrad( uGritArr',
     'textureGrad( uMacroMap',
     'auroraSnowD',
     'auroraDetailK',
     'auroraBW',
     'normal + ( viewMatrix * vec4( auroraBump, 0.0 ) )',
   ]
-  if (withAtlas) marks.push('auroraStoneK > 0.004')
+  const banned = []
+  if (opts.lofi) {
+    // The triplanar grit is the whole reason a cliff still reads as rock once
+    // the stone photograph is gone, and it exists ONLY here.
+    marks.push('float auroraGritTri(')
+    // What lo-fi is FOR. Each of these is a fetch per fragment that the middle
+    // rung exists to delete, and every one of them would come back silently if
+    // a `${stone ? ...}` guard ever went back to `${atlas ? ...}`.
+    banned.push('uAtlas', 'auroraStoneK', 'auroraGroundTile', 'auroraMF = textureGrad')
+  } else {
+    banned.push('auroraGritTri')
+    if (opts.atlas) marks.push('auroraStoneK > 0.004')
+  }
   for (const mark of marks) {
     if (!frag.includes(mark)) MISSING_MARKS.push(`${label} frag: ${mark}`)
+  }
+  for (const mark of banned) {
+    if (frag.includes(mark)) MISSING_MARKS.push(`${label} frag: emitted ${mark}, should not`)
   }
 }
 

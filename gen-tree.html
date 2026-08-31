@@ -97,7 +97,7 @@
         <button id="gallery">seeds</button>
         <button id="sizes">sizes</button>
         <button id="lod1">LOD1</button>
-        <button id="lod2">LOD2</button>
+        <button id="lod2">card</button>
         <button id="grid">grid</button>
         <button id="wire">wireframe</button>
         <button id="spin">spin</button>
@@ -113,14 +113,16 @@
       <h2>the ladder, for this tree</h2>
       <table id="lod"></table>
       <p class="note">
-        Ranges are <em>LOD_BANDS</em> in <em>src/v2/render/trees.js</em>, read live, and the
-        triangles are this tree at this height rather than a class average. The two mesh tiers are
-        the SAME tree: LOD1 only drops the trunk to three sides and each limb to one upright fin,
-        so every leaf card stays in its seat and the swap at the first boundary moves nothing you
-        can see. LOD2 is a side-on photograph of LOD0 on three crossed planes, one bake and one
-        texture layer per species; the far card is that same photograph on one triangle that turns
-        to face you. The camera stays where you left it when you flip tiers, so you can watch for
-        the moment one stops being convincing.
+        Every row is read live: the rungs and their ranges are <em>LOD_BANDS</em> and
+        <em>DRAW_RADIUS</em> in <em>src/v2/render/trees.js</em>, and the triangles are this tree at
+        this height rather than a class average. The two mesh tiers are the SAME tree: LOD1 only
+        drops the trunk to three sides and each limb to one upright fin, so every leaf card stays
+        in its seat and the swap at the first boundary moves nothing you can see. Everything past
+        them is one triangle carrying a side-on photograph of LOD0, spun to face you, one bake and
+        one texture layer per species &mdash; and where the species stands its triangle apex-down,
+        the card is sunk below the ground so the trunk still has width where it meets it. The
+        camera stays where you left it when you flip tiers, so you can watch for the moment one
+        stops being convincing.
       </p>
 
       <h2>measured, in metres</h2>

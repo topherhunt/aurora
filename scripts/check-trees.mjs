@@ -623,12 +623,12 @@ const variants = treeVariants()
   }
   check(descends, 'every variant gets cheaper at every rung of its own ladder',
     bank.tiers.map((t, i) => `${lo[i]}-${hi[i]}`).join(' | ') + worstStep)
-  // The one assertion that pins the far bill. Both ends of each range, because
-  // "every variant" is the claim: the cross is three quads for all twelve and
-  // the billboard is one triangle for all twelve, whatever the species or size.
+  // The one assertion that pins the far bill. Both ends of the range, because
+  // "every variant" is the claim: the billboard is one triangle for all four,
+  // whatever the species, and the rung above it is a mesh in the hundreds.
   const last = bank.tiers.length - 1
-  check(lo[last] === 1 && hi[last] === 1 && lo[last - 1] === 6 && hi[last - 1] === 6,
-    'the far tier is a one-triangle billboard and the one before it a three-plane cross',
+  check(lo[last] === 1 && hi[last] === 1 && lo[last - 1] > 6,
+    'the far tier is a one-triangle billboard and the one before it a mesh',
     `${lo[last - 1]}-${hi[last - 1]} then ${lo[last]}-${hi[last]} triangles`)
 
   // BatchedMesh refuses the whole arena over one stray attribute, so this is a
@@ -650,20 +650,16 @@ const variants = treeVariants()
     'one impostor layer per species, none shared', `${impostors.join(', ')}`)
   check(impostors.every((l) => Number.isInteger(l) && l >= 0 && l < LAYER_COUNT),
     'every impostor layer is inside the texture array', `${LAYER_COUNT} layers`)
-  // Both card tiers wear the SAME photograph. If they ever stopped, the far
-  // tier would cost a second bake and a second layer for no visible gain.
-  const cross = bank.tiers[bank.tiers.length - 2].geometries
+  // The card wears its species' own photograph and no other, which is what
+  // keeps one bake and one layer serving the whole far field.
   const card = bank.tiers[bank.tiers.length - 1].geometries
-  const sameLayer = variants.every((v, i) =>
-    cross[i].attributes.texLayer.getX(0) === v.impostorLayer &&
-    card[i].attributes.texLayer.getX(0) === v.impostorLayer)
-  check(sameLayer, 'both card tiers hang on their species impostor layer, so neither costs a second bake')
-  // How material.js tells the two apart: an EXACTLY vertical normal marks the
-  // card that billboardVertex may spin, and the cross must stay under
-  // CARD_UP_MARK or a whole forest starts rotating about its trunks. Exactly,
-  // not merely over the line: the marker is the entire contract between the two
-  // tiers that share one baked layer, so the billboard's normal is (0, 1, 0) and
-  // anything else is a card that has picked up a fan it must not have.
+  const sameLayer = variants.every((v, i) => card[i].attributes.texLayer.getX(0) === v.impostorLayer)
+  check(sameLayer, 'the card tier hangs on its species impostor layer, so it costs no second bake')
+  // How material.js knows to spin it: an EXACTLY vertical normal. Exactly, not
+  // merely over the line -- the marker is the entire contract between a spun
+  // card and a fixed one on the same baked layer, so the billboard's normal is
+  // (0, 1, 0) and anything else is a card that has picked up a fan it must not
+  // have.
   const cardUp = card.every((g) => {
     const n = g.attributes.normal
     for (let i = 0; i < n.count; i++) {
@@ -671,14 +667,8 @@ const variants = treeVariants()
     }
     return true
   })
-  const crossDown = cross.every((g) => {
-    const n = g.attributes.normal
-    for (let i = 0; i < n.count; i++) if (n.getY(i) >= CARD_UP_MARK) return false
-    return true
-  })
   check(cardUp, 'the billboard tier wears exactly (0, 1, 0), which is what marks it spinnable',
     `CARD_UP_MARK ${CARD_UP_MARK}`)
-  check(crossDown, 'the cross tier stays under the marker, so billboardVertex leaves it alone')
 
   // THE FAR CARD IS ONE TRIANGLE. Which way up is a fact about the species'
   // outline -- a conifer IS a triangle apex-up, a lollipop is close to one
@@ -767,20 +757,20 @@ const variants = treeVariants()
 // The tiers are pinned BY INDEX and by absolute count here, not relative to the
 // end of the ladder the way the bank section's checks are. "The last tier is one
 // triangle" stays true when a tier is inserted or dropped, and a tier appearing
-// or disappearing is the exact change this section exists to catch. So: four
-// tiers with a billboard and three without, tier 2 six triangles for every
-// variant, tier 3 one, and tiers 0 and 1 the only rungs that cost more than six.
+// or disappearing is the exact change this section exists to catch. So: three
+// tiers with a billboard and two without, tier 2 one triangle for every variant,
+// and tiers 0 and 1 the only rungs that cost more than six.
 
 console.log('\n-- the shipped ladder --')
 
 {
   const noBillboard = buildTreeBank({ seed: 1, billboard: false })
 
-  check(bank.tiers.length === 4,
-    'the shipped bank is four tiers: the LOD0 mesh, the LOD1 mesh, the cross, the billboard',
+  check(bank.tiers.length === 3,
+    'the shipped bank is three tiers: the LOD0 mesh, the LOD1 mesh, the billboard',
     `${bank.tiers.length} tiers of ${bank.variants.length} variants each`)
-  check(noBillboard.tiers.length === 3,
-    'without a billboard the bank is three tiers and the cross is the last one',
+  check(noBillboard.tiers.length === 2,
+    'without a billboard the bank is two tiers and LOD1 is the last one',
     `${noBillboard.tiers.length} tiers`)
   // The same relationship the grass gate holds, and the same two failures: one
   // band too few leaves the last tier unreachable, one too many walks off the
@@ -789,15 +779,11 @@ console.log('\n-- the shipped ladder --')
     'LOD_BANDS carries exactly one boundary fewer than the bank has tiers, so no tier is stranded',
     `${LOD_BANDS.length} bands [${LOD_BANDS.join(', ')}] against ${bank.tiers.length} tiers`)
 
-  // Both ends of both card tiers, over every variant: the cross is three quads
-  // and the billboard is one triangle whatever the species or the size.
-  const crossTris = bank.tiers[2].triangles
-  check(crossTris.every((t) => t === 6),
-    'every tier-2 geometry is exactly six triangles, the three-plane cross',
-    `${Math.min(...crossTris)}-${Math.max(...crossTris)} over ${crossTris.length} variants`)
-  const cardTris = bank.tiers[3].triangles
+  // Both ends of the card tier, over every variant: the billboard is one
+  // triangle whatever the species or the size.
+  const cardTris = bank.tiers[2].triangles
   check(cardTris.every((t) => t === 1),
-    'every tier-3 geometry is exactly one triangle, the spun billboard',
+    'every tier-2 geometry is exactly one triangle, the spun billboard',
     `${Math.min(...cardTris)}-${Math.max(...cardTris)} over ${cardTris.length} variants`)
 
   // The other half of the same statement: exactly two rungs are real trees, so a
@@ -839,13 +825,13 @@ console.log('\n-- lod --')
   // Grass gates the opposite of this and is right to: a carpet whose last band
   // sits outside the full-density radius is spending its finest tier on
   // instances that have already been thinned away. A forest is not a carpet --
-  // the near ladder has to reach past the thinning or a tree at 90 m is a flat
-  // billboard while its neighbour at 79 m still carries three silhouettes -- so
-  // the violation is recorded rather than gated.
+  // the near ladder has to reach past the thinning or a tree just outside the
+  // last band is a flat card while its neighbour just inside still carries a
+  // mesh -- so the violation is recorded rather than gated.
   const last = LOD_BANDS[LOD_BANDS.length - 1]
   if (last > FULL_RADIUS) {
     note('the last LOD band reaches PAST the full-density radius, unlike grass',
-      `${last} m band, ${FULL_RADIUS} m full -- trees between them are thinned but still crosses`)
+      `${last} m band, ${FULL_RADIUS} m full -- trees between them are thinned but still meshes`)
   } else {
     check(true, 'the last LOD band does not reach past the full-density radius',
       `${last} m band, ${FULL_RADIUS} m full`)
@@ -927,17 +913,19 @@ console.log('\n-- the vertical squash --')
   //
   // Demonstrated at the LAST MESH BOUNDARY rather than the first, because that
   // is the crossing worth arguing about: the first one swaps one mesh for
-  // another and this one swaps a tree for three quads. Both the height and the
+  // another and this one swaps a tree for a card. Both the height and the
   // distance are derived from that band, so this stays a real demonstration when
-  // the band moves -- OUT is a metre past the plain reach, and the canopy is
-  // held under the band so a plain reach exists at all.
+  // the band moves -- OUT sits midway between the plain reach and the squashed
+  // one, which is the whole window the squash opens, and the canopy is held
+  // under the band so a plain reach exists at all.
   const meshTiers = bank.tiers.filter((t) => t.triangles.some((n) => n > 6)).length
   const MESH = meshTiers - 1
   const MESH_BAND = LOD_BANDS[MESH]
   const CANOPY = Math.min(9, Math.floor(MESH_BAND * 0.6))
-  const OUT = Math.ceil(Math.sqrt(MESH_BAND ** 2 - CANOPY ** 2)) + 1
+  const OUT = (Math.sqrt(MESH_BAND ** 2 - CANOPY ** 2)
+    + Math.sqrt(MESH_BAND ** 2 - (CANOPY * Y_SQUASH) ** 2)) / 2
   check(tierOf(OUT, CANOPY, true) <= MESH && tierOf(OUT, CANOPY, false) > MESH,
-    `a canopy ${CANOPY} m up and ${OUT} m out is still a mesh only under the squash`,
+    `a canopy ${CANOPY} m up and ${OUT.toFixed(2)} m out is still a mesh only under the squash`,
     `tier ${tierOf(OUT, CANOPY, false)} -> ${tierOf(OUT, CANOPY, true)}, ` +
     `mesh to tier ${MESH} and its ${MESH_BAND} m band`)
   const reach = (squash) =>
@@ -1169,9 +1157,9 @@ trees.place(0, 0)
   check(visibleMismatch === 0, 'and every tree it hides is actually invisible in the arena',
     `${visibleMismatch} of ${s.placed} disagree`)
 
-  // THE ARENA'S OWN BOOKKEEPING, which nothing above can see: sixteen meshes,
-  // each drawing a dense prefix, and every visible instance in exactly one of
-  // them at the tier it thinks it holds.
+  // THE ARENA'S OWN BOOKKEEPING, which nothing above can see: one mesh per tier
+  // and species, each drawing a dense prefix, and every visible instance in
+  // exactly one of them at the tier it thinks it holds.
   {
     const arena = trees.batch
     let live = 0
@@ -1220,6 +1208,57 @@ trees.place(0, 0)
     `${s.tiles} tiles of which ${s.nearTiles} near, ${s.bankKB} KB of geometry`)
   note('draw calls', `${trees.batch.meshes.length} meshes, ` +
     `${trees.batch.meshes.filter((m) => m.count > 0).length} of them non-empty`)
+}
+
+// --- 9b1. the two ablations --------------------------------------------------
+//
+// The /?quest switches that answer "what do trees actually cost", and both are
+// measurements rather than settings, so what matters is that each removes ONE
+// thing and puts it back exactly. `tree tiers` has to empty the mesh meshes --
+// an emptied InstancedMesh is skipped before its draw call, which is where the
+// saving is, and a tier still holding one instance would keep the call and the
+// number would mean nothing. `tree leaf cutout` has to restore the material's
+// OWN threshold, not a number typed in a switch case, or an A/B leaves the
+// forest running at the wrong alphaTest for the rest of the session.
+{
+  const meshTiers = bank.tiers.length - 1
+  // The arena ids of every MESH tier, asked of the same map update() steers by.
+  const meshGeo = []
+  for (let t = 0; t < meshTiers; t++) meshGeo.push(...trees.tierIds[t])
+  const meshInstances = () => meshGeo.reduce((n, g) => n + trees.batch.meshes[g].count, 0)
+
+  trees.setCardsOnly(true)
+  trees.update(0, EYE, 0)
+  let offLadder = 0
+  for (const tile of trees.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) if (trees.tierAt[tile.ids[k]] !== trees.cardTier) offLadder++
+  }
+  const meshLive = meshInstances()
+  check(offLadder === 0 && meshLive === 0,
+    'cards only takes every tree down to the card tier and leaves the mesh meshes empty, so their draw calls go with them',
+    `${offLadder} trees off the card tier, ${meshLive} instances still in ${meshTiers} mesh tiers`)
+  check(trees.stats.cardsOnly === true, 'and the stats row says so, which is what the readout flags')
+
+  trees.setCardsOnly(false)
+  trees.update(0, EYE, 0)
+  const backOnMesh = meshInstances()
+  check(backOnMesh > 0 && trees.stats.cardsOnly === false,
+    'and turning it back on refills the mesh tiers, so the ablation is a measurement and not a one-way door',
+    `${backOnMesh} instances back on the mesh tiers`)
+
+  const shipped = trees.material.alphaTest
+  check(shipped > 0, 'the shipped forest is an alpha CUTOUT, which is what makes the other switch worth throwing',
+    `alphaTest ${shipped}`)
+  const version = trees.material.version
+  trees.setCutout(false)
+  check(trees.material.alphaTest === 0 && trees.material.version > version,
+    'no cutout zeroes the reject and recompiles, since USE_ALPHATEST is keyed off the threshold at compile time',
+    `alphaTest ${trees.material.alphaTest}, version ${version} -> ${trees.material.version}`)
+  check(trees.stats.cutout === false, 'and the stats row says so')
+  trees.setCutout(true)
+  check(trees.material.alphaTest === shipped && trees.stats.cutout === true,
+    'and turning it back on restores the threshold the material shipped with rather than a number typed beside it',
+    `alphaTest ${trees.material.alphaTest}, shipped ${shipped}`)
 }
 
 // --- 9b2. a dissolve never retracts -----------------------------------------
@@ -1335,9 +1374,9 @@ console.log('\n-- a dissolve does not retract --')
 
 console.log('\n-- the LOD swap dissolves --')
 {
-  // Far enough to carry a tree out through the 100 m boundary, which the dead
-  // band puts at 112 m going that way: a walk shorter than 12 m never sees the
-  // outward half of the far swap at all.
+  // Far enough to carry a tree out through the LAST band, which the dead band
+  // puts 12% further out going that way: a walk shorter than that margin never
+  // sees the outward half of the far swap at all.
   const SPEED = 4
   const SECONDS = 5
   const walk = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: DRAW_RADIUS })
@@ -1438,9 +1477,13 @@ console.log('\n-- the LOD swap dissolves --')
     }
   }
 
-  check(swaps > 50 && pairs.size === 6,
+  // Every band, crossed both ways: two pairs per boundary, and a boundary per
+  // entry in lodBands. Derived so the gate keeps covering the WHOLE ladder when
+  // a rung is added or retired rather than silently covering less of it.
+  const wantPairs = walk.lodBands.length * 2
+  check(swaps > 50 && pairs.size === wantPairs,
     'walking crosses every band in both directions, so this gate covers the whole ladder',
-    `${swaps} swaps: ${[...pairs].sort().join(' ')}`)
+    `${swaps} swaps: ${[...pairs].sort().join(' ')}, ${wantPairs} pairs wanted`)
   check(missed === 0,
     'and every one of them dissolved rather than cut -- including the 8 m wood swap',
     `${missed} swaps with no duplicate and no rim fade to explain it`)
@@ -1478,11 +1521,17 @@ console.log('\n-- the LOD swap dissolves --')
   // the frame with it. Same invariants, so a fade orphaned by a second crossing
   // inside one window shows up here even though a walker never crosses twice
   // that fast.
+  //
+  // The speed it takes to fill the ceiling is a function of the LADDER: every
+  // boundary is a ring of trees crossing, and the crossings per frame scale with
+  // the ring's circumference. Retiring a rung retires its ring, so this is set
+  // above what the ladder needs rather than at a walking pace.
+  const FLIGHT_SPEED = 400
   let flightLeaks = 0
   let flightOrphans = 0
   let flightPeak = 0
   for (let f = 1; f <= 144; f++) {
-    z -= 60 / 72
+    z -= FLIGHT_SPEED / 72
     setPropClock(0.5 + (FRAMES + f) / 72)
     walk.update(0, EYE, z)
     flightPeak = Math.max(flightPeak, walk.fades.length)
@@ -1491,7 +1540,7 @@ console.log('\n-- the LOD swap dissolves --')
   }
   check(flightPeak === TREE_TUNING.FADE_MAX_INFLIGHT,
     'flying fills the in-flight ceiling, and the swaps past it pop rather than throw',
-    `${flightPeak} duplicates at 60 m/s against a ceiling of ${TREE_TUNING.FADE_MAX_INFLIGHT}`)
+    `${flightPeak} duplicates at ${FLIGHT_SPEED} m/s against a ceiling of ${TREE_TUNING.FADE_MAX_INFLIGHT}`)
   check(flightLeaks === 0 && flightOrphans === 0,
     'and the books still close at that speed',
     `${flightLeaks} frames out of balance, ${flightOrphans} orphaned entries`)

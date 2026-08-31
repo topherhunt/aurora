@@ -2,7 +2,7 @@ import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildMushroom, mushroomTriangles, MUSHROOM_DEFAULTS } from './props/mushroom.js'
 import {
-  MUSHROOM_SPECIES, MUSHROOM_NAMES, MUSHROOM_VARIANTS,
+  MUSHROOM_SPECIES, MUSHROOM_NAMES,
   MUSHROOM_LOD_SPANS, MUSHROOM_MESH_RADIAL,
 } from './props/mushroom-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
@@ -382,26 +382,27 @@ function cellPosition(i, sp) {
   ]
 }
 
-// --- which cells the bank actually bakes ------------------------------------
+// --- which cell the bank actually bakes -------------------------------------
 //
-// The 54 cells here and the 6 rows of MUSHROOM_VARIANTS are NOT the same list
-// and must not be collapsed into one: this page is the full cross product, the
-// exploratory thing you look at to decide, and the bank is the orthogonal
-// subset that was decided. Merging them would delete the only place the
-// rejected 48 are ever drawn, which is the page's whole reason to exist.
+// The 54 cells here and the bank are NOT the same list and must not be
+// collapsed into one: this page is the full cross product, the exploratory
+// thing you look at to decide, and the bank is what was decided. Merging them
+// would delete the only place the rejected cells are ever drawn, which is the
+// page's whole reason to exist.
 //
-// But an answer is only an answer next to the question, so the six that were
-// chosen are marked ON the gallery. Without it the only way to check the bank
-// against the picture is to hold four multipliers in your head while counting
-// cells, which is exactly the friction the legend below already exists to
-// remove. Gold, because gold already means "this is the one in use" on this
+// What the bank decided is ONE CELL. It builds each species at the numbers
+// MUSHROOM_SPECIES writes down and at no multiple of them, because it ships on
+// one InstancedMesh per (tier, variant) and a second set of proportions is
+// three more draw calls -- see the header in props/mushroom-bank.js. So the
+// marked cell is the IDENTITY cell: every multiplier 1, stemCurve at its
+// default. Gold, because gold already means "this is the one in use" on this
 // page -- it is the colour of the outline on the two texture cells the current
 // mushroom wears.
 //
 // The lookup is EXACT, and a level that is not on an axis throws rather than
-// going unmarked. The bank's rows are written in the same multipliers this file
-// crosses, so a miss does not mean a rounding error -- it means the two lists
-// have drifted apart, which is the one thing that would make a mark a lie.
+// going unmarked. A miss does not mean a rounding error -- it means the
+// gallery's own axes have moved off the identity the bank builds at, which is
+// the one thing that would make the mark a lie.
 const MARK_COLOR = 0xc9a227
 
 function axisIndex(levels, value, axis) {
@@ -410,13 +411,14 @@ function axisIndex(levels, value, axis) {
   return i
 }
 
-const BAKED_CELLS = MUSHROOM_VARIANTS.map((v) => {
-  const col = axisIndex(V_CAP_RADIUS, v.capRadius, 'capRadius') * V_STEM_HEIGHT.length
-    + axisIndex(V_STEM_HEIGHT, v.stemHeight, 'stemHeight')
-  const row = axisIndex(V_STEM_CURVE, v.stemCurve, 'stemCurve') * V_CAP_RISE.length
-    + axisIndex(V_CAP_RISE, v.capRise, 'capRise')
-  return row * GALLERY_COLS + col
-})
+const BAKED_CELLS = [{ capRadius: 1, stemHeight: 1, capRise: 1, stemCurve: MUSHROOM_DEFAULTS.stemCurve }]
+  .map((v) => {
+    const col = axisIndex(V_CAP_RADIUS, v.capRadius, 'capRadius') * V_STEM_HEIGHT.length
+      + axisIndex(V_STEM_HEIGHT, v.stemHeight, 'stemHeight')
+    const row = axisIndex(V_STEM_CURVE, v.stemCurve, 'stemCurve') * V_CAP_RISE.length
+      + axisIndex(V_CAP_RISE, v.capRise, 'capRise')
+    return row * GALLERY_COLS + col
+  })
 
 // One material for all six rings, unlit and unfogged, so a mark stays the same
 // gold at the near corner of the matrix and the far one -- it is annotation
@@ -719,11 +721,11 @@ function refresh() {
       `and capRise &times;1, &times;0.5, &times;2 within each block. ` +
       `The top-left cell is the sliders as they stand, with stemCurve pinned to 0.3, and it is the one ` +
       `<em>card</em> bakes its impostor from. ` +
-      `<b>The ${BAKED_CELLS.length} gold rings</b> are the cells the shipped bank actually builds ` +
-      `(<code>MUSHROOM_VARIANTS</code>): an orthogonal subset of these ${GALLERY_N}, every level of ` +
-      `every axis appearing twice, chosen so ${BAKED_CELLS.length} meshes cover the four axes about as ` +
-      `evenly as ${BAKED_CELLS.length} meshes can. The other ${GALLERY_N - BAKED_CELLS.length} are ` +
-      `drawn and not shipped, which is what this page is for.`
+      `<b>The gold ring</b> is the one cell the shipped bank builds: every multiplier &times;1, which ` +
+      `is this species exactly as <code>MUSHROOM_SPECIES</code> writes it down. The bank ships one ` +
+      `<code>InstancedMesh</code> per (tier, variant), so a second set of proportions costs three draw ` +
+      `calls and the world buys its variety from the instance matrix instead. The other ` +
+      `${GALLERY_N - BAKED_CELLS.length} are drawn and not shipped, which is what this page is for.`
     : ''
 
   // §5's parallax rule. `spread` is the clump's full reach across the axis, not
