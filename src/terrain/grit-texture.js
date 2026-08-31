@@ -49,7 +49,7 @@ import { mulberry32 } from '../sim/mathx.js'
 // Every layer here is 256 square. The number is not arbitrary at either end: it
 // is what makes the coarse grit tile land on ~4.6 cm texels (see GRIT_METRES in
 // terrain-material.js), and it is small enough that the ten decorrelated fbm
-// grids behind the four tiles generate in well under a tenth of a second. The
+// grids behind the four tiles generate in about 0.15 s at boot. The
 // whole set is 1 MB of VRAM: 256 KB for the macro tile and 256 KB per grit
 // layer.
 export const GRIT_SIZE = 256
@@ -62,20 +62,21 @@ export const GRIT_SIZE = 256
 // than as a bare number in the shader is the point: the two constants are one
 // decision and they must move together.
 //
-// 32 is MEASURED, not chosen, and it is set by the ROCK layer -- a ridged field
-// creases at every half-level, so its slopes are roughly twice the smooth
-// fields' at the same octave count. Measured |dh/du| on the three shipped
-// fields, and the share each range clips:
+// 32 is MEASURED, not chosen. Measured |dh/du| on the three shipped fields,
+// after each spec's `relief` factor, and the share each range would clip:
 //
-//            mean   p50    p90    p99    max     @16     @24     @32
-//   grass    4.86   3.5   11.3   19.8   34.2   3.15%   0.21%   0.01%
-//   rock     5.94   3.7   14.9   29.3   61.0   8.67%   2.66%   0.61%
-//   snow     4.66   2.9   11.5   24.5   43.0   4.76%   1.10%   0.13%
+//            mean   p50    p90    p99     @16     @24     @32
+//   grass    4.86   3.4   11.4   19.7   3.10%   0.20%   0.02%
+//   rock     4.77   3.6   10.7   19.5   2.51%   0.22%   0.00%
+//   snow     4.66   2.9   11.4   24.5   4.70%   1.09%   0.28%
 //
-// 16 was right for the single smooth field this replaced and is wrong now: it
-// flattens 8.7% of every cliff, and a clipped slope is a PLATEAU -- a facet of
-// dead-flat lighting in the middle of a crag, which is the one artefact this
-// layer exists to avoid. 32 puts all three back in the tail of the tail.
+// SNOW sets it: its drift field is stretched 2.2:1, and a stretched lattice is
+// steep across the grain wherever it is gentle along it, so its p99 runs well
+// above the other two's. 16 was right for the single smooth field this replaced
+// and is wrong now -- it flattens 4.7% of every drift, and a clipped slope is a
+// PLATEAU, a facet of dead-flat lighting in the middle of a rough surface,
+// which is the one artefact this layer exists to avoid. 24 still costs snow a
+// full percent. 32 puts all three in the tail of the tail.
 //
 // What it costs is resolution, since the pack is 8 bits: one step is 0.251 of
 // dh/du, which over the 11.7 m tile at uRelief is 0.4 degrees of normal tilt.
@@ -90,9 +91,9 @@ export const GRIT_GRAD_SCALE = GRIT_GRAD_RANGE * 2
 // grid at whatever the sampling scale happens to be.
 //
 // gx and gy are separate so a field can be ANISOTROPIC, which is the only way
-// to bake a direction into noise. Rock needs one: bedding, fracture lines and
-// gouges all run along a face, and an isotropic field cannot express "along".
-// Both axes still wrap independently, so the tile stays seamless at any ratio.
+// to bake a direction into noise -- snow drifts across the wind and rock beds
+// along a face, and an isotropic field cannot express "along". Both axes still
+// wrap independently, so the tile stays seamless at any ratio.
 //
 // Same construction as preview-stage.js's bench ground, and deliberately so:
 // that ground is the look this file is aiming at ("speckled pixelated Perlin
@@ -137,15 +138,13 @@ function lattice(rand, gx, gy = gx) {
  *   g0       the coarsest lattice, in cells across the tile. Small = big
  *            blotches, and `gain` decides how much of the field they carry.
  *   aspect   cells along y as a multiple of cells along x. 1 is isotropic;
- *            anything else bakes in a DIRECTION, which is what makes rock read
- *            as bedded rather than as speckle.
- *   ridged   fold each octave through 1 - |2v - 1| before summing. A smooth
- *            field has its features in the middle of its range and its
- *            boundaries are soft; a ridged one has a CREASE along every
- *            half-level, so the result is full of hard lines and gouges. This
- *            is the single knob that separates "cliff" from "lawn".
+ *            anything else bakes in a DIRECTION -- how snow drifts across the
+ *            wind, and the faint grain in rock.
+ *   octaves,
+ *   gain     the usual pair. gain above 0.5 keeps the energy in the coarse
+ *            octaves, which is what reads as blotches rather than as fizz.
  */
-function fbmGrid(rand, size, { g0, aspect = 1, octaves, gain, ridged = false }) {
+function fbmGrid(rand, size, { g0, aspect = 1, octaves, gain }) {
   const layers = []
   let g = g0
   let amp = 1
@@ -163,8 +162,7 @@ function fbmGrid(rand, size, { g0, aspect = 1, octaves, gain, ridged = false }) 
       const v = y / size
       let s = 0
       for (const [f, a] of layers) {
-        const n = f(u, v)
-        s += (ridged ? 1 - Math.abs(n * 2 - 1) : n) * a
+        s += f(u, v) * a
       }
       out[y * size + x] = s / norm
     }
@@ -255,23 +253,30 @@ const GRIT_SPECS = [
     speckle: 0.18,
   },
   {
-    // ROCK: crags, gouges and bedding. Both of this generator's two shape knobs
-    // are turned on here and neither is decoration. `ridged` puts a crease along
-    // every half-level, which is what a fracture line is; `aspect` stretches the
-    // lattice 3.5:1 so those creases run in a DIRECTION, which is what bedding
-    // is. Without the pair, rock is grass in grey.
-    // Coarsest cell is ~5.9 x 1.7 m, finest ~37 x 10 cm.
-    h: { g0: 2, aspect: 3.5, octaves: 5, gain: 0.55, ridged: true },
-    alt: { g0: 6, aspect: 3.5, octaves: 4, gain: 0.5, ridged: true },
-    // Grittier than the other two on purpose: this is the mineral grain between
-    // the crags, and it is the finest thing on a cliff.
+    // ROCK: coarse mottle with a mineral grain over it. What separates it from
+    // grass is coarseness and grain, not shape -- g0 = 2 makes the blotches
+    // twice the size of the meadow's, the highest speckle of the three roughens
+    // every texel, and a mild 1.5:1 aspect leaves a hint of bedding direction
+    // without resolving into stripes. Coarsest cell is ~5.9 x 3.9 m, finest
+    // ~37 x 24 cm.
+    h: { g0: 2, aspect: 1.5, octaves: 5, gain: 0.6 },
+    // Isotropic, because this one is the mineral flecking between the blotches
+    // and flecks that queue up in rows read as a weave.
+    alt: { g0: 6, octaves: 4, gain: 0.5 },
     speckle: 0.26,
+    // This field is the gentlest of the three -- gain sits high and the aspect
+    // is mild, so its raw mean |dh/du| is 2.84 against the other two's 4.76 --
+    // and a cliff that lights flatter than the meadow below it is wrong however
+    // good its albedo is. 1.68 puts it on their mean, so one uRelief still means
+    // one strength everywhere.
+    relief: 1.68,
   },
   {
-    // SNOW: wind-scoured drift. Smooth (gain 0.45 drops the fine octaves fast,
-    // and there are only four), directional (a drift is laid down across the
-    // wind), and NOT ridged -- snow has no fracture lines and a creased snow
-    // field reads as crumpled paper.
+    // SNOW: wind-scoured drift. Soft (gain 0.45 drops the fine octaves fast,
+    // and there are only four) and directional, because a drift is laid down
+    // across the wind. The 2.2:1 stretch that does that is also what makes this
+    // the steepest of the three fields across its grain, which is why it and
+    // not rock is what sets GRIT_GRAD_RANGE.
     //
     // Its ALT channel is the sparkle, and that one wants the opposite: a fine,
     // isotropic field, because a crystal catching the sun is a point and points
@@ -290,6 +295,12 @@ const GRIT_SPECS = [
  *   G  0.5 + dh/du of the SMOOTH field, packed by GRIT_GRAD_RANGE
  *   B  0.5 + dh/dv, likewise
  *   A  a second, decorrelated, unquantised field
+ *
+ * `spec.relief` scales G and B only, leaving R alone, so a surface can light
+ * rougher or smoother than it looks. It is baked rather than sent as a uniform
+ * because the shader reads all three layers through one fetch and one uRelief:
+ * a per-surface strength there would mean a dynamic index into a vec3 in the
+ * hot path, and here it is free.
  *
  * The quantisation in R is the look, not a compression. A console of this era
  * could not afford a smooth gradient across a ground texture, and the eye reads
@@ -314,6 +325,7 @@ const GRIT_SPECS = [
 function bakeGritLayer(data, layer, spec, seed) {
   const size = GRIT_SIZE
   const rand = mulberry32(seed)
+  const { relief = 1 } = spec
   const h = equalise(fbmGrid(rand, size, spec.h))
   const alt = equalise(fbmGrid(rand, size, spec.alt))
 
@@ -325,7 +337,9 @@ function bakeGritLayer(data, layer, spec, seed) {
       const o = base + i * 4
       let n = Math.round(h[i] * 5) / 5
       n = Math.min(1, Math.max(0, n + (rand() - 0.5) * spec.speckle))
-      const [gx, gy] = gradAt(h, size, x, y)
+      const [rawGx, rawGy] = gradAt(h, size, x, y)
+      const gx = rawGx * relief
+      const gy = rawGy * relief
       if (Math.abs(gx) > GRIT_GRAD_RANGE || Math.abs(gy) > GRIT_GRAD_RANGE) clipped++
       data[o] = pack(n)
       data[o + 1] = pack(0.5 + gx / GRIT_GRAD_SCALE)

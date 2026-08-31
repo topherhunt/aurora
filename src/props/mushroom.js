@@ -136,17 +136,19 @@ export const MUSHROOM_DEFAULTS = {
                  // compromise between them. They are independent now, which is
                  // what makes both a finer near tier and a coarser far tier
                  // worth having
-  stemRadial: 3, // columns around the STEM and its ring, and deliberately not
+  stemRadial: 7, // columns around the STEM and its ring, and deliberately not
                  // the same number as the cap's. The two surfaces are looked at
                  // completely differently: a cap is a broad silhouette against
                  // the ground and every facet on it shows, while a stalk is a
-                 // few millimetres wide and mostly in its own cap's shadow, so
-                 // a triangular prism reads as a stalk at any distance you will
-                 // ever see one from. Splitting the knob is worth more than it
-                 // sounds -- at radial 9 the stem was two thirds of the whole
-                 // mushroom's triangles, and it is now a fifth
-  capRings: 2,   // rings from apex to rim. 1 is a faceted cone, 2 carries the
-                 // profile curve, 3 is only visible above about 1 m of cap
+                 // few millimetres wide and mostly in its own cap's shadow. 3 is
+                 // the floor and reads as a stalk at range, but this is LOD0 and
+                 // a triangular prism is a stalk with three flat sides at the
+                 // distance a player actually crouches over one. 7 is odd, so no
+                 // two of its faces are parallel and the silhouette turns as the
+                 // stem does
+  capRings: 3,   // rings from apex to rim. 1 is a faceted cone, 2 carries the
+                 // profile curve, 3 resolves it -- and `capCurve` is a power
+                 // curve, so 2 rings sample the steepest part of it exactly once
   underRings: 1, // rings from rim back to the stem
   stemRings: 2,  // segments up the stem. 1 cannot show `stemCurve` at all
 

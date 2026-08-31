@@ -12,8 +12,8 @@ import { LAYER } from '../textures.js'
 // different here is the LADDER, and it is different because a mushroom is 8 to
 // 28 cm tall:
 //
-//   LOD0   the mesh at radial 16. 60 to 66 triangles.
-//   LOD1   the same mesh at radial 6. 30 to 36 triangles.
+//   LOD0   the mesh at radial 16. 108 to 122 triangles.
+//   LOD1   the same mesh at radial 6. 58 to 72 triangles.
 //   LOD2   one plane, spun toward the eye, 1 triangle.
 //   gone   under 2 px, which for a 13 cm mushroom is 60 m.
 //
@@ -168,8 +168,11 @@ export const MUSHROOM_NAMES = Object.keys(MUSHROOM_SPECIES)
 // from. At the near tier the rim is a curve a few metres from the eye and 16
 // columns is where it stops reading as a polygon; by the far tier the whole
 // mushroom is around 23 px tall and a 6-gon rim is under half a pixel of chord
-// error. `stemRadial` is NOT tiered with it: a stalk is a triangular prism at 3
-// columns already and there is nothing under 3.
+// error. `stemRadial` is NOT tiered with it, so BOTH tiers carry the 7-column
+// stem LOD0 was set for. That is a knowingly unpaid bill on the far tier -- it is
+// most of why the coarse mesh is 58 to 72 triangles rather than half of 108 to
+// 122 -- and it stands until there is a reason to believe the second mesh tier
+// earns its slot at all.
 export const MUSHROOM_MESH_RADIAL = [16, 6]
 
 // The distance ladder, in MULTIPLES OF THE PROP'S OWN SPAN rather than metres:

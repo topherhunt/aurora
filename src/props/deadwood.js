@@ -62,16 +62,30 @@ const JAG_SLAB_HI = 2.0 // ...and the broadest: a slab with a shoulder either si
 // only part of it anybody stands close enough to read -- the barrel behind it is
 // a smooth taper whatever you spend on it. So the tip gets the detail: the ring
 // wanders along the axis (STUB_TIP_JAG, a fraction of the stub's own length) and
-// then closes on a point that is either PROUD of that ring or sunk behind it
-// (STUB_TIP_POINT). Proud is a splinter left standing where the branch tore;
-// sunk is the socket a rotted branch leaves. Both are real and the roll is even.
+// then closes on a point somewhere along it.
+//
+// THE POINT IS DRAWN FROM A CONTINUUM, not from two cases. It lands anywhere
+// between STUB_TIP_MARGIN past the ring's furthest vertex and the same distance
+// behind its nearest, so a splinter standing proud and a rotted socket are the
+// two ENDS of one range rather than two outcomes -- most tips come out somewhere
+// in between, which is what most broken branches are. Rolling proud-or-sunk
+// instead made every tip commit to an extreme, and a stand of them read as
+// alternating spikes and craters.
 //
 // The taper is what makes the sides quads rather than a cone: a broken branch
 // base is a short barrel, and a cone converging on a single apex is the one
 // thing it never looks like.
 const STUB_TIP_TAPER = 0.78 // tip radius as a fraction of the base's
 const STUB_TIP_JAG = 0.22 // how far a tip vertex wanders along the axis, of `len`
-const STUB_TIP_POINT = 0.35 // how far the point stands past the mean rim, of `len`
+const STUB_TIP_MARGIN = 0.10 // how far past the ring's extremes the point may land, of `len`
+
+// How far a stub may slide off the regular spacing below, in radians. The bound
+// that matters is not the golden angle itself: at six stubs the angle's TIGHTEST
+// gap is 32.5 degrees, and two neighbours each free to move J close on each other
+// by 2J, so anything at or above 16.25 degrees can let a pair trade places and
+// stack up -- the exact failure the spacing is there to prevent. 0.25 rad is 14.3
+// degrees, under that with a margin.
+const STUB_AZIMUTH_JITTER = 0.25
 
 // The mesh tiers, finest first. Not different SOLIDS the way the rock ladder is:
 // the same swept surface at different sampling rates. `sides` is how many facets
@@ -1114,12 +1128,23 @@ export function buildDeadwood(options = {}) {
   const stubLo = Math.min(p.stubStart, p.stubEnd)
   const stubHi = Math.max(p.stubStart, p.stubEnd)
 
+  // WHERE THE RING STARTS, drawn ONCE for the whole piece. The spacing below is
+  // regular and this is the only thing that turns it, so no two trunks put their
+  // stubs at the same compass points and every trunk still spreads its own.
+  const stubPhase = stubRand() * TAU
+
   for (let i = 0; i < nStubs; i++) {
     const t = stubLo + (stubHi - stubLo) * ((i + 0.5) / Math.max(1, nStubs) + (stubRand() - 0.5) * 0.2)
     let tc = Math.min(Math.min(0.97, stubHi), Math.max(Math.max(0.03, stubLo), t))
-    // Spread round the trunk by the golden angle plus a jitter, so two stubs
-    // never stack up the same side however few there are.
-    const a = stubRand() * TAU + i * 2.399963
+    // SPREAD ROUND THE TRUNK BY THE GOLDEN ANGLE, jittered. The angle has to be
+    // the whole of the spacing: a per-stub uniform draw added to it, which is
+    // what this used to be, swamps it completely and leaves the azimuths
+    // independent -- and four independent draws put every stub in one quadrant
+    // about one time in sixteen, which is often enough to be the thing you
+    // notice. A tree does not do that. So the phase is drawn once per piece
+    // (above), 137.5 degrees separates each stub from the last, and the jitter is
+    // bounded well inside that gap so it loosens the ring without reordering it.
+    const a = stubPhase + i * 2.399963 + (stubRand() - 0.5) * 2 * STUB_AZIMUTH_JITTER
 
     // AND THEN PULLED UNDER THE RIM AT ITS OWN AZIMUTH, which is the actual fix
     // for stubs hanging in the air. `stubEnd` caps the whole band against the
@@ -1216,11 +1241,15 @@ export function buildDeadwood(options = {}) {
     // ring, not a flat one with a jag stuck on afterwards.
     const stubURep = Math.max(1, Math.round((TAU * rad) / p.texMetres))
     const tipRad = rad * STUB_TIP_TAPER
-    // Even odds. A branch that tore leaves a splinter standing proud; one that
-    // rotted through leaves a socket. Rolled once per stub so the whole tip
-    // commits to being one or the other -- a rim that is half spike and half
-    // hollow reads as noise rather than as a break.
-    const outie = tipRand() < 0.5
+    // The surface normal of the TAPER, not of a cylinder. The barrel leans in by
+    // (rad - tipRad) over `len`, and shading it as though it did not is what
+    // leaves a five-sided stub looking like five flat cards: the vertex normals
+    // have to be the ones the real surface has before smoothing them is worth
+    // anything. Same normal top and bottom, because the taper is linear.
+    const tipSlope = (rad - tipRad) / Math.max(1e-6, len)
+    const tipNorm = 1 / Math.hypot(1, tipSlope)
+    let tipLo = Infinity
+    let tipHi = -Infinity
     for (let k = 0; k <= stubSides; k++) {
       const ang = (k / stubSides) * TAU
       const ox = stubE1.x * Math.cos(ang) + stubE2.x * Math.sin(ang)
@@ -1228,9 +1257,13 @@ export function buildDeadwood(options = {}) {
       const oz = stubE1.z * Math.cos(ang) + stubE2.z * Math.sin(ang)
       const uk = (k / stubSides) * stubURep
 
+      const nx = (ox + stubAxis.x * tipSlope) * tipNorm
+      const ny = (oy + stubAxis.y * tipSlope) * tipNorm
+      const nz = (oz + stubAxis.z * tipSlope) * tipNorm
+
       const ring = stubRing[k]
       ring.pos.set(base.x + ox * rad, base.y + oy * rad, base.z + oz * rad)
-      ring.nor.set(ox, oy, oz)
+      ring.nor.set(nx, ny, nz)
       ring.u = uk
       ring.v = 0
 
@@ -1248,33 +1281,60 @@ export function buildDeadwood(options = {}) {
         base.y + stubAxis.y * reach + oy * tipRad,
         base.z + stubAxis.z * reach + oz * tipRad,
       )
-      crown.nor.set(ox, oy, oz)
+      crown.nor.set(nx, ny, nz)
       crown.u = uk
       crown.v = reach / p.texMetres
+      if (k < stubSides) {
+        if (reach < tipLo) tipLo = reach
+        if (reach > tipHi) tipHi = reach
+      }
     }
 
     // The barrel: one quad per side, split on the diagonal that runs from the
     // base to the FURTHER of the two tip vertices, so neither triangle of a quad
     // spanning a deep notch collapses.
+    // SMOOTH, at `smooth`'s full strength, and the taper normals above are what
+    // make that legal. Five sides is few enough that flat shading draws every
+    // arris as a hard line, and a stub is a twig, not a barn -- the eye reads
+    // five hard lines round a 6 cm cylinder as faceting rather than as form. The
+    // trunk it grows out of is shaded the same way for the same reason.
     for (let k = 0; k < stubSides; k++) {
-      emitTri(out, stubRing[k], stubRing[k + 1], stubCrown[k + 1], layer, smooth * 0.5)
-      emitTri(out, stubRing[k], stubCrown[k + 1], stubCrown[k], layer, smooth * 0.5)
+      emitTri(out, stubRing[k], stubRing[k + 1], stubCrown[k + 1], layer, smooth)
+      emitTri(out, stubRing[k], stubCrown[k + 1], stubCrown[k], layer, smooth)
     }
 
-    // The break. The point sits on the axis, past the mean rim or behind it, and
-    // the fan is FLAT -- a broken end is facets, and blending the ring's radial
-    // normals into it would round the one feature the extra triangles bought.
-    const point = len + (outie ? STUB_TIP_POINT : -STUB_TIP_POINT) * len
+    // The break. The point sits on the axis, anywhere from a margin past the
+    // ring's furthest vertex to the same margin behind its nearest -- see
+    // STUB_TIP_MARGIN for why that is a range and not a coin toss.
+    const lo = tipLo - STUB_TIP_MARGIN * len
+    const point = lo + tipRand() * (tipHi + STUB_TIP_MARGIN * len - lo)
     stubTip.pos.copy(base).addScaledVector(stubAxis, point)
     stubTip.nor.copy(stubAxis)
     stubTip.v = point / p.texMetres
     for (let k = 0; k < stubSides; k++) {
       stubTip.u = ((k + 0.5) / stubSides) * stubURep
-      // Wound so the fan faces out whichever way the point went: a sunk point
-      // turns the cap inside out, and a socket lit from behind is a black hole
-      // in the side of the trunk.
-      if (outie) emitTri(out, stubCrown[k], stubCrown[k + 1], stubTip, layer, 0)
-      else emitTri(out, stubCrown[k + 1], stubCrown[k], stubTip, layer, 0)
+      const c0 = stubCrown[k]
+      const c1 = stubCrown[k + 1]
+      // WOUND OUT PER TRIANGLE, not per stub. Once the point can land between the
+      // ring's extremes, one facet of a tip is a splinter while the next is a
+      // socket, and a single winding for the whole fan turns half of it away from
+      // the camera: back-face culling then opens a hole straight through the side
+      // of the branch. The face normal against the stub's own axis says which way
+      // each triangle has to go.
+      const ux = c1.pos.x - c0.pos.x
+      const uy = c1.pos.y - c0.pos.y
+      const uz = c1.pos.z - c0.pos.z
+      const vx = stubTip.pos.x - c0.pos.x
+      const vy = stubTip.pos.y - c0.pos.y
+      const vz = stubTip.pos.z - c0.pos.z
+      const outward = (uy * vz - uz * vy) * stubAxis.x
+        + (uz * vx - ux * vz) * stubAxis.y
+        + (ux * vy - uy * vx) * stubAxis.z
+      // And smoothed with the rest of it: the crown vertices carry the barrel's
+      // normals, so the break shades continuously out of the wood behind it
+      // rather than ringing the tip with a crease.
+      if (outward >= 0) emitTri(out, c0, c1, stubTip, layer, smooth)
+      else emitTri(out, c1, c0, stubTip, layer, smooth)
     }
   }
 

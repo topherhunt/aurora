@@ -117,8 +117,8 @@ const SLIDERS = [
   [null, 'clusterLean', 0, 0.8, 0.01, 'how far outer members lean away from the centre, reaching for light'],
 
   ['— tiers', 'radial', 3, 16, 1, "the CAP's columns around the axis, and only the cap's -- the stem has its own count below. 5 is the floor at which a cap still reads as round"],
-  [null, 'stemRadial', 3, 12, 1, "the STEM's own columns, and the skirt's, independent of the cap's. 3 is the floor, and it is a real floor rather than a nominal one: a stalk is thin enough that a triangular prism reads as round"],
-  [null, 'capRings', 1, 4, 1, 'rings apex to rim. 1 is a faceted cone, 2 carries the profile curve'],
+  [null, 'stemRadial', 3, 12, 1, "the STEM's own columns, and the skirt's, independent of the cap's. 3 is the floor and reads as round at range, but a prism's silhouette is as narrow as half its radius depending on yaw, so the shipped default is 7 -- odd, so no two faces are parallel"],
+  [null, 'capRings', 1, 4, 1, 'rings apex to rim. 1 is a faceted cone, 2 carries the profile curve, 3 resolves it and is the shipped default'],
   [null, 'underRings', 1, 3, 1, 'rings across the underside'],
   [null, 'stemRings', 1, 5, 1, 'segments up the stem. 1 cannot show stemCurve at all'],
 

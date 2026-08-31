@@ -669,13 +669,16 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
 // and a Quest, and a terrain shader that fails to link does not draw a plainer
 // hillside, it draws nothing at all.
 //
-// ALL THREE VARIANTS, because each one is a different body of GLSL and each is
+// ALL FOUR VARIANTS, because each one is a different body of GLSL and each is
 // invisible to a check that compiles the others. The atlas branch carries the
 // triplanar stone fetches, the fine stone layer and the ground tiles, all inside
 // `${stone ? ... : ''}`. The LO-FI branch is the headset's middle rung: it
 // deletes those and grows a triplanar grit path and a set of `${lofi ? ...}`
-// gates that exist under no other option. All three are separate programs in the
-// real renderer too; see the cacheKey at the bottom of terrain-material.js.
+// gates that exist under no other option. LEAN is lo-fi again with two more
+// fetches gone, and it is the ONLY variant that patches the vertex shader, so it
+// is the only one where a cross-stage varying mismatch is even possible. All
+// four are separate programs in the real renderer too; see the cacheKey at the
+// bottom of terrain-material.js.
 //
 // USE_COLOR because the material is built with vertexColors, and the fog pair
 // because v2's scene carries FogExp2 -- which is now load-bearing rather than
@@ -687,6 +690,9 @@ const TERRAIN_VARIANTS = [
   // has to win over a non-null atlas or the headset compiles the stone fetches
   // it asked to be rid of. The banned marks below are what hold that.
   ['lo-fi      ', { atlas: true, lofi: true }],
+  // Same, one rung down. `lean` has to win over BOTH a non-null atlas and an
+  // unset lofi flag, since it implies lofi inside the factory.
+  ['lean       ', { atlas: true, lean: true }],
 ]
 for (const [variant, opts] of TERRAIN_VARIANTS) {
   const lib = THREE.ShaderLib.lambert
@@ -697,7 +703,7 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
     defines: {},
   }
   const atlas = opts.atlas ? new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1) : null
-  const mat = createTerrainMaterial({ atlas, lofi: opts.lofi })
+  const mat = createTerrainMaterial({ atlas, lofi: opts.lofi, lean: opts.lean })
   mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
 
   const defines = ['#define USE_COLOR', '#define USE_FOG', '#define FOG_EXP2']
@@ -714,22 +720,35 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   // far field pays for, the bump the normal pass consumes from the colour pass,
   // and -- for the atlas variant only -- the triplanar block.
   //
-  // The grit and macro marks include `textureGrad(` deliberately. Every fetch
-  // in this shader sits inside a guard that folds in distance and the surface
-  // classification, so none is quad-uniform and an implicit-LOD `texture()`
-  // there is undefined -- it compiles, it looks right on desktop, and it draws
-  // a line of sparkling pixels down every snow border on the headset. The mark
-  // is what makes that a gate failure rather than a bug report.
+  // The grit mark includes `textureGrad(` deliberately. Every grit fetch sits
+  // inside a guard that folds in distance and the surface classification, so
+  // none is quad-uniform and an implicit-LOD `texture()` there is undefined --
+  // it compiles, it looks right on desktop, and it draws a line of sparkling
+  // pixels down every snow border on the headset. The mark is what makes that a
+  // gate failure rather than a bug report.
+  //
+  // The coarse macro sample is the single exception and is marked separately
+  // below, because it is the one that sits at top-level flow.
   const marks = [
     'textureGrad( uGritArr',
-    'textureGrad( uMacroMap',
     'auroraSnowD',
     'auroraDetailK',
     'auroraBW',
     'normal + ( viewMatrix * vec4( auroraBump, 0.0 ) )',
+    // The coarse grit's two fades, which must stay TWO. One fetch feeds both
+    // the grain and the relief, and the relief outlives the grain by 29 m; a
+    // well-meaning tidy that collapses them back into one auroraNear is exactly
+    // how the lighting silently loses that range again.
+    'auroraReliefAmt = auroraRelief * uRelief',
+    'auroraGrain = mix( 0.5, auroraGR, auroraNear )',
   ]
   const banned = []
-  if (opts.lofi) {
+  const vertMarks = []
+  // `lean` implies `lofi` inside the factory, so every lo-fi expectation below
+  // has to be asserted for it too -- reading opts.lofi alone would let the lean
+  // row pass while silently compiling the stone fetches.
+  const cheap = opts.lofi || opts.lean
+  if (cheap) {
     // The triplanar grit is the whole reason a cliff still reads as rock once
     // the stone photograph is gone, and it exists ONLY here.
     marks.push('float auroraGritTri(')
@@ -741,11 +760,33 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
     banned.push('auroraGritTri')
     if (opts.atlas) marks.push('auroraStoneK > 0.004')
   }
+  if (opts.lean) {
+    // What LEAN is for, and both halves have to be checked from both ends.
+    //
+    // The 1 km layer moved to the vertex stage, so the fragment stage must not
+    // so much as DECLARE the sampler -- banning the uniform name is what makes
+    // a half-done revert (varying added, fetch left behind) a gate failure
+    // rather than a shader that quietly costs what it always did.
+    vertMarks.push('textureLod( uMacroMap', 'varying vec2 vMacro')
+    marks.push('float auroraMR = vMacro.x')
+    banned.push('uMacroMap')
+    // The fine grit rung, with the sparkle and the flecks that rode on it. Its
+    // fade is the one name that appears nowhere else, so its absence is the
+    // whole block's absence.
+    banned.push('auroraMicroFade')
+  } else {
+    // THE ONE FETCH IN THE FILE THAT MAY TAKE AN IMPLICIT LOD, because it is
+    // the only one at top-level flow. See the note above the marks.
+    marks.push('texture( uMacroMap, auroraMU )')
+  }
   for (const mark of marks) {
     if (!frag.includes(mark)) MISSING_MARKS.push(`${label} frag: ${mark}`)
   }
   for (const mark of banned) {
     if (frag.includes(mark)) MISSING_MARKS.push(`${label} frag: emitted ${mark}, should not`)
+  }
+  for (const mark of vertMarks) {
+    if (!vert.includes(mark)) MISSING_MARKS.push(`${label} vert: ${mark}`)
   }
 }
 

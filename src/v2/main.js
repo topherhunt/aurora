@@ -182,36 +182,22 @@ window.addEventListener('unhandledrejection', (e) => {
 let renderer, scene, camera, rig, leftGrip, rightGrip
 let sceneEl = null, rigEl = null, leftHandEl = null, rightHandEl = null
 
-// FIXED FOVEATED RENDERING, a cycle starting where the stack already had it.
+// FIXED FOVEATED RENDERING, at the maximum, and stated rather than defaulted to.
+// Both stacks under this file already land here silently -- three r180's
+// WebXRManager opens `let foveation = 1.0`, A-Frame 1.8's renderer schema carries
+// `foveationLevel: {default: 1}` -- so writing it down changes nothing and makes
+// the number findable. 1 is the driver's most aggressive setting, 0 is off.
 //
-// BOTH of the stacks under this file ship it at MAXIMUM and neither says so.
-// three r180's WebXRManager opens with `let foveation = 1.0` under the comment
-// "Set default foveation to maximum", and A-Frame 1.8's renderer schema carries
-// `foveationLevel: {default: 1}`, which it pushes through `xr.setFoveation` in
-// the component's update AND again on session start. So a scene that never
-// mentions foveation gets all of it. three's own doc line for the parameter:
-// "1 means maximum foveation (the edges render at lower resolution)".
+// MEASURED ON A QUEST 2 and it is load-bearing: in a frame already struggling at
+// 41 fps, turning foveation off took it to 30. There is no toggle for it because
+// every rung below 1 is worse and none of them buys anything -- 0.5 was
+// indistinguishable from 1 by eye AND by framerate, which is the number to reach
+// for if the peripheral softening ever becomes the thing that annoys.
 //
-// WHAT IT DOES is render everything outside a central disc at a fraction of
-// full resolution and let the compositor upscale it, per eye, with each eye's
-// high-resolution disc centred on ITS OWN lens -- so the two eyes' cheap regions
-// are mirrored rather than matched. That is a poor trade for this world and an
-// actively bad one for the blade bed: a grass blade is about a pixel wide, so
-// in a quarter-rate tile it either lands on a sample or misses one, and the
-// answer changes with sub-pixel head motion. The blade's edge column flips
-// between the blade and whatever is behind it every frame, it flips in ONE EYE
-// before the other because the maps are mirrored, and the Quest browser moves
-// the level under GPU load, which is why more grass makes it worse. Bilinear
-// upscaling of the panel's white-on-navy text is the bloom that comes with it.
-//
-// STARTS AT 1, which is what the stack was silently doing before any of this
-// existed, so the world still boots at the framerate it has been measured at and
-// the first click is the A/B rather than the regression. 0 is no foveation;
-// three maps 1 to the driver's most aggressive setting. Turning it off costs
-// real fps and only a headset can price that, so the cycle asks instead of
-// deciding.
-const FOVEATION_CYCLE = [1, 0, 0.25, 0.5]
-let foveationLevel = FOVEATION_CYCLE[0]
+// IT IS NOT THE CAUSE OF THE PANEL FLICKER. That was the first theory and the
+// headset refuted it: the flashing survives every level including 0. Do not
+// re-run this experiment.
+const FOVEATION = 1
 
 // Everything from here to the end of the file is wrapped in an async IIFE
 // (rather than using a top-level `await`) because Vite's default esbuild
@@ -247,7 +233,7 @@ if (QUEST_MODE) {
   // near/far fix below should make it unnecessary. It is here so the two can be
   // A/B'd in the headset without a code change, because depth precision is not
   // something a desktop can reproduce.
-  const questRenderer = ['toneMapping: no', 'antialias: true', `foveationLevel: ${foveationLevel}`]
+  const questRenderer = ['toneMapping: no', 'antialias: true', `foveationLevel: ${FOVEATION}`]
   if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
   sceneEl.setAttribute('renderer', questRenderer.join('; '))
   // No movement-controls/look-controls/blink-controls: locomotion in quest
@@ -350,17 +336,13 @@ if (QUEST_MODE) {
   rig = rigEl.object3D
   leftGrip = leftHandEl.object3D
   rightGrip = rightHandEl.object3D
-  // The session is what carries foveation, so anything set before the headset
-  // goes on lands on nothing, and A-Frame overwrites it from its own attribute
-  // on the way in besides. See applyFoveation.
-  sceneEl.addEventListener('enter-vr', () => applyFoveation())
 } else {
   renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
   renderer.setPixelRatio(1) // never above 1 in XR; the headset controls its own resolution
   renderer.setSize(innerWidth, innerHeight)
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.xr.enabled = true
-  renderer.xr.setFoveation(foveationLevel)
+  renderer.xr.setFoveation(FOVEATION)
   document.body.appendChild(renderer.domElement)
   document.body.appendChild(VRButton.createButton(renderer))
 
@@ -547,7 +529,6 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
   { key: 'treeCutout', text: 'tree leaf cutout', on: 'masked', off: 'opaque' },
   { key: 'instCull', text: 'per-instance cull' },
-  { key: 'foveation', text: 'foveation', action: () => cycleFoveation(), value: () => foveationRowLabel() },
   { key: 'wind', text: 'wind' },
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
   { key: 'dayNight', text: 'day/night' },
@@ -734,6 +715,21 @@ const QUEST_ROW_H = 0.20
 const QUEST_ROW_TOP = 0.30
 const questRowsPerCol = () => Math.ceil(QUEST_TOGGLE_ROWS.length / QUEST_PANEL_COLS)
 
+// The panel's LOWEST EDGE, in group-local metres, and negative: the group's
+// origin sits up among the buttons rather than at the bottom of the plate. Two
+// callers need the same number and they are 170 lines apart -- buildQuestPanel
+// sizes the backdrop from it, questPanelDesiredPosition subtracts it to keep
+// that backdrop out of the ground -- so it is one expression rather than two.
+// It GROWS DOWNWARD WITH THE GRID: rows run from QUEST_ROW_TOP down at
+// QUEST_ROW_H each, and the plate ends half a button below the last one.
+const questPanelBottom = () => QUEST_ROW_TOP - (questRowsPerCol() - 1) * QUEST_ROW_H - 0.14
+
+// How far the plate's bottom edge stands clear of the terrain when the ground is
+// what decides its height. Small enough to read as resting on the ground rather
+// than hovering, big enough that grass and the ground's own shading do not saw
+// through the edge as she moves her head.
+const QUEST_PANEL_GROUND_GAP = 0.05
+
 // THE BUTTON GRID IS ONE MESH OVER ONE ATLAS, and that is a draw-call decision
 // rather than a tidiness one. A quad per row, each with its own CanvasTexture
 // and its own material, is a draw call per row -- and because those materials
@@ -810,14 +806,11 @@ function buildQuestPanel() {
   // triangles never reach the render list at all.
   questPanelGroup.visible = false
 
-  // GROWS DOWNWARD WITH THE GRID rather than being a constant to forget. The
-  // buttons run from QUEST_ROW_TOP down at QUEST_ROW_H each, so the tallest
-  // column's last row sits at top - (rowsPerCol - 1) * h and its own bottom edge
-  // half a button below that; the title at 1.05 fixes the top. Three columns of
-  // seven is where the panel is now, and a fourth column would be the wrong fix
-  // for a longer list: at 2.8 m the three already subtend 51 degrees, and a
-  // fourth would put its outer edge where a Quest 2's lenses go soft.
-  const gridBottom = QUEST_ROW_TOP - (questRowsPerCol() - 1) * QUEST_ROW_H - 0.14
+  // See questPanelBottom for why the bottom edge is computed rather than typed;
+  // the title at 1.05 fixes the top. A fourth column would be the wrong fix for
+  // a longer list: at 2.8 m the three already subtend 51 degrees, and a fourth
+  // would put its outer edge where a Quest 2's lenses go soft.
+  const gridBottom = questPanelBottom()
   const bgTop = 1.20
   const bg = new THREE.Mesh(
     new THREE.PlaneGeometry(PANEL_W + 0.1, bgTop - gridBottom),
@@ -839,6 +832,17 @@ function buildQuestPanel() {
   questStatsCtx = questStatsCanvas.getContext('2d')
   questStatsTexture = new THREE.CanvasTexture(questStatsCanvas)
   questStatsTexture.colorSpace = THREE.SRGBColorSpace
+  // NO MIP CHAIN, and this one is not a micro-optimisation. This texture is the
+  // only one in the scene that is RE-UPLOADED ON A TIMER -- updateQuestStats
+  // sets needsUpdate at 4 Hz for as long as the menu is open -- and three's
+  // upload path runs texImage2D and then generateMipmap for the whole chain,
+  // inside the XR frame, at the first draw that samples it. In stereo that first
+  // draw is one eye, which is why a fault here can present in one eye only.
+  // Mipmaps buy nothing to lose: the panel is world-locked at 2.8 m and read
+  // near head-on, where 1280 px across 2.7 m is minified about 1.3x, which is
+  // what LinearFilter is for.
+  questStatsTexture.generateMipmaps = false
+  questStatsTexture.minFilter = THREE.LinearFilter
   const stats = new THREE.Mesh(
     new THREE.PlaneGeometry(PANEL_W, PANEL_W * QUEST_STATS_H / QUEST_STATS_W),
     new THREE.MeshBasicMaterial({ map: questStatsTexture, toneMapped: false, side: THREE.DoubleSide })
@@ -865,6 +869,10 @@ function buildQuestPanel() {
   questRowsCtx = questRowsCanvas.getContext('2d')
   questRowsTexture = new THREE.CanvasTexture(questRowsCanvas)
   questRowsTexture.colorSpace = THREE.SRGBColorSpace
+  // Same reasoning as the stats texture above, on a slower clock: this atlas is
+  // re-uploaded on every button press rather than on a timer.
+  questRowsTexture.generateMipmaps = false
+  questRowsTexture.minFilter = THREE.LinearFilter
 
   const positions = new Float32Array(n * 4 * 3)
   const uvs = new Float32Array(n * 4 * 2)
@@ -966,7 +974,34 @@ function questPanelDesiredPosition(out) {
   const dist = 2.8
   out.x = rig.position.x + questPanelFwd.x * dist
   out.z = rig.position.z + questPanelFwd.z * dist
-  out.y = height.heightAt(out.x, out.z) + 1.3
+
+  // HER FLOOR, NOT THE GROUND UNDER THE PANEL. `rig.position.y` is the damped
+  // terrain height while she is walking and her actual altitude while she is
+  // flying, so one expression seats the panel at reading height in both --
+  // whereas sampling the terrain 2.8 m ahead leaves the menu lying on the
+  // hillside while she is a hundred metres above it. 1.3 is unchanged and is
+  // the offset from her floor to the group's origin.
+  out.y = rig.position.y + 1.3
+
+  // AND THEN FLOORED, because her elevation and the ground in front of her are
+  // not the same number. Walking uphill, 2.8 m ahead is above her own footing,
+  // and the plate's lower corner goes into the slope; on the flat it went in
+  // anyway, by 14 cm, because the grid has grown taller than the 1.3 allows for.
+  //
+  // Three samples along the bottom EDGE, not one under the centre, because that
+  // edge is 2.8 m wide and a corner is what digs in first on a side slope. Three
+  // is enough rather than a compromise: the heightmap is 8.0 m per texel, so the
+  // whole edge fits inside one bilinear cell and the surface under it has no
+  // curvature for a fourth sample to find.
+  const halfW = (PANEL_W + 0.1) / 2
+  const rightX = questPanelFwd.z * halfW
+  const rightZ = -questPanelFwd.x * halfW
+  const ground = Math.max(
+    height.heightAt(out.x, out.z),
+    height.heightAt(out.x + rightX, out.z + rightZ),
+    height.heightAt(out.x - rightX, out.z - rightZ)
+  )
+  out.y = Math.max(out.y, ground + QUEST_PANEL_GROUND_GAP - questPanelBottom())
   return out
 }
 
@@ -2078,8 +2113,9 @@ function logSceneCensus() {
 // the `landscape shader` row never compiles a second terrain program.
 let plainTerrainMaterial = null
 let lofiTerrainMaterial = null
+let leanTerrainMaterial = null
 
-// THREE RUNGS, and the row cycles between them in cost order.
+// FOUR RUNGS, and the row cycles between them in cost order.
 //
 // The question this row exists to answer: when the headset sits at 50-60 fps
 // instead of 90, triangles are rarely what an Adreno 650 is struggling with --
@@ -2093,45 +2129,58 @@ let lofiTerrainMaterial = null
 // vertex colours, same fog, same Gouraud lighting -- so the delta is exactly
 // terrain-material.js's patch and nothing is confounding it.
 //
-// `lofi` is the rung between them and the one meant to actually ship on a
-// headset: the same shader with the two photographic tile layers compiled out,
-// so the near field costs two array fetches instead of up to ten. See the LO-FI
-// block in terrain-material.js for what it keeps and what it drops.
+// `lofi` and `lean` are the two rungs between them. Lo-fi drops the two
+// photographic tile layers, so the near field costs two array fetches instead of
+// up to ten. Lean drops two more on top of that: the 1 km macro layer moves to
+// the vertex shader, and the fine grit rung goes. See the LO-FI and LEAN blocks
+// in terrain-material.js for what each keeps and what it costs to look at.
+//
+// MEASURED on a Quest 2 with trees and grass loaded: full 48 fps, lo-fi 60,
+// plain 77. Lean is predicted at ~70 by the per-fetch model in the LEAN block --
+// which is a PREDICTION and wants a headset to confirm it.
 //
 // `plain` is NOT MeshBasicMaterial, though "flat colour" is what it would give.
 // Lambert's fragment shader is vColor times an already-interpolated irradiance
 // plus fog -- a handful of instructions -- so Basic would buy a rounding error
 // and cost the A/B its meaning, because the ground would also stop being lit and
 // the two pictures would differ in a second way.
-const TERRAIN_SHADERS = ['full', 'lofi', 'plain']
+const TERRAIN_SHADERS = ['full', 'lofi', 'lean', 'plain']
 let terrainShaderMode = 0
+
+/**
+ * One of the reduced rungs, built on first press.
+ *
+ * The atlas goes in even though neither variant will sample it: `lofi` wins over
+ * it inside the factory and `lean` implies `lofi`, and passing it keeps these
+ * calls the same shape as the one in TerrainV2 so they cannot drift apart.
+ *
+ * PATCHED, like the full material and unlike `plain`. These rungs are QUALITY
+ * settings rather than controls, so each has to keep the night lift and the
+ * shadow lookup or pressing the row would change the time of day. Each takes its
+ * own cache key, because three keys its program cache on that string alone and
+ * the variants compile different source.
+ *
+ * No uniform sync needed: nothing in the world writes the terrain material's own
+ * uniforms after construction, so a variant's defaults are the same numbers the
+ * full material is still holding. The only live uniforms on any of them are
+ * lighting.patch's, and patch() is what subscribes a material to them.
+ */
+function buildTerrainVariant(opts, cacheKey) {
+  const mat = createTerrainMaterial({ atlas: propTextures, ...opts })
+  lighting.patch(mat, { mode: 'fragment', cacheKey, worldPosVarying: 'vWorldPos' })
+  return mat
+}
 
 function terrainShaderMaterial() {
   const mode = TERRAIN_SHADERS[terrainShaderMode]
   if (mode === 'full') return terrain.material
   if (mode === 'lofi') {
-    if (!lofiTerrainMaterial) {
-      // The atlas goes in even though this variant will not sample it: `lofi`
-      // wins over it inside the factory, and passing it keeps this call the same
-      // shape as the one in TerrainV2 so the two cannot drift apart.
-      lofiTerrainMaterial = createTerrainMaterial({ atlas: propTextures, lofi: true })
-      // Patched like the full material and unlike `plain`. This rung is a
-      // QUALITY setting rather than a control, so it has to keep the night lift
-      // and the shadow lookup or pressing it would change the time of day. Its
-      // own cache key, because three keys its program cache on that string
-      // alone and the two variants compile different source.
-      lighting.patch(lofiTerrainMaterial, {
-        mode: 'fragment',
-        cacheKey: 'v2-terrain-shadow-lofi',
-        worldPosVarying: 'vWorldPos',
-      })
-      // No uniform sync needed: nothing in the world writes the terrain
-      // material's own uniforms after construction, so this one's defaults are
-      // the same numbers the full material is still holding. The only live
-      // uniforms on either are lighting.patch's, and patch() is what subscribes
-      // this material to them.
-    }
+    if (!lofiTerrainMaterial) lofiTerrainMaterial = buildTerrainVariant({ lofi: true }, 'v2-terrain-shadow-lofi')
     return lofiTerrainMaterial
+  }
+  if (mode === 'lean') {
+    if (!leanTerrainMaterial) leanTerrainMaterial = buildTerrainVariant({ lean: true }, 'v2-terrain-shadow-lean')
+    return leanTerrainMaterial
   }
   if (!plainTerrainMaterial) {
     plainTerrainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
@@ -2526,46 +2575,6 @@ function cycleTreeMesh() {
   if (!trees) return
   trees.setMeshBand(stepCycle(TREE_MESH_CYCLE, trees.lodBands[1]))
   console.log(`[v2] tree mesh band: ${meshBandLabel(trees.lodBands[1])}`)
-}
-
-/**
- * Push the current level at the XR layer. STRAIGHT AT `renderer.xr`, because the
- * obvious A-Frame spelling is a trap: `renderer` is a registered SYSTEM, and
- * AScene.setAttribute branches on that before it ever reaches the entity code
- * that implements the three-argument form. The system branch takes `(attr,
- * value)` and silently DROPS the third argument, so
- * `setAttribute('renderer', 'foveationLevel', 0.5)` does not set foveation to
- * 0.5 -- it overwrites the whole renderer attribute with the literal string
- * "foveationLevel", taking toneMapping and antialias with it and resetting the
- * level to the schema default of 1. It is not a weaker way to spell this; it is
- * the opposite of it.
- *
- * The catch that made the attribute look necessary is real, and `enter-vr`
- * handles it instead: A-Frame re-applies the attribute's level once the session
- * resolves, so a value set before the headset goes on is reverted. `enter-vr` is
- * emitted at the END of that sequence, so re-asserting there lands after it.
- */
-function applyFoveation() {
-  renderer.xr.setFoveation(foveationLevel)
-}
-
-/** Step the foveation level, live. See FOVEATION_CYCLE for what it costs. */
-function cycleFoveation() {
-  foveationLevel = stepCycle(FOVEATION_CYCLE, foveationLevel)
-  applyFoveation()
-}
-
-/**
- * WANT/GOT, and the second half is the point. three keeps whatever value it was
- * handed whether or not there was a layer to put it on, and `getFoveation`
- * returns undefined until there is one -- so a row printing only the request
- * cannot tell "the button did nothing" from "the driver refused the number".
- * Reading it back off renderer.xr makes the row answer that on its own.
- */
-function foveationRowLabel() {
-  const show = (v) => (v === 0 ? 'off' : v)
-  const got = renderer.xr.getFoveation()
-  return `${show(foveationLevel)}/${got === undefined ? '-' : show(got)} >`
 }
 
 function cycleTreeRadius() {
