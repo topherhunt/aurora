@@ -533,8 +533,9 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
   { key: 'dayNight', text: 'day/night' },
   { key: 'lighting', text: 'terrain & prop lighting' },
-  // A CYCLE and not a switch, because there are three rungs now and the middle
-  // one is the answer: see the block above TERRAIN_SHADERS.
+  // A CYCLE and not a switch: see the block above TERRAIN_SHADERS for what each
+  // rung is, why `plain` is a floor rather than a setting, and what to look at
+  // on `axis` before deciding which of the two upper rungs stays.
   { key: 'terrainShader', text: 'landscape shader', action: () => cycleTerrainShader(), value: () => `${TERRAIN_SHADERS[terrainShaderMode]} >` },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
@@ -753,6 +754,35 @@ let questRowsCanvas = null
 let questRowsCtx = null
 let questRowsTexture = null
 
+// UPLOAD THE CANVAS NOW, BETWEEN FRAMES, instead of leaving needsUpdate set for
+// three to honour at the first draw that samples it. That deferred upload is the
+// cause of the left-eye edge flicker on the Quest, and the mechanism is worth
+// writing down because nothing about it is visible at the call site:
+//
+//   - three uploads lazily. `needsUpdate = true` queues nothing; the texImage2D
+//     runs inside renderer.render(), from setTexture2D, at the first draw call
+//     that binds the map. For the panel that is a draw in the LEFT eye, because
+//     three walks cameraXR.cameras in view order and left is first. By the right
+//     eye the texture is resident and no upload happens -- which is why the
+//     artefact was in one eye and always the same eye.
+//   - the Quest's Adreno is a tile-based deferred renderer. Redefining a texture
+//     mid-pass makes the driver break the render pass: resolve the tiles, do the
+//     upload, restore. What comes back is the resolved single-sample colour, not
+//     the MSAA sample coverage that produced it (the context is antialias: true).
+//   - so fully covered pixels restore exactly and interiors look perfect, while
+//     PARTIALLY COVERED pixels -- the rim of every alpha-tested triangle in the
+//     frame, every grass blade and every fern frond -- resolve against samples
+//     that no longer exist. Whole-framebuffer, so it hits grass beside and behind
+//     the panel too, not just grass silhouetted against it.
+//
+// initTexture forces the upload here in tick(), where A-Frame has not started
+// the frame's render pass yet, so there is no pass to break. The cost is the
+// same texImage2D either way; only its timing changes.
+function uploadQuestTexture(texture) {
+  texture.needsUpdate = true
+  renderer.initTexture(texture)
+}
+
 function drawQuestRowCell(i) {
   const row = QUEST_TOGGLE_ROWS[i]
   const rowsPerCol = questRowsPerCol()
@@ -766,7 +796,7 @@ function drawQuestRowCell(i) {
   ctx.textBaseline = 'middle'
   ctx.textAlign = 'center'
   ctx.fillText(questToggleLabel(row), x + QUEST_CELL_W_PX / 2, y + QUEST_CELL_H_PX / 2)
-  questRowsTexture.needsUpdate = true
+  uploadQuestTexture(questRowsTexture)
 }
 
 const QUEST_STATS_W = 1280
@@ -791,7 +821,7 @@ function drawQuestStats(lines) {
       x += ctx.measureText(text).width
     }
   })
-  questStatsTexture.needsUpdate = true
+  uploadQuestTexture(questStatsTexture)
 }
 
 function buildQuestPanel() {
@@ -832,15 +862,13 @@ function buildQuestPanel() {
   questStatsCtx = questStatsCanvas.getContext('2d')
   questStatsTexture = new THREE.CanvasTexture(questStatsCanvas)
   questStatsTexture.colorSpace = THREE.SRGBColorSpace
-  // NO MIP CHAIN, and this one is not a micro-optimisation. This texture is the
-  // only one in the scene that is RE-UPLOADED ON A TIMER -- updateQuestStats
-  // sets needsUpdate at 4 Hz for as long as the menu is open -- and three's
-  // upload path runs texImage2D and then generateMipmap for the whole chain,
-  // inside the XR frame, at the first draw that samples it. In stereo that first
-  // draw is one eye, which is why a fault here can present in one eye only.
-  // Mipmaps buy nothing to lose: the panel is world-locked at 2.8 m and read
-  // near head-on, where 1280 px across 2.7 m is minified about 1.3x, which is
-  // what LinearFilter is for.
+  // NO MIP CHAIN. This texture is the only one in the scene RE-UPLOADED ON A
+  // TIMER -- updateQuestStats redraws it at 4 Hz for as long as the menu is open
+  // -- and three's upload path runs generateMipmap for the whole chain after
+  // every texImage2D. Mipmaps buy nothing to lose here: the panel is world-locked
+  // at 2.8 m and read near head-on, where 1280 px across 2.7 m is minified about
+  // 1.3x, which is what LinearFilter is for. Cheaper only; see uploadQuestTexture
+  // for what actually made the upload visible.
   questStatsTexture.generateMipmaps = false
   questStatsTexture.minFilter = THREE.LinearFilter
   const stats = new THREE.Mesh(
@@ -870,7 +898,7 @@ function buildQuestPanel() {
   questRowsTexture = new THREE.CanvasTexture(questRowsCanvas)
   questRowsTexture.colorSpace = THREE.SRGBColorSpace
   // Same reasoning as the stats texture above, on a slower clock: this atlas is
-  // re-uploaded on every button press rather than on a timer.
+  // redrawn on every button press rather than on a timer.
   questRowsTexture.generateMipmaps = false
   questRowsTexture.minFilter = THREE.LinearFilter
 
@@ -1492,9 +1520,11 @@ async function bootWorld() {
 
   bootSay('meshing ...')
   // The atlas is built HERE, ahead of the terrain, and not down with the trees
-  // where it used to live: the terrain's rock surface wears LAYER.ROCK too, and
-  // createTerrainMaterial decides at compile time whether to declare a sampler
-  // at all, so it has to have the array in hand before the material exists.
+  // where it used to live: createTerrainMaterial decides at compile time whether
+  // to declare a sampler at all, so it has to have the array in hand before the
+  // material exists. `lean` then declines it -- that variant wears no photographic
+  // tile -- but the argument stays so the /gen-* benches and this call are the
+  // same shape.
   //
   // Building it early costs nothing. It is built empty and its image layers land
   // asynchronously (loadImageLayers, below); the bank and the batches do not wait
@@ -1502,14 +1532,14 @@ async function bootWorld() {
   // whatever the procedural layers already hold.
   propTextures = buildTextureArray()
   terrain = new TerrainV2(scene, {
-    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures,
+    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures, lean: true,
   })
 
   lighting.patch(terrain.material, {
     mode: 'fragment',
-    // Bumped with the stone layer: the atlas variant compiles different source
-    // and three keys its program cache on this string alone.
-    cacheKey: 'v2-terrain-shadow-stone',
+    // The variant compiles different source and three keys its program cache on
+    // this string alone, so the key names which one is in hand.
+    cacheKey: 'v2-terrain-shadow-lean',
     // terrain-material.js has carried this varying since v1's surface grain was
     // written and v2 shares the material, so reusing it saves declaring a second
     // varying holding the same value.
@@ -2109,84 +2139,99 @@ function logSceneCensus() {
   if (rows.length > 24) console.log(`      ... and ${rows.length - 24} more`)
 }
 
-// Each built on first use rather than at boot, so a session that never presses
-// the `landscape shader` row never compiles a second terrain program.
+// Built on first press rather than at boot, so a session that never touches the
+// `landscape shader` row never compiles a program it does not look at.
 let plainTerrainMaterial = null
-let lofiTerrainMaterial = null
-let leanTerrainMaterial = null
+const builtTerrainVariants = new Map()
 
-// FOUR RUNGS, and the row cycles between them in cost order.
+// THREE RUNGS: what ships, the swap being evaluated, and the floor both are
+// measured against.
 //
 // The question this row exists to answer: when the headset sits at 50-60 fps
 // instead of 90, triangles are rarely what an Adreno 650 is struggling with --
 // 7 Mpixel a frame at 72 Hz is 506 Mpix/s of fill against 7.3 M tri/s of setup,
 // two orders apart. So either the ground is fill bound in the FRAGMENT shader or
-// it is not, and nothing about the triangle count can tell you which. It IS: the
-// measured answer on a Quest was ~20 fps between `full` and `plain`.
+// it is not, and nothing about the triangle count can tell you which. It IS.
 //
-// `full` is what the desktop ships. `plain` is the CONTROL and swaps nothing
-// else -- same BatchedMesh, same slots, same selection, same draw calls, same
-// vertex colours, same fog, same Gouraud lighting -- so the delta is exactly
-// terrain-material.js's patch and nothing is confounding it.
+// MEASURED on a Quest 2 under medium load, walking the four rungs that used to
+// live here: full 46 fps (21.7 ms), lo-fi 57 (17.5), lean 60 (16.7), plain 73
+// (13.7). Lean beat lo-fi on both cost and looks, and full bought nothing the
+// headset could see, so both middle rungs are gone and `lean` is now what
+// TerrainV2 compiles at boot. terrain-material.js still holds the full source --
+// the /gen-* benches and the gates compile it.
 //
-// `lofi` and `lean` are the two rungs between them. Lo-fi drops the two
-// photographic tile layers, so the near field costs two array fetches instead of
-// up to ten. Lean drops two more on top of that: the 1 km macro layer moves to
-// the vertex shader, and the fine grit rung goes. See the LO-FI and LEAN blocks
-// in terrain-material.js for what each keeps and what it costs to look at.
+// `plain` is the CONTROL and swaps nothing else -- same BatchedMesh, same slots,
+// same selection, same draw calls, same vertex colours, same Gouraud lighting --
+// so the 3.0 ms between the rungs is exactly terrain-material.js's patch plus
+// lighting.js's, and nothing is confounding it. It is NOT MeshBasicMaterial,
+// though "flat colour" is what it would give: Lambert's fragment shader is
+// vColor times an already-interpolated irradiance plus fog, a handful of
+// instructions, so Basic would buy a rounding error and cost the A/B its
+// meaning, because the ground would also stop being lit.
 //
-// MEASURED on a Quest 2 with trees and grass loaded: full 48 fps, lo-fi 60,
-// plain 77. Lean is predicted at ~70 by the per-fetch model in the LEAN block --
-// which is a PREDICTION and wants a headset to confirm it.
+// `axis` AND `bare` ARE BOTH LEAN WITH ONE THING CHANGED, and both are here to
+// be measured rather than to be quality settings -- when the headset has answered
+// them, at most one of the three upper rungs stays.
 //
-// `plain` is NOT MeshBasicMaterial, though "flat colour" is what it would give.
-// Lambert's fragment shader is vColor times an already-interpolated irradiance
-// plus fog -- a handful of instructions -- so Basic would buy a rounding error
-// and cost the A/B its meaning, because the ground would also stop being lit and
-// the two pictures would differ in a second way.
-const TERRAIN_SHADERS = ['full', 'lofi', 'lean', 'plain']
+// `axis` swaps lean's triplanar rock branch for a dominant-axis projection: 1
+// fetch instead of 4, 7 fewer branches, and the only divergent fetch-gating
+// branch in the file gone. MEASURED AT NO DIFFERENCE -- lean and axis both sit at
+// 55 fps against plain's 63 -- which is the result that motivated the rung below
+// it. The near field is not fetch bound and it is not branch bound.
+//
+// `bare` compiles the near block out entirely. It looks wrong on purpose: flat
+// vertex colour underfoot, no grain and no relief inside 55 m. It is the BRACKET
+// on every remaining idea for trimming that block, because whatever it does not
+// recover, no smaller cut inside the block can recover either. If it lands at
+// plain, the block is the whole gap and is worth spending deliberately; if it
+// lands at lean, the cost is somewhere none of this has been looking -- the
+// vertex-stage macro fetch and the shader's register footprint are the two
+// suspects, in that order. See the BARE block in terrain-material.js.
+const TERRAIN_SHADERS = ['lean', 'axis', 'bare', 'plain']
 let terrainShaderMode = 0
 
 /**
- * One of the reduced rungs, built on first press.
+ * One of the compiled rungs, built on first press and kept.
  *
- * The atlas goes in even though neither variant will sample it: `lofi` wins over
- * it inside the factory and `lean` implies `lofi`, and passing it keeps these
- * calls the same shape as the one in TerrainV2 so they cannot drift apart.
+ * PATCHED, like the boot material and unlike `plain`. Each of these is either a
+ * candidate for what ships or a probe meant to differ from lean in exactly one
+ * way, so each has to carry the night lift, the shadow lookup and the aerial ramp
+ * or pressing the row would change the time of day as well as the surface. Each
+ * takes its own cache key, because three keys its program cache on that string
+ * alone and the variants compile different source.
  *
- * PATCHED, like the full material and unlike `plain`. These rungs are QUALITY
- * settings rather than controls, so each has to keep the night lift and the
- * shadow lookup or pressing the row would change the time of day. Each takes its
- * own cache key, because three keys its program cache on that string alone and
- * the variants compile different source.
+ * The atlas goes in the way TerrainV2 passes it, even though every one of these
+ * flags wins over it inside the factory and no tile is sampled -- same shape as
+ * that call, so the two cannot drift apart.
  *
- * No uniform sync needed: nothing in the world writes the terrain material's own
- * uniforms after construction, so a variant's defaults are the same numbers the
- * full material is still holding. The only live uniforms on any of them are
- * lighting.patch's, and patch() is what subscribes a material to them.
+ * No uniform sync needed: nothing writes the terrain material's own uniforms
+ * after construction, so a variant's defaults are the numbers the boot material
+ * is still holding. The only live uniforms are lighting.patch's, and patch() is
+ * what subscribes a material to them.
  */
-function buildTerrainVariant(opts, cacheKey) {
-  const mat = createTerrainMaterial({ atlas: propTextures, ...opts })
-  lighting.patch(mat, { mode: 'fragment', cacheKey, worldPosVarying: 'vWorldPos' })
+function terrainVariant(mode) {
+  let mat = builtTerrainVariants.get(mode)
+  if (!mat) {
+    mat = createTerrainMaterial({ atlas: propTextures, [mode]: true })
+    lighting.patch(mat, {
+      mode: 'fragment', cacheKey: `v2-terrain-shadow-${mode}`, worldPosVarying: 'vWorldPos',
+    })
+    builtTerrainVariants.set(mode, mat)
+  }
   return mat
 }
 
 function terrainShaderMaterial() {
   const mode = TERRAIN_SHADERS[terrainShaderMode]
-  if (mode === 'full') return terrain.material
-  if (mode === 'lofi') {
-    if (!lofiTerrainMaterial) lofiTerrainMaterial = buildTerrainVariant({ lofi: true }, 'v2-terrain-shadow-lofi')
-    return lofiTerrainMaterial
-  }
-  if (mode === 'lean') {
-    if (!leanTerrainMaterial) leanTerrainMaterial = buildTerrainVariant({ lean: true }, 'v2-terrain-shadow-lean')
-    return leanTerrainMaterial
-  }
+  if (mode === 'lean') return terrain.material
+  if (mode !== 'plain') return terrainVariant(mode)
   if (!plainTerrainMaterial) {
     plainTerrainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
-    // Deliberately NOT lighting.patch'd. The patch is the night lift and the
-    // shadow lookup, which is more of the same fragment cost, and a control that
-    // carries half the thing being removed is not a control.
+    // Deliberately NOT lighting.patch'd. The patch is the night lift, the shadow
+    // lookup and the aerial ramp, which is more of the same fragment cost, and a
+    // control that carries half the thing being removed is not a control. It is
+    // also what makes the distant mountains fade to flat fog rather than to air:
+    // see AERIAL_GLSL in lighting.js.
   }
   return plainTerrainMaterial
 }

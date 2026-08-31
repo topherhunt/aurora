@@ -7,6 +7,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - <https://polyhaven.com/>
   - https://www.opensource3dassets.com/en
   - [Stone textures](https://seamless-pixels.blogspot.com/2012/09/free-seamless-stone-textures.html)
+  - https://quest3-playground.pages.dev/
+  - https://www.meshy.ai/features/ai-animation-generator
 - Internal tools
   - https://192.168.178.75:5173/gen-tree
   - https://192.168.178.75:5173/gen-fern

@@ -328,12 +328,18 @@ export function luminance(c) {
  *   layers it exists to remove.
  * @param {boolean} [opts.lean] Compile the ONE-FETCH variant. Implies lofi and
  *   then cuts two of the three fetches it left. See the LEAN block below.
+ * @param {boolean} [opts.axis] Swap lean's triplanar rock for a DOMINANT-AXIS
+ *   projection. Implies lean. See the AXIS block below.
+ * @param {boolean} [opts.bare] Compile lean's NEAR BLOCK out entirely. A probe,
+ *   not a quality setting -- see the BARE block below.
  */
-export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lean = false } = {}) {
-  // LEAN IS LO-FI PLUS TWO CUTS, so it rides the same flag rather than growing a
-  // second set of eight branches that would every one of them have read
-  // `lofi || lean`. Everything lo-fi drops, lean drops; what lean drops on top
-  // of that is in its own block below.
+export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lean: leanOpt = false, axis = false, bare = false } = {}) {
+  // LEAN IS LO-FI PLUS TWO CUTS, and AXIS IS LEAN WITH ONE PROJECTION SWAPPED, so
+  // each rides the flag below it rather than growing its own set of branches that
+  // would every one of them have read `lofi || lean || axis`. Everything lo-fi
+  // drops, lean drops; what each cuts on top is in its own block below. `bare`
+  // rides lean rather than axis because what it removes contains both.
+  const lean = leanOpt || axis || bare
   const lofi = lofiOpt || lean
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
 
@@ -384,25 +390,38 @@ export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lea
   //
   // ---- LEAN: lo-fi with the last two full-screen fetches taken out.
   //
-  // MEASURED ON A QUEST 2, trees and grass loaded: plain 77 fps, lo-fi 60, full
-  // 48 -- 12.99 ms, 16.67 and 20.83, so lo-fi costs 3.68 ms over the control.
-  // Divide that by the FETCH-SCREENS it runs, each fetch weighted by the share of
-  // the below-horizon screen its guard admits, and both rungs agree on ~1.8 ms
-  // per fetch-screen. THAT is the quantity to cut against, and not the
-  // instruction count: SPIR-V puts lo-fi 18% under full and the headset says 53%.
+  // MEASURED ON A QUEST 2, trees and grass loaded, under medium load: plain 73
+  // fps, lean 60, lo-fi 57, full 46 -- 13.70 ms, 16.67, 17.54, 21.74. Lean costs
+  // 2.97 ms over the control and beats lo-fi on cost AND on looks, which is why
+  // the headset ships it and the middle rungs are gone from main.js's row.
   //
-  //                                share of screen    est. cost
-  //   1 km macro, UNGUARDED             100%           ~1.84 ms
-  //   coarse grit, inside RELIEF_FAR     ~45%          ~0.83 ms
-  //   fine grit, inside MICRO_FAR        ~35%          ~0.64 ms
-  //   triplanar's 2 extra, steep rock    ~10%          ~0.37 ms
+  //                                share of screen   fetch-screens
+  //   1 km macro, UNGUARDED             100%             1.00
+  //   coarse grit, inside RELIEF_FAR     ~45%            0.45
+  //   fine grit, inside MICRO_FAR        ~35%            0.35
+  //   triplanar's 2 extra, steep rock    ~10%            0.10
   //
-  // LEAN DROPS THE FIRST AND THE THIRD, two thirds of the total. The macro layer
-  // moves to the VERTEX shader unchanged -- same field, same channels, evaluated
-  // per vertex and interpolated -- and the fine grit rung goes outright, taking
-  // the snow sparkle, the 4 cm flecks and the 10 cm relief octave with it. That
-  // second one is what lean costs to LOOK at: the coarse rung is unaccompanied at
-  // 11.7 m now, so if the ground reads as a lattice underfoot, this is why.
+  // FETCHES ARE NOT THE COST, and this table is what disproves it rather than
+  // what predicts it. Lo-fi runs 1.90 of those fetch-screens for 3.84 ms and lean
+  // runs 0.55 for 2.97: the step between removed 1.35 and bought 0.87 ms, 0.64 ms
+  // each, where full -> lo-fi implied ~1.4. No single rate fits both, so cutting
+  // a fetch buys progressively less -- there is enough arithmetic around each one
+  // to hide its latency behind.
+  //
+  // LEAN DROPS THE FIRST AND THE THIRD anyway. The macro layer moves to the
+  // VERTEX shader unchanged -- same field, same channels, evaluated per vertex
+  // and interpolated -- and the fine grit rung goes outright, taking the snow
+  // sparkle, the 4 cm flecks and the 10 cm relief octave with it. That second one
+  // is what lean costs to LOOK at: the coarse rung is unaccompanied at 11.7 m
+  // now, so if the ground reads as a lattice underfoot, this is why.
+  //
+  // WHAT IS LEFT IS ALL NEAR FIELD. Fold the `auroraRelief > 0.004` block away
+  // and lean is 37 SPIR-V ALU over a stock Lambert with ZERO fetches and ZERO
+  // branches -- that is the entire far-field colour chain, the snow and rock
+  // mixes, the region tint and the two exposure multiplies. The block itself is
+  // +97 ALU, 4 fetches and 20 branches and none of it survives RELIEF_FAR. So a
+  // distant mountain is already nearly free here and there is nothing to win at
+  // range; every remaining millisecond is spent inside 55 m.
   //
   // IT KEEPS THE COARSE RUNG'S RELIEF, which rides free on a fetch already there,
   // and it keeps the TRIPLANAR GATE exactly where it is, which is the part worth
@@ -415,6 +434,66 @@ export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lea
   // where pow(abs(n), 4) leaves the triplanar blend 89% the xz projection anyway,
   // so the two paths agree across it. At 0.62 they agree 28%, which draws a hard
   // line along one contour of every hill in the world.
+  // ---- AXIS: lean, with the triplanar rock branch replaced rather than removed.
+  //
+  // WHAT IT IS FOR. Ablating the shipped lean shader puts its near block at ~97
+  // SPIR-V ALU over a stock Lambert, and the TRIPLANAR BRANCH ALONE is 47 of them
+  // plus 3 of the block's 4 fetches. Nothing else in there is worth cutting by
+  // comparison: the speckle is 4 ALU, dirt and moss together are 9, and the bump
+  // normals are 30 only because deleting them also kills the .gb decode on a
+  // fetch that stays. So the branch is the near field, and everything else is
+  // rounding error.
+  //
+  // AND THE OP COUNT UNDERSTATES IT, which is the part worth writing down. Its
+  // condition is `rock && auroraWN.y < 0.86`, and that flips fragment to fragment
+  // along every rock/grass boundary and every 0.86-slope contour in view. A quad
+  // that straddles one executes BOTH sides masked -- 3 fetches and 1, plus the
+  // three-way blend -- so the honest weighting is not "10% of screen takes the
+  // expensive path", it is "every quad touching one of those contours pays all
+  // four". It is the only divergent branch in this file that gates fetches.
+  //
+  // THE SWAP. Sample the ONE plane the geometric normal most faces, instead of
+  // three blended by weight. Same swizzles the triplanar helper uses, so the rock
+  // layer's 3.5:1 anisotropy still lands with its long axis horizontal on a wall;
+  // same textureGrad, because this still sits inside a guard that is not
+  // quad-uniform. The selection is ternaries on vec2, which compile to selects
+  // rather than to control flow, so the fetch sits at one place in uniform flow
+  // and the divergence is gone with the branch.
+  //
+  // WHAT IT COSTS TO LOOK AT, and it is a narrow thing. Below 45 degrees the y
+  // component still dominates, so the plane chosen IS the xz plane and the result
+  // is bit-identical to lean's planar path -- which is most of the walkable world.
+  // Past 45 the projection FLIPS between planes along one contour, and the field
+  // on either side is the same field at a different phase. That reads as a change
+  // of pattern and not of brightness, which in 4.6 cm rank-equalised noise with no
+  // directional structure is about as invisible as a seam gets; but it is a seam,
+  // and the headset is the only thing that can say whether it shows.
+  //
+  // The band between the two is where it differs from lean without differing from
+  // planar: from 30.7 degrees (auroraWN.y = 0.86, where lean turns triplanar on)
+  // to 45, axis stays on xz where lean blends. That blend is 89% xz at its own
+  // gate, so there is nothing there to see either.
+  // ---- BARE: the near block gone, to find out what it is actually worth.
+  //
+  // A PROBE AND NOT A RUNG. It draws no surface detail at all inside 55 m -- no
+  // grain, no dirt, no moss, no relief -- so the ground is flat vertex colour
+  // underfoot. Nobody would ship it. It exists because three rounds of trimming
+  // that block have now bought nothing measurable and the question of what it
+  // costs has to be answered before a fourth.
+  //
+  // WHY IT IS WORTH COMPILING. On a Quest 2, lean and axis measure the SAME
+  // (55 fps against plain's 63), and axis removes 3 of lean's 4 fetches, 7 of its
+  // 26 branches and the only divergent fetch-gating branch in the file. So the
+  // near field is not fetch bound and it is not branch bound, and every remaining
+  // idea for trimming it is a smaller change of one of those two kinds. Deleting
+  // the block outright is the one measurement that brackets all of them: whatever
+  // bare does not recover, no trim inside the block can recover either.
+  //
+  // WRITTEN AS A FOLDED GUARD rather than by wrapping 240 lines in another
+  // template branch, and that is a deliberate trade of tidiness for a diff small
+  // enough to read. `if ( false )` is dead-coded by every GLSL compiler before
+  // register allocation, and the SPIR-V harness confirms the specific claim that
+  // matters: the block's four texture ops are gone, not merely unreached.
   const stone = atlas && !lofi
 
   const detail = terrainDetailTextures()
@@ -761,7 +840,46 @@ ${stone ? `        uniform sampler2DArray uAtlas;
         vec4 auroraGritP( vec2 uv, vec2 dx, vec2 dy, float layer ) {
           return textureGrad( uGritArr, vec3( uv, layer ), dx, dy );
         }
-${lofi ? `
+${axis ? `
+        // ---- THE SAME FETCH, ON THE ONE PLANE THE SURFACE MOST FACES.
+        //
+        // Replaces the triplanar helper below it. See the AXIS block for what
+        // that buys and the single thing it costs to look at.
+        //
+        // THE SWIZZLES ARE THE TRIPLANAR ONE'S, unchanged, so the rock layer's
+        // anisotropy lands the same way: u is a horizontal world axis in all
+        // three projections (z, x, x), which puts the long axis of its features
+        // across a wall and the short one up it, and that is bedding.
+        //
+        // ARITHMETIC SELECTION, and the first draft got this wrong in a way
+        // worth recording: written as \`?:\` chains this compiles to CONTROL FLOW,
+        // not to selects. glslang emitted OpSelectionMerge per ternary and
+        // spirv-opt did not flatten them, taking the shader from 26 branches to
+        // 57 -- trading one divergent branch for nine. step() and mix() are
+        // arithmetic by construction, so the whole selection is straight-line
+        // and the fetch sits at ONE place in uniform flow, which is the entire
+        // point of the exercise.
+        //
+        // Two weights, both exactly 0 or 1: wy picks the xz plane over both
+        // walls, wx picks which wall.
+        //
+        // \`bump\` is in world space, ready to add to auroraBump. Each plane
+        // perturbs the two world axes that lie in it and leaves its own alone.
+        float auroraGritAxis( vec3 p, vec3 dx, vec3 dy, vec3 n, float k, float layer, float gk, out vec3 bump ) {
+          vec3 an = abs( n );
+          float wy = step( max( an.x, an.z ), an.y );
+          float wx = step( an.z, an.x );
+          vec2 uv  = mix( mix( p.xy,  p.zy,  wx ), p.xz,  wy );
+          vec2 ddx = mix( mix( dx.xy, dx.zy, wx ), dx.xz, wy );
+          vec2 ddy = mix( mix( dy.xy, dy.zy, wx ), dy.xz, wy );
+          vec4 t = textureGrad( uGritArr, vec3( uv * k, layer ), ddx * k, ddy * k );
+          vec2 s = ( t.gb - 0.5 ) * gk;
+          bump = mix( mix( vec3( -s.x, -s.y, 0.0 ),   // xy: u = x, v = y
+                           vec3( 0.0, -s.y, -s.x ), wx ),  // zy: u = z, v = y
+                      vec3( -s.x, 0.0, -s.y ), wy );   // xz: u = x, v = z
+          return t.r;
+        }
+` : ''}${lofi && !axis ? `
         // ---- THE SAME FETCH, TRIPLANAR, and rock only. Three fetches.
         //
         // The lo-fi variant drops the stone photograph, which was the only
@@ -1222,7 +1340,7 @@ ${stone ? `
           // Opened on the LONGER of the two coarse-grit fades, because one fetch
           // feeds both and the lighting half reaches further than the colour
           // half. See the block above RELIEF_NEAR.
-          if ( auroraRelief > 0.004 ) {
+          if ( ${bare ? 'false' : 'auroraRelief > 0.004'} ) {
             // HOW MUCH OF THIS FRAGMENT THE PHOTOGRAPH IS NOT CARRYING. Rock is
             // always 1 -- it has a tile of its own but that one is bedding at
             // 16 m, which says nothing at half a metre. SNOW IS ALSO ALWAYS 1
@@ -1264,10 +1382,17 @@ ${stone ? `
             vec3 auroraGSlope;
 ${lofi ? `            // The GEOMETRIC normal, deliberately: this runs before
             // normal_fragment_begin, so nothing has perturbed it yet, and a
-            // triplanar blend keyed off bump normals would make the projection
-            // swim over a surface that is not moving.
+            // projection keyed off bump normals would swim over a surface that
+            // is not moving.
             vec3 auroraWN = normalize( inverseTransformDirection( normalize( vNormal ), viewMatrix ) );
-            // TRIPLANAR, ROCK ONLY, AND ONLY WHERE ROCK IS ACTUALLY STEEP.
+${axis ? `            // ONE FETCH ON THE DOMINANT PLANE, every surface, no branch. On
+            // anything under 45 degrees this IS the xz projection the planar
+            // path takes, so the rock guard the triplanar version needed has
+            // nothing left to guard. See the AXIS block.
+            auroraGR = auroraGritAxis( vWorldPos, auroraDPx, auroraDPy, auroraWN,
+              ${(1 / GRIT_METRES).toFixed(8)}, auroraGritLayer,
+              ${(GRIT_GRAD_SCALE / GRIT_METRES).toFixed(6)}, auroraGSlope );
+` : `            // TRIPLANAR, ROCK ONLY, AND ONLY WHERE ROCK IS ACTUALLY STEEP.
             // Without an atlas this is the only thing keeping a cliff from
             // wearing a vertically smeared xz projection, and the whole reason
             // it is affordable is that the guard is narrow twice over: rock
@@ -1290,7 +1415,7 @@ ${lofi ? `            // The GEOMETRIC normal, deliberately: this runs before
               vec2 auroraS = ( auroraG.gb - 0.5 ) * ${(GRIT_GRAD_SCALE / GRIT_METRES).toFixed(6)};
               auroraGSlope = vec3( -auroraS.x, 0.0, -auroraS.y );
             }
-` : `            {
+`}` : `            {
               vec4 auroraG = auroraGritP( vWorldPos.xz * ${(1 / GRIT_METRES).toFixed(8)},
                 auroraDPx.xz * ${(1 / GRIT_METRES).toFixed(8)},
                 auroraDPy.xz * ${(1 / GRIT_METRES).toFixed(8)}, auroraGritLayer );
@@ -1507,7 +1632,7 @@ ${lean ? '' : `            // ---- THE GRIT TILE, FINE SAMPLE: ${GRIT_FINE_METRE
   // and distinct BETWEEN the variants: the atlas, the lofi flag and the lean
   // flag each change the compiled source, so no two of them may share a program.
   // Lean is the only one that changes the VERTEX shader as well.
-  const key = `aurora-terrain-v11${stone ? '-stone' : ''}${lean ? '-lean' : lofi ? '-lofi' : ''}`
+  const key = `aurora-terrain-v11${stone ? '-stone' : ''}${bare ? '-bare' : axis ? '-axis' : lean ? '-lean' : lofi ? '-lofi' : ''}`
   material.customProgramCacheKey = () => key
 
   return material

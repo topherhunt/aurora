@@ -1332,9 +1332,14 @@ console.log('\n-- a dissolve does not retract --')
         if (hidden) {
           outs++
           // A retraction only counts against the rim if the tree never came
-          // properly inside its own trigger. 5% of the trigger is the margin,
-          // an order under the hysteresis this is gating.
-          if (shown[i] && minD[i] > fly.rim.gone[i] * RIM_AT * 0.95) grazed++
+          // inside its own trigger AT ALL. That is the whole claim: a prop shown
+          // by the slack is one standing outside the radius its own rank bought,
+          // and it is the only kind that has nothing to lose by going again. A
+          // tree that got inside and then left is the player having walked past
+          // it, however narrowly -- how narrowly is set by its LATERAL offset
+          // from the flight line, which is a fact about where it stands and not
+          // about the rim.
+          if (shown[i] && minD[i] > fly.rim.gone[i] * RIM_AT) grazed++
         } else {
           ins++
           shown[i] = 1

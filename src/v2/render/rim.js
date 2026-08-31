@@ -365,11 +365,12 @@ export class RimFade {
       const ey = instY[id] - camY
       const ez = instZ[id] - camZ
       const d2 = ex * ex + ey * ey + ez * ez
+      const gone = this.gone[id]
       // Where the prop goes. The slack pushes BOTH boundaries out together, so
       // it delays a hide (costing triangles, which is what the sweep saves) and
       // brings a show forward (costing nothing, and buying off the only artefact
       // amortising can make).
-      const from = this.gone[id] * RIM_AT + slack
+      const from = gone * RIM_AT + slack
       const state = this.state[id]
 
       if (state === FRESH || state === FRESH_FADE) {
@@ -402,8 +403,8 @@ export class RimFade {
         // moment the camera slows and the slack decays. A prop appears when it
         // is genuinely inside its radius and never before.
         const back = Math.min(
-          this.gone[id] * RIM_AT,
-          from - Math.max(RIM_HYST, this.gone[id] * RIM_HYST_FRAC))
+          gone * RIM_AT,
+          from - Math.max(RIM_HYST, gone * RIM_HYST_FRAC))
         if (d2 < back * back) {
           this.batch.setVisibleAt(id, true)
           this._startFade(id, now, true)

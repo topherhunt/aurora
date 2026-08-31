@@ -55,7 +55,7 @@ import {
   ROCK_NAMES, ROCK_VARIANTS, SITES, TINTS, TINT_GAIN, rockImpostorLayer, rockImpostorLayers,
   rockShapeSeed, rockShapeId, parseRockShapeId,
 } from '../src/props/rock-bank.js'
-import { impostorCardExtents } from '../src/props/impostor.js'
+import { buildImpostorCard, impostorCardExtents } from '../src/props/impostor.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
@@ -137,7 +137,7 @@ console.log('geometry')
 const LAYOUT = ['position', 'normal', 'uvProj', 'texLayer']
 const bad = {
   attrs: 0, unindexed: 0, nonIdentity: 0, nan: 0, triCount: 0, closedDropped: 0,
-  offGround: 0, wrongSize: 0, badNormal: 0, wrongLayer: 0, degenerate: 0,
+  offGround: 0, wrongSize: 0, badNormal: 0, wrongLayer: 0, degenerate: 0, inward: 0,
 }
 const worst = { ground: 0, size: 0, overSize: 0, normal: 0, degenFrac: 0 }
 let totalTris = 0
@@ -227,6 +227,14 @@ for (let seed = 1; seed <= SEEDS; seed++) {
       // Faces the bed plane clamped flat. A handful is the cost of a flat
       // bottom; a large fraction means `sit` is eating the rock.
       let degen = 0
+      // WOUND OUTWARD, which is what makes back-face culling safe -- and the
+      // material asks for it (side: FrontSide in v2/render/rocks.js). Signed
+      // volume is the whole test: an outward-wound solid sums its tetrahedra to
+      // its own positive volume and an inside-out one sums to exactly minus it,
+      // so a cluster of shards still comes out positive and there is no
+      // threshold to tune. A mesh that failed this would look right from every
+      // angle that has a front face and be hollow from the rest.
+      let volume = 0
       const faces = pos.length / 9
       for (let f = 0; f < faces; f++) {
         const o = f * 9
@@ -236,7 +244,9 @@ for (let seed = 1; seed <= SEEDS; seed++) {
         const cy = abz * acx - abx * acz
         const cz = abx * acy - aby * acx
         if (Math.hypot(cx, cy, cz) < 1e-9) degen++
+        volume += pos[o] * cx + pos[o + 1] * cy + pos[o + 2] * cz
       }
+      if (!(volume > 0)) bad.inward++
       const degenFrac = degen / faces
       if (degenFrac > 0.2) bad.degenerate++
       worst.degenFrac = Math.max(worst.degenFrac, degenFrac)
@@ -257,6 +267,30 @@ check(bad.offGround === 0, 'the bed plane sits on y = 0', `worst ${(worst.ground
 check(bad.wrongSize === 0, 'every tier measures `size`, give or take a coarse corner', `worst -${(worst.size * 100).toFixed(0)}% / +${(worst.overSize * 100).toFixed(0)}%, cap +${((BOX_MARGIN - 1) * 100).toFixed(0)}%`)
 check(bad.badNormal === 0, 'every normal is unit length', `worst |n|-1 = ${worst.normal.toExponential(1)}`)
 check(bad.degenerate === 0, 'the bed plane flattens only a few faces', `worst ${(worst.degenFrac * 100).toFixed(0)}% of faces`)
+check(bad.inward === 0, 'every rock is wound outward, so FrontSide culls the right half', `${bad.inward} builds inside out`)
+
+// AND THE CARD, whose front face is decided somewhere else entirely: the quad is
+// wound in object space and billboardVertex maps object +z onto the direction of
+// the eye, so the two have to agree or the whole scree field vanishes the moment
+// rocks stop being drawn double-sided. Checked on the shape the bank ships --
+// one plane, spun spherically.
+{
+  const quad = buildImpostorCard(1, 1, LAYER.IMPOSTOR_ROCK, 1, { upNormal: true, spherical: true })
+  const p = quad.attributes.position.array
+  const i = quad.index.array
+  let towardEye = 0
+  for (let f = 0; f < i.length; f += 3) {
+    const a = i[f] * 3, b = i[f + 1] * 3, c = i[f + 2] * 3
+    const abx = p[b] - p[a], aby = p[b + 1] - p[a + 1], abz = p[b + 2] - p[a + 2]
+    const acx = p[c] - p[a], acy = p[c + 1] - p[a + 1], acz = p[c + 2] - p[a + 2]
+    // Only the z of the winding normal matters: +z is where the spin puts the
+    // camera.
+    if (abx * acy - aby * acx > 0) towardEye++
+  }
+  check(towardEye === i.length / 3,
+    'the rock card winds toward the eye the spherical spin turns it to',
+    `${towardEye} of ${i.length / 3} triangles`)
+}
 console.log(`       ${builds} builds, ${totalTris} triangles`)
 
 // ---------------------------------------------------------------------------

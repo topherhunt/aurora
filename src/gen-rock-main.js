@@ -1,6 +1,8 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { buildRock, ROCK_DEFAULTS, ROCK_TIERS, ROCK_LOD_AT, rockLodSize } from './props/rock.js'
+import {
+  buildRock, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, rockLodSize,
+} from './props/rock.js'
 import {
   ROCK_VARIANTS, TINTS, TINT_GAIN, rockParams, rockImpostorLayer,
   rockShapeSeed, parseRockShapeId,
@@ -9,7 +11,7 @@ import { SEED as WORLD_SEED } from './v2/config.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
-import { createPropMaterial, setSnow, setMoss } from './material.js'
+import { createPropMaterial, setSnow, setMoss, setPropBump, getPropBump } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 import rockSource from './props/rock.js?raw'
 import impostorSource from './props/impostor.js?raw'
@@ -72,7 +74,7 @@ const SLIDERS = [
   ['size', 0.06, 14, 0.02, 'largest HORIZONTAL extent in metres, measured on the dense reference. The shape is built in relative units and rescaled, and the texture scales with it, so a shape found at 2 m is the same rock at 14 m'],
   ['squash', 0.15, 2.6, 0.01, 'height / width. Under 0.4 is a slab, over 1.5 is a standing stone'],
   ['elongate', 1, 2.6, 0.01, 'x extent against z extent. 1 is round in plan'],
-  ['tier', 0, 2, 1, 'which mesh tier is drawn: 0 = T180, 1 = T80, 2 = T20. All three are the SAME rock at different resolutions, and beyond T20 the world draws the billboard'],
+  ['detail', 0, ROCK_MAX_DETAIL, 1, `how many times each icosahedron edge is split, which IS the vertex count: 20 x (detail+1)^2 faces per shard, so 0 is T20 and ${ROCK_MAX_DETAIL} is T${20 * (ROCK_MAX_DETAIL + 1) ** 2}. This is the dial a finer LOD0 gets CHOSEN on -- the shipping ladder carries ${ROCK_TIERS.map((t) => t.name).join('/')} and the LOD ladder view always shows those three whatever this says. Everything else about the rock is unchanged: displacement is a function of direction, so every resolution is the same shape sampled harder`],
   ['lumps', 0, 0.9, 0.01, 'large-scale radial displacement -- the mass of the rock. Ceiling raised past the default because the default WAS the ceiling, which is never evidence that the ceiling is right'],
   ['lumpFreq', 0.6, 4, 0.05, 'how many lumps around the rock'],
   ['grain', 0, 0.5, 0.005, 'small-scale bumps that catch light along an edge. The 128px tile does the finer work'],
@@ -96,22 +98,37 @@ const SLIDERS = [
   ['texRepeat', 0.5, 8, 0.1, 'how many times the tile covers the rock\'s widest plan axis. Relative to the ROCK, not to the world, so a shape is the same picture at 0.2 m and at 14 m'],
   ['texJitter', 0, 1, 0.05, 'how far that repeat count is rolled per seed. This is what stops a bed of same-size cobbles looking stamped'],
   ['brightness', 0.3, 2, 0.05, 'multiplies the tint. A material setting, not geometry'],
+  ['bump', 0, 2, 0.05, 'how hard the stone tile grooves the lighting. The tile is its own height field -- dark grain pits, light grain ridges -- so this buys grit the mesh does not have to carry, at two extra texture fetches a pixel and no triangles. It moves the NORMAL, so snow settles in the grooves and the whole surface re-reads as the sun goes round. Past ~1.2 the shading detaches from the silhouette and reads as noise'],
   ['snow', 0, 1, 0.01, 'snow, in patches, filling in from the top down. The same global uniform the tree bench drives, leaning twice as hard on which way the surface faces: the top whitens first, a sheer side is about half covered by the time the top is solid, an underside goes last, and a full winter reaches everything. The patches are world-space noise, so they wander across the cut facets instead of tracing their edges. Costs no triangles and nothing at all at 0'],
   ['moss', 0, 1, 0.01, 'moss, creeping up from the shaded flanks. Unlike snow this is a real second texture (LAYER.MOSS) laid over the stone, because moss is nothing but grain -- and it deliberately does NOT take the tint, so a basalt rock and a sandstone rock grow the same green. Sits under the snow: snow falls on moss, not the other way round'],
   ['planes', 1, 3, 1, 'CARD ONLY: quads crossed about the axis. On an opaque lump their intersection is visible as an X, which is the case against a rock card'],
 ]
 
-// `brightness`, `snow`, `moss` and `planes` are bench/material settings and
-// deliberately sit outside ROCK_DEFAULTS -- snow and moss are weather and
-// growth, the other two are the previewer. The tree bench keeps `snow` outside
-// TREE_DEFAULTS for the same reason.
+// WHAT IS NOT THE SHAPE. `brightness`, `bump` and `planes` are the previewer and
+// the material, `snow` and `moss` are weather and growth, and `detail` is which
+// resolution you are looking at. None of them is a property of the rock, so
+// dragging one does not clear the preset name and loading a preset does not
+// reset one -- see the preset handler, which puts these back over whatever
+// rockParams returned.
+//
+// `detail` IS in ROCK_DEFAULTS, where it is null, meaning "read the ladder". The
+// bench is the one caller that gives it a number, and it must have one: a null
+// on a range input is an empty box.
 //
 // The page OPENS ON ROCK_DEFAULTS, not on a preset. Every preset names lumps,
-// grain, smooth, cuts and tier, so opening on one would silently overwrite all
-// five of the values ROCK_DEFAULTS was tuned to -- the defaults would be a
-// setting nobody ever saw. `custom` is the honest label for that state.
-const BENCH_KEYS = new Set(['brightness', 'snow', 'moss', 'planes'])
-const params = { ...ROCK_DEFAULTS, brightness: 1, snow: 0, moss: 0, planes: 2 }
+// grain, smooth and cuts, so opening on one would silently overwrite the values
+// ROCK_DEFAULTS was tuned to -- the defaults would be a setting nobody ever saw.
+// `custom` is the honest label for that state.
+const BENCH_DEFAULTS = {
+  brightness: 1,
+  snow: 0,
+  moss: 0,
+  planes: 2,
+  detail: ROCK_TIERS[0].detail,
+  bump: getPropBump(),
+}
+const BENCH_KEYS = new Set(Object.keys(BENCH_DEFAULTS))
+const params = { ...ROCK_DEFAULTS, ...BENCH_DEFAULTS }
 let tintIndex = 0
 let presetName = ''
 
@@ -181,7 +198,11 @@ scene.add(rule)
 const atlas = buildTextureArray()
 
 function makeMaterial() {
-  const m = createPropMaterial(atlas)
+  // `bump: true` and FrontSide because that is what v2/render/rocks.js asks for,
+  // and a bench drawing the same rock with a different material is a bench you
+  // cannot sign anything off on. The `backfaces` button flips the side back at
+  // runtime, which three recompiles for on its own key.
+  const m = createPropMaterial(atlas, { bump: true, side: THREE.FrontSide })
   const arrayPatch = m.onBeforeCompile
   m.onBeforeCompile = (shader, r) => {
     arrayPatch(shader, r)
@@ -203,6 +224,7 @@ function syncMaterials() {
   // boulders a hundred metres apart in elevation wear different amounts.
   setSnow(params.snow)
   setMoss(params.moss)
+  setPropBump(params.bump)
   // TINT_GAIN, not the hex. A tint is a DESTINATION now (see rock-bank.js) and
   // the gain that reaches it is a linear-space multiplier that mostly runs ABOVE
   // 1.0, because stone.png is a dark warm photograph rather than the pale
@@ -213,6 +235,7 @@ function syncMaterials() {
     const m = materials[i]
     m.color.setRGB(gain[0], gain[1], gain[2]).multiplyScalar(params.brightness)
     m.wireframe = wireframe
+    m.side = showBackfaces ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
   })
 }
@@ -247,6 +270,11 @@ const GALLERY_N = GALLERY_COLS * GALLERY_ROWS
 let mode = 'one'
 let wireframe = false
 let showGrid = true
+// The world draws front faces only. Turning this on puts the back ones back, so
+// an `openBottom` shell can be judged from underneath and a closed one can be
+// shown to look identical either way -- which is the evidence that culling it
+// costs nothing.
+let showBackfaces = false
 // Draw the impostor instead of the mesh. Deliberately not a camera move: the
 // question a card asks is "does this still read as a rock from where I am
 // standing", which you cannot answer if the view jumps when you press it.
@@ -259,6 +287,21 @@ function clearGroup() {
 
 function rockOptions(over = {}) {
   return { ...params, ...over }
+}
+
+/**
+ * Take a whole shape -- a preset, or the defaults -- without losing the bench.
+ *
+ * `rockParams` returns ROCK_DEFAULTS underneath, which names `detail` and sets
+ * it to null. Assigning that straight over `params` would empty the resolution
+ * slider and leave the page rebuilding at whatever `tier` the preset carried,
+ * with no visible reason. So the bench keys are put back on top: they are not
+ * the shape and a shape has no opinion about them.
+ */
+function applyShape(shape) {
+  const keep = {}
+  for (const k of BENCH_KEYS) keep[k] = params[k]
+  Object.assign(params, shape, keep)
 }
 
 // Returns aggregate stats, so the panel can report what is actually on screen
@@ -279,8 +322,12 @@ function rebuild() {
       tint: tintIndex,
     }))
   } else if (mode === 'ladder') {
+    // `detail: null` hands the rungs back to ROCK_TIERS. Without it the
+    // resolution slider would win on all three and the ladder would be the same
+    // rock three times -- see buildRock, where a numeric `detail` overrides
+    // `tier` outright.
     items = ROCK_TIERS.map((_, i) => ({
-      opts: rockOptions({ tier: i }),
+      opts: rockOptions({ tier: i, detail: null }),
       x: (i - (ROCK_TIERS.length - 1) / 2) * spacing,
       z: 0,
       tint: tintIndex,
@@ -467,7 +514,10 @@ function refresh() {
   const cardAt = shipAt[shipAt.length - 1]
 
   // --- this rock ---
-  const tier = ROCK_TIERS[Math.round(params.tier)]
+  // The rung that was BUILT, read off the geometry rather than looked up in
+  // ROCK_TIERS by the slider: the resolution slider reaches past the ladder, and
+  // a lookup would print T180 over a T500 rock.
+  const tier = { name: s.stats.tier, faces: s.stats.faces }
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} on screen)` : ''}`],
     ...(s.card
@@ -526,7 +576,10 @@ function refresh() {
         `${t.faces * shards} tris &nbsp; ${from.toFixed(0)}&ndash;${shipAt[i].toFixed(0)} m ` +
           `&nbsp; <span class="k">model ${d.toFixed(0)}</span>`,
         '',
-        i === Math.round(params.tier) && !s.card ? 'here' : '',
+        // Matched on the tier NAME, so an off-ladder resolution marks no row at
+        // all -- which is the truth. A row index compared against the slider
+        // would put "here" on T180 while a T500 rock was on screen.
+        t.name === s.stats.tier && !s.card ? 'here' : '',
       ]
     }).concat([[
       'billboard',
@@ -748,7 +801,7 @@ presetSel.addEventListener('change', () => {
   // default rather than surviving from the last one -- which is exactly what
   // rockParams does. A preset that inherited half of whatever you were just
   // looking at is not a variant you can sign off.
-  Object.assign(params, rockParams(presetName, params.seed))
+  applyShape(rockParams(presetName, params.seed))
   tintIndex = ROCK_VARIANTS[presetName].tint
   tintSel.value = String(tintIndex)
   syncSliders()
@@ -802,7 +855,7 @@ const loadShapeId = () => {
   presetSel.value = presetName
   params.seed = rockShapeSeed(WORLD_SEED, parsed.name, parsed.index)
   seedInput.value = params.seed
-  Object.assign(params, rockParams(presetName, params.seed))
+  applyShape(rockParams(presetName, params.seed))
   tintIndex = ROCK_VARIANTS[presetName].tint
   tintSel.value = String(tintIndex)
   shapeNote.textContent = `${parsed.name}-${parsed.index} -- seed ${params.seed}`
@@ -841,6 +894,7 @@ function toggle(id, get, set) {
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('card', () => cardMode, (v) => { cardMode = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
+toggle('cull', () => showBackfaces, (v) => { showBackfaces = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
 
 document.getElementById('reset').addEventListener('click', () => {
@@ -848,7 +902,7 @@ document.getElementById('reset').addEventListener('click', () => {
   // because it lived in TILE_METRES and reset had to put back the SHIPPING value
   // rather than whatever ROCK_DEFAULTS held; now `texRepeat` is a property of the
   // rock and there is only one number, so there is nothing left to except.
-  Object.assign(params, ROCK_DEFAULTS, { brightness: 1, snow: 0, moss: 0, planes: 2, seed: params.seed })
+  Object.assign(params, ROCK_DEFAULTS, BENCH_DEFAULTS, { seed: params.seed })
   presetName = ''
   presetSel.value = ''
   syncSliders()

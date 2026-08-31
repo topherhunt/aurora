@@ -2311,9 +2311,26 @@ export class Rocks {
     // above. See billboardVertex for the argument and for why a tree must NOT have
     // this. One material for every bed is what makes it a single word here rather
     // than a decision per bed.
+    //
+    // FRONT FACES ONLY, alone among the prop materials. Every other one draws
+    // cutout foliage, where both sides of a leaf are the same leaf; a rock is a
+    // CLOSED SOLID whose back faces are behind its own front ones, so culling
+    // them halves the raster work for nothing given up. The spun card is safe
+    // for a separate reason: billboardVertex maps its object +z onto the
+    // direction of the eye, so the side that is wound front is the side you are
+    // on. check-rocks.mjs holds both facts -- outward winding on every tier, and
+    // the card's -- because the failure is invisible from any angle that has a
+    // front face to look at.
+    //
+    // The one thing it changes is the `openBottom` shells: their missing bottom
+    // used to show as the inside of the shell and now shows as a hole through
+    // it. Every one of them is bedded into the ground, which is what makes that
+    // acceptable rather than merely different.
     this.material = createPropMaterial(textureArray, {
       billboardLayers: rockImpostorLayers(),
       sphericalBillboard: true,
+      side: THREE.FrontSide,
+      bump: true,
     })
 
     this.beds = BEDS.map(

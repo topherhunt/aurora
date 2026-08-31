@@ -693,6 +693,14 @@ const TERRAIN_VARIANTS = [
   // Same, one rung down. `lean` has to win over BOTH a non-null atlas and an
   // unset lofi flag, since it implies lofi inside the factory.
   ['lean       ', { atlas: true, lean: true }],
+  // Same again, one flag further down: `axis` has to win over an unset `lean`
+  // as well, since it implies lean which implies lofi. The marks below are what
+  // hold the swap itself -- one helper in, the triplanar one out.
+  ['axis       ', { atlas: true, axis: true }],
+  // The near-field probe. Implies lean, so it inherits every lean expectation;
+  // what is its own is that the coarse guard must be FOLDED, not merely false at
+  // runtime, or the probe measures the thing it is meant to remove.
+  ['bare       ', { atlas: true, bare: true }],
 ]
 for (const [variant, opts] of TERRAIN_VARIANTS) {
   const lib = THREE.ShaderLib.lambert
@@ -703,7 +711,7 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
     defines: {},
   }
   const atlas = opts.atlas ? new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1) : null
-  const mat = createTerrainMaterial({ atlas, lofi: opts.lofi, lean: opts.lean })
+  const mat = createTerrainMaterial({ atlas, lofi: opts.lofi, lean: opts.lean, axis: opts.axis, bare: opts.bare })
   mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
 
   const defines = ['#define USE_COLOR', '#define USE_FOG', '#define FOG_EXP2']
@@ -744,23 +752,28 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   ]
   const banned = []
   const vertMarks = []
-  // `lean` implies `lofi` inside the factory, so every lo-fi expectation below
-  // has to be asserted for it too -- reading opts.lofi alone would let the lean
-  // row pass while silently compiling the stone fetches.
-  const cheap = opts.lofi || opts.lean
+  // Each flag implies the one above it inside the factory -- axis => lean =>
+  // lofi -- so every expectation has to be asserted from the lowest rung that
+  // reaches it. Reading opts.lofi alone would let the lean and axis rows pass
+  // while silently compiling the stone fetches.
+  const lean = opts.lean || opts.axis || opts.bare
+  const cheap = opts.lofi || lean
   if (cheap) {
-    // The triplanar grit is the whole reason a cliff still reads as rock once
-    // the stone photograph is gone, and it exists ONLY here.
-    marks.push('float auroraGritTri(')
+    // Whatever keeps a cliff reading as rock once the stone photograph is gone.
+    // Exactly ONE of these two exists in any build, and which one is the whole
+    // difference between the lean and axis rungs: three fetches behind a
+    // divergent branch, or one at uniform flow.
+    marks.push(opts.axis ? 'float auroraGritAxis(' : 'float auroraGritTri(')
+    banned.push(opts.axis ? 'auroraGritTri' : 'auroraGritAxis')
     // What lo-fi is FOR. Each of these is a fetch per fragment that the middle
     // rung exists to delete, and every one of them would come back silently if
     // a `${stone ? ...}` guard ever went back to `${atlas ? ...}`.
     banned.push('uAtlas', 'auroraStoneK', 'auroraGroundTile', 'auroraMF = textureGrad')
   } else {
-    banned.push('auroraGritTri')
+    banned.push('auroraGritTri', 'auroraGritAxis')
     if (opts.atlas) marks.push('auroraStoneK > 0.004')
   }
-  if (opts.lean) {
+  if (lean) {
     // What LEAN is for, and both halves have to be checked from both ends.
     //
     // The 1 km layer moved to the vertex stage, so the fragment stage must not
@@ -778,6 +791,12 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
     // THE ONE FETCH IN THE FILE THAT MAY TAKE AN IMPLICIT LOD, because it is
     // the only one at top-level flow. See the note above the marks.
     marks.push('texture( uMacroMap, auroraMU )')
+  }
+  if (opts.bare) {
+    // The whole point of the probe, asserted from both ends: the guard folded to
+    // a constant, and the live threshold nowhere in the source.
+    marks.push('if ( false ) {')
+    banned.push('auroraRelief > 0.004')
   }
   for (const mark of marks) {
     if (!frag.includes(mark)) MISSING_MARKS.push(`${label} frag: ${mark}`)

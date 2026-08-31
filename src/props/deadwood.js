@@ -64,20 +64,26 @@ const JAG_SLAB_HI = 2.0 // ...and the broadest: a slab with a shoulder either si
 // wanders along the axis (STUB_TIP_JAG, a fraction of the stub's own length) and
 // then closes on a point somewhere along it.
 //
-// THE POINT IS DRAWN FROM A CONTINUUM, not from two cases. It lands anywhere
-// between STUB_TIP_MARGIN past the ring's furthest vertex and the same distance
-// behind its nearest, so a splinter standing proud and a rotted socket are the
-// two ENDS of one range rather than two outcomes -- most tips come out somewhere
-// in between, which is what most broken branches are. Rolling proud-or-sunk
-// instead made every tip commit to an extreme, and a stand of them read as
-// alternating spikes and craters.
+// THE POINT IS BIMODAL AND LOPSIDED, and the GAP IN THE MIDDLE is the point of
+// it. A tip level with its own rim is a flat disc with a few creases in it, and
+// that is the one thing a break never looks like, so the point always clears the
+// rim's whole range -- deep on the sunk side, modest on the proud side.
+//
+// SUNK is a branch that rotted from the inside and left a socket, and a socket is
+// DEEP or it does not read as one at all. PROUD is a branch that tore, and what
+// is left standing is a splinter -- push it out as far as a socket goes in and
+// the stub grows a horn and stops reading as wood. Hence the two ranges, and they
+// are measured from the rim vertex NEAREST each one rather than from the mean, so
+// a deep jag cannot eat the gap and leave the point level with the rim after all.
+// Even odds: a wood has both.
 //
 // The taper is what makes the sides quads rather than a cone: a broken branch
 // base is a short barrel, and a cone converging on a single apex is the one
 // thing it never looks like.
 const STUB_TIP_TAPER = 0.78 // tip radius as a fraction of the base's
 const STUB_TIP_JAG = 0.22 // how far a tip vertex wanders along the axis, of `len`
-const STUB_TIP_MARGIN = 0.10 // how far past the ring's extremes the point may land, of `len`
+const STUB_TIP_SOCKET = [0.20, 0.45] // sunk, behind the NEAREST rim vertex, of `len`
+const STUB_TIP_SPLINTER = [0.08, 0.25] // proud, past the FURTHEST, of `len`
 
 // How far a stub may slide off the regular spacing below, in radians. The bound
 // that matters is not the golden angle itself: at six stubs the angle's TIGHTEST
@@ -290,7 +296,7 @@ export const DEADWOOD_DEFAULTS = {
   // it. The fix is in the stub loop. This stays because it also controls where
   // stubs LOOK right, which is the lower two thirds of a snag.
   stubEnd: 0.64,
-  stubLength: 4, // as a multiple of the local DIAMETER
+  stubLength: 2, // as a multiple of the local DIAMETER
   stubRadius: 0.32, // as a fraction of the local trunk radius
   stubRise: 0.28, // radians above horizontal. Dead stubs droop toward horizontal; live branches rise
   // FIVE, and the odd count is the point: a stub is looked at from one side, and
@@ -1303,38 +1309,26 @@ export function buildDeadwood(options = {}) {
       emitTri(out, stubRing[k], stubCrown[k + 1], stubCrown[k], layer, smooth)
     }
 
-    // The break. The point sits on the axis, anywhere from a margin past the
-    // ring's furthest vertex to the same margin behind its nearest -- see
-    // STUB_TIP_MARGIN for why that is a range and not a coin toss.
-    const lo = tipLo - STUB_TIP_MARGIN * len
-    const point = lo + tipRand() * (tipHi + STUB_TIP_MARGIN * len - lo)
+    // The break. A deep socket or a modest splinter, never level with the rim --
+    // see STUB_TIP_SOCKET for the argument, and note that the two are measured
+    // from opposite ends of the rim's own range.
+    const outie = tipRand() < 0.5
+    const span = outie ? STUB_TIP_SPLINTER : STUB_TIP_SOCKET
+    const clear = (span[0] + tipRand() * (span[1] - span[0])) * len
+    const point = outie ? tipHi + clear : tipLo - clear
     stubTip.pos.copy(base).addScaledVector(stubAxis, point)
     stubTip.nor.copy(stubAxis)
     stubTip.v = point / p.texMetres
     for (let k = 0; k < stubSides; k++) {
       stubTip.u = ((k + 0.5) / stubSides) * stubURep
-      const c0 = stubCrown[k]
-      const c1 = stubCrown[k + 1]
-      // WOUND OUT PER TRIANGLE, not per stub. Once the point can land between the
-      // ring's extremes, one facet of a tip is a splinter while the next is a
-      // socket, and a single winding for the whole fan turns half of it away from
-      // the camera: back-face culling then opens a hole straight through the side
-      // of the branch. The face normal against the stub's own axis says which way
-      // each triangle has to go.
-      const ux = c1.pos.x - c0.pos.x
-      const uy = c1.pos.y - c0.pos.y
-      const uz = c1.pos.z - c0.pos.z
-      const vx = stubTip.pos.x - c0.pos.x
-      const vy = stubTip.pos.y - c0.pos.y
-      const vz = stubTip.pos.z - c0.pos.z
-      const outward = (uy * vz - uz * vy) * stubAxis.x
-        + (uz * vx - ux * vz) * stubAxis.y
-        + (ux * vy - uy * vx) * stubAxis.z
-      // And smoothed with the rest of it: the crown vertices carry the barrel's
-      // normals, so the break shades continuously out of the wood behind it
-      // rather than ringing the tip with a crease.
-      if (outward >= 0) emitTri(out, c0, c1, stubTip, layer, smooth)
-      else emitTri(out, c1, c0, stubTip, layer, smooth)
+      // Wound out, and ONE winding does the whole fan because the point clears
+      // the rim's entire range: a sunk point turns the cap inside out, and a
+      // socket that faces the wrong way is culled into a black hole in the side
+      // of the branch. Smoothed with the rest of it -- the crown vertices carry
+      // the barrel's normals, so the break shades continuously out of the wood
+      // behind it rather than ringing the tip with a crease.
+      if (outie) emitTri(out, stubCrown[k], stubCrown[k + 1], stubTip, layer, smooth)
+      else emitTri(out, stubCrown[k + 1], stubCrown[k], stubTip, layer, smooth)
     }
   }
 

@@ -51,11 +51,24 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 // photograph below it is better at every distance where either is legible. The size
 // argument lives entirely in ROCK_LOD_AT's thresholds, never in which meshes a
 // shape owns -- §23 records why a per-size-class ladder could not work.
-export const ROCK_TIERS = [
-  { name: 'T180', solid: 'ico', detail: 2, faces: 180 },
-  { name: 'T80', solid: 'ico', detail: 1, faces: 80 },
-  { name: 'T20', solid: 'ico', detail: 0, faces: 20 },
-]
+//
+// A RUNG IS ITS SUBDIVISION LEVEL AND NOTHING ELSE -- `rockTier` derives the name
+// and the face count from it, so the table cannot say T180 while building 80.
+// Three splits each edge into `detail + 1`, hence 20 * (detail + 1)^2 rather than
+// a doubling.
+export function rockTier(detail, solid = 'ico') {
+  const d = Math.max(0, Math.round(detail))
+  const perSolid = solid === 'oct' ? 8 : 20
+  const faces = perSolid * (d + 1) ** 2
+  return { name: `T${faces}`, solid, detail: d, faces }
+}
+
+// How fine the bench may go past the ladder. 5 is 720 faces a shard, which is
+// already finer than the reference the tiers are measured against -- see
+// REFERENCE_DETAIL, which follows whatever is asked for.
+export const ROCK_MAX_DETAIL = 5
+
+export const ROCK_TIERS = [rockTier(2), rockTier(1), rockTier(0)]
 
 // WHEN A ROCK STEPS DOWN THAT LADDER, in metres of camera distance PER METRE of
 // the rock's own size -- `rockLodSize` below says which metre that is. One
@@ -107,6 +120,10 @@ export const ROCK_DEFAULTS = {
   elongate: 1.25, // x extent vs z extent. 1 = round in plan, 2 = twice as long as wide
 
   tier: 0, // index into ROCK_TIERS
+  // Off the ladder entirely: a raw subdivision level, 0..ROCK_MAX_DETAIL, which
+  // OVERRIDES `tier` when it is a number. /gen-rock's resolution slider, and the
+  // dial a finer LOD0 gets chosen on before it is promoted into ROCK_TIERS.
+  detail: null,
 
   // --- surface -------------------------------------------------------------
   // Two octaves and no more. A third costs a slider and reads as noise rather
@@ -310,12 +327,19 @@ function solidDirections(solid, detail) {
 }
 
 // The direction set the rock is MEASURED on, deliberately finer than any tier
-// that ships (320 faces). See the note at the call site: measuring each tier on
-// its own vertices would give each tier a different bounding box and therefore
-// a different rescale, and the LOD transition would visibly change the rock's
+// that ships. See the note at the call site: measuring each tier on its own
+// vertices would give each tier a different bounding box and therefore a
+// different rescale, and the LOD transition would visibly change the rock's
 // height. Measuring them all on one dense set makes the coarse tiers INSCRIBED
 // in the fine one -- which is what a lower LOD should be.
-const REFERENCE_DIRS = () => solidDirections('ico', 3)
+//
+// DERIVED FROM THE LADDER RATHER THAN TYPED, because the invariant is not "320
+// faces", it is "finer than every rung". Promote a finer LOD0 into ROCK_TIERS and
+// this follows it, and every tier of a shape is re-measured together -- which is
+// the only way `measured` stays one box per shape. A hard-coded 3 under a detail-3
+// rung would silently measure the finest tier against itself.
+const REFERENCE_DETAIL = Math.max(3, ...ROCK_TIERS.map((t) => t.detail + 1))
+const REFERENCE_DIRS = (detail) => solidDirections('ico', Math.max(REFERENCE_DETAIL, detail + 1))
 
 // 32 directions on a Fibonacci sphere, used to compare one tier's silhouette
 // against the reference's. A bounding box is the wrong instrument for that: it
@@ -509,7 +533,13 @@ function emitShards(p, ax, ay, az, dirs, out, aux) {
 
 export function buildRock(options = {}) {
   const p = { ...ROCK_DEFAULTS, ...options }
-  const tier = ROCK_TIERS[Math.min(ROCK_TIERS.length - 1, Math.max(0, Math.round(p.tier)))]
+  // `tier` names a RUNG OF THE SHIPPING LADDER; `detail` names a RESOLUTION, and
+  // is how the bench looks at ones the ladder does not carry yet. Null on every
+  // path but /gen-rock, so the world reads the ladder and nothing else.
+  const rung = ROCK_TIERS[Math.min(ROCK_TIERS.length - 1, Math.max(0, Math.round(p.tier)))]
+  const tier = Number.isFinite(p.detail)
+    ? rockTier(Math.min(ROCK_MAX_DETAIL, p.detail), rung.solid)
+    : rung
 
   // Semi-axes. `size` is applied at the very end by measuring, so these only
   // have to carry the PROPORTIONS.
@@ -527,7 +557,7 @@ export function buildRock(options = {}) {
   // after that -- the AREA a coarse solid loses between its samples -- is what
   // the support gain further down corrects.
   const ref = []
-  emitShards(p, ax, ay, az, REFERENCE_DIRS(), ref, null)
+  emitShards(p, ax, ay, az, REFERENCE_DIRS(tier.detail), ref, null)
 
   let minY = Infinity
   let maxY = -Infinity
@@ -784,6 +814,11 @@ export function buildRock(options = {}) {
     openBottom: p.openBottom ? 1 : 0,
     dropped: tier.faces * Math.max(1, Math.round(p.shards)) - vertexCount / 3,
     tier: tier.name,
+    // The rung that was actually BUILT, which is not always the one `tier`
+    // named: /gen-rock's resolution slider builds off-ladder tiers, and a reader
+    // that looked its faces up in ROCK_TIERS would report the wrong number.
+    faces: tier.faces,
+    detail: tier.detail,
     // How much this tier had to be inflated to read the same size as the dense
     // reference. 1.00 means the sampling lost nothing; the coarser the solid,
     // the further above 1 it climbs.

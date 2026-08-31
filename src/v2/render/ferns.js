@@ -307,15 +307,20 @@ const PLACEMENT = {
 
 // Uniform scale applied to the shipping fern, rolled flat over this range. The
 // geometry is built once at FERN_DEFAULTS.height (0.55 m), so the bed runs
-// 0.385 m to 0.715 m tip to ground.
+// 0.385 m to 1.265 m at the tip, less the 0.03x-scale it sits sunk.
 //
-// A 1.85x spread and no skew, because the bed has to read as ONE species. A
-// wider range fails in both directions: below about half size a fern stops
-// looking young and starts looking like the same fern further away, which
-// fights the parallax the LOD ladder exists to sell, and much above 1.3 a
-// ground cover becomes a shrub. Variety at this density is carried by yaw, lean
-// and the ground cue instead.
-const SCALE_RANGE = [0.7, 1.3]
+// A 3.3x spread and no skew. The FLOOR is what keeps a small fern reading as a
+// young plant rather than as the same fern further away, which would fight the
+// parallax the LOD ladder exists to sell; below about half size it stops
+// carrying that. The CEILING is deliberately past the point where a ground
+// cover becomes a shrub, so one species covers the understory as well as the
+// carpet.
+//
+// IT WIDENS THE CARD OVERRUN, and that is the cost to watch. THE CROSSOVER in
+// this file's header prices the 10 m card distance against a rosette 1.22 m
+// across; at 2.3x that rosette is 2.8 m across and the same rule would ask for
+// 80 m. The biggest ferns are the ones flattest soonest.
+const SCALE_RANGE = [0.7, 2.3]
 
 // Degrees. Each fern leans this far off vertical at most, about a random
 // horizontal axis, rolled flat -- a rosette that grew toward the light rather

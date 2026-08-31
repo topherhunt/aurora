@@ -31,8 +31,8 @@ import { PropArena } from './prop-arena.js'
 //   inside      pi * F^2       * D
 //   beyond      2 * pi * F * D * (R - F)
 //
-// At D = 0.05, F = 80, R = 1500 that is ~1000 + ~35,700 = ~36,700 for a
-// kilometre and a half of forest (~41,000 measured, the difference being the
+// At D = 0.05, F = 50, R = 1500 that is ~400 + ~22,800 = ~23,200 for a
+// kilometre and a half of forest (~26,000 measured, the difference being the
 // over-keep below). A hard-edged disc at the same density and radius would be
 // 353,000. The last kilometre costs about as much as the first hundred metres,
 // because cost is linear in radius and area is not.
@@ -51,11 +51,17 @@ import { PropArena } from './prop-arena.js'
 //   keeping. Erring dense is the safe direction; too few trees reads as a hole.
 //
 //   The over-keep never reaches the picture, and it took a gate to notice: the
-//   rim dissolve is per tree and per distance, so it cuts the surplus back out.
-//   Measured at boot, 40,972 instances PLACED against an ideal 36,694 (1.117x),
-//   36,367 DRAWN -- within 1% of the law, at 0.0201 / 0.0098 / 0.0051 / 0.0034
-//   per m^2 against 0.0200 / 0.0100 / 0.0050 / 0.0033 at 200, 400, 800, 1200 m.
-//   So ~4,600 instances, 11% of the scatter, are fully dithered out at any
+//   rim dissolve is per tree and per distance, so it cuts the surplus back out,
+//   and then some -- a tree shows only inside RIM_AT of its gone distance, which
+//   is a further 0.85. Measured at boot on a flat world, 25,997 instances PLACED
+//   against an ideal 23,169 (1.122x) and 19,750 DRAWN, whose surface density
+//   runs 0.0504 / 0.0306 / 0.0152 / 0.0078 / 0.0039 / 0.0017 per m^2 over the
+//   0-50 / 100 / 200 / 400 / 800 / 1500 m bands against a law of 0.0500 /
+//   0.0333 / 0.0167 / 0.0083 / 0.0042 / 0.0022. Full density where it is
+//   promised, 92 to 94% of the law through the thinned bands (1.122 x 0.85), and
+//   78% in the last one where the outer rim itself is the cut.
+//
+//   So 6,247 instances, 24% of the scatter, are fully dithered out at any
 //   moment: a cost in POOL and in placement work, not in what the forest looks
 //   like. The quantisation buys its safety margin out of headroom, not density.
 //
@@ -83,8 +89,8 @@ import { PropArena } from './prop-arena.js'
 // being the cut this used to be everywhere).
 //
 // TILES make the rebuild affordable. A jittered grid pays one hash per candidate
-// and one field evaluation per SURVIVING candidate, so a full boot is ~41,000
-// samples -- 29 ms, which as a hitch every time the player crossed a line would
+// and one field evaluation per SURVIVING candidate, so a full boot is ~26,000
+// samples -- 33 ms, which as a hitch every time the player crossed a line would
 // be worse than no forest at all. Crossing a tile boundary invalidates one row,
 // queued nearest-first against a per-frame millisecond budget.
 //
@@ -106,14 +112,14 @@ import { PropArena } from './prop-arena.js'
 // under it, and the walk-away-and-come-back property would go.
 //
 // THE LADDER. Three tiers, and the far one carries almost every instance.
-// Measured on a flat headless world at standing eye height, 40,972 trees placed
-// inside 1500 m of which the rim dissolves 9,880 away:
+// Measured on a flat headless world at standing eye height,
+// 25,997 trees placed inside 1500 m of which the rim dissolves 6,247 away:
 //
 //   tier 0   LOD0 mesh    < 8 m             8 instances     3.6k
 //   tier 1   LOD1 mesh    8 - 24 m         77              28.8k
-//   tier 2   billboard    to 1500 m     31,007              31.0k
+//   tier 2   billboard    to 1500 m     19,665              19.8k
 //
-// 63.4k against §5's 350k ceiling with terrain taking 45k. The mesh tiers cost
+// 52.2k against §5's 350k ceiling with terrain taking 45k. The mesh tiers cost
 // 550 and 380 triangles a tree averaged over the bank, so what a spot pays is
 // which species stand near it -- which is why those two rows wander by a third
 // and the card row does not.
@@ -126,7 +132,7 @@ import { PropArena } from './prop-arena.js'
 // for 8 of its draw calls, and tree-bank.js has the argument that retired it.
 // Without it the layer's shaded area falls 45%, and what is left splits
 // 52 / 33 / 15 across the three tiers -- solid angle, so 85 near meshes outweigh
-// 31,007 cards three to one, which is the shape a LOD ladder should have.
+// 19,665 cards three to one, which is the shape a LOD ladder should have.
 //
 // THE TWO MESH TIERS DIFFER ONLY IN WOOD. LOD1 is LOD0 with `trunkSides` 3,
 // `branchSides` 1 (a three-sided trunk, one flat fin per limb) and `roots` 0,
@@ -224,10 +230,14 @@ import { PropArena } from './prop-arena.js'
 const DENSITY = 0.05
 
 // Metres. Inside this every tree stands. Past it the density is scaled by
-// FULL_RADIUS / d. It wants to be comfortably past the last mesh band, so the
-// forest you walk through and look across is uniform and the thinning only
-// starts where a tree is already a one-triangle card.
-const FULL_RADIUS = 80
+// FULL_RADIUS / d. It wants to be past the last mesh band, so the forest you
+// walk through is uniform and the thinning only starts where a tree is already
+// a one-triangle card -- but only just past it, because the card ring's cost is
+// dominated by its NEAR end. Card fill goes as the integral of 1/d^2, so
+// starting the taper at the first distance where it cannot be seen is worth more
+// than any amount of work at the horizon. Twice the 24 m band is the margin the
+// swap wants; further out was buying uniformity nobody could see.
+const FULL_RADIUS = 50
 
 // Metres. LOD0 inside 8, LOD1 to 24, billboard out to the draw radius.
 //
@@ -484,6 +494,7 @@ export class Trees {
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
     // The diagnostic switch behind `setCardsOnly`, read by `_near`.
     this.cardsOnly = false
+
     this.nearSq = this._near(this.lodBands[this.lodBands.length - 1])
     this._ladder(radius, falloff)
 
@@ -997,7 +1008,9 @@ export class Trees {
       // The rim, on this tile's own phase. Returns how many of its trees are
       // dissolved away and set invisible, which is what the triangle count below
       // has to leave out -- they are submitted to nothing.
-      const gone = this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
+      //
+      const gone = this.rim.sweepTile(
+        tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
 
       const dx = (tile.tx + 0.5) * TILE - camX
       const dz = (tile.tz + 0.5) * TILE - camZ
@@ -1116,7 +1129,7 @@ export class Trees {
    *   camera and nothing outside it. A box beyond DRAW_RADIUS reports zero
    *   trees, and so does one over a tile still sitting in the build queue.
    *
-   *   The tree set is COMPLETE ONLY INSIDE fullRadius (80 m). Past it the
+   *   The tree set is COMPLETE ONLY INSIDE fullRadius (50 m). Past it the
    *   graded thinning has already cut this tile's trees by fullRadius / d, so
    *   the anchors thin out with distance exactly as the forest does. Seating
    *   clumps out there would put fewer of them at greater ranges and then

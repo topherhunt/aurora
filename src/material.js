@@ -90,6 +90,14 @@ const snowVary = { value: new THREE.Vector2(1, 1) }
 // See setLeafSnowVary.
 const leafSnowVary = { value: new THREE.Vector2(1, 1) }
 
+// How hard a prop's own texture pushes its normal around. Only materials built
+// with `bump: true` compile the block that reads it (rocks), so this is a no-op
+// for the rest of the world however it is set. The default is the SHIPPING
+// depth, not an off switch -- a compiled-in bump that did nothing until someone
+// called the setter would look like a flag that never worked. /gen-rock's slider
+// is what this number was chosen with; see setPropBump.
+const bumpScale = { value: 0.5 }
+
 /**
  * Season, 0 = bare, 1 = nearly all white. This is a CEILING, not the value each
  * prop wears: what a prop actually gets is this scaled by where it stands
@@ -169,6 +177,30 @@ export function setMossVary(lo, hi) {
 
 export function getMossVary() {
   return { lo: mossVary.value.x, hi: mossVary.value.y }
+}
+
+/**
+ * How deep a prop's own texture grooves it, in the units three's bumpScale uses
+ * -- 0 is off and costs nothing, 0.5 is a coarse granite, past ~2 the shading
+ * detaches from the silhouette and reads as noise.
+ *
+ * THE HEIGHT FIELD IS THE ALBEDO'S LUMINANCE, because there is no second texture
+ * to carry a real one: dark grain reads as pits, light grain as ridges. That is
+ * wrong wherever a tile's tone is not its relief -- a dark mineral vein comes out
+ * as a trench -- and right often enough on stone to be worth two taps.
+ *
+ * IT PERTURBS `normal` BEFORE MOSS AND SNOW, so both catch in the grooves rather
+ * than lying over a surface that only LOOKS grooved.
+ *
+ * Only materials built with `bump: true` read this; everything else ignores it.
+ */
+export function setPropBump(scale) {
+  if (!Number.isFinite(scale)) throw new Error(`setPropBump: need a number, got ${scale}`)
+  bumpScale.value = Math.max(0, scale)
+}
+
+export function getPropBump() {
+  return bumpScale.value
 }
 
 /**
@@ -826,6 +858,54 @@ const SNOW_APPLY = /* glsl */ `
       cover = mix( cover, mix( vSnowPos.w, cover, snowNear ), min( cardMask, 1.0 ) );
       diffuseColor.rgb = mix( diffuseColor.rgb, snowCol, cover );
     }
+  }
+`
+
+// ---------------------------------------------------------------------------
+// BUMP FROM THE ALBEDO ITSELF, for props whose surface is one tiled stone photo
+// and whose whole read is grain: a boulder lit only by its facets is a faceted
+// blob at every hour of the day, and the same boulder with its grooves catching
+// the sun is stone. There is no second texture and no room for one, so the
+// height field is the tile's own LUMINANCE -- dark grain pits, light grain
+// ridges. Wrong wherever tone is not relief, right often enough on rock.
+//
+// TWO EXTRA ATLAS FETCHES per fragment, which on a fill-bound headset is the
+// entire cost and the reason this is a compile flag rather than a default: only
+// materials asking for `bump: true` carry it, and `uBumpScale` at 0 skips it on
+// a uniform branch, so it is free where it is off and unavailable where it was
+// never asked for.
+// ---------------------------------------------------------------------------
+const PROP_BUMP_COMMON = /* glsl */ `
+  uniform float uBumpScale;
+  float bumpLuma( vec2 uv ) {
+    return dot( texture( uAtlas, vec3( uv, vTexLayer ) ).rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+  }
+`
+
+const PROP_BUMP_APPLY = /* glsl */ `
+  if ( uBumpScale > 0.0 ) {
+    // The neighbours are one SCREEN DERIVATIVE away, not one texel. That is what
+    // keeps this from sparkling on the headset: the sample spacing widens with
+    // distance exactly as the mip level does, so a boulder's grain flattens as
+    // it recedes instead of aliasing. It also means the step is already correct
+    // for a rock whose texRepeat scales with its size.
+    vec2 dUvdx = dFdx( vUvProj );
+    vec2 dUvdy = dFdy( vUvProj );
+    float h0 = bumpLuma( vUvProj );
+    vec2 dH = uBumpScale * vec2(
+      bumpLuma( vUvProj + dUvdx ) - h0,
+      bumpLuma( vUvProj + dUvdy ) - h0 );
+    // three's perturbNormalArb, inlined because its own copy is welded to a
+    //bumpMap sampler2D and cannot read a layered atlas. It builds the tangent
+    // frame from screen derivatives of the view position, so it needs no tangent
+    // attribute and does not care that a rock's UVs come from a per-face planar
+    // projection with seams down every facet edge.
+    vec3 sigX = dFdx( - vViewPosition );
+    vec3 sigY = dFdy( - vViewPosition );
+    vec3 R1 = cross( sigY, normal );
+    vec3 R2 = cross( normal, sigX );
+    float det = dot( sigX, R1 );
+    normal = normalize( abs( det ) * normal - sign( det ) * ( dH.x * R1 + dH.y * R2 ) );
   }
 `
 
@@ -2217,6 +2297,7 @@ export function createPropMaterial(
   {
     vertexColors = false, billboardLayers = null, sphericalBillboard = false, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
+    side = THREE.DoubleSide, bump = false,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
@@ -2268,10 +2349,13 @@ export function createPropMaterial(
     // draw call, so it is architecturally unavailable to us (DESIGN.md §7).
     alphaTest: 0.5,
     transparent: false,
-    // Foliage cards are single-sided geometry and both sides are the same leaf.
-    // See the normal_fragment_begin patch below: three's flip is undone so a
-    // card is lit by its authored normal from either side.
-    side: THREE.DoubleSide,
+    // DoubleSide by default because foliage cards are single-sided geometry and
+    // both sides are the same leaf. See the normal_fragment_begin patch below:
+    // three's flip is undone so a card is lit by its authored normal from either
+    // side. A CLOSED SOLID -- a boulder -- should pass FrontSide instead and
+    // halve its raster work; the flip is a no-op there, since a back face is
+    // never shaded.
+    side,
     vertexColors,
   })
 
@@ -2292,6 +2376,7 @@ export function createPropMaterial(
     shader.uniforms.uMossBand = mossBand
     shader.uniforms.uMossVary = mossVary
     shader.uniforms.uPropClock = propClock
+    if (bump) shader.uniforms.uBumpScale = bumpScale
     if (billboards) shader.uniforms.uBillboardLayers = { value: billboards }
     if (windSpec && windCompiled) {
       shader.uniforms.uWindDir = windDir
@@ -2509,6 +2594,7 @@ export function createPropMaterial(
         ${IGN_GLSL}
         ${SNOW_COMMON}
         ${MOSS_COMMON}
+        ${bump ? PROP_BUMP_COMMON : ''}
         ${stripTiling ? `varying float vStripSeed;
         varying float vStripTx;
         uniform float uStripKeep;
@@ -2535,6 +2621,7 @@ export function createPropMaterial(
         '#include <normal_fragment_begin>',
         `#include <normal_fragment_begin>
         normal *= faceDirection;
+        ${bump ? PROP_BUMP_APPLY : ''}
         ${MOSS_APPLY}
         ${SNOW_APPLY}
         diffuseColor.rgb *= mix( 0.72, 1.0,
@@ -2566,11 +2653,15 @@ export function createPropMaterial(
   //
   // The wind suffix is evaluated per CALL rather than folded into `key`, because
   // setWindEnabled flips it under a material that is already built.
+  //
+  // `side` is NOT here and must not be: three keys DOUBLE_SIDED and FLIP_SIDED
+  // itself (WebGLPrograms.getProgramCacheKey), and a second copy would only be
+  // one more thing to fall out of step. `bump` is ours and is here.
   const growKey = billboardGrow
     ? `-grow${billboardGrow.from}.${billboardGrow.to}.${billboardGrow.scale}.`
       + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
     : ''
-  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}`
+  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}`
   material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
 
   if (windSpec) windMaterials.add(material)
