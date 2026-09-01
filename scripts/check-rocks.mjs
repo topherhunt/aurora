@@ -56,7 +56,7 @@ import {
   rockShapeSeed, rockShapeId, parseRockShapeId,
 } from '../src/props/rock-bank.js'
 import { buildImpostorCard, impostorCardExtents } from '../src/props/impostor.js'
-import { Rocks } from '../src/v2/render/rocks.js'
+import { Rocks, ROCK_STAND_MIN } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
   LAYER, LAYER_COUNT, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
@@ -340,7 +340,7 @@ for (let i = 0; i < 64; i++) {
 }
 
 // Per tier, because the tiers are not one population: T80 should be within a
-// whisker of T180 and T20 never will be, so one pooled number would either let
+// whisker of T320 and T20 never will be, so one pooled number would either let
 // a broken T80 hide behind T20's honest spread or fail T20 for being 20 faces.
 // Also
 // per (shape, tier), so a shape whose bias is large cannot cancel against one
@@ -668,6 +668,61 @@ const srgbToLinear = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1
 }
 
 // ---------------------------------------------------------------------------
+// 4a-ter. THE GRIT LAYER, which is not an albedo and is not a photograph.
+//
+// LAYER.ROCK_BUMP is generated grey noise, read only through the prop material's
+// bump block, and read as a DERIVATIVE: the shader samples it twice a screen
+// derivative apart and lights the difference. That changes what a wrap seam costs.
+// A seam in an albedo is a faint line; a seam in a height field read this way is a
+// bright rule of wrongly-lit pixels drawn across the rock at every repeat, and at
+// the tiling this is worn at (uBumpTile, ~3 passes per stone tile) there are a lot
+// of repeats. Hence the same seam metric the photographs get, and a tighter bar.
+//
+// The variance check is the other half: a height field that is nearly flat is a
+// uniform branch nobody switched off, costing two texture fetches a pixel to
+// change nothing.
+// ---------------------------------------------------------------------------
+
+{
+  console.log('\nthe grit layer (LAYER.ROCK_BUMP)')
+  const n = TEX_SIZE
+  const stride = n * n * 4
+  const all = buildTextureArray().image.data
+  const px = all.subarray(LAYER.ROCK_BUMP * stride, (LAYER.ROCK_BUMP + 1) * stride)
+
+  let mean = 0
+  let lo = 255
+  let hi = 0
+  let opaque = 0
+  let grey = 0
+  for (let i = 0; i < n * n; i++) {
+    const v = px[i * 4]
+    mean += v
+    if (v < lo) lo = v
+    if (v > hi) hi = v
+    if (px[i * 4 + 3] === 255) opaque++
+    if (px[i * 4 + 1] === v && px[i * 4 + 2] === v) grey++
+  }
+  mean /= n * n
+  let sd = 0
+  for (let i = 0; i < n * n; i++) sd += (px[i * 4] - mean) ** 2
+  sd = Math.sqrt(sd / (n * n))
+
+  check(grey === n * n, 'the grit is grey -- one height, not three', `${n * n - grey} coloured texels`)
+  check(opaque === n * n, 'and opaque, so nothing alpha-tests it away', `${n * n - opaque} non-opaque texels`)
+  check(sd > 20 && sd < 90, 'and it is a field with relief in it, not a flat fill',
+    `sd ${sd.toFixed(1)}/255 over ${lo}..${hi}`)
+  check(mean > 60 && mean < 195, 'and it sits off both rails, so the bump is two-sided',
+    `mean ${mean.toFixed(0)}/255`)
+
+  for (const axis of ['u', 'v']) {
+    const sc = seamScore(px, n, axis)
+    check(sc < 1.2, `no wrap seam in ${axis}, which a bump map cannot hide`,
+      `seam ${sc.toFixed(2)}x the worst interior step`)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 4a-bis. The two GROUND tiles, on the same terms.
 //
 // grass.png and snow.png are cut by tools/props/cut-terrain.mjs and worn by the
@@ -932,7 +987,7 @@ console.log('\nmoss.png')
 
 {
   // The mask, on the same terms as the snow arithmetic in section 6.
-  const creep = (down, blob) => blob * (1 - MOSS.down) + down * MOSS.down
+  const creep = (up, blob) => blob * (1 - MOSS.up) + up * MOSS.up
 
   check(MOSS_LAYERS.includes(LAYER.ROCK), 'stone is on the list of things moss grows on',
     `MOSS_LAYERS = ${MOSS_LAYERS.join(' ')}`)
@@ -1025,37 +1080,76 @@ console.log('\nmoss.png')
     'and a boulder keeps essentially all of that load over its own height, where a snag would not',
     `${rise(2).toFixed(2)} at 2 m, ${rise(6).toFixed(2)} at 6 m`)
 
-  // AND IT LEANS THE OTHER WAY FROM SNOW. If these ever agree, one of them is
-  // wrong: snow settles on the crown, moss creeps up the shaded flanks, and a
-  // rock wearing both should show them in different places.
-  check(creep(1, 0.5) > creep(0, 0.5), 'moss favours the down-facing half',
-    `${creep(1, 0.5).toFixed(2)} under vs ${creep(0, 0.5).toFixed(2)} on top`)
+  // MOSS TAKES THE TOP FIRST, the same half snow does, and LEANS LESS HARD ON IT
+  // than snow does. Both halves of that matter. A rock has flat faces and `up` is
+  // constant across one, so a heavy lean flips a whole facet at a time and the
+  // mask runs along facet edges as a seam -- snow can afford 0.65 because its rim
+  // is a cutover that reads as an edge anyway, and moss cannot, because a colony
+  // with a straight side is a paint job. The noise keeping the larger share is
+  // what puts tendrils across a face instead.
+  check(creep(1, 0.5) > creep(0, 0.5) && MOSS.up < SNOW_ROCK.up,
+    'moss grows on the up-facing half like snow, but leans on it more lightly',
+    `${creep(1, 0.5).toFixed(2)} on top vs ${creep(0, 0.5).toFixed(2)} under, lean ${MOSS.up} against snow's ${SNOW_ROCK.up}`)
 
-  // FINER THAN SNOW, WHICH IS THE OPPOSITE OF WHAT THIS CHECK USED TO SAY. The
-  // old promise was "colonies, not flecks" -- patches 12 to 40 cm, coarser than
-  // snow's -- on the reasoning that a colony of moss is a bigger thing than a
-  // drift of crystals. What that misses is that the two fields are not doing the
-  // same job, and the note above MOSS_FREQ in material.js is the argument:
-  // snow's blobs ARE the snow, while moss's blobs are only the shape of the
-  // stain and the photograph inside them is what reads as moss. So the blob
-  // field competes with the tile for the same band of detail, and at 6.0 it won
-  // -- a handful of lobes on a boulder with the grain buried inside them, which
-  // is a paint job.
+  // COLONIES, NOT FLECKS. The blob IS the colony, so its size is the size of a
+  // patch of moss and roughly a dozen of them wrap a 2 m boulder. A field four
+  // times finer covers the same fraction of the rock but spreads it as small
+  // stains everywhere, which the eye integrates into an even green wash -- and a
+  // wash is the one thing this must not read as. What says "grew here" is bare
+  // stone BETWEEN the lobes, and that needs lobes big enough to have a between.
   //
-  // The bound that replaces it is the one the new arithmetic actually depends
-  // on. The blend is a FIXED width against a mask spanning 0..1 -- MOSS_BLEND
-  // below the cut and MOSS_BLEND * MOSS_BLEND_SKEW above it -- so getting on for
-  // a fifth of the field's range is transition; a patch only reads as growth
-  // thinning out rather than as a blurred blob if the patch is small relative to
-  // the rock carrying it. Dozens across a 2 m boulder is what that costs, and it
-  // has to stay under snow's or the two fields read as one.
+  // The other bound is the blend. It is a FIXED width against a mask spanning
+  // 0..1 -- MOSS_BLEND below the cut and MOSS_BLEND * MOSS_BLEND_SKEW above it --
+  // so getting on for a fifth of the field's range is transition, and the rim
+  // that buys is a fraction OF THE PATCH. Coarser still and the rim is a
+  // significant part of the whole rock, at which point the mask stops being a
+  // shape and becomes a gradient.
   const patchCm = (1 / MOSS.freq) * 100
   const snowCm = (1 / SNOW_ROCK.freq) * 100
   const across = 2 * MOSS.freq
   const rampWidth = MOSS.blend * (1 + MOSS.blendSkew)
-  check(patchCm < snowCm && patchCm > 2 && across > 24 && rampWidth < 0.25,
-    'moss patches are finer than snow and small enough for a soft rim to read as growth',
+  check(patchCm > 10 && patchCm < 30 && across > 8 && across < 20 && rampWidth < 0.25,
+    'moss grows in colonies with bare stone between them, not in a wash of flecks',
     `${patchCm.toFixed(1)} cm vs snow's ${snowCm.toFixed(1)}, ~${across.toFixed(0)} across a 2 m boulder, ramp ${rampWidth.toFixed(2)} wide`)
+
+  // AND THE COLONY IS NOT A BLOT. A lobe this size with a rounded edge is a
+  // splodge; what makes it moss is a rim that wanders far enough to send runs out
+  // of the body, which is MOSS_WARP's whole job and the reason moss no longer
+  // shares snow's. Held against snow's warp rather than at an absolute value,
+  // because the warp is in cells of the caller's own frequency: what is being
+  // asserted is that moss's outline is the RAGGEDER of the two.
+  check(MOSS.warp > SNOW_ROCK.blobWarp * 1.4,
+    "and its outline is raggeder than snow's, which is where the tendrils come from",
+    `warp ${MOSS.warp} cells against snow's ${SNOW_ROCK.blobWarp}`)
+
+  // AND THE FRAY EARNS ITS NOISE EVALUATION. MOSS_FRAY is a second warp five
+  // times finer than the first, and the ONLY thing a domain warp can buy is
+  // contour length: it slides sample points about, so the same amount of rock
+  // comes out green and what changes is how far you walk round the edge of it.
+  // Both halves are asserted, because both are how the change could go wrong --
+  // a fray that lengthened nothing would be a wasted third of the moss branch,
+  // and one that moved coverage would have moved the field out from under the
+  // logit fit two checks above.
+  const cut35 = mossCutFor(0.35)
+  const smooth = mossRimLength(0, cut35)
+  const frayed = mossRimLength(MOSS.fray, cut35)
+  check(frayed.rim > smooth.rim * 1.3 && Math.abs(frayed.cover - smooth.cover) < 0.03,
+    'and the fray frays it: a third more rim for the same coverage',
+    `rim ${smooth.rim.toFixed(2)} -> ${frayed.rim.toFixed(2)} per sq patch, `
+    + `cover ${smooth.cover.toFixed(3)} -> ${frayed.cover.toFixed(3)}`)
+
+  // THE FRAY FADES MUCH NEARER THAN THE LOBES DO, and by the same rule that set
+  // the lobes' own fade: a feature stops resolving at a distance proportional to
+  // its size, and a fray feature is 1 / MOSS_FRAY_FREQ of a lobe. Past its fade
+  // the third noise evaluation is buying detail under a pixel, which is not
+  // merely wasted -- undersampled noise crawls, and crawl in a headset is the
+  // worst artefact there is. Held as a RATIO so the two fades move together.
+  const frayRatio = MOSS.fadeFar / MOSS.frayFar
+  check(MOSS.frayNear < MOSS.frayFar && MOSS.frayFar < MOSS.fadeNear
+    && frayRatio > MOSS.frayFreq * 0.7 && frayRatio < MOSS.frayFreq * 1.4,
+    "and it fades out at its own size, well inside the lobes' fade",
+    `${MOSS.frayNear}-${MOSS.frayFar} m against the lobes' ${MOSS.fadeNear}-${MOSS.fadeFar}, `
+    + `ratio ${frayRatio.toFixed(1)} for features ${MOSS.frayFreq.toFixed(1)}x finer`)
 
   // The fade has to have come with them. Procedural noise has no mip chain, so
   // the range at which it must be blended to its mean is the range at which one
@@ -1066,7 +1160,7 @@ console.log('\nmoss.png')
   // direction: the far end has to stay a few hundred patch widths out, and the
   // near end has to be nearer than it.
   const patchesToFade = MOSS.fadeFar * MOSS.freq
-  check(MOSS.fadeNear < MOSS.fadeFar && patchesToFade > 400 && patchesToFade < 1200,
+  check(MOSS.fadeNear < MOSS.fadeFar && patchesToFade > 150 && patchesToFade < 400,
     "moss's fade is set in patch widths, so it moved when the patches did",
     `${MOSS.fadeNear}-${MOSS.fadeFar} m, ~${patchesToFade.toFixed(0)} patches out`)
 }
@@ -1671,10 +1765,10 @@ console.log('\nscatter')
 
   const forestRocks = build(forest)
   const byBed = Object.fromEntries(forestRocks.stats.beds.map((b) => [b.name, b]))
-  check(forestRocks.beds.length === 6, 'six beds', forestRocks.beds.map((b) => b.cfg.name).join(', '))
+  check(forestRocks.beds.length === 7, 'seven beds', forestRocks.beds.map((b) => b.cfg.name).join(', '))
   check(
     new Set(forestRocks.beds.map((b) => b.batch.material)).size === 1,
-    'one material across all six batches',
+    'one material across all seven batches',
     'every bed billboards the same 25-layer card run, so one program still serves them'
   )
 
@@ -2227,16 +2321,16 @@ console.log('\nscatter')
     const span = (a) => `${amin(a).toFixed(2)}-${amax(a).toFixed(2)} m over ${a.length}`
     const inside = (a, lo, hi) => a.length > 0 && amin(a) >= lo - 1e-4 && amax(a) <= hi + 1e-4
 
-    // A WALL IS THE CRUST BED'S GROUND ALONE. On 68 degrees the underfoot bed
+    // A WALL IS THE TWO FACE BEDS' GROUND. On 68 degrees the underfoot bed
     // (42), the boulders and the giants have all bowed out, so whatever covers
-    // a real face is whatever the crust bed puts there -- which is the reason
-    // the bed was given a slope limit nothing else has. Asserted as an
-    // exclusive: if another bed ever starts reaching a wall, the coarse cover
+    // a real face is the crust laid over it and the embedded blocks let into
+    // it -- the only two beds carrying a slope limit past 68. Asserted as an
+    // exclusive: if a third bed ever starts reaching a wall, the coarse cover
     // stops being coarse and this is the line that notices.
     const steepRocks = build(steep)
-    const live = steepRocks.stats.beds.filter((b) => b.placed > 0).map((b) => b.name)
-    check(live.length === 1 && live[0] === 'crust',
-      'on a 68-degree wall the crust bed is the only thing left standing',
+    const live = steepRocks.stats.beds.filter((b) => b.placed > 0).map((b) => b.name).sort()
+    check(live.length === 2 && live[0] === 'crust' && live[1] === 'embedded',
+      'on a 68-degree wall only the two beds built for a face are left standing',
       live.join(' ') || 'nothing placed at all')
 
     // AND IT IS COARSE COVER, 1 to 10 m, with NO SMALL END. The old range
@@ -2401,14 +2495,22 @@ console.log('\nscatter')
   // past the floor on a cliff and the floor alone says nothing about what the
   // ground actually looks like.
   //
-  // Measured as a fraction of the instance's OWN height, which means dividing
-  // out its scale: `instSink` is metres and the roll is a fraction, so a bed
-  // whose scale spans 0.55 to 2.2 would otherwise report the scale roll rather
-  // than the burial roll. The scale comes back off the instance matrix, and the
-  // open-bottomed variants are skipped because OPEN_BURY adds a term measured in
-  // WIDTH on top of theirs (rocks.js) and it is not part of this promise.
+  // Measured off the GEOMETRY rather than off `instSink`, and that is not a
+  // stylistic choice. The rock's origin sits on its bed face, so before the
+  // quarter turns went in the standing height was `measured.height * scale` and
+  // `instSink` was the depth below the ground -- one division and you had the
+  // fraction. A rolled rock stands on whichever face the turn put down, hangs
+  // below its own origin, and folds that overhang into `instSink`, which then
+  // goes legitimately negative. So the fraction is taken the way an eye takes
+  // it: push the shape's local box through the instance matrix, find where its
+  // lowest corner lands against the ground the scatter used, and divide by the
+  // extent it actually stands. That also folds in the ground lean and the
+  // jitter, which the old arithmetic could not see at all. Open-bottomed
+  // variants are still skipped because OPEN_BURY adds a term measured in WIDTH
+  // on top of theirs (rocks.js) and it is not part of this promise.
   {
     const mat = new THREE.Matrix4()
+    const v = new THREE.Vector3()
     const fracs = (rocks, bedName) => {
       const bed = rocks.beds.find((b) => b.cfg.name === bedName)
       const out = []
@@ -2418,8 +2520,19 @@ console.log('\nscatter')
           const s = bed.shapes[bed.shapeAt[id]]
           if (s.openBottom) continue
           bed.batch.getMatrixAt(id, mat)
-          const e = mat.elements
-          out.push(bed.instSink[id] / (s.measured.height * Math.hypot(e[0], e[1], e[2])))
+          const hw = s.measured.width * 0.5
+          const hd = s.measured.depth * 0.5
+          let lo = Infinity
+          let hi = -Infinity
+          for (let corner = 0; corner < 8; corner++) {
+            v.set(corner & 1 ? hw : -hw, corner & 2 ? s.measured.height : 0, corner & 4 ? hd : -hd)
+            const y = v.applyMatrix4(mat).y
+            lo = Math.min(lo, y)
+            hi = Math.max(hi, y)
+          }
+          // `_reground` writes instY = ground - instSink, so the ground the
+          // scatter seated this rock against comes straight back out.
+          out.push((bed.instY[id] + bed.instSink[id] - lo) / (hi - lo))
         }
       }
       if (!out.length) throw new Error(`no closed-bottomed ${bedName} to measure`)
@@ -2433,11 +2546,13 @@ console.log('\nscatter')
 
     check(flat.mean > 0.02, 'a rock on the flat is bedded into the ground',
       `${(flat.mean * 100).toFixed(0)}% of its height on average, over ${flat.n}`)
-    // 1.25x rather than the 1.5 this held before the roll went in, and the
-    // slack is where the roll went: on flat ground the floor is 6% and the roll
-    // runs to 50%, so the mean is already most of the way up the range and a
-    // cliff cannot move it as far as it used to move a fixed fraction.
-    check(steep.mean > flat.mean * 1.25, 'and averaged over a hillside, a rock on a cliff is bedded deeper',
+    // 1.1x, and the shrinking margin is the roll eating it. The floor is what
+    // the slope moves -- 10% flat, 38% at the limit -- but the roll runs from
+    // the floor to 80% either way, so on flat ground the mean already sits near
+    // 45% and the cliff has only the top third of the range left to pull it
+    // into. The FLOOR below is the exact half of this promise; the mean is the
+    // half that says the floor is actually reaching the population.
+    check(steep.mean > flat.mean * 1.1, 'and averaged over a hillside, a rock on a cliff is bedded deeper',
       `${(steep.mean * 100).toFixed(0)}% vs ${(flat.mean * 100).toFixed(0)}%`)
     // The floor, which is the half of the promise that is still exact. Nothing
     // on the cliff may be as shallow as the shallowest thing on the flat -- that
@@ -2450,26 +2565,122 @@ console.log('\nscatter')
     // the widest case there is -- floor at SINK_MIN, roll to SINK_DEEP -- so
     // both ends should turn up in a wood, and if they stop turning up the bed
     // has quietly gone back to one burial fraction for everything, which is the
-    // look the roll exists to break. Stated as the 5-50% that SINK_MIN and
-    // SINK_DEEP promise, with a hair of slack at each end for the sample.
-    check(flat.min < 0.08 && flat.max > 0.46,
-      'a wood buries its boulders anywhere from a twentieth to half of themselves',
+    // look the roll exists to break. Stated as the tenth-to-four-fifths the
+    // brief asks for, with slack at the shallow end because the ground lean
+    // tips a rock's box wider than the burial arithmetic seated it.
+    check(flat.min < 0.16 && flat.max > 0.75,
+      'a wood buries its boulders anywhere from a tenth to four fifths of themselves',
       `${(flat.min * 100).toFixed(0)}% .. ${(flat.max * 100).toFixed(0)}%`)
-    // And the bed WITHOUT `sinkVary` stays a pure function of slope, because a
-    // pebble is too small for the difference to read and its open-shell variants
-    // have a burial rule of their own already. One slope, one fraction, exactly.
+    // And the bed WITHOUT `sinkVary` takes no roll: its fraction is a pure
+    // function of slope, because a pebble is too small for the difference to
+    // read and its open-shell variants have a burial rule of their own already.
+    // What is left of the spread is the LEAN -- tipping a box 15 degrees about
+    // the bed face changes the extent it stands and where its lowest corner
+    // falls -- so the test is that the spread stays a fraction of the rolled
+    // bed's, and that a cliff pebble is still unambiguously deeper than any
+    // flat one.
     const under = stat(fracs(forestRocks, 'underfoot'))
     const underSteep = stat(fracs(cliffRocks, 'underfoot'))
-    check(under.max - under.min < 1e-6 && underSteep.max - underSteep.min < 1e-6 &&
+    check(under.max - under.min < (flat.max - flat.min) * 0.35 &&
+      underSteep.max - underSteep.min < (flat.max - flat.min) * 0.35 &&
       underSteep.min > under.max,
-      'the underfoot bed takes no roll at all -- one slope, one burial fraction',
-      `${(under.min * 100).toFixed(1)}% flat, ${(underSteep.min * 100).toFixed(1)}% on the cliff`)
+      'the underfoot bed takes no burial roll -- what spread it has is the lean, not a dice',
+      `${(under.min * 100).toFixed(1)}-${(under.max * 100).toFixed(1)}% flat, ` +
+      `${(underSteep.min * 100).toFixed(1)}-${(underSteep.max * 100).toFixed(1)}% on the cliff, ` +
+      `against the rolled bed's ${(flat.min * 100).toFixed(0)}-${(flat.max * 100).toFixed(0)}%`)
 
     const flatBed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
     check(
       flatBed.instY[flatBed.tiles.values().next().value.ids[0]] < 60,
       'the instance sits below the ground line, not on it'
     )
+
+    // --- what a boulder does to the props around it -------------------------
+    //
+    // `blockTopAt` is the whole of the displacement rule: the tree, fern, grass
+    // and litter scatters all ask it once per candidate, and everything they do
+    // with the answer follows from the two facts asserted here -- that it finds a
+    // rock that is really there, and that it says nothing where there is no rock.
+    // Measured against the boulders bed's own instances rather than against a
+    // fixture, so a change to the plan factor or the settle shows up here.
+    {
+      const bed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
+      const bank = []
+      for (const t of bed.tiles.values()) {
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          const size = bed.shapeLod[bed.shapeAt[id]] * bed.instScale[id]
+          if (size > ROCK_STAND_MIN) bank.push({ id, size })
+        }
+      }
+      if (!bank.length) throw new Error('check-rocks: no boulder over the stand threshold to query')
+
+      // AT THE CENTRE OF EVERY BOULDER THERE IS SOMEWHERE TO STAND, and it is
+      // above the ground rather than at it -- the point of the whole exercise is
+      // that a tree here is lifted. `instY + instSink` is the ground the scatter
+      // itself seated the rock against, so the two numbers are commensurate
+      // without a second field query.
+      let found = 0
+      let lowest = Infinity
+      for (const { id } of bank) {
+        const ground = forestRocks.beds[0]._groundFor(bed.instX[id], bed.instZ[id])
+        const top = forestRocks.blockTopAt(bed.instX[id], bed.instZ[id], ROCK_STAND_MIN)
+        if (top === -Infinity) continue
+        found++
+        lowest = Math.min(lowest, top - ground)
+      }
+      check(found === bank.length,
+        'every boulder over a metre offers a prop somewhere to stand, at its own centre',
+        `${found} of ${bank.length}`)
+      check(lowest > 0,
+        'and that somewhere is above the ground it is standing on, not level with it',
+        `the flattest of ${bank.length} still stands ${lowest.toFixed(2)} m proud`)
+
+      // AND IT IS INSIDE THE STONE, not on its silhouette. BLOCK_SETTLE is what
+      // pays for the LOD ladder -- the T20 a rock wears at fifty metres sits
+      // inside the T320 a prop was seated against -- so a top that came back at
+      // the exact box height would put every distant tree in the air.
+      const m = new THREE.Matrix4()
+      let worst = -Infinity
+      for (const { id } of bank) {
+        bed.batch.getMatrixAt(id, m)
+        const e = m.elements
+        const sh = bed.shapes[bed.shapeAt[id]]
+        const box = e[13] + Math.abs(e[1]) * sh.measured.width * 0.5 +
+          Math.max(0, e[5] * sh.measured.height) + Math.abs(e[9]) * sh.measured.depth * 0.5
+        worst = Math.max(worst, forestRocks.blockTopAt(bed.instX[id], bed.instZ[id], ROCK_STAND_MIN) - box)
+      }
+      check(worst < 0, 'and it is settled INTO the rock rather than balanced on its silhouette',
+        `the shallowest of ${bank.length} is ${(-worst * 100).toFixed(1)} cm in`)
+
+      // THE SIZE GATE IS THE CALLER'S KNOB and it has to actually gate. The same
+      // point queried at 0 answers for anything; queried at a size no rock in the
+      // bed reaches, it must answer for nothing -- and if it did not, a tree would
+      // be perched on a cobble.
+      const huge = Math.max(...bank.map((b) => b.size)) + 1
+      let over = 0
+      for (const { id } of bank) {
+        if (forestRocks.blockTopAt(bed.instX[id], bed.instZ[id], huge) > -Infinity) over++
+      }
+      check(over === 0, 'and `minSize` really gates, so nothing is ever perched on a cobble',
+        `0 of ${bank.length} answer above ${huge.toFixed(1)} m`)
+
+      // NOTHING IS INVENTED WHERE THERE IS NO ROCK. The far side of the world is
+      // outside every bed's resident tiles, so this is also the test that an
+      // unresident tile answers -Infinity rather than throwing on a missing Map
+      // entry -- which is the shape of the bug that would drop every prop in the
+      // world at once.
+      check(forestRocks.blockTopAt(9e5, -9e5, 0) === -Infinity,
+        'and ground with no rock on it answers nothing, off the resident tiles included')
+
+      // ONLY THE FLAGGED BEDS ANSWER, asserted on the flags rather than on the
+      // query: the underfoot bed is dense enough that walking it per candidate
+      // would dominate the grass scatter, and the crust bed is larger still.
+      const blocking = forestRocks.beds.filter((b) => b.blocks).map((b) => b.cfg.name)
+      check(!blocking.includes('underfoot') && !blocking.includes('crust') && blocking.length === 5,
+        'and the two beds too dense to walk per candidate are held out of it',
+        blocking.join(' '))
+    }
 
     // THE ONE ALGEBRAIC CLAIM THE SPHERICAL CARD RESTS ON. billboardVertex's
     // spherical branch composes the card in WORLD space and hands the result
@@ -2738,7 +2949,7 @@ console.log('\nscatter')
     const bed = r.beds.reduce((best, b) => (b.fades.length > best.fades.length ? b : best), r.beds[0])
     const first = snap(bed)
     check(first.length > 0, 'a rock crossing an LOD rung starts a cross-dissolve instead of cutting',
-      `${r.beds.reduce((n, b) => n + b.fades.length, 0)} in flight over six beds, ` +
+      `${r.beds.reduce((n, b) => n + b.fades.length, 0)} in flight over seven beds, ` +
       `worst bed ${bed.cfg.name} with ${first.length}`)
 
     check(first.every((f) => f.out < 0 && f.in < 0),
@@ -2918,37 +3129,29 @@ console.log('\nscatter')
       `${buckets.size} distinct tints across ${n} instances`)
     // The whole point of the rework: a per-instance colour is a GAIN. The jitter
     // floor is 0.86 and the palette's smallest gain is 1.39, so before the ground
-    // cue the dimmest thing the scatter could write was about 1.15, and the
-    // promise was stated per channel: nothing below 1, so no rock in the world
-    // comes out darker than the tile it is made of.
+    // cue the dimmest thing the scatter could write was about 1.15, and nothing
+    // in the world came out darker than the tile it is made of.
     //
-    // THE GROUND CUE MADE THAT THE WRONG WAY TO SAY IT, and the promise itself is
-    // unchanged. The cue is renormalised to unit LUMINANCE on purpose -- a rock's
-    // tint is an absolute destination and the terrain palette is near black, so
-    // taking its magnitude would delete the rock rather than seat it -- which
-    // means what it applies is a hue rotation at constant brightness. A rotation
-    // toward forest green necessarily pulls some channel down; stone.png is warm
-    // granite whose weakest channel is already blue, and blue is the one it pulls.
-    // So brightness is the promise and it is asserted on brightness, at the
-    // luminance the cue is normalised against and nothing else.
+    // THE CUE NOW TAKES LIGHTNESS AS WELL AS HUE, which is the design: a boulder
+    // is meant to match the ground it sits on, and a wood floor is dark, so a
+    // boulder in a wood is meant to be dark. What is left of the old promise is
+    // a margin rather than a law -- the palette gains are large enough that even
+    // a fully matched forest boulder lands a hair above the bare tile -- and the
+    // margin is now 1.02x where it was 1.73x. That number is the interesting one
+    // and it is why the check stays: at 1.0 a boulder stops reading against the
+    // ground at all, and the next cue increase is what would take it there.
     check(dimmestLuma > 1, 'no instance darkens the tile',
       `dimmest instance is ${dimmestLuma.toFixed(2)}x the bare tile`)
-    // And the hue swing that buys is bounded, which is the other half of what
-    // "seated, not repainted" has to mean. A wood is the worst case in the world
-    // for it -- the greenest ground and the lowest gains -- so the envelope is
-    // measured there and nowhere else.
-    //
-    // THE ENVELOPE MOVED WHEN THE CUE DID, and it is worth saying which way round
-    // that is. This bound is not the invariant; `dimmestLuma > 1` above is, and
-    // it has not shifted a decimal (1.73x). This is a tightness statement, and
-    // its number is a consequence of GROUND_CUE.forest -- at 0.3 a wood took 4
-    // boulders in 1,832 a few percent under on blue, at 0.45 it takes 70 and the
-    // worst is a sixth under. Both are the same hue rotation at constant
-    // brightness, just further round it. If this fails after a cue change, the
-    // question is whether the LUMINANCE promise still holds; if it does, this
-    // number follows the cue rather than the cue answering to it.
-    check(dimmest > 0.8 && underOne / n < 0.05,
-      'and the hue the cue borrows off the ground never amounts to a repaint',
+    // The floor that IS a law. The cue is a lerp toward the ground, so every
+    // channel keeps at least `1 - cue` of the palette entry it was written from
+    // no matter how dark the ground under it goes -- which is what stops a match
+    // becoming a repaint, and what leaves a riverbed a bed of stones rather than
+    // a flat plane. A wood is not the worst case for this any more (the river
+    // cue is 0.75 against the forest's 0.45) but it is the case with the lowest
+    // gains behind it, so the envelope is still measured there. If this fails,
+    // the cue has grown past what the gains can carry.
+    check(dimmest > 0.55,
+      'and a rock that matches its ground still keeps over half its own palette',
       `${underOne} of ${n} dip a channel below the tile, lowest ${dimmest.toFixed(2)}`)
     // THE CUE ITSELF IS PER ENVIRONMENT and is not exported, so it is read out of
     // the source. Two things are worth holding. A MISSING environment is the
@@ -3525,21 +3728,13 @@ process.exit(failures === 0 ? 0 : 1)
 //
 // A PORT, and the honest cost of it is stated where it is used: snowNoise and
 // blobField are transliterated from the GLSL in material.js and could drift
-// from it silently. Everything that can be imported is -- MOSS.freq, MOSS.down,
-// SNOW_ROCK.blobWarp, SNOW_ROCK.blobContrast -- so the only literals here are
-// the two noise offsets and the warp frequency, which material.js keeps
-// module-private.
-//
-// A SPHERE OF RADIUS 0.9, and the radius matters: the field is sampled in WORLD
-// space, so the size of the rock decides how many patches are wrapped around it
-// and therefore how the samples are distributed. 0.9 m is an ordinary boulder,
-// which is what the moss constants were fitted against and what a player mostly
-// sees wearing moss. Fibonacci rather than a lattice or a random spray, because
-// it is the even sphere sampling with no seam and no clustering at the poles --
-// and the poles are exactly where `down` is at its extremes.
-function mossCreepOnBoulder() {
-  const N = 20000
-  const R = 0.9
+// from it silently. Everything that can be imported is -- MOSS.freq, MOSS.up,
+// MOSS.warp, MOSS.fray, MOSS.frayFreq, SNOW_ROCK.blobContrast -- so the only
+// literals here are the three noise offsets and the coarse warp frequency, which
+// material.js keeps module-private. ONE copy of it, built by mossBlobField and
+// shared with the rim measurement below, because two would drift from each other
+// as well as from the shader.
+function mossBlobField(fray) {
   const BLOB_WARP_FREQ = 0.46 // material.js, not exported: the coarse copy that drags the rims about
   const fract = (v) => v - Math.floor(v)
   const hash = (x, y, z) => {
@@ -3566,13 +3761,37 @@ function mossCreepOnBoulder() {
         mix(hash(ix, iy + 1, iz + 1), hash(ix + 1, iy + 1, iz + 1), fx), fy),
       fz)
   }
-  const blobField = (x, y, z) => {
+  // The fray is applied to the ALREADY-WARPED point, as in the shader: it is
+  // detail on a tendril, not a second wobble beside it.
+  return (x, y, z) => {
     const w = noise(x * BLOB_WARP_FREQ + 23.1, y * BLOB_WARP_FREQ + 5.7, z * BLOB_WARP_FREQ + 61.3)
-    const warp = SNOW_ROCK.blobWarp
-    const f = noise(x + w * warp, y + w * 1.7 * warp, z - w * warp)
+    let qx = x + w * MOSS.warp
+    let qy = y + w * 1.7 * MOSS.warp
+    let qz = z - w * MOSS.warp
+    if (fray > 0) {
+      const d = noise(qx * MOSS.frayFreq + 47.3, qy * MOSS.frayFreq + 88.1, qz * MOSS.frayFreq + 19.7)
+      qx += d * fray
+      qy -= d * 1.3 * fray
+      qz += d * 0.8 * fray
+    }
+    const f = noise(qx, qy, qz)
     return Math.min(1, Math.max(0, (f - 0.5) * SNOW_ROCK.blobContrast + 0.5))
   }
+}
 
+// A SPHERE OF RADIUS 0.9, and the radius matters: the field is sampled in WORLD
+// space, so the size of the rock decides how many lobes are wrapped around it and
+// therefore how the samples are distributed. 0.9 m is an ordinary boulder, which
+// is what the moss constants were fitted against and what a player mostly sees
+// wearing moss. Fibonacci rather than a lattice or a random spray, because it is
+// the even sphere sampling with no seam and no clustering at the poles -- and the
+// poles are exactly where `up` is at its extremes.
+function mossCreepOnBoulder() {
+  const N = 20000
+  const R = 0.9
+  // Full fray: this stands for the near field, which is the only place the
+  // shader has it on and the distance a boulder's moss is judged at.
+  const blobField = mossBlobField(MOSS.fray)
   const creeps = new Float64Array(N)
   const GOLDEN = Math.PI * (3 - Math.sqrt(5))
   for (let i = 0; i < N; i++) {
@@ -3586,12 +3805,48 @@ function mossCreepOnBoulder() {
     // world position, and a boulder is round enough that the two agree.
     const blob = blobField(
       nx * R * MOSS.freq + 31.7, ny * R * MOSS.freq + 12.3, nz * R * MOSS.freq + 47.1)
-    const down = Math.min(1, Math.max(0, 0.5 - ny * 0.5))
-    creeps[i] = blob * (1 - MOSS.down) + down * MOSS.down
+    const up = Math.min(1, Math.max(0, 0.5 + ny * 0.5))
+    creeps[i] = blob * (1 - MOSS.up) + up * MOSS.up
   }
   creeps.sort()
 
   return { creeps, min: creeps[0], max: creeps[N - 1] }
+}
+
+// How LONG the mask's contour is, per unit area, at a given cut -- the one thing
+// a domain warp can buy, and therefore the only way to check that MOSS_FRAY earns
+// its noise evaluation. A warp slides sample points about, so it cannot change
+// how much of the rock comes out green (that is the fit's job, checked
+// separately); what it changes is how far you have to walk round the edge of what
+// it covers.
+//
+// A 2D SLICE through the 3D field rather than the sphere, because a contour
+// length needs neighbours and the Fibonacci sampling has no grid. The field is
+// isotropic, so a plane through it is representative, and 12 lattice cells at 512
+// samples is 43 samples per cell -- eight across the finest fray feature there
+// is. Returned in cells per square cell, so it is a shape number and does not
+// move when MOSS_FREQ does.
+function mossRimLength(fray, cut) {
+  const CELLS = 12
+  const N = 512
+  const step = CELLS / N
+  const field = mossBlobField(fray)
+  const mask = new Uint8Array(N * N)
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      mask[j * N + i] = field(i * step + 3.3, j * step + 11.7, 5.9) > cut ? 1 : 0
+    }
+  }
+  let area = 0
+  let edges = 0
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      area += mask[j * N + i]
+      if (i + 1 < N && mask[j * N + i] !== mask[j * N + i + 1]) edges++
+      if (j + 1 < N && mask[j * N + i] !== mask[(j + 1) * N + i]) edges++
+    }
+  }
+  return { cover: area / (N * N), rim: (edges * step) / (CELLS * CELLS) }
 }
 
 // Lifted from check-buildings.mjs, and the reasoning there is worth repeating:

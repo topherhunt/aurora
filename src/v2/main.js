@@ -1400,7 +1400,7 @@ function buildGrass(style, cx, cz, opts = {}) {
   }
   grassStyle = style
   grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, {
-    seed: SEED, style, tint: terrainTint, ...opts,
+    seed: SEED, style, tint: terrainTint, rocks, ...opts,
   })
   // The cache key carries the style: the two materials compile DIFFERENT
   // programs (one billboards, one tiles), and a shared key would hand the second
@@ -1571,6 +1571,42 @@ async function bootWorld() {
   player.spawnAt(spawn.x, spawn.z)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
+  // Stone, in seven size beds at once: pebbles underfoot, boulders through the
+  // wood and across the cliffsides, giants on the crags and the summits, and
+  // blocks let into the faces and the lake floors. Seven more BatchedMeshes and
+  // seven more draw calls, but ONE material for all of them -- every rock bed
+  // billboards the same single card layer, so unlike the trees, the ferns and
+  // the grass there is no per-bed shader source. See render/rocks.js.
+  //
+  // Which shapes stand where is decided by the ground, not by a roll: each site
+  // is classified river / forest / cliff / peak off the field sample the
+  // placement test already pays for, and both WHICH variants may stand there and
+  // HOW MANY of them follow from that.
+  //
+  // FIRST OF THE SCATTERS, AHEAD OF THE TREES, THE FERNS AND THE GRASS, and that
+  // is a hard ordering rather than reading order. A boulder is the only prop that
+  // displaces other props: a tree or a fern whose trunk lands inside one is
+  // raised to stand ON it, and grass and litter inside one are dropped outright
+  // (`rocks.blockAt`). Every one of those tests needs the stone already on the
+  // ground. Quest mode does not weaken it -- the toggle only sets `batch.visible`
+  // and the beds are placed and stepped either way, so what the trees see does
+  // not change when the rocks are switched off.
+  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
+  lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
+  rocks.syncBands(layers)
+  rocks.place(spawn.x, spawn.z)
+  const rs = rocks.stats
+  console.log(
+    `[v2] rocks ${rs.placed} placed in ${rs.placeMs.toFixed(0)} ms, bank ${rs.shapes} shapes / ` +
+    `${rs.bankTris} tris / ${rs.bankKB} KB in ${rs.buildMs.toFixed(0)} ms; ` +
+    rs.beds.map((b) => `${b.name} ${b.placed} (${b.used}/${b.pool}) to ${b.radius} m`).join(', ')
+  )
+  // Same console hook the ferns, mushrooms and dead wood keep, and here it earns
+  // itself twice over: `describeNear` is the only way to see what a rock that
+  // misbehaves in the browser is actually doing, since a blink does not survive
+  // into a headless traverse. See render/rocks.js.
+  window.v2rocks = rocks
+
   // Trees. The atlas was built up at the terrain, above, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
   // layers landing, because a photograph taken before the bark has loaded would
@@ -1581,6 +1617,9 @@ async function bootWorld() {
   trees = new Trees(scene, height, waterSurfaces, propTextures, {
     seed: SEED,
     ground: terrain,
+    // Constructed above, and it has to be: a trunk that lands inside a boulder
+    // stands on the boulder. See Rocks.blockTopAt.
+    rocks,
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -1615,7 +1654,7 @@ async function bootWorld() {
   // The whole Layers goes in, not just its paths: a fern takes a hue cue from
   // the terrain colour underfoot, which needs the snow band and the road
   // flattening as well as the path exclusions.
-  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED })
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, rocks })
   lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
   ferns.syncSnowLine(layers)
   ferns.place(spawn.x, spawn.z)
@@ -1672,35 +1711,6 @@ async function bootWorld() {
     }
   }
 
-  // Stone, in three size beds at once: pebbles underfoot, boulders through the
-  // wood and across the cliffsides, and giants on the crags and the summits.
-  // Three more BatchedMeshes and three more draw calls, but ONE material for all
-  // three -- nothing in the rock beds billboards, so unlike the trees, the ferns
-  // and the grass there is no per-bed shader source. See render/rocks.js.
-  //
-  // Which shapes stand where is decided by the ground, not by a roll: each site
-  // is classified river / forest / cliff / peak off the field sample the
-  // placement test already pays for, and both WHICH variants may stand there and
-  // HOW MANY of them follow from that.
-  // The whole Layers again, and for the ferns' reason: a rock takes a hue cue
-  // from the terrain colour underfoot, which needs the snow band and the road
-  // flattening to reproduce what the chunk mesher painted.
-  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
-  lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
-  rocks.syncBands(layers)
-  rocks.place(spawn.x, spawn.z)
-  const rs = rocks.stats
-  console.log(
-    `[v2] rocks ${rs.placed} placed in ${rs.placeMs.toFixed(0)} ms, bank ${rs.shapes} shapes / ` +
-    `${rs.bankTris} tris / ${rs.bankKB} KB in ${rs.buildMs.toFixed(0)} ms; ` +
-    rs.beds.map((b) => `${b.name} ${b.placed} (${b.used}/${b.pool}) to ${b.radius} m`).join(', ')
-  )
-  // Same console hook the ferns, mushrooms and dead wood keep, and here it earns
-  // itself twice over: `describeNear` is the only way to see what a rock that
-  // misbehaves in the browser is actually doing, since a blink does not survive
-  // into a headless traverse. See render/rocks.js.
-  window.v2rocks = rocks
-
   // Strewn litter: the small stones, as four baked photographs stamped flat on
   // the ground instead of as tens of thousands of modelled pebbles. It is a
   // sibling of the rock beds rather than a fifth bed of them because it shares
@@ -1713,7 +1723,7 @@ async function bootWorld() {
   // the stamps pick the pictures up the frame they land in it. What would NOT
   // be fine is placing litter before the atlas exists at all, which is why this
   // sits below `propTextures` like everything else that samples it.
-  litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
+  litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain, rocks })
   lighting.patch(litter.material, { mode: 'vertex', cacheKey: 'v2-litter' })
   litter.place(spawn.x, spawn.z)
   const ls = litter.stats
@@ -3610,10 +3620,15 @@ function tick() {
   if (!QUEST_MODE || questToggles.terrain) {
     terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
   }
+  // Rocks first, and it is the same hard ordering the construction has: the tree,
+  // fern, grass and litter scatters all ask the stone where it is before they
+  // place anything, so a tile of stone has to be grown before the tile of wood
+  // over it. `rocks.update` is called whatever the quest toggle says -- the
+  // toggle hides the batches, and a hidden boulder still displaces a tree.
+  rocks.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
-  if (!QUEST_MODE || questToggles.rocks) rocks.update(headTmp.x, headTmp.y, headTmp.z)
   // litter/mushrooms/deadwood aren't among the 9 requested toggles -- always
   // updated (they're the cheapest layers in the world; see their own
   // headers), just permanently hidden in quest mode with no button to show them.

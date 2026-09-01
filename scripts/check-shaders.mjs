@@ -310,7 +310,7 @@ const PROP_MARKS = {
   frag: [
     'uniform sampler2DArray uAtlas;',
     'float ign( vec2 p )',
-    'float blobField( vec3 p )',
+    'float blobField( vec3 p, float warp, float fray )',
     'log( mossLoad',
     'snowNear > 0.004',
     'mossNear > 0.004',

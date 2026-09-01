@@ -8,19 +8,21 @@ The machine is `render/trees.js`'s, deliberately -- a tiled, camera-following, g
 
 A pebble is 11 cm and a cliff-top lip is 7 m, and no single density-and-radius pair carries both. A pebble wants one per few square metres out to fifty; a lip wants one per two thousand square metres out to a kilometre and a half. Run the pebble's numbers to the lip's horizon and it is millions of instances; run the lip's numbers underfoot and there are no pebbles.
 
-So there are **five beds**, each a complete independent scatter with its own tile grid, density, radius, LOD bands and instance pool:
+So there are **seven beds**, each a complete independent scatter with its own tile grid, density, radius, LOD bands and instance pool:
 
 | Bed | Sizes | Density / reach | What it is |
 |---|---|---|---|
-| `underfoot` | 0.11 - 0.75 m | dense, 60 m | river stones, cobbles, caps |
-| `boulders` | 0.34 - 3.4 m | medium, 460 m | the forest and cliffside rocks |
-| `scree` | 0.5 - 3 m | dense, 140 m | the pile at the foot of a face |
-| `crust` | 0.45 - 4.8 m | medium, 300 m | caps on lake floors and faces |
-| `giants` | 3.2 - 7.0 m | sparse, 1250 m | tors, shelves, buttresses, lips |
+| `underfoot` | 0.25 - 2 m | dense, 120 m | river stones, cobbles, caps |
+| `boulders` | 0.5 - 10 m | medium, 600 m | the forest and cliffside rocks |
+| `scree` | 0.5 - 3 m | dense, 280 m | the pile at the foot of a face |
+| `crust` | 0.5 - 10 m | medium, 600 m | caps on lake floors and faces |
+| `sunken` | 0.5 - 5 m | sparse, 320 m | closed stones on the lake floor |
+| `giants` | 3.2 - 7 m | sparse, 1250 m | tors, shelves, buttresses, lips |
+| `embedded` | 2 - 20 m | sparse, 1350 m | blocks let INTO a face or a bed |
 
-**Each bed exists because something it needs is per-bed and cannot be varied within one**, which is the only test a new bed has to pass. For `scree` it is the candidate count: `envDensity` is an accept rate capping at 1, and a saturated site cannot be made denser by any multiplier. For `crust` it is the slope limit and the submersion flag. Neither could have been a table entry.
+**Each bed exists because something it needs is per-bed and cannot be varied within one**, which is the only test a new bed has to pass. For `scree` it is the candidate count: `envDensity` is an accept rate capping at 1, and a saturated site cannot be made denser by any multiplier. For `crust` it is the slope limit and the submersion flag. For `sunken` it is `submergedOnly` and a size range of its own. For `embedded` it is `sinkRange`: 70 to 90% of the rock under the surface, where every other bed's burial roll runs 10 to 80% of the way there, and one bed cannot both bury a rock that far and stand it on the ground. None could have been a table entry.
 
-Six beds are six `BatchedMesh`es and six draw calls, which does not violate §5's one-material rule -- that rule is that a BATCH cannot be split by material, and these are six batches. They share **one material object**, unlike trees, ferns and grass, which cannot: which layers billboard is compiled into the shader and their lists differ. Every bed here billboards the same single layer, the card tier, so one program serves them all.
+Seven beds are seven `BatchedMesh`es and seven draw calls, which does not violate §5's one-material rule -- that rule is that a BATCH cannot be split by material, and these are seven batches. They share **one material object**, unlike trees, ferns and grass, which cannot: which layers billboard is compiled into the shader and their lists differ. Every bed here billboards the same single layer, the card tier, so one program serves them all.
 
 ## Where a rock goes is decided by where it is, not by a roll
 
@@ -49,7 +51,23 @@ A foot site additionally runs DENSER than its environment by a smooth clump fiel
 
 ## Rocks sit in the ground and lean with it
 
-Both halves matter. A rock is bedded by a fraction of its own height that GROWS WITH THE SLOPE -- on a cliff a giant is a third buried, which makes it read as protruding from the face instead of balanced on it -- and it is tilted toward the ground normal, which trees deliberately are not: a tree on a slope grows up, a rock lies the way it fell. The tilt costs four extra field samples per PLACED rock and is off for the underfoot bed, whose rocks are four centimetres tall.
+Both halves matter. A rock is bedded by a fraction of its own standing height that GROWS WITH THE SLOPE -- on a cliff a giant is a third buried before the roll even starts, which makes it read as protruding from the face instead of balanced on it -- and it is tilted toward the ground normal, which trees deliberately are not: a tree on a slope grows up, a rock lies the way it fell. The tilt costs four extra field samples per PLACED rock and is off for the underfoot bed, whose rocks are a few centimetres tall.
+
+On top of the ground lean, every rock takes a free **±15° jitter about a random horizontal world axis**, so no two rocks on the same ground lie parallel. It is applied by `premultiply` rather than `multiply`, and that is not interchangeable: composed the other way the jitter axis would be the rock's own already-tipped axis, and on a rock the quarter turn stood on its side the "lean" would come out as a second yaw and be invisible.
+
+### The quarter turns, and why they force a box
+
+Every rock is pre-turned by a random quarter turn about X and about Z, one of sixteen -- so nine authored shapes read as far more than nine, and a bank small enough to be one closed mesh still fills a wood. **Quarter turns and not free angles**, because an x/z rotation near 45° reads as a boulder leaning on the air at an impossible angle; a quarter turn just means the rock came to rest on a different face.
+
+The cost is that the seating arithmetic can no longer use `measured.height`. A rock's geometry has its origin **on its bed face** (§23), so a rock turned on its side hangs below its own origin by half its width, and "buried 30%" has to mean 30% of what it now STANDS. So placement builds the turned box: one term per row of the rotation survives a quarter turn, giving `yMin` and `yMax` in three multiplies, and burial is a fraction of `yMax - yMin` measured from `yMin`. `instSink` carries `sink + yMin` so `_reground` still works off a single number per instance, and it goes legitimately negative -- which is why the gate measures burial by pushing the box through the instance matrix rather than dividing `instSink` by anything.
+
+The `crust` bed opts out (`roll: false`) for as long as the bank holds open-bottomed shells, which have no second face to stand on. When the bank collapses to one closed boulder the exemption goes with it.
+
+### Burial is a roll, bent by size, and corrected on a face
+
+The floor rises with the slope; the roll runs from that floor to the top of the bed's `sinkRange`, 80% for everything but `embedded`. `SINK_SIZE_TILT` raises the roll to a power below 1 in proportion to the SIZE roll, so a 10 m block is much likelier to come out half-sunk than a cobble is -- big stone sits in the ground, small stone sits on it.
+
+On a steep face `sinkNormal` divides the depth by the cosine of the slope. `instY` moves a rock along world -Y, but "80% buried" on a wall means 80% along the face's own normal, and the two differ by `1/cos`: at 72° nine tenths of the sink would just slide the rock downhill and leave it as proud as before. Capped at `SINK_NORMAL_MAX` because the correction diverges at vertical. Only `embedded` sets it, because it is the only bed that buries deep enough on ground steep enough for the difference to read.
 
 Snow and moss are not this file's, which is the point of them being in the material. Both are derived in the vertex shader from the instance's own root height against a line -- snow filling in above its line, moss thinning out above its own -- so a boulder in a damp wood is green, the same boulder on a ridge bare stone, one on a summit white, with no per-instance data and no per-frame CPU. See `material.js`'s header, and `syncBands` for where the lines come from.
 
@@ -62,7 +80,7 @@ The moss line is derived from the snow's -- `MOSS_DROP` metres below it, fading 
 
 ## One LOD ladder, and the thresholds are per rock rather than per bed
 
-Every shape ships T180/T80/T20 and a two-triangle card, and every instance steps between them at `ROCK_LOD_AT` metres per metre of its OWN ladder size, the longest of its three box axes (`rockLodSize`, §23). That is 4 m per metre to T80, 7.5 to T20 and 25 to the card, so a two-metre rock holds real geometry out to 50 m, a cobble to 8.5, a twelve-metre spire to 300.
+Every shape ships T320/T80/T20 and a two-triangle card, and every instance steps between them at `ROCK_LOD_AT` metres per metre of its OWN ladder size, the longest of its three box axes (`rockLodSize`, §23). That is 4 m per metre to T80, 7.5 to T20 and 25 to the card, so a two-metre rock holds real geometry out to 50 m, a cobble to 8.5, a twelve-metre spire to 300.
 
 **A table of metres per bed was wrong in both directions at once**, because a bed is not one size of rock: the crust bed places caps from 1 m to 10 m across and handed every one to T20 at 40 m, so a six-metre swelling on a cliff face became twenty triangles while it still filled a quarter of the screen, and the underfoot bed carried 180 faces on a 25 cm pebble out to 8 m. Nothing about a bed knows how big its rocks are; the instance does, at one `Float32Array`.
 
@@ -150,9 +168,9 @@ The cliff and peak are a different question, because there `radius` is downstrea
 
 ## Taking the ground's colour: `GROUND_CUE`
 
-How far a rock's tint is pulled toward the terrain colour underfoot, on exactly `render/ferns.js`'s terms: the terrain's own vertex colour from the chunk mesher's `shade`, **renormalised to unit luminance** so what survives is hue and not magnitude.
+How far a rock's tint is pulled toward the terrain colour underfoot, on exactly `render/ferns.js`'s terms: the terrain's own vertex colour from the chunk mesher's `shade`, taken **whole -- hue and lightness both**.
 
-Magnitude has to go because a rock's tint is a DESTINATION -- `ENV_TINTS` says what the stone averages out to once the gain has white-balanced the photograph (§23) -- so multiplying by the terrain's near-black palette would delete the rock rather than darken it. The complaint behind this ("boulders shouldn't be bright white") was really that neutral grey against saturated forest green reads as a cutout, and hue is the whole of that. A rock the sun is not reaching is not this file's problem: `v2/main.js` patches the material with `lighting.patch({ mode: 'vertex' })`, so every rock takes the terrain's own sun and sky shadow per vertex.
+Lightness is in the match on purpose. The cue is a LERP toward the ground colour, not a multiply by it, which is what makes taking the magnitude safe: the terrain palette runs 0.059 to 0.088 in luminance and a multiply would delete the rock, but a lerp at 0.45 leaves a forest boulder 58% of its own brightness and a snowfield rock 93% of it. What that buys is the thing a hue-only match could not: a boulder on a dark wood floor is dark, and a pale boulder no longer reads as a lamp sitting on the ground. The floor is structural -- every channel keeps at least `1 - cue` of its palette entry however dark the ground goes -- so a match can never become a repaint. The margin against the bare tile is now 1.02x where the hue-only cue left 1.73x, and that number is the one to watch: at 1.0 a boulder stops reading against its own ground at all. A rock the sun is not reaching is not this file's problem: `v2/main.js` patches the material with `lighting.patch({ mode: 'vertex' })`, so every rock takes the terrain's own sun and sky shadow per vertex.
 
 `{ river: 0.75, forest: 0.45, cliff: 0.55, peak: 0.55 }` -- above the ferns' 0.35, reversing the old argument that a rock genuinely is a different material from the ground a fern grows out of. True of a boulder at arm's length, false of the population that matters: most stone in the world is far enough away to be a two-triangle billboard, a flat photograph with none of the self-shadowing or silhouette that says "separate object" up close. Hue is all that is left at that range, so a cue tuned on the near case leaves the far case reading as grey confetti over the hillside -- and once the eye has caught that, the tier swap that produced it is visible too.
 

@@ -280,6 +280,77 @@ export const TREE_DEFAULTS = {
                        // buried this far into the limb, so the first leaf the
                        // alpha test keeps is the one sitting on the wood
 
+  // --- v2 foliage: the warped cut, and cards spaced by LENGTH ----------------
+  //
+  // AT sprayV2 FALSE NONE OF THIS RUNS and the crown is built exactly as above.
+  // The two schemes ship side by side so /gen-tree-v2 can show them together;
+  // when one wins, the other and its four texture layers come out.
+  //
+  // What changes, and why each half is part of the same change:
+  //
+  //   THE CUT IS A QUAD. `sprayQuad` is the four corners of the hand-marked
+  //   region that gen-layers.mjs projected onto the square, in the card's own
+  //   frame with the stem at y = 0 -- so building the card on those corners
+  //   reverses the warp and the art draws at its true proportions. It replaces
+  //   `sprayAspect` and `sprayStemU`/`sprayStemV` together: a quad is not a
+  //   rectangle, and its stem is a CORNER rather than a point part-way along an
+  //   edge. Corner 0 is the stem and corner 2 is the tip opposite it.
+  //
+  //   CARDS ARE SPACED BY METRES, NOT COUNTED. `sprays` puts the same number on
+  //   every limb and leans on `sprayByLength` to rebalance it; `sprayEvery` puts
+  //   one every half metre of limb and lets the count fall out, which is what
+  //   makes a long branch carry more foliage than a short one for the right
+  //   reason. Jittered per gap so the row is irregular rather than a comb.
+  //   The count is therefore NOT PREDICTABLE without building: resolveTree
+  //   still prices `sprays` cards a limb, so at sprayV2 true its spray line is
+  //   v1's law and not this crown's bill. Read geometry.userData.tree instead.
+  //
+  //   THE CREASE RUNS STEM TO TIP. A v1 card folds about the diagonal its two
+  //   triangles already share, which on the warped cut is the wrong diagonal --
+  //   it crosses the spray instead of running down it. Folding about stem-to-tip
+  //   instead is the rachis a real spray has, with the leaflets hanging either
+  //   side of it, so the fold reads as botany rather than as a bent card.
+  sprayV2: false,
+  sprayQuad: null,     // [[x,y] x4], stem first, longer bbox side 1. Printed by
+                       // gen-layers.mjs; null is an error at sprayV2 true
+  sprayEvery: 0.5,     // metres of limb between sprays
+  sprayEveryVary: 0.5, // +/- this fraction of that gap, per gap
+  sprayFoldMax: 0.52,  // 30 degrees. The crease angle is drawn from 0 to here
+  sprayFoldDown: 0.85, // and this often the crease opens DOWNWARD, the way a
+                       // spray carrying its own weight does. The rest open up,
+                       // which is what stops a crown reading as one gesture
+
+  // --- v2a foliage: the limb IS a card ---------------------------------------
+  //
+  // AT sprayV2a FALSE NONE OF THIS RUNS. It needs sprayV2 -- it is v2's warped
+  // quad and v2's metre-spaced walk, with one addition -- and the two together
+  // are what /gen-tree-v2a draws.
+  //
+  // THE ADDITION: before any of the small sprays, the limb gets ONE card
+  // spanning the whole of it, stem on the trunk and tip at the branch tip, sized
+  // so its stem-to-tip crease IS the limb's length. The crease is rotated onto
+  // the limb chord exactly rather than approximately -- the quad's own axis is
+  // up to 21 degrees off vertical (oak's is the worst) and a card built with its
+  // `up` on the chord would hang the whole spray at that angle. It lies flat,
+  // rolled by `limbTilt`, and folds DOWNWARD by 20 to 40 degrees every time:
+  // this card is the branch, and a branch does not open upward.
+  //
+  // The small sprays then hang along that same crease, which is the limb chord,
+  // so they touch the big card and the wood at once. Two of their knobs are
+  // rewritten by how high up the tree the limb starts, because a conifer's top
+  // is pointy for two reasons at once -- there is less foliage up there, and
+  // what there is hangs steeper.
+  sprayV2a: false,
+  limbFoldMin: 0.35,   // 20 degrees, and the big card's fold is drawn between
+  limbFoldMax: 0.70,   // this and 40. Never up: see above
+  limbTilt: 0.35,      // radians of random roll about its own crease, either
+                       // way. This is the whole of "not quite horizontal"
+  limbTopThin: 2.0,    // `sprayEvery` is multiplied by 1 + this x topness, so at
+                       // 2 the small sprays are three times as far apart at the
+                       // tip of the tree as at its foot
+  limbTopDroop: 0.5,   // and `sprayDown` gains this x topness, so they hang
+                       // steeper up there. Together: a pointy top
+
   // --- the crown bundle: a whole crown for about twenty triangles ---
   //
   // AT BUNDLETRIS 0 THIS DOES NOTHING and the crown is cards, which is what
@@ -373,6 +444,13 @@ export const TREE_SPECIES = {
     barkLayer: LAYER.BARK_PINE,
     leafLayer: LAYER.SPRAY_PINE,
     impostorLayer: LAYER.IMPOSTOR_PINE,
+    // What to merge over the species to build it the v2 way. Held apart rather
+    // than folded in, so the shipped tree is still the v1 tree while both
+    // schemes are on the page -- see the sprayV2 note in TREE_DEFAULTS.
+    v2: {
+      leafLayer: LAYER.LEAF2_PINE,
+      params: { sprayV2: true, sprayQuad: [[0.4636, 0], [0.8925, 0.4439], [0.429, 1], [0, 0.6262]] },
+    },
     params: {
       sprayAspect: 0.961,
       sprayStemU: 0.435,
@@ -409,6 +487,10 @@ export const TREE_SPECIES = {
     barkLayer: LAYER.BARK,
     leafLayer: LAYER.LEAVES,
     impostorLayer: LAYER.IMPOSTOR_OAK,
+    v2: {
+      leafLayer: LAYER.LEAF2_OAK,
+      params: { sprayV2: true, sprayQuad: [[0.3316, 0], [0.6261, 0.2319], [0.6499, 0.8148], [0, 1]] },
+    },
     params: {
       sprayAspect: 0.651,
       sprayStemU: 0.602,
@@ -442,6 +524,10 @@ export const TREE_SPECIES = {
     barkLayer: LAYER.BARK_BIRCH,
     leafLayer: LAYER.LEAF_ASH,
     impostorLayer: LAYER.IMPOSTOR_BIRCH,
+    v2: {
+      leafLayer: LAYER.LEAF2_ASH,
+      params: { sprayV2: true, sprayQuad: [[0.4376, 0], [0.824, 0.6676], [0.4534, 1], [0, 0.8268]] },
+    },
     params: {
       sprayAspect: 0.642,
       sprayStemU: 0.421,
@@ -480,6 +566,10 @@ export const TREE_SPECIES = {
     barkLayer: LAYER.BARK_BIRCH,
     leafLayer: LAYER.LEAF_ASPEN,
     impostorLayer: LAYER.IMPOSTOR_ASPEN,
+    v2: {
+      leafLayer: LAYER.LEAF2_ASPEN,
+      params: { sprayV2: true, sprayQuad: [[0.3372, 0], [0.624, 0.5305], [0.3363, 1], [0, 0.5305]] },
+    },
     params: {
       sprayAspect: 0.492,
       sprayStemU: 0.481,
@@ -843,6 +933,82 @@ function addCard(out, centre, right, up, w, h, texLayer, tris, foldA = 0, foldB 
   return tris
 }
 
+// The v2 spray card: the WARPED cut, built on the quad it was cut from.
+//
+// `quad` is gen-layers.mjs's `sprayQuad` -- four corners in the card's own frame,
+// stem first, y up, longer bounding-box side 1 -- and the four corners take the
+// four corners of the texture, so drawing it here undoes the projection that
+// made the texture. Corner 0 is the stem, corner 2 the tip opposite it, and the
+// UVs fall out of where gen-layers.mjs sent each one: stem to (1, 0), then round
+// to (1, 1), (0, 1), (0, 0).
+//
+// THE STEM CORNER LANDS ON `seat`, exactly. A v1 card is centred and then shoved
+// by sprayStemU/sprayStemV to get its stem near the wood; here the stem IS a
+// corner, so it is placed and the rest of the card is measured off it. The seat
+// is on the limb's drawn axis, so the corner sits a branch radius INSIDE the
+// wood and the contact is guaranteed rather than approximated.
+//
+// THE CREASE IS THE STEM-TO-TIP DIAGONAL, which is also the edge the two
+// triangles share, so the fold costs no triangles and no texels -- the same
+// trade addCard makes, about the other diagonal. Corners 1 and 3 straddle that
+// axis and both swing to the SAME side of it, which makes this a fold rather
+// than a twist: the card comes out a shallow trough with a rachis down the
+// middle.
+//
+// `fold` IS A MAGNITUDE AND `down` SAYS WHICH WAY, because which way is not a
+// property of the angle. The free corners are displaced along the card's own
+// normal, and that normal points up on half the crown and down on the other
+// half -- so a fixed sign would open half the sprays skyward like gutters. The
+// sign is resolved here, against n, where n is known.
+//
+// One stored normal for all four corners, correct as an average for the same
+// reason addCard's is -- and foliage does not keep it anyway, see the canopy
+// normal pass at the bottom of buildTree.
+function addQuadCard(out, seat, right, up, quad, h, texLayer, fold, down) {
+  const base = out.positions.length / 3
+  const n = new THREE.Vector3().crossVectors(right, up).normalize()
+
+  // The crease, from the stem to the corner opposite it, in card-local units.
+  const ax = (quad[2][0] - quad[0][0]) * h
+  const ay = (quad[2][1] - quad[0][1]) * h
+  const len = Math.hypot(ax, ay)
+  if (len < 1e-12) throw new Error('addQuadCard: stem and tip are the same point')
+  const dx = ax / len
+  const dy = ay / len
+  const c = Math.cos(fold)
+  // A corner moves |perp| * s along n, so its rise is |perp| * s * n.y: opening
+  // downward means s and n.y carry opposite signs. A card standing exactly
+  // edge-on has n.y = 0 and no trough to point either way, so either sign does.
+  const s = Math.sin(fold) * (n.y > 0 === !!down ? -1 : 1)
+
+  const uv = [[1, 0], [1, 1], [0, 1], [0, 0]]
+  for (let i = 0; i < 4; i++) {
+    // Offset from the STEM corner, which is what puts the stem on the seat.
+    const vx = (quad[i][0] - quad[0][0]) * h
+    const vy = (quad[i][1] - quad[0][1]) * h
+    const along = vx * dx + vy * dy
+    const perp = vx * -dy + vy * dx
+    // Corners 0 and 2 lie on the axis, so their perp is zero and they come
+    // through untouched -- which is what keeps the crease a crease. |perp|
+    // sends 1 and 3 to the same face; the signed value would twist the card.
+    const cx = dx * along - dy * perp * c
+    const cy = dy * along + dx * perp * c
+    const cz = Math.abs(perp) * s
+    out.positions.push(
+      seat.x + right.x * cx + up.x * cy + n.x * cz,
+      seat.y + right.y * cx + up.y * cy + n.y * cz,
+      seat.z + right.z * cx + up.z * cy + n.z * cz
+    )
+    out.normals.push(n.x, n.y, n.z)
+    out.uvs.push(uv[i][0], uv[i][1])
+    out.layers.push(texLayer)
+    out.leaf.push(1)
+  }
+  // Split along the crease, so neither triangle spans the fold.
+  out.indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  return 2
+}
+
 // A limb in ONE triangle: the LOD1 branch. Two corners a radius either side of
 // the base and the apex at the tip -- the triangle you get by slicing the limb
 // cone down its own axis. No card, no texture trick, the same bark layer.
@@ -1108,6 +1274,33 @@ export function buildTree(options = {}) {
     ]
   }
 
+  // v2's crease, drawn off the SAME stream as v1's fold so switching schemes
+  // does not shift the shape stream and change which tree you are looking at.
+  // One angle per card, not two: the crease is a rachis, and a spray's two sides
+  // hang off it together. addQuadCard turns `down` into a sign -- see its note.
+  const sprayV2 = !!p.sprayV2
+  const quadV2 = p.sprayQuad
+  if (sprayV2 && (!Array.isArray(quadV2) || quadV2.length !== 4)) {
+    throw new Error('sprayV2 needs a 4-corner sprayQuad; gen-layers.mjs prints it')
+  }
+  const foldV2 = () => [
+    foldRand() * Math.max(0, p.sprayFoldMax),
+    foldRand() < p.sprayFoldDown,
+  ]
+  const sprayV2a = !!p.sprayV2a
+  // v2a is v2 plus one card, not a scheme of its own: without the warped quad
+  // there is no crease to lay along the limb and no corner to seat on the trunk.
+  if (sprayV2a && !sprayV2) throw new Error('sprayV2a needs sprayV2; it is v2 with a limb card')
+  // The crease's direction in the quad's OWN frame, which is what the limb card
+  // has to rotate onto the chord. Read once: it is a property of the cut.
+  const creaseDir = sprayV2 ? (() => {
+    const dx = quadV2[2][0] - quadV2[0][0]
+    const dy = quadV2[2][1] - quadV2[0][1]
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-12) throw new Error('sprayQuad: stem and tip are the same corner')
+    return { x: dx / len, y: dy / len, len }
+  })() : null
+
   // A THIRD STREAM, on the same argument, and separate even though every draw it
   // makes happens after the last limb is grown: "could not have shifted
   // anything" is a fact about the current order of two blocks.
@@ -1154,6 +1347,11 @@ export function buildTree(options = {}) {
   // honest number there: it is seated at its stem and runs h/2 either way along
   // `up`. The azimuth is kept, which is the difference from the fitted hull this
   // replaced -- see §20.
+  // The limb card is drawn where a bundle blade would be sampled, not where one
+  // would be placed, so a bundle tier would silently lose it. Say so instead.
+  if (sprayV2a && bundleTris > 0) {
+    throw new Error('sprayV2a and bundleTris: the bundle does not know the limb card')
+  }
   const bundleSamples = bundleTris > 0 ? [] : null
   let sprayTris = 0
   let sprayCards = 0
@@ -1166,6 +1364,24 @@ export function buildTree(options = {}) {
   // the middle of its bottom edge and is why sprays floated off their twigs.
   const placeSpray = (seat, right, up, h) => {
     sprayCards += 1
+    // v2 seats the card BY its stem corner, so there is no centring to undo --
+    // the seat is the answer. The bundle still wants a centre and a reach, and
+    // the quad's own midpoint between stem and tip is that: half a card's reach
+    // from the wood, along the card, which is what the v1 arithmetic means too.
+    if (sprayV2) {
+      if (bundleSamples) {
+        const mx = (quadV2[2][0] - quadV2[0][0]) * h * 0.5
+        const my = (quadV2[2][1] - quadV2[0][1]) * h * 0.5
+        bundleSamples.push({
+          pos: seat.clone().addScaledVector(right, mx).addScaledVector(up, my),
+          reach: Math.hypot(mx, my),
+        })
+        return
+      }
+      const [fold, down] = foldV2()
+      sprayTris += addQuadCard(out, seat, right, up, quadV2, h, p.leafLayer, fold, down)
+      return
+    }
     const centre = seat
       .addScaledVector(up, h * (0.5 - p.sprayStemV))
       .addScaledVector(right, h * p.sprayAspect * (0.5 - p.sprayStemU))
@@ -1441,20 +1657,88 @@ export function buildTree(options = {}) {
         Math.max(1, Math.round(length * p.barkRepeat)), p.barkLayer)
     }
 
+    // --- the limb card (v2a) ---
+    //
+    // One card for the whole limb, before any of the small ones: stem corner on
+    // the trunk, tip at the branch tip, crease along the chord between them, so
+    // the card IS the branch rather than something hung off it.
+    const limbBase = limbAxis[0]
+    const limbTip = limbAxis[limbAxis.length - 1]
+    // How high up the tree this limb starts. The geometry is built at height 1
+    // and only rescaled at the end, so the base's own y IS that fraction.
+    const topness = Math.min(1, Math.max(0, limbBase.y))
+    if (sprayV2a) {
+      const e = new THREE.Vector3().subVectors(limbTip, limbBase)
+      const limbLen = e.length()
+      // A limb with no length has no chord to lay a crease along. The small
+      // sprays below still seat on it, so this is a card skipped, not a limb.
+      if (limbLen > 1e-6) {
+        e.multiplyScalar(1 / limbLen)
+        // The second axis is horizontal and square to the chord, which puts the
+        // card's normal straight up and lets the fold hang plumb. Rolled off
+        // that by limbTilt, which is the whole of "not quite level".
+        const f = new THREE.Vector3().crossVectors(UP, e)
+        if (f.lengthSq() < 1e-8) f.set(1, 0, 0) // a vertical limb: any roll does
+        f.normalize().applyAxisAngle(e, (rand() - 0.5) * 2 * p.limbTilt)
+        // The pair is rotated so the QUAD's crease lands on the chord, rather
+        // than the quad's `up` landing on it and the crease trailing 21 degrees
+        // behind: right x dx + up x dy comes out exactly `e`.
+        const right = new THREE.Vector3()
+          .copy(e).multiplyScalar(creaseDir.x).addScaledVector(f, -creaseDir.y)
+        const up = new THREE.Vector3()
+          .copy(e).multiplyScalar(creaseDir.y).addScaledVector(f, creaseDir.x)
+        sprayCards += 1
+        sprayTris += addQuadCard(out, limbBase, right, up, quadV2,
+          limbLen / creaseDir.len, p.leafLayer,
+          p.limbFoldMin + foldRand() * Math.max(0, p.limbFoldMax - p.limbFoldMin), true)
+      }
+    }
+
     // --- foliage ---
-    for (let j = 0; j < cards; j++) {
-      // j = 0 is the TERMINAL shoot: it continues the twig rather than leaving
-      // its side, which is what stops every limb ending in a bare stick. It is
-      // seated `sprayTipBack` of the limb's length short of the tip rather than
-      // on it, because the tip of a cone has no radius and a card hung there
-      // touches nothing. The rest are side shoots at STRATIFIED-random points
-      // along the limb -- stratified rather than uniform because uniform
-      // random at these counts clumps two cards together and leaves a gap,
-      // and evenly spaced is the corduroy the cloak was thrown out for.
+    //
+    // Where along the limb each card sits, as a fraction of its length. Index 0
+    // is the TERMINAL shoot either way: it continues the twig rather than
+    // leaving its side, which is what stops every limb ending in a bare stick,
+    // and it is seated `sprayTipBack` short of the tip rather than on it because
+    // the tip of a cone has no radius and a card hung there touches nothing.
+    //
+    // The side shoots differ by scheme. v1 deals a FIXED COUNT and stratifies it
+    // over the limb -- stratified rather than uniform because uniform random at
+    // these counts clumps two cards together and leaves a gap, and evenly spaced
+    // is the corduroy the cloak was thrown out for. v2 walks the limb in
+    // `sprayEvery` metres and jitters each gap, so the count falls out of the
+    // limb's own length: a long branch carries more foliage because it is
+    // longer, not because `sprayByLength` was told to make it so.
+    // v2's walk is a PRE-PASS because its length is its answer; v1's draw stays
+    // inline, where it has always been. That is not tidiness -- both schemes
+    // share one rng stream, so hoisting v1's draw out of the loop would
+    // reorder every draw after it and quietly rebuild every tree in the bank.
+    let seatsV2 = null
+    if (sprayV2) {
+      // The tree is built at height 1, so a metre of limb is 1/height of the
+      // local units `length` is in.
+      // Thinner the higher the limb starts, so the top of the tree is sparse
+      // for the reason a real one is rather than by being trimmed.
+      const everyM = p.sprayEvery * (sprayV2a ? 1 + p.limbTopThin * topness : 1)
+      const step = everyM / Math.max(1e-6, length * p.height)
+      if (step < 1 / 500) throw new Error(`sprayEvery ${everyM} puts over 500 cards on one limb`)
+      // A gap of at most +/- this much of the nominal one. NOT p.sprayEveryVary
+      // straight: at 1 the draw can come back zero, the walk never advances, and
+      // the page hangs rather than telling you anything.
+      const vary = Math.min(0.9, Math.max(0, p.sprayEveryVary))
+      seatsV2 = [1 - p.sprayTipBack]
+      for (let s = p.sprayStart; s < 1; s += step * (1 + (rand() - 0.5) * 2 * vary)) {
+        seatsV2.push(s)
+      }
+    }
+
+    for (let j = 0; j < (seatsV2 ? seatsV2.length : cards); j++) {
       const terminal = j === 0
-      const s = terminal
-        ? 1 - p.sprayTipBack
-        : p.sprayStart + (1 - p.sprayStart) * ((j - 1 + rand()) / Math.max(1, cards - 1))
+      const s = seatsV2
+        ? seatsV2[j]
+        : terminal
+          ? 1 - p.sprayTipBack
+          : p.sprayStart + (1 - p.sprayStart) * ((j - 1 + rand()) / Math.max(1, cards - 1))
       const q = samplePath(pts, s)
       // Direction from the PATH, position from the drawn axis -- see chordAt.
       const seat = chordAt(limbAxis, s)
@@ -1475,9 +1759,11 @@ export function buildTree(options = {}) {
       // twig it grows on rather than standing to attention on top of it. The
       // pull is randomised half-to-full per card so a limb is a fan at a
       // spread of angles rather than a row at one.
+      // Steeper the higher the limb starts, the other half of a pointy top.
+      const downK = p.sprayDown + (sprayV2a ? p.limbTopDroop * topness : 0)
       const up = new THREE.Vector3()
         .lerpVectors(shoot, UP, p.sprayLift)
-        .addScaledVector(UP, -p.sprayDown * (0.5 + rand() * 0.5))
+        .addScaledVector(UP, -downK * (0.5 + rand() * 0.5))
       if (up.lengthSq() < 1e-8) up.copy(shoot) // sprayDown cancelled it exactly
       up.normalize()
       const ref = new THREE.Vector3(Math.cos(az), 0.35, Math.sin(az))

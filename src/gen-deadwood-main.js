@@ -155,7 +155,7 @@ const SLIDERS = [
   ['rings', 1, 8, 1, 'ring count along the spine at T0. The only slider that scales the barrel\'s triangle count'],
 
   ['snow', 0, 1, 0.01, 'snow, in patches, filling in from the top down. Not a triangle and not a texture -- the shared material\'s global uniform, leaning on which way a surface faces about twice as hard as it does on foliage, which is the whole reason a fallen log whitens along its TOP first instead of frosting evenly'],
-  ['moss', 0, 1, 0.01, 'moss, creeping up from the shaded flanks. A real second atlas fetch (LAYER.MOSS) because moss is nothing but grain: tint the bark green and you get green bark. It BLENDS rather than cutting over, and it carries a height cue from the instance\'s own root -- see the PAIR view'],
+  ['moss', 0, 1, 0.01, 'moss, taking the up-facing surfaces first in big ragged blotches. A real second atlas fetch (LAYER.MOSS) because moss is nothing but grain: tint the bark green and you get green bark. It BLENDS rather than cutting over, and it carries a height cue from the instance\'s own root -- see the PAIR view'],
   ['brightness', 0.3, 2, 0.05, 'multiplies the material colour. A bench setting, not geometry'],
 ]
 
@@ -717,14 +717,18 @@ function refresh() {
     // read as growth rather than as a stencil.
     ['&nbsp;&nbsp;blend, below / above cut', `&minus;${MOSS.blend.toFixed(2)} / +${(MOSS.blend * MOSS.blendSkew).toFixed(2)}`],
     ['&nbsp;&nbsp;the fringe darkens to', `&times;${MOSS.fringe.toFixed(2)}`],
-    ['&nbsp;&nbsp;how far it leans on DOWN', MOSS.down.toFixed(2)],
+    ['&nbsp;&nbsp;how far it leans on UP', MOSS.up.toFixed(2)],
     // The one moss behaviour that is about dead wood specifically.
     ['&nbsp;&nbsp;climbs to, above own root', `${MOSS.rise.toFixed(1)} m, gone by ${(MOSS.rise + MOSS.riseBand).toFixed(1)} m`],
     ['snow load', snowLoad.toFixed(2)],
     ['&nbsp;&nbsp;cut it asks the field for', (SNOW_ROCK.cutBias - snowLoad * SNOW_ROCK.cutSpan).toFixed(3)],
     ['&nbsp;&nbsp;rim, at most', `&plusmn;${SNOW_ROCK.edgeMax.toFixed(3)}`],
     ['&nbsp;&nbsp;how far it leans on UP', `${SNOW_ROCK.up.toFixed(2)} &nbsp;<span class="k">(foliage: ${SNOW_ROCK.foliageUp.toFixed(2)})</span>`],
-    ['the blob field', `warp &times;${SNOW_ROCK.blobWarp.toFixed(2)}, contrast &times;${SNOW_ROCK.blobContrast.toFixed(2)}`],
+    ['the blob field', `warp &times;${MOSS.warp.toFixed(2)} moss / &times;${SNOW_ROCK.blobWarp.toFixed(2)} snow, contrast &times;${SNOW_ROCK.blobContrast.toFixed(2)}`],
+    // The second warp, which is moss's alone and only live up close: it costs a
+    // third noise evaluation and buys contour length, which is detail you have to
+    // be near enough to resolve for it to be worth anything.
+    ['&nbsp;&nbsp;and moss frays it', `&times;${MOSS.fray.toFixed(2)} at ${MOSS.frayFreq.toFixed(1)}x, out by ${MOSS.frayFar.toFixed(0)} m`],
     ['moss noise / snow noise', `${MOSS.freq.toFixed(1)} / ${SNOW_ROCK.freq.toFixed(1)} per m`],
   ])
 

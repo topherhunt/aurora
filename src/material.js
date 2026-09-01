@@ -90,13 +90,15 @@ const snowVary = { value: new THREE.Vector2(1, 1) }
 // See setLeafSnowVary.
 const leafSnowVary = { value: new THREE.Vector2(1, 1) }
 
-// How hard a prop's own texture pushes its normal around. Only materials built
-// with `bump: true` compile the block that reads it (rocks), so this is a no-op
-// for the rest of the world however it is set. The default is the SHIPPING
-// depth, not an off switch -- a compiled-in bump that did nothing until someone
-// called the setter would look like a flag that never worked. /gen-rock's slider
-// is what this number was chosen with; see setPropBump.
-const bumpScale = { value: 0.5 }
+// How hard the grit layer pushes a prop's normal around, and how big it reads.
+// Only materials built with `bump: true` compile the block that reads them
+// (rocks), so these are a no-op for the rest of the world however they are set.
+// Both defaults are the SHIPPING values, not off switches -- a compiled-in bump
+// that did nothing until someone called the setter would look like a flag that
+// never worked. /gen-rock's two sliders are what they were chosen with; see
+// setPropBump and setPropBumpTile.
+const bumpScale = { value: 0.02 }
+const bumpTile = { value: 3 }
 
 /**
  * Season, 0 = bare, 1 = nearly all white. This is a CEILING, not the value each
@@ -180,14 +182,14 @@ export function getMossVary() {
 }
 
 /**
- * How deep a prop's own texture grooves it, in the units three's bumpScale uses
- * -- 0 is off and costs nothing, 0.5 is a coarse granite, past ~2 the shading
- * detaches from the silhouette and reads as noise.
+ * How deep the grit grooves a prop, in the units three's bumpScale uses -- 0 is off
+ * and costs nothing, 0.02 is weathered stone, past ~0.25 the shading detaches from the
+ * silhouette and reads as noise crawling over the surface.
  *
- * THE HEIGHT FIELD IS THE ALBEDO'S LUMINANCE, because there is no second texture
- * to carry a real one: dark grain reads as pits, light grain as ridges. That is
- * wrong wherever a tile's tone is not its relief -- a dark mineral vein comes out
- * as a trench -- and right often enough on stone to be worth two taps.
+ * THE HEIGHT FIELD IS LAYER.ROCK_BUMP, a generated grey noise tile, NOT the albedo:
+ * a photograph's luminance makes tone into relief, so a pale vein becomes a ridge
+ * and a damp patch a pit. A layer of its own costs 64 KB in an atlas that was
+ * already allocated and buys a height field that is actually a height field.
  *
  * IT PERTURBS `normal` BEFORE MOSS AND SNOW, so both catch in the grooves rather
  * than lying over a surface that only LOOKS grooved.
@@ -201,6 +203,28 @@ export function setPropBump(scale) {
 
 export function getPropBump() {
   return bumpScale.value
+}
+
+/**
+ * How many times the grit tile covers one pass of the albedo -- /gen-rock calls it
+ * `bumpScale`, because it is the dial that decides how big the grain READS.
+ *
+ * A SEPARATE NUMBER FROM `texRepeat` on purpose. The stone photograph is sized so
+ * the rock reads as rock at arm's length; the grain that catches a low sun is a
+ * finer thing than that, and welding the two means every change to one is a change
+ * to the other. 3 puts about three grit cells inside each stone cell.
+ *
+ * Above ~8 the height field aliases into sparkle no mip level can save, because the
+ * bump is sampled at a screen derivative of the ALBEDO's uv (see PROP_BUMP_APPLY)
+ * and this multiplies that step along with everything else.
+ */
+export function setPropBumpTile(tile) {
+  if (!(tile > 0)) throw new Error(`setPropBumpTile: need a positive number, got ${tile}`)
+  bumpTile.value = tile
+}
+
+export function getPropBumpTile() {
+  return bumpTile.value
 }
 
 /**
@@ -294,7 +318,12 @@ const SNOW_FREQ = 6.4
 // The three numbers shaping the blob field both masks are cut out of. The
 // mechanism is argued at blobField() in SNOW_COMMON; what each is worth is here.
 // All three are in units of the CALLER's own frequency, never metres, so they
-// mean the same thing to the snow at 6.4 and the moss at 24.0.
+// mean the same thing to the snow at 6.4 and the moss at 6.0.
+//
+// THE WARP IS PER CALLER -- blobField takes it as an argument, and moss passes
+// MOSS_WARP because a colony's outline is a good deal more ragged than a drift's.
+// The other two are shared, and the fit at MOSS_CUT_MID depends on their staying
+// that way.
 //
 // The warp is sampled at 0.46 of the caller's frequency, a bit over twice the
 // blob size. It MUST be coarser than the blobs it bends, or it displaces every
@@ -302,14 +331,21 @@ const SNOW_FREQ = 6.4
 // frequency the displacement varies over a scale larger than a blob, which is
 // what makes rims wander and neighbours merge.
 const BLOB_WARP_FREQ = 0.46
-// How far the sample point is dragged, in lattice cells. Under about one cell
-// the lattice survives the bend and the eye still finds the rows; the long drag
-// is also what supplies the ragged rim a second octave would otherwise buy.
+// How far the sample point is dragged, in lattice cells, for SNOW; moss passes
+// MOSS_WARP instead. Under about one cell the lattice survives the bend and the
+// eye still finds the rows; the long drag is also what supplies the ragged rim a
+// second octave would otherwise buy.
 const BLOB_WARP = 1.9
 // How hard the field is stretched about its midpoint. 1.55 is the most that can
 // be spent before the clamp flattens real area to 0 and 1 -- past about 1.8 the
 // patches acquire hard shoulders and the cut has nothing to feather against.
 const BLOB_CONTRAST = 1.55
+// The FRAY's frequency, in cells of the caller's own lattice: the second, finer
+// warp that breaks a rim into fingers. Only whoever passes a non-zero amount pays
+// for it, which today is moss alone -- see MOSS_FRAY. Five is set against the
+// blob it is fraying: much coarser and it only bends the lobe again, much finer
+// and the detail is under a pixel before you are close enough to see it.
+const BLOB_FRAY_FREQ = 5.0
 
 // Where the world-space blobs stop being resolvable and start shimmering.
 // Procedural noise has NO MIP CHAIN: a blob under a pixel across is undersampled
@@ -413,7 +449,10 @@ const SNOW_FLOOR = 0.62
 const SNOW_LUM_HI = 0.45
 
 // ---------------------------------------------------------------------------
-// MOSS, which is snow's opposite in every way that matters.
+// MOSS, which shares snow's machinery and almost none of its numbers. Both take
+// the top of a rock first; what separates them is that snow arrives in a sheet
+// with a rim and moss arrives as colonies with ragged edges and bare stone
+// between.
 //
 // Snow RECOLOURS what is there and needs no texture: at 128 px snow has no
 // grain worth the name, and a tint plus the surface's own luminance beats a
@@ -433,29 +472,68 @@ const SNOW_LUM_HI = 0.45
 // through snow.
 // ---------------------------------------------------------------------------
 
-// Moss creeps up from the shaded flanks rather than sitting on the crown, so its
-// lean is on the DOWN-facing half, the mirror of snow's. Lighter than snow's at
-// 0.35, because what decides where moss grows is damp -- crevices, and which
-// side the weather comes from -- which is what the noise stands in for, so the
-// noise gets the larger share.
-const MOSS_DOWN = 0.35
-
-// Patches around 4 cm against snow's 8 cm, so moss is the FINER field -- the
-// opposite of the obvious argument, which says a colony is a bigger thing than a
-// drift of crystals. What that misses is that the two fields do different jobs:
-// snow's blobs ARE the snow, with nothing under them but a tint, while moss's
-// blobs are only the SHAPE OF THE STAIN and the thing reading as moss is the
-// photograph inside it, tiled at MOSS_TILE. The blob field is therefore
-// competing with the texture for the same frequency band, and at 6.0 it lost --
-// a handful of colony-sized lobes read as a paint job with the grain buried in
-// it.
+// Moss takes the TOP of a boulder first and works down the flanks, so its lean
+// is on the up-facing half, the same half snow's is on. The two are told apart
+// by weight and by grain, not by direction: snow leans 0.65 on `up` and cuts
+// with a one-pixel rim, moss leans 0.35 and feathers over MOSS_BLEND, so a rock
+// wearing both shows a firm white cap over a ragged green one that has already
+// run well down the sides.
 //
-// At 24.0 there are dozens of small patches, running together where the noise is
-// high and breaking into flecks at the edges, with the texture carrying
-// everything below the patch size. The wide MOSS_BLEND depends on this: a
-// soft-edged patch reads as growth rather than blur only if its rim is a
-// fraction of the rock.
-const MOSS_FREQ = 24.0
+// 0.35 rather than more because what decides where moss grows is damp -- which
+// way the weather comes from, and which hollows hold water -- and the noise is
+// what stands in for that, so the noise keeps the larger share. It is also what
+// keeps the lean off a facet's own normal: see the flip argument at
+// SNOW_HARD_LAYERS, which bounds this the same way at 0.83.
+const MOSS_UP = 0.35
+
+// Patches around 17 cm, so a colony is roughly the size of a snow clump and
+// eight or ten of them wrap a 2 m boulder. THE BLOB IS THE COLONY, not a fleck
+// of one: what a mask four times finer bought was dozens of small stains that
+// averaged to an even green wash over the whole rock, which is the one thing
+// moss must not read as. Big lobes leave bare stone between them, and bare stone
+// between them is what says the moss grew there rather than being painted on.
+//
+// The texture inside the stain is still what reads as moss -- the blob field is
+// only its SHAPE -- so the two do compete for the same band of detail, and this
+// is the coarse end of that trade. What keeps a lobe from reading as one flat
+// blot is MOSS_WARP: the rim wanders far enough to send tendrils out of the
+// body, so the shape has structure of its own well below the patch size.
+const MOSS_FREQ = 6.0
+
+// How far moss's rim wanders, in lattice cells, against snow's BLOB_WARP of 1.9.
+//
+// A drift of snow is a compact thing with a rounded edge and 1.9 is already most
+// of what a warp can do for it. A colony is not: it spreads along whatever is
+// damp, so its outline is all fingers and inlets, and past about three cells the
+// drag varies enough ALONG a rim to pull runs out of a lobe rather than merely
+// bending it. That is the whole of the "tendrilly" look here -- no second octave
+// and no extra noise evaluation, since the warp sample is one blobField already
+// takes.
+//
+// The ceiling is the fit: MOSS_CUT_WIDTH is creep's logistic scale and the warp
+// moves it. At 3.2 the shipped mid and width still track coverage to 0.028 at
+// worst, inside the 0.04 the gate holds them to; much past this and both need
+// re-solving.
+const MOSS_WARP = 3.2
+
+// AND THE RIM FRAYS AT A SCALE BELOW THE LOBE. MOSS_WARP bends a colony's
+// outline over a whole lobe; this is a second warp at BLOB_FRAY_FREQ, five times
+// finer, dragging the already-warped point 0.45 cells -- which is over twice the
+// fray's own wavelength, so the domain folds and the contour pinches off islands
+// instead of merely wobbling. That is the fractal-looking part: tendrils running
+// out of a lobe, flecks running out of the tendrils. Measured on a slice through
+// the field: rim length per unit area up 59% at a load of 0.35 and 49% at 0.6,
+// with coverage moving under 0.01 and the logit fit unharmed (see MOSS_CUT_MID).
+//
+// It costs a third noise evaluation, so it has its own fade and that fade is
+// MUCH nearer than the lobes'. A fray feature is 1 / (MOSS_FREQ * BLOB_FRAY_FREQ)
+// = 3.3 cm, a fifth of a lobe, so by the same rule that puts the lobes' fade at
+// 40 m it stops resolving at about 9 -- and past there the third evaluation is
+// paying for detail smaller than a pixel, which is not merely wasted but is the
+// exact recipe for the crawl the fades exist to prevent.
+const MOSS_FRAY = 0.45
+const MOSS_FRAY_NEAR = 3.0
+const MOSS_FRAY_FAR = 9.0
 
 // Offset so the moss field and the snow field are not the same picture at two
 // scales. Value noise at two frequencies is close to uncorrelated already, but
@@ -470,11 +548,11 @@ const MOSS_NOISE_OFFSET = 'vec3( 31.7, 12.3, 47.1 )'
 const MOSS_TILE = 2.0
 
 // Fade the noise to its mean at distance, as snow does and for the same reason.
-// NEARER than snow's 12-40 in proportion to the patches being under half the
-// size: what sets this is where a patch stops covering a pixel, which scales
-// with the patch and nothing else.
-const MOSS_FADE_NEAR = 10.0
-const MOSS_FADE_FAR = 34.0
+// What sets this is where a patch stops covering a pixel, which scales with the
+// patch and nothing else -- and a moss lobe is now within a centimetre of a snow
+// clump, so moss fades over exactly snow's range.
+const MOSS_FADE_NEAR = 12.0
+const MOSS_FADE_FAR = 40.0
 
 // Half-width of the moss's edge, and unlike snow's it is a FIXED width in mask
 // units rather than one screen pixel of fwidth().
@@ -542,7 +620,7 @@ const MOSS_RISE_BAND = 2.2
 // MOSS LOAD IS A COVERAGE FRACTION, AND THE CUT HAS TO EARN THAT.
 //
 // A linear cut -- `bias - load * span`, which snow still uses -- assumes `creep`
-// is spread evenly over its range. It is not: creep is blob*0.65 + down*0.35
+// is spread evenly over its range. It is not: creep is blob*0.65 + up*0.35
 // with blob a smoothed value noise, so it piles up around its median and sits
 // between 0.23 and 0.77 over eight tenths of a boulder. A load of 0.2 covered
 // 0.2% of the rock and 0.5 jumped to 50%, so a plausible world range of 0 - 0.5
@@ -567,9 +645,12 @@ const MOSS_RISE_BAND = 2.2
 //
 // BOTH NUMBERS ARE MEASURED, NOT CHOSEN, and each is tied to something else.
 // THE WIDTH is creep's logistic scale, so it belongs to blobField: anything
-// changing that field's SPREAD -- BLOB_CONTRAST, the warp, an octave --
-// invalidates it (0.082, fitted to the older narrower field, painted 22% at a
-// load of 0.1). THE MID belongs to the mask's ASYMMETRIC edge: the cover term is
+// changing that field's SPREAD -- BLOB_CONTRAST, MOSS_WARP, an octave --
+// invalidates it (0.082, fitted to an older narrower field, painted 22% at a
+// load of 0.1). The FREQUENCY is not one of those: sampling the same field at a
+// different scale leaves its distribution alone, which is why MOSS_FREQ could
+// move by 4x and these could not move at all.
+// THE MID belongs to the mask's ASYMMETRIC edge: the cover term is
 // smoothstep( cut - MOSS_BLEND, cut + MOSS_BLEND * MOSS_BLEND_SKEW ), whose
 // midpoint sits MOSS_BLEND * (1 - SKEW) / 2 = 0.049 BELOW the cut, so a mid of
 // 0.50 -- correct for a symmetric edge -- ran coverage a third high through the
@@ -577,7 +658,9 @@ const MOSS_RISE_BAND = 2.2
 // moves with them.
 //
 // Solved against the real mask rather than the hard-threshold approximation: rms
-// error 0.007 over loads 0.1 to 0.85. scratchpad/moss-refit.mjs does the fit.
+// error 0.008 over loads 0.1 to 0.85, worst 0.028 anywhere. check-rocks section 5
+// re-measures both against the shipped field on every run, which is the check
+// that catches a drift in either of the two constants above.
 const MOSS_CUT_MID = 0.550
 const MOSS_CUT_WIDTH = 0.134
 const MOSS_CUT_GUARD = 1e-4
@@ -585,8 +668,13 @@ const MOSS_CUT_GUARD = 1e-4
 // Exported for scripts/check-rocks.mjs, on the same terms as SNOW_ROCK: nothing
 // reads it at runtime.
 export const MOSS = Object.freeze({
-  down: MOSS_DOWN,
+  up: MOSS_UP,
   freq: MOSS_FREQ,
+  warp: MOSS_WARP,
+  fray: MOSS_FRAY,
+  frayFreq: BLOB_FRAY_FREQ,
+  frayNear: MOSS_FRAY_NEAR,
+  frayFar: MOSS_FRAY_FAR,
   tile: MOSS_TILE,
   cutMid: MOSS_CUT_MID,
   cutWidth: MOSS_CUT_WIDTH,
@@ -627,13 +715,20 @@ const MOSS_APPLY = /* glsl */ `
       mossMask += step( abs( vTexLayer - uMossLayers[ i ] ), 0.5 );
     }
     if ( mossMask > 0.0 ) {
-      // WORLD down. The same trap snow fell into applies here and would be
-      // harder to spot, because moss has no obvious right answer to be wrong
-      // against -- see the note at 'up' below.
-      float down = clamp(
-        0.5 - inverseTransformDirection( normal, viewMatrix ).y * 0.5, 0.0, 1.0 );
-      float mossNear = smoothstep( ${MOSS_FADE_FAR.toFixed(1)}, ${MOSS_FADE_NEAR.toFixed(1)},
-        length( vViewPosition ) );
+      // WORLD up, the same half snow leans on and the same trap -- see the note
+      // at snow's 'up' below. Harder to spot here, because moss has no obvious
+      // right answer to be wrong against: a view-space lean would turn with the
+      // player's head and still look like moss.
+      float up = clamp(
+        0.5 + inverseTransformDirection( normal, viewMatrix ).y * 0.5, 0.0, 1.0 );
+      float mossDist = length( vViewPosition );
+      float mossNear = smoothstep( ${MOSS_FADE_FAR.toFixed(1)}, ${MOSS_FADE_NEAR.toFixed(1)}, mossDist );
+      // The fray's own fade, five times nearer than the lobes' because a fray
+      // feature is a fifth the size -- see MOSS_FRAY. Reaching zero is what turns
+      // the third noise evaluation off inside blobField, so this is a cost gate
+      // as much as an aliasing one.
+      float mossFray = ${MOSS_FRAY} * smoothstep(
+        ${MOSS_FRAY_FAR.toFixed(1)}, ${MOSS_FRAY_NEAR.toFixed(1)}, mossDist );
       // vSnowPos.xyz is world position -- named for the snow load it carries in
       // .w, but the xyz is just where this fragment is, which moss wants too.
       // Gated on the fade as snow's is, and safe for the same reason: blobField
@@ -642,9 +737,10 @@ const MOSS_APPLY = /* glsl */ `
       float blob = 0.5;
       if ( mossNear > 0.004 ) {
         blob = mix( 0.5,
-          blobField( vSnowPos.xyz * ${MOSS_FREQ.toFixed(2)} + ${MOSS_NOISE_OFFSET} ), mossNear );
+          blobField( vSnowPos.xyz * ${MOSS_FREQ.toFixed(2)} + ${MOSS_NOISE_OFFSET},
+            ${MOSS_WARP.toFixed(2)}, mossFray ), mossNear );
       }
-      float creep = blob * ( 1.0 - ${MOSS_DOWN} ) + down * ${MOSS_DOWN};
+      float creep = blob * ( 1.0 - ${MOSS_UP} ) + up * ${MOSS_UP};
       // THE BRANCH STAYS ON THE UNIFORM and only the cut moves to the
       // per-instance load. That split is load bearing: uMoss > 0.0 is
       // quad-uniform, which makes the texture() fetch below legal, and
@@ -733,20 +829,41 @@ const SNOW_COMMON = /* glsl */ `
   // toward 0.5 as its stand-in for the mip a procedural field has not got while
   // every end promise below is sized against a field spanning [0,1].
   //
-  // A SECOND OCTAVE IS NOT WORTH IT. One at 2.07x and 28% weight used to supply
-  // the ragged rim; the long warp buys that back on its own, because at nearly
-  // two cells the displacement varies enough along a rim to break it up. The
-  // octave cost a third noise evaluation and, worse, a NARROWER field -- a
+  // A SECOND OCTAVE OF VALUE IS NOT WORTH IT, and the FRAY is not one. One at
+  // 2.07x and 28% weight used to supply the ragged rim; the long warp buys that
+  // back on its own, and adding value octaves costs a NARROWER field -- a
   // weighted sum of two near-independent samples pulls toward the mean exactly
-  // where the cut has to live.
+  // where the cut has to live. Measured on the moss field: a fine value octave
+  // at 20% moved coverage at the 0.35 cut from 0.23 to 0.20 and pulled the whole
+  // logit fit with it, for LESS rim than the fray below buys.
   //
-  // The cost: TWO noise evaluations at ~145 ALU each, so a scene both snowy and
-  // mossy pays four. Inside the uSnow / uMoss uniform branches, so a bare season
-  // and a mossless world cost nothing, and both call sites gate again on the
-  // distance fade being worth anything -- see snowNear.
-  float blobField( vec3 p ) {
+  // The fray is a second WARP, and a warp is the one thing that lengthens a
+  // contour for free: it slides sample points about, so the distribution of
+  // values coming back is the same distribution and every promise fitted against
+  // it survives. Applied to the ALREADY-WARPED point, which is what makes it read
+  // as detail ON a tendril rather than as a second independent wobble. At 0.45
+  // cells against a wavelength of 1/5 cell it FOLDS the domain over itself --
+  // fold ratio 2.25 -- and the folding is the effect, not an overrun: a folded
+  // contour pinches off islands, so a lobe's edge breaks into flecks the way a
+  // colony's does. Measured against no fray, at loads 0.35 and 0.6: rim length
+  // per unit area up 59% and 49%, coverage within 0.01, and the shipped
+  // MOSS_CUT_MID / MOSS_CUT_WIDTH fit the frayed field BETTER than the smooth one
+  // (worst 0.013 against 0.020).
+  //
+  // The cost: TWO noise evaluations at ~145 ALU each, THREE where the fray is
+  // live, so a scene both snowy and mossy pays four or five. Inside the uSnow /
+  // uMoss uniform branches, so a bare season and a mossless world cost nothing;
+  // both call sites gate again on the distance fade being worth anything (see
+  // snowNear), and the fray gates a third time on its own much nearer fade, so
+  // the extra evaluation is confined to rocks within MOSS_FRAY_FAR.
+  float blobField( vec3 p, float warp, float fray ) {
     float w = snowNoise( p * ${BLOB_WARP_FREQ.toFixed(2)} + vec3( 23.1, 5.7, 61.3 ) );
-    float f = snowNoise( p + vec3( w, w * 1.7, -w ) * ${BLOB_WARP.toFixed(2)} );
+    vec3 q = p + vec3( w, w * 1.7, -w ) * warp;
+    if ( fray > 0.0 ) {
+      float d = snowNoise( q * ${BLOB_FRAY_FREQ.toFixed(2)} + vec3( 47.3, 88.1, 19.7 ) );
+      q += vec3( d, -d * 1.3, d * 0.8 ) * fray;
+    }
+    float f = snowNoise( q );
     return clamp( ( f - 0.5 ) * ${BLOB_CONTRAST.toFixed(2)} + 0.5, 0.0, 1.0 );
   }
 `
@@ -818,7 +935,9 @@ const SNOW_APPLY = /* glsl */ `
       // control flow would be undefined, and there is none here.
       float blob = 0.5;
       if ( snowNear > 0.004 ) {
-        blob = mix( 0.5, blobField( vSnowPos.xyz * ${SNOW_FREQ.toFixed(2)} ), snowNear );
+        blob = mix( 0.5,
+          blobField( vSnowPos.xyz * ${SNOW_FREQ.toFixed(2)}, ${BLOB_WARP.toFixed(2)}, 0.0 ),
+          snowNear );
       }
       // The one number stone changes. Everything else below is shared. Both ends
       // are module consts, so nothing here is a literal the gate can fall out of
@@ -862,12 +981,19 @@ const SNOW_APPLY = /* glsl */ `
 `
 
 // ---------------------------------------------------------------------------
-// BUMP FROM THE ALBEDO ITSELF, for props whose surface is one tiled stone photo
-// and whose whole read is grain: a boulder lit only by its facets is a faceted
-// blob at every hour of the day, and the same boulder with its grooves catching
-// the sun is stone. There is no second texture and no room for one, so the
-// height field is the tile's own LUMINANCE -- dark grain pits, light grain
-// ridges. Wrong wherever tone is not relief, right often enough on rock.
+// BUMP FROM A GRIT LAYER, for props whose surface is one tiled stone photo and
+// whose whole read is grain: a boulder lit only by its facets is a faceted blob at
+// every hour of the day, and the same boulder with its grooves catching the sun is
+// stone.
+//
+// THE HEIGHT FIELD IS ITS OWN LAYER (LAYER.ROCK_BUMP), generated grey noise, rather
+// than the albedo's luminance. Reading the photograph makes TONE into RELIEF, which
+// is wrong wherever a stone's colour is not its shape: veins become ridges, damp
+// patches become pits, and the lighting argues with the picture instead of
+// explaining it.
+//
+// TILED SEPARATELY (uBumpTile) from the albedo, because the grain that catches a
+// low sun is finer than the tile sized to read as rock at arm's length.
 //
 // TWO EXTRA ATLAS FETCHES per fragment, which on a fill-bound headset is the
 // entire cost and the reason this is a compile flag rather than a default: only
@@ -877,8 +1003,9 @@ const SNOW_APPLY = /* glsl */ `
 // ---------------------------------------------------------------------------
 const PROP_BUMP_COMMON = /* glsl */ `
   uniform float uBumpScale;
-  float bumpLuma( vec2 uv ) {
-    return dot( texture( uAtlas, vec3( uv, vTexLayer ) ).rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+  uniform float uBumpTile;
+  float bumpHeight( vec2 uv ) {
+    return texture( uAtlas, vec3( uv, ${LAYER.ROCK_BUMP}.0 ) ).r;
   }
 `
 
@@ -889,12 +1016,13 @@ const PROP_BUMP_APPLY = /* glsl */ `
     // distance exactly as the mip level does, so a boulder's grain flattens as
     // it recedes instead of aliasing. It also means the step is already correct
     // for a rock whose texRepeat scales with its size.
-    vec2 dUvdx = dFdx( vUvProj );
-    vec2 dUvdy = dFdy( vUvProj );
-    float h0 = bumpLuma( vUvProj );
+    vec2 bumpUv = vUvProj * uBumpTile;
+    vec2 dUvdx = dFdx( bumpUv );
+    vec2 dUvdy = dFdy( bumpUv );
+    float h0 = bumpHeight( bumpUv );
     vec2 dH = uBumpScale * vec2(
-      bumpLuma( vUvProj + dUvdx ) - h0,
-      bumpLuma( vUvProj + dUvdy ) - h0 );
+      bumpHeight( bumpUv + dUvdx ) - h0,
+      bumpHeight( bumpUv + dUvdy ) - h0 );
     // three's perturbNormalArb, inlined because its own copy is welded to a
     //bumpMap sampler2D and cannot read a layered atlas. It builds the tangent
     // frame from screen derivatives of the view position, so it needs no tangent
@@ -2376,7 +2504,10 @@ export function createPropMaterial(
     shader.uniforms.uMossBand = mossBand
     shader.uniforms.uMossVary = mossVary
     shader.uniforms.uPropClock = propClock
-    if (bump) shader.uniforms.uBumpScale = bumpScale
+    if (bump) {
+      shader.uniforms.uBumpScale = bumpScale
+      shader.uniforms.uBumpTile = bumpTile
+    }
     if (billboards) shader.uniforms.uBillboardLayers = { value: billboards }
     if (windSpec && windCompiled) {
       shader.uniforms.uWindDir = windDir
@@ -2661,7 +2792,7 @@ export function createPropMaterial(
     ? `-grow${billboardGrow.from}.${billboardGrow.to}.${billboardGrow.scale}.`
       + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
     : ''
-  const key = `prop-moss-v4${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}`
+  const key = `prop-moss-v5${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}`
   material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
 
   if (windSpec) windMaterials.add(material)

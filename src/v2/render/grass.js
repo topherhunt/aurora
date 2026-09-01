@@ -1008,7 +1008,7 @@ export class Grass {
     {
       seed = 1, style = 'tufts', density = null, height = null,
       radius = null, fullRadius = null, falloff = null, spin = true, grow = true,
-      tint = null,
+      tint = null, rocks = null,
     } = {}
   ) {
     if (style !== 'tufts' && style !== 'strips' && style !== 'blades') {
@@ -1022,6 +1022,12 @@ export class Grass {
     }
     if (style === 'strips' && typeof field.heightAt !== 'function') {
       throw new Error('Grass: strips need a V2Height with heightAt, to tilt onto the slope')
+    }
+    // Optional, so a rebuild before the rock beds exist and the probes under tmp/
+    // both still work. Without it a blade that lands inside a boulder is placed
+    // inside it, which is the most legible placement error in the world.
+    if (rocks && typeof rocks.blockTopAt !== 'function') {
+      throw new Error('Grass: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
     }
     // Asked once here rather than trusted per candidate: a field that answers
     // without the gradient makes every blade matrix NaN, and a NaN matrix is an
@@ -1043,6 +1049,7 @@ export class Grass {
     }
 
     this.field = field
+    this.rocks = rocks
     this.water = water
     this.paths = paths
     this.textureArray = textureArray
@@ -1319,7 +1326,7 @@ export class Grass {
     this.samples = 0
     this.regrows = 0
     this.nearTiles = 0
-    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, path: 0 }
+    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, path: 0, rock: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -1796,6 +1803,15 @@ export class Grass {
       if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       const river = this.paths.nearest(x, z, 'river')
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      // DROPPED OUTRIGHT INSIDE A ROCK, where a tree would be lifted onto it: a
+      // blade of grass growing out of the middle of a boulder is the single most
+      // legible placement error there is, and grass ON a boulder is not a thing
+      // that wants placing either. `0` rather than ROCK_STAND_MIN because ANY
+      // stone big enough to be geometry displaces a blade. Last of the tests
+      // because it is the most expensive -- nine tile lookups over five beds --
+      // and because the rocks are stepped ahead of the grass in v2/main.js, so
+      // what it asks about is always already on the ground.
+      if (this.rocks && this.rocks.blockTopAt(x, z, 0) > -Infinity) { rej.rock++; continue }
 
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a

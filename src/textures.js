@@ -436,8 +436,36 @@ export const LAYER = {
   //
   // Cut from tmp/snow.jpg by tools/props/cut-terrain.mjs.
   TERRAIN_SNOW: 98,
+
+  // NOT AN ALBEDO. A height field: grey fractal noise, read only by the prop
+  // material's bump block (src/material.js, `bump: true`) and never sampled for
+  // colour by anything. It is the rock's grit, and it is a layer of its own because
+  // the alternative -- reading the stone photograph's luminance -- makes tone into
+  // relief, so a pale mineral vein comes out as a ridge and a wet patch as a pit.
+  // Generated, seamless, and tiled independently of the albedo (uBumpTile), so how
+  // coarse the grit reads is not welded to how coarse the stone reads.
+  ROCK_BUMP: 99,
+
+  // --- the WARPED leaf cuts (tools/trees/gen-layers.mjs, /gen-tree-v2) -------
+  //
+  // The same four sprays as NEEDLES / LEAVES / LEAF_ASH / LEAF_ASPEN, cut from a
+  // hand-marked QUAD instead of an axis-aligned box, so the art fills the square
+  // instead of leaving a third of it as air: 30 -> 56% opaque on pine, 25 -> 41%
+  // on ash. A crown's cost is the card AREA it hangs, and the opaque fraction is
+  // the exchange rate between area and canopy -- at twice the fill, the same
+  // crown needs half the overlapping cards.
+  //
+  // These do not replace the four above, because a v1 tree cannot wear them: the
+  // card has to be built at the quad's own proportions to reverse the warp
+  // (`sprayQuad` in tree.js), and a v1 card is a rectangle. Both sets ship so
+  // /gen-tree-v2 can put the two schemes side by side. Whichever wins, the loser
+  // and its four layers come out.
+  LEAF2_PINE: 100,
+  LEAF2_OAK: 101,
+  LEAF2_ASH: 102,
+  LEAF2_ASPEN: 103,
 }
-export const LAYER_COUNT = 99
+export const LAYER_COUNT = 104
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -470,6 +498,10 @@ export const SNOW_LAYERS = [
   LAYER.LEAF_ASH,
   LAYER.LEAF_ASPEN,
   LAYER.SPRAY_PINE,
+  LAYER.LEAF2_PINE,
+  LAYER.LEAF2_OAK,
+  LAYER.LEAF2_ASH,
+  LAYER.LEAF2_ASPEN,
   LAYER.IMPOSTOR_PINE,
   LAYER.IMPOSTOR_OAK,
   LAYER.IMPOSTOR_BIRCH,
@@ -721,6 +753,10 @@ export const IMAGE_LAYERS = {
   [LAYER.LEAF_ASH]: 'trees/leaf_ash.png',
   [LAYER.LEAF_ASPEN]: 'trees/leaf_aspen.png',
   [LAYER.SPRAY_PINE]: 'trees/spray_pine.png',
+  [LAYER.LEAF2_PINE]: 'trees/leaf2_pine.png',
+  [LAYER.LEAF2_OAK]: 'trees/leaf2_oak.png',
+  [LAYER.LEAF2_ASH]: 'trees/leaf2_ash.png',
+  [LAYER.LEAF2_ASPEN]: 'trees/leaf2_aspen.png',
   // Cut from EZ-Tree's grass.glb by tools/trees/layers.py, which also copies it
   // here. IMPOSTOR_GRASS is deliberately absent: it is baked at load from this
   // one (grass-bank.js), the same way the tree and fern cards are.
@@ -794,6 +830,63 @@ function mottled(base, alt, scale, seed) {
   }, seed)
 }
 
+// Seamless fractal value noise, as a grey height field -- LAYER.ROCK_BUMP, and the
+// only generator here whose output is never looked at directly.
+//
+// SEAMLESS IS THE WHOLE DIFFICULTY. Every other tile above is per-pixel `rand()`,
+// which hides its edges because white noise has no structure to break; a bump map
+// is read through a DERIVATIVE, so a discontinuity at the tile edge is not a faint
+// seam but a bright line of wrongly-lit pixels ruled across the rock every repeat.
+// Hence a lattice hash that wraps at the octave's period, which makes the tile join
+// itself exactly.
+//
+// FOUR OCTAVES FROM 8 CELLS, halving in amplitude. The coarse ones are the pocking
+// that catches a low sun; the fine ones are what the eye reads as grit up close and
+// what the mip chain quietly removes as the rock recedes.
+function latticeNoise(u, v, period, seed) {
+  const x = u * period
+  const y = v * period
+  const ix = Math.floor(x)
+  const iy = Math.floor(y)
+  const fx = x - ix
+  const fy = y - iy
+  const sx = fx * fx * (3 - 2 * fx)
+  const sy = fy * fy * (3 - 2 * fy)
+  const wrap = (i) => ((i % period) + period) % period
+  const x0 = wrap(ix)
+  const y0 = wrap(iy)
+  const x1 = wrap(ix + 1)
+  const y1 = wrap(iy + 1)
+  const at = (gx, gy) => {
+    let h = Math.imul(gx | 0, 374761393) ^ Math.imul(gy | 0, 668265263) ^ Math.imul(seed | 0, 2246822519)
+    h = Math.imul(h ^ (h >>> 13), 1274126177)
+    h ^= h >>> 16
+    return (h >>> 0) / 4294967295
+  }
+  const a = at(x0, y0)
+  const b = at(x1, y0)
+  const c = at(x0, y1)
+  const d = at(x1, y1)
+  return mix(mix(a, b, sx), mix(c, d, sx), sy)
+}
+
+function grit(seed) {
+  return tile((u, v) => {
+    let h = 0
+    let amp = 1
+    let norm = 0
+    let period = 8
+    for (let o = 0; o < 4; o++) {
+      h += amp * latticeNoise(u, v, period, seed + o * 7919)
+      norm += amp
+      amp *= 0.5
+      period *= 2
+    }
+    const g = Math.round(255 * (h / norm))
+    return [g, g, g, 255]
+  }, seed)
+}
+
 // A flat fill. The only generator here that is not trying to look like anything:
 // it is what the two ground tiles stand in as, and its whole job is to be
 // EXACTLY their mean, so the contrast field the terrain shader builds out of it
@@ -836,6 +929,12 @@ export function buildTextureArray() {
   layers[LAYER.LEAF_ASH] = foliage([44, 76, 34], [96, 132, 58], 20, true)
   layers[LAYER.LEAF_ASPEN] = foliage([146, 108, 26], [214, 172, 52], 21, true)
   layers[LAYER.SPRAY_PINE] = foliage([28, 56, 34], [52, 88, 51], 22, true)
+  // The warped cuts stand in as the SAME colour as the boxed cut of the same
+  // species: they are the same photograph, differently framed.
+  layers[LAYER.LEAF2_PINE] = foliage([28, 56, 34], [52, 88, 51], 23, true)
+  layers[LAYER.LEAF2_OAK] = foliage([46, 82, 40], [88, 122, 55], 24, true)
+  layers[LAYER.LEAF2_ASH] = foliage([44, 76, 34], [96, 132, 58], 25, true)
+  layers[LAYER.LEAF2_ASPEN] = foliage([146, 108, 26], [214, 172, 52], 26, true)
   // ROCK now has a photograph over it (IMAGE_LAYERS), so this is a stand-in for
   // the few frames before it lands. Its light end is 138 against the PNG's mean
   // of 142, which is why the swap is invisible rather than a flash of a
@@ -891,6 +990,9 @@ export function buildTextureArray() {
   // is untextured for the few frames before the PNGs land rather than black.
   layers[LAYER.TERRAIN_GRASS] = flatFill(TERRAIN_GRASS_PLACEHOLDER)
   layers[LAYER.TERRAIN_SNOW] = flatFill(TERRAIN_SNOW_PLACEHOLDER)
+
+  // The rock's height field. Shipping art, not a stand-in -- see the LAYER entry.
+  layers[LAYER.ROCK_BUMP] = grit(37)
 
   // DataArrayTexture wants one contiguous buffer, layers back to back. Image
   // layers are left at zero -- fully transparent, so alphaTest discards them --

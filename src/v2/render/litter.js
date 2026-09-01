@@ -273,7 +273,7 @@ export class Litter {
    *                      re-sample it every frame.
    * @param opts.ground   TerrainV2, or null for headless probes.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, rocks = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Litter: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Litter: needs WaterSurfaces with levelAt')
     if (!layers || typeof layers.flattenAt !== 'function' || !layers.snow) {
@@ -282,12 +282,19 @@ export class Litter {
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Litter: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
     }
+    // Optional on the same terms as `ground`. Without it a stamp that lands inside
+    // a boulder is laid inside it, and a picture of pebbles cutting through a rock
+    // at the exact height of the ground beside it is unmistakable.
+    if (rocks && typeof rocks.blockTopAt !== 'function') {
+      throw new Error('Litter: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
+    }
 
     const t0 = performance.now()
     this.field = field
     this.water = water
     this.layers = layers
     this.ground = ground
+    this.rocks = rocks
     this.seed = seed
 
     this.tile = TILE
@@ -388,6 +395,12 @@ export class Litter {
     // a river.
     this.rejected = { slope: 0, env: 0, clump: 0 }
     this.rejectedWet = { dry: 0, clump: 0, slope: 0, env: 0 }
+    // Both passes' rock drops on one counter, because the test they share lives in
+    // the one method they share (_stamp). Counted rather than silent: a stamp
+    // rejected by stone is indistinguishable in the world from one that was never
+    // offered, and a rock query gone wrong would thin the whole litter layer with
+    // nothing in the readout to say so.
+    this.rejectedRock = 0
     this.placeMs = 0
     this.lastBuildMs = 0
     this.buildMs = performance.now() - t0
@@ -597,8 +610,24 @@ export class Litter {
    * `u` is the candidate's rank, which the rim dissolve is set from; the rest are
    * the rolls its own pass drew for it. The tile's three shading terms are read
    * off the instance rather than passed -- see _altLo.
+   *
+   * RETURNS -1 IF THE STAMP WAS REFUSED, which happens for exactly one reason: a
+   * rock is already standing there. Callers must skip a -1 rather than write it
+   * into their id list.
    */
   _stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll) {
+    // NOT INSIDE A ROCK, and this is a DROP rather than a lift: litter is a
+    // photograph of small stones laid flat on the ground, and there is no version
+    // of it that belongs on top of a boulder. `0` rather than ROCK_STAND_MIN
+    // because any stone big enough to be geometry is big enough for a stamp
+    // through its middle to read as an error. Here rather than in the two passes
+    // because both want it and the shared half of the placement is this method --
+    // see the note above on what a second copy costs.
+    if (this.rocks && this.rocks.blockTopAt(x, z, 0) > -Infinity) {
+      this.rejectedRock++
+      return -1
+    }
+
     // Running dry THROWS rather than quietly placing less. A scatter that
     // silently stopped scattering on the densest ground in the world would be
     // indistinguishable from one tuned that way, and the riverbed is now where
@@ -749,7 +778,9 @@ export class Litter {
       // takes the shore's saturated rate above, and the wet pass below then lays
       // more on top of it.
 
-      ids[n] = this._stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll)
+      const id = this._stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll)
+      if (id < 0) continue
+      ids[n] = id
       rank[n] = u
       n++
     }
@@ -831,7 +862,9 @@ export class Litter {
         continue
       }
 
-      ids[n] = this._stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll)
+      const id = this._stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll)
+      if (id < 0) continue
+      ids[n] = id
       rank[n] = u
       n++
     }
@@ -914,6 +947,7 @@ export class Litter {
       regrounds: this.regrounds,
       rejected: this.rejected,
       rejectedWet: this.rejectedWet,
+      rejectedRock: this.rejectedRock,
       buildMs: this.buildMs,
       placeMs: this.placeMs,
       lastBuildMs: this.lastBuildMs,

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- warped leaf sprays, v1 against v2</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+
+      #panel {
+        flex: 0 0 300px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      .row { display: grid; grid-template-columns: 92px 1fr 46px; gap: 6px; align-items: center; margin-bottom: 3px; }
+      .row label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+      .row input[type=range] { width: 100%; padding: 0; background: none; border: none; }
+      .row .v { text-align: right; font-variant-numeric: tabular-nums; }
+
+      #picker, #seedrow { display: flex; gap: 6px; margin-bottom: 8px; }
+      #picker select, #seedrow input { flex: 1 1 auto; }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
+      #buttons button { flex: 1 1 auto; padding: 4px 6px; }
+
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
+
+      #budget {
+        flex: 0 0 320px; overflow-y: auto; padding: 8px 10px;
+        border-left: 1px solid var(--edge); background: var(--panel);
+      }
+      table { width: 100%; border-collapse: collapse; }
+      td, th { padding: 1px 0; vertical-align: baseline; }
+      th { font-weight: normal; color: var(--dim); text-align: right; }
+      th:first-child { text-align: left; }
+      td.k { color: var(--dim); }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 8px; }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .ok { color: var(--good); } .warn { color: var(--warn); }
+      #cuts { width: 100%; image-rendering: pixelated; border: 1px solid var(--edge);
+        border-radius: 3px; background: #0e1726; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">LEAF SPRAYS, V1 AGAINST V2</div>
+        <div class="s">the boxed cut and the warped one, same seed, same crown</div>
+      </header>
+      <div id="controls">
+        <h2>species</h2>
+        <div id="picker"><select id="species"></select></div>
+        <h2>seed</h2>
+        <div id="seedrow">
+          <input type="number" id="seed" value="1" min="0" step="1" />
+          <button id="reroll">reroll</button>
+        </div>
+        <div id="sliders"></div>
+      </div>
+      <div id="buttons">
+        <button id="v1">v1</button>
+        <button id="v2">v2</button>
+        <button id="grid">grid</button>
+        <button id="wire">wireframe</button>
+        <button id="spin">spin</button>
+        <button id="reset">species defaults</button>
+      </div>
+    </div>
+
+    <div id="stage"><div id="hint">drag to orbit &middot; scroll to zoom &middot; v1 left, v2 right &middot; the blue post is 1.7 m</div></div>
+
+    <div id="budget">
+      <h2>what is different</h2>
+      <p class="note">
+        Same species, same seed, same wood. Only the leaf cards change. <strong>v1</strong> hangs a
+        rectangle of the boxed cut, a fixed number per limb, folded about the diagonal its two
+        triangles already share. <strong>v2</strong> hangs the <em>warped</em> cut on the four
+        corners it was projected from, so drawing it undoes the projection and the art comes back at
+        its true proportions with roughly twice the opaque area; the stem corner sits exactly on the
+        limb; cards are spaced every <em>sprayEvery</em> metres of limb rather than counted; and the
+        crease runs stem to tip, folded a little, usually downward.
+      </p>
+
+      <h2>built, per tree</h2>
+      <table id="geo"></table>
+      <p class="note">
+        Read off <em>geometry.userData.tree</em>, not off <em>resolveTree</em>: v2's card count is a
+        function of limb length and cannot be predicted without building, so the triangle law still
+        prices it as v1. Triangles per unit of leaf area is the number that decides this -- if v2
+        needs fewer cards to read as a crown, it wins twice, once on triangles and once on the
+        overdraw that is actually costing the frame.
+      </p>
+
+      <h2>the two cuts</h2>
+      <canvas id="cuts" width="384" height="192"></canvas>
+      <p class="note">
+        Top row colour, bottom row alpha. Left the boxed cut v1 draws, right the warped cut v2
+        draws, with its opaque fraction underneath. The warp is a homography: the four hand-marked
+        corners of the spray go to the four corners of the square, so the texels the boxed cut spent
+        on air become leaf.
+      </p>
+    </div>
+
+    <script type="module" src="/src/gen-tree-v2-main.js"></script>
+  </body>
+</html>

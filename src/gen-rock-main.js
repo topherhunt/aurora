@@ -11,7 +11,9 @@ import { SEED as WORLD_SEED } from './v2/config.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
-import { createPropMaterial, setSnow, setMoss, setPropBump, getPropBump } from './material.js'
+import {
+  createPropMaterial, setSnow, setMoss, setPropBump, getPropBump, setPropBumpTile, getPropBumpTile,
+} from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 import rockSource from './props/rock.js?raw'
 import impostorSource from './props/impostor.js?raw'
@@ -79,6 +81,8 @@ const SLIDERS = [
   ['lumpFreq', 0.6, 4, 0.05, 'how many lumps around the rock'],
   ['grain', 0, 0.5, 0.005, 'small-scale bumps that catch light along an edge. The 128px tile does the finer work'],
   ['grainFreq', 2, 12, 0.1, 'scale of those bumps'],
+  ['vertexJitter', 0, 0.35, 0.005, 'drags vertices SIDEWAYS, as a fraction of the radius. `lumps` and `grain` move a vertex along its own direction, which leaves an icosphere\'s geodesic triangles exactly as even as it found them however hard they are driven -- this is the dial that makes the tessellation irregular rather than merely bumpy. A T320 vertex sits about 0.28 from its neighbours, so past ~0.3 vertices trade places and triangles fold through each other'],
+  ['maxAngle', 10, 60, 1, 'the roundness rail, in degrees: no vertex may stand further off the mean of its four angular neighbours than this angle allows, measured along the surface normal so a vertex slid SIDEWAYS by vertexJitter is not mistaken for a spike. It reads the FINISHED point, so it tames lumps, grain and jitter together -- which is how you keep blobs without spikes, where turning any one of those dials down would just flatten the whole rock. The range stops at 60 because that is off: with every roughness slider here at its ceiling the steepest vertex measured juts 44 degrees, so nothing above 60 can ever bind. Cut faces are exempt -- a fracture is meant to be sharp'],
   ['smooth', 0, 1, 0.01, '0 = every face flat-shaded, 1 = one smooth shell. Genuine CUT faces stay flat at any setting'],
   ['cuts', 0, 16, 1, 'fracture planes. This is what separates stone from a potato, and with smooth at 1 it is the ONLY thing doing it -- cut faces stay flat at any smoothing'],
   ['cutDepth', 0, 1, 0.01, 'how far in the planes bite. 0 = tangent, no cut at all'],
@@ -98,14 +102,15 @@ const SLIDERS = [
   ['texRepeat', 0.5, 8, 0.1, 'how many times the tile covers the rock\'s widest plan axis. Relative to the ROCK, not to the world, so a shape is the same picture at 0.2 m and at 14 m'],
   ['texJitter', 0, 1, 0.05, 'how far that repeat count is rolled per seed. This is what stops a bed of same-size cobbles looking stamped'],
   ['brightness', 0.3, 2, 0.05, 'multiplies the tint. A material setting, not geometry'],
-  ['bump', 0, 2, 0.05, 'how hard the stone tile grooves the lighting. The tile is its own height field -- dark grain pits, light grain ridges -- so this buys grit the mesh does not have to carry, at two extra texture fetches a pixel and no triangles. It moves the NORMAL, so snow settles in the grooves and the whole surface re-reads as the sun goes round. Past ~1.2 the shading detaches from the silhouette and reads as noise'],
+  ['bump', 0, 0.25, 0.005, 'how DEEP the grit grooves the lighting. The height field is a generated noise layer of its own (LAYER.ROCK_BUMP), not the stone photograph -- a photo\'s luminance makes tone into relief, so its pale veins came out as ridges. This buys grit the mesh does not have to carry, at two extra texture fetches a pixel and no triangles, and it moves the NORMAL, so snow settles in the grooves and the surface re-reads as the sun goes round. The useful range is the bottom of this one: 0.02 is weathered stone, and by 0.25 the shading has detached from the silhouette and reads as noise crawling over it'],
+  ['bumpScale', 0.5, 8, 0.1, 'how BIG that grit reads: how many times the noise tile covers one pass of the stone tile. Separate from texRepeat on purpose -- the stone is sized to read as rock at arm\'s length and the grain that catches a low sun is finer than that. Past ~8 it aliases into sparkle no mip level can save'],
   ['snow', 0, 1, 0.01, 'snow, in patches, filling in from the top down. The same global uniform the tree bench drives, leaning twice as hard on which way the surface faces: the top whitens first, a sheer side is about half covered by the time the top is solid, an underside goes last, and a full winter reaches everything. The patches are world-space noise, so they wander across the cut facets instead of tracing their edges. Costs no triangles and nothing at all at 0'],
-  ['moss', 0, 1, 0.01, 'moss, creeping up from the shaded flanks. Unlike snow this is a real second texture (LAYER.MOSS) laid over the stone, because moss is nothing but grain -- and it deliberately does NOT take the tint, so a basalt rock and a sandstone rock grow the same green. Sits under the snow: snow falls on moss, not the other way round'],
+  ['moss', 0, 1, 0.01, 'moss, taking the up-facing surfaces first in big blotches whose edges fray into tendrils and flecks -- two domain warps, the finer of which is only live within 9 m because that is as far as 3 cm of detail survives. Unlike snow this is a real second texture (LAYER.MOSS) laid over the stone, because moss is nothing but grain -- and it deliberately does NOT take the tint, so a basalt rock and a sandstone rock grow the same green. Sits under the snow: snow falls on moss, not the other way round'],
   ['planes', 1, 3, 1, 'CARD ONLY: quads crossed about the axis. On an opaque lump their intersection is visible as an X, which is the case against a rock card'],
 ]
 
-// WHAT IS NOT THE SHAPE. `brightness`, `bump` and `planes` are the previewer and
-// the material, `snow` and `moss` are weather and growth, and `detail` is which
+// WHAT IS NOT THE SHAPE. `brightness`, `bump`, `bumpScale` and `planes` are the
+// previewer and the material, `snow` and `moss` are weather and growth, and `detail` is which
 // resolution you are looking at. None of them is a property of the rock, so
 // dragging one does not clear the preset name and loading a preset does not
 // reset one -- see the preset handler, which puts these back over whatever
@@ -126,6 +131,7 @@ const BENCH_DEFAULTS = {
   planes: 2,
   detail: ROCK_TIERS[0].detail,
   bump: getPropBump(),
+  bumpScale: getPropBumpTile(),
 }
 const BENCH_KEYS = new Set(Object.keys(BENCH_DEFAULTS))
 const params = { ...ROCK_DEFAULTS, ...BENCH_DEFAULTS }
@@ -225,6 +231,7 @@ function syncMaterials() {
   setSnow(params.snow)
   setMoss(params.moss)
   setPropBump(params.bump)
+  setPropBumpTile(params.bumpScale)
   // TINT_GAIN, not the hex. A tint is a DESTINATION now (see rock-bank.js) and
   // the gain that reaches it is a linear-space multiplier that mostly runs ABOVE
   // 1.0, because stone.png is a dark warm photograph rather than the pale
@@ -516,7 +523,7 @@ function refresh() {
   // --- this rock ---
   // The rung that was BUILT, read off the geometry rather than looked up in
   // ROCK_TIERS by the slider: the resolution slider reaches past the ladder, and
-  // a lookup would print T180 over a T500 rock.
+  // a lookup would print T320 over a T500 rock.
   const tier = { name: s.stats.tier, faces: s.stats.faces }
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} on screen)` : ''}`],
@@ -578,7 +585,7 @@ function refresh() {
         '',
         // Matched on the tier NAME, so an off-ladder resolution marks no row at
         // all -- which is the truth. A row index compared against the slider
-        // would put "here" on T180 while a T500 rock was on screen.
+        // would put "here" on T320 while a T500 rock was on screen.
         t.name === s.stats.tier && !s.card ? 'here' : '',
       ]
     }).concat([[

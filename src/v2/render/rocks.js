@@ -25,26 +25,30 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // the DRAWN ground and dissolving at each instance's own cull distance holds here
 // and is not repeated.
 //
-// SIX BEDS, because a rock's size spans two orders of magnitude and no single
+// SEVEN BEDS, because a rock's size spans two orders of magnitude and no single
 // density-and-radius pair carries both ends. Each is a complete independent
 // scatter with its own tile grid, density, radius, LOD bands and instance pool:
 //
-//   UNDERFOOT   0.11 - 0.75 m  dense, 60 m      river stones, cobbles, caps
-//   BOULDERS    0.34 - 3.4 m   medium, 460 m    the forest and cliffside rocks
-//   SCREE       0.5 - 3 m      dense, 140 m     the pile at the foot of a face
-//   CRUST       0.45 - 4.8 m   medium, 300 m    caps on lake floors and faces
-//   SUNKEN      0.5 - 5 m      sparse, 320 m    closed stones on the lake floor
-//   GIANTS      3.2 - 7.0 m    sparse, 1250 m   tors, shelves, buttresses, lips
+//   UNDERFOOT   0.25 - 2 m    dense, 120 m     river stones, cobbles, caps
+//   BOULDERS    0.5 - 10 m    medium, 600 m    the forest and cliffside rocks
+//   SCREE       0.5 - 3 m     dense, 280 m     the pile at the foot of a face
+//   CRUST       0.5 - 10 m    medium, 600 m    caps on lake floors and faces
+//   SUNKEN      0.5 - 5 m     sparse, 320 m    closed stones on the lake floor
+//   GIANTS      3.2 - 7 m     sparse, 1250 m   tors, shelves, buttresses, lips
+//   EMBEDDED    2 - 20 m      sparse, 1350 m   blocks let INTO a face or a bed
 //
 // EACH BED EXISTS BECAUSE SOMETHING IT NEEDS IS PER-BED AND CANNOT BE VARIED
 // WITHIN ONE -- the only test a new bed has to pass. Scree needs the candidate
 // count (`envDensity` is an accept rate capped at 1, so a saturated site cannot be
 // made denser by any multiplier); crust needs the slope limit and the submersion
-// flag; sunken needs `submergedOnly` and a size range of its own. Six beds are six
-// BatchedMeshes and six draw calls, which does not break §5's one-material rule --
-// that rule forbids splitting a BATCH by material. They share ONE material object,
-// unlike trees, ferns and grass, because every bed here billboards the same single
-// layer and one program serves them all.
+// flag; sunken needs `submergedOnly` and a size range of its own; embedded needs
+// `sinkRange` -- 70 to 90% under, where every other bed's burial roll tops out at
+// 80% of the way there, and a rock cannot be sunk that far and also stand on the
+// ground in the same bed. Seven beds are seven BatchedMeshes and seven draw calls,
+// which does not break §5's one-material rule -- that rule forbids splitting a
+// BATCH by material. They share ONE material object, unlike trees, ferns and
+// grass, because every bed here billboards the same single layer and one program
+// serves them all.
 //
 // WHERE A ROCK GOES IS DECIDED BY WHERE IT IS, not by a roll. A candidate is
 // classified into one of four ENVIRONMENTS -- river, peak, cliff, forest -- from
@@ -57,17 +61,39 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // variants are held out of the ordinary pools entirely.
 //
 // ROCKS SIT IN THE GROUND AND LEAN WITH IT, and both halves matter: bedded by a
-// fraction of their own height that GROWS WITH THE SLOPE, and tilted toward the
-// ground normal, which trees deliberately are not -- a tree on a slope grows up, a
-// rock lies the way it fell. The tilt costs four field samples per PLACED rock and
-// is off for the underfoot bed. Snow and moss are the material's, not this file's:
+// fraction of their own standing height that GROWS WITH THE SLOPE, and tilted
+// toward the ground normal, which trees deliberately are not -- a tree on a slope
+// grows up, a rock lies the way it fell. The tilt costs four field samples per
+// PLACED rock and is off for the underfoot bed. On top of the ground lean every
+// rock takes a free ±15° jitter about a random HORIZONTAL world axis, which is why
+// it is applied by premultiply: composed the other way round a rolled rock's lean
+// would land on its own tipped axis and read as a second yaw.
+//
+// AND EVERY ROCK IS PRE-TURNED BY A RANDOM QUARTER TURN ABOUT X AND ABOUT Z, one
+// of sixteen, so a bank of nine shapes reads as far more than nine. Quarter turns
+// and not free angles on purpose: 45° reads as a boulder leaning on the air. THE
+// TURN IS WHY THE SEATING IS COMPUTED FROM A BOX rather than from `measured.height`
+// -- the geometry's origin is on its BED FACE, so a rock turned on its side hangs
+// below its own origin, and burial has to be a fraction of what it now STANDS
+// (`yMax - yMin` of the turned box) measured from where its lowest corner now is.
+// `instSink` carries `sink + yMin` for exactly that reason and goes legitimately
+// negative. The `crust` bed opts out (`roll: false`) only while the bank still
+// holds open-bottomed shells, which have no second face to stand on.
+//
+// BURIAL IS A ROLL BETWEEN A SLOPE-DRIVEN FLOOR AND `sinkRange`'s top, BENT BY
+// SIZE: SINK_SIZE_TILT raises the roll to a power below 1 for a big rock, so a
+// 10 m block is far likelier to be half-sunk than a cobble is. On a steep face
+// `sinkNormal` divides the depth by the cosine of the slope, because `instY` moves
+// a rock down WORLD Y while "80% buried" on a wall means 80% along the face.
+//
+// Snow and moss are the material's, not this file's:
 // both derive in the vertex shader from the instance's own root height against a
 // line, so a boulder is green in a damp wood, bare on a ridge and white on a
 // summit at no per-instance data and no per-frame CPU. See syncBands.
 //
 // ONE LOD LADDER, AND THE THRESHOLDS ARE PER ROCK RATHER THAN PER BED -- the thing
 // to understand about this file if you are here about LOD at all. Every shape
-// ships T180/T80/T20 and a two-triangle card, and every instance steps between
+// ships T320/T80/T20 and a two-triangle card, and every instance steps between
 // them at `ROCK_LOD_AT` metres per metre of its OWN ladder size (`rockLodSize`):
 // 4 to T80, 7.5 to T20, 25 to the card, so a 2 m rock holds real geometry out to
 // 50 m, a cobble to 8.5, a 12 m spire to 300. A table of metres per bed was wrong
@@ -151,6 +177,13 @@ const BEDS = [
     // so offering it would fill any buffer sized for boulders with grit before
     // the first rock worth anchoring to reached the caller.
     anchor: false,
+    // DOES NOT DISPLACE PROPS, and this bed is why `blocks` defaults to false.
+    // Grass growing up between river stones is the look, not an error, and this is
+    // the densest bed of geometry anywhere near the player -- flagging it would put
+    // nine tile lookups over hundreds of pebbles on every blade of grass in the
+    // world to strip the ground of the grass that belongs there. See
+    // Rocks.blockTopAt.
+    blocks: false,
     // In METRES rather than as a multiplier, because the riverbed has to be a
     // different size from everywhere else and a multiplier cannot say that (see
     // where the scale is resolved in _growTile). The three dry ranges reproduce
@@ -185,7 +218,13 @@ const BEDS = [
     // because graded thinning packs the near field.
     envDensity: { river: 0.28, forest: 0.4, cliff: 0.4, peak: 0.32 },
     fullRadius: 95,
-    radius: 460,
+    // 600, UP FROM 460, AND SET BY `sizeByEnv` BELOW RATHER THAN BY TASTE. A 10 m
+    // boulder holds a mesh tier out to 250 m under ROCK_LOD_AT and then owes its
+    // card a full ROCK_CARD_LIFE band, so `minReach` demands 588 m; at 460 the
+    // biggest rocks in the wood would have been culled outright while still LOD2
+    // meshes. Costs (600/460)^2 = 1.7x the disc and the pool with it, which is the
+    // real price of the 10 m top end.
+    radius: 600,
     tile: 28,
     minElev: 0,
     maxSlopeDeg: 48,
@@ -200,11 +239,44 @@ const BEDS = [
     // pick up to a rock the size of a shed, which is the whole range of stone
     // with a damp shaded base to grow anything against. See Rocks.anchorsInto.
     anchor: true,
-    // Wider than the other two beds on purpose. The variants span 0.34 m to
-    // 3.4 m; times this, the wood gets everything from a knee-high cobble to a
-    // 7 m cleft, which is the spread being asked for, at the cost of a wider
-    // roll.
-    scale: [0.55, 2.2],
+    // AND THE BED THE WHOLE DISPLACEMENT RULE IS ABOUT: a tree that lands inside
+    // one of these stands on it and a blade of grass that lands inside one is not
+    // placed at all. See Rocks.blockTopAt.
+    blocks: true,
+    // HALF A METRE TO TEN, THE SAME EVERYWHERE, and in metres rather than as a
+    // `scale` pair because that is the only way to say it: the variants are
+    // authored from 0.34 m to 3.4 m, so one multiplier spanning 0.5-10 m for the
+    // cobble puts the cleft at 5-100. Dividing back through each shape's measured
+    // width makes the range mean the same thing for all thirteen. Four identical
+    // entries is not a mistake -- `sizeByEnv` is per environment because the
+    // underfoot and crust beds need it to be, and a bed that wants one range says
+    // so four times rather than growing a second mechanism.
+    sizeByEnv: {
+      river: [0.5, 10.0],
+      forest: [0.5, 10.0],
+      cliff: [0.5, 10.0],
+      peak: [0.5, 10.0],
+    },
+    // AND HEAVILY WEIGHTED TO THE SMALL END, which is what makes the 10 m top
+    // affordable as a LOOK rather than as a budget. A flat roll over 0.5-10 m puts
+    // the median boulder at 5.25 m, and a wood with a 5 m block every fifteen
+    // metres is a boulder field, not a wood. At 4 the median is 1.1 m, the upper
+    // quartile 3.5 m and the top decile 6.7 m: one rock over 6.7 m per 2,400 m2 of
+    // forest, about one every fifty metres, which is what a landmark erratic
+    // should be. The big end is rare, not absent -- that is the whole difference
+    // between biasing the roll and narrowing the range.
+    //
+    // It also feeds the burial: `sizeRoll` is what SINK_SIZE_TILT bends the sink
+    // roll by, so a bed weighted this far small leaves most rocks on a near-uniform
+    // depth draw and spends the deep-burial bias on the few big ones.
+    sizeBias: 4,
+    // NO ROCK INSIDE ANOTHER ROCK -- see the scree bed for the mechanism. It was
+    // pointless at the old 0.19-7.5 m spread and one rock per 240 m2, which is why
+    // this bed had none; at a 10 m top it is not, because two 8 m boulders landing
+    // 5 m apart make one 13 m blob and the silhouette is what the size was bought
+    // for. Nearly free here: 8 candidates a tile against scree's 196, so ~30
+    // distance tests where that bed pays 19,000.
+    minGap: 0.6,
   },
   {
     // A BED THAT EXISTS ONLY AT THE FOOT OF A FACE, separate rather than another
@@ -279,6 +351,10 @@ const BEDS = [
     // the foot of -- it is all foot -- and offering it would swamp any buffer
     // sized for the boulders bed, exactly as the underfoot bed would.
     anchor: false,
+    // It does displace, though: a talus block is a metre of solid stone and a
+    // sapling growing through one at the foot of a cliff is exactly the error
+    // Rocks.blockTopAt exists to stop.
+    blocks: true,
     // BIGGER, AND WEIGHTED TOWARDS THE BIG END. The old 0.45-1.25 was a narrow
     // band around the authored size, so a talus cone came out as one grade of
     // rock repeated and halving the density would only have thinned it. This
@@ -410,10 +486,24 @@ const BEDS = [
     // per-instance sink the two large beds vary would be varying something
     // already decided. Same reasoning as the underfoot bed's.
     sinkVary: false,
+    // THE ONE BED THAT IS NOT TURNED, and for one reason that covers both flags:
+    // its variants are `openBottom`, which means they have no underside at all.
+    // Roll one a quarter turn and it opens sideways out of the face; lean one even
+    // a few degrees off the surface and its open rim stands clear of it. Every
+    // other bed places closed rocks and takes both. See ROLL_STEPS.
+    roll: false,
+    leanJitter: 0,
     // Not an anchor. A cap has no damp shaded base to grow anything against --
     // its base is the surface it is stuck to -- and on a face there is no
     // "foot" for a caller to reason about at all.
     anchor: false,
+    // AND IT DOES NOT DISPLACE EITHER, which is a cost decision as much as a look
+    // one. A cap is a few centimetres proud of the surface it is glued to, so its
+    // "top" is the ground -- and this is by far the largest bed in the world
+    // (90k instances resident on a lake), so putting it in blockTopAt's per
+    // candidate walk would dominate every scatter downstream of it. Its ground is
+    // also lake floor and cliff face, where nothing that asks is standing.
+    blocks: false,
     // DARKER THAN THE REST, because a cap is not lit like the rocks the tint
     // palette was written for -- see where `tintDim` is applied. 0.78 lands a
     // cap just under the mean of the face it is stuck to instead of a fifth over
@@ -518,6 +608,9 @@ const BEDS = [
     // rock for ferns and mushrooms to grow against, and the base of this one is
     // under a lake.
     anchor: false,
+    // Displaces, on the same terms as the boulders: these are closed stones half
+    // a metre to five across, and the litter stamps do reach a shallow lake floor.
+    blocks: true,
     // EXACTLY THE BAND THAT WAS ASKED FOR, in metres rather than as a `scale`
     // pair for the reason `sizeByEnv` exists: the three shapes are built at
     // 0.34, 1.3 and 4.5 m, so a multiplier giving the whaleback a five-metre top
@@ -557,11 +650,99 @@ const BEDS = [
     // A cheap anchor bed: one giant per ~80 m is a handful in any box a caller
     // asks about, each a landmark whose base the eye is already on.
     anchor: true,
+    blocks: true,
     // A giant is what you navigate by, so members within a factor of two of each
     // other read as one prop repeated -- worst on the spire, where same-sized
     // pinnacles give the "field of fangs" look. 0.5 - 2.2 opens the bed's own
     // 3.2 - 7.0 m span to 1.6 - 15 m.
     scale: [0.5, 2.2],
+  },
+  {
+    // THE EMBEDDED LAYER: rock that is mostly UNDERGROUND, and the only bed whose
+    // subject is the part you cannot see.
+    //
+    // Every other bed places an object standing on a surface. This one places the
+    // top of something much larger -- seven to nine tenths of it buried, so what
+    // shows is a knuckle of a block whose real size you infer from how far apart
+    // its exposed corners are. That is what makes a cliff read as ROCK WITH SOIL ON
+    // IT rather than as a heightfield with props on it, and it is a different
+    // effect from the crust bed's: a cap is a shell stuck ONTO a surface and can
+    // only ever be surface relief, while a 20 m block showing its last three metres
+    // is a piece of the mountain the mountain does not know about.
+    //
+    // WHY IT IS ITS OWN BED, on the file's only test: `sinkRange` is per-bed and
+    // cannot be varied within one, and no rate on an existing bed can reach 0.7-0.9
+    // when SINK_DEEP caps every other bed at 0.8 and their floors start at 0.1. The
+    // slope limit and the size range are per-bed for the same reason.
+    name: 'embedded',
+    // Big, blocky and CLOSED. Nothing rounded and nothing small: a rounded stone
+    // 80% buried is a bump, and the shapes that survive being mostly buried are the
+    // ones with corners, because a corner is what still reads at 20% of a rock.
+    // No `erratic`: it is tagged forest only and this bed's forest rate is 0, so it
+    // would sit in the roster unreachable. `roundstone` and `whaleback` are here
+    // for the water, which `shelf` alone could not furnish -- and rounded is right
+    // down there, where what buries a stone is silt rather than a hillside.
+    names: ['boulder', 'wedge', 'cleft', 'blockhouse', 'shelf', 'buttress', 'tor', 'whaleback', 'roundstone'],
+    density: 0.01,
+    // No forest: an embedded block in flat woodland is a boulder that has been sunk
+    // too far, and the boulders bed already owns that ground with a burial band
+    // that tops out at 0.8. Peak matches cliff because a summit IS steep bare rock
+    // -- `_envAt` only calls it something else because of how high it is.
+    envDensity: { river: 0.4, forest: 0, cliff: 0.25, peak: 0.25 },
+    fullRadius: 120,
+    // 1300, DEMANDED BY THE 20 m TOP AND NOT NEGOTIABLE DOWN. `minReach` works off
+    // the LADDER size, and the worst shape here (`tor`) is 1.075x its own width, so
+    // a 20 m block has a 21.5 m ladder, cards at 500 m and owes a ROCK_CARD_LIFE
+    // band past that: 1,263 m. Burial does not buy any of it back -- sinking a rock
+    // takes away its HEIGHT and the ladder is its longest axis, which here is the
+    // width still lying across the face. This is why the density is a fifth of what
+    // "litter" sounds like: reach is quadratic and this bed has the longest.
+    radius: 1350,
+    tile: 60,
+    minElev: 0,
+    // Just under the crust bed's 75. Closed rock rather than a shell, so it is the
+    // burial doing the work rather than the alignment, and past about seventy the
+    // world-Y sink stops reaching into the face at all whatever `sinkNormal` does
+    // for it.
+    maxSlopeDeg: 72,
+    allowSubmerged: true,
+    // Nearly flush with the surface, for the crust bed's reason rather than the
+    // boulders bed's: at this burial the rock is part of the ground, and a block
+    // 80% buried that is still standing up straight on a 60 degree face reads as
+    // having been pushed in rather than exposed by it.
+    tilt: 0.9,
+    sinkVary: true,
+    // THE NUMBER THE BED EXISTS FOR.
+    sinkRange: [0.7, 0.9],
+    // AND THE ONE THING THAT MAKES IT WORK ON A FACE. `instY` is a world-Y offset,
+    // so on steep ground burial slides a rock ALONG the slope far more than it
+    // pushes it into it -- at 70 degrees, nine tenths of the sink is wasted. See
+    // where this is applied in _growTile.
+    sinkNormal: true,
+    // Not an anchor: the base of one of these is under the hill.
+    anchor: false,
+    // Still displaces. Most of one of these is underground, but the tenth to
+    // three tenths that is not is a block metres across, and a tree growing out of
+    // the middle of it reads no better than one growing out of a boulder.
+    blocks: true,
+    // Big on a wall, smaller in the water, which is `sizeByEnv`'s whole purpose --
+    // the crust bed does the same and for the same reason. A lake floor is looked
+    // at from a few metres away in poor visibility, so a 20 m block there is
+    // terrain; a cliff is looked at from across a valley, where 20 m is one
+    // feature among many.
+    sizeByEnv: {
+      river: [2.0, 10.0],
+      cliff: [3.0, 20.0],
+      peak: [3.0, 20.0],
+    },
+    // Weighted small, on the boulders bed's argument and more sharply, because
+    // this bed's range is wider and its reach is the longest in the file: at 3 the
+    // median cliff block is 5.1 m and the top decile 15.4 m.
+    sizeBias: 3,
+    // No block inside another block. Worth more here than anywhere: two of these
+    // overlapping do not read as two rocks jammed together, they read as one
+    // wrongly-shaped rock, because the joint is the only part of either that shows.
+    minGap: 0.7,
   },
 ]
 
@@ -593,36 +774,118 @@ const MOSS_DROP = 220
 const SNOW_CAP = [0.3, 0.5]
 const MOSS_CAP = [0, 0.5]
 
-// How deep a rock is bedded, as a fraction of its own height: this much at the
-// flat, rising to this plus the span at the bed's slope limit. A rock resting
-// exactly on the ground reads as placed; a third buried reads as part of the
-// hill. rock.js's `sit` already cut a flat bed face at the bottom of every one
-// of these, so this is burying the bed face, not standing on a point.
-const SINK_MIN = 0.06
+// How deep a rock is bedded, as a fraction of its own STANDING height: this much
+// at the flat, rising to this plus the span at the bed's slope limit. A rock
+// resting exactly on the ground reads as placed; a third buried reads as part of
+// the hill. The height burial is a fraction OF is the rock's extent after the
+// quarter-turn rolls (see ROLL_STEPS), not `measured.height`, so a boulder laid
+// on its side is bedded by a tenth of what it now stands, not of what it used to.
+const SINK_MIN = 0.1
 const SINK_SLOPE = 0.28
 
-// The deep end of the per-instance burial roll, for beds that set `sinkVary`.
-// Half a rock underground has been there long enough for the hill to grow up
-// around it. Rolling it PER INSTANCE is the point: a scatter where every rock is
-// bedded the same fraction reads as props standing ON the terrain rather than as
-// stone coming OUT of it, and the giveaway is that they all meet the ground at
-// the same relative height.
+// The deep end of the per-instance burial roll, for beds that set `sinkVary`, and
+// the default top of `sinkRange`. Four fifths of a rock underground is a rock the
+// hill has grown most of the way up around. Rolling it PER INSTANCE is the point:
+// a scatter where every rock is bedded the same fraction reads as props standing
+// ON the terrain rather than as stone coming OUT of it, and the giveaway is that
+// they all meet the ground at the same relative height.
 //
-// It wastes triangles -- the buried part is still built, skinned and submitted,
-// up to half a rock at 0.5 -- but `sit`'s flat bed face means what is buried is a
-// stump rather than a full lower hemisphere.
-const SINK_DEEP = 0.5
+// It wastes triangles -- the buried part is still built, skinned and submitted --
+// which is why `embedded` is the only bed that goes near the top of the range and
+// why it is sparse.
+const SINK_DEEP = 0.8
+
+// HOW MUCH BIGGER MEANS DEEPER. The burial roll is bent by the rock's own size
+// roll before it is read: `sinkRoll ** (1 - SINK_SIZE_TILT * sizeRoll)`, so the
+// smallest rock in a bed draws its depth uniformly and the largest draws with an
+// exponent of 0.45, whose mean sits at 0.69 of the range against 0.5. A big rock
+// is not always deeper -- it is likelier to be, which is what settling looks like:
+// mass sinks, but a block dropped on bedrock last winter is still sitting on it.
+const SINK_SIZE_TILT = 0.55
+
+// The ceiling on `sinkNormal`'s correction. Burial moves a rock along world -Y,
+// but what "70% buried" means on a cliff is 70% along the surface NORMAL, and the
+// two differ by 1/cos(slope): at 72 degrees a rock lowered by its own height goes
+// less than a third of that into the face and the rest of the move just slides it
+// downhill. `sinkNormal` beds multiply by hypot(tan, 1) to undo it, capped here
+// because the correction diverges at vertical and a rock dropped four times its
+// own height is gone rather than embedded.
+const SINK_NORMAL_MAX = 3
 
 // EXTRA burial for an open shell, as a fraction of its own WIDTH rather than its
 // height. An `openBottom` variant has no underside at all (rock.js), so its rim
 // must never stand clear of the ground -- from below you would look straight into
-// the inside through backfaces. The ordinary sink is a fraction of HEIGHT, these
-// are the flattest things in the bank, and `sinkVary` rolls that fraction over
-// 6%..SINK_DEEP, so a 2 m capslab 24 cm tall can sit on a centimetre and a half of
-// burial that the first bump in the terrain eats. Width is the right dimension
-// because what has to go under is the rim, and the rim is as far from the centre
-// as the shape is wide.
+// the inside through backfaces. The ordinary sink is a fraction of HEIGHT and
+// these are the flattest things in the bank, so a 2 m capslab 24 cm tall can sit
+// on a couple of centimetres of burial that the first bump in the terrain eats.
+// Width is the right dimension because what has to go under is the rim, and the
+// rim is as far from the centre as the shape is wide.
 const OPEN_BURY = 0.05
+
+// --- how a rock is turned ----------------------------------------------------
+//
+// QUARTER TURNS, AND ONLY QUARTER TURNS. Every bed but `crust` pre-rotates each
+// instance by a whole number of right angles about x and then about z, 16
+// combinations off one roll. The point is variety from ONE mesh: the bank is
+// collapsing to a single closed boulder, and a shape that only ever spins about
+// its own vertical axis reads as the same object repeated however good it is.
+//
+// THE INCREMENT IS 90 AND NOT A FREE ANGLE, which is the whole content of the
+// rule. A rock rolled 45 degrees rests on an edge, and an edge is not a thing a
+// rock rests on -- it reads as leaning on the air. At a quarter turn the face
+// that was the bed face is now a side face and some other flat is down, which is
+// a rock that fell over: exactly as stable, and a different silhouette.
+//
+// `crust` is held out because its variants are `openBottom` shells, which have no
+// underside at all -- rolled onto a side they open sideways out of the cliff they
+// are stuck to. That exemption disappears with the bank collapse; nothing else in
+// the file knows about it.
+const ROLL_STEPS = 4
+
+// The random lean laid on TOP of the ground alignment, in radians, about a
+// uniformly random horizontal axis. `tilt` follows the hill and is the same
+// answer for every rock standing on one patch of it, so a slope came out as a
+// parade of rocks all leaning the same way; this is the part that says each of
+// them fell separately. Kept small deliberately -- past about fifteen degrees the
+// quarter-turn argument above starts to come apart again, because a rock leaning
+// that far off any of its flats is back to resting on an edge.
+const TILT_JITTER = (15 * Math.PI) / 180
+
+// --- what a boulder does to the props around it (Rocks.blockTopAt) -----------
+//
+// A rock's plan footprint as a fraction of the circle that circumscribes its
+// turned box. A boulder is not a cylinder, so the circumscribed circle claims
+// ground at the corners the stone never reaches, and every square metre it
+// over-claims is a tree pushed up into the air beside a rock rather than onto
+// it. 0.8 is the largest factor that keeps the worst corner case inside the
+// silhouette; it costs a fringe of grass standing in the outermost few
+// centimetres of stone, which reads as grass against a rock rather than as an
+// error.
+const BLOCK_PLAN = 0.8
+
+// How far into the rock a prop standing on top of it is pushed, as a fraction of
+// the rock's ladder size and then capped. Nothing here is trying to model a
+// tree's roots -- it is paying for the LOD ladder. The mesh a prop was seated
+// against is a T320 solid and the one drawn at fifty metres is a T20, whose
+// surface sits some way inside it, so a tree placed exactly on the near
+// silhouette floats clear of the far one. Proportional because the gap between
+// tiers scales with the rock, capped because on a twenty-metre block the
+// proportion alone would bury a sapling.
+const BLOCK_SETTLE = 0.04
+const BLOCK_SETTLE_MAX = 0.35
+
+// How big a rock has to be before a prop stands ON it rather than beside it, in
+// metres of ladder size. Exported because two scatters have to agree on it and a
+// literal in each would drift; it is the callers' number rather than this file's
+// (see Rocks.blockTopAt) and lives here only so there is one of it.
+//
+// A metre, and the reason is what the two answers look like when they are wrong.
+// A tree lifted onto a half-metre cobble is a tree standing on a pedestal, which
+// nothing in a wood does. A tree left growing through a two-metre boulder is a
+// tree growing through a boulder. The first is the worse error, so the threshold
+// sits at the size where stone stops being ground clutter and starts being
+// something you would walk around.
+export const ROCK_STAND_MIN = 1
 
 // --- relief, which is where the two site-tagged families live ----------------
 //
@@ -661,18 +924,24 @@ const SITE_SHARE = 0.75
 const CLUMP_CELL = 26
 const CLUMP_GAIN = 2.2
 
-// How far a rock's tint is pulled toward the terrain colour underfoot, on exactly
-// render/ferns.js's terms: the terrain's own vertex colour from the chunk mesher's
-// `shade`, RENORMALISED TO UNIT LUMINANCE so what survives is hue and not
-// magnitude. Magnitude has to go because a rock's tint is a DESTINATION
-// (ENV_TINTS, rock-bank.js), so multiplying by the terrain's near-black palette
-// would delete the rock rather than darken it.
+// How far a rock's tint is pulled toward the terrain colour underfoot: a plain
+// lerp from 1 toward the terrain's own vertex colour from the chunk mesher's
+// `shade`, so the rock takes the ground's LIGHTNESS as well as its hue.
+//
+// IT USED TO BE HUE ONLY, the terrain colour renormalised to unit luminance on
+// the argument that a rock's tint is a DESTINATION (ENV_TINTS, rock-bank.js) and
+// the terrain palette is near black, so its magnitude would delete the rock. The
+// arithmetic behind that fear does not survive the cue being a LERP rather than a
+// multiply: the terrain runs 0.059 to 0.088 in luminance everywhere except snow,
+// which is 0.879, so at the forest's 0.45 a boulder keeps 0.58 of its brightness
+// and on a snowfield it keeps 0.93. Roughly a halving in a wood, not a deletion --
+// and the halving is the point, because a rock two and a half times the lightness
+// of the ground it is lying on reads as lit by a different sun.
 //
 // ABOVE THE FERNS' 0.35, reversing the old argument that a rock is a different
 // material from the ground a fern grows out of. True of a boulder at arm's length,
 // false of the population that matters: most stone in the world is far enough away
-// to be a flat photograph, and hue is all that is left at that range. A cue tuned
-// on the near case leaves the far case reading as grey confetti.
+// to be a flat photograph, and tone is most of what is left at that range.
 //
 // PER ENVIRONMENT, AND THE ORDER OF THE FOUR IS THE WHOLE POINT: it runs from the
 // ground a rock is made OF to the ground it is merely standing on. River highest
@@ -691,7 +960,7 @@ const PLACEMENT_CELL = 4.0
 const GROUND_SWEEP = 16
 
 // Ceilings on the cross-dissolve, in instances, PER BED -- render/grass.js's
-// pair and its reasoning verbatim, except that six beds share the frame here.
+// pair and its reasoning verbatim, except that seven beds share the frame here.
 //
 // Measured over thirty seconds of walking at 5 m/s across the endless cliff
 // apron: 50 dissolves in flight in the mean frame, 1,151 in the worst, 2,366
@@ -802,7 +1071,7 @@ function tileSeed(tx, tz, seed, bed) {
  * and one growing through it reads as nothing.
  *
  * `what` NAMES THE SHAPE FOR THE THROW BELOW and nothing else: the geometry knows
- * only which LOD tier it is, and "T180" is no help to somebody looking for which
+ * only which LOD tier it is, and "T320" is no help to somebody looking for which
  * of thirty-nine boulders stopped the world from booting.
  */
 function sectionRadius(geo, y, what) {
@@ -871,6 +1140,25 @@ class RockBed {
     this.sizeBias = cfg.sizeBias ?? 1
     // Zero on every bed but scree. See the dart in _growTile.
     this.minGap = cfg.minGap ?? 0
+
+    // The two ways a rock is turned before the ground gets a say, both ON by
+    // default and both off on `crust` alone -- see ROLL_STEPS and TILT_JITTER for
+    // what they do and why a shell may not have either.
+    this.roll = cfg.roll ?? true
+    this.leanJitter = cfg.leanJitter ?? TILT_JITTER
+
+    // The burial band, as a fraction of what the rock stands. The default is the
+    // whole world's; `embedded` is the one bed that overrides it, and overrides it
+    // to a band that starts above where every other bed ends.
+    const sinkRange = cfg.sinkRange ?? [SINK_MIN, SINK_DEEP]
+    if (!(sinkRange[0] >= 0) || !(sinkRange[1] > sinkRange[0]) || !(sinkRange[1] < 1)) {
+      throw new Error(`RockBed ${cfg.name}: sinkRange must ascend within [0, 1), got ${sinkRange.join('..')}`)
+    }
+    this.sinkLo = sinkRange[0]
+    this.sinkHi = sinkRange[1]
+    // See SINK_NORMAL_MAX. On `embedded` alone, and meaningless on a bed whose
+    // burial is a few percent of a rock that is standing on flat ground anyway.
+    this.sinkNormal = cfg.sinkNormal ?? false
 
     this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / cfg.fullRadius) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
@@ -988,6 +1276,25 @@ class RockBed {
     // Rocks.anchorsInto and leaves the caller wondering where its rocks went.
     if (typeof cfg.anchor !== 'boolean') {
       throw new Error(`RockBed ${cfg.name}: BEDS entry has no \`anchor\` flag -- see Rocks.anchorsInto`)
+    }
+    // Whether this bed's rocks DISPLACE other props -- see Rocks.blockTopAt.
+    // Defaulted rather than required, because "does not displace" is the honest
+    // default here in a way "not an anchor" was not: a bed left out of the query
+    // costs a few props standing in stone, where a bed left out of `anchorsInto`
+    // silently empties a whole caller.
+    this.blocks = cfg.blocks ?? false
+    // THE 3x3 TILE BLOCK IS ONLY ENOUGH WHILE A ROCK FITS IN ONE TILE. blockTopAt
+    // looks at the queried tile and its eight neighbours, which catches every rock
+    // whose CENTRE is within one tile of the point -- so a rock reaching further
+    // than `tile` from its own centre could cover a prop from two tiles away and
+    // never be asked about. `maxLod` is the bed's longest box axis at its top
+    // scale, so half of it bounds the reach.
+    if (this.blocks && tile < maxLod * 0.5) {
+      throw new Error(
+        `RockBed ${cfg.name}: tile ${tile} m is under half its biggest rock's ` +
+          `${maxLod.toFixed(1)} m ladder size, so blockTopAt's 3x3 tile block would miss ` +
+          `rocks that cover a prop. Widen \`tile\`, shrink the top size, or drop \`blocks\`.`
+      )
     }
     // Two indices, and the split is the point. `byEnv` is the ordinary pool and
     // holds ONLY the untagged shapes, so a talus chip can never be drawn for a
@@ -1178,7 +1485,8 @@ class RockBed {
       yaw: new Float32Array(per), scaleRoll: new Float32Array(per),
       tone: new Float32Array(per), warm: new Float32Array(per),
       tintRoll: new Float32Array(per), siteRoll: new Float32Array(per),
-      sinkRoll: new Float32Array(per),
+      sinkRoll: new Float32Array(per), rollRoll: new Float32Array(per),
+      leanDir: new Float32Array(per), leanMag: new Float32Array(per),
     }
     this._order = []
 
@@ -1188,11 +1496,21 @@ class RockBed {
     this.camTileZ = null
 
     this._m = new THREE.Matrix4()
+    // Its own scratch and not `_m`: blockTopAt is called from the middle of
+    // ANOTHER scatter's placement loop, and sharing would have a tree query
+    // scribble over the matrix a rock was half-composed into.
+    this._blockM = new THREE.Matrix4()
     this._scatter = { h: 0, tan: 0 }
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._yawQ = new THREE.Quaternion()
     this._tiltQ = new THREE.Quaternion()
+    this._rollQ = new THREE.Quaternion()
+    this._rollXQ = new THREE.Quaternion()
+    this._leanQ = new THREE.Quaternion()
+    this._leanAxis = new THREE.Vector3()
+    this._xAxis = new THREE.Vector3(1, 0, 0)
+    this._zAxis = new THREE.Vector3(0, 0, 1)
     this._s = new THREE.Vector3()
     this._c = new THREE.Color()
     this._n = new THREE.Vector3()
@@ -1617,8 +1935,17 @@ class RockBed {
       // standing at one, resolved against the relief in pass two.
       const siteRoll = rand()
       // How deep this one is bedded, within the range its bed allows. See
-      // SINK_DEEP: meaningless on a bed that has no `sinkVary`.
+      // SINK_DEEP: meaningless on a bed that has no `sinkVary`. Bent by the size
+      // roll in pass two, which is where the two are both known.
       const sinkRoll = rand()
+      // Which of the 16 quarter-turn orientations it is lying in, and the random
+      // lean on top of the ground alignment: a bearing and a magnitude. See
+      // ROLL_STEPS and TILT_JITTER. Drawn here with everything else so the field
+      // stays a pure function of position -- a bed that turns none of this on
+      // still burns the draws, exactly as it does for `sinkRoll`.
+      const rollRoll = rand()
+      const leanDir = rand()
+      const leanMag = rand()
       const u = rand()
 
       // The rank the tile ladder actually keys on -- `u`, floored so no rock is
@@ -1643,6 +1970,9 @@ class RockBed {
       c.tintRoll[m] = tintRoll
       c.siteRoll[m] = siteRoll
       c.sinkRoll[m] = sinkRoll
+      c.rollRoll[m] = rollRoll
+      c.leanDir[m] = leanDir
+      c.leanMag[m] = leanMag
       c.rank[m] = rankU
       order[m] = m
       m++
@@ -1664,6 +1994,9 @@ class RockBed {
       const tintRoll = c.tintRoll[k]
       const siteRoll = c.siteRoll[k]
       const sinkRoll = c.sinkRoll[k]
+      const rollRoll = c.rollRoll[k]
+      const leanDir = c.leanDir[k]
+      const leanMag = c.leanMag[k]
       const rankU = c.rank[k]
 
       // THE PILE FIELD, TAKEN BEFORE ANY FIELD QUERY. `_clump` is four hashes of
@@ -1786,16 +2119,58 @@ class RockBed {
       const sizeRoll = this.sizeBias === 1 ? scaleRoll : Math.pow(scaleRoll, this.sizeBias)
       let scale
       if (cfg.sizeByEnv) {
-        const span = cfg.sizeByEnv[env]
-        if (!span) throw new Error(`RockBed ${cfg.name}: sizeByEnv has no entry for ${env}`)
-        scale = (span[0] + sizeRoll * (span[1] - span[0])) / s.measured.width
+        const metres = cfg.sizeByEnv[env]
+        if (!metres) throw new Error(`RockBed ${cfg.name}: sizeByEnv has no entry for ${env}`)
+        scale = (metres[0] + sizeRoll * (metres[1] - metres[0])) / s.measured.width
       } else {
         scale = cfg.scale[0] + sizeRoll * (cfg.scale[1] - cfg.scale[0])
       }
-      // What this rock is in METRES across, which is the number two other things
-      // want: the LOD thresholds in `update` scale with it (see ROCK_LOD_AT),
-      // and the dart just below measures against it.
-      const width = s.measured.width * scale
+
+      // THE QUARTER TURNS, WHICH DECIDE WHICH WAY IS UP BEFORE ANYTHING ELSE DOES.
+      // One roll picks a whole number of right angles about x and then about z --
+      // see ROLL_STEPS for why the increment is 90 and not a free angle, and why
+      // `crust` opts out. The x turn is applied first in the rock's own frame, so
+      // `rollQ = qz * qx`. Held here, ahead of the dart, because what the dart
+      // measures is the FOOTPRINT and turning the rock changes it.
+      let m00 = 1, m01 = 0, m02 = 0
+      let m10 = 0, m11 = 1, m12 = 0
+      let m20 = 0, m21 = 0, m22 = 1
+      if (this.roll) {
+        const ri = Math.min(ROLL_STEPS * ROLL_STEPS - 1, (rollRoll * ROLL_STEPS * ROLL_STEPS) | 0)
+        const q = this._rollQ.setFromAxisAngle(this._zAxis, ((ri / ROLL_STEPS) | 0) * (Math.PI / 2))
+        q.multiply(this._rollXQ.setFromAxisAngle(this._xAxis, (ri % ROLL_STEPS) * (Math.PI / 2)))
+        const qx = q.x, qy = q.y, qz = q.z, qw = q.w
+        m00 = 1 - 2 * (qy * qy + qz * qz)
+        m01 = 2 * (qx * qy - qw * qz)
+        m02 = 2 * (qx * qz + qw * qy)
+        m10 = 2 * (qx * qy + qw * qz)
+        m11 = 1 - 2 * (qx * qx + qz * qz)
+        m12 = 2 * (qy * qz - qw * qx)
+        m20 = 2 * (qx * qz - qw * qy)
+        m21 = 2 * (qy * qz + qw * qx)
+        m22 = 1 - 2 * (qx * qx + qy * qy)
+      }
+
+      // THE ROLLED BOX, EXACTLY. rock.js puts the origin ON the bed face, so the
+      // unturned rock spans y in [0, height] and x and z about zero -- and a
+      // quarter turn maps each local axis onto a world one, so the box stays a box
+      // and one term per row survives. `stand` is what the rock now presents
+      // vertically (its DEPTH once it is on its side, not its height) and `yMin` is
+      // how far it now hangs below its own origin; both are needed to seat it.
+      const bw = s.measured.width * scale
+      const bh = s.measured.height * scale
+      const bd = s.measured.depth * scale
+      const yMax = Math.abs(m10) * bw * 0.5 + Math.max(0, m11) * bh + Math.abs(m12) * bd * 0.5
+      const yMin = -Math.abs(m10) * bw * 0.5 + Math.min(0, m11) * bh - Math.abs(m12) * bd * 0.5
+      const stand = yMax - yMin
+      // How much GROUND this rock covers, which is what the dart and every caller
+      // of `anchorsInto` are asking about. The LOD thresholds in `update` want a
+      // different number and take it from `rockLodSize`, which is the longest axis
+      // and so does not care how the rock was turned.
+      const span = Math.max(
+        Math.abs(m00) * bw + Math.abs(m01) * bh + Math.abs(m02) * bd,
+        Math.abs(m20) * bw + Math.abs(m21) * bh + Math.abs(m22) * bd
+      )
 
       // NO ROCK INSIDE ANOTHER ROCK -- see `minGap` on the scree bed. Darted
       // against the rocks already standing in THIS tile, which in pass two's rank
@@ -1813,7 +2188,7 @@ class RockBed {
           const o = ids[j]
           const dx = this.instX[o] - x
           const dz = this.instZ[o] - z
-          const need = this.minGap * 0.5 * (width + this.instSpan[o])
+          const need = this.minGap * 0.5 * (span + this.instSpan[o])
           if (dx * dx + dz * dz < need * need) {
             blocked = true
             break
@@ -1837,32 +2212,64 @@ class RockBed {
       n++
       if (useSite) this.sited[site]++
 
-      // Bedded by a fraction of its OWN height, which is why `measured` is on the
+      // Bedded by a fraction of what it stands, which is why `measured` is on the
       // shape at all: a 7 m lip and an 11 cm pebble both want to be a tenth of
       // themselves into the ground, not a tenth of a metre. The slope term is a
       // FLOOR, not the answer -- steeper ground needs a rock bedded deeper or its
       // downhill side hangs in the air -- and `sinkVary` beds reroll upward from it
-      // towards SINK_DEEP, so a flat-ground rock spans nearly the whole 5 - 50%
-      // while one at the bed's slope limit cannot come out shallower than the floor.
-      const floor = SINK_MIN + SINK_SLOPE * Math.min(1, tan / this.maxSlopeTan)
-      const frac = cfg.sinkVary ? floor + sinkRoll * (SINK_DEEP - floor) : floor
-      let sink = s.measured.height * scale * frac
-      // And an open shell deeper still, because the fraction above is of HEIGHT
-      // and these are the flattest things in the bank -- see OPEN_BURY.
-      if (s.openBottom) sink += s.measured.width * scale * OPEN_BURY
+      // to the top of `sinkRange`, so a flat-ground rock spans nearly the whole
+      // band while one at the bed's slope limit cannot come out shallower than the
+      // floor.
+      //
+      // AND THE BIG ONES SINK DEEPER, by bending the roll rather than the range:
+      // see SINK_SIZE_TILT. Bending the roll is what keeps the ends honest -- a
+      // small rock can still be buried to the top of the band and a big one can
+      // still be sitting on the surface, only the odds move.
+      const floor = Math.max(this.sinkLo, SINK_MIN + SINK_SLOPE * Math.min(1, tan / this.maxSlopeTan))
+      const deepRoll = Math.pow(sinkRoll, 1 - SINK_SIZE_TILT * sizeRoll)
+      const frac = cfg.sinkVary
+        ? floor + deepRoll * Math.max(0, this.sinkHi - floor)
+        : Math.min(floor, this.sinkHi)
+      let sink = stand * frac
+      // INTO THE FACE, NOT DOWN THE FACE. See SINK_NORMAL_MAX: `frac` is a
+      // fraction along the surface normal and `instY` can only move a rock along
+      // world Y, so a bed that means to bury something in a cliff has to pay the
+      // 1/cos(slope) between them.
+      if (this.sinkNormal) sink *= Math.min(SINK_NORMAL_MAX, Math.hypot(tan, 1))
+      // And an open shell deeper still, because the fraction above is of the
+      // STANDING extent and these are the flattest things in the bank -- see
+      // OPEN_BURY. Only reachable on `crust`, which takes no quarter turns.
+      if (s.openBottom) sink += bw * OPEN_BURY
       this.shapeAt[id] = shape
       this.instX[id] = x
       this.instZ[id] = z
-      this.instSink[id] = sink
+      // `yMin` folded in, so `instSink` stays the ONE number `_reground` needs: how
+      // far the origin sits under the drawn ground. It goes negative for a rolled
+      // rock that hangs below its own origin by more than it is buried, which is
+      // correct rather than a guard to add -- the origin belongs above ground there.
+      this.instSink[id] = sink + yMin
       this.instScale[id] = scale
-      this.instSpan[id] = width
-      this.instY[id] = this._groundFor(x, z) - sink
+      this.instSpan[id] = span
+      this.instY[id] = this._groundFor(x, z) - this.instSink[id]
 
       this._yawQ.setFromAxisAngle(this._up, yaw)
-      // Yaw first in the rock's own frame, then the lean on top of it, so a
-      // tilted rock spins about the ground's normal rather than about world Y.
+      // Roll first in the rock's own frame, then yaw about the vertical, then the
+      // ground lean, then the random lean on top of it -- so a tilted rock spins
+      // about the ground's normal rather than about world Y and the jitter is a
+      // departure from the hill rather than a second alignment to it.
+      if (this.roll) this._yawQ.multiply(this._rollQ)
       if (cfg.tilt > 0) this._q.copy(this._groundTilt(x, z, cfg.tilt)).multiply(this._yawQ)
       else this._q.copy(this._yawQ)
+      // PRE-multiplied, so the axis is horizontal IN THE WORLD. Composed the other
+      // way the axis would be horizontal in the ROCK's frame, and a rock the roll
+      // has laid on its side would take its "lean" about a near-vertical axis --
+      // which is a second yaw, not a lean, on exactly the instances that most need
+      // one.
+      if (this.leanJitter > 0) {
+        const a = leanDir * Math.PI * 2
+        this._leanAxis.set(Math.cos(a), 0, Math.sin(a))
+        this._q.premultiply(this._leanQ.setFromAxisAngle(this._leanAxis, leanMag * this.leanJitter))
+      }
       this._p.set(x, this.instY[id], z)
       this._s.set(scale, scale, scale)
       this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
@@ -1901,25 +2308,20 @@ class RockBed {
       // four _groundTilt is about to take anyway.
       shade(h, 1 / Math.hypot(tan, 1), snowLine, snowBand, this.layers.flattenAt(x, z),
         altLo, altSpan, gc, 0)
-      // Renormalised to unit luminance, so what survives is HUE. See GROUND_CUE:
-      // a rock's tint is already an absolute destination and the terrain palette
-      // is near black, so taking its magnitude would delete the rock rather than
-      // seat it.
+      // Taken at FULL MAGNITUDE, so the cue carries lightness and not just hue --
+      // see GROUND_CUE for why the old renormalisation went and what the change
+      // costs in brightness.
       const cue = GROUND_CUE[env]
-      const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
-      const k1 = gl > 1e-5 ? cue / gl : 0
-      const k0 = gl > 1e-5 ? 1 - cue : 1
+      const k1 = cue
+      const k0 = 1 - cue
 
       // Jitter on top, so two rocks of the same tint standing together still
-      // differ. Centred slightly under 1 and running slightly over: the floor of
-      // 0.86 against the palette's smallest gain of 1.39 leaves every instance
-      // brighter than the bare tile, which is this block's promise. The promise is
-      // about BRIGHTNESS and not each channel separately, and it has to be -- the
-      // cue above is exactly luminance-preserving, so it can only rotate hue, and a
-      // rotation towards forest green must pull some channel down to pay for it. In
-      // a wood a handful of instances land just under 1 in blue (lowest measured
-      // 0.965) while their luminance is still 1.7x the tile. Gate on luminance: a
-      // per-channel floor of 1 and a hue cue cannot both hold.
+      // differ. Centred slightly under 1 and running slightly over. It no longer
+      // leaves every instance brighter than the bare tile and is not meant to: a
+      // rock on dark forest loam now lands NEAR the loam, which is the whole of
+      // what the lightness match buys. What the floor of 0.86 still guarantees is
+      // separation from the ground rather than dominance of it -- the cue tops out
+      // at 0.75, so a rock keeps at least a quarter of its own palette everywhere.
       const v = (0.86 + tone * 0.3) * dim
       this._c.setRGB(
         gain[0] * v * (0.96 + warm * 0.08) * (k0 + gc[0] * k1),
@@ -2190,6 +2592,62 @@ class RockBed {
   }
 
   /**
+   * One bed's share of Rocks.blockTopAt: the highest rock top over (x, z), or
+   * `best` unchanged if this bed has nothing there. The public half carries the
+   * argument for what a caller does with it.
+   *
+   * KEYED, NOT SWEPT, and that is the difference between this and _anchorsInto.
+   * An anchor query runs once per tile of some other scatter and can afford to
+   * reject a bed's whole resident set four compares at a time; this one runs once
+   * per PROP CANDIDATE, and the giants bed is 1250 m of resident tiles. So it goes
+   * straight at the 3x3 block around the point, using _plan's key arithmetic
+   * verbatim -- the constructor's `blocks` check is what guarantees nine tiles are
+   * enough.
+   */
+  _blockAt(x, z, minSize, best) {
+    const tile = this.tile
+    const gx = Math.floor(x / tile)
+    const gz = Math.floor(z / tile)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const t = this.tiles.get((gx + dx) * 0x10000 + (gz + dz))
+        if (!t) continue
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          const shape = this.shapeAt[id]
+          const size = this.shapeLod[shape] * this.instScale[id]
+          if (size < minSize) continue
+          const r = this.instSpan[id] * 0.5 * BLOCK_PLAN
+          const ex = x - this.instX[id]
+          const ez = z - this.instZ[id]
+          if (ex * ex + ez * ez >= r * r) continue
+          // The top of the rock as it is actually standing, off the instance
+          // matrix rather than off `measured.height`: the quarter turn, the ground
+          // lean and the jitter are all in there and none of them is recoverable
+          // from the placement arrays. `e[13]` is already the world Y and the
+          // instance scale is already in the basis columns, so nothing here
+          // multiplies by `instScale`. The local box is [-w/2, w/2] x [0, h] x
+          // [-d/2, d/2], so one term per axis survives.
+          const s = this.shapes[shape]
+          this.batch.getMatrixAt(id, this._blockM)
+          const e = this._blockM.elements
+          const top = e[13] +
+            Math.abs(e[1]) * s.measured.width * 0.5 +
+            Math.max(0, e[5] * s.measured.height) +
+            Math.abs(e[9]) * s.measured.depth * 0.5
+          // Settled here rather than in the public half because this is where the
+          // rock's own size is: the caller gets a Y to stand at, not a silhouette
+          // to sit on. Comparing after the settle is deliberate too -- the answer
+          // wanted is the highest place to STAND, not the highest stone.
+          const stand = top - Math.min(BLOCK_SETTLE_MAX, BLOCK_SETTLE * size)
+          if (stand > best) best = stand
+        }
+      }
+    }
+    return best
+  }
+
+  /**
    * The id to QUOTE for one instance: `variant-index`, e.g. `shingle-1`.
    *
    * The raw `shapeAt[id]` is deliberately NOT this. It indexes this bed's own
@@ -2451,6 +2909,53 @@ export class Rocks {
       w = bed._anchorsInto(x0, z0, x1, z1, out, w, cap)
     }
     return w
+  }
+
+  /**
+   * The height a prop landing at (x, z) should stand at if a rock is already
+   * there, or `-Infinity` if the ground is clear.
+   *
+   * WHAT THIS IS FOR: a boulder is the only prop in the world that displaces other
+   * props. A tree whose trunk lands inside one has to be raised to stand ON it, and
+   * grass and litter inside one have to go entirely -- a blade of grass growing out
+   * of the middle of a rock is the single most legible placement error there is,
+   * because the eye reads the rock as solid and the grass as impossible. So the
+   * scatters that come after the rocks ask this once per candidate:
+   *
+   *   grass, litter    `blockTopAt(x, z, 0) > -Infinity`  ->  drop the candidate
+   *   trees, ferns     `blockTopAt(x, z, BLOCK_MIN)`      ->  stand here instead
+   *
+   * `minSize` IS THE WHOLE DIFFERENCE BETWEEN THE TWO RULES and it is a caller's
+   * choice, not this file's. A blade of grass is displaced by any stone big enough
+   * to be geometry; a tree is not raised onto a cobble, because a sapling standing
+   * on a half-metre stone reads as a mistake where a sapling growing beside one
+   * reads as a wood. The brief's line is a metre and the callers pass it.
+   *
+   * THE ANSWER IS ALREADY SETTLED INTO THE ROCK by BLOCK_SETTLE -- the caller gets
+   * a Y to stand at, not a silhouette to sit on. That correction belongs here
+   * because what it is paying for is the LOD ladder, which is this file's.
+   *
+   * IT IS A PLAN QUERY AND NOT A CONTAINMENT TEST. The rock is treated as a disc of
+   * BLOCK_PLAN of its turned box's circumscribed circle, and anything inside that
+   * disc is "in the rock" whatever its height -- so a tree beside a tall thin spire
+   * is raised to the spire's top rather than left at its foot. That is the right
+   * answer for the case this exists for (a boulder is wider than it is tall) and
+   * the wrong one for a spire, which is why the spire's bed is not flagged.
+   *
+   * ONLY THE BEDS FLAGGED `blocks` ANSWER; the argument is on the flags in BEDS.
+   * The query is keyed rather than swept -- see RockBed._blockAt -- so it is nine
+   * Map lookups per bed and it can be afforded per candidate.
+   *
+   * WHATEVER THE QUEST TOGGLE SAYS. The rock toggle sets `batch.visible` and the
+   * beds are placed and stepped either way, so a world with the rocks switched off
+   * has its trees in the same places as one with them on. See v2/main.js.
+   */
+  blockTopAt(x, z, minSize) {
+    let top = -Infinity
+    for (const bed of this.beds) {
+      if (bed.blocks) top = bed._blockAt(x, z, minSize, top)
+    }
+    return top
   }
 
   /**

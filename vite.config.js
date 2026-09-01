@@ -763,7 +763,7 @@ function unknownRouteGuard() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['avatar-preview', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-grass', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'test-aurora', 'quest', 'questv2', 'questv3']
+const BARE_ROUTES = ['avatar-preview', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-tree-v2', 'gen-tree-v2a', 'gen-tree-v3', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-grass', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'test-aurora', 'quest', 'questv2', 'questv3']
 
 function bareRoutes() {
   return {
@@ -835,6 +835,9 @@ export default defineConfig({
         // being asked on a flat test plane.
         genGrass: resolve(__dirname, 'gen-grass.html'),
         genTree: resolve(__dirname, 'gen-tree.html'),
+        genTreeV2: resolve(__dirname, 'gen-tree-v2.html'),
+        genTreeV2a: resolve(__dirname, 'gen-tree-v2a.html'),
+        genTreeV3: resolve(__dirname, 'gen-tree-v3.html'),
         // The rock bench, served at /gen-rock. Its job is narrower than the
         // others': the tree and fern generators ship a settled bank, this one is
         // still choosing which variants the world gets, and PRESETS in

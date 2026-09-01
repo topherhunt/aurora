@@ -10,9 +10,9 @@ import { LAYER } from '../textures.js'
 // a shape that reads as stone. Three mechanisms do it.
 //
 // 1. DISPLACEMENT IS A PURE FUNCTION OF THE ORIGINAL UNIT DIRECTION. Every vertex
-//    starts on the unit sphere and its final position comes from `shapeRadius`,
+//    starts on the unit sphere and its final position comes from `shapePoint`,
 //    which is deterministic and stateless -- nothing depends on which solid, how
-//    many vertices, or what order. So the ico at detail 0/1/2 (20/80/180 faces,
+//    many vertices, or what order. So the ico at detail 0/1/3 (20/80/320 faces,
 //    20*(detail+1)^2) samples THE SAME ROCK at three resolutions, and a tier change
 //    is a silhouette that simplifies rather than a rock that pops. Purity does not
 //    equalise SIZE -- 20 directions lose every peak between samples -- so each tier
@@ -53,7 +53,7 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 // shape owns -- §23 records why a per-size-class ladder could not work.
 //
 // A RUNG IS ITS SUBDIVISION LEVEL AND NOTHING ELSE -- `rockTier` derives the name
-// and the face count from it, so the table cannot say T180 while building 80.
+// and the face count from it, so the table cannot say T320 while building 80.
 // Three splits each edge into `detail + 1`, hence 20 * (detail + 1)^2 rather than
 // a doubling.
 export function rockTier(detail, solid = 'ico') {
@@ -68,16 +68,16 @@ export function rockTier(detail, solid = 'ico') {
 // REFERENCE_DETAIL, which follows whatever is asked for.
 export const ROCK_MAX_DETAIL = 5
 
-export const ROCK_TIERS = [rockTier(2), rockTier(1), rockTier(0)]
+export const ROCK_TIERS = [rockTier(3), rockTier(1), rockTier(0)]
 
 // WHEN A ROCK STEPS DOWN THAT LADDER, in metres of camera distance PER METRE of
 // the rock's own size -- `rockLodSize` below says which metre that is. One
-// number per boundary: T180 inside the first, T80 inside the second, T20 inside
+// number per boundary: T320 inside the first, T80 inside the second, T20 inside
 // the third, and the two-triangle billboard card beyond it.
 //
 // Per metre because what decides whether a triangle is worth drawing is ANGULAR
 // size. A 2 m rock holds its finest mesh to 8 m, its second to 15, its third to 50,
-// and cards past that; a 12 m tor holds T180 to 48 m and cards at 300. One system
+// and cards past that; a 12 m tor holds T320 to 48 m and cards at 300. One system
 // for every rock -- they all step at the same apparent size, only the metres differ.
 //
 // Deliberately tighter than a pixel-error argument, which wants ~70 m per metre
@@ -100,6 +100,15 @@ export const ROCK_LOD_AT = [4, 7.5, 25]
 export function rockLodSize(measured) {
   return Math.max(measured.height, measured.width, measured.depth)
 }
+
+// Where the rail stops being a rail. MEASURED, not chosen: drive every roughness
+// slider on the bench to its ceiling at once -- lumps 0.9, grain 0.5 at freq 12,
+// jitter 0.35, full strata -- and over 40 seeds the steepest vertex on the finest
+// tier juts 43.6 degrees. Nothing this generator can build reaches 60, so at and
+// above it the rail cannot bind and the four extra field samples are skipped
+// rather than spent proving it. It is also why the bench's slider stops there: a
+// dial whose top half provably does nothing is a dial nobody trusts.
+const ANGLE_OFF = 60
 
 export const ROCK_DEFAULTS = {
   seed: 1,
@@ -129,14 +138,30 @@ export const ROCK_DEFAULTS = {
   // Two octaves and no more. A third costs a slider and reads as noise rather
   // than as rock, because below `grain`'s scale the 128px speckle is doing the
   // work and geometry cannot compete with it.
-  lumps: 0.7, // large-scale radial displacement -- the mass of the rock
+  lumps: 0.2, // large-scale radial displacement -- the mass of the rock
   lumpFreq: 1.6,
-  grain: 0.25, // small-scale -- the bumps that catch light along an edge
+  grain: 0, // small-scale -- the bumps that catch light along an edge
   grainFreq: 5.0,
   smooth: 1, // 0 = every face flat-shaded, 1 = one smooth shell. Cut facets ignore it.
 
+  // Both of the dials above move a vertex ALONG ITS OWN DIRECTION, so however hard
+  // they are driven an icosphere keeps the even geodesic triangles it was born
+  // with: the silhouette wobbles and the tessellation still reads as a ball. This
+  // one displaces vertices SIDEWAYS as well -- see jitterOffset -- which is the
+  // part that makes a surface look broken rather than moulded. As a fraction of the
+  // unit radius; a T320 vertex sits about 0.28 of that from its neighbours, so past
+  // ~0.3 vertices start to trade places and triangles fold through each other.
+  vertexJitter: 0.12,
+  // ...AND THE RAIL THAT KEEPS THAT ROUND. A cap on how far a vertex may stand off
+  // the average of its neighbours, expressed as the ANGLE the surface makes there:
+  // ANGLE_OFF is off, 35 lets a blob keep a shoulder, 15 is a river cobble. It is
+  // measured against the FINISHED point, so it tames lumps, grain and jitter
+  // together rather than any one of them. See shapePoint for what it costs, and
+  // ANGLE_OFF for why the useful half of the dial is the bottom half.
+  maxAngle: ANGLE_OFF,
+
   // --- fracture ------------------------------------------------------------
-  cuts: 10,
+  cuts: 0,
   cutDepth: 0.78, // 0 = planes tangent (no cut), 1 = deep slices
   cutBias: 0, // -1 bedding (horizontal faces), +1 columnar (vertical faces)
 
@@ -146,7 +171,7 @@ export const ROCK_DEFAULTS = {
   // its height off.
   taper: 0.0, // >0 narrows the top (spire), <0 narrows the base (mushroom, glacial erratic)
   taperPow: 1.6, // how the narrowing is distributed up the height. >1 = shoulders, then a tooth
-  foot: 0.0, // flare on the bottom half only, so a tall rock stands on something solid
+  foot: 0.4, // flare on the bottom half only, so a tall rock stands on something solid
   strata: 0, // bedding bands up the height, as a count. 0 = none
   strataAmp: 0.08,
 
@@ -163,7 +188,7 @@ export const ROCK_DEFAULTS = {
   // --- ground --------------------------------------------------------------
   // A rock resting exactly on its lowest point looks like it was placed. Real
   // ones are bedded in: cut the bottom off and stand the cut face on y = 0.
-  sit: 0.12, // fraction of total height cut away at the bottom
+  sit: 0, // fraction of total height cut away at the bottom
 
   // AND OPTIONALLY, THROW THE BURIED BELLY AWAY. `sit` flattens everything below
   // the bed plane ONTO it, leaving a real horizontal disc of triangles facing
@@ -276,6 +301,142 @@ function profileRadial(dy, p) {
   // clamped part, and the dial would look broken at the settings that want it most.
   if (p.foot > 0) h *= 1 + p.foot * (1 - t) * (1 - t)
   return Math.max(0.04, h)
+}
+
+// How fast the jitter field turns over, in cells per unit of direction. Set
+// against the FINEST tier's vertex spacing -- a T320 vertex sits 0.28 radians from
+// its neighbours, so at 7 they are two cells apart and land on independent
+// numbers. Much lower and the warp is a second `lumps`; much higher and it is a
+// dither no tier can resolve and every tier resolves differently.
+const JITTER_FREQ = 7
+
+// The neighbour offset the roundness rail measures against, in radians, and
+// deliberately a CONSTANT rather than the tier's own spacing: a limit that read
+// the vertex count would round a T20 harder than a T320 and the two would stop
+// being the same rock. 0.25 is about one T320 edge.
+const ANGLE_EPS = 0.25
+const DEG = Math.PI / 180
+
+
+const nbPoint = { x: 0, y: 0, z: 0 }
+
+/**
+ * One vertex, in the shard's frame, before the cut planes.
+ *
+ * A pure function of the unit direction, like `shapeRadius`, and for the same
+ * reason: two tiers hand it the same direction along a silhouette and have to get
+ * back the same point or the rock moves when it swaps.
+ *
+ * `vertexJitter` is the part `shapeRadius` cannot do. Radial displacement leaves an
+ * icosphere's even geodesic triangles exactly as even as it found them, however
+ * hard it is driven -- what breaks that regularity is moving vertices SIDEWAYS, so
+ * this adds a three-channel noise vector: a domain warp, not a height field.
+ */
+function surfacePoint(dx, dy, dz, p, nseed, phase, ax, ay, az, out) {
+  const r = shapeRadius(dx, dy, dz, p, nseed, phase)
+  const hr = profileRadial(dy, p)
+  out.x = dx * ax * hr * r
+  out.y = dy * ay * r
+  out.z = dz * az * hr * r
+
+  if (p.vertexJitter > 0) {
+    const fx = dx * JITTER_FREQ
+    const fy = dy * JITTER_FREQ
+    const fz = dz * JITTER_FREQ
+    const j = p.vertexJitter
+    out.x += ax * hr * j * (noise3(fx + 1.7, fy + 9.2, fz + 4.4, nseed ^ 0x1f83d9ab) * 2 - 1)
+    out.y += ay * j * (noise3(fx + 6.1, fy + 2.8, fz + 13.5, nseed ^ 0x5be0cd19) * 2 - 1)
+    out.z += az * hr * j * (noise3(fx + 12.9, fy + 7.3, fz + 0.6, nseed ^ 0x9b05688c) * 2 - 1)
+  }
+  return out
+}
+
+/**
+ * The same vertex with the roundness rail applied: a vertex may not stand further
+ * off the mean of its four angular neighbours than tan(`maxAngle`) times their
+ * spacing, which is exactly the statement "no face may jut at more than this angle".
+ *
+ * WHY A NEIGHBOURHOOD AND NOT A CLAMP ON EACH DIAL: a spike is not a large radius,
+ * it is a large radius NEXT TO a small one. Capping `lumps` or `vertexJitter`
+ * flattens the whole rock to kill a handful of teeth; this pulls the teeth in and
+ * leaves the mass alone, which is what "round even when there are blobs" asks for.
+ *
+ * It costs four extra field evaluations per vertex, at build time only, and is
+ * skipped entirely at 90 where it can never bind. Note it cannot see the cut
+ * planes -- a `cuts` facet is a deliberate sharp edge and is not its business.
+ */
+function shapePoint(dx, dy, dz, p, nseed, phase, ax, ay, az, out) {
+  surfacePoint(dx, dy, dz, p, nseed, phase, ax, ay, az, out)
+  if (!(p.maxAngle < ANGLE_OFF)) return out
+
+  // Any two tangents will do: the four samples are symmetric about the direction,
+  // so their mean barely moves as the basis spins.
+  let ux = 0
+  let uy = 0
+  let uz = 0
+  if (Math.abs(dx) < Math.abs(dy) && Math.abs(dx) < Math.abs(dz)) ux = 1
+  else if (Math.abs(dy) < Math.abs(dz)) uy = 1
+  else uz = 1
+  let t1x = dy * uz - dz * uy
+  let t1y = dz * ux - dx * uz
+  let t1z = dx * uy - dy * ux
+  const t1l = Math.hypot(t1x, t1y, t1z) || 1e-6
+  t1x /= t1l
+  t1y /= t1l
+  t1z /= t1l
+  const t2x = dy * t1z - dz * t1y
+  const t2y = dz * t1x - dx * t1z
+  const t2z = dx * t1y - dy * t1x
+
+  let bx = 0
+  let by = 0
+  let bz = 0
+  for (let k = 0; k < 4; k++) {
+    const s = k < 2 ? (k === 0 ? ANGLE_EPS : -ANGLE_EPS) : 0
+    const t = k < 2 ? 0 : k === 2 ? ANGLE_EPS : -ANGLE_EPS
+    let nx = dx + t1x * s + t2x * t
+    let ny = dy + t1y * s + t2y * t
+    let nz = dz + t1z * s + t2z * t
+    const nl = Math.hypot(nx, ny, nz) || 1e-6
+    nx /= nl
+    ny /= nl
+    nz /= nl
+    surfacePoint(nx, ny, nz, p, nseed, phase, ax, ay, az, nbPoint)
+    bx += nbPoint.x
+    by += nbPoint.y
+    bz += nbPoint.z
+  }
+  bx /= 4
+  by /= 4
+  bz /= 4
+
+  // Their spacing, which is the run the jut's rise is measured against.
+  const span = ANGLE_EPS * Math.hypot(bx, by, bz)
+  if (span < 1e-6) return out
+
+  // ALONG THE SURFACE NORMAL ONLY. A vertex slid SIDEWAYS is not a jut -- it is an
+  // uneven triangle, which is the whole point of `vertexJitter` -- and measuring the
+  // full deviation would spend the budget on it and leave nothing for the spikes
+  // this exists to catch. The ellipsoid normal rather than the direction, for the
+  // same reason the shell normals use it: on a 2:1 rock they differ by 30 degrees.
+  const hr = profileRadial(dy, p)
+  let nx = dx / (ax * hr)
+  let ny = dy / ay
+  let nz = dz / (az * hr)
+  const nl = Math.hypot(nx, ny, nz) || 1e-6
+  nx /= nl
+  ny /= nl
+  nz /= nl
+
+  const rise = (out.x - bx) * nx + (out.y - by) * ny + (out.z - bz) * nz
+  const limit = Math.tan(Math.max(1, p.maxAngle) * DEG) * span
+  if (Math.abs(rise) > limit) {
+    const pull = rise > 0 ? rise - limit : rise + limit
+    out.x -= nx * pull
+    out.y -= ny * pull
+    out.z -= nz * pull
+  }
+  return out
 }
 
 // Cut-plane normals, biased toward vertical or horizontal by `cutBias`. Note
@@ -443,6 +604,7 @@ function emitShards(p, ax, ay, az, dirs, out, aux) {
   const up = new THREE.Vector3(0, 1, 0)
   const v = new THREE.Vector3()
   const n = new THREE.Vector3()
+  const vertex = { x: 0, y: 0, z: 0 }
 
   for (let s = 0; s < shardCount; s++) {
     // Each shard gets its own stream, so adding a shard never changes the ones
@@ -480,13 +642,14 @@ function emitShards(p, ax, ay, az, dirs, out, aux) {
       const dy = dirs[i * 3 + 1]
       const dz = dirs[i * 3 + 2]
 
-      const r = shapeRadius(dx, dy, dz, p, nseed, phase)
       // Horizontal only -- see profileRadial. The vertical axis is deliberately
-      // untouched, so the crown of a tapered rock is still at dy = 1.
+      // untouched, so the crown of a tapered rock is still at dy = 1. Kept here
+      // for the shell normal below; shapePoint applies its own.
       const hr = profileRadial(dy, p)
-      let px = dx * ax * hr * r
-      let py = dy * ay * r
-      let pz = dz * az * hr * r
+      shapePoint(dx, dy, dz, p, nseed, phase, ax, ay, az, vertex)
+      let px = vertex.x
+      let py = vertex.y
+      let pz = vertex.z
 
       // Radial clip. `pinned` records which plane -- if a whole triangle shares
       // one, that triangle IS the cut face and gets shaded flat.
@@ -669,7 +832,7 @@ export function buildRock(options = {}) {
   // Match this tier's average silhouette radius to the reference's. Sampling a lumpy
   // shape on 20 directions instead of 320 does not just round the corners off, it
   // loses AREA -- every peak between two samples is cut away -- so an untouched T20
-  // reads smaller than the T180 it replaces and the swap looks like the rock jumping
+  // reads smaller than the T320 it replaces and the swap looks like the rock jumping
   // backwards. One uniform gain about the bed origin buys that back with proportions,
   // lean and bed plane untouched. What it cannot fix is the SPREAD, and that is the
   // right trade: a silhouette that is the right size and the wrong shape is invisible
@@ -684,7 +847,7 @@ export function buildRock(options = {}) {
   // rock. That is allowed, up to BOX_MARGIN; read the argument there for why the
   // overhang is the cheaper error. The cap can bite a FINE tier too, for an
   // unrelated reason: an ico detail 2 vertex can point somewhere detail 3 never
-  // sampled, so a slab's T180 occasionally measures wider than the reference
+  // sampled, so a slab's T320 occasionally measures wider than the reference
   // that defined `size` before any gain is applied at all.
   const refExtent = [maxX - minX, maxY - cutY, maxZ - minZ]
   for (let a = 0; a < 3; a++) {

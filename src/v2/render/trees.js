@@ -7,6 +7,7 @@ import {
   getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS,
 } from '../../material.js'
 import { RimFade } from './rim.js'
+import { ROCK_STAND_MIN } from './rocks.js'
 import { PropArena } from './prop-arena.js'
 
 // ---------------------------------------------------------------------------
@@ -462,6 +463,7 @@ export class Trees {
       fullRadius = FULL_RADIUS,
       falloff = FALLOFF,
       ground = null,
+      rocks = null,
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -477,10 +479,18 @@ export class Trees {
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Trees: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
     }
+    // Optional on the same terms as `ground`, and for the same reason: the probes
+    // under tmp/ have no rock scatter to hand. Without it a trunk that lands
+    // inside a boulder is placed inside it, which is what this did before the
+    // rocks were moved ahead of the trees in v2/main.js.
+    if (rocks && typeof rocks.blockTopAt !== 'function') {
+      throw new Error('Trees: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
+    }
 
     this.field = field
     this.water = water
     this.ground = ground
+    this.rocks = rocks
     this.textureArray = textureArray
     this.seed = seed
     this.density = density
@@ -626,6 +636,17 @@ export class Trees {
     // whole matrix; the yaw it would also need stays in the matrix, which is
     // read back and has its Y translation overwritten in place.
     this.instScale = new Float32Array(this.maxInstances)
+    // How far this tree stands off the ground under it, in metres, signed. For
+    // almost every tree that is just `-PLACEMENT.sink * scale`; for one standing
+    // on a boulder it is the height of the rock's top over the ground, already
+    // settled into the stone (Rocks.blockTopAt).
+    //
+    // AN OFFSET AND NOT AN ABSOLUTE Y, which is what makes _reground work
+    // unchanged. The rock's own Y is `ground - instSink` off the same chunk mesh
+    // this tree reads, so the gap between the two is a constant: re-seating the
+    // tree on a new chunk moves the rock by exactly as much, and adding a stored
+    // offset lands it back on top without re-running the query.
+    this.instLift = new Float32Array(this.maxInstances)
 
     // The outer dissolve: which trees are drawn, which are hidden, and the
     // quarter second between. There is ONE fade slot per instance and the tier
@@ -1379,7 +1400,16 @@ export class Trees {
       this.instX[id] = x
       this.instZ[id] = z
       this.instScale[id] = scale
-      this.instY[id] = this._groundFor(x, z) - PLACEMENT.sink * scale
+      // ON TOP OF THE ROCK IF THERE IS ONE UNDER THE TRUNK. Only rocks over
+      // ROCK_STAND_MIN answer, so a tree is never perched on a cobble, and the
+      // rocks are placed and stepped before the trees in v2/main.js so the stone
+      // is always already there. `max` rather than a branch because a rock the
+      // scatter has bedded almost entirely can have its top BELOW the ground at
+      // the trunk, and a tree must not be dropped into a hill to reach it.
+      const ground = this._groundFor(x, z)
+      const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
+      this.instLift[id] = Math.max(-PLACEMENT.sink * scale, top - ground)
+      this.instY[id] = ground + this.instLift[id]
 
       this._p.set(x, this.instY[id], z)
       this._q.setFromAxisAngle(this._up, yaw)
@@ -1493,7 +1523,7 @@ export class Trees {
   _reground(tile) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      const y = this._groundFor(this.instX[id], this.instZ[id]) - PLACEMENT.sink * this.instScale[id]
+      const y = this._groundFor(this.instX[id], this.instZ[id]) + this.instLift[id]
       if (y === this.instY[id]) continue
       this.instY[id] = y
       this.batch.getMatrixAt(id, this._m)

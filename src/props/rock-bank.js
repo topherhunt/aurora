@@ -441,7 +441,7 @@ function geometryBytes(geo) {
 // A FOURTH TIER, past the coarsest mesh. A card looks worse than a coarse solid
 // -- a rock's whole read is the way its facets catch a moving light, and a
 // photograph has no facets -- and that is not what decides. A coarse solid costs
-// an instance, a matrix, a draw range and a scan slot exactly as a T180 does,
+// an instance, a matrix, a draw range and a scan slot exactly as a T320 does,
 // and the outermost band of a scree slope holds tens of thousands of them. Two
 // triangles that keep a grey lump on the hillside beat twenty that do, and both
 // beat the hole culling leaves in a talus field.

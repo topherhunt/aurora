@@ -9,6 +9,7 @@ import {
 } from '../../material.js'
 import { InstancedArena } from './instanced-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
+import { ROCK_STAND_MIN } from './rocks.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -385,7 +386,7 @@ export class Ferns {
     water,
     layers,
     textureArray,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS } = {}
+    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null } = {}
   ) {
     if (!field || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Ferns: needs a V2Height with heightAndSlopeAt')
@@ -401,6 +402,11 @@ export class Ferns {
     }
     if (typeof layers.flattenAt !== 'function' || !layers.snow) {
       throw new Error('Ferns: needs Layers with flattenAt and a snow field')
+    }
+    // Optional, so the probes under tmp/ can run the scatter with no rock bed
+    // built. Without it a fern that lands inside a boulder is placed inside it.
+    if (rocks && typeof rocks.blockTopAt !== 'function') {
+      throw new Error('Ferns: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
     }
     if (LOD_BANDS.length !== RING_TIERS.length) {
       throw new Error('Ferns: LOD_BANDS and RING_TIERS must be the same length')
@@ -423,6 +429,7 @@ export class Ferns {
     }
 
     this.field = field
+    this.rocks = rocks
     this.water = water
     this.layers = layers
     this.paths = layers.paths
@@ -905,7 +912,22 @@ export class Ferns {
       rank[n] = u
       n++
       this.instX[id] = x
-      this.instY[id] = h - PLACEMENT.sink * scale
+      // ON TOP OF THE ROCK IF THERE IS ONE UNDER IT, on exactly the trees' terms
+      // -- only stone over ROCK_STAND_MIN answers, and the rocks are placed and
+      // stepped ahead of the ferns in v2/main.js. `max` because a rock bedded
+      // almost to its crown can have a top below the ground beside it, and a fern
+      // must not be dropped into a hill to reach one.
+      //
+      // NO STORED OFFSET, unlike the trees: a fern stands on the FIELD height and
+      // is never re-seated on a chunk mesh, so there is nothing here for a lift to
+      // survive. The price is that `h` and the rock's top are measured off two
+      // different surfaces -- the field at infinite resolution and the chunk mesh
+      // chording across it -- so a raised fern is only exactly on the stone where
+      // those agree. That is the near field, which is the only place a fern is
+      // more than a few pixels, and it is the same error the fern already carries
+      // against the drawn ground.
+      const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
+      this.instY[id] = Math.max(h - PLACEMENT.sink * scale, top)
       this.instZ[id] = z
 
       this._p.set(x, this.instY[id], z)
