@@ -24,7 +24,7 @@ import { WorldLighting } from '../src/lighting.js'
 import { AZIMUTHS } from '../src/sim/horizon.js'
 import { SkyProbe } from '../src/sky-probe.js'
 import { WorldProbe } from '../src/world-probe.js'
-import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
+import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { createBladeMaterial } from '../src/props/grass-blades.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
@@ -683,6 +683,16 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
 // USE_COLOR because the material is built with vertexColors, and the fog pair
 // because v2's scene carries FogExp2 -- which is now load-bearing rather than
 // incidental, since auroraDetailK reads `fogDensity` out of the fog chunk.
+//
+// USE_COLOR_ALPHA ALONGSIDE IT, AND vColor IS A vec4 HERE. Not because the
+// terrain geometry has a four-wide colour attribute -- it does not -- but
+// because the three A-Frame 1.8 ships declares `varying vec4 vColor` for every
+// spelling of the guard, with no vec3 form left in the bundle at all. npm's r180
+// still has both, so pairing the defines is what gives this harness the type the
+// headset actually compiles; without it a `vColor *= vec3(...)` type-checks in
+// node and fails to compile on the device. Same trick, same reason, as
+// propDefines above.
+const TERRAIN_DEFINES = ['#define USE_COLOR', '#define USE_COLOR_ALPHA', '#define USE_FOG', '#define FOG_EXP2']
 const TERRAIN_VARIANTS = [
   ['no atlas   ', { atlas: false, lofi: false }],
   ['with atlas ', { atlas: true, lofi: false }],
@@ -714,7 +724,7 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   const mat = createTerrainMaterial({ atlas, lofi: opts.lofi, lean: opts.lean, axis: opts.axis, grain: opts.grain })
   mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
 
-  const defines = ['#define USE_COLOR', '#define USE_FOG', '#define FOG_EXP2']
+  const defines = TERRAIN_DEFINES
   const label = `terrain-material ${variant}`
   const vert = finish(shader.vertexShader)
   const frag = finish(shader.fragmentShader)
@@ -813,6 +823,59 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   }
   for (const mark of vertMarks) {
     if (!vert.includes(mark)) MISSING_MARKS.push(`${label} vert: ${mark}`)
+  }
+}
+
+// The PLAIN rung, which is what the headset draws -- see TERRAIN_SHADERS in
+// v2/main.js. It shares nothing with the six above: a stock Lambert whose only
+// patch is two exposure stages in the VERTEX shader, so the fragment half here
+// is three's own and the whole risk lives in four lines of GLSL.
+//
+// Compiled because those four lines touch vColor, which is the one name in this
+// file whose TYPE differs between npm's three and the headset's. Under the
+// TERRAIN_DEFINES pair it is the vec4 the device declares, so a bare assignment
+// fails here instead of on a Quest.
+{
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  const source = createTerrainMaterial({ atlas: null, axis: true })
+  const mat = createPlainTerrainMaterial(source)
+  mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+
+  const label = 'terrain-material plain      '
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', TERRAIN_DEFINES), vert])
+  SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', TERRAIN_DEFINES), frag])
+  CROSS_STAGE.push([label, vert, frag])
+
+  // JUST THE INJECTED BLOCK, which is what the patch owns: three's own
+  // color_vertex writes `vColor *= color` a few lines above and is not ours to
+  // judge. The patch lands between its include and the next one.
+  const from = shader.vertexShader.indexOf('#include <color_vertex>')
+  const block = shader.vertexShader.slice(from, shader.vertexShader.indexOf('#include', from + 24))
+
+  // The two multiplies are the whole material -- lose either and the ground ships
+  // at the wrong level, green ground grey or a snowfield clipped to a flat sheet.
+  for (const mark of ['vColor.rgb *= mix( vec3( 1.0 ), uGrassTone', 'vColor.rgb *= mix( 1.0, uSnowAlbedo']) {
+    if (!block.includes(mark)) MISSING_MARKS.push(`${label} vert: ${mark}`)
+  }
+  // Neither may be written bare, for the vec4 reason above. The vec3 form fails
+  // to compile on the device, which the row above now catches; the FLOAT form
+  // compiles there and silently scales alpha, which nothing else would catch.
+  const code = block.replace(/\/\/[^\n]*/g, '').replace(/vColor\.rgb\s*\*=/g, '')
+  if (/vColor\s*\*=/.test(code)) {
+    MISSING_MARKS.push(`${label} vert: assigns to bare vColor, which is a vec4 on the headset`)
+  }
+  // Nothing of the fragment ladder may follow it here. This rung exists to not
+  // pay for that, so a grit fetch appearing in it is the whole point being lost.
+  for (const mark of ['uGritArr', 'auroraDetailK', 'uMacroMap']) {
+    if (frag.includes(mark)) MISSING_MARKS.push(`${label} frag: emitted ${mark}, should not`)
   }
 }
 

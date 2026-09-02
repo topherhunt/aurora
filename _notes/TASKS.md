@@ -30,12 +30,13 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - Get VR looking passable
   - [ ] Trees
     - [ ] Try a new version of the voxel tree where each leaf is 2 crossed symmetrical tris, each bearing the "bristle" texture.
-    - [ ] Try a "stacked irregular cones" tree model, using my new tileable pine needles.
-      - [ ] Solid material at LOD1+
-      - [ ] Alpha material at LOD0
-    - [ ] Try a hybrid model where most tris are solid, and fringes are done via alpha
+    - [x] Try a "stacked irregular cones" tree model, using my new tileable pine needles.
+      - [x] Solid material at LOD1+
+      - [x] Alpha material at LOD0
+    - [x] Try a hybrid model where most tris are solid, and fringes are done via alpha
+    - [ ] A separate version of pine -v6 where each branch has its own cloak
     - [ ] Once I'm happy w the foliage look: Make the trunk bulge out at roots (ground level) then sink down infinitely.
-    - [ ] Generate a low-poly pine tree via Tripo?
+    - [ ] 
   - [ ] Rocks
     - [ ] Stop rendering tiny pebbles. Place nothing smaller than 0.5m. Get rid of the pebbles (we'll do those via a separate layer).
     - [ ] Sink rocks deeper into the ground - min 40% in.

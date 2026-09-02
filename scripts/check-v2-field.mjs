@@ -55,6 +55,9 @@ import { RidgeField, SHATTER_VERTEX_CELLS } from '../src/v2/height/ridge.js'
 import { CreaseField, CREASE_CELL, CREASE_REACH, CREASE_JITTER, CREASE_CAP, CREASE_SILL, CREASE_ANISO, CREASE_FLOOR } from '../src/v2/height/crease.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
+import THREE from '../src/three-instance.js'
+import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
+import { TerrainTint } from '../src/terrain/terrain-tint.js'
 import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 import { clamp01, smoothstep } from '../src/sim/mathx.js'
@@ -825,7 +828,127 @@ export async function run({ heightmap } = {}) {
     check(snow.base + snow.band / 2 < bands.max, 'and the snow band closes below the highest ground', `${(snow.base + snow.band / 2).toFixed(1)} m vs max ${bands.max.toFixed(1)} m`)
   }
 
-  // --- 13. mesher throughput ------------------------------------------------
+  // --- 13. the plain rung, and the grass standing in it ---------------------
+  //
+  // THE MESHER'S COLOUR IS NOT THE COLOUR ANYTHING IS DRAWN. What reaches the
+  // eye is shade() times whatever the terrain material does over it, and with the
+  // plain rung shipping that is now two multiplies in the VERTEX shader rather
+  // than a fragment chain. Two things have to hold and neither is visible from
+  // one file:
+  //
+  //   The blade bed takes its foot colour from TerrainTint on the CPU, so that
+  //   replay has to agree with the GLSL, EXACTLY -- a blade whose base is a
+  //   different green from the ground it grows out of is the one failure the
+  //   whole terrain-match trick exists to avoid. So the numbers are read back OUT
+  //   of the emitted shader source rather than restated here: change
+  //   PLAIN_GRASS_TONE and both sides move, change one side alone and this fails.
+  //
+  //   And the level swing has to leave grass classified as grass. shade() scales
+  //   all three channels together, so it scales the margin the vegetation knee is
+  //   measured on, and MOTTLE_VALUE is the one knob that can push mottled meadow
+  //   under it -- at which point the shader stops treating it as vegetation and
+  //   the tone above stops being applied, in patches, because the mottle is
+  //   patchy. See the C_MOSS banner in chunk-mesh-v2.js for the arithmetic.
+  console.log('\nthe plain rung')
+  {
+    const shaded = createTerrainMaterial()
+    const plainMat = createPlainTerrainMaterial(shaded)
+    const src = { vertexShader: THREE.ShaderLib.lambert.vertexShader, fragmentShader: '', uniforms: {} }
+    plainMat.onBeforeCompile(src)
+
+    // SWIZZLED, and the pattern says so on purpose: the headset's three declares
+    // vColor a vec4, so a bare assignment there does not compile at all. What
+    // catches that is check-shaders, which compiles this rung against the vec4;
+    // matching the same spelling here keeps the two gates describing one shader.
+    const toneLine = src.vertexShader.match(/vColor\.rgb \*= mix\( vec3\( 1\.0 \), uGrassTone, auroraGreenBase \* ([0-9.]+) \);/)
+    check(toneLine !== null, 'the plain rung applies uGrassTone in the vertex shader, scaled by the green mask')
+    check(/vColor\.rgb \*= mix\( 1\.0, uSnowAlbedo, auroraVertexSnow \);/.test(src.vertexShader),
+      'and uSnowAlbedo, without which C_SNOW under a 2.1 sun clips to a flat white sheet')
+    if (!toneLine) {
+      throw new Error('check-v2-field: the plain rung no longer emits the uGrassTone line this section reads its factor out of -- the pattern above and createPlainTerrainMaterial have drifted apart')
+    }
+    const toneK = Number(toneLine[1])
+    check(toneK > 0 && toneK < 1, 'at PART of full strength -- the whole multiply is tuned against a fragment chain that is no longer there', `${toneK}`)
+
+    // The knees are lifted from the GLSL for the same reason the factor is: they
+    // are the fragment stage's auroraGreenBase and auroraVertexSnow, and a rung
+    // that classified the surface differently would move the surfaces as well as
+    // their level.
+    const knee = src.vertexShader.match(/auroraGreenBase = smoothstep\( ([0-9.]+), ([0-9.]+), vColor\.g - max\( vColor\.r, vColor\.b \) \)/)
+    check(knee !== null, 'and it classifies vegetation off the same knee the fragment rungs use')
+    if (!knee) {
+      throw new Error('check-v2-field: the plain rung no longer emits the auroraGreenBase line this section reads its knee out of')
+    }
+
+    const tint = new TerrainTint(shaded, layers, bands, 'plain')
+    const tone = shaded.userData.uniforms.uGrassTone.value
+    const out = [0, 0, 0]
+    const nyAt = (x, z) => {
+      const gx = (field.heightAt(x + CLASS_EPS, z, CLASS_EPS) - field.heightAt(x - CLASS_EPS, z, CLASS_EPS)) / (2 * CLASS_EPS)
+      const gz = (field.heightAt(x, z + CLASS_EPS, CLASS_EPS) - field.heightAt(x, z - CLASS_EPS, CLASS_EPS)) / (2 * CLASS_EPS)
+      return 1 / Math.hypot(gx, 1, gz)
+    }
+
+    // MEADOW SITES ARE PICKED BY GEOMETRY, NOT BY COLOUR. The knee is the thing
+    // under test, so selecting on it would only prove that ground the knee likes
+    // is ground the knee likes. Low, shallow and below the snow band is C_GRASS by
+    // construction in shade(), whatever the mottle then does to it.
+    let worst = 0
+    let lowVeg = 1
+    let meadow = 0
+    let moved = 0
+    const rgb = [0, 0, 0]
+    for (let i = 0; i < 6000; i++) {
+      const p = site(i + 4200000)
+      const ny = nyAt(p.x, p.z)
+      const h = field.heightAt(p.x, p.z, CLASS_EPS)
+      const snowLine = field.snowLineAt(p.x, p.z)
+
+      // What the mesher writes, and then what the GLSL above does to it.
+      shade(h, ny, snowLine, layers.snow.band, 0, bands.altLo, bands.altSpan, p.x, p.z, out, 0)
+      const green = smoothstep(Number(knee[1]), Number(knee[2]), out[1] - Math.max(out[0], out[2]))
+      const drawn = [
+        out[0] * (1 + (tone.r - 1) * green * toneK),
+        out[1] * (1 + (tone.g - 1) * green * toneK),
+        out[2] * (1 + (tone.b - 1) * green * toneK),
+      ]
+
+      // And what a blade planted there is painted.
+      tint.groundAt(rgb, p.x, p.z, h, ny, snowLine)
+      for (let c = 0; c < 3; c++) worst = Math.max(worst, Math.abs(rgb[c] - drawn[c]))
+
+      if (clamp01((h - bands.altLo) / bands.altSpan) < 0.3 && ny > 0.95 && h < snowLine - layers.snow.band) {
+        meadow++
+        lowVeg = Math.min(lowVeg, green)
+        if (Math.abs(rgb[0] - out[0]) > 1e-9) moved++
+      }
+    }
+    check(worst < 1e-12, "a blade's foot is painted the colour the plain rung draws that ground",
+      `worst channel disagreement ${worst.toExponential(1)}`)
+    check(meadow > 50, 'there is meadow in this world to run the classification on', `${meadow} of 6000 sites`)
+    check(moved === meadow, 'and the instrument can see a disagreement -- the tone moves every one of them',
+      `${moved}/${meadow} moved by the tone`)
+    // 0.75 AND NOT THE MEASURED 0.89. What is being defended is that the mottle
+    // cannot switch vegetation OFF in patches -- the failure is the shader picking
+    // the rock grit layer and skipping the moss and the tone across a meadow, and
+    // it arrives patchy because the mottle is. A bar set just under today's
+    // reading would fail on any retune of the palette that is still perfectly
+    // safe; a bar at the knee's own midpoint fails when the margin is genuinely
+    // being spent.
+    check(lowVeg > 0.75, 'the doubled level swing leaves the darkest meadow still classified as vegetation',
+      `worst meadow site ${lowVeg.toFixed(3)} vegetated`)
+
+    // The snow half of the same knob, from the source: the two constants are not
+    // exported and the value they defend is a LOOK, so what is asserted is the
+    // relationship the comment states rather than either number.
+    const meshSrc = await readFile(MESH_PATH, 'utf8')
+    const ground = Number(meshSrc.match(/const MOTTLE_VALUE = ([0-9.]+)/)[1])
+    const onSnow = Number(meshSrc.match(/const MOTTLE_VALUE_SNOW = ([0-9.]+)/)[1])
+    check(ground > onSnow, 'snow takes a smaller level swing than ground -- it is an order of magnitude brighter, so the same fraction is a far larger step',
+      `${ground} on ground, ${onSnow} on snow`)
+  }
+
+  // --- 14. mesher throughput ------------------------------------------------
   console.log('\nmesher throughput')
   {
     const authored = new Layers()
@@ -858,7 +981,7 @@ export async function run({ heightmap } = {}) {
     check(msAuthored < 13.9, 'an authored chunk meshes inside a frame', `${msAuthored.toFixed(2)} ms`)
   }
 
-  // --- 14. the relief knobs -------------------------------------------------
+  // --- 15. the relief knobs -------------------------------------------------
   //
   // §18's opt-in jaggedness set (src/v2/height/relief.js). Last in the file
   // because it is the only section that builds fields other than the shipped

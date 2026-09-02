@@ -1652,3 +1652,76 @@ ${lean ? '' : `            // ---- THE GRIT TILE, FINE SAMPLE: ${GRIT_FINE_METRE
 
   return material
 }
+
+// ---------------------------------------------------------------------------
+// THE PLAIN RUNG, which is what the headset draws: the mesher's vertex colours
+// under a stock Lambert, with the two EXPOSURE stages off the bottom of the full
+// shader and nothing else. No atlas fetch, no near block, no macro layers, no
+// branches. Everything this file spends its milliseconds on is gone.
+//
+// WHY THOSE TWO STAGES SURVIVE THE CUT WHEN THE REST DOES NOT. Every other layer
+// above ADDS surface detail the vertex colours cannot carry, so dropping it costs
+// variety and nothing else. These two add nothing -- they SCALE what shade()
+// already wrote -- and dropping them draws the palette at the wrong level in two
+// specific places. Green ground reads grey and waxy without uGrassTone, because
+// low chroma is what waxy IS and the cure is red and blue down while green stays.
+// And snow, at C_SNOW 0.88 against a 2.1 sun with no tone mapping anywhere in the
+// renderer, computes about 2.15 and hard-clips to a flat white sheet; uSnowAlbedo
+// is the only thing between the snowfield and that.
+//
+// AT HALF STRENGTH ON GRASS -- PLAIN_GRASS_TONE. The full multiply is tuned
+// against a fragment shader that then lays moss, dirt and a photograph over it,
+// and landing all of it on bare vertex colours overshoots into a green too
+// saturated to read as ground.
+//
+// IN THE VERTEX SHADER, which is what makes it nearly free: a smoothstep and two
+// multiplies, once per vertex rather than once per fragment, on an attribute the
+// mesher already writes. The masks are the same functions of vColor the fragment
+// stage computes at auroraGreenBase and auroraVertexSnow, so this rung classifies
+// the surface identically to the ones it is measured against.
+export const PLAIN_GRASS_TONE = 0.5
+
+/**
+ * @param {THREE.Material} source  the material createTerrainMaterial built, for
+ *   uGrassTone and uSnowAlbedo. Held BY REFERENCE, so retuning the exposure
+ *   retunes this rung with it.
+ */
+export function createPlainTerrainMaterial(source) {
+  const src = source?.userData?.uniforms
+  if (!src?.uGrassTone || !src?.uSnowAlbedo) {
+    throw new Error('createPlainTerrainMaterial: needs the terrain material, for uGrassTone and uSnowAlbedo')
+  }
+
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true })
+  material.userData.uniforms = { uGrassTone: src.uGrassTone, uSnowAlbedo: src.uSnowAlbedo }
+
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, material.userData.uniforms)
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        uniform vec3 uGrassTone;
+        uniform float uSnowAlbedo;`)
+      .replace('#include <color_vertex>', `#include <color_vertex>
+        // BOTH MASKS BEFORE EITHER MULTIPLY. The grass tone takes blue down by
+        // more than a quarter, so reading the snow knee off an already-toned
+        // vColor would classify toned grass against a moved threshold.
+        //
+        // SWIZZLED, AND NEVER BARE vColor. The three A-Frame 1.8 ships -- the
+        // three every headset page runs, see three-instance.js -- declares vColor
+        // a vec4 unconditionally, where npm's r180 gives a vec3 unless
+        // USE_COLOR_ALPHA. A bare vColor *= vec3 does not compile there at all,
+        // and a bare vColor *= float compiles and quietly scales alpha, which
+        // that fork's color_fragment then multiplies into diffuseColor whole.
+        // Same trap as COLOR_FRAGMENT in material.js. A swizzle is right on both.
+        float auroraGreenBase = smoothstep( 0.004, 0.030, vColor.g - max( vColor.r, vColor.b ) );
+        float auroraVertexSnow = smoothstep( 0.30, 0.60, vColor.b );
+        vColor.rgb *= mix( vec3( 1.0 ), uGrassTone, auroraGreenBase * ${PLAIN_GRASS_TONE.toFixed(2)} );
+        vColor.rgb *= mix( 1.0, uSnowAlbedo, auroraVertexSnow );`)
+  }
+
+  // Named rather than left to three's default, which stringifies the whole
+  // onBeforeCompile above into the key. lighting.patch chains onto this one.
+  material.customProgramCacheKey = () => 'aurora-terrain-plain'
+
+  return material
+}

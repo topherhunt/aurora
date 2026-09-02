@@ -1,4 +1,5 @@
 import { terrainDetailTextures } from './grit-texture.js'
+import { PLAIN_GRASS_TONE } from './terrain-material.js'
 import { shade } from '../v2/terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -10,16 +11,29 @@ import { shade } from '../v2/terrain/chunk-mesh-v2.js'
 // terrain/terrain-material.js then puts it through several more stages before
 // anything reaches the eye. Painting a prop with `shade` alone gives something
 // flatly, uniformly the wrong colour, most obviously because of the last stage:
-// uGrassTone is (0.45, 0.92, 0.45), so every green fragment in the world has its
-// red and its blue halved on the way out and a prop that skips it reads grey and
-// waxy beside the meadow it is standing in.
+// uGrassTone is (0.45, 0.92, 0.45), so green ground has its red and its blue
+// taken down hard on the way out -- at full strength under the shader rungs and
+// at half under the plain one -- and a prop that skips it reads grey and waxy
+// beside the meadow it is standing in.
 //
-// So this replays the three stages that MOVE THE AVERAGE:
-//   1. the region layer, one kilometre per tile, a value swing plus a pull
-//      toward dirt at its high end and deep green at its low;
-//   2. the mid-range mottle, 137 m per tile and rotated, the same shape with a
-//      dry ochre at its high end;
-//   3. uGrassTone, the exposure multiply that lands last.
+// SO IT REPLAYS WHATEVER RUNG IS ON SCREEN, because "the colour the ground is"
+// is a different chain per rung and a prop painted from the wrong one is wrong by
+// a visible amount. `chain` selects, and the two are:
+//
+//   'plain' -- what the headset draws. HALF of uGrassTone, on the same green
+//     mask, and nothing else, which is the entire fragment stage of
+//     createPlainTerrainMaterial.
+//   'shader' -- axis, grain, and anything else this factory compiles. The three
+//     stages that MOVE THE AVERAGE: the region layer, one kilometre per tile, a
+//     value swing plus a pull toward dirt at its high end and deep green at its
+//     low; the mid-range mottle, 137 m per tile and rotated, the same shape with
+//     a dry ochre at its high end; and uGrassTone whole, landing last.
+//
+// The two are far apart, and the gap is the bug this exists to close: under
+// 'plain' the ground has no region and no macro layer AT ALL, so a bed replaying
+// them carries a 137 m patchwork the ground it stands in does not have, over a
+// green a third more saturated than the ground's.
+//
 // The amplitudes and the palette are READ LIVE off the terrain's own uniforms,
 // so retuning the ground retunes everything painted from it. What is duplicated
 // here is only the geometry of the thing -- the two tile sizes, the rotation and
@@ -66,8 +80,12 @@ export class TerrainTint {
    *   and any lighting patch.
    * @param {Layers} layers  for `flattenAt` and the live snow band.
    * @param {object} bands  V2Height's, for `altLo` and `altSpan`.
+   * @param {'plain'|'shader'} [chain]  which rung to replay; see the banner. The
+   *   default is what the headset draws. WRITABLE afterwards, for the /?quest
+   *   row -- but a clump is coloured once, when it is placed, so switching this
+   *   re-tints beds only as their tiles recycle under the player.
    */
-  constructor(material, layers, bands) {
+  constructor(material, layers, bands, chain = 'plain') {
     const u = material?.userData?.uniforms
     if (!u) throw new Error('TerrainTint: the terrain material has no userData.uniforms')
     for (const key of NEEDED) {
@@ -81,6 +99,7 @@ export class TerrainTint {
     if (!bands || typeof bands.altLo !== 'number' || typeof bands.altSpan !== 'number') {
       throw new Error('TerrainTint: needs V2Height.bands, for altLo and altSpan')
     }
+    this.setChain(chain)
     this.u = u
     this.layers = layers
     this.bands = bands
@@ -130,6 +149,14 @@ export class TerrainTint {
     return (top + (bot - top) * fy) / 255
   }
 
+  /** Which rung to replay. See the banner. */
+  setChain(chain) {
+    if (chain !== 'plain' && chain !== 'shader') {
+      throw new Error(`TerrainTint: chain must be 'plain' or 'shader', got ${chain}`)
+    }
+    this.chain = chain
+  }
+
   /**
    * Take a `shade` result to the colour the ground at (x, z) is drawn in.
    * Mutates `rgb` in place; values stay LINEAR throughout, as `shade`'s are.
@@ -139,6 +166,8 @@ export class TerrainTint {
     // How green the vertex tint is, which is the mask every colour stage below
     // is weighted by -- terrain-material.js computes exactly this from vColor.
     const green = smoothstep(0.004, 0.030, rgb[1] - Math.max(rgb[0], rgb[2]))
+
+    if (this.chain === 'plain') return this._tone(rgb, green * PLAIN_GRASS_TONE)
 
     const region = this._macroR(x / REGION_METRES, z / REGION_METRES)
     scaleRGB(rgb, 1 + (region - 0.5) * u.uRegionValue.value)
@@ -155,10 +184,15 @@ export class TerrainTint {
     mixRGB(rgb, u.uDry.value, smoothstep(0.856, 1.0, mottle) * green * u.uMacroTint.value)
     mixRGB(rgb, u.uDeep.value, smoothstep(0.218, 0.0, mottle) * green * u.uMacroTint.value)
 
-    const tone = u.uGrassTone.value
-    rgb[0] *= 1 + (tone.r - 1) * green
-    rgb[1] *= 1 + (tone.g - 1) * green
-    rgb[2] *= 1 + (tone.b - 1) * green
+    return this._tone(rgb, green)
+  }
+
+  /** uGrassTone, at `k` of full strength. The last stage of either chain. */
+  _tone(rgb, k) {
+    const tone = this.u.uGrassTone.value
+    rgb[0] *= 1 + (tone.r - 1) * k
+    rgb[1] *= 1 + (tone.g - 1) * k
+    rgb[2] *= 1 + (tone.b - 1) * k
     return rgb
   }
 }

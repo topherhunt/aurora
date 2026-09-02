@@ -20,7 +20,7 @@ import { Trees } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
-import { createTerrainMaterial } from '../terrain/terrain-material.js'
+import { createPlainTerrainMaterial, createTerrainMaterial } from '../terrain/terrain-material.js'
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood } from './render/deadwood.js'
@@ -1581,6 +1581,12 @@ async function bootWorld() {
   // does and must not be rebuilt when the bed is. See terrain/terrain-tint.js.
   terrainTint = new TerrainTint(terrain.material, layers, height.bands)
 
+  // The shipped rung goes on here and not at construction, because TerrainV2
+  // compiles `axis` either way -- the depth material and the tint above both need
+  // its uniforms -- so without this the mesh would draw with the one thing on the
+  // row that nobody selected. See TERRAIN_SHADERS.
+  applyTerrainShader()
+
   // The authored surfaces. Water first, because the spawn search asks it what is
   // wet before the player is placed.
   waterSurfaces = new WaterSurfaces({ water, layers })
@@ -2180,8 +2186,8 @@ function logSceneCensus() {
 let plainTerrainMaterial = null
 const builtTerrainVariants = new Map()
 
-// THREE RUNGS: what ships, the swap being evaluated, and the floor both are
-// measured against.
+// THREE RUNGS, and `plain` IS NOW THE ONE THAT SHIPS -- the other two are what
+// it is measured against and what it would cost to go back.
 //
 // The question this row exists to answer: when the headset sits at 50-60 fps
 // instead of 90, triangles are rarely what an Adreno 650 is struggling with --
@@ -2196,19 +2202,22 @@ const builtTerrainVariants = new Map()
 // TerrainV2 compiles at boot. terrain-material.js still holds the full source --
 // the /gen-* benches and the gates compile it.
 //
-// `plain` is the CONTROL and swaps nothing else -- same BatchedMesh, same slots,
-// same selection, same draw calls, same vertex colours, same Gouraud lighting --
-// so the 3.0 ms between the rungs is exactly terrain-material.js's patch plus
-// lighting.js's, and nothing is confounding it. It is NOT MeshBasicMaterial,
+// `plain` swaps nothing else -- same BatchedMesh, same slots, same selection,
+// same draw calls, same vertex colours, same Gouraud lighting -- which is what
+// made it a clean control and is now what makes it a cheap default: the 2.74 ms
+// between it and `axis` is exactly terrain-material.js's fragment patch, and
+// there is nothing else in the swap to give back. It is NOT MeshBasicMaterial,
 // though "flat colour" is what it would give: Lambert's fragment shader is
 // vColor times an already-interpolated irradiance plus fog, a handful of
-// instructions, so Basic would buy a rounding error and cost the A/B its
-// meaning, because the ground would also stop being lit.
+// instructions, so Basic would buy a rounding error and stop the ground being
+// lit. See createPlainTerrainMaterial for the two exposure stages it does keep
+// and why they are in the VERTEX shader.
 //
-// `axis` IS WHAT SHIPS and what TerrainV2 compiles at boot. `grain` is the one
-// quality rung below it: same projection, but the near block cut to the speckle
-// and the relief normals, dropping the dirt and moss mixes and the colour guard
-// that wrapped them.
+// `axis` is what TerrainV2 still compiles at boot, and it has to: the depth
+// material and TerrainTint both hold its uniforms. It is simply not what the
+// BatchedMesh draws with. `grain` is one quality rung below it: same projection,
+// but the near block cut to the speckle and the relief normals, dropping the dirt
+// and moss mixes and the colour guard that wrapped them.
 //
 // THE LADDER THAT SETTLED IT, on a Quest 2 under load from trees and ferns, three
 // cycles agreeing: lean 53 fps (18.87 ms), axis 53, near block folded away 57
@@ -2222,8 +2231,11 @@ const builtTerrainVariants = new Map()
 //
 // AND THE WHOLE ROW IS 2.74 ms OF A 7.76 ms OVERSPEND against 90 fps. Deleting the
 // terrain shader outright lands at 62, so the rest is props. That is why this
-// stops at two rungs.
-const TERRAIN_SHADERS = ['axis', 'grain', 'plain']
+// stops at two rungs, and why the 2.74 was eventually taken.
+//
+// FIRST ENTRY IS THE DEFAULT, and the row still cycles all three -- what it costs
+// to put the near field back is the thing this is read for.
+const TERRAIN_SHADERS = ['plain', 'axis', 'grain']
 let terrainShaderMode = 0
 
 /**
@@ -2261,9 +2273,9 @@ function terrainShaderMaterial() {
   if (mode === 'axis') return terrain.material
   if (mode !== 'plain') return terrainVariant(mode)
   if (!plainTerrainMaterial) {
-    plainTerrainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
+    plainTerrainMaterial = createPlainTerrainMaterial(terrain.material)
     // PATCHED IN VERTEX MODE, which is the whole difference between this rung
-    // being a control and being a candidate. Unpatched it had no aerial ramp, so
+    // being a control and being shippable. Unpatched it had no aerial ramp, so
     // distant mountains faded to flat white fogColor -- the opposite of what air
     // does, which is to go blue with depth. It also had no night lift and no
     // terrain shadow, so it was wrong twice more at dusk.
@@ -2286,7 +2298,19 @@ function terrainShaderMaterial() {
 
 function cycleTerrainShader() {
   terrainShaderMode = (terrainShaderMode + 1) % TERRAIN_SHADERS.length
+  applyTerrainShader()
+}
+
+/**
+ * Put the selected rung on the mesh, and tell TerrainTint which chain the ground
+ * is now being drawn through so newly placed clumps are painted the colour of the
+ * ground they are standing in. Beds already on screen keep the colour they were
+ * given until their tiles recycle -- see TerrainTint's constructor.
+ */
+function applyTerrainShader() {
+  const mode = TERRAIN_SHADERS[terrainShaderMode]
   terrain.batch.material = terrainShaderMaterial()
+  terrainTint.setChain(mode === 'plain' ? 'plain' : 'shader')
 }
 
 /**

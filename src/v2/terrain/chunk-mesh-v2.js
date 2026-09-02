@@ -221,7 +221,16 @@ const MOTTLE = new Noise(0x6d07713)
 const MOTTLE_COARSE = 31 // m, the hillside-scale swing
 const MOTTLE_FINE = 6.5 // m, the shortest octave -- see the Nyquist note above
 const MOTTLE_HUE = 17 // m, the patch scale for what the ground is MADE of
-const MOTTLE_VALUE = 0.13 // +/- brightness, as a fraction
+// +/- brightness, as a fraction. GROUND AND SNOW ARE A FACTOR OF TWO APART, and
+// the ground figure is set where it is because with the plain rung shipping this
+// and the bump normals are the ONLY near-field texture the ground has -- no grit
+// fetch, no photograph, nothing else -- so it is turned up until a hollow reads
+// as a hollow from standing height. Snow stays where both used to be: it is the
+// brightest surface in the world by an order of magnitude, so an equal fraction
+// is a far larger step in absolute terms, and at the ground's setting a snowfield
+// reads as dirty rather than as relieved. Same trade as BUMP_SNOW.
+const MOTTLE_VALUE = 0.26
+const MOTTLE_VALUE_SNOW = 0.13
 const MOTTLE_TINT = 0.30 // how far the hue swing pulls the palette
 const MOTTLE_EARTH = 0.62 // how far a bare-earth patch pulls it, at the dry tail
 
@@ -237,8 +246,12 @@ const MOTTLE_EARTH = 0.62 // how far a bare-earth patch pulls it, at the dry tai
 // would arrive as patches, because the mottle is patchy. So the dry side yellows
 // and brightens while keeping g above both other channels: C_STRAW clears the
 // knee by 0.034, C_MOSS by 0.052, and a 30% pull toward either leaves grass at
-// 0.038 and 0.044 -- still 1.000 vegetated even at the bottom of the level swing.
-// Check that arithmetic before moving any of these three.
+// 0.038 and 0.044. THE LEVEL SWING EATS INTO THAT MARGIN, because it scales all
+// three channels together and so scales their difference: measured over low
+// shallow ground at MOTTLE_VALUE, the darkest meadow in the world reads 0.89
+// vegetated rather than 1.00. Check the arithmetic before moving any of these
+// three, and check the number before moving MOTTLE_VALUE -- check-v2-field's
+// "the plain rung" section is where it is measured.
 //
 // The one place the classification does move is SCRUB at altitude, which is not
 // green-dominant to start with and reaches 0.23 vegetated on the mossy side. That
@@ -343,7 +356,8 @@ function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, wx, wz, out
   // between warm and cool stone, off the same field and with no seam where they
   // meet. Snow takes none of it: at 0.86 linear against palette entries near
   // 0.07, any hue pull reads as dirt on the brightest thing in the world. It
-  // keeps the level swing below, which is what gives snow a readable surface.
+  // keeps the level swing below at MOTTLE_VALUE_SNOW, which is what gives snow a
+  // readable surface without turning it grey.
   const ha = Math.abs(hue) * MOTTLE_TINT * (1 - snow)
   const grassT = hue > 0 ? C_MOSS : C_STRAW
   const rockT = hue > 0 ? C_ROCK_WARM : C_ROCK_COOL
@@ -364,7 +378,7 @@ function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, wx, wz, out
   g = lerp(g, C_EARTH[1], earthA)
   b = lerp(b, C_EARTH[2], earthA)
 
-  const v = 1 + m * MOTTLE_VALUE
+  const v = 1 + m * lerp(MOTTLE_VALUE, MOTTLE_VALUE_SNOW, snow)
   r *= v
   g *= v
   b *= v
