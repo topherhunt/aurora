@@ -30,7 +30,7 @@ import { createTerrainMaterial } from '../../terrain/terrain-material.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.js'
 
 // ---------------------------------------------------------------------------
-// v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 10 tree, worker-fed
+// v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 11 tree, worker-fed
 // geometry, hole-free swaps, partial invalidation on an edit, and ONE draw call.
 //
 // The rendering argument is DESIGN.md §5; the streaming policy lives in
@@ -61,7 +61,7 @@ import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.j
 // ---------------------------------------------------------------------------
 
 // Reselect the quadtree at ~12 Hz when nothing is streaming: 12 cm of walking
-// between selections against a 50 cm leaf cell at depth 10. Selection also reruns
+// between selections against a 25 cm leaf cell at depth 11. Selection also reruns
 // immediately when a chunk lands or an edit invalidates (`_dirty`), which is what
 // actually settles a new view; the timer only covers walking through resident
 // ground. Halving it would double a measured 0.023 ms p50 / 0.044 ms p99
@@ -140,9 +140,9 @@ export class TerrainV2 {
    * @param relief        the jaggedness knobs (height/relief.js); defaults to all off.
    * @param workers       worker count.
    * @param queueDepth    requests in flight per worker; see WORKER_QUEUE_DEPTH.
-   * @param lean          compile the reduced ground shader; see the LEAN block in terrain-material.js.
+   * @param axis          compile the reduced ground shader; see the LEAN and AXIS blocks in terrain-material.js.
    */
-  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, lean = false } = {}) {
+  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false } = {}) {
     if (!heightmapRaw) throw new Error('TerrainV2: no heightmapRaw -- the workers have no coarse field to sample and would mesh a flat world')
     if (!doc) throw new Error('TerrainV2: no doc -- the workers have no content layers to bake')
     const { width, height, data, meta } = heightmapRaw
@@ -188,10 +188,10 @@ export class TerrainV2 {
 
     // The prop texture array, forwarded so the rock surface can wear the same
     // stone tile the boulders do. Optional: without it the terrain compiles
-    // exactly as it did before, which is what /gen-* benches still get. `lean`
+    // exactly as it did before, which is what /gen-* benches still get. `axis`
     // wins over it -- that variant samples no tiles at all -- so the game passes
     // both and the atlas only reaches the shader on the /gen-* path.
-    this.material = createTerrainMaterial({ atlas, lean })
+    this.material = createTerrainMaterial({ atlas, axis })
 
     this.batch = new THREE.BatchedMesh(SLOT_COUNT, SLOT_COUNT * CHUNK_VERTS, SLOT_COUNT * CHUNK_INDICES, this.material)
     this.batch.name = 'terrain-v2'

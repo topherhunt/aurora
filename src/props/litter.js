@@ -192,20 +192,17 @@ export const LITTER_SIZE_POW = 2.0
 export const LITTER_KEY = 0.7
 export const LITTER_SKY = 0.3
 
-// The shapes that get dropped, and how many distinct rocks are built of each.
-// SMALL VARIANTS ONLY: these are the stones that used to be scattered as the
-// underfoot bed, so the list is that bed's roster minus the ones too big to
-// belong in a patch a stride wide.
+// How many distinct rocks a patch is assembled from. There is one boulder in
+// this world (rock-bank.js) and no variants to draw on, so the pool is fifteen
+// SEEDS of it: same parameters, different noise, and at these sizes that is the
+// whole of what a silhouette is.
 //
-// A POOL, NOT A ROCK PER STONE. Five variants at three seeds is fifteen
-// distinct meshes, and every one of the two hundred-odd stones across the four
-// layers is one of those fifteen under a different yaw, scale and tint. That is
-// the same trade rock-bank.js makes for the world itself, and the repeat is
-// just as invisible here for the same reason: at these sizes a stone is a
-// silhouette, and a silhouette turned 40 degrees and scaled by 2.5 is a
-// different silhouette. Fifteen buildRock calls at load rather than two hundred.
-export const LITTER_VARIANTS = ['pebble', 'grit', 'cobble', 'shingle', 'scree']
-export const LITTER_SEEDS = 3
+// A POOL, NOT A ROCK PER STONE. Every one of the two hundred-odd stones across
+// the four layers is one of those fifteen under a different yaw, scale and tint,
+// and the repeat is invisible because at these sizes a stone IS a silhouette,
+// and a silhouette turned 40 degrees and scaled by 2.5 is a different one.
+// Fifteen buildRock calls at load rather than two hundred.
+export const LITTER_SEEDS = 15
 
 // Which tier the pooled rocks are built at. ROCK_TIERS is finest-first, so 1 is
 // T80. Not tier 0: this geometry is thrown away the moment the photograph is
@@ -237,10 +234,8 @@ export const LITTER_TINTS = TINTS.map((_, i) => i).filter((i) => TINTS[i][0] !==
  */
 export function buildLitterPool() {
   const pool = []
-  for (const name of LITTER_VARIANTS) {
-    for (let s = 0; s < LITTER_SEEDS; s++) {
-      pool.push(buildRock({ ...rockParams(name, s), size: 1, tier: LITTER_TIER }))
-    }
+  for (let s = 0; s < LITTER_SEEDS; s++) {
+    pool.push(buildRock({ ...rockParams(s), size: 1, tier: LITTER_TIER }))
   }
   return pool
 }
@@ -257,7 +252,7 @@ export function buildLitterPool() {
  *
  * Returns `[{ shape, tint, size, x, z, yaw }]`, where `shape` indexes the pool.
  */
-export function litterPlacements(seed, poolSize = LITTER_VARIANTS.length * LITTER_SEEDS) {
+export function litterPlacements(seed, poolSize = LITTER_SEEDS) {
   const rand = mulberry32(seed * 7919 + 13)
   // Drawn once, before the loop: the lobes are the PATCH's shape and not any
   // stone's, so a phase per stone would average them away to a circle.

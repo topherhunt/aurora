@@ -16,7 +16,7 @@ import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, MAX_DEPTH, SLOT_COUNT, PINNED_CHUNKS
 //
 // WHAT IS DIFFERENT FROM v1, and it is three things, none of them the rule:
 //
-//   1. The box is 8192 m rather than v1's 16384 m at the SAME MAX_DEPTH 10, so the leaf node is 8 m rather than v1's 16 m and the finest cell is 50 cm rather than 1 m. One level of resolution, bought entirely with the halved world. The cap was briefly 13, and §18 and config.js record why it came back: the split rule floors range at a node's own half-size, so a deeper cap is a staircase of tiny 640-triangle chunks dragged under the camera forever. WORLD_SIZE and MAX_DEPTH are imported, never re-declared: they moved three times while this file was being written (16384/14, then 4096/12, then 8192/13, now 8192/10) and every number below was re-measured each time. That is the whole argument for importing them, and for the gate deriving its own probe positions from WORLD_HALF rather than writing metres down.
+//   1. The box is 8192 m rather than v1's 16384 m, at MAX_DEPTH 11 against v1's 10, so the leaf node is 4 m rather than v1's 16 m and the finest cell is 25 cm rather than 1 m. Two levels of resolution, one from the halved world and one from the deeper cap. The cap was briefly 13, and §18 and config.js record why it came back to 10 and then went out one level to 11: the split rule floors range at a node's own half-size, so a deeper cap is a staircase of 640-triangle chunks dragged under the camera forever, and at 13's 1 m leaf that staircase was spending 640 triangles on a square metre at a time. WORLD_SIZE and MAX_DEPTH are imported, never re-declared: they moved four times while this file was being written (16384/14, then 4096/12, then 8192/13, then 8192/10, now 8192/11) and every number below was re-measured each time. That is the whole argument for importing them, and for the gate deriving its own probe positions from WORLD_HALF rather than writing metres down.
 //   2. Integer node keys rather than `${depth}|${ix}|${iz}` strings. See nodeKey.
 //   3. A finer default triDeg, because v2's primary surface is a desktop editor rather than the Quest 2 that Constraint 1 actually targets. See LOD.triDeg -- the default is the exception, not the setting.
 // ---------------------------------------------------------------------------
@@ -28,20 +28,20 @@ import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, MAX_DEPTH, SLOT_COUNT, PINNED_CHUNKS
 // Mutable so the panel and the [ ] keys can move it live; selection reads it every frame, so a change lands on the next one with no regeneration.
 // ---------------------------------------------------------------------------
 export const LOD = {
-  // 3.0, where v1 ships 5.72. That gap is a DEVICE decision, not a change of mind about the rule, AND 3.0 IS THE EXCEPTION RATHER THAN THE SETTING. DESIGN.md Constraint 1 is explicit that Quest 2 is the only device this project plans for and that there is deliberately no second column, so the headset path is the real one and this default describes the desktop /v2 EDITING route only. Whatever ships to XR takes 4.0 or coarser -- see the budget rows below, where 3.0 is at 91% of terrain's share and 4.0 at 68%. If one number ever has to serve both routes it is 4.0, and this line is where that change belongs.
+  // 3.0, where v1 ships 5.72. That gap is a DEVICE decision, not a change of mind about the rule, AND 3.0 IS THE EXCEPTION RATHER THAN THE SETTING. DESIGN.md Constraint 1 is explicit that Quest 2 is the only device this project plans for and that there is deliberately no second column, so the headset path is the real one and this default describes the desktop /v2 EDITING route only. Whatever ships to XR takes 4.0 or coarser -- see the budget rows below, where 3.0 is at 75% of terrain's share and 4.0 at 57%. If one number ever has to serve both routes it is 4.0, and this line is where that change belongs.
   //
-  // v1's 5.72 is a Quest 2 number chosen by eye with the [ ] keys and then measured, and it is still the right SHAPE of number for a headset. The reason the editor does not simply inherit it: the entire point of a 50 cm cell is being able to SEE that detail while dragging a spline point through it, and at 5.72 the ground is held at 6 degrees per triangle, which hides the thing the depth exists to show. So the editor gets a finer default and XR keeps a coarse one. This is a live knob read every frame rather than a baked constant, which is what makes two routes off one field possible at all.
+  // v1's 5.72 is a Quest 2 number chosen by eye with the [ ] keys and then measured, and it is still the right SHAPE of number for a headset. The reason the editor does not simply inherit it: the entire point of a 25 cm cell is being able to SEE that detail while dragging a spline point through it, and at 5.72 the ground is held at 6 degrees per triangle, which hides the thing the depth exists to show. So the editor gets a finer default and XR keeps a coarse one. This is a live knob read every frame rather than a baked constant, which is what makes two routes off one field possible at all.
   //
   // Measured over 606 positions x 4 headings, half airborne, worst case over the sweep, 640 tris/chunk (check-v2-quadtree.mjs "MIN_TRI_DEG budget"). The "upper bound" column is the same sweep run with NO vertical bounds, where range degrades to the horizontal distance -- and since hypot(dx,dy,dz) is never less than hypot(dx,dz), that column is a bound no height field can exceed. It is what makes these numbers usable before v2's field exists:
   //
   //     triDeg   sel + 21 pinned   + 21 unbounded   fits 1024?   drawn tris   upper bound   % of terrain's 117k
-  //      1.2           886                913             yes        313k          322k            268-275%
-  //      2.0           484                499             yes        158k          163k            135-139%
-  //      3.0           343                367             yes        101k          106k             86- 91%
-  //      4.0           271                289             yes         76k           79k             65- 68%
-  //      5.72          199                208             yes         57k           59k             49- 50%
+  //      1.2           733                748             yes        260k          267k            222-228%
+  //      2.0           409                418             yes        136k          136k            116-116%
+  //      3.0           292                307             yes         86k           88k             74- 75%
+  //      4.0           244                247             yes         65k           67k             56- 57%
+  //      5.72          175                178             yes         51k           51k             44- 44%
   //
-  // §0 holds the whole frame to 350k and terrain to a third of it, 117k. 3.0 draws 101k worst case and cannot exceed 106k for any field, so it FITS -- 91% of terrain's share at the bound, which is a fit with no margin worth having. The props, water and aurora that share the frame have to come out of the other two thirds exactly. AN XR ROUTE SHOULD TAKE 4.0 (68% of the share) OR COARSER rather than assume this default leaves it room. The column to re-measure once the real field lands is "drawn tris", which moves with where the ground sits relative to the eye; the "upper bound" column does not move.
+  // §0 holds the whole frame to 350k and terrain to a third of it, 117k. 3.0 draws 86k worst case and cannot exceed 88k for any field, so it FITS -- 75% of terrain's share at the bound, which is a fit with no margin worth having. The props, water and aurora that share the frame have to come out of the other two thirds exactly. AN XR ROUTE SHOULD TAKE 4.0 (57% of the share) OR COARSER rather than assume this default leaves it room. The column to re-measure once the real field lands is "drawn tris", which moves with where the ground sits relative to the eye; the "upper bound" column does not move.
   //
   // Note that the two finest rows are over budget on drawn triangles even though they fit the slot pool. See MIN_TRI_DEG below for why that is the important asymmetry rather than a footnote.
   triDeg: 3.0,
@@ -50,8 +50,8 @@ export const LOD = {
   //
   // CLAMPED UP to triDeg at the point of use, because a periphery finer than the cone is meaningless. Unlike v1's shipped 5.72, v2's 3.0 default leaves the clamp unbound, so the grading is live -- and it gets MORE load-bearing the finer the knob goes, because the periphery is what the cone's cost is measured against. Worst selection on the sweep, graded against the periphery given the cone's own target:
   //
-  //     triDeg 3.0   322 graded   370 flat   (13% saved, both fit the 1024 pool)
-  //     triDeg 1.2   865 graded  1279 flat   (32% saved, and 1279 + 21 does NOT fit)
+  //     triDeg 3.0   271 graded   316 flat   (14% saved =  29k triangles, both fit the 1024 pool)
+  //     triDeg 1.2   712 graded  1045 flat   (32% saved = 213k triangles, and 1045 + 21 does NOT fit)
   //
   // So the grading buys headroom at the default and is the entire reason MIN_TRI_DEG can be 1.2 rather than something coarser. The gate asserts it at the floor, which is where the claim has teeth.
   periphDeg: 5.0,
@@ -71,8 +71,9 @@ export const LOD = {
 //         4096         12       1 m   6.25 cm       1.1
 //         8192         13       1 m   6.25 cm       1.2
 //         8192         10       8 m     50 cm       1.2 (INHERITED, NOT RE-MEASURED)
+//         8192         11       4 m     25 cm       1.0 available, 1.2 kept
 //
-// Same leaf size, same cell size, same 1024 pool, three different worlds, and the floor is NOT the same number across them. So "1.2 is v1's number and v2 came back to it, therefore 1.2 is what this rule gives you" is the wrong inference, and 4096/12 is the counterexample that was actually measured rather than argued. If WORLD_SIZE or MAX_DEPTH moves again, run check-v2-quadtree.mjs and read the ladder off it. Do not carry 1.2 forward. THE LAST ROW IS EXACTLY THAT MISTAKE, LEFT VISIBLE: the cap came down to 10 for triangle reasons and 1.2 was carried over rather than re-swept, which is safe only in the direction it moved -- a shallower cap can only REDUCE the leaf count, so the pool cannot overflow where it did not before, and the floor is now conservative rather than wrong. Re-sweep it if MIN_TRI_DEG itself is ever the thing being moved.
+// The first three rows share a leaf size, a cell size and a 1024 pool, and the floor is NOT the same number across them. So "1.2 is v1's number and v2 came back to it, therefore 1.2 is what this rule gives you" is the wrong inference, and 4096/12 is the counterexample that was actually measured rather than argued. If WORLD_SIZE or MAX_DEPTH moves again, run check-v2-quadtree.mjs and read the ladder off it. Do not carry 1.2 forward. The 8192/10 row is exactly that mistake, left visible: the cap came down to 10 for triangle reasons and 1.2 was carried over rather than re-swept, which is safe only in the direction it moved -- a shallower cap can only REDUCE the leaf count, so the pool cannot overflow where it did not before. The last row IS re-swept, and the ladder below now puts the pool's own edge at 1.0 (952 of 1024) with 0.9 the first cap that overflows. 1.2 is KEPT anyway rather than lowered to what the pool allows, because the pool is not the wall this knob hits first: at 1.2 the sweep already draws 267k triangles, 229% of terrain's §0 third. Lowering the floor to 1.0 would only extend the knob further into ground that is resident and unaffordable.
 //
 // terrain-v2.js keeps v1's rule that the current selection is exempt from eviction, so the WORST-CASE leaf count has to fit SLOT_COUNT alongside the PINNED_CHUNKS base layer, and overflow THROWS rather than degrading. A knob whose range includes values that cannot work is a knob that fails late.
 //
@@ -81,20 +82,20 @@ export const LOD = {
 // Measured over 606 positions x 4 headings, half of them airborne (check-v2-quadtree.mjs, "MIN_TRI_DEG budget"). Two columns, because a floor measured against a stand-in height field would be a floor that moves when the real field lands: "bounded" uses the analytic stand-in's per-node minY/maxY, "unbounded" runs the same sweep with no bounds at all, where range degrades to the horizontal distance. hypot(dx,dy,dz) >= hypot(dx,dz) always, so the unbounded column is a HARD upper bound that NO height field can exceed.
 //
 //     cap    bounded   + 21   unbounded   + 21   fits 1024?
-//     0.9      1288     1309     1312      1333      no
-//     1.0      1099     1120     1135      1156      no
-//     1.1       979     1000     1072      1093      no
-//     1.2       865      886      892       913     yes
-//     1.5       664      685      712       733     yes
-//     2.0       463      484      478       499     yes
+//     0.9      1042     1063     1066      1087      no
+//     1.0       919      940      931       952     yes
+//     1.1       820      841      868       889     yes
+//     1.2       712      733      727       748     yes
+//     1.5       553      574      580       601     yes
+//     2.0       388      409      397       418     yes
 //
 // THE FLOOR IS SET ON THE UNBOUNDED COLUMN, and that choice is what makes 1.1 wrong rather than marginal. At 1.1 the bounded worst is 979, which plus the 21 pinned is 1000 -- it fits with room to spare, for one particular stand-in field. The unbounded column says 1093, and no height field can beat that column downward, so a 1.1 chosen on the stand-in would throw on the real one. 1.2 is the finest cap that is safe for whatever v2's field turns out to be. The gate asserts both directions on that same column -- 1.2 fits, 1.1 does not -- so the number is shown to be tight rather than picked, and it is asserted on the column the floor was chosen on rather than whichever one makes it pass.
 //
 // WHY THE EXTRA LEVELS ARE NEARLY FREE, which is the measurement SLOT_COUNT 1024 rests on. Same sweep, same 1.2 cap, varying only MAX_DEPTH:
 //
-//     depth 6 -> 322    8 -> 481    10 -> 628    12 -> 793    13 -> 865
+//     depth 6 -> 322    7 -> 400    8 -> 481    10 -> 628    11 -> 712
 //
-// Each level adds roughly one RING of leaves around the camera, not a quadrupling, because a deeper cap only refines what is already close enough to want it -- and the rings stop growing once the ring's own range makes the target cell coarser than the level provides. Four levels, 9 to 13, cost 1.53x, not 256x. Note also that the grading is doing a third of this work: without it the 1.2 row is 1279 rather than 865 (see LOD.periphDeg).
+// Each level adds roughly one RING of leaves around the camera, not a quadrupling, because a deeper cap only refines what is already close enough to want it -- and the rings stop growing once the ring's own range makes the target cell coarser than the level provides. Four levels, 7 to 11, cost 1.78x, not 256x. Note also that the grading is doing a third of this work: without it the 1.2 row is 1045 rather than 712 (see LOD.periphDeg).
 //
 // CEILING -- 7.0. CHUNK_RES is 16 in v2 as in v1, so v1's derivation carries over unchanged. Range is floored at a node's own half-size, so for any node containing the camera the split test is
 //
@@ -102,10 +103,11 @@ export const LOD = {
 //
 // -- independent of size, so past atan(0.125) = 7.125 deg it either splits every such node or none of them, and "none" means the entire 8 km world draws as a single chunk with 512 m triangles. MEASURED here rather than inherited, because the depth changed and an assertion carried over untested is the failure mode design/lessons.md counts thirteen times. From a ground-level camera:
 //
-//     depth 13:  7.0 -> 130 leaves (55 drawn)     7.2 -> 1 leaf
-//     depth 10:  7.0 -> 106 leaves (44 drawn)     7.2 -> 1 leaf
+//     depth 13:  7.0 -> 130 leaves     7.2 -> 1 leaf
+//     depth 11:  7.0 -> 118 leaves     7.2 -> 1 leaf
+//     depth 10:  7.0 -> 106 leaves     7.2 -> 1 leaf
 //
-// v1's file reports "59 drawn leaves at 7.0, 1 at 7.2" for depth 10 on its own field; 44 here is the same measurement on a different height field, and the 7.2 column is exactly 1 on both, which is the part that matters -- the cliff is a property of CHUNK_RES and the range floor, not of the terrain. The extra 24 leaves at depth 13 are the staircase running three levels further down beside the one node that contains the camera, confirming that at the ceiling depth buys a handful of leaves and nothing else. This ceiling moves only if CHUNK_RES does.
+// v1's file reports "59 drawn leaves at 7.0, 1 at 7.2" for depth 10 on its own field; the counts here are the same measurement on a different height field, and the 7.2 column is exactly 1 on both, which is the part that matters -- the cliff is a property of CHUNK_RES and the range floor, not of the terrain. The twelve leaves between depths 11 and 13 are the staircase running two levels further down beside the one node that contains the camera, confirming that at the ceiling depth buys a handful of leaves and nothing else. This ceiling moves only if CHUNK_RES does.
 export const MIN_TRI_DEG = 1.2
 export const MAX_TRI_DEG = 7.0
 
@@ -246,7 +248,7 @@ export function selectNodes(
     const tan = seen ? tanTri : tanPeriph
 
     if (depth < maxDepth) {
-      // Range is floored at the node's own half-size: inside the box the distance is zero and every node would split to maxDepth regardless of how flat it is. At v1's depth 10 that was a spike of triangles under her feet; here the leaf is 1 m rather than v1's 16 m, so the spike would be 256x larger in leaf count, and it is the one place those leaves buy nothing. This `Math.max` is the invariant the gate was verified against by deliberately deleting it: check-v2-quadtree.mjs's "one step past the cliff the whole world is a single chunk" goes from 1 leaf to 124 and fails. Worth knowing that it is the ONLY check that fails -- the pool ladder and the tiling invariants do not notice, because the staircase under the camera is only about three leaves per level. The ceiling section is load-bearing for this specific bug precisely because atan(2/CHUNK_RES) is derived FROM the floor.
+      // Range is floored at the node's own half-size: inside the box the distance is zero and every node would split to maxDepth regardless of how flat it is. At v1's depth 10 that was a spike of triangles under her feet; here the leaf is 4 m rather than v1's 16 m, so the spike would be 16x larger in leaf count, and it is the one place those leaves buy nothing. This `Math.max` is the invariant the gate was verified against by deliberately deleting it: check-v2-quadtree.mjs's "one step past the cliff the whole world is a single chunk" goes from 1 leaf to 124 and fails. Worth knowing that it is the ONLY check that fails -- the pool ladder and the tiling invariants do not notice, because the staircase under the camera is only about three leaves per level. The ceiling section is load-bearing for this specific bug precisely because atan(2/CHUNK_RES) is derived FROM the floor.
       const bounds = info ? info.get(nodeKey(depth, ix, iz)) : null
       const range = Math.max(nodeRange(cam, x, z, size, bounds), size * 0.5)
 

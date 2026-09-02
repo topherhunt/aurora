@@ -99,6 +99,7 @@ import {
   CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock, getPropClock, setPropFadeTimerAt, setPropSolidAt,
 } from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
+import { ROCK_STAND_MIN } from '../src/v2/render/rocks.js'
 import { RIM_AT } from '../src/v2/render/rim.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
 import { LAYER_COUNT, IMAGE_LAYERS, buildTextureArray } from '../src/textures.js'
@@ -1749,6 +1750,95 @@ console.log('\n-- placement --')
     `2^(1/${QUANT}) = ${Math.pow(2, 1 / QUANT).toFixed(3)}`)
   check(NEAR_MARGIN >= TILE, 'the near set reaches at least a tile past the last band',
     `${NEAR_MARGIN} m margin on a ${TILE} m tile`)
+}
+
+// --- 12. trees on top of rocks ----------------------------------------------
+
+console.log('\n-- rocks under the trunk --')
+
+{
+  // A stone standing 4 m proud over a 6 m disc, and a stub instead of the real
+  // `Rocks` so what is under test is the TREE's half of the contract: what it asks
+  // for, where it applies the answer, and what it does everywhere else.
+  const STONE = { x: 40, z: -55, r: 6, top: 64 }
+  let asked = 0
+  let minSizeSeen = Infinity
+  const stone = {
+    blockTopAt(x, z, minSize) {
+      asked++
+      minSizeSeen = Math.min(minSizeSeen, minSize)
+      const dx = x - STONE.x
+      const dz = z - STONE.z
+      return dx * dx + dz * dz < STONE.r * STONE.r ? STONE.top : -Infinity
+    },
+  }
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, rocks: stone })
+  t.place(0, 0)
+
+  let on = 0
+  let off = 0
+  let wrongOn = 0
+  let wrongOff = 0
+  for (const tile of t.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const dx = t.instX[id] - STONE.x
+      const dz = t.instZ[id] - STONE.z
+      const sunk = 60 - PLACEMENT.sink * t.instScale[id]
+      if (dx * dx + dz * dz < STONE.r * STONE.r) {
+        on++
+        // Settled the sink into the STONE's top rather than the ground's, and the
+        // stored lift is what `_reground` will re-add on the next chunk swap.
+        if (Math.abs(t.instY[id] - STONE.top) > 1e-4) wrongOn++
+        if (Math.abs(t.instLift[id] - (STONE.top - 60)) > 1e-4) wrongOn++
+      } else {
+        off++
+        if (Math.abs(t.instY[id] - sunk) > 1e-4) wrongOff++
+      }
+    }
+  }
+
+  check(asked > 0 && on > 0, 'the trees ask the rocks about every trunk, and some of them land on stone',
+    `${asked} asked, ${on} of ${on + off} inside the stone`)
+  check(minSizeSeen === ROCK_STAND_MIN,
+    'and they ask about stone over ROCK_STAND_MIN, so no tree is ever perched on a cobble',
+    `asked at ${minSizeSeen} m`)
+  check(wrongOn === 0, 'a tree over the stone stands on its top, with the lift stored for the reground',
+    `${wrongOn} of ${on} off the stone`)
+  check(wrongOff === 0, 'and a tree beside it is sunk into the ground exactly as before',
+    `${wrongOff} of ${off} moved`)
+
+  // THE OFFSET IS A CONSTANT, WHICH IS THE WHOLE REASON IT IS STORED. `_reground`
+  // re-seats a tree on the chunk mesh that has just been built under it; the rock
+  // was seated off the same data, so the gap between them does not change and the
+  // reground must not re-ask. Raising the world by 5 m must raise a tree on stone
+  // by 5 m and nothing else about it.
+  const raised = { ...flat, scatterAt: (x, z, cell, out) => { out.h = 65; out.tan = 0; return out }, heightAt: () => 65 }
+  t.field = raised
+  const before = []
+  for (const tile of t.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) before.push([tile.ids[k], t.instY[tile.ids[k]]])
+  }
+  for (const tile of t.tiles.values()) t._reground(tile)
+  let moved = 0
+  for (const [id, y] of before) if (Math.abs(t.instY[id] - y - 5) > 1e-4) moved++
+  check(moved === 0, 'and a reground moves a tree on stone with the ground, without re-asking',
+    `${moved} of ${before.length} did something else`)
+
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  bare.place(0, 0)
+  check(bare.placed === t.placed,
+    'a rock lifts a tree and never deletes one -- the two beds are the same scatter',
+    `${bare.placed} without rocks, ${t.placed} with`)
+
+  let threw = false
+  try {
+    new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, rocks: {} })
+  } catch { threw = true }
+  check(threw, 'and something passed as `rocks` that cannot answer throws at construction')
+
+  t.dispose()
+  bare.dispose()
 }
 
 // ---------------------------------------------------------------------------

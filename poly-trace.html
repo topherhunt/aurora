@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- polygon tracer</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --accent: #7fd1ff; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; cursor: pointer;
+      }
+      button:hover { background: #17263c; }
+
+      /* --- left: the point list ---------------------------------------- */
+      #panel {
+        flex: 0 0 260px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
+      #list { flex: 1 1 auto; overflow-y: auto; overflow-x: clip; padding: 8px 10px; }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
+      #buttons button { flex: 1 1 auto; }
+
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 1px 0; vertical-align: baseline; }
+      td.i { color: var(--dim); width: 2.5em; }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      td.x { width: 1.4em; text-align: right; color: var(--dim); cursor: pointer; }
+      td.x:hover { color: #ff9a9a; }
+      tr.here td { color: #eaf3ff; }
+      tr.out td.n { color: #c9a227; } /* outside the image bounds */
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+
+      /* --- centre: the image ------------------------------------------- */
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #view { width: 100%; height: 100%; touch-action: none; }
+      #hint {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        color: var(--dim); pointer-events: none; text-align: center; line-height: 2;
+      }
+      #tip {
+        position: absolute; left: 0; top: 0; padding: 2px 5px; border-radius: 3px;
+        background: rgba(5,8,15,.92); border: 1px solid var(--edge); color: #eaf3ff;
+        pointer-events: none; white-space: pre; display: none;
+      }
+      #drop {
+        position: absolute; inset: 0; border: 2px dashed var(--accent); background: rgba(20,60,100,.25);
+        pointer-events: none; display: none;
+      }
+      body.dragging #drop { display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">POLYGON TRACER</div>
+        <div class="s" id="status">drop an image to start</div>
+      </header>
+      <div id="list"></div>
+      <div id="buttons">
+        <button id="copy">copy JSON</button>
+        <button id="fit">fit</button>
+        <button id="clear">clear points</button>
+      </div>
+    </div>
+
+    <div id="stage">
+      <canvas id="view"></canvas>
+      <div id="hint">drop an image anywhere<br />click to add points &middot; drag to move them<br />drag the background to pan &middot; scroll to zoom</div>
+      <div id="tip"></div>
+      <div id="drop"></div>
+    </div>
+
+    <script type="module" src="/src/poly-trace-main.js"></script>
+  </body>
+</html>

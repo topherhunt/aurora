@@ -31,7 +31,7 @@ import { grassTexture, wrapLambert } from './preview-stage.js'
 import { buildTextureArray, loadImageLayers } from './textures.js'
 import { buildTreeBank, bakeTreeImpostors } from './props/tree-bank.js'
 import { buildRock } from './props/rock.js'
-import { ROCK_NAMES, rockParams } from './props/rock-bank.js'
+import { rockParams } from './props/rock-bank.js'
 import { buildGrassStripBank, STRIP_BASE, STRIP_TILE_ASPECT, GRASS_HEIGHT_REF } from './props/grass-bank.js'
 import { createPropMaterial, setPropClock } from './material.js'
 
@@ -373,8 +373,7 @@ AFRAME.registerComponent('quest-features', {
       }
       placeTrees(treePlacements)
       const makeBoulder = (i) => {
-        const name = ROCK_NAMES[i % ROCK_NAMES.length]
-        const geo = buildRock({ ...rockParams(name, 1978 + i), tier: 0 })
+        const geo = buildRock({ ...rockParams(1978 + i), tier: 0 })
         const scale = Math.min(1, 2 / geo.userData.rock.measured.height) // cap at 2m tall
         const measured = geo.userData.rock.measured
         const [x, z] = scatterXZ(i, 30, (Math.max(measured.width, measured.depth) / 2) * scale)

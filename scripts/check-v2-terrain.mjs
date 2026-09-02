@@ -805,8 +805,8 @@ export async function run() {
       `        ${[0, 2, MAX_DEPTH - 2, MAX_DEPTH].map((d) => `depth ${d}: ${cellSize(d) >= 1 ? `${cellSize(d)} m` : `${(cellSize(d) * 100).toFixed(2)} cm`}`).join('   ')}`
     )
     check(
-      Math.abs(cellSize(MAX_DEPTH) - 0.5) < 1e-12,
-      'the leaf cell is 50 cm, which is what an 8 m smallest chunk means in these units',
+      Math.abs(cellSize(MAX_DEPTH) - 0.25) < 1e-12,
+      'the leaf cell is 25 cm, which is what a 4 m smallest chunk means in these units',
       `${cellSize(MAX_DEPTH)} m at depth ${MAX_DEPTH}`
     )
     check(cellSize(0) === WORLD_SIZE / CHUNK_RES, 'the root chunk spans the world', `${cellSize(0)} m cells`)

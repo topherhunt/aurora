@@ -47,8 +47,6 @@
       .pick select { flex: 1 1 auto; }
       #seedrow { display: flex; gap: 6px; margin-bottom: 8px; }
       #seedrow input { flex: 1 1 auto; }
-      #shaperow { display: flex; gap: 6px; margin-bottom: 4px; }
-      #shaperow input { flex: 1 1 auto; }
       #shapenote { margin-bottom: 8px; }
       #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
       #buttons button { flex: 1 1 auto; padding: 4px 6px; }
@@ -88,19 +86,14 @@
         <div class="s">one granite tile, tinted; the shape is code</div>
       </header>
       <div id="controls">
-        <h2>variant</h2>
+        <h2>shape</h2>
         <div class="pick"><select id="preset"></select></div>
         <div class="pick"><select id="tint"></select></div>
         <div id="seedrow">
           <input type="number" id="seed" value="1" min="0" step="1" />
           <button id="reroll">reroll</button>
         </div>
-        <div id="shaperow">
-          <input type="text" id="shapeid" placeholder="shape id, e.g. shingle-1"
-                 title="Paste what the /v2 cursor readout printed. It names one shape in the world's rock bank -- variant, then which of that variant's shapes it is -- and loading it sets the preset and the seed to exactly that rock." />
-          <button id="shapego">load</button>
-        </div>
-        <div class="s" id="shapenote">the id /v2 prints under `cursor:`</div>
+        <div class="s" id="shapenote">`boulder` is the one asset the world ships</div>
         <div id="sliders"></div>
       </div>
       <div id="buttons">
@@ -110,7 +103,7 @@
         <button id="card">card</button>
         <button id="grid">grid</button>
         <button id="wire">wireframe</button>
-        <button id="cull" title="Draw front faces only, which is what the world does. Off shows both sides, so you can see what an openBottom shell's inside looks like -- and, on a closed rock, prove nothing changes.">backfaces</button>
+        <button id="cull" title="Draw front faces only, which is what the world does. The rock is a closed solid, so off should look identical -- that is the point of the button: it proves no face is wound inside out.">backfaces</button>
         <button id="spin">spin</button>
         <button id="reset">defaults</button>
       </div>

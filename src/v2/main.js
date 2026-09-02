@@ -27,7 +27,7 @@ import { Deadwood } from './render/deadwood.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeLitterSet } from '../props/litter.js'
-import { bakeRockImpostors } from '../props/rock-bank.js'
+import { bakeRockImpostor } from '../props/rock-bank.js'
 import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWindEnabled } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
@@ -96,14 +96,15 @@ const QUEST_MODE = new URLSearchParams(location.search).has('quest')
 //   own radii, densities and ladder live in its own header and are deliberately
 //   NOT restated here -- render/trees.js, grass.js, ferns.js, rocks.js.
 //
-//   ROCKS RUN SIX OF THAT SAME SCATTER AT ONCE, because a pebble is 11 cm and a
-//   summit fang is 7 m and no one density-and-radius pair carries both. What
-//   stands where is a function of the GROUND: each site is classified river /
-//   forest / cliff / peak, and that decides both which variants may stand there
-//   and how many. Snow and moss then arrive from two world lines running in
-//   opposite directions, so a rock on a summit is white and the same rock in a
-//   damp wood is green, neither costing a byte per instance. See DESIGN.md §25,
-//   props/rock-bank.js for the variants and material.js for the two lines.
+//   ROCKS RUN SIX OF THAT SAME SCATTER AT ONCE, because a pebble is 25 cm and a
+//   landmark is 20 m and no one density-and-radius pair carries both. There is
+//   exactly ONE boulder mesh in the world; what varies is where copies of it go,
+//   how big, which way up and what colour. Each site is classified river /
+//   forest / cliff / peak, and that decides the size range, the rate and the
+//   palette. Snow and moss then arrive from two world lines running in opposite
+//   directions, so a rock on a summit is white and the same rock in a damp wood
+//   is green, neither costing a byte per instance. See DESIGN.md §25,
+//   props/rock-bank.js for the one asset and material.js for the two lines.
 //
 //   MUSHROOMS ARE THE ONE LAYER THAT IS NOT A SCATTER OVER OPEN GROUND. A clump
 //   grows at the foot of something, so where it goes is read back out of the
@@ -1522,7 +1523,7 @@ async function bootWorld() {
   // The atlas is built HERE, ahead of the terrain, and not down with the trees
   // where it used to live: createTerrainMaterial decides at compile time whether
   // to declare a sampler at all, so it has to have the array in hand before the
-  // material exists. `lean` then declines it -- that variant wears no photographic
+  // material exists. `axis` then declines it -- that variant wears no photographic
   // tile -- but the argument stays so the /gen-* benches and this call are the
   // same shape.
   //
@@ -1532,14 +1533,14 @@ async function bootWorld() {
   // whatever the procedural layers already hold.
   propTextures = buildTextureArray()
   terrain = new TerrainV2(scene, {
-    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures, lean: true,
+    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures, axis: true,
   })
 
   lighting.patch(terrain.material, {
     mode: 'fragment',
     // The variant compiles different source and three keys its program cache on
     // this string alone, so the key names which one is in hand.
-    cacheKey: 'v2-terrain-shadow-lean',
+    cacheKey: 'v2-terrain-shadow-axis',
     // terrain-material.js has carried this varying since v1's surface grain was
     // written and v2 shares the material, so reusing it saves declaring a second
     // varying holding the same value.
@@ -1597,7 +1598,7 @@ async function bootWorld() {
   rocks.place(spawn.x, spawn.z)
   const rs = rocks.stats
   console.log(
-    `[v2] rocks ${rs.placed} placed in ${rs.placeMs.toFixed(0)} ms, bank ${rs.shapes} shapes / ` +
+    `[v2] rocks ${rs.placed} placed in ${rs.placeMs.toFixed(0)} ms, bank ` +
     `${rs.bankTris} tris / ${rs.bankKB} KB in ${rs.buildMs.toFixed(0)} ms; ` +
     rs.beds.map((b) => `${b.name} ${b.placed} (${b.used}/${b.pool}) to ${b.radius} m`).join(', ')
   )
@@ -1833,12 +1834,12 @@ async function bootWorld() {
     // inside this promise and not merely conventionally: run before the decode
     // and it would photograph the procedural fallback bark into the two cards.
     deadwood.bakeCards(renderer)
-    // The rock cards, one photograph per variant. Unlike the four above this is
-    // not a method on the scatter, because there is nothing per-bed about it:
-    // the same twenty-five pictures serve all five beds, so they live on the
-    // bank. See ROCK_CARD_SEED in props/rock-bank.js for the seed they are all
-    // taken at and why it is pinned.
-    const rockCards = bakeRockImpostors(renderer, propTextures)
+    // The rock card: one photograph, of the one boulder. Unlike the four above
+    // this is not a method on the scatter, because there is nothing per-bed about
+    // it -- the same picture serves all six beds, so it lives on the bank. See
+    // ROCK_CARD_SEED in props/rock-bank.js for the seed it is taken at and why it
+    // is pinned.
+    const rockCard = bakeRockImpostor(renderer, propTextures)
     // The four strewn-pebble patches. Same rig as the impostors above and the
     // same reason for being here rather than on disk -- see props/litter.js.
     const lit = bakeLitterSet(renderer, propTextures)
@@ -1861,17 +1862,10 @@ async function bootWorld() {
     // Same instrument, same reason. A rock card is a grey blob, which makes
     // coverage the number that matters more than luma here: it says how much of
     // the quad is stone rather than hole, and a card whose coverage collapses is
-    // a distant boulder that has become a rectangle of sky. Printed as the range
-    // over the twenty-five rather than one line each: the console is not where
-    // twenty-five rows belong, and what a reader needs is whether any of them
-    // came out empty.
-    const worst = rockCards.reduce((a, b) => (b.coverage < a.coverage ? b : a))
-    const bestC = rockCards.reduce((a, b) => (b.coverage > a.coverage ? b : a))
+    // a distant boulder that has become a rectangle of sky.
     console.log(
-      `rock impostors baked: ${rockCards.length} variants, ` +
-        `luma ${(rockCards.reduce((t, b) => t + b.meanLuma, 0) / rockCards.length).toFixed(3)} mean, ` +
-        `cover ${worst.coverage.toFixed(3)} (${worst.subject}) .. ` +
-        `${bestC.coverage.toFixed(3)} (${bestC.subject})`
+      `rock impostor baked: luma ${rockCard.meanLuma.toFixed(3)}, ` +
+        `cover ${rockCard.coverage.toFixed(3)}, layer ${rockCard.layer}`
     )
   })
 
@@ -1951,7 +1945,7 @@ async function bootWorld() {
     // loop was already running this test for a stats readout. Worst case over the
     // same sweep: 224k submitted becomes 108k.
     terrain.cullDeg = (70 * Math.PI) / 180
-    // The 8 m chunk floor is NOT set here. It was, briefly, and it is config.js's
+    // The 4 m chunk floor is NOT set here. It was, briefly, and it is config.js's
     // MAX_DEPTH now: one world, one cap, desktop and headset alike. See the note
     // on that constant for why a per-route override was the wrong trade.
     applyBatchCulling()
@@ -2179,34 +2173,33 @@ const builtTerrainVariants = new Map()
 // instructions, so Basic would buy a rounding error and cost the A/B its
 // meaning, because the ground would also stop being lit.
 //
-// `axis` AND `bare` ARE BOTH LEAN WITH ONE THING CHANGED, and both are here to
-// be measured rather than to be quality settings -- when the headset has answered
-// them, at most one of the three upper rungs stays.
+// `axis` IS WHAT SHIPS and what TerrainV2 compiles at boot. `grain` is the one
+// quality rung below it: same projection, but the near block cut to the speckle
+// and the relief normals, dropping the dirt and moss mixes and the colour guard
+// that wrapped them.
 //
-// `axis` swaps lean's triplanar rock branch for a dominant-axis projection: 1
-// fetch instead of 4, 7 fewer branches, and the only divergent fetch-gating
-// branch in the file gone. MEASURED AT NO DIFFERENCE -- lean and axis both sit at
-// 55 fps against plain's 63 -- which is the result that motivated the rung below
-// it. The near field is not fetch bound and it is not branch bound.
+// THE LADDER THAT SETTLED IT, on a Quest 2 under load from trees and ferns, three
+// cycles agreeing: lean 53 fps (18.87 ms), axis 53, near block folded away 57
+// (17.54), plain 62 (16.13). Read as time, the terrain shader is 2.74 ms, of which
+// the entire near block is 1.33 and everything else -- the far-field colour chain,
+// the lighting patch, the two varyings and the vertex-stage macro fetch -- is
+// 1.41. Two conclusions worth keeping: the near block is HALF the gap, so no trim
+// inside it can ever pay more than 1.33 ms; and axis matching lean exactly, while
+// removing 3 of 4 fetches and the only divergent fetch-gating branch, says the
+// near field is neither fetch bound nor branch bound.
 //
-// `bare` compiles the near block out entirely. It looks wrong on purpose: flat
-// vertex colour underfoot, no grain and no relief inside 55 m. It is the BRACKET
-// on every remaining idea for trimming that block, because whatever it does not
-// recover, no smaller cut inside the block can recover either. If it lands at
-// plain, the block is the whole gap and is worth spending deliberately; if it
-// lands at lean, the cost is somewhere none of this has been looking -- the
-// vertex-stage macro fetch and the shader's register footprint are the two
-// suspects, in that order. See the BARE block in terrain-material.js.
-const TERRAIN_SHADERS = ['lean', 'axis', 'bare', 'plain']
+// AND THE WHOLE ROW IS 2.74 ms OF A 7.76 ms OVERSPEND against 90 fps. Deleting the
+// terrain shader outright lands at 62, so the rest is props. That is why this
+// stops at two rungs.
+const TERRAIN_SHADERS = ['axis', 'grain', 'plain']
 let terrainShaderMode = 0
 
 /**
  * One of the compiled rungs, built on first press and kept.
  *
- * PATCHED, like the boot material and unlike `plain`. Each of these is either a
- * candidate for what ships or a probe meant to differ from lean in exactly one
- * way, so each has to carry the night lift, the shadow lookup and the aerial ramp
- * or pressing the row would change the time of day as well as the surface. Each
+ * PATCHED, like the boot material and unlike `plain`. Each of these has to carry
+ * the night lift, the shadow lookup and the aerial ramp or pressing the row would
+ * change the time of day as well as the surface. Each
  * takes its own cache key, because three keys its program cache on that string
  * alone and the variants compile different source.
  *
@@ -2233,15 +2226,28 @@ function terrainVariant(mode) {
 
 function terrainShaderMaterial() {
   const mode = TERRAIN_SHADERS[terrainShaderMode]
-  if (mode === 'lean') return terrain.material
+  if (mode === 'axis') return terrain.material
   if (mode !== 'plain') return terrainVariant(mode)
   if (!plainTerrainMaterial) {
     plainTerrainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
-    // Deliberately NOT lighting.patch'd. The patch is the night lift, the shadow
-    // lookup and the aerial ramp, which is more of the same fragment cost, and a
-    // control that carries half the thing being removed is not a control. It is
-    // also what makes the distant mountains fade to flat fog rather than to air:
-    // see AERIAL_GLSL in lighting.js.
+    // PATCHED IN VERTEX MODE, which is the whole difference between this rung
+    // being a control and being a candidate. Unpatched it had no aerial ramp, so
+    // distant mountains faded to flat white fogColor -- the opposite of what air
+    // does, which is to go blue with depth. It also had no night lift and no
+    // terrain shadow, so it was wrong twice more at dusk.
+    //
+    // 'vertex' AND NOT 'fragment', and it is the cheaper mode in every direction.
+    // It carries ONE small varying rather than needing a vWorldPos this material
+    // does not have, it moves the sun and sky horizon lookups to the vertex stage,
+    // and it still installs AERIAL_GLSL in the fragment shader -- the ramp is a
+    // function of vFogDepth, which every fogged material already interpolates, so
+    // the thing that was actually missing costs nothing to add. At a 25 cm leaf
+    // cell the per-vertex shading is finer near the camera than the shadow map it
+    // samples, which is the same argument this mode already wins for the props.
+    //
+    // WHAT IT GIVES UP against fragment mode is caustics: CAUSTIC_APPLY is only
+    // emitted on the fragment path, so terrain below a waterline is lit dry here.
+    lighting.patch(plainTerrainMaterial, { mode: 'vertex', cacheKey: 'v2-terrain-shadow-plain' })
   }
   return plainTerrainMaterial
 }
@@ -3341,11 +3347,10 @@ const CURSOR_PICKS = [
   { label: 'fern', idKey: 'variantAt', radius: 0.6, rise: 1.2 },
   { label: 'deadwood', idKey: 'variantAt', radius: 0.9, rise: 1.5 },
   // No radius/rise: a rock's pick volume is its own measured footprint and
-  // height, which `RockBed.pickSizeAt` reads straight off the bank shape. The
-  // constants that used to be here were 1.2 m either way at scale 1, which over
-  // a bank running 7:1 wide to 3:1 tall was air above some rocks and a cursor
-  // that pointed through the top of others.
-  { label: 'rock', idKey: 'shapeAt' },
+  // height, which `RockBed.pickSizeAt` reads straight off the bank shape and
+  // scales per instance. No `idKey` either -- there is one boulder in the world,
+  // so there is no variant array to index; the bed's name is the readout.
+  { label: 'rock' },
   // Nor here, and for a sharper version of the same reason: a tree is a thin
   // trunk under a wide crown, so it is TWO pick volumes and `bindCursorPicks`
   // expands this one entry into both. The constants that used to be here were a
@@ -3356,10 +3361,10 @@ const CURSOR_PICKS = [
 
 /**
  * The list `pickProp` actually walks, built by `bindCursorPicks`. It is not
- * `CURSOR_PICKS` because ROCKS ARE FIVE SCATTERS AND NOT ONE: `Rocks` is a
- * facade over five `RockBed`s, and every array pickProp needs -- tiles, instX,
- * shapeAt, instScale -- lives on a bed. So the rock template expands into one
- * bound source per bed and the array is longer than the table above.
+ * `CURSOR_PICKS` because ROCKS ARE SIX SCATTERS AND NOT ONE: `Rocks` is a
+ * facade over six `RockBed`s, and every array pickProp needs -- tiles, instX,
+ * instScale -- lives on a bed. So the rock template expands into one bound
+ * source per bed and the array is longer than the table above.
  */
 let boundPicks = null
 
@@ -3379,14 +3384,14 @@ function bindCursorPicks() {
       // pickProp walks; the beds do. Binding the facade is what made rocks
       // unnameable, and pickProp now throws rather than skipping it in silence.
       //
-      // The id printed is `RockBed.shapeIdAt` -- `variant-index`, which
-      // /gen-rock's shape box takes -- and not the raw `shapeAt` index, which
-      // means a different rock in each bed. See that method for why.
+      // Every rock in the world is the same boulder, so the only thing a readout
+      // can usefully say is which BED put this one here -- which is the answer to
+      // "why is that one 12 m across", the question actually being asked.
       for (const bed of rocks.beds) {
         boundPicks.push({
           ...p,
           sys: bed,
-          nameAt: (s, id) => s.shapeIdAt(id),
+          nameAt: (s) => `boulder (${s.cfg.name})`,
           sizeAt: (s, id, out) => s.pickSizeAt(id, out),
         })
       }
@@ -3446,10 +3451,9 @@ function cursorPick() {
   const prop = pickProp(boundPicks, origin, dir, cursorOut.dist === null ? Infinity : cursorOut.dist)
   if (prop) {
     cursorOut.label = prop.label
-    // The PRINTABLE id, not the raw index. For rocks it is `variant-index`,
-    // which /gen-rock's shape box takes; for trees `species-size`; for the
-    // scatters whose variant array indexes their bank in order it is still the
-    // integer.
+    // The PRINTABLE id, not the raw index. For rocks it is the bed that placed
+    // it; for trees `species-size`; for the scatters whose variant array indexes
+    // their bank in order it is still the integer.
     cursorOut.variant = prop.name
   }
   return cursorOut

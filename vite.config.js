@@ -11,6 +11,10 @@ import { encodePng } from './tools/props/png.mjs'
 import { buildFishPrompt } from './tools/fauna/fish-prompt.mjs'
 import { buildFishMesh } from './tools/fauna/loft-fish-mesh.mjs'
 import { SPECIES as FISH_SPECIES } from './tools/fauna/fish-roster.mjs'
+import { buildCreaturePrompt } from './tools/creatures/creature-prompt.mjs'
+import { CREATURES } from './tools/creatures/creature-roster.mjs'
+import { estimateCredits as tripoCredits, PRESETS as TRIPO_PRESETS } from './tools/creatures/tripo.mjs'
+import * as creatures from './tools/creatures/workspace.mjs'
 
 // Vite loads .env into import.meta.env for client bundles, but NOT into
 // process.env for its own config/plugin code -- openrouter.mjs reads
@@ -18,6 +22,9 @@ import { SPECIES as FISH_SPECIES } from './tools/fauna/fish-roster.mjs'
 // it, with no Vite involved at all), so pull it in explicitly here.
 if (!process.env.OPENROUTER_API_KEY) {
   process.env.OPENROUTER_API_KEY = loadEnv('development', process.cwd(), 'OPENROUTER_API_KEY').OPENROUTER_API_KEY
+}
+if (!process.env.TRIPO_API_KEY) {
+  process.env.TRIPO_API_KEY = loadEnv('development', process.cwd(), 'TRIPO_API_KEY').TRIPO_API_KEY
 }
 
 // --- the prop originals index (dev only) ------------------------------------
@@ -679,6 +686,177 @@ function fishGen() {
   }
 }
 
+// --- creature pipeline: image -> Tripo mesh -> rig -> animation (dev only) --
+//
+// gen-creature.html's bench. Two vendors and two wallets behind these
+// endpoints: OpenRouter (FLUX.2 Klein 4B, ~$0.015) for the candidate image,
+// Tripo (credits at $0.01 each) for everything 3D. The API keys stay here --
+// the page never sees either one.
+//
+// The endpoints are split so that SPENDING IS ALWAYS ONE EXPLICIT CLICK, and
+// the four that spend say so in their names' company below:
+//
+//   free     /__creature-roster, /__creature-list, /__creature-candidates,
+//            /__creature-assets, /__creature-save, /__creature-pick,
+//            /__creature-lod (decimation is ours, not a vendor's),
+//            /__creature-rig-check (Tripo prices rig-check at 0 credits)
+//   ~$0.015  /__creature-image
+//   ~$0.50   /__creature-mesh
+//   $0.25    /__creature-rig
+//   $0.10/ea /__creature-animate
+//
+// Every 3D response reports the credits it charged so the bench's running total
+// is the real one rather than an estimate the page maintains for itself.
+//
+// Generated files are read back by the page straight off the dev server's
+// static handler (/tools/creatures/work/<id>/mesh.glb) rather than through a
+// JSON endpoint -- GLTFLoader wants a URL, and base64ing a megabyte of GLB
+// through JSON to hand it back to a loader would be pure ceremony.
+function creatureGen() {
+  const readRaw = (req, maxBytes) => new Promise((resolve, reject) => {
+    const chunks = []
+    let bytes = 0
+    req.on('data', (c) => {
+      bytes += c.length
+      if (bytes > maxBytes) req.destroy(new Error(`body over ${maxBytes} bytes`))
+      chunks.push(c)
+    })
+    req.on('error', reject)
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+  })
+  // The LOD endpoint takes a GLB, so it needs the bytes; everything else takes
+  // JSON. utf8-decoding a binary body corrupts it silently, so the two are kept
+  // as separate calls rather than one that guesses from a header.
+  const readBody = async (req, maxBytes) => (await readRaw(req, maxBytes)).toString('utf8')
+
+  // Every endpoint here answers JSON, including on the way down: the bench
+  // shows `error` in its status line, and an HTML error page would surface as
+  // an unparseable blob with the real reason hidden inside it.
+  const json = (handler) => (req, res) => {
+    res.setHeader('content-type', 'application/json')
+    Promise.resolve()
+      .then(() => handler(req, res))
+      .then((out) => { if (out !== undefined) res.end(JSON.stringify(out)) })
+      .catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+  }
+
+  const postOnly = (req) => { if (req.method !== 'POST') throw new Error('POST only') }
+  const idOf = (req) => {
+    const id = new URL(req.url, 'http://x').searchParams.get('id') || ''
+    if (!/^[a-z0-9-]+$/.test(id)) throw new Error(`invalid creature id "${id}"`)
+    return id
+  }
+
+  return {
+    name: 'aurora:creature-gen',
+    apply: 'serve',
+    configureServer(server) {
+      // The roster plus the preset tables and the price list, so the bench
+      // renders costs and animation choices from the same source the server
+      // charges against instead of a second copy that can drift.
+      server.middlewares.use('/__creature-roster', json(() => ({
+        ok: true,
+        creatures: CREATURES,
+        presets: TRIPO_PRESETS,
+        credits: {
+          mesh: tripoCredits({ step: 'mesh' }),
+          rig: tripoCredits({ step: 'rig' }),
+          rigCheck: tripoCredits({ step: 'rig-check' }),
+          perAnimation: tripoCredits({ step: 'retarget', animationCount: 1 }),
+        },
+        hasTripoKey: Boolean(process.env.TRIPO_API_KEY),
+      })))
+
+      // Free. The asset index behind the bench's library: every creature the
+      // roster names plus every one that only exists on disk, with what has been
+      // generated for it and what it has cost so far.
+      server.middlewares.use('/__creature-list', json(() => ({ ok: true, creatures: creatures.listAll() })))
+
+      // Free, local. The roster file is a seed list; an edited prompt lives in
+      // the creature's own state.json, which is also how a creature that was
+      // never in the roster comes to exist.
+      server.middlewares.use('/__creature-save', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const patch = JSON.parse(await readBody(req, 1 << 16))
+        return { ok: true, creature: creatures.saveMeta(id, patch) }
+      }))
+
+      // Free, local. src/mesh/decimate.js runs in the page and posts the GLB it
+      // produced; nothing here goes near Tripo, which also sells retopology.
+      server.middlewares.use('/__creature-lod', json(async (req) => {
+        postOnly(req)
+        const url = new URL(req.url, 'http://x')
+        const id = idOf(req)
+        const level = Number(url.searchParams.get('level'))
+        return { ok: true, ...creatures.saveLod(id, level, await readRaw(req, 64 << 20)) }
+      }))
+
+      server.middlewares.use('/__creature-candidates', json((req) => ({
+        ok: true, candidates: creatures.listCandidates(idOf(req)),
+      })))
+
+      server.middlewares.use('/__creature-assets', json((req) => ({ ok: true, ...creatures.assets(idOf(req)) })))
+
+      // SPENDS (OpenRouter, ~$0.015). One candidate image, saved to disk
+      // immediately -- an image that was paid for and only lived in a tab is
+      // an image paid for twice after a reload.
+      server.middlewares.use('/__creature-image', json(async (req) => {
+        postOnly(req)
+        const { id, description, rigType, styleNote, seed } = JSON.parse(await readBody(req, 1 << 16))
+        if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid creature id "${id}"`)
+        const prompt = buildCreaturePrompt({ description, rigType, styleNote })
+        const { buffer, cost } = await generateImage({ prompt, aspectRatio: '1:1', seed })
+        const file = creatures.saveCandidate(id, buffer, cost)
+        return { ok: true, file, cost, prompt }
+      }))
+
+      // Free, local: promotes one candidate to source.png, the image every
+      // Tripo step reads.
+      server.middlewares.use('/__creature-pick', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, path: creatures.pickCandidate(id, file) }
+      }))
+
+      // SPENDS (Tripo, ~50 credits). Blocks until the mesh is downloaded --
+      // a task id whose result was never fetched is money spent for nothing,
+      // and the CDN urls expire.
+      server.middlewares.use('/__creature-mesh', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const opts = JSON.parse(await readBody(req, 1 << 12) || '{}')
+        return { ok: true, ...(await creatures.runMesh(id, opts)) }
+      }))
+
+      // Free (Tripo prices rig-check at 0). Worth calling before every rig:
+      // it is the only way to learn a mesh is unriggable without paying 25
+      // credits to find out.
+      server.middlewares.use('/__creature-rig-check', json(async (req) => {
+        postOnly(req)
+        return { ok: true, ...(await creatures.runRigCheck(idOf(req))) }
+      }))
+
+      // SPENDS (Tripo, 25 credits).
+      server.middlewares.use('/__creature-rig', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { rigType } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...(await creatures.runRig(id, { rigType })) }
+      }))
+
+      // SPENDS (Tripo, 10 credits per animation).
+      server.middlewares.use('/__creature-animate', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { animations } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...(await creatures.runAnimate(id, { animations })) }
+      }))
+    },
+  }
+}
+
 // --- unknown routes get a route list, not the homepage (dev only) -----------
 //
 // Vite's dev server SPA-falls-back any unmatched extensionless request to
@@ -763,7 +941,7 @@ function unknownRouteGuard() {
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['avatar-preview', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-tree-v2', 'gen-tree-v2a', 'gen-tree-v3', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-grass', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'test-aurora', 'quest', 'questv2', 'questv3']
+const BARE_ROUTES = ['avatar-preview', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-tree-v2', 'gen-tree-v2a', 'gen-tree-v3', 'gen-tree-v4', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-grass', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'gen-creature', 'poly-trace', 'tileable', 'chroma-key', 'test-aurora', 'quest', 'questv2', 'questv3']
 
 function bareRoutes() {
   return {
@@ -798,7 +976,7 @@ function bareRoutes() {
 // cover, so the only way to see one is twenty seeds side by side.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -838,6 +1016,7 @@ export default defineConfig({
         genTreeV2: resolve(__dirname, 'gen-tree-v2.html'),
         genTreeV2a: resolve(__dirname, 'gen-tree-v2a.html'),
         genTreeV3: resolve(__dirname, 'gen-tree-v3.html'),
+        genTreeV4: resolve(__dirname, 'gen-tree-v4.html'),
         // The rock bench, served at /gen-rock. Its job is narrower than the
         // others': the tree and fern generators ship a settled bank, this one is
         // still choosing which variants the world gets, and PRESETS in
@@ -874,6 +1053,26 @@ export default defineConfig({
         // The fish bench, served at /gen-fish: the fauna analogue of
         // gen-sheet.html, cut down to one sideview per species (tools/fauna/).
         genFish: resolve(__dirname, 'gen-fish.html'),
+        // The creature bench, served at /gen-creature: candidate image ->
+        // Tripo mesh -> rig -> animation (tools/creatures/). The only bench
+        // whose steps spend money on a vendor other than OpenRouter, and the
+        // only one that is useless in a build -- every button needs the dev
+        // server's API keys -- but it builds so the route list stays honest.
+        genCreature: resolve(__dirname, 'gen-creature.html'),
+        // The polygon tracer, served at /poly-trace. Not a generator: drop any
+        // image and click a polygon around it, in image pixels that may fall
+        // outside the bounds. No three.js and no dev-server endpoint, so unlike
+        // the benches above it works exactly the same from a build.
+        polyTrace: resolve(__dirname, 'poly-trace.html'),
+        // The tileable bench, served at /tileable. Drop a texture, blend it into
+        // one that wraps, check it rolled, download it. Same two operations as
+        // tools/tileable.sh, in canvas rather than ImageMagick; like the tracer
+        // it needs no dev-server endpoint, so it works from a build.
+        tileable: resolve(__dirname, 'tileable.html'),
+        // The chroma-key bench, served at /chroma-key. Sample a colour out of a
+        // dropped image and everything within a threshold of it goes
+        // transparent. Same no-endpoint shape as the two above.
+        chromaKey: resolve(__dirname, 'chroma-key.html'),
         // The aurora shader lab, served at /test-aurora. A separate page rather
         // than a mode inside v2 for the same reason the grass bench is: what it
         // needs is an empty sky over a nominal skyline and sixty sliders, and

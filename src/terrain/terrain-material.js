@@ -330,16 +330,16 @@ export function luminance(c) {
  *   then cuts two of the three fetches it left. See the LEAN block below.
  * @param {boolean} [opts.axis] Swap lean's triplanar rock for a DOMINANT-AXIS
  *   projection. Implies lean. See the AXIS block below.
- * @param {boolean} [opts.bare] Compile lean's NEAR BLOCK out entirely. A probe,
- *   not a quality setting -- see the BARE block below.
+ * @param {boolean} [opts.grain] Cut the near block to GRAIN AND RELIEF ONLY.
+ *   Implies axis. See the GRAIN block below.
  */
-export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lean: leanOpt = false, axis = false, bare = false } = {}) {
-  // LEAN IS LO-FI PLUS TWO CUTS, and AXIS IS LEAN WITH ONE PROJECTION SWAPPED, so
-  // each rides the flag below it rather than growing its own set of branches that
-  // would every one of them have read `lofi || lean || axis`. Everything lo-fi
-  // drops, lean drops; what each cuts on top is in its own block below. `bare`
-  // rides lean rather than axis because what it removes contains both.
-  const lean = leanOpt || axis || bare
+export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lean: leanOpt = false, axis: axisOpt = false, grain = false } = {}) {
+  // EACH RUNG RIDES THE ONE BELOW IT rather than growing its own set of branches
+  // that would every one of them have read `lofi || lean || axis || grain`. Lean
+  // is lo-fi plus two cuts, axis is lean with one projection swapped, grain is
+  // axis with the colour half cut back. Everything lo-fi drops, all of them drop.
+  const axis = axisOpt || grain
+  const lean = leanOpt || axis
   const lofi = lofiOpt || lean
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
 
@@ -473,27 +473,35 @@ export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lea
   // planar: from 30.7 degrees (auroraWN.y = 0.86, where lean turns triplanar on)
   // to 45, axis stays on xz where lean blends. That blend is 89% xz at its own
   // gate, so there is nothing there to see either.
-  // ---- BARE: the near block gone, to find out what it is actually worth.
   //
-  // A PROBE AND NOT A RUNG. It draws no surface detail at all inside 55 m -- no
-  // grain, no dirt, no moss, no relief -- so the ground is flat vertex colour
-  // underfoot. Nobody would ship it. It exists because three rounds of trimming
-  // that block have now bought nothing measurable and the question of what it
-  // costs has to be answered before a fourth.
+  // IT MEASURED FREE, NOT FASTER: a Quest 2 under load reads axis and lean at the
+  // same 53 fps, twice, though axis removes 3 of lean's 4 fetches, 7 of its 26
+  // branches and the only divergent fetch-gating branch in the file. It is what
+  // ships because it is strictly less code for the same frame time, but it is the
+  // measurement that ended the search for a fetch- or branch-shaped win here: the
+  // near field is neither fetch bound nor branch bound.
+  // ---- GRAIN: axis, with the near field cut to the two things you can see.
   //
-  // WHY IT IS WORTH COMPILING. On a Quest 2, lean and axis measure the SAME
-  // (55 fps against plain's 63), and axis removes 3 of lean's 4 fetches, 7 of its
-  // 26 branches and the only divergent fetch-gating branch in the file. So the
-  // near field is not fetch bound and it is not branch bound, and every remaining
-  // idea for trimming it is a smaller change of one of those two kinds. Deleting
-  // the block outright is the one measurement that brackets all of them: whatever
-  // bare does not recover, no trim inside the block can recover either.
+  // WHAT IS LEFT: one grit fetch on the dominant plane, its .r driving the
+  // brightness speckle, its .gb driving the relief normals. What goes: the dirt
+  // and moss mixes, and the `auroraNear > 0.004` guard that used to wrap all
+  // three. So the ground still has readable grain and still lights as a rough
+  // surface, and green ground loses its soil and moss flecking inside FADE_FAR.
   //
-  // WRITTEN AS A FOLDED GUARD rather than by wrapping 240 lines in another
-  // template branch, and that is a deliberate trade of tidiness for a diff small
-  // enough to read. `if ( false )` is dead-coded by every GLSL compiler before
-  // register allocation, and the SPIR-V harness confirms the specific claim that
-  // matters: the block's four texture ops are gone, not merely unreached.
+  // THE GUARD GOES BECAUSE THE BODY SHRANK. It was worth a branch when it wrapped
+  // a speckle and two smoothstep mixes for fragments between FADE_FAR and
+  // RELIEF_FAR that would arrive at auroraGrain = 0.5 and change nothing. With
+  // the mixes gone the body is three ops, the fade is already arithmetic, and the
+  // branch costs more than it skips.
+  //
+  // WHAT IT IS WORTH, and this is the honest part. A Quest 2 under load measures
+  // lean 53 / axis 53 / plain 62, with the whole near block folded away at 57 --
+  // so the block entire is 1.33 ms of a 2.74 ms gap. Grain takes 12 SPIR-V ALU and
+  // 3 branches out of the 66 ALU that block still holds under axis, which is 18%
+  // of it, or about 0.24 ms if the two scale together. Under one fps. It is here
+  // because the features it drops are the least visible in the block, not because
+  // the arithmetic promises much, and the ladder above says nothing left inside
+  // that block promises much either.
   const stone = atlas && !lofi
 
   const detail = terrainDetailTextures()
@@ -1081,7 +1089,7 @@ ${lofi ? '' : `          if ( auroraDetailK > 0.004 ) {
           // triangles, so wherever it crosses the grid at an angle it steps.
           // Alternating the mesh diagonal (chunk-mesh.js) stops that step being
           // REGULAR, but the boundary is still resolved at vertex spacing --
-          // 50 cm at the leaf and far coarser in the LOD rings, which is where
+          // 25 cm at the leaf and far coarser in the LOD rings, which is where
           // it is most visible.
           //
           // Displacing the classification by a world-space field moves the
@@ -1340,7 +1348,7 @@ ${stone ? `
           // Opened on the LONGER of the two coarse-grit fades, because one fetch
           // feeds both and the lighting half reaches further than the colour
           // half. See the block above RELIEF_NEAR.
-          if ( ${bare ? 'false' : 'auroraRelief > 0.004'} ) {
+          if ( auroraRelief > 0.004 ) {
             // HOW MUCH OF THIS FRAGMENT THE PHOTOGRAPH IS NOT CARRYING. Rock is
             // always 1 -- it has a tile of its own but that one is bedding at
             // 16 m, which says nothing at half a metre. SNOW IS ALSO ALWAYS 1
@@ -1425,11 +1433,18 @@ ${axis ? `            // ONE FETCH ON THE DOMINANT PLANE, every surface, no bran
             }
 `}
             // ---- The COLOUR half of the coarse rung, which stops at FADE_FAR
-            // where its tile would start reading as a lattice. Its own guard,
-            // so the fragments between FADE_FAR and RELIEF_FAR pay for the
-            // fetch and the bump below and nothing else -- without it every one
-            // of them would run the speckle and both mixes to arrive at
-            // auroraGrain = 0.5 and change nothing.
+            // where its tile would start reading as a lattice.
+${grain ? `            // UNGUARDED, because grain has cut the body to three ops and the
+            // guard now costs more than it saves. auroraNear reaching 0 already
+            // takes auroraGrain to exactly 0.5, which multiplies by 1.0 and
+            // changes nothing, so the fade is arithmetic and the branch was only
+            // ever an optimisation.
+            float auroraGrain = mix( 0.5, auroraGR, auroraNear );
+            diffuseColor.rgb *= 1.0 + ( auroraGrain - 0.5 ) * uSpeckle * auroraProc;
+` : `            // Its own guard, so the fragments between FADE_FAR and RELIEF_FAR
+            // pay for the fetch and the bump below and nothing else -- without
+            // it every one of them would run the speckle and both mixes to
+            // arrive at auroraGrain = 0.5 and change nothing.
             if ( auroraNear > 0.004 ) {
               // Faded toward the field's own mean rather than toward zero, so
               // the layer leaves the surface where it found it as it goes.
@@ -1450,7 +1465,7 @@ ${axis ? `            // ONE FETCH ON THE DOMINANT PLANE, every surface, no bran
               diffuseColor.rgb = mix( diffuseColor.rgb, uDirt, smoothstep( 0.813, 1.0, auroraGrain ) * auroraGreen * uDirtAmount );
               diffuseColor.rgb = mix( diffuseColor.rgb, uMoss, smoothstep( 0.292, 0.0, auroraGrain ) * auroraGreen * uMossAmount );
             }
-
+`}
             // ---- Relief, coarse rung. See uRelief.
             //
             // .gb is dh/du in TILE units, so dividing by the tile's size in
@@ -1632,7 +1647,7 @@ ${lean ? '' : `            // ---- THE GRIT TILE, FINE SAMPLE: ${GRIT_FINE_METRE
   // and distinct BETWEEN the variants: the atlas, the lofi flag and the lean
   // flag each change the compiled source, so no two of them may share a program.
   // Lean is the only one that changes the VERTEX shader as well.
-  const key = `aurora-terrain-v11${stone ? '-stone' : ''}${bare ? '-bare' : axis ? '-axis' : lean ? '-lean' : lofi ? '-lofi' : ''}`
+  const key = `aurora-terrain-v11${stone ? '-stone' : ''}${grain ? '-grain' : axis ? '-axis' : lean ? '-lean' : lofi ? '-lofi' : ''}`
   material.customProgramCacheKey = () => key
 
   return material

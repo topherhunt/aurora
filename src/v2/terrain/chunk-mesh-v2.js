@@ -1,4 +1,5 @@
 import { clamp01, lerp, smoothstep } from '../../sim/mathx.js'
+import { Noise } from '../../sim/noise.js'
 import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
 
 // ---------------------------------------------------------------------------
@@ -101,7 +102,7 @@ const DIRT_MAX = 0.85
 //
 // shade() decides rock-vs-grass and, far more visibly, snow-vs-no-snow off
 // steepness. The mesh normal is a central difference over the chunk's OWN cell,
-// and in v2 that ranges from 50 cm at a leaf to 512 m at the root -- a factor
+// and in v2 that ranges from 25 cm at a leaf to 512 m at the root -- a factor
 // of 1024. An alpine face standing at 74 deg over a metre averages to 24 deg
 // over 128 m, so the identical ground classified itself as bare rock up close
 // and as solid snow from far away, and since chunks coarsen one at a time as you
@@ -118,7 +119,7 @@ const DIRT_MAX = 0.85
 // leaf the mesh normal already IS the fixed-scale slope. That argument holds
 // only where step EQUALS CLASS_EPS, which in v1 was true of the leaf by
 // construction. It is false in v2: below a metre the field still has real
-// energy -- that is what detail.js is for -- so a 50 cm central difference
+// energy -- that is what detail.js is for -- so a 25 cm central difference
 // reports a systematically steeper slope than a 1 m one, and taking the skip
 // would reintroduce the very repaint it was written to fix, running the other
 // way (fine chunks too dark rather than coarse chunks too white). So the skip
@@ -184,7 +185,119 @@ const CREST_CELL_HI = 6
 //
 // `ny` is the Y component of the CLASSIFICATION normal, not the mesh normal.
 // Feeding the mesh normal in here was the bug in the CLASS_EPS banner above.
-function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, out, o) {
+// ---- MOTTLE: the ground's colour variation, carried by the VERTEX COLOURS the
+// mesher already writes rather than by a fragment shader.
+//
+// WHY IT LIVES HERE. A Quest 2 measures the whole terrain fragment shader at
+// 2.7-3.1 ms against a stock Lambert, and the half of that spent drawing surface
+// detail inside 55 m buys one grit fetch and its speckle. Baked into vColor the
+// same variation is FREE at draw time: it is three floats a vertex on an
+// attribute that already exists, computed once when a chunk is meshed, on a
+// worker, and interpolated by fixed-function hardware.
+//
+// WHAT IT CAN AND CANNOT DO. The finest cell in the world is 25 cm (4 m leaf /
+// CHUNK_RES 16), so the Nyquist limit on anything vColor can carry is about half
+// a metre, and a chunk two LOD levels out is sampling on 1 m cells. This is
+// therefore VARIEGATION AND NOT GRAIN -- a hillside that changes colour across
+// itself, not a surface with texture underfoot. MOTTLE_FINE is set so the
+// shortest octave stays resolved on the cell sizes actually drawn near the
+// camera; shortening it does not buy detail, it buys aliasing.
+//
+// A PURE FUNCTION OF WORLD POSITION, with no dependence on cell size or depth,
+// and that is not a simplification -- it is the same invariant the CLASS_EPS
+// banner below is defending. Band-limiting the octaves per chunk would be the
+// textbook fix for the undersampling above, and it would make mottle amplitude a
+// property of the CHUNK: one step of it along every LOD seam, which is the
+// chunk-shaped-squares bug that stencil exists to prevent, in a quieter colour.
+// Undersampling a position-only field costs contrast at distance; a chunk-keyed
+// amplitude costs a visible grid. The first is the cheaper mistake.
+// TWO FIELDS AND NOT ONE, decorrelated by their offsets. Level and hue are
+// separate questions about a piece of ground -- a dark patch can be dark because
+// it is mossy or because it is wet mud, and locking the two together produces a
+// surface that only ever gets lighter and darker, which is what a lit smooth
+// surface already does. Independent fields are what make it read as ground made
+// of different things.
+const MOTTLE = new Noise(0x6d07713)
+const MOTTLE_COARSE = 31 // m, the hillside-scale swing
+const MOTTLE_FINE = 6.5 // m, the shortest octave -- see the Nyquist note above
+const MOTTLE_HUE = 17 // m, the patch scale for what the ground is MADE of
+const MOTTLE_VALUE = 0.13 // +/- brightness, as a fraction
+const MOTTLE_TINT = 0.30 // how far the hue swing pulls the palette
+const MOTTLE_EARTH = 0.62 // how far a bare-earth patch pulls it, at the dry tail
+
+// The mottle palettes: what each surface varies BETWEEN. Level lives in
+// MOTTLE_VALUE; these are only about hue.
+//
+// BOTH GRASS TARGETS ARE GREEN-DOMINANT BY CONSTRUCTION, and that is a hard
+// constraint rather than a preference. terrain-material.js classifies vegetated
+// ground as `smoothstep( 0.004, 0.030, vColor.g - max( vColor.r, vColor.b ) )`,
+// and C_GRASS clears that knee by only 0.010. A dry-grass target that reached for
+// real ochre would push mottled grass back under the knee and the shader would
+// stop treating it as vegetation -- wrong grit layer, no moss, and the change
+// would arrive as patches, because the mottle is patchy. So the dry side yellows
+// and brightens while keeping g above both other channels: C_STRAW clears the
+// knee by 0.034, C_MOSS by 0.052, and a 30% pull toward either leaves grass at
+// 0.038 and 0.044 -- still 1.000 vegetated even at the bottom of the level swing.
+// Check that arithmetic before moving any of these three.
+//
+// The one place the classification does move is SCRUB at altitude, which is not
+// green-dominant to start with and reaches 0.23 vegetated on the mossy side. That
+// is wanted: a damp high meadow is what it looks like, and it is a ramp rather
+// than a switch.
+const C_MOSS = [0.030, 0.082, 0.026]
+const C_STRAW = [0.058, 0.092, 0.036]
+
+// BARE EARTH, and it is the ONE target that deliberately breaks the dominance
+// rule above -- r above g, so the classifier reads a patch of it as unvegetated.
+// That is the point rather than a cost: a mud patch in a meadow IS bare ground,
+// and having the shader agree is more correct than a brown that still grows
+// moss. It is kept off the smooth moss/straw ramp and driven by its own
+// smoothstep on the dry tail of the hue field so it arrives as PATCHES with
+// grass between them; a third target lerped continuously would just desaturate
+// the whole meadow toward mud. Steep ground and snow take none of it.
+const C_EARTH = [0.078, 0.053, 0.031]
+
+// Rock has no such constraint -- it is the classifier's fallback -- but it must
+// not become green-dominant either, or a cliff grows moss the shader believes in.
+// Both of these keep g below max(r, b).
+const C_ROCK_WARM = [0.098, 0.086, 0.068]
+const C_ROCK_COOL = [0.070, 0.074, 0.082]
+
+// ---- BUMP: the same trick as the mottle, applied to the vertex NORMALS.
+//
+// WHY THIS AND NOT A NORMAL MAP. The near block's one grit fetch is the single
+// most expensive thing in the terrain shader -- of the 1.33 ms between the full
+// near field and none of it, the arithmetic accounts for about 0.3 and the rest
+// is that one textureGrad. Any shader-side normal map, however cheap its
+// arithmetic, pays that. Perturbing the normals the mesher is already writing
+// costs nothing at draw time at all.
+//
+// TWO OCTAVES, and the fine one is what a 4 m leaf bought. At the XR route's
+// 5.72 deg the 25 cm cell reaches about 2.5 m from the eye and the 50 cm cell
+// about 5 m, so BUMP_FINE at 1.7 m is 7 samples across a wavelength on the
+// ground she is standing on. It degrades past 8 m, where the cell passes a
+// metre and the fine octave falls under Nyquist -- that is the same trade
+// MOTTLE_FINE makes and it is accepted for the same reason: the coarse octave
+// still carries the surface out there, and band-limiting per chunk would key
+// the amplitude to the CHUNK, which puts a lighting step along every LOD seam.
+//
+// ROCK IS BUMPIEST, SNOW LEAST. Rock and grass are what the eye is on and
+// nothing else draws them, so they carry the full slope. Snow sits below both:
+// it is the brightest surface in the world, so the same dy/dx reads as far more
+// contrast there than it does on ground at a twentieth the albedo.
+//
+// The same position-only rule as the mottle, for the same reason. This is a
+// SHADING perturbation only -- the mesh, the collision field and the
+// classification normal nyClass are all untouched, so the ground she walks on is
+// still the ground that was meshed.
+const BUMP_SCALE = 3.4 // m, the form scale -- boulder-and-hollow
+const BUMP_FINE = 1.7 // m, the grain scale -- see the Nyquist note above
+const BUMP_FINE_MIX = 0.45 // share of the slope the fine octave carries
+const BUMP_ROCK = 0.48 // slope added on rock, as dy/dx
+const BUMP_GRASS = 0.15
+const BUMP_SNOW = 0.12
+
+function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, wx, wz, out, o) {
   const steep = smoothstep(0.86, 0.62, ny)
   const alt = clamp01((h - altLo) / altSpan)
 
@@ -212,6 +325,49 @@ function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, out, o) {
   r = lerp(r, C_SNOW[0], snow)
   g = lerp(g, C_SNOW[1], snow)
   b = lerp(b, C_SNOW[2], snow)
+
+  // The mottle, before the road so a cleared surface stays an even one.
+  //
+  // TWO OCTAVES AND NOT AN FBM. fbm's gain stacks its short octaves at low
+  // amplitude under a dominant long one, which at this scale spends most of the
+  // signal below the cell size -- exactly the half that cannot be represented.
+  // Two named wavelengths at a stated ratio put the energy where the mesh can
+  // actually carry it.
+  const m = 0.6 * MOTTLE.simplex2(wx / MOTTLE_COARSE, wz / MOTTLE_COARSE)
+    + 0.4 * MOTTLE.simplex2(wx / MOTTLE_FINE + 91.7, wz / MOTTLE_FINE - 43.1)
+
+  const hue = MOTTLE.simplex2(wx / MOTTLE_HUE - 218.3, wz / MOTTLE_HUE + 164.9)
+
+  // The hue swing, per surface, weighted by how much of this vertex each surface
+  // is -- so grass varies between moss and straw while the cliff above it varies
+  // between warm and cool stone, off the same field and with no seam where they
+  // meet. Snow takes none of it: at 0.86 linear against palette entries near
+  // 0.07, any hue pull reads as dirt on the brightest thing in the world. It
+  // keeps the level swing below, which is what gives snow a readable surface.
+  const ha = Math.abs(hue) * MOTTLE_TINT * (1 - snow)
+  const grassT = hue > 0 ? C_MOSS : C_STRAW
+  const rockT = hue > 0 ? C_ROCK_WARM : C_ROCK_COOL
+  const grassA = ha * (1 - steep)
+  const rockA = ha * steep
+  r = lerp(lerp(r, grassT[0], grassA), rockT[0], rockA)
+  g = lerp(lerp(g, grassT[1], grassA), rockT[1], rockA)
+  b = lerp(lerp(b, grassT[2], grassA), rockT[2], rockA)
+
+  // The bare-earth patches, on the dry tail of the same hue field. The knee is
+  // what makes them PATCHES rather than a wash: it puts a visible pull on 9% of
+  // flat ground and reaches the full 0.62 only at their cores, so the rest of
+  // the dry side stays straw. See C_EARTH for why this one is allowed to take
+  // grass out of the vegetated class -- measured, it takes 4.5% of the meadow
+  // under half-vegetated and leaves the mean at 0.95.
+  const earthA = smoothstep(0.42, 1.0, -hue) * MOTTLE_EARTH * (1 - steep) * (1 - snow)
+  r = lerp(r, C_EARTH[0], earthA)
+  g = lerp(g, C_EARTH[1], earthA)
+  b = lerp(b, C_EARTH[2], earthA)
+
+  const v = 1 + m * MOTTLE_VALUE
+  r *= v
+  g *= v
+  b *= v
 
   // LAST, after snow: a road above the snow line is a road that has been
   // cleared, and a road that disappears under the snow layer is a road the
@@ -385,12 +541,41 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
       const dz = (H[e + epr] - H[e - epr]) / (2 * step)
       const len = Math.hypot(dx, 1, dz)
       const ny = 1 / len
-      normals[o] = -dx / len
-      normals[o + 1] = ny
-      normals[o + 2] = -dz / len
 
       const wx = ox + i * step
       const wz = oz + j * step
+
+      // The shading bump. See the BUMP constants. Two decorrelated taps of the
+      // noise per octave give an XZ slope vector directly -- this is not the
+      // gradient of a height field, so the two octaves can be mixed by weight
+      // without the fine one's slope compounding as its wavelength shrinks.
+      //
+      // ADDED TO dx/dz BEFORE NORMALISING, not to the finished unit normal --
+      // adding to a normalised vector and renormalising bends a cliff face and a
+      // flat meadow by different amounts for the same bump, because the two start
+      // at different lengths. In slope space the perturbation means the same
+      // thing everywhere: this much extra rise per metre.
+      //
+      // Snow OVERRIDES rather than joining the max: it is the quietest of the
+      // three, so taking the larger of it and the rock weight would hand a snowy
+      // cliff the rock number and lose the reason snow is lower at all. `ny` is
+      // the mesh normal here rather than nyClass, deliberately -- this is about
+      // how the surface catches light, which is a question about the surface that
+      // was actually built.
+      const snowLine = field.snowLineAt(wx, wz)
+      const snowHere = smoothstep(snowLine - snowBand / 2, snowLine + snowBand / 2, h)
+      const bumpGround = BUMP_GRASS + (BUMP_ROCK - BUMP_GRASS) * smoothstep(0.86, 0.62, ny)
+      const bumpK = lerp(bumpGround, BUMP_SNOW, snowHere)
+      const bx = (1 - BUMP_FINE_MIX) * MOTTLE.simplex2(wx / BUMP_SCALE + 7.13, wz / BUMP_SCALE - 2.61)
+        + BUMP_FINE_MIX * MOTTLE.simplex2(wx / BUMP_FINE + 128.7, wz / BUMP_FINE - 74.2)
+      const bz = (1 - BUMP_FINE_MIX) * MOTTLE.simplex2(wx / BUMP_SCALE - 55.9, wz / BUMP_SCALE + 31.4)
+        + BUMP_FINE_MIX * MOTTLE.simplex2(wx / BUMP_FINE - 301.4, wz / BUMP_FINE + 212.8)
+      const bdx = dx + bx * bumpK
+      const bdz = dz + bz * bumpK
+      const blen = Math.hypot(bdx, 1, bdz)
+      normals[o] = -bdx / blen
+      normals[o + 1] = 1 / blen
+      normals[o + 2] = -bdz / blen
 
       // DELIBERATELY NOT CREST-BIASED, and it is the same argument the CLASS_EPS
       // banner makes: the classification slope is measured over a fixed world
@@ -408,14 +593,14 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
         nyClass = 1 / Math.hypot(gx, 1, gz)
       }
 
-      shade(h, nyClass, field.snowLineAt(wx, wz), snowBand, touched ? layers.flattenAt(wx, wz) : 0, altLo, altSpan, colors, o)
+      shade(h, nyClass, snowLine, snowBand, touched ? layers.flattenAt(wx, wz) : 0, altLo, altSpan, wx, wz, colors, o)
     }
   }
 
   const idx = (i, j) => j * vpr + i
 
   // Skirt depth scales with cell size -- coarse chunks have bigger vertical gaps
-  // to hide -- with a 2 m floor so a leaf's 50 cm cell does not produce a 1.5 m
+  // to hide -- with a 2 m floor so a leaf's 25 cm cell does not produce a 0.75 m
   // flange that a one-level LOD difference can see straight past.
   const skirtDepth = Math.max(2, step * 3)
 

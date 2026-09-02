@@ -3,6 +3,7 @@ node_modules/
 dist/
 tools/characters/sheets/
 tools/fauna/sheets/
+tools/creatures/work/
 devops/deploy.env
 .env
 .DS_Store

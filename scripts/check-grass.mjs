@@ -2229,6 +2229,54 @@ console.log('\n-- blades --')
   blades.dispose()
 }
 
+// --- grass around rocks -----------------------------------------------------
+//
+// Grass is the other half of the displacement rule: a tree is LIFTED onto a rock,
+// a tuft is DROPPED. Nothing here builds a real rock -- a stub answers over a disc
+// so that what is under test is the grass's half of the contract.
+
+console.log('\n-- rocks in the bed --')
+
+{
+  const STONE = { x: 30, z: 22, r: 12 }
+  let minSizeSeen = Infinity
+  const stone = {
+    blockTopAt(x, z, minSize) {
+      minSizeSeen = Math.min(minSizeSeen, minSize)
+      const dx = x - STONE.x
+      const dz = z - STONE.z
+      return dx * dx + dz * dz < STONE.r * STONE.r ? 61 : -Infinity
+    },
+  }
+  const g = new Grass(scene, flat, dry, clear, texArray, { seed: 7, style: 'tufts', rocks: stone })
+  g.place(0, 0)
+
+  let inside = 0
+  for (const tile of g.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const dx = g.instX[id] - STONE.x
+      const dz = g.instZ[id] - STONE.z
+      if (dx * dx + dz * dz < STONE.r * STONE.r) inside++
+    }
+  }
+  check(inside === 0, 'not one tuft grows inside a rock', `${inside} of ${g.placed}`)
+  check(g.stats.rejected.rock > 0 && g.placed + g.stats.rejected.rock === st.placed,
+    'and every tuft the rock took is accounted for as a rock rejection, not lost',
+    `${g.stats.rejected.rock} rejected, ${g.placed} + that against ${st.placed} without`)
+  check(minSizeSeen === 0,
+    'and the grass asks about ANY stone, cobbles included -- it is skipped, not lifted',
+    `asked at ${minSizeSeen} m`)
+
+  let threw = false
+  try {
+    new Grass(scene, flat, dry, clear, texArray, { seed: 7, style: 'tufts', rocks: {} })
+  } catch { threw = true }
+  check(threw, 'and something passed as `rocks` that cannot answer throws at construction')
+
+  g.dispose()
+}
+
 // ---------------------------------------------------------------------------
 
 console.log(`\n${failures === 0 ? 'all grass checks passed' : `${failures} FAILED`}\n`)

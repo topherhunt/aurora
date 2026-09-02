@@ -616,7 +616,7 @@ export class Panel {
     // The sampling spacing of the chunk she is STANDING on, and §18's "down to
     // 10 cm" is a claim about this exact value -- which makes this the only live
     // check on it, and the reason it is still here at all. It held the big row
-    // below until it was pointed out that "50 cm" answers a question about the
+    // below until it was pointed out that "25 cm" answers a question about the
     // mesher rather than about the view: true, load-bearing, and of no use to
     // anyone standing in the world. So it keeps its measurement and loses its
     // billing.
@@ -653,7 +653,7 @@ export class Panel {
     // WHAT IS THE THING I AM POINTING AT, AND HOW FAR. The big row used to hold
     // the terrain's sampling spacing underfoot, which is a number this world
     // exists to make true and a number nobody standing in the world has any use
-    // for -- "50 cm" answers a question about the mesher, not about the view. It
+    // for -- "25 cm" answers a question about the mesher, not about the view. It
     // is still measured, one row down among the counters, because §18's "down to
     // 10 cm" is a claim about that value and this is the only live check on it.
     //

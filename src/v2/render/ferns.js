@@ -759,9 +759,10 @@ export class Ferns {
   }
 
   /**
-   * Bring the resident tile set in line with the camera: queue what is missing,
-   * evict what has fallen out. Returns immediately unless the camera has
-   * actually changed tile, which is what makes it safe to call every frame.
+   * Bring the resident tile set in line with the camera: thin what the camera
+   * has left behind, queue what is missing, evict what has fallen out. Returns
+   * immediately unless the camera has actually changed tile, which is what makes
+   * it safe to call every frame.
    */
   _reseat(cx, cz) {
     const tx = Math.floor(cx / TILE)
@@ -776,7 +777,27 @@ export class Ferns {
       if (dx * dx + dz * dz > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
+        continue
       }
+
+      // A SURVIVING TILE IS THINNED HERE AND NOT THROUGH THE QUEUE, because the
+      // queue is rebuilt below with the MISSING tiles only: a survivor keeps the
+      // level it was grown at until the tile loop pushes a thin job, which is
+      // worked a build budget at a time on a LATER frame and is dropped outright
+      // by the next crossing. That is fine while the camera walks and fatal when
+      // it JUMPS -- a quest teleport, or `place` after the ground moved, which
+      // drains the queue unbudgeted. One jump is survivable; what is not is a
+      // string of them, each stranding another tile that was underfoot at its
+      // full near-field complement 100 m away. The stale counts ratchet, and
+      // _poolBound has no room for them: the pool is sized for every tile
+      // standing at the level its DISTANCE says, and running dry throws.
+      //
+      // On the tile loop's own two-level dead band, so a tile sitting on a level
+      // boundary is not cut and regrown by one step across a tile line.
+      const nx = Math.max(tile.tx * TILE, Math.min(cx, (tile.tx + 1) * TILE))
+      const nz = Math.max(tile.tz * TILE, Math.min(cz, (tile.tz + 1) * TILE))
+      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)
+      if (q >= tile.q + 2) this._growTile({ key, tx: tile.tx, tz: tile.tz, q })
     }
 
     // The queue is rebuilt from scratch, so any level-change job pushed by the
@@ -954,7 +975,7 @@ export class Ferns {
       // a road the only other contributor is a lake, whose flattened apron is
       // already water-rejected above.
       const ny = 1 / Math.hypot(tan, 1)
-      shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(x, z) : 0, altLo, altSpan, gc, 0)
+      shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(x, z) : 0, altLo, altSpan, x, z, gc, 0)
       // Renormalised to unit luminance, so what survives is HUE. See the header:
       // the terrain palette's magnitude is near-black and multiplying by it raw
       // would undo the whole de-light.

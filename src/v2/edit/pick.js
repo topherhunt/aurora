@@ -22,7 +22,7 @@ import { WORLD_SIZE } from '../config.js'
 //   step(t) = clamp(t * 0.01, 0.05 m, 64 m)
 //
 // The 5 cm floor follows the field's own resolution. The finest
-// cell is 50 cm (config.js: 8192 m over MAX_DEPTH 10 is an 8 m leaf node, and a
+// cell is 25 cm (config.js: 8192 m over MAX_DEPTH 11 is a 4 m leaf node, and a
 // node holds CHUNK_RES = 16 cells) and its finest detail octave has a 25 cm
 // wavelength (§18 LAMBDA_MIN), so the narrowest real feature in the field is
 // ~25 cm across. A 5 cm step samples that five times, which is enough that the
@@ -50,7 +50,7 @@ import { WORLD_SIZE } from '../config.js'
 // returned point is then re-evaluated as
 // `heightAt(x, z, 0)` so it sits EXACTLY on the field rather than 4 microns off
 // it along the ray. The residual error is therefore the horizontal one: under
-// 4 microns of XZ displacement, five orders of magnitude below the 50 cm cell
+// 4 microns of XZ displacement, five orders of magnitude below the 25 cm cell
 // this world resolves to. The gate measures 1.6e-6 m off the ray, worst case.
 //
 // The one thing bisection cannot fix is a bracket containing an even number of
@@ -224,7 +224,9 @@ export function screenRay(camera, ndcX, ndcY) {
  * @typedef {object} PickSource
  * @property {string} label     what to call it in the readout
  * @property {object} sys       the scatter, needing tiles/instX/instY/instZ
- * @property {string} idKey     the variant array's property name on `sys`
+ * @property {string} [idKey]   the variant array's property name on `sys`.
+ *   Omitted by a scatter with only ONE model, which has no such array; such a
+ *   source must carry a `nameAt`.
  * @property {number} [radius]  pick radius, metres at scale 1
  * @property {number} [rise]    pick height, metres at scale 1
  * @property {string} [scaleKey] per-instance scale array, if the system has one
@@ -239,11 +241,9 @@ export function screenRay(camera, ndcX, ndcY) {
  * @property {(sys: object, id: number) => string} [nameAt] the id to QUOTE for
  *   this instance, when the raw integer is not one. A variant index is only
  *   quotable where it indexes a list the previewer also shows -- true for the
- *   scatters whose `variantAt` indexes their bank in order, false for rocks,
- *   whose `shapeAt` indexes ONE BED'S OWN ROSTER: a subset of the bank picked
- *   per environment, so the same integer means a different rock in each of the
- *   five beds and none of them means anything in /gen-rock. Such a source hands
- *   back the string the previewer would accept instead.
+ *   scatters whose `variantAt` indexes their bank in order, and vacuous for the
+ *   rocks, which have one model and no index at all. Such a source hands back
+ *   the string the previewer would accept instead.
  */
 
 /**
@@ -359,8 +359,12 @@ export function pickProp(sources, origin, dir, maxDist) {
     if (!sys) throw new Error(`pickProp: ${src.label} has no scatter bound`)
     if (!sys.tiles) throw new Error(`pickProp: ${src.label} has no tiles -- bind the sub-scatter that owns them, not the facade over it`)
     const scales = src.scaleKey ? sys[src.scaleKey] : null
-    const ids = sys[src.idKey]
-    if (!ids) throw new Error(`pickProp: ${src.label} has no ${src.idKey}`)
+    // Optional, because a scatter with ONE model has no variant array to name --
+    // see `idKey`. Such a source owes a `nameAt` instead, and saying so here is
+    // what stops it printing "undefined" at the cursor.
+    const ids = src.idKey ? sys[src.idKey] : null
+    if (src.idKey && !ids) throw new Error(`pickProp: ${src.label} has no ${src.idKey}`)
+    if (!src.idKey && !src.nameAt) throw new Error(`pickProp: ${src.label} has neither an idKey nor a nameAt`)
     if (!src.sizeAt && !(src.radius > 0 && src.rise > 0)) {
       throw new Error(`pickProp: ${src.label} has neither a sizeAt nor a positive radius and rise`)
     }
@@ -412,7 +416,7 @@ export function pickProp(sources, origin, dir, maxDist) {
         bestT = t
         best = src
         pickHit.label = src.label
-        pickHit.variant = ids[id]
+        pickHit.variant = ids === null ? 0 : ids[id]
         pickHit.name = src.nameAt ? src.nameAt(sys, id) : String(ids[id])
         pickHit.dist = t
       }

@@ -400,23 +400,15 @@ export const LAYER = {
   // is borrowed, and stretched to fit.
   IMPOSTOR_BUILDING: 50, // base of a 20-layer run, one per wall style x roof kind
 
-  // --- rock impostors (src/props/rock-bank.js, src/v2/render/rocks.js) ------
+  // --- rock impostor (src/props/rock-bank.js, src/v2/render/rocks.js) -------
   //
-  // ONE PHOTOGRAPH PER VARIANT, twenty-five of them, and unlike the building run
-  // this one really is per shape. The arithmetic that ruled it out there rules
-  // it in here: 25 slices is 1.6 MB against 9.3 MB, and a rock has no wall-style
-  // x roof-kind grid to collapse along -- its variants differ in SILHOUETTE,
-  // which is the one thing a card is.
+  // ONE PHOTOGRAPH, of the one boulder the world has. Every carded rock in every
+  // bed reads this single layer, which is the whole card cost for stone.
   //
-  // WHAT IT REPLACES: a single layer holding one photograph of one `boulder`,
-  // stretched onto all twenty-five shapes' quads. Measured over the bank that
-  // stretch ran 0.29x on a `capslab` (a boulder squashed under a third of its
-  // height) to 4.00x on a `spire`, so every distant rock that was not roughly
-  // boulder-shaped was drawn as a boulder pulled or crushed into its outline.
-  //
-  // Base of a 25-layer run ending at `IMPOSTOR_ROCK + ROCK_NAMES.length - 1`;
-  // rock-bank.js owns the order (ROCK_NAMES, the variant table in table order)
-  // and `rockImpostorLayer` there indexes it. LAYER_COUNT must leave room.
+  // 71..94 ARE FREE and are not yet reclaimed: this was a 25-layer run, one
+  // picture per variant, and collapsing the bank to a single asset emptied all
+  // but the base. Renumbering means moving every layer above it, which is a
+  // change with a blast radius out of proportion to the ~1.5 MB it reclaims.
   IMPOSTOR_ROCK: 70,
 
   // Crab sheet, same reasoning as the mushroom's: a crab's shape is geometry

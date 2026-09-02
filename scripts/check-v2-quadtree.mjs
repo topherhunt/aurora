@@ -440,7 +440,8 @@ export async function run() {
     )
 
     // What the four extra levels actually cost. This is the measurement SLOT_COUNT 1024 rests on, and config.js states it in prose.
-    const byDepth = [6, 8, 10, MAX_DEPTH - 1, MAX_DEPTH].map((d) => `${d} -> ${worstAt(MIN_TRI_DEG, { maxDepth: d }).worst}`)
+    const depths = [...new Set([6, 8, 10, MAX_DEPTH - 1, MAX_DEPTH])].sort((a, b) => a - b)
+    const byDepth = depths.map((d) => `${d} -> ${worstAt(MIN_TRI_DEG, { maxDepth: d }).worst}`)
     console.log(`\n        worst selection at ${MIN_TRI_DEG} deg by MAX_DEPTH:  ${byDepth.join('   ')}   leaves`)
     const shallow = worstAt(MIN_TRI_DEG, { maxDepth: MAX_DEPTH - 4 }).worst
     check(
@@ -452,9 +453,9 @@ export async function run() {
 
   // --- 5. does it actually reach the cap underfoot? ------------------------
   //
-  // MAX_DEPTH is a CAP, not a target -- the angular rule decides what is reached -- so "the cap allows a 50 cm cell" is not the same statement as "standing on the ground you get one", and only the second one is the feature.
+  // MAX_DEPTH is a CAP, not a target -- the angular rule decides what is reached -- so "the cap allows a 25 cm cell" is not the same statement as "standing on the ground you get one", and only the second one is the feature.
   //
-  // The direction of this section INVERTED when the cap came down from 13 to 10. At 13 the interesting risk was falling short: the rule wanted 8.6 cm underfoot, the cap allowed 6.25 cm, and the question was whether selection actually got there. At 10 the cap is well coarser than anything the rule wants at eye height, so reaching it is not in doubt -- what this now pins is that the cap SATURATES, i.e. the ground under her feet is always at the finest tier the tree has, and no closer camera, finer triDeg or flatter patch can talk it into another level. That saturation is the whole reason the cap is the triangle lever it is.
+  // The direction of this section INVERTED when the cap came down from 13 to 11. At 13 the interesting risk was falling short: the rule wanted 8.6 cm underfoot, the cap allowed 6.25 cm, and the question was whether selection actually got there. At 11 the cap is still coarser than anything the rule wants at eye height, so reaching it is not in doubt -- what this now pins is that the cap SATURATES, i.e. the ground under her feet is always at the finest tier the tree has, and no closer camera, finer triDeg or flatter patch can talk it into another level. That saturation is the whole reason the cap is the triangle lever it is.
 
   console.log('\nreaches the cap underfoot')
   {

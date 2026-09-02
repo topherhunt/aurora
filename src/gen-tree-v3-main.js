@@ -162,11 +162,11 @@ loadImageLayers(atlas)
 
 const foliageMaterial = createVoxelFoliageMaterial()
 
-// THE LEAF TILE, one per species. leaf_pine_solid.png is leaf_pine.png stamped over itself,
-// randomly rotated and translated on a torus, until nothing is transparent --
-// see tools/trees/solidify-leaves.mjs. Solid is the point: a leaf triangle can
-// wear needle ART without an alpha test, and the alpha test is what would cost
-// the draw its low-resolution-Z and with it the whole fill advantage.
+// THE LEAF TILE, one per species: a hi-res cut of real leaves stamped over
+// itself on a torus until nothing is transparent, then downressed once to
+// 128px -- see tools/trees/solidify-leaves.mjs. Solid is the point: a leaf
+// triangle can wear leaf ART without an alpha test, and the alpha test is what
+// would cost the draw its low-resolution-Z and with it the fill advantage.
 //
 // It is loaded on its own rather than through the layer atlas because it is
 // sampled with REPEAT wrapping at a random offset per leaf, and the atlas is a
@@ -681,19 +681,23 @@ const SLIDERS = [
   ['leaves', 4, 45, 1, 'leaves PER METRE of twig -- limbs and sub-branches alike'],
   ['texMix', 0, 1, 0.05, 'how much of the solid needle tile shows through the vertex palette'],
   ['leafPatch', 0.15, 1.5, 0.05, 'how much of that tile one leaf covers'],
-  ['leafAngleMin', 70, 140, 1, 'degrees at the leaf triangle\'s MIDDLE vertex; the leaf is lengthened until it reaches this'],
-  ['leafAngleMax', 70, 170, 1, 'and shortened if it would pass this'],
+  ['leafStemMin', 15, 90, 1, 'degrees at the leaf\'s STEM corner -- narrow is a needle dart, wide is a broadleaf blade'],
+  ['leafStemMax', 15, 90, 1, 'and the top of that band'],
+  ['leafSideMin', 1, 2, 0.02, 'the leaf\'s long flank as a multiple of its short one -- 1 is isoceles'],
+  ['leafSideMax', 1, 2, 0.02, 'and the top of that band'],
   ['normalRound', 0, 5, 0.1, 'how far each vertex\'s crown normal is pushed off the leaf\'s mean -- 0 is flat-lit, higher sweeps the light across each leaf'],
   ['barkTile', 0.15, 1.6, 0.05, 'metres of bark per tile, the same around as along'],
   ['voxelSize', 0.03, 0.2, 0.005, 'METRES, the MINIMUM leaf'],
   ['voxelLong', 1, 8, 0.1, 'leaf LENGTH = voxelSize x this'],
-  ['voxelWide', 0.3, 3, 0.05, 'and its width across, same units'],
   ['voxelVary', 1, 3, 0.05, 'random size, 1x up to this and no further'],
   ['leafFloor', 0.2, 1, 0.02, 'shortest leaf as a fraction of the longest one the crown actually grew'],
   ['voxelOut', 0, 1, 0.02, '0 = the leaf continues the twig, 1 = straight out its side'],
   ['voxelRise', -0.4, 0.6, 0.02, 'and tilted up off the twig'],
   ['voxelRoll', 0, 3.2, 0.05, 'radians the roll around the twig may stray'],
-  ['voxelJitter', 0, 0.8, 0.02, 'per-vertex wobble, so no two leaves are one stamp'],
+  ['leafSpin', 0, 1, 0.02, 'half-turns a leaf plate may face about its own stem axis'],
+  ['leafOpen', 0, 1, 0.02, 'how hard each leaf turns toward open space -- 0 is a random spray'],
+  ['leafOpenUp', 0, 1, 0.02, '0 seeks openness in any direction, 1 seeks the sky (phototropism)'],
+  ['leafOpenJitter', 0, 1.6, 0.02, 'radians of slop on that answer -- high is back to a random spray'],
   ['fringeAt', 0.4, 1, 0.02, 'r/R past which a leaf is on the frayed rim'],
   ['fringeShrink', 0.1, 1, 0.02, 'how much smaller those rim leaves get'],
   ['depthShade', 0, 1, 0.02, 'the crown\'s value structure, in one number'],
@@ -719,7 +723,7 @@ const SHADER_SLIDERS = [
  * generator's knobs in the middle, the view buttons at the bottom.
  *
  * Rebuilt wholesale on a species change, because every slider's POSITION is a
- * species parameter -- an oak's voxelWide is not a pine's, and leaving the
+ * species parameter -- an oak's stem angle is not a pine's, and leaving the
  * handles where the last species put them makes the panel lie.
  */
 function buildPanel() {

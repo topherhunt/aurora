@@ -1644,14 +1644,23 @@ export class Grass {
   }
 
   /**
-   * Bring the visible tile set in line with the camera: queue what is missing,
-   * evict what has fallen out. Returns immediately unless the camera has
-   * actually changed tile, which is what makes it safe to call every frame.
+   * Bring the visible tile set in line with the camera: thin what the camera has
+   * left behind, queue what is missing, evict what has fallen out. Returns
+   * immediately unless the camera has actually changed tile, which is what makes
+   * it safe to call every frame.
    */
   _reseat(cx, cz) {
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
     if (tx === this.camTileX && tz === this.camTileZ) return
+    // More than one tile of travel between two crossings is not walking: it is a
+    // teleport, a `place` after the ground moved, or a hitch long enough to be
+    // one. What makes the distinction worth drawing is that the rim's state --
+    // and so its hold on a cut, see _thin -- describes the camera position it
+    // was last swept at, which a jump has just made meaningless.
+    const jumped = this.camTileX === null
+      || Math.abs(tx - this.camTileX) > 1
+      || Math.abs(tz - this.camTileZ) > 1
     this.camTileX = tx
     this.camTileZ = tz
 
@@ -1661,7 +1670,25 @@ export class Grass {
       if (dx * dx + dz * dz > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
+        continue
       }
+
+      // A SURVIVING TILE IS THINNED HERE AND NOT THROUGH THE QUEUE. See
+      // Ferns._reseat for the whole of it. `update`'s unbudgeted thin pass is
+      // not enough on its own and never was: it drains the queue this method
+      // has just REBUILT, which holds the missing tiles only, so the thins it
+      // catches are the ones the tile loop pushed on a frame that did not cross
+      // a tile line. A camera that jumps -- a quest teleport, or `place` after
+      // the ground moved, which drains the queue without the pass at all --
+      // strands a near-field tile in the far field each time, and the stale
+      // counts ratchet until the grow loop cannot find room for the disc ahead.
+      //
+      // On the tile loop's own two-level dead band, so a tile sitting on a level
+      // boundary is not cut and regrown by one step across a tile line.
+      const nx = Math.max(tile.tx * TILE, Math.min(cx, (tile.tx + 1) * TILE))
+      const nz = Math.max(tile.tz * TILE, Math.min(cz, (tile.tz + 1) * TILE))
+      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)
+      if (q >= tile.q + 2) this._growTile({ key, tx: tile.tx, tz: tile.tz, q, force: jumped })
     }
 
     // The queue is rebuilt from scratch, so any level-change job pushed by the
@@ -1725,7 +1752,7 @@ export class Grass {
         // _thin -- and leaving `u` and `q` where they are is what makes _reseat
         // queue the rest of the cut on a later frame, by which time the fade has
         // retired and the id is free to take.
-        if (this._thin(tile, uNew)) {
+        if (this._thin(tile, uNew, job.force === true)) {
           tile.q = q
           tile.u = uNew
         }
@@ -1980,8 +2007,13 @@ export class Grass {
     )
   }
 
-  /** Cut every tuft in the tile whose rank has fallen above the keep-fraction. */
-  _thin(tile, uNew) {
+  /**
+   * Cut every tuft in the tile whose rank has fallen above the keep-fraction.
+   * Returns whether the cut is COMPLETE -- see the rim hold below. `force`
+   * cuts a clump the rim still has on screen, and is set by the caller that
+   * knows the rim's answer is about a camera position that no longer exists.
+   */
+  _thin(tile, uNew, force = false) {
     let w = 0
     let held = 0
     for (let k = 0; k < tile.n; k++) {
@@ -2000,7 +2032,14 @@ export class Grass {
       // one of those is a clump vanishing between two frames. Hand it to the rim
       // and keep it in the tile; the caller leaves the level alone, so the cut
       // comes back for it once the dissolve has retired it.
-      if (!this.rim.isHidden(id)) {
+      //
+      // NOT ACROSS A JUMP, though, which is what `force` is for. The hold reads
+      // the rim state the last sweep left, and after a teleport that is an
+      // answer about where the camera USED to be -- worse, the jump feeds the
+      // rim's speed slack, so every clump in the bed reads as on screen and the
+      // cut frees nothing at all. See _reseat: the tile is being cut BECAUSE the
+      // camera is now somewhere else, so there is nothing on screen to protect.
+      if (!force && !this.rim.isHidden(id)) {
         this.rim.retire(id, getPropClock())
         tile.ids[w] = id
         tile.rank[w] = tile.rank[k]

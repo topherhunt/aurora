@@ -925,7 +925,7 @@ export class Mushrooms {
         this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
 
         const ny = 1 / Math.hypot(tan, 1)
-        shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(mx, mz) : 0, altLo, altSpan, gc, 0)
+        shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(mx, mz) : 0, altLo, altSpan, mx, mz, gc, 0)
         const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
         const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
         const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1

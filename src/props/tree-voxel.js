@@ -114,9 +114,9 @@ export const VOXEL_PINE_DEFAULTS = {
   leaves: 21,
   voxelSize: 0.075,        // METRES, the MINIMUM leaf. Not a fraction: a needle
                            // spray is a real size whether the tree is 6 m or 20.
-  voxelLong: 4.0,          // leaf LENGTH = voxelSize * this, so 4 is a 30 cm
+  voxelLong: 4.7,          // leaf LENGTH = voxelSize * this, so this is a 33 cm
                            // spray off a 7.5 cm attach -- a fan, not a chip.
-  voxelWide: 1.85,         // and its width across, same units
+                           // Width is not a knob: the stem angle sets it.
   voxelVary: 2.0,          // random size, from 1x up to this and no further.
                            // Unbounded variance spends triangles on leaves too
                            // small to read; a factor of two is all the eye
@@ -127,23 +127,44 @@ export const VOXEL_PINE_DEFAULTS = {
                            // blob centred on the wood.
   voxelRise: 0.24,         // and tilted up off the twig's own plane
   voxelRoll: 2.1,          // radians the roll around the twig may stray
-  voxelSplay: 0.55,        // how unequal the two far corners are allowed to be
-  voxelJitter: 0.3,        // per-vertex wobble, as a fraction of the leaf
+  leafSpin: 1.0,           // how freely a leaf plate turns about its own stem
+                           // axis, in half-turns. 1 is any angle at all.
+  // HOW HARD EACH LEAF TURNS TOWARD OPEN SPACE. 0 is the golden-angle spiral
+  // with a random plate spin; 1 lets every leaf take the roll and the spin that
+  // face the most of whatever is not already a leaf. See the openness pass.
+  //
+  // ON, because it measures as a gain -- but only in a crown dense enough to
+  // have neighbours worth turning away from. The win tracks crown NARROWNESS
+  // (aspen +6%, birch +4%, pine +3%, oak -3%), so a wide sparse crown turns it
+  // off per species. design/26-voxel-foliage.md has the tables and the reason.
+  leafOpen: 1.0,
+  leafOpenJitter: 0.30,    // radians of slop on the answer, so a shared gap
+                           // does not turn a neighbourhood into one flat sheet
+  // WHICH OPENNESS. 0 is any direction at all, the whole sphere weighted
+  // evenly -- a leaf just turns away from its neighbours. 1 is the
+  // cosine-weighted sky instead, real phototropism, which additionally aims
+  // every plate face-up and so edge-on to anyone standing under the tree.
+  // Same pass, same cost; only the target moves.
+  leafOpenUp: 0.0,
   // The floor on leaf length, as a fraction of the LONGEST leaf the crown
   // actually produced. voxelVary bounds the roll, but the leader taper and the
-  // fringe shrink both stack on top of it and the angle band then rescales
-  // every leaf again -- so the only floor that means anything is measured
-  // against the delivered maximum, after all of that.
+  // fringe shrink both stack on top of it -- so the only floor that means
+  // anything is measured against the delivered maximum, after all of that.
   leafFloor: 0.5,
-  // The leaf triangle's SHAPE, stated as the angle at its middle vertex. A
-  // leaf is the tapered attach corner, one vertex bulging out to the side part
-  // way along, and a far tip -- so the longest side is always attach-to-tip and
-  // the middle vertex is the one opposite it. Hold that angle obtuse and the
-  // triangle is a long needle-ish sliver; let it fall toward 90 and the same
-  // three vertices read as a fat arrowhead chip. The length is solved to land
-  // inside this band, which is why it is a band and not a taste knob.
-  leafAngleMin: 100,       // degrees, and the leaf is lengthened to reach it
-  leafAngleMax: 110,
+  // THE LEAF TRIANGLE'S SHAPE, stated as the angle at the STEM corner -- the
+  // one on the twig. Three angles fix a triangle up to scale, and the other
+  // two are the even split of what is left, so this single band is the whole
+  // silhouette: narrow is a needle dart, wide is a broadleaf blade. Width
+  // follows from it (roughly 2*tan(stem/2) of the length), which is why there
+  // is no width knob any more.
+  leafStemMin: 25,         // degrees at the attach corner
+  leafStemMax: 35,
+  // THE LOPSIDEDNESS, as the ratio between the leaf's two flanks -- the edges
+  // running out from the attach corner. 1 would be isoceles and would read as
+  // one stamp repeated; this band keeps every leaf visibly one-sided without
+  // letting the short flank collapse into a sliver.
+  leafSideMin: 1.10,
+  leafSideMax: 1.40,
   // How far each vertex's own crown normal is pushed away from the leaf's mean
   // one. At 1 the three vertices carry the crown's true curvature across the
   // leaf, which is a small gradient; above that it is exaggerated, and the
@@ -196,13 +217,17 @@ export const VOXEL_PINE_DEFAULTS = {
  * question this table exists to answer, and it is not the same question the
  * pine answered. A conifer is a cone of slivers and the approach was built for
  * it; an oak is a bellied ball of broad blades, which asks the leaf triangle to
- * be short and wide -- a shape the middle-vertex band was tuned to forbid. So
- * each broadleaf carries its own angle band and its own `voxelWide`, and they
- * run far wider than the pine's.
+ * be short and wide. So each broadleaf opens the stem-angle band well past the
+ * pine's dart, which is the one knob that shape hangs off.
  *
- * `tile` is the solid needle/leaf mat from tools/trees/solidify-leaves.mjs.
- * Every entry names a `_solid` file: an alpha-tested cut anywhere in this
- * material costs the draw its low-resolution-Z, which is the whole advantage.
+ * `tile` is the solid needle/leaf mat from tools/trees/solidify-leaves.mjs: a
+ * hand cut of real leaves stamped over itself until it is opaque. Every entry
+ * names a `_solid` file, because an alpha-tested cut anywhere in this material
+ * costs the draw its low-resolution-Z, which is the whole advantage.
+ *
+ * The shader divides the tile by its own mean, so the tile supplies GRAIN and
+ * the palette below supplies COLOUR -- which means a species whose leaves are
+ * not green needs a palette that is not green. See the aspen.
  */
 export const VOXEL_SPECIES = {
   pine: {
@@ -216,24 +241,27 @@ export const VOXEL_SPECIES = {
   oak: {
     label: 'oak',
     barkLayer: LAYER.BARK,
-    tile: 'trees/leaf2_oak_solid.png',
+    tile: 'trees/leaf_oak_solid.png',
     params: {
       firstBranch: 0.40, branchCount: 30, branchLength: 0.46, branchMin: 0.42,
       crownPeak: 0.45, crownFullness: 0.52,
       branchAngle: 0.34, branchRise: 0.30, branchDroop: 0.20, branchSway: 0.42,
       trunkRadius: 0.017, trunkTaper: 0.34, trunkKink: 0.018,
       subMin: 2, subMax: 3, subLength: 0.52, subAngle: 1.1,
-      // FIVE leaves per metre of twig, against the pine's 21. A conifer's twigs
-      // are a sparse skeleton the needles have to fill; a broadleaf crown is a
-      // packed ball, so the same rate buries the tree in seven layers of leaf
-      // for one layer of silhouette. Tuned so `layers` lands near the pine's.
-      leaves: 8, voxelSize: 0.07, voxelLong: 3.0, voxelWide: 2.8, voxelVary: 1.7,
-      // A BLADE, NOT A NEEDLE, and the middle-vertex angle is the whole of that
-      // shape: near 180 the triangle is a flat sliver, near 0 it is a folded
-      // one, and a leaf lives in between. Lower than the pine's band, because
-      // lower is shorter and wider. These knobs only set where the angle STARTS
-      // -- the band is what it ends at, and it rescales length to get there.
-      leafAngleMin: 84, leafAngleMax: 100,
+      // EIGHT leaves per metre of twig, against the pine's 21. A conifer's
+      // twigs are a sparse skeleton the needles have to fill; a broadleaf crown
+      // is a packed ball, so the same rate buries the tree in seven layers of
+      // leaf for one layer of silhouette. Tuned so `layers` lands near the
+      // pine's.
+      leaves: 8, voxelSize: 0.07, voxelLong: 4.1, voxelVary: 1.7,
+      // THE ONE CROWN WIDE ENOUGH TO LOSE BY IT. Openness-seeking needs
+      // neighbours to turn away from; an oak's 3.9 m crown has open space in
+      // every direction, so every leaf points outward TOGETHER and the
+      // correlation costs more than the gap-filling buys. Measured -2.6%.
+      leafOpen: 0,
+      // A BLADE, NOT A NEEDLE: twice the pine's stem angle is twice the width
+      // for the same length, which is the difference between the two crowns.
+      leafStemMin: 52, leafStemMax: 68,
       voxelOut: 0.55, voxelRise: 0.34, fringeAt: 0.80, apexVoxels: 8, apexReach: 0.16,
       needleDark: [0.052, 0.098, 0.046], needleMid: [0.196, 0.318, 0.118],
       needleTip: [0.386, 0.470, 0.170],
@@ -252,35 +280,74 @@ export const VOXEL_SPECIES = {
       branchAngle: 0.52, branchRise: 0.34, branchDroop: 0.78, branchSway: 0.36,
       trunkRadius: 0.0085, trunkTaper: 0.28, trunkKink: 0.014,
       subMin: 1, subMax: 3, subLength: 0.58, subAngle: 0.7, subDroop: 0.55,
-      leaves: 10, voxelSize: 0.07, voxelLong: 3.0, voxelWide: 2.8, voxelVary: 1.8,
-      leafAngleMin: 84, leafAngleMax: 100,
+      leaves: 10, voxelSize: 0.07, voxelLong: 3.8, voxelVary: 1.8,
+      leafStemMin: 52, leafStemMax: 68,
       voxelOut: 0.62, voxelRise: 0.18, fringeAt: 0.78, apexVoxels: 10, apexReach: 0.14,
       needleDark: [0.070, 0.112, 0.054], needleMid: [0.246, 0.372, 0.146],
       needleTip: [0.470, 0.540, 0.208],
       leafPatch: 0.7, barkTile: 1.2,
     },
   },
-  // Narrow and columnar, with the smallest leaf of the four and the warmest
-  // palette -- an aspen reads as a vertical stroke of pale gold-green.
+  // Narrow and columnar, with the smallest leaf of the four -- an aspen in
+  // turn reads as a vertical stroke of gold.
   aspen: {
     label: 'aspen',
     barkLayer: LAYER.BARK_BIRCH,
-    tile: 'trees/leaf2_aspen_solid.png',
+    tile: 'trees/leaf_aspen_solid.png',
     params: {
       firstBranch: 0.44, branchCount: 56, branchLength: 0.22, branchMin: 0.46,
       crownPeak: 0.50, crownFullness: 1.05,
       branchAngle: 0.62, branchRise: 0.42, branchDroop: 0.22, branchSway: 0.28,
       trunkRadius: 0.009, trunkTaper: 0.30, trunkKink: 0.009,
       subMin: 1, subMax: 2, subLength: 0.50, subAngle: 0.8,
-      leaves: 10, voxelSize: 0.07, voxelLong: 3.0, voxelWide: 2.8, voxelVary: 1.7,
-      leafAngleMin: 84, leafAngleMax: 100,
+      leaves: 10, voxelSize: 0.07, voxelLong: 3.6, voxelVary: 1.7,
+      leafStemMin: 52, leafStemMax: 68,
       voxelOut: 0.66, voxelRise: 0.26, fringeAt: 0.80, apexVoxels: 12, apexReach: 0.12,
-      needleDark: [0.086, 0.116, 0.048], needleMid: [0.284, 0.362, 0.132],
-      needleTip: [0.530, 0.548, 0.196],
+      // THE TILE'S OWN COLOUR, not a green one. needleMid IS the linear mean
+      // of leaf_aspen_solid.png, so palette * (tile / mean) averages back to
+      // exactly the photograph and the crown wears the gold it was cut from.
+      // Any other hue here re-tints the tile, which is what turned a yellow
+      // aspen green. Dark and tip are the same chromaticity at 0.36x and 1.30x
+      // the value, so the ramp carries value structure and nothing else.
+      needleDark: [0.197, 0.111, 0.021], needleMid: [0.548, 0.307, 0.057],
+      needleTip: [0.712, 0.399, 0.074],
       leafPatch: 0.65, barkTile: 1.2,
     },
   },
 }
+
+/**
+ * OPENNESS, as a fixed set of directions with two weights: [x, y, z, wSky, wAll].
+ *
+ * The WHOLE SPHERE, not a hemisphere: what a leaf is looking for is any
+ * direction that is not already another leaf, and down and sideways count.
+ * Fibonacci-spiralled so every sample owns equal solid angle and no azimuth is
+ * favoured, which is what stops a crown lining up on a sample direction.
+ *
+ * `wAll` is uniform -- pure outward-seeking. `wSky` is the cosine-weighted
+ * upper hemisphere, the diffuse sky a flat plate actually collects, zero
+ * below the horizon. leafOpenUp mixes them; see openFormAt.
+ *
+ * Nineteen is the working number over a sphere: below about twelve the leaves
+ * visibly quantise onto the samples, and past about twenty-four the answer
+ * stops moving while the pass keeps getting more expensive.
+ */
+const OPEN_DIRS = (() => {
+  const n = 19
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const cosT = 1 - (2 * (i + 0.5)) / n
+    const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT))
+    const phi = i * 2.399963
+    out.push([Math.cos(phi) * sinT, cosT, Math.sin(phi) * sinT, Math.max(0, cosT), 1])
+  }
+  return out
+})()
+// How far a ray is marched through the crown, in grid cells, and how many rolls
+// around its twig a leaf is offered. Both are the cost knobs: the pass is
+// sites * (OPEN_PHI + 1) * OPEN_DIRS * OPEN_STEPS grid reads.
+const OPEN_STEPS = 6
+const OPEN_PHI = 8
 
 /** The full parameter set for a species, pine defaults underneath. */
 export function voxelSpecies(name) {
@@ -474,7 +541,7 @@ export function buildVoxelPine(params = {}, barkLayer = 0) {
   // Collected as plain records first. Nothing is emitted until they have been
   // ordered, because the ORDER is the ladder.
   const voxels = []
-  const pushVoxel = (base, dir, size) => {
+  const pushVoxel = (base, dir, size, spin) => {
     // The leaf's own centre, a bit out from its attach point -- the pivot the
     // inflate grows about and the point the dissolve collapses onto.
     const c = [base[0] + dir[0] * size * 0.45,
@@ -502,6 +569,7 @@ export function buildVoxelPine(params = {}, barkLayer = 0) {
       // the cone's slope. This is what the canopy is shaded by.
       out: norm([rx / r, p.normalTilt, rz / r]),
       size: sz,
+      spin,
       depth,
       lift,
       hue: rand(-1, 1) * p.hueVary,
@@ -510,52 +578,46 @@ export function buildVoxelPine(params = {}, barkLayer = 0) {
 
   // Leaves hang off TWIGS -- limb segments and sub-branches alike -- at a
   // density per metre, so a two-metre skirt limb gets four times the leaves of
-  // a half-metre one at the leader and neither comes out threadbare.
+  // a half-metre one at the leader and neither comes out threadbare. Sites
+  // first, orientations second: which way a leaf faces depends on the leaves
+  // already grown, so nothing can be oriented until they all exist as places.
+  const sites = []
   for (const tw of twigs) {
     const n = Math.max(1, Math.round(tw.len * p.leaves))
     const uAx = norm(cross(tw.dir, Math.abs(tw.dir[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]))
     const vAx = norm(cross(uAx, tw.dir))
     for (let i = 0; i < n; i++) {
-      const u = (i + rand(0.15, 0.85)) / n
-      // Roll around the twig, walked by the golden angle so consecutive leaves
-      // never stack on one side, then frayed by voxelRoll.
-      const phi = i * 2.399963 + rand(-p.voxelRoll, p.voxelRoll)
-      const out = [
-        uAx[0] * Math.cos(phi) + vAx[0] * Math.sin(phi),
-        uAx[1] * Math.cos(phi) + vAx[1] * Math.sin(phi),
-        uAx[2] * Math.cos(phi) + vAx[2] * Math.sin(phi),
-      ]
-      // OUT AND FORWARD. A needle spray leaves its twig sideways and angled
-      // toward the tip; it is not centred on the wood and it is not radial.
-      const dir = norm([
-        lerp(tw.dir[0], out[0], p.voxelOut),
-        lerp(tw.dir[1], out[1], p.voxelOut) + p.voxelRise,
-        lerp(tw.dir[2], out[2], p.voxelOut),
-      ])
-      // ON the twig's surface. Starting at the centreline is what makes a leaf
-      // look skewered by its own branch.
-      const rad = lerp(tw.r0, tw.r1, u)
-      const from = [
-        tw.a[0] + tw.dir[0] * tw.len * u + out[0] * rad,
-        tw.a[1] + tw.dir[1] * tw.len * u + out[1] * rad,
-        tw.a[2] + tw.dir[2] * tw.len * u + out[2] * rad,
-      ]
-      pushVoxel(from, dir, p.voxelSize * p.voxelLong * rand(1, p.voxelVary))
+      sites.push({
+        tw, uAx, vAx,
+        u: (i + rand(0.15, 0.85)) / n,
+        // The fallback roll around the twig, walked by the golden angle so
+        // consecutive leaves never stack on one side, then frayed by
+        // voxelRoll. At leafOpen 0 this is the answer; above it, the start.
+        phi0: i * 2.399963 + rand(-p.voxelRoll, p.voxelRoll),
+        size: p.voxelSize * p.voxelLong * rand(1, p.voxelVary),
+        spin0: rand(-1, 1) * p.leafSpin * Math.PI,
+      })
     }
   }
 
   // The leader. Its leaves are smaller and tighter than a limb's -- a season
-  // of growth, not a tier.
+  // of growth, not a tier. It grows off the trunk's own tip rather than a twig,
+  // so its direction is fixed and only the plate's spin is up for grabs.
   for (let i = 0; i < p.apexVoxels; i++) {
     const t = i / Math.max(1, p.apexVoxels - 1)
     const y = h - p.apexReach * h * t
     const axis = trunkAt(y)
     const yaw = i * 2.399963
     const r = trunkRadiusAt(y) + rand(0.2, 1.0) * p.voxelSize * 1.6 * (0.35 + t)
-    const c = [axis[0] + Math.cos(yaw) * r, y - rand(0, 0.3) * p.voxelSize, axis[2] + Math.sin(yaw) * r]
-    pushVoxel(c, norm([Math.cos(yaw), rand(0.5, 1.4), Math.sin(yaw)]),
-      p.voxelSize * p.voxelLong * lerp(0.55, 0.95, t) * rand(1, p.voxelVary))
+    sites.push({
+      from: [axis[0] + Math.cos(yaw) * r, y - rand(0, 0.3) * p.voxelSize, axis[2] + Math.sin(yaw) * r],
+      dir: norm([Math.cos(yaw), rand(0.5, 1.4), Math.sin(yaw)]),
+      size: p.voxelSize * p.voxelLong * lerp(0.55, 0.95, t) * rand(1, p.voxelVary),
+      spin0: rand(-1, 1) * p.leafSpin * Math.PI,
+    })
   }
+
+  growTowardOpen(sites)
 
   // --- leaf shapes, resolved before anything else sees a size --------------
   //
@@ -568,9 +630,9 @@ export function buildVoxelPine(params = {}, barkLayer = 0) {
   const floorL = longest * p.leafFloor
   for (const v of voxels) {
     if (v.leaf.L >= floorL) continue
-    // Length AND width together. The middle-vertex angle depends only on their
-    // ratio, so scaling both grows the leaf without pushing it out of the band;
-    // stretching the length alone would open the angle past leafAngleMax.
+    // Length AND width together, which is a SIMILAR triangle: all three angles
+    // survive untouched. Stretching the length alone would narrow the stem
+    // angle and put the leaf outside the band it was drawn from.
     const k = floorL / v.leaf.L
     v.leaf.L *= k
     v.leaf.W *= k
@@ -667,8 +729,8 @@ export function buildVoxelPine(params = {}, barkLayer = 0) {
     // kinked, so those are not the same point, and a camera that orbits the
     // origin orbits a spot beside the tree.
     axis: trunkAt((crownBase + h) / 2),
-    // The band leafAngleMin/Max actually delivered, so a bad shape is a number
-    // and not a squint at a render.
+    // The stem angles actually delivered, in degrees, so a bad shape is a
+    // number and not a squint at a render. It must sit inside leafStemMin/Max.
     leafAngle: leafAngles.length
       ? [Math.min(...leafAngles), Math.max(...leafAngles)].map((a) => +(a * 180 / Math.PI).toFixed(1))
       : [0, 0],
@@ -799,58 +861,264 @@ export function buildVoxelPine(params = {}, barkLayer = 0) {
   }
 
   /**
-   * THE LEAF'S SHAPE, for a leaf of nominal length `size`. Vertex 0 is the
-   * tapered attach corner, ON the twig. Vertex 1 is the MIDDLE vertex, part way
-   * out and bulging to one side. Vertex 2 is the far tip, drifting the other
-   * way. So the longest side is always 0-2 and the middle vertex is the one
-   * opposite it, which is the angle the band holds -- see leafAngleMin.
+   * TURN EVERY LEAF TOWARD WHATEVER IS NOT ALREADY A LEAF.
+   *
+   * A leaf here has exactly two freedoms: WHERE around its twig it leaves
+   * (`phi`, which the size of voxelOut confines to a cone about the wood), and
+   * which way the plate then FACES about its own stem (`spin`). Both are
+   * chosen against the leaves already grown, in a shuffled order, so the first
+   * leaf into an empty crown has no preference at all and the last one into a
+   * packed crown takes the one gap still left to it.
+   *
+   * leafOpenUp aims it. At 0 the target is openness in ANY direction, the
+   * whole sphere weighted evenly -- the leaf simply turns away from its
+   * neighbours. At 1 it is the cosine-weighted sky, which is real phototropism.
+   *
+   * THE SOLVE IS CLOSED FORM, and it is 2x2 because the plate's normal is
+   * already confined to the circle perpendicular to its own stem. Score a plate
+   * by the openness its face collects, sum(w * T * (n . d)^2), which is the
+   * double-sided objective -- a plate and its flip are the same plate, so the
+   * SIGN of n . d must not matter and squaring is how you say that over a whole
+   * sphere. Written in the stem's own (s0, u0) basis that sum is the quadratic
+   * form [[a, b], [b, c]], and its largest eigenvalue is the best openness this
+   * roll can reach while its eigenvector is the spin that reaches it. One march
+   * per candidate answers both, with no search.
+   *
+   * COST: sites * (OPEN_PHI + 1) * OPEN_DIRS.length * OPEN_STEPS grid reads --
+   * the +1 is the chosen roll marching again for its spin -- so ~2.1M for a
+   * 2,000-leaf pine. See design/26-voxel-foliage.md for what
+   * that measures at, and for why the shipped forest wants these baked.
+   */
+  function growTowardOpen(sites) {
+    // Leaf area per cell of a coarse grid over the crown. The crown is the only
+    // occluder that matters -- a leaf is never shaded by the trunk it is
+    // standing off by 10 cm, and the sky it wants is above the whole tree.
+    const cell = Math.max(0.15, p.aoRadius * 0.6)
+    const R = Math.max(...profile) * 1.25 + cell
+    const nx = Math.max(1, Math.ceil((2 * R) / cell))
+    const ny = Math.max(1, Math.ceil((h + cell) / cell))
+    const dens = new Float32Array(nx * nx * ny)
+    const cellAt = (x, y, z) => {
+      const i = Math.floor((x + R) / cell), j = Math.floor(y / cell), k = Math.floor((z + R) / cell)
+      if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nx) return -1
+      return (j * nx + i) * nx + k
+    }
+    // Beer-Lambert through one cell of randomly oriented flat plates: the mean
+    // projected area of a plate over directions is half its own area, so the
+    // optical depth a cell adds is 0.5 * (leaf area in it) / (cell area).
+    const EXT = 0.5 / (cell * cell)
+
+    /**
+     * The openness quadratic form at a point, in the basis perpendicular to a
+     * stem: out = [a, b, c] for sum(w * T * (n . d)^2) written over (s0, u0).
+     * Everything the caller needs -- how much openness this spot offers and
+     * which way to turn for it -- is an eigen-decomposition of those three
+     * numbers, and both callers do it inline.
+     */
+    const wgt = OPEN_DIRS.map((d) => lerp(d[4], d[3], p.leafOpenUp))
+    const openFormAt = (c, s0, u0, out) => {
+      out[0] = out[1] = out[2] = 0
+      for (let q = 0; q < OPEN_DIRS.length; q++) {
+        const d = OPEN_DIRS[q]
+        if (wgt[q] <= 0) continue
+        let tau = 0
+        for (let s = 1; s <= OPEN_STEPS; s++) {
+          const t = (s - 0.5) * cell
+          const i = cellAt(c[0] + d[0] * t, c[1] + d[1] * t, c[2] + d[2] * t)
+          // Out of the box is open, and everything past it is too.
+          if (i < 0) break
+          tau += dens[i]
+        }
+        const w = wgt[q] * Math.exp(-tau * EXT)
+        const ds = d[0] * s0[0] + d[1] * s0[1] + d[2] * s0[2]
+        const du = d[0] * u0[0] + d[1] * u0[1] + d[2] * u0[2]
+        out[0] += w * ds * ds; out[1] += w * ds * du; out[2] += w * du * du
+      }
+    }
+
+    /**
+     * The spin that maximises that form, and how lopsided the form is. A
+     * symmetric 2x2's principal axis is at half the atan2 of its off-diagonal,
+     * and the plate's normal runs sin(spin)*s0 - cos(spin)*u0, so reading the
+     * eigenvector back as a spin is one more atan2. `aniso` is the gap between
+     * the two eigenvalues: at zero the spot is equally open every way round and
+     * there is no answer to give.
+     */
+    const solveSpin = (M) => {
+      const aniso = Math.hypot((M[0] - M[2]) / 2, M[1])
+      const th = 0.5 * Math.atan2(2 * M[1], M[0] - M[2])
+      return { want: Math.atan2(Math.cos(th), -Math.sin(th)), aniso, best: (M[0] + M[2]) / 2 + aniso }
+    }
+    // Below this much anisotropy the principal axis is numerical noise, and
+    // taking it anyway would align every leaf of an empty crown on one arbitrary
+    // direction. An indifferent spot keeps the roll it was dealt.
+    const ANISO_MIN = 1e-6
+
+    const perpBasis = (along) => {
+      const s0 = norm(cross(along, Math.abs(along[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]))
+      return [s0, norm(cross(s0, along))]
+    }
+
+    // SHUFFLED, because the order is a priority queue. Walk the twigs in the
+    // order they were built and the first branch gets every leaf it wants
+    // while the last one grows in its shadow -- a systematic bias by branch
+    // index, visible as one lush limb and one bald one.
+    for (let i = sites.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1))
+      const t = sites[i]; sites[i] = sites[j]; sites[j] = t
+    }
+
+    // A triangle of length L tapering at A is about L^2 * tan(A/2) across, so
+    // the mid of the stem band is all the density field needs to turn a leaf's
+    // length into the area it occludes with.
+    const areaK = Math.tan(((p.leafStemMin + p.leafStemMax) / 2) * Math.PI / 360)
+    const M = [0, 0, 0]
+    for (const st of sites) {
+      let from = st.from, dir = st.dir, phi = 0
+      if (st.tw) {
+        // Where on the twig, and how far out. Both depend on the roll, so a
+        // candidate has to be built before it can be scored.
+        const rad = lerp(st.tw.r0, st.tw.r1, st.u)
+        const base = [
+          st.tw.a[0] + st.tw.dir[0] * st.tw.len * st.u,
+          st.tw.a[1] + st.tw.dir[1] * st.tw.len * st.u,
+          st.tw.a[2] + st.tw.dir[2] * st.tw.len * st.u,
+        ]
+        const build = (ph) => {
+          const cs = Math.cos(ph), sn = Math.sin(ph)
+          const out = [
+            st.uAx[0] * cs + st.vAx[0] * sn,
+            st.uAx[1] * cs + st.vAx[1] * sn,
+            st.uAx[2] * cs + st.vAx[2] * sn,
+          ]
+          // OUT AND FORWARD. A needle spray leaves its twig sideways and
+          // angled toward the tip; it is not centred on the wood and it is not
+          // radial. ON the twig's surface, too -- starting at the centreline is
+          // what makes a leaf look skewered by its own branch.
+          return {
+            out,
+            dir: norm([
+              lerp(st.tw.dir[0], out[0], p.voxelOut),
+              lerp(st.tw.dir[1], out[1], p.voxelOut) + p.voxelRise,
+              lerp(st.tw.dir[2], out[2], p.voxelOut),
+            ]),
+          }
+        }
+        phi = st.phi0
+        if (p.leafOpen > 0) {
+          // Which roll can reach the most openness. Scored by the BEST the roll
+          // could do if its plate then span optimally, which is the top
+          // eigenvalue -- so the roll and the spin are chosen against the same
+          // number instead of the roll guessing at a proxy for it.
+          let bestScore = -1, bestOff = 0
+          for (let k = 0; k < OPEN_PHI; k++) {
+            const off = (k / OPEN_PHI) * Math.PI * 2
+            const cand = build(st.phi0 + off)
+            const c = [
+              base[0] + cand.out[0] * rad + cand.dir[0] * st.size * 0.45,
+              base[1] + cand.out[1] * rad + cand.dir[1] * st.size * 0.45,
+              base[2] + cand.out[2] * rad + cand.dir[2] * st.size * 0.45,
+            ]
+            const [s0, u0] = perpBasis(cand.dir)
+            openFormAt(c, s0, u0, M)
+            const score = solveSpin(M).best
+            if (score > bestScore) { bestScore = score; bestOff = off }
+          }
+          // Wrapped to the short way round, so leafOpen interpolates between the
+          // spiral and the answer instead of sweeping the long arc between them.
+          if (bestOff > Math.PI) bestOff -= Math.PI * 2
+          phi += bestOff * p.leafOpen
+        }
+        const chosen = build(phi)
+        dir = chosen.dir
+        from = [base[0] + chosen.out[0] * rad, base[1] + chosen.out[1] * rad, base[2] + chosen.out[2] * rad]
+      }
+
+      // THE SPIN, from the same closed form the roll was scored with.
+      const c = [from[0] + dir[0] * st.size * 0.45, from[1] + dir[1] * st.size * 0.45, from[2] + dir[2] * st.size * 0.45]
+      let spin = st.spin0
+      if (p.leafOpen > 0) {
+        const [s0, u0] = perpBasis(dir)
+        openFormAt(c, s0, u0, M)
+        const { want, aniso } = solveSpin(M)
+        if (aniso > ANISO_MIN) {
+          // Half a turn either way is the same plate, so the short way round is
+          // measured modulo PI and never modulo 2 PI.
+          let off = (want - st.spin0) % Math.PI
+          if (off > Math.PI / 2) off -= Math.PI
+          if (off < -Math.PI / 2) off += Math.PI
+          spin = st.spin0 + off * p.leafOpen
+        }
+        spin += rand(-1, 1) * p.leafOpenJitter
+      }
+
+      pushVoxel(from, dir, st.size, spin)
+      // And now this leaf is an occluder for everything grown after it.
+      const i = cellAt(c[0], c[1], c[2])
+      if (i >= 0) dens[i] += st.size * st.size * areaK
+    }
+  }
+
+  /**
+   * THE LEAF'S SHAPE, drawn from its ANGLES. Vertex 0 is the attach corner, ON
+   * the twig, and the angle there is leafStemMin..Max: it is the leaf's taper,
+   * and because three angles fix a triangle up to scale it is the whole
+   * silhouette. What splits the remaining 180 degrees is the LOPSIDEDNESS: the
+   * leaf's two flanks, the edges running out from the attach corner, differ in
+   * length by leafSideMin..Max, so no leaf is ever the symmetric arrowhead an
+   * even split would give. `size` then supplies the one thing angles cannot:
+   * the LENGTH, measured along the leaf's own stem axis.
    *
    * Returned rather than emitted, because leafFloor has to compare every leaf
    * against the longest before any of them is turned into triangles.
    */
   function shapeLeaf(size) {
-    const W = size * (p.voxelWide / p.voxelLong)
-    const jit = p.voxelJitter
-    const fM = rand(0.34, 0.58)          // where along the leaf the bulge sits
-    const sM = rand(0.62, 1.0)           // how far it bulges, in units of W
-    const sF = rand(-0.28, 0.10)         // the far tip's own drift
-    const jA = rand(-1, 1) * jit, jM = rand(-1, 1) * jit, jF = rand(-1, 1) * jit
-
-    // The angle at the middle vertex, for a leaf of length `ln`. The three
-    // offsets are stated in the leaf's own orthonormal frame, so this is the
-    // true 3D angle and not a projection of one.
-    const angleAtM = (ln) => {
-      const ax = -fM * ln, ay = -W * sM, az = W * (jA - jM) * 2
-      const bx = ln - fM * ln, by = W * (sF - sM), bz = W * (jF - jM) * 2
-      const da = Math.hypot(ax, ay, az), db = Math.hypot(bx, by, bz)
-      return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / (da * db || 1e-9))))
+    const A = rand(p.leafStemMin, p.leafStemMax) * Math.PI / 180
+    // The flank ratio IS the other two angles. By the law of sines the flanks
+    // are proportional to sin(C) and sin(B), so asking for sin(C) = r sin(B)
+    // with B + C = 180 - A solves to cot(B) = (r - cos A) / sin A. r >= 1 and
+    // cos A <= 1 keep that denominator positive, so B always lands in (0, 90).
+    const r = rand(p.leafSideMin, p.leafSideMax)
+    const B = Math.atan2(Math.sin(A), r - Math.cos(A))
+    const C = Math.PI - A - B
+    // The stem axis does not BISECT the taper: one edge leaves the twig much
+    // closer to the axis than the other, so the leaf hangs to one side the way
+    // a real one does instead of reading as a symmetric arrowhead.
+    const t = rand(0.55, 0.85)
+    // Law of sines: an edge off vertex 0 is proportional to the sine of the
+    // angle opposite it. Scale is fixed afterwards, so unit k is fine here.
+    const V = [
+      [0, 0],
+      [Math.sin(C) * Math.cos(A * t), Math.sin(C) * Math.sin(A * t)],
+      [Math.sin(B) * Math.cos(A * (1 - t)), -Math.sin(B) * Math.sin(A * (1 - t))],
+    ]
+    // Vertex 2 has to be the FAR one: emitVoxel runs the tip colour and the
+    // tile's v coordinate off `reach`, so the corner it calls furthest out
+    // must be the one that is.
+    if (V[2][0] < V[1][0]) { const q = V[1]; V[1] = V[2]; V[2] = q }
+    const L = V[2][0]
+    if (!(L > 1e-6)) throw new Error(`leaf stem angle ${(A * 180 / Math.PI).toFixed(1)} deg folds the leaf back on itself`)
+    const W = Math.max(Math.abs(V[1][1]), Math.abs(V[2][1]))
+    return {
+      L: size,
+      W: (W / L) * size,
+      angle: A,
+      reach: V.map((q) => q[0] / L),
+      across: V.map((q) => q[1] / W),
     }
-    // Lengthening the leaf opens that angle -- at zero length the three
-    // vertices collapse onto the side axis and the angle closes to nothing, and
-    // as it runs out they line up along the leaf and it opens toward flat. So
-    // the angle is monotone in length and a bisection lands on it exactly.
-    const lenFor = (target) => {
-      let lo = W * 0.02, hi = W * 80
-      for (let k = 0; k < 32; k++) {
-        const m = (lo + hi) * 0.5
-        if (angleAtM(m) < target) lo = m; else hi = m
-      }
-      return (lo + hi) * 0.5
-    }
-    const lo = p.leafAngleMin * Math.PI / 180, hi = p.leafAngleMax * Math.PI / 180
-    const nominal = angleAtM(size)
-    // The size sliders still set the length; the band only stops it short of a
-    // fat chip at one end and a shimmering splinter at the other.
-    const L = nominal < lo ? lenFor(lo) : nominal > hi ? lenFor(hi) : size
-    return { L, W, angle: angleAtM(L), reach: [0, fM, 1], across: [0, sM, sF], rise: [jA, jM, jF] }
   }
 
   function emitVoxel(v, rank) {
     const base = pos.length / 3
-    const { L: Lf, W, reach, across, rise } = v.leaf
+    const { L: Lf, W, reach, across } = v.leaf
+    const spin = v.spin
     const along = v.along
-    const side = norm(cross(along, Math.abs(along[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]))
-    const up = norm(cross(side, along))
+    const s0 = norm(cross(along, Math.abs(along[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]))
+    const u0 = norm(cross(s0, along))
+    // The plate's across axis, spun about the stem. The triangle is planar by
+    // construction, so this one angle places it completely.
+    const cs = Math.cos(spin), sn = Math.sin(spin)
+    const side = [s0[0] * cs + u0[0] * sn, s0[1] * cs + u0[1] * sn, s0[2] * cs + u0[2] * sn]
     leafAngles.push(v.leaf.angle)
     // Colour: the crown's depth carries the value structure, the leaf tip
     // carries this season's growth, and hueVary keeps two neighbours apart.
@@ -872,11 +1140,10 @@ export function buildVoxelPine(params = {}, barkLayer = 0) {
     for (let i = 0; i < 3; i++) {
       const ax = Lf * reach[i]
       const sx = W * across[i]
-      const ux = W * rise[i] * 2
       P.push([
-        v.base[0] + along[0] * ax + side[0] * sx + up[0] * ux,
-        v.base[1] + along[1] * ax + side[1] * sx + up[1] * ux,
-        v.base[2] + along[2] * ax + side[2] * sx + up[2] * ux,
+        v.base[0] + along[0] * ax + side[0] * sx,
+        v.base[1] + along[1] * ax + side[1] * sx,
+        v.base[2] + along[2] * ax + side[2] * sx,
       ])
     }
     // The plate's own normal, turned to face OUT of the crown. It is drawn

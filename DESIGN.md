@@ -45,7 +45,8 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 22 | `design/22-ground-litter.md` | Strewn small stones as a stamped texture: why not props, the wet second pass, density read as a spacing, where each environment rate caps, taking the ground's colour |
 | 23 | `design/23-rock-generator.md` | Procedural rocks: pure radial displacement, radial plane clipping for flat facets, the rock-relative tile, the three tiers and `ROCK_LOD_AT`, the support gain and `BOX_MARGIN` |
 | 24 | `design/24-mushrooms.md` | Mushrooms: the two-knob cap family, parametric normals, colour in the sheets rather than the tint, the planar cap decal; and the anchor-driven scatter, its ordering contract and span-relative ladder |
-| 25 | `design/25-rock-scatter.md` | The rock scatter: why five beds, the four environments and the relief test, per-rock LOD thresholds, `ROCK_CARD_LIFE`, the density derivations, `GROUND_CUE`, `anchorsInto` and its three approximations, the sampler-unit collision behind the blink |
+| 25 | `design/25-rock-scatter.md` | The rock scatter: why six beds, the four environments and the relief test, per-rock LOD thresholds, `ROCK_CARD_LIFE`, the density derivations, `GROUND_CUE`, `anchorsInto` and its three approximations, the sampler-unit collision behind the blink |
+| 27 | `design/27-creature-pipeline.md` | The creature pipeline: why Tripo over Meshy, why the 128px texture and not the polycount is the gate, the stages and what each costs, quad topology and what its surcharge buys, our own LOD decimator, the spend model, task ids written before the wait |
 
 Plus two files with no section number:
 

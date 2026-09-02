@@ -26,18 +26,19 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - Get VR looking passable
-  - Terrain.
-    - [x] Eliminate skyline
-    - [x] increase triDeg to 5.72 (this gets us to ~128k tris on just terrain)
-  - Grass.
-    - [x] Remove the strips system. Instead randomly scatter grass. LOD0 is 3-card tufts; beyond 8m, grass is a cylindrical billboard.
-    - [x] Will this give us a blatant sphere of grass instances, cutting off at a hard cull seam?
-    - [x] What if we create a 3d grass model that's a scattering of 10 tris, and use those at every distance with a terrain-matching color, instead of the 2-tri cards? = no opacity masking
   - [ ] Trees
-    - [ ] Rethink the way trees are rendered.
-      - [ ] Try a v2 of transparency-based procedural trees to see if I can make them look better. Rotate each spray so the stem comes from the corner rather than top-center. Then, from each branch, add spray cards at regular intervals (randomly jittered), at a horizontal outward angle (randomly-jittered), folded downward along the seam at a randomly-jittered 0-30 deg angle,  so the bottom branches have ~10 sprays each. See how such a tree looks.
-      - [ ] 
+    - [ ] Try a new version of the voxel tree where each leaf is 2 crossed symmetrical tris, each bearing the "bristle" texture.
+    - [ ] Try a "stacked irregular cones" tree model, using my new tileable pine needles.
+    - [ ] Create 
+    - [ ] Try a hybrid model where most tris are solid, and fringes are done via alpha
   - [ ] Rocks
+    - [ ] Sink massive ones into cliff faces and riverbeds
+    - [ ] Stop rendering tiny pebbles. Min size 0.5m, get rid of the pebbles.
+    - [ ] Tint of billboards is misaligned from tint of the rock it's replacing. Often totally black.
+    - [ ] Show rock billboards as always 50% dithered, for cheap blending?
+  - [ ] Double # of grass tris
+  - [ ] Add occasional tall-grass tufts
+  - [ ] Pebbles
   - [ ] How many draw calls am I doing? Where do they come from? Try to get them down to 20 for the whole world.
     - [ ] How many does the terrain LOD system use?
 

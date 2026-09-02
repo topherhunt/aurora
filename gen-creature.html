@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- creature pipeline</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; --spend: #d98a5a; --local: #6f9fbf; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body { margin: 0; overflow: hidden; background: #05080f; color: var(--ink); font: 12px/1.5 monospace; display: flex; }
+
+      h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button, textarea { font: inherit; color: var(--ink); background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0; }
+      textarea { width: 100%; resize: vertical; }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button:disabled { opacity: .4; cursor: default; }
+      button.pick { background: #1d3a5f; border-color: #4a7fbf; }
+      button.picked { background: #234a2c; border-color: var(--good); color: #eaf3ff; }
+      /* Anything that charges a card is orange and says the price on its face. */
+      button.spend { border-color: var(--spend); color: #ffd9be; }
+      button.spend:hover { background: #3a2416; }
+      /* Blue is our own compute: free, local, repeatable, nothing billed. */
+      button.local { border-color: var(--local); color: #d6ecff; }
+      button.local:hover { background: #16324a; }
+
+      #panel { flex: 0 0 330px; display: flex; flex-direction: column; border-right: 1px solid var(--edge); background: var(--panel); }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      .field { margin-bottom: 6px; }
+      .field label { display: block; color: var(--dim); font-size: 11px; margin-bottom: 2px; }
+      .field input, .field textarea, .field select { width: 100%; }
+      .field textarea { height: 110px; }
+      .row { display: flex; gap: 6px; }
+      .row > * { flex: 1 1 auto; }
+      .row > button.narrow { flex: 0 0 auto; }
+      .wide { width: 100%; }
+      .step { color: var(--dim); font-size: 10px; margin: 2px 0 6px; }
+
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; overflow-y: auto; padding: 16px; }
+      #stage h3 { margin: 0 0 8px; color: var(--dim); font-size: 12px; font-weight: normal; }
+      #stage h3:not(:first-child) { margin-top: 18px; border-top: 1px solid #1b2c44; padding-top: 12px; }
+
+      #gallery { display: flex; flex-wrap: wrap; gap: 12px; }
+      .candidate { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+      .candidate img { width: 200px; height: 200px; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
+      .candidate.is-picked img { border-color: var(--good); }
+      .candidate .cost { color: var(--dim); font-size: 10px; }
+
+      #viewRow { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+      #viewer { display: none; flex-direction: column; gap: 4px; }
+      #viewer.on { display: flex; }
+      #viewCanvas { display: block; width: 420px; height: 320px; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; }
+      .label { color: var(--dim); font-size: 10px; }
+      .viewControls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; width: 420px; }
+      .viewControls label { display: flex; align-items: center; gap: 4px; color: var(--dim); font-size: 10px; }
+
+      /* The 128px check: same texture, two sizes, side by side, pixelated so
+         the downrez is judged on its own terms and not through the browser's
+         smoothing. */
+      #texRow { display: none; gap: 14px; align-items: flex-start; }
+      #texRow.on { display: flex; }
+      #texRow figure { margin: 0; display: flex; flex-direction: column; gap: 4px; align-items: center; }
+      #texRow canvas { border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; image-rendering: pixelated; width: 200px; height: 200px; }
+
+      /* The library: every asset, its prompt, and what has been made of it.
+         An overlay rather than a fourth column because it is a place you go to
+         choose what to work on, not something you read while working. */
+      #library { display: none; position: absolute; inset: 0; z-index: 5; overflow-y: auto; padding: 16px; background: #070b14; }
+      #library.on { display: block; }
+      #libGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+      .card { border: 1px solid var(--edge); border-radius: 4px; background: #0b1220; padding: 8px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+      .card:hover { border-color: #4a7fbf; background: #10192b; }
+      .card.is-current { border-color: var(--good); }
+      .card .top { display: flex; gap: 8px; align-items: flex-start; }
+      .card img { width: 64px; height: 64px; object-fit: cover; background: #0e1726; border: 1px solid #1b2c44; border-radius: 3px; flex: 0 0 auto; }
+      .card .noimg { width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; border: 1px dashed #1b2c44; border-radius: 3px; color: #3d5a80; font-size: 10px; flex: 0 0 auto; }
+      .card .name { color: #eaf3ff; }
+      .card .prompt { color: var(--dim); font-size: 10px; line-height: 1.45; max-height: 4.4em; overflow: hidden; }
+      .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+      .chip { font-size: 10px; padding: 0 4px; border-radius: 2px; border: 1px solid #1b2c44; color: var(--dim); }
+      .chip.on { border-color: var(--good); color: var(--good); }
+      .chip.cost { border-color: var(--spend); color: var(--spend); }
+
+      #lodWrap { display: none; }
+      #lodWrap.on { display: block; }
+      table.data { border-collapse: collapse; font-size: 11px; }
+      table.data th { text-align: left; color: var(--dim); font-weight: normal; padding: 2px 10px 4px 0; border-bottom: 1px solid #1b2c44; }
+      table.data td { padding: 3px 10px 3px 0; border-bottom: 1px solid #101c2e; }
+      table.data td button { padding: 0 5px; }
+
+      #budget { flex: 0 0 320px; overflow-y: auto; padding: 8px 10px; border-left: 1px solid var(--edge); background: var(--panel); }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .ok { color: var(--good); } .warn { color: var(--warn); } .spendtext { color: var(--spend); }
+      #status { margin-top: 6px; }
+      #ledger { font-size: 11px; }
+      #ledger div { display: flex; justify-content: space-between; gap: 8px; }
+      #ledger .total { border-top: 1px solid #1b2c44; margin-top: 4px; padding-top: 4px; color: #eaf3ff; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">CREATURE PIPELINE</div>
+        <div class="s">image &rarr; mesh &rarr; LOD &rarr; rig &rarr; animation</div>
+        <button id="libToggle" class="wide" style="margin-top:6px">&#9776; library</button>
+      </header>
+      <div id="controls">
+        <h2>1. species</h2>
+        <div class="field">
+          <label>roster</label>
+          <div class="row">
+            <button id="rosterPrev" class="narrow" title="previous">&lt;</button>
+            <select id="roster"></select>
+            <button id="rosterNext" class="narrow" title="next">&gt;</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>id</label>
+          <input type="text" id="creatureId" placeholder="id (a-z0-9-)" />
+        </div>
+        <div class="field">
+          <label>label (display name)</label>
+          <input type="text" id="label" />
+        </div>
+        <div class="field">
+          <label>rig type (sets the prompt's pose clause)</label>
+          <select id="rigType"></select>
+        </div>
+        <div class="field">
+          <label>size (m, longest dimension)</label>
+          <input type="number" id="sizeM" step="0.01" min="0.01" />
+        </div>
+        <div class="field">
+          <label>description (this is the prompt)</label>
+          <textarea id="description"></textarea>
+        </div>
+        <div class="row">
+          <button id="saveMeta" class="local">save</button>
+          <button id="newCreature">new&hellip;</button>
+        </div>
+        <div id="metaOut" class="step"></div>
+
+        <h2>2. candidate image</h2>
+        <div class="step">FLUX.2 Klein 4B via OpenRouter</div>
+        <button id="genImage" class="wide spend">generate candidate (~$0.015)</button>
+
+        <h2>3. mesh</h2>
+        <div class="step">Tripo image-to-model. Pick a candidate first.</div>
+        <div class="field">
+          <label>model</label>
+          <select id="meshModel">
+            <option value="p1">P1 Smart Mesh -- native low-poly quads</option>
+            <option value="h3">H3 v3.1 -- high fidelity, decimated</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>face limit <span id="faceLimitVal" class="label"></span></label>
+          <input type="range" id="faceLimit" min="500" max="10000" step="250" value="4000" />
+        </div>
+        <button id="genMesh" class="wide spend" disabled>generate mesh</button>
+
+        <h2>4. LOD</h2>
+        <div class="step">Our decimator (src/mesh/decimate.js). Free, local, re-runnable.</div>
+        <div class="field">
+          <label>tier targets, coarsest last</label>
+          <input type="text" id="lodTargets" value="50%, 25%, 10%" />
+        </div>
+        <button id="genLod" class="wide local" disabled>decimate (free)</button>
+        <button id="saveLod" class="wide local" disabled style="margin-top:4px">save tiers to disk</button>
+
+        <h2>5. rig</h2>
+        <div class="step">rig-check is free and tells you if this can rig at all.</div>
+        <button id="rigCheck" class="wide" disabled>rig-check (free)</button>
+        <div id="rigCheckOut" class="step"></div>
+        <button id="genRig" class="wide spend" disabled>rig ($0.25)</button>
+
+        <h2>6. animations</h2>
+        <div class="step">Presets available for this rig type.</div>
+        <div id="animList" class="field"></div>
+        <button id="genAnim" class="wide spend" disabled>retarget selected</button>
+      </div>
+    </div>
+
+    <div id="stage">
+      <div id="library">
+        <h3>library &mdash; every creature, its prompt, and what exists for it</h3>
+        <div id="libGrid"></div>
+      </div>
+
+      <h3>candidates</h3>
+      <div id="gallery"></div>
+
+      <h3>preview</h3>
+      <div id="viewRow">
+        <div id="viewer">
+          <canvas id="viewCanvas"></canvas>
+          <div class="viewControls">
+            <label><input type="checkbox" id="showSkeleton" /> skeleton</label>
+            <label><input type="checkbox" id="showWire" /> wireframe</label>
+            <label>clip <select id="clipSelect"></select></label>
+          </div>
+          <div id="meshStats" class="label"></div>
+          <div id="meshAnalysis" class="label"></div>
+        </div>
+        <div id="texRow">
+          <figure><canvas id="texFull" width="256" height="256"></canvas><figcaption class="label">source texture</figcaption></figure>
+          <figure><canvas id="tex128" width="128" height="128"></canvas><figcaption class="label">128px downrez</figcaption></figure>
+        </div>
+      </div>
+
+      <div id="lodWrap">
+        <h3>LOD tiers</h3>
+        <table class="data" id="lodTable"></table>
+        <p class="note">
+          Click a tier to load it into the preview. A tier that stops well short of its target is
+          not a bug in the decimator: seam and boundary vertices are pinned, so the reduction
+          ceiling is a direct measurement of how few, how large and how well-closed this mesh's UV
+          islands are -- the same property that decides whether the texture survives 128px.
+        </p>
+      </div>
+    </div>
+
+    <div id="budget">
+      <h2>this bench</h2>
+      <p class="note">
+        Every orange button spends real money and nothing fires on its own. The image step bills
+        OpenRouter (~$0.015); the mesh, rig and animation steps bill Tripo credits at $0.01 each.
+        <span class="spendtext">rig-check is free</span> and is the only way to find out a mesh
+        cannot be rigged without paying 25 credits to discover it -- always run it first.
+      </p>
+      <p class="note">
+        Working files land in <em>tools/creatures/work/&lt;id&gt;/</em> (gitignored). Tripo's result
+        URLs expire, so each step downloads its output to disk before returning; the task ids in
+        <em>state.json</em> are the only handle on work already paid for.
+      </p>
+      <p class="note">
+        <strong>Why P1 is the default.</strong> The texture panel is the real gate on this pipeline,
+        not the triangle count. A decimated mesh gets auto-unwrapped into a scatter of small UV
+        islands, and at 128px the small ones vanish while bilinear filtering bleeds neighbours
+        across every seam. P1 generates native quad topology with coherent edge flow, so the islands
+        come out fewer and larger and survive the downrez. Judge a candidate on the 128px panel, not
+        the full-size one.
+      </p>
+      <h2>ledger</h2>
+      <div id="ledger"></div>
+      <h2>status</h2>
+      <div id="status" class="note"></div>
+    </div>
+
+    <script type="module" src="/src/gen-creature-main.js"></script>
+  </body>
+</html>

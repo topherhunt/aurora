@@ -666,7 +666,7 @@ export class Litter {
     // same way and for the same reason. See GROUND_HUE for why the hue and
     // the brightness are pulled out of it separately.
     shade(h, 1 / Math.hypot(tan, 1), snowLine, this._snowBand, this.layers.flattenAt(x, z),
-      this._altLo, this._altSpan, gc, 0)
+      this._altLo, this._altSpan, x, z, gc, 0)
     const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
     const k1 = gl > 1e-5 ? GROUND_HUE / gl : 0
     const k0 = gl > 1e-5 ? 1 - GROUND_HUE : 1

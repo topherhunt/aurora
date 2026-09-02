@@ -3,11 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
   buildRock, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, rockLodSize,
 } from './props/rock.js'
-import {
-  ROCK_VARIANTS, TINTS, TINT_GAIN, rockParams, rockImpostorLayer,
-  rockShapeSeed, parseRockShapeId,
-} from './props/rock-bank.js'
-import { SEED as WORLD_SEED } from './v2/config.js'
+import { BOULDER, TINTS, TINT_GAIN, rockParams } from './props/rock-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
@@ -21,17 +17,20 @@ import impostorSource from './props/impostor.js?raw'
 // ---------------------------------------------------------------------------
 // The procedural rock previewer (gen-rock.html, served at /gen-rock).
 //
-// This bench exists to ANSWER A QUESTION, not to show off a generator: which
-// rock variants is the world actually going to ship? The question has been
-// answered -- the twenty-five in src/props/rock-bank.js -- and the PRESET dropdown
-// is that bank, so picking an entry previews exactly the rock the scatter will
-// place. The sliders are still here because the answer is not final: drag them,
-// find a better shape, and write the numbers back into the bank.
+// This bench exists to ANSWER A QUESTION, not to show off a generator: what does
+// the world's ONE rock look like? The world ships a single boulder asset --
+// `BOULDER` in src/props/rock-bank.js -- and the PRESET dropdown is that asset,
+// so picking it previews exactly the rock the scatter will place, everywhere.
+// The sliders are still here because the answer is not final: drag them, find a
+// better shape, and write the numbers back into the bank. The shipping boulder
+// is currently the DEFAULTS at one authored seed, so the preset and this page's
+// opening state differ by that seed alone.
 //
 // Three views do most of the work, and none of them is the default single rock:
 //
-//   GALLERY -- twenty seeds of one preset. A generator is only as good as its
-//   range, and one rock proves nothing about a parameter set.
+//   GALLERY -- twenty seeds of the shape. This is the view that matters most now
+//   that the world has one asset: the seed is the only thing separating one
+//   boulder from the next, so the gallery IS the variety argument.
 //
 //   LADDER -- the same rock at all three mesh tiers, side by side, at true
 //   size. This is the view that settles "do we need a real LOD2", because the
@@ -54,20 +53,21 @@ const STONE_TEX = 'rocks/stone.png'
 
 // --- the shipping bank ------------------------------------------------------
 //
-// ROCK_VARIANTS and TINTS come from src/props/rock-bank.js, because THE WORLD
-// READS THEM TOO. A preset table only this page could see would let the shape
-// signed off here and the shape that ships drift apart, which is the one
-// failure a bench exists to prevent. Edit the twenty-five over there; this page
-// previews them and nothing else.
+// BOULDER and TINTS come from src/props/rock-bank.js, because THE WORLD READS
+// THEM TOO. A preset table only this page could see would let the shape signed
+// off here and the shape that ships drift apart, which is the one failure a
+// bench exists to prevent.
 //
-// `tint` is a default, not a property of the shape -- any of these can wear any
-// colour, which is exactly why the shape list can stay this short. `size` is
-// not really part of the shape either: now that the tile scales with the rock,
-// an entry is the same picture at any scale, so the size a variant carries is
-// the one it is MEANT for. It no longer picks a ladder -- there is one ladder
-// and every rock is on it -- but the size a rock ends up at is what sets the
-// DISTANCES on that ladder, so it still decides how much mesh the world spends
-// on the variant. See ROCK_LOD_AT.
+// THERE IS ONE PRESET, and that is not a stub. The world has exactly one rock
+// asset; `boulder` IS that asset and everything else on this page is a sketch on
+// the way to changing it. `custom` is where a dragged slider lands, so the
+// dropdown never claims you are looking at the shipping rock once you are not.
+//
+// The tint is not part of the shape -- the same rock wears eight colours, rolled
+// per instance from the environment's palette. `size` is not really part of it
+// either: the tile scales with the rock, so the shape is the same picture at any
+// scale, and what `size` decides is the DISTANCES on the LOD ladder rather than
+// which tiers ship. See ROCK_LOD_AT.
 
 // --- slider spec ------------------------------------------------------------
 // Ranges reach past what is useful on purpose: `cutDepth` at 1 shaves a rock
@@ -93,7 +93,6 @@ const SLIDERS = [
   ['strata', 0, 8, 1, 'bedding bands up the height, as a count. 0 = none'],
   ['strataAmp', 0, 0.2, 0.005, 'how proud those bands stand'],
   ['sit', 0, 0.6, 0.01, 'fraction of the height cut away at the bottom, so the rock is BEDDED IN rather than resting on a point'],
-  ['openBottom', 0, 1, 1, '0/1. `sit` flattens the buried belly ONTO the bed plane, which leaves a real horizontal disc down there; this throws those faces away and ships an open shell. A cap protruding from a riverbed for a fraction of a closed rock\'s triangles -- and, the moment the ground moves out from under it, a view of its inside through backfaces. Only ever on something bedded'],
   ['shards', 1, 5, 1, 'masses in the cluster. Costs its multiple in triangles -- the most expensive slider on this page'],
   ['shardSpread', 0.1, 1.1, 0.01, 'how far satellites sit from the main mass. Past ~0.9 they stop overlapping and read as separate rocks'],
   ['shardDrop', 0, 0.8, 0.01, 'how much smaller satellites get'],
@@ -120,8 +119,8 @@ const SLIDERS = [
 // bench is the one caller that gives it a number, and it must have one: a null
 // on a range input is an empty box.
 //
-// The page OPENS ON ROCK_DEFAULTS, not on a preset. Every preset names lumps,
-// grain, smooth and cuts, so opening on one would silently overwrite the values
+// The page OPENS ON ROCK_DEFAULTS, not on `boulder`. The boulder names lumps,
+// grain, smooth and cuts, so opening on it would silently overwrite the values
 // ROCK_DEFAULTS was tuned to -- the defaults would be a setting nobody ever saw.
 // `custom` is the honest label for that state.
 const BENCH_DEFAULTS = {
@@ -149,7 +148,7 @@ stage.appendChild(renderer.domElement)
 const scene = new THREE.Scene()
 scene.background = new THREE.Color(0x0a1018)
 
-// far plane at 600 m, because `size` reaches 14 and the gallery of a 14 m crag
+// far plane at 600 m, because `size` reaches 14 and the gallery of a 14 m rock
 // is 80 m across before the camera has to back off from it.
 const camera = new THREE.PerspectiveCamera(45, 1, 0.02, 600)
 
@@ -277,10 +276,9 @@ const GALLERY_N = GALLERY_COLS * GALLERY_ROWS
 let mode = 'one'
 let wireframe = false
 let showGrid = true
-// The world draws front faces only. Turning this on puts the back ones back, so
-// an `openBottom` shell can be judged from underneath and a closed one can be
-// shown to look identical either way -- which is the evidence that culling it
-// costs nothing.
+// The world draws front faces only. Turning this on puts the back ones back: the
+// rock is a closed solid, so the two views should be identical, and that is the
+// evidence that culling costs nothing.
 let showBackfaces = false
 // Draw the impostor instead of the mesh. Deliberately not a camera move: the
 // question a card asks is "does this still read as a rock from where I am
@@ -360,20 +358,12 @@ function rebuild() {
 
   let drawn = geos
   if (cardMode) {
-    // ONE bake feeds every card on screen, and here that IS a shortcut -- the
-    // world photographs each of the twenty-five variants into its own slice of
-    // the IMPOSTOR_ROCK run (see THE CARD in rock-bank.js). The gallery is
-    // twenty seeds of ONE preset, so one bake is the right thing for this page:
-    // what you are looking at is the one slice the world would give this
-    // variant, worn by twenty different seeds of it -- which is exactly the
-    // question the card button is here to answer.
-    //
-    // Into that variant's real slice when a preset is selected, so the bench
-    // and the world are looking at the same texel budget. Sliders dragged off a
-    // preset clear `presetName`, and then there is no variant to own a slice:
-    // the run's base doubles as the scratch slot, as it did when it was the
-    // only rock impostor layer there was.
-    const bakeLayer = presetName ? rockImpostorLayer(presetName) : LAYER.IMPOSTOR_ROCK
+    // ONE bake feeds every card on screen, and that is not a shortcut: the world
+    // does the same thing. There is one rock and one IMPOSTOR_ROCK slice, so what
+    // the gallery shows is that single photograph worn by twenty different seeds
+    // -- which is exactly the question the card button is here to answer, since a
+    // seed the one card cannot stand in for is a seed the world draws wrong.
+    const bakeLayer = LAYER.IMPOSTOR_ROCK
     const ext = bakeImpostor(renderer, geos[0], atlas, bakeLayer, {
       width: Math.max(measured.width, measured.depth),
       height: measured.height,
@@ -558,7 +548,7 @@ function refresh() {
     ['billboards past', `${cardAt.toFixed(0)} m`],
   ])
   document.getElementById('geonote').innerHTML = s.card
-    ? `The card is a photograph of the mesh taken at load into this variant's own slice of the <em>LAYER.IMPOSTOR_ROCK</em> run -- one of twenty-five, one per variant -- so it costs no disk and cannot disagree with the mesh. It is the weakest tier here by a distance -- see the parallax note.`
+    ? `The card is a photograph of the mesh taken at load into <em>LAYER.IMPOSTOR_ROCK</em> -- one layer, because the world has one rock -- so it costs no disk and cannot disagree with the mesh. It is the weakest tier here by a distance -- see the parallax note.`
     : `<em>shards</em> multiplies triangles directly: ${tier.faces} faces per shard, ${shards} shard${shards > 1 ? 's' : ''}. ` +
       `&sect;5's boulder row budgets <em>20 tris &times; 440 instances</em>, which predates this ladder -- that row is T20 with one shard, and it is the tier the vast majority of instances are at.`
 
@@ -630,7 +620,7 @@ function refresh() {
   document.getElementById('disknote').innerHTML =
     `No mesh file, and -- unlike the ferns -- no second texture either. Every rock in the ` +
     `world, every seed, every size, every environment, costs the same ${fmt(shipped)}. ` +
-    `Adding a variant to the bank above costs <em>0 bytes</em>; adding a tint costs 0 bytes; ` +
+    `Adding a tint costs <em>0 bytes</em>; so would a second shape, if the world ever wanted one; ` +
     `adding a second stone tile would cost ~${fmt(diskBytes.png)} and would have to earn it ` +
     `by differing in GRAIN, since hue and value are already free.`
 }
@@ -643,7 +633,7 @@ function drawSwatch(stats) {
   ctx.imageSmoothingEnabled = false
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  const layer = cardMode ? (presetName ? rockImpostorLayer(presetName) : LAYER.IMPOSTOR_ROCK) : LAYER.ROCK
+  const layer = cardMode ? LAYER.IMPOSTOR_ROCK : LAYER.ROCK
   const px = layerPixels(layer)
   const rgb = new ImageData(TEX_SIZE, TEX_SIZE)
   const tinted = new ImageData(TEX_SIZE, TEX_SIZE)
@@ -682,7 +672,7 @@ function drawSwatch(stats) {
   })
 
   const banner = cardMode
-    ? `baked -- IMPOSTOR_ROCK${presetName ? ` + ${presetName}` : ' (scratch)'}`
+    ? `baked -- IMPOSTOR_ROCK${presetName ? '' : ' (custom shape, not what ships)'}`
     : layersLoaded
       ? `ROCK -- stone.png, untinted | &times; ${TINTS[tintIndex][0]}`
       : 'stone.png still loading -- this is the procedural stand-in'
@@ -767,10 +757,10 @@ for (const [key, min, max, step, help] of SLIDERS) {
   input.addEventListener('input', () => {
     params[key] = Number(input.value)
     showValue(key, step)
-    // Dragging a SHAPE slider means you are no longer looking at the preset, so
-    // the dropdown stops claiming you are. The three bench/material sliders are
-    // not the shape and do not clear it -- you have to be able to drag snow over
-    // `crag` and still be told it is `crag`.
+    // Dragging a SHAPE slider means you are no longer looking at the shipping
+    // rock, so the dropdown stops claiming you are. The bench/material sliders
+    // are not the shape and do not clear it -- you have to be able to drag snow
+    // over `boulder` and still be told it is `boulder`.
     if (!BENCH_KEYS.has(key)) {
       presetName = ''
       presetSel.value = ''
@@ -793,24 +783,26 @@ function syncSliders() {
 }
 
 const presetSel = document.getElementById('preset')
-// `custom` is a destination, not a source: `defaults` and any hand-dragged
-// slider land there, so the dropdown never claims you are looking at a preset
-// you have since edited.
+// TWO ENTRIES, and one of them is not a shape. `boulder` is the world's only
+// rock asset; `custom` is a destination rather than a source -- `defaults` and
+// any hand-dragged shape slider land there, so the dropdown never claims you are
+// looking at the shipping rock once you are not.
 presetSel.innerHTML =
-  Object.keys(ROCK_VARIANTS)
-    .map((k) => `<option value="${k}" title="${ROCK_VARIANTS[k].envs.join(', ')}">${k} -- ${ROCK_VARIANTS[k].envs.join('/')}</option>`)
-    .join('') + '<option value="">custom</option>'
+  `<option value="boulder" title="The one rock the world ships: ROCK_DEFAULTS at seed ${BOULDER.seed}.">boulder -- the world's one rock</option>` +
+  '<option value="">custom</option>'
 presetSel.value = presetName
 presetSel.addEventListener('change', () => {
   presetName = presetSel.value
   if (!presetName) return
-  // A variant is a full shape, so anything it does not name goes back to the
-  // default rather than surviving from the last one -- which is exactly what
-  // rockParams does. A preset that inherited half of whatever you were just
-  // looking at is not a variant you can sign off.
-  applyShape(rockParams(presetName, params.seed))
-  tintIndex = ROCK_VARIANTS[presetName].tint
-  tintSel.value = String(tintIndex)
+  // A full shape AND the boulder's own seed, because the seed is now the whole
+  // of what separates the shipping rock from ROCK_DEFAULTS -- keeping whatever
+  // was in the seed box would put the label `boulder` under a rock nobody ships.
+  // Anything the preset does not name goes back to the default rather than
+  // surviving from whatever you were just dragging: a rock that inherited half
+  // of a sketch is not one you can sign off. The tint is untouched: it is not
+  // part of the shape.
+  applyShape(rockParams())
+  seedInput.value = params.seed
   syncSliders()
   frame()
   refresh()
@@ -836,44 +828,6 @@ document.getElementById('reroll').addEventListener('click', () => {
   refresh()
 })
 
-// ---------------------------------------------------------------------------
-// LOADING A SHAPE THE RUNNING WORLD NAMED.
-//
-// /v2's cursor readout prints `variant-index` -- the shape's identity inside the
-// world's rock bank -- and this is the box that takes it back. `rockShapeSeed`
-// is the same function `buildRockBank` derives every shape's seed with, so
-// setting the preset and that seed puts this previewer on EXACTLY the rock that
-// was under the cursor, not a cousin of it.
-//
-// It reads WORLD_SEED from v2/config.js rather than taking a bank seed of its
-// own, because a shape id only means anything against the bank it was printed
-// from. If someone ever gives /v2 a per-session seed, this box has to learn it
-// too or it starts lying, so: one constant, imported, not copied.
-// ---------------------------------------------------------------------------
-const shapeInput = document.getElementById('shapeid')
-const shapeNote = document.getElementById('shapenote')
-const loadShapeId = () => {
-  const parsed = parseRockShapeId(shapeInput.value.trim())
-  if (!parsed) {
-    shapeNote.textContent = `not a shape id: expected something like shingle-1`
-    return
-  }
-  presetName = parsed.name
-  presetSel.value = presetName
-  params.seed = rockShapeSeed(WORLD_SEED, parsed.name, parsed.index)
-  seedInput.value = params.seed
-  applyShape(rockParams(presetName, params.seed))
-  tintIndex = ROCK_VARIANTS[presetName].tint
-  tintSel.value = String(tintIndex)
-  shapeNote.textContent = `${parsed.name}-${parsed.index} -- seed ${params.seed}`
-  syncSliders()
-  frame()
-  refresh()
-}
-document.getElementById('shapego').addEventListener('click', loadShapeId)
-shapeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') loadShapeId()
-})
 
 // gallery / ladder / tints are one exclusive mode; card / grid / wire / spin are
 // independent of it and of each other.

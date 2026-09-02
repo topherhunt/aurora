@@ -23,7 +23,7 @@ import * as THREE from 'three'
 import {
   LITTER_LAYERS, LITTER_PATCH_M, LITTER_MARGIN, LITTER_REACH, LITTER_RIM_KNEE, LITTER_RIM_TAPER,
   LITTER_STONES, LITTER_SIZE, LITTER_SIZE_POW,
-  LITTER_VARIANTS, LITTER_SEEDS, LITTER_TIER, LITTER_TINTS, LITTER_KEY, LITTER_SKY,
+  LITTER_SEEDS, LITTER_TIER, LITTER_TINTS, LITTER_KEY, LITTER_SKY,
   buildLitterPool, litterPlacements,
 } from '../src/props/litter.js'
 import { smoothstep } from '../src/sim/mathx.js'
@@ -76,8 +76,8 @@ console.log('\npool')
 const pool = buildLitterPool()
 
 {
-  check(pool.length === LITTER_VARIANTS.length * LITTER_SEEDS, 'the pool is every litter variant at every seed',
-    `${pool.length} = ${LITTER_VARIANTS.length} variants x ${LITTER_SEEDS} seeds`)
+  check(pool.length === LITTER_SEEDS, 'the pool is the world\'s one boulder at every litter seed',
+    `${pool.length} = ${LITTER_SEEDS} seeds of one shape`)
 
   const LAYOUT = ['normal', 'position', 'texLayer', 'uvProj']
   const wrongAttrs = pool.filter((g) => Object.keys(g.attributes).sort().join(',') !== LAYOUT.join(','))
@@ -86,19 +86,19 @@ const pool = buildLitterPool()
   const unindexed = pool.filter((g) => !g.index)
   check(unindexed.length === 0, 'and every one of them is indexed', `${unindexed.length} of ${pool.length} not`)
 
-  // The face count LITTER_TIER implies, less whatever the rock's own open bottom threw away. `shingle` is the one variant in the roster with `openBottom`, and it drops 22 of its 80 faces on the bed plane -- a real shortfall, and it has to be EXACTLY the one the geometry reports, or the tier stopped being the tier and nothing else here would notice.
+  // The face count LITTER_TIER implies, exactly. The rock is a closed solid, so `dropped` is 0 on every seed and the tier's face count has to come back untouched -- if it does not, the tier stopped being the tier and nothing else here would notice.
   const tierFaces = ROCK_TIERS[LITTER_TIER].faces
   const wrongFaces = []
   pool.forEach((g, i) => {
     // rockParams spreads ROCK_DEFAULTS, so `shards` is always there and a missing one is a real breakage rather than a case to default around.
-    const p = rockParams(LITTER_VARIANTS[(i / LITTER_SEEDS) | 0], i % LITTER_SEEDS)
-    if (!Number.isFinite(p.shards)) throw new Error(`rockParams(${LITTER_VARIANTS[(i / LITTER_SEEDS) | 0]}) no longer carries a shards count`)
+    const p = rockParams(i)
+    if (!Number.isFinite(p.shards)) throw new Error(`rockParams(${i}) no longer carries a shards count`)
     const shards = Math.max(1, Math.round(p.shards))
     const expect = tierFaces * shards - g.userData.rock.dropped
     if (g.index.count / 3 !== expect || g.userData.rock.triangles !== expect) wrongFaces.push(i)
   })
   const faceCounts = pool.map((g) => g.index.count / 3)
-  check(wrongFaces.length === 0, `every pooled rock carries ${ROCK_TIERS[LITTER_TIER].name}'s ${tierFaces} faces, less exactly the ones its open bottom dropped`,
+  check(wrongFaces.length === 0, `every pooled rock carries ${ROCK_TIERS[LITTER_TIER].name}'s ${tierFaces} faces, whole -- the boulder is closed, so nothing is dropped`,
     `${Math.min(...faceCounts)}..${Math.max(...faceCounts)} faces, ${wrongFaces.length} off`)
 
   // A REAL SOLID, AND A UNIT-SIZED ONE. Span is measured the way check-rocks.mjs measures it, as the wider of the two horizontal extents, because that is what buildRock's `size` means -- height is a consequence of `squash` and is genuinely small on a flat shingle chip (0.10 against a span of 0.98), so a bound that treated all three axes alike would fail an entirely correct rock. Measured across the fifteen: span 0.98 to 1.05, and the thinnest vertical extent 0.10. The band below is a good deal wider than that on purpose but far narrower than the +/-80% BOX_MARGIN would technically permit, so it catches a build that stopped honouring `size: 1` while leaving the noise field room to move.
@@ -825,6 +825,55 @@ console.log('\nseeds')
 {
   const s = worlds.shore.stats
   console.log(`       ${s.placed} stamps, ${s.tris} tris, ${s.tiles} tiles resident, build ${s.buildMs.toFixed(1)} ms, place ${s.placeMs.toFixed(0)} ms`)
+}
+
+// --- litter around rocks ----------------------------------------------------
+//
+// Litter follows the grass rather than the trees: a twig or a cone inside a
+// boulder is skipped outright, at any rock size, because there is nothing to lift
+// it onto that would not read as debris floating on a curved face. A stub answers
+// over a disc, so what is under test is the litter's half of the contract.
+
+{
+  const STONE = { x: 24, z: -18, r: 14 }
+  let minSizeSeen = Infinity
+  const stone = {
+    blockTopAt(x, z, minSize) {
+      minSizeSeen = Math.min(minSizeSeen, minSize)
+      const dx = x - STONE.x
+      const dz = z - STONE.z
+      return dx * dx + dz * dz < STONE.r * STONE.r ? 61 : -Infinity
+    },
+  }
+  const w = world(60, 0, 9999, null)
+  const l = new Litter(new THREE.Scene(), w.field, w.water, scatterLayers, texArray, { seed: SEED, rocks: stone })
+  l.place(0, 0)
+  const s = l.stats
+
+  let inside = 0
+  for (const tile of l.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const dx = l.instX[id] - STONE.x
+      const dz = l.instZ[id] - STONE.z
+      if (dx * dx + dz * dz < STONE.r * STONE.r) inside++
+    }
+  }
+  check(inside === 0, 'not one piece of litter lands inside a rock', `${inside} of ${s.placed}`)
+  check(s.rejectedRock > 0 && s.placed + s.rejectedRock === worlds.forest.stats.placed,
+    'and every stamp the rock took is accounted for as a rock rejection, not lost',
+    `${s.rejectedRock} rejected, ${s.placed} + that against ${worlds.forest.stats.placed} without`)
+  check(minSizeSeen === 0,
+    'and the litter asks about ANY stone, cobbles included -- it is skipped, not lifted',
+    `asked at ${minSizeSeen} m`)
+
+  let threw = false
+  try {
+    new Litter(new THREE.Scene(), w.field, w.water, scatterLayers, texArray, { seed: SEED, rocks: {} })
+  } catch { threw = true }
+  check(threw, 'and something passed as `rocks` that cannot answer throws at construction')
+
+  l.dispose()
 }
 
 for (const l of Object.values(worlds)) l.dispose()

@@ -99,7 +99,7 @@ export class TerrainTint {
    */
   groundAt(rgb, x, z, h, ny, snowLine) {
     shade(h, ny, snowLine, this.layers.snow.band, this.layers.flattenAt(x, z),
-      this.bands.altLo, this.bands.altSpan, rgb, 0)
+      this.bands.altLo, this.bands.altSpan, x, z, rgb, 0)
     return this.apply(rgb, x, z)
   }
 

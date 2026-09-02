@@ -1265,9 +1265,10 @@ export class Trees {
   }
 
   /**
-   * Bring the visible tile set in line with the camera: queue what is missing,
-   * evict what has fallen out. Returns immediately unless the camera has
-   * actually changed tile, which is what makes it safe to call every frame.
+   * Bring the visible tile set in line with the camera: thin what the camera has
+   * left behind, queue what is missing, evict what has fallen out. Returns
+   * immediately unless the camera has actually changed tile, which is what makes
+   * it safe to call every frame.
    */
   _reseat(cx, cz) {
     const tx = Math.floor(cx / TILE)
@@ -1282,7 +1283,25 @@ export class Trees {
       if (dx * dx + dz * dz > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
+        continue
       }
+
+      // A SURVIVING TILE IS THINNED HERE AND NOT THROUGH THE QUEUE. See
+      // Ferns._reseat for the whole of it; the short form is that the queue is
+      // rebuilt below with the MISSING tiles only, so a tile that survives a
+      // jump keeps the level it was grown at until the tile loop pushes a thin
+      // job on a LATER frame -- and a camera that keeps jumping (a quest
+      // teleport, or `place` after the ground moved) strands another near-field
+      // tile in the far field each time until the grow loop cannot find room for
+      // the disc ahead. _poolBound sizes the pool for every tile standing at the
+      // level its DISTANCE says, and running dry throws.
+      //
+      // On the tile loop's own two-level dead band, so a tile sitting on a level
+      // boundary is not cut and regrown by one step across a tile line.
+      const nx = Math.max(tile.tx * TILE, Math.min(cx, (tile.tx + 1) * TILE))
+      const nz = Math.max(tile.tz * TILE, Math.min(cz, (tile.tz + 1) * TILE))
+      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)
+      if (q >= tile.q + 2) this._growTile({ key, tx: tile.tx, tz: tile.tz, q })
     }
 
     // The queue is rebuilt from scratch, so any level-change job pushed by the

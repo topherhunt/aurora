@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- chroma key</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --accent: #7fd1ff; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; cursor: pointer;
+      }
+      button:hover { background: #17263c; }
+      button[aria-pressed="true"] { background: #1d3a5c; border-color: var(--accent); color: #eaf3ff; }
+      button:disabled { opacity: .4; cursor: default; }
+      button:disabled:hover { background: #0e1726; }
+
+      /* --- left: the controls ------------------------------------------ */
+      #panel {
+        flex: 0 0 260px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
+      #body { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
+      #buttons button { flex: 1 1 auto; }
+      .row { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
+      .row button { flex: 1 1 auto; }
+      label { display: block; margin: 8px 0 2px; color: var(--dim); }
+      label .v { float: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+      input[type=range] { width: 100%; accent-color: var(--accent); }
+      input[type=color] {
+        flex: 0 0 42px; height: 22px; padding: 0; background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; cursor: pointer;
+      }
+      #keyHex { flex: 1 1 auto; color: #eaf3ff; }
+      .note { color: var(--dim); margin: 8px 0 0; font-size: 11px; }
+
+      /* --- centre: the image ------------------------------------------- */
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #view { width: 100%; height: 100%; cursor: crosshair; }
+      #hint {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        color: var(--dim); pointer-events: none; text-align: center; line-height: 2;
+      }
+      #drop {
+        position: absolute; inset: 0; border: 2px dashed var(--accent); background: rgba(20,60,100,.25);
+        pointer-events: none; display: none;
+      }
+      body.dragging #drop { display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">CHROMA KEY</div>
+        <div class="s" id="status">drop an image to start</div>
+      </header>
+
+      <div id="body">
+        <h2>key colour</h2>
+        <div class="row">
+          <input type="color" id="swatch" value="#000000" />
+          <span id="keyHex">#000000</span>
+        </div>
+        <p class="note">Click the image to sample. Every pixel within the threshold of this colour goes transparent.</p>
+
+        <h2>match</h2>
+        <label>threshold <span class="v" id="thresholdV">0.12</span></label>
+        <input type="range" id="threshold" min="0" max="1" step="0.005" value="0.12" />
+        <label>softness <span class="v" id="softnessV">0.04</span></label>
+        <input type="range" id="softness" min="0" max="0.5" step="0.005" value="0.04" />
+        <p class="note">RGB distance, 0 to 1 across the whole cube. Softness is the band beyond the threshold that fades out instead of cutting -- it keeps anti-aliased edges from going jagged.</p>
+
+        <h2>view</h2>
+        <div class="row">
+          <button id="showKeyed" aria-pressed="true">keyed</button>
+          <button id="showSource" aria-pressed="false">source</button>
+        </div>
+      </div>
+
+      <div id="buttons">
+        <button id="download" disabled>download</button>
+      </div>
+    </div>
+
+    <div id="stage">
+      <canvas id="view"></canvas>
+      <div id="hint">drop an image anywhere<br />or click to pick a file</div>
+      <div id="drop"></div>
+    </div>
+
+    <script type="module" src="/src/chroma-key-main.js"></script>
+  </body>
+</html>

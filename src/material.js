@@ -98,7 +98,7 @@ const leafSnowVary = { value: new THREE.Vector2(1, 1) }
 // never worked. /gen-rock's two sliders are what they were chosen with; see
 // setPropBump and setPropBumpTile.
 const bumpScale = { value: 0.02 }
-const bumpTile = { value: 3 }
+const bumpTile = { value: 1.8 }
 
 /**
  * Season, 0 = bare, 1 = nearly all white. This is a CEILING, not the value each
@@ -212,7 +212,7 @@ export function getPropBump() {
  * A SEPARATE NUMBER FROM `texRepeat` on purpose. The stone photograph is sized so
  * the rock reads as rock at arm's length; the grain that catches a low sun is a
  * finer thing than that, and welding the two means every change to one is a change
- * to the other. 3 puts about three grit cells inside each stone cell.
+ * to the other. 1.8 puts a little under two grit cells inside each stone cell.
  *
  * Above ~8 the height field aliases into sparkle no mip level can save, because the
  * bump is sampled at a screen derivative of the ALBEDO's uv (see PROP_BUMP_APPLY)
@@ -1319,7 +1319,7 @@ function billboardVertex(spherical, grow, spin = true) {
       // and the plain inverse maps the world offset back untouched, the matrix
       // reapplies the scale on the way out, and every spun card in the bed draws
       // at its raw bank size no matter how big the rock is. That was not a
-      // subtle error and it was not a rare one: a crust cap sits at scale 4.10
+      // subtle error and it was not a rare one: an embedded block sits at scale 4.10
       // in the median and 8.33 at the top, so its billboard came out at a
       // quarter of the mesh it replaced and sometimes an eighth, while an
       // underfoot pebble at 0.23 came out four times too big. 87% of placed
