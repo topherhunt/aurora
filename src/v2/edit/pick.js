@@ -22,7 +22,7 @@ import { WORLD_SIZE } from '../config.js'
 //   step(t) = clamp(t * 0.01, 0.05 m, 64 m)
 //
 // The 5 cm floor follows the field's own resolution. The finest
-// cell is 25 cm (config.js: 8192 m over MAX_DEPTH 11 is a 4 m leaf node, and a
+// cell is 50 cm (config.js: 8192 m over MAX_DEPTH 10 is an 8 m leaf node, and a
 // node holds CHUNK_RES = 16 cells) and its finest detail octave has a 25 cm
 // wavelength (§18 LAMBDA_MIN), so the narrowest real feature in the field is
 // ~25 cm across. A 5 cm step samples that five times, which is enough that the
@@ -50,7 +50,7 @@ import { WORLD_SIZE } from '../config.js'
 // returned point is then re-evaluated as
 // `heightAt(x, z, 0)` so it sits EXACTLY on the field rather than 4 microns off
 // it along the ray. The residual error is therefore the horizontal one: under
-// 4 microns of XZ displacement, five orders of magnitude below the 25 cm cell
+// 4 microns of XZ displacement, five orders of magnitude below the 50 cm cell
 // this world resolves to. The gate measures 1.6e-6 m off the ray, worst case.
 //
 // The one thing bisection cannot fix is a bracket containing an even number of

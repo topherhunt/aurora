@@ -37,7 +37,7 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 13 | `design/13-aurora-and-sky.md` | Aurora shader, the 16-form catalogue, sky dome, stars |
 | 14 | `design/14-build-order.md` | Ordered build plan and what is done |
 | 15, 16 | `design/15-open-and-deferred.md` | Deferred decisions and open questions |
-| 17 | `design/17-workflow.md` | Desktop-first, the gate scripts, the headset-gate protocol |
+| 17 | `design/17-workflow.md` | Desktop-first, the gate scripts, the headset-gate protocol, the bench pages and how a route registers |
 | 18 | `design/18-v2-world.md` | v2: imported heightmap, procedural detail to 10 cm, authored content layers (snow line, lakes, rivers, roads) |
 | 19 | `design/19-buildings.md` | The Nordic building kit: its texture layers, the `Builder`, the plan grammar, LOD by re-generation |
 | 20 | `design/20-vegetation-generators.md` | Trees and bushes: the four primitives, the triangle law, crown profile and height density, card foliage and its fold, the root crown, LOD by re-generation |

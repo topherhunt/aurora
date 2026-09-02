@@ -13,12 +13,14 @@
 //   entire point of the blade bed is that it does not do that. It renders fine
 //   and it costs the headset the frame. Checked first.
 //
-//   THE FEET STOP BEING (1,1,1). The base vertex colour is multiplied by the
-//   per-instance colour in three's `color_vertex` chunk, and the instance
-//   colour is the colour the ground at that spot is drawn in. Anything but
-//   white at the foot double-tints it, and the clump stops growing out of the
-//   ground and starts sitting on it. Invisible in a screenshot of one clump;
-//   obvious as a pale or dark stipple across a hillside.
+//   THE FEET STOP AVERAGING TO (1,1,1). The base vertex colour is multiplied by
+//   the per-instance colour in three's `color_vertex` chunk, and the instance
+//   colour is the colour the ground at that spot is drawn in. The two feet
+//   straddle white by `baseRound` to give the blade a cross-section; what must
+//   not move is their MEAN, because a base that averages to anything else
+//   double-tints, and the clump stops growing out of the ground and starts
+//   sitting on it. Invisible in a screenshot of one clump; obvious as a pale or
+//   dark stipple across a hillside.
 //
 //   THE TIP BRIGHTNESS COMES BACK INTO THE GEOMETRY. It is per instance now,
 //   `aTipMul`, applied in the vertex patch -- which is why the vertex patch is
@@ -86,6 +88,7 @@ function blades(geo, sink) {
       height: pos[o + 7] + sink,
       normal: { x: nrm[o], y: nrm[o + 1], z: nrm[o + 2] },
       footColor: [col[o], col[o + 1], col[o + 2]],
+      footColorB: [col[o + 3], col[o + 4], col[o + 5]],
       tipColor: [col[o + 6], col[o + 7], col[o + 8]],
       ramp: [ramp[b * 3], ramp[b * 3 + 1], ramp[b * 3 + 2]],
     })
@@ -394,10 +397,20 @@ console.log('\n-- colour --')
 {
   // THE TERRAIN-MATCH INVARIANT. `color_vertex` multiplies this by the instance
   // colour, and the instance colour is the colour the ground at that spot is
-  // drawn in.
-  check(b.every((x) => x.footColor.every((c) => c === 1)),
-    'the feet are exactly (1,1,1), so the instance colour lands on them unmodified',
-    b[0].footColor.join(','))
+  // drawn in. The pair has to average to exactly 1 for that colour to survive;
+  // the SPREAD around it is the blade's cross-section and is checked next.
+  check(b.every((x) => x.footColor.every((c, i) => near((c + x.footColorB[i]) / 2, 1, 1e-6))),
+    'the two feet average to exactly (1,1,1), so the instance colour lands on the base unmodified',
+    `${b[0].footColor.join(',')} and ${b[0].footColorB.join(',')}`)
+  // A FLAT TRIANGLE WITH A VERTICAL NORMAL HAS NO SHADING OF ITS OWN, so the
+  // only thing that can make a blade read as round is this gap across its base
+  // edge. Zero here is a bed of painted slivers, and it costs nothing to keep.
+  const r = BLADE_DEFAULTS.baseRound
+  check(r > 0 && b.every((x) => near(x.footColor[0], 1 + r, 1e-6) && near(x.footColorB[0], 1 - r, 1e-6)),
+    `one foot is ${((1 + r) * 100).toFixed(0)}% of the base colour and the other ${((1 - r) * 100).toFixed(0)}%`,
+    `baseRound ${r}`)
+  check(buildBladeClump({ baseRound: 0 }, 5).getAttribute('color').array[0] === 1,
+    'and baseRound 0 puts both feet back on exactly white')
   // HUE ONLY at the tip. Brightness is aTipMul, per instance; a gain baked in
   // here as well would be the same number applied twice.
   check(b.every((x) => near(x.tipColor[1], 1, 1e-6)),

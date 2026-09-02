@@ -860,6 +860,27 @@ const FADE_POOL_RESERVE = 1024
 const LOD_SQ = Float32Array.from(ROCK_LOD_AT, (k) => k * k)
 const LOD_SQ_OUT = Float32Array.from(ROCK_LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
 
+// HOW FAR OUTSIDE ITS OWN BOX A ROCK STILL COUNTS AS CONTAINING THE EYE. See
+// RockShell for what containment turns on; this is the slack on the test.
+//
+// The test is the rock's bounding CYLINDER -- vertical span and widest radius,
+// both at the instance's scale -- and not a sphere about the origin, even though
+// a sphere would be one compare cheaper on a distance the LOD loop already has.
+// A sphere has to hold the whole rock from a point on its BED FACE, which for a
+// 15 m giant is a 19 m ball, and a ball that size is over the camera whenever the
+// player walks anywhere near one. A shell that never switches off is exactly the
+// standing cost this is not allowed to have.
+//
+// THE SLACK IS 15% AND IT IS DELIBERATE, because the errors here are not
+// symmetric. The cylinder is upright and the instance is LEANED, so a real rock
+// pokes a little outside it; missing that is a hole out into the world at the one
+// viewpoint that has no front faces left to close it. Over-reaching costs
+// nothing -- the shell is a back-side draw depth-tested against the rock's own
+// front faces, so a shell you are outside of is hidden behind the rock. 15% of a
+// rock's own size is also comfortably past the 0.1 m near plane, so the interior
+// is already up by the time the eye can see through the surface.
+const INSIDE_PAD = 0.15
+
 // HOW LONG A ROCK IS A WHOLE BILLBOARD FOR, as a multiple of the distance its
 // card takes over at.
 //
@@ -1144,6 +1165,16 @@ class RockBed {
     // why it is neither the width nor the height.
     this.shapeLod = rockLodSize(this.shape.measured)
 
+    // The same trick again for the interior test: the bounding cylinder as
+    // FRACTIONS of the ladder size, so `update` gets both back for one multiply
+    // by the size it already has. `insideLow` is the slack, and it hangs below
+    // the bed face as well as above the crown -- a rock is sunk into the ground
+    // and the eye can be under its lowest drawn vertex and still inside it.
+    const m = this.shape.measured
+    this.insideRise = m.height / this.shapeLod
+    this.insideLow = this.insideRise * INSIDE_PAD
+    this.insideRadius = ((Math.max(m.width, m.depth) * 0.5) / this.shapeLod) * (1 + INSIDE_PAD)
+
     // THE BIGGEST ROCK THIS BED CAN PLACE, and through it the distance past which
     // no instance of it can still be on a mesh tier. `update` uses that to skip
     // whole tiles instead of walking them rock by rock -- everything out there is
@@ -1415,6 +1446,9 @@ class RockBed {
     this._gc = new Float32Array(3)
 
     this.tris = 0
+    // The one instance in this bed the eye is closest to being inside of, in
+    // ladder sizes, or -1. Rewritten every `update`; read by RockShell.sync.
+    this.insideId = -1
     this.placed = 0
     this.samples = 0
     this.regrows = 0
@@ -1632,6 +1666,8 @@ class RockBed {
     const tile = this.tile
     const coarse = ROCK_BAND_COUNT - 1
     let tris = 0
+    this.insideId = -1
+    let insideBest = Infinity
     const phase = this._sweep
     this._sweep = (this._sweep + 1) % GROUND_SWEEP
     const ground = this.ground
@@ -1690,6 +1726,23 @@ class RockBed {
         // the scale this instance was placed at.
         const size = this.shapeLod * this.instScale[i]
         const sizeSq = size * size
+
+        // IS THE EYE INSIDE THIS ONE? The same three offsets, read against the
+        // instance's own bounding cylinder. The height test is first because it
+        // is the cheapest and it rejects nearly everything: the whole bed is at
+        // the player's feet or over their head.
+        //
+        // The CLOSEST candidate wins rather than the first, because rocks
+        // interpenetrate -- there is one shell per bed, and the rock you are
+        // least far into is the one whose interior you are looking at.
+        if (ey <= size * this.insideLow && ey >= -size * (this.insideRise + this.insideLow) && d2 < insideBest) {
+          const rh = size * this.insideRadius
+          if (ex * ex + ez * ez < rh * rh) {
+            insideBest = d2
+            this.insideId = i
+          }
+        }
+
         let tier = coarse
         for (let b = 0; b < LOD_SQ.length; b++) {
           const sticky = cur >= 0 && cur <= b
@@ -2672,6 +2725,110 @@ class RockBed {
 }
 
 /**
+ * The inside of the one rock the camera is in, drawn back faces only.
+ *
+ * WHAT IT IS FOR: the beds cull back faces (see Rocks' material), which is right
+ * for a closed solid seen from outside and wrong the moment the eye is inside
+ * one -- nothing collides with a boulder, so the player walks into them, and a
+ * culled interior is a hole straight out into the world. This puts the missing
+ * half back for that one rock, on a material of its own.
+ *
+ * BackSide AND NOT DoubleSide. The bed is already drawing the front faces; this
+ * adds only what is missing, so the pair comes out to a double-sided rock with no
+ * coincident geometry to z-fight. It is also why a false positive is free -- a
+ * shell on a rock you are merely NEAR is behind that rock's own front faces and
+ * fails the depth test.
+ *
+ * A MATERIAL OF ITS OWN, not `side` flipped on the shared one around the draw.
+ * `side` is not in three's `needsProgramChange` list, so a flip is normally just
+ * a cull-state toggle -- but any program change that DID fire while the flag was
+ * flipped (a lights-version bump, say) would compile FLIP_SIDED as the cached
+ * program for the shared material and turn every bed inside out. Two materials
+ * cost one extra program and cannot do that.
+ *
+ * ONE INSTANCE PER BED, tier 0 only. Every bed keeps its own nearest candidate
+ * because a giant and a pebble can overlap. Tier 0 needs no choosing: the finest
+ * mesh reaches out to 4 ladder sizes and a rock you are inside of is within one,
+ * so anything with an interior is already wearing it.
+ */
+class RockShell {
+  constructor(scene, material, geo, capacity) {
+    this.batch = new THREE.BatchedMesh(
+      capacity,
+      geo.attributes.position.count,
+      geo.index.count,
+      material
+    )
+    this.batch.name = 'v2-rocks-shell'
+    this.batch.frustumCulled = false
+    this.batch.sortObjects = false
+    this.batch.visible = false
+
+    this.geoId = this.batch.addGeometry(geo)
+    const meta = geo.userData.rock
+    if (!meta) throw new Error('RockShell: tier 0 is not a mesh tier')
+    this.geoTris = meta.triangles
+
+    this.capacity = capacity
+    for (let i = 0; i < capacity; i++) {
+      const id = this.batch.addInstance(this.geoId)
+      this.batch.setVisibleAt(id, false)
+    }
+    // Same reason the beds do it, one material later: give the colours texture a
+    // definite existence before the first draw rather than the first placement.
+    this.batch.setColorAt(0, new THREE.Color(1, 1, 1))
+
+    this.n = 0
+    this.tris = 0
+    this._m = new THREE.Matrix4()
+    this._c = new THREE.Color()
+    scene.add(this.batch)
+  }
+
+  /**
+   * Point the shell at whatever each bed decided it was inside of this frame.
+   *
+   * The transform and the colour are COPIED FROM THE BED INSTANCE rather than
+   * recomputed, which is what keeps the shell registered with its rock for free:
+   * the matrix carries the same lean and quarter turn, and the RGB carries the
+   * ground cue, so the interior is tinted by the same dirt the outside is. Snow
+   * and moss need no copying at all -- both are hashed from the instance root's
+   * world XZ in the vertex shader, so identical transforms roll identical.
+   *
+   * THE FADE SLOT IS NOT COPIED and must not be: `getColorAt` reads a THREE.Color
+   * and drops alpha, and a shell dithering along with a rock mid-dissolve would
+   * open holes out into the world from the one viewpoint that has no front faces
+   * left to close them. Solid is both the reachable answer and the right one.
+   */
+  sync(beds) {
+    let n = 0
+    for (const bed of beds) {
+      const id = bed.insideId
+      // A bed switched off by the quest toggle takes its interior with it,
+      // rather than leaving a hollow rock hanging where the rock was.
+      if (id < 0 || !bed.batch.visible) continue
+      bed.batch.getMatrixAt(id, this._m)
+      bed.batch.getColorAt(id, this._c)
+      this.batch.setMatrixAt(n, this._m)
+      this.batch.setColorAt(n, this._c)
+      setPropSolidAt(this.batch, n)
+      this.batch.setVisibleAt(n, true)
+      n++
+    }
+    for (let i = n; i < this.n; i++) this.batch.setVisibleAt(i, false)
+    this.n = n
+    this.tris = n * this.geoTris
+    // An empty shell leaves the traversal at projectObject rather than being
+    // walked and rejected, so standing in open ground costs nothing at all.
+    this.batch.visible = n > 0
+  }
+
+  dispose() {
+    this.batch.dispose()
+  }
+}
+
+/**
  * All the world's stone: one bank, one material, one bed per BEDS entry.
  *
  * The public shape matches Trees/Ferns/Grass -- construct, `place` once at
@@ -2743,6 +2900,17 @@ export class Rocks {
       (cfg, i) => new RockBed(scene, field, water, layers, this.material, bank, cfg, i, { seed, ground })
     )
 
+    // The same material read from the other side, for the one rock the camera is
+    // standing in. See RockShell for why this is a second material and not a
+    // `side` flip on the one above.
+    this.shellMaterial = createPropMaterial(textureArray, {
+      billboardLayers: rockImpostorLayers(),
+      sphericalBillboard: true,
+      side: THREE.BackSide,
+      bump: true,
+    })
+    this.shell = new RockShell(scene, this.shellMaterial, bank.shape.tiers[0], this.beds.length)
+
     // BatchedMesh has copied every vertex into its own arena; the bank's
     // geometries are now a spare copy with no reader.
     for (const g of bank.geometries) g.dispose()
@@ -2769,6 +2937,8 @@ export class Rocks {
   update(camX, camY, camZ) {
     const slice = BUILD_BUDGET_MS / this.beds.length
     for (const bed of this.beds) bed.update(camX, camY, camZ, slice)
+    // After every bed, because each one picked its own candidate above.
+    this.shell.sync(this.beds)
   }
 
   /**
@@ -3207,7 +3377,12 @@ export class Rocks {
     return {
       beds,
       placed: beds.reduce((n, b) => n + b.placed, 0),
-      tris: beds.reduce((n, b) => n + b.tris, 0),
+      // Summed for the same reason a bed exposes it: `tris` already skips the
+      // rim-hidden instances, so `placed` on its own is the one number here that
+      // counts stone the GPU never sees.
+      rimHidden: beds.reduce((n, b) => n + b.rimHidden, 0),
+      tris: beds.reduce((n, b) => n + b.tris, 0) + this.shell.tris,
+      inside: this.shell.n,
       pool: beds.reduce((n, b) => n + b.pool, 0),
       used: beds.reduce((n, b) => n + b.used, 0),
       bankKB: Math.round(this.bank.bytes / 1024),
@@ -3219,6 +3394,8 @@ export class Rocks {
 
   dispose() {
     for (const bed of this.beds) bed.dispose()
+    this.shell.dispose()
     this.material.dispose()
+    this.shellMaterial.dispose()
   }
 }

@@ -1089,7 +1089,7 @@ ${lofi ? '' : `          if ( auroraDetailK > 0.004 ) {
           // triangles, so wherever it crosses the grid at an angle it steps.
           // Alternating the mesh diagonal (chunk-mesh.js) stops that step being
           // REGULAR, but the boundary is still resolved at vertex spacing --
-          // 25 cm at the leaf and far coarser in the LOD rings, which is where
+          // 50 cm at the leaf and far coarser in the LOD rings, which is where
           // it is most visible.
           //
           // Displacing the classification by a world-space field moves the

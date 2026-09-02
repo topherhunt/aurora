@@ -30,7 +30,7 @@ import { createTerrainMaterial } from '../../terrain/terrain-material.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.js'
 
 // ---------------------------------------------------------------------------
-// v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 11 tree, worker-fed
+// v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 10 tree, worker-fed
 // geometry, hole-free swaps, partial invalidation on an edit, and ONE draw call.
 //
 // The rendering argument is DESIGN.md §5; the streaming policy lives in
@@ -61,7 +61,7 @@ import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.j
 // ---------------------------------------------------------------------------
 
 // Reselect the quadtree at ~12 Hz when nothing is streaming: 12 cm of walking
-// between selections against a 25 cm leaf cell at depth 11. Selection also reruns
+// between selections against a 50 cm leaf cell at depth 10. Selection also reruns
 // immediately when a chunk lands or an edit invalidates (`_dirty`), which is what
 // actually settles a new view; the timer only covers walking through resident
 // ground. Halving it would double a measured 0.023 ms p50 / 0.044 ms p99

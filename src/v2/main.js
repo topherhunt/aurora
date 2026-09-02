@@ -520,7 +520,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'grassFalloff', text: 'grass falloff', action: () => cycleGrassFalloff(), value: () => `${grass ? grass.falloff : '?'}^ >` },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
-  { key: 'treeMesh', text: 'tree mesh', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
+  { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
   // The two ABLATIONS on the tree layer, both starting where the world ships so
   // that "off" is the measurement. `tree tiers` takes the mesh ladder away and
   // leaves the card ring, which is what makes the reach and falloff rows above
@@ -1159,6 +1159,28 @@ function kilo(n) {
  *      first question is whether the gamepads are even being seen, and there is
  *      no other way to ask it on-device.
  */
+/**
+ * One scatter layer's line item: `instances/triangles`, both counted after the
+ * rim's hiding pass, so they are what the GPU was handed rather than what the
+ * layer placed -- `placed` alone overstates by however much of the far rim is
+ * currently hidden.
+ *
+ * `hidden` and not a count when the layer is not being drawn, because a count
+ * there is a lie in two different ways at once. Rocks keep stepping while their
+ * batches are invisible (a hidden boulder still displaces a tree), so their
+ * numbers stay live and describe geometry nobody is rendering; trees, ferns and
+ * grass skip update() entirely, so theirs freeze at whatever the world was when
+ * the row was switched off and read as current.
+ */
+function scatterCells(label, shown, s) {
+  return [
+    [label, '#7f95b4'],
+    shown
+      ? [`${kilo(s.placed - s.rimHidden)}/${kilo(s.tris)}`.padEnd(11), '#8fd48f']
+      : ['hidden'.padEnd(11), '#5c6b7d'],
+  ]
+}
+
 function updateQuestStats() {
   if (!questStatsTexture || !ready) return
   // Nothing to read while the menu is closed, and this is not free: it lays out
@@ -1178,6 +1200,12 @@ function updateQuestStats() {
   const inp = input.state
   const la = inp.left.axes
   const ra = inp.right.axes
+  // Ground range under the MOUSE, and only on the flat screen: in the headset
+  // there is no cursor to measure from, and cursorPick raymarches the height
+  // field and then walks every scatter's instance arrays -- exactly the CPU
+  // time this panel exists to hunt down. `null` here is what keeps it off the
+  // row rather than a dash the wearer has to learn to ignore.
+  const cursor = renderer.xr.isPresenting ? null : cursorPick()
   drawQuestStats([
     [
       ['FPS ', '#7f95b4'], [`${fps.toFixed(0)}→${fps5.toFixed(0)}`.padEnd(8), fpsColor],
@@ -1186,7 +1214,12 @@ function updateQuestStats() {
       ['LOW ', '#7f95b4'], [low5.toFixed(0).padEnd(5), rate(low5)],
       ['MS ', '#7f95b4'], [avgMs.toFixed(1).padEnd(6), fpsColor],
       ['TRIS ', '#7f95b4'], [kilo(info.render.triangles).padEnd(8), '#7fd7ff'],
-      ['CALLS ', '#7f95b4'], [String(info.render.calls), '#ff9a7a'],
+      ['CALLS ', '#7f95b4'], [String(info.render.calls).padEnd(6), '#ff9a7a'],
+      // Metres to the ground under the cursor, which is the only ruler this
+      // view has. `-` is the ray reaching the horizon, not a failure.
+      ...(cursor
+        ? [['CURSOR ', '#7f95b4'], [cursor.dist === null ? '-' : `${cursor.dist.toFixed(1)}m`, '#ff6b6b']]
+        : []),
     ],
     [
       ['GEO ', '#7f95b4'], [String(info.memory.geometries).padEnd(6), '#b39ddb'],
@@ -1200,30 +1233,25 @@ function updateQuestStats() {
       ['drawn ', '#7f95b4'], [String(st.rendered).padEnd(6), '#cfe3ff'],
       ['tris ', '#7f95b4'], [kilo(st.drawnTris).padEnd(7), '#cfe3ff'],
       ['q ', '#7f95b4'], [String(st.queued).padEnd(4), st.queued > 0 ? '#ffd27a' : '#cfe3ff'],
-      ['deg ', '#7f95b4'], [st.triDeg.toFixed(1), '#cfe3ff'],
-    ],
-    // The forest gets a line to itself, broken out BY TIER, because the whole
-    // performance question about it is which band is spending the frame and a
-    // combined placed/tris pair cannot say. `lod1` is the expensive row -- 380
-    // triangles a tree over an area that grows as the square of the band it is
-    // printed beside -- and `card` is one triangle a tree and almost all of the
-    // instances.
-    [
-      ['tree ', '#7f95b4'], [`${kilo(ts.placed)}/${kilo(ts.tris)}`.padEnd(11), '#8fd48f'],
-      ['lod0 ', '#7f95b4'], [String(ts.tiers[0]).padEnd(4), '#cfe3ff'],
-      ['lod1 ', '#7f95b4'], [`${ts.tiers[1]}@${ts.meshBand}m`.padEnd(11), ts.tiers[1] > 0 ? '#cfe3ff' : '#8fd48f'],
-      ['card ', '#7f95b4'], [kilo(ts.tiers[2]).padEnd(8), '#cfe3ff'],
-      ['tiles ', '#7f95b4'], [`${ts.nearTiles}/${kilo(ts.tiles)}`.padEnd(11), '#cfe3ff'],
-      // Present ONLY while an ablation is on. The row describes the shipped
-      // forest unless it says otherwise, and a flag that is always there stops
-      // being read -- so nothing is spent on the case that needs no warning.
-      ...(ts.cardsOnly ? [['CARDS ONLY ', '#ffd27a']] : []),
-      ...(ts.cutout ? [] : [['NO CUTOUT', '#ffd27a']]),
+      ['deg ', '#7f95b4'], [st.triDeg.toFixed(1).padEnd(5), '#cfe3ff'],
     ],
     [
-      ['grass ', '#7f95b4'], [`${kilo(grass.stats.placed)}/${kilo(grass.stats.tris)}`.padEnd(10), '#8fd48f'],
-      ['rock ', '#7f95b4'], [`${kilo(rocks.stats.placed)}/${kilo(rocks.stats.tris)}`.padEnd(10), '#8fd48f'],
-      ['fern ', '#7f95b4'], [`${kilo(ferns.stats.placed)}/${kilo(ferns.stats.tris)}`.padEnd(10), '#8fd48f'],
+      ...scatterCells('tree ', questToggles.trees, ts),
+      ...(questToggles.trees
+        ? [
+            ['tiles ', '#7f95b4'], [`${ts.nearTiles}/${kilo(ts.tiles)}`.padEnd(11), '#cfe3ff'],
+            // Present ONLY while an ablation is on. The row describes the shipped
+            // forest unless it says otherwise, and a flag that is always there stops
+            // being read -- so nothing is spent on the case that needs no warning.
+            ...(ts.cardsOnly ? [['CARDS ONLY ', '#ffd27a']] : []),
+            ...(ts.cutout ? [] : [['NO CUTOUT', '#ffd27a']]),
+          ]
+        : []),
+    ],
+    [
+      ...scatterCells('grass ', questToggles.grass, grass.stats),
+      ...scatterCells('rock ', questToggles.rocks, rocks.stats),
+      ...scatterCells('fern ', questToggles.ferns, ferns.stats),
       ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(6), '#8fd48f'],
       ['mode ', '#7f95b4'], [player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk', '#8fd48f'],
     ],
@@ -1594,6 +1622,10 @@ async function bootWorld() {
   // not change when the rocks are switched off.
   rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
+  // A cacheKey of its own, not a second use of the one above: the shell is a
+  // separate program (BackSide flips FLIP_SIDED) and sharing the key would pin
+  // both materials to whichever entry compiled first. See lighting.patch.
+  lighting.patch(rocks.shellMaterial, { mode: 'vertex', cacheKey: 'v2-rock-shell' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
   const rs = rocks.stats
@@ -1945,7 +1977,7 @@ async function bootWorld() {
     // loop was already running this test for a stats readout. Worst case over the
     // same sweep: 224k submitted becomes 108k.
     terrain.cullDeg = (70 * Math.PI) / 180
-    // The 4 m chunk floor is NOT set here. It was, briefly, and it is config.js's
+    // The 8 m chunk floor is NOT set here. It was, briefly, and it is config.js's
     // MAX_DEPTH now: one world, one cap, desktop and headset alike. See the note
     // on that constant for why a per-route override was the wrong trade.
     applyBatchCulling()
@@ -2241,7 +2273,7 @@ function terrainShaderMaterial() {
     // does not have, it moves the sun and sky horizon lookups to the vertex stage,
     // and it still installs AERIAL_GLSL in the fragment shader -- the ramp is a
     // function of vFogDepth, which every fogged material already interpolates, so
-    // the thing that was actually missing costs nothing to add. At a 25 cm leaf
+    // the thing that was actually missing costs nothing to add. At a 50 cm leaf
     // cell the per-vertex shading is finer near the camera than the shadow map it
     // samples, which is the same argument this mode already wins for the props.
     //
@@ -2530,9 +2562,14 @@ function cycleAurora() {
 // A BED PER CYCLE, because the same number buys a different bill on each: a card
 // is two triangles out to 70 m, a blade clump is ten out to 30 m. A shared list
 // would step one of them off the end of its own useful range on the first press.
+// The blade list goes UP from where the bed ships rather than down, which is the
+// opposite of every other row here: the question it exists to answer is what
+// doubling and quadrupling the mat underfoot costs, not what thinning it saves.
+// Each rung rebuilds the pool from the density, so 12/m2 is a real bed and not a
+// clamp against the shipped pool.
 const GRASS_DENSITY_CYCLE = {
   cards: [6, 3, 1.5, 0.75],
-  blades: [3, 1.5, 0.75, 0.375],
+  blades: [3, 6, 12],
 }
 const GRASS_RADIUS_CYCLE = {
   cards: [70, 40, 25, 15],
@@ -2628,14 +2665,20 @@ const TREE_RADIUS_CYCLE = [1500, 1000, 750, 400]
 const TREE_FALLOFF_CYCLE = [1, 1.5, 2, 3]
 // Shipped, then out to the ceiling the meshes were sized for, then down to
 // LOD_BANDS[0], which is the tier's inner edge and therefore `off`.
-const TREE_MESH_CYCLE = [24, 32, 45, 8]
+// Where LOD1 hands over to the billboard. The list runs INWARD from where the
+// forest ships, ending on the 8 m LOD0 edge -- a band with no width, which is
+// LOD1 switched off and four fewer draw calls per eye. See Trees.setMeshBand.
+// The outward rungs are gone: MESH_BAND_MAX still allows 45 m, but what this row
+// is being read for is what the middle tier COSTS, and that is measured by
+// taking it away.
+const TREE_MESH_CYCLE = [24, 16, 8]
 
-const meshBandLabel = (b) => (b <= TREE_MESH_CYCLE[TREE_MESH_CYCLE.length - 1] ? 'off' : `${b} m`)
+const meshBandLabel = (b) => (b <= TREE_MESH_CYCLE[TREE_MESH_CYCLE.length - 1] ? `${b} m off` : `${b} m`)
 
 function cycleTreeMesh() {
   if (!trees) return
   trees.setMeshBand(stepCycle(TREE_MESH_CYCLE, trees.lodBands[1]))
-  console.log(`[v2] tree mesh band: ${meshBandLabel(trees.lodBands[1])}`)
+  console.log(`[v2] tree LOD1 band: ${meshBandLabel(trees.lodBands[1])}`)
 }
 
 function cycleTreeRadius() {

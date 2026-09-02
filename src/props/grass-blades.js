@@ -58,8 +58,9 @@ import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, getWindEnabled, propClockUniform,
 // Sampling that colour is the caller's job and not this module's, because the
 // terrain's own drawn colour is a shader chain and not a function -- see
 // TerrainTint in src/terrain/terrain-tint.js, which replays it on the CPU. The
-// contract here is only that the FEET are (1,1,1), so whatever colour arrives
-// lands on them untouched.
+// contract here is that the two FEET AVERAGE to (1,1,1): one is `baseRound`
+// above it and the other the same amount below, so the blade's base is still
+// exactly the colour that arrives, spread across its width instead of flat.
 //
 // THE THREE THINGS THAT MAKE A TIP DIFFERENT FROM A FOOT, and where each lives:
 //   - the RAMP is geometry: `aBladeT` is 0 at the feet and 1 at the apex, and
@@ -154,6 +155,19 @@ export const BLADE_DEFAULTS = {
   tipVary: 0.4,
   // Pushes red up and blue down at the tip, for sun-bleached ends.
   tipWarm: 0.0,
+  // ROUNDNESS ACROSS THE BLADE'S WIDTH, as a fraction either side of the base
+  // colour: one foot vertex is drawn 1 + this, the other 1 - this, and the
+  // interpolator sweeps between them along the base edge. A blade is a flat
+  // triangle whose normal is forced to straight up (normalUp), so shading gives
+  // it no cross-section at all -- this is the only cue that it is a blade rather
+  // than a painted sliver, and it is free: three floats that were already in the
+  // colour attribute.
+  //
+  // It is SYMMETRIC about 1 so the pair still averages to the ground colour the
+  // caller sampled, which is the terrain-match invariant. Which side is lighter
+  // is fixed rather than rolled, because the blade's yaw is already random --
+  // rolling it too would only decide which of two arbitrary directions is lit.
+  baseRound: 0.10,
 }
 
 /**
@@ -213,6 +227,12 @@ export function buildBladeClump(params = {}, seed = 1) {
   const tipG = 1
   const tipB = Math.max(0, 1 - p.tipWarm)
 
+  if (!(p.baseRound >= 0 && p.baseRound < 1)) {
+    throw new Error(`grass-blades: baseRound must be in [0, 1), got ${p.baseRound}`)
+  }
+  const footHi = 1 + p.baseRound
+  const footLo = 1 - p.baseRound
+
   const e1 = new THREE.Vector3()
   const e2 = new THREE.Vector3()
   const fn = new THREE.Vector3()
@@ -260,10 +280,11 @@ export function buildBladeClump(params = {}, seed = 1) {
       nrm[o + v * 3] = fn.x; nrm[o + v * 3 + 1] = fn.y; nrm[o + v * 3 + 2] = fn.z
     }
 
-    // (1,1,1) at the feet is what makes the instance colour land on the base
-    // unmodified, which is the whole terrain-match trick.
-    col[o + 0] = 1; col[o + 1] = 1; col[o + 2] = 1
-    col[o + 3] = 1; col[o + 4] = 1; col[o + 5] = 1
+    // The feet straddle (1,1,1) rather than sitting on it: the pair still
+    // averages to the instance colour, which is the terrain-match trick, and the
+    // gap across the base edge is the blade's roundness. See baseRound.
+    col[o + 0] = footHi; col[o + 1] = footHi; col[o + 2] = footHi
+    col[o + 3] = footLo; col[o + 4] = footLo; col[o + 5] = footLo
     col[o + 6] = tipR; col[o + 7] = tipG; col[o + 8] = tipB
 
     ramp[b * 3] = 0; ramp[b * 3 + 1] = 0; ramp[b * 3 + 2] = 1

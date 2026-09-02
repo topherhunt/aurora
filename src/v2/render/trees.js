@@ -154,7 +154,7 @@ import { PropArena } from './prop-arena.js'
 // of half an arcminute over a 65 mm baseline resolves depth to about d^2 x
 // eta / IPD: 1.3 m at 24 m, 5.6 m at 50 m. A crown is 3 to 6 m deep, so a flat
 // card is detectable AS flat at 24 m and not at 50. The band is set at the near
-// end of that and left as a knob (`setMeshBand`, the /?quest `tree mesh` row)
+// end of that and left as a knob (`setMeshBand`, the /?quest `tree LOD1 band` row)
 // because the honest test is a headset, not this arithmetic.
 //
 // THE FAR TIER IS A REAL CAMERA-FACING BILLBOARD, spun about its own trunk in
@@ -251,7 +251,7 @@ const FULL_RADIUS = 50
 // Moving the FIRST number is nearly free in both directions, because the two
 // mesh tiers are within 31% of each other -- that is what makes it safe to keep
 // LOD0 as tight as this. Moving the SECOND is the real spend and it is the one
-// the /?quest `tree mesh` row exists to A/B, because it is now the ONLY boundary
+// the /?quest `tree LOD1 band` row exists to A/B, because it is now the ONLY boundary
 // between a real tree and a flat picture of one. `setMeshBand` moves it; the
 // tier caps are sized for MESH_BAND_MAX so it can travel outward as well as in.
 //

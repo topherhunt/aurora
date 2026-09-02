@@ -864,11 +864,9 @@ function creatureGen() {
 // all) silently rendered the v2 world instead of failing loudly. Production
 // doesn't have this problem -- devops/provision.sh's Caddy config is
 // `try_files {path} {path}.html` then a bare `file_server`, which 404s for
-// real when neither exists, no catch-all. This is the dev-server equivalent
-// of that real 404, scoped to the routes this project actually knows about
-// (BARE_ROUTES, plus any request that already resolves to a real .html file)
-// rather than Caddy's broader "any *.html in dist" match, so this stays a
-// deliberate list rather than silently blessing whatever's on disk.
+// real when neither exists, no catch-all. This is the dev-server equivalent of
+// that real 404, matching Caddy's rule exactly: a page request survives only if
+// it resolves to a real file on disk, and the body lists what does.
 //
 // Registered AFTER bareRoutes() in the plugin list so it sees the rewritten
 // URL for a known bare route, and BEFORE vite's own middleware runs, so it
@@ -896,10 +894,10 @@ function unknownRouteGuard() {
         const isPage = !last.includes('.') || url.endsWith('.html')
         if (isPage) {
           if (url.endsWith('.html') && existsOnDisk(url.slice(1))) return next()
-          if (!url.endsWith('.html') && BARE_ROUTES.includes(url.slice(1))) return next()
+          if (!url.endsWith('.html') && isPageRoute(root, url.slice(1))) return next()
           res.statusCode = 404
           res.setHeader('content-type', 'text/html')
-          const items = ['/', ...BARE_ROUTES.map((r) => `/${r}`)].sort().map((r) => `<li><a href="${r}">${r}</a></li>`).join('')
+          const items = ['/', ...pageNames(root).map((r) => `/${r}`)].sort().map((r) => `<li><a href="${r}">${r}</a></li>`).join('')
           res.end(`<!doctype html><html><head><title>404</title><style>
             body{background:#05080f;color:#cfe3ff;font:14px/1.6 monospace;padding:2em}
             a{color:#7fd1ff} h1{font-size:16px;color:#eaf3ff}
@@ -927,31 +925,42 @@ function unknownRouteGuard() {
 
 // --- bare paths as routes rather than filenames (dev only) ------------------
 //
-// `/` is the world. The named HTML files remain useful direct build artifacts,
-// while these rewrites make the local dev server match production, where Caddy's
-// `try_files {path} {path}.html` does the same append-if-it-exists match against
-// dist/ for any bare path.
+// `/` is the world; every other root .html file is a bench (see §17). A bare
+// path is a route when its .html exists, which is exactly what Caddy's
+// `try_files {path} {path}.html` does against dist/ in production
+// (devops/provision.sh). Asked of the disk per request rather than kept as a
+// list, so a new bench is reachable the moment its file lands: no config edit,
+// and so no dev-server restart in the middle of someone's flight.
 //
-// A list rather than a blanket "append .html to anything that misses": Caddy's
-// try_files only rewrites when the .html file actually exists on disk, so it never
-// turns a genuine 404 into a served page. This list is the dev-server equivalent of
-// that existence check -- add a name here whenever a new bare route is wired into
-// BARE_ROUTES so dev matches what Caddy already serves in production with no
-// provisioning step at all.
+// The URL reaches the filesystem here, so a name is flat and dot-free or it is
+// not a page: no slash, no leading dot, nothing to traverse with. Dot-free also
+// keeps every asset request from paying a stat, since `/leaf.png` can never be
+// a bare route.
 //
 // Registered in the body of configureServer, not in the returned post-hook, so
 // it rewrites the URL before vite's own html middleware and fallback see it.
-const BARE_ROUTES = ['avatar-preview', 'gen-rock', 'gen-fern', 'gen-tree', 'gen-tree-v2', 'gen-tree-v2a', 'gen-tree-v3', 'gen-tree-v4', 'gen-deadwood', 'gen-mushroom', 'gen-crab', 'gen-butterfly', 'gen-grass', 'gen-building', 'gen-anim', 'gen-character', 'gen-sheet', 'gen-fish', 'gen-creature', 'poly-trace', 'tileable', 'chroma-key', 'test-aurora', 'quest', 'questv2', 'questv3']
+const PAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+
+function isPageRoute(root, name) {
+  return PAGE_NAME.test(name) && existsSync(resolve(root, `${name}.html`))
+}
+
+// Read fresh rather than cached, so a page added since startup is listed too.
+// `index` is `/`, not a named route.
+function pageNames(root) {
+  return readdirSync(root).filter((f) => f.endsWith('.html')).map((f) => f.slice(0, -5)).filter((n) => n !== 'index')
+}
 
 function bareRoutes() {
   return {
     name: 'aurora:bare-routes',
     apply: 'serve',
     configureServer(server) {
+      const root = server.config.root
       server.middlewares.use((req, _res, next) => {
         const path = req.url.split('?')[0]
         const name = path.replace(/^\/|\/$/g, '')
-        if (BARE_ROUTES.includes(name)) req.url = `/${name}.html${req.url.slice(path.length)}`
+        if (isPageRoute(root, name)) req.url = `/${name}.html${req.url.slice(path.length)}`
         next()
       })
     },
@@ -969,11 +978,8 @@ function bareRoutes() {
 //
 // `base` is relative so the built output works from any subpath, including
 // topherhunt.com/games/aurora.
-// index.html is the world; every other page is a bench. map.html is the §14
-// step 3 Phase A map -- the "eye" the tune-by-eye constants in phase-a.js refer
-// to -- and props.html is the same eye for the §9 asset library. The gen-*.html
-// pages tune the procedural content, whose "library" is the range its parameters
-// cover, so the only way to see one is twenty seeds side by side.
+// index.html is the world; every other root .html file is a bench, and the
+// catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
   plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), bareRoutes(), unknownRouteGuard()],
@@ -998,104 +1004,14 @@ export default defineConfig({
   server: { host: true, port: 5173, hmr: false },
   worker: { format: 'es' },
   build: {
+    // Every root .html file is an entry -- the same disk question bareRoutes()
+    // asks, so a bench reachable in dev is in the build with no second edit.
+    // What each bench is for, and why it is a page rather than a mode inside
+    // the world, is DESIGN.md §17.
     rollupOptions: {
-      input: {
-        main: resolve(__dirname, 'index.html'),
-        avatarPreview: resolve(__dirname, 'avatar-preview.html'),
-        map: resolve(__dirname, 'map.html'),
-        props: resolve(__dirname, 'props.html'),
-        genFern: resolve(__dirname, 'gen-fern.html'),
-        // The grass bench, served at /gen-grass. The only generator that boots
-        // the REAL world -- V2Height, the layers document and TerrainV2's
-        // quadtree -- because the two questions it exists to answer (how fast
-        // density may fall off with distance, and whether opaque blades still
-        // read as grass on a hillside, in snow and from above) do not survive
-        // being asked on a flat test plane.
-        genGrass: resolve(__dirname, 'gen-grass.html'),
-        genTree: resolve(__dirname, 'gen-tree.html'),
-        genTreeV2: resolve(__dirname, 'gen-tree-v2.html'),
-        genTreeV2a: resolve(__dirname, 'gen-tree-v2a.html'),
-        genTreeV3: resolve(__dirname, 'gen-tree-v3.html'),
-        genTreeV4: resolve(__dirname, 'gen-tree-v4.html'),
-        // The rock bench, served at /gen-rock. Its job is narrower than the
-        // others': the tree and fern generators ship a settled bank, this one is
-        // still choosing which variants the world gets, and PRESETS in
-        // src/gen-rock-main.js is where that choice is being written down.
-        genRock: resolve(__dirname, 'gen-rock.html'),
-        // The deadwood bench, served at /gen-deadwood. The two props that are
-        // not trees and not rocks: a broken-off snag and a fallen log. It is
-        // also where the moss and snow recipe on WOOD gets judged, since dead
-        // wood is the first thing in the world that wears both.
-        genDeadwood: resolve(__dirname, 'gen-deadwood.html'),
-        // The mushroom bench, served at /gen-mushroom. The only generator whose
-        // texture is code rather than a photograph (src/props/mushroom-texture.js),
-        // so the bench is also the only place the sheets can be looked at.
-        genMushroom: resolve(__dirname, 'gen-mushroom.html'),
-        // The crab bench, served at /gen-crab. Mesh and texture only, per the
-        // same code-not-photo reasoning as the mushroom's -- see the header
-        // of src/props/crab-texture.js.
-        genCrab: resolve(__dirname, 'gen-crab.html'),
-        // The butterfly bench, served at /gen-butterfly. Mesh and texture
-        // only, same code-not-photo reasoning -- see the header of
-        // src/props/butterfly-texture.js. Unlike the crab, colour and size
-        // are the whole point here, so the bench's reroll throws both wide
-        // rather than picking from a small fixed species table.
-        genButterfly: resolve(__dirname, 'gen-butterfly.html'),
-        // The building bench, served at /gen-building. Its strength-0 mode
-        // provides the straight control for judging the warped geometry.
-        genBuilding: resolve(__dirname, 'gen-building.html'),
-        // The character benches, served at /gen-anim and /gen-character:
-        // tune the shared procedural animation set, and adjust one
-        // character's bone placement, per tools/characters/'s pipeline.
-        genAnim: resolve(__dirname, 'gen-anim.html'),
-        genCharacter: resolve(__dirname, 'gen-character.html'),
-        genSheet: resolve(__dirname, 'gen-sheet.html'),
-        // The fish bench, served at /gen-fish: the fauna analogue of
-        // gen-sheet.html, cut down to one sideview per species (tools/fauna/).
-        genFish: resolve(__dirname, 'gen-fish.html'),
-        // The creature bench, served at /gen-creature: candidate image ->
-        // Tripo mesh -> rig -> animation (tools/creatures/). The only bench
-        // whose steps spend money on a vendor other than OpenRouter, and the
-        // only one that is useless in a build -- every button needs the dev
-        // server's API keys -- but it builds so the route list stays honest.
-        genCreature: resolve(__dirname, 'gen-creature.html'),
-        // The polygon tracer, served at /poly-trace. Not a generator: drop any
-        // image and click a polygon around it, in image pixels that may fall
-        // outside the bounds. No three.js and no dev-server endpoint, so unlike
-        // the benches above it works exactly the same from a build.
-        polyTrace: resolve(__dirname, 'poly-trace.html'),
-        // The tileable bench, served at /tileable. Drop a texture, blend it into
-        // one that wraps, check it rolled, download it. Same two operations as
-        // tools/tileable.sh, in canvas rather than ImageMagick; like the tracer
-        // it needs no dev-server endpoint, so it works from a build.
-        tileable: resolve(__dirname, 'tileable.html'),
-        // The chroma-key bench, served at /chroma-key. Sample a colour out of a
-        // dropped image and everything within a threshold of it goes
-        // transparent. Same no-endpoint shape as the two above.
-        chromaKey: resolve(__dirname, 'chroma-key.html'),
-        // The aurora shader lab, served at /test-aurora. A separate page rather
-        // than a mode inside v2 for the same reason the grass bench is: what it
-        // needs is an empty sky over a nominal skyline and sixty sliders, and
-        // putting that behind a terrain load, a document fetch and a walk to a
-        // vantage point would mean paying all three every time you want to see
-        // what one exponent does. It is also the only page whose whole content
-        // is one quad, which is what makes it honest about the shader's cost.
-        // See the header of src/aurora-lab/glsl/frame.js.
-        testAurora: resolve(__dirname, 'test-aurora.html'),
-        quest: resolve(__dirname, 'quest.html'),
-        // The minimum-complexity control group for /quest: no texture array,
-        // no render-to-texture baking, no image loads -- just primitive
-        // geometry and flat colour, to isolate whether the Quest 2 boot hang
-        // traces to /quest's texture pipeline or to something more basic.
-        questv2: resolve(__dirname, 'questv2.html'),
-        // A-Frame-based, not Three.js -- see questv3.html's header comment.
-        // Neither /quest nor /questv2's hand-rolled WebXR session code has
-        // ever entered VR successfully on the test Quest 2; A-Frame's own
-        // Hello World demo (and aboveparadowski.com, also A-Frame) has. This
-        // is that same architecture as a minimal proof of concept to build
-        // real content on top of once VR entry itself is confirmed working.
-        questv3: resolve(__dirname, 'questv3.html'),
-      },
+      input: Object.fromEntries(
+        readdirSync(__dirname).filter((f) => f.endsWith('.html')).map((f) => [f.slice(0, -5), resolve(__dirname, f)]),
+      ),
     },
   },
 })

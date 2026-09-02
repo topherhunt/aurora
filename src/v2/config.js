@@ -49,55 +49,57 @@ export const CHUNK_RES = 16
 export const CHUNK_VERTS = (CHUNK_RES + 1) * (CHUNK_RES + 1) + 4 * (CHUNK_RES + 1)
 export const CHUNK_INDICES = (CHUNK_RES * CHUNK_RES * 2 + 4 * CHUNK_RES * 2) * 3
 
-// THE 4 METRE CHUNK, and the reason there is no smaller one.
+// THE 8 METRE CHUNK, and the reason there is no smaller one.
 //
-// 8192 / 2^11 = 4 m leaf NODE, and a node holds CHUNK_RES cells, so the finest
-// CELL is 25 cm. That is exactly detail.js's fractal floor, so the field is now
-// sampled to exhaustion: there is no octave below this one to go and get.
+// 8192 / 2^10 = 8 m leaf NODE, and a node holds CHUNK_RES cells, so the finest
+// CELL is 50 cm. detail.js's fractal floor is 25 cm, so at 50 cm cells the field
+// is one doubling short of exhausted rather than many.
 //
-// THE COST IS ONE RING OF LEAVES, priced on the unbounded column of
-// check-v2-quadtree.mjs's ladder, which is an upper bound for any height field:
+// IT WAS 13 -- a 1 m node with 6.25 cm cells -- and the argument for it was that
+// detail.js carries relief down to 25 cm, so the extra levels resolve something
+// that is actually there. That argument is true and it is not sufficient,
+// because of what the split rule does at close range. The rule floors range at
+// the node's own half-size (see quadtree-v2.js), which means the node CONTAINING
+// the camera splits all the way to the cap no matter how flat it is. At 13 that
+// is a permanent staircase of 1 m chunks dragged everywhere she walks, and a
+// chunk is 640 triangles whatever its size -- so the deepest tier was spending
+// 640 triangles on one square metre of ground already closest to being flat
+// underfoot. Over a 72-camera sweep of the real field, capping at 10 takes the
+// worst-case selection from 152k triangles both eyes to 102k.
 //
-//     triDeg    leaves 10 -> 11    worst drawn tris 10 -> 11
-//      3.00       256 -> 286            80k ->  88k
-//      5.72       142 -> 157            46k ->  51k
-//
-// About +10% of leaves and +6k triangles wherever the knob sits, and the XR
-// route (5.72) lands at 51k against terrain's 117k third. The pool is not close
-// to binding either: MIN_TRI_DEG still fits at 748 of 1024.
-//
-// WHY 11 IS AFFORDABLE WHERE 13 WAS NOT, since 13 is where this started. The
-// split rule floors range at the node's own half-size (see quadtree-v2.js), so
-// the node CONTAINING the camera splits to the cap however flat it is, and a
-// chunk is 640 triangles whatever its size. At 13 that staircase spent 640
-// triangles on one square metre of ground, and spent it on the ground already
-// closest to being flat underfoot -- 152k triangles both eyes against 102k at
-// 10. A 4 m leaf is 16 square metres, so the same staircase costs one level of
-// it rather than three, and the ladder above is what that is worth.
+// IT WAS ALSO 11 FOR A DAY, and the measurement that sent it back is the useful
+// half of this comment, because the argument for 11 is the seductive one: a 4 m
+// leaf gives a 25 cm cell, which is EXACTLY the fractal floor, so the field
+// would be sampled to exhaustion. It costs about +10% of leaves and +6 to 8k
+// drawn triangles at every knob setting (256 -> 286 leaves and 80k -> 88k at
+// triDeg 3.0; 142 -> 157 and 46k -> 51k at the XR route's 5.72). What it BUYS is
+// 6 mm. RMS residual against the exact field is 1.00 cm at a 50 cm cell and
+// 0.37 cm at 25 cm (check-v2-field.mjs "band limit"), and the reach was not the
+// problem -- over 96 eye poses the 25 cm band covered ground to a median 8.9 m
+// ahead, so it was under her feet and out into the middle distance and still
+// invisible. There is no height detail at that scale to go and find. Anything
+// that makes the near ground read as varied has to come from the NORMALS and the
+// vertex colours the mesher already writes (see MOTTLE and BUMP in
+// chunk-mesh-v2.js), which are free at draw time, and not from more vertices.
+// Do not spend this level again without a field that has something in it.
 //
 // The cap is the SAME on desktop and in XR, deliberately. It was briefly a
 // per-route override (13 on desktop, 10 in the headset) and that is the wrong
 // trade for this project: a desktop that renders ground the headset cannot is a
 // second fidelity story to keep in sync, and §18's whole premise is one world
 // that looks the same in both. Consistency beats a better desktop.
-//
-// Still a CAP, not a target. The split rule decides what depth is actually
-// reached from range; this only says where refining stops. At the XR route's
-// 5.72 deg the rule wants a 25 cm cell only within about 2.5 m of the eye, so
-// this level is bought for the ground she is standing on and nothing further.
-export const MAX_DEPTH = 11
+export const MAX_DEPTH = 10
 
 // Hard ceiling on simultaneously-resident chunks, and a fixed ~17 MB of GPU
 // buffers. Overflow THROWS in terrain-v2.js rather than degrading, so this has
 // to cover the worst selection at the finest reachable triDeg plus the pinned
 // base layer plus LRU headroom.
 //
-// v1 ships 768 for MAX_DEPTH 10 over a 16 km world. v2 goes one level deeper
-// over a world half the size -- a 4 m leaf against v1's 16 m -- and those two
-// effects push in opposite directions: the deeper cap only refines nodes near
-// the camera and adds roughly one ring of leaves, while the smaller box removes
-// one level of far-field coarse nodes entirely. Re-measure with check-v2.mjs section "slot pool" before
-// moving MIN_TRI_DEG -- do not reason about it from this comment.
+// v1 ships 768 for MAX_DEPTH 10 over a 16 km world. v2 has the same cap over a
+// world half the size -- an 8 m leaf against v1's 16 m -- so it is one level
+// finer at the leaf while carrying one FEWER level of far-field coarse nodes,
+// which are the numerous ones. Re-measure with check-v2.mjs section "slot pool"
+// before moving MIN_TRI_DEG -- do not reason about it from this comment.
 export const SLOT_COUNT = 1024
 
 // Depths 0-2, pinned forever so there is always SOMETHING to draw: 1 + 4 + 16.

@@ -102,7 +102,7 @@ const DIRT_MAX = 0.85
 //
 // shade() decides rock-vs-grass and, far more visibly, snow-vs-no-snow off
 // steepness. The mesh normal is a central difference over the chunk's OWN cell,
-// and in v2 that ranges from 25 cm at a leaf to 512 m at the root -- a factor
+// and in v2 that ranges from 50 cm at a leaf to 512 m at the root -- a factor
 // of 1024. An alpine face standing at 74 deg over a metre averages to 24 deg
 // over 128 m, so the identical ground classified itself as bare rock up close
 // and as solid snow from far away, and since chunks coarsen one at a time as you
@@ -119,7 +119,7 @@ const DIRT_MAX = 0.85
 // leaf the mesh normal already IS the fixed-scale slope. That argument holds
 // only where step EQUALS CLASS_EPS, which in v1 was true of the leaf by
 // construction. It is false in v2: below a metre the field still has real
-// energy -- that is what detail.js is for -- so a 25 cm central difference
+// energy -- that is what detail.js is for -- so a 50 cm central difference
 // reports a systematically steeper slope than a 1 m one, and taking the skip
 // would reintroduce the very repaint it was written to fix, running the other
 // way (fine chunks too dark rather than coarse chunks too white). So the skip
@@ -195,9 +195,9 @@ const CREST_CELL_HI = 6
 // attribute that already exists, computed once when a chunk is meshed, on a
 // worker, and interpolated by fixed-function hardware.
 //
-// WHAT IT CAN AND CANNOT DO. The finest cell in the world is 25 cm (4 m leaf /
-// CHUNK_RES 16), so the Nyquist limit on anything vColor can carry is about half
-// a metre, and a chunk two LOD levels out is sampling on 1 m cells. This is
+// WHAT IT CAN AND CANNOT DO. The finest cell in the world is 50 cm (8 m leaf /
+// CHUNK_RES 16), so the Nyquist limit on anything vColor can carry is a metre,
+// and a chunk two LOD levels out is sampling on 2 m cells. This is
 // therefore VARIEGATION AND NOT GRAIN -- a hillside that changes colour across
 // itself, not a surface with texture underfoot. MOTTLE_FINE is set so the
 // shortest octave stays resolved on the cell sizes actually drawn near the
@@ -272,11 +272,11 @@ const C_ROCK_COOL = [0.070, 0.074, 0.082]
 // arithmetic, pays that. Perturbing the normals the mesher is already writing
 // costs nothing at draw time at all.
 //
-// TWO OCTAVES, and the fine one is what a 4 m leaf bought. At the XR route's
-// 5.72 deg the 25 cm cell reaches about 2.5 m from the eye and the 50 cm cell
-// about 5 m, so BUMP_FINE at 1.7 m is 7 samples across a wavelength on the
-// ground she is standing on. It degrades past 8 m, where the cell passes a
-// metre and the fine octave falls under Nyquist -- that is the same trade
+// TWO OCTAVES, and the fine one is set against the cell it will actually be
+// sampled on. Measured over 96 eye poses at the XR route's 5.72 deg, the leaf's
+// 50 cm band covers ground to a median 19.4 m ahead, so BUMP_FINE at 1.7 m gets
+// 3.4 samples across a wavelength everywhere inside that. It degrades past the
+// 1 m cell beyond it, where the fine octave falls under Nyquist -- the same trade
 // MOTTLE_FINE makes and it is accepted for the same reason: the coarse octave
 // still carries the surface out there, and band-limiting per chunk would key
 // the amplitude to the CHUNK, which puts a lighting step along every LOD seam.
@@ -600,7 +600,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   const idx = (i, j) => j * vpr + i
 
   // Skirt depth scales with cell size -- coarse chunks have bigger vertical gaps
-  // to hide -- with a 2 m floor so a leaf's 25 cm cell does not produce a 0.75 m
+  // to hide -- with a 2 m floor so a leaf's 50 cm cell does not produce a 1.5 m
   // flange that a one-level LOD difference can see straight past.
   const skirtDepth = Math.max(2, step * 3)
 

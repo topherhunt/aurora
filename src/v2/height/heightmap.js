@@ -14,8 +14,8 @@ import { decodePng, encodePng, loadPng, readPng } from './png.js'
 // C1, so the gradient jumps at every texel edge. Over an 8 m/texel image that
 // puts a crease every 8 m, running the length of the world in both directions.
 // v1 never saw it because its finest cell is 1 m and a 1 m triangle cannot
-// resolve a crease. v2's finest cell is 25 cm (config.js MAX_DEPTH), and at
-// 25 cm a slope discontinuity is a visible facet edge under a low sun -- the
+// resolve a crease. v2's finest cell is 50 cm (config.js MAX_DEPTH), and at
+// 50 cm a slope discontinuity is a visible facet edge under a low sun -- the
 // exact artifact the aurora and the low sun angles are there to show off.
 // sampleBilinear() is kept so the gate can prove that claim rather than assert
 // it; see scripts/check-v2-heightmap.mjs section "C1 continuity".

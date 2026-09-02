@@ -9,6 +9,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [Stone textures](https://seamless-pixels.blogspot.com/2012/09/free-seamless-stone-textures.html)
   - https://quest3-playground.pages.dev/
   - https://www.meshy.ai/features/ai-animation-generator
+  - https://developers.tripo3d.ai/en/pricing
+  - https://developers.tripo3d.ai/en/docs/quick-start
 - Internal tools
   - https://192.168.178.75:5173/gen-tree
   - https://192.168.178.75:5173/gen-fern
@@ -29,26 +31,36 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Trees
     - [ ] Try a new version of the voxel tree where each leaf is 2 crossed symmetrical tris, each bearing the "bristle" texture.
     - [ ] Try a "stacked irregular cones" tree model, using my new tileable pine needles.
-    - [ ] Create 
+      - [ ] Solid material at LOD1+
+      - [ ] Alpha material at LOD0
     - [ ] Try a hybrid model where most tris are solid, and fringes are done via alpha
+    - [ ] Once I'm happy w the foliage look: Make the trunk bulge out at roots (ground level) then sink down infinitely.
+    - [ ] Generate a low-poly pine tree via Tripo?
   - [ ] Rocks
-    - [ ] Sink massive ones into cliff faces and riverbeds
-    - [ ] Stop rendering tiny pebbles. Min size 0.5m, get rid of the pebbles.
-    - [ ] Tint of billboards is misaligned from tint of the rock it's replacing. Often totally black.
+    - [ ] Stop rendering tiny pebbles. Place nothing smaller than 0.5m. Get rid of the pebbles (we'll do those via a separate layer).
+    - [ ] Sink rocks deeper into the ground - min 40% in.
+    - [ ] Cliff faces should have larger boulders sunk in, deeper. I don't see any massive ones. 100m size.
+    - [ ] Fix: Tint of billboards is misaligned from tint of the rock it's replacing. Often totally black.
+    - [ ] Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
     - [ ] Show rock billboards as always 50% dithered, for cheap blending?
   - [ ] Double # of grass tris
   - [ ] Add occasional tall-grass tufts
   - [ ] Pebbles
+    - 1 mesh, reuse the boulder LOD1 + LOD2 + billboard. Lower tri count, irregular, sunk into ground. 
+    - Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
   - [ ] How many draw calls am I doing? Where do they come from? Try to get them down to 20 for the whole world.
     - [ ] How many does the terrain LOD system use?
 
-- Assess code length, comment length, etc. Can anything be refactored or trimmed to save token count for future claude agent readers?
-- Tame rock counts. Currently way too many. In valley forests, should be 1/5th current volume.
-- Tame rock LODs & tri budget. Currently wasteful.
-  - Rock caps: instead of a billboard, maybe a flat card for the distance LOD?
-- Cliffsides: Include larger rock caps. Fit rock shade / brightness better with the terrain it's on.
-- Giant boulders underwater (rivers, lakebeds).
-- Fix the x-cross on top of tree cards. (mipmap bleed?)
+- ...
+  - [ ] greeting dialog on 1st load on pc (point to vr).
+  - [ ] simple shadows.
+  - [ ] animals. Wrapped uv from ai gen character sheet, low poly. Dragon, horse, fox, songbird, hawk, boar, deer, fish (3 kinds), snake, butterfly.
+  - [ ] procedural towns, grown around a seed central location. Procedural roads between them. Each has a stable w horses you can take.
+  - [ ] procedural house interiors. Hearth and chimney, table, food, dishware, beds, storage barrels, shelves, chairs, divider walls, stairs down to cellar, candles (cast light), torches, windows.
+  - [ ] procedural caves. Mazelike
+  - [ ] procedual flowers.
+  - [ ] Multiplayer: support shooting up a flare that other players can find each other.
+- 
 - Make auroras more sinuous. Also the curtains / ley-lines currently tend to run east<>west, shouldn't they roughly run north-south?
 - Rivers should sit into the hillside (node needs to be placed deep enough that the river wall bites in
 - 2x ground variation at the 0.5m-2m level. This should help riverbanks feel broken up rather than smooth splines.

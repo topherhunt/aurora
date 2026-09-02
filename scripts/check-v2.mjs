@@ -103,10 +103,10 @@ function extentAgreement() {
     else if (Number(m[1]) !== want) out.push(`design/18-v2-world.md says ${name} = ${m[1]}, config.js says ${want}`)
   }
 
-  // THE LEAF NODE IS 4 METRES, and that is what MAX_DEPTH means now -- not the
+  // THE LEAF NODE IS 8 METRES, and that is what MAX_DEPTH means now -- not the
   // retired "down to 10 cm". A leaf node of WORLD_SIZE / 2^MAX_DEPTH holds
-  // CHUNK_RES cells, so the finest CELL is 25 cm, which is exactly detail.js's
-  // fractal floor: there is no octave below this one left to buy.
+  // CHUNK_RES cells, so the finest CELL is 50 cm, one doubling above detail.js's
+  // 25 cm fractal floor.
   //
   // The bound is two-sided on purpose and the interesting half is the LOWER one.
   // A cap that is too DEEP is not a fidelity win, it is the failure §18 records:
@@ -117,10 +117,10 @@ function extentAgreement() {
   const chunkRes = cfgNum('CHUNK_RES')
   const leafNode = worldSize / 2 ** maxDepth
   const finestCell = leafNode / chunkRes
-  if (leafNode > 4) {
-    out.push(`leaf node is ${leafNode} m -- §18 fixes the smallest chunk at 4 m, so MAX_DEPTH is too low for a ${worldSize} m world`)
-  } else if (leafNode < 4) {
-    out.push(`leaf node is ${leafNode} m -- §18 fixes the smallest chunk at 4 m, and a deeper cap spends 640 triangles on ${leafNode * leafNode} m2 of ground under the camera`)
+  if (leafNode > 8) {
+    out.push(`leaf node is ${leafNode} m -- §18 fixes the smallest chunk at 8 m, so MAX_DEPTH is too low for a ${worldSize} m world`)
+  } else if (leafNode < 8) {
+    out.push(`leaf node is ${leafNode} m -- §18 fixes the smallest chunk at 8 m, and a deeper cap spends 640 triangles on ${leafNode * leafNode} m2 of ground under the camera`)
   }
   return { out, worldSize, maxDepth, finestCell }
 }

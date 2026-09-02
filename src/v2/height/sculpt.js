@@ -45,7 +45,7 @@ const SMOOTH_TAPS = 1
  * smoothstep from the rim inward: 0 at r = radius, 1 at the centre, with zero
  * DERIVATIVE at both ends. The derivative is the point. A brush with a hard rim
  * (linear falloff, or any cone) leaves a slope discontinuity in a circle around
- * every stamp, and the composed field is sampled down to 25 cm cells -- so
+ * every stamp, and the composed field is sampled down to 50 cm cells -- so
  * that circle is not a soft edge, it is a visible crease ring, one per stamp,
  * and a drag lays down sixty of them a second.
  *

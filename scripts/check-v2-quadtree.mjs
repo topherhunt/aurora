@@ -453,9 +453,9 @@ export async function run() {
 
   // --- 5. does it actually reach the cap underfoot? ------------------------
   //
-  // MAX_DEPTH is a CAP, not a target -- the angular rule decides what is reached -- so "the cap allows a 25 cm cell" is not the same statement as "standing on the ground you get one", and only the second one is the feature.
+  // MAX_DEPTH is a CAP, not a target -- the angular rule decides what is reached -- so "the cap allows a 50 cm cell" is not the same statement as "standing on the ground you get one", and only the second one is the feature.
   //
-  // The direction of this section INVERTED when the cap came down from 13 to 11. At 13 the interesting risk was falling short: the rule wanted 8.6 cm underfoot, the cap allowed 6.25 cm, and the question was whether selection actually got there. At 11 the cap is still coarser than anything the rule wants at eye height, so reaching it is not in doubt -- what this now pins is that the cap SATURATES, i.e. the ground under her feet is always at the finest tier the tree has, and no closer camera, finer triDeg or flatter patch can talk it into another level. That saturation is the whole reason the cap is the triangle lever it is.
+  // The direction of this section INVERTED when the cap came down from 13 to 10. At 13 the interesting risk was falling short: the rule wanted 8.6 cm underfoot, the cap allowed 6.25 cm, and the question was whether selection actually got there. At 10 the cap is still coarser than anything the rule wants at eye height, so reaching it is not in doubt -- what this now pins is that the cap SATURATES, i.e. the ground under her feet is always at the finest tier the tree has, and no closer camera, finer triDeg or flatter patch can talk it into another level. That saturation is the whole reason the cap is the triangle lever it is.
 
   console.log('\nreaches the cap underfoot')
   {

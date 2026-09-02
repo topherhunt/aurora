@@ -815,22 +815,26 @@ check(sweptLiterals >= RESERVED_SCAN.length,
 console.log('\n--- the page is wired -----------------------------------------')
 // ===========================================================================
 //
-// A shader lab nobody can open is not a lab. Three files have to line up: the
-// HTML entry point, its module, and the two places vite has to be told about a
-// second page -- the dev server's bare-route rewrite (so /test-aurora works
-// without the extension) and the rollup build input (so it survives `npm run
-// build`). Getting one of the two vite entries and not the other gives a page
-// that works in dev and vanishes from the build, which is the worst version of
-// this to find out about late.
+// A shader lab nobody can open is not a lab. The page is registered by
+// existing -- vite.config.js reads the root for both the dev routes and the
+// build inputs (DESIGN.md §17) -- so the failure this guards is no longer a
+// forgotten config line but a broken derivation, which would silently drop
+// every bench from the build at once. Asked by resolving the config rather
+// than by grepping it, for the reason section 9 of check-v2-sculpt.mjs gives.
+//
+// `__dirname` is vite's injection, so a plain node import needs it defined
+// first; if that ever stops being enough this fails loudly rather than skips.
 
 const exists = (rel) => fs.existsSync(path.join(ROOT, rel))
 check(exists('test-aurora.html'), 'test-aurora.html exists at the repo root')
 check(exists('src/test-aurora-main.js'), 'src/test-aurora-main.js exists')
 
-const viteSrc = exists('vite.config.js') ? fs.readFileSync(path.join(ROOT, 'vite.config.js'), 'utf8') : ''
-const mentions = (viteSrc.match(/test-aurora/g) || []).length
-check(mentions >= 2, 'vite.config.js names the page for both the dev rewrite and the build input',
-  `${mentions} mention(s) of test-aurora`)
+globalThis.__dirname = ROOT
+const input = (await import(`${ROOT}/vite.config.js`)).default.build.rollupOptions.input
+const entries = Object.values(input).map((p) => path.basename(p))
+check(entries.includes('test-aurora.html'), 'and the build input the config resolves to includes it',
+  `${entries.length} entr(ies), test-aurora.html ${entries.includes('test-aurora.html') ? 'present' : 'MISSING'}`)
+check(entries.includes('index.html'), 'and the world itself, so the derivation is reading the real root')
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 process.exit(failures ? 1 : 0)
