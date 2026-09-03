@@ -34,28 +34,24 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
       - [x] Solid material at LOD1+
       - [x] Alpha material at LOD0
     - [x] Try a hybrid model where most tris are solid, and fringes are done via alpha
-    - [ ] A separate version of pine -v6 where each branch has its own cloak
-    - [ ] Once I'm happy w the foliage look: Make the trunk bulge out at roots (ground level) then sink down infinitely.
+    - [x] A separate version of pine -v6 where each branch has its own cloak
     - [ ] 
   - [ ] Rocks
     - [ ] Stop rendering tiny pebbles. Place nothing smaller than 0.5m. Get rid of the pebbles (we'll do those via a separate layer).
     - [ ] Sink rocks deeper into the ground - min 40% in.
-    - [ ] Cliff faces should have larger boulders sunk in, deeper. I don't see any massive ones. 100m size.
+    - [ ] Cliff faces should have larger boulders sunk in, deeper. I don't see any massive ones. Say up to 50m tall, protruding slightly out of the cliff face.
     - [ ] Fix: Tint of billboards is misaligned from tint of the rock it's replacing. Often totally black.
-    - [ ] Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
     - [ ] Show rock billboards as always 50% dithered, for cheap blending?
   - [ ] Double # of grass tris
   - [ ] Add occasional tall-grass tufts
   - [ ] Pebbles
     - 1 mesh, reuse the boulder LOD1 + LOD2 + billboard. Lower tri count, irregular, sunk into ground. 
     - Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
-  - [ ] How many draw calls am I doing? Where do they come from? Try to get them down to 20 for the whole world.
-    - [ ] How many does the terrain LOD system use?
-
 - ...
   - [ ] greeting dialog on 1st load on pc (point to vr).
   - [ ] simple shadows.
   - [ ] animals. Wrapped uv from ai gen character sheet, low poly. Dragon, horse, fox, songbird, hawk, boar, deer, fish (3 kinds), snake, butterfly.
+  - [ ] Gnome doorways into giant boulders. You can go inside, and you're transported into an interior of the same rock but 2x the size.
   - [ ] procedural towns, grown around a seed central location. Procedural roads between them. Each has a stable w horses you can take.
   - [ ] procedural house interiors. Hearth and chimney, table, food, dishware, beds, storage barrels, shelves, chairs, divider walls, stairs down to cellar, candles (cast light), torches, windows.
   - [ ] procedural caves. Mazelike

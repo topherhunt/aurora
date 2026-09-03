@@ -2417,29 +2417,37 @@ console.log('\nscatter')
     check(flat.mean > 0.02, 'a rock on the flat is bedded into the ground',
       `${(flat.mean * 100).toFixed(0)}% of its height on average, over ${flat.n}`)
     // 1.1x, and the shrinking margin is the roll eating it. The floor is what
-    // the slope moves -- 10% flat, 38% at the limit -- but the roll runs from
+    // the slope moves -- 40% flat, 68% at the limit -- but the roll runs from
     // the floor to 80% either way, so on flat ground the mean already sits near
-    // 45% and the cliff has only the top third of the range left to pull it
-    // into. The FLOOR below is the exact half of this promise; the mean is the
-    // half that says the floor is actually reaching the population.
+    // 60% and the cliff has only the top of the range left to pull it into. The
+    // FLOOR below is the exact half of this promise; the mean is the half that
+    // says the floor is actually reaching the population.
     check(steep.mean > flat.mean * 1.1, 'and averaged over a hillside, a rock on a cliff is bedded deeper',
       `${(steep.mean * 100).toFixed(0)}% vs ${(flat.mean * 100).toFixed(0)}%`)
     // The floor, which is the half of the promise that is still exact. Nothing
     // on the cliff may be as shallow as the shallowest thing on the flat -- that
     // is what stops a steep rock's downhill side hanging in the air, and it is
     // the one thing the per-instance roll must not be allowed to undo.
-    check(steep.min > flat.min * 2, 'and the shallowest cliff rock is still deeper than the shallowest flat one',
+    //
+    // A MARGIN AND NOT A DOUBLING, since SINK_MIN came up to two fifths. The
+    // slope term is worth SINK_SLOPE at a bed's own limit and nothing can reach
+    // twice the floor with SINK_DEEP four fifths above it -- the arithmetic
+    // forbids the old 2x, so asking for it would be asking the constants to be
+    // something they cannot be.
+    check(steep.min > flat.min * 1.3, 'and the shallowest cliff rock is still deeper than the shallowest flat one',
       `floors ${(steep.min * 100).toFixed(0)}% vs ${(flat.min * 100).toFixed(0)}%`)
 
     // AND THE ROLL ACTUALLY SPANS ITS RANGE. A `sinkVary` bed on flat ground is
     // the widest case there is -- floor at SINK_MIN, roll to SINK_DEEP -- so
     // both ends should turn up in a wood, and if they stop turning up the bed
     // has quietly gone back to one burial fraction for everything, which is the
-    // look the roll exists to break. Stated as the tenth-to-four-fifths the
+    // look the roll exists to break. Stated as the two-fifths-to-four-fifths the
     // brief asks for, with slack at the shallow end because the ground lean
-    // tips a rock's box wider than the burial arithmetic seated it.
-    check(flat.min < 0.16 && flat.max > 0.75,
-      'a wood buries its boulders anywhere from a tenth to four fifths of themselves',
+    // tips a rock's box wider than the burial arithmetic seated it -- the
+    // shallowest MEASURES a few points under SINK_MIN for that reason and is
+    // buried the full fraction of the box it was seated on.
+    check(flat.min < 0.45 && flat.max > 0.75,
+      'a wood buries its boulders anywhere from two fifths to four fifths of themselves',
       `${(flat.min * 100).toFixed(0)}% .. ${(flat.max * 100).toFixed(0)}%`)
     // THE TWO FLOORS, WHICH ARE WHAT BEDS A ROCK THAT HAS NO FOOT. `sit` is 0 on
     // the shipping boulder, so no instance stands on a cut face and nothing is

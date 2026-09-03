@@ -1,7 +1,7 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
-  buildTrunkV8, buildFoliageV8, resolveTreeV8, treeV8Lod, TREE_V8_DEFAULTS, V8_TILE,
+  buildTrunkV8, buildFoliageV8, resolveTreeV8, treeV8Lod, TREE_V8_SPECIES, treeV8Species,
 } from './props/tree-v8.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers } from './textures.js'
@@ -16,11 +16,20 @@ import { grassTexture, wrapLambert } from './preview-stage.js'
 //
 // THE ONE DIFFERENCE WORTH KNOWING ABOUT IS THE MAT. v6 wears a cut-out at
 // LOD0 and swaps to the opaque tile past it, and watching that swap is half of
-// what its tier slider is for. v8 wears the OPAQUE tile at every rung, because
+// what its tier slider is for. v8 wears an OPAQUE mat at every rung, because
 // its silhouette is modelled: the air between the boughs is geometry, not
 // alpha. So there is no cutout slider on this panel and no swap in the ladder,
-// and what the tier costs here is boughs -- which is a coarser thing to lose
-// and the honest price of spending the triangles on separate limbs.
+// and what a tier costs here is spine stations first and whole boughs and
+// whorls second -- a coarser thing to lose than notches off a cone, and the
+// honest price of spending the triangles on separate limbs. Every mesh rung is
+// a SUBSET of LOD0, tip for tip, so the whole ladder is a thing to watch on the
+// stage: switch between the rungs and the crown thins without a tip moving.
+//
+// THE SPECIES DROPDOWN sits above every slider because it moves every slider.
+// Picking one replaces the parameter set AND the baseline the orange labels are
+// measured against, so an orange row always means "away from THIS tree's
+// shape", never "away from the pine". It also swaps the foliage mat, each
+// species carrying its own.
 // ---------------------------------------------------------------------------
 
 // --- slider spec ------------------------------------------------------------
@@ -31,7 +40,7 @@ import { grassTexture, wrapLambert } from './preview-stage.js'
 // range stops.
 const SLIDERS = [
   ['#', 'tier'],
-  ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes -- the same generator asked for fewer boughs, fewer whorls and a wedge of a trunk -- and 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you. Every mesh rung wears the SOLID needle mat, v8 having no use for a cut-out'],
+  ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes and each is a SUBSET of LOD0 -- fewer spine stations, then whole boughs and whole whorls dropped, over a wedge of a trunk -- so every tip that survives is on the point LOD0 put it and switching rungs moves nothing. 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you. Every mesh rung wears the same opaque mat, v8 having no use for a cut-out'],
 
   ['#', 'size'],
   ['height', 1, 32, 0.25, 'metres, root to tip. Every shape slider below is a fraction of this, so the tree scales rather than growing'],
@@ -53,7 +62,7 @@ const SLIDERS = [
   ['rootWidth', 0, 2, 0.05, 'half a spur\'s width at the ground, as a fraction of the TRUNK\'s radius at its foot. Over 1 is deliberate: a buttress is wider than the trunk at the soil line. 0 draws no crown at all'],
 
   ['#', 'the stack'],
-  ['skirts', 1, 28, 1, 'whorls up the trunk. The whole density knob, and at `boughs` x 6 triangles each it is also half the crown budget'],
+  ['skirts', 1, 28, 1, 'whorls up the trunk. The whole density knob, and at `boughs` x (4 x boughSpine - 6) triangles each it is also most of the crown budget'],
   ['skirtBottom', 0, 0.8, 0.01, 'fraction of height the LOWEST whorl sits at. This is the bare-trunk knob'],
   ['skirtTop', 0.3, 1, 0.01, 'and the highest, which is PINNED -- the top whorl takes no stagger and no shift, so at 1 its boughs launch from the trunk\'s own measured tip. Under ~0.95 the tree ends in a bare spike'],
   ['skirtStagger', 0, 1.5, 0.05, 'how far a whorl may wander inside its own gap, as a fraction of that gap. 0 leaves the spacing exactly as spacingByLength set it'],
@@ -65,47 +74,63 @@ const SLIDERS = [
   ['topGrow', 0, 1, 0.01, 'how much bigger the TOP whorl is than the crown profile asks for. It is pinned to the trunk tip, so unlike every other whorl it cannot wander down to close the gap to the one below it -- and the profile makes it the shortest whorl on the tree. At 0 the tip shows bare wood'],
 
   ['#', 'one whorl'],
-  ['boughs', 3, 20, 1, 'boughs around a whorl, costing 6 triangles each -- three a side, spine to cloak. THE knob for this whole scheme: at 3 the whorl is a claw, and by ~14 the cloaks close up and you have paid v6\'s triangles for v6\'s cone with extra seams in it. The air between them is the entire reason v8 exists'],
+  ['boughs', 3, 20, 1, 'boughs around a whorl, costing 4 x boughSpine - 6 triangles each. THE knob for this whole scheme: at 3 the whorl is a claw, and by ~14 the cloaks close up and you have paid v6\'s triangles for v6\'s cone with extra seams in it. The air between them is the entire reason v8 exists'],
   ['skirtDrop', 0.1, 2, 0.05, 'how far a bough hangs, as a multiple of its whorl\'s OWN reach. Above ~0.5 the whorls overlap, which is what makes the stack a canopy rather than a set of shelves'],
   ['dropByHeight', 0, 3, 0.05, 'and how much further, in proportion, the whorls near the tip hang. Their boughs are short up there, so on skirtDrop alone the drop shrinks with the reach and the trunk shows between them. The one shape term that reads height rather than being a pure fraction of its own whorl'],
-  ['skirtBow', 0, 0.4, 0.01, 'the spine\'s middle joint, off halfway by up to this much, drawn PER BOUGH. Negative runs the limb out flat and drops its tip, positive drops it off the trunk and flattens it at the end, and at 0 every spine is a straight line. Per bough rather than per whorl because one sign for a whole whorl gives a surface of revolution again, which is the shape the eye reads as turned on a lathe'],
-  ['bowOutward', 0, 1, 0.01, 'what share of those draws comes back NEGATIVE -- the flat-then-dropping half. Moving it changes how often a spine bows out, not how far: each half of the draw is rescaled to the full skirtBow swing'],
+  ['skirtBow', 0, 0.4, 0.01, 'how far a limb turns its ANGLE up over its length -- four radians per unit, so 0.1 is about 23 degrees -- leaving the trunk steeply and flattening out toward the tip. The turn is split evenly over the bough\'s joints, which is what makes it read as a curve: split evenly in SLOPE instead and the outer joint rotates half again as far as the inner one, and the limb reads as a hinge with a straight stick on it. Every bough turns up and this is the MEAN of a per-bough draw, so the slider moves the whole whorl together rather than moving how many limbs turn and how many hang; at 0 every spine is a straight line. Drawn per bough and not per whorl because one curve for a whole whorl gives a surface of revolution again, which is the shape the eye reads as turned on a lathe'],
   ['skirtLean', 0, 0.5, 0.01, 'radians a whorl\'s axis may tip off the trunk\'s, drawn per whorl. Neighbours lean independently, so the stack reads as whorls that grew crooked rather than as a tree bent over'],
   ['skirtShift', 0, 0.6, 0.01, 'and how far its launch point may slide off the axis, as a fraction of its own reach. The top whorl ignores it, its launch being the tip of the tree'],
 
   ['#', 'one bough'],
+  ['boughSpine', 3, 8, 1, 'stations down a bough\'s spine, and so 3N-2 vertices and 4N-6 triangles for the bough. They are NOT evenly spaced: they crowd toward the tip, because the inner stretch of a bough is under the whorl above and under its own cloaks, and a bend nobody can see is a bend not worth paying for. At 3 a bough is one bow; past 5 it starts to curl'],
   ['boughVary', 0, 0.8, 0.01, 'per-bough shortening, as a fraction of the whorl\'s reach. The whole reason a whorl has an outline: at 0 every limb ends on the same circle and the silhouette is that circle'],
   ['boughLift', 0, 1, 0.01, 'how far a SHORT bough rides back UP, as a fraction of its own shortening -- one draw drives both, because a limb that stops short stops higher on the cone too. At 1 the tips stay roughly on the shell; at 0 they are cut flat and the short ones sink inside, where the silhouette is a plain circle again'],
   ['boughSpread', 0, 1.2, 0.01, 'how far a bough slides AROUND off the even angle its index would give it, as a fraction of the angular step. Evenly spaced limbs are most of what reads as machined. Past 1 neighbours can trade places, which is legal here -- their cloaks already cross'],
   ['boughTilt', 0, 1, 0.01, 'and how far it pitches up or down on top of the lift, as a fraction of its whorl\'s drop. Signed, unlike the lift, so a whorl is ragged rather than merely uneven'],
-  ['midBend', 0, 1, 0.01, 'how much of the shortening the MIDDLE JOINT inherits. 0 pulls only the tip in and leaves the spine straight; up near 1 a short bough is short along its whole length'],
-  ['boughWidth', 0, 0.9, 0.01, 'half a cloak\'s width at its widest, as a fraction of that bough\'s own length, jittered per SIDE so a limb is lopsided. Past roughly 0.4 at 8 boughs the cloaks cross, which is wanted -- crossing cloaks are most of what makes a crown look grown'],
-  ['boughTaper', 0, 1.2, 0.01, 'and the outer station\'s width as a fraction of that, so a bough narrows to its tip instead of ending square. Over 1 flares it, which reads as a paddle'],
+  ['midBend', 0, 1, 0.01, 'how much of the shortening the spine\'s MIDPOINT inherits. 0 pulls only the tip in and leaves the rest of the bough out at full reach; up near 1 a short bough is short along its whole length'],
+  ['boughWidth', 0, 0.9, 0.01, 'half a cloak\'s width at its widest, as a fraction of that bough\'s own length, redrawn at every station on both sides so a limb is lopsided and its rim is jagged. Wide enough and neighbouring cloaks cross, which is wanted -- crossing cloaks are most of what makes a crown look grown. A corner near the butt is held under its own reach whatever this says, or the hem starts as one wide flat triangle instead of running out to the tip'],
+  ['boughTaper', 0, 1.2, 0.01, 'and the width AT THE TIP as a fraction of that, so a bough narrows going out. Every corner is scaled by its own out-ness along this ramp, which is what lets the MIDDLE of a hem narrow as hard as its end and so lets a bough come to a real point. Over 1 flares it, which reads as a paddle'],
   ['boughDroop', 0, 2, 0.02, 'how far the cloak sags below the spine, as a fraction of its own half-width. A fraction of the width rather than a length, because a wider cloak has more to hang: this is what gives a bough a ridge and two falling sides instead of a flat fin'],
-  ['boughCrook', 0, 0.5, 0.01, 'sideways kink at the middle joint, as a fraction of the bough\'s length. The spine is otherwise straight in plan, and a whorl of straight spokes reads as a wheel however ragged its ends are'],
+  ['boughCrook', 0, 0.5, 0.01, 'sideways bend through the spine\'s middle, as a fraction of the whorl\'s reach, going to zero at both ends so the tip stays on its own azimuth. The spine is otherwise straight in plan, and a whorl of straight spokes reads as a wheel however ragged its ends are'],
 
   ['#', 'shading'],
   ['innerShade', 0, 1, 0.01, 'how dark every bough\'s BUTT is baked, as a multiple of the tip\'s brightness. A crown is a stack of overlapping shells and no light rig the game can afford knows a whorl is under another one, so the occlusion is baked into the vertices -- lit honestly, every layer takes the same sun and the stack reads as one green mass. 1 turns it off'],
   ['shadeToTip', 0, 1, 0.01, 'how much of that darkening the TOP whorl is let off. Only the top one: its boughs are the only boughs on the tree with open sky above them. At 1 the peak is unshaded, which is what makes it read as the top rather than as another layer'],
-  ['midShade', 0, 1, 0.01, 'how much of the butt\'s darkening a fully covered MIDDLE JOINT takes. Coverage is measured per bough against the reach of the whorl above, so a short limb under a wide whorl goes darker than the long one beside it. This is what gives each layer its own depth instead of a dark spot at the trunk'],
+  ['midShade', 0, 1, 0.01, 'how much of the butt\'s darkening a fully covered INTERIOR station takes. Coverage is measured per station against the reach of the whorl above, so the stations nearer a butt go darker than the ones out past the whorl overhead, and a short limb under a wide whorl goes darker than the long one beside it. This is what gives each layer its own depth instead of a dark spot at the trunk'],
 
   ['#', 'material'],
-  ['texMetres', 0.15, 4, 0.05, 'one needle tile, in metres, on both axes of a cloak. Each bough draws its own offset into the tile, so no two carry the same needles in the same place'],
+  ['texMetres', 0.15, 4, 0.05, 'one needle tile, in metres, on both axes of a cloak. Each bough draws its own offset into the tile AND its own turn of it, so no two carry the same needles in the same place or running the same way'],
   ['leafSkyward', 0, 1, 0.01, 'how far a bough normal turns toward the sky. The black-underside knob: 0 shades each cloak by its own two panels, 1 shades the crown as if lit from above'],
   ['brightness', 0.4, 3, 0.05, 'multiplies the albedo of both materials. A material property, not geometry'],
 ]
 
 // design/05-rendering.md's tree row: two mesh tiers at 550 and 380, and a near
-// card of three quads. v8 runs FOUR rungs against that ladder's three, so its
-// LOD2 has no class number to be over -- null rather than a made-up one, since
-// a budget nobody set is worse than no budget at all.
-const CLASS_BUDGET = [550, 380, null, 6]
+// card of three quads. v8 runs FOUR rungs against that ladder's three, so the
+// 190 is this page's own number rather than the doc's, and it is half of LOD1
+// on purpose: a third mesh rung's entire justification is being much cheaper
+// than the one above it, so a LOD2 that cannot halve LOD1 is a rung that should
+// not be built at all.
+const CLASS_BUDGET = [550, 380, 190, 6]
 
 // `lod` is the tier and `brightness` is the bench's exposure, and neither is a
 // property of the tree. They still get a slider, a default and an orange label
-// -- they are just not shape, which is what keeps them out of the copied JSON.
+// -- they are just not shape, which is what keeps them out of the copied JSON
+// and what carries them across a species change unmoved.
 const BENCH_KEYS = new Set(['lod', 'brightness'])
-const DEFAULTS = { ...TREE_V8_DEFAULTS, lod: 0, brightness: 1.0 }
+// Those two plus the LADDER's own pair, which treeV8Lod writes per tier: a
+// species that carried its own keep fractions would be arguing with the rung it
+// is drawn at. None of the four is shape, so none of the four is copied out.
+const NOT_SHAPE = new Set([...BENCH_KEYS, 'skirtKeep', 'boughKeep'])
+
+const SPECIES_NAMES = Object.keys(TREE_V8_SPECIES)
+const benchDefaults = (name) => ({ ...treeV8Species(name), lod: 0, brightness: 1.0 })
+
+// DEFAULTS is TWO things -- what `defaults` restores and what the orange labels
+// are measured against -- so it has to be rebuilt when the species changes. A
+// const here would leave every row on the panel orange the moment you left the
+// pine, which is the one thing the mark must never say.
+let species = 'pine'
+let DEFAULTS = benchDefaults(species)
 const params = { ...DEFAULTS }
 
 // --- scene ------------------------------------------------------------------
@@ -216,16 +241,28 @@ foliageMaterial.customProgramCacheKey = () => 'gen-tree-v8-foliage-v1'
 
 const texLoader = new THREE.TextureLoader()
 let matLoaded = false
+let needleTex = null
+
 // refresh() rather than drawSwatch(): a card baked before its mat landed is a
 // photograph of an untextured crown, and nothing else would ever re-take it.
-const needleTex = texLoader.load(V8_TILE, () => {
-  matLoaded = true
-  refresh()
-})
-needleTex.wrapS = needleTex.wrapT = THREE.RepeatWrapping
-needleTex.colorSpace = THREE.SRGBColorSpace
-needleTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy())
-foliageMaterial.map = needleTex
+function loadMat(url) {
+  const prev = needleTex
+  matLoaded = false
+  needleTex = texLoader.load(url, () => {
+    matLoaded = true
+    refresh()
+  })
+  needleTex.wrapS = needleTex.wrapT = THREE.RepeatWrapping
+  needleTex.colorSpace = THREE.SRGBColorSpace
+  needleTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy())
+  foliageMaterial.map = needleTex
+  foliageMaterial.needsUpdate = true
+  // Nothing else holds the old one once it is off the material, and a bench you
+  // sit on for an hour flipping species would otherwise keep every mat it ever
+  // showed on the GPU.
+  if (prev) prev.dispose()
+}
+loadMat(TREE_V8_SPECIES[species].mat)
 
 // --- the card ---------------------------------------------------------------
 //
@@ -517,6 +554,8 @@ function frameCamera() {
 const fmt = (b) =>
   b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`
 
+const matName = () => TREE_V8_SPECIES[species].mat.split('/').pop()
+
 const TIER_NAMES = ['LOD0', 'LOD1', 'LOD2', 'card']
 
 function table(el, rows) {
@@ -542,7 +581,7 @@ function ladderRows() {
     const r = resolveTreeV8(p)
     rows.push({
       name: TIER_NAMES[t],
-      what: `${Math.round(p.trunkSides)}-side trunk, ${r.skirts}x${r.boughs} boughs`,
+      what: `${Math.round(p.trunkSides)}-side trunk, ${r.skirts}x${r.boughs} boughs of ${r.spine}`,
       mat: 'solid',
       tris: r.triangles,
     })
@@ -568,7 +607,7 @@ function refresh() {
     : [
         [`&nbsp;&nbsp;trunk ${r.trunkTris > 0 ? `${Math.round(meshP.trunkSides)} sides &times; ${Math.round(meshP.trunkRings)}` : '&mdash;'}`, Math.round(s.trunk / s.count)],
         [`&nbsp;&nbsp;roots ${r.roots}&times;2`, Math.round(s.root / s.count)],
-        [`&nbsp;&nbsp;boughs ${r.skirts}&times;${r.boughs}&times;6`, Math.round(s.skirt / s.count)],
+        [`&nbsp;&nbsp;boughs ${r.skirts}&times;${r.boughs}&times;${4 * r.spine - 6}`, Math.round(s.skirt / s.count)],
       ]
 
   table(document.getElementById('geo'), [
@@ -577,9 +616,7 @@ function refresh() {
     ['vertices', Math.round(s.verts / s.count)],
     ['drawn here', s.count],
     ['geometry in RAM', fmt(s.bytes)],
-    budget === null
-      ? [`tree-class ${TIER_NAMES[tier]}`, 'the shipped ladder has no third mesh tier']
-      : [`tree-class ${TIER_NAMES[tier]}`, `${per} / ${budget} tris`, per <= budget ? 'ok' : 'warn'],
+    [`tree-class ${TIER_NAMES[tier]}`, `${per} / ${budget} tris`, per <= budget ? 'ok' : 'warn'],
   ])
 
   document.getElementById('geonote').innerHTML = s.card
@@ -588,7 +625,7 @@ function refresh() {
       `vertex shader. Every card on the stage samples that one bake, which is what an impostor is.`
     : `Two meshes and two draw calls per tree: the trunk is the shared prop material over the texture ` +
       `array, exactly as the game draws bark, and the crown is one OPAQUE mapped Lambert over ` +
-      `<em>pine-mat-solid.png</em> tiled at <em>${params.texMetres.toFixed(2)} m</em> &mdash; no cut-out at ` +
+      `<em>${matName()}</em> tiled at <em>${params.texMetres.toFixed(2)} m</em> &mdash; no cut-out at ` +
       `any tier, a bough's outline being geometry. There is no third primitive: v8 has no wood in its ` +
       `crown, so every triangle above is either the trunk or a cloak.`
 
@@ -611,6 +648,7 @@ function refresh() {
     ['bare trunk below it', `${f.crownBase.toFixed(2)} m`],
     ['crown / height', (f.crownWidth / Math.max(1e-6, f.height)).toFixed(2)],
     ['whorls on it', `${f.skirts} @ ${f.boughs} boughs`],
+    ['spine stations', `${f.spine} a bough, ${3 * f.spine - 2} vertices`],
     ['boughs in all', f.skirts * f.boughs],
     [
       'one whorl covers',
@@ -659,9 +697,10 @@ function drawSwatch() {
     ctx.fillText('the mat is still loading', canvas.width / 2, canvas.height / 2 + 4)
   }
 
+  const dims = img ? `${img.width}&times;${img.height}` : 'still loading'
   document.getElementById('swatchnote').innerHTML =
-    `<em>pine-mat-solid.png</em>, 128&sup2;, drawn here repeated so you are looking at the seam ` +
-    `rather than at the picture. Every rung wears this one: v6 needs a cut-out at LOD0 because its ` +
+    `<em>${matName()}</em>, ${dims}, drawn here repeated so you are looking at the seam ` +
+    `rather than at the picture. One mat per species, and every rung wears it: v6 needs a cut-out at LOD0 because its ` +
     `whorl is a closed cone whose only ragged edge is painted, and a v8 whorl is separate limbs with ` +
     `real air between them, so the alpha would be paying a per-pixel test to erase what the silhouette ` +
     `already does not have. Fully opaque is also what a DISTANT crown should be made of, an alpha test ` +
@@ -766,6 +805,28 @@ document.getElementById('reroll').addEventListener('click', () => {
   refresh()
 })
 
+// A species is a WHOLE parameter set, seed included, not a preset layered over
+// whatever is on the panel: these four are hand-tuned trees, and a birch built
+// on an oak's seed and an oak's crownPeak is neither of them. So the swap is
+// total, and the only things that survive it are the bench's own two knobs.
+const speciesEl = document.getElementById('species')
+speciesEl.innerHTML = SPECIES_NAMES.map(
+  (n) => `<option value="${n}">${TREE_V8_SPECIES[n].label}</option>`
+).join('')
+speciesEl.value = species
+speciesEl.addEventListener('change', () => {
+  species = speciesEl.value
+  DEFAULTS = benchDefaults(species)
+  const bench = {}
+  for (const key of BENCH_KEYS) bench[key] = params[key]
+  Object.assign(params, DEFAULTS, bench)
+  seedInput.value = params.seed
+  loadMat(TREE_V8_SPECIES[species].mat)
+  syncSliders()
+  refresh()
+  frameCamera() // after, so it frames the tree that was just built
+})
+
 // `rebuilds` because most of these change the mesh and one does not: spinning
 // the camera would otherwise regrow twenty trees and re-bake the card to move a
 // boolean the render loop reads every frame anyway.
@@ -814,9 +875,9 @@ document.getElementById('reset').addEventListener('click', () => {
 // worth keeping and then read forty numbers off the panel by eye to type them
 // back in, which nobody does twice.
 //
-// JSON rather than a source block, because a v8 shape has no bank to paste into
-// yet -- there is one parameter table, and what this hands back is a whole one,
-// ready to be a preset the day there is somewhere to put presets.
+// JSON, and it is a WHOLE parameter set rather than a diff, so it pastes into
+// TREE_V8_SPECIES as the picked species' `params` -- which is where a shape
+// tuned here is meant to end up.
 //
 // `lod` is left out because it is the TIER, which is a fact about what you are
 // looking at and not about the tree; `brightness` is left out on the harder
@@ -825,7 +886,7 @@ document.getElementById('reset').addEventListener('click', () => {
 function copyText() {
   const shape = {}
   for (const key of Object.keys(DEFAULTS)) {
-    if (BENCH_KEYS.has(key)) continue
+    if (NOT_SHAPE.has(key)) continue
     const step = key in readouts ? readouts[key].step : null
     shape[key] = step === null ? params[key] : atStep(params[key], step)
   }

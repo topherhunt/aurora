@@ -123,7 +123,9 @@ export const SPRAY_PINE_DEFAULTS = {
   //
   // MEASURED IN LEAF WIDTHS, and it has to be well under 1 for the same reason
   // minGap does: a limb is only 1 to 1.5 m long, so a step of a whole leaf width
-  // beads it two or three times, and the tip rule below then eats both of them.
+  // beads it two or three times, and the offshoot cap then allows it no fans.
+  // `chainStep` is held equal to it, so a leaf sits the same distance from its
+  // neighbour whether that neighbour is up the spine or out along a fan.
   spineGap: 0.75,
   spineJitter: 0.3,
 
@@ -156,12 +158,13 @@ export const SPRAY_PINE_DEFAULTS = {
   outMax: 45,
   downMin: 30,
   downMax: 45,
-  // ONE LEAF WIDTH: a chain is a run of touching leaves, not a dotted line.
-  // Measured at the size of the leaf being stepped away from, so a chain that
-  // shrinks as it leaves the core closes up as it goes. It cannot go below
-  // minGap (a link inside the parent's own exclusion sphere is refused, and the
-  // chain dies at link 1), which is the floor `stepBy` applies.
-  chainStep: 1.0,          // leaf widths between links of one chain
+  // HELD EQUAL TO spineGap, so spacing does not change direction: a chain is a
+  // run of touching leaves, not a dotted line. Measured at the size of the leaf
+  // being stepped away from, so a chain that shrinks as it leaves the core closes
+  // up as it goes. It cannot go below minGap (a link inside the parent's own
+  // exclusion sphere is refused, and the chain dies at link 1), which is the
+  // floor `stepBy` applies.
+  chainStep: 0.75,         // leaf widths between links of one chain
   chainWander: 14,         // degrees a link may turn off the one before it
   // Candidate directions scored per offshoot. The winner is the one furthest in
   // angle from what the PREVIOUS offshoot on this side of this limb took, which
@@ -199,7 +202,7 @@ export const SPRAY_PINE_DEFAULTS = {
   // the spine they were supposed to sit on. An absolute shell says what was
   // meant -- the outer `interiorDepth` metres of crown is the part you can see
   // into, and everything behind it is the column nobody resolves.
-  interiorGrow: 2.0,
+  interiorGrow: 3.0,
   interiorDepth: 3.0,
 
   // --- the tint -------------------------------------------------------------
@@ -544,42 +547,53 @@ export function buildSprayPine(params = {}, barkLayer = 0) {
   /**
    * Grow one offshoot chain off `from`, on side `sgn` of the limb.
    *
-   * `last` is the (phi, theta) the PREVIOUS offshoot on this side took; the
-   * candidate furthest from it wins, so the fans off one limb spread instead of
-   * stacking. Returns the angles chosen, so the next fan can be steered off
-   * them, and how many links actually landed before something blocked one.
+   * `last` is the (phi, theta) the PREVIOUS offshoot on this side took. The
+   * candidates are ranked by how far they sit from it, so the fans off one limb
+   * spread instead of stacking, and then TRIED IN THAT ORDER: the best-spread
+   * angle is often the one a neighbouring fan already took, and a chain that
+   * gives up on its first link leaves the bead bare on that side. Returns the
+   * angles chosen, so the next fan can be steered off them, and how many links
+   * actually landed before something blocked one.
    */
   const growOffshoot = (from, flat, side, sgn, n, last, up, ceil) => {
-    let dir = null, phi = 0, theta = 0, bestSep = -Infinity
+    const cands = []
     for (let t = 0; t < p.angleTries; t++) {
-      const cPhi = rad(rand(p.outMin, p.outMax))
-      const cTheta = up ? -rad(rand(p.topUpMin, p.topUpMax)) : rad(rand(p.downMin, p.downMax))
-      const sep = last ? Math.abs(cPhi - last.phi) + Math.abs(cTheta - last.theta) : 1
-      if (sep > bestSep) { bestSep = sep; phi = cPhi; theta = cTheta; dir = fanDir(flat, side, sgn, cPhi, cTheta) }
+      const phi = rad(rand(p.outMin, p.outMax))
+      const theta = up ? -rad(rand(p.topUpMin, p.topUpMax)) : rad(rand(p.downMin, p.downMax))
+      const sep = last ? Math.abs(phi - last.phi) + Math.abs(theta - last.theta) : 1
+      cands.push({ phi, theta, sep })
     }
-    let q = from
-    let s = ceil
-    let grown = 0
-    for (let k = 0; k < n; k++) {
-      // Each link turns a little off the last, so a chain droops away rather
-      // than ruling a straight line of evenly spaced dots.
-      const w = rad(rand(-p.chainWander, p.chainWander))
-      const cw = Math.cos(w), sw = Math.sin(w)
-      dir = norm([dir[0] * cw - dir[2] * sw, dir[1], dir[0] * sw + dir[2] * cw])
-      // Stepped at the size of the leaf we are stepping AWAY from, so a chain
-      // that shrinks outward closes up as it goes instead of holding the gap
-      // its fat inner end asked for.
-      const step = stepBy(p.chainStep, s)
-      const next = [q[0] + dir[0] * step, q[1] + dir[1] * step, q[2] + dir[2] * step]
-      // STOP, do not skip: a blocked link ends the chain, which is what makes
-      // a crowded neighbourhood self-limiting without counting anything.
-      const got = tryPlace(next, s)
-      if (got < 0) break
-      q = next
-      s = got
-      grown++
+    cands.sort((x, y) => y.sep - x.sep)
+
+    for (const c of cands) {
+      let dir = fanDir(flat, side, sgn, c.phi, c.theta)
+      let q = from
+      let s = ceil
+      let grown = 0
+      for (let k = 0; k < n; k++) {
+        // Each link turns a little off the last, so a chain droops away rather
+        // than ruling a straight line of evenly spaced dots.
+        const w = rad(rand(-p.chainWander, p.chainWander))
+        const cw = Math.cos(w), sw = Math.sin(w)
+        dir = norm([dir[0] * cw - dir[2] * sw, dir[1], dir[0] * sw + dir[2] * cw])
+        // Stepped at the size of the leaf we are stepping AWAY from, so a chain
+        // that shrinks outward closes up as it goes instead of holding the gap
+        // its fat inner end asked for.
+        const step = stepBy(p.chainStep, s)
+        const next = [q[0] + dir[0] * step, q[1] + dir[1] * step, q[2] + dir[2] * step]
+        // STOP, do not skip: a blocked link ends the chain, which is what makes
+        // a crowded neighbourhood self-limiting without counting anything.
+        const got = tryPlace(next, s)
+        if (got < 0) break
+        q = next
+        s = got
+        grown++
+      }
+      // A rejected link adds nothing to the grid, so the next candidate starts
+      // from the same clean state.
+      if (grown) return { phi: c.phi, theta: c.theta, grown }
     }
-    return { phi, theta, grown }
+    return { phi: cands[0].phi, theta: cands[0].theta, grown: 0 }
   }
 
   /**
@@ -597,9 +611,9 @@ export function buildSprayPine(params = {}, barkLayer = 0) {
    * one at the tip -- and an evenly divided limb simply loses every inner bead
    * to the one before it.
    *
-   * The last bead is the limb's TIP, moved there rather than left wherever the
-   * walk happened to stop, and placed whether or not the room is free. A limb
-   * that ends a step short of its own tip is a bare twig poking out of the
+   * The walk does not stop AT the tip, it steps PAST it: the last bead is one
+   * ordinary step beyond the limb's end, so the leaf's body covers the twig.
+   * A limb that stops short of its own tip is a bare stick poking out of the
    * foliage, and at these leaf sizes that is most limbs.
    */
   const beadSpine = (a, b, L) => {
@@ -613,15 +627,11 @@ export function buildSprayPine(params = {}, barkLayer = 0) {
       if (got >= 0) { spine.push({ q, s: got }); spineLeaves++; s = got }
       d += stepBy(p.spineGap, s) * (1 + rand(-1, 1) * p.spineJitter)
     }
-    // Drop a bead that all but reached the tip, so capping it does not leave two
-    // leaves sitting on top of each other.
-    const near = stepBy(p.spineGap, s) * 0.6
-    if (spine.length) {
-      const last = spine[spine.length - 1].q
-      if (Math.hypot(last[0] - b[0], last[1] - b[1], last[2] - b[2]) < near) spine.pop()
-    }
-    const tip = tryPlace(b, Infinity, true)
-    spine.push({ q: b, s: tip })
+    // `d` is the walk's own next position, which the loop above left one step
+    // past the end. Forced, so the tip is covered whatever else is crowding it;
+    // a full step from the bead before it, so nothing z-fights.
+    const cap = at(d / L)
+    spine.push({ q: cap, s: tryPlace(cap, Infinity, true) })
     spineLeaves++
     return spine
   }
@@ -642,17 +652,22 @@ export function buildSprayPine(params = {}, barkLayer = 0) {
     const cap = Math.round(p.offshootCap * spine.length)
     const lastAng = [null, null]
     for (let i = 0; i < spine.length; i++) {
-      // A budget for the WHOLE bead, not per side: allowed one each way it is
-      // two leaves, and the point the rule exists to make goes blunt again.
-      let budget = Math.min(spine.length - 1 - i, cap)
+      // THE BUDGET IS PER SIDE, not for the whole bead. Shared, a bead one in
+      // from the tip is allowed a single leaf and one of its two flanks is
+      // always bare; per side it gets one each way, which is what makes a shoot
+      // read as a shoot. The ramp's SHAPE is untouched -- still none at the tip,
+      // still one more per bead inward, still capped -- only doubled.
+      const budget = Math.min(spine.length - 1 - i, cap)
       if (budget <= 0) continue
-      for (const sgn of [-1, 1]) {
+      // Alternated so the outer flank is not always the one grown into a crowd
+      // the inner flank already made.
+      const order = i % 2 ? [1, -1] : [-1, 1]
+      for (const sgn of order) {
         const want = Math.min(budget, Math.round(rand(p.offshootMin, p.offshootMax)))
         if (want <= 0) continue
         const s = sgn < 0 ? 0 : 1
         const got = growOffshoot(spine[i].q, flat, side, sgn, want, lastAng[s], up, spine[i].s)
         if (got.grown) lastAng[s] = got
-        budget -= got.grown
       }
     }
   }

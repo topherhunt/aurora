@@ -32,9 +32,9 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // independent scatter with its own tile grid, density, radius, LOD bands and
 // instance pool:
 //
-//   UNDERFOOT   0.25 - 2 m    dense, 120 m     stones you step over
+//   UNDERFOOT   0.5 - 2 m     dense, 120 m     stones you step over
 //   BOULDERS    0.5 - 10 m    medium, 600 m    the forest and cliffside rocks
-//   SCREE       0.3 - 3 m     dense, 280 m     the pile at the foot of a face
+//   SCREE       0.5 - 3 m     dense, 280 m     the pile at the foot of a face
 //   SUNKEN      0.5 - 5 m     sparse, 320 m    stones standing on the lake floor
 //   GIANTS      1.6 - 15 m    sparse, 1250 m   the landmarks
 //   EMBEDDED    2 - 20 m      sparse, 1350 m   blocks let INTO a face or a bed
@@ -134,6 +134,20 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // is to offer more CANDIDATES there, and candidates are per-bed rather than
 // per-site. The roll it costs is drawn unconditionally alongside the others,
 // before the environment is even known -- see _growTile.
+
+// THE SMALLEST ROCK THE WORLD DRAWS AS GEOMETRY, in metres of measured width.
+// Every bed's `sizeByEnv` is checked against it in the constructor.
+//
+// A LOOK FLOOR, though it pays as a budget one too. Under about half a metre the
+// boulder stops reading as a rock: there is one shape in the bank (see
+// rock-bank.js), so a stone the size of a fist is a two-metre boulder shrunk --
+// the same facets, the same grain, the same sixteen quarter turns, at a size
+// where the eye takes all of it in at once and catches the repeat. What the
+// ground wants down there is COVER, and cover is what LAYER.LITTER stamps for
+// two triangles a patch. So geometry starts where a rock becomes an object you
+// walk around, and the stamps carry everything below it.
+const ROCK_MIN_SIZE = 0.5
+
 const BEDS = [
   {
     name: 'underfoot',
@@ -154,8 +168,9 @@ const BEDS = [
     // stones at one per 2.9 m2 was the densest geometry in the world and read as
     // gravel, which is what LITTER does for two triangles a patch. So the
     // geometry here becomes what gravel cannot be: see `sizeByEnv`, where the
-    // river range is 0.3 to 2 m. One rock per 36 m2 of riverbed, something to
-    // step around every few strides, with the pebble atlas carrying the rest.
+    // river range is half a metre to two. One rock per 36 m2 of riverbed,
+    // something to step around every few strides, with the pebble atlas carrying
+    // the rest.
     envDensity: { river: 0.08, forest: 0.05, cliff: 0.1, peak: 0.09 },
     fullRadius: 18,
     // 120 rather than 55, set by the ladder: the bed's biggest rock is a 2 m
@@ -191,10 +206,10 @@ const BEDS = [
     // _growTile). The riverbed gets a taller range than the dry ground because a
     // stream bed is where a stone big enough to step around belongs.
     sizeByEnv: {
-      river: [0.3, 2.0],
-      forest: [0.25, 1.0],
-      cliff: [0.25, 1.0],
-      peak: [0.25, 1.0],
+      river: [ROCK_MIN_SIZE, 2.0],
+      forest: [ROCK_MIN_SIZE, 1.0],
+      cliff: [ROCK_MIN_SIZE, 1.0],
+      peak: [ROCK_MIN_SIZE, 1.0],
     },
   },
   {
@@ -360,17 +375,18 @@ const BEDS = [
     // 1.65 and 2.72 for a flat roll -- a pile with blocks in it rather than a bed
     // of chips.
     //
-    // NO SMALL END TO SPEAK OF, deliberately. Dropping the bottom to the
-    // underfoot bed's 0.25 m would rebuild the speck carpet inside the one place
-    // the rocks are supposed to be big, and each of those specks costs a full
-    // instance whatever its triangle count.
+    // NO SMALL END TO SPEAK OF, and the bottom sits ON ROCK_MIN_SIZE rather than
+    // above it. Nothing in the world goes under that now, so what used to be this
+    // bed's own restraint against a speck carpet is the world's rule; what is left
+    // here is the BIAS, which is the half that still separates a talus cone from a
+    // gravel path.
     //
     // Only `cliff` and `peak` are listed because they are the only environments
     // this bed's `envDensity` can reach; the constructor takes `hi` over the
     // reachable ones and would throw on a missing entry.
     sizeByEnv: {
-      cliff: [0.3, 3.0],
-      peak: [0.3, 3.0],
+      cliff: [ROCK_MIN_SIZE, 3.0],
+      peak: [ROCK_MIN_SIZE, 3.0],
     },
     sizeBias: 0.7,
     // AND NO ROCK INSIDE ANOTHER ROCK. Centres must be `minGap` of the sum of
@@ -647,26 +663,47 @@ const SNOW_CAP = [0.3, 0.5]
 const MOSS_CAP = [0, 0.5]
 
 // How deep a rock is bedded, as a fraction of its own STANDING height: this much
-// at the flat, rising to this plus the span at the bed's slope limit. A rock
-// resting exactly on the ground reads as placed; a third buried reads as part of
-// the hill. The height burial is a fraction OF is the rock's extent after the
-// quarter-turn rolls (see ROLL_STEPS), not `measured.height`, so a boulder laid
-// on its side is bedded by a tenth of what it now stands, not of what it used to.
-const SINK_MIN = 0.1
+// at the flat, rising to this plus the span at the bed's slope limit. The height
+// burial is a fraction OF is the rock's extent after the quarter-turn rolls (see
+// ROLL_STEPS), not `measured.height`, so a boulder laid on its side is bedded by
+// a fraction of what it NOW stands, not of what it used to.
+//
+// TWO FIFTHS AT THE FLAT, AND THAT IS A FLOOR ON THE WHOLE WORLD -- every bed
+// inherits it through `sinkRange`'s default and `embedded` starts deeper still.
+// A rock resting on the ground reads as PLACED, and a tenth of it underground was
+// not enough to beat that: the giveaway is the ground line, an unbroken ellipse
+// of contact where the rock meets the dirt all the way round, and only burying
+// the widest part of the rock breaks it. Past two fifths the hill has closed over
+// the belly and what shows is stone coming OUT of the ground.
+//
+// IT COSTS TRIANGLES AND THE COST IS REAL: the buried part is still built and
+// still submitted (see SINK_DEEP), so raising the floor from a tenth to two
+// fifths spends geometry on rock nobody sees. It buys the one thing the scatter
+// could not fake -- see the ground-line argument above -- which is why the answer
+// to the cost is ROCK_MIN_SIZE and not a shallower bed.
+const SINK_MIN = 0.4
 const SINK_SLOPE = 0.28
 
-// AND A ROCK STOOD ON END IS BEDDED THREE TIMES DEEPER. The quarter turns put a
+// AND A ROCK STOOD ON END IS BEDDED HALF AGAIN AS DEEP. The quarter turns put a
 // different axis up each time, and one of the boulder's three is half again as
-// long as the others: stood on that one it is a 2 m slab on a 1.2 m base, and a
-// tenth of that underground reads as balanced. Nothing that shape stays up on
-// open ground unheld, and burial is the only thing holding it -- `sit` is 0 on
-// the shipping shape, so no instance is standing on a cut face either.
+// long as the others: stood on that one it is a 2 m slab on a 1.2 m base, and
+// two fifths of that underground still reads as balanced. Nothing that shape
+// stays up on open ground unheld, and burial is the only thing holding it --
+// `sit` is 0 on the shipping shape, so no instance is standing on a cut face
+// either.
+//
+// THE MARGIN OVER SINK_MIN IS NARROWER THAN IT WAS, and it has to be: the two
+// floors used to stand at a tenth and three tenths, and there is no room for
+// that ratio once the shallow one is two fifths and SINK_DEEP caps the roll at
+// four. What the pair still has to say is the ORDERING -- whatever is standing
+// up is in deeper than whatever is lying down -- and three fifths says it with
+// a fifth of the range left above for the roll.
 //
 // TALL IS A RATIO, NOT A HEIGHT: the rolled box's vertical extent over the mean
 // of its two plan extents, so the rule follows the shape rather than a number
 // read off one seed. At 1.0 it fires on an orientation that stands taller than
 // the ground it covers and on no other, which is half the sixteen turns.
-const SINK_TALL = 0.3
+const SINK_TALL = 0.6
 const TALL_AT = 1
 
 // The deep end of the per-instance burial roll, for beds that set `sinkVary`, and
@@ -1156,6 +1193,17 @@ class RockBed {
       const span = cfg.sizeByEnv?.[env]
       if (!span || !(span[0] > 0) || !(span[1] > span[0])) {
         throw new Error(`RockBed ${cfg.name}: sizeByEnv.${env} must be an ascending range in metres`)
+      }
+      // AND NOTHING IN THE WORLD IS SMALLER THAN ROCK_MIN_SIZE. Enforced here
+      // rather than trusted to five hand-written ranges, because that is the
+      // form the rule keeps: a bed added later gets the floor for free and a
+      // range edited down to 0.25 fails at construction instead of quietly
+      // laying grit back over the ground.
+      if (span[0] < ROCK_MIN_SIZE) {
+        throw new Error(
+          `RockBed ${cfg.name}: sizeByEnv.${env} starts at ${span[0]} m, under the ` +
+            `${ROCK_MIN_SIZE} m floor -- anything smaller is the litter stamps' job, not geometry`
+        )
       }
     }
 

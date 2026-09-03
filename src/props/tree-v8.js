@@ -20,26 +20,64 @@ import { buildTree, crownProfile, TREE_DEFAULTS } from './tree.js'
 // is modelled, not painted, so there is nothing for an alpha test to buy and
 // nothing for it to alias at range.
 //
-// ONE BOUGH IS SEVEN VERTICES AND SIX TRIANGLES. Three run down the spine --
-// butt on the axis, middle, tip -- and two hang off each side, drooping. That
-// is the smallest thing that can be a bough rather than a leaf: the spine's
-// three points let it bow and rise the way a v6 meridian does, and the two
-// stations per side let the cloak sag deeper near the butt than at the tip
-// instead of being one flat fin. The panels are what carry the mat.
+// ONE BOUGH IS A SPINE AND TWO CLOAKS. `boughSpine` stations run down the
+// spine -- butt on the axis, tip out in the air -- and one cloak corner hangs
+// between each neighbouring pair on each side, so a bough is 3N-2 vertices and
+// 4N-6 triangles. The stations are NOT evenly spaced along it: they crowd
+// toward the tip, because the inner stretch of a bough sits under the whorl
+// above and under its own needles, and resolution spent there is resolution
+// nobody sees. The panels are what carry the mat.
+//
+// A CORNER IS PLACED BY OUT-NESS, NOT BY A DISTANCE ALONG THE SPINE. It stands
+// part of the way out between the two stations it hangs between -- jittered,
+// and under halfway, see HEM_OUT -- measured along the bough's own azimuth, and
+// its width then swings sideways off that. Set by a plain fraction along the
+// section instead, a corner ends up as far from the axis as the tip is and the
+// bough finishes in a blunt three-vertex edge; taking it out-ward leaves the tip
+// the furthest-out point, which is what makes the thing read as pointed. Its
+// out-ness is also what the WIDTH law reads, at both ends -- `boughTaper` from
+// the tip and HEM_BUTT from the butt -- so the hem is one continuous leaf and
+// not a fan, and a corner's width no longer depends on how many stations the
+// spine happens to have.
+//
+// A BOUGH TURNS ITS ANGLE UP AS IT RUNS OUT, BY THE SAME ANGLE AT EVERY JOINT.
+// It leaves the trunk steeply and flattens going out, the way a real branch is
+// bent by its own load and then carries its needles skyward. It does not end
+// higher than it started; the PITCH is what rotates. Splitting that rotation
+// evenly is what makes a spine read as a curve instead of a hinge, and it is
+// the reason the drops are solved per bough rather than sampled off a fixed
+// profile -- see `bowSpine`, and note that evenly in SLOPE is not evenly at
+// all.
+//
+// EVERY TIER LANDS ITS TIPS ON THE SAME POINTS. A tip is where it is because of
+// per-bough draws only -- nothing about the spine's station count reaches it --
+// so LOD1 takes stations OUT of a bough without moving its ends, and the switch
+// is a bough getting straighter rather than a tree changing shape. That holds
+// only because the corner jitter draws from a stream of its own: two draws per
+// corner off the main stream would make the bough after this one depend on how
+// many stations this one had.
+//
+// LOD2 keeps it by the same discipline one level up. It thins the crown, and a
+// count is the one thing it must not touch to do that: `skirts` and `boughs`
+// are how many times the stack walks the rng, so lowering either reseeds every
+// whorl above it and the tier becomes a different tree. `skirtKeep` and
+// `boughKeep` are fractions KEPT -- the loops run the full counts, every draw
+// happens, and a dropped bough is skipped between its last draw and its first
+// vertex. What is left is a subset in LOD0's own seats.
 //
 // THE BOUGHS ARE NOT A DECOMPOSITION OF THE CONE. Every one draws its own
 // azimuth off the even spacing (`boughSpread`), its own length (`boughVary`),
-// its own bow, its own tilt, its own sideways kink at the middle joint
-// (`boughCrook`) and a different half-width on each side. Nothing is shared
-// around the whorl, so neighbouring cloaks CROSS -- which is wanted. A whorl of
-// boughs that tiled its circle exactly would read as a cut cone again, and
-// crossing cloaks are most of what makes the crown look grown.
+// its own bow, its own tilt, its own sideways bend (`boughCrook`), a different
+// half-width at every station on both sides, and its own turn of the mat.
+// Nothing is shared around the whorl, so neighbouring cloaks CROSS -- which is
+// wanted. A whorl of boughs that tiled its circle exactly would read as a cut
+// cone again, and crossing cloaks are most of what makes the crown look grown.
 //
 // THE OCCLUSION IS v6's, ONE STATION OVER. `innerShade` darkens the butt of
-// every bough, `shadeToTip` lets the top whorl off, and the middle joint takes
-// a share set by how far it sits under the reach of the whorl above -- measured
-// per bough, so a short bough under a wide whorl goes darker than a long one
-// beside it. The tip is never shaded.
+// every bough, `shadeToTip` lets the top whorl off, and each INTERIOR station
+// takes a share set by how far its own reach sits under the reach of the whorl
+// above -- measured per bough, so a short bough under a wide whorl goes darker
+// than a long one beside it. The tip is never shaded.
 //
 // ATTRIBUTES: `{ position, normal, uv, color }` on the foliage and buildTree's
 // `{ position, normal, uvProj, texLayer }` on the trunk, as v6.
@@ -48,13 +86,21 @@ import { buildTree, crownProfile, TREE_DEFAULTS } from './tree.js'
 const TAU = Math.PI * 2
 const UP = new THREE.Vector3(0, 1, 0)
 
-// The one needle mat, and it is the OPAQUE one at every tier. See the header:
-// a bough's outline is geometry, so the cut-out mat would only be paying an
-// alpha test to erase pixels the silhouette already does not have.
-export const V8_TILE = '/tmp/leaves/pine-mat-solid.png'
+// One foliage mat per species, and every one is OPAQUE at every tier. See the
+// header: a bough's outline is geometry, so a cut-out mat would only be paying
+// an alpha test to erase pixels the silhouette already does not have. All four
+// are checked opaque -- an RGBA file whose alpha is 255 everywhere -- because a
+// hole in one of these would render as whatever colour is underneath it rather
+// than as a hole.
+export const V8_MATS = {
+  pine: '/trees/mat_pine.png',
+  oak: '/trees/mat_oak.png',
+  aspen: '/trees/mat_aspen.png',
+  birch: '/trees/mat_birch.png',
+}
 
 export const TREE_V8_DEFAULTS = {
-  seed: 1,
+  seed: 78480,
 
   // --- size ---
   height: 9,           // metres, root to tip
@@ -76,71 +122,92 @@ export const TREE_V8_DEFAULTS = {
   rootWidth: 1.1,
 
   // --- the stack ---
-  skirts: 11,          // whorls up the trunk, `boughs` x 6 triangles each
+  skirts: 11,          // whorls up the trunk, `boughs` boughs each
   skirtBottom: 0.34,   // fraction of height the LOWEST whorl sits at. Higher
-                       // than v6's, because a cloak hangs BELOW its own spine:
-                       // at v6's 0.3 the lowest boughs reach into the soil on
-                       // roughly a third of the seeds
+                       // than v6's, because a cloak hangs BELOW its own spine.
+                       // At this `boughDroop` it still dips a few centimetres
+                       // into the soil on most seeds, which reads as a hem
+                       // resting in the grass rather than as a fault
   skirtTop: 1,         // and the highest. At 1 that whorl's butt IS the trunk
                        // tip, so the tree ends in needles and not in a spike
   skirtStagger: 0.25,  // how far a whorl may wander inside its own gap
   spacingByLength: 0.6, // how much of the gap above a whorl is set by how long
                        // that whorl's boughs are. 0 spaces them evenly
   crownRadius: 0.35,   // the WIDEST whorl's reach, as a fraction of height
-  crownPeak: 0.05,     // where up the stack that widest whorl sits. 0 = cone
-  crownFullness: 1.15, // falloff from the peak. <1 fuller, >1 pointier
-  skirtMin: 0.10,      // smallest whorl as a fraction of the widest
-  topGrow: 0.3,        // how much bigger the TOP whorl is than the profile asks
+  crownPeak: 0,        // where up the stack that widest whorl sits. 0 = cone
+  crownFullness: 0.65, // falloff from the peak. <1 fuller, >1 pointier
+  skirtMin: 0.16,      // smallest whorl as a fraction of the widest
+  topGrow: 0.11,       // how much bigger the TOP whorl is than the profile asks
                        // for: it is pinned to the tip and cannot wander down to
                        // close the gap, and the profile makes it the shortest
 
   // --- one whorl's shape ---
-  boughs: 8,           // boughs around a whorl, 6 triangles each. THE budget
-                       // knob, with `skirts`
+  boughs: 3,           // boughs around a whorl. THE budget knob, with `skirts`
+                       // and `boughSpine`
   skirtDrop: 0.8,      // how far a bough hangs, as a multiple of its own reach
-  dropByHeight: 1.0,   // and how much further, in proportion, the whorls near
+  dropByHeight: 0.55,  // and how much further, in proportion, the whorls near
                        // the tip hang -- their boughs are short up there, so on
                        // skirtDrop alone the trunk shows between them
-  skirtBow: 0.17,      // the middle joint's depth, off halfway by this much.
-                       // Drawn PER BOUGH, which is what makes a whorl read as a
-                       // handful of limbs rather than as one turned surface
-  bowOutward: 0.35,    // what share of those draws come back NEGATIVE
-  skirtLean: 0.09,     // radians a whorl's axis may tip off the trunk's
+  skirtBow: 0.1,       // how far a limb's ANGLE turns up over its length --
+                       // BOW_TURN radians per unit, so the default is about 23
+                       // degrees -- steepest leaving the trunk and shallowest at
+                       // the tip, split evenly over its joints. Every bough
+                       // turns up; this is the MEAN of a per-bough draw, which
+                       // is what makes a whorl read as a handful of limbs rather
+                       // than one turned surface
+  skirtLean: 0.01,     // radians a whorl's axis may tip off the trunk's
   skirtShift: 0,       // and how far its butt may slide off the axis
 
   // --- one bough ---
-  boughVary: 0.29,     // per-bough shortening, as a fraction of the whorl's
+  boughSpine: 4,       // stations down a bough's spine, min 3. A bough is
+                       // 3N-2 vertices and 4N-6 triangles; the stations crowd
+                       // toward the tip -- see the header
+  boughVary: 0,        // per-bough shortening, as a fraction of the whorl's
                        // reach. The whole reason a whorl has an outline
-  boughLift: 0.28,     // how far a SHORT bough rides back up, as a fraction of
+  boughLift: 0,        // how far a SHORT bough rides back up, as a fraction of
                        // how much it came in -- one draw drives both, because a
                        // limb that stops short stops higher on the cone too
-  boughSpread: 0.5,    // how far a bough slides AROUND off the even angle, as a
+  boughSpread: 0,      // how far a bough slides AROUND off the even angle, as a
                        // fraction of the angular step. Evenly spaced limbs are
                        // most of what reads as machined
-  boughTilt: 0.2,      // and how far it pitches up or down on top of the lift.
+  boughTilt: 0.29,     // and how far it pitches up or down on top of the lift.
                        // Signed, unlike the lift
-  midBend: 0.61,       // how much of the shortening the MIDDLE joint inherits.
-                       // 0 pulls only the tip in and leaves the bough straight
-  boughWidth: 0.45,    // half a cloak's width at its widest, as a fraction of
-                       // the bough's own length. Past ~0.4 at 8 boughs the
+  midBend: 0.3,        // how much of the shortening the spine's MIDPOINT
+                       // inherits. 0 pulls only the tip in and leaves the rest
+                       // of the bough out at full reach
+  boughWidth: 0.5,     // half a cloak's width at its widest, as a fraction of
+                       // the bough's own length. Wide enough and neighbouring
                        // cloaks CROSS, which is the point -- see the header
-  boughTaper: 0.55,    // and the outer station's width as a fraction of that,
-                       // so a bough narrows to its tip instead of ending square
-  boughDroop: 0.6,     // how far the cloak sags below the spine, as a fraction
+  boughTaper: 0,       // and the width AT THE TIP as a fraction of that. Read
+                       // off each corner's own out-ness, so it narrows the
+                       // middle of a hem as hard as it narrows the end of one
+  boughDroop: 1.14,    // how far the cloak sags below the spine, as a fraction
                        // of its own half-width. A wider cloak sags further,
                        // which is why this is not a length
-  boughCrook: 0.12,    // sideways kink at the middle joint, as a fraction of
-                       // the bough's length. The spine is otherwise straight in
-                       // plan and a whorl of straight spokes reads as a wheel
+  boughCrook: 0.08,    // sideways bend through the spine's middle, as a
+                       // fraction of the whorl's reach. The spine is otherwise
+                       // straight in plan and a whorl of straight spokes reads
+                       // as a wheel
+
+  // --- what a coarse tier drops ---
+  // Both are FRACTIONS KEPT, not counts, and that distinction is the whole
+  // point: `skirts` and `boughs` still say how many the tree HAS, every one of
+  // them is still drawn from the rng, and these two only decide which of them
+  // reach the buffer. Lowering the counts instead reshapes the tree -- see
+  // treeV8Lod.
+  skirtKeep: 1,        // fraction of the stack's whorls that get built, always
+                       // including the top one, which is the tip of the tree
+  boughKeep: 1,        // and of each whorl's boughs, the kept set rotating one
+                       // step per whorl so the gaps do not stack into a wedge
 
   // --- shading ---
   innerShade: 0,       // how dark every bough's BUTT is baked, as a multiple of
                        // the tip's brightness
   shadeToTip: 1.0,     // how much of that the TOP whorl is let off -- only the
                        // top one, its boughs being the only ones under open sky
-  midShade: 0.8,       // how much of the butt's darkening a fully covered
-                       // MIDDLE JOINT takes, measured per bough against the
-                       // reach of the whorl above
+  midShade: 0.74,      // how much of the butt's darkening a fully covered
+                       // INTERIOR station takes, measured per station against
+                       // the reach of the whorl above
 
   // --- material ---
   texMetres: 1.0,      // one needle tile, in metres, on both axes of a cloak
@@ -148,6 +215,136 @@ export const TREE_V8_DEFAULTS = {
                        // black-underside knob
 
   barkLayer: LAYER.BARK_PINE,
+}
+
+// ---------------------------------------------------------------------------
+// THE SPECIES BANK. Four shapes off one generator, each a DIFF over the pine
+// defaults above, so a change to a law that belongs to all trees moves all four
+// and only the numbers that are actually a species decision are written down.
+//
+// The generator is a stack of whorls of drooping boughs, which is a conifer's
+// architecture and not a broadleaf's. What makes the three broadleaves work is
+// that the same three knobs read as different botany:
+//
+//   `skirtBow` -- how hard a limb turns UP as it runs out. It is the single
+//   most species-carrying number here. A pine limb barely turns (0.1); an oak
+//   limb leaves the trunk low and finishes reaching for the sky (0.26); a birch
+//   twig does not turn at all and just hangs (0.03).
+//
+//   `crownPeak` with `crownFullness` -- where the widest whorl sits and how
+//   fast the stack falls away from it. 0 is the cone every conifer is; a
+//   broadleaf peaks at the middle or above it and the crown becomes a dome.
+//
+//   `boughDroop` against `skirtDrop` -- a bough's SPINE can hang and its cloak
+//   can sag, and the two read differently. A birch hangs the cloak (1.4) off a
+//   spine that is already falling; an oak holds its foliage ON its limbs (0.75)
+//   and the mass sits over the wood.
+//
+// Every one is at its own natural size, and every one fits its LOD0 in the 550
+// of design/05-rendering.md's tree row.
+// ---------------------------------------------------------------------------
+export const TREE_V8_SPECIES = {
+  // The tree the generator was written for: a spire, whorled, with the widest
+  // ring at the very bottom (`crownPeak` 0) and boughs that hang more than they
+  // reach.
+  pine: { label: 'pine', mat: V8_MATS.pine, params: {} },
+
+  // OAK. A short thick bole under a crown wider than the tree is tall, and the
+  // limbs are the whole character: few, long, crooked, and turning up hard at
+  // the ends. `skirtBottom` 0.5 is what makes the bole short; `boughCrook` and
+  // `boughSpread` at their highest of the four are what stop six limbs on a
+  // whorl reading as six spokes. The cloaks are wide and BLUNT -- `boughTaper`
+  // 0.4 against pine's 0 -- because oak foliage is clumped leaf masses hung on
+  // a limb, not a needle mat running out to a point.
+  oak: {
+    label: 'oak',
+    mat: V8_MATS.oak,
+    params: {
+      seed: 10496,
+      height: 9,
+      trunkSides: 12, trunkLobe: 0.3, trunkRings: 3, trunkRadius: 0.035, trunkBend: 0.06,
+      barkRepeat: 5,
+      roots: 6, rootRise: 0.05, rootLength: 0.14, rootAngle: 0.55, rootDroop: 0.5, rootWidth: 1.4,
+      skirts: 6, skirtBottom: 0.5, skirtStagger: 0.5, spacingByLength: 0.2,
+      crownRadius: 0.46, crownPeak: 0.45, crownFullness: 0.6, skirtMin: 0.45, topGrow: 0.1,
+      boughs: 6, skirtDrop: 0.45, dropByHeight: 0.15, skirtBow: 0.26,
+      skirtLean: 0.06, skirtShift: 0.12,
+      boughSpine: 4, boughVary: 0.32, boughLift: 0.55, boughSpread: 0.5, boughTilt: 0.3,
+      midBend: 0.45, boughWidth: 0.6, boughTaper: 0.4, boughDroop: 0.75, boughCrook: 0.22,
+      innerShade: 0.15, midShade: 0.7,
+      texMetres: 1.1, leafSkyward: 0.55,
+      barkLayer: LAYER.BARK,
+    },
+  },
+
+  // ASPEN. A narrow column on a pole -- half the tree is bare trunk -- and the
+  // branches are short and swept UP, which is `skirtBow` at 0.3, the hardest
+  // turn of the four. `crownFullness` over 1 is what keeps the column from
+  // bellying out. Ten whorls, because aspen foliage is a dense flutter and the
+  // stack is what carries that; four spine stations rather than the three a
+  // bough this short would otherwise want, because at three LOD1 has nothing
+  // left to drop -- it can only coarsen the trunk, and the rung saves 9%.
+  aspen: {
+    label: 'aspen',
+    mat: V8_MATS.aspen,
+    params: {
+      seed: 30917,
+      height: 6,
+      trunkSides: 9, trunkLobe: 0.06, trunkRings: 2, trunkRadius: 0.022, trunkBend: 0.035,
+      barkRepeat: 7,
+      roots: 3, rootRise: 0.05, rootLength: 0.08, rootAngle: 0.9, rootDroop: 0.4, rootWidth: 0.9,
+      skirts: 10, skirtBottom: 0.5, skirtStagger: 0.35, spacingByLength: 0.45,
+      crownRadius: 0.2, crownPeak: 0.5, crownFullness: 1.1, skirtMin: 0.3, topGrow: 0.12,
+      boughs: 4, skirtDrop: 0.5, dropByHeight: 0.35, skirtBow: 0.3,
+      skirtLean: 0.05, skirtShift: 0.08,
+      boughSpine: 4, boughVary: 0.3, boughLift: 0.6, boughSpread: 0.45, boughTilt: 0.3,
+      midBend: 0.4, boughWidth: 0.6, boughTaper: 0.25, boughDroop: 0.85, boughCrook: 0.1,
+      innerShade: 0.1, midShade: 0.7,
+      texMetres: 0.6, leafSkyward: 0.7,
+      // No aspen bark in the atlas, and none is wanted: aspen and birch are both
+      // pale and lenticelled, which textures.js says of this layer in as many
+      // words at its own definition.
+      barkLayer: LAYER.BARK_BIRCH,
+    },
+  },
+
+  // BIRCH. The pendulous one, and it is the only species here whose limbs do
+  // NOT turn up: `skirtBow` 0.03 leaves a spine running straight out and down,
+  // and `boughDroop` 1.4 then hangs the cloak off it. `skirtDrop` over 1 makes
+  // each bough fall further than its own whorl reaches, which is the weeping
+  // outline. Narrow cloaks (`boughWidth` 0.42) on a slender white trunk --
+  // birch foliage is fine and open, and a wide cloak reads as a poplar.
+  birch: {
+    label: 'birch',
+    mat: V8_MATS.birch,
+    params: {
+      seed: 62755,
+      height: 6,
+      trunkSides: 9, trunkLobe: 0.05, trunkRings: 3, trunkRadius: 0.019, trunkBend: 0.06,
+      barkRepeat: 6,
+      roots: 4, rootRise: 0.04, rootLength: 0.09, rootAngle: 0.8, rootDroop: 0.5, rootWidth: 0.95,
+      skirts: 9, skirtBottom: 0.45, skirtStagger: 0.45, spacingByLength: 0.5,
+      crownRadius: 0.27, crownPeak: 0.6, crownFullness: 0.9, skirtMin: 0.28, topGrow: 0.15,
+      boughs: 4, skirtDrop: 1.05, dropByHeight: 0.7, skirtBow: 0.03,
+      skirtLean: 0.06, skirtShift: 0.1,
+      boughSpine: 4, boughVary: 0.35, boughLift: 0.35, boughSpread: 0.5, boughTilt: 0.32,
+      midBend: 0.35, boughWidth: 0.42, boughTaper: 0.12, boughDroop: 1.4, boughCrook: 0.14,
+      innerShade: 0.12, midShade: 0.72,
+      texMetres: 0.65, leafSkyward: 0.5,
+      barkLayer: LAYER.BARK_BIRCH,
+    },
+  },
+}
+
+/** One species' full parameter set. Throws on a name that is not in the bank. */
+export function treeV8Species(name) {
+  const s = TREE_V8_SPECIES[name]
+  if (!s) {
+    throw new Error(
+      `treeV8Species: no species "${name}" -- the bank holds ${Object.keys(TREE_V8_SPECIES).join(', ')}`
+    )
+  }
+  return { ...TREE_V8_DEFAULTS, ...s.params }
 }
 
 // v1's own trunk keys, so buildTrunkV8 hands tree.js exactly what it owns.
@@ -160,24 +357,33 @@ const TRUNK_KEYS = [
 /**
  * The mesh ladder. Three tiers, and a fourth rung that is a baked card.
  *
- * v8 coarsens by dropping BOUGHS, which is a harder simplification than v6's:
- * a whorl of five boughs is visibly a different plant from a whorl of eight,
- * where a cone of fifteen spokes and one of twenty-four are the same cone. The
- * trade is what the scheme buys at LOD0 -- real air between the limbs -- and
- * the tiers are set where the loss lands past the distance it shows at.
+ * LOD1 TOUCHES NOTHING BUT THE SPINE. Every bough stays, every whorl stays, and
+ * each bough loses a station -- so its butt, its tip and its azimuth are the
+ * ones LOD0 drew and only the bend between them coarsens. The switch has to be
+ * invisible at the distance it happens, and a whorl that loses a limb or a tip
+ * that jumps outward is the one thing the eye does catch. (The coarse trunk is
+ * free of this: the whorls hang off an apex that is one vertex either way.)
+ *
+ * LOD2 is where the stack itself gives: whole boughs and whole whorls come off,
+ * on top of the shortest spine there is. It DROPS them rather than asking for
+ * fewer, and the difference is the whole tier. `skirts` and `boughs` are counts
+ * the rng walks: lower them and every whorl lands at a new height with a new
+ * yaw, every bough rerolls its bow, its tilt and its length, and the switch is
+ * one tree replaced by another one. `skirtKeep` and `boughKeep` leave the walk
+ * exactly as LOD0 ran it and skip the emit, so what survives is a subset -- the
+ * kept boughs are in the seats LOD0 gave them, with the tips LOD0 gave them,
+ * and the tier reads as a thinning rather than as a jump.
+ *
+ * Dropping spokes off a v6 cone of revolution is still cheaper than any of it:
+ * it takes notches and keeps the cone. That is the price of spending the
+ * triangles on separate boughs, and what it buys is the air between them.
  */
 export function treeV8Lod(options, tier) {
   const p = { ...TREE_V8_DEFAULTS, ...options }
   if (tier === 0) return p
   const coarse = { ...p, trunkSides: 3, trunkRings: 1, roots: 0 }
-  if (tier === 1) return { ...coarse, boughs: Math.max(3, Math.round(p.boughs * 0.6)) }
-  if (tier === 2) {
-    return {
-      ...coarse,
-      boughs: Math.max(3, Math.round(p.boughs * 0.45)),
-      skirts: Math.max(3, Math.round(p.skirts * 0.6)),
-    }
-  }
+  if (tier === 1) return { ...coarse, boughSpine: Math.max(3, Math.round(p.boughSpine) - 1) }
+  if (tier === 2) return { ...coarse, boughSpine: 3, boughKeep: 0.45, skirtKeep: 0.6 }
   throw new Error(
     `treeV8Lod: no MESH tier ${tier}; v8 has LOD0, LOD1 and LOD2. The tier past ` +
       'them is one spun quad carrying a baked photograph, not a parameter set'
@@ -185,11 +391,35 @@ export function treeV8Lod(options, tier) {
 }
 
 /**
+ * How many of a set of `total` a keep fraction leaves, and which ones.
+ *
+ * Floored at three, because a whorl of two boughs is a plank and a stack of two
+ * whorls is not a tree, and anchored on the LAST index -- for the stack that is
+ * the whorl pinned to the trunk's tip, and dropping it finishes the tree in a
+ * bare spike. `turn` rotates the pattern one step per whorl, so the gaps do not
+ * stack into a wedge of missing crown running up one side.
+ */
+const keptCount = (total, keep) =>
+  Math.min(total, Math.max(Math.min(3, total), Math.round(total * Math.min(1, Math.max(0, keep)))))
+
+const keptSet = (total, count, turn) => {
+  const on = new Uint8Array(total)
+  for (let k = 0; k < count; k++) {
+    on[(total * 2 - 1 - Math.round((k * total) / count) + turn) % total] = 1
+  }
+  return on
+}
+
+/**
  * Every triangle a parameter set implies, before any geometry exists.
  *
  *   trunk   = trunkSides x ((trunkRings - 1) x 2 + 1)   -- tree.js's cone law
  *   roots   = roots x 2                                 -- two-triangle wedges
- *   boughs  = skirts x boughs x 6                       -- three a side
+ *   boughs  = skirts x boughs x (4 x boughSpine - 6)    -- 2N-3 a side
+ *
+ * The two counts are the KEPT ones: a coarse tier drops whorls and boughs from
+ * a stack it still draws in full, so `skirts` here is what reaches the buffer
+ * and not what the rng walked.
  */
 export function resolveTreeV8(options = {}) {
   const p = { ...TREE_V8_DEFAULTS, ...options }
@@ -197,15 +427,17 @@ export function resolveTreeV8(options = {}) {
   const rings = Math.max(1, Math.round(p.trunkRings))
   const trunkTris = p.trunkRadius > 0 ? sides * ((rings - 1) * 2 + 1) : 0
   const roots = p.trunkRadius > 0 && p.rootWidth > 0 ? Math.max(0, Math.round(p.roots)) : 0
-  const skirts = Math.max(1, Math.round(p.skirts))
-  const boughs = Math.max(1, Math.round(p.boughs))
-  const skirtTris = skirts * boughs * 6
+  const skirts = keptCount(Math.max(1, Math.round(p.skirts)), p.skirtKeep)
+  const boughs = keptCount(Math.max(1, Math.round(p.boughs)), p.boughKeep)
+  const spine = Math.max(3, Math.round(p.boughSpine))
+  const skirtTris = skirts * boughs * (4 * spine - 6)
   return {
     trunkTris,
     roots,
     rootTris: roots * 2,
     skirts,
     boughs,
+    spine,
     skirtTris,
     triangles: trunkTris + roots * 2 + skirtTris,
   }
@@ -308,17 +540,105 @@ function skirtStops(n, p) {
   return stops
 }
 
-// Where along the spine each cloak station sits, as a fraction of its own
-// section. Both are past the middle of their section, which puts the cloak's
-// widest point outboard of the joint: a bough is widest where its own side
-// shoots have had the most room, not at the wood it grew off.
-const CLOAK_AT = 0.6
-// Where the outer station sits between the joint and the tip. Not 1: a cloak
-// that reached the tip would end in a blunt three-vertex edge, and this leaves
-// the last stretch of spine to close to a point.
-const CLOAK_OUT = 0.6
+// How far OUT a cloak corner hangs, as a fraction of the way between the reach
+// of the two spine stations it sits between, and how wide the draw around that
+// runs. Under halfway, so every corner sits nearer the trunk than the middle of
+// its own section: that leaves the run from the last corner to the tip the
+// longest stretch of hem on the bough, which is the stretch that reads as the
+// point. See the header for why this is a reach and not a distance along the
+// spine.
+const HEM_OUT = 0.3
+const HEM_SPREAD = 0.3
 
-// Where the mid-joint coverage ramp saturates, as a fraction of the covering
+// How far out a cloak reaches its full width, as a fraction of the bough. The
+// width law tapers at BOTH ends: `boughTaper` owns the tip, and this owns the
+// butt, where needles thin out anyway and the stretch is under the whorl above.
+// Without it the inner corner is the widest part of a bough at its shortest,
+// swings almost straight sideways off the trunk, and the hem starts as one flat
+// triangle rather than running out to the tip. It scales the width rather than
+// capping it, so `boughWidth` keeps moving the inner corner at every setting.
+// It has to stay INSIDE the innermost corner's own out-ness, or the two ramps
+// cross and the widest part of the cloak lands in the middle -- a bulge, which
+// is the one shape no amount of `boughTaper` can point.
+const HEM_BUTT = 0.15
+
+// The narrowest arch a bough may draw, as a fraction of `skirtBow`. The draw
+// runs to the same distance the other side of the mean, so the mean IS
+// `skirtBow`.
+const BOW_LOW = 0.35
+
+// Radians a bough turns over its whole length per unit of `skirtBow`, and the
+// most it may turn whatever the slider says. The cap keeps the solve below the
+// half turn at which no first-segment angle can satisfy it at all -- well past
+// anything that reads as a branch.
+const BOW_TURN = 4
+const BOW_MAX = 1.4
+
+// Drops down a spine that turn it by the SAME ANGLE at every joint, given where
+// its stations already sit out from the trunk and how far its tip must fall.
+//
+// Equal steps of SLOPE are not equal steps of angle, and the difference is very
+// visible: a bough leaves the trunk steep, where a given slope change is a small
+// rotation, and arrives shallow, where the same change is a large one -- so the
+// outer joint bends about half again as hard as the inner one and the spine
+// reads as a hinge with a straight stick on it. Equal steps of angle is what
+// makes it read as a curve, and it is what a bent branch actually does.
+//
+// Segment i then runs at pitch `a - i * turn` below horizontal, so its drop is
+// its out-ness run times the tangent of that, and the drops must add up to the
+// tip's. One unknown, `a`, in one equation that increases strictly with it:
+// bracketed between the two angles that would stand a segment vertical, and
+// solved by Newton with a bisection fallback for where tan turns over.
+const bowSpine = (sd, sr, ns, fall, total) => {
+  const turn = total / (ns - 2)
+  sd[0] = 0
+  sd[ns - 1] = fall
+  // A spine that doubles back has no pitch to equalise. `boughVary` and
+  // `midBend` can between them shorten a station past the one inside it, at
+  // which point the bough is degenerate and the best it can do is run straight.
+  for (let j = 1; j < ns; j++) {
+    if (sr[j] - sr[j - 1] <= 1e-9) {
+      for (let k = 1; k < ns - 1; k++) sd[k] = fall * (sr[k] / Math.max(1e-9, sr[ns - 1]))
+      return
+    }
+  }
+  let lo = total - Math.PI / 2 + 1e-9
+  let hi = Math.PI / 2 - 1e-9
+  // The chord's own pitch, plus half the turn, is where the answer nearly is.
+  let a = Math.min(hi, Math.max(lo, Math.atan(fall / sr[ns - 1]) + total / 2))
+  for (let k = 0; k < 32; k++) {
+    let f = -fall
+    let df = 0
+    for (let i = 0; i < ns - 1; i++) {
+      const c = Math.cos(a - i * turn)
+      const run = sr[i + 1] - sr[i]
+      f += run * Math.tan(a - i * turn)
+      df += run / (c * c)
+    }
+    if (f > 0) hi = a
+    else lo = a
+    if (Math.abs(f) < 1e-13 * sr[ns - 1]) break
+    const step = a - f / df
+    a = step > lo && step < hi ? step : (lo + hi) / 2
+  }
+  for (let j = 1; j < ns - 1; j++) sd[j] = sd[j - 1] + (sr[j] - sr[j - 1]) * Math.tan(a - (j - 1) * turn)
+}
+
+// The exponent that places the spine's stations along their own length. 1 would
+// space them evenly; below that they crowd toward the tip, buying detail at the
+// end of a bough that reads and spending it on the stretch under the whorl above
+// and under the bough's own cloaks. It also sets where the hem corners can sit,
+// since each one hangs inside its own section: crowd the stations hard and the
+// middle corner is dragged out toward the tip with them, whatever HEM_OUT says.
+const SPINE_TIPWARD = 0.75
+
+// A piecewise-linear ramp from `a` to `b` passing through `m` at the halfway
+// point. The spine's shortening is this shape, which is what lets a spine of
+// any number of stations agree with the three-station one at the two points
+// they share.
+const ramp = (t, a, m, b) => (t < 0.5 ? a + (t / 0.5) * (m - a) : m + ((t - 0.5) / 0.5) * (b - m))
+
+// Where the interior coverage ramp saturates, as a fraction of the covering
 // whorl's reach. v6's constant and v6's argument: the crown is self-similar,
 // so a ramp reaching full darkness only on the trunk would leave the whole
 // stack near half lit.
@@ -340,7 +660,15 @@ export function buildFoliageV8(options, frame) {
   const H = frame.height
   const n = Math.max(1, Math.round(p.skirts))
   const nb = Math.max(1, Math.round(p.boughs))
-  const stride = nb * 7
+  const ns = Math.max(3, Math.round(p.boughSpine))
+  const vpb = 3 * ns - 2
+  // What a coarse tier keeps. The loops below still run the FULL counts, so
+  // every draw happens whatever is kept, and only the emit is skipped -- that
+  // is the whole reason LOD2's boughs land in LOD0's seats.
+  const nKeep = keptCount(n, p.skirtKeep)
+  const nbKeep = keptCount(nb, p.boughKeep)
+  const keepSkirt = keptSet(n, nKeep, 0)
+  const stride = nbKeep * vpb
   const Rmax = Math.max(1e-4, p.crownRadius * H)
   const bottom = p.skirtBottom * H
   const span = Math.max(0, p.skirtTop * H - bottom)
@@ -359,13 +687,30 @@ export function buildFoliageV8(options, frame) {
   const w = new THREE.Vector3()
   const out = new THREE.Vector3()
   const side = new THREE.Vector3()
-  const s0 = new THREE.Vector3()
-  const s1 = new THREE.Vector3()
-  const s2 = new THREE.Vector3()
   const tan = new THREE.Vector3()
   const arm = new THREE.Vector3()
   const nrm = new THREE.Vector3()
   const hem = new THREE.Vector3()
+
+  // One bough's spine, reused: where each station sits along its own length,
+  // then its point, reach, drop, sideways bend and arc length from the butt.
+  const st = new Float64Array(ns)
+  for (let j = 0; j < ns; j++) st[j] = Math.pow(j / (ns - 1), SPINE_TIPWARD)
+
+  const sp = []
+  for (let j = 0; j < ns; j++) sp.push(new THREE.Vector3())
+  const sr = new Float64Array(ns)
+  const sd = new Float64Array(ns)
+  const sc = new Float64Array(ns)
+  const sv = new Float64Array(ns)
+
+  // The mat's frame for the bough being built: an origin and a TURN. Offsets
+  // alone leave every cloak on the tree running its needles the same way, and a
+  // stack of parallel tiles is the tell that reads as one repeated decal.
+  let matU = 0
+  let matV = 0
+  let matCos = 1
+  let matSin = 0
 
   let widest = 0
 
@@ -383,12 +728,13 @@ export function buildFoliageV8(options, frame) {
     return (stops[i + 1] - stops[i - 1]) / 2
   }
 
-  // One vertex: place it, author its normal, and give it a uv and a shade. The
-  // normal is forced to the SKYWARD side of its own surface before the
-  // `leafSkyward` turn, because a bough is one cell thick and lit from
-  // everywhere -- a panel normal taken with its sign would send half of every
-  // cloak black under any rig, which is the same argument material.js makes
-  // for its cards.
+  // One vertex: place it, author its normal, and give it a uv and a shade. `u`
+  // and `v` come in as metres ACROSS and ALONG the bough and are turned into
+  // the bough's own mat frame here. The normal is forced to the SKYWARD side of
+  // its own surface before the `leafSkyward` turn, because a bough is one cell
+  // thick and lit from everywhere -- a panel normal taken with its sign would
+  // send half of every cloak black under any rig, which is the same argument
+  // material.js makes for its cards.
   const push = (at, normal, u, v, shade) => {
     positions.push(at.x, at.y, at.z)
     nrm.copy(normal)
@@ -399,7 +745,7 @@ export function buildFoliageV8(options, frame) {
     if (nrm.lengthSq() < 1e-8) nrm.copy(UP)
     nrm.normalize()
     normals.push(nrm.x, nrm.y, nrm.z)
-    uvs.push(u, v)
+    uvs.push(matU + u * matCos - v * matSin, matV + u * matSin + v * matCos)
     shades.push(shade, shade, shade)
     widest = Math.max(widest, Math.hypot(at.x, at.z))
   }
@@ -444,132 +790,186 @@ export function buildFoliageV8(options, frame) {
 
     const step = TAU / nb
     const base = positions.length / 3
-    const midR = new Float32Array(nb)
+    const spineR = new Float32Array(nbKeep * ns)
+    const keepBough = keptSet(nb, nbKeep, i)
     let reach = 0
+    // Where in the buffer the NEXT kept bough of this whorl goes. Not `b`: at a
+    // coarse tier the two run apart, and indexing the buffer by `b` would leave
+    // holes in it that the winding then stitches across.
+    let eb = 0
 
     for (let b = 0; b < nb; b++) {
-      // EVERY DRAW FOR THIS BOUGH, in one place: nothing here is shared around
-      // the whorl, which is the difference between v8 and a cut-up v6 cone.
+      // EVERY PER-BOUGH DRAW, in one place: nothing here is shared around the
+      // whorl, which is the difference between v8 and a cut-up v6 cone.
       const pull = Math.min(0.88, p.boughVary * rand())
       const liftBy = p.boughLift * pull
       const tilt = (rand() * 2 - 1) * p.boughTilt
       const sink = Math.min(0.95, Math.max(-0.4, liftBy + tilt))
-      const bo = Math.min(0.999, Math.max(0.001, p.bowOutward))
-      const u = rand()
-      // `bowOutward` is the share of the draw that comes back negative, and the
-      // two halves are each rescaled to the full swing, so moving the split
-      // changes how OFTEN a spine bows out, not how far.
-      const bow = (u < bo ? -(u / bo) : (u - bo) / (1 - bo)) * p.skirtBow
-      const mid = Math.min(0.9, Math.max(0.1, 0.5 + bow))
+      // EVERY bough leaves the trunk pointing DOWN and turns up as it runs out,
+      // and the draw sets only how far this one does. `skirtBow` is the mean of
+      // that, so the slider moves the whole whorl together instead of moving
+      // how many limbs turn up and how many hang. BOW_MAX owns the cap, in the
+      // angle the draw is about to become.
+      const bow = p.skirtBow * (BOW_LOW + (2 - 2 * BOW_LOW) * rand())
       const swing = (rand() - 0.5) * p.boughSpread * step
       const crook = (rand() * 2 - 1) * p.boughCrook
-      // A different half-width on each side, so a bough is lopsided the way a
-      // limb that grew into its neighbour's light is.
-      const wideL = p.boughWidth * (0.7 + 0.6 * rand())
-      const wideR = p.boughWidth * (0.7 + 0.6 * rand())
-      // The mat's own origin per bough. Without it every cloak on the tree
-      // shows the same needles in the same place and the crown pulses.
-      const uOff = rand()
-      const vOff = rand()
+      matU = rand()
+      matV = rand()
+      const turn = rand() * TAU
+      matCos = Math.cos(turn)
+      matSin = Math.sin(turn)
+      // The cloak corners draw from a stream of their OWN, seeded off this one.
+      // There are two draws per corner and so `boughSpine`-many of them, and a
+      // count that moves with a slider would shift every bough built after it.
+      // The ladder rests on this: LOD1 coarsens the spine and MUST land its
+      // tips where LOD0 left them.
+      const jit = mulberry32(rand() * 4294967296)
 
-      const a = yaw + b * step + swing
-      out.copy(e1).multiplyScalar(Math.cos(a)).addScaledVector(e2, Math.sin(a))
+      // Every draw above this line has now happened, which is the only thing a
+      // dropped bough owes the stream. Past it there is nothing but arithmetic.
+      if (!keepSkirt[i] || !keepBough[b]) continue
+
+      const az = yaw + b * step + swing
+      out.copy(e1).multiplyScalar(Math.cos(az)).addScaledVector(e2, Math.sin(az))
       side.crossVectors(w, out).normalize()
 
       // The spine, in (reach, drop) exactly as a v6 meridian: butt on the axis,
-      // joint where this bough's own bow put it, tip where its shortening left
-      // it. `boughCrook` is the one term v6 has no analogue for -- a cone's
-      // meridian cannot leave its own radial plane, and a limb does.
-      const r1 = R * 0.5 * (1 - bend * pull)
-      const d1 = D * mid * (1 - bend * sink)
-      const r2 = R * (1 - pull)
-      const d2 = D * (1 - sink)
-      midR[b] = r1
-      reach += r2 / nb
+      // its own bow through the middle, tip where its shortening left it. The
+      // crook is the one term v6 has no analogue for -- a cone's meridian
+      // cannot leave its own radial plane, and a limb does -- and it goes to
+      // zero at both ends, so the bend is through the spine rather than a kink
+      // that swings the tip off its own azimuth.
+      for (let j = 0; j < ns; j++) {
+        const t = st[j]
+        const shrink = ramp(t, 0, bend, 1)
+        sr[j] = R * t * (1 - pull * shrink)
+        sc[j] = crook * R * Math.sin(Math.PI * t)
+        spineR[eb * ns + j] = sr[j]
+      }
 
-      s0.copy(origin)
-      s1.copy(origin).addScaledVector(out, r1).addScaledVector(w, -d1).addScaledVector(side, crook * R)
-      s2.copy(origin).addScaledVector(out, r2).addScaledVector(w, -d2)
+      // The pitch is NOT put through `shrink`: that curves a spine on its own
+      // account, and a bough lifted hard enough would then hang however far it
+      // is bowed. `midBend` bends the SHORTENING and nothing else.
+      const fall = D * (1 - sink)
+      bowSpine(sd, sr, ns, fall, Math.min(BOW_MAX, BOW_TURN * bow))
 
-      const len01 = s0.distanceTo(s1)
-      const len12 = s1.distanceTo(s2)
-      const L = len01 + len12
-      const W0 = p.boughWidth > 0 ? L * wideL : 0
-      const W1 = W0 * Math.max(0, p.boughTaper)
-      const sag0 = W0 * Math.max(0, p.boughDroop)
-      const sag1 = W1 * Math.max(0, p.boughDroop)
+      for (let j = 0; j < ns; j++) {
+        sp[j].copy(origin).addScaledVector(out, sr[j]).addScaledVector(side, sc[j]).addScaledVector(w, -sd[j])
+        sv[j] = j === 0 ? 0 : sv[j - 1] + sp[j].distanceTo(sp[j - 1])
+      }
+      const L = sv[ns - 1]
+      reach += sr[ns - 1] / nbKeep
 
-      // The ridge normal, per spine point: perpendicular to the spine and to
-      // the cloak's lateral run. This is what makes the top of a bough the
-      // brightest line on it.
-      const ridge = (from, to, at, uu, vv, shade) => {
-        tan.copy(to).sub(from)
+      // The ridge normal, per station: perpendicular to the cloak's lateral run
+      // and to the spine's, the latter taken across the station's NEIGHBOURS so
+      // that a hard bow does not put a crease down the ridge. This is what
+      // makes the top of a bough the brightest line on it. The interior shades
+      // are placeholders -- the coverage pass below owns them.
+      for (let j = 0; j < ns; j++) {
+        tan.copy(sp[Math.min(ns - 1, j + 1)]).sub(sp[Math.max(0, j - 1)])
         nrm.crossVectors(side, tan)
-        push(at, nrm, uu, vv, shade)
+        push(sp[j], nrm, 0, sv[j] / tex, j === 0 ? apexShade : 1)
       }
 
-      // The joint's spine normal is taken across the WHOLE bough rather than
-      // off either section, so a hard bow does not put a crease down the ridge.
-      ridge(s0, s1, s0, uOff, vOff, apexShade)
-      ridge(s0, s2, s1, uOff, vOff + len01 / tex, 1)
-      ridge(s1, s2, s2, uOff, vOff + L / tex, 1)
-
-      // The four cloak corners. Each takes the normal of ITS OWN panel -- the
-      // plane through the spine run and the arm out to the hem -- so the two
-      // sides of a bough shade differently and the thing reads as a roof rather
-      // than as a flat fin.
-      const corner = (from, to, along, half, sag, sg, vv, shade) => {
-        hem.copy(from).lerp(to, along).addScaledVector(side, sg * half).addScaledVector(w, -sag)
-        tan.copy(to).sub(from)
-        arm.copy(hem).sub(from)
-        nrm.crossVectors(tan, arm)
-        push(hem, nrm, uOff + (sg * half) / tex, vv, shade)
+      // The cloak corners, left side then right. Each takes the normal of ITS
+      // OWN panel -- the plane through the spine's section and the arm out to
+      // the corner -- so the two sides of a bough shade differently and the
+      // thing reads as a roof rather than as a flat fin.
+      for (let sg = 1; sg >= -1; sg -= 2) {
+        for (let j = 0; j < ns - 1; j++) {
+          // A fresh half-width at every station on both sides, so a bough is
+          // lopsided and jagged the way a limb that grew into its neighbour's
+          // light is.
+          const wide = jit() * 0.6 + 0.7
+          // Placed at `frac` of the way OUT between its two stations -- their
+          // out-ness, the component along the bough's own azimuth, so the width
+          // it then swings sideways cannot eat into it. That is what leaves the
+          // tip the furthest-out point on the bough and the hem running to it,
+          // and it is why a corner is not placed by a distance along the spine:
+          // set that way a corner stands as far out as the tip and the bough
+          // ends in a blunt three-vertex edge.
+          const frac = HEM_OUT + (jit() - 0.5) * HEM_SPREAD
+          const at = (arr) => arr[j] + (arr[j + 1] - arr[j]) * frac
+          const far = at(sr)
+          // Both ends of the width law read the corner's OWN out-ness, not
+          // which station it sits beside. Indexed instead, `boughTaper` owns
+          // only the last corner and the middle one is pinned halfway up the
+          // ramp however pointed the tip is asked to be -- and a cloak's width
+          // then moves when the station count does, which is the one thing an
+          // LOD rung must not touch.
+          const u = Math.min(1, far / Math.max(1e-9, sr[ns - 1]))
+          const half = L * p.boughWidth * wide *
+            (1 + (Math.max(0, p.boughTaper) - 1) * u) *
+            Math.min(1, u / HEM_BUTT)
+          const sag = half * Math.max(0, p.boughDroop)
+          hem.copy(origin)
+            .addScaledVector(out, far)
+            .addScaledVector(side, at(sc) + sg * half)
+            .addScaledVector(w, -(at(sd) + sag))
+          tan.copy(sp[j + 1]).sub(sp[j])
+          arm.copy(hem).sub(sp[j])
+          nrm.crossVectors(tan, arm)
+          push(hem, nrm, (sg * half) / tex, at(sv) / tex, 1)
+        }
       }
 
-      const vIn = vOff + (len01 * CLOAK_AT) / tex
-      const vOut = vOff + (len01 + len12 * CLOAK_OUT) / tex
-      corner(s0, s1, CLOAK_AT, W0, sag0, 1, vIn, 1)
-      corner(s1, s2, CLOAK_OUT, W1, sag1, 1, vOut, 1)
-      corner(s0, s1, CLOAK_AT, W0, sag0, -1, vIn, 1)
-      corner(s1, s2, CLOAK_OUT, W1, sag1, -1, vOut, 1)
-
-      // 0 butt, 1 joint, 2 tip, 3/4 the left cloak, 5/6 the right. Wound so
-      // every one of the six faces up; the mat is two-sided, so this is for the
-      // geometry's own sake rather than for visibility.
-      const v0 = base + b * 7
-      indices.push(
-        v0, v0 + 1, v0 + 3,
-        v0 + 1, v0 + 4, v0 + 3,
-        v0 + 1, v0 + 2, v0 + 4,
-        v0, v0 + 5, v0 + 1,
-        v0 + 1, v0 + 5, v0 + 6,
-        v0 + 1, v0 + 6, v0 + 2
-      )
+      // Stations 0..ns-1 down the spine, then the left cloak's ns-1 corners,
+      // then the right's. Wound so every face looks up; the mat is two-sided,
+      // so this is for the geometry's own sake rather than for visibility.
+      const v0 = base + eb * vpb
+      const hl = v0 + ns
+      const hr = hl + ns - 1
+      indices.push(v0, v0 + 1, hl, v0, hr, v0 + 1)
+      for (let j = 1; j < ns - 1; j++) {
+        indices.push(
+          v0 + j, hl + j, hl + j - 1,
+          v0 + j, v0 + j + 1, hl + j,
+          v0 + j, hr + j - 1, hr + j,
+          v0 + j, hr + j, v0 + j + 1
+        )
+      }
+      eb++
     }
 
-    layers.push({ apexShade, base, midR, reach })
+    // Only the whorls that were built, so the coverage pass below asks each one
+    // about the next whorl STILL OVER IT at this tier rather than about one
+    // that was dropped.
+    if (keepSkirt[i]) layers.push({ apexShade, base, spineR, reach })
   }
 
-  // THE MIDDLE JOINTS, now that every whorl's reach is known. How dark a joint
-  // goes is how far under the whorl above it sits, per bough against that
+  // THE INTERIOR STATIONS, now that every whorl's reach is known. How dark one
+  // goes is how far under the whorl above its own reach sits, against that
   // whorl's MEAN reach -- the yaws are independent, so pairing bough to bough
-  // would be noise. The joint's two cloak stations take the same shade, being
-  // the same distance out.
+  // would be noise. A station nearer the butt is further under and goes darker,
+  // which is the whole depth effect.
   const midShade = Math.min(1, Math.max(0, p.midShade))
+  const sh = new Float64Array(ns)
+  const paint = (v, s) => {
+    const k = v * 3
+    shades[k] = s
+    shades[k + 1] = s
+    shades[k + 2] = s
+  }
   for (let i = 0; i < layers.length; i++) {
     const L = layers[i]
     const above = layers[i + 1]
-    for (let b = 0; b < nb; b++) {
-      // The top whorl has nothing over it and stays at full brightness.
-      const cover = above
-        ? Math.min(1, Math.max(0, (above.reach - L.midR[b]) / Math.max(1e-6, above.reach * COVER_DEEP)))
-        : 0
-      const s = 1 - cover * (1 - L.apexShade) * midShade
-      for (const slot of [1, 3, 5]) {
-        const v = (L.base + b * 7 + slot) * 3
-        shades[v] = s
-        shades[v + 1] = s
-        shades[v + 2] = s
+    sh[0] = L.apexShade
+    sh[ns - 1] = 1
+    for (let b = 0; b < nbKeep; b++) {
+      for (let j = 1; j < ns - 1; j++) {
+        // The top whorl has nothing over it and stays at full brightness.
+        const cover = above
+          ? Math.min(1, Math.max(0, (above.reach - L.spineR[b * ns + j]) / Math.max(1e-6, above.reach * COVER_DEEP)))
+          : 0
+        sh[j] = 1 - cover * (1 - L.apexShade) * midShade
+      }
+      const v0 = L.base + b * vpb
+      for (let j = 0; j < ns; j++) paint(v0 + j, sh[j])
+      // A corner takes the shade of the station it hangs OUTBOARD of: it sits
+      // between two, and the outer one is the one it shares a rim with.
+      for (let j = 0; j < ns - 1; j++) {
+        paint(v0 + ns + j, sh[j + 1])
+        paint(v0 + ns + ns - 1 + j, sh[j + 1])
       }
     }
   }
@@ -588,8 +988,9 @@ export function buildFoliageV8(options, frame) {
   geo.userData.foliage = {
     triangles: indices.length / 3,
     vertices: positions.length / 3,
-    skirts: n,
-    boughs: nb,
+    skirts: nKeep,
+    boughs: nbKeep,
+    spine: ns,
     stride,
     crownRadius: widest,
     crownBase: geo.boundingBox.min.y,
@@ -618,6 +1019,7 @@ export function buildTreeV8(options = {}) {
       skirtTris: f.triangles,
       skirts: f.skirts,
       boughs: f.boughs,
+      spine: f.spine,
       crownWidth: f.crownRadius * 2,
       crownBase: f.crownBase,
       crownTop: f.crownTop,

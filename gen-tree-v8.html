@@ -55,6 +55,7 @@
       .row input[type=range] { width: 100%; padding: 0; background: none; border: none; }
       .row .v { text-align: right; font-variant-numeric: tabular-nums; }
 
+      #species { width: 100%; margin-bottom: 8px; }
       #seedrow { display: flex; gap: 6px; margin-bottom: 8px; }
       #seedrow input { flex: 1 1 auto; }
       #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
@@ -92,6 +93,13 @@
         <div class="s">v6's stack, with each whorl broken into separate boughs</div>
       </header>
       <div id="controls">
+        <!-- First, because it is the only control that moves every other one:
+             picking a species replaces the whole parameter set AND the baseline
+             the orange labels are measured against, so an orange row below it
+             always means "away from THIS tree's shape". -->
+        <h2>species</h2>
+        <select id="species"></select>
+
         <h2>seed</h2>
         <div id="seedrow">
           <input type="number" id="seed" value="1" min="0" step="1" />
@@ -124,13 +132,19 @@
       <table id="lod"></table>
       <p class="note">
         The <em>LOD</em> slider at the top of the panel is this table, live. Three of the four rungs
-        are the same generator asked for less of itself, and here that means fewer <em>boughs</em> --
-        a harder loss than v6's, where dropping spokes off a cone of revolution takes notches and
-        keeps the cone. A whorl of five limbs is visibly a different plant from one of eight. That
-        is the price of spending the triangles on separate boughs, and what it buys is the air
-        between them: unlike v6 the mat never changes down the ladder, because a v8 silhouette is
-        modelled and there is no cut-out to swap out. The last rung is one spun quad carrying a
-        photograph of LOD0, baked here and now off the tree on the stage.
+        are the same tree with less of it drawn: first a <em>spine station</em> out of every bough,
+        which costs bends nobody reads at range, and then whole <em>boughs</em> and whole
+        <em>whorls</em>. Every rung is a <em>subset</em> of LOD0 -- not one triangle moves, and
+        every tip that survives is on the point LOD0 put it. That is the difference between
+        <em>dropping</em> boughs and <em>asking for fewer</em>: the counts are how many times the
+        stack walks its random stream, so lowering one reseeds the whole crown and the switch becomes
+        a different plant. Switch between the rungs on the stage and you should see limbs straighten
+        and then thin out, with nothing jumping. Both losses are harder than v6's, where dropping
+        spokes off a cone of revolution takes notches and keeps the cone. That is the price of
+        spending the triangles on separate boughs, and what it buys is the air between them: unlike
+        v6 the mat never changes down the ladder, because a v8 silhouette is modelled and there is no
+        cut-out to swap out. The last rung is one spun quad carrying a photograph of LOD0, baked here
+        and now off the tree on the stage.
       </p>
 
       <h2>measured, in metres</h2>
