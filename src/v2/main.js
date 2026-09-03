@@ -516,8 +516,15 @@ const QUEST_TOGGLE_ROWS = [
   // measurement that separated them would be three readings of the same number.
   { key: 'litter', text: 'litter, fungi & deadfall' },
   { key: 'grassDensity', text: 'grass', action: () => cycleGrassDensity(), value: () => `${grass ? grass.density : '?'}/m2 >` },
+  { key: 'grassBlades', text: 'grass blades', action: () => cycleGrassBlades(), value: () => (grassStyle === 'blades' ? `${grass.bladeCount}/clump >` : 'n/a') },
   { key: 'grassRadius', text: 'grass reach', action: () => cycleGrassRadius(), value: () => `${grass ? grass.radius : '?'} m >` },
   { key: 'grassFalloff', text: 'grass falloff', action: () => cycleGrassFalloff(), value: () => `${grass ? grass.falloff : '?'}^ >` },
+  // THE OTHER HALF OF THE `grass` ROW. Off leaves the bed on screen and stops
+  // its update() -- the tile walk, the rim sweep, the tier loop and every
+  // attribute upload those cause. `grass` off measures draw plus CPU together;
+  // this one measures the CPU alone, and the difference is the draw. Standing
+  // still it should be nearly free, because a settled rim writes nothing.
+  { key: 'grassUpdate', text: 'grass scatter step', on: 'stepping', off: 'frozen' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -636,15 +643,19 @@ function applyQuestToggle(key) {
 // blinking" -- not a shader crash, and not the GPU, which the same headset
 // happily feeds a million alpha-masked triangles.
 //
-// WHAT IT STILL REACHES IS TERRAIN AND ROCKS, and nothing else. Every scatter is
-// on an InstancedMesh arena now -- trees, ferns, grass, litter, mushrooms and
-// dead wood -- and those carry the two flags only so applyBatchCulling records a
-// default rather than `undefined` (see the notes in trees.js / grass.js /
-// instanced-arena.js / prop-arena.js); writing them changes no rendering, and
-// there is no per-instance cull on an InstancedMesh to have. That leaves
-// terrain.batch, which sorts its 1024 chunks as well as culling them, and the
-// six rock beds, which cull only. Both are on three's defaults, so "on" is what
-// the world ships.
+// WHAT IT STILL REACHES IS TERRAIN, and nothing else. Every scatter is on an
+// InstancedMesh arena now -- trees, ferns, grass, litter, mushrooms, dead wood
+// and the rock beds -- and those carry the two flags only so applyBatchCulling
+// records a default rather than `undefined` (see the notes in trees.js /
+// grass.js / instanced-arena.js / prop-arena.js); writing them changes no
+// rendering, and there is no per-instance cull on an InstancedMesh to have.
+// That leaves terrain.batch, which sorts its 1024 chunks as well as culling
+// them. It is on three's defaults, so "on" is what the world ships.
+//
+// THE ROCKS WERE THE LAST LAYER OFF THIS PATH and are the measurement that
+// settles the argument: eight beds, 323k pooled instances between them, swept
+// twice per frame for two eyes, took the headset from 90 fps to about 20 the
+// moment the layer was switched on. They are on PropArena now.
 //
 // Turning it OFF trades draw-time (every instance is submitted) for frame-time
 // (no sweep). The user's own /quest measurements say this world is nowhere near
@@ -1348,7 +1359,7 @@ const questToggles = QUEST_MODE
       // already ships, and the measurement being made is what REMOVING them
       // buys. Starting one off would mean the panel's default state disagreed
       // with the world outside quest mode.
-      wind: true, treeTiers: true, treeCutout: true,
+      wind: true, treeTiers: true, treeCutout: true, grassUpdate: true,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
       // this panel exists to look at, which is what the world does to the frame
       // while you are moving continuously through it.
@@ -1872,12 +1883,12 @@ async function bootWorld() {
     // inside this promise and not merely conventionally: run before the decode
     // and it would photograph the procedural fallback bark into the two cards.
     deadwood.bakeCards(renderer)
-    // The rock card: one photograph, of the one boulder. Unlike the four above
-    // this is not a method on the scatter, because there is nothing per-bed about
-    // it -- the same picture serves all six beds, so it lives on the bank. See
-    // ROCK_CARD_SEED in props/rock-bank.js for the seed it is taken at and why it
-    // is pinned.
-    const rockCard = bakeRockImpostor(renderer, propTextures)
+    // The rock cards: one photograph per SHAPE in the bank, the boulder and the
+    // cap. Unlike the four above this is not a method on the scatter, because
+    // there is nothing per-bed about it -- a bed picks a shape and the shape's
+    // picture serves every bed that picked it, so it lives on the bank. See
+    // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
+    const rockCards = bakeRockImpostor(renderer, propTextures)
     // The four strewn-pebble patches. Same rig as the impostors above and the
     // same reason for being here rather than on disk -- see props/litter.js.
     const lit = bakeLitterSet(renderer, propTextures)
@@ -1902,8 +1913,10 @@ async function bootWorld() {
     // the quad is stone rather than hole, and a card whose coverage collapses is
     // a distant boulder that has become a rectangle of sky.
     console.log(
-      `rock impostor baked: luma ${rockCard.meanLuma.toFixed(3)}, ` +
-        `cover ${rockCard.coverage.toFixed(3)}, layer ${rockCard.layer}`
+      'rock impostors baked:',
+      rockCards
+        .map((b) => `${b.name} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)} layer ${b.layer}`)
+        .join(', ')
     )
   })
 
@@ -2182,8 +2195,9 @@ function logSceneCensus() {
 }
 
 // Built on first press rather than at boot, so a session that never touches the
-// `landscape shader` row never compiles a program it does not look at.
-let plainTerrainMaterial = null
+// `landscape shader` row never compiles a program it does not look at. The
+// plain rung is keyed by whether it carries caustics -- see plainTerrainRung.
+const builtPlainTerrain = new Map()
 const builtTerrainVariants = new Map()
 
 // THREE RUNGS, and `plain` IS NOW THE ONE THAT SHIPS -- the other two are what
@@ -2268,32 +2282,50 @@ function terrainVariant(mode) {
   return mat
 }
 
+/**
+ * The plain rung, dry or wet, built once each and kept.
+ *
+ * PATCHED IN VERTEX MODE, which is the whole difference between this rung being
+ * a control and being shippable. Unpatched it had no aerial ramp, so distant
+ * mountains faded to flat white fogColor -- the opposite of what air does, which
+ * is to go blue with depth. It also had no night lift and no terrain shadow, so
+ * it was wrong twice more at dusk.
+ *
+ * 'vertex' AND NOT 'fragment', and it is the cheaper mode in every direction.
+ * It carries ONE small varying rather than needing a vWorldPos this material
+ * does not have, it moves the sun and sky horizon lookups to the vertex stage,
+ * and it still installs AERIAL_GLSL in the fragment shader -- the ramp is a
+ * function of vFogDepth, which every fogged material already interpolates, so
+ * the thing that was actually missing costs nothing to add. At a 50 cm leaf
+ * cell the per-vertex shading is finer near the camera than the shadow map it
+ * samples, which is the same argument this mode already wins for the props.
+ *
+ * THE WET TWIN is the same material with the caustic net compiled in, and it
+ * exists as a SECOND PROGRAM rather than as a uniform branch because the net
+ * needs a world position per pixel and the vertex path has none: switching it
+ * on inside one program would interpolate a vec3 across every hillside in the
+ * world to light the lake beds. Two programs put the whole cost -- varying,
+ * noise and branch -- inside the one she is only ever drawn with under water.
+ * Caustics are not what makes a bed a bed, so a dry build is unchanged from what
+ * shipped, byte for byte. See applySubmersion for when the swap happens.
+ */
+function plainTerrainRung(wet) {
+  let mat = builtPlainTerrain.get(wet)
+  if (!mat) {
+    mat = createPlainTerrainMaterial(terrain.material)
+    lighting.patch(mat, {
+      mode: 'vertex', cacheKey: `v2-terrain-shadow-plain${wet ? '-wet' : ''}`, caustics: wet,
+    })
+    builtPlainTerrain.set(wet, mat)
+  }
+  return mat
+}
+
 function terrainShaderMaterial() {
   const mode = TERRAIN_SHADERS[terrainShaderMode]
   if (mode === 'axis') return terrain.material
   if (mode !== 'plain') return terrainVariant(mode)
-  if (!plainTerrainMaterial) {
-    plainTerrainMaterial = createPlainTerrainMaterial(terrain.material)
-    // PATCHED IN VERTEX MODE, which is the whole difference between this rung
-    // being a control and being shippable. Unpatched it had no aerial ramp, so
-    // distant mountains faded to flat white fogColor -- the opposite of what air
-    // does, which is to go blue with depth. It also had no night lift and no
-    // terrain shadow, so it was wrong twice more at dusk.
-    //
-    // 'vertex' AND NOT 'fragment', and it is the cheaper mode in every direction.
-    // It carries ONE small varying rather than needing a vWorldPos this material
-    // does not have, it moves the sun and sky horizon lookups to the vertex stage,
-    // and it still installs AERIAL_GLSL in the fragment shader -- the ramp is a
-    // function of vFogDepth, which every fogged material already interpolates, so
-    // the thing that was actually missing costs nothing to add. At a 50 cm leaf
-    // cell the per-vertex shading is finer near the camera than the shadow map it
-    // samples, which is the same argument this mode already wins for the props.
-    //
-    // WHAT IT GIVES UP against fragment mode is caustics: CAUSTIC_APPLY is only
-    // emitted on the fragment path, so terrain below a waterline is lit dry here.
-    lighting.patch(plainTerrainMaterial, { mode: 'vertex', cacheKey: 'v2-terrain-shadow-plain' })
-  }
-  return plainTerrainMaterial
+  return plainTerrainRung(causticsArmed)
 }
 
 function cycleTerrainShader() {
@@ -2567,47 +2599,76 @@ function cycleAurora() {
 
 // --- the grass knobs, on the panel because grass is the layer under suspicion --
 //
-// WHAT THESE TWO ARE FOR, and it is worth being blunt because they do not cost
+// WHAT THESE FOUR ARE FOR, and it is worth being blunt because they do not cost
 // the same thing. Measured on the settled bed, the fill a grass card costs goes
 // as its facing area over its distance squared, and that puts 53% of the whole
 // bed's fill inside FIVE METRES and 70% inside ten. So:
 //
 //   REACH is nearly free to cut and nearly worthless. Going from 70 m to 20 m
 //   drops 72% of the instances and 17% of the fill. It is the right knob if the
-//   bed is ever CPU-bound on its scatter, and the wrong one if it is fill-bound,
-//   which every headset measurement so far says it is.
+//   bed is ever CPU-bound on its scatter, and the wrong one if it is fill-bound.
 //
-//   DENSITY is the knob that moves the number. It scales every ring at once, so
-//   half the density is half the fill wherever the fill happens to be.
+//   DENSITY scales every ring at once, so half the density is half of both the
+//   fill and the instances. It moves the number on every bed.
 //
-// Both rebuild rather than reconfigure -- the pool, the tile candidate count and
-// the material's compiled ramp all depend on them -- so both cost a hitch on the
-// frame they are pressed. See buildGrass.
+//   BLADES PER CLUMP is the blade bed's only knob that moves the geometry
+//   WITHOUT moving the instance count, which is what makes the pair of it and
+//   density a proper experiment rather than two ways of asking for less grass.
+//
+//   SCATTER STEP is not a knob at all but an ablation -- see the row.
+//
+// The first three rebuild rather than reconfigure -- the pool, the tile
+// candidate count, the clump geometry and the material's compiled ramp all
+// depend on them -- so each costs a hitch on the frame it is pressed. See
+// buildGrass.
 // A BED PER CYCLE, because the same number buys a different bill on each: a card
 // is two triangles out to 70 m, a blade clump is ten out to 30 m. A shared list
 // would step one of them off the end of its own useful range on the first press.
-// The blade list goes UP from where the bed ships rather than down, which is the
-// opposite of every other row here: the question it exists to answer is what
-// doubling and quadrupling the mat underfoot costs, not what thinning it saves.
-// Each rung rebuilds the pool from the density, so 12/m2 is a real bed and not a
+// Each rung rebuilds the pool from the density, so 24/m2 is a real bed and not a
 // clamp against the shipped pool.
 const GRASS_DENSITY_CYCLE = {
   cards: [6, 3, 1.5, 0.75],
-  blades: [3, 6, 12],
+  blades: [12, 24, 6, 3],
 }
 const GRASS_RADIUS_CYCLE = {
   cards: [70, 40, 25, 15],
   blades: [30, 20, 12, 8],
 }
 
+// TRIANGLES PER CLUMP, and the blade bed's sharpest measured lever. It moves
+// triangles, vertices and per-vertex instance-attribute fetch together while
+// leaving the instance count, the pool, the draw call and the CPU sweep exactly
+// where they were -- which is what makes it the clean read that blade SIZE was
+// not. Halving height and width, a 4x cut in projected area, changed the frame
+// by nothing; halving this one does show up.
+//
+// Paired with the density row it separates per-vertex cost from per-instance
+// cost outright: 5 blades at 24/m2 draws the same triangles as 10 at 12 and
+// twice the instances, so whatever moves between those two settings is the
+// arena's and not the geometry's.
+//
+// Cards have no such knob -- a billboard is two triangles whatever you ask for
+// -- so the row REFUSES rather than being given a second meaning. Stepping a
+// card bed here would park a blade count in grassOpts that nothing applies until
+// the next style swap, and then the bed would come back changed for no reason
+// the wearer pressed.
+const GRASS_BLADE_CYCLE = [10, 5, 20]
+
 // The exponent p in the blade bed's thinning law -- see _keepAt in
 // render/grass.js. Cards are on 1 and have no reason not to be: their far field
-// is already the cheap end of the bed. What this row is for is the blade bed,
-// where the near mat is the whole cost and the question is how hard the far
-// field can be cut before the ground reads as bare. The bed ships at the hard
-// end of this list, so the row reads as loosening the far field, not tightening
-// it.
-const GRASS_FALLOFF_CYCLE = [3, 2, 1.5, 1]
+// is already the cheap end of the bed.
+//
+// THE LIST STEPS UP FIRST, because the blade bed's cost is its TRIANGLE COUNT
+// and this is the only knob that cuts triangles without touching the mat you are
+// standing in. At p 3 with a 6.5 m full radius, 61% of the bed's clumps are
+// beyond that radius: p 4 drops 24% of every clump in the bed and p 5 drops 35%,
+// none of it inside 6.5 m. Against that, blade count and density are linear in
+// the near field too, and reach is nearly worthless -- 30 m to 15 m is 17%.
+//
+// Down from 3 is kept because it is the same question asked the other way: what
+// the far field looks like when it is NOT cut hard, which is what makes the
+// upper rungs readable as a picture rather than only as a frame time.
+const GRASS_FALLOFF_CYCLE = [3, 4, 5, 2, 1.5, 1]
 
 // The live overrides, carried across every rebuild so the three grass rows
 // compose. Without this, changing the reach would silently restore the shipped
@@ -2637,6 +2698,14 @@ function grassCycle(table) {
 function cycleGrassDensity() {
   const list = grassCycle(GRASS_DENSITY_CYCLE)
   rebuildGrass({ density: stepCycle(list, grass ? grass.density : NaN) })
+}
+
+function cycleGrassBlades() {
+  if (grassStyle !== 'blades') {
+    console.log(`[v2] blades per clump is a blade-bed knob; the bed is '${grassStyle}'`)
+    return
+  }
+  rebuildGrass({ bladeCount: stepCycle(GRASS_BLADE_CYCLE, grass.bladeCount) })
 }
 
 function cycleGrassRadius() {
@@ -2970,6 +3039,21 @@ let submerged = false
 let eyeY = 0
 let waterY = null
 
+// Whether the ground is currently being drawn with the caustic-carrying build of
+// the plain rung (plainTerrainRung). ARMED IS NOT SUBMERGED and is deliberately
+// the wider question: a program is compiled the first time it is drawn with, so
+// arming on submersion exactly would put that compile on the frame her head goes
+// under, which is a stall in the middle of the one moment this effect exists for.
+// Armed at the waterline instead, she pays it while wading, where a hitch is a
+// hitch in walking rather than in the dive -- and the net itself is still off,
+// because the gain uniform below is what decides that.
+let causticsArmed = false
+// How far ABOVE the local water surface her head can be and still have the wet
+// build on the mesh. One stride of headroom: enough that stepping into a lake
+// arms it well before her head goes under, and not so much that swimming over a
+// lake in fly mode does.
+const CAUSTIC_ARM_M = 3
+
 // THE CURRENT. `swayApplied` is the offset currently sitting in her rig
 // position, and it is the whole of the bookkeeping: every frame the DIFFERENCE
 // between where the current wants her and where it last put her is added, so
@@ -3012,6 +3096,20 @@ function applySubmersion(head, elapsedReal, state) {
   waterY = level
 
   water.setSubmerged(submerged)
+
+  // THE RUNG SWAP, which is what gives the shipping ground a net at all: `plain`
+  // is patched in vertex mode and only its wet build emits CAUSTIC_APPLY. Done
+  // on the TRANSITION and not every frame, and it reaches the mesh through
+  // applyTerrainShader so that the two upper rungs -- already fragment-patched,
+  // already causticked -- are left alone by it.
+  //
+  // No null guard on `terrain`: waterSurfaces is built after it, so a non-null
+  // `level` means the ground is on screen.
+  const arm = level !== null && head.y < level + CAUSTIC_ARM_M
+  if (arm !== causticsArmed) {
+    causticsArmed = arm
+    applyTerrainShader()
+  }
 
   // THE CAUSTICS, and they are set on both paths rather than only the wet one.
   // A gain of zero is the off switch, so writing it every frame is what makes
@@ -3699,7 +3797,15 @@ function tick() {
   rocks.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
-  if (!QUEST_MODE || questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
+  // TWO ROWS, ONE LAYER, and the split is the whole point: `grass` hides the
+  // batch and `grassUpdate` stops the per-frame CPU work, so pressing them one
+  // at a time says which half of the bed's frame time is the DRAW and which is
+  // the scatter's own bookkeeping -- the tile walk, the rim sweep and the
+  // attribute uploads they trigger. Gated on `grass` too, because a bed nobody
+  // is drawing has nothing to keep current.
+  if (!QUEST_MODE || (questToggles.grass && questToggles.grassUpdate)) {
+    grass.update(headTmp.x, headTmp.y, headTmp.z)
+  }
   // litter/mushrooms/deadwood aren't among the 9 requested toggles -- always
   // updated (they're the cheapest layers in the world; see their own
   // headers), just permanently hidden in quest mode with no button to show them.

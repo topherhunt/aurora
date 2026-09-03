@@ -130,16 +130,19 @@ const SLIDERS = [
 ]
 
 const DEFAULTS = {
-  // The shipped bed (BLADE_DENSITY and friends in v2/render/grass.js): tufted
-  // ground close in, held only 2 m out, then thinned hard so the far field is
+  // The shipped bed (BLADE_DENSITY and friends in v2/render/grass.js): a mat
+  // close in, held to the full radius, then thinned hard so the far field is
   // cheap but not bare. Slide `density` up to see what coverage the frame time
-  // would buy -- the game shipped at 3/m2 because 24 cost 10 fps on the headset.
-  density: 3,
+  // would buy -- 12/m2 costs 4-5 fps of a 67 on the headset and 24 cost 10 of
+  // an 85.
+  density: 12,
   full: 6.5,
   cull: 30,
   falloff: 3,
   scaleVary: 0.5,
-  windAmp: 0.06,
+  // Mirrors createBladeMaterial's own uniform default, so the bench opens on the
+  // shipped look. It is tied to BLADE_DEFAULTS.height -- see the note there.
+  windAmp: 0.045,
   windSpeed: 0.9,
   ...BLADE_DEFAULTS,
 }

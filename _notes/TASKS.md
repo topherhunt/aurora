@@ -35,17 +35,21 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
       - [x] Alpha material at LOD0
     - [x] Try a hybrid model where most tris are solid, and fringes are done via alpha
     - [x] A separate version of pine -v6 where each branch has its own cloak
-    - [ ] 
+    - \[ \]
   - [ ] Rocks
-    - [ ] Stop rendering tiny pebbles. Place nothing smaller than 0.5m. Get rid of the pebbles (we'll do those via a separate layer).
-    - [ ] Sink rocks deeper into the ground - min 40% in.
+    - [x] Stop rendering tiny pebbles. Place nothing smaller than 0.5m. Get rid of the pebbles (we'll do those via a separate layer). ROCK_MIN_SIZE in rocks.js, enforced in the RockBed constructor so a new bed cannot drift under it.
+    - [x] Sink rocks deeper into the ground - min 40% in. SINK_MIN 0.4, SINK_TALL 0.6. The arithmetic buries a fraction of the UNLEANED box, so the shallowest flat-ground rock measures 36%.
     - [ ] Cliff faces should have larger boulders sunk in, deeper. I don't see any massive ones. Say up to 50m tall, protruding slightly out of the cliff face.
-    - [ ] Fix: Tint of billboards is misaligned from tint of the rock it's replacing. Often totally black.
-    - [ ] Show rock billboards as always 50% dithered, for cheap blending?
+    - [x] Fix: Tint of billboards is misaligned from tint of the rock it's replacing. Often totally black. Two causes: the instance's quarter turn was rotating the card's lighting normal (12 of 16 turns pointed it sideways or down), and the bake's near-black hemisphere ground is a canopy number. SPUN_CARD_NORMAL in material.js pins the normal; BAKE_ROCK_BOUNCE lights the underside.
+    - [ ] Show rock billboards as always 50% dithered, for cheap blending? NOT DONE, and recommended against -- it costs nothing (the discard already runs) but it removes half the card's pixels, so a distant rock reads as gauze rather than stone, and at card range the stipple is sub-pixel and shimmers.
+    - [x] A "rock cap": one open face, no floor, for carpeting cliffsides. `sit` past 0 now drops the bed-plane disc and `skirt` hangs the open rim a rock-height below ground. `CAP` in rock-bank.js at seed 98821; 153 triangles against the boulder's 320.
+    - [x] Carpet cliff faces and river/lake beds with the cap. Two beds in rocks.js: `cliff caps` (45-85 deg, 1.5-20 m, `fitSlope` probes the footprint's four corners so a big plate only lands on a big face) and `bed caps` (submerged, 0.8-6 m). Both take `tilt: 1` and refuse the quarter turns, which is what keeps the open rim in the ground. Measured on the real heightmap: about half the qualifying wall area under plate, 6-13k triangles, +50 ms on `place`. `scripts/probe-caps.mjs` is where those numbers come from.
+    - [ ] Lakebeds: try rock cap carpets, maybe remove?
+    - [ ] 
   - [ ] Double # of grass tris
   - [ ] Add occasional tall-grass tufts
   - [ ] Pebbles
-    - 1 mesh, reuse the boulder LOD1 + LOD2 + billboard. Lower tri count, irregular, sunk into ground. 
+    - 1 mesh, reuse the boulder LOD1 + LOD2 + billboard. Lower tri count, irregular, sunk into ground.
     - Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
 - ...
   - [ ] greeting dialog on 1st load on pc (point to vr).

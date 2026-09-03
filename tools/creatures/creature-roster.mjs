@@ -65,6 +65,26 @@ export const CREATURES = [
       'an intelligent pale eye',
   },
   {
+    id: 'hedge-songbird',
+    label: 'Hedge Songbird',
+    rigType: 'avian',
+    sizeM: 0.14,
+    description:
+      'a small round-bodied songbird, soft grey-brown plumage over the back and wings, a warm rust-orange ' +
+      'breast fading to a pale cream belly, a fine pointed dark beak, a short square tail, thin scaled legs with ' +
+      'delicate gripping toes, a bright dark eye ringed in pale feathers',
+  },
+  {
+    id: 'greylag-goose',
+    label: 'Greylag Goose',
+    rigType: 'avian',
+    sizeM: 0.85,
+    description:
+      'a heavy greylag goose with a thick barrel body, grey-brown barred plumage across the back and wings ' +
+      'paling to off-white on the belly, a long thick neck, a stout wedge-shaped orange bill, broad webbed pink ' +
+      'feet, dark eyes set high on a rounded head',
+  },
+  {
     id: 'ironscale-bass',
     label: 'Ironscale Bass',
     rigType: 'aquatic',
@@ -73,6 +93,26 @@ export const CREATURES = [
       'a sturdy freshwater bass with a deep round-bodied profile, thick overlapping scales in dull bronze-olive ' +
       'darkening to iron-grey along the back, a spiny dorsal fin held stiffly upright, a blunt underslung jaw ' +
       'and small dark eyes',
+  },
+  {
+    id: 'reed-pike',
+    label: 'Reed Pike',
+    rigType: 'aquatic',
+    sizeM: 0.8,
+    description:
+      'a long torpedo-shaped predatory fish, narrow and muscular, with a flattened duck-billed snout and a wide jaw ' +
+      'lined with fine needle teeth, olive-green flanks broken by pale creamy bars and gold speckling over a white ' +
+      'belly, dorsal and anal fins set far back near a broad forked tail, a hard staring eye',
+  },
+  {
+    id: 'glimmerfin',
+    label: 'Glimmerfin',
+    rigType: 'aquatic',
+    sizeM: 0.12,
+    description:
+      'a small plump endearing fish with rounded jewel-toned scales that catch the light like cut gemstones, facets ' +
+      'of amethyst purple and sapphire blue over a softly glowing core, large round curious eyes, delicate ' +
+      'translucent fins edged in gold like stained glass',
   },
   {
     id: 'marsh-frog',
@@ -93,6 +133,26 @@ export const CREATURES = [
       'a butterfly with wings spread flat and fully open, upper wings patterned in warm amber and chalk-white with ' +
       'a dark scalloped border and small eye spots, delicate dark veining across translucent wing membrane, ' +
       'a slender furred body and long thin antennae',
+  },
+  {
+    id: 'birch-spider',
+    label: 'Birch Spider',
+    rigType: 'octopod',
+    sizeM: 0.05,
+    description:
+      'an orb-weaving spider with a rounded bulbous abdomen patterned in cream and grey-brown with a pale cross ' +
+      'marking, a small dark cephalothorax, eight long banded legs tapering to fine points, short dense bristles ' +
+      'along every joint, a cluster of small glossy black eyes',
+  },
+  {
+    id: 'shore-crab',
+    label: 'Shore Crab',
+    rigType: 'octopod',
+    sizeM: 0.12,
+    description:
+      'a shore crab with a broad flattened carapace mottled in dark green and mud-brown with paler speckling and a ' +
+      'scalloped notched front edge, two heavy asymmetric claws carried forward, eight jointed walking legs tipped ' +
+      'in dark points, two small eyes on short stalks raised above the shell',
   },
   {
     id: 'wandering-trader',

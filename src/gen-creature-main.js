@@ -21,7 +21,7 @@ import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
-import { analyzeMesh, decimateLadder } from './mesh/decimate.js'
+import { analyzeMesh, decimate, decimateLadder } from './mesh/decimate.js'
 
 const $ = (id) => document.getElementById(id)
 const status = $('status')
@@ -31,6 +31,7 @@ let library = [] // every creature the bench knows about: roster seeds + anythin
 let presets = {}
 let credits = {}
 let candidates = []
+let meshCandidates = []
 let assets = { source: false, mesh: false, rig: false, anims: [], lods: [], state: {} }
 let lodTiers = [] // { level, target, mesh, geometry, stats } for the mesh currently loaded
 const ledger = [] // { what, usd }
@@ -63,6 +64,22 @@ async function loadRoster() {
   }
   $('genMesh').textContent = `generate mesh ($${(credits.mesh / 100).toFixed(2)})`
   $('genRig').textContent = `rig ($${(credits.rig / 100).toFixed(2)})`
+}
+
+/**
+ * Reads the Tripo wallet at startup. Costs nothing, and it is the difference
+ * between "the pipeline is broken" and "the wallet is empty" -- two failures
+ * that look identical from inside a spend button.
+ */
+async function loadBalance() {
+  const box = $('balance')
+  const res = await fetch('/__creature-balance')
+  const j = await res.json()
+  if (!res.ok) { box.innerHTML = `<span class="warn">could not read balance: ${j.error}</span>`; return }
+  const usd = (j.balance / 100).toFixed(2)
+  const enough = j.balance >= credits.mesh
+  box.innerHTML = `${j.balance} credits ($${usd})${j.frozen ? ` &middot; ${j.frozen} frozen` : ''}` +
+    (enough ? '' : `<br><span class="warn">not enough for a mesh (${credits.mesh} credits) -- top up at tripo3d.ai before the orange buttons will work</span>`)
 }
 
 // --- the library: every asset, its prompt, and what has been made of it ------
@@ -134,7 +151,7 @@ function renderLibrary() {
     for (const [label, on] of [
       [`${c.candidateCount} img`, c.candidateCount > 0],
       ['source', c.has.source],
-      ['mesh', c.has.mesh],
+      [`${c.meshCount} mesh`, c.meshCount > 0],
       [`${c.lodCount} lod`, c.lodCount > 0],
       ['rig', c.has.rig],
       [`${c.animCount} anim`, c.animCount > 0],
@@ -223,17 +240,22 @@ $('newCreature').addEventListener('click', () => withButton($('newCreature'), 'c
 async function refresh() {
   const id = currentId()
   if (!/^[a-z0-9-]+$/.test(id)) return
-  const [cRes, aRes] = await Promise.all([
+  const [cRes, mRes, aRes] = await Promise.all([
     fetch(`/__creature-candidates?id=${encodeURIComponent(id)}`),
+    fetch(`/__creature-meshes?id=${encodeURIComponent(id)}`),
     fetch(`/__creature-assets?id=${encodeURIComponent(id)}`),
   ])
   const cj = await cRes.json()
+  const mj = await mRes.json()
   const aj = await aRes.json()
   if (!cRes.ok) throw new Error(cj.error)
+  if (!mRes.ok) throw new Error(mj.error)
   if (!aRes.ok) throw new Error(aj.error)
   candidates = cj.candidates
+  meshCandidates = mj.meshes
   assets = aj
   renderGallery()
+  renderMeshGallery()
   renderAnimList()
   $('genMesh').disabled = !assets.source
   $('genLod').disabled = !assets.mesh
@@ -264,6 +286,54 @@ function renderGallery() {
     cost.className = 'cost'
     cost.textContent = `$${(c.cost ?? 0).toFixed(4)}`
     div.append(img, btn, cost)
+    g.appendChild(div)
+  }
+}
+
+// Mesh candidates are the expensive rung of the ladder: every one of these cost
+// 40-50 credits and Tripo has no task-history endpoint to re-fetch a lost one
+// from. They are listed, never replaced.
+function renderMeshGallery() {
+  const g = $('meshGallery')
+  g.innerHTML = ''
+  if (!meshCandidates.length) {
+    g.innerHTML = '<p class="label">no meshes yet -- pick an image above, then generate one</p>'
+    return
+  }
+  for (const m of meshCandidates) {
+    const div = document.createElement('div')
+    div.className = `candidate${m.picked ? ' is-picked' : ''}`
+
+    let shot
+    if (m.previewUrl) {
+      shot = document.createElement('img')
+      shot.src = m.previewUrl
+    } else {
+      shot = document.createElement('div')
+      shot.className = 'noshot'
+      shot.textContent = 'no preview render'
+    }
+    shot.style.cursor = 'pointer'
+    shot.title = 'preview this mesh without picking it'
+    shot.addEventListener('click', () => showModel(`meshes/${m.file}`).catch((e) => setStatus(`preview failed: ${e.message}`, 'warn')))
+
+    const btn = document.createElement('button')
+    btn.textContent = m.picked ? 'picked' : 'pick'
+    btn.className = m.picked ? 'picked' : 'pick'
+    btn.disabled = m.picked
+    btn.addEventListener('click', () => withButton(btn, `picking ${m.file}`, () => pickMesh(m.file)))
+
+    const meta = document.createElement('div')
+    meta.className = 'cost'
+    const p = m.params
+    meta.innerHTML = [
+      m.file,
+      p ? `${p.model.replace(/-\d+$/, '')} @ ${p.faceLimit}f` : 'params not recorded',
+      `${m.credits} credits`,
+      m.lods.length ? `${m.lods.length} lod${m.lods.length === 1 ? '' : 's'}` : 'no lods',
+    ].join(' &middot; ')
+
+    div.append(shot, btn, meta)
     g.appendChild(div)
   }
 }
@@ -340,18 +410,33 @@ async function pick(file) {
   setStatus(`picked -> ${j.path}`, 'ok')
 }
 
-$('genMesh').addEventListener('click', () => withButton($('genMesh'), 'generating mesh (Tripo, this takes a minute)', async () => {
-  const j = await post(`/__creature-mesh?id=${encodeURIComponent(currentId())}`, {
-    model: $('meshModel').value === 'p1' ? 'P1-20260311' : 'v3.1-20260211',
-    faceLimit: Number($('faceLimit').value),
-  })
-  bill('mesh', j.credits / 100)
-  // Tiers built from the mesh this one just replaced would still be sitting in
-  // lodTiers, and "save tiers" would write them under the new mesh's name.
+async function pickMesh(file) {
+  const j = await post(`/__creature-pick-mesh?id=${encodeURIComponent(currentId())}`, { file })
+  // Tiers in memory were decimated from the mesh that was picked a moment ago;
+  // keeping them would let "save tiers" write them under this mesh's name.
   clearLods()
   await refresh()
   await showModel('mesh')
-  setStatus(`mesh -> ${j.path} (${j.credits} credits)`, 'ok')
+  setStatus(`working mesh -> ${j.path}`, 'ok')
+}
+
+$('genMesh').addEventListener('click', () => withButton($('genMesh'), 'generating mesh (Tripo, this takes a minute)', async () => {
+  const p1 = $('meshModel').value === 'p1'
+  const j = await post(`/__creature-mesh?id=${encodeURIComponent(currentId())}`, {
+    model: p1 ? 'P1-20260311' : 'v3.1-20260211',
+    faceLimit: Number($('faceLimit').value),
+    // P1 is already a low-poly generator and Tripo rejects the flag on it.
+    smartLowPoly: !p1 && $('smartLowPoly').checked,
+  })
+  bill('mesh', j.credits / 100)
+  if (j.autoPicked) clearLods()
+  await refresh()
+  // Always preview the mesh just paid for, even when an earlier pick still owns
+  // mesh.glb -- a second generation that showed the first one reads as a no-op.
+  await showModel(`meshes/${j.file}`)
+  setStatus(j.autoPicked
+    ? `mesh -> ${j.path} (${j.credits} credits), picked as the working mesh`
+    : `mesh candidate ${j.file} -> ${j.path} (${j.credits} credits) -- "pick" it to rig or decimate it`, 'ok')
 }))
 
 $('rigCheck').addEventListener('click', () => withButton($('rigCheck'), 'rig-check (free)', async () => {
@@ -510,6 +595,14 @@ function drawTexture(image) {
 
 let lodMaterial = null // the source mesh's material, reused so tiers preview textured
 
+/** The source material with the atlas taken off and the bake switched on. */
+function bakedMaterial() {
+  const m = lodMaterial.clone()
+  m.map = null
+  m.vertexColors = true
+  return m
+}
+
 /**
  * Plain arrays in. decimate.js knows nothing about three -- it has to run under
  * node in scripts/check-decimate.mjs, where THREE does not exist -- so the
@@ -531,14 +624,88 @@ function toPlainMesh(geometry) {
   }
 }
 
-function toGeometry(mesh) {
+function toGeometry(mesh, colors) {
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3))
-  g.setAttribute('uv', new THREE.BufferAttribute(mesh.uvs, 2))
+  // A drop-mode tier has no atlas: two corners of one triangle can come from
+  // unrelated islands, so there is no `uv` to set and the colour bake stands in.
+  if (mesh.uvs) g.setAttribute('uv', new THREE.BufferAttribute(mesh.uvs, 2))
+  if (colors) g.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   if (mesh.normals) g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3))
   g.setIndex(new THREE.BufferAttribute(mesh.indices, 1))
   if (!mesh.normals) g.computeVertexNormals()
   return g
+}
+
+/**
+ * Point sampler over a texture image. glTF puts the UV origin top-left and
+ * GLTFLoader sets `flipY = false` to match, so v maps straight down the image;
+ * a texture that was flipped back has to be read the other way up.
+ */
+function textureSampler(image, flipY) {
+  const { width, height } = image
+  const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+  ctx.canvas.width = width
+  ctx.canvas.height = height
+  ctx.drawImage(image, 0, 0)
+  const data = ctx.getImageData(0, 0, width, height).data
+  const clamp = (n, hi) => Math.min(hi, Math.max(0, n))
+  return (u, v) => {
+    const x = clamp(Math.round(u * (width - 1)), width - 1)
+    const y = clamp(Math.round((flipY ? 1 - v : v) * (height - 1)), height - 1)
+    const i = (y * width + x) * 4
+    return [data[i], data[i + 1], data[i + 2]]
+  }
+}
+
+/**
+ * Bake the source texture into per-vertex colours, using each output vertex's
+ * remembered location in the ORIGINAL atlas. This is what buys the low tiers:
+ * once the atlas is gone the decimator is free, and the colour is what is left
+ * of the texture. getImageData hands back sRGB bytes; three's vertex colours are
+ * working-space, so the conversion is not optional.
+ */
+function bakeColors(mesh, sample) {
+  const uv = mesh.sampleUvs
+  if (!uv) throw new Error('a drop-mode tier arrived without sampleUvs -- there is nothing to bake from')
+  const count = mesh.positions.length / 3
+  const out = new Float32Array(count * 3)
+  const c = new THREE.Color()
+  for (let i = 0; i < count; i++) {
+    const [r, g, b] = sample(uv[i * 2], uv[i * 2 + 1])
+    c.setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace)
+    out[i * 3] = c.r
+    out[i * 3 + 1] = c.g
+    out[i * 3 + 2] = c.b
+  }
+  return out
+}
+
+/**
+ * Weld tolerance, given as a percentage of the bounding diagonal. Blank means
+ * the decimator's own hair-thin default. Measured on the fox: welding harder
+ * does not lower the floor, and past ~1% it raises it, because fusing points
+ * across a gap makes non-manifold edges that then pin themselves.
+ */
+function parseWeld(text, diagonal) {
+  const s = text.trim()
+  if (!s) return undefined
+  const n = Number(s.replace('%', ''))
+  if (!Number.isFinite(n) || n < 0) throw new Error(`"${text}" is not a weld tolerance -- want a percentage of the bounding diagonal`)
+  return (n / 100) * diagonal
+}
+
+/** Diagonal of the bounding box, the unit the weld tolerance is expressed in. */
+function boundsDiagonal(positions) {
+  const lo = [Infinity, Infinity, Infinity]
+  const hi = [-Infinity, -Infinity, -Infinity]
+  for (let i = 0; i < positions.length; i += 3) {
+    for (let a = 0; a < 3; a++) {
+      lo[a] = Math.min(lo[a], positions[i + a])
+      hi[a] = Math.max(hi[a], positions[i + a])
+    }
+  }
+  return Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
 }
 
 /** "50%, 25%, 10%" or "4000, 1500" or a mix. Percentages are of the input. */
@@ -576,22 +743,37 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
   lodMaterial = meshes[0].material
 
   const plain = toPlainMesh(meshes[0].geometry)
-  const analysis = analyzeMesh(plain)
+  const weldEps = parseWeld($('lodWeld').value, boundsDiagonal(plain.positions))
+  const analysis = analyzeMesh(plain, { weldEps })
+  // The atlas floor: where decimation stops if the UV atlas must survive intact.
+  // One island cannot go below one triangle, so a shattered atlas is a hard floor
+  // no amount of tuning moves, and it is the number that explains a stalled tier.
+  const floor = decimate(plain, 1, { weldEps, uvMode: 'preserve' }).stats.outputTris
   $('meshAnalysis').innerHTML =
     `${analysis.tris} tris, ${analysis.points} welded points &middot; ` +
     `${analysis.uvIslands} UV island${analysis.uvIslands === 1 ? '' : 's'} &middot; ` +
     `${analysis.lockedPoints} pinned (${Math.round((analysis.lockedPoints / analysis.points) * 100)}%) &middot; ` +
     `${analysis.lockedFaces} unremovable faces &middot; ` +
-    `quads ${Math.round(analysis.quadFraction * 100)}%`
+    `quads ${Math.round(analysis.quadFraction * 100)}% &middot; ` +
+    `atlas floor ${floor} tris`
 
   const targets = parseTargets($('lodTargets').value, analysis.tris)
-  const tiers = decimateLadder(plain, targets, {})
-  lodTiers = tiers.map((t, i) => ({
-    level: i + 1,
-    mesh: t,
-    geometry: toGeometry(t),
-    stats: t.stats,
-  }))
+  const tiers = decimateLadder(plain, targets, { weldEps, uvMode: 'auto' })
+  // Sampled once, not per tier: every tier reads the same original texture.
+  const map = lodMaterial.map
+  const sample = map && map.image ? textureSampler(map.image, map.flipY) : null
+  lodTiers = tiers.map((t, i) => {
+    const baked = t.stats.uvMode === 'drop' && sample ? bakeColors(t, sample) : null
+    return {
+      level: i + 1,
+      mesh: t,
+      geometry: toGeometry(t, baked),
+      // A tier that gave up the atlas cannot wear the textured material: its
+      // corners index an atlas that no longer describes it.
+      material: baked ? bakedMaterial() : lodMaterial,
+      stats: t.stats,
+    }
+  })
 
   renderLodTable()
   $('saveLod').disabled = false
@@ -602,13 +784,15 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
 function renderLodTable() {
   const t = $('lodTable')
   t.innerHTML =
-    '<tr><th>tier</th><th>target</th><th>got</th><th>reduction</th><th>why it stopped</th></tr>'
+    '<tr><th>tier</th><th>target</th><th>got</th><th>reduction</th><th>texture</th><th>why it stopped</th></tr>'
   for (const tier of lodTiers) {
     const s = tier.stats
     const tr = document.createElement('tr')
     tr.innerHTML =
       `<td>lod${tier.level}</td><td>${s.targetTris}</td><td>${s.outputTris}</td>` +
-      `<td>${Math.round(s.reduction * 100)}%</td><td class="label">${s.reason}</td>`
+      `<td>${Math.round(s.reduction * 100)}%</td>` +
+      `<td class="label">${s.uvMode === 'drop' ? 'baked colours' : 'atlas'}</td>` +
+      `<td class="label">${s.reason}</td>`
     tr.style.cursor = 'pointer'
     tr.addEventListener('click', () => showTier(tier).catch((e) => setStatus(e.message, 'warn')))
     t.appendChild(tr)
@@ -618,15 +802,16 @@ function renderLodTable() {
 
 async function showTier(tier) {
   clearModel()
-  model = new THREE.Mesh(tier.geometry, lodMaterial)
+  model = new THREE.Mesh(tier.geometry, tier.material)
   model.userData.borrowed = true
   scene.add(model)
   model.material.wireframe = $('showWire').checked
   frameModel()
   $('meshStats').innerHTML =
     `lod${tier.level}: ${tier.stats.outputTris} tris (asked ${tier.stats.targetTris}, from ${tier.stats.inputTris}) &middot; ` +
-    `${tier.stats.collapses} collapses &middot; ${tier.stats.lockedPoints}/${tier.stats.totalPoints} points pinned`
-  drawTexture(lodMaterial.map ? lodMaterial.map.image : null)
+    `${tier.stats.collapses} collapses &middot; ${tier.stats.lockedPoints}/${tier.stats.totalPoints} points pinned &middot; ` +
+    `${tier.stats.uvMode === 'drop' ? 'atlas dropped, texture baked to vertex colours' : 'atlas preserved'}`
+  drawTexture(tier.material.map ? tier.material.map.image : null)
   $('viewer').classList.add('on')
   setSize()
 }
@@ -635,7 +820,7 @@ $('saveLod').addEventListener('click', () => withButton($('saveLod'), 'writing t
   const id = currentId()
   const exporter = new GLTFExporter()
   for (const tier of lodTiers) {
-    const mesh = new THREE.Mesh(tier.geometry, lodMaterial)
+    const mesh = new THREE.Mesh(tier.geometry, tier.material)
     const glb = await exporter.parseAsync(mesh, { binary: true })
     const res = await fetch(`/__creature-lod?id=${encodeURIComponent(id)}&level=${tier.level}`, {
       method: 'POST',
@@ -656,7 +841,9 @@ function renderClipSelect() {
   sel.innerHTML = ''
   const options = []
   if (assets.mesh) options.push(['mesh.glb', 'mesh (no rig)'])
-  for (const l of assets.lods) options.push([l, l.replace(/^mesh-|\.glb$/g, '')])
+  // meshes/<n>-lod<k>.glb -> "lod<k>": the <n> is the mesh candidate this tier
+  // came from, and only the picked one's tiers are ever listed.
+  for (const l of assets.lods) options.push([l, l.replace(/^meshes\/\d+-|\.glb$/g, '')])
   if (assets.rig) options.push(['rig.glb', 'rig (bind pose)'])
   for (const a of assets.anims) options.push([a, a.replace(/^anim-|\.glb$/g, '')])
   for (const [value, text] of options) {
@@ -676,6 +863,16 @@ $('showWire').addEventListener('change', () => {
   model?.traverse((o) => { if (o.isMesh) o.material.wireframe = $('showWire').checked })
 })
 $('faceLimit').addEventListener('input', () => { $('faceLimitVal').textContent = $('faceLimit').value })
+
+// Tripo refuses smart_low_poly on P1, so the box follows the model rather than
+// letting you arm a request that comes back a 400.
+function syncSmartLowPoly() {
+  const p1 = $('meshModel').value === 'p1'
+  $('smartLowPoly').disabled = p1
+  if (p1) $('smartLowPoly').checked = false
+}
+$('meshModel').addEventListener('change', syncSmartLowPoly)
+syncSmartLowPoly()
 
 function setSize() {
   const w = canvas.clientWidth || 420, h = canvas.clientHeight || 320
@@ -710,6 +907,9 @@ $('libToggle').addEventListener('click', () => {
 $('faceLimitVal').textContent = $('faceLimit').value
 bill('session start', 0)
 loadRoster()
+  // Balance after the roster (it prices itself against credits.mesh) but before
+  // anything else, so an empty wallet is on screen before the first click.
+  .then(loadBalance)
   .then(loadLibrary)
   .then(() => loadCreature(library[0].id))
   .catch((e) => setStatus(`startup failed: ${e.message}`, 'warn'))

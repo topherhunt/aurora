@@ -13,7 +13,7 @@ import { buildFishMesh } from './tools/fauna/loft-fish-mesh.mjs'
 import { SPECIES as FISH_SPECIES } from './tools/fauna/fish-roster.mjs'
 import { buildCreaturePrompt } from './tools/creatures/creature-prompt.mjs'
 import { CREATURES } from './tools/creatures/creature-roster.mjs'
-import { estimateCredits as tripoCredits, PRESETS as TRIPO_PRESETS } from './tools/creatures/tripo.mjs'
+import { estimateCredits as tripoCredits, getBalance as tripoBalance, PRESETS as TRIPO_PRESETS } from './tools/creatures/tripo.mjs'
 import * as creatures from './tools/creatures/workspace.mjs'
 
 // Vite loads .env into import.meta.env for client bundles, but NOT into
@@ -698,8 +698,9 @@ function fishGen() {
 //
 //   free     /__creature-roster, /__creature-list, /__creature-candidates,
 //            /__creature-assets, /__creature-save, /__creature-pick,
+//            /__creature-meshes, /__creature-pick-mesh,
 //            /__creature-lod (decimation is ours, not a vendor's),
-//            /__creature-rig-check (Tripo prices rig-check at 0 credits)
+//            /__creature-balance, /__creature-rig-check (Tripo prices both at 0)
 //   ~$0.015  /__creature-image
 //   ~$0.50   /__creature-mesh
 //   $0.25    /__creature-rig
@@ -767,6 +768,11 @@ function creatureGen() {
         hasTripoKey: Boolean(process.env.TRIPO_API_KEY),
       })))
 
+      // Free (Tripo does not charge for it). Reads the wallet, so an empty
+      // balance shows up in the panel before a spend button is pressed rather
+      // than as a failure after one.
+      server.middlewares.use('/__creature-balance', json(async () => ({ ok: true, ...(await tripoBalance()) })))
+
       // Free. The asset index behind the bench's library: every creature the
       // roster names plus every one that only exists on disk, with what has been
       // generated for it and what it has cost so far.
@@ -797,6 +803,20 @@ function creatureGen() {
       })))
 
       server.middlewares.use('/__creature-assets', json((req) => ({ ok: true, ...creatures.assets(idOf(req)) })))
+
+      server.middlewares.use('/__creature-meshes', json((req) => ({
+        ok: true, meshes: creatures.listMeshes(idOf(req)),
+      })))
+
+      // Free, local: makes one mesh candidate the working mesh. Moves the rig
+      // step's task id with it, so rigging cannot silently target a different
+      // mesh than the one being previewed.
+      server.middlewares.use('/__creature-pick-mesh', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...creatures.pickMesh(id, file) }
+      }))
 
       // SPENDS (OpenRouter, ~$0.015). One candidate image, saved to disk
       // immediately -- an image that was paid for and only lived in a tab is
@@ -945,6 +965,35 @@ function isPageRoute(root, name) {
   return PAGE_NAME.test(name) && existsSync(resolve(root, `${name}.html`))
 }
 
+// --- restarting the server when server-side code changes --------------------
+//
+// Everything the endpoints run -- workspace.mjs, tripo.mjs, openrouter.mjs, the
+// rosters -- is a static import of this file, so Vite records it in
+// `configFileDependencies` and a change to any of them means the running server
+// is executing stale code. Vite normally restarts itself for exactly this, but
+// it routes config-dependency changes through `onHMRUpdate`, which is skipped
+// wholesale when `server.hmr` is false. We turn HMR off on purpose (see the
+// comment on the server config), so the restart has to be re-hung here.
+//
+// Client code is untouched by this: it is not a config dependency, so saving a
+// file in src/ still does nothing until you reload. Only the Node half restarts.
+function serverRestart() {
+  return {
+    name: 'aurora:server-restart',
+    apply: 'serve',
+    configureServer(server) {
+      const deps = new Set([server.config.configFile, ...server.config.configFileDependencies].map((f) => resolve(f)))
+      let restarting = false
+      server.watcher.on('change', async (file) => {
+        if (restarting || !deps.has(resolve(file))) return
+        restarting = true
+        server.config.logger.info(`${relative(process.cwd(), resolve(file))} changed, restarting server...`, { clear: true, timestamp: true })
+        await server.restart()
+      })
+    },
+  }
+}
+
 // Read fresh rather than cached, so a page added since startup is listed too.
 // `index` is `/`, not a named route.
 function pageNames(root) {
@@ -982,7 +1031,7 @@ function bareRoutes() {
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), serverRestart(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -999,6 +1048,10 @@ export default defineConfig({
   // new code rather than a cached transform. It also takes the error overlay
   // with it, since that arrives over the same socket; a syntax error now shows
   // up in the console on reload instead of as a red panel.
+  //
+  // It ALSO kills Vite's own restart-on-config-change, which is routed through
+  // the same disabled path. serverRestart() puts that back, because a stale Node
+  // half answers endpoints with code that no longer exists on disk.
   //
   // Set `hmr: true` to get the old behaviour back.
   server: { host: true, port: 5173, hmr: false },

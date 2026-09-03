@@ -63,19 +63,32 @@ async function post(path, body, what) {
  * Uploads one PNG and returns its `file_token`. Tripo's image inputs take a
  * token, a public URL or an STS object -- a token is the only one of the three
  * that works for a file that exists solely on this laptop.
+ *
+ * The path is `/v3/files`, not `/v3/upload`. v2's was `/v2/openapi/upload` and
+ * returned `image_token`; v3 renamed both the route and the field. Verified
+ * against the live API -- upload is free, so the probe cost nothing.
  */
 export async function uploadImage(buffer, filename = 'candidate.png') {
   const form = new FormData()
   form.append('file', new Blob([buffer], { type: 'image/png' }), filename)
-  const res = await fetch(`${BASE}/upload`, {
+  const res = await fetch(`${BASE}/files`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey()}` }, // no Content-Type: fetch sets the multipart boundary
     body: form,
   })
   const data = await unwrap(res, 'upload')
-  const token = data.file_token ?? data.image_token
-  if (!token) throw new Error(`Tripo upload returned no file_token: ${JSON.stringify(data).slice(0, 300)}`)
-  return token
+  if (!data.file_token) throw new Error(`Tripo upload returned no file_token: ${JSON.stringify(data).slice(0, 300)}`)
+  return data.file_token
+}
+
+/**
+ * Remaining credits. Free, and the only way to tell "the pipeline is broken"
+ * apart from "the wallet is empty" before a spend button is pressed.
+ */
+export async function getBalance() {
+  const res = await fetch(`${BASE}/account/balance`, { headers: { Authorization: `Bearer ${apiKey()}` } })
+  const data = await unwrap(res, 'balance')
+  return { balance: data.balance, frozen: data.frozen }
 }
 
 export const MODELS = {
@@ -85,6 +98,12 @@ export const MODELS = {
   p1: 'P1-20260311',
   h3: 'v3.1-20260211',
 }
+
+// P1 rejects the `quad` field outright (code 1004) -- it already emits quad
+// topology, so there is nothing to ask for. Every other model accepts the flag
+// and charges for it. The server's own error text claims quad is P2-only; that
+// is wrong, v3.1 and v2.5 both take it. Verified by probe.
+const REJECTS_QUAD = new Set([MODELS.p1])
 
 /**
  * Image -> mesh. `faceLimit` is a target, not a contract: Tripo's own docs say
@@ -111,10 +130,12 @@ export async function createMeshTask({
 }) {
   if (!fileToken) throw new Error('createMeshTask requires a fileToken')
   const body = {
-    file_token: fileToken,
+    // The image goes in a nested `file` object. A top-level `file_token` is not
+    // an error -- it is ignored, and the request dies as "file is required",
+    // which reads like the upload failed rather than like a wrong field name.
+    file: { type: 'png', file_token: fileToken },
     model,
     face_limit: faceLimit,
-    quad,
     texture,
     pbr,
     texture_quality: textureQuality,
@@ -122,6 +143,7 @@ export async function createMeshTask({
     auto_size: autoSize,
     orientation,
   }
+  if (quad && !REJECTS_QUAD.has(model)) body.quad = true
   // smart_low_poly is an H3-only surcharge; P1 is natively low-poly and
   // rejects the combination.
   if (smartLowPoly && model !== MODELS.p1) body.smart_low_poly = true

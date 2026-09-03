@@ -1,38 +1,51 @@
 import { buildRock, ROCK_TIERS, ROCK_DEFAULTS } from './rock.js'
-import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'
+import { bakeImpostor, buildImpostorCard, impostorCardExtents, BAKE_ROCK_BOUNCE } from './impostor.js'
 import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 
 // ---------------------------------------------------------------------------
-// The shipping rock bank: ONE BOULDER. One closed shape, the tints it wears, the
-// baked geometry for each of its mesh tiers, and the billboard card that stands
-// in for it past the last mesh band.
+// The shipping rock bank: A BOULDER AND A CAP. Two shapes, the tints they wear,
+// the baked geometry for each of their mesh tiers, and a billboard card apiece
+// for the band past the last mesh.
 //
-// THE WORLD HAS EXACTLY ONE ROCK ASSET AND THIS FILE IS IT. There is no variant
-// table, no shape roster, no per-environment species, no site-tagged families and
-// no open-bottomed cap. A stone underfoot, a boulder in the wood, a landmark on a
-// crag and a block let into a cliff face are all THE SAME GEOMETRY at different
-// sizes -- see v2/render/rocks.js, where every bed asks for a size in metres and
-// divides it back through this shape's measured width.
+// TWO ASSETS, AND THE SECOND IS NOT A SECOND ROCK. There is still no variant
+// table, no per-environment species and no site-tagged families: a stone
+// underfoot, a boulder in the wood, a landmark on a crag and a block let into a
+// cliff face are all THE SAME GEOMETRY at different sizes -- see
+// v2/render/rocks.js, where every bed asks for a size in metres and divides it
+// back through its shape's measured width.
 //
-// WHERE THE VARIETY COMES FROM, since that is the fair question about a world
-// built from one rock. Four things, none of them a second mesh:
+// WHAT SEPARATES THE TWO IS WHICH WAY THEY MEET THE GROUND, and it is a
+// difference no size or turn of the boulder can express. A BOULDER IS SUNK INTO
+// a surface: closed on every side, so any of its faces may be turned downward
+// and the burial decides how much of it is left. A CAP IS LAID ON one: open
+// underneath, aligned to the surface normal rather than to gravity, and sealed
+// by a skirt that plugs into the hill. That buys the two things the boulder
+// cannot do -- stone that lies flush on a wall too steep to stand a rock on, and
+// half the triangles, because a cap spends none on a floor no camera reaches.
 //
-//   QUARTER TURNS. Every instance is pre-rotated by a whole number of right
-//   angles about x and then about z, sixteen combinations, so the face that was
-//   the bed face is now a side and some other flat is down. A different
-//   silhouette off the same triangles, and stable -- 45 degrees would read as a
-//   rock leaning on the air. See ROLL_STEPS in rocks.js.
+// WHERE THE VARIETY COMES FROM, since two shapes is barely more than one. Four
+// things, none of them a third mesh:
 //
-//   SIZE. Two orders of magnitude of it, 0.25 m to 20 m, weighted small.
+//   QUARTER TURNS, ON THE BOULDER. Every boulder instance is pre-rotated by a
+//   whole number of right angles about x and then about z, sixteen combinations,
+//   so the face that was the bed face is now a side and some other flat is down.
+//   A different silhouette off the same triangles, and stable -- 45 degrees would
+//   read as a rock leaning on the air. A CAP TAKES NONE OF IT: turn an
+//   open-bottomed shell onto its side and the mouth faces the player. See
+//   ROLL_STEPS and the `roll` flag in rocks.js.
+//
+//   SIZE. Two orders of magnitude of it, half a metre to twenty, weighted small.
 //
 //   TINT. Eight destination colours rolled per instance from the environment's
 //   own palette, then pulled toward the ground the rock is standing on.
 //
 //   THE GROUND. Yaw, the lean onto the slope, a +/-15 degree jitter on top of it,
-//   and a burial depth that runs from a few percent to nine tenths.
+//   and a burial depth that runs from two fifths to nine tenths. A cap leans the
+//   whole way onto the slope where a boulder leans part of it, which is the
+//   difference between stone lying on a hillside and stone standing on one.
 //
 // Same policy as tree-bank.js and fern-bank.js: NO OFFLINE BAKE STEP. Built at
-// construction, handed to BatchedMesh.addGeometry(), disposed. The CARD tier is
+// construction, handed to whatever copies it into an arena, disposed. The CARD tier is
 // the one thing that arrives in two pieces -- quads at construction, pixels once
 // the renderer exists. See THE CARD below.
 // ---------------------------------------------------------------------------
@@ -48,7 +61,7 @@ import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 // 0.19): multiply THAT by 0x6e747c and the rock is mud, and since a multiply can
 // only push a warm tile warmer, half the palette is unreachable. Dividing
 // white-balances the photograph out of the way instead, and because
-// BatchedMesh's colour texture is FLOAT (see the fade-slot guards in
+// the per-instance colour is FLOAT (see the fade-slot guards in
 // material.js) a gain above 1.0 is storable and BRIGHTENS. Nothing here darkens
 // the tile; the smallest gain is 1.39 and check-rocks.mjs asserts it.
 //
@@ -153,9 +166,46 @@ export const BOULDER = {
   seed: 44555,
 }
 
+/**
+ * THE SECOND SHAPE, and it is a shape rather than a rock: an open-bottomed shell
+ * meant to be LAID ON a surface, where the boulder is meant to be SUNK IN one.
+ *
+ * `sit` 0.6 keeps the top two fifths of the lump and rock.js drops the disc the
+ * cut leaves behind, so a cap is 153 triangles against the boulder's 320 at the
+ * same tier -- it spends nothing on a floor no camera can reach. `foot` 0 because
+ * the flare exists to stop a tapered rock looking balanced on a point and a cap
+ * has no point to balance on; `squash` 0.7 so the two fifths that survive are a
+ * low dome rather than a cap of a ball.
+ *
+ * `skirt` 1 IS WHAT MAKES IT PLACEABLE. The rim descends a full rock-height
+ * below the bed plane, so the hole cannot clear the dirt on any slope a cap
+ * would be laid on. Free -- the curtain faces are the ones that were already
+ * holding the disc's edge.
+ *
+ * WHO PLACES IT: the `cliff caps` and `bed caps` beds in v2/render/rocks.js,
+ * which carpet steep faces and the floors of lakes and rivers with it. Both
+ * align it to the surface normal and neither rolls it -- see the `roll` flag
+ * there for why an open shell may not be turned onto its side.
+ *
+ * Pinned here rather than in gen-rock-main.js for BOULDER's reason: the bench
+ * and the world have to photograph the same shape.
+ */
+export const CAP = {
+  seed: 98821,
+  sit: 0.6,
+  foot: 0,
+  squash: 0.7,
+  skirt: 1,
+}
+
 /** The buildRock options for the boulder -- at its own seed unless given another. */
 export function rockParams(seed = BOULDER.seed) {
   return { ...ROCK_DEFAULTS, ...BOULDER, seed }
+}
+
+/** The same, for the cap. */
+export function capParams(seed = CAP.seed) {
+  return { ...ROCK_DEFAULTS, ...CAP, seed }
 }
 
 function geometryBytes(geo) {
@@ -176,8 +226,8 @@ function geometryBytes(geo) {
 // beat the hole culling leaves in a talus field.
 //
 // IT IS A BILLBOARD: ONE QUAD, SPUN IN EVERY DIRECTION. The pinned call is
-// `buildImpostorCard(w, h, ROCK_IMPOSTOR_LAYER, 1, { upNormal: true, spherical:
-// true })` and every argument is load-bearing. A rock is looked DOWN on as often
+// `buildImpostorCard(w, h, ROCK_IMPOSTOR_LAYERS[shape], 1, { upNormal: true,
+// spherical: true })` and every argument is load-bearing. A rock is looked DOWN on as often
 // as across, so rocks.js is the only bed whose material is built with
 // `sphericalBillboard`; `spherical` here tells the card which spin it will meet,
 // and the difference is the bounding sphere -- centred on the foot rather than
@@ -196,11 +246,13 @@ function geometryBytes(geo) {
 // the foot, which is the one part a distant rock needs in order to read as
 // sitting on the ground rather than floating, and `tri: 'up'` eats the crown.
 //
-// ONE PHOTOGRAPH, ONE ATLAS LAYER, and the objection that used to be raised
-// against sharing one -- that a shared picture only lands undistorted on a shape
-// with the subject's aspect -- died with the variant table. There is one subject
-// and it is the thing being photographed, so the aspect matches by construction.
-// LAYER.IMPOSTOR_ROCK is that layer.
+// ONE PHOTOGRAPH PER SHAPE, ONE ATLAS LAYER EACH, and the objection that used to
+// be raised against sharing one is exactly why the cap gets its own: a shared
+// picture only lands undistorted on a shape with the subject's aspect, and the
+// two subjects here have nothing like the same one. The boulder stands three
+// fifths as tall as it is wide, the cap a fifth -- share a layer and the far band
+// prints a squashed boulder where a cap should be, at the one distance where the
+// card is all there is. LAYER.IMPOSTOR_ROCK and LAYER.IMPOSTOR_ROCK_CAP.
 //
 // WHAT CANCELS. The card GEOMETRY is built when the bank is and the PIXELS
 // cannot exist until there is a renderer, so the two halves can never check each
@@ -268,18 +320,35 @@ export function rockBakeFrame(measured) {
 export const ROCK_CARD_SEED = 1978
 
 /**
- * The atlas layer holding the boulder's photograph. One layer, because there is
- * one shape; the bake writes it and the card geometry reads it.
+ * The atlas layer holding each shape's photograph -- one per shape, keyed by the
+ * name `buildRockBank` files it under. The bake writes them and the card
+ * geometries read them.
  */
-export const ROCK_IMPOSTOR_LAYER = LAYER.IMPOSTOR_ROCK
+export const ROCK_IMPOSTOR_LAYERS = {
+  boulder: LAYER.IMPOSTOR_ROCK,
+  cap: LAYER.IMPOSTOR_ROCK_CAP,
+}
 
 /**
- * Photograph the boulder into its atlas layer, in place.
+ * The two shapes the bank builds, in the order they enter it: the buildRock
+ * options for each, and the atlas layer its card is photographed into.
  *
- * Call ONCE, after `loadImageLayers()` has resolved -- the subject wears
+ * ONE TABLE AND NOT TWO CODE PATHS, because the bank, the bake and the gate all
+ * have to walk the same list -- a shape built here but never photographed draws
+ * an empty layer at card range, which alphaTest discards silently.
+ */
+export const ROCK_SHAPES = [
+  { name: 'boulder', params: rockParams, layer: ROCK_IMPOSTOR_LAYERS.boulder },
+  { name: 'cap', params: capParams, layer: ROCK_IMPOSTOR_LAYERS.cap },
+]
+
+/**
+ * Photograph every shape into its own atlas layer, in place.
+ *
+ * Call ONCE, after `loadImageLayers()` has resolved -- the subjects wear
  * LAYER.ROCK, and LAYER.ROCK is a PNG that arrives some hundreds of
- * milliseconds into the session. Bake before it lands and the card is a
- * photograph of an untextured lump. Until then the far band draws an empty
+ * milliseconds into the session. Bake before it lands and the cards are
+ * photographs of untextured lumps. Until then the far band draws an empty
  * layer, which is fully transparent and so discarded by alphaTest, exactly as
  * the tree, fern and grass cards do.
  *
@@ -287,16 +356,29 @@ export const ROCK_IMPOSTOR_LAYER = LAYER.IMPOSTOR_ROCK
  * coarse subject would only donate its own faceting to a picture that is meant
  * to stand in for the fine one.
  *
+ * Lit against BAKE_ROCK_BOUNCE and not the canopy rig's near-black floor: what
+ * is under a boulder's lower half is open ground, not more crown.
+ *
+ * THE CAP'S SKIRT IS OUT OF FRAME BY CONSTRUCTION and needs no special case.
+ * bakeImpostor's frustum runs from y = 0 up, and the skirt is the part below the
+ * bed plane -- the part that is inside the hill wherever the cap is placed. So
+ * the picture is the dome and nothing else, which is exactly the part of a cap a
+ * distant camera can see.
+ *
  * Needs the live renderer, so it cannot live in `buildRockBank` -- that runs in
- * a constructor and in node. Returns the one bake row, for the caller to log.
+ * a constructor and in node. Returns one bake row per shape, for the caller to
+ * log.
  */
 export function bakeRockImpostor(renderer, texArray) {
-  const geo = buildRock({ ...rockParams(ROCK_CARD_SEED), tier: 0 })
-  const frame = rockBakeFrame(geo.userData.rock.measured)
-  const azimuth = widestAzimuth(geo)
-  const baked = bakeImpostor(renderer, geo, texArray, ROCK_IMPOSTOR_LAYER, { ...frame, azimuth })
-  geo.dispose()
-  return { layer: ROCK_IMPOSTOR_LAYER, azimuth, ...baked }
+  return ROCK_SHAPES.map(({ name, params, layer }) => {
+    const geo = buildRock({ ...params(ROCK_CARD_SEED), tier: 0 })
+    const frame = rockBakeFrame(geo.userData.rock.measured)
+    const azimuth = widestAzimuth(geo)
+    const baked = bakeImpostor(
+      renderer, geo, texArray, layer, { ...frame, azimuth, bounce: BAKE_ROCK_BOUNCE })
+    geo.dispose()
+    return { name, layer, azimuth, ...baked }
+  })
 }
 
 /**
@@ -355,12 +437,14 @@ function widestAzimuth(geo, steps = 180) {
  * card VANISHES edge-on rather than just flattening.
  */
 export function rockImpostorLayers() {
-  return [ROCK_IMPOSTOR_LAYER]
+  return ROCK_SHAPES.map((s) => s.layer)
 }
 
 /**
- * How many tiers the boulder reports. The last one is ALWAYS the card, so the
- * mesh ladder gets ROCK_BAND_COUNT - 1 of these -- exactly ROCK_TIERS.
+ * How many tiers a shape reports. The last one is ALWAYS the card, so the mesh
+ * ladder gets ROCK_BAND_COUNT - 1 of these -- exactly ROCK_TIERS. One number for
+ * both shapes: a bed indexes its tier table by band, and a cap that reported a
+ * shorter ladder would need a second one.
  */
 export const ROCK_BAND_COUNT = ROCK_TIERS.length + 1
 
@@ -368,56 +452,65 @@ export const ROCK_BAND_COUNT = ROCK_TIERS.length + 1
 export const ROCK_MESH_BAND_COUNT = ROCK_BAND_COUNT - 1
 
 /**
- * Build the bank: the boulder at every tier, plus its card.
+ * Build the bank: every shape in ROCK_SHAPES at every tier, plus a card each.
  *
- * Returns `{ shape, geometries, triangles, bytes }`.
+ * Returns `{ shapes, geometries, triangles, bytes }`.
  *
- *   `shape` is the one buildable rock: `{ seed, measured, tiers }`, where
- *   `tiers` is ALWAYS ROCK_BAND_COUNT long so a band index is a straight lookup.
+ *   `shapes` is keyed by name -- `shapes.boulder`, `shapes.cap` -- each
+ *   `{ name, seed, measured, tiers }`, where `tiers` is ALWAYS ROCK_BAND_COUNT
+ *   long so a band index is a straight lookup. A bed names the one it wants.
  *
  *   `geometries` is every geometry the bank made, in the order they should enter
- *   the batch. The caller owns them and MUST dispose them once BatchedMesh has
- *   copied them into its arena -- and note that each BED builds its own batch, so
- *   one bank is copied into as many arenas as there are beds.
+ *   an arena. The caller owns them and MUST dispose them once every consumer holds
+ *   its own copy -- a bed CLONES its shape's four into its PropArena, and the
+ *   shell's BatchedMesh copies the vertices it is handed. A BED TAKES ONLY ITS OWN
+ *   SHAPE'S FOUR, which is why the bank being two shapes costs the world one extra
+ *   arena's worth of vertices rather than eight.
  *
- * THE CARD IS APPENDED LAST, so `tiers[ROCK_BAND_COUNT - 1]` is the card. Note
- * the two are different kinds of object: a mesh tier carries `userData.rock` and
- * the card carries `userData.impostor`, so anything walking the tier table has to
- * ask which it is holding rather than reaching straight for
+ * A SHAPE'S CARD IS APPENDED LAST, so `tiers[ROCK_BAND_COUNT - 1]` is the card.
+ * Note the two are different kinds of object: a mesh tier carries `userData.rock`
+ * and the card carries `userData.impostor`, so anything walking the tier table
+ * has to ask which it is holding rather than reaching straight for
  * `userData.rock.triangles`.
  *
- * `seed` DEFAULTS TO THE BOULDER'S OWN and the world does not pass one -- see
- * BOULDER for why the asset is pinned while the scatter around it is not. The
+ * `seed` DEFAULTS TO EACH SHAPE'S OWN and the world does not pass one -- see
+ * BOULDER for why the assets are pinned while the scatter around them is not. The
  * argument survives for the bench and the gates, which need to see the generator
- * at more than one draw. The CARD's picture never moves with it; see
- * ROCK_CARD_SEED.
+ * at more than one draw, and it overrides BOTH shapes' seeds together. The CARDS'
+ * pictures never move with it; see ROCK_CARD_SEED.
  */
-export function buildRockBank({ seed = BOULDER.seed } = {}) {
+export function buildRockBank({ seed = null } = {}) {
   const geometries = []
+  const shapes = {}
   let triangles = 0
   let bytes = 0
 
-  const tiers = ROCK_TIERS.map((_, tier) => {
-    const g = buildRock({ ...rockParams(seed), tier })
-    geometries.push(g)
-    triangles += g.userData.rock.triangles
-    bytes += geometryBytes(g)
-    return g
-  })
+  for (const spec of ROCK_SHAPES) {
+    const params = seed === null ? spec.params() : spec.params(seed)
+    const tiers = ROCK_TIERS.map((_, tier) => {
+      const g = buildRock({ ...params, tier })
+      geometries.push(g)
+      triangles += g.userData.rock.triangles
+      bytes += geometryBytes(g)
+      return g
+    })
 
-  // ...and only then the card, so the last band is the card. Sized through
-  // `rockCardFrame` + `impostorCardExtents` so it agrees with `bakeRockImpostor`
-  // about the framing by construction -- see THE CARD.
-  const measured = tiers[0].userData.rock.measured
-  const ext = impostorCardExtents(rockCardFrame(measured))
-  const card = buildImpostorCard(ext.width, ext.height, ROCK_IMPOSTOR_LAYER, 1, {
-    upNormal: true,
-    spherical: true,
-  })
-  geometries.push(card)
-  triangles += card.userData.impostor.triangles
-  bytes += geometryBytes(card)
-  tiers.push(card)
+    // ...and only then the card, so the last band is the card. Sized through
+    // `rockCardFrame` + `impostorCardExtents` so it agrees with
+    // `bakeRockImpostor` about the framing by construction -- see THE CARD.
+    const measured = tiers[0].userData.rock.measured
+    const ext = impostorCardExtents(rockCardFrame(measured))
+    const card = buildImpostorCard(ext.width, ext.height, spec.layer, 1, {
+      upNormal: true,
+      spherical: true,
+    })
+    geometries.push(card)
+    triangles += card.userData.impostor.triangles
+    bytes += geometryBytes(card)
+    tiers.push(card)
 
-  return { shape: { seed, measured, tiers }, geometries, triangles, bytes }
+    shapes[spec.name] = { name: spec.name, seed: params.seed, measured, tiers }
+  }
+
+  return { shapes, geometries, triangles, bytes }
 }

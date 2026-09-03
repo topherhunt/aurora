@@ -310,9 +310,9 @@ const _airOut = { r: 0, g: 0, b: 0 }
 
 // CAUSTICS: the moving net of focused sunlight on a bed under water (§11).
 //
-// The definitions. Emitted only on the fragment patch, because that is the one
-// that has a world position per pixel -- and it is also the only one that
-// matters, since the fragment patch is the terrain and the terrain is the bed.
+// The definitions. Emitted only where `caustics` is asked for, which is the
+// fragment patch and the one vertex-patched material that is ever a lake bed --
+// see patch(). Either way it is the TERRAIN, because the terrain is the bed.
 // Rocks and props take the murk and the darkening like everything else and
 // simply do not catch the net; the alternative is a third varying on every
 // material in the world to light the six per cent of them that are ever under a
@@ -655,6 +655,16 @@ export class WorldLighting {
    * cache on it and two differently-patched Lamberts would otherwise share a
    * compiled program.
    *
+   * `caustics` is whether the net on a lake bed is compiled in at all, and it
+   * defaults to the fragment path because that path already has a world
+   * position per pixel and pays nothing extra for it. A VERTEX patch that asks
+   * for it declares a vec3 varying that nothing else in this file needs, so it
+   * is a second program rather than a second uniform: the caller compiles one
+   * material with it and one without, and hands the wet one to the mesh only
+   * while she is in the water. See v2/main.js's plain terrain rung, which is
+   * how the shipping ground gets caustics without carrying the varying across
+   * every hillside in the world.
+   *
    * IT IS COMPOSED WITH WHATEVER KEY THE MATERIAL ALREADY HAD, not substituted
    * for it, and that is not tidiness. createPropMaterial builds a key that
    * varies with the things it compiles in and out -- billboard layers, strip
@@ -667,7 +677,7 @@ export class WorldLighting {
    * to read "no difference" on a headset. variantKey() rides in the same key
    * for the same reason: this file's own two axes are three programs.
    */
-  patch(material, { mode, cacheKey, worldPosVarying = null }) {
+  patch(material, { mode, cacheKey, worldPosVarying = null, caustics = mode === 'fragment' }) {
     if (mode !== 'fragment' && mode !== 'vertex') throw new Error(`patch: bad mode ${mode}`)
 
     const prev = material.onBeforeCompile
@@ -699,7 +709,7 @@ export class WorldLighting {
       if (mode === 'fragment') {
         if (!worldPosVarying) throw new Error('patch: fragment mode needs worldPosVarying')
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}\n${CAUSTIC_DEFS}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
@@ -711,15 +721,23 @@ export class WorldLighting {
           )
           // Caustics ahead of the aerial mix, in the same slot, so the murk
           // gets the last word on a bed at range.
-          .replace('#include <fog_fragment>', `${CAUSTIC_APPLY(worldPosVarying)}\n${AERIAL_GLSL}`)
+          .replace(
+            '#include <fog_fragment>',
+            caustics ? `${CAUSTIC_APPLY(worldPosVarying)}\n${AERIAL_GLSL}` : AERIAL_GLSL
+          )
       } else {
         // A vec3 of (sun, sky, near) when there are maps to sample, a bare
         // float of `near` when there are not -- the point of the unready build
         // is that the other two components are interpolated constants, and a
         // varying is paid for at every vertex in the forest.
         const varying = maps ? 'varying vec3 vWlShade;' : 'varying float vWlNear;'
+        // The bed's world position, carried across ONLY for a wet build. This
+        // is the varying the note above CAUSTIC_DEFS refuses to put on every
+        // material in the world, so it is here on exactly one of them and only
+        // in the program she is under water for.
+        const bed = caustics ? '\nvarying vec3 vWlBed;' : ''
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}${bed}`)
           .replace(
             '#include <project_vertex>',
             `#include <project_vertex>
@@ -727,10 +745,11 @@ export class WorldLighting {
             ${maps
               ? `vWlShade = vec3( wlSun( wlWorld.xz ), wlSky( wlWorld.xz ),
                              ${NEAR_GLSL('wlWorld')} );`
-              : `vWlNear = ${NEAR_GLSL('wlWorld')};`}`
+              : `vWlNear = ${NEAR_GLSL('wlWorld')};`}
+            ${caustics ? 'vWlBed = wlWorld;' : ''}`
           )
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${varying}\n${NIGHT_GLSL}`)
+          .replace('#include <common>', `#include <common>\n${varying}${bed}\n${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
@@ -740,7 +759,9 @@ export class WorldLighting {
               maps ? 'vWlShade.z' : 'vWlNear'
             )}`
           )
-          .replace('#include <fog_fragment>', AERIAL_GLSL)
+          // Same slot and same order as the fragment path: the net goes on
+          // before the murk gets the last word.
+          .replace('#include <fog_fragment>', caustics ? `${CAUSTIC_APPLY('vWlBed')}\n${AERIAL_GLSL}` : AERIAL_GLSL)
       }
     }
 

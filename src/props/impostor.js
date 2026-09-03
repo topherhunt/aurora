@@ -106,6 +106,21 @@ const BAKE_KEY = 1.5
 const BAKE_SKY = 1.0
 
 /**
+ * The hemisphere's GROUND colour -- what a surface facing straight down
+ * collects, and the whole of the "a canopy is a third of leaf albedo" figure
+ * above. Nearly black, because the thing under a leaf is more crown.
+ *
+ * WRONG FOR A SOLID. A boulder has no interior to shade; what is under its
+ * lower half is open ground, which bounces roughly its own albedo of the same
+ * sky back up. Baked against this constant a rock's underside comes out at
+ * half a percent of its top and the card reads as a black wedge sitting in
+ * mid-grey scree, so `bounce` lets a solid subject ask for a real one --
+ * BAKE_ROCK_BOUNCE is 0.2 in linear light, which is what open ground is.
+ */
+const BAKE_GROUND = 0x0e0f12
+export const BAKE_ROCK_BOUNCE = 0x7b7b7b
+
+/**
  * Render `geometry` side-on into one layer of the texture array, in place.
  *
  * Returns the card extents the capture was framed to, which is what
@@ -155,7 +170,7 @@ export function impostorCardExtents({ width, height, foot = 0 }) {
 
 export function bakeImpostor(
   renderer, geometry, texArray, layer,
-  { width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false }
+  { width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false, bounce = BAKE_GROUND }
 ) {
   if (!(width > 0) || !(height > 0)) {
     throw new Error(`bakeImpostor: need a positive width and height, got ${width}x${height}`)
@@ -217,14 +232,14 @@ export function bakeImpostor(
   // the one the real sun does not move along much at 65 N.
   //
   // The hemisphere is doing the heavier job of the two despite the lower
-  // number. Its ground colour is nearly black, so every leaf facing down or
-  // inward loses almost all of its light, and that is the interior of the crown
-  // -- the shadowed mass that makes a distant canopy read as a third of leaf
-  // albedo instead of as a flat green cutout.
+  // number. Its ground colour is what a downward-facing texel collects, and for
+  // a canopy that is nearly nothing -- the shadowed interior mass that makes a
+  // distant crown read as a third of leaf albedo instead of as a flat green
+  // cutout. A subject with no interior passes its own `bounce`; see BAKE_GROUND.
   const key = new THREE.DirectionalLight(0xffffff, BAKE_KEY)
   key.position.set(Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
   scene.add(key)
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x0e0f12, BAKE_SKY))
+  scene.add(new THREE.HemisphereLight(0xffffff, bounce, BAKE_SKY))
 
   const big = TEX_SIZE * SUPERSAMPLE
   const target = new THREE.WebGLRenderTarget(big, big, {

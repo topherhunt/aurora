@@ -82,7 +82,7 @@ const MAKE = {
   mushrooms: () => new Mushrooms(S(), field, water, layers, textures, [noAnchors], { seed: 7 }),
 }
 
-/** A Rocks is six beds behind one façade; everything else is its own bed. */
+/** A Rocks is eight beds behind one façade; everything else is its own bed. */
 const subBeds = (bed) => (bed.beds ? bed.beds : [bed])
 const bedName = (b) => (b.cfg ? b.cfg.name : '')
 

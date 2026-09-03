@@ -3,9 +3,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
   buildRock, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, rockLodSize,
 } from './props/rock.js'
-import { BOULDER, TINTS, TINT_GAIN, rockParams } from './props/rock-bank.js'
+import { BOULDER, CAP, TINTS, TINT_GAIN, rockParams, capParams } from './props/rock-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
-import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
+import { bakeImpostor, buildImpostorCard, BAKE_ROCK_BOUNCE } from './props/impostor.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
 import {
   createPropMaterial, setSnow, setMoss, setPropBump, getPropBump, setPropBumpTile, getPropBumpTile,
@@ -58,10 +58,12 @@ const STONE_TEX = 'rocks/stone.png'
 // off here and the shape that ships drift apart, which is the one failure a
 // bench exists to prevent.
 //
-// THERE IS ONE PRESET, and that is not a stub. The world has exactly one rock
-// asset; `boulder` IS that asset and everything else on this page is a sketch on
-// the way to changing it. `custom` is where a dragged slider lands, so the
-// dropdown never claims you are looking at the shipping rock once you are not.
+// THERE ARE TWO PRESETS AND ONE ASSET. `boulder` is the rock the world places,
+// everywhere; `cap` is the open-bottomed shell meant to be laid on a cliff face,
+// which nothing scatters yet -- it is in the bank and on this dropdown so the
+// shape can be judged before a bed is built for it. `custom` is where a dragged
+// slider lands, so the dropdown never claims you are looking at the shipping
+// rock once you are not.
 //
 // The tint is not part of the shape -- the same rock wears eight colours, rolled
 // per instance from the environment's palette. `size` is not really part of it
@@ -92,7 +94,8 @@ const SLIDERS = [
   ['foot', 0, 1.4, 0.02, 'a batter flared onto the bottom, quadratic in the distance below the crown. This is what stops a heavily tapered rock looking balanced on a point. Reaches well above the bed plane on purpose -- `sit` flattens the very bottom away, so a flare that only peaked down there would look like a broken dial'],
   ['strata', 0, 8, 1, 'bedding bands up the height, as a count. 0 = none'],
   ['strataAmp', 0, 0.2, 0.005, 'how proud those bands stand'],
-  ['sit', 0, 0.6, 0.01, 'fraction of the height cut away at the bottom, so the rock is BEDDED IN rather than resting on a point'],
+  ['sit', 0, 0.6, 0.01, 'fraction of the height cut away at the bottom, so the rock is BEDDED IN rather than resting on a point. Past 0 the flat disc the cut leaves on the bed plane is DROPPED and the rock becomes an open-bottomed shell -- the triangle counter is where to watch that, and `skirt` is what makes the shell safe to place'],
+  ['skirt', 0, 2, 0.05, 'how far the open rim hangs BELOW the bed plane, in rock-heights. Only does anything once `sit` is past 0, since that is what opens a rim to hang. Costs no triangles -- the curtain faces are the ones that were already holding the disc\'s edge -- and does not change the measured size, because it is applied after the support gain and hangs under y = 0'],
   ['shards', 1, 5, 1, 'masses in the cluster. Costs its multiple in triangles -- the most expensive slider on this page'],
   ['shardSpread', 0.1, 1.1, 0.01, 'how far satellites sit from the main mass. Past ~0.9 they stop overlapping and read as separate rocks'],
   ['shardDrop', 0, 0.8, 0.01, 'how much smaller satellites get'],
@@ -367,6 +370,7 @@ function rebuild() {
     const ext = bakeImpostor(renderer, geos[0], atlas, bakeLayer, {
       width: Math.max(measured.width, measured.depth),
       height: measured.height,
+      bounce: BAKE_ROCK_BOUNCE,
     })
     drawn = geos.map((geo) => {
       const quad = buildImpostorCard(ext.width, ext.height, bakeLayer, params.planes)
@@ -783,12 +787,14 @@ function syncSliders() {
 }
 
 const presetSel = document.getElementById('preset')
-// TWO ENTRIES, and one of them is not a shape. `boulder` is the world's only
-// rock asset; `custom` is a destination rather than a source -- `defaults` and
-// any hand-dragged shape slider land there, so the dropdown never claims you are
-// looking at the shipping rock once you are not.
+// THREE ENTRIES, and one of them is not a shape. `boulder` is the world's only
+// rock ASSET; `cap` is the open-bottomed shell no bed places yet, here so the
+// shape gets looked at before it gets scattered. `custom` is a destination rather
+// than a source -- `defaults` and any hand-dragged shape slider land there, so
+// the dropdown never claims you are looking at the shipping rock once you are not.
 presetSel.innerHTML =
   `<option value="boulder" title="The one rock the world ships: ROCK_DEFAULTS at seed ${BOULDER.seed}.">boulder -- the world's one rock</option>` +
+  `<option value="cap" title="An open-bottomed shell: sit ${CAP.sit} drops the floor disc and skirt ${CAP.skirt} hangs the rim a rock-height below the bed plane. Seed ${CAP.seed}. Nothing places it yet.">cap -- open-bottomed, for laying on a face</option>` +
   '<option value="">custom</option>'
 presetSel.value = presetName
 presetSel.addEventListener('change', () => {
@@ -801,7 +807,7 @@ presetSel.addEventListener('change', () => {
   // surviving from whatever you were just dragging: a rock that inherited half
   // of a sketch is not one you can sign off. The tint is untouched: it is not
   // part of the shape.
-  applyShape(rockParams())
+  applyShape(presetName === 'cap' ? capParams() : rockParams())
   seedInput.value = params.seed
   syncSliders()
   frame()

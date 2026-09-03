@@ -1222,6 +1222,47 @@ function billboardGrowVertex({ from, to, scale, sink, top }) {
         transformed.z * bbG );`
 }
 
+/**
+ * A SPUN CARD IS LIT AS GROUND, whatever its instance did to it.
+ *
+ * The card authors its normal exactly up, but the LIGHTING normal is not that
+ * attribute -- `defaultnormal_vertex` runs the instance's own rotation over it,
+ * and a rock instance is not a yaw. rock-bank varies one boulder shape by 16
+ * quarter turns, so twelve of every sixteen cards had their up normal turned
+ * sideways or straight DOWN, and a down-facing normal collects almost no light
+ * from a sky-and-sun rig. That is the whole of "the distant rocks are black" --
+ * the picture was fine and the surface it was pasted on was facing the floor.
+ *
+ * ON THE SPHERICAL BEDS ONLY, which is rocks and nothing else. It would be a
+ * no-op almost everywhere else -- a yaw plus a diagonal scale already leaves an
+ * up normal up, and the arithmetic below reproduces that exactly -- but not
+ * quite everywhere: a grass clump is tilted onto the terrain normal, so its card
+ * is lit as the slope it stands on rather than as flat ground, and that is a
+ * look somebody chose. A bed that rolls its instances and asks for a cylindrical
+ * card would hit the original bug; there is no such bed, and this is where to
+ * widen the gate if one appears.
+ *
+ * WHY THIS EXPRESSION. `defaultnormal_vertex` computes `M * (n / s2)` per
+ * matrix, `s2` being the squared column lengths. Wanting `up` out of that means
+ * feeding in `n = up * M` (v * M is M-transpose * v in GLSL), since
+ * `M * ((up * M) / s2)` is `M * M-inverse * up`. Exact for any R * S with R
+ * orthonormal and S diagonal, which is every matrix a TRS compose makes,
+ * including grass's non-uniform (sqrt(h), h, sqrt(h)). The two are applied
+ * innermost-first so a batch under an instanced parent would also come out
+ * right.
+ */
+const SPUN_CARD_NORMAL = /* glsl */ `
+        if ( propSpun > 0.0 ) {
+          vec3 cardN = vec3( 0.0, 1.0, 0.0 );
+          #ifdef USE_INSTANCING
+            cardN = cardN * mat3( instanceMatrix );
+          #endif
+          #ifdef USE_BATCHING
+            cardN = cardN * mat3( batchingMatrix );
+          #endif
+          objectNormal = cardN;
+        }`
+
 // Appended to `begin_vertex`, after `batching_vertex` and `beginnormal_vertex`
 // (chunk order in ShaderLib/meshlambert.glsl.js), so `batchingMatrix` is in
 // scope and the normal is already transformed.
@@ -1229,9 +1270,10 @@ function billboardGrowVertex({ from, to, scale, sink, top }) {
 // THE NORMAL IS NOT SPUN WITH THE QUAD. Turning it toward the eye makes N.L a
 // function of where the player stands, so the whole fern bed brightens and dims
 // as they turn on the spot -- the most obvious artefact a billboard can have.
-// The card keeps the vertical normal it was authored with (buildBillboardCard):
-// at this range a fern bed IS a ground surface, and lighting it as one is both
-// stable and closer to true than lighting 18,000 independent vertical cards.
+// The card keeps the vertical normal SPUN_CARD_NORMAL pinned for it a few chunks
+// earlier: at this range a fern bed IS a ground surface, and lighting it as one
+// is both stable and closer to true than lighting 18,000 independent vertical
+// cards.
 //
 // `spin` false compiles the SAME block without the yaw-to-camera rotation: the
 // grow ramp and the u-flip still run and the card stands at whatever yaw its
@@ -2521,6 +2563,17 @@ export function createPropMaterial(
     }
 
     shader.vertexShader = shader.vertexShader
+      // THE MASK IS BUILT HERE, one chunk before it is first read, because the
+      // NORMAL needs it too. Chunk order is `batching_vertex` (defines
+      // batchingMatrix), then this, then `defaultnormal_vertex`, then
+      // `begin_vertex` -- so a mask computed here is in scope for the fade, the
+      // wind and the spin further down, and the layer loop is still run once.
+      .replace(
+        '#include <beginnormal_vertex>',
+        `#include <beginnormal_vertex>
+        ${propCardMask(billboards ? billboards.length : 0)}
+        ${sphericalBillboard ? SPUN_CARD_NORMAL : ''}`
+      )
       .replace(
         '#include <common>',
         `#include <common>
@@ -2573,7 +2626,6 @@ export function createPropMaterial(
         vTexLayer = texLayer;
         vUvProj = uvProj;
         vec3 propObjPos = transformed;
-        ${propCardMask(billboards ? billboards.length : 0)}
         ${FADE_VERTEX}
         ${windSpec && windCompiled ? windVertex(windSpec, { strip: stripTiling, cards: !!billboards }) : ''}
         ${billboards ? billboardVertex(sphericalBillboard, billboardGrow, billboardSpin) : ''}

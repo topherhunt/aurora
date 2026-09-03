@@ -17,19 +17,38 @@
 // across an island boundary. On a 128px texture that is not a subtle artifact:
 // it swaps which part of the atlas a triangle samples.
 //
-// THE ONE RULE THIS MODULE IS BUILT AROUND: a vertex that sits on a UV seam or a
-// geometric boundary is never moved and never removed. Interiors decimate,
-// island outlines are preserved vertex for vertex. That is conservative -- it
-// gives up reduction near seams -- and the trade is deliberate, because the
-// failure it prevents is invisible until the asset is in the world and the
-// reduction it costs is visible immediately in the numbers below.
+// THE ONE RULE: no vertex attribute is ever interpolated or invented. Every UV
+// in the output is a UV that was in the input, on a triangle that could already
+// reach it. Nothing below ever computes a new texture coordinate.
 //
-// A consequence worth using rather than apologising for: HOW FAR A MESH CAN
-// DECIMATE IS A MEASUREMENT OF HOW GOOD ITS UV LAYOUT IS. A mesh with a few
-// large islands has mostly interior vertices and reduces freely. A mesh whose
-// unwrap shattered into scattered islands is mostly seam, locks solid, and
-// refuses to reduce -- which is the same property that makes its texture die at
-// 128px. `analyzeMesh` reports both numbers so the bench can say so out loud.
+// What DOES vary is whether the vendor's atlas is kept at all -- `uvMode`:
+//
+//   'preserve'  Keep it. A seam vertex is collapsible, but only into a vertex
+//     carrying a matching wedge on every face involved; `wedgeMap` decides that
+//     per edge. Because the correspondence is read off faces that already
+//     contain both endpoints, every rewritten corner moves along an edge of an
+//     existing atlas triangle -- island outlines shrink, no triangle jumps to
+//     unrelated texture. Only boundary and non-manifold points are pinned.
+//
+//   'drop'  Give it up. Topology is built from positions alone, so the whole
+//     mesh is free and reduction is bounded only by geometry. The output has NO
+//     `uv`; it carries `sampleUvs` instead -- per vertex, where in the original
+//     texture that point sat -- which is what the caller bakes into vertex
+//     colours. Neighbouring corners can come from unrelated islands, so these
+//     are not atlas coordinates and must never be handed to a sampler.
+//
+//   'auto'  Try 'preserve'; use 'drop' only for a tier it could not reach.
+//
+// WHY 'drop' HAD TO EXIST. Preserving a shattered atlas puts a hard floor on
+// reduction at roughly one triangle per UV island, and no algorithm gets under
+// it: a one-triangle island cannot be reduced. A Tripo P1 fox came back as 112
+// islands across 487 triangles, 76 of those islands three triangles or fewer,
+// and stalled at 291. The same 487 triangles reach 49 on geometry alone. A
+// far-LOD creature does not need the vendor's atlas -- at that range it needs a
+// silhouette and a handful of colours -- so the coarse tiers stop carrying one.
+//
+// `analyzeMesh` reports free, seam and locked points apart, so the bench can say
+// which kind of mesh it is holding before deciding.
 // ---------------------------------------------------------------------------
 
 const EPS = 1e-12
@@ -78,10 +97,17 @@ function quadricError(Q, o, x, y, z) {
  * welds by position to recover the real surface, then works out which of those
  * welded points are pinned.
  *
- * A point is LOCKED when any of these hold:
- *   - its corners disagree about UV     -> it is on a seam
- *   - it touches an edge used by 1 face -> it is on an open boundary
- *   - it touches an edge used by 3+     -> non-manifold, collapse is undefined
+ * Two separate classifications come out of this, and the difference is the
+ * whole reason a shattered atlas can still decimate:
+ *
+ *   LOCKED -- touches an edge used by 1 face (open boundary) or by 3+
+ *     (non-manifold). Never collapsible; there is no defined answer.
+ *   SEAM -- its corners disagree about UV. Collapsible, but only into another
+ *     point that carries a matching wedge on every face involved. `wedgeMap`
+ *     in `decimate` is what decides that, per candidate edge.
+ *
+ * `uvId` gives each distinct UV value a dense integer, so a corner's wedge is
+ * one array lookup rather than a string key rebuilt per collapse.
  */
 export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
   const vertexCount = positions.length / 3
@@ -110,25 +136,28 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
       p = rep.length
       byKey.set(key, p)
       pointPos.push(x, y, z)
-      // The representative corner is what a face inherits when its own corner is
-      // collapsed away. Faces never touched by a collapse keep their original
-      // corners, so an untouched triangle's attributes are bit-identical.
       rep.push(i)
     }
     pointOf[i] = p
   }
   const pointCount = rep.length
 
-  // UV disagreement -> seam.
+  // UV disagreement -> seam. Without UVs every corner is the same wedge, which
+  // makes the wedge machinery downstream a no-op rather than a special case.
   const locked = new Uint8Array(pointCount)
+  const seam = new Uint8Array(pointCount)
+  const uvId = new Int32Array(vertexCount)
   if (uvs) {
-    const uvKey = new Array(pointCount).fill(null)
+    const ids = new Map()
+    const firstId = new Int32Array(pointCount).fill(-1)
     for (let i = 0; i < vertexCount; i++) {
-      const p = pointOf[i]
-      if (locked[p]) continue
       const k = `${Math.round(uvs[i * 2] / 1e-6)},${Math.round(uvs[i * 2 + 1] / 1e-6)}`
-      if (uvKey[p] === null) uvKey[p] = k
-      else if (uvKey[p] !== k) locked[p] = 1
+      let uid = ids.get(k)
+      if (uid === undefined) { uid = ids.size; ids.set(k, uid) }
+      uvId[i] = uid
+      const p = pointOf[i]
+      if (firstId[p] === -1) firstId[p] = uid
+      else if (firstId[p] !== uid) seam[p] = 1
     }
   }
 
@@ -150,7 +179,7 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
     locked[+v] = 1
   }
 
-  return { pointOf, pointPos: Float64Array.from(pointPos), rep: Int32Array.from(rep), locked, pointCount, faces, faceCount, eps, diag }
+  return { pointOf, pointPos: Float64Array.from(pointPos), locked, seam, uvId, pointCount, faces, faceCount, eps, diag }
 }
 
 /**
@@ -242,10 +271,14 @@ export function estimateQuadFraction({ positions, indices }, cosTol = 0.9995) {
 }
 
 /** Everything the bench wants to say about a mesh before touching it. */
-export function analyzeMesh(mesh) {
-  const topo = buildTopology(mesh)
+export function analyzeMesh(mesh, { weldEps } = {}) {
+  const topo = buildTopology(mesh, { weldEps })
   let lockedPoints = 0
-  for (let p = 0; p < topo.pointCount; p++) if (topo.locked[p]) lockedPoints++
+  let seamPoints = 0
+  for (let p = 0; p < topo.pointCount; p++) {
+    if (topo.locked[p]) lockedPoints++
+    else if (topo.seam[p]) seamPoints++
+  }
   let lockedFaces = 0
   for (let f = 0; f < topo.faceCount; f++) {
     const a = topo.faces[f * 3], b = topo.faces[f * 3 + 1], c = topo.faces[f * 3 + 2]
@@ -256,7 +289,12 @@ export function analyzeMesh(mesh) {
     vertices: mesh.positions.length / 3,
     points: topo.pointCount,
     lockedPoints,
-    freePoints: topo.pointCount - lockedPoints,
+    // Seam points are not free -- a collapse across one needs a matching wedge
+    // on both ends -- but they are not pinned either. A mesh that is mostly
+    // seam decimates worse than one that is mostly interior, and reporting the
+    // two apart is what tells a shattered atlas from a genuinely dense mesh.
+    seamPoints,
+    freePoints: topo.pointCount - lockedPoints - seamPoints,
     // Faces pinned at all three corners can never be removed, whatever target is
     // asked for. This is the honest floor on what decimation can achieve here.
     lockedFaces,
@@ -314,16 +352,41 @@ class MinHeap {
  * input. A decimator that computes new texture coordinates is a decimator that
  * can put them in the wrong island.
  *
- * `mesh` is `{ positions, uvs?, normals?, indices }` of plain arrays. Returns
- * the same shape plus `stats`.
+ * `mesh` is `{ positions, uvs?, sampleUvs?, normals?, indices }` of plain arrays.
+ * Returns the same shape plus `stats`. `uvMode` decides whether the atlas is
+ * kept -- see the module header; a tier built with 'drop' comes back with `uvs`
+ * null and `sampleUvs` filled, and feeding it straight back in works, which is
+ * what lets `decimateLadder` chain coarse tiers.
+ *
+ * `weldEps` is the distance under which two vertices are the same point,
+ * defaulting to a millionth of the bounding diagonal -- enough to fuse the
+ * duplicated vertices a glTF seam is made of and nothing else. Raising it fuses
+ * genuinely distinct geometry, which on a thin-featured mesh makes edges
+ * non-manifold and PINS them: on the fox, 2% of the diagonal locked 42 points
+ * and cost more reduction than it bought.
  */
-export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}) {
+export function decimate(mesh, targetTris, opts = {}) {
+  const { flipTolerance = 0.2, weldEps, seamCollapse = true, uvMode = 'preserve' } = opts
   const { positions, uvs, normals, indices } = mesh
   if (!positions || !indices) throw new Error('decimate requires positions and indices')
   if (!Number.isFinite(targetTris) || targetTris < 1) throw new Error(`decimate requires a positive targetTris, got ${targetTris}`)
+  if (!['preserve', 'drop', 'auto'].includes(uvMode)) throw new Error(`unknown uvMode "${uvMode}" -- want preserve, drop or auto`)
 
-  const topo = buildTopology(mesh, { weldEps })
-  const { pointPos, rep, locked, pointCount, faceCount } = topo
+  // Cheapest tier that works: keep the atlas if it can reach the target, and
+  // only give it up when it demonstrably cannot. Which one ran is in the stats,
+  // because the two answers are not interchangeable downstream.
+  if (uvMode === 'auto') {
+    const kept = decimate(mesh, targetTris, { ...opts, uvMode: 'preserve' })
+    return kept.stats.outputTris <= targetTris ? kept : decimate(mesh, targetTris, { ...opts, uvMode: 'drop' })
+  }
+
+  // An input carrying `sampleUvs` instead of `uvs` has already had its atlas
+  // dropped by an earlier tier. Preserving is then not a choice on offer, and
+  // saying it happened would put a `uv` attribute back on a mesh whose corners
+  // come from unrelated islands.
+  const keepAtlas = uvMode === 'preserve' && Boolean(uvs)
+  const topo = buildTopology(keepAtlas ? mesh : { positions, indices }, { weldEps })
+  const { pointPos, locked, seam, uvId, pointCount, faceCount } = topo
 
   // Working copies -- faces in point space, and the original corner each face
   // slot still refers to. An untouched slot keeps its original corner, so its
@@ -373,15 +436,69 @@ export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}
 
   const heap = new MinHeap()
   const pushEdge = (u, v) => {
-    // Both ends must be free: collapsing INTO a seam vertex would need one of
-    // its several attribute corners chosen for it, and there is no correct
-    // choice. Giving up those collapses is what keeps island outlines exact.
+    // Geometric boundary and non-manifold points are pinned outright. Seam
+    // points are not -- whether a particular seam collapse is legal depends on
+    // the edge, and `wedgeMap` decides it when the edge comes off the heap.
     if (locked[u] || locked[v]) return
+    if (!seamCollapse && (seam[u] || seam[v])) return
     heap.push({ cost: costOf(u, v), u, v, stamp: version[u] + version[v] })
   }
   for (let u = 0; u < pointCount; u++) {
     if (locked[u]) continue
     for (const v of neighbours[u]) pushEdge(u, v)
+  }
+
+  /**
+   * Which corner of v each wedge of u becomes, or null if the collapse has no
+   * consistent answer.
+   *
+   * A point on a UV seam carries several corners -- one per island meeting
+   * there -- and merging u into v has to send each of u's corners to the corner
+   * of v in the SAME island. The correspondence is read off the faces that
+   * contain both u and v: such a face names one corner of each, and they are by
+   * construction in the same island.
+   *
+   * That sourcing is also what bounds the damage. Every rewritten corner moves
+   * along one edge of a triangle that already existed in the atlas, so a
+   * collapse can shorten an island outline but can never stretch a triangle
+   * across the atlas into unrelated texture.
+   *
+   * Two ways to have no answer, both rejected:
+   *   - the shared faces disagree about where one wedge of u should go (the
+   *     edge is itself a seam and v's islands do not line up with u's)
+   *   - some face at u carries a wedge the shared faces never mentioned, so
+   *     there is no corner of v to give it
+   */
+  const wedgeMap = (u, v) => {
+    const map = new Map()
+    for (const f of facesAt[u]) {
+      if (!faceAlive[f]) continue
+      let su = -1, sv = -1
+      for (let s = 0; s < 3; s++) {
+        const p = facePoints[f * 3 + s]
+        if (p === u) su = s
+        else if (p === v) sv = s
+      }
+      if (su < 0 || sv < 0) continue
+      const wu = uvId[faceCorners[f * 3 + su]]
+      const cv = faceCorners[f * 3 + sv]
+      const prev = map.get(wu)
+      if (prev !== undefined && uvId[prev] !== uvId[cv]) return null
+      if (prev === undefined) map.set(wu, cv)
+    }
+    if (map.size === 0) return null
+    for (const f of facesAt[u]) {
+      if (!faceAlive[f]) continue
+      let su = -1, hasV = false
+      for (let s = 0; s < 3; s++) {
+        const p = facePoints[f * 3 + s]
+        if (p === u) su = s
+        else if (p === v) hasV = true
+      }
+      if (hasV || su < 0) continue
+      if (!map.has(uvId[faceCorners[f * 3 + su]])) return null
+    }
+    return map
   }
 
   /**
@@ -434,6 +551,10 @@ export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}
     if (e.stamp !== version[u] + version[v]) { pushEdge(u, v); continue } // stale cost
     if (!linkConditionOk(u, v)) continue
     if (wouldFlip(u, v)) continue
+    // Read the correspondence before anything is retired -- it is sourced from
+    // exactly the faces the collapse is about to kill.
+    const wedges = wedgeMap(u, v)
+    if (!wedges) continue
 
     // Retire the faces on the collapsed edge.
     for (const f of facesAt[u]) {
@@ -441,11 +562,15 @@ export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}
       const a = facePoints[f * 3], b = facePoints[f * 3 + 1], c = facePoints[f * 3 + 2]
       if (a === v || b === v || c === v) { faceAlive[f] = 0; liveFaces-- }
     }
-    // Rewrite the rest onto v, taking v's representative corner for attributes.
+    // Rewrite the rest onto v, each corner taking the corner of v that sits in
+    // its own island.
     for (const f of facesAt[u]) {
       if (!faceAlive[f]) continue
       for (let s = 0; s < 3; s++) {
-        if (facePoints[f * 3 + s] === u) { facePoints[f * 3 + s] = v; faceCorners[f * 3 + s] = rep[v] }
+        if (facePoints[f * 3 + s] === u) {
+          facePoints[f * 3 + s] = v
+          faceCorners[f * 3 + s] = wedges.get(uvId[faceCorners[f * 3 + s]])
+        }
       }
       facesAt[v].add(f)
     }
@@ -485,7 +610,13 @@ export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}
 
   const outVerts = usedCorner.size
   const outPositions = new Float32Array(outVerts * 3)
-  const outUvs = uvs ? new Float32Array(outVerts * 2) : null
+  // Where to sample the ORIGINAL texture for this vertex. In drop mode it is not
+  // a usable atlas coordinate for the output mesh -- two corners of one triangle
+  // can come from unrelated islands -- so it goes out under its own name and the
+  // `uv` slot is left empty rather than filled with something that looks usable.
+  const srcUv = uvs ?? mesh.sampleUvs
+  const outUvs = keepAtlas && srcUv ? new Float32Array(outVerts * 2) : null
+  const outSampleUvs = !keepAtlas && srcUv ? new Float32Array(outVerts * 2) : null
   const outNormals = normals ? new Float32Array(outVerts * 3) : null
   for (const [corner, out] of usedCorner) {
     // Position comes from the welded point so a rewritten face lands on the
@@ -494,7 +625,8 @@ export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}
     outPositions[out * 3] = pointPos[p]
     outPositions[out * 3 + 1] = pointPos[p + 1]
     outPositions[out * 3 + 2] = pointPos[p + 2]
-    if (outUvs) { outUvs[out * 2] = uvs[corner * 2]; outUvs[out * 2 + 1] = uvs[corner * 2 + 1] }
+    const uvOut = outUvs ?? outSampleUvs
+    if (uvOut) { uvOut[out * 2] = srcUv[corner * 2]; uvOut[out * 2 + 1] = srcUv[corner * 2 + 1] }
     if (outNormals) {
       outNormals[out * 3] = normals[corner * 3]
       outNormals[out * 3 + 1] = normals[corner * 3 + 1]
@@ -506,6 +638,7 @@ export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}
   return {
     positions: outPositions,
     uvs: outUvs,
+    sampleUvs: outSampleUvs,
     normals: outNormals,
     indices: outVerts > 65535 ? Uint32Array.from(outIndices) : Uint16Array.from(outIndices),
     stats: {
@@ -513,9 +646,14 @@ export function decimate(mesh, targetTris, { flipTolerance = 0.2, weldEps } = {}
       outputTris: outTris,
       targetTris,
       collapses,
+      // What actually happened, not what was asked for -- 'auto' resolves here,
+      // and so does 'preserve' on a mesh that had no atlas left to preserve.
+      uvMode: keepAtlas ? 'preserve' : 'drop',
       reduction: faceCount ? 1 - outTris / faceCount : 0,
       lockedPoints: locked.reduce((s, x) => s + x, 0),
+      seamPoints: seam.reduce((s, x) => s + x, 0),
       totalPoints: pointCount,
+      weldedFrom: positions.length / 3,
       reason,
     },
   }

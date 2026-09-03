@@ -490,10 +490,10 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
 // caller in the whole project, v2's terrain, and its extra code was until now
 // compiled for the first time by whichever headset was pointed at a lake.
 //
-// It is also the branch that carries the most: the shadow and occlusion sample,
-// the night lift, the aerial ramp AND the caustic net, none of which the vertex
-// path emits. A ShaderMaterial that fails here does not draw a dimmer world; it
-// drops the terrain.
+// It is also the branch that carries the most: the shadow and occlusion sample
+// per pixel, the night lift, the aerial ramp and the caustic net. A
+// ShaderMaterial that fails here does not draw a dimmer world; it drops the
+// terrain.
 //
 // `vWorldPos` is declared into the stub rather than patched in, because that is
 // where it comes from in the real thing -- terrain-material.js has carried the
@@ -509,9 +509,10 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
 // what every material in the world actually ships as today.
 //
 // The vertex mode is here in its own right rather than only under the blade bed
-// below, because the two variants declare a DIFFERENT VARYING -- vec3 vWlShade
-// with maps, float vWlNear without -- and a cross-stage mismatch there is a link
-// error, which is the one class of failure a per-stage compile cannot see.
+// below, because its builds declare DIFFERENT VARYINGS -- vec3 vWlShade with
+// maps, float vWlNear without, plus vWlBed when caustics are asked for -- and a
+// cross-stage mismatch there is a link error, which is the one class of failure
+// a per-stage compile cannot see.
 const WL_MAPS_N = 4
 for (const variant of ['maps', 'unready', 'off']) {
   const lighting = new WorldLighting()
@@ -555,6 +556,28 @@ for (const variant of ['maps', 'unready', 'off']) {
   SHADERS.push([`lighting.js    vertex   ${variant.padEnd(7)}   frag`, 'frag', builtinPrologue('frag', defines), fsrc])
   CROSS_STAGE.push([`lighting.js vertex ${variant}`, vsrc, fsrc])
 
+  // AND THE WET VERTEX BUILD, which is a fourth program per variant and the only
+  // one anything is ever drawn with under a lake: the plain terrain rung swaps to
+  // it at the waterline (v2/main.js). It is the one build where the caustic net
+  // rides a varying this file declares rather than one the material already had,
+  // so a `vWlBed` that reached only one stage would be a link error at the exact
+  // moment she wades in -- which is what CROSS_STAGE is for.
+  const wetStub = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  const wetMat = new THREE.MeshLambertMaterial()
+  lighting.patch(wetMat, { mode: 'vertex', cacheKey: 'check-vertex-wet', caustics: true })
+  wetMat.onBeforeCompile(wetStub, { capabilities: { isWebGL2: true } })
+
+  const wvsrc = finish(wetStub.vertexShader)
+  const wfsrc = finish(wetStub.fragmentShader)
+  SHADERS.push([`lighting.js    wet vert ${variant.padEnd(7)}   vert`, 'vert', builtinPrologue('vert', defines), wvsrc])
+  SHADERS.push([`lighting.js    wet vert ${variant.padEnd(7)}   frag`, 'frag', builtinPrologue('frag', defines), wfsrc])
+  CROSS_STAGE.push([`lighting.js vertex wet ${variant}`, wvsrc, wfsrc])
+
   // The marks, per variant, and the ABSENCES are as load-bearing as the
   // presences: a horizon lookup surviving into the unready build is the dead
   // fetch this variant exists to remove, and anything at all surviving into the
@@ -580,6 +603,29 @@ for (const variant of ['maps', 'unready', 'off']) {
   }
   for (const mark of banVert) {
     if (vsrc.includes(mark)) MISSING_MARKS.push(`lighting.js vertex ${variant} vert: emitted ${mark}, should not`)
+  }
+
+  // THE DRY VERTEX BUILD MUST STAY CLEAN, and that absence is the whole reason
+  // the wet one is a second program rather than a uniform: a `vWlBed` or a
+  // `wlCaustic` in the build every hillside in the world is drawn with is the
+  // cost this arrangement exists to keep off them, and nothing about the picture
+  // would say it had leaked.
+  for (const mark of ['vWlBed', 'wlCaustic']) {
+    if (vsrc.includes(mark) || fsrc.includes(mark)) {
+      MISSING_MARKS.push(`lighting.js vertex ${variant}: emitted ${mark} on the dry build, should not`)
+    }
+  }
+  if (variant === 'off') {
+    // `off` wins over the flag, like it wins over everything else here: the row
+    // that switches this system out has to switch the net out with it.
+    if (wvsrc.includes('vWlBed') || wfsrc.includes('wlCaustic')) {
+      MISSING_MARKS.push('lighting.js vertex wet off: emitted the net with the whole system off')
+    }
+  } else {
+    if (!wvsrc.includes('vWlBed = wlWorld;')) MISSING_MARKS.push(`lighting.js vertex wet ${variant} vert: vWlBed`)
+    for (const mark of ['varying vec3 vWlBed;', 'float wlCaustic( vec2 p, float t )', 'uCaustic.x > 0.0']) {
+      if (!wfsrc.includes(mark)) MISSING_MARKS.push(`lighting.js vertex wet ${variant} frag: ${mark}`)
+    }
   }
 }
 

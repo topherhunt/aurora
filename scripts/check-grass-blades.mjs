@@ -35,7 +35,7 @@
 //   triangle per blade to round the taper is exactly the change that looks
 //   harmless in the generator and is not.
 //
-//   THE HEIGHTS STOP VARYING, OR STOP BEING 0.3 m. The spec is a 0.30 m mean
+//   THE HEIGHTS STOP VARYING, OR STOP BEING 0.225 m. The spec is a 0.225 m mean
 //   with +/-20%. A stuck random gives a bed of clones that renders perfectly;
 //   drifting the mean changes what "density 6" looks like and silently
 //   invalidates every look call made against the sliders.
@@ -282,7 +282,7 @@ console.log('\n-- heights --')
   // 12% is loose enough not to flake on a reseed and tight enough to catch a
   // mean that has actually moved.
   check(near(mean, BLADE_DEFAULTS.height, BLADE_DEFAULTS.height * 0.12),
-    'the mean blade is 0.30 m, which is the spec',
+    'the mean blade is 0.225 m, which is the spec',
     `${mean.toFixed(4)} m against ${BLADE_DEFAULTS.height}`)
   check(hs.every((h) => h >= lo - 1e-6 && h <= hi + 1e-6),
     'and every blade is inside +/-20% of it',

@@ -87,6 +87,32 @@ function seamedPair(n) {
 }
 
 /**
+ * One continuous curved surface whose atlas has been shattered: positions are a
+ * welded n x n grid, but every quad owns a separate, gapped cell in UV space. The
+ * Tripo failure in miniature -- nothing is wrong with the geometry, and an
+ * atlas-preserving decimator still cannot get below one triangle per island.
+ */
+function shatteredAtlas(n) {
+  const positions = [], uvs = [], indices = []
+  const h = (x, z) => 0.15 * Math.sin(x * 7) * Math.cos(z * 5)
+  for (let z = 0; z < n; z++) {
+    for (let x = 0; x < n; x++) {
+      const b = positions.length / 3
+      for (const [dx, dz] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+        const px = (x + dx) / n, pz = (z + dz) / n
+        positions.push(px, h(px, pz), pz)
+        // Inset by 5% so neighbouring cells never touch, which would weld two
+        // islands into one and make the island count a smaller number than the
+        // fixture is trying to be.
+        uvs.push((x + 0.05 + dx * 0.9) / n, (z + 0.05 + dz * 0.9) / n)
+      }
+      indices.push(b, b + 1, b + 2, b, b + 2, b + 3)
+    }
+  }
+  return { positions: Float32Array.from(positions), uvs: Float32Array.from(uvs), indices: Uint32Array.from(indices) }
+}
+
+/**
  * n independent planar quads, each tilted differently, each split into two
  * triangles. The unambiguous quad fixture: the only coplanar neighbour any
  * triangle has is its own quad partner.
@@ -173,13 +199,17 @@ console.log('\ntopology and locking')
   check(countUvIslands(s) === 2, 'two charts sharing a spine read as two UV islands', String(countUvIslands(s)))
   const topo = buildTopology(s)
   // The shared spine is coincident in space but split in the atlas, so those
-  // points must lock on the UV test, not just on the boundary test.
-  let seamLocked = 0
+  // points must classify on the UV test. The two spine ends sit on the open
+  // boundary as well, and boundary outranks seam: it is the stricter answer.
+  let spineSeam = 0, spineLocked = 0
   for (let p = 0; p < topo.pointCount; p++) {
     const o = p * 3
-    if (Math.abs(topo.pointPos[o + 2] - 1) < 1e-9 && topo.locked[p]) seamLocked++
+    if (Math.abs(topo.pointPos[o + 2] - 1) > 1e-9) continue
+    if (topo.locked[p]) spineLocked++
+    else if (topo.seam[p]) spineSeam++
   }
-  check(seamLocked === 5, 'every vertex on the shared spine is locked', `${seamLocked} of 5`)
+  check(spineSeam + spineLocked === 5, 'every vertex on the shared spine is seam or boundary', `${spineSeam} seam + ${spineLocked} boundary`)
+  check(spineSeam === 3, 'the three interior spine vertices read as seam, not as pinned', String(spineSeam))
 }
 
 // --- the invariant ----------------------------------------------------------
@@ -208,6 +238,105 @@ console.log('\nUVs are preserved, never invented')
   for (const uv of after) if (!before.has(uv)) foreign++
   check(foreign === 0, 'and invents no texture coordinate at the seam', `${foreign} foreign`)
 }
+{
+  // Seams are collapsible, not pinned. This is what separates the current
+  // decimator from the one that returned a Tripo fox at 99.6% of its input
+  // size: pinning every seam vertex stops a shattered atlas dead.
+  const s = seamedPair(8)
+  const pinned = decimate(s, 40, { seamCollapse: false })
+  const aware = decimate(s, 40)
+  check(triCount(aware) < triCount(pinned),
+    'a seamed mesh reduces further with seam collapses than without', `${triCount(aware)} vs ${triCount(pinned)}`)
+  check(countUvIslands(aware) === countUvIslands(s),
+    'and still does not merge the two islands', `${countUvIslands(s)} -> ${countUvIslands(aware)}`)
+
+  // The one thing a wedge collapse must never do: give a face a UV from an
+  // island it was not in. Checked per FACE, not per vertex -- a foreign-UV
+  // scan passes even when a triangle is handed the wrong island's corner,
+  // because that corner is still a UV the input contained.
+  // The two charts are the first and second half of the vertex list. A UV that
+  // occurs in both halves cannot testify either way and is skipped.
+  const half = s.positions.length / 6
+  const chartOf = new Map()
+  for (let i = 0; i < s.positions.length / 3; i++) {
+    const k = `${s.uvs[i * 2]},${s.uvs[i * 2 + 1]}`
+    const chart = i < half ? 'a' : 'b'
+    chartOf.set(k, chartOf.has(k) && chartOf.get(k) !== chart ? 'both' : chart)
+  }
+  let mixed = 0
+  const seen = new Set()
+  for (let f = 0; f < aware.indices.length / 3; f++) {
+    const tags = new Set()
+    for (let e = 0; e < 3; e++) {
+      const i = aware.indices[f * 3 + e]
+      tags.add(chartOf.get(`${aware.uvs[i * 2]},${aware.uvs[i * 2 + 1]}`))
+    }
+    for (const t of tags) seen.add(t)
+    if (tags.has('a') && tags.has('b')) mixed++
+  }
+  // Without this the mixed count is meaningless: if the discriminator went blind
+  // and tagged everything the same way, zero mixed faces proves nothing.
+  check(seen.has('a') && seen.has('b'),
+    'the output still carries UVs unique to each chart', [...seen].sort().join(','))
+  check(mixed === 0, 'no output face mixes UVs from both charts', `${mixed} mixed faces`)
+}
+
+// --- uvMode -----------------------------------------------------------------
+
+console.log('\nuvMode: the atlas floor and the way past it')
+{
+  const s = shatteredAtlas(10)
+  check(countUvIslands(s) === 100, 'the fixture is one connected surface shattered into 100 UV islands', String(countUvIslands(s)))
+
+  // 60 sits between the two floors this fixture has: 200 with the atlas kept
+  // (one triangle per island) and 40 without it (the open rim is locked, and 40
+  // rim vertices cannot triangulate into fewer than 38 faces). Asking below 40
+  // would fail for a reason that has nothing to do with UVs.
+  const kept = decimate(s, 60, { uvMode: 'preserve' })
+  const dropped = decimate(s, 60, { uvMode: 'drop' })
+  // The point of the mode. One island cannot go below one triangle, so an atlas
+  // this fragmented is a floor no tuning moves -- and the fox stalled on exactly
+  // this, at 291 of 487 triangles, whatever the weld tolerance.
+  check(triCount(kept) > 60, 'preserving a shattered atlas cannot reach the target', `${triCount(kept)} triangles`)
+  check(triCount(dropped) <= 60, 'dropping it reaches the target on geometry alone', `${triCount(dropped)} triangles`)
+
+  check(dropped.uvs === null, 'a dropped tier emits no uv attribute, because its corners no longer share an atlas')
+  check(dropped.sampleUvs instanceof Float32Array && dropped.sampleUvs.length === (dropped.positions.length / 3) * 2,
+    'and carries one sampleUv per output vertex instead', String(dropped.sampleUvs?.length))
+  check(kept.sampleUvs === null && kept.uvs instanceof Float32Array, 'a preserved tier is the other way round')
+  check(kept.stats.uvMode === 'preserve' && dropped.stats.uvMode === 'drop', 'stats name the mode that ran')
+
+  // Every sampleUv must still be a coordinate the input contained: the whole
+  // value of the bake is that it reads the ORIGINAL texture at a real location.
+  const before = uvSet(s)
+  let foreign = 0
+  for (let i = 0; i < dropped.sampleUvs.length / 2; i++) {
+    const k = `${dropped.sampleUvs[i * 2].toFixed(6)},${dropped.sampleUvs[i * 2 + 1].toFixed(6)}`
+    if (!before.has(k)) foreign++
+  }
+  check(foreign === 0, 'and every sampleUv is a texture coordinate the input had', `${foreign} foreign`)
+}
+{
+  const s = shatteredAtlas(10)
+  const easy = decimate(s, 60, { uvMode: 'auto' })
+  check(easy.stats.uvMode === 'drop', 'auto gives up the atlas when preserving cannot hit the target', easy.stats.uvMode)
+  check(triCount(easy) <= 60, 'and hits it', `${triCount(easy)} triangles`)
+
+  const g = bumpyGrid(20)
+  const cheap = decimate(g, 200, { uvMode: 'auto' })
+  check(cheap.stats.uvMode === 'preserve', 'and keeps it when preserving is enough', cheap.stats.uvMode)
+  check(cheap.uvs instanceof Float32Array, 'so a continuous chart still comes back textured')
+}
+{
+  // Chaining is where sample coordinates are easiest to mistake for an atlas:
+  // tier 2 sees a mesh with no uvs and must not promote sampleUvs into the slot.
+  const tiers = decimateLadder(shatteredAtlas(10), [140, 60], { uvMode: 'auto' })
+  check(tiers.every((t) => t.stats.uvMode === 'drop'), 'every tier of a shattered ladder drops',
+    tiers.map((t) => t.stats.uvMode).join(' -> '))
+  check(tiers.every((t) => t.uvs === null && t.sampleUvs), 'and no later tier re-emits sample coordinates as an atlas')
+  check(triCount(tiers[1]) <= 60, 'the coarsest tier reaches its target', `${triCount(tiers[1])} triangles`)
+}
+check(throws(() => decimate(grid(4), 4, { uvMode: 'sometimes' })), 'an unknown uvMode throws rather than guessing')
 
 // --- reduction --------------------------------------------------------------
 
@@ -304,7 +433,8 @@ console.log('\nanalyzeMesh')
   const a = analyzeMesh(bumpyGrid(10))
   check(a.tris === 200, 'reports triangle count', String(a.tris))
   check(a.points === 121 && a.lockedPoints === 40, 'reports welded points and how many are pinned', `${a.points} pts, ${a.lockedPoints} locked`)
-  check(a.freePoints === a.points - a.lockedPoints, 'free and locked account for every point')
+  check(a.freePoints + a.seamPoints + a.lockedPoints === a.points, 'free, seam and locked account for every point')
+  check(a.seamPoints === 0, 'a single-chart grid has no seam points', String(a.seamPoints))
   check(a.uvIslands === 1, 'reports the island count')
   // A grid's four corner triangles have all three vertices on the rim, so a
   // small non-zero floor is correct. It should stay small.

@@ -7,17 +7,28 @@
 // Layout, all under tools/creatures/work/<id>/ (gitignored -- working sources,
 // not shipped assets; the bake step is what writes public/):
 //
-//   candidates/<n>.png   every generated candidate image
-//   source.png           the picked candidate, the one Tripo reconstructs
-//   mesh.glb             textured mesh from image-to-model
-//   rig.glb              skeleton bound to the mesh
-//   anim-<preset>.glb    one file per retargeted clip
-//   state.json           task ids, costs, picks -- the record of what was spent
+//   candidates/<n>.png       every generated candidate image
+//   source.png               the picked candidate, the one Tripo reconstructs
+//   meshes/<n>.glb           every generated mesh, kept forever
+//   meshes/<n>-preview.png   Tripo's own render of that mesh
+//   meshes/<n>-lod<k>.glb    LOD tiers, decimated locally from that mesh
+//   mesh.glb                 a copy of the picked mesh -- what rigging reads
+//   rig.glb                  skeleton bound to the mesh
+//   anim-<preset>.glb        one file per retargeted clip
+//   state.json               task ids, costs, picks -- the record of what was spent
 //
 // state.json is the reason this module exists rather than living in the plugin:
 // a Tripo task id is the only handle on work already paid for, so it is written
 // the moment a task is created, BEFORE the wait, and survives a dev-server
 // restart mid-generation. Losing it means paying twice.
+//
+// NOTHING PAID FOR IS EVER OVERWRITTEN. Generated output is appended under a new
+// number and `taskLog` keeps every task id the account was ever charged for,
+// including ones no longer referenced by a pick. `state.tasks[step]` holds only
+// the *current* handle, so it is not a record and must never be the only copy --
+// an earlier version of this module wrote every mesh to a fixed `mesh.glb` and
+// silently destroyed the previous one, which costs 50 credits to undo and there
+// is no task-history endpoint to recover from.
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs'
@@ -100,11 +111,93 @@ export function pickCandidate(id, file) {
 function charge(id, step, taskId, credits) {
   const state = readState(id)
   state.tasks[step] = { taskId, credits, at: Date.now() }
+  // Append-only. `tasks` is overwritten by the next run of the same step; this
+  // is the copy that makes a paid task id impossible to lose.
+  state.taskLog = [...(state.taskLog ?? []), { step, taskId, credits, at: Date.now() }]
   state.creditsSpent = (state.creditsSpent ?? 0) + credits
   writeState(id, state)
 }
 
-/** image-to-model. Downloads the GLB (and its render preview) to disk. */
+// --- mesh candidates --------------------------------------------------------
+
+/**
+ * A mesh generated before meshes were kept as candidates lives at the top level
+ * with no entry in `state.meshes`. Adopt it as candidate 0 rather than leaving
+ * 50 credits of work invisible to the bench.
+ */
+function adoptLegacyMesh(id) {
+  const dir = workDir(id)
+  const state = readState(id)
+  const legacy = path.join(dir, 'mesh.glb')
+  if (state.meshes?.length || !fs.existsSync(legacy)) return state
+
+  fs.mkdirSync(path.join(dir, 'meshes'), { recursive: true })
+  fs.copyFileSync(legacy, path.join(dir, 'meshes', '0.glb'))
+  const preview = path.join(dir, 'mesh-preview.png')
+  if (fs.existsSync(preview)) fs.copyFileSync(preview, path.join(dir, 'meshes', '0-preview.png'))
+
+  state.meshes = [{
+    file: '0.glb',
+    taskId: state.tasks?.mesh?.taskId ?? null,
+    credits: state.tasks?.mesh?.credits ?? 0,
+    at: state.tasks?.mesh?.at ?? null,
+    params: null,
+  }]
+  state.pickedMesh = '0.glb'
+  return writeState(id, state)
+}
+
+export function listMeshes(id) {
+  const state = adoptLegacyMesh(id)
+  const dir = workDir(id)
+  return (state.meshes ?? []).map((m) => ({
+    ...m,
+    picked: m.file === state.pickedMesh,
+    url: `/tools/creatures/work/${id}/meshes/${m.file}`,
+    previewUrl: fs.existsSync(path.join(dir, 'meshes', m.file.replace('.glb', '-preview.png')))
+      ? `/tools/creatures/work/${id}/meshes/${m.file.replace('.glb', '-preview.png')}`
+      : null,
+    lods: lodsOf(id, m.file),
+  }))
+}
+
+function lodsOf(id, file) {
+  const dir = path.join(workDir(id), 'meshes')
+  if (!fs.existsSync(dir)) return []
+  const stem = file.replace(/\.glb$/, '')
+  return fs.readdirSync(dir)
+    .filter((f) => new RegExp(`^${stem}-lod\\d+\\.glb$`).test(f))
+    .sort()
+    .map((f) => ({ file: f, level: Number(f.match(/-lod(\d+)\.glb$/)[1]), url: `/tools/creatures/work/${id}/meshes/${f}` }))
+}
+
+/**
+ * Makes one mesh candidate the working mesh. Copies it to `mesh.glb`, which is
+ * what the rig step and the bench's viewer read, and repoints `tasks.mesh` --
+ * rigging is driven by the task id, so a pick that did not move it would rig a
+ * different mesh than the one on screen.
+ */
+export function pickMesh(id, file) {
+  const dir = workDir(id)
+  const state = adoptLegacyMesh(id)
+  const entry = (state.meshes ?? []).find((m) => m.file === file)
+  if (!entry) throw new Error(`no mesh candidate "${file}" for "${id}"`)
+
+  fs.copyFileSync(path.join(dir, 'meshes', file), path.join(dir, 'mesh.glb'))
+  const preview = path.join(dir, 'meshes', file.replace('.glb', '-preview.png'))
+  if (fs.existsSync(preview)) fs.copyFileSync(preview, path.join(dir, 'mesh-preview.png'))
+
+  state.pickedMesh = file
+  if (entry.taskId) state.tasks.mesh = { taskId: entry.taskId, credits: entry.credits, at: entry.at }
+  writeState(id, state)
+  return { file, path: path.relative(ROOT, path.join(dir, 'mesh.glb')) }
+}
+
+/**
+ * image-to-model. Writes a NEW numbered candidate every time -- see the header.
+ * Auto-picks only when nothing is picked yet, so a deliberate pick is never
+ * silently replaced by a later generation.
+ */
 export async function runMesh(id, opts = {}) {
   const dir = workDir(id)
   const source = path.join(dir, 'source.png')
@@ -120,12 +213,25 @@ export async function runMesh(id, opts = {}) {
   const task = await waitForTask(taskId)
   const modelUrl = task.output?.model_url ?? task.output?.pbr_model ?? task.output?.model
   if (!modelUrl) throw new Error(`Tripo mesh task ${taskId} succeeded with no model url: ${JSON.stringify(task.output ?? {}).slice(0, 300)}`)
-  fs.writeFileSync(path.join(dir, 'mesh.glb'), await download(modelUrl))
+
+  // The number is claimed from the state file, not from a directory listing, so
+  // it cannot collide with a candidate whose file was moved away by hand.
+  const state = adoptLegacyMesh(id)
+  const file = `${(state.meshes ?? []).length}.glb`
+  fs.mkdirSync(path.join(dir, 'meshes'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'meshes', file), await download(modelUrl))
 
   const previewUrl = task.output?.rendered_image_url ?? task.output?.rendered_image
-  if (previewUrl) fs.writeFileSync(path.join(dir, 'mesh-preview.png'), await download(previewUrl))
+  if (previewUrl) fs.writeFileSync(path.join(dir, 'meshes', file.replace('.glb', '-preview.png')), await download(previewUrl))
 
-  return { taskId, credits, path: path.relative(ROOT, path.join(dir, 'mesh.glb')) }
+  const fresh = readState(id)
+  fresh.meshes = [...(fresh.meshes ?? []), { file, taskId, credits, at: Date.now(), params }]
+  writeState(id, fresh)
+
+  const autoPicked = !fresh.pickedMesh
+  if (autoPicked) pickMesh(id, file)
+
+  return { taskId, credits, file, autoPicked, path: path.relative(ROOT, path.join(dir, 'meshes', file)) }
 }
 
 /** Free. Tripo's own read on whether the mesh can be rigged, and as what. */
@@ -203,8 +309,12 @@ export function assets(id) {
   const has = (f) => fs.existsSync(path.join(dir, f))
   const files = fs.existsSync(dir) ? fs.readdirSync(dir) : []
   const anims = files.filter((f) => f.startsWith('anim-') && f.endsWith('.glb'))
-  const lods = files.filter((f) => /^mesh-lod\d+\.glb$/.test(f)).sort()
-  return { source: has('source.png'), mesh: has('mesh.glb'), rig: has('rig.glb'), anims, lods, state: readState(id) }
+  const state = readState(id)
+  // LODs belong to the mesh they were decimated from, so switching pick shows
+  // that mesh's tiers rather than a stale ladder from a different one. Paths are
+  // relative to the work dir, which is what the bench's viewer appends to.
+  const lods = state.pickedMesh ? lodsOf(id, state.pickedMesh).map((l) => `meshes/${l.file}`) : []
+  return { source: has('source.png'), mesh: has('mesh.glb'), rig: has('rig.glb'), anims, lods, meshCount: (state.meshes ?? []).length, state }
 }
 
 // --- the asset index --------------------------------------------------------
@@ -250,6 +360,7 @@ export function listAll() {
       inRoster: CREATURES.some((c) => c.id === id),
       edited: Boolean(state.meta),
       candidateCount: state.candidates.length,
+      meshCount: a.meshCount,
       thumbUrl: thumb ? `/tools/creatures/work/${id}/candidates/${thumb}` : null,
       has: { source: a.source, mesh: a.mesh, rig: a.rig },
       animCount: a.anims.length,
@@ -265,8 +376,9 @@ export function listAll() {
 export function saveLod(id, level, buffer) {
   if (!Number.isInteger(level) || level < 1 || level > 9) throw new Error(`lod level must be 1-9, got ${level}`)
   const dir = workDir(id)
-  if (!fs.existsSync(path.join(dir, 'mesh.glb'))) throw new Error(`no mesh.glb for "${id}" -- nothing to decimate from`)
-  const file = `mesh-lod${level}.glb`
-  fs.writeFileSync(path.join(dir, file), buffer)
-  return { file, path: path.relative(ROOT, path.join(dir, file)), bytes: buffer.length }
+  const state = adoptLegacyMesh(id)
+  if (!state.pickedMesh) throw new Error(`no picked mesh for "${id}" -- generate and pick a mesh first`)
+  const file = `${state.pickedMesh.replace(/\.glb$/, '')}-lod${level}.glb`
+  fs.writeFileSync(path.join(dir, 'meshes', file), buffer)
+  return { file, path: path.relative(ROOT, path.join(dir, 'meshes', file)), bytes: buffer.length }
 }

@@ -4,7 +4,8 @@ import { LAYER } from '../textures.js'
 import { buildTree, crownProfile, TREE_DEFAULTS } from './tree.js'
 
 // ---------------------------------------------------------------------------
-// TREE v8 -- v6's stack of whorls, with each whorl broken into separate boughs.
+// TREE v8 -- v6's stack of whorls, with each whorl broken into separate boughs,
+// and in two crown forms: a conifer's and a broadleaf's.
 //
 // Read props/tree-v6.js's header first. The trunk, the stack, the spacing law,
 // the pinned tip, the per-meridian bow and the baked occlusion are all v6's and
@@ -49,13 +50,44 @@ import { buildTree, crownProfile, TREE_DEFAULTS } from './tree.js'
 // profile -- see `bowSpine`, and note that evenly in SLOPE is not evenly at
 // all.
 //
+// TWO CROWN FORMS OFF THE ONE PRIMITIVE, chosen by `crownForm`. Everything
+// above is the WHORLED one: rings of boughs that leave the trunk pointing down,
+// turn up as they run out, and finish in a top whorl pinned to the trunk's tip.
+// That is a conifer, and it is what the generator was written for. No setting of
+// those knobs is a broadleaf -- a ring of limbs off one point reads as a spire
+// whichever way the limbs then point -- so the ASCENDING FORM changes four
+// things and nothing else:
+//
+//   (1) The bow is SIGNED the other way. A limb leaves the trunk climbing and
+//   flattens at its end, which is the arc a hardwood limb makes under its own
+//   load, and it goes through the same `bowSpine` solve with a negative total.
+//
+//   (2) How far it climbs is its HEADROOM -- the trunk left above where it
+//   leaves -- so a limb low on the bole sweeps up hard and one at the tip runs
+//   out level, and the crown closes over at the tree's own height instead of
+//   growing a second spire. `dropByHeight` is then the overshoot past the tip,
+//   which rounds the top over rather than cutting it flat. See `rise`.
+//
+//   (3) The top whorl is NOT pinned: a broadleaf's trunk tip is only the
+//   highest place a limb can leave from.
+//
+//   (4) `limbScatter` gives every limb its own launch height and `limbFork`
+//   lets it leave off the LIMB BEFORE IT instead of off the trunk, FORK_DEEP
+//   deep. Together they dissolve the rings. A fork costs exactly what a primary
+//   limb costs and comes out of the same `boughs`, so an outline made of
+//   sub-branches is bought by spending fewer spokes and not by spending more
+//   triangles.
+//
 // EVERY TIER LANDS ITS TIPS ON THE SAME POINTS. A tip is where it is because of
 // per-bough draws only -- nothing about the spine's station count reaches it --
 // so LOD1 takes stations OUT of a bough without moving its ends, and the switch
 // is a bough getting straighter rather than a tree changing shape. That holds
 // only because the corner jitter draws from a stream of its own: two draws per
 // corner off the main stream would make the bough after this one depend on how
-// many stations this one had.
+// many stations this one had. A fork is the same argument one level further
+// out, and the reason it reads its parent at NS_REF rather than at the tier's
+// own station count: a butt placed by an index into a spine LOD1 has coarsened
+// slides along that spine, and takes every tip downstream of it along.
 //
 // LOD2 keeps it by the same discipline one level up. It thins the crown, and a
 // count is the one thing it must not touch to do that: `skirts` and `boughs`
@@ -122,6 +154,10 @@ export const TREE_V8_DEFAULTS = {
   rootWidth: 1.1,
 
   // --- the stack ---
+  crownForm: 'whorled', // 'whorled' or 'ascending'. WHICH ARCHITECTURE the
+                       // crown is built to, and the one parameter here that is
+                       // not a number, because it is not a matter of degree:
+                       // see the header's two forms
   skirts: 11,          // whorls up the trunk, `boughs` boughs each
   skirtBottom: 0.34,   // fraction of height the LOWEST whorl sits at. Higher
                        // than v6's, because a cloak hangs BELOW its own spine.
@@ -189,6 +225,25 @@ export const TREE_V8_DEFAULTS = {
                        // straight in plan and a whorl of straight spokes reads
                        // as a wheel
 
+  // --- the ascending form only ---
+  // Inert under `crownForm: 'whorled'`, and deliberately so: they are drawn
+  // from the rng only on the ascending path, which is what keeps a conifer's
+  // stream the stream it has always had.
+  limbScatter: 0,      // how far a limb's launch wanders up and down the trunk
+                       // off its whorl's own stop, as a fraction of the stack's
+                       // whole span. THE knob that dissolves the rings: at 0 an
+                       // ascending crown is still a stack of tidy whorls, and a
+                       // ring of limbs all leaving the trunk at one height is
+                       // the tell that reads as a conifer whichever way they
+                       // point
+  limbFork: 0,         // and the chance that a limb launches off the LIMB
+                       // BEFORE IT instead of off the trunk, up to two deep. A
+                       // fork costs exactly what a limb costs, so this trades
+                       // primary limbs for sub-branches rather than adding any
+  forkSpread: 0.6,     // radians a fork swings off its parent's azimuth,
+                       // signed per fork. At 0 a fork carries straight on and
+                       // reads as one long limb
+
   // --- what a coarse tier drops ---
   // Both are FRACTIONS KEPT, not counts, and that distinction is the whole
   // point: `skirts` and `boughs` still say how many the tree HAS, every one of
@@ -222,9 +277,13 @@ export const TREE_V8_DEFAULTS = {
 // defaults above, so a change to a law that belongs to all trees moves all four
 // and only the numbers that are actually a species decision are written down.
 //
-// The generator is a stack of whorls of drooping boughs, which is a conifer's
-// architecture and not a broadleaf's. What makes the three broadleaves work is
-// that the same three knobs read as different botany:
+// FIRST, `crownForm`, because it is the only decision here that a number
+// cannot make. Aspen and birch are conifer architecture worn lightly -- a
+// slender stack of whorls whose limbs happen to hang or sweep -- and the
+// knobs below carry them. An oak is not, and no setting of those knobs was
+// ever going to make it one; see the header's two forms.
+//
+// Within a form, the same three knobs read as different botany:
 //
 //   `skirtBow` -- how hard a limb turns UP as it runs out. It is the single
 //   most species-carrying number here. A pine limb barely turns (0.1); an oak
@@ -249,13 +308,20 @@ export const TREE_V8_SPECIES = {
   // reach.
   pine: { label: 'pine', mat: V8_MATS.pine, params: {} },
 
-  // OAK. A short thick bole under a crown wider than the tree is tall, and the
-  // limbs are the whole character: few, long, crooked, and turning up hard at
-  // the ends. `skirtBottom` 0.5 is what makes the bole short; `boughCrook` and
-  // `boughSpread` at their highest of the four are what stop six limbs on a
-  // whorl reading as six spokes. The cloaks are wide and BLUNT -- `boughTaper`
-  // 0.4 against pine's 0 -- because oak foliage is clumped leaf masses hung on
-  // a limb, not a needle mat running out to a point.
+  // OAK, and the ONE ASCENDING crown in the bank -- everything the header says
+  // about the second form is here or nowhere. A short thick bole under a crown
+  // wider than the tree is tall, and the limbs are the whole character: few,
+  // long, crooked, climbing out of the trunk and flattening at their ends, and
+  // forking as often as not. `skirtBottom` 0.5 is what makes the bole short.
+  // `limbScatter` 0.55 is most of a whorl's own gap, so six rings of six limbs
+  // dissolve into thirty-six launch heights and nothing reads as a ring.
+  // `limbFork` 0.45 spends nearly half the limb budget on sub-branches instead
+  // of primaries, which is the trade the crown wants: an oak's outline is made
+  // of forks, and six long spokes is a spoked wheel whichever way they point.
+  // `crownPeak` 1 puts the widest whorl at the very top, so the profile widens
+  // all the way up and the mass sits high. The cloaks are wide and BLUNT --
+  // `boughTaper` 0.4 against pine's 0 -- because oak foliage is clumped leaf
+  // masses hung on a limb, not a needle mat running out to a point.
   oak: {
     label: 'oak',
     mat: V8_MATS.oak,
@@ -264,11 +330,13 @@ export const TREE_V8_SPECIES = {
       height: 9,
       trunkSides: 12, trunkLobe: 0.3, trunkRings: 3, trunkRadius: 0.035, trunkBend: 0.06,
       barkRepeat: 5,
-      roots: 6, rootRise: 0.05, rootLength: 0.14, rootAngle: 0.55, rootDroop: 0.5, rootWidth: 1.4,
+      roots: 6, rootRise: 0.05, rootLength: 0.14, rootAngle: 0.69, rootDroop: 0.12, rootWidth: 0.75,
+      crownForm: 'ascending',
       skirts: 6, skirtBottom: 0.5, skirtStagger: 0.5, spacingByLength: 0.2,
-      crownRadius: 0.46, crownPeak: 0.45, crownFullness: 0.6, skirtMin: 0.45, topGrow: 0.1,
+      crownRadius: 0.46, crownPeak: 1, crownFullness: 0.6, skirtMin: 0.45, topGrow: 0.1,
       boughs: 6, skirtDrop: 0.45, dropByHeight: 0.15, skirtBow: 0.26,
       skirtLean: 0.06, skirtShift: 0.12,
+      limbScatter: 0.55, limbFork: 0.45, forkSpread: 0.8,
       boughSpine: 4, boughVary: 0.32, boughLift: 0.55, boughSpread: 0.5, boughTilt: 0.3,
       midBend: 0.45, boughWidth: 0.6, boughTaper: 0.4, boughDroop: 0.75, boughCrook: 0.22,
       innerShade: 0.15, midShade: 0.7,
@@ -574,6 +642,29 @@ const BOW_LOW = 0.35
 const BOW_TURN = 4
 const BOW_MAX = 1.4
 
+// Where along its parent a fork leaves, as a fraction of the parent's stations,
+// and how far either side of that the draw runs. Past the middle, because a
+// fork nearer the butt is a second primary limb wearing a disguise -- the two
+// run side by side for most of their length and the crown gains no outline for
+// what it spent. FORK_SPAN is kept inside the bracket so the butt always lands
+// on an interior section and never on the parent's own tip.
+const FORK_OUT = 0.62
+const FORK_SPAN = 0.3
+
+// A fork's reach, as a fraction of its PARENT's whole reach. Not of the run the
+// parent had left, which is the tempting reading and the wrong one: a fork
+// leaving at FORK_OUT with only that much left in it lands inside its parent's
+// own cloaks and buys the crown no outline at all. A little over the remaining
+// run is what puts a fork's tip PAST its parent's, off to one side, which is
+// what makes a forked crown lobed instead of round. Under 1 all the same, so a
+// chain of them tapers out and stops.
+const FORK_KEEP = 0.55
+
+// How many forks deep a chain may run. Two, because the third is a twig at this
+// scale: it lands inside the cloaks of the two above it and pays a whole bough
+// for foliage nobody can see past.
+const FORK_DEEP = 2
+
 // Drops down a spine that turn it by the SAME ANGLE at every joint, given where
 // its stations already sit out from the trunk and how far its tip must fall.
 //
@@ -589,6 +680,12 @@ const BOW_MAX = 1.4
 // tip's. One unknown, `a`, in one equation that increases strictly with it:
 // bracketed between the two angles that would stand a segment vertical, and
 // solved by Newton with a bisection fallback for where tan turns over.
+//
+// `total` IS SIGNED, and its sign is the two crown forms. Positive is a bough
+// that leaves the trunk pointing down and rotates up as it runs out, which is
+// a conifer's; negative rotates the other way, so a limb leaves the trunk
+// climbing steeply and flattens out at its end, which is a broadleaf's. Both
+// go through the same solve -- see the header's ASCENDING FORM.
 const bowSpine = (sd, sr, ns, fall, total) => {
   const turn = total / (ns - 2)
   sd[0] = 0
@@ -602,8 +699,13 @@ const bowSpine = (sd, sr, ns, fall, total) => {
       return
     }
   }
-  let lo = total - Math.PI / 2 + 1e-9
-  let hi = Math.PI / 2 - 1e-9
+  // Every segment's pitch, `a` through `a - total`, has to stay off vertical,
+  // so the bracket is the intersection of the two constraints. Written for a
+  // positive `total` alone it reduces to the old `[total - PI/2, PI/2]`, and a
+  // negative one needs the other pair of bounds or the solve starts outside its
+  // own domain and Newton walks off through a pole.
+  let lo = Math.max(-Math.PI / 2, total - Math.PI / 2) + 1e-9
+  let hi = Math.min(Math.PI / 2, total + Math.PI / 2) - 1e-9
   // The chord's own pitch, plus half the turn, is where the answer nearly is.
   let a = Math.min(hi, Math.max(lo, Math.atan(fall / sr[ns - 1]) + total / 2))
   for (let k = 0; k < 32; k++) {
@@ -675,6 +777,12 @@ export function buildFoliageV8(options, frame) {
   const tex = Math.max(0.05, p.texMetres)
   const sky = Math.min(1, Math.max(0, p.leafSkyward))
   const bend = Math.min(1, Math.max(0, p.midBend))
+  if (p.crownForm !== 'whorled' && p.crownForm !== 'ascending') {
+    throw new Error(
+      `buildFoliageV8: crownForm "${p.crownForm}" is not a crown -- it is 'whorled' or 'ascending'`
+    )
+  }
+  const asc = p.crownForm === 'ascending'
 
   const positions = []
   const normals = []
@@ -703,6 +811,38 @@ export function buildFoliageV8(options, frame) {
   const sd = new Float64Array(ns)
   const sc = new Float64Array(ns)
   const sv = new Float64Array(ns)
+  // How far each station stands from the TRUNK, which is not the same question
+  // as how far it stands from its own butt the moment a limb can launch off
+  // another limb. The coverage shading reads this one -- see the pass at the
+  // bottom, and note that a fork measured from its own butt would come out as
+  // the most deeply buried thing on the tree when it is in fact the foliage
+  // furthest out in the light.
+  const sa = new Float64Array(ns)
+
+  // THE PARENT A FORK READS, solved at a FIXED resolution and never at the
+  // tier's. `ns` is the one thing about a limb that a coarse tier changes, so a
+  // butt placed by an index into the tier's own stations would slide along its
+  // parent the moment LOD1 took a station out -- and every tip downstream of it
+  // with it, which is exactly the drift the ladder exists to not have. Eight
+  // stations resolve a bough's bow well past where a butt can be seen to move.
+  //
+  // Held across the whole crown rather than reset per whorl, so what a fork
+  // reads is always the limb built just before it -- and filled for DROPPED
+  // limbs too, or a coarse tier would hang a fork off a parent it never solved.
+  const NS_REF = 8
+  const rr = new Float64Array(NS_REF)
+  const rd = new Float64Array(NS_REF)
+  const rc = new Float64Array(NS_REF)
+  const rt = new Float64Array(NS_REF)
+  for (let j = 0; j < NS_REF; j++) rt[j] = Math.pow(j / (NS_REF - 1), SPINE_TIPWARD)
+  const prev = []
+  for (let j = 0; j < NS_REF; j++) prev.push(new THREE.Vector3())
+  let prevAz = 0
+  let prevR = 0
+  let prevDeep = 0
+
+  const axis = new THREE.Vector3()
+  const origin = new THREE.Vector3()
 
   // The mat's frame for the bough being built: an origin and a TURN. Offsets
   // alone leave every cloak on the tree running its needles the same way, and a
@@ -727,6 +867,18 @@ export function buildFoliageV8(options, frame) {
     if (i === n - 1) return stops[n - 1] - stops[n - 2]
     return (stops[i + 1] - stops[i - 1]) / 2
   }
+
+  // How far an ASCENDING limb climbs, given where it leaves and how far it
+  // reaches. Written against the HEADROOM -- the trunk it still has above it --
+  // rather than against its own reach, and that is what makes the form close
+  // over: a limb low on the trunk has metres to climb and sweeps up hard, a limb
+  // at the tip has none and runs out level, so the crown tops out at the tree's
+  // own height instead of growing a second spire above it. `skirtDrop` is the
+  // fraction of that headroom a limb takes, and `dropByHeight` is the overshoot
+  // past the trunk's tip, in the limb's own reach, which rounds the top over
+  // rather than cutting it flat.
+  const rise = (y, r) =>
+    Math.max(0, p.skirtTop * H - y) * Math.max(0, p.skirtDrop) + r * Math.max(0, p.dropByHeight)
 
   // One vertex: place it, author its normal, and give it a uv and a shade. `u`
   // and `v` come in as metres ACROSS and ALONG the bough and are turned into
@@ -756,13 +908,20 @@ export function buildFoliageV8(options, frame) {
     // read the same whichever whorl is being built, or nudging `skirts` would
     // reroll the shape of every whorl below the one that was added.
     const wander = (rand() - 0.5) * p.skirtStagger * slotOf(i)
-    const t = top ? stops[i] : Math.min(1, Math.max(0, stops[i] + wander))
+    // The whorled form pins its top whorl to the trunk's tip, which is what
+    // finishes a conifer in needles rather than in a spike. The ascending form
+    // must NOT: a ring of limbs radiating from one point at the top of the tree
+    // is exactly the pointed peak a broadleaf does not have, and there the tip
+    // of the trunk is only the highest place a limb can leave from.
+    const pin = top && !asc
+    const t = pin ? stops[i] : Math.min(1, Math.max(0, stops[i] + wander))
     const apexY = bottom + t * span
     const f = Math.min(1, Math.max(0, apexY / Math.max(1e-6, H)))
 
+    const grow = top ? 1 + Math.max(0, p.topGrow) : 1
     const prof = crownProfile(t, p.crownPeak, p.crownFullness)
-    const R = Rmax * (p.skirtMin + (1 - p.skirtMin) * prof) * (top ? 1 + Math.max(0, p.topGrow) : 1)
-    const D = R * Math.max(0, p.skirtDrop) * (1 + Math.max(0, p.dropByHeight) * t)
+    const Rw = Rmax * (p.skirtMin + (1 - p.skirtMin) * prof) * grow
+    const Dw = Rw * Math.max(0, p.skirtDrop) * (1 + Math.max(0, p.dropByHeight) * t)
     const yaw = rand() * TAU
 
     // The axis: the trunk's, tipped by its own draw. A whorl that leaned the
@@ -776,13 +935,17 @@ export function buildFoliageV8(options, frame) {
     e2.crossVectors(w, e1).normalize()
 
     const shiftAz = rand() * TAU
-    // Drawn then discarded on the top whorl, for the same reason `wander` is:
-    // its butt has to sit ON the axis to be the tip of the tree.
-    const drift = rand() * p.skirtShift * R
-    const shift = top ? 0 : drift
-    const origin = frame.at(f)
-      .addScaledVector(e1, Math.cos(shiftAz) * shift)
-      .addScaledVector(e2, Math.sin(shiftAz) * shift)
+    // Drawn then discarded on a PINNED top whorl, for the same reason `wander`
+    // is: its butt has to sit ON the axis to be the tip of the tree.
+    const drift = rand() * p.skirtShift * Rw
+    const shift = pin ? 0 : drift
+    // The whorl's launch offset, in the WHORL's own leaned frame and not in
+    // world, so a leaning whorl slides across itself rather than across the
+    // ground. Added to whatever point on the trunk a limb leaves from -- one
+    // point for the whole whorl in the whorled form, a different one per limb
+    // in the ascending form.
+    const offA = Math.cos(shiftAz) * shift
+    const offB = Math.sin(shiftAz) * shift
 
     const apexShade = top
       ? p.innerShade + (1 - p.innerShade) * Math.min(1, Math.max(0, p.shadeToTip))
@@ -805,11 +968,12 @@ export function buildFoliageV8(options, frame) {
       const liftBy = p.boughLift * pull
       const tilt = (rand() * 2 - 1) * p.boughTilt
       const sink = Math.min(0.95, Math.max(-0.4, liftBy + tilt))
-      // EVERY bough leaves the trunk pointing DOWN and turns up as it runs out,
-      // and the draw sets only how far this one does. `skirtBow` is the mean of
-      // that, so the slider moves the whole whorl together instead of moving
-      // how many limbs turn up and how many hang. BOW_MAX owns the cap, in the
-      // angle the draw is about to become.
+      // How far this bough ROTATES over its own length -- down-then-up in the
+      // whorled form, up-then-flat in the ascending one, the form owning the
+      // sign and the draw owning only the amount. `skirtBow` is the mean of it,
+      // so the slider moves the whole whorl together instead of moving how many
+      // limbs turn and how many run straight. BOW_MAX owns the cap, in the angle
+      // the draw is about to become.
       const bow = p.skirtBow * (BOW_LOW + (2 - 2 * BOW_LOW) * rand())
       const swing = (rand() - 0.5) * p.boughSpread * step
       const crook = (rand() * 2 - 1) * p.boughCrook
@@ -824,12 +988,61 @@ export function buildFoliageV8(options, frame) {
       // The ladder rests on this: LOD1 coarsens the spine and MUST land its
       // tips where LOD0 left them.
       const jit = mulberry32(rand() * 4294967296)
+      // THE ASCENDING FORM'S OWN DRAWS, taken only on that path. A conifer's
+      // stream has to stay the stream it always was, or teaching the generator a
+      // broadleaf would reshape every pine in the world.
+      const hop = asc ? (rand() - 0.5) * p.limbScatter : 0
+      const roll = asc ? rand() : 1
+      const forkAt = asc ? FORK_OUT + (rand() - 0.5) * FORK_SPAN : 0
+      const forkTurn = asc ? rand() * 2 - 1 : 0
 
       // Every draw above this line has now happened, which is the only thing a
-      // dropped bough owes the stream. Past it there is nothing but arithmetic.
-      if (!keepSkirt[i] || !keepBough[b]) continue
+      // dropped bough owes the stream. The spine below is then solved for a
+      // DROPPED bough too, and that is not waste: a fork's butt sits on the limb
+      // built before it, so a parent a coarse tier skipped still has to exist as
+      // arithmetic or the fork after it lands where LOD0 never put it. Only the
+      // EMIT is skipped, further down.
+      const keep = keepSkirt[i] && keepBough[b]
 
-      const az = yaw + b * step + swing
+      // WHERE THIS LIMB LEAVES FROM, which is the whole of the difference
+      // between the two forms. A whorled bough leaves the one point its whorl
+      // sits on, every bough in the ring from the same place. An ascending one
+      // leaves its own point up the trunk -- or, `limbFork` of the time, a point
+      // out along the limb before it, which is what makes a sub-branch.
+      let R = Rw
+      let D = Dw
+      let az = yaw + b * step + swing
+      let deep = 0
+      if (!asc) {
+        axis.copy(frame.at(f))
+        origin.copy(axis).addScaledVector(e1, offA).addScaledVector(e2, offB)
+      } else if (roll < p.limbFork && b > 0 && prevDeep < FORK_DEEP && prevR > 1e-4) {
+        // A FORK: butt on its parent's spine, azimuth swung off its parent's,
+        // reach a fraction of what its parent had. `axis` stays the TRUNK at
+        // this height, not the parent -- the shading pass asks how far out from
+        // the tree a station is, and a fork measured from its own butt would
+        // come back as the most buried foliage on a crown when it is the
+        // furthest out in the light.
+        const k = forkAt * (NS_REF - 1)
+        const j0 = Math.min(NS_REF - 2, Math.max(0, Math.floor(k)))
+        origin.copy(prev[j0]).lerp(prev[j0 + 1], Math.min(1, Math.max(0, k - j0)))
+        az = prevAz + p.forkSpread * (forkTurn < 0 ? -1 : 1) * (0.45 + 0.55 * Math.abs(forkTurn))
+        R = Math.max(1e-4, prevR * FORK_KEEP)
+        D = rise(origin.y, R)
+        deep = prevDeep + 1
+        axis.copy(frame.at(Math.min(1, Math.max(0, origin.y / Math.max(1e-6, H)))))
+      } else {
+        // A PRIMARY LIMB, off its own point on the trunk. `hop` is the whole of
+        // what turns a stack of rings into a scatter, and the profile is re-read
+        // at the height it actually leaves from rather than at its whorl's.
+        const ty = Math.min(1, Math.max(0, t + hop))
+        const yb = bottom + ty * span
+        axis.copy(frame.at(Math.min(1, Math.max(0, yb / Math.max(1e-6, H)))))
+        origin.copy(axis).addScaledVector(e1, offA).addScaledVector(e2, offB)
+        R = Rmax * (p.skirtMin + (1 - p.skirtMin) * crownProfile(ty, p.crownPeak, p.crownFullness)) * grow
+        D = rise(yb, R)
+      }
+
       out.copy(e1).multiplyScalar(Math.cos(az)).addScaledVector(e2, Math.sin(az))
       side.crossVectors(w, out).normalize()
 
@@ -840,25 +1053,53 @@ export function buildFoliageV8(options, frame) {
       // zero at both ends, so the bend is through the spine rather than a kink
       // that swings the tip off its own azimuth.
       for (let j = 0; j < ns; j++) {
-        const t = st[j]
-        const shrink = ramp(t, 0, bend, 1)
-        sr[j] = R * t * (1 - pull * shrink)
-        sc[j] = crook * R * Math.sin(Math.PI * t)
-        spineR[eb * ns + j] = sr[j]
+        const u = st[j]
+        const shrink = ramp(u, 0, bend, 1)
+        sr[j] = R * u * (1 - pull * shrink)
+        sc[j] = crook * R * Math.sin(Math.PI * u)
       }
 
       // The pitch is NOT put through `shrink`: that curves a spine on its own
       // account, and a bough lifted hard enough would then hang however far it
       // is bowed. `midBend` bends the SHORTENING and nothing else.
-      const fall = D * (1 - sink)
-      bowSpine(sd, sr, ns, fall, Math.min(BOW_MAX, BOW_TURN * bow))
+      //
+      // ONE SIGN IS BOTH FORMS. Positive is a whorled bough: it leaves pointing
+      // down by `fall` and rotates up as it runs out. Negative is an ascending
+      // limb: it leaves CLIMBING and rotates over, so it starts steep and
+      // flattens at its end, which is the arc an oak limb makes.
+      const arch = Math.min(BOW_MAX, BOW_TURN * bow)
+      const dir = asc ? -1 : 1
+      const fall = dir * D * (1 - sink)
+      bowSpine(sd, sr, ns, fall, dir * arch)
 
       for (let j = 0; j < ns; j++) {
         sp[j].copy(origin).addScaledVector(out, sr[j]).addScaledVector(side, sc[j]).addScaledVector(w, -sd[j])
         sv[j] = j === 0 ? 0 : sv[j - 1] + sp[j].distanceTo(sp[j - 1])
+        if (asc) sa[j] = Math.hypot(sp[j].x - axis.x, sp[j].z - axis.z)
       }
       const L = sv[ns - 1]
-      reach += sr[ns - 1] / nbKeep
+
+      // This limb is the next one's possible parent, kept or dropped -- at
+      // NS_REF, for the reason `prev` is declared with.
+      if (asc) {
+        for (let j = 0; j < NS_REF; j++) {
+          const u = rt[j]
+          rr[j] = R * u * (1 - pull * ramp(u, 0, bend, 1))
+          rc[j] = crook * R * Math.sin(Math.PI * u)
+        }
+        bowSpine(rd, rr, NS_REF, fall, dir * arch)
+        for (let j = 0; j < NS_REF; j++) {
+          prev[j].copy(origin).addScaledVector(out, rr[j]).addScaledVector(side, rc[j]).addScaledVector(w, -rd[j])
+        }
+        prevAz = az
+        prevR = R
+        prevDeep = deep
+      }
+
+      if (!keep) continue
+
+      for (let j = 0; j < ns; j++) spineR[eb * ns + j] = asc ? sa[j] : sr[j]
+      reach += (asc ? sa[ns - 1] : sr[ns - 1]) / nbKeep
 
       // The ridge normal, per station: perpendicular to the cloak's lateral run
       // and to the spine's, the latter taken across the station's NEIGHBOURS so

@@ -61,7 +61,7 @@ The pose clause is selected by rig type, because **a limb tucked against the tor
 
 ### Stage 3: quad topology, and what the +5 credits buy
 
-H3 charges 5 extra credits for `quad: true`. P1 charges nothing, because quads are what it generates.
+H3 charges 5 extra credits for `quad: true`. **P1 rejects the field outright** (code 1004) rather than charging nothing for it, because quads are what it generates and there is nothing to ask for. `createMeshTask` omits `quad` for P1 for that reason -- `REJECTS_QUAD` is the list. The server's own error text says quad is supported only by `P2-20260801`; that is wrong, `v3.1` and `v2.5` both accept it, and P1 is the sole refusal.
 
 **glTF has no quad primitive.** Mode 4 is TRIANGLES and there is no other option, so whichever model produced it, `mesh.glb` arrives triangulated and no runtime anywhere in this repo will ever see a quad. Paying for quad mode does not buy a different file format. It buys a different *arrangement* of the triangles inside the same format: a quad-generated mesh is triangle pairs that were coplanar quads a moment earlier, laid out in edge loops that follow the form.
 
@@ -75,20 +75,32 @@ That arrangement is not cosmetic, and it matters for exactly one reason -- the o
 
 Tripo will also sell retopology. Buying it would put the one step that can be iterated for free behind a per-attempt charge, so `src/mesh/decimate.js` does it instead: quadric error metric, half-edge collapse, plain arrays in and out, no dependency on three so the same code runs in the bench tab and under `scripts/check-decimate.mjs` in node.
 
-**The one rule: a vertex on a UV seam or a geometric boundary is never moved and never removed.** Half-edge collapse means the surviving vertex stays exactly where it was, so no position, UV or normal is ever interpolated or invented. The gate asserts this directly -- every UV in the output existed in the input, zero foreign -- because a decimator that computes new texture coordinates is a decimator that can put one in the wrong island, and that is the same 128px failure arriving by a different road.
+**The one rule: no vertex attribute is ever interpolated or invented.** Collapses are half-edge, so the surviving vertex stays exactly where it was and every position, UV and normal in the output is one the input already had. The gate asserts it directly -- zero foreign UVs -- because a decimator that computes new texture coordinates is one that can put a corner in the wrong island, and that is the 128px failure arriving by a different road.
+
+Geometric boundary vertices are pinned. **UV seam vertices are not.** A welded point on a seam carries several *wedges*, one corner per island meeting there. A collapse `u -> v` is legal when a consistent map from u's wedges to v's corners can be read off the faces that contain both u and v, and each rewritten corner takes its mapped one. Because the correspondence is sourced from shared faces, every rewritten corner moves along an edge of a triangle the atlas already had: islands shrink, and no triangle can jump to unrelated texture. Where no consistent map exists -- a junction where three or more islands meet, whose wedges the shared faces never all mention -- the collapse is refused. `seamCollapse: false` restores the pinned behaviour and exists so the gate can measure the difference between them.
 
 three's `SimplifyModifier` was read and rejected. It carries a `uv` attribute through, but `computeEdgeCollapseCost` is `edgelength * curvature` with no attribute term at all, and its border-cost branch is commented out. On a textured mesh it will happily collapse across a seam.
 
-**The reduction ceiling is a measurement, not a bug.** Pinning seams and boundaries means a mesh can refuse to reach its target, and how far it does get is a direct reading of how few, how large and how well-closed its UV islands are -- the same property that decides 128px survival. The bench prints the island count, the pinned fraction, the unremovable-face floor and, per tier, why it stopped.
+**The atlas floor is the ceiling, and it is a measurement.** Preserving the atlas cannot take a mesh below roughly one triangle per UV island, however the algorithm is tuned. The bench reports that floor directly -- it runs one throwaway `decimate(mesh, 1, { uvMode: 'preserve' })` and prints where it stopped -- next to the island count, the pinned fraction and the unremovable-face floor, so a stalled tier is explained before it is run rather than after.
 
-Run against this repo's own props the ceiling is severe, and the numbers say why:
+The first real Tripo mesh, a P1 red fox at a 4000 face limit, came back at **487 triangles in 112 UV islands**, with 240 of its 250 welded points on a seam. That is not the closed organic surface with a single unwrap the vendor is sold as: 33 islands are one triangle, 24 are two, 19 are three, so **76 of the 112 are three triangles or fewer**. Wedge collapses take it from 485 triangles (0.4% off) to 291 (40% off), zero foreign UVs, islands 112 -> 105. **291 is the fox's atlas floor**, and no target below it is reachable with the atlas intact.
+
+**`uvMode` is the way past it.** `preserve` is the behaviour above. `drop` builds topology from positions alone, ignoring seams entirely; the output carries no `uv` attribute, because two corners of one output triangle can come from unrelated islands and a `uv` slot filled anyway would look usable. In its place each output vertex carries a `sampleUvs` entry: where that vertex sat in the *original* atlas. The bench reads the source texture at those points and bakes them into vertex colours, so a dropped tier still looks like the creature -- it has traded a texture for 3 floats a vertex, which at these triangle counts is the better trade and is also immune to the 128px bleed the whole pipeline is arranged around. `auto`, what the bench uses, runs `preserve` first and only falls back to `drop` when preserving demonstrably missed the target; the mode that actually ran is in `stats.uvMode` and in the bench's tier table, because the two outputs are not interchangeable downstream.
+
+On the fox, `auto` at targets 244 / 122 / 49 returns **243 / 121 / 49**, every tier reaching its target with zero foreign sample coordinates. A sub-50-triangle fox exists.
+
+Welding harder does not help and eventually hurts. Decimating the fox's geometry to 49 triangles reaches it at every tolerance from the default (`1e-6` of the bounding diagonal) up to 0.5%; at 1% it overshoots to 43, and at 2% it *stalls at 101* with 42 points locked, because fusing across a gap makes non-manifold edges that then pin themselves. The blocker was never positional duplication. The bench exposes the tolerance as a percentage of the bounding diagonal anyway, defaulting to the hair-thin value.
+
+H3 with `smart_low_poly` (+10 credits, H3-only -- Tripo rejects it on P1) is the other lever: it retopologises and re-unwraps rather than decimating what P1 emitted, so it should arrive with a coarser atlas and a higher floor to begin with. The bench has a checkbox for it next to the model selector.
+
+This repo's own props hit the ceiling for two different reasons, neither of which is the fox's:
 
 | mesh | tris | islands | pinned | reached, asked 50% |
 |---|---|---|---|---|
 | `gen_oak_LOD0` | 494 | 2 | 88% | 28% |
 | `tree_cracked_dead_LOD0` | 500 | 120 | 95% | 2% |
 
-Two different causes. The oak is open surfaces -- leaf cards, an open trunk -- so almost every vertex is a geometric boundary. The dead tree is atlas-mapped with roughly an island per face, so almost every edge is a UV seam. Both are already-baked Blender LODs, which is to say the worst case and not the target: a Tripo mesh is one closed organic surface with a single unwrap. **That is untested -- no mesh has been generated yet -- and it is the first thing to look at on the first real run.** If the ceiling turns out to bite there too, the fix is known and is a real piece of work: allow collapses that run *along* a seam or boundary by choosing, per rewritten face, the corner of the surviving vertex that lies in that face's own UV island. Today's version forbids them outright.
+The oak is open surfaces -- leaf cards, an open trunk -- so almost every vertex is a geometric boundary, which stays pinned. The dead tree is atlas-mapped with roughly an island per face. Both are already-baked Blender LODs, measured before seam collapses existed.
 
 Tiers are decimated from the tier above rather than from the original, so tier 2's vertices are a subset of tier 1's and swapping between them does not pop.
 
@@ -113,16 +125,22 @@ The project's standing rule is that external API dollars are a separate budget f
 Everything lands under `tools/creatures/work/<id>/` (gitignored -- these are working sources; the bake step is what writes `public/`):
 
 ```
-candidates/<n>.png   every generated candidate
-source.png           the picked one -- the single image every Tripo step reads
-mesh.glb             textured mesh
-mesh-preview.png     Tripo's own render
-rig.glb              skeleton bound to the mesh
-anim-<preset>.glb    one file per retargeted clip
-state.json           task ids, credits, picks
+candidates/<n>.png       every generated candidate image
+source.png               the picked one -- the single image every Tripo step reads
+meshes/<n>.glb           every generated mesh
+meshes/<n>-preview.png   Tripo's own render of it
+meshes/<n>-lod<k>.glb    LOD tiers, decimated locally from that mesh
+mesh.glb                 a copy of the picked mesh -- what rigging reads
+rig.glb                  skeleton bound to the mesh
+anim-<preset>.glb        one file per retargeted clip
+state.json               task ids, credits, picks
 ```
 
-**A Tripo task id is the only handle on work already paid for.** `charge()` in `workspace.mjs` writes it to `state.json` the moment the task is created, *before* the wait -- so a dev-server restart mid-generation loses the poll, not the purchase. For the same reason every output is downloaded to disk in the request that observed success: Tripo's result URLs are CDN links that expire, and a stored URL is a receipt for something you can no longer collect.
+**Nothing paid for is ever overwritten.** Images and meshes are both append-only numbered candidates; the bench lists them and a pick copies one into the fixed name the next stage reads. `state.tasks[step]` holds the *current* handle only and is overwritten by the next run of that step, so it is not a record -- `state.taskLog` is, appending every task id the account was ever charged for whether or not a pick still points at it.
+
+**A Tripo task id is the only handle on work already paid for.** `charge()` in `workspace.mjs` writes it the moment the task is created, *before* the wait, so a dev-server restart mid-generation loses the poll and not the purchase. For the same reason every output is downloaded to disk in the request that observed success: Tripo's result URLs are CDN links that expire, and there is no task-history endpoint (see below) -- a lost id is 50 credits that cannot be re-fetched.
+
+Picking a mesh moves `tasks.mesh` with it. Rigging is driven by the task id rather than by the file, so a pick that left it behind would rig a different mesh than the one on screen.
 
 The bench's stage buttons gate on `/__creature-assets`, which reads that directory, so a reload mid-pipeline resumes where it stopped rather than restarting.
 
@@ -131,7 +149,7 @@ The bench's stage buttons gate on `/__creature-assets`, which reads that directo
 ```
 tools/creatures/tripo.mjs            v3 API client: upload, mesh, rig-check, rig, retarget, poll, and the credit table
 tools/creatures/creature-prompt.mjs  the image prompt and its per-rig-type pose clause
-tools/creatures/creature-roster.mjs  the starter roster (9 creatures)
+tools/creatures/creature-roster.mjs  the starter roster (15 creatures)
 tools/creatures/workspace.mjs        disk layout, the library index, the prompt store, the four orchestrated steps
 src/mesh/decimate.js                 the LOD decimator -- three-free, runs in the tab and in node
 gen-creature.html                    the bench
@@ -143,6 +161,8 @@ vite.config.js  creatureGen()        the dev-server endpoints; the only place th
 
 The bench's library overlay lists every creature the roster seeds *and* every directory under `work/`, with its prompt, its thumbnail, what stages exist for it and what it has cost so far. **The prompt is editable and saves into the creature's own `state.json`, not into the roster file.** That is what lets a creature be invented in the page and survive a reload without an edit to `creature-roster.mjs`; the roster stays a seed list, and promoting a settled creature into it is a separate, deliberate act.
 
+Saving any of these server-side files restarts the dev server, so an endpoint never answers with code that is no longer on disk. Vite does that itself normally, but routes it through the HMR path, which this project disables; `serverRestart()` in `vite.config.js` re-hangs it on the same `configFileDependencies` list. Client code is unaffected -- src/ still waits for a manual reload.
+
 Orchestration lives in `workspace.mjs` rather than in the Vite plugin so a batch script can drive the same pipeline later without a browser. `creatureGen()` is a thin wrapper: it validates the creature id (`/^[a-z0-9-]+$/`) and returns JSON for every outcome including errors.
 
 **The id validator is a security boundary, not tidiness.** It arrives from a query string and is concatenated into a filesystem path, and the dev server binds to the LAN (`server.host`). `../` in that string is an arbitrary file write. The gate tests it against traversal directly.
@@ -153,8 +173,24 @@ Orchestration lives in `workspace.mjs` rather than in the Vite plugin so a batch
 
 The seam is `tools/creatures/tripo.mjs`. It exports a small surface -- `uploadImage`, `createMeshTask`, `createRigTask`, `createRetargetTask`, `waitForTask`, `estimateCredits` -- and `workspace.mjs` is the only caller. A Meshy client implementing the same surface would slot in behind a model selector, at the cost of losing non-biped rigging for creatures generated through it. Nothing else in the tree imports the vendor client.
 
-## Unverified
+## What the live API actually answers
 
-**The exact v3 multipart upload path and field name were never confirmed in Tripo's published docs** -- they are inconsistent about the base URL, showing both `api.tripo3d.ai/v2/openapi/task` and `openapi.tripo3d.ai/v3`. v3 was chosen because the animation endpoints exist only there. `unwrap()` quotes the raw response body when it is not JSON, because an HTML error page from a wrong path is the single most likely first-run failure and "unexpected token <" would hide it; `uploadImage` throws explicitly when no `file_token` comes back. The first real run settles this.
+Tripo's published docs are inconsistent about the base URL, showing both `api.tripo3d.ai/v2/openapi/...` and `openapi.tripo3d.ai/v3`, and the developer portal is a JS shell that a fetch tool cannot read. The paths below were settled by probing the live API instead. Every probe was free: upload costs nothing, and the existence checks POSTed an empty body, which fails argument validation before a chargeable task is created.
 
-Nothing in this pipeline has been run against the live API yet. Everything above is built and gated; none of it has spent a credit.
+| what | v3 path | notes |
+| --- | --- | --- |
+| upload | `POST /v3/files` | returns `data.file_token`, prefixed `file_` |
+| mesh | `POST /v3/generation/image-to-model` | |
+| rig check | `POST /v3/animations/rig-check` | |
+| rig | `POST /v3/animations/rig` | |
+| retarget | `POST /v3/animations/retarget` | |
+| task poll | `GET /v3/tasks/{id}` | |
+| balance | `GET /v3/account/balance` | free; `{ balance, frozen }` in credits |
+
+**The image goes in a nested `file` object** -- `{ file: { type: 'png', file_token } }`. A top-level `file_token` is not rejected, it is ignored, and the request fails as "file is required for image_to_model", which reads like the upload broke rather than like a wrong field name. The animation endpoints are the opposite shape: `input` is a bare task-id string, and nesting it there fails instead. No outer `type` field is needed anywhere; the path already names the operation.
+
+**v3 renamed both the upload route and its field.** v2 was `POST /v2/openapi/upload` returning `image_token`; anything written against v2 will 404 with code 4001 ("No endpoint found") and no HTML page to make the cause obvious. `/v3/upload`, `/v3/upload/sts`, `/v3/file/upload`, `/v3/files/upload`, `/v3/uploads`, `/v3/balance`, `/v3/user/balance` and bare `POST /v3/generation` all do not exist.
+
+Server-allowed mesh models are `P1-20260311, P2-20260801, v2.5-20250123, v3.0-20250812, v3.1-20260211`; rig models are `v1.0-20240301, v2.5-20260210`. **`P2-20260801` exists and this pipeline does not use it** -- P1 is still the default for the native low-poly reason above, and P2's pricing and topology are unmeasured.
+
+The wallet is the other thing a first run discovers. The bench reads `/v3/account/balance` at startup and says so in the panel, because an empty wallet and a broken pipeline are indistinguishable from inside a spend button.

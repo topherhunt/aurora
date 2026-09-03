@@ -47,11 +47,13 @@
       #stage h3 { margin: 0 0 8px; color: var(--dim); font-size: 12px; font-weight: normal; }
       #stage h3:not(:first-child) { margin-top: 18px; border-top: 1px solid #1b2c44; padding-top: 12px; }
 
-      #gallery { display: flex; flex-wrap: wrap; gap: 12px; }
-      .candidate { display: flex; flex-direction: column; gap: 4px; align-items: center; }
-      .candidate img { width: 200px; height: 200px; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
-      .candidate.is-picked img { border-color: var(--good); }
-      .candidate .cost { color: var(--dim); font-size: 10px; }
+      #gallery, .gallery { display: flex; flex-wrap: wrap; gap: 12px; }
+      .candidate { display: flex; flex-direction: column; gap: 4px; align-items: center; width: 200px; }
+      .candidate img, .candidate .noshot { width: 200px; height: 200px; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
+      .candidate .noshot { display: flex; align-items: center; justify-content: center; border-style: dashed; color: #3d5a80; font-size: 10px; }
+      .candidate.is-picked img, .candidate.is-picked .noshot { border-color: var(--good); }
+      .candidate .cost { color: var(--dim); font-size: 10px; text-align: center; }
+      .candidate button { width: 100%; }
 
       #viewRow { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
       #viewer { display: none; flex-direction: column; gap: 4px; }
@@ -152,7 +154,7 @@
         <button id="genImage" class="wide spend">generate candidate (~$0.015)</button>
 
         <h2>3. mesh</h2>
-        <div class="step">Tripo image-to-model. Pick a candidate first.</div>
+        <div class="step">Tripo image-to-model, from the picked image. Every run is kept as a new mesh candidate; nothing paid for is overwritten.</div>
         <div class="field">
           <label>model</label>
           <select id="meshModel">
@@ -164,13 +166,20 @@
           <label>face limit <span id="faceLimitVal" class="label"></span></label>
           <input type="range" id="faceLimit" min="500" max="10000" step="250" value="4000" />
         </div>
+        <div class="field">
+          <label><input type="checkbox" id="smartLowPoly" /> smart low-poly (H3 only, +10 credits)</label>
+        </div>
         <button id="genMesh" class="wide spend" disabled>generate mesh</button>
 
         <h2>4. LOD</h2>
-        <div class="step">Our decimator (src/mesh/decimate.js). Free, local, re-runnable.</div>
+        <div class="step">Our decimator (src/mesh/decimate.js) on the picked mesh candidate. Free, local, re-runnable. A tier keeps the UV atlas if it can hit the target that way, and drops it for baked vertex colours if it cannot.</div>
         <div class="field">
           <label>tier targets, coarsest last</label>
           <input type="text" id="lodTargets" value="50%, 25%, 10%" />
+        </div>
+        <div class="field">
+          <label>weld tolerance, % of bounding diagonal</label>
+          <input type="text" id="lodWeld" value="" placeholder="default: hair-thin" />
         </div>
         <button id="genLod" class="wide local" disabled>decimate (free)</button>
         <button id="saveLod" class="wide local" disabled style="margin-top:4px">save tiers to disk</button>
@@ -194,8 +203,11 @@
         <div id="libGrid"></div>
       </div>
 
-      <h3>candidates</h3>
+      <h3>image candidates &mdash; pick the one Tripo reconstructs</h3>
       <div id="gallery"></div>
+
+      <h3>mesh candidates &mdash; pick the one that rigs and gets LODs</h3>
+      <div id="meshGallery" class="gallery"></div>
 
       <h3>preview</h3>
       <div id="viewRow">
@@ -248,6 +260,8 @@
         come out fewer and larger and survive the downrez. Judge a candidate on the 128px panel, not
         the full-size one.
       </p>
+      <h2>tripo wallet</h2>
+      <div id="balance" class="note">checking&hellip;</div>
       <h2>ledger</h2>
       <div id="ledger"></div>
       <h2>status</h2>

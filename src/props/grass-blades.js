@@ -37,8 +37,8 @@ import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, getWindEnabled, propClockUniform,
 //     ten yaws inside one clump have no degenerate viewing angle.
 //
 // WHAT IT COSTS, stated plainly so the trade can be read: a blade is thinner
-// than a pixel past roughly 5 m (Quest 2 is ~0.00086 rad/px, so an 8 mm blade
-// subtends 2 px at 4.7 m), and a sub-pixel opaque triangle has no mip chain to
+// than a pixel past roughly 3.7 m (Quest 2 is ~0.00086 rad/px, so a 6 mm blade
+// subtends 2 px at 3.5 m), and a sub-pixel opaque triangle has no mip chain to
 // fall back on, so the far field will crawl and sparkle in a way the card's
 // mipped texture does not. The fill number stays good out there -- ten
 // sub-pixel blades cost ~40 fragments where a 30 m card shades ~360 to keep
@@ -80,20 +80,32 @@ export const BLADE_DEFAULTS = {
   // TEN TRIANGLES, ONE PER BLADE. There is no second triangle making a quad --
   // a blade is a spike, base to point, and the taper IS the silhouette. Two
   // triangles per blade would buy a curve and double the bill for something
-  // that is under a pixel wide by 5 m.
+  // that is under a pixel wide by 3.7 m.
   blades: 10,
   // Mean blade height in metres, and the fraction either side of it.
-  height: 0.30,
+  //
+  // THESE ARE NOT FILL LEVERS, WHICH WAS MEASURED AND NOT ASSUMED. Projected
+  // blade area is height x width, so halving both is a quarter of the fragments
+  // -- and halving both on the headset moved the bed's cost by nothing at all
+  // (a 4-5 fps toggle delta before and after, under medium load with trees and
+  // ferns). Whatever the bed is spending is not proportional to fragment area,
+  // so set these for LOOK and take the frame back somewhere else.
+  //
+  // The likely reason the quarter never arrived is the 2x2 shading quad: a
+  // triangle thinner than a pixel still costs a whole one, so past the distance
+  // in WHAT IT COSTS above the bed's fill tracks blade COUNT and not blade
+  // area, and shrinking only pushed that crossover nearer the eye.
+  height: 0.225,
   heightVary: 0.20,
   // Base width. The blade closes to a point at the top, so the mean width over
-  // its length is half this.
-  width: 0.035,
+  // its length is half this -- 13 mm here, which the header prices in pixels.
+  width: 0.02625,
   // How far from the clump's centre the feet scatter. Blades sit at a random
   // radius and a random yaw within this disc and lean OUTWARD in proportion to
   // how far out they start, which is what makes a clump read as a fountain
   // rather than as a bundle of sticks.
   //
-  // 0.4 m is WIDER THAN THE CLUMP IS TALL, which is deliberate: at 10 blades a
+  // 0.4 m is 1.8x THE CLUMP'S HEIGHT, which is deliberate: at 10 blades a
   // tight clump reads as a tussock with bald ground between it and its
   // neighbours, and spreading the same ten blades over a disc bigger than the
   // spacing lets neighbouring clumps interleave instead of tiling. The cost is
@@ -339,9 +351,19 @@ export function createBladeMaterial({ wind = true, instancedFade = false } = {})
     side: THREE.DoubleSide,
   })
 
+  // uWindAmp IS TIED TO BLADE_DEFAULTS.height AND HAS TO MOVE WITH IT. The bend
+  // below is an absolute displacement in the clump's local metres, not a
+  // fraction of the blade, so it is the blade's LENGTH that sets what a given
+  // amplitude looks like -- 0.045 against a 0.225 m blade is 20% of height at
+  // the tip, and stays 20% at any pair that holds the ratio. Width does not
+  // enter it: the lever arm for a bend is how far the tip stands from the foot.
+  //
+  // Amplitude is the only one of the three that height touches. uWindFreq is a
+  // spatial frequency across the FIELD, in world metres, and uWindSpeed is a
+  // rate -- neither is measured against the blade.
   const uniforms = {
     uTime: { value: 0 },
-    uWindAmp: { value: 0.06 },
+    uWindAmp: { value: 0.045 },
     uWindFreq: { value: 0.22 },
     uWindSpeed: { value: 0.9 },
   }
@@ -445,7 +467,14 @@ ${FADE_FRAGMENT}
           // The clump's world origin, which is what gives neighbouring clumps
           // different phases and makes the gust travel across the field rather
           // than every blade in the world nodding together.
-          vec3 bladeRoot = ( modelMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+          //
+          // instanceMatrix[3] IS the instance's translation column, so this is
+          // the origin without forming the mat4 x mat4 product first -- one
+          // mat4 x vec4 rather than a full matrix concatenation on every vertex
+          // of the densest bed in the world. Do not "simplify" it back to a
+          // multiply against vec4( 0.0, 0.0, 0.0, 1.0 ): that is the same
+          // number written so the compiler has to be trusted to fold it.
+          vec3 bladeRoot = ( modelMatrix * instanceMatrix[ 3 ] ).xyz;
           // ONE NUMBER PER CLUMP, WITH NO sin IN IT. The fractional part of a
           // dot against an irrational pair decorrelates neighbouring positions
           // well enough for jitter and costs two ops, where the usual

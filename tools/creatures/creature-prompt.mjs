@@ -30,7 +30,11 @@ const POSE_BY_RIG = {
   serpentine: 'stretched out in a long gentle S-curve seen from above at a three-quarter angle, the whole body visible end to end with no coils crossing over each other',
   aquatic: 'in exact side profile swimming straight, body straight rather than curved, all fins spread open and clearly separated from the body',
   hexapod: 'standing with all six legs spread and clearly separated, seen three-quarters from above and the side',
-  octopod: 'with all eight limbs spread evenly and clearly separated, seen three-quarters from above',
+  // "every limb" rather than "all eight": a crab has eight walking legs plus two
+  // claws, and a prompt that names a count the picture contradicts is a prompt
+  // arguing with itself. The skeleton family is still octopod; what the clause
+  // has to buy is limbs held clear of the body, not a headcount.
+  octopod: 'with every limb spread evenly and clearly separated from the body and from each other, seen three-quarters from above',
   // Nothing to rig, so the pose is chosen to read well as a static prop.
   none: 'seen three-quarters from the side, whole subject visible with nothing cropped',
 }

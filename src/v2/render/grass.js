@@ -369,10 +369,12 @@ const HEIGHT = [0.5, 1.5]
 // what the headset feels. It holds flat for the full radius and then falls off
 // hard. Read all four together -- moving one alone is how the bed gets expensive.
 //
-// THE DENSITY IS A FRAME-TIME BUDGET AND NOT A LOOK. The bed ran at 24/m2 while
-// it was being tuned for coverage, which on the headset cost 10 fps of an 85 and
-// ~100k triangles both eyes at this reach. 3/m2 is what the frame has room for,
-// and it reads as tufted ground rather than a mat.
+// THE DENSITY IS A FRAME-TIME BUDGET AND NOT A LOOK. 12/m2 is the target look
+// and costs 4-5 fps of a 67 on the headset under medium load. That cost is NOT
+// fragment area -- halving blade height and width, a 4x cut in projected area,
+// moved it by nothing -- so the way to buy it back is not a smaller blade. 24/m2
+// cost 10 fps of an 85 while the bed was being tuned, and 3/m2 reads as tufted
+// ground rather than a mat.
 //
 // THE FULL RADIUS IS SET BY A PROMISE, NOT BY TASTE: nothing appears or
 // disappears within 4 m of the player, because grass changing state underfoot is
@@ -388,7 +390,7 @@ const HEIGHT = [0.5, 1.5]
 // clumps in five of those placed -- and the two ways to cheapen it are a smaller
 // radius or a smaller RIM_HYST, which is 2 m for scatters whose gone-distances
 // run to hundreds of metres and is over half of a near clump's here.
-const BLADE_DENSITY = 3
+const BLADE_DENSITY = 12
 const BLADE_FULL_RADIUS = 6.5
 const BLADE_DRAW_RADIUS = 30
 
@@ -974,9 +976,15 @@ class InstancedArena extends THREE.InstancedMesh {
  * the same for all three beds. There is nothing to choose between here -- a
  * clump IS the model -- which is why grass-blades.js exports a builder and not a
  * bank.
+ *
+ * `bladeCount` is the only thing the caller gets to move, and it is here because
+ * it is the bed's SHARPEST measured lever: halving it halves triangles, vertices
+ * and per-vertex instance-attribute fetch at an unchanged instance count, pool
+ * size and CPU sweep, and on the headset that shows up in the frame where
+ * halving blade height and width did not.
  */
-function buildBladeBank() {
-  const geometry = buildBladeClump(BLADE_DEFAULTS, 1)
+function buildBladeBank(bladeCount) {
+  const geometry = buildBladeClump({ ...BLADE_DEFAULTS, blades: bladeCount }, 1)
   return {
     tiers: [{ geometry, triangles: geometry.getAttribute('position').count / 3 }],
     cardTier: 0,
@@ -998,6 +1006,8 @@ export class Grass {
    * @param tint          a TerrainTint. Blades only, and required there: their
    *                      whole look is that a blade's foot is the colour of the
    *                      ground it is standing in.
+   * @param bladeCount    triangles per clump, blades only. Defaults to the
+   *                      model's own; see buildBladeBank for why it is a knob.
    */
   constructor(
     scene,
@@ -1008,7 +1018,7 @@ export class Grass {
     {
       seed = 1, style = 'tufts', density = null, height = null,
       radius = null, fullRadius = null, falloff = null, spin = true, grow = true,
-      tint = null, rocks = null,
+      tint = null, rocks = null, bladeCount = null,
     } = {}
   ) {
     if (style !== 'tufts' && style !== 'strips' && style !== 'blades') {
@@ -1075,6 +1085,13 @@ export class Grass {
     // a range of metres -- the model's own height is BLADE_DEFAULTS.height, and
     // the bed has no business restating it.
     this.baseHeight = this.strips ? STRIP_BASE.height : this.blades ? 1 : GRASS_BASE.height
+    // Triangles per clump. Only the blade bed has one -- a card is two triangles
+    // whatever you ask for -- and it is carried on the instance so the Quest
+    // panel can read back what it is currently standing in.
+    this.bladeCount = bladeCount === null ? BLADE_DEFAULTS.blades : bladeCount
+    if (!(this.bladeCount >= 1)) {
+      throw new Error(`Grass: bladeCount must be at least 1, got ${this.bladeCount}`)
+    }
     this.sink = this.strips ? STRIP_SINK : this.blades ? BLADE_DEFAULTS.sink : PLACEMENT.sink
     // NEITHER BED HAS A LADDER NOW: a strip never had one (buildGrassStripBank)
     // and the tuft bed gave its up when it moved onto an InstancedMesh, which
@@ -1137,7 +1154,7 @@ export class Grass {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = this.strips ? buildGrassStripBank() : this.blades ? buildBladeBank() : buildGrassBank()
+    const bank = this.strips ? buildGrassStripBank() : this.blades ? buildBladeBank(this.bladeCount) : buildGrassBank()
     if (!this.strips && !this.blades) {
       // KEEP THE CARD, THROW THE CLUMP AWAY. One geometry is all the arena can
       // hold and the billboard is the one to keep: it is a photograph of the
@@ -1184,9 +1201,11 @@ export class Grass {
     // project compiles it. Still one material and one draw call.
     //
     // BLADES: not a prop material at all. No atlas, no cutout, no billboard --
-    // the whole point is that nothing in the fragment stage discards, so the
-    // draw keeps its low-resolution-Z. `instancedFade` there is a SHRINK rather
-    // than the dither the other two use, for the same reason.
+    // the fragment stage is a Lambert term over a varying and nothing else.
+    // `instancedFade` there is the SAME dither the other two use, and it does
+    // carry the same `discard`, so the bed has no low-resolution-Z either. That
+    // is a real cost on a tiled renderer and it is paid deliberately: the
+    // dither is what stops a clump popping, and popping is worse.
     this.material = this.blades
       ? createBladeMaterial({ wind: true, instancedFade: true })
       : this.strips

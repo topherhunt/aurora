@@ -400,16 +400,24 @@ export const LAYER = {
   // is borrowed, and stretched to fit.
   IMPOSTOR_BUILDING: 50, // base of a 20-layer run, one per wall style x roof kind
 
-  // --- rock impostor (src/props/rock-bank.js, src/v2/render/rocks.js) -------
+  // --- rock impostors (src/props/rock-bank.js, src/v2/render/rocks.js) ------
   //
-  // ONE PHOTOGRAPH, of the one boulder the world has. Every carded rock in every
-  // bed reads this single layer, which is the whole card cost for stone.
+  // ONE PHOTOGRAPH PER SHAPE, and the bank has two. Every carded rock in every
+  // bed reads one of these two layers, which is the whole card cost for stone.
   //
-  // 71..94 ARE FREE and are not yet reclaimed: this was a 25-layer run, one
-  // picture per variant, and collapsing the bank to a single asset emptied all
-  // but the base. Renumbering means moving every layer above it, which is a
-  // change with a blast radius out of proportion to the ~1.5 MB it reclaims.
+  // THE TWO PICTURES CANNOT BE ONE. A cap is an open-bottomed shell, so its
+  // silhouette is a low dome roughly a fifth as tall as it is wide, against the
+  // boulder's blunt block at three fifths; a card is stretched to the quad it is
+  // drawn on, so sharing a photograph would print the boulder's crown squashed
+  // into the cap's frame at exactly the distance where nothing else is left to
+  // tell the two apart.
+  //
+  // 72..94 ARE FREE and are not yet reclaimed: this was a 25-layer run, one
+  // picture per variant, and collapsing the bank emptied all but the base.
+  // Renumbering means moving every layer above it, which is a change with a
+  // blast radius out of proportion to the ~1.4 MB it reclaims.
   IMPOSTOR_ROCK: 70,
+  IMPOSTOR_ROCK_CAP: 71,
 
   // Crab sheet, same reasoning as the mushroom's: a crab's shape is geometry
   // (props/crab.js) and its texture is a mottled shell colour, cheap
@@ -565,7 +573,7 @@ export const SNOW_CARD_LAYERS = [
 // takes the foliage weight, which is silently the wrong look rather than an
 // error. scripts/check-rocks.mjs gates it.
 //
-// IMPOSTOR_ROCK is out for a sharper reason than the fern cards. A rock card
+// THE ROCK CARDS are out for a sharper reason than the fern cards. A rock card
 // cannot wear the stone lean at all -- its normals are outward and horizontal by
 // construction (impostor.js), so every fragment reads as a sheer face and the
 // lean has nothing to bite on. So a snowed rock's LOD2 shows bare stone, one
@@ -615,7 +623,7 @@ export const SNOW_WOOD_LAYERS = [LAYER.BARK, LAYER.BARK_BIRCH, LAYER.BARK_PINE, 
 // diameter of its own root height, so the cue reads ~1 end to end and it is
 // mossy the whole way.
 //
-// IMPOSTOR_ROCK is out for a duller reason than in the snow lists: a card is
+// THE ROCK CARDS are out for a duller reason than in the snow lists: a card is
 // photographed from the mesh, so if the mesh was mossy when baked, the moss is
 // already in the picture and mossing it again would double it.
 export const MOSS_LAYERS = [LAYER.ROCK, LAYER.BARK, LAYER.BARK_BIRCH, LAYER.BARK_PINE, LAYER.TIMBER_BEAM]

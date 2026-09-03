@@ -64,7 +64,7 @@ const SLIDERS = [
   ['#', 'the stack'],
   ['skirts', 1, 28, 1, 'whorls up the trunk. The whole density knob, and at `boughs` x (4 x boughSpine - 6) triangles each it is also most of the crown budget'],
   ['skirtBottom', 0, 0.8, 0.01, 'fraction of height the LOWEST whorl sits at. This is the bare-trunk knob'],
-  ['skirtTop', 0.3, 1, 0.01, 'and the highest, which is PINNED -- the top whorl takes no stagger and no shift, so at 1 its boughs launch from the trunk\'s own measured tip. Under ~0.95 the tree ends in a bare spike'],
+  ['skirtTop', 0.3, 1, 0.01, 'and the highest. In the whorled form that one is PINNED -- it takes no stagger and no shift, so at 1 its boughs launch from the trunk\'s own measured tip, and under ~0.95 the tree ends in a bare spike. The ascending form does not pin it, a ring of limbs off a single point at the top of a tree being the pointed peak a broadleaf does not have; there this is where the headroom a limb climbs into runs out'],
   ['skirtStagger', 0, 1.5, 0.05, 'how far a whorl may wander inside its own gap, as a fraction of that gap. 0 leaves the spacing exactly as spacingByLength set it'],
   ['spacingByLength', 0, 1, 0.01, 'how much of the gap above a whorl is set by how long that whorl\'s boughs are. 0 spaces the stack evenly; at 1 a full-width whorl takes the whole gap and the short ones at the tip and the foot crowd together, which is how a conifer actually stacks -- a whorl\'s own needles are what fill the space over it'],
   ['crownRadius', 0.03, 0.5, 0.005, 'the WIDEST whorl\'s reach, as a fraction of height'],
@@ -75,11 +75,16 @@ const SLIDERS = [
 
   ['#', 'one whorl'],
   ['boughs', 3, 20, 1, 'boughs around a whorl, costing 4 x boughSpine - 6 triangles each. THE knob for this whole scheme: at 3 the whorl is a claw, and by ~14 the cloaks close up and you have paid v6\'s triangles for v6\'s cone with extra seams in it. The air between them is the entire reason v8 exists'],
-  ['skirtDrop', 0.1, 2, 0.05, 'how far a bough hangs, as a multiple of its whorl\'s OWN reach. Above ~0.5 the whorls overlap, which is what makes the stack a canopy rather than a set of shelves'],
-  ['dropByHeight', 0, 3, 0.05, 'and how much further, in proportion, the whorls near the tip hang. Their boughs are short up there, so on skirtDrop alone the drop shrinks with the reach and the trunk shows between them. The one shape term that reads height rather than being a pure fraction of its own whorl'],
+  ['skirtDrop', 0.1, 2, 0.05, 'how far a bough hangs, as a multiple of its whorl\'s OWN reach. Above ~0.5 the whorls overlap, which is what makes the stack a canopy rather than a set of shelves. In the ascending form it is the sign and the measure both: a limb CLIMBS this fraction of the trunk it has left above it, so one low on the bole sweeps up hard and one at the tip runs out level'],
+  ['dropByHeight', 0, 3, 0.05, 'and how much further, in proportion, the whorls near the tip hang. Their boughs are short up there, so on skirtDrop alone the drop shrinks with the reach and the trunk shows between them. The one shape term that reads height rather than being a pure fraction of its own whorl. In the ascending form it is the OVERSHOOT: how far past the trunk\'s tip a limb may climb, in its own reach, which is what rounds the top of the crown over instead of cutting it flat'],
   ['skirtBow', 0, 0.4, 0.01, 'how far a limb turns its ANGLE up over its length -- four radians per unit, so 0.1 is about 23 degrees -- leaving the trunk steeply and flattening out toward the tip. The turn is split evenly over the bough\'s joints, which is what makes it read as a curve: split evenly in SLOPE instead and the outer joint rotates half again as far as the inner one, and the limb reads as a hinge with a straight stick on it. Every bough turns up and this is the MEAN of a per-bough draw, so the slider moves the whole whorl together rather than moving how many limbs turn and how many hang; at 0 every spine is a straight line. Drawn per bough and not per whorl because one curve for a whole whorl gives a surface of revolution again, which is the shape the eye reads as turned on a lathe'],
   ['skirtLean', 0, 0.5, 0.01, 'radians a whorl\'s axis may tip off the trunk\'s, drawn per whorl. Neighbours lean independently, so the stack reads as whorls that grew crooked rather than as a tree bent over'],
   ['skirtShift', 0, 0.6, 0.01, 'and how far its launch point may slide off the axis, as a fraction of its own reach. The top whorl ignores it, its launch being the tip of the tree'],
+
+  ['#', 'the ascending form'],
+  ['limbScatter', 0, 1.5, 0.05, 'how far a limb\'s launch wanders up and down the trunk off its whorl\'s own stop, as a fraction of the whole stack\'s span. Inert unless the species is ascending -- pine, aspen and birch never read it -- and on an oak it is THE knob that dissolves the rings. A ring of limbs all leaving the trunk at one height is the tell that reads as a conifer whichever way the limbs then point, so at 0 an ascending crown is still a stack of tidy whorls with its boughs on backwards'],
+  ['limbFork', 0, 1, 0.05, 'and the chance a limb leaves off the LIMB BEFORE IT instead of off the trunk, up to two forks deep. A fork costs exactly what a primary limb costs and comes out of the same `boughs`, so this trades spokes for sub-branches and adds no triangles at all. At 0 the crown is six long limbs a whorl however chaotically they are aimed'],
+  ['forkSpread', 0, 1.6, 0.05, 'radians a fork swings off its parent\'s azimuth, signed per fork. At 0 it carries straight on and the pair reads as one long limb with a kink; up near 1.5 a fork turns back across the crown'],
 
   ['#', 'one bough'],
   ['boughSpine', 3, 8, 1, 'stations down a bough\'s spine, and so 3N-2 vertices and 4N-6 triangles for the bough. They are NOT evenly spaced: they crowd toward the tip, because the inner stretch of a bough is under the whorl above and under its own cloaks, and a bend nobody can see is a bend not worth paying for. At 3 a bough is one bow; past 5 it starts to curl'],
@@ -647,6 +652,10 @@ function refresh() {
     ['trunk at the base', `${(f.trunkDiameter * 100).toFixed(0)} cm`],
     ['bare trunk below it', `${f.crownBase.toFixed(2)} m`],
     ['crown / height', (f.crownWidth / Math.max(1e-6, f.height)).toFixed(2)],
+    // Not a measurement, and here anyway: it is the one fact about the tree
+    // that changes what half the rows above mean, and there is no slider it
+    // could have been a row of instead.
+    ['crown form', params.crownForm],
     ['whorls on it', `${f.skirts} @ ${f.boughs} boughs`],
     ['spine stations', `${f.spine} a bough, ${3 * f.spine - 2} vertices`],
     ['boughs in all', f.skirts * f.boughs],

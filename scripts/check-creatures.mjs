@@ -2,11 +2,12 @@
 //
 //   node scripts/check-creatures.mjs
 //
-// SPENDS NOTHING AND MAKES NO NETWORK CALL. Every function it touches is pure:
-// the prompt builder, the credit table, the roster, and the one path
-// computation. That is the whole point -- this pipeline's failure modes are
-// expensive in a way a shader bug is not, so the parts that can be checked for
-// free are checked on every `npm run check`.
+// SPENDS NOTHING AND MAKES NO NETWORK CALL. Almost everything it touches is
+// pure -- the prompt builder, the credit table, the roster, the one path
+// computation -- and the one request builder that is not runs against a stubbed
+// `fetch`. That is the whole point: this pipeline's failure modes are expensive
+// in a way a shader bug is not, so the parts that can be checked for free are
+// checked on every `npm run check`.
 //
 //   THE PRICE LIST DRIFTS FROM THE REQUEST BUILDER. `estimateCredits` is what
 //   gen-creature.html prints on a button before anyone clicks it, and it is a
@@ -36,7 +37,7 @@
 
 import { buildCreaturePrompt } from '../tools/creatures/creature-prompt.mjs'
 import { CREATURES } from '../tools/creatures/creature-roster.mjs'
-import { MODELS, PRESETS, RIG_TYPES, estimateCredits, creditsToUsd } from '../tools/creatures/tripo.mjs'
+import { MODELS, PRESETS, RIG_TYPES, createMeshTask, estimateCredits, creditsToUsd } from '../tools/creatures/tripo.mjs'
 import { workDir } from '../tools/creatures/workspace.mjs'
 
 let failures = 0
@@ -45,6 +46,40 @@ const check = (ok, label, detail = '') => {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
 const throws = (fn) => { try { fn(); return false } catch { return true } }
+
+// --- the mesh request body ---------------------------------------------------
+//
+// Field names Tripo will not tell you about until you spend a click finding
+// out. Both of these shipped wrong and both failed at the vendor rather than
+// here: a top-level `file_token` is silently ignored and comes back as "file is
+// required", and `quad` sent to P1 is a hard rejection. `fetch` is stubbed, so
+// this still makes no network call and creates no task.
+
+console.log('\nmesh request body')
+{
+  const realFetch = globalThis.fetch
+  const sent = []
+  globalThis.fetch = async (url, init) => {
+    sent.push({ url, body: JSON.parse(init.body) })
+    return new Response(JSON.stringify({ code: 0, data: { task_id: 'stub' } }), { status: 200 })
+  }
+  process.env.TRIPO_API_KEY ||= 'stub-key'
+  try {
+    await createMeshTask({ fileToken: 'file_abc', model: MODELS.p1, quad: true })
+    await createMeshTask({ fileToken: 'file_abc', model: MODELS.h3, quad: true })
+    await createMeshTask({ fileToken: 'file_abc', model: MODELS.h3, quad: false })
+  } finally {
+    globalThis.fetch = realFetch
+  }
+  const [p1, h3quad, h3plain] = sent.map((s) => s.body)
+  check(sent[0].url.endsWith('/v3/generation/image-to-model'), 'posts to the image-to-model path')
+  check(p1.file?.file_token === 'file_abc', 'the image token is nested under `file`, not top-level')
+  check(p1.file_token === undefined, 'and is not also sent top-level, where Tripo ignores it')
+  check(p1.quad === undefined, 'quad is omitted for P1, which rejects the field outright')
+  check(h3quad.quad === true, 'quad is sent for H3, which accepts and charges for it')
+  check(h3plain.quad === undefined, 'and omitted when not asked for')
+  check(p1.model === MODELS.p1 && h3quad.model === MODELS.h3, 'the model id goes through unchanged')
+}
 
 // --- the price list ---------------------------------------------------------
 //

@@ -27,15 +27,15 @@ import { LAYER } from '../textures.js'
 //    vertices were pinned by the SAME plane is shaded flat regardless of `smooth`,
 //    or turning smoothing up rounds the fractures away and the potato is back.
 //
-// 3. ONE TILE (LAYER.ROCK), TINTED PER INSTANCE via BatchedMesh.setColorAt, so
+// 3. ONE TILE (LAYER.ROCK), TINTED PER INSTANCE via the arena's instance colour, so
 //    granite, basalt, sandstone, wet shale and lichen-green are one draw call. The
 //    tile is graded bright and near-neutral because a tint is a multiply. UVs are a
 //    per-face planar projection off the dominant world axis, divided by an extent
 //    that SCALES WITH THE ROCK (see texRepeat) rather than by fixed world metres.
 //
 // ATTRIBUTES: always { position, normal, uvProj, texLayer }, indexed with an
-// identity index. That is the shared prop material's layout (src/material.js) and
-// BatchedMesh rejects a geometry that disagrees. Unlike buildFern there is no second
+// identity index. That is the shared prop material's layout (src/material.js), and
+// the shell's BatchedMesh rejects a geometry that disagrees. Unlike buildFern there is no second
 // `uv` layout, because gen-rock.html renders the real material.
 // ---------------------------------------------------------------------------
 
@@ -189,6 +189,30 @@ export const ROCK_DEFAULTS = {
   // A rock resting exactly on its lowest point looks like it was placed. Real
   // ones are bedded in: cut the bottom off and stand the cut face on y = 0.
   sit: 0, // fraction of total height cut away at the bottom
+
+  // WHAT `sit` LEAVES BEHIND ON THE BED PLANE is a flat disc -- three vertices
+  // clamped to the same y still span real area -- and above `sit` 0 that disc is
+  // pure waste. It is the one face of the rock that is guaranteed never to be
+  // seen, it is the widest part of a bedded shape so it is a big share of the
+  // triangles, and it exists only so a CLOSED solid can be turned onto any face.
+  // So it is dropped, unconditionally, wherever there is a cut face to drop: a
+  // rock with `sit` over 0 is an open-bottomed shell and spends every triangle it
+  // has on the part above ground. `sit` 0 is untouched and still closed, which is
+  // what the shipping boulder is -- rocks.js turns it through sixteen quarter
+  // turns and any face of it may end up facing the sky.
+  //
+  // THE SKIRT IS WHAT MAKES THAT SAFE TO PLACE. An open shell is a hole seen from
+  // below or from the side of a slope, so the rim left by the drop is pushed DOWN
+  // this many rock-heights, turning the boundary faces into a curtain that
+  // descends into the ground. 1 means a cap can be laid on any slope up to about
+  // 45 degrees, or half-buried, without the hole ever clearing the dirt. It costs
+  // no triangles at all -- the curtain faces are the ones that were already there
+  // holding the disc's edge -- only the height of the bounding sphere.
+  //
+  // Measured in units of `measured.height`, and applied AFTER the support gain
+  // and the re-seat, so neither the rock's measured size nor its bed plane moves:
+  // the skirt hangs below y = 0 and the rock above it is the same rock.
+  skirt: 0,
 
   // --- material ------------------------------------------------------------
   // The tile is sized RELATIVE TO THE ROCK, not to the world -- see point 3 in
@@ -757,12 +781,12 @@ export function buildRock(options = {}) {
   const refSupport = meanSupport(ref, cx, cy, cz)
 
   // --- build the tier that actually ships ---------------------------------
-  const positions = []
+  let positions = []
   const aux = { shells: [], facets: [] }
   emitShards(p, ax, ay, az, solidDirections(tier.solid, tier.detail), positions, aux)
 
-  const shells = aux.shells
-  const facets = aux.facets
+  let shells = aux.shells
+  let facets = aux.facets
 
   // A vertical clamp, not a radial one: the ground is a plane in the ROCK's
   // frame, and satellite shards are offset away from the origin, so the radial
@@ -770,13 +794,27 @@ export function buildRock(options = {}) {
   //
   // WHAT THIS LEAVES BEHIND is a flat disc on the bed plane, not nothing: three
   // vertices clamped to the same y but different x and z still span real area.
-  // That is fine and it is why the rock is CLOSED: it is buried, and a solid
-  // with a floor can be turned onto any face without opening a hole in itself.
+  // At `sit` 0 that disc is the rock's floor and it stays -- see `skirt` for the
+  // shapes that drop it, and for why the drop waits until after the gain.
+  //
+  // `pinned` is which vertices the plane caught, and it is the only record: the
+  // y values are about to be scaled and re-seated and no comparison against
+  // `cutY` will identify them afterwards.
+  //
+  // `<=` AND NOT `<`. A vertex can land exactly ON the plane rather than under
+  // it -- a cut face tangent to the bed, once in a couple of hundred seeds --
+  // and it is on the floor either way. Testing strictly leaves that one vertex
+  // unmarked, which leaves one floor triangle behind on a rock that was meant
+  // to have none and one spike behind on a rock wearing a skirt.
+  const pinned = new Uint8Array(positions.length / 3)
   for (let i = 1; i < positions.length; i += 3) {
-    if (positions[i] < cutY) positions[i] = cutY
+    if (positions[i] <= cutY) {
+      positions[i] = cutY
+      pinned[(i - 1) / 3] = 1
+    }
   }
 
-  const vertexCount = positions.length / 3
+  let vertexCount = positions.length / 3
 
   // This tier's own extents, on exactly the terms the reference was measured on.
   const bounds = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]
@@ -833,6 +871,50 @@ export function buildRock(options = {}) {
   }
   if (sitY > 1e-6) {
     for (let i = 1; i < positions.length; i += 3) positions[i] -= sitY
+  }
+
+  // --- open the bottom, then hang a skirt off the rim ----------------------
+  //
+  // AFTER THE GAIN AND THE RE-SEAT, AND THAT ORDERING IS THE WHOLE TRICK. The
+  // support gain matches this tier's mean silhouette to the dense reference's,
+  // and the reference keeps its floor disc; drop the tier's before measuring and
+  // the two are no longer the same quantity, so every cap would be inflated to
+  // pay for triangles it deliberately does not have. Measure the closed rock,
+  // scale the closed rock, seat the closed rock, and only then take the floor
+  // out. What is left is the boulder with its lid kept and its base removed --
+  // identical geometry above the bed plane, to the last vertex.
+  if (p.sit > 0) {
+    const kept = []
+    const keptShells = []
+    const keptFacets = []
+    const keptPinned = []
+    for (let f = 0; f < vertexCount; f += 3) {
+      if (pinned[f] && pinned[f + 1] && pinned[f + 2]) continue
+      for (let j = 0; j < 3; j++) {
+        const i = f + j
+        kept.push(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2])
+        keptShells.push(shells[i * 3], shells[i * 3 + 1], shells[i * 3 + 2])
+        keptFacets.push(facets[i])
+        keptPinned.push(pinned[i])
+      }
+    }
+    positions = kept
+    shells = keptShells
+    facets = keptFacets
+    for (let i = 0; i < keptPinned.length; i++) pinned[i] = keptPinned[i]
+    vertexCount = positions.length / 3
+
+    // The rim descends. Only the vertices the bed plane caught move, so the faces
+    // that had two feet on the disc's edge stretch into a curtain and every face
+    // clear of the plane is untouched. Inside the same branch as the drop: with
+    // no cut face there is no rim to hang, only isolated vertices that would be
+    // pulled into spikes.
+    if (p.skirt > 0) {
+      const drop = p.skirt * measured.height
+      for (let i = 0; i < vertexCount; i++) {
+        if (pinned[i]) positions[i * 3 + 1] -= drop
+      }
+    }
   }
 
   // --- normals and UVs, per face ------------------------------------------
@@ -929,10 +1011,11 @@ export function buildRock(options = {}) {
     vertices: vertexCount,
     shards: Math.max(1, Math.round(p.shards)),
     cuts: Math.max(0, Math.round(p.cuts)),
-    // How many faces went missing against tier faces x shards. ALWAYS 0 -- the
-    // rock is closed and nothing drops a face -- and reported so that a change
-    // to the shard or cut machinery that quietly loses geometry has somewhere
-    // to show up. check-rocks.mjs holds it at zero.
+    // How many faces went missing against tier faces x shards. 0 for a CLOSED
+    // rock -- `sit` 0, nothing drops a face -- and the floor disc's face count
+    // for an open-bottomed one; see `skirt`. Reported so that a change to the
+    // shard or cut machinery that quietly loses geometry has somewhere to show
+    // up. check-rocks.mjs holds it at zero wherever `sit` is.
     dropped: tier.faces * Math.max(1, Math.round(p.shards)) - vertexCount / 3,
     tier: tier.name,
     // The rung that was actually BUILT, which is not always the one `tier`
