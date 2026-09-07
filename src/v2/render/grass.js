@@ -369,12 +369,13 @@ const HEIGHT = [0.5, 1.5]
 // what the headset feels. It holds flat for the full radius and then falls off
 // hard. Read all four together -- moving one alone is how the bed gets expensive.
 //
-// THE DENSITY IS A FRAME-TIME BUDGET AND NOT A LOOK. 12/m2 is the target look
-// and costs 4-5 fps of a 67 on the headset under medium load. That cost is NOT
-// fragment area -- halving blade height and width, a 4x cut in projected area,
-// moved it by nothing -- so the way to buy it back is not a smaller blade. 24/m2
-// cost 10 fps of an 85 while the bed was being tuned, and 3/m2 reads as tufted
-// ground rather than a mat.
+// THE DENSITY IS A FRAME-TIME BUDGET AND NOT A LOOK. The bed's cost is linear in
+// ON-SCREEN TRIANGLES and in nothing else (WHAT IT COSTS in props/grass-blades.js
+// has the five measurements), so density and blades-per-clump are one lever with
+// two handles: at 12/m2 the bed cost ~1.13 ms, and 8/m2 with the blade 1.5x
+// bigger is the same screen coverage for two thirds of the triangles. 24/m2 cost
+// 10 fps of an 85 while the bed was being tuned, and 3/m2 reads as tufted ground
+// rather than a mat.
 //
 // THE FULL RADIUS IS SET BY A PROMISE, NOT BY TASTE: nothing appears or
 // disappears within 4 m of the player, because grass changing state underfoot is
@@ -390,7 +391,7 @@ const HEIGHT = [0.5, 1.5]
 // clumps in five of those placed -- and the two ways to cheapen it are a smaller
 // radius or a smaller RIM_HYST, which is 2 m for scatters whose gone-distances
 // run to hundreds of metres and is over half of a near clump's here.
-const BLADE_DENSITY = 12
+const BLADE_DENSITY = 8
 const BLADE_FULL_RADIUS = 6.5
 const BLADE_DRAW_RADIUS = 30
 

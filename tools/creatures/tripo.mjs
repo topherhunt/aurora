@@ -117,7 +117,7 @@ const REJECTS_QUAD = new Set([MODELS.p1])
 export async function createMeshTask({
   fileToken,
   model = MODELS.p1,
-  faceLimit = 4000,
+  faceLimit = 500,
   quad = true,
   texture = true,
   pbr = false,

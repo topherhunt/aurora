@@ -171,21 +171,35 @@ export const BOULDER = {
  * meant to be LAID ON a surface, where the boulder is meant to be SUNK IN one.
  *
  * `sit` 0.6 keeps the top two fifths of the lump and rock.js drops the disc the
- * cut leaves behind, so a cap is 153 triangles against the boulder's 320 at the
+ * cut leaves behind, so a cap is 158 triangles against the boulder's 320 at the
  * same tier -- it spends nothing on a floor no camera can reach. `foot` 0 because
  * the flare exists to stop a tapered rock looking balanced on a point and a cap
- * has no point to balance on; `squash` 0.7 so the two fifths that survive are a
- * low dome rather than a cap of a ball.
+ * has no point to balance on.
+ *
+ * `squash` 0.48 WITH `lumps` 0.28 AT `lumpFreq` 3.7 IS THE FACADE PLATE, and the
+ * three move together. Squash alone flattens the dome to 0.16 of its own width
+ * -- what a plate of a wall is -- but a flat dome off the default 0.2 lumps at
+ * 1.6 is an EGG: one smooth swell with a silhouette that repeats visibly the
+ * moment two of them lie side by side, which is what a face carpeted in them
+ * looked like. More than double the lump frequency puts three or four swells
+ * across the plate instead of one, and the extra amplitude is what keeps them
+ * legible after the squash has divided their vertical component down. Chosen on
+ * /gen-rock at this seed; every other dial is ROCK_DEFAULTS.
  *
  * `skirt` 1 IS WHAT MAKES IT PLACEABLE. The rim descends a full rock-height
  * below the bed plane, so the hole cannot clear the dirt on any slope a cap
  * would be laid on. Free -- the curtain faces are the ones that were already
- * holding the disc's edge.
+ * holding the disc's edge. THE SQUASH SPENDS THAT BUDGET: a rock-height is now
+ * 0.31 of the width where it was 0.44, so the curtain a given plate hangs is
+ * three tenths shorter, and it is the fit probe in v2/render/rocks.js that has
+ * to know it -- see `_fitFactor`, which sizes a plate against exactly this
+ * depth.
  *
- * WHO PLACES IT: the `cliff caps` and `bed caps` beds in v2/render/rocks.js,
- * which carpet steep faces and the floors of lakes and rivers with it. Both
- * align it to the surface normal and neither rolls it -- see the `roll` flag
- * there for why an open shell may not be turned onto its side.
+ * WHO PLACES IT: the `cliff slabs` and `bed caps` beds in
+ * v2/render/rocks.js, which panel steep faces and carpet the floors of lakes and
+ * rivers with it. Both align it to the surface normal and neither rolls it --
+ * see the `roll` flag there for why an open shell may not be turned onto its
+ * side.
  *
  * Pinned here rather than in gen-rock-main.js for BOULDER's reason: the bench
  * and the world have to photograph the same shape.
@@ -194,7 +208,9 @@ export const CAP = {
   seed: 98821,
   sit: 0.6,
   foot: 0,
-  squash: 0.7,
+  squash: 0.48,
+  lumps: 0.28,
+  lumpFreq: 3.7,
   skirt: 1,
 }
 
@@ -509,7 +525,21 @@ export function buildRockBank({ seed = null } = {}) {
     bytes += geometryBytes(card)
     tiers.push(card)
 
-    shapes[spec.name] = { name: spec.name, seed: params.seed, measured, tiers }
+    // `skirt` IN METRES, at the size the shape was measured at, because the one
+    // consumer that needs it is doing arithmetic in metres. rock.js hangs the rim
+    // `skirt * measured.height` below the bed plane and that product is the
+    // ONLY thing that says how far a plate's ground may fall away before the
+    // hole under it clears the dirt -- see `_fitFactor` in v2/render/rocks.js,
+    // which sizes every panel against it. Reported rather than assumed there:
+    // the dial lives here, and a cap re-authored flatter silently shortens the
+    // curtain.
+    shapes[spec.name] = {
+      name: spec.name,
+      seed: params.seed,
+      measured,
+      skirt: (params.skirt ?? 0) * measured.height,
+      tiers,
+    }
   }
 
   return { shapes, geometries, triangles, bytes }

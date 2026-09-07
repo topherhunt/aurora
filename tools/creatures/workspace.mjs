@@ -62,15 +62,51 @@ export function writeState(id, state) {
 
 // --- candidate images (OpenRouter, already paid for by the caller) ----------
 
-export function saveCandidate(id, buffer, cost) {
-  const dir = workDir(id)
-  fs.mkdirSync(path.join(dir, 'candidates'), { recursive: true })
+/**
+ * The bench lets several image generations run at once, so two calls can be in
+ * flight over the same directory. The slot number is therefore CLAIMED on disk
+ * with an exclusive write rather than read off `state.candidates.length`: two
+ * requests that pick the same number cannot both win it, and the loser retries
+ * instead of silently overwriting an image that was paid for. Deleting a
+ * candidate leaves a hole, which the next generation fills.
+ *
+ * The prompt and frame are recorded WITH the image. The description field is
+ * editable and images are generated in batches, so "which words produced this
+ * picture" stops being answerable from memory after about four of them.
+ */
+export function saveCandidate(id, buffer, cost, { prompt = null, aspectRatio = null } = {}) {
+  const dest = path.join(workDir(id), 'candidates')
+  fs.mkdirSync(dest, { recursive: true })
+  let file = null
+  for (let n = 0; n < 1000 && !file; n++) {
+    try {
+      fs.writeFileSync(path.join(dest, `${n}.png`), buffer, { flag: 'wx' })
+      file = `${n}.png`
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+    }
+  }
+  if (!file) throw new Error(`no free candidate slot for "${id}" -- 1000 images is not a workflow`)
   const state = readState(id)
-  const file = `${state.candidates.length}.png`
-  fs.writeFileSync(path.join(dir, 'candidates', file), buffer)
-  state.candidates.push({ file, cost })
+  state.candidates.push({ file, cost, prompt, aspectRatio })
   writeState(id, state)
   return file
+}
+
+/**
+ * Drops one candidate image. source.png is a COPY, not a link, so a picked
+ * candidate's deletion leaves the Tripo input intact -- but the pick must stop
+ * naming a file that is gone, or the gallery marks nothing as picked and the
+ * next `listCandidates` disagrees with disk.
+ */
+export function deleteCandidate(id, file) {
+  const state = readState(id)
+  if (!state.candidates.some((c) => c.file === file)) throw new Error(`no candidate "${file}" for "${id}"`)
+  fs.rmSync(path.join(workDir(id), 'candidates', file), { force: true })
+  state.candidates = state.candidates.filter((c) => c.file !== file)
+  if (state.picked === file) state.picked = null
+  writeState(id, state)
+  return { file, picked: state.picked }
 }
 
 /**
@@ -121,6 +157,26 @@ function charge(id, step, taskId, credits) {
 // --- mesh candidates --------------------------------------------------------
 
 /**
+ * What Tripo actually sent, read off the bytes rather than assumed from the
+ * field name. `quad: true` makes it deliver FBX -- glTF has no quads -- and a
+ * body written blind to a `.glb` name surfaces much later, in the loader, as
+ * "Unexpected token 'K'" on the FBX magic.
+ */
+function containerOf(buf) {
+  if (buf.subarray(0, 4).toString('ascii') === 'glTF') return 'glb'
+  if (buf.subarray(0, 18).toString('ascii') === 'Kaydara FBX Binary') return 'fbx'
+  throw new Error(`Tripo returned a model in an unrecognised container, first bytes ${JSON.stringify(buf.subarray(0, 12).toString('ascii'))}`)
+}
+
+/** `meshes/3.fbx` -> `3`. The candidate number, whatever container it arrived in. */
+const stemOf = (file) => file.replace(/\.[^.]+$/, '')
+
+/** The picked candidate copied to the top level, under its own extension. */
+function workingMesh(dir) {
+  return ['mesh.glb', 'mesh.fbx'].find((f) => fs.existsSync(path.join(dir, f))) ?? null
+}
+
+/**
  * A mesh generated before meshes were kept as candidates lives at the top level
  * with no entry in `state.meshes`. Adopt it as candidate 0 rather than leaving
  * 50 credits of work invisible to the bench.
@@ -154,28 +210,37 @@ export function listMeshes(id) {
     ...m,
     picked: m.file === state.pickedMesh,
     url: `/tools/creatures/work/${id}/meshes/${m.file}`,
-    previewUrl: fs.existsSync(path.join(dir, 'meshes', m.file.replace('.glb', '-preview.png')))
-      ? `/tools/creatures/work/${id}/meshes/${m.file.replace('.glb', '-preview.png')}`
+    previewUrl: fs.existsSync(path.join(dir, 'meshes', `${stemOf(m.file)}-preview.png`))
+      ? `/tools/creatures/work/${id}/meshes/${stemOf(m.file)}-preview.png`
       : null,
     lods: lodsOf(id, m.file),
   }))
 }
 
+/**
+ * The tiers decimated from one mesh candidate. Disk is the truth about which
+ * exist; state.json carries what each one COST in triangles, so the bench can
+ * list a candidate's ladder without loading every glb to count faces.
+ */
 function lodsOf(id, file) {
   const dir = path.join(workDir(id), 'meshes')
   if (!fs.existsSync(dir)) return []
-  const stem = file.replace(/\.glb$/, '')
+  const stem = stemOf(file)
+  const recorded = (readState(id).meshes ?? []).find((m) => m.file === file)?.lods ?? []
   return fs.readdirSync(dir)
     .filter((f) => new RegExp(`^${stem}-lod\\d+\\.glb$`).test(f))
-    .sort()
-    .map((f) => ({ file: f, level: Number(f.match(/-lod(\d+)\.glb$/)[1]), url: `/tools/creatures/work/${id}/meshes/${f}` }))
+    .map((f) => {
+      const level = Number(f.match(/-lod(\d+)\.glb$/)[1])
+      return { ...(recorded.find((r) => r.level === level) ?? {}), file: f, level, url: `/tools/creatures/work/${id}/meshes/${f}` }
+    })
+    .sort((a, b) => a.level - b.level)
 }
 
 /**
- * Makes one mesh candidate the working mesh. Copies it to `mesh.glb`, which is
- * what the rig step and the bench's viewer read, and repoints `tasks.mesh` --
- * rigging is driven by the task id, so a pick that did not move it would rig a
- * different mesh than the one on screen.
+ * Makes one mesh candidate the working mesh. Copies it to `mesh.<ext>`, which is
+ * what the bench's viewer reads, and repoints `tasks.mesh` -- rigging is driven
+ * by the task id, so a pick that did not move it would rig a different mesh than
+ * the one on screen.
  */
 export function pickMesh(id, file) {
   const dir = workDir(id)
@@ -183,14 +248,19 @@ export function pickMesh(id, file) {
   const entry = (state.meshes ?? []).find((m) => m.file === file)
   if (!entry) throw new Error(`no mesh candidate "${file}" for "${id}"`)
 
-  fs.copyFileSync(path.join(dir, 'meshes', file), path.join(dir, 'mesh.glb'))
-  const preview = path.join(dir, 'meshes', file.replace('.glb', '-preview.png'))
+  // The working copy keeps the candidate's own container, so picking a glb after
+  // an fbx has to take the previous one away rather than leave two.
+  const previous = workingMesh(dir)
+  if (previous) fs.rmSync(path.join(dir, previous))
+  const working = `mesh${path.extname(file)}`
+  fs.copyFileSync(path.join(dir, 'meshes', file), path.join(dir, working))
+  const preview = path.join(dir, 'meshes', `${stemOf(file)}-preview.png`)
   if (fs.existsSync(preview)) fs.copyFileSync(preview, path.join(dir, 'mesh-preview.png'))
 
   state.pickedMesh = file
   if (entry.taskId) state.tasks.mesh = { taskId: entry.taskId, credits: entry.credits, at: entry.at }
   writeState(id, state)
-  return { file, path: path.relative(ROOT, path.join(dir, 'mesh.glb')) }
+  return { file, path: path.relative(ROOT, path.join(dir, working)) }
 }
 
 /**
@@ -203,7 +273,7 @@ export async function runMesh(id, opts = {}) {
   const source = path.join(dir, 'source.png')
   if (!fs.existsSync(source)) throw new Error(`no source.png for "${id}" -- pick a candidate image first`)
 
-  const params = { model: MODELS.p1, faceLimit: 4000, quad: true, texture: true, pbr: false, ...opts }
+  const params = { model: MODELS.p1, faceLimit: 500, quad: true, texture: true, pbr: false, ...opts }
   const credits = estimateCredits({ step: 'mesh', ...params })
 
   const fileToken = await uploadImage(fs.readFileSync(source), `${id}.png`)
@@ -214,15 +284,37 @@ export async function runMesh(id, opts = {}) {
   const modelUrl = task.output?.model_url ?? task.output?.pbr_model ?? task.output?.model
   if (!modelUrl) throw new Error(`Tripo mesh task ${taskId} succeeded with no model url: ${JSON.stringify(task.output ?? {}).slice(0, 300)}`)
 
-  // The number is claimed from the state file, not from a directory listing, so
-  // it cannot collide with a candidate whose file was moved away by hand.
-  const state = adoptLegacyMesh(id)
-  const file = `${(state.meshes ?? []).length}.glb`
-  fs.mkdirSync(path.join(dir, 'meshes'), { recursive: true })
-  fs.writeFileSync(path.join(dir, 'meshes', file), await download(modelUrl))
-
+  adoptLegacyMesh(id)
+  const body = await download(modelUrl)
   const previewUrl = task.output?.rendered_image_url ?? task.output?.rendered_image
-  if (previewUrl) fs.writeFileSync(path.join(dir, 'meshes', file.replace('.glb', '-preview.png')), await download(previewUrl))
+  const preview = previewUrl ? await download(previewUrl) : null
+
+  // Everything from here to writeState runs with no `await` in it, and that is
+  // what makes the slot claim indivisible: several mesh tasks are in flight at
+  // once, and a stem read from state.meshes.length before an await is a number
+  // two of them can both win -- the second overwrites the first's file and the
+  // gallery shows one 50-credit mesh where two were paid for.
+  //
+  // Stems are claimed across CONTAINERS, because `0.glb` and `0.fbx` are the
+  // same candidate number to everything downstream (stemOf, the LOD names, the
+  // preview). `wx` on the full filename alone would let both of those land.
+  const meshDir = path.join(dir, 'meshes')
+  fs.mkdirSync(meshDir, { recursive: true })
+  const taken = new Set(fs.readdirSync(meshDir).map((f) => f.match(/^(\d+)\./)?.[1]).filter(Boolean))
+  const ext = containerOf(body)
+  let file = null
+  for (let n = 0; n < 1000 && !file; n++) {
+    if (taken.has(String(n))) continue
+    try {
+      fs.writeFileSync(path.join(meshDir, `${n}.${ext}`), body, { flag: 'wx' })
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+      continue
+    }
+    file = `${n}.${ext}`
+    if (preview) fs.writeFileSync(path.join(meshDir, `${n}-preview.png`), preview)
+  }
+  if (!file) throw new Error(`no free mesh slot for "${id}" -- 1000 meshes is not a workflow`)
 
   const fresh = readState(id)
   fresh.meshes = [...(fresh.meshes ?? []), { file, taskId, credits, at: Date.now(), params }]
@@ -234,12 +326,24 @@ export async function runMesh(id, opts = {}) {
   return { taskId, credits, file, autoPicked, path: path.relative(ROOT, path.join(dir, 'meshes', file)) }
 }
 
+/**
+ * The Tripo task the rig steps work from: the PICKED candidate's, read off
+ * state.meshes rather than off `tasks.mesh`. With several mesh tasks in flight
+ * `charge` points tasks.mesh at whichever one finished LAST, so a rig driven
+ * from it would silently skeleton a candidate you did not pick. The fallback is
+ * for workspaces predating per-candidate meshes.
+ */
+function meshTaskFor(id, state) {
+  const picked = (state.meshes ?? []).find((m) => m.file === state.pickedMesh)
+  const taskId = picked?.taskId ?? state.tasks.mesh?.taskId
+  if (!taskId) throw new Error(`no mesh task for "${id}" -- generate and pick a mesh first`)
+  return taskId
+}
+
 /** Free. Tripo's own read on whether the mesh can be rigged, and as what. */
 export async function runRigCheck(id) {
   const state = readState(id)
-  const meshTask = state.tasks.mesh?.taskId
-  if (!meshTask) throw new Error(`no mesh task for "${id}" -- generate the mesh first`)
-  const taskId = await createRigCheckTask(meshTask)
+  const taskId = await createRigCheckTask(meshTaskFor(id, state))
   charge(id, 'rigCheck', taskId, 0)
   const task = await waitForTask(taskId)
   return { taskId, riggable: task.output?.riggable ?? false, rigType: task.output?.rig_type ?? null }
@@ -248,8 +352,7 @@ export async function runRigCheck(id) {
 export async function runRig(id, { rigType, spec = 'mixamo' }) {
   const dir = workDir(id)
   const state = readState(id)
-  const meshTask = state.tasks.mesh?.taskId
-  if (!meshTask) throw new Error(`no mesh task for "${id}" -- generate the mesh first`)
+  const meshTask = meshTaskFor(id, state)
 
   const credits = estimateCredits({ step: 'rig' })
   const taskId = await createRigTask({ modelTaskId: meshTask, rigType, spec })
@@ -314,7 +417,9 @@ export function assets(id) {
   // that mesh's tiers rather than a stale ladder from a different one. Paths are
   // relative to the work dir, which is what the bench's viewer appends to.
   const lods = state.pickedMesh ? lodsOf(id, state.pickedMesh).map((l) => `meshes/${l.file}`) : []
-  return { source: has('source.png'), mesh: has('mesh.glb'), rig: has('rig.glb'), anims, lods, meshCount: (state.meshes ?? []).length, state }
+  // `mesh` is the working file's name, not a flag: the bench has to fetch it,
+  // and which loader it needs is in the extension.
+  return { source: has('source.png'), mesh: workingMesh(dir), rig: has('rig.glb'), anims, lods, meshCount: (state.meshes ?? []).length, state }
 }
 
 // --- the asset index --------------------------------------------------------
@@ -332,7 +437,7 @@ export function readMeta(id) {
 }
 
 export function saveMeta(id, patch) {
-  const allowed = ['label', 'rigType', 'sizeM', 'description', 'styleNote']
+  const allowed = ['label', 'rigType', 'sizeM', 'description', 'styleNote', 'aspectRatio']
   const meta = {}
   for (const k of allowed) if (patch[k] !== undefined) meta[k] = patch[k]
   if (!meta.description) throw new Error('a creature needs a description -- it is the prompt')
@@ -362,7 +467,7 @@ export function listAll() {
       candidateCount: state.candidates.length,
       meshCount: a.meshCount,
       thumbUrl: thumb ? `/tools/creatures/work/${id}/candidates/${thumb}` : null,
-      has: { source: a.source, mesh: a.mesh, rig: a.rig },
+      has: { source: a.source, mesh: Boolean(a.mesh), rig: a.rig },
       animCount: a.anims.length,
       lodCount: a.lods.length,
       // Both wallets, kept apart: Tripo credits are not dollars until divided,
@@ -372,13 +477,32 @@ export function listAll() {
   })
 }
 
-/** Stores one locally-decimated LOD tier. Costs nothing -- our code made it. */
-export function saveLod(id, level, buffer) {
+/**
+ * Stores one locally-decimated LOD tier. Costs nothing -- our code made it.
+ *
+ * A tier belongs to the mesh candidate it was decimated FROM, not to whichever
+ * candidate happens to be picked when it lands: the bench can decimate any
+ * candidate, and filing the result under the picked one would attach a fox's
+ * ladder to a mesh it was never derived from.
+ */
+export function saveLod(id, level, buffer, { mesh = null, stats = null } = {}) {
   if (!Number.isInteger(level) || level < 1 || level > 9) throw new Error(`lod level must be 1-9, got ${level}`)
   const dir = workDir(id)
   const state = adoptLegacyMesh(id)
-  if (!state.pickedMesh) throw new Error(`no picked mesh for "${id}" -- generate and pick a mesh first`)
-  const file = `${state.pickedMesh.replace(/\.glb$/, '')}-lod${level}.glb`
+  const from = mesh ?? state.pickedMesh
+  if (!from) throw new Error(`no picked mesh for "${id}" -- generate and pick a mesh first`)
+  const entry = (state.meshes ?? []).find((m) => m.file === from)
+  if (!entry) throw new Error(`no mesh candidate "${from}" for "${id}"`)
+
+  const file = `${stemOf(from)}-lod${level}.glb`
   fs.writeFileSync(path.join(dir, 'meshes', file), buffer)
+
+  // Whitelisted, because this arrives from the page: the ladder table renders it
+  // straight back and state.json is not a place to let a client write free-form.
+  const kept = { level }
+  for (const k of ['tris', 'targetTris', 'uvMode', 'kind']) if (stats?.[k] !== undefined) kept[k] = stats[k]
+  entry.lods = [...(entry.lods ?? []).filter((l) => l.level !== level), kept].sort((a, b) => a.level - b.level)
+  writeState(id, state)
+
   return { file, path: path.relative(ROOT, path.join(dir, 'meshes', file)), bytes: buffer.length }
 }

@@ -37,20 +37,24 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
     - [x] A separate version of pine -v6 where each branch has its own cloak
     - \[ \]
   - [ ] Rocks
-    - [x] Stop rendering tiny pebbles. Place nothing smaller than 0.5m. Get rid of the pebbles (we'll do those via a separate layer). ROCK_MIN_SIZE in rocks.js, enforced in the RockBed constructor so a new bed cannot drift under it.
-    - [x] Sink rocks deeper into the ground - min 40% in. SINK_MIN 0.4, SINK_TALL 0.6. The arithmetic buries a fraction of the UNLEANED box, so the shallowest flat-ground rock measures 36%.
-    - [ ] Cliff faces should have larger boulders sunk in, deeper. I don't see any massive ones. Say up to 50m tall, protruding slightly out of the cliff face.
-    - [x] Fix: Tint of billboards is misaligned from tint of the rock it's replacing. Often totally black. Two causes: the instance's quarter turn was rotating the card's lighting normal (12 of 16 turns pointed it sideways or down), and the bake's near-black hemisphere ground is a canopy number. SPUN_CARD_NORMAL in material.js pins the normal; BAKE_ROCK_BOUNCE lights the underside.
-    - [ ] Show rock billboards as always 50% dithered, for cheap blending? NOT DONE, and recommended against -- it costs nothing (the discard already runs) but it removes half the card's pixels, so a distant rock reads as gauze rather than stone, and at card range the stipple is sub-pixel and shimmers.
-    - [x] A "rock cap": one open face, no floor, for carpeting cliffsides. `sit` past 0 now drops the bed-plane disc and `skirt` hangs the open rim a rock-height below ground. `CAP` in rock-bank.js at seed 98821; 153 triangles against the boulder's 320.
-    - [x] Carpet cliff faces and river/lake beds with the cap. Two beds in rocks.js: `cliff caps` (45-85 deg, 1.5-20 m, `fitSlope` probes the footprint's four corners so a big plate only lands on a big face) and `bed caps` (submerged, 0.8-6 m). Both take `tilt: 1` and refuse the quarter turns, which is what keeps the open rim in the ground. Measured on the real heightmap: about half the qualifying wall area under plate, 6-13k triangles, +50 ms on `place`. `scripts/probe-caps.mjs` is where those numbers come from.
-    - [ ] Lakebeds: try rock cap carpets, maybe remove?
-    - [ ] 
-  - [ ] Double # of grass tris
-  - [ ] Add occasional tall-grass tufts
+    - [ ] Rock caps: positioned impostor card rather than billboard.
+    - [ ] Fix boulder billboard colors & positions
+      - Currently billboard color is substantially misaligned from the color / light level of the rock itself.
+      - Also, billboard POSITION is off-center, and often size too, it needs to match the center-position and size of the rock mesh it's replacing. (I may have previously specified that billboards should never embed in the ground; that was wrong and I'm sorry.
+      - Billboards apparently have a "size on screen" based fadeout trigger, so their fade distance is size-dependent. That's good. But it needs to be 2x the size it currently is. Currently we have lots of tiny pebbles busying up the screen.
+    - [ ] Fix rock-cap far-distance cards
+      - Rock caps' impostor photo should be top-down. Instead of a cylindrically-rotated billboard, the rock card will just be positioned along whatever surface the cap was on, tangent to the top surface of where the mesh reached (so it's out a bit from the cliff wall or whatever), at the same rotation and scale.
   - [ ] Pebbles
     - 1 mesh, reuse the boulder LOD1 + LOD2 + billboard. Lower tri count, irregular, sunk into ground.
     - Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
+  - Ensure the various prop scatterers are only calculating placement within their local rim of visibility & not beyond that.
+  - [ ] Characters
+    - [ ] 
+    - [ ] A snake, slithering through the grass.
+    - [ ] A small wood-and-twig creature, like a fey.
+    - [ ] Figure out how distant cards should work.
+  - [ ] Gen trees WITH the texture, preserve that version, also take the mesh and repaint it with my tiled textures. Can I do a "partial repaint" which preserves the orig's 128px texture wrap but overrides it for certain faces where I have something better?
+  - [ ] 
 - ...
   - [ ] greeting dialog on 1st load on pc (point to vr).
   - [ ] simple shadows.

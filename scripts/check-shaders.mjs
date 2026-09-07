@@ -278,7 +278,14 @@ ${COLOR_FNS}
 // diffuseColor.a, which is what COLOR_FRAGMENT exists to prevent. Three's own
 // chunks are npm's, so this pairing also gives vColor the vec4 it has in both
 // stages of the real program and the cross-stage check stays honest.
-const propDefines = ({ batched = true, vertexColors = false } = {}) => {
+// AN INSTANCED MESH DEFINES USE_COLOR IN THE FRAGMENT STAGE ONLY, which is the
+// one asymmetry here worth copying rather than tidying: three's vertex prologue
+// keys USE_COLOR off `vertexColors` alone and lets <color_vertex> fold
+// instanceColor in behind USE_INSTANCING_COLOR, while its fragment prologue
+// defines USE_COLOR for any of the three colour sources (WebGLPrograms, the two
+// prologue builders). Getting it backwards would compile COLOR_FRAGMENT out and
+// pass a harness that never looks at the per-instance tint.
+const propDefines = ({ batched = true, instanced = false, vertexColors = false } = {}) => {
   const shared = [
     '#define USE_FOG',
     '#define FOG_EXP2',
@@ -287,8 +294,12 @@ const propDefines = ({ batched = true, vertexColors = false } = {}) => {
   ]
   const batchColor = batched ? '#define USE_COLOR_ALPHA' : ''
   return {
-    vert: [batched ? '#define USE_BATCHING' : '', batched ? '#define USE_BATCHING_COLOR' : '', batchColor, ...shared],
-    frag: ['#define USE_ALPHATEST', batchColor, ...shared],
+    vert: [
+      batched ? '#define USE_BATCHING' : '', batched ? '#define USE_BATCHING_COLOR' : '',
+      instanced ? '#define USE_INSTANCING' : '', instanced ? '#define USE_INSTANCING_COLOR' : '',
+      batchColor, ...shared,
+    ],
+    frag: ['#define USE_ALPHATEST', instanced ? '#define USE_COLOR' : '', batchColor, ...shared],
   }
 }
 
@@ -341,12 +352,31 @@ const PROP_VARIANTS = [
   // GLSL in the file that touches the batching matrix as a mat3 or indexes
   // viewMatrix by hand. Both are easy to get wrong in a way that compiles
   // everywhere except a real driver, which is what this harness is for. Batched,
-  // because that is how rocks draw and USE_BATCHING is what selects the line.
+  // because that is how the rock SHELL draws and USE_BATCHING is what selects
+  // the line; the beds themselves are the instanced variant below.
   [
     'billboardLayers, spherical',
     createPropMaterial(atlas, { billboardLayers: [0, 1, 2], sphericalBillboard: true }),
     { batched: true },
     { vert: [...PROP_MARKS.vert, 'uBillboardLayers', 'mat3( batchingMatrix )'], frag: PROP_MARKS.frag },
+  ],
+  // WHAT THE ROCK BEDS ACTUALLY DRAW, and the only INSTANCED compile in this
+  // table. Since the beds came off BatchedMesh their dissolve slot is the
+  // `aPropFade` attribute, which lives behind USE_INSTANCING and
+  // PROP_FADE_ATTRIBUTE -- so a batched compile type-checks the OTHER branch of
+  // FADE_VERTEX and reports success on a bed whose dissolve is dead GLSL, which
+  // is exactly what shipped. `bump` rides along because it is the one option no
+  // other variant here carries.
+  [
+    'instancedFade, spherical, bump',
+    createPropMaterial(atlas, {
+      billboardLayers: [0], sphericalBillboard: true, instancedFade: true, bump: true,
+    }),
+    { batched: false, instanced: true },
+    {
+      vert: [...PROP_MARKS.vert, '#define PROP_FADE_ATTRIBUTE', 'float fadeSlot = aPropFade'],
+      frag: [...PROP_MARKS.frag, 'abs( vPropFade ) <= fadeT ) discard'],
+    },
   ],
   [
     'stripTiling',

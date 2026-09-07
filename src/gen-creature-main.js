@@ -20,8 +20,11 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { analyzeMesh, decimate, decimateLadder } from './mesh/decimate.js'
+import { TEX_SIZE } from './textures.js'
+import { SUPERSAMPLE, BAKE_ROCK_BOUNCE, impostorCardExtents, downsample, dilate } from './props/impostor.js'
 
 const $ = (id) => document.getElementById(id)
 const status = $('status')
@@ -29,11 +32,23 @@ function setStatus(text, cls) { status.textContent = text; status.className = `n
 
 let library = [] // every creature the bench knows about: roster seeds + anything on disk
 let presets = {}
+let frames = {} // rigType -> the frame a creature with that silhouette gets by default
 let credits = {}
 let candidates = []
 let meshCandidates = []
-let assets = { source: false, mesh: false, rig: false, anims: [], lods: [], state: {} }
-let lodTiers = [] // { level, target, mesh, geometry, stats } for the mesh currently loaded
+let assets = { source: false, mesh: null, rig: false, anims: [], lods: [], state: {} }
+// The mesh candidate section 4 operates on. Not the same thing as the PICKED
+// candidate: picking is what rigs and ships, selecting is what you are currently
+// comparing ladders for, and the whole point of keeping every candidate is being
+// able to decimate one you have not committed to.
+let selectedMesh = null
+let lodTiers = [] // { level, object, stats } decimated from `selectedMesh` this session
+// Generations in flight, and the one-second guards on the buttons that start
+// them. Declared up here rather than beside their handlers because `refresh`
+// reads them and runs before those handlers are ever installed.
+let pendingImages = 0
+let pendingMeshes = 0
+let meshCooling = false
 const ledger = [] // { what, usd }
 
 const currentId = () => $('creatureId').value.trim()
@@ -51,7 +66,19 @@ function bill(what, usd) {
 
 async function loadRoster() {
   const j = await (await fetch('/__creature-roster')).json()
+  // Checked here rather than trusted, because everything that reads these reads
+  // them much later and somewhere else: a response missing `frames` surfaced as
+  // "cannot read properties of undefined (reading 'avian')" from the roster
+  // arrows, and only on creatures with no saved aspectRatio, since the ?? in
+  // loadCreature short-circuits for the ones that have one. vite.config.js's
+  // middleware does not hot-reload, so a dev server older than this page is the
+  // way that happens.
+  if (!j.ok) throw new Error(j.error ?? 'GET /__creature-roster failed')
+  for (const k of ['presets', 'frames', 'credits']) {
+    if (!j[k]) throw new Error(`/__creature-roster answered without "${k}" -- restart the dev server, its middleware is older than this page`)
+  }
   presets = j.presets
+  frames = j.frames
   credits = j.credits
   if (!j.hasTripoKey) setStatus('TRIPO_API_KEY is not set -- the 3D steps will fail until it is in .env', 'warn')
 
@@ -185,7 +212,16 @@ async function loadCreature(id) {
   $('rigType').value = c.rigType ?? 'none'
   $('sizeM').value = c.sizeM ?? ''
   $('description').value = c.description ?? ''
+  // The frame follows the SILHOUETTE, so it defaults from the rig type and is
+  // only stored per creature once someone overrides it. Most creatures are wide
+  // -- see FRAME_BY_RIG in creature-prompt.mjs.
+  $('aspectRatio').value = c.aspectRatio ?? frames[c.rigType] ?? '4:3'
   candidates = []
+  // Explicitly, not by falling out of refresh's "is the selection still valid"
+  // check: every creature numbers its candidates from zero, so "0.glb" is valid
+  // for the new one too and the selection would look like it survived.
+  selectedMesh = null
+  framedFor = null
   clearLods()
   clearModel()
   await refresh()
@@ -206,6 +242,7 @@ $('saveMeta').addEventListener('click', () => withButton($('saveMeta'), 'saving'
     rigType: $('rigType').value,
     sizeM: Number($('sizeM').value) || undefined,
     description: $('description').value.trim(),
+    aspectRatio: $('aspectRatio').value,
   })
   await loadLibrary()
   $('roster').value = id
@@ -229,6 +266,7 @@ $('newCreature').addEventListener('click', () => withButton($('newCreature'), 'c
     rigType: $('rigType').value,
     sizeM: Number($('sizeM').value) || undefined,
     description,
+    aspectRatio: $('aspectRatio').value,
   })
   await loadLibrary()
   await loadCreature(id)
@@ -254,11 +292,22 @@ async function refresh() {
   candidates = cj.candidates
   meshCandidates = mj.meshes
   assets = aj
+  // The selection follows the pick until you move it, and has to survive a
+  // refresh: `refresh` runs after every action, and re-defaulting here would drag
+  // the LOD section back to the picked candidate the moment a tier was saved.
+  if (!meshCandidates.some((m) => m.file === selectedMesh)) {
+    selectedMesh = (meshCandidates.find((m) => m.picked) ?? meshCandidates[0])?.file ?? null
+  }
   renderGallery()
   renderMeshGallery()
   renderAnimList()
-  $('genMesh').disabled = !assets.source
-  $('genLod').disabled = !assets.mesh
+  renderLodTable()
+  // `meshCooling` is checked here as well as in the timer: refresh runs after
+  // every action, and without it a refresh landing inside the cooldown would
+  // hand the button straight back and undo the double-click guard.
+  $('genMesh').disabled = !assets.source || meshCooling
+  $('genLod').disabled = !selectedMesh
+  $('genCards').disabled = !selectedMesh
   $('saveLod').disabled = lodTiers.length === 0
   $('rigCheck').disabled = !assets.mesh
   $('genRig').disabled = !assets.mesh
@@ -266,10 +315,30 @@ async function refresh() {
   renderClipSelect()
 }
 
+/**
+ * A candidate is generated at 1024px and shown at 200px, so the gallery is for
+ * telling images apart and this is for judging one. Any click dismisses it, and
+ * the src is dropped on the way out: a hidden node still holds the bytes, and
+ * the image it points at may be deleted from under it a moment later.
+ */
+function openLightbox(url, caption) {
+  $('lightboxImg').src = url
+  $('lightboxCap').textContent = caption
+  $('lightbox').hidden = false
+}
+
+function closeLightbox() {
+  $('lightbox').hidden = true
+  $('lightboxImg').removeAttribute('src')
+}
+
+$('lightbox').addEventListener('click', closeLightbox)
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox() })
+
 function renderGallery() {
   const g = $('gallery')
   g.innerHTML = ''
-  if (!candidates.length) {
+  if (!candidates.length && !pendingImages) {
     g.innerHTML = '<p class="label">no candidates yet -- generate one</p>'
     return
   }
@@ -285,7 +354,43 @@ function renderGallery() {
     const cost = document.createElement('div')
     cost.className = 'cost'
     cost.textContent = `$${(c.cost ?? 0).toFixed(4)}`
-    div.append(img, btn, cost)
+
+    const zoom = document.createElement('button')
+    zoom.className = 'corner zoom'
+    zoom.innerHTML = '&#128269;'
+    zoom.title = `view ${c.file} full size`
+    zoom.addEventListener('click', () => openLightbox(c.url, `${c.file} -- $${(c.cost ?? 0).toFixed(4)}`))
+    img.style.cursor = 'zoom-in'
+    img.addEventListener('click', () => openLightbox(c.url, `${c.file} -- $${(c.cost ?? 0).toFixed(4)}`))
+
+    const trash = document.createElement('button')
+    trash.className = 'corner trash'
+    trash.innerHTML = '&#128465;'
+    trash.title = `delete ${c.file}`
+    // Confirmed, unlike every other click in this gallery: the image cost money
+    // and there is no way to get this exact one back.
+    trash.addEventListener('click', () => {
+      if (!window.confirm(`Delete candidate ${c.file}? It cost $${(c.cost ?? 0).toFixed(4)} and cannot be regenerated identically.`)) return
+      withButton(trash, `deleting ${c.file}`, async () => {
+        await post(`/__creature-delete-candidate?id=${encodeURIComponent(currentId())}`, { file: c.file })
+        await refresh()
+        await loadLibrary()
+        setStatus(`deleted ${c.file}`, 'ok')
+      })
+    })
+
+    div.append(img, btn, cost, zoom, trash)
+    g.appendChild(div)
+  }
+  // One placeholder per generation still in flight, so a second click has
+  // somewhere visible to land while the first request is still running.
+  for (let i = 0; i < pendingImages; i++) {
+    const div = document.createElement('div')
+    div.className = 'candidate pending'
+    const shot = document.createElement('div')
+    shot.className = 'noshot'
+    shot.textContent = 'generating...'
+    div.append(shot)
     g.appendChild(div)
   }
 }
@@ -296,13 +401,13 @@ function renderGallery() {
 function renderMeshGallery() {
   const g = $('meshGallery')
   g.innerHTML = ''
-  if (!meshCandidates.length) {
+  if (!meshCandidates.length && !pendingMeshes) {
     g.innerHTML = '<p class="label">no meshes yet -- pick an image above, then generate one</p>'
     return
   }
   for (const m of meshCandidates) {
     const div = document.createElement('div')
-    div.className = `candidate${m.picked ? ' is-picked' : ''}`
+    div.className = `candidate${m.picked ? ' is-picked' : ''}${m.file === selectedMesh ? ' is-selected' : ''}`
 
     let shot
     if (m.previewUrl) {
@@ -314,8 +419,8 @@ function renderMeshGallery() {
       shot.textContent = 'no preview render'
     }
     shot.style.cursor = 'pointer'
-    shot.title = 'preview this mesh without picking it'
-    shot.addEventListener('click', () => showModel(`meshes/${m.file}`).catch((e) => setStatus(`preview failed: ${e.message}`, 'warn')))
+    shot.title = 'select this mesh: previews it and points the LOD section at it'
+    shot.addEventListener('click', () => selectMesh(m.file).catch((e) => setStatus(`preview failed: ${e.message}`, 'warn')))
 
     const btn = document.createElement('button')
     btn.textContent = m.picked ? 'picked' : 'pick'
@@ -336,6 +441,33 @@ function renderMeshGallery() {
     div.append(shot, btn, meta)
     g.appendChild(div)
   }
+  // One placeholder per mesh still in flight, so a queued generation is visible
+  // as a slot coming rather than as a click that did nothing for a minute.
+  for (let i = 0; i < pendingMeshes; i++) {
+    const div = document.createElement('div')
+    div.className = 'candidate pending'
+    const shot = document.createElement('div')
+    shot.className = 'noshot'
+    shot.textContent = 'generating...'
+    div.append(shot)
+    g.appendChild(div)
+  }
+}
+
+/**
+ * Points section 4 at one mesh candidate and previews it. The in-memory tiers go
+ * with the old selection: they were decimated from a different mesh, and leaving
+ * them on screen under a new candidate's heading is the one way this table can
+ * lie about what it is showing.
+ */
+async function selectMesh(file) {
+  if (file !== selectedMesh) {
+    selectedMesh = file
+    clearLods()
+    renderMeshGallery()
+    renderLodTable()
+  }
+  await showModel(`meshes/${file}`)
 }
 
 function renderAnimList() {
@@ -393,16 +525,51 @@ async function post(url, body) {
   return j
 }
 
-$('genImage').addEventListener('click', () => withButton($('genImage'), 'generating candidate image', async () => {
-  const j = await post('/__creature-image', {
+// Neither generate button waits for its request: it goes dead for a second --
+// long enough that a double-click is one generation, not two -- and then lets
+// you queue the next. The cooldown is the whole of the protection against an
+// accidental double charge, so it guards the expensive button too (see
+// queueMesh); what it deliberately does NOT do is cap how many run at once,
+// because Tripo's minute of wall clock is the same minute for four meshes as
+// for one.
+const IMAGE_QUEUE_COOLDOWN_MS = 1000
+const MESH_QUEUE_COOLDOWN_MS = 1000
+
+$('genImage').addEventListener('click', () => {
+  const btn = $('genImage')
+  btn.disabled = true
+  window.setTimeout(() => { btn.disabled = false }, IMAGE_QUEUE_COOLDOWN_MS)
+  queueImage()
+})
+
+async function queueImage() {
+  // Read now, not when the response lands: the prompt field is editable and a
+  // queued generation belongs to the words that were on screen when it was asked
+  // for.
+  const body = {
     id: currentId(),
     description: $('description').value.trim(),
     rigType: $('rigType').value,
-  })
-  bill('image', j.cost)
-  await refresh()
-  setStatus(`candidate saved (${j.file}), $${j.cost.toFixed(4)}`, 'ok')
-}))
+    aspectRatio: $('aspectRatio').value,
+  }
+  pendingImages++
+  renderGallery()
+  setStatus(`generating ${pendingImages} candidate image${pendingImages === 1 ? '' : 's'}`)
+  try {
+    const j = await post('/__creature-image', body)
+    bill('image', j.cost)
+    pendingImages--
+    // The server's own copy, not the page's reconstruction of it: "is my edit
+    // even being used" is otherwise unanswerable without reading the source.
+    $('promptOut').querySelector('pre').textContent = `${body.aspectRatio} frame\n\n${j.prompt}`
+    await refresh()
+    setStatus(`candidate saved (${j.file}), $${j.cost.toFixed(4)}${pendingImages ? ` -- ${pendingImages} still generating` : ''}`, 'ok')
+  } catch (e) {
+    pendingImages--
+    renderGallery()
+    setStatus(`generating candidate image failed: ${e.message}`, 'warn')
+  }
+}
 
 async function pick(file) {
   const j = await post(`/__creature-pick?id=${encodeURIComponent(currentId())}`, { file })
@@ -420,24 +587,62 @@ async function pickMesh(file) {
   setStatus(`working mesh -> ${j.path}`, 'ok')
 }
 
-$('genMesh').addEventListener('click', () => withButton($('genMesh'), 'generating mesh (Tripo, this takes a minute)', async () => {
+// Mesh generation queues the same way image generation does. A Tripo mesh takes
+// about a minute of wall clock and four of them in flight take the same minute,
+// so serialising them was costing four minutes to look at four candidates. The
+// button still goes dead for a second, which is what keeps a double-click from
+// charging 100 credits.
+$('genMesh').addEventListener('click', () => {
+  meshCooling = true
+  $('genMesh').disabled = true
+  window.setTimeout(() => {
+    meshCooling = false
+    // Through refresh's own rule, not straight to enabled: source.png may have
+    // gone away while this was cooling.
+    $('genMesh').disabled = !assets.source
+  }, MESH_QUEUE_COOLDOWN_MS)
+  queueMesh()
+})
+
+async function queueMesh() {
+  // Read now, not when the response lands: the model and face-limit controls
+  // stay live, and a queued mesh belongs to the settings it was asked for with.
   const p1 = $('meshModel').value === 'p1'
-  const j = await post(`/__creature-mesh?id=${encodeURIComponent(currentId())}`, {
+  const body = {
     model: p1 ? 'P1-20260311' : 'v3.1-20260211',
     faceLimit: Number($('faceLimit').value),
     // P1 is already a low-poly generator and Tripo rejects the flag on it.
     smartLowPoly: !p1 && $('smartLowPoly').checked,
-  })
-  bill('mesh', j.credits / 100)
-  if (j.autoPicked) clearLods()
-  await refresh()
-  // Always preview the mesh just paid for, even when an earlier pick still owns
-  // mesh.glb -- a second generation that showed the first one reads as a no-op.
-  await showModel(`meshes/${j.file}`)
-  setStatus(j.autoPicked
-    ? `mesh -> ${j.path} (${j.credits} credits), picked as the working mesh`
-    : `mesh candidate ${j.file} -> ${j.path} (${j.credits} credits) -- "pick" it to rig or decimate it`, 'ok')
-}))
+  }
+  // The creature is captured too: a mesh takes a minute, and switching creatures
+  // meanwhile must not file the result under whichever one is on screen.
+  const id = currentId()
+  pendingMeshes++
+  renderMeshGallery()
+  setStatus(`generating ${pendingMeshes} mesh${pendingMeshes === 1 ? '' : 'es'} (Tripo, about a minute each)`)
+  try {
+    const j = await post(`/__creature-mesh?id=${encodeURIComponent(id)}`, body)
+    bill('mesh', j.credits / 100)
+    pendingMeshes--
+    if (j.autoPicked) clearLods()
+    if (id !== currentId()) {
+      setStatus(`mesh candidate ${j.file} saved to ${id} (${j.credits} credits)`, 'ok')
+      return
+    }
+    await refresh()
+    // Only when nothing else is queued. Yanking the viewer to each mesh as it
+    // lands makes the last one to arrive win, which is not the one you were
+    // looking at.
+    if (!pendingMeshes) await selectMesh(j.file)
+    setStatus(j.autoPicked
+      ? `mesh -> ${j.path} (${j.credits} credits), picked as the working mesh`
+      : `mesh candidate ${j.file} -> ${j.path} (${j.credits} credits)${pendingMeshes ? ` -- ${pendingMeshes} still generating` : ' -- "pick" it to rig or decimate it'}`, 'ok')
+  } catch (e) {
+    pendingMeshes--
+    renderMeshGallery()
+    setStatus(`generating mesh failed: ${e.message}`, 'warn')
+  }
+}
 
 $('rigCheck').addEventListener('click', () => withButton($('rigCheck'), 'rig-check (free)', async () => {
   const j = await post(`/__creature-rig-check?id=${encodeURIComponent(currentId())}`)
@@ -481,6 +686,20 @@ const orbit = new OrbitControls(camera, renderer.domElement)
 orbit.enableDamping = true
 
 const loader = new GLTFLoader()
+const fbxLoader = new FBXLoader()
+
+/**
+ * Tripo delivers quad topology as FBX, because glTF has no quads, so a mesh
+ * candidate is not always a glb. The workspace names each file from the bytes it
+ * downloaded, which makes the extension the honest answer to which loader to use.
+ */
+async function loadScene(url) {
+  if (/\.fbx(\?|$)/i.test(url)) {
+    const root = await fbxLoader.loadAsync(url)
+    return { scene: root, animations: root.animations ?? [] }
+  }
+  return loader.loadAsync(url)
+}
 let model = null
 let skeletonHelper = null
 let mixer = null
@@ -514,38 +733,50 @@ function clearModel() {
  * Tripo's output scale depends on auto_size, so the declared size is a claim
  * about the creature, not about the file that just came back. Returns the span
  * because the caller reports it.
+ *
+ * ONCE PER CREATURE, not once per model. Swapping between a mesh and its LOD
+ * tiers is a comparison, and a comparison whose viewpoint moves between the two
+ * frames is not one -- the eye reads the reframing as the change. The clip
+ * planes still track the new model, since those cannot be judged by eye and a
+ * stale near plane clips the thing being compared.
  */
-function frameModel() {
+let framedFor = null // the creature the current camera placement was chosen for
+
+function frameModel(force = false) {
   const box = new THREE.Box3().setFromObject(model)
   const size = box.getSize(new THREE.Vector3())
   const centre = box.getCenter(new THREE.Vector3())
   const span = Math.max(size.x, size.y, size.z) || 1
-  camera.position.set(centre.x + span * 1.6, centre.y + span * 0.9, centre.z + span * 1.6)
   camera.near = span / 100
   camera.far = span * 50
   camera.updateProjectionMatrix()
-  orbit.target.copy(centre)
+  if (force || framedFor !== currentId()) {
+    camera.position.set(centre.x + span * 1.6, centre.y + span * 0.9, centre.z + span * 1.6)
+    orbit.target.copy(centre)
+    framedFor = currentId()
+  }
   orbit.update()
   return span
 }
 
 async function showModel(which) {
   const id = currentId()
-  const file = which === 'mesh' ? 'mesh.glb' : which === 'rig' ? 'rig.glb' : which
+  const file = which === 'mesh' ? assets.mesh : which === 'rig' ? 'rig.glb' : which
+  if (!file) throw new Error('no working mesh on disk -- generate one, or pick a mesh candidate')
   const url = `/tools/creatures/work/${encodeURIComponent(id)}/${file}?t=${Date.now()}`
-  const gltf = await loader.loadAsync(url)
+  const gltf = await loadScene(url)
 
   clearModel()
   model = gltf.scene
   scene.add(model)
 
   let tris = 0
-  let texture = null
+  let found = null
   model.traverse((o) => {
     if (!o.isMesh) return
     const g = o.geometry
     tris += (g.index ? g.index.count : g.attributes.position.count) / 3
-    if (!texture && o.material?.map?.image) texture = o.material.map.image
+    if (!found && o.material?.map?.image) found = o.material.map
     o.material.wireframe = $('showWire').checked
   })
 
@@ -567,28 +798,86 @@ async function showModel(which) {
     mixer.clipAction(gltf.animations[0]).play()
   }
 
-  drawTexture(texture)
+  drawTexture(found)
   $('viewer').classList.add('on')
   setSize()
 }
 
-/**
- * The 128px gate. Both canvases draw the same source; only the destination size
- * differs, so what the small one loses is exactly what the shipped texture will
- * lose. Judge UV island survival here -- it is the failure this whole pipeline
- * is arranged around, and it is invisible at full size.
- */
-function drawTexture(image) {
+// --- the resolution comparison ----------------------------------------------
+//
+// Both canvases draw the same source; only the destination size differs, so what
+// the small one loses is exactly what a 128px layer would lose. The preview wears
+// the SOURCE by default: creatures ship on their own 512px array rather than in
+// the 128px prop atlas (design/27-creature-pipeline.md), so the source is the
+// shipping resolution and the 128 figure is now the comparison, not the target.
+// Clicking either figure puts that resolution on the model.
+
+let texChoice = 'source' // sticky across previews: a choice made once should hold
+let downrez = null // the 128px canvas as a texture, rebuilt per source
+let sourceMap = null // the map `downrez` was reduced from, and the other choice
+const originalMaps = new WeakMap() // material -> the map it arrived with
+
+function drawTexture(map) {
   const row = $('texRow')
-  if (!image) { row.classList.remove('on'); return }
+  sourceMap = map?.image ? map : null
+  downrez = null
+  if (!sourceMap) { row.classList.remove('on'); return }
+
+  // An FBX's texture is embedded and decoded through a blob URL, which the
+  // loader does not wait for: the image exists with width 0, and drawing it
+  // paints nothing at all rather than failing.
+  if (!sourceMap.image.width) {
+    sourceMap.image.addEventListener('load', () => drawTexture(map), { once: true })
+    return
+  }
+
   for (const [id, size] of [['texFull', 256], ['tex128', 128]]) {
     const ctx = $(id).getContext('2d')
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.clearRect(0, 0, size, size)
-    ctx.drawImage(image, 0, 0, size, size)
+    ctx.drawImage(sourceMap.image, 0, 0, size, size)
   }
+
+  downrez = new THREE.CanvasTexture($('tex128'))
+  // Copied, not defaulted. CanvasTexture flips Y where a glTF texture does not,
+  // and a wrong flip reads as a plausible-looking texture on the wrong islands.
+  downrez.flipY = sourceMap.flipY
+  downrez.colorSpace = sourceMap.colorSpace
+  downrez.wrapS = sourceMap.wrapS
+  downrez.wrapT = sourceMap.wrapT
+  downrez.minFilter = sourceMap.minFilter
+  downrez.magFilter = sourceMap.magFilter
+
   row.classList.add('on')
+  applyTexture()
+}
+
+/** Put the chosen resolution on every material that arrived wearing `sourceMap`. */
+function applyTexture() {
+  for (const [id, choice] of [['texFull', 'source'], ['tex128', '128']]) {
+    $(id).parentElement.classList.toggle('is-active', texChoice === choice)
+  }
+  if (!model || !sourceMap) return
+  model.traverse((o) => {
+    if (!o.isMesh || !o.material) return
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (!originalMaps.has(m)) {
+        if (!m.map) continue
+        originalMaps.set(m, m.map)
+      }
+      const original = originalMaps.get(m)
+      // A second material with its own atlas keeps it: the downrez was reduced
+      // from one map, and handing it to another is showing the wrong picture.
+      if (original !== sourceMap) continue
+      m.map = texChoice === '128' && downrez ? downrez : original
+      m.needsUpdate = true
+    }
+  })
+}
+
+for (const [id, choice] of [['texFull', 'source'], ['tex128', '128']]) {
+  $(id).parentElement.addEventListener('click', () => { texChoice = choice; applyTexture() })
 }
 
 // --- LOD: our decimator, run in this tab ------------------------------------
@@ -725,21 +1014,31 @@ function parseTargets(text, inputTris) {
 function clearLods() {
   lodTiers = []
   lodMaterial = null
-  $('lodWrap').classList.remove('on')
-  $('lodTable').innerHTML = ''
   $('meshAnalysis').textContent = ''
   $('saveLod').disabled = true
 }
 
-$('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating', async () => {
+/**
+ * The one mesh in the selected candidate, loaded fresh. Both the decimator and
+ * the card bake want the same thing and neither may use the previewed model:
+ * that one is wearing whatever texture and wireframe state the last click left
+ * on it, and the bake photographs exactly what it is handed.
+ */
+async function loadSelectedMesh() {
+  if (!selectedMesh) throw new Error('no mesh candidate selected -- generate one, or click a candidate above')
   const id = currentId()
-  const gltf = await loader.loadAsync(`/tools/creatures/work/${encodeURIComponent(id)}/mesh.glb?t=${Date.now()}`)
-
+  const gltf = await loadScene(`/tools/creatures/work/${encodeURIComponent(id)}/meshes/${selectedMesh}?t=${Date.now()}`)
   const meshes = []
   gltf.scene.traverse((o) => { if (o.isMesh) meshes.push(o) })
-  // Loud rather than clever: a multi-mesh GLB would need per-mesh ladders and a
+  // Loud rather than clever: a multi-mesh file would need per-mesh ladders and a
   // merge rule, and silently decimating only the first would look like it worked.
-  if (meshes.length !== 1) throw new Error(`expected one mesh in mesh.glb, found ${meshes.length} -- the ladder is per-mesh and this file needs splitting first`)
+  if (meshes.length !== 1) throw new Error(`expected one mesh in ${selectedMesh}, found ${meshes.length} -- the ladder is per-mesh and this file needs splitting first`)
+  return { root: gltf.scene, mesh: meshes[0] }
+}
+
+$('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating', async () => {
+  const { mesh } = await loadSelectedMesh()
+  const meshes = [mesh]
   lodMaterial = meshes[0].material
 
   const plain = toPlainMesh(meshes[0].geometry)
@@ -764,14 +1063,23 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
   const sample = map && map.image ? textureSampler(map.image, map.flipY) : null
   lodTiers = tiers.map((t, i) => {
     const baked = t.stats.uvMode === 'drop' && sample ? bakeColors(t, sample) : null
+    // A tier that gave up the atlas cannot wear the textured material: its
+    // corners index an atlas that no longer describes it.
+    const material = baked ? bakedMaterial() : lodMaterial
+    const object = new THREE.Mesh(toGeometry(t, baked), material)
     return {
       level: i + 1,
-      mesh: t,
-      geometry: toGeometry(t, baked),
-      // A tier that gave up the atlas cannot wear the textured material: its
-      // corners index an atlas that no longer describes it.
-      material: baked ? bakedMaterial() : lodMaterial,
-      stats: t.stats,
+      object,
+      kind: 'decimated',
+      tris: t.stats.outputTris,
+      targetTris: t.stats.targetTris,
+      uvMode: t.stats.uvMode,
+      reason: t.stats.reason,
+      texture: material.map ?? null,
+      detail:
+        `lod${i + 1}: ${t.stats.outputTris} tris (asked ${t.stats.targetTris}, from ${t.stats.inputTris}) &middot; ` +
+        `${t.stats.collapses} collapses &middot; ${t.stats.lockedPoints}/${t.stats.totalPoints} points pinned &middot; ` +
+        `${t.stats.uvMode === 'drop' ? 'atlas dropped, texture baked to vertex colours' : 'atlas preserved'}`,
     }
   })
 
@@ -781,20 +1089,235 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
   setStatus(`${lodTiers.length} tier(s) built locally, $0.000`, 'ok')
 }))
 
+// --- the card cross ---------------------------------------------------------
+
+const CARD_BAKE = TEX_SIZE * SUPERSAMPLE
+
+/**
+ * The last rung: two crossed cards, four triangles, each carrying its own 128px
+ * cutout -- one photographed down the viewer's current line of sight, one a
+ * quarter turn round from it. At the range this tier draws, the creature
+ * subtends a few dozen pixels and its silhouette is the whole of what reads,
+ * so which quarter turn you pick is the only real decision, and the bench makes
+ * it by asking what you are already looking at.
+ *
+ * Captured at SUPERSAMPLE and boxed down in JS, the same way src/props/impostor.js
+ * does it for ferns and for the same reason: an alpha-tested cutout rendered
+ * straight at 128 has a binary one-texel edge, and every mip after that is a
+ * worse guess at where the edge was. `dilate` then pushes colour outward into
+ * the transparent margin, because bilinear filtering at the silhouette blends
+ * TOWARD unwritten texels and an unwritten texel is transparent BLACK.
+ */
+async function bakeCardCross() {
+  const { root, mesh } = await loadSelectedMesh()
+
+  const box = new THREE.Box3().setFromObject(root)
+  const size = box.getSize(new THREE.Vector3())
+  if (!(size.y > 0)) throw new Error('the selected mesh has no height -- there is nothing to photograph')
+  const centre = box.getCenter(new THREE.Vector3())
+
+  // The front card is whatever the viewer is pointed at right now. Only the
+  // BEARING is taken: the cards are vertical, so the camera's height above the
+  // model is irrelevant and would only tilt the photograph.
+  const eye = camera.position.clone().sub(orbit.target)
+  if (Math.hypot(eye.x, eye.z) < 1e-6) {
+    throw new Error('the camera is looking straight down -- orbit round to the side you want as the front, then bake')
+  }
+  const front = Math.atan2(eye.x, eye.z)
+
+  // Stood at the origin with its feet on y = 0, which is where impostorCardExtents
+  // puts the bottom edge of a card and therefore the bottom row of the picture.
+  root.position.set(-centre.x, -box.min.y, -centre.z)
+  const bakeScene = new THREE.Scene()
+  bakeScene.add(root)
+
+  const reach = Math.max(size.x, size.y, size.z)
+  // The bake rig from impostor.js, with a SOLID's ground bounce: a fox has no
+  // shaded interior the way a canopy does, and the near-black canopy bounce
+  // leaves its underside a black wedge. The key rides the capture's own azimuth
+  // rather than a fixed world direction -- anywhere else burns a left-right
+  // terminator into a picture that gets seen from both sides.
+  const key = new THREE.DirectionalLight(0xffffff, 1.5)
+  bakeScene.add(key)
+  bakeScene.add(new THREE.HemisphereLight(0xffffff, BAKE_ROCK_BOUNCE, 1.0))
+
+  const target = new THREE.WebGLRenderTarget(CARD_BAKE, CARD_BAKE, {
+    format: THREE.RGBAFormat,
+    type: THREE.UnsignedByteType,
+    colorSpace: THREE.SRGBColorSpace,
+    generateMipmaps: false,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: true,
+  })
+  const prevTarget = renderer.getRenderTarget()
+  const prevClear = renderer.getClearColor(new THREE.Color())
+  const prevAlpha = renderer.getClearAlpha()
+
+  const group = new THREE.Group()
+  const textures = []
+  const cards = []
+  // Screen-right at azimuth a is (cos a, 0, -sin a), so a box of size.x by size.z
+  // projects to this much width across the camera -- size.x at a = 0 and size.z at
+  // a = 90, which is what the two axis-aligned captures used to be hardcoded to.
+  // The box is symmetric about the vertical axis through its own centre, and that
+  // axis is now the origin, so the subject lands centred in the frame at EVERY
+  // bearing and the two cards cross on that same line rather than beside it.
+  const widthAcross = (a) => Math.abs(Math.cos(a)) * size.x + Math.abs(Math.sin(a)) * size.z
+  for (const [name, azimuth] of [['front', front], ['side', front + Math.PI / 2]]) {
+    const width = widthAcross(azimuth)
+    const { width: cardW, height: cardH } = impostorCardExtents({ width, height: size.y })
+    cards.push({ name, width })
+
+    // Ortho, because a card seen from 20 m and from 60 m has to be the same
+    // picture. The frustum's [bottom, top] of [0, cardH] with a level camera puts
+    // the subject's feet exactly on the picture's bottom edge.
+    const cam = new THREE.OrthographicCamera(-cardW / 2, cardW / 2, cardH, 0, 0.01, reach * 8)
+    cam.position.set(Math.sin(azimuth) * reach * 2, 0, Math.cos(azimuth) * reach * 2)
+    cam.lookAt(0, 0, 0)
+    key.position.set(Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
+
+    renderer.setRenderTarget(target)
+    renderer.setClearColor(0x000000, 0)
+    renderer.clear(true, true, false)
+    renderer.render(bakeScene, cam)
+    const raw = new Uint8Array(CARD_BAKE * CARD_BAKE * 4)
+    renderer.readRenderTargetPixels(target, 0, 0, CARD_BAKE, CARD_BAKE, raw)
+
+    const px = downsample(raw, CARD_BAKE)
+    dilate(px)
+    // NOT flipped. GL hands back its bottom row first, which is the subject's
+    // feet, and glTF reads image row 0 at v = 0 -- so the raw row order is
+    // already the one a plane's own uvs want, and flipping would only have to be
+    // undone on export.
+    const { preview, exported } = cardTextures(px)
+    textures.push(exported)
+
+    // A card faces the camera that photographed it, and a plane's normal starts
+    // on +Z, so the yaw IS the azimuth.
+    const geometry = new THREE.PlaneGeometry(cardW, cardH)
+    geometry.translate(0, cardH / 2, 0)
+    geometry.rotateY(azimuth)
+    const card = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      map: preview,
+      // Unlit: the light is already in the photograph, and lighting it again
+      // would apply the bake rig twice.
+      alphaTest: 0.5,
+      side: THREE.DoubleSide,
+      name: `card-${name}`,
+    }))
+    card.name = `card-${name}`
+    group.add(card)
+  }
+
+  renderer.setRenderTarget(prevTarget)
+  renderer.setClearColor(prevClear, prevAlpha)
+  target.dispose()
+
+  // Dropped back over the mesh it was photographed from. The cards are BUILT
+  // about a centred vertical axis with their feet on y = 0, which is the shipping
+  // convention and not necessarily where this glb's mesh sits; without this the
+  // cross stands somewhere else in the viewer and flipping between the two tiers
+  // compares positions instead of silhouettes.
+  group.position.set(centre.x, box.min.y, centre.z)
+
+  mesh.geometry.dispose()
+  return { group, textures, size, cards, front }
+}
+
+/**
+ * The dilated cutout as two textures over the same bytes. Three uploads the raw
+ * array as-is, so the PREVIEW is exact. GLTFExporter can only serialise an image
+ * a canvas can draw, and a canvas backing store is premultiplied, which zeroes
+ * the colour of every fully transparent texel -- precisely the gutter `dilate`
+ * just wrote. So the exported copy loses the gutter and the previewed one keeps
+ * it. That is the right way round: this glb is for looking at, and the shipping
+ * card is re-photographed from the mesh by bakeImpostor, which dilates into the
+ * prop atlas itself.
+ */
+function cardTextures(px) {
+  const preview = new THREE.DataTexture(px, TEX_SIZE, TEX_SIZE, THREE.RGBAFormat)
+  preview.colorSpace = THREE.SRGBColorSpace
+  preview.minFilter = THREE.LinearMipmapLinearFilter
+  preview.magFilter = THREE.LinearFilter
+  preview.generateMipmaps = true
+  preview.needsUpdate = true
+
+  const canvas = document.createElement('canvas')
+  canvas.width = TEX_SIZE
+  canvas.height = TEX_SIZE
+  canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px), TEX_SIZE, TEX_SIZE), 0, 0)
+  const exported = new THREE.CanvasTexture(canvas)
+  exported.colorSpace = THREE.SRGBColorSpace
+  // The bytes are already in glTF's row order, so the exporter must not flip
+  // them back. Both textures therefore agree that v = 0 is the subject's feet.
+  exported.flipY = false
+
+  return { preview, exported }
+}
+
+$('genCards').addEventListener('click', () => withButton($('genCards'), 'baking card cross', async () => {
+  const { group, textures, size, cards, front } = await bakeCardCross()
+  const bearing = Math.round(((THREE.MathUtils.radToDeg(front) % 360) + 360) % 360)
+  const level = lodTiers.length + 1
+  if (level > 9) throw new Error('nine tiers is the ceiling -- shorten the target list first')
+  lodTiers = [...lodTiers, {
+    level,
+    object: group,
+    kind: 'cards',
+    tris: 4,
+    targetTris: 4,
+    uvMode: 'cards',
+    reason: 'a cross is two quads; there is no lower rung',
+    texture: null,
+    exportTextures: textures,
+    detail:
+      `lod${level}: card cross, 4 tris &middot; two ${TEX_SIZE}px cutouts baked at ${CARD_BAKE}px &middot; ` +
+      `front card ${cards[0].width.toFixed(2)}m wide shot from ${bearing}&deg;, side card ${cards[1].width.toFixed(2)}m, ` +
+      `both ${(size.y).toFixed(2)}m tall`,
+  }]
+  renderLodTable()
+  $('saveLod').disabled = false
+  await showTier(lodTiers[lodTiers.length - 1])
+  setStatus(`card cross baked from the current view (front at ${bearing}°, 4 tris, 2 x ${TEX_SIZE}px), $0.000`, 'ok')
+}))
+
+// --- the tier table ---------------------------------------------------------
+
 function renderLodTable() {
   const t = $('lodTable')
-  t.innerHTML =
-    '<tr><th>tier</th><th>target</th><th>got</th><th>reduction</th><th>texture</th><th>why it stopped</th></tr>'
-  for (const tier of lodTiers) {
-    const s = tier.stats
+  const saved = meshCandidates.find((m) => m.file === selectedMesh)?.lods ?? []
+  const subject = selectedMesh ? `mesh candidate ${selectedMesh}` : 'no mesh candidate selected'
+  $('lodSubject').textContent = selectedMesh ? `LOD target: ${selectedMesh}` : ''
+  $('lodHead').textContent = `LOD tiers -- ${subject}`
+
+  // Fresh tiers win over saved ones when they exist: they were decimated from
+  // this same candidate in this session, and they carry the stats the saved list
+  // only remembers a summary of.
+  const fresh = lodTiers.length > 0
+  const rows = fresh
+    ? lodTiers.map((tier) => ({ tier, level: tier.level, target: tier.targetTris, tris: tier.tris, uvMode: tier.uvMode, reason: tier.reason }))
+    : saved.map((l) => ({ lod: l, level: l.level, target: l.targetTris, tris: l.tris, uvMode: l.uvMode, reason: l.kind === 'cards' ? 'card cross' : 'on disk' }))
+
+  if (!rows.length) {
+    t.innerHTML = ''
+    $('lodWrap').classList.toggle('on', Boolean(selectedMesh))
+    if (selectedMesh) t.innerHTML = '<tr><td class="label">no tiers for this candidate yet -- decimate, or bake a card cross</td></tr>'
+    return
+  }
+
+  t.innerHTML = `<tr><th>tier</th><th>target</th><th>got</th><th>texture</th><th>${fresh ? 'why it stopped' : 'source'}</th></tr>`
+  for (const r of rows) {
     const tr = document.createElement('tr')
+    const texture = r.uvMode === 'cards' ? `2 x ${TEX_SIZE}px cards` : r.uvMode === 'drop' ? 'baked colours' : r.uvMode === 'preserve' ? 'atlas' : 'unrecorded'
     tr.innerHTML =
-      `<td>lod${tier.level}</td><td>${s.targetTris}</td><td>${s.outputTris}</td>` +
-      `<td>${Math.round(s.reduction * 100)}%</td>` +
-      `<td class="label">${s.uvMode === 'drop' ? 'baked colours' : 'atlas'}</td>` +
-      `<td class="label">${s.reason}</td>`
+      `<td>lod${r.level}</td><td>${r.target ?? '--'}</td><td>${r.tris ?? '--'}</td>` +
+      `<td class="label">${texture}</td><td class="label">${r.reason}</td>`
     tr.style.cursor = 'pointer'
-    tr.addEventListener('click', () => showTier(tier).catch((e) => setStatus(e.message, 'warn')))
+    tr.addEventListener('click', () => {
+      const show = r.tier ? showTier(r.tier) : showModel(`meshes/${r.lod.file}`)
+      show.catch((e) => setStatus(e.message, 'warn'))
+    })
     t.appendChild(tr)
   }
   $('lodWrap').classList.add('on')
@@ -802,16 +1325,13 @@ function renderLodTable() {
 
 async function showTier(tier) {
   clearModel()
-  model = new THREE.Mesh(tier.geometry, tier.material)
+  model = tier.object
   model.userData.borrowed = true
   scene.add(model)
-  model.material.wireframe = $('showWire').checked
+  model.traverse((o) => { if (o.isMesh) o.material.wireframe = $('showWire').checked })
   frameModel()
-  $('meshStats').innerHTML =
-    `lod${tier.level}: ${tier.stats.outputTris} tris (asked ${tier.stats.targetTris}, from ${tier.stats.inputTris}) &middot; ` +
-    `${tier.stats.collapses} collapses &middot; ${tier.stats.lockedPoints}/${tier.stats.totalPoints} points pinned &middot; ` +
-    `${tier.stats.uvMode === 'drop' ? 'atlas dropped, texture baked to vertex colours' : 'atlas preserved'}`
-  drawTexture(tier.material.map ? tier.material.map.image : null)
+  $('meshStats').innerHTML = tier.detail
+  drawTexture(tier.texture)
   $('viewer').classList.add('on')
   setSize()
 }
@@ -820,9 +1340,28 @@ $('saveLod').addEventListener('click', () => withButton($('saveLod'), 'writing t
   const id = currentId()
   const exporter = new GLTFExporter()
   for (const tier of lodTiers) {
-    const mesh = new THREE.Mesh(tier.geometry, tier.material)
-    const glb = await exporter.parseAsync(mesh, { binary: true })
-    const res = await fetch(`/__creature-lod?id=${encodeURIComponent(id)}&level=${tier.level}`, {
+    // The card cross previews through DataTextures the exporter cannot draw, so
+    // the canvas-backed twins go on for the length of the export and come off
+    // again -- swapping them permanently would put the fringed copy on screen.
+    const swapped = []
+    if (tier.exportTextures) {
+      tier.object.children.forEach((card, i) => {
+        swapped.push([card.material, card.material.map])
+        card.material.map = tier.exportTextures[i]
+      })
+    }
+    let glb
+    try {
+      glb = await exporter.parseAsync(tier.object, { binary: true })
+    } finally {
+      for (const [material, map] of swapped) material.map = map
+    }
+
+    const q = new URLSearchParams({
+      id, level: String(tier.level), mesh: selectedMesh,
+      tris: String(tier.tris), targetTris: String(tier.targetTris), uvMode: tier.uvMode, kind: tier.kind,
+    })
+    const res = await fetch(`/__creature-lod?${q}`, {
       method: 'POST',
       headers: { 'content-type': 'model/gltf-binary' },
       body: glb,
@@ -833,14 +1372,14 @@ $('saveLod').addEventListener('click', () => withButton($('saveLod'), 'writing t
   await refresh()
   await loadLibrary()
   $('roster').value = id
-  setStatus(`${lodTiers.length} tier(s) written to work/${id}/, $0.000`, 'ok')
+  setStatus(`${lodTiers.length} tier(s) written to work/${id}/meshes/, $0.000`, 'ok')
 }))
 
 function renderClipSelect() {
   const sel = $('clipSelect')
   sel.innerHTML = ''
   const options = []
-  if (assets.mesh) options.push(['mesh.glb', 'mesh (no rig)'])
+  if (assets.mesh) options.push([assets.mesh, 'mesh (no rig)'])
   // meshes/<n>-lod<k>.glb -> "lod<k>": the <n> is the mesh candidate this tier
   // came from, and only the picked one's tiers are ever listed.
   for (const l of assets.lods) options.push([l, l.replace(/^meshes\/\d+-|\.glb$/g, '')])
@@ -862,6 +1401,7 @@ $('showSkeleton').addEventListener('change', () => { if (skeletonHelper) skeleto
 $('showWire').addEventListener('change', () => {
   model?.traverse((o) => { if (o.isMesh) o.material.wireframe = $('showWire').checked })
 })
+$('refit').addEventListener('click', () => { if (model) frameModel(true) })
 $('faceLimit').addEventListener('input', () => { $('faceLimitVal').textContent = $('faceLimit').value })
 
 // Tripo refuses smart_low_poly on P1, so the box follows the model rather than
@@ -894,8 +1434,17 @@ window.addEventListener('resize', setSize)
 $('roster').addEventListener('change', (e) => loadCreature(e.target.value).catch((err) => setStatus(err.message, 'warn')))
 $('rosterPrev').addEventListener('click', () => stepRoster(-1))
 $('rosterNext').addEventListener('click', () => stepRoster(1))
-$('rigType').addEventListener('change', renderAnimList)
+$('rigType').addEventListener('change', () => {
+  renderAnimList()
+  // The frame follows, because changing the rig type is changing what shape the
+  // creature is -- and a new creature typed in from scratch would otherwise
+  // silently keep whichever frame the last one left in the select.
+  const saved = library.find((c) => c.id === currentId())?.aspectRatio
+  if (!saved) $('aspectRatio').value = frames[$('rigType').value] ?? '4:3'
+})
 $('creatureId').addEventListener('change', () => {
+  selectedMesh = null
+  framedFor = null
   clearLods()
   refresh().catch((e) => setStatus(e.message, 'warn'))
 })

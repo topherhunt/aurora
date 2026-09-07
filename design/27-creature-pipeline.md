@@ -33,7 +33,7 @@ A high-fidelity model that is decimated down to budget gets its UVs re-solved af
 
 **P1 Smart Mesh (`P1-20260311`) is the default for this reason.** It generates native quad topology with coherent edge flow rather than decimating a dense surface, so the unwrap yields fewer and larger islands, and those survive the downrez. It is also all-inclusive on price where H3 stacks surcharges, which makes the default the cheap option too.
 
-The bench is built around checking this and nothing else is as important: `#texRow` draws the same texture into a 256px and a 128px canvas side by side, `image-rendering: pixelated` so the browser's smoothing does not flatter it. **Judge a candidate on the small panel.** H3 (`v3.1-20260211`) stays selectable for the case where a creature genuinely needs the fidelity and someone has looked at both panels and decided.
+The bench is built around checking this and nothing else is as important: `#texRow` draws the same texture into a 256px and a 128px canvas side by side, `image-rendering: pixelated` so the browser's smoothing does not flatter it. **Judge a candidate on the small panel** -- and the preview mesh wears the 128px version by default for the same reason, because a creature evaluated under a 2k texture is a creature evaluated as it will never ship. Clicking either panel puts that resolution on the model, so the comparison is one click rather than a rebuild. H3 (`v3.1-20260211`) stays selectable for the case where a creature genuinely needs the fidelity and someone has looked at both panels and decided.
 
 ## The stages
 
@@ -41,8 +41,8 @@ The bench is built around checking this and nothing else is as important: `#texR
 |---|---|---|---|---|
 | 1 | species | -- | free | (form state) |
 | 2 | candidate image | OpenRouter, FLUX.2 Klein 4B | ~$0.015 | `candidates/<n>.png` |
-| 3 | mesh + texture | Tripo image-to-model | $0.40--$0.55 | `mesh.glb` |
-| 3b | LOD ladder | **ours** (`src/mesh/decimate.js`) | free | `mesh-lod<n>.glb` |
+| 3 | mesh + texture | Tripo image-to-model | $0.40--$0.55 | `meshes/<n>.glb\|.fbx` |
+| 3b | LOD ladder + card cross | **ours** (`src/mesh/decimate.js`, `src/props/impostor.js`) | free | `meshes/<n>-lod<k>.glb` |
 | 4a | rig-check | Tripo | **free** | -- |
 | 4b | rig | Tripo | $0.25 | `rig.glb` |
 | 5 | animations | Tripo retarget | $0.10 each | `anim-<preset>.glb` |
@@ -104,6 +104,12 @@ The oak is open surfaces -- leaf cards, an open trunk -- so almost every vertex 
 
 Tiers are decimated from the tier above rather than from the original, so tier 2's vertices are a subset of tier 1's and swapping between them does not pop.
 
+**A ladder belongs to the mesh candidate it was decimated from**, not to whichever candidate happens to be picked. The bench has a *selected* candidate as well as a picked one -- picking is what rigs and ships, selecting is what section 4 operates on -- so two candidates from the same image can have their ladders built and compared without committing to either. `saveLod` files each tier under the source candidate's stem and records its triangle count in `state.json`, which is how the table lists a saved ladder without opening every glb to count faces. Swapping between the source mesh and any of its tiers holds the camera where it was: a comparison whose viewpoint moves between the two frames is not one, and the eye reads the reframing as the change.
+
+**The bottom rung is not a mesh.** Below about fifty triangles the silhouette is the whole of what reads, and the cheapest honest way to draw a silhouette is to photograph it: `bakeCardCross` in `gen-creature-main.js` takes two orthographic captures -- one along -Z, one along -X -- and hangs them on two crossed quads. **Four triangles, two 128px textures**, which is the same asset shape `src/props/impostor.js` already ships for ferns and whose pure pixel helpers it reuses. Captured at `SUPERSAMPLE` and boxed down in JS rather than rendered straight at 128, because an alpha-tested cutout rendered at its final size has a binary one-texel edge that every mip afterwards guesses at; then `dilate` pushes colour into the transparent margin, because bilinear filtering at the silhouette blends *toward* unwritten texels and an unwritten texel is transparent black. The bake rig is impostor.js's, with `BAKE_ROCK_BOUNCE` for the ground term rather than the near-black canopy value -- a fox has no shaded interior, and baked against a canopy bounce its underside comes out a black wedge. The key light rides each capture's own azimuth so no left-right terminator is burned into a card that gets seen from both sides.
+
+The preview and the exported copy of a card carry the same bytes through different textures. Three uploads the raw array as-is, so what is on screen is exact; `GLTFExporter` can only serialise an image a canvas can draw, and a canvas backing store is premultiplied, which zeroes the colour of every fully transparent texel -- exactly the gutter `dilate` just wrote. The exported glb therefore loses the gutter and the preview keeps it, which is the right way round: the glb is for looking at, and the shipping card is re-photographed from the mesh by `bakeImpostor` into the prop atlas, dilating there.
+
 ### Stage 4: rig-check first, always
 
 `POST /v3/animations/rig-check` costs nothing and returns `riggable` plus a recommended `rig_type`. It is the only way to learn that a mesh will not take a skeleton without paying 25 credits to find out. The bench offers it as its own non-orange button and writes Tripo's suggestion back into the rig-type selector.
@@ -127,16 +133,18 @@ Everything lands under `tools/creatures/work/<id>/` (gitignored -- these are wor
 ```
 candidates/<n>.png       every generated candidate image
 source.png               the picked one -- the single image every Tripo step reads
-meshes/<n>.glb           every generated mesh
+meshes/<n>.glb|.fbx      every generated mesh, in the container Tripo sent
 meshes/<n>-preview.png   Tripo's own render of it
 meshes/<n>-lod<k>.glb    LOD tiers, decimated locally from that mesh
-mesh.glb                 a copy of the picked mesh -- what rigging reads
+mesh.glb|.fbx            a copy of the picked mesh -- what the bench reads
 rig.glb                  skeleton bound to the mesh
 anim-<preset>.glb        one file per retargeted clip
 state.json               task ids, credits, picks
 ```
 
-**Nothing paid for is ever overwritten.** Images and meshes are both append-only numbered candidates; the bench lists them and a pick copies one into the fixed name the next stage reads. `state.tasks[step]` holds the *current* handle only and is overwritten by the next run of that step, so it is not a record -- `state.taskLog` is, appending every task id the account was ever charged for whether or not a pick still points at it.
+**The container is read off the bytes, never assumed.** `quad: true` makes Tripo deliver FBX rather than glTF, because glTF has no quads -- and only on models that accept the flag, so a P1 run (where it is stripped) and an H3 run with identical parameters come back in different containers. `containerOf()` in `workspace.mjs` sniffs the magic before naming the file, so a candidate is `1.fbx` when that is what arrived; writing it blind to `.glb` surfaced much later, in GLTFLoader, as `Unexpected token 'K'` on the FBX header. The bench picks its loader from the extension. Rigging is unaffected either way: it is driven by the task id, and Tripo re-derives from its own copy.
+
+**Nothing paid for is ever overwritten.** Images and meshes are both numbered candidates; the bench lists them and a pick copies one into the fixed name the next stage reads. Images are cheap enough to want several of, so the bench lets generations queue -- the button goes dead for a second and then takes another click, while meshes stay strictly one at a time at 50 credits apiece. Concurrent image writes mean the slot number cannot come from `state.candidates.length`: `saveCandidate` *claims* it on disk with an exclusive write, so two requests that pick the same number cannot both win it. An image can be deleted from the gallery (the only destructive control on the page, and the only one that asks first); `source.png` is a copy rather than a link, so deleting the picked candidate leaves the Tripo input intact and only clears the pick. `state.tasks[step]` holds the *current* handle only and is overwritten by the next run of that step, so it is not a record -- `state.taskLog` is, appending every task id the account was ever charged for whether or not a pick still points at it.
 
 **A Tripo task id is the only handle on work already paid for.** `charge()` in `workspace.mjs` writes it the moment the task is created, *before* the wait, so a dev-server restart mid-generation loses the poll and not the purchase. For the same reason every output is downloaded to disk in the request that observed success: Tripo's result URLs are CDN links that expire, and there is no task-history endpoint (see below) -- a lost id is 50 credits that cannot be re-fetched.
 
@@ -152,8 +160,9 @@ tools/creatures/creature-prompt.mjs  the image prompt and its per-rig-type pose 
 tools/creatures/creature-roster.mjs  the starter roster (15 creatures)
 tools/creatures/workspace.mjs        disk layout, the library index, the prompt store, the four orchestrated steps
 src/mesh/decimate.js                 the LOD decimator -- three-free, runs in the tab and in node
+src/props/impostor.js                the card bake's pixel helpers, shared with the fern and rock impostors
 gen-creature.html                    the bench
-src/gen-creature-main.js             its page logic, library, LOD ladder and 3D preview
+src/gen-creature-main.js             its page logic, library, LOD ladder, card bake and 3D preview
 scripts/check-creatures.mjs          the pipeline gate -- network-free, spends nothing
 scripts/check-decimate.mjs           the decimator gate -- synthetic fixtures whose answers are known by construction
 vite.config.js  creatureGen()        the dev-server endpoints; the only place the API keys are read
@@ -161,7 +170,7 @@ vite.config.js  creatureGen()        the dev-server endpoints; the only place th
 
 The bench's library overlay lists every creature the roster seeds *and* every directory under `work/`, with its prompt, its thumbnail, what stages exist for it and what it has cost so far. **The prompt is editable and saves into the creature's own `state.json`, not into the roster file.** That is what lets a creature be invented in the page and survive a reload without an edit to `creature-roster.mjs`; the roster stays a seed list, and promoting a settled creature into it is a separate, deliberate act.
 
-Saving any of these server-side files restarts the dev server, so an endpoint never answers with code that is no longer on disk. Vite does that itself normally, but routes it through the HMR path, which this project disables; `serverRestart()` in `vite.config.js` re-hangs it on the same `configFileDependencies` list. Client code is unaffected -- src/ still waits for a manual reload.
+**Nothing here reloads on save -- not the page, not the Node half.** Vite's HMR is off (see `server.hmr` in `vite.config.js`), and its restart-on-config-change rides the same disabled path and is deliberately not re-hung: a restart while a Tripo poll is open drops the connection on a job the vendor bills for regardless, and an agent saving `workspace.mjs` is enough to trigger one. So a change to any server-side file above needs a manual `npm run dev` restart, taken between generations rather than during one.
 
 Orchestration lives in `workspace.mjs` rather than in the Vite plugin so a batch script can drive the same pipeline later without a browser. `creatureGen()` is a thin wrapper: it validates the creature id (`/^[a-z0-9-]+$/`) and returns JSON for every outcome including errors.
 

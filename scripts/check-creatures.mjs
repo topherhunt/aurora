@@ -35,7 +35,7 @@
 //   one gait per rig type, and the bench renders its checkboxes straight off
 //   PRESETS. A stale entry there is a paid retarget that fails.
 
-import { buildCreaturePrompt } from '../tools/creatures/creature-prompt.mjs'
+import { buildCreaturePrompt, frameForRig, ASPECT_RATIOS } from '../tools/creatures/creature-prompt.mjs'
 import { CREATURES } from '../tools/creatures/creature-roster.mjs'
 import { MODELS, PRESETS, RIG_TYPES, createMeshTask, estimateCredits, creditsToUsd } from '../tools/creatures/tripo.mjs'
 import { workDir } from '../tools/creatures/workspace.mjs'
@@ -149,6 +149,24 @@ for (const rigType of allRigTypes) {
 }
 check(throws(() => buildCreaturePrompt({ description: 'x', rigType: 'wyvern' })), 'an unknown rig type throws rather than silently dropping the pose clause')
 check(throws(() => buildCreaturePrompt({ rigType: 'biped' })), 'a missing description throws')
+
+// --- the frame ---------------------------------------------------------------
+//
+// The canvas shape outranks the description: a wide subject asked for in a
+// square gets REPOSED to fit, which is how the dragon kept coming back rearing
+// on its hind legs no matter what the text said. So every rig type must name a
+// frame, and the wide ones must actually be wide.
+
+console.log('\nframe')
+const wide = (r) => { const [w, h] = frameForRig(r).split(':').map(Number); return w > h }
+for (const rigType of allRigTypes) {
+  check(ASPECT_RATIOS.includes(frameForRig(rigType)), `"${rigType}" has a frame the image API accepts`)
+}
+for (const rigType of ['quadruped', 'avian', 'aquatic', 'serpentine']) {
+  check(wide(rigType), `"${rigType}" is framed wide -- a body seen side-on with legs, tail or open wings does not fit a square`)
+}
+check(!wide('biped'), 'the biped is the exception: standing upright is a tall subject')
+check(throws(() => frameForRig('wyvern')), 'an unknown rig type throws rather than silently falling back to a square')
 
 // --- roster -----------------------------------------------------------------
 

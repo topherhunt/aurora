@@ -1229,7 +1229,16 @@ function updateQuestStats() {
       // Metres to the ground under the cursor, which is the only ruler this
       // view has. `-` is the ray reaching the horizon, not a failure.
       ...(cursor
-        ? [['CURSOR ', '#7f95b4'], [cursor.dist === null ? '-' : `${cursor.dist.toFixed(1)}m`, '#ff6b6b']]
+        ? [
+            ['CURSOR ', '#7f95b4'], [cursor.dist === null ? '-' : `${cursor.dist.toFixed(1)}m`, '#ff6b6b'],
+            ['AT ', '#7f95b4'],
+            [
+              cursor.at === null
+                ? '-'
+                : `${cursor.at.x.toFixed(0)} ${cursor.at.y.toFixed(0)} ${cursor.at.z.toFixed(0)}`,
+              '#ff6b6b',
+            ],
+          ]
         : []),
     ],
     [
@@ -2628,7 +2637,7 @@ function cycleAurora() {
 // clamp against the shipped pool.
 const GRASS_DENSITY_CYCLE = {
   cards: [6, 3, 1.5, 0.75],
-  blades: [12, 24, 6, 3],
+  blades: [8, 12, 24, 4],
 }
 const GRASS_RADIUS_CYCLE = {
   cards: [70, 40, 25, 15],
@@ -2656,19 +2665,14 @@ const GRASS_BLADE_CYCLE = [10, 5, 20]
 
 // The exponent p in the blade bed's thinning law -- see _keepAt in
 // render/grass.js. Cards are on 1 and have no reason not to be: their far field
-// is already the cheap end of the bed.
-//
-// THE LIST STEPS UP FIRST, because the blade bed's cost is its TRIANGLE COUNT
-// and this is the only knob that cuts triangles without touching the mat you are
-// standing in. At p 3 with a 6.5 m full radius, 61% of the bed's clumps are
-// beyond that radius: p 4 drops 24% of every clump in the bed and p 5 drops 35%,
-// none of it inside 6.5 m. Against that, blade count and density are linear in
-// the near field too, and reach is nearly worthless -- 30 m to 15 m is 17%.
-//
-// Down from 3 is kept because it is the same question asked the other way: what
-// the far field looks like when it is NOT cut hard, which is what makes the
-// upper rungs readable as a picture rather than only as a frame time.
-const GRASS_FALLOFF_CYCLE = [3, 4, 5, 2, 1.5, 1]
+// is already the cheap end of the bed. What this row is for is the blade bed,
+// where the question is how hard the far field can be cut before the ground
+// reads as bare. 3 IS THE HARD END AND THE ROW DOES NOT GO PAST IT: a steeper
+// exponent does cut triangles, and triangles are the bed's cost, but it buys
+// them by emptying ground the player can see. A distance card was the other way
+// to spend the far field and it was rejected on look -- see the header of
+// props/grass-blades.js.
+const GRASS_FALLOFF_CYCLE = [3, 2, 1.5, 1]
 
 // The live overrides, carried across every rebuild so the three grass rows
 // compose. Without this, changing the reach would silently restore the shipped
@@ -3599,16 +3603,24 @@ function bindCursorPicks() {
 // step schedule in pick.js, which is the same order as one frame of scatter
 // placement and a quarter-second apart; the prop pass is a few tens of
 // thousands of multiply-adds on top.
-const cursorOut = { dist: null, label: null, variant: null }
+const cursorOut = { dist: null, at: null, label: null, variant: null }
 function cursorPick() {
   cursorOut.dist = null
+  cursorOut.at = null
   cursorOut.label = null
   cursorOut.variant = null
   if (!cursorNdc.seen) return cursorOut
 
   const { origin, dir } = screenRay(camera, cursorNdc.x, cursorNdc.y)
   const hit = raymarchGround(height, origin, dir)
-  if (hit) cursorOut.dist = Math.hypot(hit.x - origin.x, hit.y - origin.y, hit.z - origin.z)
+  if (hit) {
+    cursorOut.dist = Math.hypot(hit.x - origin.x, hit.y - origin.y, hit.z - origin.z)
+    // WHERE, not just how far. A range alone cannot be typed into a probe script
+    // or compared against a heightmap sample, and every placement question this
+    // panel gets pointed at ("why is there nothing HERE") is asked about a world
+    // position. `raymarchGround` already has it; it was being thrown away.
+    cursorOut.at = hit
+  }
 
   // Infinity rather than the ground range when the ray reaches the horizon:
   // there is no hill to hide behind, so every prop along it is fair game.

@@ -11,9 +11,14 @@
 //
 // Editable in the bench -- this is the starting point for judging whether a
 // concept is worth spending art on, not a fixed list.
+//
+// The village NPCs are appended at the bottom, derived rather than written.
 // ---------------------------------------------------------------------------
 
-export const CREATURES = [
+import { createRequire } from 'node:module'
+import { describeNordicCharacter, professionsFor } from '../characters/nordic-roster.mjs'
+
+const ANIMALS = [
   {
     id: 'red-fox',
     label: 'Red Fox',
@@ -48,11 +53,46 @@ export const CREATURES = [
     id: 'fen-dragon',
     label: 'Fen Dragon',
     rigType: 'quadruped',
-    sizeM: 3.5,
+    // Wingspan, not body length: with the wings spread they are the longest
+    // dimension, and sizeM is what places the creature in the world.
+    sizeM: 6,
+    // Wings, but rigType stays quadruped: Tripo's RIG_TYPES has no draconic
+    // skeleton, so the preset rigs the four legs and the wings ride along as
+    // unweighted geometry until they get a hand-built hinge.
+    //
+    // Two things are deliberately absent, both of which produced a reared dragon.
+    // "Heraldic" NAMES the rampant pose -- every picture captioned with it is up
+    // on its hind legs. And spread wings cannot be shown from side-on, so asking
+    // for them rotates the animal front-on, where a quadruped resolves as an
+    // upright torso with dangling forelimbs; folded wings cost nothing, since
+    // Tripo's quadruped preset never weights them anyway.
+    //
+    // No real animal is named. Naming one held the stance but dragged the whole
+    // surface along with it, so what carries the pose now is repeated positive
+    // geometry: weight down, feet flat, body horizontal, head no higher than the
+    // shoulders, tail along the ground. That leaves the hide, skull and eyes free
+    // to go strange. "One" tail is load-bearing too -- the generator grows a
+    // second one otherwise.
+    //
+    // The build is held between two failures that are both one adjective away:
+    // "slender" comes back lanky and dog-legged, "heavy" comes back fat. So the
+    // bulk is described as muscle definition rather than as mass, and the legs
+    // are kept short by what they are FOR (holding the body low and level) rather
+    // than by calling them stout.
     description:
-      'a lean four-legged wingless drake the size of a horse, low-slung and lizard-like, overlapping scales in ' +
-      'peat-brown and bog-green with a paler cream underbelly, a long tapering tail, a narrow crocodilian skull ' +
-      'with backswept horns and a row of dark spines running from neck to tail tip, clawed feet',
+      'a large four-legged dragon at rest, standing four-square and settled with its whole weight down on all four ' +
+      'feet, each foot planted flat, the long body carried horizontal and low. Lean and hard-muscled rather than ' +
+      'bulky: a deep but narrow chest, long ropes of muscle across the shoulders and haunches, the flanks drawn in ' +
+      'tight so the ribs and hip bones show through the hide, four powerful legs short enough to hold the body level ' +
+      'and low, ending in long grasping talons, and one long heavy tapering tail lying straight out along the ground ' +
+      'behind it. The hide is a close armour of small interlocking plates in matte peat-brown and bog-green under a faint ' +
+      'oil-slick iridescence, crusted with pale grey lichen along the spine and shoulders and going soft and cream ' +
+      'down the underbelly. A narrow elongated skull carried level on a short thick neck, no higher than the ' +
+      'shoulders, crowned with a swept-back fan of thin ridged horns, a fringe of drooping barbels hanging beneath ' +
+      'the jaw, no visible ears, and small pale eyes that glow faintly and show no pupil. A crest of dark quill-like ' +
+      'spines runs from the back of the skull to the tail tip. A pair of large ribbed membrane wings folded shut ' +
+      'along its back like a resting bat, the folded wing arms peaking above the shoulders and the membranes ' +
+      'gathered in against the back, well clear of the legs',
   },
   {
     id: 'fjord-raven',
@@ -165,3 +205,35 @@ export const CREATURES = [
       'beard and a fur-lined hood pushed back off the head',
   },
 ]
+
+// --- the village -------------------------------------------------------------
+//
+// The 24 human NPCs are DERIVED from the character pipeline, not retyped into
+// it: tools/characters/characters.json is the cast list and nordic-roster.mjs
+// writes the bios, and both already drive gen-sheet.html. A second copy of those
+// descriptions here would drift from the original the first time a profession's
+// gear changes, and the ids match public/characters/<id>/ so the two pipelines
+// stay pointed at the same person.
+//
+// They come in as `biped`, which is what gives them the A-pose clause and the
+// 9:16 frame -- the one silhouette in FRAME_BY_RIG that is genuinely tall.
+
+const require = createRequire(import.meta.url)
+const { characters } = require('../characters/characters.json')
+
+const NPCS = characters.map(({ id, role, gender, age, professionId, heightM }) => {
+  const prof = professionId ? professionsFor(age).find((p) => p.id === professionId) : null
+  return {
+    id,
+    // A child has no trade, so its id is the only name it has: "child-villager-1"
+    // becomes "Child Villager 1".
+    label: prof ? prof.label : id.replace(/-/g, ' ').replace(/\b[a-z]/g, (ch) => ch.toUpperCase()),
+    rigType: 'biped',
+    sizeM: heightM,
+    // Trailing period stripped: buildCreaturePrompt punctuates the description
+    // itself, and gen-sheet's bios end in one where the animal entries do not.
+    description: describeNordicCharacter({ role, gender, age, professionId }).description.replace(/\.$/, ''),
+  }
+})
+
+export const CREATURES = [...ANIMALS, ...NPCS]

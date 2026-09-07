@@ -36,6 +36,9 @@
       .field { margin-bottom: 6px; }
       .field label { display: block; color: var(--dim); font-size: 11px; margin-bottom: 2px; }
       .field input, .field textarea, .field select { width: 100%; }
+      /* A checkbox sits on its label's line, against .field's stacked default. */
+      .check label { display: flex; align-items: center; gap: 6px; margin: 0; }
+      .check input { width: auto; }
       .field textarea { height: 110px; }
       .row { display: flex; gap: 6px; }
       .row > * { flex: 1 1 auto; }
@@ -48,12 +51,33 @@
       #stage h3:not(:first-child) { margin-top: 18px; border-top: 1px solid #1b2c44; padding-top: 12px; }
 
       #gallery, .gallery { display: flex; flex-wrap: wrap; gap: 12px; }
-      .candidate { display: flex; flex-direction: column; gap: 4px; align-items: center; width: 200px; }
+      .candidate { position: relative; display: flex; flex-direction: column; gap: 4px; align-items: center; width: 200px; }
       .candidate img, .candidate .noshot { width: 200px; height: 200px; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
       .candidate .noshot { display: flex; align-items: center; justify-content: center; border-style: dashed; color: #3d5a80; font-size: 10px; }
       .candidate.is-picked img, .candidate.is-picked .noshot { border-color: var(--good); }
+      /* Selection is not the pick: a selected mesh candidate is the one the LOD
+         section operates on, which you often want to be one you have not picked. */
+      .candidate.is-selected img, .candidate.is-selected .noshot { border-color: #4a7fbf; box-shadow: 0 0 0 1px #4a7fbf; }
       .candidate .cost { color: var(--dim); font-size: 10px; text-align: center; }
       .candidate button { width: 100%; }
+      /* Both corner buttons share one placement rule; only the hover colour and
+         the column they sit in differ. */
+      .candidate .corner { position: absolute; top: 4px; width: auto; padding: 0 5px; line-height: 18px; opacity: .35; background: #0e1726; }
+      .candidate:hover .corner { opacity: 1; }
+      .candidate .trash { right: 4px; }
+      .candidate .trash:hover { border-color: #bf5a4a; color: #ffd0c8; background: #3a1a16; }
+      .candidate .zoom { right: 32px; }
+      .candidate .zoom:hover { border-color: #4a7fbf; color: #cfe4ff; background: #16233a; }
+      /* A queued generation reserves its slot in the gallery, so clicking twice
+         reads as two images coming rather than as nothing having happened. */
+      .candidate.pending .noshot { border-style: dashed; animation: pulse 1.2s ease-in-out infinite; }
+      /* The gallery thumbnail is 200px and a candidate is 1024px wide, so judging
+         one means seeing it at something nearer its own size. `hidden` alone will
+         not hide a flex box, hence the explicit [hidden] rule. */
+      .lightbox { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; padding: 24px; background: rgba(6, 10, 18, .93); cursor: zoom-out; }
+      .lightbox[hidden] { display: none; }
+      .lightbox img { max-width: 92vw; max-height: 84vh; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
+      @keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: .8 } }
 
       #viewRow { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
       #viewer { display: none; flex-direction: column; gap: 4px; }
@@ -65,11 +89,15 @@
 
       /* The 128px check: same texture, two sizes, side by side, pixelated so
          the downrez is judged on its own terms and not through the browser's
-         smoothing. */
+         smoothing. Click either to wear it on the preview mesh; the outlined one
+         is the one the model is currently wearing. */
       #texRow { display: none; gap: 14px; align-items: flex-start; }
       #texRow.on { display: flex; }
-      #texRow figure { margin: 0; display: flex; flex-direction: column; gap: 4px; align-items: center; }
+      #texRow figure { margin: 0; display: flex; flex-direction: column; gap: 4px; align-items: center; cursor: pointer; }
       #texRow canvas { border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; image-rendering: pixelated; width: 200px; height: 200px; }
+      #texRow figure:hover canvas { border-color: #4a7fbf; }
+      #texRow figure.is-active canvas { border-color: var(--good); }
+      #texRow figure.is-active figcaption { color: var(--good); }
 
       /* The library: every asset, its prompt, and what has been made of it.
          An overlay rather than a fourth column because it is a place you go to
@@ -151,7 +179,18 @@
 
         <h2>2. candidate image</h2>
         <div class="step">FLUX.2 Klein 4B via OpenRouter</div>
+        <div class="field">
+          <label>frame (defaults from the rig type; the subject fills it)</label>
+          <select id="aspectRatio">
+            <option value="16:9">16:9 wide &mdash; quadrupeds, birds, fish</option>
+            <option value="4:3">4:3 slightly wide &mdash; the safe default</option>
+            <option value="1:1">1:1 square &mdash; crabs, spiders, anything splayed</option>
+            <option value="3:4">3:4 slightly tall</option>
+            <option value="9:16">9:16 tall &mdash; upright bipeds</option>
+          </select>
+        </div>
         <button id="genImage" class="wide spend">generate candidate (~$0.015)</button>
+        <details id="promptOut"><summary class="label">the prompt actually sent</summary><pre class="label"></pre></details>
 
         <h2>3. mesh</h2>
         <div class="step">Tripo image-to-model, from the picked image. Every run is kept as a new mesh candidate; nothing paid for is overwritten.</div>
@@ -164,15 +203,16 @@
         </div>
         <div class="field">
           <label>face limit <span id="faceLimitVal" class="label"></span></label>
-          <input type="range" id="faceLimit" min="500" max="10000" step="250" value="4000" />
+          <input type="range" id="faceLimit" min="500" max="10000" step="250" value="500" />
         </div>
-        <div class="field">
+        <div class="field check">
           <label><input type="checkbox" id="smartLowPoly" /> smart low-poly (H3 only, +10 credits)</label>
         </div>
         <button id="genMesh" class="wide spend" disabled>generate mesh</button>
 
         <h2>4. LOD</h2>
-        <div class="step">Our decimator (src/mesh/decimate.js) on the picked mesh candidate. Free, local, re-runnable. A tier keeps the UV atlas if it can hit the target that way, and drops it for baked vertex colours if it cannot.</div>
+        <div class="step">Our decimator (src/mesh/decimate.js) on the <em>selected</em> mesh candidate &mdash; click one above to switch. Free, local, re-runnable. A tier keeps the UV atlas if it can hit the target that way, and drops it for baked vertex colours if it cannot.</div>
+        <div id="lodSubject" class="step"></div>
         <div class="field">
           <label>tier targets, coarsest last</label>
           <input type="text" id="lodTargets" value="50%, 25%, 10%" />
@@ -182,6 +222,7 @@
           <input type="text" id="lodWeld" value="" placeholder="default: hair-thin" />
         </div>
         <button id="genLod" class="wide local" disabled>decimate (free)</button>
+        <button id="genCards" class="wide local" disabled style="margin-top:4px">bake card cross (4 tris, free)</button>
         <button id="saveLod" class="wide local" disabled style="margin-top:4px">save tiers to disk</button>
 
         <h2>5. rig</h2>
@@ -217,24 +258,31 @@
             <label><input type="checkbox" id="showSkeleton" /> skeleton</label>
             <label><input type="checkbox" id="showWire" /> wireframe</label>
             <label>clip <select id="clipSelect"></select></label>
+            <button id="refit" title="re-centre the camera on the current model">refit</button>
           </div>
           <div id="meshStats" class="label"></div>
           <div id="meshAnalysis" class="label"></div>
         </div>
         <div id="texRow">
-          <figure><canvas id="texFull" width="256" height="256"></canvas><figcaption class="label">source texture</figcaption></figure>
+          <figure><canvas id="texFull" width="256" height="256"></canvas><figcaption class="label">source texture (ships)</figcaption></figure>
           <figure><canvas id="tex128" width="128" height="128"></canvas><figcaption class="label">128px downrez</figcaption></figure>
+          <p class="note">The preview wears the source by default &mdash; creatures ship on their own 512px array, not in the 128px prop atlas. The small figure is there to show what the prop atlas would cost you. Click a texture to put it on the mesh.</p>
         </div>
       </div>
 
       <div id="lodWrap">
-        <h3>LOD tiers</h3>
+        <h3 id="lodHead">LOD tiers</h3>
         <table class="data" id="lodTable"></table>
         <p class="note">
-          Click a tier to load it into the preview. A tier that stops well short of its target is
-          not a bug in the decimator: seam and boundary vertices are pinned, so the reduction
-          ceiling is a direct measurement of how few, how large and how well-closed this mesh's UV
-          islands are -- the same property that decides whether the texture survives 128px.
+          Click a tier to load it into the preview; the camera holds its angle across the swap, so
+          the silhouette is comparable frame to frame. Tiers belong to the mesh candidate they were
+          decimated from -- selecting a different candidate shows that one's ladder.
+        </p>
+        <p class="note">
+          A tier that stops well short of its target is not a bug in the decimator: seam and
+          boundary vertices are pinned, so the reduction ceiling is a direct measurement of how
+          few, how large and how well-closed this mesh's UV islands are -- the same property that
+          decides whether the texture survives 128px.
         </p>
       </div>
     </div>
@@ -266,6 +314,11 @@
       <div id="ledger"></div>
       <h2>status</h2>
       <div id="status" class="note"></div>
+    </div>
+
+    <div id="lightbox" class="lightbox" hidden>
+      <img id="lightboxImg" alt="candidate image at full size" />
+      <div id="lightboxCap" class="label"></div>
     </div>
 
     <script type="module" src="/src/gen-creature-main.js"></script>

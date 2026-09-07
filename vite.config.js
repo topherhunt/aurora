@@ -11,10 +11,12 @@ import { encodePng } from './tools/props/png.mjs'
 import { buildFishPrompt } from './tools/fauna/fish-prompt.mjs'
 import { buildFishMesh } from './tools/fauna/loft-fish-mesh.mjs'
 import { SPECIES as FISH_SPECIES } from './tools/fauna/fish-roster.mjs'
-import { buildCreaturePrompt } from './tools/creatures/creature-prompt.mjs'
+import { buildCreaturePrompt, frameForRig, ASPECT_RATIOS } from './tools/creatures/creature-prompt.mjs'
 import { CREATURES } from './tools/creatures/creature-roster.mjs'
 import { estimateCredits as tripoCredits, getBalance as tripoBalance, PRESETS as TRIPO_PRESETS } from './tools/creatures/tripo.mjs'
 import * as creatures from './tools/creatures/workspace.mjs'
+import { buildTreePrompt, TREE_SPECIES as TREE_V9_SPECIES } from './tools/trees/v9/tree-species.mjs'
+import * as treesV9 from './tools/trees/v9/workspace.mjs'
 
 // Vite loads .env into import.meta.env for client bundles, but NOT into
 // process.env for its own config/plugin code -- openrouter.mjs reads
@@ -699,6 +701,7 @@ function fishGen() {
 //   free     /__creature-roster, /__creature-list, /__creature-candidates,
 //            /__creature-assets, /__creature-save, /__creature-pick,
 //            /__creature-meshes, /__creature-pick-mesh,
+//            /__creature-delete-candidate,
 //            /__creature-lod (decimation is ours, not a vendor's),
 //            /__creature-balance, /__creature-rig-check (Tripo prices both at 0)
 //   ~$0.015  /__creature-image
@@ -759,6 +762,11 @@ function creatureGen() {
         ok: true,
         creatures: CREATURES,
         presets: TRIPO_PRESETS,
+        // The page picks a creature's default frame from this rather than
+        // importing the table: tools/ is server-side, and a second copy in
+        // src/ is a second copy to keep in step.
+        frames: Object.fromEntries([...Object.keys(TRIPO_PRESETS), 'none'].map((r) => [r, frameForRig(r)])),
+        aspectRatios: ASPECT_RATIOS,
         credits: {
           mesh: tripoCredits({ step: 'mesh' }),
           rig: tripoCredits({ step: 'rig' }),
@@ -795,7 +803,17 @@ function creatureGen() {
         const url = new URL(req.url, 'http://x')
         const id = idOf(req)
         const level = Number(url.searchParams.get('level'))
-        return { ok: true, ...creatures.saveLod(id, level, await readRaw(req, 64 << 20)) }
+        // The tier's provenance and its triangle count ride in the query string
+        // because the body is the GLB itself. `mesh` is the candidate it was
+        // decimated from; without it the tier files itself under the picked one.
+        const mesh = url.searchParams.get('mesh') || null
+        const stats = {
+          tris: Number(url.searchParams.get('tris')) || undefined,
+          targetTris: Number(url.searchParams.get('targetTris')) || undefined,
+          uvMode: url.searchParams.get('uvMode') || undefined,
+          kind: url.searchParams.get('kind') || undefined,
+        }
+        return { ok: true, ...creatures.saveLod(id, level, await readRaw(req, 64 << 20), { mesh, stats }) }
       }))
 
       server.middlewares.use('/__creature-candidates', json((req) => ({
@@ -823,11 +841,17 @@ function creatureGen() {
       // an image paid for twice after a reload.
       server.middlewares.use('/__creature-image', json(async (req) => {
         postOnly(req)
-        const { id, description, rigType, styleNote, seed } = JSON.parse(await readBody(req, 1 << 16))
+        const { id, description, rigType, styleNote, seed, aspectRatio } = JSON.parse(await readBody(req, 1 << 16))
         if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid creature id "${id}"`)
+        // Defaulted from the rig type rather than to a square -- see
+        // FRAME_BY_RIG, the frame outranks the words. Whitelisted rather than
+        // passed through: an unknown ratio is a silent 400 from OpenRouter
+        // after the request has already been queued and the caller is waiting.
+        const ratio = aspectRatio ?? frameForRig(rigType)
+        if (!ASPECT_RATIOS.includes(ratio)) throw new Error(`unknown aspect ratio "${ratio}" -- expected one of ${ASPECT_RATIOS.join(', ')}`)
         const prompt = buildCreaturePrompt({ description, rigType, styleNote })
-        const { buffer, cost } = await generateImage({ prompt, aspectRatio: '1:1', seed })
-        const file = creatures.saveCandidate(id, buffer, cost)
+        const { buffer, cost } = await generateImage({ prompt, aspectRatio: ratio, seed })
+        const file = creatures.saveCandidate(id, buffer, cost, { prompt, aspectRatio: ratio })
         return { ok: true, file, cost, prompt }
       }))
 
@@ -838,6 +862,16 @@ function creatureGen() {
         const id = idOf(req)
         const { file } = JSON.parse(await readBody(req, 1 << 12))
         return { ok: true, path: creatures.pickCandidate(id, file) }
+      }))
+
+      // Free, local, and the only DESTRUCTIVE endpoint here: it throws away an
+      // image that cost money. Only candidate images -- a mesh candidate cost 50
+      // credits and Tripo has no task history to re-fetch one from.
+      server.middlewares.use('/__creature-delete-candidate', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...creatures.deleteCandidate(id, file) }
       }))
 
       // SPENDS (Tripo, ~50 credits). Blocks until the mesh is downloaded --
@@ -872,6 +906,148 @@ function creatureGen() {
         const id = idOf(req)
         const { animations } = JSON.parse(await readBody(req, 1 << 12))
         return { ok: true, ...(await creatures.runAnimate(id, { animations })) }
+      }))
+    },
+  }
+}
+
+// --- /gen-tree-v9: solid trees, reconstructed then painted (design §28) -----
+//
+// Two spending endpoints and six free ones. The vendor client and the price
+// table are the creature pipeline's -- see tools/trees/v9/workspace.mjs for why
+// nothing is copied -- so `tripoCredits` below is the same arithmetic
+// gen-creature.html quotes, reading a different default.
+function treeGen() {
+  const readRaw = (req, maxBytes) => new Promise((resolve, reject) => {
+    const chunks = []
+    let bytes = 0
+    req.on('data', (c) => {
+      bytes += c.length
+      if (bytes > maxBytes) req.destroy(new Error(`body over ${maxBytes} bytes`))
+      chunks.push(c)
+    })
+    req.on('error', reject)
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+  })
+  const readBody = async (req, maxBytes) => (await readRaw(req, maxBytes)).toString('utf8')
+
+  const json = (handler) => (req, res) => {
+    res.setHeader('content-type', 'application/json')
+    Promise.resolve()
+      .then(() => handler(req, res))
+      .then((out) => { if (out !== undefined) res.end(JSON.stringify(out)) })
+      .catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+  }
+
+  const postOnly = (req) => { if (req.method !== 'POST') throw new Error('POST only') }
+  const idOf = (req) => {
+    const id = new URL(req.url, 'http://x').searchParams.get('id') || ''
+    if (!/^[a-z0-9-]+$/.test(id)) throw new Error(`invalid tree id "${id}"`)
+    return id
+  }
+
+  return {
+    name: 'aurora:tree-gen-v9',
+    apply: 'serve',
+    configureServer(server) {
+      // The species seeds and the price of the one paid mesh step, so the bench
+      // prints a cost from the same arithmetic the server charges against.
+      server.middlewares.use('/__tree9-species', json(() => ({
+        ok: true,
+        species: TREE_V9_SPECIES,
+        credits: {
+          meshTextured: tripoCredits({ step: 'mesh', texture: true }),
+          meshBare: tripoCredits({ step: 'mesh', texture: false }),
+        },
+        hasTripoKey: Boolean(process.env.TRIPO_API_KEY),
+      })))
+
+      server.middlewares.use('/__tree9-balance', json(async () => ({ ok: true, ...(await tripoBalance()) })))
+
+      server.middlewares.use('/__tree9-list', json(() => ({ ok: true, trees: treesV9.listAll() })))
+
+      // Free. Every PNG the paint step could wear. Which of them also has an
+      // atlas LAYER is decided in the page, where src/textures.js already lives.
+      server.middlewares.use('/__tree9-pool', json(() => ({ ok: true, textures: treesV9.texturePool() })))
+
+      server.middlewares.use('/__tree9-save', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const patch = JSON.parse(await readBody(req, 1 << 16))
+        return { ok: true, tree: treesV9.saveMeta(id, patch) }
+      }))
+
+      server.middlewares.use('/__tree9-candidates', json((req) => ({
+        ok: true, candidates: treesV9.listCandidates(idOf(req)),
+      })))
+
+      server.middlewares.use('/__tree9-assets', json((req) => ({
+        ok: true, ...treesV9.assets(idOf(req)), paint: treesV9.readPaint(idOf(req)),
+      })))
+
+      // SPENDS (OpenRouter, ~$0.015). Written to disk in the request that paid
+      // for it: an image that only ever lived in a tab is an image bought twice.
+      server.middlewares.use('/__tree9-image', json(async (req) => {
+        postOnly(req)
+        const { id, description, crown, trunk, styleNote, seed } = JSON.parse(await readBody(req, 1 << 16))
+        if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid tree id "${id}"`)
+        const prompt = buildTreePrompt({ description, crown, trunk, styleNote })
+        const { buffer, cost } = await generateImage({ prompt, aspectRatio: '1:1', seed })
+        const file = treesV9.saveCandidate(id, buffer, cost)
+        return { ok: true, file, cost, prompt }
+      }))
+
+      server.middlewares.use('/__tree9-pick', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, path: treesV9.pickCandidate(id, file) }
+      }))
+
+      server.middlewares.use('/__tree9-delete-candidate', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...treesV9.deleteCandidate(id, file) }
+      }))
+
+      // Free: copies one bought mesh over mesh.glb, which is what the decimate
+      // and paint stages read.
+      server.middlewares.use('/__tree9-pick-mesh', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...treesV9.pickMesh(id, file) }
+      }))
+
+      // SPENDS (Tripo, 40 credits bare / 50 textured). Blocks until the GLB is
+      // on disk: Tripo's result URLs expire, so a task id whose output was never
+      // fetched is money spent for nothing.
+      server.middlewares.use('/__tree9-mesh', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const opts = JSON.parse(await readBody(req, 1 << 12) || '{}')
+        return { ok: true, ...(await treesV9.runMesh(id, opts)) }
+      }))
+
+      // Free, local. src/mesh/decimate.js runs in the page and posts what it made.
+      server.middlewares.use('/__tree9-lod', json(async (req) => {
+        postOnly(req)
+        const url = new URL(req.url, 'http://x')
+        const id = idOf(req)
+        const level = Number(url.searchParams.get('level'))
+        return { ok: true, ...treesV9.saveLod(id, level, await readRaw(req, 64 << 20)) }
+      }))
+
+      // Free, local. The GLB rides base64 inside the JSON so the mesh and the
+      // paint record that explains it land in one write -- a painted.glb whose
+      // paint.json failed to save is a texLayer column of bare numbers.
+      server.middlewares.use('/__tree9-paint', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { glb, paint } = JSON.parse(await readBody(req, 64 << 20))
+        if (typeof glb !== 'string') throw new Error('paint save needs the GLB as base64 in `glb`')
+        return { ok: true, ...treesV9.savePainted(id, Buffer.from(glb, 'base64'), paint) }
       }))
     },
   }
@@ -965,35 +1141,6 @@ function isPageRoute(root, name) {
   return PAGE_NAME.test(name) && existsSync(resolve(root, `${name}.html`))
 }
 
-// --- restarting the server when server-side code changes --------------------
-//
-// Everything the endpoints run -- workspace.mjs, tripo.mjs, openrouter.mjs, the
-// rosters -- is a static import of this file, so Vite records it in
-// `configFileDependencies` and a change to any of them means the running server
-// is executing stale code. Vite normally restarts itself for exactly this, but
-// it routes config-dependency changes through `onHMRUpdate`, which is skipped
-// wholesale when `server.hmr` is false. We turn HMR off on purpose (see the
-// comment on the server config), so the restart has to be re-hung here.
-//
-// Client code is untouched by this: it is not a config dependency, so saving a
-// file in src/ still does nothing until you reload. Only the Node half restarts.
-function serverRestart() {
-  return {
-    name: 'aurora:server-restart',
-    apply: 'serve',
-    configureServer(server) {
-      const deps = new Set([server.config.configFile, ...server.config.configFileDependencies].map((f) => resolve(f)))
-      let restarting = false
-      server.watcher.on('change', async (file) => {
-        if (restarting || !deps.has(resolve(file))) return
-        restarting = true
-        server.config.logger.info(`${relative(process.cwd(), resolve(file))} changed, restarting server...`, { clear: true, timestamp: true })
-        await server.restart()
-      })
-    },
-  }
-}
-
 // Read fresh rather than cached, so a page added since startup is listed too.
 // `index` is `/`, not a named route.
 function pageNames(root) {
@@ -1031,7 +1178,7 @@ function bareRoutes() {
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), serverRestart(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -1049,11 +1196,19 @@ export default defineConfig({
   // with it, since that arrives over the same socket; a syntax error now shows
   // up in the console on reload instead of as a red panel.
   //
-  // It ALSO kills Vite's own restart-on-config-change, which is routed through
-  // the same disabled path. serverRestart() puts that back, because a stale Node
-  // half answers endpoints with code that no longer exists on disk.
+  // NOTHING RESTARTS THE NODE HALF EITHER, and that is also on purpose. Vite's
+  // own restart-on-config-change is routed through the same disabled path, and
+  // it is not re-hung: the endpoints in this file hold open requests that have
+  // already been paid for -- a Tripo mesh is a minutes-long poll -- and a
+  // restart triggered by an agent saving workspace.mjs drops that connection
+  // while the vendor bills for the job anyway.
   //
-  // Set `hmr: true` to get the old behaviour back.
+  // The cost is that a change to this file, workspace.mjs, tripo.mjs,
+  // openrouter.mjs or a roster does nothing until the dev server is restarted
+  // by hand: Ctrl-C and `npm run dev`. Do that between generations, not during.
+  //
+  // Set `hmr: true` for the old behaviour: page reload on save, and Vite's own
+  // config-dependency restart back with it.
   server: { host: true, port: 5173, hmr: false },
   worker: { format: 'es' },
   build: {
