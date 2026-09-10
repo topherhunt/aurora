@@ -41,6 +41,14 @@ import { LAYER, SNOW_LAYERS, SNOW_CARD_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYER
 // extension guard -- see SNOW_EDGE_MIN. The whole block sits inside a
 // `uSnow > 0.0` branch that is uniform across the draw and free when the sun is
 // out.
+//
+// COMPILED IN ONLY ON REQUEST: `createPropMaterial({ seasons: true })`. Without
+// it a program carries none of this -- no noise functions, no vSnowPos / vMoss
+// interpolators, no uniform branches -- and the setters below move uniforms no
+// program reads. Nothing that ships in the world asks for it; the /gen benches
+// with snow and moss sliders do. What a near rock fragment pays with it on is
+// ~700-850 ALU plus one atlas fetch, which on a fill-bound headset was too much
+// for what it bought.
 // ---------------------------------------------------------------------------
 
 const snowAmount = { value: 0 }
@@ -417,6 +425,35 @@ const SNOW_CUT_SPAN = 1.16
 const SNOW_ROCK_UP = 0.65
 const SNOW_FOLIAGE_UP = 0.45
 
+// --- and what happens to stone once the noise has gone ----------------------
+//
+// PAST SNOW_FADE_FAR THE BLOB IS A CONSTANT, and that leaves a hard-surface
+// fragment with nothing left to break its coverage up: a MESH's `drift` collapses
+// to an affine function of `up` alone, so the rim becomes a clean analytic
+// contour of the surface normal, and a CARD's collapses to its instance load, a
+// flat grey wash over the whole quad. Both read the way the far field actually
+// looked -- a definite snow line and a cap that goes smoothly, evenly white as
+// the load climbs.
+//
+// SO THE FAR FIELD QUANTISES `cover` AGAINST THE DISSOLVE'S OWN ign(). Three ALU,
+// no texture, already compiled into this program, and screen-space blue-ish noise
+// is exactly the stipple wanted here. The MEAN coverage is unchanged, so this
+// moves how snow is drawn and not how much of it falls, and it is crossfaded on
+// the same `snowNear` the blob fades on, so nothing inside forty metres moves.
+//
+// AND IT NEVER REACHES ONE. Dither alone still goes solid the moment coverage
+// saturates, which is the top of the load slider and the case being complained
+// about. Capping it below one leaves this share of a fully loaded rock's
+// fragments showing stone at every distance, so a far peak is speckled rather
+// than a white blob. 0.15 is a sixth of the pixels: legible as grain on a rock a
+// few pixels wide, and short of the quarter that starts reading as bare rock.
+//
+// STONE AND WOOD ONLY (`rock`). Foliage has the same collapse and the far forest
+// would take the same stipple, but a canopy is a stack of cards where a rock is a
+// solid, and the load cap that governs it (setLeafSnowVary) is a different tuning
+// argument. Left alone deliberately.
+const SNOW_FAR_MAX = 0.85
+
 // Exported ONLY so scripts/check-rocks.mjs can hold the promises above to
 // account without a GL context. Nothing at runtime reads this: the numbers are
 // compiled into the GLSL as literals. The shared ones are here too, because what
@@ -433,6 +470,8 @@ export const SNOW_ROCK = Object.freeze({
   cutBias: SNOW_CUT_BIAS,
   cutSpan: SNOW_CUT_SPAN,
   edgeMax: SNOW_EDGE_MAX,
+  farMax: SNOW_FAR_MAX,
+  fadeFar: SNOW_FADE_FAR,
 })
 
 // Cold white rather than 1.0 flat: snow in daylight is the sky's colour, and a
@@ -975,6 +1014,17 @@ const SNOW_APPLY = /* glsl */ `
         cardMask += step( abs( vTexLayer - uSnowCardLayers[ i ] ), 0.5 );
       }
       cover = mix( cover, mix( vSnowPos.w, cover, snowNear ), min( cardMask, 1.0 ) );
+      // AND ON STONE THE FAR FIELD IS A STIPPLE, NOT A WASH -- see SNOW_FAR_MAX
+      // for the whole argument. Both branches above have run, so this catches the
+      // mesh's normal contour and the card's flat load with one line.
+      float far = ( 1.0 - snowNear ) * rock;
+      if ( far > 0.004 ) {
+        // STRICTLY BELOW, not step( ign, cover ): ign() really does reach 0.0
+        // (see FADE_FRAGMENT, which had to say the same thing), and the other
+        // way round leaves a bare rock one stray white fragment per few thousand.
+        cover = mix( cover,
+          1.0 - step( min( cover, ${SNOW_FAR_MAX} ), ign( gl_FragCoord.xy ) ), far );
+      }
       diffuseColor.rgb = mix( diffuseColor.rgb, snowCol, cover );
     }
   }
@@ -2467,7 +2517,7 @@ export function createPropMaterial(
   {
     vertexColors = false, billboardLayers = null, sphericalBillboard = false, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
-    side = THREE.DoubleSide, bump = false,
+    side = THREE.DoubleSide, bump = false, seasons = false,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
@@ -2531,20 +2581,22 @@ export function createPropMaterial(
 
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uAtlas = { value: textureArray }
-    // By REFERENCE, so one setSnow call moves every program compiled here.
-    shader.uniforms.uSnow = snowAmount
-    shader.uniforms.uSnowLayers = snowLayers
-    shader.uniforms.uSnowRockLayers = snowRockLayers
-    shader.uniforms.uSnowCardLayers = snowCardLayers
-    shader.uniforms.uSnowLine = snowLine
-    shader.uniforms.uSnowBand = snowBand
-    shader.uniforms.uSnowVary = snowVary
-    shader.uniforms.uLeafSnowVary = leafSnowVary
-    shader.uniforms.uMoss = mossAmount
-    shader.uniforms.uMossLayers = mossLayers
-    shader.uniforms.uMossLine = mossLine
-    shader.uniforms.uMossBand = mossBand
-    shader.uniforms.uMossVary = mossVary
+    if (seasons) {
+      // By REFERENCE, so one setSnow call moves every program compiled here.
+      shader.uniforms.uSnow = snowAmount
+      shader.uniforms.uSnowLayers = snowLayers
+      shader.uniforms.uSnowRockLayers = snowRockLayers
+      shader.uniforms.uSnowCardLayers = snowCardLayers
+      shader.uniforms.uSnowLine = snowLine
+      shader.uniforms.uSnowBand = snowBand
+      shader.uniforms.uSnowVary = snowVary
+      shader.uniforms.uLeafSnowVary = leafSnowVary
+      shader.uniforms.uMoss = mossAmount
+      shader.uniforms.uMossLayers = mossLayers
+      shader.uniforms.uMossLine = mossLine
+      shader.uniforms.uMossBand = mossBand
+      shader.uniforms.uMossVary = mossVary
+    }
     shader.uniforms.uPropClock = propClock
     if (bump) {
       shader.uniforms.uBumpScale = bumpScale
@@ -2584,27 +2636,8 @@ export function createPropMaterial(
         attribute float aPropFade;` : ''}
         varying float vTexLayer;
         varying vec2 vUvProj;
-        uniform float uSnow;
-        uniform float uSnowLine;
-        uniform float uSnowBand;
-        uniform vec2 uSnowVary;
-        uniform vec2 uLeafSnowVary;
-        // The FOLIAGE list, which this stage needs only for the leaf roll --
-        // the fragment stage has always had it (SNOW_APPLY), and the uniform is
-        // the same object bound to both.
-        uniform float uSnowLayers[ ${SNOW_LAYERS.length} ];
-        uniform float uSnowRockLayers[ ${SNOW_HARD_LAYERS.length} ];
-        uniform float uMoss;
-        uniform float uMossLine;
-        uniform float uMossBand;
-        uniform vec2 uMossVary;
-        // WHERE MOSS MAY GROW, the same list the fragment stage masks with
-        // (MOSS_APPLY) and the same uniform object bound to both. This stage
-        // needs it to gate the per-instance moss roll -- see the mossV loop.
-        uniform float uMossLayers[ ${MOSS_LAYERS.length} ];
+        ${seasons ? SEASONS_VERTEX_COMMON : ''}
         uniform float uPropClock;
-        varying vec4 vSnowPos;
-        varying vec2 vMoss;
         varying float vPropFade;
         ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
         ${windSpec && windCompiled ? `uniform vec2 uWindDir;
@@ -2631,15 +2664,137 @@ export function createPropMaterial(
         ${billboards ? billboardVertex(sphericalBillboard, billboardGrow, billboardSpin) : ''}
         ${stripTiling ? STRIP_VERTEX : ''}`
       )
-      // Snow is placed in WORLD space so two instances of the same tree side by
-      // side do not wear identical drifts, and so a drift does not slide around
-      // a trunk when the instance is yawed. That means undoing batching and
-      // instancing the way project_vertex does -- `transformed` is still object
-      // space here, and modelMatrix alone would put a whole BatchedMesh's worth
-      // of trees at one spot.
       .replace(
         '#include <project_vertex>',
         `#include <project_vertex>
+        ${seasons ? SEASONS_VERTEX : ''}`
+      )
+
+    shader.fragmentShader = shader.fragmentShader
+      // FIRST, because every patch below it assumes diffuseColor.a still means
+      // opacity. See COLOR_FRAGMENT: the per-instance colour's alpha is the fade
+      // slot, and three's own include would push it into the alphaTest.
+      .replace('#include <color_fragment>', COLOR_FRAGMENT)
+      .replace(
+        '#include <common>',
+        `#include <common>
+        precision highp sampler2DArray;
+        uniform sampler2DArray uAtlas;
+        varying float vTexLayer;
+        varying vec2 vUvProj;
+        varying float vPropFade;
+        ${IGN_GLSL}
+        ${seasons ? SNOW_COMMON : ''}
+        ${seasons ? MOSS_COMMON : ''}
+        ${bump ? PROP_BUMP_COMMON : ''}
+        ${stripTiling ? `varying float vStripSeed;
+        varying float vStripTx;
+        uniform float uStripKeep;
+        uniform float uStripShort;
+        ${STRIP_FRAGMENT}` : ''}`
+      )
+      // BOTH SIDES OF A CUTOUT ARE THE SAME SURFACE. Three's double-sided path
+      // flips the normal toward the VIEWER (`normal *= faceDirection` in
+      // normal_fragment_begin), right for a solid seen from inside and
+      // catastrophic for a leaf: stand under a canopy, look up, and every card
+      // hands the lighting a normal pointing at the ground -- dotNL 0 from the
+      // sun and the hemisphere's near-black ground colour -- so the underside of
+      // the tree goes black. Undoing the flip (faceDirection twice is the
+      // identity) lights a fragment by the normal the GEOMETRY authored,
+      // whichever side you are on. tree.js gives every leaf vertex the canopy
+      // shell's normal for this reason, and a leaf really is one cell thick and
+      // lit from every side at once.
+      //
+      // What is left is a gentle darkening when you look at the back of that
+      // normal -- the underside of a canopy, the inside of a wall. Ramped rather
+      // than stepped so a solid's silhouette, where the dot passes through zero,
+      // does not get a hard rim.
+      .replace(
+        '#include <normal_fragment_begin>',
+        `#include <normal_fragment_begin>
+        normal *= faceDirection;
+        ${bump ? PROP_BUMP_APPLY : ''}
+        ${seasons ? MOSS_APPLY : ''}
+        ${seasons ? SNOW_APPLY : ''}
+        diffuseColor.rgb *= mix( 0.72, 1.0,
+          smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) );`
+      )
+      .replace(
+        'vec4 diffuseColor = vec4( diffuse, opacity );',
+        `vec4 diffuseColor = vec4( diffuse, opacity );
+        ${stripTiling ? STRIP_SAMPLE : 'diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );'}
+        ${FADE_FRAGMENT}`
+      )
+
+    material.userData.shader = shader
+  }
+
+  // Force a distinct program cache key so this patched material is never
+  // conflated with an unpatched MeshLambertMaterial. Everything compiled INTO
+  // the shader has to be in the key, because two materials differing only there
+  // are two programs and a shared key hands the second one whichever compiled
+  // first: the billboard list (an array size and a loop bound cannot be
+  // uniforms), `sphericalBillboard` and `billboardSpin` (each selects a
+  // different BODY for the same branch -- the symptom is a hillside of rocks
+  // spinning like trees, or a forest lying its trunks down, depending on boot
+  // order), billboardGrow's five numbers including `top` (GLSL literals, so
+  // sharing puts the wrong meadow's growth curve on another bed's cards), and
+  // `instancedFade`, the sharpest of them -- a program declaring `aPropFade`
+  // bound to a mesh without that attribute reads garbage timers and dissolves at
+  // random.
+  //
+  // The wind suffix is evaluated per CALL rather than folded into `key`, because
+  // setWindEnabled flips it under a material that is already built.
+  //
+  // `side` is NOT here and must not be: three keys DOUBLE_SIDED and FLIP_SIDED
+  // itself (WebGLPrograms.getProgramCacheKey), and a second copy would only be
+  // one more thing to fall out of step. `bump` and `seasons` are ours and are
+  // here.
+  const growKey = billboardGrow
+    ? `-grow${billboardGrow.from}.${billboardGrow.to}.${billboardGrow.scale}.`
+      + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
+    : ''
+  const key = `prop-moss-v5${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}`
+  material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
+
+  if (windSpec) windMaterials.add(material)
+
+  return material
+}
+
+// The season uniforms and interpolators the vertex stage declares, and the
+// block that writes them. Spliced in only for `seasons: true`; see the header.
+const SEASONS_VERTEX_COMMON = /* glsl */ `
+        uniform float uSnow;
+        uniform float uSnowLine;
+        uniform float uSnowBand;
+        uniform vec2 uSnowVary;
+        uniform vec2 uLeafSnowVary;
+        // The FOLIAGE list, which this stage needs only for the leaf roll --
+        // the fragment stage has always had it (SNOW_APPLY), and the uniform is
+        // the same object bound to both.
+        uniform float uSnowLayers[ ${SNOW_LAYERS.length} ];
+        uniform float uSnowRockLayers[ ${SNOW_HARD_LAYERS.length} ];
+        uniform float uMoss;
+        uniform float uMossLine;
+        uniform float uMossBand;
+        uniform vec2 uMossVary;
+        // WHERE MOSS MAY GROW, the same list the fragment stage masks with
+        // (MOSS_APPLY) and the same uniform object bound to both. This stage
+        // needs it to gate the per-instance moss roll -- see the mossV loop.
+        uniform float uMossLayers[ ${MOSS_LAYERS.length} ];
+        varying vec4 vSnowPos;
+        varying vec2 vMoss;
+`
+
+// Snow is placed in WORLD space so two instances of the same tree side by
+// side do not wear identical drifts, and so a drift does not slide around
+// a trunk when the instance is yawed. That means undoing batching and
+// instancing the way project_vertex does -- `transformed` is still object
+// space here, and modelMatrix alone would put a whole BatchedMesh's worth
+// of trees at one spot. Appended to project_vertex, after propObjPos and the
+// wind have run.
+const SEASONS_VERTEX = /* glsl */ `
         vec4 snowWorld = vec4( propObjPos, 1.0 );
         vec4 snowRoot = vec4( 0.0, 0.0, 0.0, 1.0 );
         #ifdef USE_BATCHING
@@ -2759,98 +2914,6 @@ export function createPropMaterial(
             * ( 1.0 - smoothstep( uMossLine - uMossBand * 0.5,
               uMossLine + uMossBand * 0.5, propRootY ) ),
           propWorld.y - propRootY );`
-      )
-
-    shader.fragmentShader = shader.fragmentShader
-      // FIRST, because every patch below it assumes diffuseColor.a still means
-      // opacity. See COLOR_FRAGMENT: the per-instance colour's alpha is the fade
-      // slot, and three's own include would push it into the alphaTest.
-      .replace('#include <color_fragment>', COLOR_FRAGMENT)
-      .replace(
-        '#include <common>',
-        `#include <common>
-        precision highp sampler2DArray;
-        uniform sampler2DArray uAtlas;
-        varying float vTexLayer;
-        varying vec2 vUvProj;
-        varying float vPropFade;
-        ${IGN_GLSL}
-        ${SNOW_COMMON}
-        ${MOSS_COMMON}
-        ${bump ? PROP_BUMP_COMMON : ''}
-        ${stripTiling ? `varying float vStripSeed;
-        varying float vStripTx;
-        uniform float uStripKeep;
-        uniform float uStripShort;
-        ${STRIP_FRAGMENT}` : ''}`
-      )
-      // BOTH SIDES OF A CUTOUT ARE THE SAME SURFACE. Three's double-sided path
-      // flips the normal toward the VIEWER (`normal *= faceDirection` in
-      // normal_fragment_begin), right for a solid seen from inside and
-      // catastrophic for a leaf: stand under a canopy, look up, and every card
-      // hands the lighting a normal pointing at the ground -- dotNL 0 from the
-      // sun and the hemisphere's near-black ground colour -- so the underside of
-      // the tree goes black. Undoing the flip (faceDirection twice is the
-      // identity) lights a fragment by the normal the GEOMETRY authored,
-      // whichever side you are on. tree.js gives every leaf vertex the canopy
-      // shell's normal for this reason, and a leaf really is one cell thick and
-      // lit from every side at once.
-      //
-      // What is left is a gentle darkening when you look at the back of that
-      // normal -- the underside of a canopy, the inside of a wall. Ramped rather
-      // than stepped so a solid's silhouette, where the dot passes through zero,
-      // does not get a hard rim.
-      .replace(
-        '#include <normal_fragment_begin>',
-        `#include <normal_fragment_begin>
-        normal *= faceDirection;
-        ${bump ? PROP_BUMP_APPLY : ''}
-        ${MOSS_APPLY}
-        ${SNOW_APPLY}
-        diffuseColor.rgb *= mix( 0.72, 1.0,
-          smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) );`
-      )
-      .replace(
-        'vec4 diffuseColor = vec4( diffuse, opacity );',
-        `vec4 diffuseColor = vec4( diffuse, opacity );
-        ${stripTiling ? STRIP_SAMPLE : 'diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );'}
-        ${FADE_FRAGMENT}`
-      )
-
-    material.userData.shader = shader
-  }
-
-  // Force a distinct program cache key so this patched material is never
-  // conflated with an unpatched MeshLambertMaterial. Everything compiled INTO
-  // the shader has to be in the key, because two materials differing only there
-  // are two programs and a shared key hands the second one whichever compiled
-  // first: the billboard list (an array size and a loop bound cannot be
-  // uniforms), `sphericalBillboard` and `billboardSpin` (each selects a
-  // different BODY for the same branch -- the symptom is a hillside of rocks
-  // spinning like trees, or a forest lying its trunks down, depending on boot
-  // order), billboardGrow's five numbers including `top` (GLSL literals, so
-  // sharing puts the wrong meadow's growth curve on another bed's cards), and
-  // `instancedFade`, the sharpest of them -- a program declaring `aPropFade`
-  // bound to a mesh without that attribute reads garbage timers and dissolves at
-  // random.
-  //
-  // The wind suffix is evaluated per CALL rather than folded into `key`, because
-  // setWindEnabled flips it under a material that is already built.
-  //
-  // `side` is NOT here and must not be: three keys DOUBLE_SIDED and FLIP_SIDED
-  // itself (WebGLPrograms.getProgramCacheKey), and a second copy would only be
-  // one more thing to fall out of step. `bump` is ours and is here.
-  const growKey = billboardGrow
-    ? `-grow${billboardGrow.from}.${billboardGrow.to}.${billboardGrow.scale}.`
-      + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
-    : ''
-  const key = `prop-moss-v5${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}`
-  material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
-
-  if (windSpec) windMaterials.add(material)
-
-  return material
-}
 
 /**
  * The material an IMPOSTOR IS BAKED WITH -- not one anything in the world is

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- rig editor</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; --bad: #d4685a; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+      button:disabled { opacity: .4; cursor: default; }
+      select { width: 100%; }
+
+      .panel { display: flex; flex-direction: column; background: var(--panel); overflow: hidden; }
+      .panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; flex: 0 0 auto; }
+      .panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      .panel > header .s { color: var(--dim); font-size: 11px; }
+      .panel > .body { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      #panel { flex: 0 0 230px; border-right: 1px solid var(--edge); }
+      #side { flex: 0 0 310px; border-left: 1px solid var(--edge); }
+
+      .row { display: flex; gap: 6px; margin-bottom: 6px; }
+      .row input, .row select { flex: 1 1 auto; }
+      .check { display: flex; align-items: center; gap: 6px; color: var(--dim); margin-bottom: 3px; }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+
+      /* --- the viewports ---------------------------------------------------
+         One canvas stretched across the grid, three cameras drawn into three
+         scissored regions. The .vp divs sit on top and own the pointer, so
+         each view's controls and picking see coordinates in their own box. */
+      #stage { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+      #views { flex: 1 1 auto; position: relative; min-height: 0; display: grid; gap: 1px; background: var(--edge); grid-template-columns: 1.7fr 1fr; grid-template-rows: 1fr 1fr; }
+      /* The canvas is appended last, so it paints over the .vp divs. It must not
+         take the pointer, or the divs beneath it never see a click and both the
+         picking and the per-view OrbitControls are dead. */
+      #views > canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      .vp { position: relative; overflow: hidden; }
+      .vp[data-view=persp] { grid-row: span 2; }
+      .vp .tag { position: absolute; left: 6px; top: 4px; color: var(--dim); pointer-events: none; }
+      .vp .labels { position: absolute; inset: 0; display: none; overflow: hidden; pointer-events: none; }
+      .vp .labels.on { display: block; }
+      .vp .labels span {
+        position: absolute; transform: translate(-50%, -50%); font-size: 9px; color: #ffd9a0;
+        text-shadow: 0 0 3px #000, 0 0 6px #000; white-space: nowrap;
+      }
+      #tip {
+        position: fixed; z-index: 5; padding: 2px 6px; background: #0b1524; border: 1px solid #4a7fbf;
+        border-radius: 3px; color: #eaf3ff; pointer-events: none; display: none; white-space: nowrap;
+      }
+      #transport {
+        flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+        border-top: 1px solid var(--edge); background: var(--panel);
+      }
+      #transport select { width: auto; flex: 0 0 auto; }
+      #transport .grow { flex: 1 1 auto; }
+
+      /* --- lists ----------------------------------------------------------- */
+      #validation div, #tree div { white-space: pre; cursor: pointer; }
+      #validation div:hover, #tree div:hover { background: #17263c; }
+      #tree .sel, #validation .sel { background: #1d3a5f; color: #eaf3ff; }
+      #tree .unmapped, #validation .unmapped { color: #55688a; }
+      #tree .gone { color: #7a5a52; text-decoration: line-through; }
+      #sel .name { color: #eaf3ff; font-size: 13px; }
+      #sel .orig { color: var(--dim); }
+    </style>
+  </head>
+  <body>
+    <div class="panel" id="panel">
+      <header>
+        <div class="t">RIG EDITOR</div>
+        <div class="s">relabel, reparent, delete and move a generated skeleton</div>
+      </header>
+      <div class="body">
+        <h2>rig</h2>
+        <div class="row">
+          <input type="text" id="creatureId" value="red-fox" />
+          <button id="load">load</button>
+        </div>
+        <p class="note">
+          Always <em>rig.glb</em> as Tripo generated it, with the sidecar laid over the top. Nothing here
+          reads <em>rig-fixed.glb</em>, so the edit stays a description of the original rather than a
+          description of the last thing that was written.
+        </p>
+
+        <h2>view</h2>
+        <label class="check"><input type="checkbox" id="showMesh" checked /> mesh</label>
+        <label class="check"><input type="checkbox" id="showSkeleton" checked /> skeleton</label>
+        <label class="check"><input type="checkbox" id="showNames" /> all bone names</label>
+        <label class="check"><input type="checkbox" id="showGround" checked /> ground plane</label>
+
+        <h2>edits</h2>
+        <div class="row">
+          <button id="save">save + apply</button>
+          <button id="revert">revert</button>
+        </div>
+        <div id="editCount" class="note"></div>
+        <p class="note">
+          Saving writes <em>rig-edit.json</em> next to the rig and applies it to <em>rig-fixed.glb</em>.
+          glTF deforms a vertex by world matrix times inverse bind matrix, and every edit here keeps that
+          product the same at rest: reparenting rewrites the local transform, deleting hands the joint's
+          weights up to the joint that adopts its children, and moving recomputes the inverse bind matrix
+          so only the pivot changes.
+        </p>
+
+        <h2>status</h2>
+        <div id="status" class="note"></div>
+      </div>
+    </div>
+
+    <div id="stage">
+      <div id="views">
+        <div class="vp" data-view="persp"><div class="tag">perspective &middot; drag to orbit</div><div class="labels"></div></div>
+        <div class="vp" data-view="side"><div class="tag">side (Y/Z) &middot; drag to pan, drag the selected joint to move it</div><div class="labels"></div></div>
+        <div class="vp" data-view="top"><div class="tag">top (X/Z) &middot; drag to pan, drag the selected joint to move it</div><div class="labels"></div></div>
+      </div>
+      <div id="transport">
+        <span>preview</span>
+        <select id="previewAnimal"></select>
+        <select id="previewClip"></select>
+        <button id="previewPlay">play</button>
+        <button id="previewStop" disabled>stop</button>
+        <span class="grow note" id="previewNote">a Quaternius clip, retargeted onto this rig by bone name</span>
+      </div>
+    </div>
+
+    <div class="panel" id="side">
+      <div class="body">
+        <h2>selection</h2>
+        <div id="sel">
+          <div class="note">click a joint in any view</div>
+        </div>
+
+        <h2>canonical bones</h2>
+        <div id="validation"></div>
+
+        <h2>this rig</h2>
+        <div id="tree"></div>
+      </div>
+    </div>
+
+    <div id="tip"></div>
+    <script type="module" src="/src/rig-edit-main.js"></script>
+  </body>
+</html>

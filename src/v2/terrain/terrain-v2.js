@@ -209,6 +209,9 @@ export class TerrainV2 {
     this._scratch.setAttribute('position', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS * 3), 3))
     this._scratch.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS * 3), 3))
     this._scratch.setAttribute('color', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS * 3), 3))
+    // Per-face stipple frame (angle, tiles/m, offset u, offset v); see
+    // chunk-mesh-v2 STIPPLE FRAME.
+    this._scratch.setAttribute('stipple', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS * 4), 4))
     this._scratch.setIndex(new THREE.BufferAttribute(new Uint16Array(CHUNK_INDICES), 1))
     this._scratch.boundingSphere = new THREE.Sphere()
 
@@ -732,6 +735,10 @@ export class TerrainV2 {
           `slots are sized for ${CHUNK_VERTS} / ${CHUNK_INDICES} -- CHUNK_RES and the worker disagree`
       )
     }
+    if (msg.stipple.length !== CHUNK_VERTS * 4) {
+      const { depth, ix, iz } = unpackKey(msg.key)
+      throw new Error(`v2 chunk ${depth}/${ix}/${iz} stipple has ${msg.stipple.length} floats, slots hold ${CHUNK_VERTS * 4}`)
+    }
 
     // An entry that already holds a slot is an invalidated chunk that kept its old
     // geometry on screen (_invalidateRect); it is REPLACED IN PLACE, which is the
@@ -753,6 +760,7 @@ export class TerrainV2 {
     g.attributes.position.array.set(msg.positions)
     g.attributes.normal.array.set(msg.normals)
     g.attributes.color.array.set(msg.colors)
+    g.attributes.stipple.array.set(msg.stipple)
     g.index.array.set(msg.indices)
 
     // Keep the interior heights. setGeometryAt copies the positions into the
@@ -844,7 +852,10 @@ export class TerrainV2 {
     entry.state = 'pending'
     const w = this.workers[this._nextWorker]
     this._nextWorker = (this._nextWorker + 1) % this.workers.length
-    w.postMessage({ type: 'chunk', key: node.key, epoch: this.epoch, ox: node.x, oz: node.z, size: node.size, res: CHUNK_RES })
+    // The camera at send time sizes each vertex's stipple; a chunk keeps that
+    // sizing until the LOD tree rebuilds it, which is rough and intended.
+    const cam = { x: this._cam.x, y: this._cam.y, z: this._cam.z }
+    w.postMessage({ type: 'chunk', key: node.key, epoch: this.epoch, ox: node.x, oz: node.z, size: node.size, res: CHUNK_RES, cam })
     this.inFlight++
   }
 

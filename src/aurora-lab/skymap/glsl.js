@@ -15,7 +15,7 @@
 //
 //     S = |rd.xz| * u_fieldScale / denom,     s = log( S )
 //
-// and a sample at altitude a sits at field-unit radius S * a, that is at LOG RADIUS u = s + log( a ). The altitude window is the same [u_altLow, u_altHigh] for every ray, so in u the window is [ s + log altLow, s + log altHigh ]: a window of FIXED WIDTH log( altHigh / altLow ) that merely TRANSLATES as the elevation changes. Measured on the real code at the schema defaults, the window width is 1.060871961 at every elevation from -1.1 to 78 degrees, to nine digits, because it is the same subtraction every time.
+// and a sample at altitude a sits at field-unit radius S * a, that is at LOG RADIUS u = s + log( a ). The altitude window is the same [u_altLow, u_altHigh] for every ray, so in u the window is [ s + log altLow, s + log altHigh ]: a window of FIXED WIDTH log( altHigh / altLow ) that merely TRANSLATES as the elevation changes. Measured on the real code, the window width is the same at every elevation from -1.1 to 78 degrees to nine digits, because it is the same subtraction every time: 0.664976304 at the shipped v2 altitudes and 1.060871961 at v1's.
 //
 // A quadrature over a window of fixed width whose integrand depends on position only through u, sliding along one axis, is a CORRELATION WITH A FIXED KERNEL. Sample the shading onto a lattice in (azimuth, log radius), convolve each row once, and every pixel at that azimuth reads its answer out of the result at its own s. The forty samples per pixel become one fetch, and the forty-tap convolution is paid on the map rather than on the screen.
 //
@@ -28,7 +28,7 @@
 // planmap/glsl.js spends its radial texels on u = r / (r + near) because that tracks apparent angle. Log radius is chosen here for a different property -- it is the ONLY warp in which the altitude window is translation-invariant, which is the entire mechanism above -- so the question is what it costs in texel density, and the answer is nothing. Swept over the sector at the schema defaults: |d log S / d elevation| runs from 1.657 to 4.870, a spread of 2.94, which at 384 texels is 0.129 to 0.378 degrees per texel. planmap's reciprocal warp on the same sweep gives 0.140 to 0.404 and a spread of 2.9. Log radius is a hair FINER at both ends and translation-invariant as well, so both properties are available at once and there is no trade to make.
 //
 // ===========================================================================
-// THE FOUR THINGS THAT DO NOT COMMUTE WITH AN INTEGRAL, AND WHAT WAS DONE ABOUT EACH
+// THE FIVE THINGS THAT DO NOT COMMUTE WITH AN INTEGRAL, AND WHAT WAS DONE ABOUT EACH
 // ===========================================================================
 //
 // 1. THE SHADING IS NONLINEAR. `core`, `skirt`, `ray`, `caus`, `flow`, `belt` and the gate are all functions of the field at ONE sample and of uniforms, so every one of them is a function of the texel and is evaluated inside the generator, before anything is summed. The belt is the only one that looks like it might not be: its northing is a plan quantity, and the texel's plan position is exp(u) times the azimuth direction, so it is one exp away from being a texel function like the rest.
@@ -56,6 +56,8 @@
 // For scale: turning the weather sliders off altogether is 4.097 rms and 18.60 worst, so this is a term worth carrying rather than one that could have been dropped quietly.
 //
 // 4. THE CONVOLUTION'S OWN COST. The kernel does NOT collapse to a handful of taps, and the sweep says so plainly. Against the 384-step reference: 6 taps 4.609, 8 taps 3.364, 12 taps 2.043, 16 taps 1.443, 24 taps 0.820, 32 taps 0.505, 40 taps 0.327, 64 taps 0.104. About forty are needed to match the shipped shader, which is the same forty the march uses -- the deposition profile has a knife edge at the hem and no quadrature gets to ignore it. A prefix-sum formulation was considered and rejected on arithmetic rather than on taste: WebGL2 has no compute shaders, so a ping-pong scan is about 2 log2(N) fetches per element, which is not cheaper than forty direct taps.
+//
+// 5. THE FRAYED HEM. The top of the emitting slab is not at one altitude everywhere -- it tears, and the tears are most of what stops a curtain reading as a painted band. A top altitude that varies across the sky is exactly what a kernel indexed on tap alone cannot express, and unlike the weather it cannot be sliced either, because it is not a smooth function of one scalar. So it is not in the kernel at all: the convolution samples a cut height once per output texel and trims each tap against it. One noise lookup per texel and one smoothstep per tap, against three dependent fetches a tap already pays. What the cut may be a function OF is decided by this lattice and not by the sky -- a hem finer than the output map can resolve does not soften, it blanks whole texels, and smConvolve carries the argument in full.
 //
 // THE SAVING IS THEREFORE NOT THE TAP COUNT. IT IS THE LATTICE. Those forty taps are paid on a map of 512 by 61 texels rather than on 230,400 pixels, and the ratio between those two numbers is the whole result.
 //
@@ -99,6 +101,20 @@ export const SKYMAP_GLSL = `
 
   const float SM_INV_TAU = 0.15915494309;
   const float SM_DEG = 0.01745329252;
+
+  // The two axes the frayed hem is read on, sized against the OUTPUT LATTICE
+  // rather than against the sky. See smConvolve for why that is the binding
+  // constraint and what it looks like when it is ignored.
+  //
+  // SM_FRAY_R is the radius of the circle the tears are read around, so the
+  // tear count is 2 pi R per turn at fray scale 1. At the top of that slider
+  // and on the second octave this puts three azimuth texels on a tear, which
+  // is the tightest the map can carry; at the default it is fourteen.
+  const float SM_FRAY_R = 1.9;
+
+  // And how fast the pattern decorrelates with elevation, per unit of log
+  // radius. The output map moves 0.077 of one of these per row.
+  const float SM_FRAY_ELEV = 1.4;
 
   // The march's altitude-to-distance divisor, as a function of the ray's elevation SINE and nothing else. Every helper below is written in terms of that sine so that the generator, which only has an angle, and the reader, which has a normalised direction, cannot disagree about the mapping. They must agree to the bit: a half-texel of disagreement is not visible as an error, it is visible as the sky being slightly soft.
   float smDenom( float ny ) {
@@ -286,6 +302,56 @@ export const SKYMAP_FRAME_GLSL = `
     float fr = gx - j0;
     vec3 lane = j0 < 0.5 ? vec3( 1.0 - fr, fr, 0.0 ) : vec3( 0.0, 1.0 - fr, fr );
 
+    // ---- The frayed hem: where THIS ray's curtain stops, as a fraction of the
+    // altitude window.
+    //
+    // The kernel cannot carry this. It is a function of the tap index alone --
+    // that is the whole mechanism of this file -- so a top altitude that varies
+    // across the sky has to be applied on the far side of the fetch, as a
+    // per-tap trim on a per-texel cut. It costs one noise lookup per output
+    // texel and one smoothstep per tap, against the three dependent texture
+    // fetches a tap already pays.
+    //
+    // WHAT IT IS SAMPLED ON, WHICH IS THE WHOLE OF THE DIFFICULTY. The obvious
+    // coordinate is the plan position of this ray's top, dir * exp( s ) *
+    // altHigh, and it cannot be used: that length grows like exp( s ), so at
+    // the horizon one ROW of this map steps 2.2 noise features. Four times past
+    // Nyquist does not look like softness. It gives every row an unrelated
+    // random cut, and a ray crosses at most ONE lit channel across the whole
+    // altitude window above about twenty degrees of elevation -- so its light
+    // is a single bump at one tap, and a cut that lands under that bump takes
+    // ALL of it while the row beside it keeps all of its. Magnified back up by
+    // the reader's bilinear fetch, that is blocks of sky that never light no
+    // matter how bright the aurora around them gets.
+    //
+    // So the cut is read around a CIRCLE: dir at a fixed radius, with no
+    // exp( s ) in it. A tear runs ALONG the hem, which is the azimuth
+    // direction, and azimuth is the one axis this lattice resolves well -- 512
+    // texels to about 36 tears. Reading it off dir rather than off the azimuth
+    // number is what keeps it seamless at the wrap. It is still head-
+    // independent, because the map's azimuth is world azimuth.
+    //
+    // Elevation and churn then share the noise's third axis. Rays at different
+    // elevations are looking at different distances and should not tear in
+    // lockstep, and s moves 0.077 per row against tears one apart, so it is
+    // resolved with room over. What sharing costs is that the tears drift
+    // slowly through elevation as they change rather than boiling in place,
+    // which is what fraying does anyway; neither term can crawl sideways.
+    //
+    // hem is a fraction of the LOG-altitude window, not of the kilometre
+    // range: 0.5 cuts at sqrt( altLow * altHigh ), not at the midpoint.
+    float hem = 1.0;
+    if ( u_smFray > 0.0 ) {
+      vec2 fp = dir * ( SM_FRAY_R * u_smFrayScale );
+      float fz = s * SM_FRAY_ELEV + t * u_smFrayRate;
+      float n1 = vnoise3( vec3( fp, fz ) );
+      float n2 = vnoise3( vec3( fp * 2.31 + 17.3, fz * 1.37 + 5.1 ) );
+      // Mostly zero, tearing to one only in the noise's upper tail. A plain
+      // noise here would sag the whole hem by its own mean, which reads as a
+      // shorter curtain rather than a ragged one.
+      hem = 1.0 - u_smFray * smoothstep( 0.46, 0.94, n1 * 0.65 + n2 * 0.35 );
+    }
+
     float dv = smDv();
     float uBase = s + log( u_altLow ) + 0.5 * dv;
     float uLo = smULo();
@@ -300,11 +366,20 @@ export const SKYMAP_FRAME_GLSL = `
 
       vec2 luv = vec2( ( uBase + float( i ) * dv - uLo ) / uSp, uv.y );
 
+      // Where this tap sits in the window, on 0..1. It is the kernel texel's own
+      // coordinate and the trim's, which is why it is computed once.
+      float kk = ( float( i ) + 0.5 ) * invT;
+
       float em = dot( lane, texture2D( u_skyLanes, luv ).xyz );
       vec3 neo = texture2D( u_skyHue, luv ).xyz;
-      vec4 ker = texture2D( u_skyKernel, vec2( ( float( i ) + 0.5 ) * invT, 0.5 ) );
+      vec4 ker = texture2D( u_skyKernel, vec2( kk, 0.5 ) );
 
-      acc += em * ( ker.xyz + neo * ker.w );
+      // At hem = 1 this is 1 at every tap and the sum is what it was before the
+      // hem existed, which is what makes u_smFray = 0 a true bypass rather than
+      // an almost-bypass.
+      float trim = 1.0 - smoothstep( hem, hem + 0.16, kk );
+
+      acc += em * trim * ( ker.xyz + neo * ker.w );
     }
 
     // Saturation last and around Rec. 709 luma, exactly as auroraColour does it -- but ONCE, on the sum, because it is affine and commutes with the integral. See the header for the one place that is not bit-identical to the march.

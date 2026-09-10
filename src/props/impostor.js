@@ -121,17 +121,6 @@ const BAKE_GROUND = 0x0e0f12
 export const BAKE_ROCK_BOUNCE = 0x7b7b7b
 
 /**
- * Render `geometry` side-on into one layer of the texture array, in place.
- *
- * Returns the card extents the capture was framed to, which is what
- * `buildImpostorCard` has to be given for the stretch to cancel.
- *
- * `renderer` is the live WebGLRenderer -- this is a load-time step that borrows
- * the context for one frame, the way fern-bank borrows a millisecond of startup
- * rather than shipping an asset. It restores the render target and clear state
- * it found.
- */
-/**
  * The card size a subject of `width` x `height` gets framed into: its own
  * extents plus the transparent MARGIN, and how far below the subject's feet the
  * card's bottom edge sits.
@@ -168,15 +157,25 @@ export function impostorCardExtents({ width, height, foot = 0 }) {
   return { width: cardW, height: top + sink, sink }
 }
 
+/**
+ * Render `geometry` SIDE-ON into one layer of the texture array, in place.
+ *
+ * Returns the card extents the capture was framed to, which is what
+ * `buildImpostorCard` has to be given for the stretch to cancel.
+ *
+ * `renderer` is the live WebGLRenderer -- this is a load-time step that borrows
+ * the context for one frame, the way fern-bank borrows a millisecond of startup
+ * rather than shipping an asset. It restores the render target and clear state
+ * it found.
+ *
+ * A subject that is far wider than it is tall wants `bakeImpostorPlate` instead.
+ */
 export function bakeImpostor(
   renderer, geometry, texArray, layer,
   { width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false, bounce = BAKE_GROUND }
 ) {
   if (!(width > 0) || !(height > 0)) {
     throw new Error(`bakeImpostor: need a positive width and height, got ${width}x${height}`)
-  }
-  if (layer < 0 || layer >= texArray.image.depth) {
-    throw new Error(`bakeImpostor: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
 
   const { width: cardW, height: cardH, sink } = impostorCardExtents({ width, height, foot })
@@ -202,6 +201,103 @@ export function bakeImpostor(
   cam.lookAt(0, 0, 0)
   cam.updateMatrixWorld()
 
+  // THE KEY SITS AT THE CAMERA'S OWN AZIMUTH and well above it. Anywhere else
+  // and the photograph gets a left-right terminator burned into it, which is
+  // fatal for a picture that will be seen from every direction on the compass
+  // -- half the time the baked bright side would be facing away from the real
+  // sun. From the camera's azimuth there is no left-right term at all: the
+  // gradient runs top to bottom, which is the one axis a card cannot fake and
+  // the one the real sun does not move along much at 65 N.
+  const key = new THREE.Vector3(
+    Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
+
+  const pixels = captureLayer(
+    renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, bounce })
+  return { width: cardW, height: cardH, sink, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
+}
+
+/**
+ * The card size a PLATE of `width` x `depth` gets framed into, seen from above.
+ *
+ * The same transparent border as `impostorCardExtents`, on all four sides: a
+ * top-down shot has no ground line to sit against, so neither edge of either
+ * axis is the special one.
+ */
+export function plateCardExtents({ width, depth }) {
+  if (!(width > 0) || !(depth > 0)) {
+    throw new Error(`plateCardExtents: need a positive width and depth, got ${width}x${depth}`)
+  }
+  return { width: width * (1 + MARGIN * 2), depth: depth * (1 + MARGIN * 2) }
+}
+
+/**
+ * Photograph `geometry` from STRAIGHT ABOVE into one layer of the array.
+ *
+ * For a subject that is far wider than it is tall, which is what a cliff-facade
+ * plate is: 2 m across and 0.31 m high. Shot side-on it fills a fifth of a
+ * square slice and the other four fifths are transparent sky, so the picture the
+ * far band draws is 128 texels of which about 25 carry stone. Shot from above it
+ * fills the slice, and the face it fills it with is the one a camera out in the
+ * valley actually sees.
+ *
+ * THE FRUSTUM RUNS FROM THE CAMERA DOWN TO y = 0, which is the top-down analogue
+ * of the side-on shot's "bottom edge is the bed plane": everything below is the
+ * skirt, and the skirt is the part inside the hill wherever the plate is laid.
+ *
+ * THE KEY POINTS STRAIGHT DOWN, unlike bakeImpostor's. A plate is laid at a
+ * random yaw and its card is not spun, so any tilt on the key would be a compass
+ * direction baked into the picture and wrong on half the wall. Straight down
+ * costs nothing here: what carries the relief is that the lumps tilt their own
+ * normals off vertical, so `dot(N, L)` still runs from the crown to the rim --
+ * a radial gradient with no bearing in it, which is what a plate lit from the
+ * sky looks like from any side.
+ *
+ * `height` is the subject's, and only sets how far back to stand.
+ */
+export function bakeImpostorPlate(
+  renderer, geometry, texArray, layer,
+  { width, depth, height, tint = null, vertexColors = false, bounce = BAKE_GROUND }
+) {
+  if (!(width > 0) || !(depth > 0) || !(height > 0)) {
+    throw new Error(`bakeImpostorPlate: need positive extents, got ${width}x${height}x${depth}`)
+  }
+
+  const { width: cardW, depth: cardD } = plateCardExtents({ width, depth })
+
+  // Clear of the crown by the crown's own height again, so the subject is never
+  // behind the near plane however lumpy it turned out. Ortho, so the distance
+  // costs nothing.
+  const camY = Math.max(cardW, cardD) + height * 2
+
+  const cam = new THREE.OrthographicCamera(-cardW / 2, cardW / 2, cardD / 2, -cardD / 2, 0.01, camY)
+  cam.position.set(0, camY, 0)
+  // Camera-up is world -z, which makes camera-right world +x. So the image's top
+  // row is the subject's -z edge and its right column the +x edge, which is the
+  // mapping buildPlateCard's corners are written against. Three's lookAt picks
+  // the whole basis off this one vector, and the default (0, 1, 0) is degenerate
+  // looking straight down.
+  cam.up.set(0, 0, -1)
+  cam.lookAt(0, 0, 0)
+  cam.updateMatrixWorld()
+
+  const pixels = captureLayer(
+    renderer, geometry, texArray, layer, cam, new THREE.Vector3(0, camY, 0),
+    { tint, vertexColors, bounce })
+  return { width: cardW, depth: cardD, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
+}
+
+/**
+ * Render `geometry` through `cam` into `layer`, lit by a white key at `keyPos`
+ * over a hemisphere whose ground is `bounce`. Returns the bytes it stored.
+ *
+ * The half both bakes share; what a bake chooses is its camera and where the key
+ * stands. Restores the render target and clear state it found.
+ */
+function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, vertexColors, bounce }) {
+  if (layer < 0 || layer >= texArray.image.depth) {
+    throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
+  }
+
   // `vertexColors` is the building kit's -- see createImpostorBakeMaterial. A
   // prop leaves it off and carries no `color` attribute at all.
   const material = createImpostorBakeMaterial(texArray, { vertexColors })
@@ -220,16 +316,8 @@ export function bakeImpostor(
   scene.add(mesh)
 
   // THE BAKE RIG. What it is for and why it is shaped this way is in the note
-  // on createImpostorBakeMaterial; the numbers are here, next to the camera
-  // they are aimed relative to.
-  //
-  // The key sits at the CAMERA'S OWN AZIMUTH and well above it. Anywhere else
-  // and the photograph gets a left-right terminator burned into it, which is
-  // fatal for a picture that will be seen from every direction on the compass
-  // -- half the time the baked bright side would be facing away from the real
-  // sun. From the camera's azimuth there is no left-right term at all: the
-  // gradient runs top to bottom, which is the one axis a card cannot fake and
-  // the one the real sun does not move along much at 65 N.
+  // on createImpostorBakeMaterial; the numbers are here, and where the key
+  // stands is the caller's, next to the camera it is aimed relative to.
   //
   // The hemisphere is doing the heavier job of the two despite the lower
   // number. Its ground colour is what a downward-facing texel collects, and for
@@ -237,7 +325,7 @@ export function bakeImpostor(
   // distant crown read as a third of leaf albedo instead of as a flat green
   // cutout. A subject with no interior passes its own `bounce`; see BAKE_GROUND.
   const key = new THREE.DirectionalLight(0xffffff, BAKE_KEY)
-  key.position.set(Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
+  key.position.copy(keyPos)
   scene.add(key)
   scene.add(new THREE.HemisphereLight(0xffffff, bounce, BAKE_SKY))
 
@@ -282,7 +370,7 @@ export function bakeImpostor(
   texArray.image.data.set(pixels, layer * stride)
   texArray.needsUpdate = true
 
-  return { width: cardW, height: cardH, sink, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
+  return pixels
 }
 
 // Mean luminance over the texels the prop actually COVERS, 0..1 in sRGB, and
@@ -737,5 +825,91 @@ export function buildImpostorCard(
     width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
     upNormal, canopy, tri, sink, spherical, azimuth,
   }
+  return geo
+}
+
+/**
+ * The card a top-down bake gets drawn on: two triangles lying FLAT in the
+ * subject's own local XZ plane, `lift` above it.
+ *
+ * THE OTHER KIND OF CARD ENTIRELY, and that is why it is its own function rather
+ * than a flag on buildImpostorCard. Every concept in there -- the crossed
+ * planes, the sink, the apex triangle, the canopy fan, the u-mirror, the spin --
+ * belongs to a card that STANDS UP in front of a camera at eye level and has to
+ * cope with being seen from any bearing. This one does none of that. It lies on
+ * the surface its subject was laid on, at the subject's own yaw and tilt, and it
+ * is looked DOWN on. A flag would have had to switch off nine tenths of that
+ * function to arrive here.
+ *
+ * IT IS NOT A BILLBOARD AND MUST NOT BE IN `uBillboardLayers`. material.js spins
+ * a quad when its layer is in that list AND its normal.y clears CARD_UP_MARK,
+ * and this card's normal is exactly (0, 1, 0) -- so listing its layer would spin
+ * the one card in the world that already knows which way it should face. The
+ * instance matrix carries the plate's yaw, its tilt into the cliff and its
+ * scale, so "the same angle as the mesh it replaces" costs nothing: it is the
+ * same matrix.
+ *
+ * THE PROPORTIONS ARE THE SUBJECT'S OWN, width by DEPTH, so a plate stretched
+ * 2 : 1.2 draws a card stretched 2 : 1.2. There is no mean-over-the-compass here
+ * of the kind rockCardFrame takes for a spun quad, and there does not need to be:
+ * a card that keeps its own yaw is seen from the same side the photograph was
+ * taken from, always.
+ *
+ * `lift` HOLDS IT OFF THE SURFACE, along the plate's own +Y -- which is the
+ * surface normal, because that is what the instance was aligned to. It has to
+ * clear not a depth-buffer step but the plate's whole BURIAL: a plate is placed
+ * sunk into the face, so its bed plane, which is y = 0 here, is under the wall.
+ * A card left in that plane is not dim, it is behind the terrain and gone. The
+ * caller owns that arithmetic; see PLATE_CARD_LIFT in rock-bank.js.
+ *
+ * WINDING. The corners run counter-clockwise seen from +Y, so the front face is
+ * the one pointing out of the cliff. That is the only side a camera can be on,
+ * which is what makes a FrontSide material safe here without a spin to guarantee
+ * it -- see the note by `side` in v2/render/rocks.js.
+ *
+ * UV. `bakeImpostorPlate` stands its camera on +Y with up = -z, so the image's
+ * top row is the subject's -z edge and its right column the +x edge; v = 0 is
+ * the top row, as it is for every other layer in the atlas (see flipY). Hence
+ * u = 0 at -x, v = 0 at -z. Get this pair wrong and the card is a mirrored or
+ * quarter-turned photograph of the right rock, which reads as "the distant
+ * plates do not quite line up" and nothing louder.
+ */
+export function buildPlateCard(width, depth, layer, { lift = 0 } = {}) {
+  if (!(width > 0) || !(depth > 0)) {
+    throw new Error(`buildPlateCard: need a positive width and depth, got ${width}x${depth}`)
+  }
+  if (!(lift >= 0)) throw new Error(`buildPlateCard: lift is a height above the surface, got ${lift}`)
+
+  const hw = width / 2
+  const hd = depth / 2
+  const corners = [
+    [-hw, hd, 0, 1],
+    [hw, hd, 1, 1],
+    [hw, -hd, 1, 0],
+    [-hw, -hd, 0, 0],
+  ]
+  const positions = []
+  const normals = []
+  const uvs = []
+  const layers = []
+  for (const [x, z, u, v] of corners) {
+    positions.push(x, lift, z)
+    normals.push(0, 1, 0)
+    uvs.push(u, v)
+    layers.push(layer)
+  }
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(uvs, 2))
+  geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(layers, 1))
+  geo.setIndex([0, 1, 2, 0, 2, 3])
+  // Nothing moves these vertices after the cull test, so the tight bounds are
+  // the true ones -- the opposite of the spun card's case a few lines up.
+  geo.computeBoundingBox()
+  geo.computeBoundingSphere()
+
+  geo.userData.impostor = { plate: true, width, depth, lift, layer, planes: 1, triangles: 2 }
   return geo
 }

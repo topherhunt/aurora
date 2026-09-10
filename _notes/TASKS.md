@@ -32,14 +32,20 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 - Get VR looking passable
   - [ ] Trees
-    - [ ] Try a new version of the voxel tree where each leaf is 2 crossed symmetrical tris, each bearing the "bristle" texture.
+    - [x] Try a new version of the voxel tree where each leaf is 2 crossed symmetrical tris, each bearing the "bristle" texture.
     - [x] Try a "stacked irregular cones" tree model, using my new tileable pine needles.
       - [x] Solid material at LOD1+
       - [x] Alpha material at LOD0
     - [x] Try a hybrid model where most tris are solid, and fringes are done via alpha
     - [x] A separate version of pine -v6 where each branch has its own cloak
-    - \[ \]
+    - [x] Pine trees are locked
+    - [ ] Oak trees
+      - instead of separate icosahedrons for separate boughs, let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
+  - [ ] Landscape
+    - [ ] Try again at subdividing ridgelines. When rendering an LOD for a region (just then, not per-frame), as seen from the player's current standpoint, any edge that's > N arc-minutes of view that borders a hidden / backfaced triangle, should get subdivided until it's < N arc-minutes of view. (help me pick a reasonable N.)
+    - [ ] Try again at landscape. Let's apply the same normal-map bump stipple to macro, med (if within distance), and micro (if within distance). Please propose a reasonable distance radius for each, and propose how to do this as cheaply as possible.
   - [ ] Rocks
+    - [ ] Get rid of all these rock caps. Boulders should be placed and rendered at a distance relative to their size, maxing out at 1.1km. (Ensure trees max out at 1km. Trees must place AFTER boulders, and thus must have a closer viewing distance.)
     - [ ] Rock caps: positioned impostor card rather than billboard.
     - [ ] Fix boulder billboard colors & positions
       - Currently billboard color is substantially misaligned from the color / light level of the rock itself.

@@ -10,10 +10,12 @@
 //   and holds no plate centre is a miss. That is the promise stated as a number,
 //   and the count of misses is the headline.
 //
-//   AND NO TWO PLATES OVERLAP BY MORE THAN A TENTH. Overlap is the cheap centre-
-//   radius one the placer itself uses: 1 - d / (r + ro), over the plates' own
-//   in-plane radii and in THREE dimensions, so a pair reading 0.10 is two discs
-//   touching with the seam shut and anything past it is stone paid for twice.
+//   AND NO PLATE IS DRAWN MOSTLY INSIDE ANOTHER. Overlap itself is wanted and is
+//   not rationed; what is measured is BURIAL, the lens a pair shares as a fraction
+//   of the smaller share of it -- the order-free form of the placer's earnings rule
+//   (`_earnedFrac`), which admits a plate only when `packEarn` of its own face disc
+//   is wall nothing already covers. A pair past `1 - packEarn` is stone paid for
+//   twice.
 //
 // Everything else here is context for those two. The masked fraction says how
 // much wall the plates actually clothe; the bare runs say whether what is left is
@@ -198,18 +200,30 @@ const report = (rocks, cx, cz, label) => {
   // one hole is a face nothing was laid on.
   const gaps = runs(N, N, isBare, weight).sort((a, b) => b.dia - a.dia)
 
-  // THE OVERLAP CEILING, on the placer's own cheap metric. O(n^2) over a few
-  // hundred plates is nothing next to the field sampling above.
+  // THE BURIAL CEILING, on the placer's own lens arithmetic. O(n^2) over a few
+  // hundred plates is nothing next to the field sampling above. Areas are carried
+  // in r^2 units, as `_earnedFrac` carries them, so the pi cancels.
+  const BURY = 1 - slabs.packEarn
   let worst = 0
   let over = 0
   let overSeam = 0
   for (let i = 0; i < near.length; i++) {
     for (let j = i + 1; j < near.length; j++) {
+      const { r: ra } = near[i]
+      const { r: rb } = near[j]
       const d = Math.hypot(near[i].x - near[j].x, near[i].y - near[j].y, near[i].z - near[j].z)
-      const f = 1 - d / (near[i].r + near[j].r)
-      if (f <= 0) continue
+      if (d >= ra + rb) continue
+      const lens = d <= Math.abs(ra - rb)
+        ? Math.min(ra, rb) ** 2
+        : (ra * ra * Math.acos((d * d + ra * ra - rb * rb) / (2 * d * ra))
+          + rb * rb * Math.acos((d * d + rb * rb - ra * ra) / (2 * d * rb))
+          - 0.5 * Math.sqrt((ra + rb - d) * (d + ra - rb) * (d - ra + rb) * (ra + rb + d))
+        ) / Math.PI
+      // The smaller share: the gate cannot know which plate of the pair went down
+      // first, and the bound binds on the later one, so the min is what must hold.
+      const f = Math.min(lens / (ra * ra), lens / (rb * rb))
       if (f > worst) worst = f
-      if (f > 0.1005) {
+      if (f > BURY + 1e-3) {
         over++
         if (near[i].tile !== near[j].tile) overSeam++
       }
@@ -227,8 +241,8 @@ const report = (rocks, cx, cz, label) => {
       `  ${missedFaces.length} of ${big.length} faces over ${FACE_MIN} m across hold no plate` +
       `   (${((missedArea / bigArea) * 100).toFixed(1)}% of that wall, widest miss ` +
       `${(missedFaces[0] ? Math.max(...missedFaces.map((f) => f.dia)) : 0).toFixed(0)} m)\n` +
-      `  worst overlapping pair ${(worst * 100).toFixed(1)}%, ${over} pairs past the tenth ` +
-      `(${overSeam} of them across a tile seam)\n` +
+      `  worst pair buries ${(worst * 100).toFixed(1)}% of the smaller share, ${over} pairs past ` +
+      `the ${(BURY * 100).toFixed(0)}% ceiling (${overSeam} of them across a tile seam)\n` +
       `  ${pct(masked)}% of the wall is masked` +
       `   (${pct(missed)}% bare with a plate available, ${pct(refused)}% bare because the ground refuses one)\n` +
       `  widest bare run ${(gaps[0]?.dia ?? 0).toFixed(0)} m, next ` +

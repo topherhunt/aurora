@@ -223,7 +223,9 @@ scene.add(rule)
 // plane and would vanish edge-on the moment you orbited past it -- the bench
 // would be showing a card the game does not draw.
 const atlas = buildTextureArray()
-const material = createPropMaterial(atlas, { billboardLayers: treeImpostorLayers() })
+// `seasons` because the snow and moss sliders are this bench's; the world
+// compiles without them.
+const material = createPropMaterial(atlas, { billboardLayers: treeImpostorLayers(), seasons: true })
 const arrayPatch = material.onBeforeCompile
 material.onBeforeCompile = (shader, r) => {
   arrayPatch(shader, r)

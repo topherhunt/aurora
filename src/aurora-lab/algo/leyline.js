@@ -130,6 +130,12 @@ export const LEYLINE = {
           type: 'float', min: 0.01, max: 1.5, step: 0.005, value: 0.16,
         },
         {
+          key: 'leyBendRate',
+          label: 'bend drift',
+          hint: 'How fast the bend field wanders under the contours. The warp has `morph rate` and this is the same idea one term along: the bend is what lets a channel arch and hook, so moving it slowly makes the whole track of a channel slither -- the line stays where it is and the curve travelling along it does not. It is a bounded wander rather than a slide, so nothing drifts off across the sky no matter how long you watch. Zero freezes the bend, which is what it did before this knob existed.',
+          type: 'float', min: 0, max: 0.5, step: 0.005, value: 0,
+        },
+        {
           key: 'leyAlong',
           label: 'along scale',
           hint: 'Scales the along-channel coordinate that flow, shimmer and the vertical rays are all indexed on. It does not change the shape of anything -- it changes how long a channel is in the units those three effects measure it in, so raising it makes every travelling feature smaller and more frequent at once.',
@@ -184,7 +190,17 @@ export const LEYLINE = {
       // test, so the branch is coherent across the whole draw.
       float phi = w.y * u_leyFreq;
       if ( u_leyBend > 0.0 ) {
-        phi += ( gfbm2( w * u_leyBendFreq ) - 0.5 ) * u_leyBend;
+        // The bend field wanders on a Lissajous path of unit radius in its own
+        // units, which is about one feature across. A straight translation
+        // would work too and is one operation cheaper, but it slides the arches
+        // steadily off one edge of the sky; a closed path of bounded radius
+        // keeps them writhing in place, which is what an arc actually does.
+        vec2 bd = vec2( 0.0 );
+        if ( u_leyBendRate > 0.0 ) {
+          float ba = t * u_leyBendRate;
+          bd = vec2( cos( ba ), sin( ba * 0.77 ) );
+        }
+        phi += ( gfbm2( w * u_leyBendFreq + bd ) - 0.5 ) * u_leyBend;
       }
 
       // 1 on a contour, 0 midway between two of them -- the whole family in one

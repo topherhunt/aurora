@@ -87,6 +87,9 @@ const REFERENCE_V1 = {
     // Zero for the same reason as zenFade above: the below-horizon skirt did not exist when this was captured, and 0 is what the pin WAS. It reads as nothing on all three builtins in any case -- they are leyline, and only the sky-map frame has a skirt -- but the pin has to survive being carried onto skymap by an algorithm switch.
     horizonSkirt: 0,
     edgeFade: 0.06,
+    // The bend field did not drift when this was captured, so 0 is what the pin
+    // WAS -- same reasoning as warpStages and lowRes below.
+    leyBendRate: 0,
     fieldSeed: 1,
     steps: 40,
     stepBias: 1.5,
@@ -235,6 +238,228 @@ const LOWRES = {
   lowBlur: 1.0,
 }
 
+// ---------------------------------------------------------------------------
+// PINNED 2026-09-10: the sky map exactly as it stood before the v2 pass, so
+// that every change in that pass has something to be judged against.
+//
+// This is a pin of the WORLD's sky rather than of a set of sliders, which is
+// why it is the one builtin with the world drive ON. What /?quest draws is the
+// sky map with the belt, the rays, the shimmer and the exposure overwritten
+// every frame from the clock; a pin that turned the drive off would show a belt
+// the headset never shows, and comparing v2 against it would be comparing two
+// things that differ in more than v2. The six knobs the drive owns are
+// therefore inert here on purpose, and `worldAct` at 0.45 -- active bands --
+// is the point on the clock this pin stands at.
+//
+// What the v2 pass changed, and so what this preset is for reading back:
+//   altHigh   260 -> 175   half as tall
+//   zenReach  0.90 -> 0.45 the dissolve halved with the slab it measures
+//   leyBend   0.85 -> 1.6  the tracks turn harder
+//   leyBendRate 0 -> 0.05  and the turns travel along the channel
+//   smFray    0 -> 0.45    the top tears instead of ending at one altitude
+//
+// The three fray knobs are stated rather than omitted because the covering
+// check in check-aurora-lab.mjs is exact in both directions; scale and churn
+// are inert while the depth is zero, and they carry the v2 numbers so that
+// turning the depth up from this preset lands somewhere sensible.
+const SKYMAP_V1 = {
+  worldDrive: true,
+  worldAct: 0.45,
+  worldAurora: 1,
+  smTaps: 40,
+  smTopDeg: 88,
+  smRows: 64,
+  smAzRes: 512,
+  leyFreq: 0.55,
+  leyWarp: 1.55,
+  leyWarpFreq: 0.34,
+  leyMorph: 0.42,
+  leyBend: 0.85,
+  leyBendFreq: 0.16,
+  leyAlong: 1,
+  leyGateAmt: 0.7,
+  leyGate: 0.34,
+  leyPatchAmt: 0.55,
+  leyPatch: 0.13,
+  width: 0.3,
+  sharp: 1.6,
+  scatter: 0.35,
+  skirtTight: 26,
+  altLow: 90,
+  altHigh: 260,
+  hemSoft: 0.055,
+  falloff: 2.4,
+  topFade: 0.86,
+  beltAmt: 0.85,
+  beltOffset: -420,
+  beltWidth: 520,
+  beltPow: 2.4,
+  gDim: 0.5,
+  gFuzz: 0.35,
+  gSharp: 0.3,
+  gScatter: 0.4,
+  gScale: 0.35,
+  gDetail: 0.6,
+  gDrift: 0.03,
+  gRefKm: 300,
+  rays: 0.6,
+  rayFreq: 2.6,
+  flowSpeed: 0.25,
+  flowFreq: 0.5,
+  flowHue: 1,
+  caustic: 0.5,
+  causFreq: 1.4,
+  causSpeed: 0.35,
+  causPow: 4,
+  neon: 0.22,
+  pale: 0.25,
+  hemBand: 0.12,
+  crown: 0.55,
+  crownStart: 0.42,
+  neonSpread: 1,
+  neonShift: 0.15,
+  tint: [0.55,1,0.82],
+  tintAmt: 0,
+  saturate: 1.05,
+  gain: 1,
+  exposure: 1,
+  persp: 0.78,
+  zenFade: 0.7,
+  zenReach: 0.9,
+  fieldScale: 0.012,
+  horizonCut: -0.02,
+  extinct: 0.8,
+  horizonSkirt: 0.3,
+  edgeFade: 0.06,
+  fieldSeed: 1,
+  steps: 40,
+  stepBias: 1.5,
+  dither: 1,
+  warpStages: 2,
+  lowRes: 1,
+  lowBlur: 1,
+  timeScale: 1,
+  fov: 62,
+  resScale: 1,
+  stars: 1,
+  apex: 1,
+  relief: 1,
+  haze: 0.35,
+  rimAmount: 0,
+  seed: 1,
+  visible: true,
+  leyBendRate: 0,
+  smFray: 0,
+  smFrayScale: 3,
+  smFrayRate: 0.06,
+}
+
+// The sky v2, which is the sky the headset draws.
+//
+// This is a LOCK and not a copy. check-aurora-lab.mjs asserts, key for key,
+// that it equals defaultsFor( WORLD_ALGORITHM ) -- and the whole point of the
+// schema is that those defaults are what /?quest and /test-aurora both start
+// from, so pinning them is what makes "the headset draws v2" a fact rather
+// than a coincidence that held on the day it was checked. If you retune a
+// default, that check fails and names the key: either bring this preset with
+// it, deliberately, or you did not mean to move the shipped sky.
+//
+// Its five differences from SKYMAP_V1 are listed above that pin. Selecting it
+// is therefore the same as a reset today; it stops being that the moment
+// anyone drags a slider, which is when a restore point is worth having.
+const SKYMAP_V2 = {
+  worldDrive: true,
+  worldAct: 0.45,
+  worldAurora: 1,
+  smTaps: 40,
+  smTopDeg: 88,
+  smRows: 64,
+  smAzRes: 512,
+  leyFreq: 0.55,
+  leyWarp: 1.55,
+  leyWarpFreq: 0.34,
+  leyMorph: 0.42,
+  leyBend: 1.6,
+  leyBendFreq: 0.16,
+  leyAlong: 1,
+  leyGateAmt: 0.7,
+  leyGate: 0.34,
+  leyPatchAmt: 0.55,
+  leyPatch: 0.13,
+  width: 0.3,
+  sharp: 1.6,
+  scatter: 0.35,
+  skirtTight: 26,
+  altLow: 90,
+  altHigh: 175,
+  hemSoft: 0.055,
+  falloff: 2.4,
+  topFade: 0.86,
+  beltAmt: 0.85,
+  beltOffset: -420,
+  beltWidth: 520,
+  beltPow: 2.4,
+  gDim: 0.5,
+  gFuzz: 0.35,
+  gSharp: 0.3,
+  gScatter: 0.4,
+  gScale: 0.35,
+  gDetail: 0.6,
+  gDrift: 0.03,
+  gRefKm: 300,
+  rays: 0.6,
+  rayFreq: 2.6,
+  flowSpeed: 0.25,
+  flowFreq: 0.5,
+  flowHue: 1,
+  caustic: 0.5,
+  causFreq: 1.4,
+  causSpeed: 0.35,
+  causPow: 4,
+  neon: 0.22,
+  pale: 0.25,
+  hemBand: 0.12,
+  crown: 0.55,
+  crownStart: 0.42,
+  neonSpread: 1,
+  neonShift: 0.15,
+  tint: [0.55,1,0.82],
+  tintAmt: 0,
+  saturate: 1.05,
+  gain: 1,
+  exposure: 1,
+  persp: 0.78,
+  zenFade: 0.7,
+  zenReach: 0.45,
+  fieldScale: 0.012,
+  horizonCut: -0.02,
+  extinct: 0.8,
+  horizonSkirt: 0.3,
+  edgeFade: 0.06,
+  fieldSeed: 1,
+  steps: 40,
+  stepBias: 1.5,
+  dither: 1,
+  warpStages: 2,
+  lowRes: 1,
+  lowBlur: 1,
+  timeScale: 1,
+  fov: 62,
+  resScale: 1,
+  stars: 1,
+  apex: 1,
+  relief: 1,
+  haze: 0.35,
+  rimAmount: 0,
+  seed: 1,
+  visible: true,
+  leyBendRate: 0.05,
+  smFray: 0.45,
+  smFrayScale: 3,
+  smFrayRate: 0.06,
+}
+
+
 export const BUILTIN_PRESETS = [
   {
     name: 'reference-v1',
@@ -253,6 +478,18 @@ export const BUILTIN_PRESETS = [
     note: 'the pinned sky at 4.4% of its cost, and cleaner than the original',
     algorithm: 'leyline',
     values: LOWRES,
+  },
+  {
+    name: 'sky map v2',
+    note: 'the sky the headset draws -- half as tall, frayed at the top, and slithering',
+    algorithm: 'skymap',
+    values: SKYMAP_V2,
+  },
+  {
+    name: 'sky map v1',
+    note: 'what the headset drew before the v2 pass -- taller, steadier, straighter',
+    algorithm: 'skymap',
+    values: SKYMAP_V1,
   },
 ]
 

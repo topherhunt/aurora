@@ -210,7 +210,9 @@ function makeMaterial() {
   // and a bench drawing the same rock with a different material is a bench you
   // cannot sign anything off on. The `backfaces` button flips the side back at
   // runtime, which three recompiles for on its own key.
-  const m = createPropMaterial(atlas, { bump: true, side: THREE.FrontSide })
+  // `seasons` because the snow and moss sliders are this bench's; the world
+  // compiles without them.
+  const m = createPropMaterial(atlas, { bump: true, side: THREE.FrontSide, seasons: true })
   const arrayPatch = m.onBeforeCompile
   m.onBeforeCompile = (shader, r) => {
     arrayPatch(shader, r)

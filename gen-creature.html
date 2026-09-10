@@ -83,6 +83,13 @@
       #viewer { display: none; flex-direction: column; gap: 4px; }
       #viewer.on { display: flex; }
       #viewCanvas { display: block; width: 420px; height: 320px; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; }
+      /* Bone names, projected onto the canvas. A skeleton helper draws every
+         bone as the same white stick; which bone is which is the part that
+         matters when a retargeted clip misbehaves. */
+      #viewStage { position: relative; width: 420px; height: 320px; }
+      #boneLabels { display: none; position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+      #boneLabels.on { display: block; }
+      #boneLabels span { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font-size: 9px; color: #ffd9a0; text-shadow: 0 0 3px #000, 0 0 3px #000; }
       .label { color: var(--dim); font-size: 10px; }
       .viewControls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; width: 420px; }
       .viewControls label { display: flex; align-items: center; gap: 4px; color: var(--dim); font-size: 10px; }
@@ -253,9 +260,13 @@
       <h3>preview</h3>
       <div id="viewRow">
         <div id="viewer">
-          <canvas id="viewCanvas"></canvas>
+          <div id="viewStage">
+            <canvas id="viewCanvas"></canvas>
+            <div id="boneLabels"></div>
+          </div>
           <div class="viewControls">
             <label><input type="checkbox" id="showSkeleton" /> skeleton</label>
+            <label><input type="checkbox" id="showBoneNames" /> bone names</label>
             <label><input type="checkbox" id="showWire" /> wireframe</label>
             <label>clip <select id="clipSelect"></select></label>
             <button id="refit" title="re-centre the camera on the current model">refit</button>

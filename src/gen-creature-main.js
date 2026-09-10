@@ -705,8 +705,51 @@ let skeletonHelper = null
 let mixer = null
 const clock = new THREE.Clock()
 
+// --- bone names -------------------------------------------------------------
+//
+// A skeleton helper draws every bone as the same white stick, and which bone is
+// which is exactly what a misbehaving clip turns on: Tripo retargets its presets
+// BY NAME, and its names are its own guess at anatomy. On the fox it guessed
+// wrong -- the spine came back called `0_Left_Limb_1` and a front leg called
+// `Spine_0` -- so the walk cycle bends the animal at bones that are not joints
+// of the kind the clip thinks they are. `scripts/probe-rig.mjs` prints the same
+// names against each joint's measured position; this is the version you can
+// orbit. The `tripo::` prefix is dropped because every name carries it.
+let bones = []
+
+function setBones(list) {
+  bones = list
+  const box = $('boneLabels')
+  box.innerHTML = ''
+  for (const b of bones) {
+    const el = document.createElement('span')
+    el.textContent = b.name.replace(/^tripo::/, '')
+    box.appendChild(el)
+  }
+}
+
+const labelAt = new THREE.Vector3()
+
+function drawBoneLabels() {
+  const box = $('boneLabels')
+  const on = $('showBoneNames').checked && bones.length > 0
+  box.classList.toggle('on', on)
+  if (!on) return
+  const w = canvas.clientWidth, h = canvas.clientHeight
+  bones.forEach((b, i) => {
+    const el = box.children[i]
+    b.getWorldPosition(labelAt).project(camera)
+    // Behind the camera, x and y flip sign; placing those would scatter labels
+    // across the frame at mirrored positions.
+    el.style.display = labelAt.z > 1 ? 'none' : ''
+    el.style.left = `${(labelAt.x * 0.5 + 0.5) * w}px`
+    el.style.top = `${(-labelAt.y * 0.5 + 0.5) * h}px`
+  })
+}
+
 function clearModel() {
   if (skeletonHelper) { scene.remove(skeletonHelper); skeletonHelper = null }
+  setBones([])
   if (model) {
     scene.remove(model)
     // A LOD tier's geometry and material are held by lodTiers/lodMaterial and
@@ -792,6 +835,7 @@ async function showModel(which) {
   skeletonHelper = new THREE.SkeletonHelper(model)
   skeletonHelper.visible = $('showSkeleton').checked
   scene.add(skeletonHelper)
+  setBones(skeletonHelper.bones.filter((b) => b.name))
 
   if (gltf.animations?.length) {
     mixer = new THREE.AnimationMixer(model)
@@ -1427,6 +1471,7 @@ function tick() {
   mixer?.update(dt)
   orbit.update()
   renderer.render(scene, camera)
+  drawBoneLabels()
 }
 requestAnimationFrame(tick)
 window.addEventListener('resize', setSize)

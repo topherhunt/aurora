@@ -124,6 +124,16 @@ The preview and the exported copy of a card carry the same bytes through differe
 
 `rigType: 'none'` is a real answer, not a gap. A butterfly wants two textured planes on a hinge -- `gen-butterfly.html` already does that better and cheaper than a rigged solid mesh would -- and a frog is small enough that a hop is a whole-body transform.
 
+**The skeleton comes back sound and the NAMES on it come back wrong, and only the names matter.** Measured on the red fox with `scripts/probe-rig.mjs`, which prints each joint's name beside where that joint actually sits on the animal: the hierarchy is correct -- root, pelvis, spine, chest, neck, head, front legs off the chest, hind legs off the pelvis, tail off the root -- but the labels are shuffled. The fox's spine is called `0_Left_Limb_1`, its chest `Head_0`, its front-left shoulder `Spine_0`, and all four legs are unnamed `bone_9` through `bone_29`. Rigging the same mesh twice produces different labels, so this is a guess being re-rolled, not a convention.
+
+**Retargeting matches by name, so wrong names are a paid no-op.** `preset:quadruped:walk` on that rig drives **7 of 36 bones**: the pelvis, the two bones it thinks are limbs (the spine and the chest), and the tail. Every leg is frozen at its rest rotation for the whole 2.6s clip. Worse, the two mis-named body bones are held **98 and 95 degrees off their rest pose** for the entire clip -- a constant offset, not a gait -- which folds the fox's front half down until both front paws are driven 7cm below the ground plane. What it looks like is an animal walking on its tail with its body dragged behind, which is what it is.
+
+So **the presets are not usable for quadrupeds**, and buying more of them will not help: the failure is upstream of the clip. Renaming the bones locally cannot fix it either -- `createRetargetTask` posts a rig *task id*, so Tripo animates the skeleton it stored, not the file we hold, and our names never reach it.
+
+What is left is to animate the rig ourselves, which is free per creature and already half-built for humanoids in `tools/characters/animations.mjs`. It needs anatomy read off the geometry rather than off the labels, which is `probe-rig.mjs`'s second column: a chain tip in the bottom fifth of the mesh that dropped further than it travelled sideways is a foot; the highest free tip is the head; the widest gap along the body axis -- taken from the joints' own covariance, since a creature can be authored at any yaw -- splits front feet from hind. That inference gets the fox's four feet, head and tail exactly right.
+
+The bench's **bone names** checkbox draws the same labels over the preview, because a skeleton helper renders every bone as an identical white stick and which bone is which is the whole question.
+
 ## The spend model
 
 The project's standing rule is that external API dollars are a separate budget from tokens and never get spent without a human deciding. That rule is implemented, not just documented:

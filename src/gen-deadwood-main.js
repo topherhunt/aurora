@@ -259,7 +259,9 @@ function makeMaterial() {
   // marked, so it stays in the plane it was photographed in even though its layer
   // is listed. The bench therefore gets the world's own behaviour for free, and
   // if the two ever diverge it is visible here first.
-  const m = createPropMaterial(atlas, { billboardLayers: deadwoodImpostorLayers() })
+  // `seasons` because the weather panel's snow and moss sliders are this
+  // bench's; the world compiles without them.
+  const m = createPropMaterial(atlas, { billboardLayers: deadwoodImpostorLayers(), seasons: true })
   // The whole family is aged by a multiply on the material rather than by a
   // darkened set of atlas layers -- see DEADWOOD_TINT. The bench has to wear it
   // too or the bench is showing live bark. syncMaterial reapplies it every frame

@@ -1,6 +1,41 @@
-import { clamp01, lerp, smoothstep } from '../../sim/mathx.js'
+import { clamp01, lerp, mulberry32, smoothstep } from '../../sim/mathx.js'
 import { Noise } from '../../sim/noise.js'
 import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
+
+// ---- THE STIPPLE FRAME, one per vertex, read per FACE.
+//
+// The plain-stipple terrain rung (terrain-material.js) tiles one grit texture
+// over every triangle in its own frame: a random rotation and offset, and a
+// tile size that grows with the triangle's distance from the camera AT BUILD
+// TIME, so the texel stays a roughly constant size on screen instead of mipping
+// out to flat past twenty metres. The frame is baked here as a vec4 attribute,
+// (angle, tiles per metre, offset u, offset v), and the shader reads it as a
+// `flat` varying, so each triangle takes the frame of its provoking vertex
+// whole: no interpolation, no blending, a hard seam at every edge -- which is
+// the look, and is what makes it one fetch and no derivatives.
+//
+// Rotation and offset are hashed off the vertex's WORLD position on the 50 cm
+// leaf lattice, so a vertex keeps its frame across rebuilds and across depths;
+// only the scale is a function of where the camera stood.
+//
+// The scale is per VERTEX and not per chunk on purpose: the far edge of an 8 m
+// chunk is not the near edge, and a 128 m chunk spans a doubling of distance.
+// It is still only as current as the last rebuild -- the ring swap is what
+// refreshes it -- so within a ring it drifts up to 2x from ideal. Rough by
+// design.
+//
+// STIPPLE_TILE_PER_M is the tile's size as a fraction of viewing distance: 0.5
+// puts one 256-texel tile across ~29 degrees, a texel across ~0.11 degrees,
+// about two Quest pixels. STIPPLE_TILE_MIN stops the tile shrinking under the
+// feet, where distance goes to eye height.
+export const STIPPLE_TILE_PER_M = 0.5
+export const STIPPLE_TILE_MIN = 1.5
+
+function stippleSeed(wx, wz) {
+  const ix = Math.round(wx * 2) | 0
+  const iz = Math.round(wz * 2) | 0
+  return (Math.imul(ix, 0x9e3779b1) ^ Math.imul(iz ^ 0x7f4a7c15, 0x85ebca6b)) >>> 0
+}
 
 // ---------------------------------------------------------------------------
 // The v2 chunk mesher. Pure math -- no three.js, no worker globals -- so it runs
@@ -401,10 +436,15 @@ function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, wx, wz, out
 /**
  * @param {V2Height} field
  * @param {Layers} layers
- * @param {{ox:number, oz:number, size:number, res:number}} spec
- * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
+ * @param {{ox:number, oz:number, size:number, res:number, cam:{x:number,y:number,z:number}}} spec
+ *   `cam` is where the camera stood when this build was asked for -- see the
+ *   STIPPLE FRAME block for what it fixes and how stale it is allowed to be.
+ * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
-export function buildChunkV2(field, layers, { ox, oz, size, res }) {
+export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
+  if (!cam || !Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
+    throw new Error(`buildChunkV2: spec.cam must be a finite {x, y, z}, got ${JSON.stringify(cam)}`)
+  }
   const step = size / res
   const vpr = res + 1
   const innerCount = vpr * vpr
@@ -512,6 +552,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   const positions = new Float32Array(total * 3)
   const normals = new Float32Array(total * 3)
   const colors = new Float32Array(total * 3)
+  const stipple = new Float32Array(total * 4)
 
   let minY = Infinity
   let maxY = -Infinity
@@ -608,6 +649,16 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
       }
 
       shade(h, nyClass, snowLine, snowBand, touched ? layers.flattenAt(wx, wz) : 0, altLo, altSpan, wx, wz, colors, o)
+
+      // See the STIPPLE FRAME block. Three draws off one seed: angle, then the
+      // two offsets. Order matters for reproducibility, not for looks.
+      const rand = mulberry32(stippleSeed(wx, wz))
+      const dist = Math.hypot(wx - cam.x, h - cam.y, wz - cam.z)
+      const s = vi * 4
+      stipple[s] = rand() * Math.PI * 2
+      stipple[s + 1] = 1 / Math.max(STIPPLE_TILE_MIN, dist * STIPPLE_TILE_PER_M)
+      stipple[s + 2] = rand()
+      stipple[s + 3] = rand()
     }
   }
 
@@ -651,6 +702,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
       colors[o] = colors[vi * 3]
       colors[o + 1] = colors[vi * 3 + 1]
       colors[o + 2] = colors[vi * 3 + 2]
+      for (let c = 0; c < 4; c++) stipple[sv * 4 + c] = stipple[vi * 4 + c]
       row.push(sv)
       sv++
     }
@@ -705,7 +757,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res }) {
   // `culled` travels with the mesh so the panel and the gate can report the
   // fraction of chunks that took the cheap path -- §18 puts a number on that
   // claim rather than asserting it.
-  return { positions, normals, colors, indices, minY, maxY, skirtDepth, culled: !touched }
+  return { positions, normals, colors, stipple, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
 // C_GRASS is exported because the quest flat-ground card has to paint itself the

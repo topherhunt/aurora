@@ -313,18 +313,26 @@ const atlas = new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1)
 // silent, the unpatched lambert shader compiles perfectly, and the check goes
 // green on a shader containing none of our code. So each variant names the text
 // it MUST contain, and a missing marker fails as loudly as a syntax error.
-const PROP_MARKS = {
-  vert: [
-    'attribute float texLayer;', 'varying vec2 vMoss;', 'vMoss = vec2(', 'snowRoll', 'mossRoll',
-    'vPropFade = propFade;',
-  ],
+//
+// SNOW AND MOSS ARE OPT-IN (`seasons: true`) and nothing in the world asks for
+// them, so the marks split two ways: what every prop program carries, and what
+// only a seasons program carries -- asserted PRESENT there and ABSENT everywhere
+// else, because the whole point of the flag is that a default program pays for
+// none of it, and a splice that leaked back in would compile perfectly.
+const SEASON_MARKS = {
+  vert: ['varying vec2 vMoss;', 'vMoss = vec2(', 'snowRoll', 'mossRoll', 'vSnowPos = vec4('],
   frag: [
-    'uniform sampler2DArray uAtlas;',
-    'float ign( vec2 p )',
     'float blobField( vec3 p, float warp, float fray )',
     'log( mossLoad',
     'snowNear > 0.004',
     'mossNear > 0.004',
+  ],
+}
+const PROP_MARKS = {
+  vert: ['attribute float texLayer;', 'vPropFade = propFade;'],
+  frag: [
+    'uniform sampler2DArray uAtlas;',
+    'float ign( vec2 p )',
     'normal *= faceDirection;',
     // The dissolve's alpha channel, defended. If this line is missing, three's
     // own color_fragment is back and a fading prop is discarded whole by the
@@ -332,6 +340,7 @@ const PROP_MARKS = {
     // visible from inside the world. See COLOR_FRAGMENT in material.js.
     'diffuseColor.rgb *= vColor.rgb;',
   ],
+  absent: SEASON_MARKS,
 }
 
 // Every distinct program src/material.js can emit. The options are not cosmetic:
@@ -412,6 +421,22 @@ const PROP_VARIANTS = [
     { batched: true },
     { vert: [...PROP_MARKS.vert, 'uWindDir', 'uWindStrength'], frag: PROP_MARKS.frag },
   ],
+  // THE PRESERVED SEASON CODE, compiled both ways SEASONS_VERTEX can go: batched
+  // with cards (the card snow path and USE_BATCHING) and instanced with bump
+  // (what the rock beds drew with it on, and USE_INSTANCING). Nothing in the
+  // world builds either; the /gen benches with snow and moss sliders do.
+  [
+    'seasons, cards, batched',
+    createPropMaterial(atlas, { billboardLayers: [0, 1, 2], seasons: true }),
+    { batched: true },
+    { vert: [...PROP_MARKS.vert, ...SEASON_MARKS.vert], frag: [...PROP_MARKS.frag, ...SEASON_MARKS.frag] },
+  ],
+  [
+    'seasons, instanced, bump',
+    createPropMaterial(atlas, { instancedFade: true, bump: true, seasons: true }),
+    { batched: false, instanced: true },
+    { vert: [...PROP_MARKS.vert, ...SEASON_MARKS.vert], frag: [...PROP_MARKS.frag, ...SEASON_MARKS.frag] },
+  ],
   [
     'impostor bake',
     createImpostorBakeMaterial(atlas),
@@ -452,6 +477,9 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
   for (const [stage, src] of [['vert', vert], ['frag', frag]]) {
     for (const mark of marks[stage]) {
       if (!src.includes(mark)) MISSING_MARKS.push(`${label} ${stage}: ${mark}`)
+    }
+    for (const mark of marks.absent ? marks.absent[stage] : []) {
+      if (src.includes(mark)) MISSING_MARKS.push(`${label} ${stage}: must NOT contain ${mark}`)
     }
   }
 }
@@ -953,6 +981,37 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   for (const mark of ['uGritArr', 'auroraDetailK', 'uMacroMap']) {
     if (frag.includes(mark)) MISSING_MARKS.push(`${label} frag: emitted ${mark}, should not`)
   }
+
+  // THE STIPPLE TWIN: the same rung with the per-face fetch, compiled under the
+  // same defines. It reads an array texture in the fragment stage, which is what
+  // the precision line exists for; dropping it fails on the device and here.
+  const stippleShader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  const stippleMat = createPlainTerrainMaterial(source, { stipple: true })
+  stippleMat.onBeforeCompile(stippleShader, { capabilities: { isWebGL2: true } })
+  const sLabel = 'terrain-material stipple    '
+  const sVert = finish(stippleShader.vertexShader)
+  const sFrag = finish(stippleShader.fragmentShader)
+  SHADERS.push([`${sLabel}  vert`, 'vert', builtinPrologue('vert', TERRAIN_DEFINES), sVert])
+  SHADERS.push([`${sLabel}  frag`, 'frag', builtinPrologue('frag', TERRAIN_DEFINES), sFrag])
+  CROSS_STAGE.push([sLabel, sVert, sFrag])
+  // Exactly the one implicit-LOD fetch on the FLAT face frame and the tilt, and
+  // none of the ladder: a textureGrad appearing here is the cost creeping back
+  // in, a second fetch is the macro layer creeping back in. (dFdx is not
+  // checked: three's own FLAT_SHADED guard carries one in every Lambert.)
+  if (!sVert.includes('attribute vec4 stipple;')) MISSING_MARKS.push(`${sLabel} vert: attribute vec4 stipple`)
+  for (const mark of ['flat varying vec3 vStipFrame;', 'texture( uGritArr, vec3( auroraStipUv, uStippleLayer ) )', 'auroraStippleTilt']) {
+    if (!sFrag.includes(mark)) MISSING_MARKS.push(`${sLabel} frag: ${mark}`)
+  }
+  const fetches = sFrag.replace(/\/\/[^\n]*/g, '').match(/texture\( uGritArr/g)?.length ?? 0
+  if (fetches !== 1) MISSING_MARKS.push(`${sLabel} frag: ${fetches} grit fetches, wants exactly 1`)
+  for (const mark of ['textureGrad', 'auroraDetailK', 'auroraDist', 'uMacroMap']) {
+    if (sFrag.includes(mark)) MISSING_MARKS.push(`${sLabel} frag: emitted ${mark}, should not`)
+  }
 }
 
 // Returns null when the shader compiled, or the validator's output when it did
@@ -1023,10 +1082,10 @@ for (const [label, vert, frag] of CROSS_STAGE) {
 
 // --- did our code actually get into the shader ------------------------------
 if (MISSING_MARKS.length === 0) {
-  console.log(`  ok    material.js    every onBeforeCompile patch landed in the assembled source`)
+  console.log(`  ok    material.js    every onBeforeCompile patch landed in the assembled source, and the season blocks only where asked`)
 } else {
-  console.log(`  FAIL  material.js    an onBeforeCompile replace silently did not match`)
-  for (const m of MISSING_MARKS) console.log(`        missing: ${m}`)
+  console.log(`  FAIL  material.js    an onBeforeCompile replace silently did not match, or a block leaked`)
+  for (const m of MISSING_MARKS) console.log(`        ${m.includes('must NOT') ? 'leaked' : 'missing'}: ${m}`)
 }
 
 // --- does the harness itself work -------------------------------------------
@@ -1038,7 +1097,12 @@ if (MISSING_MARKS.length === 0) {
 // src/material.js.
 let selfTest = 0
 {
-  const [, vert, frag] = CROSS_STAGE[0]
+  // The seasons variant, because the planted clash below is on vMoss and only a
+  // seasons program declares it; looked up by label rather than by index so a
+  // reordered table cannot hand this a source with nothing to retype.
+  const entry = CROSS_STAGE.find(([label]) => label === 'material.js    seasons, cards, batched')
+  if (!entry) throw new Error('check-shaders: the seasons variant is missing from CROSS_STAGE')
+  const [, vert, frag] = entry
   const defines = propDefines({ batched: true })
 
   // 1. The validator must REJECT source it should reject. If this compiles, the

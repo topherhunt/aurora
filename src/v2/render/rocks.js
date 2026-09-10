@@ -13,6 +13,7 @@ import {
 import { PropArena } from './prop-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
+import { ROCK_TILE_MEAN } from '../../textures.js'
 
 // ---------------------------------------------------------------------------
 // The stone on the /v2 route: pebbles underfoot, boulders through the wood and
@@ -698,10 +699,12 @@ const BEDS = [
     //   holds a plate when a candidate lands in it, so the pitch has to be finer
     //   than the smallest face the promise covers.
     //
-    //   AND NO PLATE CLOSES MORE THAN `packOverlap` OF THE ROOM BETWEEN CENTRES.
-    //   See `_packRadius`. Overlap is wanted -- it is what makes the joins between
-    //   panels ragged instead of a tiling -- but a plate mostly inside another one
-    //   is triangles skinned and never seen.
+    //   AND EVERY PLATE EARNS ITS TRIANGLES: at least `packEarn` of its own face
+    //   disc must be wall no plate already covers. See `_earnedFrac`. Overlap is
+    //   not rationed -- it is what makes the joins between panels ragged instead of
+    //   a tiling, and one 2x panel over four small ones is a quarter the triangles
+    //   for the same wall. What the rule refuses is a plate mostly inside another
+    //   one, which is triangles skinned and never seen.
     //
     // THERE WAS A CARPET BED UNDER THIS ONE and it is gone. It ran at 0.12 and put
     // 1,851 plates of a 3.2 m median on the steepest face against this bed's 95,
@@ -840,20 +843,22 @@ const BEDS = [
     // the gap beside it goes bare. The grid is what turns the rate into a PITCH, and
     // the pitch is what the five-metre face promise is made of.
     lattice: true,
-    // A TENTH OF THE ROOM BETWEEN CENTRES, and no more. See `_packRadius` for the
-    // metric, which is three-dimensional and has to be. THIS BOUND IS THE ASK AND
-    // NOT THE GROUND'S: measured at a third of this rate, letting plates close
-    // freely reads 44/63/84 against 37/53/67, so the tenth costs seven to seventeen
-    // points of cover. It is the one number to move if the stone looks scarce.
-    packOverlap: 0.1,
+    // EVERY PANEL MASKS AT LEAST THIS MUCH WALL ON ITS OWN ACCOUNT. See
+    // `_earnedFrac` for the metric, which is three-dimensional and has to be.
+    // Overlap is not rationed at all: a plate may lie two thirds inside its
+    // neighbours so long as the third that is left is real wall.
+    packEarn: 0.35,
+    // AND THE PANELS ARE THE CLIFF'S OWN COLOUR -- see FACADE_GAIN. This bed is the
+    // only one in the world that clothes a face rather than standing on it, so it is
+    // the only one that gives up the mineral palette to do it.
+    facade: true,
     // THREE CANDIDATES IN TEN, DECLARED, AND IT PAYS FOR THE PITCH. `_poolBound`
     // counts rank survivors and knows nothing about slope or the pack, so this bed
     // is allocated as if every candidate placed -- 1.14M instances at this density,
     // 91 MB of matrices for 17 MB of rock. What actually places is bounded by the
-    // PACK and not by the rate: on a fixture that is qualifying wall edge to edge,
-    // the worst case there is, the bed draws 187 of 1369 per tile. So this is set
-    // above that with room, at a pool of 341k -- which is what the bed cost at a
-    // third of this pitch, so the finer lattice is bought with nothing but time.
+    // PACK and not by the rate: the worst tile of the 1141 resident on the steepest
+    // ground in the world draws 207 of 1370 candidates, half of what is declared
+    // here. The margin is the point, not the fit -- a bed that overruns throws.
     //
     // A PROMISE, NOT AN ESTIMATE. Set it under what a world really wants and the
     // bed does not degrade, it THROWS on the tile that overruns.
@@ -1158,23 +1163,36 @@ const CLUMP_GAIN = 2.2
 // rock, chosen once at placement and baked into the instance colour. §25.
 const GROUND_CUE = { river: 0.75, forest: 0.45, cliff: 0.55, peak: 0.55 }
 
+// --- and the one bed that is not a rock standing on the ground --------------
+//
+// A FACADE BED IS THE CLIFF, so it takes the cliff's own colour and adds nothing.
+// The panels are a skin over the heightfield rather than stone lying on it, and
+// every mineral in the palette -- the buff of sandstone, the rust of ironstone,
+// the green of lichen -- reads as a different rock bolted onto the mountain. What
+// is left to vary with is LIGHTNESS, which is what the terrain itself varies with:
+// `shade` already carries altitude, slope and the snow line, so a facade that
+// takes the ground cue whole is darker in the gullies and paler at the tops
+// WITHOUT a second opinion about what it is made of.
+//
+// THE GAIN IS THE TERRAIN'S OWN. terrain-material.js divides its stone sample by
+// ROCK_TILE_MEAN and multiplies by that vertex shade; a prop that wants to BE the
+// terrain takes the same reciprocal and the same shade, and there is no tint left
+// over. Deliberately NOT a TINTS entry: as a destination colour this is white, and
+// every promise the palette makes -- the clip headroom, "nothing darkens the tile"
+// -- is about a gain applied with no ground cue behind it. This one is only ever
+// applied with a FULL one, and that is what keeps it in range: off snow the
+// terrain palette runs a luminance of 0.06 to 0.09, so the product lands well
+// under 1 and the panels track the snow line up to white for the same reason the
+// ground under them does.
+//
+// THE CUE IS 1 WHERE NO OTHER BED REACHES IT. GROUND_CUE stops short everywhere
+// because the stones still have to be findable; a facade being findable is the
+// defect it exists to fix.
+const FACADE_CUE = 1
+const FACADE_GAIN = ROCK_TILE_MEAN.map((m) => 1 / m)
+
 // Everything below is render/trees.js's, unchanged, and its header is the
 // explanation for all of it.
-// TEMPORARY DEBUG -- a flat instance colour per bed, keyed by `cfg.name`, so the
-// beds that clothe a cliff can be told apart on the face by eye. Values are the
-// same GAIN on the granite photo every tint is (see TINT_GAIN), so they read as
-// saturated paint rather than as a texture. Empty this object to ship; the one
-// use is at the end of the tint block in _growTile.
-//
-//   cliff slabs  RED     the panels, the thing being tuned
-//   giants       BLUE    the boulders scattered into the same faces
-//   embedded     GREEN   the buried blocks that break the panelling up
-const DEBUG_BED_TINT = {
-  'cliff slabs': [2.2, 0.05, 0.05],
-  giants: [0.05, 0.3, 2.2],
-  embedded: [0.05, 1.6, 0.2],
-}
-
 const LOD_HYSTERESIS = 0.12
 const BUILD_BUDGET_MS = 1.5
 const PLACEMENT_CELL = 4.0
@@ -1250,12 +1268,20 @@ const INSIDE_PAD = 0.15
 // appeared, so the card showed up already dithering -- from inside the world
 // indistinguishable from the mesh dithering out, which is what it was reported as.
 //
-// So the floor is a BAND. 2.0 is one full doubling, the span the ladder gives the
-// other tiers (ROCK_LOD_AT steps 4 -> 7.5 -> 25, so 1.9x then 3.3x) and the span
-// the thinning law is written in. NOT FREE: a bed may not end before its own
-// ladder does (`minReach`), so this multiplies every bed's radius and its pool.
-// Do not raise it without re-running scripts/check-rocks.mjs, which bounds both.
-const ROCK_CARD_LIFE = 2.0
+// So the floor is a BAND, and 1.0 is the SHORTEST one that is still a band. The
+// dissolve fires at RIM_AT rather than at FADE_BAND, and the gone-distance here
+// divides by the smaller of the two, so at 1.0 a card is drawn solid for the 8.8%
+// of its start distance between the two numbers before it begins to dither. That
+// is thin -- 2.0 was a full doubling, matching the span the ladder gives the
+// other tiers -- and it is what halving the range a rock is a billboard for
+// costs, which was asked for on the grounds that a card is a worse picture than
+// the mesh and should hand back to it as late as it can.
+//
+// NOT FREE IN THE OTHER DIRECTION EITHER: a bed may not end before its own ladder
+// does (`minReach`), so this multiplies every bed's radius and its pool. Lowering
+// it shrinks both; raising it grows both. Re-run scripts/check-rocks.mjs after
+// either, which bounds them.
+const ROCK_CARD_LIFE = 1.0
 
 /**
  * The gone-distance a rock of ladder size `size` metres must be given, in metres,
@@ -1441,6 +1467,10 @@ class RockBed {
     this.fullSq = cfg.fullRadius * cfg.fullRadius
 
     this.perTile = Math.max(1, Math.round(tile * tile * cfg.density))
+    // `radius` is the bed's reach along the ground and never moves. The three
+    // below are the LIVE reach, squeezed by altitude in `_reseat` -- see there.
+    // Read `radius` for anything that describes the bed, these for anything that
+    // decides which tiles exist right now.
     this.tileSpan = Math.ceil(cfg.radius / tile) + 1
     this.radiusSq = cfg.radius * cfg.radius
     this.evictSq = (cfg.radius + tile * 1.5) ** 2
@@ -1474,40 +1504,53 @@ class RockBed {
     // stone at least its own size, which is the "place the largest first" rule
     // expressed without touching the rank order the tile growth depends on.
     this.gapBySize = cfg.gapBySize ?? false
-    // THE OTHER DART, AND IT IS A PACKING RULE RATHER THAN A SPACING ONE. `minGap`
-    // asks how far apart two rocks STAND, as a fraction of the sum of their
-    // widths, and refuses whatever is closer. This asks the same question of the
-    // plan SHADOWS and allows a stated amount of interpenetration: two plates may
-    // overlap by this fraction of the sum of their shadow radii, and a candidate
-    // that would overlap further is SHRUNK until it does not. Centres and radii
-    // and nothing else, solved in closed form -- see `_packRadius`.
+    // THE OTHER DART, AND IT IS NOT A SPACING RULE AT ALL. `minGap` asks how far
+    // apart two rocks STAND and refuses whatever is closer. This asks a plate what
+    // it is FOR: the fraction of its own footprint that is wall no plate already
+    // covers, and it refuses whatever earns less than this. Overlap is not
+    // rationed, it is ignored -- two plates may lie almost on top of each other so
+    // long as each is still masking this much wall on its own account. See
+    // `_earnedFrac`.
     //
-    // A TENTH IS "TOUCHING, WITH THE SEAM SHUT". Zero is a circle packing, and
-    // plates fitted to ragged ground leave a visible line of terrain along every
-    // tangent; a tenth of the summed radii hides that line for a few per cent of a
-    // plate's area. What it forbids is the failure that made this rule necessary:
-    // the rule it replaced refused a candidate only inside HALF a bigger plate's
-    // shadow, so plates stacked at half-radius spacing, and the panels on the
-    // steepest face summed to more area than the face had while covering 41% of
-    // it. Stone drawn inside stone is 158 triangles that mask nothing.
+    // WHY EARNINGS AND NOT A SPACING BOUND. A bound on how close two centres may
+    // come is a bound on how BIG the second plate may be, because it is the summed
+    // radii that the distance is measured against -- so the rule that keeps plates
+    // from burying each other is the same rule that stops a face being clothed in
+    // one plate instead of nine. Measured, a tenth of the summed radii held the
+    // median panel to 13.8 m on faces the ground would have given 35, left a fifth
+    // of every wall bare with a plate available for it, and threw away twelve
+    // candidates for crowding for every one the ground refused. An earnings test
+    // has no opinion about size: a big plate laid across a smaller one still earns
+    // its keep on the ring outside it, so the ground's answer is the one that
+    // survives, and it is a plate's WORTH rather than its neighbours that decides.
     //
-    // IT IS A SHRINK AND NOT A REJECT, which is the other half of covering a wall.
-    // A candidate that would have overlapped by a third is not litter, it is a
-    // plate that wants to be smaller, and the seam it leaves if it is thrown away
-    // is exactly the bare wall this bed exists to close.
-    this.packOverlap = cfg.packOverlap ?? 0
-    this.packCaps = this.packOverlap > 0
+    // WHAT IT STILL FORBIDS is the thing that made a pack rule necessary -- stone
+    // drawn inside stone. A plate that would be mostly swallowed earns nothing and
+    // is thrown away whole, which is the right disposal for 158 triangles that
+    // mask nothing. That is also why this is a REJECT and no longer a shrink:
+    // shrinking a plate to fit the gap beside its neighbour is what built the
+    // carpet of small panels, and the gap it was fitting into is worth less than
+    // the triangles it costs.
+    this.packEarn = cfg.packEarn ?? 0
+    this.packCaps = this.packEarn > 0
     if (this.packCaps && this.minGap > 0) {
-      throw new Error(`RockBed ${cfg.name}: packOverlap and minGap are two answers to the same question`)
+      throw new Error(`RockBed ${cfg.name}: packEarn and minGap are two answers to the same question`)
     }
-    if (this.packCaps && !(this.packOverlap >= 0 && this.packOverlap < 1)) {
-      throw new Error(`RockBed ${cfg.name}: packOverlap ${this.packOverlap} is a fraction of the summed radii`)
+    if (this.packCaps && !(this.packEarn > 0 && this.packEarn <= 1)) {
+      throw new Error(`RockBed ${cfg.name}: packEarn ${this.packEarn} is a fraction of a plate's own area`)
     }
     // The pack orders itself by the size the GROUND hands each candidate, so a bed
-    // with nothing to ask the ground has no order to place in and the rule is a
-    // spacing dart with extra steps.
+    // with nothing to ask the ground has no order to place in and every plate earns
+    // whatever the arbitrary order it arrived in leaves it.
     if (this.packCaps && !this.fitSlope) {
-      throw new Error(`RockBed ${cfg.name}: packOverlap needs fitSlope to have a size to order by`)
+      throw new Error(`RockBed ${cfg.name}: packEarn needs fitSlope to have a size to order by`)
+    }
+    // THIS BED IS CLIFF SKIN, NOT STONE ON THE CLIFF -- see FACADE_GAIN. It gives
+    // up the mineral palette and the hue skew and keeps only lightness, so the
+    // panels read as the mountain rather than as something fixed to it.
+    this.facade = cfg.facade ?? false
+    if (this.facade && !this.fitSlope) {
+      throw new Error(`RockBed ${cfg.name}: facade is for plates laid on a face, which needs fitSlope`)
     }
     // HOW FAR A RIM MAY BE UNDER THE HILL, per metre of span, and it is what makes
     // "as large as the FACE allows" mean a face. `_fitFactor`'s plane test only
@@ -1857,11 +1900,13 @@ class RockBed {
     // THE TIER TABLE, one arena id and one triangle count per band. The last slot
     // is the 2-triangle card and NO BED DECLINES IT.
     //
-    // WHAT THAT COSTS is that a card is a flat photograph and a rock bedded deep
-    // into a face has most of itself underground, so the quad stands taller than
-    // the visible part of the mesh it replaces. That is a poke-out of a fraction of
-    // a metre at a range where the rock is a few pixels tall, and it is the price
-    // of one ladder rather than six.
+    // WHAT THAT COSTS is that a card is a flat photograph while the mesh it
+    // replaces was bedded into a face, so the quad stands proud of it -- a
+    // boulder's by however much of the mesh was underground, a plate's by
+    // whatever of its crown the sink left showing plus PLATE_CARD_LIFT, which is
+    // deliberate and is the only thing keeping a flat card out of the wall.
+    // Either way it is a fraction of a metre at a range where the rock is a few
+    // pixels across, and it is the price of one ladder rather than six.
     this.tierIds = new Int32Array(ROCK_BAND_COUNT)
     this.tierTris = new Int32Array(ROCK_BAND_COUNT)
     for (let t = 0; t < ROCK_BAND_COUNT; t++) {
@@ -1947,6 +1992,9 @@ class RockBed {
     this.queue = []
     this.camTileX = null
     this.camTileZ = null
+    // Height above ground the live reach was last computed for, quantised to
+    // whole tiles. Null so the first `_reseat` cannot be skipped.
+    this.camAglQ = null
 
     this._m = new THREE.Matrix4()
     // Its own scratch and not `_m`: blockTopAt is called from the middle of
@@ -2332,67 +2380,92 @@ class RockBed {
   }
 
   /**
-   * The biggest a plate centred on the ground at (x, y, z) may be grown to without
-   * overlapping anything already standing in this tile by more than `packOverlap`.
-   * In `_faceRadius` metres -- the plate's own, on the face it is lying in.
+   * What fraction of a plate of face radius `r`, centred on the ground at
+   * (x, y, z), would be wall that no plate already standing here covers. 1 on
+   * open face, 0 inside a bigger plate. The caller compares it against
+   * `packEarn`.
    *
-   * CENTRES AND RADII, WHICH IS THE WHOLE TEST. Two discs of radii r and ro whose
-   * centres are d apart touch at d = r + ro, and this bed allows them to close a
-   * stated fraction of that: the rule is d >= (r + ro) * (1 - packOverlap), so the
-   * largest r that satisfies it is d / (1 - packOverlap) - ro. Solved rather than
-   * searched -- no field sample, one pass over the tile's instances, and the answer
-   * is exact instead of a ladder rung away from it.
+   * DISC AREAS, WHICH IS THE WHOLE TEST. Every plate is already modelled as the
+   * disc of equal footprint area in the face it lies in (`_faceRadius`), so what
+   * a neighbour takes from this candidate is the circle-circle lens: closed form,
+   * two acos and a root, and only for the neighbours that actually reach. The
+   * cheap squared-distance guard in front of it means a typical candidate pays
+   * the trig for a handful of plates out of the few hundred resident.
    *
-   * THE DISTANCE IS THE THREE-DIMENSIONAL ONE AND THIS IS NOT A DETAIL. Measured on
-   * the MAP instead, two plates a hundred metres apart up an eighty-five degree wall
-   * sit within a couple of metres of each other, so a plan-frame pack lets one plate
-   * per plan spot onto a face that wants a column of them -- measured, that capped
-   * the steepest face at a third covered whatever else was tuned. A wall is a
-   * surface, the plates lie IN it, and the space they compete for is its area.
+   * THE OVERLAPS ARE SUMMED AND NOT UNIONED, which over-counts wherever two
+   * neighbours cover the same piece of this candidate, so the earnings come back
+   * LOW. Deliberately the cheap direction: a union needs the pairwise geometry of
+   * the neighbours with each other, and being wrong this way refuses a plate that
+   * was marginal rather than admitting one that was not. Exact in the case that
+   * decides most of them, which is a plate against the one big panel beside it.
+   *
+   * THE DISTANCE IS THE THREE-DIMENSIONAL ONE AND THIS IS NOT A DETAIL. Measured
+   * on the MAP instead, two plates a hundred metres apart up an eighty-five degree
+   * wall sit within a couple of metres of each other, so a plan-frame test reads a
+   * column of plates clothing a face as one plate swallowing eight. A wall is a
+   * surface, the plates lie IN it, and the area they are earning is its area.
    * Across a ridge the straight line is shorter than the walk, so two plates on
-   * opposite faces yield to each other slightly more than they need to; that is the
-   * cheap direction to be wrong in and it costs a seam nobody can see from either
-   * side.
+   * opposite faces read as taking slightly more from each other than they do; that
+   * is the cheap direction to be wrong in and it costs a seam nobody can see from
+   * either side.
    *
-   * IT LOOKS AT EVERY NEIGHBOUR AND NOT ONLY THE BIGGER ONES, which the rule it
-   * replaced could not afford to do. That one ran in rank order, where a plate the
-   * ground had cut to five metres could land before the forty-metre panel meant to
-   * clothe the same face, so it had to ignore smaller stone or the small plate
-   * would have vetoed the big one. This pass runs in SIZE order, so everything
-   * already standing is by construction at least as big as the candidate asking --
-   * and the swallowed-plate case the old rule left open cannot arise, because the
-   * plate that would have been swallowed has not been placed yet.
+   * IT LOOKS AT EVERY NEIGHBOUR AND NOT ONLY THE BIGGER ONES. The pass runs in the
+   * size order the ground handed out, so everything already standing is by
+   * construction at least as big as the candidate asking -- but a plate the ground
+   * cut small still masks real wall, and wall it masks is wall this candidate
+   * cannot be paid for twice.
    *
    * AND IT CROSSES THE TILE SEAM, alone in this file. `_dartBlocked` deliberately
    * does not: a dart across a seam makes a tile's layout depend on which of its
    * neighbours happened to be grown first, which is to say on the route the player
    * walked. The panels cannot afford that principle, because their footprints are
-   * TENS OF METRES against a 220 m tile -- measured on the three real faces, every
-   * pair overlapping past `packOverlap` was a pair either side of a seam, the worst
-   * of them buried four fifths of a plate inside another. What the crossing costs
-   * is exactly that route dependence, and it costs nothing else: no field sample,
-   * only a walk of instances already placed. It is also INVISIBLE. A tile is grown
-   * when its centre first comes inside `radius` -- 4.2 km, past the 4.1 km where
-   * every plate in it has already dissolved -- and evicted 330 m further out
-   * still, so no plate is ever resized while anything is drawing it.
+   * TENS OF METRES against a 220 m tile -- a plate a metre inside the seam has most
+   * of its earnings on the far side of it. What the crossing costs is exactly that
+   * route dependence, and it costs nothing else: no field sample, only a walk of
+   * instances already placed. It is also INVISIBLE. A tile is grown when its centre
+   * first comes inside `radius` -- 4.2 km, twice the 2.1 km where even a top-size
+   * plate has already dissolved -- and evicted 330 m further out still, so no plate
+   * is ever judged while anything is drawing it.
    */
-  _packRadius(x, y, z, ids, n, tx, tz) {
-    let r = Infinity
-    const k = 1 - this.packOverlap
+  _earnedFrac(x, y, z, r, ids, n, tx, tz) {
+    const mine = r * r
+    let taken = 0
     const one = (o) => {
+      if (taken >= mine) return
       const dx = this.instX[o] - x
       // The GROUND the neighbour is standing on, which is what `instY` is minus
       // the burial that was taken off it. Comparing origins instead would make a
       // deeply sunk plate read as further away than it is.
       const dy = this.instY[o] + this.instSink[o] - y
       const dz = this.instZ[o] - z
-      const lim = Math.sqrt(dx * dx + dy * dy + dz * dz) / k - this._faceRadius(this.instSpan[o])
-      if (lim < r) r = lim
+      const d2 = dx * dx + dy * dy + dz * dz
+      const ro = this._faceRadius(this.instSpan[o])
+      const sum = r + ro
+      if (d2 >= sum * sum) return
+      const gap = r - ro
+      if (d2 <= gap * gap) {
+        // One disc inside the other. Whichever is smaller is wholly covered, and
+        // when that is the candidate it has earned nothing at all.
+        taken += Math.min(r, ro) ** 2
+        return
+      }
+      const d = Math.sqrt(d2)
+      // The two half-angles of the lens. The guards above put both cosines
+      // strictly inside (-1, 1); the clamp is for the ulp at the boundary, where
+      // acos would hand back NaN and a NaN in `taken` would silently refuse every
+      // plate on the face.
+      const ca = Math.min(1, Math.max(-1, (d2 + r * r - ro * ro) / (2 * d * r)))
+      const cb = Math.min(1, Math.max(-1, (d2 + ro * ro - r * r) / (2 * d * ro)))
+      taken +=
+        (r * r * Math.acos(ca) +
+          ro * ro * Math.acos(cb) -
+          0.5 * Math.sqrt((sum - d) * (d + gap) * (d - gap) * (sum + d))) /
+        Math.PI
     }
     for (let j = 0; j < n; j++) one(ids[j])
     // ONE RING IS THE WHOLE REACH: the biggest plate this bed can author is 70 m
-    // across, so the rule binds only inside (1 - packOverlap) * 2 * _faceRadius(70)
-    // -- 49 m against a 220 m tile -- and no second ring can reach.
+    // across, so a neighbour can only take area inside 2 * _faceRadius(70) -- 55 m
+    // against a 220 m tile -- and no second ring can reach.
     for (let dj = -1; dj <= 1; dj++) {
       for (let di = -1; di <= 1; di++) {
         if (di === 0 && dj === 0) continue
@@ -2401,7 +2474,7 @@ class RockBed {
         for (let j = 0; j < t.n; j++) one(t.ids[j])
       }
     }
-    return r
+    return Math.max(0, 1 - taken / mine)
   }
 
   /**
@@ -2472,14 +2545,16 @@ class RockBed {
 
   place(cx, cz) {
     const t0 = performance.now()
-    this._reseat(cx, cz)
+    // Standing on the ground, so the full reach: a synchronous place is asked for
+    // when something wants the bed complete, not when something is flying over it.
+    this._reseat(cx, this.field.heightAt(cx, cz), cz)
     while (this.queue.length) this._growTile(this.queue.pop())
     this.placeMs = performance.now() - t0
     return this.placed
   }
 
   update(camX, camY, camZ, budgetMs) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camY, camZ)
 
     const t0 = performance.now()
     while (this.queue.length && performance.now() - t0 < budgetMs) this._growTile(this.queue.pop())
@@ -2515,7 +2590,7 @@ class RockBed {
       const nz = Math.max(t.tz * tile, Math.min(camZ, (t.tz + 1) * tile))
       const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
 
-      this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
+      const tileHidden = this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
 
       const q = t.q
       const thicken = near2 < this.loSq[q]
@@ -2531,11 +2606,21 @@ class RockBed {
       if (!near) {
         if (t.near) this._demote(t, coarse)
         t.near = false
-        for (let k = 0; k < t.n; k++) {
-          const id = t.ids[k]
-          if (this.rim.isHidden(id)) continue
-          tris += this.tierTris[coarse]
-        }
+        // O(1), AND THE TRIANGLE COUNT IS NOT WORTH MORE THAN THAT. A far tile is
+        // entirely on `coarse` -- there is no per-rock decision left to make out
+        // here -- so the only thing the old per-instance walk produced was this
+        // sum. It cost 69k iterations a frame at survey altitude, 1.2 ms of a
+        // 13.9 ms budget, to fill in a panel cell that is only drawn while the
+        // menu is open. DO NOT REINTRODUCE A PER-INSTANCE LOOP FOR A STATISTIC:
+        // this loop runs over every resident tile of every bed every frame, so
+        // anything inside it that is O(instances) is a frame-rate feature.
+        //
+        // `tileHidden` is the rim's own count for this tile, exact as of that
+        // tile's last sweep and so up to RIM_PHASES frames stale -- a fade that
+        // retired since is still counted as drawn. That is the same staleness the
+        // visibility it describes already has, and it is a readout, not a
+        // decision: nothing branches on `this.tris`.
+        tris += (t.n - tileHidden) * this.tierTris[coarse]
         continue
       }
       t.near = true
@@ -2596,13 +2681,48 @@ class RockBed {
     this.tris = tris + this.fadeTris
   }
 
-  _reseat(cx, cz) {
+  /**
+   * THE BED'S REACH IS A SPHERE, NOT A COLUMN. `radius` is how far the bed
+   * carries along the ground; at height `agl` above it, the ground still inside
+   * that sphere is a disc of `sqrt(radius^2 - agl^2)`, and past `radius` there is
+   * none. So flying up switches the small beds off in the order a rock stops
+   * being worth drawing: at 500 m `underfoot`, `scree` and `bed caps` are gone
+   * outright and the survivors are cut to a third or a half of their footprint,
+   * which is 9352 resident tiles down to 4942 and 41% off the frame.
+   *
+   * The y term is one multiply-subtract on a test that was already squared, so it
+   * is free; the one sqrt is per bed per frame, to size the admission grid.
+   *
+   * `agl` is quantised DOWN to whole tiles, which is what makes this cheap enough
+   * to sit in front of the early-out: under one tile of altitude the reach is the
+   * configured one exactly, so standing on the ground is untouched, and the
+   * reseat only re-runs when the camera crosses a tile line horizontally OR
+   * changes altitude band. Between those, nothing recomputes.
+   *
+   * The reach is measured from the ground UNDER THE CAMERA, not per tile, so
+   * admission and eviction always agree and a tile cannot be admitted and evicted
+   * on alternate frames. The cost of that is the honest one: flying level past a
+   * canyon rim, the floor below sets the reach even though the rim is at eye
+   * level, and rock on it can drop out early.
+   */
+  _reseat(cx, cy, cz) {
     const tile = this.tile
     const tx = Math.floor(cx / tile)
     const tz = Math.floor(cz / tile)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    const agl = Math.max(0, cy - this.field.heightAt(cx, cz))
+    const aglQ = Math.floor(agl / tile) * tile
+    if (tx === this.camTileX && tz === this.camTileZ && aglQ === this.camAglQ) return
     this.camTileX = tx
     this.camTileZ = tz
+    this.camAglQ = aglQ
+
+    const reach = Math.sqrt(Math.max(0, this.radius * this.radius - aglQ * aglQ))
+    this.radiusSq = reach * reach
+    // The eviction slack exists to stop a tile on the line being cut and regrown
+    // across it. A bed with no reach left has no line, and wants to be EMPTY --
+    // slack there would strand a tile of pebbles under a camera 500 m up.
+    this.evictSq = reach > 0 ? (reach + tile * 1.5) ** 2 : 0
+    this.tileSpan = Math.ceil(reach / tile) + 1
 
     for (const [key, t] of this.tiles) {
       const dx = (t.tx + 0.5) * tile - cx
@@ -2773,13 +2893,13 @@ class RockBed {
     // --- pass two: place them, lowest rank first -----------------------------
     //
     // AND ON A PACKING BED IT RUNS TWICE, BECAUSE THE ORDER IS THE ALGORITHM.
-    // `packOverlap` is a greedy pack: each plate takes the room its neighbours have
-    // left, so whichever plate is laid first keeps its full size and the rest fit
-    // around it. Laid in rank order that is arbitrary, and a plate the ground cut
-    // to nine metres routinely lands before the forty-metre panel that was going to
-    // clothe the same face -- the panel is then shrunk to nine metres by a plate an
-    // eighth its width, and a face that wanted one plate gets a dozen. Largest
-    // first is the only order a greedy pack is worth running in.
+    // `packEarn` is a greedy pack: each plate is judged against the wall its
+    // neighbours have already claimed, so whichever plate is laid first is the one
+    // that keeps its place. Laid in rank order that is arbitrary, and a plate the
+    // ground cut to nine metres routinely lands before the forty-metre panel that
+    // was going to clothe the same face -- the panel then finds its own face
+    // already spoken for and is refused, and a face that wanted one plate gets a
+    // dozen. Largest first is the only order a greedy pack is worth running in.
     //
     // WHICH MEANS ASKING BEFORE PLACING. The size is not rolled, it is what the
     // ground answers (`fitFromTop`), so nothing knows it until the fit ladder has
@@ -3115,38 +3235,25 @@ class RockBed {
         continue
       }
 
-      // AND HOW MUCH ROOM ITS NEIGHBOURS HAVE LEFT IT. See `_packRadius`: the
-      // plates already standing in this tile are, in this pass's size order, every
-      // plate at least as big as this one, and what comes back is the largest this
-      // one may be grown to while overlapping all of them by no more than
-      // `packOverlap`. Behind the ladder, because the ground's answer is what the
-      // pass is ordered by and the neighbours only ever take room away.
+      // AND WHETHER IT IS WORTH DRAWING AT ALL. See `_earnedFrac`: what comes back
+      // is the fraction of this plate's own footprint that is wall no plate already
+      // standing has covered, and a plate that earns less than `packEarn` of itself
+      // is thrown away whole. Behind the ladder, because the size the ground gave it
+      // is the size it is being judged at.
       //
-      // SHRINK, THEN REJECT AT THE FLOOR. A plate cut below `fitFloor` is one whose
-      // face is already inside a neighbour, and it is the only plate this rule
-      // throws away. Shrinking cannot break the fit the ladder just granted: the
-      // budget and the footprint both scale with the radius while the ground's
-      // departure from the plate's plane grows faster than either.
-      // The DRAWN ground and not the field's, because that is the height every
-      // plate already standing was written at (`instY` below) and the pack compares
-      // the two. Hoisted out of that line rather than sampled twice.
+      // IT KEEPS THE SIZE IT WAS GRANTED. Nothing here shrinks a plate to fit the
+      // room beside a neighbour: that is what dressed a face in a ring of ever
+      // smaller panels around its one big one, each cut to the gap it happened to
+      // land in. A plate is the size of the face under it or it is not placed.
+      //
+      // The DRAWN ground and not the field's, because that is the height every plate
+      // already standing was written at (`instY` below) and this compares the two.
+      // Hoisted out of that line rather than sampled twice.
       const groundY = this._groundFor(x, z)
-      if (this.packCaps) {
-        const mine = this._faceRadius(span)
-        const room = this._packRadius(x, groundY, z, ids, n, tx, tz)
-        if (room < mine) {
-          const g = room / mine
-          if (span * g < this.fitFloor) {
-            this.rejected.gap++
-            continue
-          }
-          scale *= g
-          yMin *= g
-          stand *= g
-          planX *= g
-          planZ *= g
-          span *= g
-        }
+      if (this.packCaps &&
+        this._earnedFrac(x, groundY, z, this._faceRadius(span), ids, n, tx, tz) < this.packEarn) {
+        this.rejected.gap++
+        continue
       }
 
       if (this.freeCount === 0) {
@@ -3205,8 +3312,12 @@ class RockBed {
       // entry is a gain that brightens and white-balances it rather than a multiply
       // that darkens it further (see TINT_GAIN). The per-instance colour is FLOAT,
       // so > 1 is storable and does what it says.
+      // A FACADE BED SKIPS THE ROLL ENTIRELY and takes the terrain's own gain, so
+      // there is no mineral to read off a cliff panel -- see FACADE_GAIN.
       const pal = ENV_TINTS[env]
-      const gain = TINT_GAIN[pal[Math.min(pal.length - 1, (tintRoll * pal.length) | 0)]]
+      const gain = this.facade
+        ? FACADE_GAIN
+        : TINT_GAIN[pal[Math.min(pal.length - 1, (tintRoll * pal.length) | 0)]]
 
       // AND THEN PULLED PART OF THE WAY TOWARD THE GROUND IT IS STANDING ON.
       // The terrain's own vertex colour here, from the chunk mesher's own
@@ -3220,7 +3331,7 @@ class RockBed {
       // Taken at FULL MAGNITUDE, so the cue carries lightness and not just hue --
       // see GROUND_CUE for why the old renormalisation went and what the change
       // costs in brightness.
-      const cue = GROUND_CUE[env]
+      const cue = this.facade ? FACADE_CUE : GROUND_CUE[env]
       const k1 = cue
       const k0 = 1 - cue
 
@@ -3229,18 +3340,21 @@ class RockBed {
       // leaves every instance brighter than the bare tile and is not meant to: a
       // rock on dark forest loam now lands NEAR the loam, which is the whole of
       // what the lightness match buys. What the floor of 0.86 still guarantees is
-      // separation from the ground rather than dominance of it -- the cue tops out
-      // at 0.75, so a rock keeps at least a quarter of its own palette everywhere.
-      const v = 0.86 + tone * 0.3
+      // separation from the ground rather than dominance of it -- outside a facade
+      // bed the cue tops out at 0.75, so a rock keeps a quarter of its own palette.
+      //
+      // A FACADE TAKES A TENTH OF THAT SPREAD and no hue skew at all. The jitter is
+      // per-instance rather than positional, so on panels tens of metres wide it is
+      // patchwork rather than weathering; what is left is just enough that abutting
+      // plates do not read as one flat sheet. Everything that should say WHERE on
+      // the mountain a panel sits already came in through the cue.
+      const skew = this.facade ? 0 : 0.08
+      const v = this.facade ? 0.96 + tone * 0.08 : 0.86 + tone * 0.3
       this._c.setRGB(
-        gain[0] * v * (0.96 + warm * 0.08) * (k0 + gc[0] * k1),
+        gain[0] * v * (1 - skew * 0.5 + warm * skew) * (k0 + gc[0] * k1),
         gain[1] * v * (k0 + gc[1] * k1),
-        gain[2] * v * (1.04 - warm * 0.08) * (k0 + gc[2] * k1)
+        gain[2] * v * (1 + skew * 0.5 - warm * skew) * (k0 + gc[2] * k1)
       )
-      // TEMPORARY DEBUG -- see DEBUG_BED_TINT. One flat colour per cliff bed, so
-      // a panel, a boulder and a buried block read apart on the face while
-      // placement is being looked at. Delete this line with the constant.
-      if (DEBUG_BED_TINT[cfg.name]) this._c.fromArray(DEBUG_BED_TINT[cfg.name])
       this.batch.setColorAt(id, this._c)
 
       // WHERE THIS ROCK DISSOLVES, AND WHY IT CANNOT BE BEFORE ITS LADDER ENDS.
@@ -3907,12 +4021,16 @@ export class Rocks {
     // FRONT FACES ONLY, alone among the prop materials. Every other one draws
     // cutout foliage, where both sides of a leaf are the same leaf; a rock is a
     // CLOSED SOLID whose back faces are behind its own front ones, so culling
-    // them halves the raster work for nothing given up. The spun card is safe
-    // for a separate reason: billboardVertex maps its object +z onto the
-    // direction of the eye, so the side that is wound front is the side you are
-    // on. check-rocks.mjs holds both facts -- outward winding on every tier, and
-    // the card's -- because the failure is invisible from any angle that has a
-    // front face to look at.
+    // them halves the raster work for nothing given up. The two cards are safe
+    // for two separate reasons. The BOULDER'S spins: billboardVertex maps its
+    // object +z onto the direction of the eye, so the side that is wound front is
+    // the side you are on. The CAP'S does not spin, and is safe because of where
+    // it is put -- it lies in the plate's own XZ plane, wound front-face along
+    // the plate's +Y, and the plate was aligned to the surface normal, so its
+    // front face points out of the cliff and the only camera that could see its
+    // back is one inside the hill. check-rocks.mjs holds all three facts --
+    // outward winding on every mesh tier, and each card's -- because the failure
+    // is invisible from any angle that has a front face to look at.
     // `instancedFade` IS WHAT MAKES THE TWO DISSOLVES DRAW. The beds are
     // InstancedMeshes, so the fade slot is the `aPropFade` attribute PropArena
     // hangs on every geometry, and the attribute has to be DECLARED for the

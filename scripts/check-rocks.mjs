@@ -52,7 +52,7 @@ import * as THREE from 'three'
 import { buildRock, ROCK_TIERS, ROCK_LOD_AT, rockLodSize, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
 import {
   buildRockBank, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, ROCK_MESH_BAND_COUNT,
-  ROCK_IMPOSTOR_LAYERS, TINTS, TINT_GAIN, rockImpostorLayers,
+  ROCK_IMPOSTOR_LAYERS, ROCK_SHAPES, PLATE_CARD_LIFT, TINTS, TINT_GAIN, rockImpostorLayers,
 } from '../src/props/rock-bank.js'
 import { buildImpostorCard, impostorCardExtents } from '../src/props/impostor.js'
 import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX } from '../src/v2/render/rocks.js'
@@ -1273,6 +1273,30 @@ console.log('\nsnow on stone')
     missed === null ? `floor ${drift(0, 0).toFixed(2)} vs cut ${(cut(1) + SNOW_ROCK.edgeMax).toFixed(2)}`
       : `normal.y ${missed} stays bare`)
 
+  // AND FROM A DISTANCE THE MASK IS DITHERED RATHER THAN DRAWN. Past
+  // SNOW_FADE_FAR the blob has faded out to its constant 0.5, so `drift` is an
+  // affine function of `up` alone and the smoothstep either side of the cut is a
+  // clean analytic contour on the normal -- solid white one side, bare the other,
+  // and no noise anywhere in it to keep the line from reading as a decal painted
+  // on the hill. So the far field quantises the mask against ign() and caps what
+  // it can quantise at SNOW_ROCK.farMax. Both halves of that are load-bearing:
+  // the dither alone still goes solid once coverage saturates, which is the same
+  // artefact one crossfade further out.
+  const farDrift = (ny) => 0.5 * (1 - w) + upOf(ny) * w
+  check(farDrift(1) > cut(1) + SNOW_ROCK.edgeMax && SNOW_ROCK.farMax < 1,
+    'a distant rock never goes solid white, however deep the load',
+    `a flat top saturates the far mask at ${farDrift(1).toFixed(2)} over a cut of ` +
+    `${cut(1).toFixed(2)}, and the stipple caps it at ${SNOW_ROCK.farMax}`)
+
+  // AND THE SPECKLE IS A REAL SHARE OF THE PIXELS WITHOUT COSTING THE CAP. Below
+  // about a tenth the bare fragments are too sparse to read as anything but a
+  // slightly dirty white at the distances this applies over; above about a half
+  // the cap stops being a cap. What ships leaves 15% bare on a saturated face.
+  const bareShare = 1 - SNOW_ROCK.farMax
+  check(bareShare > 0.1 && bareShare < 0.5,
+    'and the speckle it keeps is a real share of the pixels without eating the cap',
+    `${(bareShare * 100).toFixed(0)}% of a saturated face stays bare stone past ${SNOW_ROCK.fadeFar} m`)
+
   // TOP FIRST, UNDERSIDE LAST. The lean has to be real or the whole thing reads
   // as bleached rather than as snowed, so coverage must climb strictly with how
   // much of the sky a face can see.
@@ -1794,29 +1818,48 @@ console.log('\nscatter')
   // card's real vertices, spin them through a basis the shader could actually
   // be handed, and demand the authored sphere still contains them. A tight
   // sphere around the unspun quad fails this by roughly its own radius again.
-  for (const shape of Object.values(forestRocks.bank.shapes)) {
-    {
-      const card = shape.tiers[shape.tiers.length - 1]
-      const pos = card.attributes.position.array
-      const sph = card.boundingSphere
+  // ONLY THE SPUN CARD OWES THIS. A plate card is never moved after the cull
+  // test -- that is the whole point of it -- so its bounds are simply the
+  // vertices, and the check it owes instead is that they really are tight, since
+  // an inflated sphere on a card that does not spin is wasted draw range on the
+  // largest population in the world. Both cases are read off the same table the
+  // bank ships rather than off a name, so a shape that changes kind changes which
+  // check it takes.
+  for (const spec of ROCK_SHAPES) {
+    const shape = forestRocks.bank.shapes[spec.name]
+    const card = shape.tiers[shape.tiers.length - 1]
+    const pos = card.attributes.position.array
+    const sph = card.boundingSphere
+    if (spec.card !== 'spun') {
       let over = 0
-      // Eight bases spread over the sphere, standing in for every camera the
-      // player could have. Orthonormal by construction, as the view matrix rows
-      // the shader reads are.
-      for (let a = 0; a < 8; a++) {
-        const th = (a / 8) * Math.PI * 2
-        const ph = (a % 3) * 0.7
-        const right = new THREE.Vector3(Math.cos(th), 0, Math.sin(th))
-        const up = new THREE.Vector3(-Math.sin(th) * Math.sin(ph), Math.cos(ph), Math.cos(th) * Math.sin(ph))
-        for (let k = 0; k < pos.length; k += 3) {
-          const v = right.clone().multiplyScalar(pos[k]).addScaledVector(up, pos[k + 1])
-          over = Math.max(over, v.distanceTo(sph.center) - sph.radius)
-        }
+      let under = Infinity
+      for (let k = 0; k < pos.length; k += 3) {
+        const d = new THREE.Vector3(pos[k], pos[k + 1], pos[k + 2]).distanceTo(sph.center)
+        over = Math.max(over, d - sph.radius)
+        under = Math.min(under, sph.radius - d)
       }
-      check(over <= 1e-4,
-        `the ${shape.name} card's bounding sphere contains the card at every angle the spin can reach`,
-        `worst overhang ${over.toFixed(4)} m over 8 camera bases`)
+      check(over <= 1e-4 && under <= 1e-4,
+        `the ${shape.name} card's bounding sphere is the tight one, because nothing moves it`,
+        `overhang ${over.toFixed(4)} m, slack ${under.toFixed(4)} m`)
+      continue
     }
+    let over = 0
+    // Eight bases spread over the sphere, standing in for every camera the
+    // player could have. Orthonormal by construction, as the view matrix rows
+    // the shader reads are.
+    for (let a = 0; a < 8; a++) {
+      const th = (a / 8) * Math.PI * 2
+      const ph = (a % 3) * 0.7
+      const right = new THREE.Vector3(Math.cos(th), 0, Math.sin(th))
+      const up = new THREE.Vector3(-Math.sin(th) * Math.sin(ph), Math.cos(ph), Math.cos(th) * Math.sin(ph))
+      for (let k = 0; k < pos.length; k += 3) {
+        const v = right.clone().multiplyScalar(pos[k]).addScaledVector(up, pos[k + 1])
+        over = Math.max(over, v.distanceTo(sph.center) - sph.radius)
+      }
+    }
+    check(over <= 1e-4,
+      `the ${shape.name} card's bounding sphere contains the card at every angle the spin can reach`,
+      `worst overhang ${over.toFixed(4)} m over 8 camera bases`)
   }
 
   // A PHOTOGRAPH PER SHAPE, AND THE CARDS THAT READ THEM. Two shapes, two
@@ -1845,14 +1888,111 @@ console.log('\nscatter')
     // The bake writes through ROCK_IMPOSTOR_LAYERS and the card geometries read
     // through it, so those two agree by construction. The material does NOT --
     // it is handed `rockImpostorLayers()` separately, and material.js spins a
-    // quad only if its layer is in that list. Miss one and that shape's card is a
-    // fixed single vertical-normal plane, which is the one arrangement that
-    // vanishes edge-on instead of merely flattening.
+    // quad only if its layer is in that list. The list has to match the SHAPES'
+    // OWN `card` kinds in both directions, and both directions are silent
+    // failures. A spun shape left off the list draws a fixed single
+    // vertical-normal plane, the one arrangement that vanishes edge-on rather
+    // than merely flattening. A PLATE shape put ON it is worse and less obvious:
+    // its normal is exactly (0, 1, 0), so it clears CARD_UP_MARK on the first
+    // try and every cliff plate in the world starts turning to face the eye,
+    // throwing away the yaw and tilt it was placed with.
     const spun = rockImpostorLayers()
-    const wanted = Object.values(want)
-    check(spun.length === wanted.length && wanted.every((l) => spun.includes(l)),
-      'and both those layers are in the list the material is told to spin',
-      `spins ${spun.join('/')}, wants ${wanted.join('/')}`)
+    const wanted = ROCK_SHAPES.filter((s) => s.card === 'spun').map((s) => s.layer)
+    const plated = ROCK_SHAPES.filter((s) => s.card !== 'spun').map((s) => s.layer)
+    check(spun.length === wanted.length && wanted.every((l) => spun.includes(l))
+      && !plated.some((l) => spun.includes(l)),
+      'the material is told to spin the billboard layer and only that one',
+      `spins ${spun.join('/') || 'none'}, billboards ${wanted.join('/') || 'none'}, `
+        + `plates ${plated.join('/') || 'none'}`)
+  }
+
+  // THE PLATE CARD IS THE PLATE, laid the way the plate was laid. Four separate
+  // claims, and each of them fails in a way that reads as "the distant cliffs
+  // look a bit off" and nothing louder, so none is left to the eye.
+  {
+    const shape = forestRocks.bank.shapes.cap
+    const card = shape.tiers[ROCK_BAND_COUNT - 1]
+    const pos = card.attributes.position.array
+    const nrm = card.attributes.normal.array
+    const uv = card.attributes.uvProj.array
+    const idx = card.index.array
+
+    // ONE: it lies FLAT. Every vertex at the same height and every normal
+    // straight up -- the alternative is the vertical billboard it used to be.
+    let flat = true
+    for (let k = 0; k < pos.length; k += 3) {
+      if (Math.abs(pos[k + 1] - pos[1]) > 1e-6) flat = false
+      if (Math.abs(nrm[k]) > 1e-6 || Math.abs(nrm[k + 2]) > 1e-6 || Math.abs(nrm[k + 1] - 1) > 1e-6) flat = false
+    }
+    check(flat && card.attributes.position.count === 4 && idx.length === 6,
+      'the cap draws a flat 2-triangle plate rather than a standing billboard',
+      `${idx.length / 3} triangles, normal (${nrm[0]}, ${nrm[1]}, ${nrm[2]})`)
+
+    // TWO: it is STRETCHED AS THE PLATE IS. The quad's x:z is the measured
+    // rock's width:depth, so a plate laid at some size draws a card of the same
+    // proportions -- which is the thing a spun quad sized to the mean silhouette
+    // over the compass could not do.
+    let hw = 0
+    let hd = 0
+    for (let k = 0; k < pos.length; k += 3) {
+      hw = Math.max(hw, Math.abs(pos[k]))
+      hd = Math.max(hd, Math.abs(pos[k + 2]))
+    }
+    const aspect = (hw / hd) / (shape.measured.width / shape.measured.depth)
+    check(Math.abs(aspect - 1) < 1e-3,
+      'and it carries the plate\'s own proportions, not a mean over the compass',
+      `card ${(hw / hd).toFixed(3)} : 1 against a mesh at `
+        + `${(shape.measured.width / shape.measured.depth).toFixed(3)} : 1`)
+
+    // THREE: it is HELD OFF THE WALL, and specifically PAST THE CROWN. A plate
+    // is placed sunk by up to SINK_CAP = 0.92 of its own standing height, so its
+    // bed plane -- y = 0 on this card -- is inside the cliff. A card left near
+    // there is not a z-fight, it is behind the terrain and never drawn, which is
+    // silent and looks exactly like the far band having no plates in it. The
+    // crown is the one plane no instance can bury, so the lift is measured from
+    // there: anything at or below `height` is the bug this catches.
+    const lift = pos[1]
+    const want = (1 + PLATE_CARD_LIFT) * shape.measured.height
+    check(Math.abs(lift - want) < 1e-6 && lift > shape.measured.height,
+      'and it stands clear of its own crown by PLATE_CARD_LIFT of its thickness',
+      `${lift.toFixed(4)} m at the bank size, ${(PLATE_CARD_LIFT * 100).toFixed(0)}% past a `
+        + `${shape.measured.height.toFixed(4)} m crown`)
+
+    // FOUR: it FACES OUT. Nothing spins this card toward the eye, so the winding
+    // is the only thing deciding which side FrontSide keeps -- and the side a
+    // camera can be on is the one the plate's +Y points at, out of the cliff.
+    let outward = 0
+    for (let f = 0; f < idx.length; f += 3) {
+      const a = idx[f] * 3
+      const b = idx[f + 1] * 3
+      const c = idx[f + 2] * 3
+      const abx = pos[b] - pos[a]
+      const abz = pos[b + 2] - pos[a + 2]
+      const acx = pos[c] - pos[a]
+      const acz = pos[c + 2] - pos[a + 2]
+      // The y of the winding normal, which for a quad in the XZ plane is the
+      // whole of it: (ab x ac).y is abz*acx - abx*acz.
+      if (abz * acx - abx * acz > 0) outward++
+    }
+    check(outward === idx.length / 3,
+      'and it winds front-face along the plate\'s own up, which is out of the wall',
+      `${outward} of ${idx.length / 3} triangles`)
+
+    // AND THE PICTURE IS THE RIGHT WAY ROUND ON IT. bakeImpostorPlate stands its
+    // camera on +y with up = -z, so image-right is world +x and the image's TOP
+    // row is world -z; flipY then puts that top row at v = 0, as every other
+    // layer in the atlas has it. So u must climb with x and v must climb with z.
+    // Get either backwards and the card is a mirrored or quarter-turned
+    // photograph of exactly the right rock.
+    let uWithX = true
+    let vWithZ = true
+    for (let k = 0, t = 0; k < pos.length; k += 3, t += 2) {
+      if ((pos[k] > 0) !== (uv[t] > 0.5)) uWithX = false
+      if ((pos[k + 2] > 0) !== (uv[t + 1] > 0.5)) vWithZ = false
+    }
+    check(uWithX && vWithZ,
+      'and the photograph is laid on it the way the camera that took it was standing',
+      `u climbs with x: ${uWithX}, v climbs with z: ${vWithZ}`)
   }
 
   // THE CARD REACHES AN INSTANCE, which is the one thing a bake and a geometry
@@ -2233,20 +2373,28 @@ console.log('\nscatter')
       // that is the whole of what the dart promises: a neighbouring tile is grown
       // independently and in an order the camera decides, so darting across the
       // seam would make the world stop being a pure function of position. Pairs
-      // straddling a seam may interpenetrate and are not counted. `packOverlap` is
+      // straddling a seam may interpenetrate and are not counted. `packEarn` is
       // checked ACROSS the seam as well, because that bed deliberately buys the
-      // route dependence back -- see `_packRadius`.
+      // route dependence back -- see `_earnedFrac`.
       {
         const undarted = r.beds
-          .filter((b) => !(b.minGap > 0) && !(b.packOverlap > 0))
+          .filter((b) => !(b.minGap > 0) && !b.packCaps)
           .map((b) => b.cfg.name)
         check(undarted.length === 0, 'every bed keeps its rocks out of each other, one way or the other',
-          undarted.length ? `neither minGap nor packOverlap on ${undarted.join(', ')}` : `all ${r.beds.length} beds`)
+          undarted.length ? `neither minGap nor packEarn on ${undarted.join(', ')}` : `all ${r.beds.length} beds`)
 
         // AND A PACKING BED KEEPS THE OTHER PROMISE, which is not about spacing at
-        // all: panels may grow through each other, but only by a stated fraction of
-        // the room between their centres, so no plate is ever drawn mostly inside
-        // another one -- triangles submitted, skinned and never seen.
+        // all: panels may grow through each other as far as they like -- that is
+        // wanted -- but no plate is drawn MOSTLY INSIDE another one, which is
+        // triangles submitted, skinned and never seen.
+        //
+        // THE ORDER-FREE FORM OF THE RULE, which is what makes it checkable here:
+        // the placer only ever accepted a plate that earned `packEarn` of its own
+        // face disc against EVERY plate already down, so the lens it shares with any
+        // one of them is at most `1 - packEarn` of its area. This gate does not know
+        // which of a pair went first, so it takes the smaller of the two ratios --
+        // whichever plate was the later one satisfies the bound, so the min always
+        // must.
         //
         // MEASURED THE WAY THE PLACER MEASURES, which is the only way this check is
         // worth anything: THREE-DIMENSIONAL centre distance against each plate's own
@@ -2256,10 +2404,10 @@ console.log('\nscatter')
         // none. Ground height rather than instance origin, so a deeply sunk plate does
         // not read as further away than it is.
         //
-        // ONE RING OF TILES IS THE WHOLE REACH: the rule binds only inside
-        // (1 - packOverlap) * 2 * _faceRadius(top), 49 m against a 220 m tile, so no
-        // second ring can reach and the four forward neighbours below cover every
-        // crossing pair exactly once.
+        // ONE RING OF TILES IS THE WHOLE REACH: two discs that do not touch share no
+        // lens, so the rule binds only inside 2 * _faceRadius(top), 55 m against a
+        // 220 m tile, and the four forward neighbours below cover every crossing pair
+        // exactly once.
         const FWD = [[0, 0], [1, 0], [0, 1], [1, 1], [1, -1]]
         let pPairs = 0
         let pOver = 0
@@ -2267,7 +2415,7 @@ console.log('\nscatter')
         let pSeam = 0
         let pNear = 0
         for (const b of r.beds) {
-          if (!(b.packOverlap > 0)) continue
+          if (!b.packCaps) continue
           for (const t of b.tiles.values()) {
             for (const [di, dj] of FWD) {
               const o = di === 0 && dj === 0
@@ -2281,17 +2429,25 @@ console.log('\nscatter')
                   const dx = b.instX[a] - b.instX[c]
                   const dy = b.instY[a] + b.instSink[a] - (b.instY[c] + b.instSink[c])
                   const dz = b.instZ[a] - b.instZ[c]
-                  const need = b._faceRadius(b.instSpan[a]) + b._faceRadius(b.instSpan[c])
-                  const f = 1 - Math.sqrt(dx * dx + dy * dy + dz * dz) / need
+                  const ra = b._faceRadius(b.instSpan[a])
+                  const rc = b._faceRadius(b.instSpan[c])
+                  const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
                   pPairs++
                   if (o !== t) pNear++
+                  if (d >= ra + rc) continue
+                  const lens = d <= Math.abs(ra - rc)
+                    ? Math.min(ra, rc) ** 2
+                    : (ra * ra * Math.acos((d * d + ra * ra - rc * rc) / (2 * d * ra))
+                      + rc * rc * Math.acos((d * d + rc * rc - ra * ra) / (2 * d * rc))
+                      - 0.5 * Math.sqrt((ra + rc - d) * (d + ra - rc) * (d - ra + rc) * (ra + rc + d))
+                    ) / Math.PI
+                  const f = Math.min(lens / (ra * ra), lens / (rc * rc))
                   if (f > pWorst) pWorst = f
-                  // A TENTH OF A POINT OF SLACK, because the bound is not merely
-                  // respected here, it is HIT: `_packRadius` hands back the room and
-                  // the caller scales the plate to exactly fill it, so a plate the
-                  // pack touched sits on the bound and lands either side of it by a
-                  // few ulps. Anything tighter than this measures float noise.
-                  if (f > b.packOverlap + 1e-3) {
+                  // A TENTH OF A POINT OF SLACK. The pack sums its neighbours'
+                  // lenses pairwise rather than unioning them, so a plate accepted
+                  // on the bound overstates what it owes and sits just inside it;
+                  // anything tighter than this measures float noise.
+                  if (f > 1 - b.packEarn + 1e-3) {
                     pOver++
                     if (o !== t) pSeam++
                   }
@@ -2301,9 +2457,9 @@ console.log('\nscatter')
           }
         }
         check(pPairs > 1000 && pNear > 0 && pOver === 0,
-          'and no panel closes more than its bed allows of the room between it and its neighbour',
+          'and no panel is drawn mostly inside another one',
           `${pOver} of ${pPairs} pairs past the bound (${pSeam} of them across a tile seam)` +
-            `, worst ${(pWorst * 100).toFixed(3)}% of an allowed ${(0.1 * 100).toFixed(1)}%` +
+            `, worst pair buries ${(pWorst * 100).toFixed(1)}% of the smaller share` +
             `, ${pNear} pairs straddling a seam were checked`)
 
         // `t.ids` IS PLACEMENT ORDER, which is what makes a `gapBySize` bed
@@ -2381,11 +2537,11 @@ console.log('\nscatter')
     // neighbours in the probe and the most generous burial the bed could ever hand
     // a plate. THIS AND NOT THE PLACED WIDTHS is what `fitFromTop` and `fitSlope`
     // are claims about: between the ladder's answer and the width that ends up on
-    // the ground sits the pack, which cuts a plate to exactly the room its
-    // neighbours leave it and so produces continuous, off-ladder, far-from-the-top
-    // widths BY DESIGN (see `_packRadius`). Every check below that means to say
-    // something about the LADDER asks it here; the ones that mean to say something
-    // about the plates that stand up read `widths`.
+    // the ground sits the pack, which never resizes a plate but does REFUSE the
+    // ones whose face is already covered (see `_earnedFrac`), so the placed widths
+    // are a subset of the ladder's and skewed toward the wide end. Every check below
+    // that means to say something about the LADDER asks it here; the ones that mean
+    // to say something about the plates that stand up read `widths`.
     const SINK_CAP = 0.92 // rocks.js, not exported
     const fitAnswers = (rocks, bedName, step = 7, reach = 300) => {
       const b = rocks.beds.find((q) => q.cfg.name === bedName)
@@ -3907,12 +4063,15 @@ console.log('\nscatter')
     // What the gate still buys is LEAVES. uMossVary must not reach foliage --
     // moss does not grow on a canopy -- and because MOSS_LAYERS is a bark-and-
     // stone list with no leaf on it, that falls out of the same test.
+    // `seasons: true`, because everything below reads the season blocks and a
+    // default program no longer carries them; check-shaders holds the world's
+    // own materials to compiling WITHOUT them.
     const src = {
       vertexShader: THREE.ShaderLib.lambert.vertexShader,
       fragmentShader: THREE.ShaderLib.lambert.fragmentShader,
       uniforms: {},
     }
-    createPropMaterial(texArray).onBeforeCompile(src)
+    createPropMaterial(texArray, { seasons: true }).onBeforeCompile(src)
     const vs = src.vertexShader
     const snowAt = vs.indexOf('vSnowPos = vec4(')
     const mossAt = vs.indexOf('vMoss =')
@@ -3954,6 +4113,21 @@ console.log('\nscatter')
       src.fragmentShader.includes('mossMask += step( abs( vTexLayer - uMossLayers[ i ] ), 0.5 )'),
       'and it is neither stone alone nor anything with a leaf on it',
       `${MOSS_LAYERS.length} layers against ${SNOW_ROCK_LAYERS.length} stone, sharing ${leafless.length} with the foliage list`)
+
+    // --- and the far-field stipple is gated on stone ---------------------------
+    //
+    // The numbers behind SNOW_FAR_MAX are checked in the snow-on-stone section;
+    // what is read here is that the line is actually WIRED that way, because the
+    // two ways of getting it wrong are both silent. It must ride `rock`, so a
+    // fern's canopy is left alone -- foliage has its own noise that survives the
+    // fade and dithering it would only make the leaves crawl. And it must ride
+    // `1.0 - snowNear`, the same fade the blob collapses on, so nothing inside
+    // SNOW_FADE_FAR moves by a fragment.
+    const stipple = src.fragmentShader.slice(src.fragmentShader.indexOf('float far ='))
+    check(src.fragmentShader.includes('float far = ( 1.0 - snowNear ) * rock;') &&
+      /1\.0 - step\( min\( cover, [0-9.]+ \), ign\( gl_FragCoord\.xy \) \), far/.test(stipple),
+      'the far-field stipple rides the blob\'s own fade and reaches stone only',
+      `capped at ${SNOW_ROCK.farMax}, crossfaded from ${SNOW_ROCK.fadeFar} m out`)
 
     // --- and the card spins spherically, which nothing else in the world does -
     //

@@ -184,7 +184,7 @@ self.onmessage = (e) => {
     if (!field) throw new Error('v2 terrain worker got a chunk request before init')
     const t0 = performance.now()
     const r = buildChunkV2(field, layers, msg)
-    // Transfer rather than copy: these four buffers are the bulk of the per-chunk
+    // Transfer rather than copy: these five buffers are the bulk of the per-chunk
     // cost and structured-cloning them would put that cost back on the main
     // thread, which is the one thing this worker exists to avoid.
     self.postMessage(
@@ -195,13 +195,14 @@ self.onmessage = (e) => {
         positions: r.positions,
         normals: r.normals,
         colors: r.colors,
+        stipple: r.stipple,
         indices: r.indices,
         minY: r.minY,
         maxY: r.maxY,
         skirtDepth: r.skirtDepth,
         ms: performance.now() - t0,
       },
-      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.indices.buffer]
+      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.indices.buffer]
     )
     return
   }

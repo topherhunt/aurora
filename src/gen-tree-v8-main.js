@@ -3,42 +3,49 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
   buildTrunkV8, buildFoliageV8, resolveTreeV8, treeV8Lod, TREE_V8_SPECIES, treeV8Species,
 } from './props/tree-v8.js'
+import { buildTreeOak, resolveTreeOak, treeOakLod, TREE_OAK_SPECIES, treeOakSpecies } from './props/tree-oak.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers } from './textures.js'
 import { createPropMaterial } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 
 // ---------------------------------------------------------------------------
-// THE BENCH FOR props/tree-v8.js. Read that file's header for what a v8 tree
-// is, and /gen-tree-v6's bench for the panel conventions -- the LOD slider
-// first, the orange label the moment a value leaves its default, the copy
-// button, the four-rung ladder. This page is that page pointed at boughs.
+// THE BENCH FOR props/tree-v8.js AND props/tree-oak.js. Read those files'
+// headers for what each tree is, and /gen-tree-v6's bench for the panel
+// conventions -- the LOD slider first, the orange label the moment a value
+// leaves its default, the copy button, the four-rung ladder. This page is that
+// page pointed at boughs, and at scoops.
 //
-// THE ONE DIFFERENCE WORTH KNOWING ABOUT IS THE MAT. v6 wears a cut-out at
-// LOD0 and swaps to the opaque tile past it, and watching that swap is half of
-// what its tier slider is for. v8 wears an OPAQUE mat at every rung, because
-// its silhouette is modelled: the air between the boughs is geometry, not
-// alpha. So there is no cutout slider on this panel and no swap in the ladder,
-// and what a tier costs here is spine stations first and whole boughs and
-// whorls second -- a coarser thing to lose than notches off a cone, and the
-// honest price of spending the triangles on separate limbs. Every mesh rung is
-// a SUBSET of LOD0, tip for tip, so the whole ladder is a thing to watch on the
-// stage: switch between the rungs and the crown thins without a tip moving.
+// TWO GENERATORS, ONE PAGE. The conifers and the v8 broadleaf are whorls of
+// cloaks; the oak is crooked tubes under a litter of scoops. They share no
+// parameter, no triangle law and no mesh primitive, so each is a GENERATOR
+// descriptor below -- its sliders, its ladder, its build and the words for its
+// budget table -- and the species dropdown picks a generator as well as a
+// parameter set. The stage, the card bake, the camera, the crown material and
+// the panel plumbing are the same for both, which is the whole reason they
+// share a page.
 //
-// THE SPECIES DROPDOWN sits above every slider because it moves every slider.
-// Picking one replaces the parameter set AND the baseline the orange labels are
-// measured against, so an orange row always means "away from THIS tree's
-// shape", never "away from the pine". It also swaps the foliage mat, each
-// species carrying its own.
+// THE MAT IS OPAQUE ON BOTH, AT EVERY RUNG. v6 wears a cut-out at LOD0 and
+// swaps to the opaque tile past it; here the silhouette is modelled, the air
+// between the boughs and between the scoops being geometry and not alpha. So
+// there is no cutout slider and no swap in the ladder. A cloak and a scoop are
+// both sheets, seen from both faces, so one double-sided material dresses
+// every crown.
+//
+// THE SPECIES DROPDOWN sits above every slider because it moves every slider
+// -- and, crossing generators, replaces them. Picking one replaces the
+// parameter set AND the baseline the orange labels are measured against, so an
+// orange row always means "away from THIS tree's shape", never "away from the
+// pine". It also swaps the foliage mat, each species carrying its own.
 // ---------------------------------------------------------------------------
 
-// --- slider spec ------------------------------------------------------------
+// --- slider specs -----------------------------------------------------------
 // `['#', title]` starts a group. Ranges are chosen so both ends are things you
 // would plausibly want to SEE, not so both ends are good: `boughWidth` past ~0.7
 // makes neighbouring cloaks pass clean through each other and the whorl closes
 // back up into a cone, and watching that happen is how you learn where the
 // range stops.
-const SLIDERS = [
+const V8_SLIDERS = [
   ['#', 'tier'],
   ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes and each is a SUBSET of LOD0 -- fewer spine stations, then whole boughs and whole whorls dropped, over a wedge of a trunk -- so every tip that survives is on the point LOD0 put it and switching rungs moves nothing. 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you. Every mesh rung wears the same opaque mat, v8 having no use for a cut-out'],
 
@@ -109,6 +116,206 @@ const SLIDERS = [
   ['brightness', 0.4, 3, 0.05, 'multiplies the albedo of both materials. A material property, not geometry'],
 ]
 
+const OAK_SLIDERS = [
+  ['#', 'tier'],
+  ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes: LOD1 keeps three scoops in five and LOD2 one in four, each in LOD0\'s own seat, and both take sides off the wood. 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you'],
+
+  ['#', 'size'],
+  ['height', 1, 32, 0.25, 'metres, root to the top of the crown. Every shape slider below is a fraction of this, so the tree scales rather than growing'],
+
+  ['#', 'trunk'],
+  ['trunkSides', 3, 24, 1, 'sides around the bole, costing `sides` x 2 triangles per segment'],
+  ['trunkSegments', 1, 8, 1, 'crooked segments up the bole. 1 is a straight cone; the warp needs joints to happen at, and 3 is enough to read as a lean that changes its mind'],
+  ['trunkCrook', 0, 0.5, 0.01, 'radians a joint may turn, about an azimuth of its own. At 0 the bole is straight whatever the segments say'],
+  ['trunkTop', 0.2, 0.9, 0.01, 'the bole\'s length as a fraction of height, before the rescale that puts the highest scoop at the height'],
+  ['trunkRadius', 0, 0.09, 0.001, 'base radius as a FRACTION of height -- the panel prints the centimetres'],
+  ['trunkTaper', 0, 1, 0.01, 'the last ring\'s radius as a fraction of the base\'s. A bole does not run to a point the way a conifer\'s does: the closing point is the cap, lost among the scoops'],
+  ['trunkLobe', 0, 0.5, 0.01, 'how far out of round, as a fraction of the radius. Three harmonics at a phase this tree drew for itself, running straight up the bole. Needs sides to spend: under 6 it is ignored'],
+  ['barkRepeat', 0.5, 16, 0.5, 'bark tiles UP the bole this many times. The tiling AROUND it, and along every branch, is derived so a tile stays roughly square in world space'],
+
+  ['#', 'branches'],
+  ['branches', 0, 12, 1, 'limbs off the bole, which is where every scoop stems from: the litter is spread over them evenly, so more limbs means fewer scoops each. Costs a tube apiece, and 0 leaves the crown with nothing to seat on'],
+  ['branchSegments', 1, 8, 1, 'crooked segments per branch, each (sides x 2) triangles and the last closing to a point for `sides`'],
+  ['branchCrook', 0, 0.8, 0.01, 'radians a joint may turn, pitch and yaw drawn separately per joint. 0 is a straight stick'],
+  ['branchRise', -0.3, 0.5, 0.01, 'and how far every joint turns UP on top of that, so a limb leaves reaching out and finishes reaching up. Negative droops'],
+  ['branchBottom', 0, 1, 0.01, 'fraction of the BOLE the lowest branch leaves at. Each branch takes its own slot between this and branchTopEnd, in order, so five branches are five heights and never a ring'],
+  ['branchTopEnd', 0, 1, 0.01, 'and the highest'],
+  ['branchLength', 0.05, 0.8, 0.01, 'a branch\'s length as a fraction of height'],
+  ['branchVary', 0, 0.8, 0.01, 'per-branch shortening, as a fraction of that. At 0 every tip is on the same sphere'],
+  ['branchPitch', -0.5, 1.4, 0.01, 'radians above horizontal at the launch, the mean'],
+  ['branchPitchVary', 0, 0.8, 0.01, 'and the half-range of the per-branch draw around it'],
+  ['branchSpread', 0, 1.2, 0.01, 'how far a branch slides AROUND off its even azimuth, as a fraction of the angular step. Past 1 neighbours can trade places'],
+  ['branchSides', 3, 12, 1, 'sides around a branch'],
+  ['branchRadius', 0, 1, 0.01, 'butt radius as a fraction of the bole\'s where it leaves'],
+  ['branchTaper', 0, 1, 0.01, 'the last ring\'s radius as a fraction of the butt\'s'],
+
+  ['#', 'the scoops'],
+  ['boughs', 0, 160, 1, 'scoops littered over the branches, five triangles each: a pentagon fanned from a centre pushed out of its plane, like a shallow bowl. THE budget knob. The count is how many the tree HAS; the ladder keeps a fraction of them without moving one'],
+  ['boughRadius', 0.02, 0.2, 0.005, 'a scoop\'s rim radius as a fraction of height'],
+  ['boughVary', 0, 0.8, 0.01, 'per-scoop half-range around that, as a fraction, so the litter is of irregular sizes'],
+  ['boughDepth', 0, 1.2, 0.01, 'how far the centre is pushed out of the rim\'s plane, in rim radii. 0 is a flat pentagon; 0.5 is a saucer; 1 is a cup'],
+  ['boughJitter', 0, 0.6, 0.01, 'per-vertex radial jitter, half-range as a fraction of the rim radius. Every rim corner draws its own, the stem on top of its reach, so no two scoops are the same shape'],
+  ['stemReach', 0.3, 3, 0.05, 'the STEM vertex\'s distance from the centre in rim radii, where every other rim corner is at one. The stem is the corner that touches the wood, so this is how far a scoop hangs off its branch rather than being pinned through the middle'],
+  ['boughAims', 1, 64, 1, 'a scoop is AIMED to be as un-parallel to its neighbours as it can: this many openings are tried, spread evenly over a hemisphere about a pole drawn at random for each scoop, and the one least parallel to the scoops already within three rim radii of it, nearest weighted most, wins. 1 is a random facing; more spreads the litter better, at build time'],
+  ['boughSpins', 1, 12, 1, 'body directions tried round the stem for each opening, from a drawn start, so a scoop can also reach to where nothing faces its way. Scoops may cross each other; that is not scored'],
+  ['boughSkew', 0, 0.9, 0.01, 'the rim stretched by this along an axis of its own and squeezed by the same across it, so a scoop is an oval and not a regular pentagon'],
+  ['boughFrom', 0, 1, 0.01, 'the fraction of a branch nothing seats below. The butt end of a limb near the bole stays bare'],
+  ['tipBias', 0.2, 5, 0.05, 'how the seats crowd along a branch: the draw is raised to 1/this, so above 1 they bunch toward the tips and below 1 toward the butt'],
+  ['tipZone', 0, 1, 0.01, 'scoops seated within this fraction of a branch\'s tip refuse any body that runs back down the limb, so a limb\'s end holds scoops reaching past it at every other angle. 0 and no scoop refuses; 1 and every scoop does'],
+
+  ['#', 'shading'],
+  ['innerShade', 0, 1, 0.01, 'how dark the crown\'s LOWEST vertex is baked, as a multiple of the highest. The scoops are lit honestly, but the low ones sit under the high ones and no rig the game can afford knows it. 1 turns the ramp off'],
+  ['boughTint', 0, 0.3, 0.01, 'per-scoop brightness jitter, half-range, so neighbouring scoops separate instead of merging into one green'],
+
+  ['#', 'material'],
+  ['texMetres', 0.15, 4, 0.05, 'one leaf tile, in metres, laid flat in each scoop\'s own plane at an offset the scoop drew for itself'],
+  ['brightness', 0.4, 3, 0.05, 'multiplies the albedo of both materials. A material property, not geometry'],
+]
+
+// --- generators -------------------------------------------------------------
+//
+// One descriptor per crown architecture. `build(opts)` returns two geometries
+// and one flat `stats` object, and everything the budget column prints about a
+// tree is either a stats field or a function of the resolved law, so adding a
+// generator is adding a descriptor and nothing in refresh().
+//
+//   sliders     the panel, in the spec above
+//   notShape    parameter keys the LADDER writes per tier and the copy leaves
+//               out -- see NOT_SHAPE
+//   defaults    a species' full parameter set; mat its foliage tile
+//   lod/resolve the ladder and the triangle law, the same pair the builder
+//               grows from, so a change to either moves the table with it
+//   parts       the breakdown rows: [label(meshParams, resolved), statsKey]
+//   ladderWhat  the words beside a rung
+//   measure     the generator's own rows in the metre table
+//   geonote     the prose under the budget
+const GEN_V8 = {
+  sliders: V8_SLIDERS,
+  notShape: ['skirtKeep', 'boughKeep'],
+  defaults: treeV8Species,
+  mat: (key) => TREE_V8_SPECIES[key].mat,
+  lod: treeV8Lod,
+  resolve: resolveTreeV8,
+  build(opts) {
+    const { geometry: trunk, frame, tree } = buildTrunkV8(opts)
+    const foliage = buildFoliageV8(opts, frame)
+    const f = foliage.userData.foliage
+    return {
+      trunk,
+      foliage,
+      stats: {
+        height: tree.height,
+        belowGround: tree.belowGround,
+        trunkDiameter: tree.trunkDiameter,
+        crownWidth: Math.max(f.crownRadius * 2, tree.crownWidth),
+        crownBase: f.crownBase,
+        crownTop: f.crownTop,
+        skirts: f.skirts,
+        boughs: f.boughs,
+        spine: f.spine,
+        trunkTris: tree.trunkTris,
+        rootTris: tree.rootTris,
+        boughTris: f.triangles,
+        triangles: tree.triangles + f.triangles,
+        vertices: tree.vertices + f.vertices,
+      },
+    }
+  },
+  parts: [
+    [(p, r) => `trunk ${r.trunkTris > 0 ? `${Math.round(p.trunkSides)} sides &times; ${Math.round(p.trunkRings)}` : '&mdash;'}`, 'trunkTris'],
+    [(p, r) => `roots ${r.roots}&times;2`, 'rootTris'],
+    [(p, r) => `boughs ${r.skirts}&times;${r.boughs}&times;${4 * r.spine - 6}`, 'boughTris'],
+  ],
+  ladderWhat: (p, r) => `${Math.round(p.trunkSides)}-side trunk, ${r.skirts}x${r.boughs} boughs of ${r.spine}`,
+  measure(f, p, crownH) {
+    return [
+      // Not a measurement, and here anyway: it is the one fact about the tree
+      // that changes what half the rows above mean, and there is no slider it
+      // could have been a row of instead.
+      ['crown form', p.crownForm],
+      ['whorls on it', `${f.skirts} @ ${f.boughs} boughs`],
+      ['spine stations', `${f.spine} a bough, ${3 * f.spine - 2} vertices`],
+      ['boughs in all', f.skirts * f.boughs],
+      ['one whorl covers', `${(crownH / Math.max(1, f.skirts)).toFixed(2)} m of stack`],
+    ]
+  },
+  geonote: (mat, p) =>
+    `Two meshes and two draw calls per tree: the trunk is the shared prop material over the texture ` +
+    `array, exactly as the game draws bark, and the crown is one OPAQUE mapped Lambert over ` +
+    `<em>${mat}</em> tiled at <em>${p.texMetres.toFixed(2)} m</em> &mdash; no cut-out at ` +
+    `any tier, a bough's outline being geometry. There is no third primitive: v8 has no wood in its ` +
+    `crown, so every triangle above is either the trunk or a cloak.`,
+  ladderNote:
+    `The <em>LOD</em> slider at the top of the panel is this table, live. Three of the four rungs ` +
+    `are the same tree with less of it drawn: first a <em>spine station</em> out of every bough, ` +
+    `which costs bends nobody reads at range, and then whole <em>boughs</em> and whole ` +
+    `<em>whorls</em>. Every rung is a <em>subset</em> of LOD0 -- not one triangle moves, and ` +
+    `every tip that survives is on the point LOD0 put it. That is the difference between ` +
+    `<em>dropping</em> boughs and <em>asking for fewer</em>: the counts are how many times the ` +
+    `stack walks its random stream, so lowering one reseeds the whole crown and the switch becomes ` +
+    `a different plant. Switch between the rungs on the stage and you should see limbs straighten ` +
+    `and then thin out, with nothing jumping. Both losses are harder than v6's, where dropping ` +
+    `spokes off a cone of revolution takes notches and keeps the cone. That is the price of ` +
+    `spending the triangles on separate boughs, and what it buys is the air between them: unlike ` +
+    `v6 the mat never changes down the ladder, because a v8 silhouette is modelled and there is no ` +
+    `cut-out to swap out. The last rung is one spun quad carrying a photograph of LOD0, baked here ` +
+    `and now off the tree on the stage.`,
+}
+
+const GEN_OAK = {
+  sliders: OAK_SLIDERS,
+  notShape: ['boughKeep'],
+  defaults: treeOakSpecies,
+  mat: (key) => TREE_OAK_SPECIES[key].mat,
+  lod: treeOakLod,
+  resolve: resolveTreeOak,
+  build(opts) {
+    return buildTreeOak(opts)
+  },
+  parts: [
+    [(p, r) => `trunk ${r.trunkSides} sides &times; ${r.trunkSegments}`, 'trunkTris'],
+    [(p, r) => `branches ${r.branches} &times; ${r.branchSides} sides &times; ${r.branchSegments}`, 'branchTris'],
+    [(p, r) => `scoops ${r.boughs}&times;5`, 'boughTris'],
+  ],
+  ladderWhat: (p, r) => `${r.trunkSides}-side bole, ${r.branches} limbs, ${r.boughs} scoops`,
+  measure(f) {
+    return [
+      ['bole', `${f.boleHeight.toFixed(2)} m to its cap`],
+      ['limbs', `${f.branches}, ${f.branchTris} triangles of wood`],
+      ['scoops', `${f.boughs} of five triangles`],
+    ]
+  },
+  geonote: (mat, p) =>
+    `Two meshes and two draw calls per tree: the wood is the shared prop material over the texture ` +
+    `array, the bole and every branch in one buffer, and the crown is one OPAQUE mapped Lambert over ` +
+    `<em>${mat}</em> tiled at <em>${p.texMetres.toFixed(2)} m</em>, on both faces: a scoop is a ` +
+    `sheet, seen from below as much as from above, and its normal is authored on each face's sky ` +
+    `side whichever way it opens, so the underside takes the same light as the top.`,
+  ladderNote:
+    `The <em>LOD</em> slider at the top of the panel is this table, live. Three of the four rungs ` +
+    `are the same tree with less of it drawn: LOD1 keeps <em>three scoops in five</em> and LOD2 ` +
+    `<em>one in four</em>, and both take sides off the wood, whose rings stay on the same crooked ` +
+    `path. Every scoop is drawn from the stream at every tier and only its emit is skipped, so a ` +
+    `rung is a subset of LOD0 in LOD0's own seats -- switch between them and scoops vanish without ` +
+    `one of the survivors moving. The seats are drawn in random order over the limbs, so the ` +
+    `survivors are an even thinning and not one bare branch. The last rung is one spun quad ` +
+    `carrying a photograph of LOD0, baked here and now off the tree on the stage.`,
+}
+
+// The dropdown. A row is a generator and the key that generator knows the
+// species by. The three broadleaves are scoop trees; v8's own readings of
+// them stay on the list beside each, since the two are the argument for the
+// second generator, and the argument should be visible.
+const SPECIES = {
+  pine: { gen: GEN_V8, key: 'pine', label: TREE_V8_SPECIES.pine.label },
+  oak: { gen: GEN_OAK, key: 'oak', label: 'oak' },
+  'oak-v8': { gen: GEN_V8, key: 'oak', label: 'oak (v8 boughs)' },
+  aspen: { gen: GEN_OAK, key: 'aspen', label: 'aspen' },
+  'aspen-v8': { gen: GEN_V8, key: 'aspen', label: 'aspen (v8 boughs)' },
+  birch: { gen: GEN_OAK, key: 'birch', label: 'birch' },
+  'birch-v8': { gen: GEN_V8, key: 'birch', label: 'birch (v8 boughs)' },
+}
+
 // design/05-rendering.md's tree row: two mesh tiers at 550 and 380, and a near
 // card of three quads. v8 runs FOUR rungs against that ladder's three, so the
 // 190 is this page's own number rather than the doc's, and it is half of LOD1
@@ -122,20 +329,21 @@ const CLASS_BUDGET = [550, 380, 190, 6]
 // -- they are just not shape, which is what keeps them out of the copied JSON
 // and what carries them across a species change unmoved.
 const BENCH_KEYS = new Set(['lod', 'brightness'])
-// Those two plus the LADDER's own pair, which treeV8Lod writes per tier: a
-// species that carried its own keep fractions would be arguing with the rung it
-// is drawn at. None of the four is shape, so none of the four is copied out.
-const NOT_SHAPE = new Set([...BENCH_KEYS, 'skirtKeep', 'boughKeep'])
+// Those two plus the LADDER's own keys, which the generator's lod() writes per
+// tier: a species that carried its own keep fractions would be arguing with
+// the rung it is drawn at. None of them is shape, so none is copied out.
+const NOT_SHAPE = () => new Set([...BENCH_KEYS, ...current().gen.notShape])
 
-const SPECIES_NAMES = Object.keys(TREE_V8_SPECIES)
-const benchDefaults = (name) => ({ ...treeV8Species(name), lod: 0, brightness: 1.0 })
+const current = () => SPECIES[species]
+const gen = () => current().gen
+const benchDefaults = () => ({ ...gen().defaults(current().key), lod: 0, brightness: 1.0 })
 
 // DEFAULTS is TWO things -- what `defaults` restores and what the orange labels
 // are measured against -- so it has to be rebuilt when the species changes. A
 // const here would leave every row on the panel orange the moment you left the
 // pine, which is the one thing the mark must never say.
 let species = 'pine'
-let DEFAULTS = benchDefaults(species)
+let DEFAULTS = benchDefaults()
 const params = { ...DEFAULTS }
 
 // --- scene ------------------------------------------------------------------
@@ -262,12 +470,13 @@ function loadMat(url) {
   needleTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy())
   foliageMaterial.map = needleTex
   foliageMaterial.needsUpdate = true
-  // Nothing else holds the old one once it is off the material, and a bench you
-  // sit on for an hour flipping species would otherwise keep every mat it ever
-  // showed on the GPU.
+  // Nothing else holds the old one once it is off the material, and a bench
+  // you sit on for an hour flipping species would otherwise keep every mat it
+  // ever showed on the GPU.
   if (prev) prev.dispose()
 }
-loadMat(TREE_V8_SPECIES[species].mat)
+const matUrl = () => gen().mat(current().key)
+loadMat(matUrl())
 
 // --- the card ---------------------------------------------------------------
 //
@@ -413,13 +622,14 @@ function rebuild() {
   const isCard = tier === 3
   const meshTier = isCard ? 0 : tier
 
+  const g = gen()
   barkMaterial.wireframe = wireframe
   foliageMaterial.wireframe = wireframe
   barkMaterial.color.setScalar(params.brightness)
   foliageMaterial.color.setScalar(params.brightness)
   cardMaterial.color.setScalar(params.brightness)
 
-  const p = treeV8Lod(params, meshTier)
+  const p = g.lod(params, meshTier)
 
   const jobs = []
   if (view === 'gallery') {
@@ -436,7 +646,8 @@ function rebuild() {
 
   clearGroup()
 
-  const agg = { tris: 0, verts: 0, bytes: 0, trunk: 0, root: 0, skirt: 0, card: 0, count: jobs.length }
+  const agg = { tris: 0, verts: 0, bytes: 0, parts: {}, card: 0, count: jobs.length }
+  for (const [, key] of g.parts) agg.parts[key] = 0
   // The metre readouts describe ONE tree, and in the size ladder it has to be
   // the one at the height on the slider -- otherwise dragging `height` moves
   // every number in the panel except the one it is named after.
@@ -445,27 +656,14 @@ function rebuild() {
   let width = 0
 
   const built = jobs.map((job) => {
-    const opts = { ...p, seed: job.seed, height: job.height }
-    const { geometry: trunk, frame, tree } = buildTrunkV8(opts)
-    const foliage = buildFoliageV8(opts, frame)
-    const f = foliage.userData.foliage
-    const stats = {
-      height: tree.height,
-      belowGround: tree.belowGround,
-      trunkDiameter: tree.trunkDiameter,
-      crownWidth: f.crownRadius * 2,
-      crownBase: f.crownBase,
-      crownTop: f.crownTop,
-      skirts: f.skirts,
-      boughs: f.boughs,
-    }
+    const b = g.build({ ...p, seed: job.seed, height: job.height })
     const err = Math.abs(job.height - params.height)
     if (err < measuredErr) {
       measuredErr = err
-      measured = stats
+      measured = b.stats
     }
-    width = Math.max(width, stats.crownWidth, tree.crownWidth)
-    return { trunk, foliage, tree, f, stats }
+    width = Math.max(width, b.stats.crownWidth)
+    return b
   })
 
   lastWidth = Math.max(0.2, width)
@@ -490,11 +688,9 @@ function rebuild() {
     })
   } else {
     built.forEach((b, i) => {
-      agg.tris += b.tree.triangles + b.f.triangles
-      agg.verts += b.tree.vertices + b.f.vertices
-      agg.trunk += b.tree.trunkTris
-      agg.root += b.tree.rootTris
-      agg.skirt += b.f.triangles
+      agg.tris += b.stats.triangles
+      agg.verts += b.stats.vertices
+      for (const [, key] of g.parts) agg.parts[key] += b.stats[key]
       agg.bytes += geometryBytes(b.trunk) + geometryBytes(b.foliage)
       place(new THREE.Mesh(b.trunk, barkMaterial), i, spacing)
       place(new THREE.Mesh(b.foliage, foliageMaterial), i, spacing)
@@ -559,7 +755,7 @@ function frameCamera() {
 const fmt = (b) =>
   b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`
 
-const matName = () => TREE_V8_SPECIES[species].mat.split('/').pop()
+const matName = () => matUrl().split('/').pop()
 
 const TIER_NAMES = ['LOD0', 'LOD1', 'LOD2', 'card']
 
@@ -571,25 +767,21 @@ function table(el, rows) {
 
 // The ladder, priced for the tree on the stage rather than for a class average
 // -- a 3 m sapling and a 25 m conifer sit at opposite ends of the same sliders,
-// and a class number describes neither. The mesh rungs are resolveTreeV8
-// applied to treeV8Lod, which is the same pair the builder grows from, so a
-// change to either law moves this table with it. The card is two by
+// and a class number describes neither. The mesh rungs are the generator's
+// resolve applied to its lod, which is the same pair the builder grows from,
+// so a change to either law moves this table with it. The card is two by
 // construction, being a quad.
 //
 // The mat column reads `solid` on every mesh rung, and that sameness is the
-// point: it is where v6's ladder swaps a cut-out out and v8's has nothing to
+// point: it is where v6's ladder swaps a cut-out out and these have nothing to
 // swap.
 function ladderRows() {
+  const g = gen()
   const rows = []
   for (let t = 0; t < 3; t++) {
-    const p = treeV8Lod(params, t)
-    const r = resolveTreeV8(p)
-    rows.push({
-      name: TIER_NAMES[t],
-      what: `${Math.round(p.trunkSides)}-side trunk, ${r.skirts}x${r.boughs} boughs of ${r.spine}`,
-      mat: 'solid',
-      tris: r.triangles,
-    })
+    const p = g.lod(params, t)
+    const r = g.resolve(p)
+    rows.push({ name: TIER_NAMES[t], what: g.ladderWhat(p, r), mat: 'solid', tris: r.triangles })
   }
   rows.push({ name: 'card', what: 'one spun quad, baked off LOD0', mat: 'baked', tris: 2 })
   return rows
@@ -597,23 +789,20 @@ function ladderRows() {
 
 function refresh() {
   const s = rebuild()
+  const g = gen()
   const tier = Math.round(params.lod)
   const per = Math.round(s.tris / s.count)
   const budget = CLASS_BUDGET[tier]
   const rows = ladderRows()
-  const meshP = treeV8Lod(params, Math.min(tier, 2))
-  const r = resolveTreeV8(meshP)
+  const meshP = g.lod(params, Math.min(tier, 2))
+  const r = g.resolve(meshP)
 
   // The breakdown describes what is ON THE STAGE, so at the card tier it is one
   // row. Printing LOD0's bough count beside a zero would read as a bug in the
   // builder rather than as a tier that has no boughs.
   const breakdown = s.card
     ? [['&nbsp;&nbsp;card', `2 &mdash; one bake, ${s.count} instance${s.count > 1 ? 's' : ''}`]]
-    : [
-        [`&nbsp;&nbsp;trunk ${r.trunkTris > 0 ? `${Math.round(meshP.trunkSides)} sides &times; ${Math.round(meshP.trunkRings)}` : '&mdash;'}`, Math.round(s.trunk / s.count)],
-        [`&nbsp;&nbsp;roots ${r.roots}&times;2`, Math.round(s.root / s.count)],
-        [`&nbsp;&nbsp;boughs ${r.skirts}&times;${r.boughs}&times;${4 * r.spine - 6}`, Math.round(s.skirt / s.count)],
-      ]
+    : g.parts.map(([label, key]) => [`&nbsp;&nbsp;${label(meshP, r)}`, Math.round(s.parts[key] / s.count)])
 
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} total)` : ''}`],
@@ -628,11 +817,9 @@ function refresh() {
     ? `One mesh and one draw call: a quad ${cardSize.width.toFixed(2)} &times; ${cardSize.height.toFixed(2)} m ` +
       `carrying a ${CARD_TEX}&sup2; photograph of the LOD0 tree, taken here and spun about world up in the ` +
       `vertex shader. Every card on the stage samples that one bake, which is what an impostor is.`
-    : `Two meshes and two draw calls per tree: the trunk is the shared prop material over the texture ` +
-      `array, exactly as the game draws bark, and the crown is one OPAQUE mapped Lambert over ` +
-      `<em>${matName()}</em> tiled at <em>${params.texMetres.toFixed(2)} m</em> &mdash; no cut-out at ` +
-      `any tier, a bough's outline being geometry. There is no third primitive: v8 has no wood in its ` +
-      `crown, so every triangle above is either the trunk or a cloak.`
+    : g.geonote(matName(), params)
+
+  document.getElementById('laddernote').innerHTML = g.ladderNote
 
   const lodEl = document.getElementById('lod')
   lodEl.innerHTML = rows
@@ -652,17 +839,7 @@ function refresh() {
     ['trunk at the base', `${(f.trunkDiameter * 100).toFixed(0)} cm`],
     ['bare trunk below it', `${f.crownBase.toFixed(2)} m`],
     ['crown / height', (f.crownWidth / Math.max(1e-6, f.height)).toFixed(2)],
-    // Not a measurement, and here anyway: it is the one fact about the tree
-    // that changes what half the rows above mean, and there is no slider it
-    // could have been a row of instead.
-    ['crown form', params.crownForm],
-    ['whorls on it', `${f.skirts} @ ${f.boughs} boughs`],
-    ['spine stations', `${f.spine} a bough, ${3 * f.spine - 2} vertices`],
-    ['boughs in all', f.skirts * f.boughs],
-    [
-      'one whorl covers',
-      `${(crownH / Math.max(1, f.skirts)).toFixed(2)} m of stack`,
-    ],
+    ...g.measure(f, params, crownH),
     [
       'below ground',
       f.belowGround > 0.005 ? `${(f.belowGround * 100).toFixed(0)} cm` : 'none',
@@ -721,7 +898,9 @@ function drawSwatch() {
 // --- controls ---------------------------------------------------------------
 
 const slidersEl = document.getElementById('sliders')
-const readouts = {}
+// Rebuilt whole when the species crosses a generator: the two panels share
+// `lod`, `height`, `brightness` and a few trunk names, and nothing else.
+let readouts = {}
 
 // --- precision, twice, because there are two different questions -------------
 //
@@ -772,29 +951,35 @@ function showValue(key) {
   label.classList.toggle('changed', !sameAsDefault(key, v))
 }
 
-for (const [key, min, max, step, help] of SLIDERS) {
-  if (key === '#') {
-    const h = document.createElement('h2')
-    h.textContent = min
-    slidersEl.appendChild(h)
-    continue
-  }
-  const row = document.createElement('div')
-  row.className = 'row'
-  row.innerHTML =
-    `<label title="${help.replace(/"/g, '&quot;')}">${key}</label>` +
-    `<input type="range" min="${min}" max="${max}" step="${step}" value="${params[key]}" />` +
-    `<span class="v"></span>`
-  const input = row.querySelector('input')
-  readouts[key] = { input, out: row.querySelector('.v'), label: row.querySelector('label'), step }
-  input.addEventListener('input', () => {
-    params[key] = Number(input.value)
+function buildSliders(spec) {
+  slidersEl.innerHTML = ''
+  readouts = {}
+  for (const [key, min, max, step, help] of spec) {
+    if (key === '#') {
+      const h = document.createElement('h2')
+      h.textContent = min
+      slidersEl.appendChild(h)
+      continue
+    }
+    if (!(key in DEFAULTS)) throw new Error(`gen-tree-v8: slider "${key}" names no parameter of ${species}`)
+    const row = document.createElement('div')
+    row.className = 'row'
+    row.innerHTML =
+      `<label title="${help.replace(/"/g, '&quot;')}">${key}</label>` +
+      `<input type="range" min="${min}" max="${max}" step="${step}" value="${params[key]}" />` +
+      `<span class="v"></span>`
+    const input = row.querySelector('input')
+    readouts[key] = { input, out: row.querySelector('.v'), label: row.querySelector('label'), step }
+    input.addEventListener('input', () => {
+      params[key] = Number(input.value)
+      showValue(key)
+      refresh()
+    })
     showValue(key)
-    refresh()
-  })
-  showValue(key)
-  slidersEl.appendChild(row)
+    slidersEl.appendChild(row)
+  }
 }
+buildSliders(gen().sliders)
 
 function syncSliders() {
   for (const key of Object.keys(readouts)) {
@@ -815,23 +1000,27 @@ document.getElementById('reroll').addEventListener('click', () => {
 })
 
 // A species is a WHOLE parameter set, seed included, not a preset layered over
-// whatever is on the panel: these four are hand-tuned trees, and a birch built
-// on an oak's seed and an oak's crownPeak is neither of them. So the swap is
-// total, and the only things that survive it are the bench's own two knobs.
+// whatever is on the panel: these are hand-tuned trees, and a birch built on
+// an oak's seed and an oak's crownPeak is neither of them. So the swap is
+// total -- the other generator's keys are cleared, not left underneath -- and
+// the only things that survive it are the bench's own two knobs.
 const speciesEl = document.getElementById('species')
-speciesEl.innerHTML = SPECIES_NAMES.map(
-  (n) => `<option value="${n}">${TREE_V8_SPECIES[n].label}</option>`
+speciesEl.innerHTML = Object.entries(SPECIES).map(
+  ([n, s]) => `<option value="${n}">${s.label}</option>`
 ).join('')
 speciesEl.value = species
 speciesEl.addEventListener('change', () => {
+  const prevGen = gen()
   species = speciesEl.value
-  DEFAULTS = benchDefaults(species)
+  DEFAULTS = benchDefaults()
   const bench = {}
   for (const key of BENCH_KEYS) bench[key] = params[key]
+  for (const key of Object.keys(params)) delete params[key]
   Object.assign(params, DEFAULTS, bench)
   seedInput.value = params.seed
-  loadMat(TREE_V8_SPECIES[species].mat)
-  syncSliders()
+  loadMat(matUrl())
+  if (gen() !== prevGen) buildSliders(gen().sliders)
+  else syncSliders()
   refresh()
   frameCamera() // after, so it frames the tree that was just built
 })
@@ -885,8 +1074,8 @@ document.getElementById('reset').addEventListener('click', () => {
 // back in, which nobody does twice.
 //
 // JSON, and it is a WHOLE parameter set rather than a diff, so it pastes into
-// TREE_V8_SPECIES as the picked species' `params` -- which is where a shape
-// tuned here is meant to end up.
+// the generator's species bank as the picked species' `params` -- which is
+// where a shape tuned here is meant to end up.
 //
 // `lod` is left out because it is the TIER, which is a fact about what you are
 // looking at and not about the tree; `brightness` is left out on the harder
@@ -894,8 +1083,9 @@ document.getElementById('reset').addEventListener('click', () => {
 // pasting the previewer's exposure into the world.
 function copyText() {
   const shape = {}
+  const skip = NOT_SHAPE()
   for (const key of Object.keys(DEFAULTS)) {
-    if (NOT_SHAPE.has(key)) continue
+    if (skip.has(key)) continue
     const step = key in readouts ? readouts[key].step : null
     shape[key] = step === null ? params[key] : atStep(params[key], step)
   }

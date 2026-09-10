@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- Quaternius animal pack</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+
+      #panel {
+        flex: 0 0 240px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      /* One button per row, name left and duration right -- the clip list is
+         the point of this page, so it stays scannable rather than wrapping. */
+      .list { display: flex; flex-direction: column; gap: 3px; }
+      .list button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
+      .list button .d { color: var(--dim); font-variant-numeric: tabular-nums; }
+      .list button.on .d { color: #b9d4f5; }
+
+      .check { display: flex; align-items: center; gap: 6px; color: var(--dim); margin-bottom: 3px; }
+
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; display: flex; flex-direction: column; }
+      #view { flex: 1 1 auto; position: relative; min-height: 0; }
+      #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
+      #boneLabels { position: absolute; inset: 0; display: none; overflow: hidden; pointer-events: none; }
+      #boneLabels.on { display: block; }
+      #boneLabels span {
+        position: absolute; transform: translate(-50%, -50%); font-size: 9px; color: #ffd9a0;
+        text-shadow: 0 0 3px #000, 0 0 6px #000; white-space: nowrap;
+      }
+      #transport {
+        flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+        border-top: 1px solid var(--edge); background: var(--panel);
+      }
+      #transport input[type=range] { flex: 1 1 auto; padding: 0; background: none; border: none; }
+      #transport .v { color: var(--dim); font-variant-numeric: tabular-nums; }
+
+      #info {
+        flex: 0 0 300px; overflow-y: auto; padding: 8px 10px;
+        border-left: 1px solid var(--edge); background: var(--panel);
+      }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .ok { color: var(--good); } .warn { color: var(--warn); }
+      #status { margin-top: 6px; }
+      /* The bone tree: indent by depth, and dim the bones that carry no skin
+         weight (Quaternius ships IK controls inside the skin's joint list). */
+      #bones { margin: 6px 0 0; font-size: 11px; line-height: 1.45; }
+      #bones div { white-space: pre; }
+      #bones .unweighted { color: #55688a; }
+      #bones .extra { color: var(--warn); }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">QUATERNIUS ANIMALS</div>
+        <div class="s">CC0 animated animal pack, read straight from tmp/</div>
+      </header>
+      <div id="controls">
+        <h2>animal</h2>
+        <div class="list" id="animals"></div>
+        <h2>animation</h2>
+        <div class="list" id="clips"></div>
+        <h2>view</h2>
+        <label class="check"><input type="checkbox" id="showSkeleton" /> skeleton</label>
+        <label class="check"><input type="checkbox" id="showBoneNames" /> bone names</label>
+        <label class="check"><input type="checkbox" id="showMesh" checked /> mesh</label>
+        <label class="check"><input type="checkbox" id="tour" /> tour (advance each loop)</label>
+      </div>
+    </div>
+
+    <div id="stage">
+      <div id="view">
+        <div id="hint">drag to orbit &middot; scroll to zoom &middot; &larr;/&rarr; clip &middot; &uarr;/&darr; animal</div>
+        <div id="boneLabels"></div>
+      </div>
+      <div id="transport">
+        <button id="play">pause</button>
+        <input type="range" id="scrub" min="0" max="1" step="0.001" value="0" />
+        <span class="v" id="time">0.00s</span>
+        <label class="check" style="margin:0">speed</label>
+        <input type="range" id="speed" min="0.1" max="2" step="0.05" value="1" style="flex:0 0 90px" />
+        <span class="v" id="speedV">1.00x</span>
+      </div>
+    </div>
+
+    <div id="info">
+      <h2>this bench</h2>
+      <p class="note">
+        The pack in <em>tmp/Quaternius Animated Animals</em> (CC0, no attribution required), served by the
+        dev server straight out of the gitignored folder -- nothing is copied into the repo. Each
+        <em>.gltf</em> carries its buffers inline as base64, so one fetch is the whole animal.
+      </p>
+      <p class="note">
+        What to look for: whether the twelve animals share one skeleton. They do, near enough -- the bone
+        list below marks the ones this animal has <span class="extra">beyond the set common to every animal
+        loaded so far</span>, and <span class="unweighted">dims the joints that carry no skin weight</span>
+        (the IK controls and pole targets, which a retarget should ignore).
+      </p>
+      <h2>status</h2>
+      <div id="status" class="note"></div>
+      <h2>skeleton</h2>
+      <div id="bones"></div>
+    </div>
+
+    <script type="module" src="/src/quaternius-main.js"></script>
+  </body>
+</html>

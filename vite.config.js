@@ -14,6 +14,7 @@ import { SPECIES as FISH_SPECIES } from './tools/fauna/fish-roster.mjs'
 import { buildCreaturePrompt, frameForRig, ASPECT_RATIOS } from './tools/creatures/creature-prompt.mjs'
 import { CREATURES } from './tools/creatures/creature-roster.mjs'
 import { estimateCredits as tripoCredits, getBalance as tripoBalance, PRESETS as TRIPO_PRESETS } from './tools/creatures/tripo.mjs'
+import { applyRigEdit, readGlb, readRigEdit, writeGlb } from './tools/creatures/apply-rig-edit.mjs'
 import * as creatures from './tools/creatures/workspace.mjs'
 import { buildTreePrompt, TREE_SPECIES as TREE_V9_SPECIES } from './tools/trees/v9/tree-species.mjs'
 import * as treesV9 from './tools/trees/v9/workspace.mjs'
@@ -794,6 +795,36 @@ function creatureGen() {
         const id = idOf(req)
         const patch = JSON.parse(await readBody(req, 1 << 16))
         return { ok: true, creature: creatures.saveMeta(id, patch) }
+      }))
+
+      // Free, local. The joint renames and reparents authored in rig-edit.html.
+      // A save also applies them, so the page can load rig-fixed.glb straight
+      // back and animate the rig it just described. The sidecar is written only
+      // after the apply succeeds: an edit that cannot produce a loadable glb is
+      // not a state worth persisting.
+      server.middlewares.use('/__creature-rig-edit', json(async (req) => {
+        const id = idOf(req)
+        const dir = creatures.workDir(id)
+        const editFile = join(dir, 'rig-edit.json')
+        if (req.method === 'GET') return { ok: true, edit: readRigEdit(editFile) }
+        postOnly(req)
+        const posted = JSON.parse(await readBody(req, 1 << 16))
+        const edit = {
+          renames: posted.renames ?? {},
+          reparent: posted.reparent ?? {},
+          delete: posted.delete ?? [],
+          moves: posted.moves ?? {},
+        }
+        const { json: gltf, bin } = readGlb(join(dir, 'rig.glb'))
+        // Deleting and moving rewrite vertex data and inverse bind matrices, so
+        // the BIN chunk that comes back is the one to write -- not the one read.
+        const report = applyRigEdit(gltf, edit, bin)
+        writeGlb(join(dir, 'rig-fixed.glb'), gltf, report.bin)
+        writeFileSync(editFile, JSON.stringify(edit, null, 2))
+        // Everything but the rebuilt buffer, which is the whole mesh and has
+        // just been written to disk where it belongs.
+        const { bin: _rebuilt, ...counts } = report
+        return { ok: true, ...counts }
       }))
 
       // Free, local. src/mesh/decimate.js runs in the page and posts the GLB it

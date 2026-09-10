@@ -58,7 +58,7 @@ import { snowDefaults } from '../src/v2/layers/doc.js'
 import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { TerrainTint } from '../src/terrain/terrain-tint.js'
-import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN, STIPPLE_TILE_PER_M } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 import { clamp01, smoothstep } from '../src/sim/mathx.js'
 
@@ -67,6 +67,10 @@ const JSON_PATH = new URL('../public/world/height.json', import.meta.url)
 const PLAYER_PATH = new URL('../src/player.js', import.meta.url)
 const MESH_PATH = new URL('../src/v2/terrain/chunk-mesh-v2.js', import.meta.url)
 const RIDGE_PATH = new URL('../src/v2/height/ridge.js', import.meta.url)
+
+// Where the camera stands for every chunk built here. Only the stipple frame
+// reads it, and only section 10 looks at what it wrote.
+const CAM = { x: 0, y: 0, z: 0 }
 
 // A deterministic scatter of world points, used by every statistical section so
 // two sections' numbers are comparable. Confined to the inner 90% so no probe
@@ -538,7 +542,7 @@ export async function run({ heightmap } = {}) {
   console.log('\nmesher invariants')
   {
     const size = WORLD_SIZE / (1 << 8)
-    const r = buildChunkV2(field, layers, { ox: 512, oz: -1024, size, res: CHUNK_RES })
+    const r = buildChunkV2(field, layers, { ox: 512, oz: -1024, size, res: CHUNK_RES, cam: CAM })
     const vpr = CHUNK_RES + 1
     const inner = vpr * vpr
 
@@ -575,6 +579,37 @@ export async function run({ heightmap } = {}) {
     }
     check(sv === CHUNK_VERTS, 'the skirt ring is exactly the four edges', `${sv - inner} skirt vertices`)
     check(skirtBad === 0, `every skirt vertex hangs exactly skirtDepth below its edge vertex`, `skirtDepth ${r.skirtDepth.toFixed(3)} m, ${skirtBad} deviations`)
+
+    // The stipple frame: one vec4 per vertex, its tile sized to THAT vertex's
+    // distance from the camera, so a chunk is not one scale end to end.
+    check(r.stipple.length === CHUNK_VERTS * 4, 'stipple frame is one vec4 per vertex', `${r.stipple.length / 4} of ${CHUNK_VERTS}`)
+    let kBad = 0
+    let offBad = 0
+    const angles = new Set()
+    for (let v = 0; v < inner; v++) {
+      const wx = 512 + r.positions[v * 3]
+      const wy = r.positions[v * 3 + 1]
+      const wz = -1024 + r.positions[v * 3 + 2]
+      const want = 1 / Math.max(STIPPLE_TILE_MIN, Math.hypot(wx - CAM.x, wy - CAM.y, wz - CAM.z) * STIPPLE_TILE_PER_M)
+      if (Math.abs(r.stipple[v * 4 + 1] - want) > want * 1e-5) kBad++
+      const ou = r.stipple[v * 4 + 2]
+      const ov = r.stipple[v * 4 + 3]
+      if (!(ou >= 0 && ou < 1 && ov >= 0 && ov < 1)) offBad++
+      angles.add(r.stipple[v * 4])
+    }
+    check(kBad === 0, 'every vertex tiles the stipple at 1 / max(min, distance * per-metre)', `${kBad} of ${inner} off`)
+    check(offBad === 0, 'stipple offsets lie in [0, 1)', `${offBad} outside`)
+    check(angles.size > inner * 0.9, 'stipple rotations are hashed per vertex, not shared', `${angles.size} distinct of ${inner}`)
+    const kNear = r.stipple[(CHUNK_RES * vpr + CHUNK_RES) * 4 + 1]
+    const kFar = r.stipple[1]
+    check(kNear > kFar, 'the near corner of a chunk gets a finer tile than the far corner', `${(1 / kNear).toFixed(2)} m vs ${(1 / kFar).toFixed(2)} m`)
+    let skirtFrame = 0
+    sv = inner
+    for (const vi of edgeOrder) {
+      for (let c = 0; c < 4; c++) if (r.stipple[sv * 4 + c] !== r.stipple[vi * 4 + c]) skirtFrame++
+      sv++
+    }
+    check(skirtFrame === 0, 'every skirt vertex carries its edge vertex\'s stipple frame', `${skirtFrame} deviations`)
 
     // Winding, in the XZ projection: every surface triangle must come out
     // counter-clockwise seen from above, or it is invisible from the only side
@@ -621,7 +656,7 @@ export async function run({ heightmap } = {}) {
     // memory corruption in the shape of terrain, because terrain-v2.js recycles
     // fixed-size BatchedMesh slots.
     let threw = false
-    try { buildChunkV2(field, layers, { ox: 0, oz: 0, size, res: CHUNK_RES + 1 }) } catch { threw = true }
+    try { buildChunkV2(field, layers, { ox: 0, oz: 0, size, res: CHUNK_RES + 1, cam: CAM }) } catch { threw = true }
     check(threw, 'a res that does not match config throws rather than meshing', `res ${CHUNK_RES + 1}`)
   }
 
@@ -651,7 +686,7 @@ export async function run({ heightmap } = {}) {
     const half = parentSize / 2
     const kids = []
     for (let q = 0; q < 4; q++) {
-      kids.push(buildChunkV2(field, layers, { ox: ox + (q & 1) * half, oz: oz + (q >> 1) * half, size: half, res: CHUNK_RES }))
+      kids.push(buildChunkV2(field, layers, { ox: ox + (q & 1) * half, oz: oz + (q >> 1) * half, size: half, res: CHUNK_RES, cam: CAM }))
     }
     const vpr = CHUNK_RES + 1
     let worst = 0
@@ -708,7 +743,7 @@ export async function run({ heightmap } = {}) {
     const colorAt = (x, z, depth) => {
       const step = WORLD_SIZE / (1 << depth) / CHUNK_RES
       const half = CHUNK_RES / 2
-      const c = buildChunkV2(field, layers, { ox: x - half * step, oz: z - half * step, size: step * CHUNK_RES, res: CHUNK_RES })
+      const c = buildChunkV2(field, layers, { ox: x - half * step, oz: z - half * step, size: step * CHUNK_RES, res: CHUNK_RES, cam: CAM })
       return c.colors[(half * (CHUNK_RES + 1) + half) * 3 + 2]
     }
 
@@ -962,7 +997,7 @@ export async function run({ heightmap } = {}) {
     const bench = (f, lyr, label) => {
       const size = WORLD_SIZE / (1 << 9)
       const specs = []
-      for (let n = 0; n < 64; n++) specs.push({ ox: -1024 + (n % 8) * size, oz: -1024 + Math.floor(n / 8) * size, size, res: CHUNK_RES })
+      for (let n = 0; n < 64; n++) specs.push({ ox: -1024 + (n % 8) * size, oz: -1024 + Math.floor(n / 8) * size, size, res: CHUNK_RES, cam: CAM })
       for (const s of specs) buildChunkV2(f, lyr, s)
       const t0 = performance.now()
       for (const s of specs) buildChunkV2(f, lyr, s)

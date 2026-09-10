@@ -501,17 +501,15 @@ worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 if (QUEST_MODE) {
   // LITERALS AND NOT questToggles, only because this runs at module scope and
   // the toggles are declared further down -- reading them here is a temporal
-  // dead zone throw at boot. These four have to be kept agreeing with
-  // `dayNight`, `water` and `aurora` by hand; everything else the panel hides is
-  // hidden inside bootWorld, which can read them.
+  // dead zone throw at boot. These two have to be kept agreeing with `water` and
+  // `aurora` by hand; everything else the panel hides is hidden inside bootWorld,
+  // which can read them.
   //
   // `water.group` IS THE NODE THE `water` ROW OWNS, all the way through. Every
   // v2 lake and river is a child of it -- WaterSurfaces parents its own group
   // under this one -- so hiding it here and then toggling the CHILD is a lake
   // that can never be shown, the parent flag still false underneath.
-  sky.mesh.visible = true
   water.group.visible = false
-  stars.points.visible = true
   aurora.mesh.visible = false
 }
 
@@ -552,7 +550,13 @@ const questControllerHits = new Map()
 const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
   { key: 'trees', text: 'trees' },
-  { key: 'rocks', text: 'rocks' },
+  // TWO ROWS FOR THE EIGHT ROCK BEDS, split on the shape each bed draws: the
+  // plates that panel a cliff face against everything that is a rounded stone
+  // lying on the ground. They are separate because the cap beds are the ones
+  // under judgement and the rubble beds put hundreds of small rocks in front of
+  // them -- with one row there was no way to look at the cliff panelling alone.
+  { key: 'rockCaps', text: 'rock caps' },
+  { key: 'boulders', text: 'boulders & rubble' },
   { key: 'grass', text: 'grass' },
   { key: 'ferns', text: 'ferns' },
   // ONE ROW FOR THREE LAYERS, because they are one thing to the wearer: the
@@ -560,16 +564,6 @@ const QUEST_TOGGLE_ROWS = [
   // all three are ground scatters that only exist inside ~100 m -- so a
   // measurement that separated them would be three readings of the same number.
   { key: 'litter', text: 'litter, fungi & deadfall' },
-  { key: 'grassDensity', text: 'grass', action: () => cycleGrassDensity(), value: () => `${grass ? grass.density : '?'}/m2 >` },
-  { key: 'grassBlades', text: 'grass blades', action: () => cycleGrassBlades(), value: () => (grassStyle === 'blades' ? `${grass.bladeCount}/clump >` : 'n/a') },
-  { key: 'grassRadius', text: 'grass reach', action: () => cycleGrassRadius(), value: () => `${grass ? grass.radius : '?'} m >` },
-  { key: 'grassFalloff', text: 'grass falloff', action: () => cycleGrassFalloff(), value: () => `${grass ? grass.falloff : '?'}^ >` },
-  // THE OTHER HALF OF THE `grass` ROW. Off leaves the bed on screen and stops
-  // its update() -- the tile walk, the rim sweep, the tier loop and every
-  // attribute upload those cause. `grass` off measures draw plus CPU together;
-  // this one measures the CPU alone, and the difference is the draw. Standing
-  // still it should be nearly free, because a settled rim writes nothing.
-  { key: 'grassUpdate', text: 'grass scatter step', on: 'stepping', off: 'frozen' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -584,7 +578,6 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'instCull', text: 'per-instance cull' },
   { key: 'wind', text: 'wind' },
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
-  { key: 'dayNight', text: 'day/night' },
   { key: 'lighting', text: 'terrain & prop lighting' },
   // A CYCLE and not a switch: see the block above TERRAIN_SHADERS for what each
   // rung is, why `plain` is a floor rather than a setting, and what to look at
@@ -616,7 +609,6 @@ function applyQuestToggle(key) {
   const enabled = (questToggles[key] = !questToggles[key])
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
-    case 'dayNight': sky.mesh.visible = enabled; stars.points.visible = enabled; break
     // A REAL OFF SWITCH, and it has to be one. This row used to gate only the
     // sun/hemi/lighting.update block in applySky(), which turned nothing off:
     // every one of those is a LATER WRITER with no restore, so "off" froze the
@@ -630,7 +622,7 @@ function applyQuestToggle(key) {
     // REMOVED -- the same polarity as `wind` and `landscape shader`.
     case 'treeTiers': trees.setCardsOnly(!enabled); break
     case 'treeCutout': trees.setCutout(enabled); break
-    case 'rocks': rocks.beds.forEach((b) => { b.batch.visible = enabled }); break
+    case 'rockCaps': case 'boulders': applyRockVisibility(); break
     case 'grass': grass.batch.visible = enabled; break
     // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
     // beds are a mesh per species. See render/ferns.js on why an InstancedMesh
@@ -665,6 +657,16 @@ function applyQuestToggle(key) {
     // world. Expect a one-off compile hitch on the frame you press it.
     case 'reflections': water.setCubeReflections(enabled); break
     case 'aurora': aurora.mesh.visible = enabled; break
+  }
+}
+
+// WHICH BED IS A CAP IS THE BED'S OWN SHAPE, not a name list here. `cap` is the
+// flat plate that panels a cliff face or a river bed; every other bed draws the
+// rounded boulder. A name list would go stale the next time a bed is added, and
+// the two rows would then silently disagree about who owns it.
+function applyRockVisibility() {
+  for (const b of rocks.beds) {
+    b.batch.visible = b.cfg.shape === 'cap' ? questToggles.rockCaps : questToggles.boulders
   }
 }
 
@@ -1315,7 +1317,7 @@ function updateQuestStats() {
     ],
     [
       ...scatterCells('grass ', questToggles.grass, grass.stats),
-      ...scatterCells('rock ', questToggles.rocks, rocks.stats),
+      ...scatterCells('rock ', questToggles.rockCaps || questToggles.boulders, rocks.stats),
       ...scatterCells('fern ', questToggles.ferns, ferns.stats),
       ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(6), '#8fd48f'],
       ['mode ', '#7f95b4'], [player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk', '#8fd48f'],
@@ -1405,15 +1407,15 @@ let ready = false
 // already running. The scatter layers still submit everything when this is off.
 const questToggles = QUEST_MODE
   ? {
-      terrain: true, dayNight: true, lighting: true,
-      trees: false, rocks: false, grass: false, ferns: false, litter: false,
+      terrain: true, lighting: true,
+      trees: false, rockCaps: false, boulders: false, grass: false, ferns: false, litter: false,
       instCull: false, water: false, reflections: false, aurora: false,
       // The toggles that start ON, because unlike every layer above them these
       // are not things being added to an empty world -- they are how the world
       // already ships, and the measurement being made is what REMOVING them
       // buys. Starting one off would mean the panel's default state disagreed
       // with the world outside quest mode.
-      wind: true, treeTiers: true, treeCutout: true, grassUpdate: true,
+      wind: true, treeTiers: true, treeCutout: true,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
       // this panel exists to look at, which is what the world does to the frame
       // while you are moving continuously through it.
@@ -1966,10 +1968,17 @@ async function bootWorld() {
     // coverage the number that matters more than luma here: it says how much of
     // the quad is stone rather than hole, and a card whose coverage collapses is
     // a distant boulder that has become a rectangle of sky.
+    //
+    // THE KIND IS PRINTED because the two rows are not the same measurement. The
+    // boulder is shot side-on and the cap from straight above (see THE CARD in
+    // rock-bank.js), and a plate seen down its own axis fills far more of its
+    // slice than anything seen broadside -- which is the whole reason it is shot
+    // that way, and would read as an anomaly next to an unlabelled boulder.
     console.log(
       'rock impostors baked:',
       rockCards
-        .map((b) => `${b.name} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)} layer ${b.layer}`)
+        .map((b) => `${b.name} (${b.card}) luma ${b.meanLuma.toFixed(3)} `
+          + `cover ${b.coverage.toFixed(3)} layer ${b.layer}`)
         .join(', ')
     )
   })
@@ -2012,7 +2021,7 @@ async function bootWorld() {
     trees.batch.visible = questToggles.trees
     trees.setCardsOnly(!questToggles.treeTiers)
     trees.setCutout(questToggles.treeCutout)
-    rocks.beds.forEach((b) => { b.batch.visible = questToggles.rocks })
+    applyRockVisibility()
     grass.batch.visible = questToggles.grass
     ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
     water.group.visible = questToggles.water
@@ -2301,9 +2310,18 @@ const builtTerrainVariants = new Map()
 // terrain shader outright lands at 62, so the rest is props. That is why this
 // stops at two rungs, and why the 2.74 was eventually taken.
 //
-// FIRST ENTRY IS THE DEFAULT, and the row still cycles all three -- what it costs
+// `stipple` IS THE PLAIN RUNG PLUS A PROP'S WORTH OF TEXTURE, and it is the
+// question this row is asking now: whether the ground can carry surface detail
+// at what a textured static mesh costs. Same vertex-lit chain, plus ONE
+// implicit-LOD fetch of the grit tile on a per-face frame the mesher baked --
+// random rotation, tile size from that face's distance to the camera at build
+// time (chunk-mesh-v2 STIPPLE FRAME) -- and a tilt on the normal; no
+// derivatives, no guards, no classification. UNMEASURED on the headset -- the
+// number it puts against `plain` is what decides whether it ships.
+//
+// FIRST ENTRY IS THE DEFAULT, and the row still cycles all four -- what it costs
 // to put the near field back is the thing this is read for.
-const TERRAIN_SHADERS = ['plain', 'axis', 'grain']
+const TERRAIN_SHADERS = ['plain', 'stipple', 'axis', 'grain']
 let terrainShaderMode = 0
 
 /**
@@ -2363,14 +2381,13 @@ function terrainVariant(mode) {
  * Caustics are not what makes a bed a bed, so a dry build is unchanged from what
  * shipped, byte for byte. See applySubmersion for when the swap happens.
  */
-function plainTerrainRung(wet) {
-  let mat = builtPlainTerrain.get(wet)
+function plainTerrainRung(wet, stipple) {
+  const key = `${stipple ? 'stipple' : 'plain'}${wet ? '-wet' : ''}`
+  let mat = builtPlainTerrain.get(key)
   if (!mat) {
-    mat = createPlainTerrainMaterial(terrain.material)
-    lighting.patch(mat, {
-      mode: 'vertex', cacheKey: `v2-terrain-shadow-plain${wet ? '-wet' : ''}`, caustics: wet,
-    })
-    builtPlainTerrain.set(wet, mat)
+    mat = createPlainTerrainMaterial(terrain.material, { stipple })
+    lighting.patch(mat, { mode: 'vertex', cacheKey: `v2-terrain-shadow-${key}`, caustics: wet })
+    builtPlainTerrain.set(key, mat)
   }
   return mat
 }
@@ -2378,8 +2395,8 @@ function plainTerrainRung(wet) {
 function terrainShaderMaterial() {
   const mode = TERRAIN_SHADERS[terrainShaderMode]
   if (mode === 'axis') return terrain.material
-  if (mode !== 'plain') return terrainVariant(mode)
-  return plainTerrainRung(causticsArmed)
+  if (mode === 'plain' || mode === 'stipple') return plainTerrainRung(causticsArmed, mode === 'stipple')
+  return terrainVariant(mode)
 }
 
 function cycleTerrainShader() {
@@ -2396,7 +2413,8 @@ function cycleTerrainShader() {
 function applyTerrainShader() {
   const mode = TERRAIN_SHADERS[terrainShaderMode]
   terrain.batch.material = terrainShaderMaterial()
-  terrainTint.setChain(mode === 'plain' ? 'plain' : 'shader')
+  // Stipple replays as plain: its block is zero-mean over the plain chain.
+  terrainTint.setChain(mode === 'plain' || mode === 'stipple' ? 'plain' : 'shader')
 }
 
 /**
@@ -2651,119 +2669,14 @@ function cycleAurora() {
   console.log(`[aurora] ${aurora.label}${aurora.blurb ? `  --  ${aurora.blurb}` : ''}`, i)
 }
 
-// --- the grass knobs, on the panel because grass is the layer under suspicion --
-//
-// WHAT THESE FOUR ARE FOR, and it is worth being blunt because they do not cost
-// the same thing. Measured on the settled bed, the fill a grass card costs goes
-// as its facing area over its distance squared, and that puts 53% of the whole
-// bed's fill inside FIVE METRES and 70% inside ten. So:
-//
-//   REACH is nearly free to cut and nearly worthless. Going from 70 m to 20 m
-//   drops 72% of the instances and 17% of the fill. It is the right knob if the
-//   bed is ever CPU-bound on its scatter, and the wrong one if it is fill-bound.
-//
-//   DENSITY scales every ring at once, so half the density is half of both the
-//   fill and the instances. It moves the number on every bed.
-//
-//   BLADES PER CLUMP is the blade bed's only knob that moves the geometry
-//   WITHOUT moving the instance count, which is what makes the pair of it and
-//   density a proper experiment rather than two ways of asking for less grass.
-//
-//   SCATTER STEP is not a knob at all but an ablation -- see the row.
-//
-// The first three rebuild rather than reconfigure -- the pool, the tile
-// candidate count, the clump geometry and the material's compiled ramp all
-// depend on them -- so each costs a hitch on the frame it is pressed. See
-// buildGrass.
-// A BED PER CYCLE, because the same number buys a different bill on each: a card
-// is two triangles out to 70 m, a blade clump is ten out to 30 m. A shared list
-// would step one of them off the end of its own useful range on the first press.
-// Each rung rebuilds the pool from the density, so 24/m2 is a real bed and not a
-// clamp against the shipped pool.
-const GRASS_DENSITY_CYCLE = {
-  cards: [6, 3, 1.5, 0.75],
-  blades: [8, 12, 24, 4],
-}
-const GRASS_RADIUS_CYCLE = {
-  cards: [70, 40, 25, 15],
-  blades: [30, 20, 12, 8],
-}
-
-// TRIANGLES PER CLUMP, and the blade bed's sharpest measured lever. It moves
-// triangles, vertices and per-vertex instance-attribute fetch together while
-// leaving the instance count, the pool, the draw call and the CPU sweep exactly
-// where they were -- which is what makes it the clean read that blade SIZE was
-// not. Halving height and width, a 4x cut in projected area, changed the frame
-// by nothing; halving this one does show up.
-//
-// Paired with the density row it separates per-vertex cost from per-instance
-// cost outright: 5 blades at 24/m2 draws the same triangles as 10 at 12 and
-// twice the instances, so whatever moves between those two settings is the
-// arena's and not the geometry's.
-//
-// Cards have no such knob -- a billboard is two triangles whatever you ask for
-// -- so the row REFUSES rather than being given a second meaning. Stepping a
-// card bed here would park a blade count in grassOpts that nothing applies until
-// the next style swap, and then the bed would come back changed for no reason
-// the wearer pressed.
-const GRASS_BLADE_CYCLE = [10, 5, 20]
-
-// The exponent p in the blade bed's thinning law -- see _keepAt in
-// render/grass.js. Cards are on 1 and have no reason not to be: their far field
-// is already the cheap end of the bed. What this row is for is the blade bed,
-// where the question is how hard the far field can be cut before the ground
-// reads as bare. 3 IS THE HARD END AND THE ROW DOES NOT GO PAST IT: a steeper
-// exponent does cut triangles, and triangles are the bed's cost, but it buys
-// them by emptying ground the player can see. A distance card was the other way
-// to spend the far field and it was rejected on look -- see the header of
-// props/grass-blades.js.
-const GRASS_FALLOFF_CYCLE = [3, 2, 1.5, 1]
-
-// The live overrides, carried across every rebuild so the three grass rows
-// compose. Without this, changing the reach would silently restore the shipped
-// density, and the wearer would read the frame-time change as the reach's.
-const grassOpts = {}
-
-function rebuildGrass(patch) {
-  Object.assign(grassOpts, patch)
-  player.headPosition(headTmp)
-  buildGrass(grassStyle, headTmp.x, headTmp.z, grassOpts)
-}
-
 /**
- * Step a cycle from wherever the bed currently sits. A value that is not on the
- * list -- which is what a style swap leaves behind -- lands on the list's head,
- * so the row always goes somewhere sensible rather than nowhere.
+ * Step a cycle from wherever the layer currently sits. A value that is not on
+ * the list lands on the list's head, so the row always goes somewhere sensible
+ * rather than nowhere.
  */
 function stepCycle(list, now) {
   const i = list.findIndex((v) => Math.abs(v - now) < 1e-6)
   return i < 0 ? list[0] : list[(i + 1) % list.length]
-}
-
-function grassCycle(table) {
-  return grassStyle === 'blades' ? table.blades : table.cards
-}
-
-function cycleGrassDensity() {
-  const list = grassCycle(GRASS_DENSITY_CYCLE)
-  rebuildGrass({ density: stepCycle(list, grass ? grass.density : NaN) })
-}
-
-function cycleGrassBlades() {
-  if (grassStyle !== 'blades') {
-    console.log(`[v2] blades per clump is a blade-bed knob; the bed is '${grassStyle}'`)
-    return
-  }
-  rebuildGrass({ bladeCount: stepCycle(GRASS_BLADE_CYCLE, grass.bladeCount) })
-}
-
-function cycleGrassRadius() {
-  const list = grassCycle(GRASS_RADIUS_CYCLE)
-  rebuildGrass({ radius: stepCycle(list, grass ? grass.radius : NaN) })
-}
-
-function cycleGrassFalloff() {
-  rebuildGrass({ falloff: stepCycle(GRASS_FALLOFF_CYCLE, grass ? grass.falloff : NaN) })
 }
 
 // --- the tree knobs, and WHY THERE ARE THREE OF THEM -------------------------
@@ -2897,11 +2810,9 @@ addEventListener('keydown', (e) => {
   // ~100 ms of one frame; a swap is not something a player does.
   if (fresh.includes('grassStyle')) {
     player.headPosition(headTmp)
-    // Through grassOpts so a style swap keeps whatever density and reach the
-    // panel has set: the two beds are only comparable at the same numbers.
     if (grass) {
       const next = GRASS_STYLES[(GRASS_STYLES.indexOf(grassStyle) + 1) % GRASS_STYLES.length]
-      buildGrass(next, headTmp.x, headTmp.z, grassOpts)
+      buildGrass(next, headTmp.x, headTmp.z)
     }
   }
   if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
@@ -3058,7 +2969,7 @@ function applySky(state, head, elapsedReal) {
   scene.background.copy(tmpCol)
 
   sky.update(head, state)
-  if (!QUEST_MODE || questToggles.dayNight) stars.update(head, state, clock.elapsed, elapsedReal)
+  stars.update(head, state, clock.elapsed, elapsedReal)
   if (!QUEST_MODE || questToggles.aurora) aurora.update(head, state, elapsedReal)
   if (!QUEST_MODE || questToggles.water) water.update(elapsedReal, hemi)
 
@@ -3187,11 +3098,8 @@ function applySubmersion(head, elapsedReal, state) {
 
   if (!submerged) {
     // Nothing to restore but the dome, and only the dome because it is the one
-    // of the three that does not decide its own visibility every frame. In
-    // quest mode the day/night toggle owns this instead of a bare `true`,
-    // since she can't be submerged while the (default-off) water toggle is
-    // off but this still runs every frame.
-    sky.mesh.visible = !QUEST_MODE || questToggles.dayNight
+    // of the three that does not decide its own visibility every frame.
+    sky.mesh.visible = true
     return
   }
 
@@ -3866,18 +3774,13 @@ function tick() {
   // trees may sit where a boulder would have pushed them. That is invisible while
   // the boulder is, and an ablation panel that cannot ablate is worth less than an
   // exact one.
-  if (!QUEST_MODE || questToggles.rocks) rocks.update(headTmp.x, headTmp.y, headTmp.z)
+  // EITHER ROCK ROW KEEPS THE SCATTER STEPPING, because Rocks.update splits one
+  // frame budget across all eight beds and has no per-bed entry point. Only both
+  // rows off is the ablation described above.
+  if (!QUEST_MODE || questToggles.rockCaps || questToggles.boulders) rocks.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
-  // TWO ROWS, ONE LAYER, and the split is the whole point: `grass` hides the
-  // batch and `grassUpdate` stops the per-frame CPU work, so pressing them one
-  // at a time says which half of the bed's frame time is the DRAW and which is
-  // the scatter's own bookkeeping -- the tile walk, the rim sweep and the
-  // attribute uploads they trigger. Gated on `grass` too, because a bed nobody
-  // is drawing has nothing to keep current.
-  if (!QUEST_MODE || (questToggles.grass && questToggles.grassUpdate)) {
-    grass.update(headTmp.x, headTmp.y, headTmp.z)
-  }
+  if (!QUEST_MODE || questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
   // Three layers on one `litter` row, hidden AND frozen together -- see the row's
   // own note for why they share a button. Cheap per frame standing still, which is
   // what "the cheapest layers in the world" was measured at; all three are tiled

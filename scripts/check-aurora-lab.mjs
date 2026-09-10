@@ -170,7 +170,7 @@ try {
 }
 
 const { ALGORITHMS, algorithmById, paramsFor, defaultsFor } = LAB_MODULES
-const { BUILTIN_PRESETS } = LAB_MODULES
+const { BUILTIN_PRESETS, builtinByName } = LAB_MODULES
 const { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAMENT_GLSL } = LAB_MODULES
 const { PALETTE_GLSL, MARCH_GLSL, MAIN_GLSL, VERTEX_GLSL, SLAB_MARCH_GLSL } = LAB_MODULES
 const { LUT_GLSL, PLANMAP_GLSL } = LAB_MODULES
@@ -275,6 +275,31 @@ function assemble(id) {
 const stripComments = (src) =>
   src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ')
 
+// Everything the ESSL 1.00 spec defines, plus the constructors and the flow
+// keywords, which the call scan below cannot tell from a function call. Written
+// out rather than pattern-matched: a name missing from here is reported as an
+// undefined function, which is a loud and quickly-fixed false positive, where a
+// pattern loose enough to cover them all would wave real ones through.
+const GLSL_BUILTINS = new Set([
+  'if', 'for', 'while', 'switch', 'return', 'defined',
+  'float', 'int', 'bool', 'vec2', 'vec3', 'vec4', 'ivec2', 'ivec3', 'ivec4',
+  'bvec2', 'bvec3', 'bvec4', 'mat2', 'mat3', 'mat4',
+  'radians', 'degrees', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+  'pow', 'exp', 'log', 'exp2', 'log2', 'sqrt', 'inversesqrt',
+  'abs', 'sign', 'floor', 'ceil', 'fract', 'mod', 'min', 'max', 'clamp',
+  'mix', 'step', 'smoothstep', 'length', 'distance', 'dot', 'cross',
+  'normalize', 'faceforward', 'reflect', 'refract', 'matrixCompMult',
+  'lessThan', 'lessThanEqual', 'greaterThan', 'greaterThanEqual',
+  'equal', 'notEqual', 'any', 'all', 'not',
+  // `texture` and `textureLod` are the ESSL 3.00 spellings. They belong here
+  // even though most of this library is 1.00, because three.js defines
+  // texture2D onto texture under WebGL2 and glsl/lut.js is written the 3.00 way
+  // outright.
+  'texture2D', 'texture2DProj', 'texture2DLod', 'textureCube', 'textureCubeLod',
+  'texture', 'textureLod', 'textureProj', 'texelFetch', 'textureSize',
+  'dFdx', 'dFdy', 'fwidth',
+])
+
 // ===========================================================================
 console.log('\n--- every uniform the GLSL references is declared --------------')
 // ===========================================================================
@@ -317,6 +342,29 @@ for (const algo of ALGORITHMS) {
     `${algo.id}: one declaration per shader-facing param, and no more`,
     `${declared.size} declarations, ${uniformParams.length} params + ${samplers.length} sampler(s)`
   )
+
+  // The same question about FUNCTIONS, which has the same answer for the same
+  // reason and until now had no check. A frame or a field is free to call a
+  // helper the assembly does not include -- the chunk list is `needs`, and
+  // `needs` is written by hand -- and the symptom is a link error on a page
+  // that then draws nothing, with no GL context in node to catch it first.
+  // GLSL has no forward declarations here, so definition BEFORE first call is
+  // checked too rather than mere presence.
+  const clean = stripComments(body)
+  const defined = new Map()
+  for (const m of clean.matchAll(/\b(?:float|vec2|vec3|vec4|mat2|mat3|void)\s+([A-Za-z_]\w*)\s*\(/g)) {
+    if (!defined.has(m[1])) defined.set(m[1], m.index)
+  }
+  const unresolved = []
+  for (const m of clean.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)) {
+    const name = m[1]
+    if (GLSL_BUILTINS.has(name) || defined.get(name) === m.index) continue
+    if (!defined.has(name)) unresolved.push(`${name} (never defined)`)
+    else if (defined.get(name) > m.index) unresolved.push(`${name} (called above its definition)`)
+  }
+  check(unresolved.length === 0,
+    `${algo.id}: every function it calls is defined in the assembly, before the call`,
+    [...new Set(unresolved)].join(', '))
 }
 
 // ===========================================================================
@@ -702,6 +750,161 @@ const curtainKeys = new Set(curtainParams().map((p) => p.key))
 const leaked = ['worldDrive', 'worldAct', 'worldAurora'].filter((k) => curtainKeys.has(k))
 check(leaked.length === 0,
   'the curtain is not handed world sliders it cannot obey', leaked.join(', '))
+
+// ===========================================================================
+console.log('\n--- the sky map, pinned at v2 and readable against v1 ----------')
+// ===========================================================================
+//
+// The whole value of a pin is that it is the OTHER sky. A pin that has drifted
+// onto the same numbers as the defaults still loads, still looks right, and
+// silently answers "nothing changed" to every A/B anyone runs against it --
+// which is the same class of quiet failure the covering check above exists for,
+// arriving through the values rather than through the keys.
+//
+// So this asserts the difference itself, knob by knob, in both directions: the
+// override says what v2 holds and the pin says what v1 held.
+
+const V2_PASS = {
+  altHigh: [260, 175],
+  zenReach: [0.9, 0.45],
+  leyBend: [0.85, 1.6],
+  leyBendRate: [0, 0.05],
+  smFray: [0, 0.45],
+}
+
+const pin = builtinByName('sky map v1')
+check(!!pin, 'the sky map v1 pin is a builtin the panel can list')
+check(pin && pin.algorithm === WORLD_ALGORITHM,
+  'and it pins the algorithm the world draws, so the A/B is one dropdown click',
+  pin ? pin.algorithm : '(absent)')
+
+// With the drive off it would pin a belt and an exposure the headset never
+// shows, and the comparison against v2 would then differ in six knobs nobody
+// meant to change. See the note above the values in presets.js.
+check(pin && pin.values.worldDrive === true,
+  'and it pins the sky the WORLD draws rather than a set of free sliders')
+
+if (pin) {
+  const wrong = []
+  for (const [key, [was, now]] of Object.entries(V2_PASS)) {
+    if (pin.values[key] !== was) wrong.push(`pin ${key} is ${pin.values[key]}, v1 held ${was}`)
+    if (worldDefaults[key] !== now) wrong.push(`default ${key} is ${worldDefaults[key]}, v2 wants ${now}`)
+  }
+  check(wrong.length === 0,
+    'every knob v2 moved is at its v2 value by default and at its v1 value in the pin',
+    wrong.join('; '))
+}
+
+// The v2 pin is the lock on the SHIPPED sky, and it is asserted key for key
+// rather than on the five knobs the pass moved. That is the difference between
+// a preset and a lock: /?quest and /test-aurora both start from
+// defaultsFor( WORLD_ALGORITHM ), so this equality is the only thing that makes
+// "the headset draws v2" a fact instead of something that was true the day it
+// was looked at. When it fails, it has caught a default being retuned, and the
+// answer is to bring the pin with it on purpose or to put the default back.
+const pin2 = builtinByName('sky map v2')
+check(!!pin2, 'the sky map v2 pin is a builtin the panel can list')
+check(pin2 && pin2.algorithm === WORLD_ALGORITHM,
+  'and it pins the algorithm the world draws',
+  pin2 ? pin2.algorithm : '(absent)')
+
+if (pin2) {
+  const drift = Object.keys(worldDefaults)
+    .filter((k) => JSON.stringify(worldDefaults[k]) !== JSON.stringify(pin2.values[k]))
+    .map((k) => `${k}: default ${JSON.stringify(worldDefaults[k])}, pin ${JSON.stringify(pin2.values[k])}`)
+  check(drift.length === 0,
+    'and it is the sky the headset actually draws, key for key',
+    drift.join('; '))
+}
+
+// The world clock overwrites its six knobs every frame, so a v2 knob that fell
+// into that set would be pinned here and then thrown away before the first
+// frame -- a preset that reads correctly and draws something else.
+const clobbered = Object.keys(V2_PASS).filter((k) => DRIVEN_KEYS.includes(k))
+check(clobbered.length === 0,
+  'and the world clock overwrites none of the knobs v2 tuned',
+  clobbered.join(', '))
+
+// leyBendRate has to reach the reference sky as a true zero, or the v2 pass has
+// quietly retuned `leyline` -- which is the one algorithm in the list that may
+// not move, because it is what the cheap candidates are measured against.
+check(defaultsFor('leyline').leyBendRate === 0,
+  'the bend drift is off by default, so the reference sky is untouched by v2')
+
+// The fray is skymap's alone. It is applied inside smConvolve, which no other
+// algorithm compiles, so a fray param that leaked into the shared schema would
+// be a slider that moves nothing on nine of the ten entries.
+const frayKeys = ['smFray', 'smFrayScale', 'smFrayRate']
+const frayLeak = []
+for (const algo of ALGORITHMS) {
+  if (algo.id === WORLD_ALGORITHM) continue
+  const keys = new Set(Object.keys(defaultsFor(algo.id)))
+  for (const k of frayKeys) if (keys.has(k)) frayLeak.push(`${algo.id}.${k}`)
+}
+check(frayLeak.length === 0, 'the fray knobs belong to the sky map alone', frayLeak.join(', '))
+
+// The trim multiplies every tap, and at smFray 0 the cut sits at 1 so the
+// smoothstep returns 0 at every tap and the sum is what it was. A trim applied
+// to `acc` after the loop instead would be a per-ray dimmer rather than a hem.
+const smSrc = fs.readFileSync(path.join(ROOT, 'src', 'aurora-lab', 'skymap', 'glsl.js'), 'utf8')
+check(/acc \+= em \* trim \* \(/.test(smSrc),
+  'the hem trims each tap inside the loop rather than the sum outside it')
+
+// The hem is ONE number per output texel, so the noise it is cut from has to
+// be resolved by that lattice and not by the screen. This shipped wrong once
+// and the symptom was not a soft hem: the coordinate was the ray's top plan
+// position, whose length grows like exp(s), so at the horizon a single row
+// stepped 2.2 noise features. A ray above about 20 degrees crosses only one
+// lit channel across the whole altitude window -- all of its light is one bump
+// at one tap -- so an unrelated cut per row takes a texel's entire
+// contribution while its neighbour keeps all of its, and the reader's bilinear
+// fetch magnifies that into blocks of sky that never light.
+//
+// Both halves are asserted: that nothing in the cut grows with radius, and
+// that the tear count the slider can reach still lands several azimuth texels
+// per tear at the second octave. The constants are read out of the GLSL rather
+// than restated here, because a restated constant is one that drifts.
+const frayAt = smSrc.indexOf('float hem = 1.0;')
+// Searched FROM the hem, because smKernel opens with the same smDv() line.
+const frayBlock = smSrc.slice(frayAt, smSrc.indexOf('float dv = smDv();', frayAt))
+check(frayBlock.length > 100, 'the fray block is where this gate thinks it is')
+check(/vec2 fp = dir \* \( SM_FRAY_R \* u_smFrayScale \)/.test(frayBlock),
+  'the hem is cut around a circle of fixed radius, not at the ray top')
+check(!/exp\s*\(/.test(frayBlock),
+  'so no term of the cut grows like exp( s ) and outruns the output lattice')
+check(/float fz = s \* SM_FRAY_ELEV \+ t \* u_smFrayRate;/.test(frayBlock)
+  && /vnoise3\( vec3\( fp, fz \) \)/.test(frayBlock),
+  'and elevation and time share the third axis, so the hem cannot crawl sideways')
+
+const frayR = Number((smSrc.match(/const float SM_FRAY_R = ([\d.]+);/) || [])[1])
+const frayElev = Number((smSrc.match(/const float SM_FRAY_ELEV = ([\d.]+);/) || [])[1])
+check(Number.isFinite(frayR) && Number.isFinite(frayElev),
+  'and this gate found both fray constants to measure them against',
+  `R ${frayR}, elev ${frayElev}`)
+
+const smapParams = paramsFor('skymap')
+const decl = (k) => smapParams.find((p) => p.key === k)
+const azRes = decl('smAzRes').value
+const rows = decl('smRows').value
+const scaleMax = decl('smFrayScale').max
+// The tightest thing in the picture: the second octave, at 2.31, with the
+// scale slider at its top. Three texels is the floor -- below it the noise is
+// aliasing rather than tearing.
+const texelsPerTear = azRes / (2 * Math.PI * frayR * scaleMax * 2.31)
+check(texelsPerTear >= 3,
+  'the finest tear the slider can ask for still spans 3 azimuth texels',
+  `${texelsPerTear.toFixed(2)} texels at scale ${scaleMax}`)
+
+// The same question on the other axis. smSpan is a function of horizonCut,
+// persp, fieldScale and smTopDeg, so it is computed rather than assumed.
+const dflt = defaultsFor('skymap')
+const denom = (ny) => Math.max(ny * dflt.persp + (1 - dflt.persp), 0.035)
+const logScale = (ny) => Math.log(Math.sqrt(Math.max(1 - ny * ny, 1e-12)) * dflt.fieldScale / denom(ny))
+const smSpan = logScale(dflt.horizonCut) - logScale(Math.sin((dflt.smTopDeg * Math.PI) / 180))
+const rowsPerTear = 1 / ((smSpan / rows) * frayElev * 1.37)
+check(rowsPerTear >= 3,
+  'and it spans 3 rows up the sky, which is the axis that aliased before',
+  `${rowsPerTear.toFixed(2)} rows over a span of ${smSpan.toFixed(2)}`)
 
 // ===========================================================================
 console.log('\n--- every chunk carries its include guard ----------------------')
