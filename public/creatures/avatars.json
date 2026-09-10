@@ -1,0 +1,40 @@
+{
+  "avatars": [
+    {
+      "id": "blacksmith",
+      "heightM": 1.82
+    },
+    {
+      "id": "farmer",
+      "heightM": 1.65
+    },
+    {
+      "id": "hunter",
+      "heightM": 1.78
+    },
+    {
+      "id": "fisherman",
+      "heightM": 1.63
+    },
+    {
+      "id": "innkeeper",
+      "heightM": 1.68
+    },
+    {
+      "id": "herbalist",
+      "heightM": 1.6
+    },
+    {
+      "id": "woodcutter",
+      "heightM": 1.85
+    },
+    {
+      "id": "shepherd",
+      "heightM": 1.75
+    },
+    {
+      "id": "alchemist",
+      "heightM": 1.62
+    }
+  ]
+}

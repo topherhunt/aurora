@@ -94,7 +94,7 @@ import * as THREE from 'three'
 import {
   TREE_DEFAULTS, TREE_SPECIES, treeLod, resolveTree, buildTree, crownProfile,
 } from '../src/props/tree.js'
-import { buildTreeBank, treeVariants, treeImpostorLayers, TREE_BANK_SPECIES } from '../src/props/tree-bank.js'
+import { buildTreeBank, treeVariants, treeImpostorLayers, plantedSpecies, TREE_BANK_SPECIES } from '../src/props/tree-bank.js'
 import { buildImpostorCard } from '../src/props/impostor.js'
 import {
   CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock, getPropClock, setPropFadeTimerAt, setPropSolidAt,
@@ -118,7 +118,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol
 const pct = (v) => `${(v * 100).toFixed(2)}%`
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, LOD_HYSTERESIS, Y_SQUASH,
-  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL } = TREE_TUNING
+  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE } = TREE_TUNING
 
 const species = Object.keys(TREE_SPECIES)
 
@@ -597,11 +597,15 @@ console.log('\n-- bank --')
 
 const bank = buildTreeBank({ billboard: true })
 const variants = treeVariants()
-const bankSpecies = Object.keys(TREE_BANK_SPECIES)
+const bankSpecies = plantedSpecies()
 
 {
   check(bank.variants.length === bankSpecies.length,
-    'the bank is exactly one variant per species', `${bank.variants.length} variants, ${bankSpecies.length} species`)
+    'the bank is exactly one variant per planted species', `${bank.variants.length} variants: ${bankSpecies.join(', ')}`)
+  // The forest is pine-only until the broadleaf crowns look right; a broadleaf
+  // reappearing here is a decision, not a drift.
+  check(bankSpecies.length === 1 && bankSpecies[0] === 'pine',
+    'the world plants only the pine', `planted: ${bankSpecies.join(', ')}`)
   check(bank.tiers.every((t) => t.geometries.length === bank.variants.length),
     'every tier holds one geometry per variant',
     bank.tiers.map((t) => t.geometries.length).join(' / '))
@@ -667,7 +671,7 @@ const bankSpecies = Object.keys(TREE_BANK_SPECIES)
 
   const impostors = treeImpostorLayers()
   check(impostors.length === bankSpecies.length,
-    'one impostor layer per species, none shared', `${impostors.join(', ')}`)
+    'one impostor layer per planted species, none shared', `${impostors.join(', ')}`)
   check(impostors.every((l) => Number.isInteger(l) && l >= 0 && l < LAYER_COUNT),
     'every impostor layer is inside the texture array', `${LAYER_COUNT} layers`)
   // The card wears its species' own photograph and no other, which is what
@@ -1709,7 +1713,8 @@ console.log('\n-- the cursor names a tree --')
     `${trunk.radius.toFixed(3)} m against ${(trees.unitTrunkRadius[v] * scale).toFixed(3)} m`)
 
   // Over every placed tree, not just the first: the old constant was 3 m for
-  // all of them, and a sapling is a third the size of its full-grown variant.
+  // all of them, and a sapling is a third the size of its full-grown variant --
+  // so a one-species forest still spreads by nearly the SCALE range.
   const scratchSize = { radius: 0, base: 0, rise: 0 }
   let widest = 0
   let narrowest = Infinity
@@ -1722,7 +1727,7 @@ console.log('\n-- the cursor names a tree --')
       n++
     }
   }
-  check(widest < 3 && narrowest > 0.01 && widest / narrowest > 5,
+  check(widest < 3 && narrowest > 0.01 && widest / narrowest > (SCALE[1] / SCALE[0]) * 0.9,
     'and the volumes track the trees rather than being one number for the forest',
     `${n} trees, trunk pick radius ${narrowest.toFixed(3)} to ${widest.toFixed(3)} m, all under the 3 m the constant used`)
 }

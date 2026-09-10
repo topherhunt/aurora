@@ -20,9 +20,10 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // its generator's own tuned parameters and seed, which is the tree that was
 // signed off on the /gen-tree-v8 bench; the bank takes no seed of its own,
 // since a re-rolled tree would be one nobody has looked at. ONE VARIANT PER
-// SPECIES at that species' own height, and each instance picks a species, a
-// yaw and a size multiplier on the MATRIX (trees.js SCALE), so the trees a
-// player sees outnumber the four meshes stored by a long way.
+// PLANTED SPECIES (TREE_BANK_SPECIES) at that species' own height, and each
+// instance picks a variant, a yaw and a size multiplier on the MATRIX
+// (trees.js SCALE), so the trees a player sees outnumber the meshes stored by
+// a long way.
 //
 // EACH GENERATOR HANDS OVER TWO GEOMETRIES -- the wood in createPropMaterial's
 // `{position, normal, uvProj, texLayer}` and the crown in a mapped Lambert's
@@ -67,16 +68,23 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // ---------------------------------------------------------------------------
 
 /**
- * The species the world plants, in a stable order: an index into this is a
- * variant id. `generator` names which builder grows it and `matLayer` the
- * array layer its crown is tiled from.
+ * The species the bank knows, in a stable order. `generator` names which
+ * builder grows it and `matLayer` the array layer its crown is tiled from.
+ *
+ * ONLY THE `planted` ONES ARE BUILT: the world is a pine forest until the
+ * broadleaf crowns look right, so the three scoop species stay here, ready,
+ * and cost no geometry, no mesh and no bake. An index into `treeVariants()`,
+ * the planted subset, is a variant id.
  */
 export const TREE_BANK_SPECIES = {
-  pine: { generator: 'v8', matLayer: LAYER.MAT_PINE, impostorLayer: LAYER.IMPOSTOR_PINE, billboardTri: 'up' },
-  oak: { generator: 'oak', matLayer: LAYER.MAT_OAK, impostorLayer: LAYER.IMPOSTOR_OAK, billboardTri: 'down' },
-  birch: { generator: 'oak', matLayer: LAYER.MAT_BIRCH, impostorLayer: LAYER.IMPOSTOR_BIRCH, billboardTri: 'down' },
-  aspen: { generator: 'oak', matLayer: LAYER.MAT_ASPEN, impostorLayer: LAYER.IMPOSTOR_ASPEN, billboardTri: 'down' },
+  pine: { generator: 'v8', matLayer: LAYER.MAT_PINE, impostorLayer: LAYER.IMPOSTOR_PINE, billboardTri: 'up', planted: true },
+  oak: { generator: 'oak', matLayer: LAYER.MAT_OAK, impostorLayer: LAYER.IMPOSTOR_OAK, billboardTri: 'down', planted: false },
+  birch: { generator: 'oak', matLayer: LAYER.MAT_BIRCH, impostorLayer: LAYER.IMPOSTOR_BIRCH, billboardTri: 'down', planted: false },
+  aspen: { generator: 'oak', matLayer: LAYER.MAT_ASPEN, impostorLayer: LAYER.IMPOSTOR_ASPEN, billboardTri: 'down', planted: false },
 }
+
+/** The species the world plants, in table order. */
+export const plantedSpecies = () => Object.keys(TREE_BANK_SPECIES).filter((s) => TREE_BANK_SPECIES[s].planted)
 
 const GENERATORS = {
   v8: { species: treeV8Species, lod: treeV8Lod, build: buildTreeV8 },
@@ -84,14 +92,14 @@ const GENERATORS = {
 }
 
 /**
- * Every species, once, at its own default height, in a stable order. An index
- * into this is a variant id.
+ * Every planted species, once, at its own default height, in table order. An
+ * index into this is a variant id.
  *
  * The height is the species' OWN and never a multiplier on it: a placed tree's
  * size comes off the instance matrix instead.
  */
 export function treeVariants() {
-  return Object.keys(TREE_BANK_SPECIES).map((species) => {
+  return plantedSpecies().map((species) => {
     const sp = TREE_BANK_SPECIES[species]
     const gen = GENERATORS[sp.generator]
     if (!gen) throw new Error(`treeVariants: ${species} names no generator "${sp.generator}"`)
@@ -117,7 +125,7 @@ export function treeVariantId(v) {
 }
 
 /**
- * The impostor texture layers, one per species, de-duplicated.
+ * The impostor texture layers, one per planted species, de-duplicated.
  *
  * This is the list `createPropMaterial({ billboardLayers })` keys on to decide
  * which geometries in the batch its vertex shader spins toward the eye. It is
@@ -128,7 +136,7 @@ export function treeVariantId(v) {
  * spinning. See material.js's billboardVertex.
  */
 export function treeImpostorLayers() {
-  return [...new Set(Object.keys(TREE_BANK_SPECIES).map((s) => TREE_BANK_SPECIES[s].impostorLayer))]
+  return [...new Set(plantedSpecies().map((s) => TREE_BANK_SPECIES[s].impostorLayer))]
 }
 
 /** One species' mesh tier, as its generator hands it over: `{ trunk, foliage, stats }`. */
@@ -308,11 +316,11 @@ export function buildTreeBank({ billboard = true } = {}) {
 }
 
 /**
- * Photograph one tree per SPECIES into the impostor layer its cards already
- * point at. Call ONCE, after `loadImageLayers()` has resolved -- before that
+ * Photograph one tree per PLANTED SPECIES into the impostor layer its cards
+ * already point at. Call ONCE, after `loadImageLayers()` has resolved -- before that
  * the tree has no bark or mat and the picture would be of nothing.
  *
- * Four ortho renders at 512^2, four 1 MB readbacks and the downsample, and
+ * One ortho render at 512^2 per species, a 1 MB readback and the downsample, and
  * `readRenderTargetPixels` stalls the pipeline for each -- so this is a
  * deliberate one-off hitch at load rather than anything the frame loop does.
  *

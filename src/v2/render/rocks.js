@@ -156,9 +156,32 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // walk around, and the stamps carry everything below it.
 const ROCK_MIN_SIZE = 0.5
 
+// A BED MAY BE SWITCHED OFF, and three of the eight are. `enabled: false` keeps
+// the entry -- its sizes, its rates and the argument behind them -- and stops it
+// being constructed, so it costs no pool, no tiles and no placement work rather
+// than being built and hidden. NOT A DELETION: remove the flag to have it back.
+//
+// The bed's INDEX in this array seeds its scatter field (see `tileSeed`) and is
+// taken BEFORE the filter, so switching one off does not move the rocks of the
+// beds either side of it. check-rocks holds that, and builds the off beds with
+// `allBeds` so their rules stay gated.
+//
+// WHAT IS OFF AND WHY, measured with scripts/probe-rock-cost.mjs on a real cliff:
+//
+//   cliff slabs  2980 ms  13359 drawn  547110 candidates walked  4200 m reach
+//   underfoot      33 ms    177 drawn    5965 candidates          120 m reach
+//   bed caps       10 ms      0 drawn    4838 candidates          360 m reach
+//
+// The cap beds are off because the panelled cliff face is being reconsidered
+// whole, and `cliff slabs` alone was 88% of every millisecond this file spends --
+// a half-million candidate sites, each one a field sample, to clothe a wall. The
+// pebbles are off because a stone under half a metre is not a rock you walk
+// around, and LAYER.LITTER already stamps that scatter onto the ground for two
+// triangles a patch.
 const BEDS = [
   {
     name: 'underfoot',
+    enabled: false,
     density: 0.35,
     // Leaf litter and turf swallow small stones; bare rock and gravel do not.
     // OUTSIDE A STREAM BED THIS IS A TENTH OF WHAT IT WAS, which is what stops
@@ -240,11 +263,19 @@ const BEDS = [
     // 1.96x, 0.40 -> 2.05x, 0.30 -> 2.10x with nothing clipped. 0.40 is the knee.
     // Not free -- 2.5 `heightAndSlopeAt` lookups where it paid one, over a 460 m
     // radius, and the pool scales with it (_poolBound). §25 has the derivation.
-    density: 0.0105,
-    // Each is the old rate divided by 2.5, so every environment's rocks per square
-    // metre is what it was and only the foot ratio moved. At the effective 0.0042 a
-    // forest boulder is one per 240 m2, roughly every 15 m, and closer in practice
-    // because graded thinning packs the near field.
+    //
+    // AND THEN HALVED AGAIN TO PAY FOR THE SIZE, from 0.0105. `sizeByEnv` below
+    // starts at a metre and a half now and the median boulder is three times what
+    // it was, and a rock that size at the old spacing is a boulder field rather
+    // than a wood with boulders in it. The two numbers are ONE decision: the bed
+    // draws about half as many rocks and each of them is worth looking at. The
+    // small stone this stops laying is not lost -- LAYER.LITTER stamps that
+    // scatter for two triangles a patch, and the scree bed still runs from half a
+    // metre where the ground is a talus foot.
+    density: 0.0055,
+    // At the effective 0.0022 a forest boulder is one per 455 m2, roughly every
+    // 21 m, and closer in practice because graded thinning packs the near field.
+    // The ratios between the four are untouched; only the scale moved.
     envDensity: { river: 0.28, forest: 0.4, cliff: 0.4, peak: 0.32 },
     fullRadius: 95,
     // 600, UP FROM 460, AND SET BY `sizeByEnv` BELOW RATHER THAN BY TASTE. A 10 m
@@ -262,10 +293,10 @@ const BEDS = [
     // See SINK_DEEP. Most beds vary their burial per instance; the underfoot bed
     // does not, because a pebble is too small for the difference to read.
     sinkVary: true,
-    // AN ANCHOR BED, and the one a caller is really asking about: half a metre
-    // through to ten spans everything from a stone you could pick up to a rock
-    // the size of a shed, which is the whole range of stone with a damp shaded
-    // base to grow anything against. See Rocks.anchorsInto.
+    // AN ANCHOR BED, and the one a caller is really asking about: a metre and a
+    // half through to ten spans everything from a block you would scramble over to
+    // a rock the size of a shed, which is the whole range of stone with a damp
+    // shaded base to grow anything against. See Rocks.anchorsInto.
     anchor: true,
     // AND THE BED THE WHOLE DISPLACEMENT RULE IS ABOUT: a tree that lands inside
     // one of these stands on it and a blade of grass that lands inside one is not
@@ -280,35 +311,46 @@ const BEDS = [
     // accept rate is capped at 1, so 0.4 * (1 + CLUMP_GAIN * clump) has room to
     // move where 1.0 would have every last bit of it truncated away.
     footDense: true,
-    // HALF A METRE TO TEN, THE SAME EVERYWHERE. Four identical entries is not a
-    // mistake -- `sizeByEnv` is per environment because the underfoot, sunken and
+    // A METRE AND A HALF TO TEN, THE SAME EVERYWHERE. Four identical entries is
+    // not a mistake -- `sizeByEnv` is per environment because the sunken and
     // embedded beds need it to be, and a bed that wants one range everywhere says
     // so four times rather than growing a second mechanism to say it once.
+    //
+    // THE FLOOR IS WHERE A ROCK BECOMES AN OBSTACLE. ROCK_STAND_MIN puts the line a
+    // prop can stand on at a metre and this sits half a metre clear of it, because a
+    // stone that small is ground clutter -- too small to walk around, too small to
+    // read as geometry -- and it was most of what the bed drew: over half of every
+    // boulder placed came out under 1.5 m. Those are gone rather
+    // than shrunk, and what they were carrying is carried by LAYER.LITTER, which
+    // stamps the same scatter for two triangles a patch.
+    //
+    // THE TOP IS NOT TASTE AND MUST NOT BE RAISED HERE. `minReach` derives the
+    // bed's whole LOD reach from it: at 10 m it demands 588 m of the 600 below,
+    // and 11 m throws at construction. The bed above 10 m is `giants`, which buys
+    // its 15 m top with a 1250 m radius.
     sizeByEnv: {
-      river: [0.5, 10.0],
-      forest: [0.5, 10.0],
-      cliff: [0.5, 10.0],
-      peak: [0.5, 10.0],
+      river: [1.5, 10.0],
+      forest: [1.5, 10.0],
+      cliff: [1.5, 10.0],
+      peak: [1.5, 10.0],
     },
-    // AND HEAVILY WEIGHTED TO THE SMALL END, which is what makes the 10 m top
-    // affordable as a LOOK rather than as a budget. A flat roll over 0.5-10 m puts
-    // the median boulder at 5.25 m, and a wood with a 5 m block every fifteen
-    // metres is a boulder field, not a wood. At 4 the median is 1.1 m, the upper
-    // quartile 3.5 m and the top decile 6.7 m: one rock over 6.7 m per 2,400 m2 of
-    // forest, about one every fifty metres, which is what a landmark erratic
-    // should be. The big end is rare, not absent -- that is the whole difference
-    // between biasing the roll and narrowing the range.
+    // STILL WEIGHTED SMALL, BUT NOWHERE NEAR AS HARD -- 4 before, and at 4 over a
+    // range starting at 1.5 the median would sit at 2.0 m and three rocks in four
+    // under 4.2. The point of the range is that it is a RANGE. At 2.5 the median
+    // is 3.0 m, the upper quartile 5.6 m and the top decile 8.0 m, against
+    // a flat roll's 5.75 m median: the big end stays rare rather than becoming the
+    // norm, which is the whole difference between biasing the roll and narrowing
+    // the range.
     //
     // It also feeds the burial: `sizeRoll` is what SINK_SIZE_TILT bends the sink
-    // roll by, so a bed weighted this far small leaves most rocks on a near-uniform
-    // depth draw and spends the deep-burial bias on the few big ones.
-    sizeBias: 4,
-    // NO ROCK INSIDE ANOTHER ROCK -- see the scree bed for the mechanism. It was
-    // pointless at the old 0.19-7.5 m spread and one rock per 240 m2, which is why
-    // this bed had none; at a 10 m top it is not, because two 8 m boulders landing
+    // roll by, so a bed weighted small leaves most rocks on a near-uniform depth
+    // draw and spends the deep-burial bias on the big ones.
+    sizeBias: 2.5,
+    // NO ROCK INSIDE ANOTHER ROCK -- see the scree bed for the mechanism. It
+    // matters more the bigger the bed's rocks get, because two 8 m boulders landing
     // 5 m apart make one 13 m blob and the silhouette is what the size was bought
-    // for. Nearly free here: 8 candidates a tile against scree's 196, so ~30
-    // distance tests where that bed pays 19,000.
+    // for. Nearly free here: 4 candidates a tile against scree's 196, so a handful
+    // of distance tests where that bed pays thousands.
     minGap: 0.6,
   },
   {
@@ -746,6 +788,7 @@ const BEDS = [
     // and phase one replays them largest first, so a face is panelled before it is
     // filled in. That is the whole reason a packing bed grows in two passes.
     name: 'cliff slabs',
+    enabled: false,
     shape: 'cap',
     roll: false,
     // THE RATE IS A LATTICE PITCH AND THE PITCH IS THE PROMISE. With `lattice` this
@@ -876,6 +919,7 @@ const BEDS = [
     // unrolled, and common enough to read as a surface. Neither is expressible as
     // a multiplier on the other.
     name: 'bed caps',
+    enabled: false,
     shape: 'cap',
     roll: false,
     // Half again the `sunken` bed's rate, and measured the same way as the cliff
@@ -1108,6 +1152,23 @@ export const ROCK_STAND_MIN = 1
 // would read noise rather than landform.
 const RELIEF_STEP = 6
 const RELIEF_PROBE = 16
+
+// AND THE ANSWER IS CACHED ON A GRID THIS FINE, in metres, which is what makes a
+// dense `footOnly` bed affordable: candidates arrive in clusters far tighter than
+// the signal, so scree paid four field samples over and over within a few metres
+// -- 54,000 asks a disc, cut to 12,000 answers.
+//
+// FOUR METRES IS UNDER EVERY SCALE THE SIGNAL HAS: a fall line over RELIEF_STEP
+// (6 m), a break over RELIEF_PROBE (16 m), a clump field with 26 m cells. So this
+// is not a pure memo -- it declares the RESOLUTION of the question, moving the
+// foot boundary by up to a cell, and cannot move where the piles are.
+//
+// THE ANSWER IS TAKEN AT THE CELL'S OWN CENTRE, one extra `heightAt` and the only
+// safe version. Storing whichever candidate asked FIRST is cheaper and wrong: a
+// tile regrown at a finer level walks a different subset, so the first-asker
+// changes and a rock appears or vanishes as the camera walks toward it. This has
+// to be a pure function of position like everything else here.
+const RELIEF_CELL = 4
 
 // How much the ground has to depart from its own local slope over that probe
 // before a site counts. A SECOND difference: the probe's height is compared
@@ -1626,6 +1687,15 @@ class RockBed {
     this.footOnly = cfg.footOnly ?? false
     this.footDense = cfg.footDense ?? false
     this.probesRelief = this.footOnly || this.footDense
+    // One cell per RELIEF_CELL of tile, plus one so the last partial cell has a
+    // slot. 0 is "not asked yet"; see `_reliefAt`.
+    if (this.probesRelief) {
+      this.reliefN = Math.ceil(tile / RELIEF_CELL) + 1
+      this.reliefMemo = new Uint8Array(this.reliefN * this.reliefN)
+    }
+    /** How many times `_relief` actually ran, against how often it was asked. */
+    this.reliefs = 0
+    this.reliefAsks = 0
 
     // The burial band, as a fraction of what the rock stands. The default is the
     // whole world's; `embedded` is the one bed that overrides it, and overrides it
@@ -2255,6 +2325,32 @@ class RockBed {
   }
 
   /**
+   * `_relief` for the RELIEF_CELL cell a candidate stands in, evaluated at that
+   * cell's centre and remembered for the rest of the tile. See RELIEF_CELL.
+   *
+   * The caller passes the tile it is filling, because the memo is indexed by the
+   * cell's position WITHIN that tile -- `_growTile` clears it on entry, so an
+   * answer cannot outlive the tile it was taken in. `h` is not passed: the point
+   * this answers about is the cell centre and not the candidate, so the height has
+   * to be the centre's too.
+   */
+  _reliefAt(x, z, tx, tz) {
+    this.reliefAsks++
+    const n = this.reliefN
+    const cx = ((x - tx * this.tile) / RELIEF_CELL) | 0
+    const cz = ((z - tz * this.tile) / RELIEF_CELL) | 0
+    const i = cz * n + cx
+    const seen = this.reliefMemo[i]
+    if (seen !== 0) return seen === 1 ? null : seen === 2 ? 'foot' : 'brow'
+    this.reliefs++
+    const px = tx * this.tile + (cx + 0.5) * RELIEF_CELL
+    const pz = tz * this.tile + (cz + 0.5) * RELIEF_CELL
+    const site = this._relief(px, pz, this.field.heightAt(px, pz))
+    this.reliefMemo[i] = site === null ? 1 : site === 'foot' ? 2 : 3
+    return site
+  }
+
+  /**
    * How much of a plate this spot can actually hold: 1 if the whole footprint
    * stands on the face, a smaller factor if it only does once cut down, and 0 if
    * it does not even at `fitFloor`. Only `fitSlope` beds call it.
@@ -2790,6 +2886,8 @@ class RockBed {
     const uOld = existing ? existing.u : 0
 
     const rand = mulberry32(tileSeed(tx, tz, this.seed, this.index))
+    // The landform answers are per tile and indexed within it -- see RELIEF_CELL.
+    if (this.probesRelief) this.reliefMemo.fill(0)
     const cfg = this.cfg
     const ids = existing ? existing.ids : new Int32Array(this.perTile)
     const rank = existing ? existing.rank : new Float32Array(this.perTile)
@@ -2977,6 +3075,27 @@ class RockBed {
         continue
       }
 
+      // THE LANDFORM FIRST ON A BED THAT HAS NO BUSINESS OFF A FOOT. `_relief`
+      // used to sit below the terrain sample because it was four field samples
+      // against one; cached per cell (see RELIEF_CELL) it is a fifth of one, and
+      // it throws away nine candidates in ten where the slope test throws away
+      // almost none. So the scree bed pays `scatterAt` on the tenth that is
+      // standing somewhere it could belong, instead of on all of them.
+      //
+      // ORDER-FREE, WHICH IS WHY THIS IS A REORDER AND NOT A RULE CHANGE. Both
+      // tests are pure functions of position and neither reads the other's
+      // output, so the set that survives both is the same set whichever runs
+      // first; only which counter in `rejected` records a refusal moves.
+      let site = null
+      if (this.footOnly) {
+        site = this._reliefAt(x, z, tx, tz)
+        if (site !== null) this.sited[site]++
+        if (site !== 'foot') {
+          this.rejected.foot++
+          continue
+        }
+      }
+
       this.samples++
       const g = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
       h = g.h
@@ -2999,21 +3118,17 @@ class RockBed {
       snowLine = this.field.snowLineAt(x, z)
       env = this._envAt(x, z, h, tan, snowLine)
 
-      // THE RELIEF, and it is asked BEFORE the density test because it moves it.
-      // Probed only on a bed that asked -- scree and boulders -- so everywhere
-      // else the four field samples are never taken. See _relief.
+      // THE RELIEF FOR A BED THAT MERELY LEANS ON IT, asked here rather than above
+      // because a `footDense` bed places everywhere and only runs denser at a foot,
+      // so nothing is thrown away by asking and the answer is wanted one line down.
+      // A bed that asked for neither flag never probes at all. See _relief.
       //
-      // A `footOnly` bed is not a bed that PREFERS feet, it is one that has no
-      // business anywhere else. Held after the clump floor above because that one
-      // is free and this one is not.
-      // `sited` counts what the probe SAW, not what was placed, which is why it is
-      // incremented before the reject: it is the only readout of the landform this
-      // file has, and a brow the bed then throws away is still a brow.
-      const site = this.probesRelief ? this._relief(x, z, h) : null
-      if (site !== null) this.sited[site]++
-      if (this.footOnly && site !== 'foot') {
-        this.rejected.foot++
-        continue
+      // `sited` counts what the probe SAW, not what was placed: it is the only
+      // readout of the landform this file has, and a brow the bed then ignores is
+      // still a brow.
+      if (this.footDense) {
+        site = this._reliefAt(x, z, tx, tz)
+        if (site !== null) this.sited[site]++
       }
 
       // How MUCH stone this environment has lying about, as opposed to which
@@ -3983,8 +4098,13 @@ export class Rocks {
    *                      the same position.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param opts.ground   TerrainV2, or null for headless probes. See Trees.
+   * @param opts.allBeds  Build the `enabled: false` beds too. FOR THE GATE ONLY --
+   *                      a switched-off bed still has a config, a shape and a set
+   *                      of rules that check-rocks holds, and those assertions are
+   *                      the reason it is safe to switch one back on. Nothing that
+   *                      renders passes this; see the `enabled` note above BEDS.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, allBeds = false } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Rocks: needs WaterSurfaces with levelAt')
     if (!layers || typeof layers.flattenAt !== 'function' || !layers.snow) {
@@ -4048,9 +4168,14 @@ export class Rocks {
       instancedFade: true,
     })
 
-    this.beds = BEDS.map(
-      (cfg, i) => new RockBed(scene, field, water, layers, this.material, bank, cfg, i, { seed, ground })
-    )
+    // The index is the position in BEDS and not in the survivors, because it seeds
+    // the bed's scatter field -- see the `enabled` note above BEDS.
+    this.beds = BEDS
+      .map((cfg, i) => ({ cfg, i }))
+      .filter(({ cfg }) => allBeds || cfg.enabled !== false)
+      .map(({ cfg, i }) =>
+        new RockBed(scene, field, water, layers, this.material, bank, cfg, i, { seed, ground }))
+    if (!this.beds.length) throw new Error('Rocks: every bed is disabled')
 
     // The same material read from the other side, for the one rock the camera is
     // standing in. See RockShell for why this is a second material and not a

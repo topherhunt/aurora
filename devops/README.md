@@ -35,8 +35,8 @@ only Aurora's unit.
 
 ## Later netplay work
 
-The relay currently carries pose only. Its versioned message envelope leaves room for later
-ordered world events; it deliberately has no persistence. `APP_PORT` is bound to localhost and
+The relay carries pose, hand presence and the avatar id each client wears, nothing else. Its versioned
+message envelope leaves room for later ordered world events; it deliberately has no persistence. `APP_PORT` is bound to localhost and
 must never be opened publicly.
 
 For local headset testing, run `npm run relay`, then start Vite with

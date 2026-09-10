@@ -34,8 +34,7 @@ import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWind
 // about the SKY or about the BODY and neither depends on where the ground came
 // from. What v2 must not import is v1's ANSWER to the ground question --
 // sim/terrain-height.js and sim/phase-a.js -- and scripts/check-v2.mjs fails
-// the build if it ever does. That is also why the spawn search below is
-// rewritten here rather than imported from phase-a.js.
+// the build if it ever does.
 import { Player, LOCOMOTION } from '../player.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
@@ -535,21 +534,6 @@ SkyProbe.include(aurora.mesh)
 // for the aurora -- and because a dome fills every face with alpha 1, which
 // turns "is there land along this ray" into "yes, always". See world-probe.js.
 worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
-
-if (QUEST_MODE) {
-  // LITERALS AND NOT questToggles, only because this runs at module scope and
-  // the toggles are declared further down -- reading them here is a temporal
-  // dead zone throw at boot. These two have to be kept agreeing with `water` and
-  // `aurora` by hand; everything else the panel hides is hidden inside bootWorld,
-  // which can read them.
-  //
-  // `water.group` IS THE NODE THE `water` ROW OWNS, all the way through. Every
-  // v2 lake and river is a child of it -- WaterSurfaces parents its own group
-  // under this one -- so hiding it here and then toggling the CHILD is a lake
-  // that can never be shown, the parent flag still false underneath.
-  water.group.visible = false
-  aurora.mesh.visible = false
-}
 
 // ---------------------------------------------------------------------------
 // Quest mode: a world-space toggle panel, ported from quest-main.js's
@@ -1383,6 +1367,13 @@ const netplay = new Netplay({
   url: import.meta.env.VITE_WS_URL || undefined,
   onState: (peers) => peerAvatars.apply(peers),
 })
+// A villager drawn at random on every load; the pick rides with each pose so
+// everyone in the room sees the same one.
+peerAvatars.ready.then((roster) => {
+  netplay.avatar = roster[Math.floor(Math.random() * roster.length)].id
+  console.log(`[net] wearing ${netplay.avatar}`)
+})
+peerAvatars.warm(renderer, camera)
 
 const poseQuat = new THREE.Quaternion()
 const posePos = new THREE.Vector3()
@@ -1427,11 +1418,9 @@ let editor = null
 let panel = null
 let ready = false
 
-// Quest-mode toggle panel state. Most layers default off so the headset can
-// isolate one system's cost at a time; the ground and the sky do not, because
-// they are what everything else is measured ON -- a bed of grass floating over
-// a black void is not the picture anyone is judging. Non-quest mode never reads
-// this.
+// Quest-mode toggle panel state. The world boots as it ships -- every layer the
+// wearer would see is on -- and the rows exist to take one away for a
+// measurement. Non-quest mode never reads this.
 //
 // `lighting` is in that second group for a stricter reason than composition:
 // off, the sun and hemi lights keep the fixed noon-ish rig they were
@@ -1452,13 +1441,12 @@ let ready = false
 const questToggles = QUEST_MODE
   ? {
       terrain: true, lighting: true,
-      trees: false, rockCaps: false, boulders: false, grass: false, ferns: false, litter: false,
-      instCull: false, water: false, reflections: false, aurora: false,
-      // The toggles that start ON, because unlike every layer above them these
-      // are not things being added to an empty world -- they are how the world
-      // already ships, and the measurement being made is what REMOVING them
-      // buys. Starting one off would mean the panel's default state disagreed
-      // with the world outside quest mode.
+      trees: true, boulders: true, grass: true, ferns: true, litter: true,
+      water: true, reflections: true, aurora: true,
+      // The cliff plates are not in the shipped set; the row is there to look
+      // at them on their own (see QUEST_TOGGLE_ROWS).
+      rockCaps: false,
+      instCull: false,
       wind: true, treeTiers: true, treeCutout: true,
       terrainWire: false,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
@@ -1586,52 +1574,10 @@ function buildGrass(style, cx, cz, opts = {}) {
  * middle of the terrain actually climbs -- a fixed band is either a hard line on
  * a gentle world or a hundred-metre smear on a steep one.
  */
-/**
- * A place to stand, on v2's own field.
- *
- * v1 imports findSpawn from phase-a.js and v2 cannot -- that module IS v1's
- * procedural world. The rule here is deliberately weaker than v1's: v1 scores
- * against a baked macro pass with lakes and villages in it, and v2 has neither
- * at boot. So this asks for the three things that are actually checkable --
- * walkable slope, dry ground, low elevation -- over a spiral of candidates, and
- * takes the best.
- *
- * The spiral is golden-angle rather than a grid: a grid at this candidate count
- * is coarse enough that whole valleys fall between its rows, and its
- * regularity means the failure repeats identically every boot instead of
- * showing up once and being noticed.
- */
-function findSpawnV2(h, wet, bands) {
-  const R = WORLD_HALF * 0.55
-  const GOLDEN = Math.PI * (3 - Math.sqrt(5))
-  const N = 512
-  // Walkable with margin. Spawning exactly at the locomotion limit means the
-  // first step in three of four directions is blocked.
-  const maxSlope = (LOCOMOTION.maxSlopeDeg * 0.6 * Math.PI) / 180
-
-  let best = null
-  for (let i = 0; i < N; i++) {
-    const r = R * Math.sqrt((i + 0.5) / N)
-    const a = i * GOLDEN
-    const x = Math.cos(a) * r
-    const z = Math.sin(a) * r
-    const y = h.heightAt(x, z)
-    if (wet.isSubmerged(x, z, y)) continue
-    const slope = h.slopeAt(x, z)
-    if (slope > maxSlope) continue
-    // Low ground, and flat, and near the middle -- in that order of weight. The
-    // elevation term is normalised by the world's own relief so it stays
-    // comparable to the other two under any bake.
-    const relief = Math.max(1, bands.max - bands.min)
-    const score =
-      ((y - bands.min) / relief) * 2 + slope / maxSlope + (r / R) * 0.5
-    if (best === null || score < best.score) best = { x, z, y, score }
-  }
-  if (best) return best
-  throw new Error(
-    `v2: no spawn found in ${N} candidates within ${R.toFixed(0)} m of the origin -- every one was underwater or steeper than ${((maxSlope * 180) / Math.PI).toFixed(0)} deg`
-  )
-}
+// Where the world starts. A fixed point rather than a search, so every boot
+// and every headset opens on the same view. Chosen by hand; the boot throws if
+// the water ever rises over it, since nothing else here checks the ground.
+const SPAWN = { x: -320, z: 1367 }
 
 async function bootWorld() {
   bootSay(`loading <b>${HEIGHTMAP_URL}</b> ...`)
@@ -1720,7 +1666,8 @@ async function bootWorld() {
 
   await bootStep('spawn')
   player = new Player(rig, camera, height)
-  const spawn = findSpawnV2(height, waterSurfaces, bands)
+  const spawn = { x: SPAWN.x, z: SPAWN.z, y: height.heightAt(SPAWN.x, SPAWN.z) }
+  if (waterSurfaces.isSubmerged(spawn.x, spawn.z, spawn.y)) throw new Error(`v2: SPAWN (${spawn.x}, ${spawn.z}) is underwater`)
   player.spawnAt(spawn.x, spawn.z)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
@@ -2076,6 +2023,11 @@ async function bootWorld() {
     // litter/mushrooms/deadwood share the one `litter` row -- see
     // QUEST_TOGGLE_ROWS -- and are always constructed either way, because
     // mushrooms anchors onto placed trees and rocks whether it is drawn or not.
+    //
+    // `water.group` IS THE NODE THE `water` ROW OWNS, all the way through. Every
+    // v2 lake and river is a child of it -- WaterSurfaces parents its own group
+    // under this one -- so hiding it and then toggling the CHILD is a lake that
+    // can never be shown, the parent flag still false underneath.
     terrain.batch.visible = questToggles.terrain
     trees.batch.visible = questToggles.trees
     trees.setCardsOnly(!questToggles.treeTiers)
@@ -2085,6 +2037,7 @@ async function bootWorld() {
     ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
     water.group.visible = questToggles.water
     water.setCubeReflections(questToggles.reflections)
+    aurora.mesh.visible = questToggles.aurora
     litter.batch.visible = questToggles.litter
     mushrooms.batch.visible = questToggles.litter
     deadwood.batch.visible = questToggles.litter

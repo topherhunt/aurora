@@ -19,20 +19,32 @@ try {
   const first = await open()
   const second = await open()
   const pose = Array.from({ length: 21 }, (_, i) => (i % 7 === 6 ? 1 : i / 10))
-  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [true, false] }))
-  const snapshot = await new Promise((resolve, reject) => {
+  const nextSnapshot = (ws, accept) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('snapshot timeout')), 1000)
-    second.addEventListener('message', (event) => {
+    const onMessage = (event) => {
       const message = JSON.parse(event.data)
-      if (message.type === 'snapshot' && message.peers.length) {
+      if (message.type === 'snapshot' && message.peers.length && accept(message.peers[0])) {
         clearTimeout(timer)
-        resolve(message)
+        ws.removeEventListener('message', onMessage)
+        resolve(message.peers[0])
       }
-    })
+    }
+    ws.addEventListener('message', onMessage)
   })
-  const peer = snapshot.peers[0]
+  // An avatar id that is not a creature id is dropped with its whole message,
+  // so the first pose the peer ever sees is the well-formed one after it.
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose: pose.map((v) => -v), hands: [true, false], avatar: '../etc' }))
+  await wait(30)
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [true, false], avatar: 'blacksmith' }))
+  const peer = await nextSnapshot(second, () => true)
   if (peer.pose.join(',') !== pose.join(',') || peer.hands[0] !== true) throw new Error('pose round-trip mismatch')
-  console.log('net relay check: OK')
+  if (peer.avatar !== 'blacksmith') throw new Error(`avatar round-trip mismatch: got ${JSON.stringify(peer.avatar)}`)
+  // Without the field the relay says null, which the client reads as "dress by id hash".
+  await wait(30)
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, false] }))
+  const bare = await nextSnapshot(second, (p) => p.hands[0] === false)
+  if (bare.avatar !== null) throw new Error(`avatar should be null when unsent, got ${JSON.stringify(bare.avatar)}`)
+  console.log('net relay check: OK (pose, hands, avatar round-trip; malformed avatar dropped)')
   first.close()
   second.close()
 } finally {

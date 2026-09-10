@@ -5,7 +5,7 @@
 // Reuses check-rocks.mjs's `ridge` stub world and its spacing metric verbatim
 // (scripts/check-rocks.mjs section 8, "the pile itself, in metres"):
 //
-//   isFoot(x, z) = beds[1]._relief(x, z, ridge.heightAt(x)) === 'foot'
+//   isFoot(x, z) = scree._relief(x, z, ridge.heightAt(x)) === 'foot'
 //   footN        = rocks from EVERY bed inside R with isFoot(x, z)
 //   footA        = foot ground inside R, sampled on a 2 m lattice, 4 m2 a hit
 //   spacing      = sqrt(footA / footN)                     -- 1/sqrt(density)
@@ -70,6 +70,10 @@ const base = new Rocks(scene, countingField, ridge.water, layers, texArray, { se
 const RockBed = Object.getPrototypeOf(base.beds[0]).constructor
 const SCREE = base.beds.findIndex((b) => b.cfg.name === 'scree')
 const cfg = base.beds[SCREE].cfg
+// The bed's index in BEDS, not in the survivors -- it is what seeds the scatter
+// field, so a swept bed built with the array position would lay a different world
+// than the one that ships. See the `enabled` note in rocks.js.
+const SCREE_SEED_INDEX = base.beds[SCREE].index
 const SHIPPED = { ...cfg }
 
 const bedCost = []
@@ -85,8 +89,8 @@ for (const bed of base.beds) {
 
 // isFoot goes through the UNcounted field, so probing the ground for the area
 // integrals cannot pollute a bed's traffic counters.
-const relief1 = base.beds[1]._relief.bind(base.beds[1])
-base.beds[1].field = ridge.field
+const relief1 = base.beds[SCREE]._relief.bind(base.beds[SCREE])
+base.beds[SCREE].field = ridge.field
 const isFoot = (x, z) => relief1(x, z, ridge.field.heightAt(x)) === 'foot'
 
 /** The foot lattice inside R, on check-rocks' own 2 m step: xs, zs, 4 m2 each. */
@@ -160,7 +164,7 @@ const OTHER = { 140: footRocks(others, 140), 110: footRocks(others, 110), 90: fo
 /** One scree bed at `over`, on one seed. */
 function once(over, seed) {
   Object.assign(cfg, SHIPPED, over)
-  const bed = new RockBed(scene, countingField, ridge.water, layers, base.material, base.bank, cfg, SCREE, { seed, ground: null })
+  const bed = new RockBed(scene, countingField, ridge.water, layers, base.material, base.bank, cfg, SCREE_SEED_INDEX, { seed, ground: null })
   const relief0 = bed._relief.bind(bed)
   let reliefs = 0
   // How many DISTINCT 4 m cells (rocks.js's own PLACEMENT_CELL) the relief probe
@@ -406,7 +410,7 @@ console.log('  dens  floor | pile ground | scree spacing  in-pile | nn p10/med/p
 for (const [d, f] of [[0.3, 0.42], [0.6, 0.42], [0.6, 0.58], [1.0, 0.5], [1.0, 0.58], [1.0, 0.65], [1.5, 0.58], [1.5, 0.65]]) {
   const rs = SEEDS.map((seed) => {
     Object.assign(cfg, SHIPPED, { density: d, clumpFloor: f, fullRadius: 140, radius: 140 })
-    const bed = new RockBed(scene, countingField, ridge.water, layers, base.material, base.bank, cfg, SCREE, { seed, ground: null })
+    const bed = new RockBed(scene, countingField, ridge.water, layers, base.material, base.bank, cfg, SCREE_SEED_INDEX, { seed, ground: null })
     bed.place(0, 0)
     const s = footRocks([bed], 140)
     let pileA = 0

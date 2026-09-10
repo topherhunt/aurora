@@ -137,6 +137,7 @@ const runs = (w, h, keep, weight) => {
 
 const report = (rocks, cx, cz, label) => {
   const slabs = rocks.beds.find((b) => b.cfg.name === 'cliff slabs')
+  if (!slabs) throw new Error("no bed 'cliff slabs' -- it is 'enabled: false' in BEDS, so there is nothing to measure")
   const R = slabs.fullRadius
   const near = platesNear(rocks, cx, cz, R)
 

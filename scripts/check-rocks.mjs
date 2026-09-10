@@ -1785,15 +1785,51 @@ console.log('\nscatter')
   // any of these rocks -- which is the case the cue has to be right in anyway.
   const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 } }
 
+  // EVERY BED, INCLUDING THE ONES THAT DO NOT SHIP. Three of the eight carry
+  // `enabled: false` and are not built in the world; their configs, shapes and
+  // rules are all still here, and these assertions are the reason it is safe to
+  // switch one back on. So the gate builds the whole table and the SHIPPED set is
+  // asserted separately, just below.
   const build = (w) => {
-    const r = new Rocks(new THREE.Scene(), w.field, w.water, layers, texArray, { seed: 7 })
+    const r = new Rocks(new THREE.Scene(), w.field, w.water, layers, texArray, { seed: 7, allBeds: true })
     r.place(0, 0)
     return r
   }
 
   const forestRocks = build(forest)
   const byBed = Object.fromEntries(forestRocks.stats.beds.map((b) => [b.name, b]))
-  check(forestRocks.beds.length === 8, 'eight beds', forestRocks.beds.map((b) => b.cfg.name).join(', '))
+  check(forestRocks.beds.length === 8, 'eight beds in the table', forestRocks.beds.map((b) => b.cfg.name).join(', '))
+
+  // AND FIVE OF THEM SHIP. The other three are `enabled: false` -- see the note
+  // above BEDS for what each one cost and why it went. Named rather than counted,
+  // because the failure worth catching is a bed switched off by accident, which a
+  // count agrees with.
+  //
+  // AND A BED SWITCHED OFF MOVES NOTHING. `tileSeed` takes a bed's index in the
+  // full table, so the filter has to run AFTER the index is taken or every
+  // surviving bed's scatter field shifts and the whole world's rocks jump. That is
+  // a silent failure -- the world still looks like a world -- so it is asserted
+  // against the full build directly: same bed, same positions, to the metre.
+  {
+    const shipped = new Rocks(new THREE.Scene(), forest.field, forest.water, layers, texArray, { seed: 7 })
+    shipped.place(0, 0)
+    const live = shipped.beds.map((b) => b.cfg.name)
+    check(live.join(' ') === 'boulders scree sunken giants embedded',
+      'and five of the eight ship -- the cap beds and the pebbles are switched off', live.join(', '))
+    const xs = (rocks, name) => {
+      const bed = rocks.beds.find((b) => b.cfg.name === name)
+      const out = []
+      for (const t of bed.tiles.values()) {
+        for (let k = 0; k < t.n; k++) out.push(`${bed.instX[t.ids[k]].toFixed(2)},${bed.instZ[t.ids[k]].toFixed(2)}`)
+      }
+      return out.sort().join(' ')
+    }
+    const moved = live.filter((n) => xs(shipped, n) !== xs(forestRocks, n))
+    check(moved.length === 0 && xs(shipped, 'boulders').length > 0,
+      'and switching a bed off does not move the rocks of the beds either side of it',
+      moved.length ? `${moved.join(', ')} moved` : `${live.length} beds land identically with the other three built`)
+    shipped.dispose()
+  }
   check(
     new Set(forestRocks.beds.flatMap((b) => b.batch.meshes.map((m) => m.material))).size === 1,
     'one material across every bed and every tier mesh',
@@ -2190,32 +2226,35 @@ console.log('\nscatter')
     const bed = r.beds.find((b) => b.cfg.name === 'boulders')
 
     // MORE CANDIDATES AT A LOWER RATE, which is the shape of the boulders bed's
-    // density change and the reason it needs three checks of its own: read
-    // either number alone and it looks like somebody multiplied the boulders in
-    // the world or divided them, and it is neither.
+    // density and the reason it needs three checks of its own: read either
+    // number alone and it looks like somebody multiplied the boulders in the
+    // world or divided them, and it is neither.
     //
     // `envDensity` is an ACCEPT RATE, tested as `envRoll >= dens`, and at a foot
     // site `dens` is `envDensity * (1 + CLUMP_GAIN * clump)`. That product is
     // capped at 1 by construction, so every candidate it pushes past 1.0 has the
     // rest of its multiplier silently thrown away -- and the thrown-away part IS
-    // the clumping. At the old cliff and peak rate of 1.0 the cap ate all of it
-    // and CLUMP_GAIN was a dead knob: turning it up did nothing at all, which is
-    // the kind of failure that never shows up as an error. So the rates came
-    // down by 2.5x and `density` went up by the same factor to pay for them.
+    // the clumping. At a cliff and peak rate of 1.0 the cap ate all of it and
+    // CLUMP_GAIN was a dead knob: turning it up did nothing at all, which is the
+    // kind of failure that never shows up as an error. Hence rates well under 1
+    // with `density` carrying the candidate count instead.
     //
-    // Held as three separate promises, because each one fails on its own:
-    // nothing moved in absolute terms, the cap is no longer eating the gain, and
-    // a foot really does end up about twice as dense as the ground beside it.
+    // Held as three separate promises, because each one fails on its own: the
+    // product is what it is meant to be, the cap is not eating the gain, and a
+    // foot really does end up about twice as dense as the ground beside it.
     const rate = bed.cfg.envDensity
     const perM2 = Object.fromEntries(Object.entries(rate).map(([e, v]) => [e, bed.cfg.density * v]))
-    // The shipped rocks per square metre of open ground, which is what a player
-    // sees and the only figure the retune was not allowed to move. Pinned here
-    // so that a later "simplification" folding `density` and `envDensity` back
-    // together cannot quietly re-scatter every environment in the game.
-    const WANT = { river: 0.00294, forest: 0.0042, cliff: 0.0042, peak: 0.00336 }
+    // THE SHIPPED BOULDERS PER SQUARE METRE, which is what a player sees, and
+    // half what it was: the bed's `sizeByEnv` now starts at 1.5 m rather than
+    // 0.5 and the median boulder is three times the size, so the same spacing
+    // would have made a boulder field out of every wood. The two numbers are one
+    // decision -- see the bed's own `density` note -- and this pin is what stops
+    // either of them drifting back alone, or a later "simplification" folding
+    // `density` and `envDensity` together and re-scattering the whole game.
+    const WANT = { river: 0.00154, forest: 0.0022, cliff: 0.0022, peak: 0.00176 }
     const drift = Object.entries(WANT).map(([e, w]) => Math.abs(perM2[e] - w) / w)
     check(Math.max(...drift) < 0.02,
-      'raising the candidate count and lowering the accept rate left every environment exactly as dense as it was',
+      'the candidate count and the accept rate multiply out to the density that ships',
       Object.entries(perM2).map(([e, v]) => `${e} ${v.toFixed(5)}`).join('  '))
 
     // AND THE CAP IS NOT EATING THE CLUMPING. This is the invariant the two

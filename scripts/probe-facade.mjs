@@ -117,6 +117,10 @@ for (const s of [spots[0], spots[400]]) {
   console.log(`\n=== ${s.x}, ${s.z} -- a ${((Math.atan(s.tan) * 180) / Math.PI).toFixed(0)} degree face ===`)
   for (const name of BEDS) {
     const bed = rocks.beds.find((b) => b.cfg.name === name)
+    if (!bed) {
+      console.log(`  ${name.padEnd(12)} disabled in BEDS`)
+      continue
+    }
     const rows = sample(bed)
     if (!rows.length) {
       console.log(`  ${name.padEnd(12)} nothing placed`)

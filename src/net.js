@@ -41,6 +41,10 @@ export class Netplay {
     this.lastSend = -Infinity
     this.retry = 250
     this.closed = false
+    // The creature id this client wears (see v2/render/avatar.js), set once the
+    // roster loads and sent with every pose since the relay keeps only the
+    // latest message per client.
+    this.avatar = null
     this.connect()
   }
 
@@ -71,7 +75,8 @@ export class Netplay {
   sendPose(pose, hands, now = performance.now()) {
     if (now - this.lastSend < SEND_MS || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
     this.lastSend = now
-    this.socket.send(JSON.stringify({ version: 1, type: 'pose', pose, hands }))
+    const { avatar } = this
+    this.socket.send(JSON.stringify({ version: 1, type: 'pose', pose, hands, ...(avatar ? { avatar } : {}) }))
   }
 
   update(now = performance.now()) {

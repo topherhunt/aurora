@@ -40,6 +40,7 @@ const texArray = buildTextureArray()
 // with it -- so tuning on `raw` alone buys stacked plates and bare rock.
 const coverage = (rocks, field, cx, cz, name) => {
   const bed = rocks.beds.find((b) => b.cfg.name === name)
+  if (!bed) throw new Error(`no bed '${name}' -- it is 'enabled: false' in BEDS, so there is nothing to measure`)
   const R = bed.fullRadius
   const aspect = bed.shape.measured.depth / bed.shape.measured.width
   let plate = 0

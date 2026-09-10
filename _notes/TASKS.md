@@ -14,6 +14,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - https://developers.tripo3d.ai/en/docs/animations-retarget
   - https://www.mixamo.com/#/?page=1&type=Motion%2CMotionPack
   - [Claude - AI animation tools](https://claude.ai/chat/801dd461-e625-4511-8b37-8e283541e6fe) 
+  - [Skyrim trees](https://duckduckgo.com/?q=skyrim+tree&iar=images&iai=https%3A%2F%2Fimg.goodfon.com%2Fwallpaper%2Fnbig%2F0%2F5d%2Fskyrim-tes-5-elder-scrolls-fir-tree-stone-grass-mountain-fog.jpg) pics
 - Internal tools
   - https://192.168.178.75:5173/gen-tree
   - https://192.168.178.75:5173/gen-fern
@@ -30,19 +31,14 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
+- [ ] Player characters: rig bones, move arms/hands to match actual hand position.
+
 - Get VR looking passable
-  - [ ] Trees
-    - [x] Try a new version of the voxel tree where each leaf is 2 crossed symmetrical tris, each bearing the "bristle" texture.
-    - [x] Try a "stacked irregular cones" tree model, using my new tileable pine needles.
-      - [x] Solid material at LOD1+
-      - [x] Alpha material at LOD0
-    - [x] Try a hybrid model where most tris are solid, and fringes are done via alpha
-    - [x] A separate version of pine -v6 where each branch has its own cloak
-    - [x] Pine trees are locked
-    - [ ] Oak trees
-      - instead of separate icosahedrons for separate boughs, let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
+  - [ ] 
+  - [ ] Oak trees
+    - instead of separate icosahedrons for separate boughs, let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
   - [ ] Rocks
-    - [ ] Get rid of all these rock caps. Boulders should be placed and rendered at a distance relative to their size, maxing out at 1.1km. (Ensure trees max out at 1km. Trees must place AFTER boulders, and thus must have a closer viewing distance.)
+    - [x] Get rid of all these rock caps. Boulders should be placed and rendered at a distance relative to their size, maxing out at 1.1km. (Ensure trees max out at 1km. Trees must place AFTER boulders, and thus must have a closer viewing distance.)
     - [ ] Rock caps: positioned impostor card rather than billboard.
     - [ ] Fix boulder billboard colors & positions
       - Currently billboard color is substantially misaligned from the color / light level of the rock itself.
@@ -54,13 +50,12 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
     - 1 mesh, reuse the boulder LOD1 + LOD2 + billboard. Lower tri count, irregular, sunk into ground.
     - Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
   - Ensure the various prop scatterers are only calculating placement within their local rim of visibility & not beyond that.
+  - [ ] Generate deadwood meshes - more convincing than my random ones.
   - [ ] Characters
     - \[ \]
     - [ ] A snake, slithering through the grass.
     - [ ] A small wood-and-twig creature, like a fey.
     - [ ] Figure out how distant cards should work.
-  - [ ] Gen trees WITH the texture, preserve that version, also take the mesh and repaint it with my tiled textures. Can I do a "partial repaint" which preserves the orig's 128px texture wrap but overrides it for certain faces where I have something better?
-  - \[ \]
 - ...
   - [ ] greeting dialog on 1st load on pc (point to vr).
   - [ ] simple shadows.

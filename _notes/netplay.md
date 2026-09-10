@@ -4,9 +4,9 @@
 
 ## Verdict on feasibility
 
-Perf is a non-issue. Against `src/budget.js` (350k tris, 45 draw calls, 12k batched instances) one peer costs ~500-1500 tris, 1 draw call if all peer parts live in a single InstancedMesh, and zero batched instances. Head + 2 hands is 21 floats = 84 bytes; at 20 Hz that is ~1.7 KB/s each way. Per-frame JS is one small parse plus 3 lerps and 3 slerps.
+Perf is a non-issue. Against `src/budget.js` (350k tris, 45 draw calls, 12k batched instances) one peer costs ~1000-2000 tris (a Tripo villager body from `public/creatures/`, picked at random per load and named in every pose message) plus the hands, three draw calls, and zero batched instances. Head + 2 hands is 21 floats = 84 bytes; at 20 Hz that is ~1.7 KB/s each way. Per-frame JS is one small parse plus 3 lerps and 3 slerps.
 
-The one real render risk is the **shader compile hitch** when the peer material first draws -- on Quest that is several dropped frames, and it would land exactly when the friend walks up. Build the avatar and force compilation at boot (`renderer.compile`, or render once parked behind the camera), never on join.
+The one real render risk is the **shader compile hitch** when the peer material first draws -- on Quest that is several dropped frames, and it would land exactly when the friend walks up. `PeerAvatars.warm` compiles one body at boot (`renderer.compile` against the world scene's lights and fog); every villager shares that material shape, so none compiles on join.
 
 WebRTC is not needed. A relay costs maybe 30-60ms over a datachannel and saves building signaling, STUN and TURN. At walking speed with an interpolation buffer, 150ms of avatar lag is invisible.
 
@@ -32,7 +32,7 @@ implementation is a state relay, not a game server:
 Tick-based rather than echo-on-receive so send rate and broadcast rate are decoupled, and a joining client gets everyone on the next tick rather than waiting for them to move.
 
 **Client** -- `src/net.js` owns the socket, throttled send, receive buffer, and interpolation;
-`src/v2/render/avatar.js` draws the peer head and hands; `src/v2/main.js` samples world-space poses.
+`src/v2/render/avatar.js` dresses each peer in a villager body hung from the head pose (yaw only) and draws the hands; `src/v2/main.js` samples world-space poses.
 
 Sampling is free: `player.headPosition(headTmp)` already runs every frame near line 1786 and calls `camera.getWorldPosition()`. Hands need wiring that does not exist yet -- `src/input.js` polls `session.inputSources` for gamepad buttons and axes only, no poses. Add `renderer.xr.getControllerGrip(0|1)` and `rig.add()` them so their world transforms include the rig.
 

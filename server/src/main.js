@@ -25,10 +25,13 @@ function validRoom(name) {
   return typeof name === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(name)
 }
 
+// `avatar` names a file under public/creatures/ on every peer's client, so it
+// is held to the creature id alphabet rather than relayed as free text.
 function validPose(message) {
   return message && message.type === 'pose' && Array.isArray(message.pose) && message.pose.length === 21 &&
     message.pose.every((n) => Number.isFinite(n)) && Array.isArray(message.hands) && message.hands.length === 2 &&
-    message.hands.every((v) => typeof v === 'boolean')
+    message.hands.every((v) => typeof v === 'boolean') &&
+    (message.avatar === undefined || (typeof message.avatar === 'string' && /^[a-z0-9-]{1,32}$/.test(message.avatar)))
 }
 
 function leave(client) {
@@ -67,7 +70,7 @@ wss.on('connection', (ws, request) => {
     return
   }
 
-  const client = { id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false] }
+  const client = { id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null }
   room.set(client.id, client)
   ws.isAlive = true
   ws.on('pong', () => { ws.isAlive = true; client.lastSeen = Date.now() })
@@ -79,6 +82,7 @@ wss.on('connection', (ws, request) => {
     if (now - client.lastPoseAt < 20) return
     client.pose = message.pose
     client.hands = message.hands
+    client.avatar = message.avatar ?? null
     client.lastPoseAt = now
     client.lastSeen = now
   })
@@ -99,7 +103,7 @@ setInterval(() => {
       const peers = []
       for (const peer of room.values()) {
         if (peer === client || !peer.pose) continue
-        peers.push({ id: peer.id, pose: peer.pose, hands: peer.hands })
+        peers.push({ id: peer.id, pose: peer.pose, hands: peer.hands, avatar: peer.avatar })
       }
       send(client, { version: 1, type: 'snapshot', tick: serverTick, peers })
     }
