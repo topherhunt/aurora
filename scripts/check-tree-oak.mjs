@@ -17,15 +17,20 @@
 //   A SCOOP IS A SCOOP. Five faces fanned one way round, so every face agrees
 //   with the scoop's opening, which is turned away from the openings beside
 //   it, with the body reaching any way but back down a limb at its tip; the
-//   stem corner on a branch's surface and, on the whole, further from the
-//   centre than the other four.
+//   normals on the scoop's sky side and smooth across it; the stem corner on
+//   the wood's surface, the bole's tip included, and, on the whole, further
+//   from the centre than the other four.
 //
-//   THE TIERS ARE ONE TREE. A coarse rung is a prefix of LOD0's scoops, vertex
-//   for vertex: dropped, not re-rolled, and at the same scale.
+//   THE TIERS ARE ONE TREE. A coarse rung's scoops are a prefix of LOD0's,
+//   each cut to a quad on three of LOD0's own corners, to the float in place
+//   and in shade: dropped and flattened, not re-rolled, and at the same scale.
+//
+//   THE SHADE IS THE SKY. The crown's top and the foot of the bole are lit in
+//   full and the bole under the crown is not.
 //
 //   THE LAYOUTS MATCH THE MATERIALS. The wood is createPropMaterial's layout
-//   and the crown is the mapped Lambert's, and BatchedMesh refuses a batch over
-//   one stray attribute.
+//   with its colour on and the crown is the mapped Lambert's, and BatchedMesh
+//   refuses a batch over one stray attribute.
 
 import { createHash } from 'node:crypto'
 
@@ -91,6 +96,8 @@ const SHAPES = [
   { name: 'bare', over: { branches: 0 } },
   { name: 'flat', over: { boughDepth: 0, boughSkew: 0, boughJitter: 0, tipZone: 0 } },
   { name: 'tips', over: { tipZone: 1 } },
+  { name: 'capped', over: { tipBoughs: 8, tipZone: 0 } },
+  { name: 'uncapped', over: { tipBoughs: 0 } },
   { name: 'plain', over: { boughAims: 1, boughSpins: 1 } },
   { name: 'many', over: { branches: 11, boughs: 160, boughRadius: 0.04, tipBias: 0.5 } },
   { name: 'round', over: { trunkLobe: 0, trunkSides: 5, branchSides: 3 } },
@@ -137,25 +144,30 @@ console.log('--- 2. resolveTreeOak() prices what buildTreeOak() builds')
 //
 // The fan goes one way round, so every face's own cross product must have a
 // positive part along the scoop's opening -- a face against it is one the
-// skew or the jitter turned over -- and the stored normal must be that cross
-// product turned to the sky side. The opening is read off the fan itself: the
+// skew or the jitter turned over. The opening is read off the fan itself: the
 // SUM of the unnormalised cross products is twice the rim polygon's vector
 // area, which lies along the opening exactly, where a mean of unit normals
-// does not -- a deep cup's opposite walls cancel. The bodies reach every way:
-// with every scoop in the tip zone none runs back down its limb, and over all
-// the shapes only a few reach straight out along the limb -- the litter is
-// not a clamshell of scoops closing on each tip. The aim's whole point is
-// measured too: over scoops within three rim radii of one another, the mean
-// of how parallel two openings are must come out clearly lower with the aim
-// on than with a single candidate (`plain`). The stem is on a branch's
-// surface: within the tube's radius of its polyline, read back off the wood's
-// own rings. And, in all but a few, the stem is further from the centre than
-// the other rim corners.
-console.log('--- 3. every scoop is fanned one way, aimed off its neighbours, stemmed on a branch and reaches off it')
+// does not -- a deep cup's opposite walls cancel. The stored normals sit on
+// ONE side of the scoop, the sky's, each rim corner's leaning to its own
+// face's side of the sheet, and they are smooth: a corner shared by two faces carries one
+// normal in both, and on any scoop with depth to it that normal is not the
+// face's own. The bodies reach every way: with every scoop in the tip zone
+// none runs back down its limb, and over all the shapes only a few reach
+// straight out along the limb -- the litter is not a clamshell of scoops
+// closing on each tip. The aim's whole point is measured too: over scoops
+// within three rim radii of one another, the mean of how parallel two
+// openings are must come out clearly lower with the aim on than with a single
+// candidate (`plain`). The stem is on the wood's surface, the bole's included:
+// within the tube's radius of its polyline, read back off the wood's own
+// rings. And, in all but a few, the stem is further from the centre than the
+// other rim corners.
+console.log('--- 3. every scoop is fanned one way, shaded smooth on its sky side, aimed off its neighbours, stemmed on the wood and reaches off it')
 {
   let faces = 0
   let against = 0
   let notOwn = 0
+  let notSmooth = 0
+  let flat = 0
   let notReaching = 0
   let straightOut = 0
   let scoops = 0
@@ -163,6 +175,7 @@ console.log('--- 3. every scoop is fanned one way, aimed off its neighbours, ste
   let stemNear = 0
   let offWood = 0
   let worst = ''
+  let worstSmooth = ''
   let worstWood = ''
   const parallel = { default: { sum: 0, pairs: 0 }, plain: { sum: 0, pairs: 0 } }
   for (const shape of SHAPES) {
@@ -172,18 +185,18 @@ console.log('--- 3. every scoop is fanned one way, aimed off its neighbours, ste
       const { trunk, foliage } = buildTreeOak(p)
       const pos = foliage.attributes.position.array
       const nrm = foliage.attributes.normal.array
-      // The branches' polylines and ring radii, off the wood. The bole comes
-      // first: its rings and its apex; then each branch's rings and apex. A
-      // ring's mean is its centre, a seam corner over.
+      // The polylines and ring radii, off the wood: the bole's rings and apex
+      // first, then each branch's. A ring's mean is its centre, a seam corner
+      // over, and a lobed bole's mean radius is its round one.
       const wood = trunk.attributes.position.array
-      let at = r.trunkSegments * (r.trunkSides + 1) + r.trunkSides
+      let at = 0
       const limbs = []
-      for (let b = 0; b < r.branches; b++) {
+      const readTube = (segments, sides) => {
         const path = []
         const radii = []
-        for (let ring = 0; ring < r.branchSegments; ring++) {
+        for (let ring = 0; ring < segments; ring++) {
           let cx = 0, cy = 0, cz = 0
-          const n = r.branchSides + 1
+          const n = sides + 1
           for (let k = 0; k < n; k++) { cx += wood[(at + k) * 3]; cy += wood[(at + k) * 3 + 1]; cz += wood[(at + k) * 3 + 2] }
           const c = [cx / n, cy / n, cz / n]
           let rad = 0
@@ -194,9 +207,11 @@ console.log('--- 3. every scoop is fanned one way, aimed off its neighbours, ste
         }
         path.push([wood[at * 3], wood[at * 3 + 1], wood[at * 3 + 2]])
         radii.push(0)
-        at += r.branchSides
+        at += sides
         limbs.push({ path, radii })
       }
+      readTube(r.trunkSegments, r.trunkSides)
+      for (let b = 0; b < r.branches; b++) readTube(r.branchSegments, r.branchSides)
       // How far a point is off the nearest tube surface, in that branch's butt
       // radii: distance to the closest polyline segment, less the radius there;
       // and which way every segment whose surface it is on runs -- at a sharp
@@ -233,14 +248,36 @@ console.log('--- 3. every scoop is fanned one way, aimed off its neighbours, ste
           own.push([ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx])
         }
         const opening = own.reduce((m, w) => [m[0] + w[0], m[1] + w[1], m[2] + w[2]], [0, 0, 0])
+        // The stored normals, fifteen in the fan's order, and the scoop's sky
+        // side: the way its centre normal leans off the opening. A vertex
+        // whose normal is not on that side is wrongly lit, and so is a rim
+        // corner leaning away from its own face's side of the sheet; the
+        // centre of a deep cup legitimately leans off its steepest wall. A
+        // sky side pointing down is upside down.
+        const stored = (k) => [nrm[(i * PER_SCOOP + k) * 3], nrm[(i * PER_SCOOP + k) * 3 + 1], nrm[(i * PER_SCOOP + k) * 3 + 2]]
+        const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        const sky = Math.sign(dot(stored(0), opening))
+        if (sky * opening[1] < 0) { notOwn++; worst = worst || `${shape.name} seed ${1000 + s} scoop ${i} normals on the ground side` }
+        let flatFaces = 0
         for (let f = 0; f < 5; f++) {
           faces++
-          const v = (i * 5 + f) * 3
           const w = own[f]
           const l = Math.hypot(...w)
-          if (w[0] * opening[0] + w[1] * opening[1] + w[2] * opening[2] <= 0) { against++; worst = worst || `${shape.name} seed ${1000 + s} scoop ${i} face ${f} turned over` }
-          if (Math.abs(w[0] * nrm[v * 3] + w[1] * nrm[v * 3 + 1] + w[2] * nrm[v * 3 + 2]) / l < 0.999 || nrm[v * 3 + 1] < 0) { notOwn++; worst = worst || `${shape.name} seed ${1000 + s} scoop ${i} face ${f} stored normal is not its own, skyward` }
+          if (dot(w, opening) <= 0) { against++; worst = worst || `${shape.name} seed ${1000 + s} scoop ${i} face ${f} turned over` }
+          let ownFace = 0
+          for (let m = 0; m < 3; m++) {
+            const n = stored(f * 3 + m)
+            const lean = (sky * dot(w, n)) / l
+            if ((m > 0 && lean <= 0) || sky * dot(n, opening) <= 0) { notOwn++; worst = worst || `${shape.name} seed ${1000 + s} scoop ${i} face ${f} vertex ${m} normal leans off its sky side` }
+            if (lean > 0.999) ownFace++
+          }
+          if (ownFace === 3) flatFaces++
+          // Rim corner f + 1 is this face's third vertex and the next face's
+          // second; the centre is every face's first.
+          const g = (f + 1) % 5
+          if (dist(stored(f * 3 + 2), stored(g * 3 + 1)) > 1e-6 || dist(stored(f * 3), stored(g * 3)) > 1e-6) { notSmooth++; worstSmooth = worstSmooth || `${shape.name} seed ${1000 + s} scoop ${i} faces ${f} and ${g} disagree on a shared corner` }
         }
+        if (p.boughDepth > 0 && flatFaces === 5) { flat++; worstSmooth = worstSmooth || `${shape.name} seed ${1000 + s} scoop ${i} is flat-shaded` }
         // The rim's centre, for the neighbourhood the aim scores.
         const rimC = [stem, ...rim].reduce((m, q) => [m[0] + q[0] / 5, m[1] + q[1] / 5, m[2] + q[2] / 5], [0, 0, 0])
         const l = Math.hypot(...opening)
@@ -281,7 +318,8 @@ console.log('--- 3. every scoop is fanned one way, aimed off its neighbours, ste
       }
     }
   }
-  check(against === 0 && notOwn === 0 && notReaching === 0, `${faces} faces: ${against} turned over, ${notOwn} not their own skyward normal; ${notReaching} tip scoops running back down the limb`, worst)
+  check(against === 0 && notOwn === 0 && notReaching === 0, `${faces} faces: ${against} turned over, ${notOwn} vertices lit off their sky side; ${notReaching} tip scoops running back down the limb`, worst)
+  check(notSmooth === 0 && flat === 0, `${scoops} scoops shaded smooth: ${notSmooth} corners disagreeing between faces, ${flat} scoops with depth shaded flat`, worstSmooth)
   // A body within thirty degrees of its limb's own heading: a cone of a
   // fifteenth of the sphere, so a litter reaching every way keeps well under a
   // fifth of its scoops there.
@@ -289,39 +327,77 @@ console.log('--- 3. every scoop is fanned one way, aimed off its neighbours, ste
   const aimed = parallel.default.sum / parallel.default.pairs
   const plain = parallel.plain.sum / parallel.plain.pairs
   check(parallel.default.pairs > 0 && aimed < plain * 0.85, `neighbouring openings are less parallel aimed than not: ${aimed.toFixed(3)} against ${plain.toFixed(3)} over ${parallel.default.pairs} and ${parallel.plain.pairs} pairs`)
-  check(offWood === 0, `${scoops} stems on a branch's surface`, worstWood)
+  check(offWood === 0, `${scoops} stems on the wood's surface`, worstWood)
   check(stemNear <= reaching * 0.01, `the stem is further from the centre than the other corners in all but ${stemNear} of ${reaching}`)
 }
 
 // --- 4. the tiers are one tree ----------------------------------------------
 //
-// A coarse rung's crown must be the first N scoops of LOD0's crown, vertex for
-// vertex: the seats are drawn the same, nothing is re-rolled, and the extent
+// A coarse rung's crown must be the first N scoops of LOD0's crown, each a
+// quad of six unwelded vertices -- (stem, L, far), (stem, far, R) -- whose
+// stem, L and R are LOD0's stem, first and last rim corners, in position and
+// in shade: the seats are drawn the same, nothing is re-rolled, the extent
 // that sets the scale is measured over every scoop drawn rather than over
-// those kept, so the tiers share one scale to the float.
-console.log('--- 4. a coarse tier is a prefix of LOD0, at LOD0\'s scale')
+// those kept, and the sky is cast against every scoop drawn, so the tiers
+// share one scale and one bake to the float. LOD1 keeps every scoop. The quad
+// itself is held to the pentagon's terms: both faces with its opening, the
+// normals on its sky side and smooth across the fold.
+console.log('--- 4. a coarse tier is LOD0\'s scoops cut to quads, at LOD0\'s scale and shade')
 {
   let worst = 0
   let where = ''
   let counts = ''
+  let quads = 0
+  let bad = 0
+  let worstQuad = ''
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
   for (const shape of SHAPES) {
     for (let s = 0; s < SEEDS; s++) {
       const base = { ...TREE_OAK_DEFAULTS, ...shape.over, seed: 1000 + s }
-      const a = buildTreeOak(treeOakLod(base, 0)).foliage.attributes.position.array
+      const full = buildTreeOak(treeOakLod(base, 0)).foliage
+      const a = full.attributes.position.array
+      const ac = full.attributes.color.array
+      const r0 = resolveTreeOak(treeOakLod(base, 0))
       for (let tier = 1; tier < 3; tier++) {
         const p = treeOakLod(base, tier)
         const r = resolveTreeOak(p)
-        const b = buildTreeOak(p).foliage.attributes.position.array
-        if (b.length !== r.boughs * PER_SCOOP * 3 || b.length > a.length) { counts = counts || `${shape.name} seed ${1000 + s} LOD${tier}: ${b.length / 3} vertices for ${r.boughs} scoops, LOD0 has ${a.length / 3}`; continue }
-        for (let i = 0; i < b.length; i++) {
-          const d = Math.abs(a[i] - b[i]) / base.height
-          if (d > worst) { worst = d; where = `${shape.name} seed ${1000 + s} LOD${tier} float ${i}: ${(d * 100).toFixed(4)}% of height` }
+        const cut = buildTreeOak(p).foliage
+        const b = cut.attributes.position.array
+        const bc = cut.attributes.color.array
+        const bn = cut.attributes.normal.array
+        if (b.length !== r.boughs * 6 * 3 || r.boughs > r0.boughs || (tier === 1 && r.boughs !== r0.boughs)) { counts = counts || `${shape.name} seed ${1000 + s} LOD${tier}: ${b.length / 3} vertices for ${r.boughs} scoops, LOD0 has ${r0.boughs}`; continue }
+        for (let i = 0; i < r.boughs; i++) {
+          for (const [k0, k1] of [[1, 0], [2, 1], [11, 5]]) {
+            for (let c = 0; c < 3; c++) {
+              const d = Math.abs(a[(i * PER_SCOOP + k0) * 3 + c] - b[(i * 6 + k1) * 3 + c]) / base.height
+              if (d > worst) { worst = d; where = `${shape.name} seed ${1000 + s} LOD${tier} scoop ${i}: ${(d * 100).toFixed(4)}% of height` }
+            }
+            const d = Math.abs(ac[(i * PER_SCOOP + k0) * 3] - bc[(i * 6 + k1) * 3])
+            if (d > worst) { worst = d; where = `${shape.name} seed ${1000 + s} LOD${tier} scoop ${i}: shade off by ${d.toFixed(5)}` }
+          }
+          quads++
+          const v = (k) => [b[(i * 6 + k) * 3], b[(i * 6 + k) * 3 + 1], b[(i * 6 + k) * 3 + 2]]
+          const n = (k) => [bn[(i * 6 + k) * 3], bn[(i * 6 + k) * 3 + 1], bn[(i * 6 + k) * 3 + 2]]
+          const cross = (o, p1, p2) => {
+            const ax = p1[0] - o[0], ay = p1[1] - o[1], az = p1[2] - o[2]
+            const bx = p2[0] - o[0], by = p2[1] - o[1], bz = p2[2] - o[2]
+            return [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx]
+          }
+          const own = [cross(v(0), v(1), v(2)), cross(v(3), v(4), v(5))]
+          const opening = [own[0][0] + own[1][0], own[0][1] + own[1][1], own[0][2] + own[1][2]]
+          const sky = Math.sign(dot(n(0), opening))
+          let ok = sky * opening[1] >= 0 && own.every((w) => dot(w, opening) > 0)
+          for (let k = 0; k < 6; k++) if (sky * dot(n(k), opening) <= 0) ok = false
+          // The stem is vertices 0 and 3, the far point 2 and 4: one normal each.
+          if (dist(n(0), n(3)) > 1e-6 || dist(n(2), n(4)) > 1e-6) ok = false
+          if (!ok) { bad++; worstQuad = worstQuad || `${shape.name} seed ${1000 + s} LOD${tier} scoop ${i}` }
         }
       }
     }
   }
-  check(counts === '', 'a coarse tier holds exactly the kept count', counts)
-  check(worst < 1e-6, 'every kept vertex is where LOD0 put it', where ? `worst ${where}` : 'to the float')
+  check(counts === '', 'LOD1 holds every scoop and LOD2 the kept count, six vertices each', counts)
+  check(worst < 1e-6, 'every quad\'s stem and side corners are where LOD0 put them, at LOD0\'s shade', where ? `worst ${where}` : 'to the float')
+  check(bad === 0, `${quads} quads fanned one way, shaded smooth on their sky side`, worstQuad)
 }
 
 // --- 5. the layouts ---------------------------------------------------------
@@ -329,13 +405,42 @@ console.log('--- 5. attribute layouts')
 {
   const { trunk, foliage } = buildTreeOak(TREE_OAK_DEFAULTS)
   const keys = (g) => Object.keys(g.attributes).sort().join(',')
-  check(keys(trunk) === 'normal,position,texLayer,uvProj', 'wood is createPropMaterial\'s layout', keys(trunk))
+  check(keys(trunk) === 'color,normal,position,texLayer,uvProj', 'wood is createPropMaterial\'s layout with its colour on', keys(trunk))
   check(keys(foliage) === 'color,normal,position,uv', 'crown is {position, normal, uv, color}', keys(foliage))
   check(foliage.index !== null && foliage.index.count === foliage.attributes.position.count, 'crown carries an identity index')
   const col = foliage.attributes.color.array
   let lo = Infinity, hi = -Infinity
   for (let i = 0; i < col.length; i++) { lo = Math.min(lo, col[i]); hi = Math.max(hi, col[i]) }
-  check(lo > 0.3 && hi <= 1.4 && lo < hi, 'the shade ramp is a grey in a sane range', `${lo.toFixed(2)}..${hi.toFixed(2)}`)
+  check(lo > 0.3 && hi <= 1.4 && lo < hi, 'the crown\'s shade is a grey in a sane range', `${lo.toFixed(2)}..${hi.toFixed(2)}`)
+}
+
+// --- 5b. the shade is the sky ----------------------------------------------
+//
+// Over the species: some scoop vertex sees the whole sky, the foot of the bole
+// nearly does (birch's hanging limbs take a little of its sky), and the bole
+// under the crown -- its highest ring, where every scoop is over it -- sees
+// almost none. The foliage tint rides on top, so the crown's full is one plus
+// the tint's half-range.
+console.log('--- 5b. the crown\'s shell and the bole\'s foot are lit, the bole under the crown is not')
+for (const name of Object.keys(TREE_OAK_SPECIES)) {
+  const p = treeOakSpecies(name)
+  const r = resolveTreeOak(p)
+  const { trunk, foliage } = buildTreeOak(p)
+  const inner = p.innerShade
+  const leaf = foliage.attributes.color.array
+  let crownHi = 0
+  for (let i = 0; i < leaf.length; i += 3) crownHi = Math.max(crownHi, leaf[i])
+  const wood = trunk.attributes.color.array
+  const ring = (k) => {
+    let sum = 0
+    for (let i = 0; i <= r.trunkSides; i++) sum += wood[(k * (r.trunkSides + 1) + i) * 3]
+    return sum / (r.trunkSides + 1)
+  }
+  const foot = ring(0)
+  const neck = ring(r.trunkSegments - 1)
+  check(crownHi >= 0.98, `${name}: the crown reaches full light`, `brightest ${crownHi.toFixed(3)}`)
+  check(foot >= 0.9, `${name}: the foot of the bole sees the sky`, `foot ${foot.toFixed(3)}`)
+  check(neck < inner + (1 - inner) * 0.35, `${name}: the bole under the crown is shaded`, `neck ${neck.toFixed(3)} against ${inner} at no sky`)
 }
 
 // --- 6. the tree stands at height ------------------------------------------

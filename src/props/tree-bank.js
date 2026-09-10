@@ -1,6 +1,8 @@
 import THREE from '../three-instance.js'
 
-import { buildTree, treeLod, TREE_DEFAULTS, TREE_SPECIES } from './tree.js'
+import { LAYER } from '../textures.js'
+import { buildTreeV8, treeV8Lod, treeV8Species } from './tree-v8.js'
+import { buildTreeOak, treeOakLod, treeOakSpecies } from './tree-oak.js'
 import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'
 
 // ---------------------------------------------------------------------------
@@ -8,131 +10,109 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 //
 // Same policy as fern-bank.js and for the same reasons: THERE IS NO OFFLINE
 // BAKE STEP AND THERE SHOULD NOT BE. This runs at construction and hands its
-// geometries straight to the InstancedMeshes that draw them.
-// An asset file on disk would buy nothing and cost a build step, a cache to
-// invalidate and a way for the mesh to disagree with the generator.
+// geometries straight to the InstancedMeshes that draw them. An asset file on
+// disk would buy nothing and cost a build step, a cache to invalidate and a
+// way for the mesh to disagree with the generator.
 //
-// ONE VARIANT PER SPECIES, at that species' own default height -- 9 m for pine
-// and oak, 6 m for birch and aspen. Each instance then picks a species, a yaw
-// and a size multiplier on the MATRIX (trees.js SCALE, 0.5 to 1.5), so the
-// trees a player sees outnumber the four meshes stored by a long way.
+// TWO GENERATORS, ONE BANK. The pine is tree-v8.js's -- a stack of whorls,
+// each broken into boughs -- and the three broadleaves are tree-oak.js's, a
+// bole of crooked limbs under a litter of scoops. Each species is built at
+// its generator's own tuned parameters and seed, which is the tree that was
+// signed off on the /gen-tree-v8 bench; the bank takes no seed of its own,
+// since a re-rolled tree would be one nobody has looked at. ONE VARIANT PER
+// SPECIES at that species' own height, and each instance picks a species, a
+// yaw and a size multiplier on the MATRIX (trees.js SCALE), so the trees a
+// player sees outnumber the four meshes stored by a long way.
 //
-// IT USED TO BE A CROSS PRODUCT, species x size, with a four-rung height ladder
-// that REGENERATED each tree rather than scaling it -- so a sapling had a
-// sapling's whorl count and life-sized needles. Sixteen variants times four
-// tiers is 64 geometries, which is 64 InstancedMeshes' worth of arena under the
-// ladder trees.js now draws (see its header): the Quest 2 wants few, fat
-// instanced draws, and a bank that fine splinters the forest into thin ones. So
-// the size ladder moved onto the instance matrix, and what it costs is that a
-// half-size tree now has half-size leaves instead of a young tree's leaves.
-// That reads at arm's length on the one tree you are standing under and nowhere
-// else; four species times four tiers is the trade.
+// EACH GENERATOR HANDS OVER TWO GEOMETRIES -- the wood in createPropMaterial's
+// `{position, normal, uvProj, texLayer}` and the crown in a mapped Lambert's
+// `{position, normal, uv, color}` over its species' mat -- and the bank welds
+// them into ONE in the prop layout with `color` on both: the crown's `uv` is
+// the tile coordinate the array's RepeatWrapping already understands, its mat
+// is a layer of the array (LAYER.MAT_*), and wood that carries no baked shade
+// takes white. One geometry a tier, so the arena stays one material and one
+// program with every other prop -- textures.js's "adding a species means
+// adding a layer, not a material". The baked occlusion in `color` is why
+// trees.js asks the material for `vertexColors`.
 //
 // THREE TIERS, FINEST FIRST -- tier 0 is the one you stand under:
 //
-//   0  LOD0   the full tree, resolveTree's own numbers, root crown included.
-//             480 triangles mean.
-//   1  LOD1   the same tree with cheap wood: a 3-sided trunk and one flat fin
-//             per limb, and FOLIAGE THAT IS BIT-IDENTICAL TO TIER 0's. 338
-//             triangles mean, a 28% cut, all of it out of sticks.
+//   0  LOD0   the generator's full tree.
+//   1  LOD1   the generator's own LOD1: the pine keeps every bough and drops a
+//             station from each; a broadleaf keeps every scoop as two
+//             triangles on LOD0's own corners and straightens its wood to one
+//             five-sided segment a tube. Both are the SAME tree walked from the
+//             same seed, so nothing moves at the switch.
 //   2  card   the impostor as ONE spun plane, and that plane is ONE triangle:
 //             apex up for the pine, apex down for the three broadleaves, which
-//             is the shape each species already is. Only built when `billboard`
-//             is set; without it tier 1 is the last tier and the bank is a
-//             mesh-only ladder.
+//             is the shape each species already is. Only built when
+//             `billboard` is set; without it tier 1 is the last tier.
 //
-// THE TWO MESH TIERS ARE THE SAME TREE AND THAT IS LITERAL HERE, not a claim
-// about silhouettes. They are built from one seed through one rng stream, and
-// tier 1 changes only `trunkSides`, `branchSides` and `roots`, so every card in
-// the crown is the same card in the same seat at the same size. The root crown
-// tier 1 drops is wood at the foot, drawn from its own rng stream and reaching
-// nowhere near the crown, so dropping it moves no other part of the tree.
-// Measured over all four variants, the two tiers agree on height and crown
-// width to every digit printed. Nothing pops at the boundary except branches
-// losing their barrel.
+// Both generators also carry an LOD2 that thins the crown; the world's ladder
+// (trees.js LOD_BANDS) has two mesh bands and does not ask for it.
 //
-// A CHEAPER LOD1 EXISTED AND WAS WITHDRAWN. The same two wood cuts, but with
-// the crown thrown as a bundle of twenty big tiled triangles (`bundleTris`),
-// which took the tier to ~130 triangles and held 10 to 45 m. It did not look
-// like a tree there. Cheap and well-nested is not the same as convincing. The
-// bundle is still in tree.js and no tier asks for it.
+// THE CARD. Why one triangle is the right shape for a tree, with the measured
+// fraction of each silhouette it keeps and the SINK that keeps an apex-down
+// card from standing on its point, is the `tri` note in impostor.js.
+// `billboardTri` on each species record is a fact about the species' outline,
+// not a taste knob. A one-plane card is only legal because material.js's
+// billboardVertex spins it about its own trunk in the VERTEX SHADER, and the
+// shader knows to by the NORMAL: `upNormal` rides with `billboard`, so a card
+// meant to be spun has an EXACTLY vertical normal and the shader masks on
+// `layer match AND normal.y > CARD_UP_MARK`.
 //
-// ONE CARD TIER, AND THERE USED TO BE TWO. A three-plane CROSS held 22.5-100 m
-// and the billboard took everything past it, on the argument that a cross
-// carries real depth between its planes where a flat card carries none. The
-// measurement that retired it: three untrimmed quads is 3.0 rectangles of shaded
-// area against the billboard's ~0.52, and on the headset that mid band was HALF
-// the forest's fill on four percent of its instances, for eight of its draw
-// calls. What it was buying is worth less than it sounds -- stereo acuity of
-// half an arcminute over a 65 mm baseline resolves about 1.3 m of depth at 24 m
-// and 5.6 m at 50 m, so a crown 3 to 6 m deep reads flat over most of the range
-// the cross was covering anyway. It is 6 draws' worth of geometry in
-// buildImpostorCard still (`planes: 3, canopy: true`) if a mid rung is ever
-// wanted back; ferns and rocks use the same call.
-//
-// WHAT THE CARD GIVES UP FOR ITS SIXTH OF THE FILL is two corners of its
-// photograph, and the argument for why a triangle is the right shape for a tree
-// -- with the measured fraction of each species' silhouette it keeps, and the
-// SINK that keeps an apex-down card from standing on its point -- is the `tri`
-// note in impostor.js. `billboardTri` on each species record is where the
-// up-or-down choice is made; it is a fact about the species' outline, not a
-// taste knob.
-//
-// A ONE-PLANE CARD IS ONLY LEGAL IF SOMETHING TURNS IT, and material.js's
-// billboardVertex is that something -- it spins the card about its own trunk in
-// the VERTEX SHADER, so the turning costs no CPU, no second material and no
-// per-frame matrix write, and the tier stays one draw call. It also looks better
-// than a fixed cross seen from far away: it always presents the silhouette the
-// photograph was actually taken from.
-//
-// HOW THE SHADER KNOWS TO SPIN IT: by the NORMAL, not by the vertex count --
-// billboardVertex never sees how many corners a geometry has. `upNormal` rides
-// with `billboard`, so a card meant to be spun has an EXACTLY vertical normal,
-// and the shader masks on `layer match AND normal.y > CARD_UP_MARK`. Every other
-// normal buildImpostorCard authors stays under that 0.99 marker by construction
-// and it asserts both sides of it, which is what let the cross share this tier's
-// layer and bake for as long as it existed.
-//
-// `crownWidth` IS READ OFF TIER 0 AND USED FOR EVERY TIER, and it is exact
-// rather than approximate: tier 1 measures the same crown to every digit, and
-// the card is framed on it. The impostor is a photograph OF that tree, so no
-// tier can disagree with any other about how wide the crown is.
+// `crownWidth`, `height` and `trunkDiameter` ARE READ OFF TIER 0 AND USED FOR
+// EVERY TIER: the card is framed on them and the impostor is a photograph OF
+// that tree, so no tier can disagree with any other about how wide it is.
 // ---------------------------------------------------------------------------
+
+/**
+ * The species the world plants, in a stable order: an index into this is a
+ * variant id. `generator` names which builder grows it and `matLayer` the
+ * array layer its crown is tiled from.
+ */
+export const TREE_BANK_SPECIES = {
+  pine: { generator: 'v8', matLayer: LAYER.MAT_PINE, impostorLayer: LAYER.IMPOSTOR_PINE, billboardTri: 'up' },
+  oak: { generator: 'oak', matLayer: LAYER.MAT_OAK, impostorLayer: LAYER.IMPOSTOR_OAK, billboardTri: 'down' },
+  birch: { generator: 'oak', matLayer: LAYER.MAT_BIRCH, impostorLayer: LAYER.IMPOSTOR_BIRCH, billboardTri: 'down' },
+  aspen: { generator: 'oak', matLayer: LAYER.MAT_ASPEN, impostorLayer: LAYER.IMPOSTOR_ASPEN, billboardTri: 'down' },
+}
+
+const GENERATORS = {
+  v8: { species: treeV8Species, lod: treeV8Lod, build: buildTreeV8 },
+  oak: { species: treeOakSpecies, lod: treeOakLod, build: buildTreeOak },
+}
 
 /**
  * Every species, once, at its own default height, in a stable order. An index
  * into this is a variant id.
  *
- * The height is the species' OWN `params.height` and never a multiplier on it:
- * pine and oak state 9 m, birch and aspen 6 m, and a placed tree's size comes
- * off the instance matrix instead.
+ * The height is the species' OWN and never a multiplier on it: a placed tree's
+ * size comes off the instance matrix instead.
  */
 export function treeVariants() {
-  return Object.keys(TREE_SPECIES).map((species) => {
-    const sp = TREE_SPECIES[species]
-    const base = { ...TREE_DEFAULTS, ...sp.params }
+  return Object.keys(TREE_BANK_SPECIES).map((species) => {
+    const sp = TREE_BANK_SPECIES[species]
+    const gen = GENERATORS[sp.generator]
+    if (!gen) throw new Error(`treeVariants: ${species} names no generator "${sp.generator}"`)
     return {
       species,
-      height: base.height,
+      height: gen.species(species).height,
       impostorLayer: sp.impostorLayer,
-      leafLayer: sp.leafLayer,
-      barkLayer: sp.barkLayer,
+      matLayer: sp.matLayer,
       billboardTri: sp.billboardTri,
     }
   })
 }
 
 /**
- * What to CALL one variant, which is now just its species.
- *
- * A variant id is an index into `treeVariants()`, and "tree 3" tells you
- * nothing about which tree it is -- the readout in /v2 exists so that "that
- * tree is wrong" can be said about a tree somebody can then go and look at.
- * With one variant per species the species IS the whole name; the size a given
- * tree happens to be drawn at is on its matrix and is not a bank member.
+ * What to CALL one variant, which is its species. A variant id is an index
+ * into `treeVariants()`, and "tree 3" tells you nothing about which tree it
+ * is -- the readout in /v2 exists so that "that tree is wrong" can be said
+ * about a tree somebody can then go and look at.
  */
 export function treeVariantId(v) {
-  if (!TREE_SPECIES[v.species]) throw new Error(`treeVariantId: ${v.species} is not a species`)
+  if (!TREE_BANK_SPECIES[v.species]) throw new Error(`treeVariantId: ${v.species} is not a species`)
   return v.species
 }
 
@@ -143,37 +123,92 @@ export function treeVariantId(v) {
  * which geometries in the batch its vertex shader spins toward the eye. It is
  * layers rather than geometry ids because the shader can only see a vertex
  * attribute, and `texLayer` is the one every prop in the project already
- * carries -- one prop material serves ferns, rocks and trees, so a dedicated
- * `isBillboard` attribute would be a change to every generator in the project.
- *
- * The layer list is NOT sufficient on its own, and deliberately so: a fixed card
- * spun about its own axis is visibly wrong, and this array is also where the
- * bake rig's own subjects live. The shader takes a second condition -- the
- * vertex normal, vertical only on a card that wants spinning -- so a fixed card
- * and a spun one can share a layer and a bake. See material.js's
- * billboardVertex.
+ * carries. The layer list is NOT sufficient on its own: the shader takes a
+ * second condition, the vertex normal, vertical only on a card that wants
+ * spinning. See material.js's billboardVertex.
  */
 export function treeImpostorLayers() {
-  return [...new Set(Object.keys(TREE_SPECIES).map((s) => TREE_SPECIES[s].impostorLayer))]
+  return [...new Set(Object.keys(TREE_BANK_SPECIES).map((s) => TREE_BANK_SPECIES[s].impostorLayer))]
 }
 
-/** The full parameter set for one variant, ready for buildTree or treeLod. */
-function paramsFor(v, seed) {
-  const sp = TREE_SPECIES[v.species]
-  return {
-    ...TREE_DEFAULTS,
-    ...sp.params,
-    leafLayer: v.leafLayer,
-    barkLayer: v.barkLayer,
-    height: v.height,
-    seed,
+/** One species' mesh tier, as its generator hands it over: `{ trunk, foliage, stats }`. */
+function grow(species, tier) {
+  const sp = TREE_BANK_SPECIES[species]
+  const gen = GENERATORS[sp.generator]
+  return gen.build(gen.lod(gen.species(species), tier))
+}
+
+/** A `count`-long run of `value` for a one-float attribute. */
+const runOf = (count, value) => new Float32Array(count).fill(value)
+
+/**
+ * Weld a generator's two geometries into one in the prop layout, `color`
+ * included -- see the header. Returns a fresh geometry and disposes neither
+ * input; the caller owns all three.
+ */
+function weldTree(species, { trunk, foliage, stats }) {
+  const need = (geo, name, ...attrs) => {
+    if (!geo.index) throw new Error(`weldTree: ${species} ${name} is not indexed`)
+    for (const a of attrs) {
+      if (!geo.attributes[a]) throw new Error(`weldTree: ${species} ${name} carries no ${a}`)
+    }
   }
+  need(trunk, 'wood', 'position', 'normal', 'uvProj', 'texLayer')
+  need(foliage, 'crown', 'position', 'normal', 'uv', 'color')
+  const nw = trunk.attributes.position.count
+  const nc = foliage.attributes.position.count
+
+  const cat = (a, b, size) => {
+    const out = new Float32Array((nw + nc) * size)
+    out.set(a, 0)
+    out.set(b, nw * size)
+    return new THREE.BufferAttribute(out, size)
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', cat(trunk.attributes.position.array, foliage.attributes.position.array, 3))
+  geo.setAttribute('normal', cat(trunk.attributes.normal.array, foliage.attributes.normal.array, 3))
+  geo.setAttribute('uvProj', cat(trunk.attributes.uvProj.array, foliage.attributes.uv.array, 2))
+  geo.setAttribute('texLayer', cat(trunk.attributes.texLayer.array, runOf(nc, TREE_BANK_SPECIES[species].matLayer), 1))
+  const woodShade = trunk.attributes.color ? trunk.attributes.color.array : runOf(nw * 3, 1)
+  geo.setAttribute('color', cat(woodShade, foliage.attributes.color.array, 3))
+
+  const index = new Uint32Array(trunk.index.count + foliage.index.count)
+  index.set(trunk.index.array, 0)
+  for (let i = 0; i < foliage.index.count; i++) index[trunk.index.count + i] = foliage.index.array[i] + nw
+  geo.setIndex(new THREE.BufferAttribute(index, 1))
+  geo.computeBoundingBox()
+  geo.computeBoundingSphere()
+
+  // The four numbers trees.js reads for the pick silhouette and the card's
+  // frame. `firstBranchHeight` is where the crown starts: the lowest scoop or
+  // bough, since that is what the cursor can hit.
+  for (const k of ['height', 'crownWidth', 'trunkDiameter', 'crownBase']) {
+    if (!(stats[k] > 0)) throw new Error(`weldTree: ${species} publishes no usable ${k} (${stats[k]})`)
+  }
+  geo.userData.tree = {
+    height: stats.height,
+    crownWidth: stats.crownWidth,
+    trunkDiameter: stats.trunkDiameter,
+    firstBranchHeight: stats.crownBase,
+    belowGround: stats.belowGround,
+    triangles: stats.triangles,
+  }
+  return geo
+}
+
+/** One mesh tier of one species, welded; the generator's own buffers are let go. */
+function buildTier(species, tier) {
+  const built = grow(species, tier)
+  const geo = weldTree(species, built)
+  built.trunk.dispose()
+  built.foliage.dispose()
+  return geo
 }
 
 // How much fatter the bark gets than the mean. `trunkDiameter` on a built tree
-// is the MEAN diameter at the foot and `trunkLobe` takes the skin to roughly
-// this much of it, so a card framed against the mean would leave the fat side of
-// the trunk hanging outside its own silhouette.
+// is the MEAN diameter at the foot and the trunk's lobing takes the skin to
+// roughly this much of it, so a card framed against the mean would leave the
+// fat side of the trunk hanging outside its own silhouette.
 const TRUNK_LOBE = 1.11
 
 /**
@@ -215,23 +250,16 @@ function geometryBytes(geo) {
  * cards sample an empty layer and alphaTest discards them, so distant trees fade
  * in rather than flashing.
  */
-export function buildTreeBank({ seed = 1, billboard = true } = {}) {
+export function buildTreeBank({ billboard = true } = {}) {
   const variants = treeVariants()
   const lod0 = []
   const lod1 = []
   const cards = []
 
-  variants.forEach((v, i) => {
-    // One seed per variant, spread rather than consecutive so two species do
-    // not walk neighbouring rng streams and grow correlated crowns.
-    const p = paramsFor(v, seed + i * 101)
-    const g0 = buildTree(p)
+  for (const v of variants) {
+    const g0 = buildTier(v.species, 0)
     lod0.push(g0)
-
-    // The SAME tree with cheap wood -- see treeLod. Same seed, so buildTree
-    // walks the identical rng stream and the crown that comes out is not merely
-    // the same size, it is the same cards in the same seats.
-    lod1.push(buildTree(treeLod(p, 1)))
+    lod1.push(buildTier(v.species, 1))
 
     // The card is framed on tier 0's measured crown AND on its measured trunk,
     // which is the tree the impostor is a photograph OF and what
@@ -242,36 +270,25 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
     // the eye must NOT also turn its normal, or N.L becomes a function of where
     // the player stands and the whole forest brightens and dims as they turn on
     // the spot. A vertical normal is stable and, for a canopy seen from 30 m
-    // out, closer to true anyway. Same call and same reasoning as
-    // fernCardGeometries. The roundness the cross gets from `canopy` this tier
-    // gets from the photograph instead -- the bake is lit, so the crown's own
-    // interior shading is in the texture. See impostor.js on why the billboard
-    // does not simply take the fan as well.
-    //
-    // `tri` is what makes this tier one triangle rather than two, and the
-    // species picks which way up. It is asked for by name rather than defaulted
-    // on, because the same function builds the fern billboard, which is a
-    // ROSETTE and has no corner it can spare.
-    //
-    // `sink` is the other half of `tri`, and comes out of the same call that
-    // sized the card: an apex-down triangle hangs below the ground so that it
-    // still has the trunk's width where the trunk is. bakeTreeImpostors asks
-    // `cardFoot` the same question so the photograph is framed on the same
-    // strip.
+    // out, closer to true anyway. `tri` is what makes this tier one triangle
+    // rather than two, and the species picks which way up; `sink` is the other
+    // half of `tri`, out of the same call that sized the card, so an apex-down
+    // triangle hangs below the ground and still has the trunk's width where the
+    // trunk is. bakeTreeImpostors asks `cardFoot` the same question so the
+    // photograph is framed on the same strip.
     if (billboard) {
-      // A missing `billboardTri` would quietly fall back to a quad and double
-      // the far band's bill, which is the one number nobody would notice going
-      // wrong. A new species has to say which way up its outline is.
-      if (!v.billboardTri) {
-        throw new Error(`buildTreeBank: ${v.species} has no billboardTri`)
-      }
+      if (!v.billboardTri) throw new Error(`buildTreeBank: ${v.species} has no billboardTri`)
       const ext = impostorCardExtents({
         width: u.crownWidth, height: u.height, foot: cardFoot(u, v.billboardTri),
       })
-      cards.push(buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1,
-        { upNormal: true, tri: v.billboardTri, sink: ext.sink }))
+      const card = buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1,
+        { upNormal: true, tri: v.billboardTri, sink: ext.sink })
+      // The mesh tiers carry their baked shade in `color`; the card's shade is
+      // in its photograph, so it wears white to share their layout and program.
+      card.setAttribute('color', new THREE.BufferAttribute(runOf(card.attributes.position.count * 3, 1), 3))
+      cards.push(card)
     }
-  })
+  }
 
   // Three tiers when the far one is a billboard, two when it is not -- without a
   // vertex shader to turn it, a one-plane card is not a tier anyone can ship, so
@@ -293,24 +310,20 @@ export function buildTreeBank({ seed = 1, billboard = true } = {}) {
 /**
  * Photograph one tree per SPECIES into the impostor layer its cards already
  * point at. Call ONCE, after `loadImageLayers()` has resolved -- before that
- * the tree has no bark or leaf texture and the picture would be of nothing.
+ * the tree has no bark or mat and the picture would be of nothing.
  *
  * Four ortho renders at 512^2, four 1 MB readbacks and the downsample, and
  * `readRenderTargetPixels` stalls the pipeline for each -- so this is a
  * deliberate one-off hitch at load rather than anything the frame loop does.
  *
- * ONE LAYER PER SPECIES, which is now also one layer per variant. A placed
- * tree's size is a uniform scale on its matrix, so the photograph is stretched
- * evenly with the card and stays exact at every size in the range.
+ * ONE LAYER PER SPECIES, which is also one layer per variant. A placed tree's
+ * size is a uniform scale on its matrix, so the photograph is stretched evenly
+ * with the card and stays exact at every size in the range.
  */
-export function bakeTreeImpostors(renderer, texArray, { seed = 1 } = {}) {
-  const variants = treeVariants()
+export function bakeTreeImpostors(renderer, texArray) {
   const done = []
-  for (const species of Object.keys(TREE_SPECIES)) {
-    const i = variants.findIndex((v) => v.species === species)
-    if (i < 0) throw new Error(`bakeTreeImpostors: no variant for ${species}`)
-    const v = variants[i]
-    const geo = buildTree(paramsFor(v, seed + i * 101))
+  for (const v of treeVariants()) {
+    const geo = buildTier(v.species, 0)
     const u = geo.userData.tree
     const ext = bakeImpostor(renderer, geo, texArray, v.impostorLayer, {
       width: u.crownWidth,
@@ -318,9 +331,12 @@ export function bakeTreeImpostors(renderer, texArray, { seed = 1 } = {}) {
       // The same strip of empty ground the card's apex hangs into. Framed here
       // and not just in the geometry, or the picture sits `sink` too high on it.
       foot: cardFoot(u, v.billboardTri),
+      // The baked occlusion is in the mesh's `color`, and the photograph has to
+      // show the same shaded crown the mesh does or the swap is a colour step.
+      vertexColors: true,
     })
     geo.dispose()
-    done.push({ species, layer: v.impostorLayer, ...ext })
+    done.push({ species: v.species, layer: v.impostorLayer, ...ext })
   }
   return done
 }

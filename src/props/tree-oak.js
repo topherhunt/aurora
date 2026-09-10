@@ -32,9 +32,14 @@ import { LAYER } from '../textures.js'
 // no two scoops are the same shape. One rim vertex is the STEM: it sits
 // exactly on a branch's surface, and it is `stemReach` rim radii from the
 // centre where the others are one, so a scoop hangs off its branch rather
-// than being pinned through the middle. Every scoop stems from a branch,
+// than being pinned through the middle. The other four corners are not spread
+// evenly but held to the far side of the stem (`RIM_ANGLES`), so the outline
+// is a leaf's: one point at the stem and a rounded blade beyond it, no corner
+// of the blade sharper than about 115 degrees. Every scoop stems from a branch,
 // seated at a fraction of its length drawn between `boughFrom` and the tip
-// and crowded toward the tip by `tipBias`.
+// and crowded toward the tip by `tipBias`; `tipBoughs` more stem from the
+// bole's own tip, which is a branch tip to them, so a crown does not end in a
+// bare point of bark.
 //
 // A SCOOP IS AIMED, NOT DROPPED. Hung from its stem, a scoop is free to turn
 // every way -- which way it opens, and which way its body runs off the stem
@@ -55,22 +60,34 @@ import { LAYER } from '../textures.js'
 // running back down the limb, so a limb's end holds scoops reaching past it
 // at every angle and no more of them straight out than any other way. A
 // scoop is a sheet seen from both sides, so it wears the mat DOUBLE-SIDED, and
-// its normal is authored on the SKY side of each face whichever way it opens:
-// a Lambert lit along a downward opening would put every scoop in its own
-// shadow.
+// its normals are authored on its SKY side whichever way it opens -- a
+// Lambert lit along a downward opening would put every scoop in its own
+// shadow -- and SMOOTHED over the scoop: each vertex carries the mean of the
+// faces it joins, so a bowl shades as one curved sheet and not as five
+// facets.
 //
-// THE LADDER. LOD1 and LOD2 keep a FRACTION of the scoops and take sides off
-// the wood; nothing else moves. Every scoop is drawn from the rng at every
-// tier and only its emit is skipped, so `boughs` is how many the tree has,
-// `boughKeep` is how many reach the buffer, and a coarse tier is a subset in
-// LOD0's own seats -- v8's argument, one primitive over. The seats are drawn
-// in random order over the branches, so the first N are an even thinning.
+// THE LADDER. LOD1 keeps EVERY scoop and cheapens each: `quadScoops` emits a
+// scoop as two triangles on its stem, its two widest corners and one far
+// point, so the outline is LOD0's and the count is LOD0's, and `straightWood`
+// emits every tube as one straight segment from its butt to its tip with
+// five sides. The scoops still seat on the crooked paths, so a stem can stand
+// a little off a straightened limb; that is the price of not moving a scoop
+// between tiers. LOD2 thins the scoops on top: every scoop is drawn from the
+// rng at every tier and only its emit is skipped, so `boughs` is how many the
+// tree has, `boughKeep` is how many reach the buffer, and a coarse tier is a
+// subset in LOD0's own seats -- v8's argument, one primitive over. The bole's
+// tip scoops are drawn first, so every tier keeps them; the rest are drawn in
+// random order over the branches, so the first N are an even thinning.
 //
-// THE OCCLUSION IS A RAMP. A crown of overlapping sheets is lit honestly by a
-// Lambert, but the low scoops are under the high ones and no rig the game can
-// afford knows it, so `innerShade` darkens every vertex by how far down the
-// crown it sits, and `boughTint` gives each scoop its own small offset so
-// neighbours separate.
+// THE OCCLUSION IS BAKED. A crown of overlapping sheets is lit honestly by a
+// Lambert, but an inner scoop is under the outer ones and no rig the game can
+// afford knows it, so every vertex -- the wood's too -- is darkened by how
+// little sky it sees: `SKY_RAYS` are cast from it against every drawn scoop
+// taken as a disc in its rim's plane, its own scoop excepted, and the vertex
+// is baked at `innerShade` for no sky through to full at `SKY_FULL` of it. An
+// outer scoop's outer rim sees most of the sky and takes the whole light; the
+// bole under the crown and the scoops inside it go dark. `boughTint` gives
+// each scoop its own small offset on top, so neighbours separate.
 //
 // BUILT AT `height` AND THEN RESCALED SO THE CROWN'S TOP LANDS THERE. Where
 // the top comes out is the sum of the bole, a limb's climb and a scoop's
@@ -79,9 +96,10 @@ import { LAYER } from '../textures.js'
 // scaled along so a tile stays the metres `texMetres` says. The extent is
 // measured over every scoop DRAWN, kept or not, so all tiers share one scale.
 //
-// ATTRIBUTES: `{ position, normal, uv, color }` on the foliage, flat-shaded and
-// unwelded with an identity index; `{ position, normal, uvProj, texLayer }` on
-// the wood, which is createPropMaterial's layout.
+// ATTRIBUTES: `{ position, normal, uv, color }` on the foliage, smooth within
+// each scoop and unwelded between them, with an identity index; `{ position,
+// normal, uvProj, texLayer, color }` on the wood, which is createPropMaterial's
+// layout with its `vertexColors` opt-in taken.
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2
@@ -148,12 +166,17 @@ export const TREE_OAK_DEFAULTS = {
                        // so past 1 the scoops crowd toward the tips
   tipZone: 0.2,        // scoops seated within this fraction of the tip may
                        // not run back down the branch. 0 turns it off
+  tipBoughs: 3,        // scoops seated in the bole's own tip zone, on top of
+                       // `boughs`, drawn first so every tier keeps them
   boughKeep: 1,        // fraction of the scoops a tier builds -- a FRACTION
                        // KEPT, not a count, see the header
+  quadScoops: 0,       // 1 emits every scoop as two triangles, see the header.
+                       // The ladder's, not a species'
+  straightWood: 0,     // 1 emits every tube as one straight segment. Likewise
 
   // --- shading ---
-  innerShade: 0.55,    // how dark the crown's lowest vertex is baked, as a
-                       // multiple of the highest. 1 turns the ramp off
+  innerShade: 0.55,    // how dark a vertex that sees no sky is baked, as a
+                       // multiple of one that sees all of it. 1 turns it off
   boughTint: 0.08,     // per-scoop brightness jitter, half-range
 
   // --- material ---
@@ -226,18 +249,18 @@ export function treeOakSpecies(name) {
 /**
  * The mesh ladder. Three tiers, and a fourth rung that is a baked card.
  *
- * LOD1 keeps three scoops in five and LOD2 one in four, each in LOD0's own
- * seat, and both take sides off the wood, whose rings stay on the same path.
- * Neither touches `boughs`, `branches` or any other count the rng walks --
- * see the header.
+ * LOD1 keeps every scoop as two triangles and straightens the wood to one
+ * five-sided segment a tube; LOD2 keeps one scoop in four of those, the
+ * bole's tip scoops always among them, each in LOD0's own seat, and takes
+ * more sides off the wood. Neither touches `boughs`, `branches` or any other
+ * count the rng walks -- see the header.
  */
 export function treeOakLod(options, tier) {
   const p = { ...TREE_OAK_DEFAULTS, ...options }
   if (tier === 0) return p
-  if (tier === 1) {
-    return { ...p, boughKeep: Math.min(p.boughKeep, 0.6), trunkSides: Math.min(6, p.trunkSides), branchSides: Math.min(4, p.branchSides) }
-  }
-  if (tier === 2) return { ...p, boughKeep: Math.min(p.boughKeep, 0.25), trunkSides: Math.min(4, p.trunkSides), branchSides: 3 }
+  const cheap = { ...p, quadScoops: 1, straightWood: 1, trunkSides: Math.min(5, p.trunkSides), branchSides: Math.min(5, p.branchSides) }
+  if (tier === 1) return cheap
+  if (tier === 2) return { ...cheap, boughKeep: Math.min(p.boughKeep, 0.25), trunkSides: Math.min(4, p.trunkSides), branchSides: 3 }
   throw new Error(
     `treeOakLod: no MESH tier ${tier}; the oak has LOD0, LOD1 and LOD2. The tier past ` +
       'them is one spun quad carrying a baked photograph, not a parameter set'
@@ -245,7 +268,6 @@ export function treeOakLod(options, tier) {
 }
 
 const tubeTris = (segments, sides) => (segments - 1) * sides * 2 + sides
-const BOUGH_TRIS = 5
 const keptBoughs = (total, keep) => Math.round(total * Math.min(1, Math.max(0, keep)))
 
 /**
@@ -253,10 +275,15 @@ const keptBoughs = (total, keep) => Math.round(total * Math.min(1, Math.max(0, k
  *
  *   trunk    = (trunkSegments - 1) x trunkSides x 2 + trunkSides
  *   branches = branches x ((branchSegments - 1) x branchSides x 2 + branchSides)
- *   boughs   = kept x 5, and none at all with no branch to stem from
+ *   boughs   = kept x 5, over tipBoughs on the bole and, with a branch to
+ *              stem from, `boughs` on the branches
  *
- * `boughs` is the KEPT count: a coarse tier draws every scoop and skips the
- * emit, so this is what reaches the buffer and not what the rng walked.
+ * with the segments read as 1 under `straightWood` and the 5 as 2 under
+ * `quadScoops`. `boughs` is the KEPT count: a coarse tier draws every scoop
+ * and skips the emit, so this is what reaches the buffer and not what the rng
+ * walked; the paths keep their segments the same way, so `trunkSegments` and
+ * `branchSegments` are the drawn joints and `straightWood` says whether the
+ * tube follows them.
  */
 export function resolveTreeOak(options = {}) {
   const p = { ...TREE_OAK_DEFAULTS, ...options }
@@ -265,16 +292,21 @@ export function resolveTreeOak(options = {}) {
   const branchSides = Math.max(3, Math.round(p.branchSides))
   const branchSegments = Math.max(1, Math.round(p.branchSegments))
   const branches = Math.max(0, Math.round(p.branches))
-  const boughs = branches > 0 ? keptBoughs(Math.max(0, Math.round(p.boughs)), p.boughKeep) : 0
-  const trunkTris = tubeTris(trunkSegments, trunkSides)
-  const branchTris = branches * tubeTris(branchSegments, branchSides)
-  const boughTris = boughs * BOUGH_TRIS
+  const tipBoughs = Math.max(0, Math.round(p.tipBoughs))
+  const straightWood = p.straightWood > 0
+  const quadScoops = p.quadScoops > 0
+  const boughs = keptBoughs(tipBoughs + (branches > 0 ? Math.max(0, Math.round(p.boughs)) : 0), p.boughKeep)
+  const trunkTris = tubeTris(straightWood ? 1 : trunkSegments, trunkSides)
+  const branchTris = branches * tubeTris(straightWood ? 1 : branchSegments, branchSides)
+  const boughTris = boughs * (quadScoops ? 2 : 5)
   return {
     trunkSides,
     trunkSegments,
     branchSides,
     branchSegments,
     branches,
+    straightWood,
+    quadScoops,
     boughs,
     trunkTris,
     branchTris,
@@ -423,6 +455,13 @@ function crookedPath(rand, start, dir, length, segments, crook, rise) {
 // --- the scoops -------------------------------------------------------------
 
 const RIM = 5
+// Where the four blade corners sit round the rim from the stem's direction, in
+// order round the rim. Held past 90 degrees either side so that with the stem
+// at `stemReach` the outline is a leaf: about 58 degrees at the stem, 116 at
+// the two corners beside it and 125 at the two across, where an even spread
+// makes 73, 126 and 108. The quad tier keeps the first and last and folds the
+// middle two into one point straight across from the stem.
+const RIM_ANGLES = [100, 150, 210, 260].map((deg) => (deg * Math.PI) / 180)
 
 // Where a fraction of a limb sits: the point, the tube's radius there and the
 // segment's direction. The path is `segments` equal steps closing to a point
@@ -473,11 +512,13 @@ function seatBough(limb, seat, rand, p, boughR) {
 }
 
 // A seated scoop shaped, opening along `n` with its body running off the stem
-// along `body`: its six vertices in world space and the frame they were built
-// in. The stem is rim vertex 0; the centre is `reach` rim radii back from it
-// along `h` and `depth` radii down along `n`; the other four rim corners go
-// round from `h` at even angles, each at its own jittered radius, stretched
-// by the skew.
+// along `body`: its six vertices in world space, the quad tier's far point,
+// and the frame they were built in. The stem is rim vertex 0; the centre is
+// `reach` rim radii back from it along `h` and `depth` radii down along `n`;
+// the other four rim corners go round from `h` at `RIM_ANGLES`, each at its
+// own jittered radius, stretched by the skew. The far point is straight
+// across from the stem at the mean of the two far corners' jitter, half the
+// centre's depth down, so the quad folds along its stem-to-far diagonal.
 function shapeBough(s, n, body, p) {
   // The reach is the body flattened into the opening's plane. One with
   // nothing left there takes the limb's own direction instead, and failing
@@ -512,14 +553,21 @@ function shapeBough(s, n, body, p) {
   const spin = -Math.atan2(s0y, s0x)
   const cr = Math.cos(spin)
   const sr = Math.sin(spin)
-  for (let k = 1; k < RIM; k++) {
-    const m = s.rimJitter[k - 1]
-    const [ux, uy] = skewed((k / RIM) * TAU)
+  const rimPoint = (phi, m) => {
+    const [ux, uy] = skewed(phi)
     const x = ux * cr - uy * sr
     const y = ux * sr + uy * cr
-    verts.push(rimCentre.clone().addScaledVector(h, r * m * x).addScaledVector(f2, r * m * y))
+    return rimCentre.clone().addScaledVector(h, r * m * x).addScaledVector(f2, r * m * y)
   }
-  return { verts, n, h, f2, rimCentre, u0: s.u0, v0: s.v0, tint: s.tint }
+  for (let k = 1; k < RIM; k++) verts.push(rimPoint(RIM_ANGLES[k - 1], s.rimJitter[k - 1]))
+  // The quad tier's far corner, dropped out of the plane for half the cup,
+  // less the squeeze: the two faces hinge on the stem-to-far edge, and a rim
+  // squeezed to a sliver has too little projected area to hold a dropped
+  // hinge, so the quad would fold over into a taco.
+  const far = rimPoint(Math.PI, (s.rimJitter[1] + s.rimJitter[2]) / 2).addScaledVector(n, -r * Math.max(0, p.boughDepth) * 0.5 * (1 - skew))
+  // The occluder the shade takes the scoop as: the rim's plane out to the rim
+  // radius, about the leaf's own area.
+  return { verts, far, n, h, f2, rimCentre, disc: r, u0: s.u0, v0: s.v0, tint: s.tint }
 }
 
 // How far, in rim radii, a placed scoop's centre counts as a neighbour, and
@@ -596,34 +644,105 @@ function layoutBough(limb, seat, rand, aimRand, placed, p, boughR) {
   return best
 }
 
-// One laid-out scoop into the foliage buffers: five triangles fanned from the
-// centre, unwelded and flat-shaded off each face's own cross product, the mat
-// laid flat in the rim's own plane at the scoop's own offset. The rim goes
-// round counter-clockwise seen from the opening, so every face's cross
-// product has a positive part along `n`; the STORED normal is that cross
-// turned to the sky side, since the material lights both faces off it and a
-// dome lit from underneath would shade itself.
-function addBough(out, bough, tex) {
-  const [c] = bough.verts
-  const fn = new THREE.Vector3()
+// One laid-out scoop into the foliage buffers as a fan of `faces`, each a
+// triple of its vertices wound counter-clockwise seen from the opening, so
+// every face's cross product has a positive part along `n`. Unwelded, the
+// mat laid flat in the rim's own plane at the scoop's own offset. The STORED
+// normals are those crosses turned to the sheet's sky side -- the side its
+// own opening, the area-weighted sum of the crosses, leans up on (a near-flat
+// sheet's two tiers can differ here, a quad folds where a pentagon does not);
+// the whole sheet one way,
+// since the material lights both faces off them and a dome lit from
+// underneath would shade itself -- and smoothed: a vertex carries the mean of
+// the faces it joins. `verts` is any list the faces index into.
+function emitFan(out, bough, verts, faces, tex) {
   const ab = new THREE.Vector3()
   const ac = new THREE.Vector3()
   const rel = new THREE.Vector3()
-  for (let k = 0; k < RIM; k++) {
-    const a = bough.verts[1 + k]
-    const b = bough.verts[1 + ((k + 1) % RIM)]
-    fn.crossVectors(ab.subVectors(a, c), ac.subVectors(b, c)).normalize()
-    if (fn.y < 0) fn.negate()
-    for (const q of [c, a, b]) {
+  const crosses = faces.map(([i, j, k]) => new THREE.Vector3().crossVectors(ab.subVectors(verts[j], verts[i]), ac.subVectors(verts[k], verts[i])))
+  const sky = crosses.reduce((s, c) => s + c.y, 0) < 0 ? -1 : 1
+  const smooth = verts.map(() => new THREE.Vector3())
+  faces.forEach(([i, j, k], f) => {
+    const fn = crosses[f].normalize().multiplyScalar(sky)
+    smooth[i].add(fn)
+    smooth[j].add(fn)
+    smooth[k].add(fn)
+  })
+  for (const vn of smooth) vn.normalize()
+  for (const face of faces) {
+    for (const j of face) {
+      const q = verts[j]
+      const vn = smooth[j]
       out.positions.push(q.x, q.y, q.z)
-      out.normals.push(fn.x, fn.y, fn.z)
+      out.normals.push(vn.x, vn.y, vn.z)
       rel.subVectors(q, bough.rimCentre)
       out.uvs.push(bough.u0 + rel.dot(bough.h) / tex, bough.v0 + rel.dot(bough.f2) / tex)
       out.tint.push(bough.tint)
     }
   }
-  return RIM
+  return faces.length
 }
+
+// Five triangles fanned from the centre round the rim.
+const PENTAGON_FACES = [0, 1, 2, 3, 4].map((k) => [0, 1 + k, 1 + ((k + 1) % RIM)])
+const addBough = (out, bough, tex) => emitFan(out, bough, bough.verts, PENTAGON_FACES, tex)
+
+// The quad tier: two triangles on the stem, the corners beside it and the far
+// point, folded along the stem-to-far diagonal. The stem and the two corners
+// are LOD0's own vertices, so a scoop keeps its outline across the switch.
+const QUAD_FACES = [[0, 1, 2], [0, 2, 3]]
+const addQuadBough = (out, bough, tex) =>
+  emitFan(out, bough, [bough.verts[1], bough.verts[2], bough.far, bough.verts[5]], QUAD_FACES, tex)
+
+// --- the shade --------------------------------------------------------------
+
+// The sky, sampled: straight up, and rings at two elevations. Each ray
+// carries the cosine of its zenith angle, so a sheet flat overhead costs a
+// vertex most of its light and one standing off to the side costs it little,
+// which is how a Lambert would see the sky if it could.
+const SKY_RAYS = (() => {
+  const rays = [{ dir: UP.clone(), weight: 1 }]
+  for (const [elevation, count] of [[60, 6], [30, 12]]) {
+    const el = (elevation * Math.PI) / 180
+    for (let k = 0; k < count; k++) {
+      const az = ((k + 0.5) / count) * TAU
+      rays.push({ dir: new THREE.Vector3(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el)), weight: Math.sin(el) })
+    }
+  }
+  const total = rays.reduce((s, r) => s + r.weight, 0)
+  for (const r of rays) r.weight /= total
+  return rays
+})()
+
+// How lit a point is baked, 0 to 1: the fraction of the sky it sees past
+// `scoops`, each taken as the disc of its `disc` radius in its rim's plane,
+// blocking from either face, over `SKY_FULL`. No vertex in a crown sees the
+// low sky all the way round -- a scoop on the outside of the crown sees about
+// two thirds of it -- so full light is set at that, and the outer shell reads
+// as lit rather than as a milder grey than the top. `self` is the scoop the
+// point belongs to and never blocks it.
+const SKY_FULL = 0.7
+const skyLight = (() => {
+  const toCentre = new THREE.Vector3()
+  const hit = new THREE.Vector3()
+  return (at, scoops, self) => {
+    let seen = 0
+    for (const ray of SKY_RAYS) {
+      let clear = true
+      for (const s of scoops) {
+        if (s === self) continue
+        const along = ray.dir.dot(s.n)
+        if (Math.abs(along) < 1e-9) continue
+        const t = toCentre.subVectors(s.rimCentre, at).dot(s.n) / along
+        if (t <= 1e-6) continue
+        hit.copy(at).addScaledVector(ray.dir, t)
+        if (hit.distanceToSquared(s.rimCentre) < s.disc * s.disc) { clear = false; break }
+      }
+      if (clear) seen += ray.weight
+    }
+    return Math.min(1, seen / SKY_FULL)
+  }
+})()
 
 // --- the tree ---------------------------------------------------------------
 
@@ -663,8 +782,10 @@ export function buildTreeOak(options = {}) {
   // One tile is boleLen / barkRepeat metres tall.
   const vPerMetre = p.barkRepeat / boleLen
   const warp = lobeWarp(p, R.trunkSides)
+  // Under `straightWood` a tube is its path's chord at the butt's radius.
+  const tube = (path, radii) => (R.straightWood ? [[path[0], path[path.length - 1]], [radii[0]]] : [path, radii])
   let trunkTris = 0
-  if (trunkR > 0) trunkTris = addTube(wood, trunkPath, trunkRadii, R.trunkSides, warp, trunkURepeat, vPerMetre, p.barkLayer)
+  if (trunkR > 0) trunkTris = addTube(wood, ...tube(trunkPath, trunkRadii), R.trunkSides, warp, trunkURepeat, vPerMetre, p.barkLayer)
 
   // Where along the bole a fraction sits, and the bole's radius there. The
   // path is `trunkSegments` equal steps, so a fraction is an index and a
@@ -707,7 +828,7 @@ export function buildTreeOak(options = {}) {
       radii[r] = r0 * (1 + (Math.max(0, p.branchTaper) - 1) * t)
     }
     const uRepeat = Math.max(1, Math.round((TAU * r0 * p.barkRepeat) / H))
-    if (r0 > 0) branchTris += addTube(wood, path, radii, R.branchSides, null, uRepeat, vPerMetre, p.barkLayer)
+    if (r0 > 0) branchTris += addTube(wood, ...tube(path, radii), R.branchSides, null, uRepeat, vPerMetre, p.barkLayer)
     limbs.push({ path, radii })
   }
 
@@ -723,6 +844,13 @@ export function buildTreeOak(options = {}) {
   const nBoughs = Math.max(0, Math.round(p.boughs))
   const from = Math.min(1, Math.max(0, p.boughFrom))
   const bias = 1 / Math.max(0.05, p.tipBias)
+  // The bole's tip first: a limb to the scoops, seated within its tip zone,
+  // so its point wears scoops reaching up past it the way a branch's does.
+  const bole = { path: trunkPath, radii: trunkRadii }
+  const zone = Math.min(1, Math.max(0, p.tipZone))
+  for (let i = 0, n = Math.max(0, Math.round(p.tipBoughs)); i < n; i++) {
+    drawn.push(layoutBough(bole, 1 - zone * boughRand(), boughRand, aimRand, placed, p, boughR))
+  }
   if (limbs.length > 0) {
     for (let i = 0; i < nBoughs; i++) {
       const limb = limbs[Math.floor(boughRand() * limbs.length)]
@@ -733,35 +861,53 @@ export function buildTreeOak(options = {}) {
   const boughs = drawn.slice(0, R.boughs)
 
   // --- extents, then the rescale ---
-  // The top is whatever stands highest, a branch tip included: a limb can
-  // climb past every scoop on it. The base is the crown's alone, for the ramp.
+  // The top is whatever stands highest, a limb's joint included: a limb can
+  // climb past every scoop on it. Measured over the joints and not the rings
+  // round them so every tier, whatever it makes of the wood, lands on one
+  // scale; a ring corner stands past its joint only on a limb lying level,
+  // which is never the top of a tree.
   let topY = 0
-  for (let i = 1; i < wood.positions.length; i += 3) topY = Math.max(topY, wood.positions[i])
-  let baseY = Infinity
-  for (const b of drawn) {
-    for (const v of b.verts) {
-      topY = Math.max(topY, v.y)
-      baseY = Math.min(baseY, v.y)
-    }
-  }
+  for (const j of trunkPath) topY = Math.max(topY, j.y)
+  for (const limb of limbs) for (const j of limb.path) topY = Math.max(topY, j.y)
+  for (const b of drawn) for (const v of b.verts) topY = Math.max(topY, v.y)
   const scale = topY > 1e-6 ? H / topY : 1
 
   // --- emit the foliage ---
   const leaf = { positions: [], normals: [], uvs: [], tint: [] }
+  const emit = R.quadScoops ? addQuadBough : addBough
   let boughTris = 0
-  for (const b of boughs) boughTris += addBough(leaf, b, tex)
+  let scoop = 0
+  const own = []
+  for (const b of boughs) {
+    const faces = emit(leaf, b, tex)
+    boughTris += faces
+    for (let i = 0; i < faces * 3; i++) own.push(scoop)
+    scoop++
+  }
 
-  // The shade ramp, over the crown's layout extent, then the per-scoop tint.
+  // The shade: every vertex by the sky it sees past the DRAWN scoops, so a
+  // coarse tier's vertex is baked as LOD0 baked it, then the per-scoop tint on
+  // the foliage. Layout space, before the rescale, which moves nothing a ray
+  // sees.
   const inner = Math.min(1, Math.max(0, p.innerShade))
   const nLeaf = leaf.positions.length / 3
   const shades = new Float32Array(nLeaf * 3)
-  const crownSpan = Math.max(1e-6, topY - baseY)
+  const at = new THREE.Vector3()
   for (let i = 0; i < nLeaf; i++) {
-    const t = Math.min(1, Math.max(0, (leaf.positions[i * 3 + 1] - baseY) / crownSpan))
-    const s = (inner + (1 - inner) * t) * leaf.tint[i]
+    at.fromArray(leaf.positions, i * 3)
+    const s = (inner + (1 - inner) * skyLight(at, drawn, boughs[own[i]])) * leaf.tint[i]
     shades[i * 3] = s
     shades[i * 3 + 1] = s
     shades[i * 3 + 2] = s
+  }
+  const nWood = wood.positions.length / 3
+  const woodShades = new Float32Array(nWood * 3)
+  for (let i = 0; i < nWood; i++) {
+    at.fromArray(wood.positions, i * 3)
+    const s = inner + (1 - inner) * skyLight(at, drawn, null)
+    woodShades[i * 3] = s
+    woodShades[i * 3 + 1] = s
+    woodShades[i * 3 + 2] = s
   }
 
   // The rescale, positions and the metre-based uvs alike, so a tile stays
@@ -779,6 +925,7 @@ export function buildTreeOak(options = {}) {
   trunk.setAttribute('normal', new THREE.Float32BufferAttribute(wood.normals, 3))
   trunk.setAttribute('uvProj', new THREE.Float32BufferAttribute(wood.uvs, 2))
   trunk.setAttribute('texLayer', new THREE.Float32BufferAttribute(wood.layers, 1))
+  trunk.setAttribute('color', new THREE.BufferAttribute(woodShades, 3))
   trunk.setIndex(wood.indices)
   trunk.computeBoundingBox()
   trunk.computeBoundingSphere()

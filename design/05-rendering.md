@@ -179,7 +179,7 @@ Regenerate the table with `node scripts/probe-trideg.mjs`.
 | Class | Mesh tiers | Card | LOD0 to | Card from | Cull | Mesh class |
 | --- | --- | --- | --- | --- | --- | --- |
 | **structure** (cabins, tower, mill) | 2700, 460, 140 | 2 quads at 90°, **no billboard** | 60 / 140 m | 200 m | 1,500 m | Batched |
-| **tree** (trees) | 550, 380 | 3 quads, then 1 triangle | 8 m | 22.5 m | 1,500 m + clumps | Instanced, 4 tiers x 4 species |
+| **tree** (trees) | 507, 179 | 1 triangle | 8 m | 24 m | 1,500 m + clumps | Instanced, 3 tiers x 4 species |
 | **bush** (ferns, bushes, stumps, logs) | 84, 56, 28 | 2 quads | 5 m | 26 m | 500 m + clumps | Batched, then Instanced |
 | **rock** (pebbles to crags) | 180, 80, 20, 8 -- at most three per size class | 1 quad, spun **spherically**, on four beds of five | 8 / 33 / 15 / 15 / 70 m by bed | 40 / 176 / 80 / \-- / 360 m by bed | 55 / 460 / 140 / 170 / 1,250 m by bed | Batched |
 | **litter** (strewn pebbles) | one 2-triangle quad, no ladder | \-- | \-- | \-- | 64 m | Batched |

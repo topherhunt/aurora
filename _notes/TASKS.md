@@ -41,9 +41,6 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
     - [x] Pine trees are locked
     - [ ] Oak trees
       - instead of separate icosahedrons for separate boughs, let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
-  - [ ] Landscape
-    - [ ] Try again at subdividing ridgelines. When rendering an LOD for a region (just then, not per-frame), as seen from the player's current standpoint, any edge that's > N arc-minutes of view that borders a hidden / backfaced triangle, should get subdivided until it's < N arc-minutes of view. (help me pick a reasonable N.)
-    - [ ] Try again at landscape. Let's apply the same normal-map bump stipple to macro, med (if within distance), and micro (if within distance). Please propose a reasonable distance radius for each, and propose how to do this as cheaply as possible.
   - [ ] Rocks
     - [ ] Get rid of all these rock caps. Boulders should be placed and rendered at a distance relative to their size, maxing out at 1.1km. (Ensure trees max out at 1km. Trees must place AFTER boulders, and thus must have a closer viewing distance.)
     - [ ] Rock caps: positioned impostor card rather than billboard.
@@ -124,6 +121,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Later
 
+- [ ] Try again at subdividing ridgelines. When rendering an LOD for a region (just then, not per-frame), as seen from the player's current standpoint, any edge that's > N arc-minutes of view that borders a hidden / backfaced triangle, should get subdivided until it's < N arc-minutes of view. (help me pick a reasonable N.)
 - You can sleep in any bed, to pass time. If in multiplayer, all players need to be in a bed. If it's after sunset, you wake up at sunrise. Otherwise 8h pass.
 - Ensure inward faces are culled as appropriate. (Tree trunks & branches, boulders, etc?)
 - Underwater shader

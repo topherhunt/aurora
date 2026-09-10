@@ -58,7 +58,7 @@ import { snowDefaults } from '../src/v2/layers/doc.js'
 import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { TerrainTint } from '../src/terrain/terrain-tint.js'
-import { buildChunkV2, shade, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN, STIPPLE_TILE_PER_M } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { buildChunkV2, shade, stippleTilesPerM, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 import { clamp01, smoothstep } from '../src/sim/mathx.js'
 
@@ -581,28 +581,67 @@ export async function run({ heightmap } = {}) {
     check(skirtBad === 0, `every skirt vertex hangs exactly skirtDepth below its edge vertex`, `skirtDepth ${r.skirtDepth.toFixed(3)} m, ${skirtBad} deviations`)
 
     // The stipple frame: one vec4 per vertex, its tile sized to THAT vertex's
-    // distance from the camera, so a chunk is not one scale end to end.
+    // distance from the camera, so a chunk is not one scale end to end; its
+    // plane the normal's dominant axis; its offset placing the chunk on the
+    // world tiling of that plane so neighbours at one scale share a sheet.
     check(r.stipple.length === CHUNK_VERTS * 4, 'stipple frame is one vec4 per vertex', `${r.stipple.length / 4} of ${CHUNK_VERTS}`)
+    const frac = (v) => Math.fround((((v % 1) + 1) % 1))
     let kBad = 0
     let offBad = 0
-    const angles = new Set()
+    let pow2Bad = 0
+    let planeBad = 0
+    const ks = new Set()
+    const planes = new Set()
     for (let v = 0; v < inner; v++) {
       const wx = 512 + r.positions[v * 3]
       const wy = r.positions[v * 3 + 1]
       const wz = -1024 + r.positions[v * 3 + 2]
-      const want = 1 / Math.max(STIPPLE_TILE_MIN, Math.hypot(wx - CAM.x, wy - CAM.y, wz - CAM.z) * STIPPLE_TILE_PER_M)
-      if (Math.abs(r.stipple[v * 4 + 1] - want) > want * 1e-5) kBad++
-      const ou = r.stipple[v * 4 + 2]
-      const ov = r.stipple[v * 4 + 3]
-      if (!(ou >= 0 && ou < 1 && ov >= 0 && ov < 1)) offBad++
-      angles.add(r.stipple[v * 4])
+      const k = r.stipple[v * 4]
+      if (k !== Math.fround(stippleTilesPerM(Math.hypot(wx - CAM.x, wy - CAM.y, wz - CAM.z)))) kBad++
+      const tileStep = Math.log2(1 / (k * STIPPLE_TILE_MIN))
+      if (Math.abs(tileStep - Math.round(tileStep)) > 1e-6 || tileStep < 0) pow2Bad++
+      const plane = r.stipple[v * 4 + 3]
+      if (!(plane === 0 || plane === 1 || plane === 2)) planeBad++
+      const ou = r.stipple[v * 4 + 1]
+      const ov = r.stipple[v * 4 + 2]
+      const wantU = plane === 1 ? frac(k * -1024) : frac(k * 512)
+      const wantV = plane === 0 ? frac(k * -1024) : 0
+      if (Math.abs(ou - wantU) > 1e-6 || Math.abs(ov - wantV) > 1e-6) offBad++
+      ks.add(k)
+      planes.add(plane)
     }
-    check(kBad === 0, 'every vertex tiles the stipple at 1 / max(min, distance * per-metre)', `${kBad} of ${inner} off`)
-    check(offBad === 0, 'stipple offsets lie in [0, 1)', `${offBad} outside`)
-    check(angles.size > inner * 0.9, 'stipple rotations are hashed per vertex, not shared', `${angles.size} distinct of ${inner}`)
-    const kNear = r.stipple[(CHUNK_RES * vpr + CHUNK_RES) * 4 + 1]
-    const kFar = r.stipple[1]
-    check(kNear > kFar, 'the near corner of a chunk gets a finer tile than the far corner', `${(1 / kNear).toFixed(2)} m vs ${(1 / kFar).toFixed(2)} m`)
+    check(kBad === 0, 'every vertex tiles the stipple at stippleTilesPerM(distance)', `${kBad} of ${inner} off`)
+    check(pow2Bad === 0, 'every tile is the minimum times a power of two', `${pow2Bad} of ${inner} off`)
+    check(planeBad === 0, 'every vertex names one of the three planes', `${planeBad} of ${inner} off`)
+    check(offBad === 0, 'stipple offsets are frac(k * chunk origin) on the plane\'s axes', `${offBad} wrong`)
+    check(ks.size === 1, 'a chunk a kilometre out sits inside one tile step', `${ks.size} distinct scales`)
+    check(planes.has(0), 'the chunk has walkable ground on the xz plane', `planes ${[...planes].join(',')}`)
+    // A chunk under the camera straddles several steps: the tile is the
+    // minimum at the feet and doubles outward.
+    {
+      const near = buildChunkV2(field, layers, { ox: -size / 2, oz: -size / 2, size, res: CHUNK_RES, cam: { x: 0, y: field.heightAt(0, 0) + 1.6, z: 0 } })
+      const kMid = near.stipple[((vpr >> 1) * vpr + (vpr >> 1)) * 4]
+      const kCorner = near.stipple[0]
+      check(kMid === Math.fround(1 / STIPPLE_TILE_MIN), 'the vertex under the feet gets the minimum tile', `${(1 / kMid).toFixed(2)} m`)
+      check(kCorner < kMid, 'the corner of the chunk under the feet gets a coarser tile than its middle', `${(1 / kCorner).toFixed(2)} m vs ${(1 / kMid).toFixed(2)} m`)
+    }
+    // The plane pick, on ground that is exactly a plane rising along x: past
+    // 45 degrees the geometric normal's x beats its y and the tile goes onto
+    // zy. 40 degrees is inside the band where the shading bump alone would
+    // tip some vertices over, which is why the pick reads the slope, not the
+    // normal in the buffer.
+    {
+      const planeLayers = new Layers()
+      const planeOf = (deg) => {
+        const pf = new V2Height({ heightmap: planeHeightmap(deg), layers: planeLayers, seed: WORLD_SEED, rough: 1e-6 })
+        const pr = buildChunkV2(pf, planeLayers, { ox: 0, oz: 0, size, res: CHUNK_RES, cam: CAM })
+        const got = new Set()
+        for (let v = 0; v < inner; v++) got.add(pr.stipple[v * 4 + 3])
+        return [...got].join(',')
+      }
+      check(planeOf(40) === '0', 'a 40 degree slope keeps the xz plane', `planes ${planeOf(40)}`)
+      check(planeOf(55) === '1', 'a 55 degree slope facing x takes the zy plane', `planes ${planeOf(55)}`)
+    }
     let skirtFrame = 0
     sv = inner
     for (const vi of edgeOrder) {

@@ -22,10 +22,12 @@
       #boot.gone { opacity: 0; pointer-events: none; }
       #boot b { color: #7fd1ff; font-weight: 600; }
       #boot pre { color: #ff9a7a; max-width: 70ch; white-space: pre-wrap; }
+      #boot-sub { color: #4f627d; max-width: 70ch; text-align: center; margin-top: .5em; }
+      #boot-sub b { color: #7f95b4; }
     </style>
   </head>
   <body>
-    <div id="boot"><span>loading <b>world/height.png</b> ...</span></div>
+    <div id="boot"><div><div id="boot-line">loading <b>world/height.png</b> ...</div><div id="boot-sub"></div></div></div>
     <div id="v2-panel"></div>
     <script type="module" src="/src/v2/main.js"></script>
   </body>

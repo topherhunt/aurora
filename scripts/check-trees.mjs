@@ -9,9 +9,9 @@
 // is invisible in a screenshot of one tree and ruinous across a hillside of
 // them. In the order they cost the most:
 //
-//   THE COARSE MESH STOPS BEING THE SAME TREE. treeLod(p, 1) is the tier the
-//   world draws between 8 and 22.5 m, and it is LOD0 with cheaper WOOD and nothing
-//   else: a 3-sided trunk, one fin per limb, the same card per spray. Two
+//   THE COARSE MESH STOPS BEING THE SAME TREE. treeLod(p, 1) is tree.js's
+//   coarse tier, and it is LOD0 with cheaper WOOD and nothing else: a 3-sided
+//   trunk, one fin per limb, the same card per spray. Two
 //   parameters move and no count does, so buildTree walks an identical rng
 //   stream and lays out an identical tree, which is what makes the swap at 8 m
 //   invisible. The moment a count moves, the crown moves with it: the note this
@@ -82,9 +82,10 @@
 //   has to be nearly inert at eye height, or it silently widens every band and
 //   the near count with it.
 //
-//   THE ATTRIBUTE LAYOUT DRIFTS. BatchedMesh validates that every geometry in
-//   the batch has an identical layout and refuses the whole mesh over one stray
-//   `uv`, so this is a boot failure for the entire forest.
+//   THE ATTRIBUTE LAYOUT DRIFTS. Every bank geometry shares one material and
+//   one program, and the bank welds two generators' output -- prop-layout wood,
+//   Lambert-layout crown -- into that program's layout, `color` included, so a
+//   stray `uv` or a missing `color` is a boot failure for the entire forest.
 
 import { readFileSync } from 'node:fs'
 
@@ -93,7 +94,7 @@ import * as THREE from 'three'
 import {
   TREE_DEFAULTS, TREE_SPECIES, treeLod, resolveTree, buildTree, crownProfile,
 } from '../src/props/tree.js'
-import { buildTreeBank, treeVariants, treeImpostorLayers } from '../src/props/tree-bank.js'
+import { buildTreeBank, treeVariants, treeImpostorLayers, TREE_BANK_SPECIES } from '../src/props/tree-bank.js'
 import { buildImpostorCard } from '../src/props/impostor.js'
 import {
   CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock, getPropClock, setPropFadeTimerAt, setPropSolidAt,
@@ -594,12 +595,13 @@ const CAP_BITES = { pine: 3, oak: 6, birch: 11, aspen: 11 }
 
 console.log('\n-- bank --')
 
-const bank = buildTreeBank({ seed: 1, billboard: true })
+const bank = buildTreeBank({ billboard: true })
 const variants = treeVariants()
+const bankSpecies = Object.keys(TREE_BANK_SPECIES)
 
 {
-  check(bank.variants.length === species.length,
-    'the bank is exactly one variant per species', `${bank.variants.length} variants, ${species.length} species`)
+  check(bank.variants.length === bankSpecies.length,
+    'the bank is exactly one variant per species', `${bank.variants.length} variants, ${bankSpecies.length} species`)
   check(bank.tiers.every((t) => t.geometries.length === bank.variants.length),
     'every tier holds one geometry per variant',
     bank.tiers.map((t) => t.geometries.length).join(' / '))
@@ -632,8 +634,12 @@ const variants = treeVariants()
     'the far tier is a one-triangle billboard and the one before it a mesh',
     `${lo[last - 1]}-${hi[last - 1]} then ${lo[last]}-${hi[last]} triangles`)
 
-  // BatchedMesh refuses the whole arena over one stray attribute, so this is a
-  // boot failure for the entire forest rather than a wrong-looking tree.
+  // One material and one program over the whole arena, so every geometry has
+  // to carry exactly what createPropMaterial({ vertexColors }) reads: the two
+  // generators' wood and crown are welded into this layout and the card is
+  // padded to it, and a stray `uv` or a missing `color` is a boot failure for
+  // the entire forest rather than a wrong-looking tree.
+  const PROP_LAYOUT = 'color,normal,position,texLayer,uvProj'
   const layouts = new Set()
   let indexed = true
   for (const t of bank.tiers) {
@@ -642,12 +648,25 @@ const variants = treeVariants()
       if (!g.index) indexed = false
     }
   }
-  check(layouts.size === 1, 'every geometry in the bank has one identical attribute layout',
-    [...layouts][0])
+  check(layouts.size === 1 && layouts.has(PROP_LAYOUT),
+    'every geometry in the bank wears the prop layout with a baked colour',
+    [...layouts].join(' | '))
   check(indexed, 'every geometry in the bank is indexed')
+  // The crown's shade is what `color` is for: a tree with every vertex white
+  // is one whose bake fell out of the weld, and it would light flat.
+  const shaded = bank.tiers[0].geometries.every((g) => {
+    const c = g.attributes.color
+    for (let i = 0; i < c.count; i++) if (c.getX(i) < 0.99) return true
+    return false
+  })
+  check(shaded, 'every LOD0 tree carries some baked shade in its colour, so the weld kept the bake')
+  // The crown's mat is a layer of the array like every other prop's skin.
+  const matsIn = variants.every((v) => Number.isInteger(v.matLayer) && v.matLayer >= 0 && v.matLayer < LAYER_COUNT)
+  check(matsIn, 'every species mat is a layer inside the texture array',
+    variants.map((v) => `${v.species} ${v.matLayer}`).join(', '))
 
   const impostors = treeImpostorLayers()
-  check(impostors.length === species.length,
+  check(impostors.length === bankSpecies.length,
     'one impostor layer per species, none shared', `${impostors.join(', ')}`)
   check(impostors.every((l) => Number.isInteger(l) && l >= 0 && l < LAYER_COUNT),
     'every impostor layer is inside the texture array', `${LAYER_COUNT} layers`)
@@ -677,7 +696,7 @@ const variants = treeVariants()
   // each silhouette that each choice keeps. Checked against the SPECIES TABLE
   // and then against the built geometry, because buildTreeBank throwing on a
   // missing billboardTri only helps if the field is still meaningful.
-  const tris = Object.entries(TREE_SPECIES).map(([s, sp]) => [s, sp.billboardTri])
+  const tris = Object.entries(TREE_BANK_SPECIES).map(([s, sp]) => [s, sp.billboardTri])
   check(tris.every(([, t]) => t === 'up' || t === 'down'),
     "every species says which way up its billboard is, 'up' or 'down'",
     tris.map(([s, t]) => `${s} ${t}`).join(', '))
@@ -765,7 +784,7 @@ const variants = treeVariants()
 console.log('\n-- the shipped ladder --')
 
 {
-  const noBillboard = buildTreeBank({ seed: 1, billboard: false })
+  const noBillboard = buildTreeBank({ billboard: false })
 
   check(bank.tiers.length === 3,
     'the shipped bank is three tiers: the LOD0 mesh, the LOD1 mesh, the billboard',
@@ -1077,6 +1096,7 @@ trees.place(0, 0)
   const bandSq = LOD_BANDS.map((b) => b * b)
   const nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
   const counts = new Array(bank.tiers.length).fill(0)
+  const tierBill = new Array(bank.tiers.length).fill(0)
   let wrong = 0
   let bill = 0
   // Trees the rim has dissolved away. They are still resident and still hold
@@ -1095,6 +1115,7 @@ trees.place(0, 0)
       }
       const tier = trees.tierAt[id]
       counts[tier]++
+      tierBill[tier] += bank.tiers[tier].triangles[trees.variantAt[id]]
       bill += bank.tiers[tier].triangles[trees.variantAt[id]]
       let want = trees.cardTier
       if (isNear) {
@@ -1113,6 +1134,8 @@ trees.place(0, 0)
   for (let t = 1; t < counts.length; t++) if (counts[t] <= counts[t - 1]) widens = false
   check(widens, 'every tier holds more instances than the tier finer than it',
     counts.join(' / '))
+  // The row trees.js's ladder table is copied from.
+  note('triangles per tier', tierBill.map((t) => `${(t / 1000).toFixed(1)}k`).join(' / '))
   // Plus the cross-dissolve ghosts, which are drawn and are deliberately not in
   // the ladder walk above: a duplicate is not a tree, it is the tier a tree has
   // just left, still on screen for a quarter second.

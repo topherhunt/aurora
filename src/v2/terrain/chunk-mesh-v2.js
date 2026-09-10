@@ -1,24 +1,36 @@
-import { clamp01, lerp, mulberry32, smoothstep } from '../../sim/mathx.js'
+import { clamp01, lerp, smoothstep } from '../../sim/mathx.js'
 import { Noise } from '../../sim/noise.js'
 import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
 
 // ---- THE STIPPLE FRAME, one per vertex, read per FACE.
 //
-// The plain-stipple terrain rung (terrain-material.js) tiles one grit texture
-// over every triangle in its own frame: a random rotation and offset, and a
-// tile size that grows with the triangle's distance from the camera AT BUILD
-// TIME, so the texel stays a roughly constant size on screen instead of mipping
-// out to flat past twenty metres. The frame is baked here as a vec4 attribute,
-// (angle, tiles per metre, offset u, offset v), and the shader reads it as a
-// `flat` varying, so each triangle takes the frame of its provoking vertex
-// whole: no interpolation, no blending, a hard seam at every edge -- which is
-// the look, and is what makes it one fetch and no derivatives.
+// The plain-stipple terrain rung (terrain-material.js) tiles one stipple
+// texture over every triangle, axis-aligned and anchored to the WORLD origin,
+// at a tile size that grows with the triangle's distance from the camera AT
+// BUILD TIME, so the texel stays a roughly constant size on screen instead of
+// mipping out to flat past twenty metres. The frame is baked here as a vec4
+// attribute, (tiles per metre, offset u, offset v, plane), and the shader
+// reads it as a `flat` varying, so each triangle takes its provoking vertex's
+// frame whole: one fetch, no derivatives.
 //
-// Rotation and offset are hashed off the vertex's WORLD position on the 50 cm
-// leaf lattice, so a vertex keeps its frame across rebuilds and across depths;
-// only the scale is a function of where the camera stood.
+// The plane is the DOMINANT AXIS of the geometric normal -- 0 for xz (the
+// walkable world), 1 for zy (a wall facing x), 2 for xy (a wall facing z) --
+// so a cliff gets the tile laid on its face instead of XZ smeared up it. This
+// is the shipping shader's per-fragment axis pick (terrain-material.js AXIS)
+// decided once per face at build time; where the pick flips along a contour
+// the pattern changes phase, not brightness.
 //
-// The scale is per VERTEX and not per chunk on purpose: the far edge of an 8 m
+// The tile size is QUANTISED to powers of two of STIPPLE_TILE_MIN. Two faces
+// with the same size then tile as one continuous sheet (uv = k * world xz for
+// both), so the only seams are the rings where the size doubles. Continuous
+// sizing would put a seam on every edge instead: uv = k * wxz jumps by
+// (k_a - k_b) * wxz between neighbours, and wxz is hundreds of metres.
+//
+// The offset is frac(k * chunk origin) on the plane's axes: the shader adds
+// k * chunk-local position to it, which is k * world position mod 1 without
+// ever forming a world coordinate at float precision in the vertex stage.
+//
+// The size is per VERTEX and not per chunk on purpose: the far edge of an 8 m
 // chunk is not the near edge, and a 128 m chunk spans a doubling of distance.
 // It is still only as current as the last rebuild -- the ring swap is what
 // refreshes it -- so within a ring it drifts up to 2x from ideal. Rough by
@@ -31,10 +43,10 @@ import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
 export const STIPPLE_TILE_PER_M = 0.5
 export const STIPPLE_TILE_MIN = 1.5
 
-function stippleSeed(wx, wz) {
-  const ix = Math.round(wx * 2) | 0
-  const iz = Math.round(wz * 2) | 0
-  return (Math.imul(ix, 0x9e3779b1) ^ Math.imul(iz ^ 0x7f4a7c15, 0x85ebca6b)) >>> 0
+/** Tiles per metre for ground at this distance: the nearest power-of-two step. */
+export function stippleTilesPerM(dist) {
+  const step = Math.max(0, Math.round(Math.log2((dist * STIPPLE_TILE_PER_M) / STIPPLE_TILE_MIN)))
+  return 1 / (STIPPLE_TILE_MIN * 2 ** step)
 }
 
 // ---------------------------------------------------------------------------
@@ -650,15 +662,20 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
 
       shade(h, nyClass, snowLine, snowBand, touched ? layers.flattenAt(wx, wz) : 0, altLo, altSpan, wx, wz, colors, o)
 
-      // See the STIPPLE FRAME block. Three draws off one seed: angle, then the
-      // two offsets. Order matters for reproducibility, not for looks.
-      const rand = mulberry32(stippleSeed(wx, wz))
-      const dist = Math.hypot(wx - cam.x, h - cam.y, wz - cam.z)
+      // See the STIPPLE FRAME block. The plane is the one the GEOMETRIC normal
+      // (-dx, 1, -dz) most faces -- not the bumped shading normal above, whose
+      // noise would flip the plane vertex by vertex along a 45 degree
+      // contour. Its offset is the chunk origin's phase along that plane's
+      // two axes, and the chunk sits at y = 0 in the batch so y has no phase.
+      const k = stippleTilesPerM(Math.hypot(wx - cam.x, h - cam.y, wz - cam.z))
+      const adx = Math.abs(dx)
+      const adz = Math.abs(dz)
+      const plane = adx > 1 && adx >= adz ? 1 : adz > 1 ? 2 : 0
       const s = vi * 4
-      stipple[s] = rand() * Math.PI * 2
-      stipple[s + 1] = 1 / Math.max(STIPPLE_TILE_MIN, dist * STIPPLE_TILE_PER_M)
-      stipple[s + 2] = rand()
-      stipple[s + 3] = rand()
+      stipple[s] = k
+      stipple[s + 1] = plane === 1 ? ((k * oz) % 1 + 1) % 1 : ((k * ox) % 1 + 1) % 1
+      stipple[s + 2] = plane === 0 ? ((k * oz) % 1 + 1) % 1 : 0
+      stipple[s + 3] = plane
     }
   }
 

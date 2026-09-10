@@ -1,7 +1,7 @@
 ## 20. Vegetation generators
 
 > **Covers:** how `src/props/tree.js` builds a tree or a bush out of four primitives, the triangle law that prices it, the crown-shape and height-density models, the card foliage rules, the root crown, and the LOD tier that is a re-generation rather than a decimation.
-> **Read this when:** a tree looks wrong, a triangle budget moves, or you are about to add a knob to `TREE_DEFAULTS`. The source carries the local "why" at each line; the arguments that took a round of measurement to settle live here.
+> **Read this when:** a tree looks wrong, a triangle budget moves, or you are about to add a knob to `TREE_DEFAULTS`. Note that the world no longer plants `tree.js`'s trees: `src/props/tree-bank.js` builds the pine from `tree-v8.js` (which still takes its wood from `tree.js`) and the oak, birch and aspen from `tree-oak.js`, so the LOD tier and the band figures below describe `tree.js` on its own bench, not the shipped ladder (`v2/render/trees.js`). The source carries the local "why" at each line; the arguments that took a round of measurement to settle live here.
 
 ### The four primitives
 

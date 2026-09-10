@@ -1,6 +1,6 @@
 import THREE from '../three-instance.js'
 import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN } from '../textures.js'
-import { GRIT_GRAD_SCALE, GRIT_LAYER, terrainDetailTextures } from './grit-texture.js'
+import { GRIT_GRAD_SCALE, GRIT_LAYER, stippleTile, terrainDetailTextures } from './grit-texture.js'
 
 // ---------------------------------------------------------------------------
 // The terrain material: Lambert + vertex colours + FOUR TEXTURE FETCHES. The
@@ -1686,35 +1686,29 @@ export const PLAIN_GRASS_TONE = 0.5
  *   uGrassTone and uSnowAlbedo. Held BY REFERENCE, so retuning the exposure
  *   retunes this rung with it.
  * @param {boolean} [opts.stipple]  the plain rung plus the STIPPLE block below:
- *   one implicit-LOD fetch of the grit field per fragment, on a per-FACE frame
- *   the mesher baked into a `stipple` vertex attribute (chunk-mesh-v2 STIPPLE
- *   FRAME), and nothing else of the shipping shader's ladder. See the block.
+ *   one implicit-LOD fetch of the stipple tile per fragment, on a per-FACE
+ *   frame the mesher baked into a `stipple` vertex attribute (chunk-mesh-v2
+ *   STIPPLE FRAME), and nothing else of the shipping shader's ladder.
  */
 export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
   const src = source?.userData?.uniforms
   if (!src?.uGrassTone || !src?.uSnowAlbedo) {
     throw new Error('createPlainTerrainMaterial: needs the terrain material, for uGrassTone and uSnowAlbedo')
   }
-  if (stipple && !src.uGritArr) {
-    throw new Error('createPlainTerrainMaterial: stipple needs the terrain material\'s uGritArr')
-  }
 
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
   material.userData.uniforms = { uGrassTone: src.uGrassTone, uSnowAlbedo: src.uSnowAlbedo }
   if (stipple) {
     Object.assign(material.userData.uniforms, {
-      // The shipping shader's grit array, by reference. ONE layer for every
-      // surface: the vertex colours say grass from rock from snow, the stipple
-      // only roughens.
-      uGritArr: src.uGritArr,
-      uStippleLayer: { value: GRIT_LAYER.GRASS },
+      // ONE tile for every surface (grit-texture.js STIPPLE TILE): the vertex
+      // colours say grass from rock from snow, the stipple only roughens.
+      uStippleMap: { value: stippleTile() },
       // +/- brightness about a ZERO MEAN (see the block), seeded from uSpeckle.
       uStippleGrit: { value: 0.46 },
-      // Tilt per unit of the field's gradient IN TILE UNITS, not metres: the
+      // Normal tilt at the tile's unit slope, IN TILE UNITS, not metres: the
       // relief a face shows is the same whatever its tile size, which is what
-      // keeps the far ground as rough on screen as the near. 0.286 * 64 / 11.7
-      // is the shipping uRelief at the shipping tile size.
-      uStippleBump: { value: 1.56 },
+      // keeps the far ground as rough on screen as the near.
+      uStippleBump: { value: 0.5 },
     })
   }
 
@@ -1725,9 +1719,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         uniform vec3 uGrassTone;
         uniform float uSnowAlbedo;${stipple ? `
         attribute vec4 stipple;
-        flat varying vec3 vStipFrame;
-        flat varying vec2 vStipOrigin;
-        varying vec2 vStipXZ;` : ''}`)
+        flat varying vec4 vStipFrame;
+        varying vec3 vStipPos;` : ''}`)
       .replace('#include <color_vertex>', `#include <color_vertex>
         // BOTH MASKS BEFORE EITHER MULTIPLY. The grass tone takes blue down by
         // more than a quarter, so reading the snow knee off an already-toned
@@ -1748,40 +1741,34 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
       shader.vertexShader = shader.vertexShader.replace(
         '#include <project_vertex>',
         `#include <project_vertex>
-        // ---- THE STIPPLE FRAME, one per FACE. stipple is (angle, tiles/m,
-        // offset u, offset v), baked by the mesher from the vertex's world
-        // position and its distance from the camera at build time. The frame
-        // is FLAT: whichever vertex provokes the triangle, its frame is the
-        // triangle's, so a face is one rotation and one scale end to end and
-        // the pattern breaks at every edge -- by design; the vertex colours
-        // and the tiny scale step between neighbours keep the break quiet.
-        // uv = k * R(angle) * (xz - xz_vertex) + offset, on chunk-local
-        // transformed, which is small at every depth.
-        float auroraStipC = cos( stipple.x );
-        float auroraStipS = sin( stipple.x );
-        vStipFrame = vec3( auroraStipC, auroraStipS, stipple.y );
-        vStipOrigin = stipple.zw - stipple.y * vec2(
-          auroraStipC * transformed.x - auroraStipS * transformed.z,
-          auroraStipS * transformed.x + auroraStipC * transformed.z );
-        vStipXZ = transformed.xz;`
+        // ---- THE STIPPLE FRAME, one per FACE. stipple is (tiles/m, offset u,
+        // offset v, plane), baked by the mesher from the vertex's distance
+        // from the camera at build time and its normal's dominant axis, with
+        // the offset placing the chunk on a WORLD tiling. The frame is FLAT:
+        // whichever vertex provokes the triangle, its frame is the triangle's,
+        // so a face is one scale and one plane end to end. Neighbours at the
+        // same scale and plane share the sheet and show no seam; the seams
+        // are the ring where the scale doubles and the contour where the
+        // plane flips. uv = offset + k * (two axes of chunk-local
+        // transformed, which is small at every depth).
+        vStipFrame = stipple;
+        vStipPos = transformed;`
       )
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
-        precision highp sampler2DArray;
-        uniform sampler2DArray uGritArr;
-        uniform float uStippleLayer;
+        uniform sampler2D uStippleMap;
         uniform float uStippleGrit;
         uniform float uStippleBump;
-        flat varying vec3 vStipFrame;
-        flat varying vec2 vStipOrigin;
-        varying vec2 vStipXZ;
+        flat varying vec4 vStipFrame;
+        varying vec3 vStipPos;
         // Filled at color_fragment, read at normal_fragment_begin.
-        vec2 auroraStippleTilt;`)
+        vec3 auroraStippleTilt;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
         // ---- THE STIPPLE: what a prop's texture costs, on the ground.
         //
-        // One fetch with the LOD left to the hardware, on a UV that is four
-        // multiplies from the face frame, into a colour the vertex stage
+        // One fetch with the LOD left to the hardware, on a UV that is two
+        // selects and a multiply-add from the face frame, into a colour the
+        // vertex stage
         // already exposed. No derivatives, no distance guard, no
         // classification. The tile is sized to the face's distance, so the
         // pattern holds its screen size out to the fog instead of mipping
@@ -1792,24 +1779,24 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         // (see terrain-tint.js), and it knows nothing of this block. The field
         // is 0..1 about 0.5, so a clump sits at the ground's AVERAGE and the
         // stipple swings the ground around it.
-        vec2 auroraStipUv = vStipOrigin + vStipFrame.z * vec2(
-          vStipFrame.x * vStipXZ.x - vStipFrame.y * vStipXZ.y,
-          vStipFrame.y * vStipXZ.x + vStipFrame.x * vStipXZ.y );
-        vec4 auroraStippleG = texture( uGritArr, vec3( auroraStipUv, uStippleLayer ) );
+        // The plane, 0 xz / 1 zy / 2 xy, as selects on a flat value: uniform
+        // flow, no branch.
+        vec2 auroraStipP = vStipFrame.w < 0.5 ? vStipPos.xz : vStipFrame.w < 1.5 ? vStipPos.zy : vStipPos.xy;
+        vec2 auroraStipUv = vStipFrame.yz + vStipFrame.x * auroraStipP;
+        vec4 auroraStippleG = texture( uStippleMap, auroraStipUv );
         diffuseColor.rgb *= 1.0 + ( auroraStippleG.r - 0.5 ) * uStippleGrit;
-        // .gb are the gradient of the .r this pixel was just coloured by, in
-        // tile units; rotated back through R^T into world XZ. Not divided by
-        // the tile size on purpose -- see uStippleBump.
-        vec2 auroraStipGrad = auroraStippleG.gb - 0.5;
-        auroraStippleTilt = vec2(
-          vStipFrame.x * auroraStipGrad.x + vStipFrame.y * auroraStipGrad.y,
-          -vStipFrame.y * auroraStipGrad.x + vStipFrame.x * auroraStipGrad.y );`)
+        // .gb are the gradient of the .r this pixel was just coloured by, as
+        // a unit slope in tile units, laid back onto the plane's two world
+        // axes. Not divided by the tile size on purpose -- see uStippleBump.
+        vec2 auroraStipGrad = ( auroraStippleG.gb - 0.5 ) * 2.0;
+        auroraStippleTilt = vStipFrame.w < 0.5 ? vec3( auroraStipGrad.x, 0.0, auroraStipGrad.y )
+          : vStipFrame.w < 1.5 ? vec3( 0.0, auroraStipGrad.y, auroraStipGrad.x )
+          : vec3( auroraStipGrad, 0.0 );`)
         // Lambert lights per fragment in every three this runs on, so a tilted
         // normal is a tilted N.L. `normal` is view space here, so the world
         // tilt is rotated in, as the shipping shader does with auroraBump.
         .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
-        normal = normalize( normal + ( viewMatrix *
-          vec4( -auroraStippleTilt.x, 0.0, -auroraStippleTilt.y, 0.0 ) ).xyz * uStippleBump );`)
+        normal = normalize( normal + ( viewMatrix * vec4( -auroraStippleTilt, 0.0 ) ).xyz * uStippleBump );`)
     }
   }
 

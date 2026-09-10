@@ -464,8 +464,21 @@ export const LAYER = {
   LEAF2_OAK: 101,
   LEAF2_ASH: 102,
   LEAF2_ASPEN: 103,
+
+  // --- the foliage MATS (src/props/tree-v8.js, src/props/tree-oak.js) --------
+  //
+  // Not cards: a v8 bough and an oak scoop are geometry with their own outline,
+  // and the mat is a TILED, fully opaque surface run several repeats across
+  // each -- what the array's RepeatWrapping is for. One per species, since a
+  // needle mat and a leaf mat are a hue and a pattern apart. Both benches
+  // sample the same files; pine's and aspen's ship at 360 and 369 pixels there
+  // and are cut to TEX_SIZE for the array.
+  MAT_PINE: 104,
+  MAT_OAK: 105,
+  MAT_ASPEN: 106,
+  MAT_BIRCH: 107,
 }
-export const LAYER_COUNT = 104
+export const LAYER_COUNT = 108
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -502,6 +515,11 @@ export const SNOW_LAYERS = [
   LAYER.LEAF2_OAK,
   LAYER.LEAF2_ASH,
   LAYER.LEAF2_ASPEN,
+  // The mats the shipped crowns (tree-bank.js) are tiled from.
+  LAYER.MAT_PINE,
+  LAYER.MAT_OAK,
+  LAYER.MAT_ASPEN,
+  LAYER.MAT_BIRCH,
   LAYER.IMPOSTOR_PINE,
   LAYER.IMPOSTOR_OAK,
   LAYER.IMPOSTOR_BIRCH,
@@ -757,6 +775,10 @@ export const IMAGE_LAYERS = {
   [LAYER.LEAF2_OAK]: 'trees/leaf2_oak.png',
   [LAYER.LEAF2_ASH]: 'trees/leaf2_ash.png',
   [LAYER.LEAF2_ASPEN]: 'trees/leaf2_aspen.png',
+  [LAYER.MAT_PINE]: 'trees/mat_pine_128.png',
+  [LAYER.MAT_OAK]: 'trees/mat_oak.png',
+  [LAYER.MAT_ASPEN]: 'trees/mat_aspen_128.png',
+  [LAYER.MAT_BIRCH]: 'trees/mat_birch.png',
   // Cut from EZ-Tree's grass.glb by tools/trees/layers.py, which also copies it
   // here. IMPOSTOR_GRASS is deliberately absent: it is baked at load from this
   // one (grass-bank.js), the same way the tree and fern cards are.
@@ -935,6 +957,12 @@ export function buildTextureArray() {
   layers[LAYER.LEAF2_OAK] = foliage([46, 82, 40], [88, 122, 55], 24, true)
   layers[LAYER.LEAF2_ASH] = foliage([44, 76, 34], [96, 132, 58], 25, true)
   layers[LAYER.LEAF2_ASPEN] = foliage([146, 108, 26], [214, 172, 52], 26, true)
+  // The mats stand in SOLID, since the art is: a hole in a placeholder would
+  // show the far side of a scoop through it for those frames.
+  layers[LAYER.MAT_PINE] = foliage([28, 56, 34], [52, 88, 51], 27, false)
+  layers[LAYER.MAT_OAK] = foliage([46, 82, 40], [88, 122, 55], 28, false)
+  layers[LAYER.MAT_ASPEN] = foliage([150, 92, 28], [222, 156, 48], 29, false)
+  layers[LAYER.MAT_BIRCH] = foliage([44, 76, 34], [96, 132, 58], 30, false)
   // ROCK now has a photograph over it (IMAGE_LAYERS), so this is a stand-in for
   // the few frames before it lands. Its light end is 138 against the PNG's mean
   // of 142, which is why the swap is invisible rather than a flash of a

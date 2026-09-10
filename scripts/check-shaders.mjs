@@ -983,8 +983,7 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   }
 
   // THE STIPPLE TWIN: the same rung with the per-face fetch, compiled under the
-  // same defines. It reads an array texture in the fragment stage, which is what
-  // the precision line exists for; dropping it fails on the device and here.
+  // same defines.
   const stippleShader = {
     uniforms: THREE.UniformsUtils.clone(lib.uniforms),
     vertexShader: lib.vertexShader,
@@ -1004,12 +1003,12 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   // in, a second fetch is the macro layer creeping back in. (dFdx is not
   // checked: three's own FLAT_SHADED guard carries one in every Lambert.)
   if (!sVert.includes('attribute vec4 stipple;')) MISSING_MARKS.push(`${sLabel} vert: attribute vec4 stipple`)
-  for (const mark of ['flat varying vec3 vStipFrame;', 'texture( uGritArr, vec3( auroraStipUv, uStippleLayer ) )', 'auroraStippleTilt']) {
+  for (const mark of ['flat varying vec4 vStipFrame;', 'texture( uStippleMap, auroraStipUv )', 'auroraStippleTilt']) {
     if (!sFrag.includes(mark)) MISSING_MARKS.push(`${sLabel} frag: ${mark}`)
   }
-  const fetches = sFrag.replace(/\/\/[^\n]*/g, '').match(/texture\( uGritArr/g)?.length ?? 0
-  if (fetches !== 1) MISSING_MARKS.push(`${sLabel} frag: ${fetches} grit fetches, wants exactly 1`)
-  for (const mark of ['textureGrad', 'auroraDetailK', 'auroraDist', 'uMacroMap']) {
+  const fetches = sFrag.replace(/\/\/[^\n]*/g, '').match(/texture\( uStippleMap/g)?.length ?? 0
+  if (fetches !== 1) MISSING_MARKS.push(`${sLabel} frag: ${fetches} stipple fetches, wants exactly 1`)
+  for (const mark of ['textureGrad', 'auroraDetailK', 'auroraDist', 'uMacroMap', 'uGritArr', 'sampler2DArray']) {
     if (sFrag.includes(mark)) MISSING_MARKS.push(`${sLabel} frag: emitted ${mark}, should not`)
   }
 }

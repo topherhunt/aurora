@@ -116,12 +116,12 @@ import { PropArena } from './prop-arena.js'
 // Measured on a flat headless world at standing eye height,
 // 25,997 trees placed inside 1500 m of which the rim dissolves 6,247 away:
 //
-//   tier 0   LOD0 mesh    < 8 m             8 instances     3.6k
-//   tier 1   LOD1 mesh    8 - 24 m         77              28.8k
-//   tier 2   billboard    to 1500 m     19,665              19.8k
+//   tier 0   LOD0 mesh    < 8 m             8 instances     4.4k
+//   tier 1   LOD1 mesh    8 - 24 m         77              13.7k
+//   tier 2   billboard    to 1500 m     19,665              19.7k
 //
-// 52.2k against §5's 350k ceiling with terrain taking 45k. The mesh tiers cost
-// 550 and 380 triangles a tree averaged over the bank, so what a spot pays is
+// 37.8k against §5's 350k ceiling with terrain taking 45k. The mesh tiers cost
+// 507 and 179 triangles a tree averaged over the bank, so what a spot pays is
 // which species stand near it -- which is why those two rows wander by a third
 // and the card row does not.
 //
@@ -135,20 +135,18 @@ import { PropArena } from './prop-arena.js'
 // 52 / 33 / 15 across the three tiers -- solid angle, so 85 near meshes outweigh
 // 19,665 cards three to one, which is the shape a LOD ladder should have.
 //
-// THE TWO MESH TIERS DIFFER ONLY IN WOOD. LOD1 is LOD0 with `trunkSides` 3,
-// `branchSides` 1 (a three-sided trunk, one flat fin per limb) and `roots` 0,
-// dropping the root crown that only reads when you stand on it. Its FOLIAGE IS
-// THE SAME CARDS IN THE SAME SEATS. So the 8 m boundary is the cheapest swap in
-// the project: nothing about the canopy changes, and what pops is limbs losing
-// their barrel where a limb is ~15 px wide and mostly behind its own leaves. The
-// 31% it saves is all sticks, which is why it can be spent this close in.
+// THE TWO MESH TIERS ARE THE SAME TREE FROM THE SAME SEED (tree-bank.js): the
+// pine's LOD1 keeps every bough and drops a station from each, a broadleaf's
+// keeps every scoop as two triangles on LOD0's own corners and straightens the
+// wood to one five-sided segment a limb. Nothing moves at the 8 m boundary;
+// what pops is a limb losing its crook and a scoop its cup, on a limb ~15 px
+// wide and mostly behind its own leaves, which is why the swap can be spent
+// this close in.
 //
-// WHY THE MESH STOPS AT 24 m. The next saving after the wood is the crown, and
-// there is no honest cut in a crown: a card is already one triangle at its true
-// world size, so fewer sprays thins the tree and bigger ones put a two-foot
-// needle on a spruce. A tier past LOD1 has to stop drawing the crown as
-// geometry, and once it does, the cheapest thing that draws a crown at all is
-// also the best one available -- so there is nothing between LOD1 and the card.
+// WHY THE MESH STOPS AT 24 m. Both generators carry an LOD2 that thins the
+// crown, and the ladder does not ask for it: a tier past LOD1 that still draws
+// the crown as geometry saves little against a card that draws it in one
+// triangle, so there is nothing between LOD1 and the card worth a band.
 //
 // 24 m IS WHERE FLATNESS STOPS BEING FREE, which is what sets it. Stereo acuity
 // of half an arcminute over a 65 mm baseline resolves depth to about d^2 x
@@ -514,7 +512,7 @@ export class Trees {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = buildTreeBank({ seed, billboard: true })
+    const bank = buildTreeBank({ billboard: true })
     this.bank = bank
     this.variantCount = bank.variants.length
     this.tierCount = bank.tiers.length
@@ -528,6 +526,10 @@ export class Trees {
     this.material = createPropMaterial(textureArray, {
       billboardLayers: treeImpostorLayers(),
       wind: 'tree',
+      // The bank bakes each tree's sky occlusion into `color` (the shade under
+      // the crown, and the crown's own interior); three composes it under the
+      // per-instance tint rather than replacing it.
+      vertexColors: true,
       // No colour alpha to hide a fade timer in on an InstancedMesh; the arena
       // carries a per-instance float instead. See material.js's FADE_VERTEX.
       instancedFade: true,
@@ -562,15 +564,12 @@ export class Trees {
     // instance scale 1. `anchorsInto` is the only reader; see there for what it
     // is for.
     //
-    // TAKEN FROM THE GENERATOR RATHER THAN MEASURED OFF THE MESH, because the
-    // generator already publishes it exactly. tree.js builds the whole tree at
-    // height 1, rescales it by `scale = height / boundingBox.max.y` at the very
-    // end, and writes `trunkDiameter: 2 * p.trunkRadius * scale` into
-    // geo.userData.tree -- so the number is already in metres and already
-    // carries the rescale. It is the radius AT THE BASE and not an average,
-    // because the trunk is a cone whose radius law is
-    // `radiusAt(f) = trunkRadius * (1 - f)` and the base ring sits at f = 0, on
-    // y = 0, which is where the tree's root is by construction.
+    // TAKEN FROM THE GENERATOR RATHER THAN MEASURED OFF THE MESH, because both
+    // generators (tree-v8.js's pine, tree-oak.js's broadleaves) publish it
+    // exactly: the trunk radius their taper law starts from at the foot ring
+    // on y = 0, doubled and already carrying the tree's rescale to its height,
+    // so the number is in metres and is the radius AT THE BASE, not an average
+    // up the trunk.
     //
     // It is the MEAN radius rather than a bound on the wood, because the trunk
     // is lobed: `trunkLobe` takes the built skin to roughly +/- 11% of this
@@ -1558,10 +1557,10 @@ export class Trees {
    * complementary thresholds. Called with the ORIGINAL already switched, so
    * everything here is about the ghost.
    *
-   * EVERY BOUNDARY GETS ONE, the 8 m LOD0/LOD1 swap included. The wood is the
-   * only thing that changes there -- a five-sided limb becoming a flat fin --
-   * and the limb is 15-19 px wide at that range, which is small but is a hard
-   * edge appearing between two frames on the tree the player is standing under.
+   * EVERY BOUNDARY GETS ONE, the 8 m LOD0/LOD1 swap included. Little changes
+   * there -- a limb loses its crook, a scoop its cup -- and the limb is 15-19 px
+   * wide at that range, which is small but is a hard edge appearing between
+   * two frames on the tree the player is standing under.
    * A quarter second of dither is the cheapest place in the ladder to spend it:
    * the near bands hold tens of trees, not thousands, so their ghosts are the
    * ghosts that cost the least.

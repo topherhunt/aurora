@@ -118,7 +118,7 @@ const V8_SLIDERS = [
 
 const OAK_SLIDERS = [
   ['#', 'tier'],
-  ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes: LOD1 keeps three scoops in five and LOD2 one in four, each in LOD0\'s own seat, and both take sides off the wood. 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you'],
+  ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes: LOD1 keeps every scoop as two triangles on LOD0\'s own corners and straightens the wood to one five-sided segment a tube, LOD2 keeps one scoop in four of those. 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you'],
 
   ['#', 'size'],
   ['height', 1, 32, 0.25, 'metres, root to the top of the crown. Every shape slider below is a fraction of this, so the tree scales rather than growing'],
@@ -162,9 +162,10 @@ const OAK_SLIDERS = [
   ['boughFrom', 0, 1, 0.01, 'the fraction of a branch nothing seats below. The butt end of a limb near the bole stays bare'],
   ['tipBias', 0.2, 5, 0.05, 'how the seats crowd along a branch: the draw is raised to 1/this, so above 1 they bunch toward the tips and below 1 toward the butt'],
   ['tipZone', 0, 1, 0.01, 'scoops seated within this fraction of a branch\'s tip refuse any body that runs back down the limb, so a limb\'s end holds scoops reaching past it at every other angle. 0 and no scoop refuses; 1 and every scoop does'],
+  ['tipBoughs', 0, 8, 1, 'scoops seated in the BOLE\'s own tip zone, on top of `boughs`: the bole is a limb to them and its cap a branch tip, so the crown does not end in a bare point of bark. Drawn first, so every rung of the ladder keeps them'],
 
   ['#', 'shading'],
-  ['innerShade', 0, 1, 0.01, 'how dark the crown\'s LOWEST vertex is baked, as a multiple of the highest. The scoops are lit honestly, but the low ones sit under the high ones and no rig the game can afford knows it. 1 turns the ramp off'],
+  ['innerShade', 0, 1, 0.01, 'how dark a vertex that sees NO SKY is baked, as a multiple of one that sees it all. Rays are cast from every vertex, the wood\'s too, against every scoop taken as a disc, so the outer shell of the crown takes the whole light and the scoops inside it and the bole under it go dark, as if the Lambert knew what was over them. 1 turns it off'],
   ['boughTint', 0, 0.3, 0.01, 'per-scoop brightness jitter, half-range, so neighbouring scoops separate instead of merging into one green'],
 
   ['#', 'material'],
@@ -183,6 +184,8 @@ const OAK_SLIDERS = [
 //   notShape    parameter keys the LADDER writes per tier and the copy leaves
 //               out -- see NOT_SHAPE
 //   defaults    a species' full parameter set; mat its foliage tile
+//   wood        the bark material, as a thunk since the materials are made
+//               further down: the oak's reads a colour the pine's lacks
 //   lod/resolve the ladder and the triangle law, the same pair the builder
 //               grows from, so a change to either moves the table with it
 //   parts       the breakdown rows: [label(meshParams, resolved), statsKey]
@@ -194,6 +197,7 @@ const GEN_V8 = {
   notShape: ['skirtKeep', 'boughKeep'],
   defaults: treeV8Species,
   mat: (key) => TREE_V8_SPECIES[key].mat,
+  wood: () => barkMaterial,
   lod: treeV8Lod,
   resolve: resolveTreeV8,
   build(opts) {
@@ -264,42 +268,50 @@ const GEN_V8 = {
 
 const GEN_OAK = {
   sliders: OAK_SLIDERS,
-  notShape: ['boughKeep'],
+  notShape: ['boughKeep', 'quadScoops', 'straightWood'],
   defaults: treeOakSpecies,
   mat: (key) => TREE_OAK_SPECIES[key].mat,
+  wood: () => shadedBarkMaterial,
   lod: treeOakLod,
   resolve: resolveTreeOak,
   build(opts) {
     return buildTreeOak(opts)
   },
   parts: [
-    [(p, r) => `trunk ${r.trunkSides} sides &times; ${r.trunkSegments}`, 'trunkTris'],
-    [(p, r) => `branches ${r.branches} &times; ${r.branchSides} sides &times; ${r.branchSegments}`, 'branchTris'],
-    [(p, r) => `scoops ${r.boughs}&times;5`, 'boughTris'],
+    [(p, r) => `trunk ${r.trunkSides} sides &times; ${r.straightWood ? 1 : r.trunkSegments}`, 'trunkTris'],
+    [(p, r) => `branches ${r.branches} &times; ${r.branchSides} sides &times; ${r.straightWood ? 1 : r.branchSegments}`, 'branchTris'],
+    [(p, r) => `scoops ${r.boughs}&times;${r.quadScoops ? 2 : 5}`, 'boughTris'],
   ],
-  ladderWhat: (p, r) => `${r.trunkSides}-side bole, ${r.branches} limbs, ${r.boughs} scoops`,
+  ladderWhat: (p, r) =>
+    `${r.trunkSides}-side ${r.straightWood ? 'straight ' : ''}bole, ${r.branches} limbs, ${r.boughs} scoops of ${r.quadScoops ? 2 : 5}`,
   measure(f) {
     return [
       ['bole', `${f.boleHeight.toFixed(2)} m to its cap`],
       ['limbs', `${f.branches}, ${f.branchTris} triangles of wood`],
-      ['scoops', `${f.boughs} of five triangles`],
+      ['scoops', `${f.boughs} of ${f.boughs > 0 ? f.boughTris / f.boughs : 5} triangles`],
     ]
   },
   geonote: (mat, p) =>
     `Two meshes and two draw calls per tree: the wood is the shared prop material over the texture ` +
-    `array, the bole and every branch in one buffer, and the crown is one OPAQUE mapped Lambert over ` +
-    `<em>${mat}</em> tiled at <em>${p.texMetres.toFixed(2)} m</em>, on both faces: a scoop is a ` +
-    `sheet, seen from below as much as from above, and its normal is authored on each face's sky ` +
-    `side whichever way it opens, so the underside takes the same light as the top.`,
+    `array with its vertex colours on, the bole and every branch in one buffer, and the crown is one ` +
+    `OPAQUE mapped Lambert over <em>${mat}</em> tiled at <em>${p.texMetres.toFixed(2)} m</em>, on ` +
+    `both faces: a scoop is a sheet, seen from below as much as from above, and its normals are ` +
+    `authored on its sky side whichever way it opens, so the underside takes the same light as the ` +
+    `top, and smoothed over the scoop, so a bowl shades as one curve and not five facets. Both ` +
+    `buffers carry the baked sky occlusion in their vertex colour.`,
   ladderNote:
     `The <em>LOD</em> slider at the top of the panel is this table, live. Three of the four rungs ` +
-    `are the same tree with less of it drawn: LOD1 keeps <em>three scoops in five</em> and LOD2 ` +
-    `<em>one in four</em>, and both take sides off the wood, whose rings stay on the same crooked ` +
-    `path. Every scoop is drawn from the stream at every tier and only its emit is skipped, so a ` +
-    `rung is a subset of LOD0 in LOD0's own seats -- switch between them and scoops vanish without ` +
-    `one of the survivors moving. The seats are drawn in random order over the limbs, so the ` +
-    `survivors are an even thinning and not one bare branch. The last rung is one spun quad ` +
-    `carrying a photograph of LOD0, baked here and now off the tree on the stage.`,
+    `are the same tree drawn cheaper: LOD1 keeps <em>every scoop</em> and cuts each to two ` +
+    `triangles on its stem, its two widest corners and one far point, so the outline and the count ` +
+    `are LOD0's, and straightens every tube to one five-sided segment from butt to tip. LOD2 keeps ` +
+    `<em>one scoop in four</em> of those and takes more sides off the wood. Every scoop is drawn ` +
+    `from the stream at every tier and only its emit changes, so a rung is LOD0's scoops in LOD0's ` +
+    `own seats, the shared corners to the float -- switch between them and the scoops flatten and ` +
+    `then thin without one moving. The scoops still seat on the crooked paths, so at LOD1 a stem ` +
+    `can stand a little off its straightened limb. The bole's tip scoops are drawn first, so every ` +
+    `rung keeps them; the rest are drawn in random order over the limbs, so LOD2's survivors are an ` +
+    `even thinning and not one bare branch. The last rung is one spun quad carrying a photograph of ` +
+    `LOD0, baked here and now off the tree on the stage.`,
 }
 
 // The dropdown. A row is a generator and the key that generator knows the
@@ -409,18 +421,25 @@ scene.add(rule)
 // not replaced: assigning over onBeforeCompile would drop the sampler2DArray
 // patch and the trunk would render untextured white.
 const atlas = buildTextureArray()
-const barkMaterial = createPropMaterial(atlas)
-{
-  const arrayPatch = barkMaterial.onBeforeCompile
-  barkMaterial.onBeforeCompile = (shader, r) => {
+// Two of them: the oak's wood carries its baked occlusion in a colour
+// attribute the pine's wood does not have, and a material reading a colour a
+// geometry lacks draws it black.
+const barkMaterialFor = (vertexColors) => {
+  const material = createPropMaterial(atlas, { vertexColors })
+  const arrayPatch = material.onBeforeCompile
+  material.onBeforeCompile = (shader, r) => {
     arrayPatch(shader, r)
     wrapLambert(shader)
   }
   // A distinct key because this program is the array patch AND the wrap patch;
   // sharing three's default would let it hand us a cached program with only one
   // of them compiled in.
-  barkMaterial.customProgramCacheKey = () => 'gen-tree-v8-bark-v1'
+  material.customProgramCacheKey = () => `gen-tree-v8-bark-v1-${vertexColors ? 'shaded' : 'plain'}`
+  return material
 }
+const barkMaterial = barkMaterialFor(false)
+const shadedBarkMaterial = barkMaterialFor(true)
+const barkMaterials = [barkMaterial, shadedBarkMaterial]
 const layersReady = loadImageLayers(atlas)
 
 // The crown. Not the array material: the needle mat is a TILED surface running
@@ -555,6 +574,7 @@ function bakeCard(trunkGeo, foliageGeo, stats) {
   }
 
   bakeTrunk.geometry = trunkGeo
+  bakeTrunk.material = gen().wood()
   bakeFoliage.geometry = foliageGeo
 
   const reach = Math.max(width, height)
@@ -623,9 +643,11 @@ function rebuild() {
   const meshTier = isCard ? 0 : tier
 
   const g = gen()
-  barkMaterial.wireframe = wireframe
+  for (const m of barkMaterials) {
+    m.wireframe = wireframe
+    m.color.setScalar(params.brightness)
+  }
   foliageMaterial.wireframe = wireframe
-  barkMaterial.color.setScalar(params.brightness)
   foliageMaterial.color.setScalar(params.brightness)
   cardMaterial.color.setScalar(params.brightness)
 
@@ -692,7 +714,7 @@ function rebuild() {
       agg.verts += b.stats.vertices
       for (const [, key] of g.parts) agg.parts[key] += b.stats[key]
       agg.bytes += geometryBytes(b.trunk) + geometryBytes(b.foliage)
-      place(new THREE.Mesh(b.trunk, barkMaterial), i, spacing)
+      place(new THREE.Mesh(b.trunk, g.wood()), i, spacing)
       place(new THREE.Mesh(b.foliage, foliageMaterial), i, spacing)
     })
   }

@@ -130,10 +130,48 @@ const FOG_COLOR = 0x9db4cf
 const SUN_COLOR = 0xfff2dc
 
 const boot = document.getElementById('boot')
+const bootLine = document.getElementById('boot-line')
+const bootSub = document.getElementById('boot-sub')
 const bootSay = (html) => {
-  if (boot) boot.innerHTML = html
+  if (bootLine) bootLine.innerHTML = html
 }
-const bootDone = () => {
+
+// Boot's substeps, each timed, for the overlay's subline and the console.
+//
+// Everything in bootWorld after the two fetches is synchronous, so a status
+// line written before a step is never painted: the browser gets no frame until
+// bootDone, and the overlay sits on "loading world/layers.json" for the whole
+// build. bootStep closes the previous step's timer, writes the running
+// breakdown, then yields ONE frame so what it wrote is on screen while the
+// step runs. The step's clock starts after the yield, so a render the yield
+// lets through (flat mode draws the half-built scene until `ready`) is not
+// charged to the step that follows it. The frame is raced against a timeout
+// because a hidden tab never fires requestAnimationFrame, and boot must not
+// stall in a tab nobody is looking at.
+const bootSteps = []
+let bootStepName = null
+let bootStepAt = 0
+const bootFmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms.toFixed(0)} ms`)
+async function bootStep(name) {
+  if (bootStepName !== null) bootSteps.push({ name: bootStepName, ms: performance.now() - bootStepAt })
+  bootStepName = name
+  if (bootSub) {
+    bootSub.innerHTML =
+      bootSteps.map((s) => `${s.name} ${bootFmtMs(s.ms)}`).concat(name === null ? [] : [`<b>${name} ...</b>`]).join(' &middot; ')
+  }
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0))
+    setTimeout(resolve, 100)
+  })
+  bootStepAt = performance.now()
+}
+const bootDone = async () => {
+  await bootStep(null)
+  const total = bootSteps.reduce((s, x) => s + x.ms, 0)
+  console.log(
+    `[v2] boot ${bootFmtMs(total)} in ${bootSteps.length} steps: ` +
+      bootSteps.slice().sort((a, b) => b.ms - a.ms).map((s) => `${s.name} ${bootFmtMs(s.ms)}`).join(', ')
+  )
   if (boot) boot.classList.add('gone')
 }
 // A failed boot must READ as a failed boot. The overlay covers the canvas, so
@@ -583,6 +621,9 @@ const QUEST_TOGGLE_ROWS = [
   // rung is, why `plain` is a floor rather than a setting, and what to look at
   // on `axis` before deciding which of the two upper rungs stays.
   { key: 'terrainShader', text: 'landscape shader', action: () => cycleTerrainShader(), value: () => `${TERRAIN_SHADERS[terrainShaderMode]} >` },
+  // Lime lines over the drawn ground, so the triangle size under a texture
+  // seam can be read against the seam. See TerrainV2._drawWireframe.
+  { key: 'terrainWire', text: 'landscape wireframe' },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
@@ -609,6 +650,7 @@ function applyQuestToggle(key) {
   const enabled = (questToggles[key] = !questToggles[key])
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
+    case 'terrainWire': terrain.wireframe = enabled; break
     // A REAL OFF SWITCH, and it has to be one. This row used to gate only the
     // sun/hemi/lighting.update block in applySky(), which turned nothing off:
     // every one of those is a LATER WRITER with no restore, so "off" froze the
@@ -1273,20 +1315,6 @@ function updateQuestStats() {
       ['MS ', '#7f95b4'], [avgMs.toFixed(1).padEnd(6), fpsColor],
       ['TRIS ', '#7f95b4'], [kilo(info.render.triangles).padEnd(8), '#7fd7ff'],
       ['CALLS ', '#7f95b4'], [String(info.render.calls).padEnd(6), '#ff9a7a'],
-      // Metres to the ground under the cursor, which is the only ruler this
-      // view has. `-` is the ray reaching the horizon, not a failure.
-      ...(cursor
-        ? [
-            ['CURSOR ', '#7f95b4'], [cursor.dist === null ? '-' : `${cursor.dist.toFixed(1)}m`, '#ff6b6b'],
-            ['AT ', '#7f95b4'],
-            [
-              cursor.at === null
-                ? '-'
-                : `${cursor.at.x.toFixed(0)} ${cursor.at.y.toFixed(0)} ${cursor.at.z.toFixed(0)}`,
-              '#ff6b6b',
-            ],
-          ]
-        : []),
     ],
     [
       ['GEO ', '#7f95b4'], [String(info.memory.geometries).padEnd(6), '#b39ddb'],
@@ -1324,9 +1352,25 @@ function updateQuestStats() {
     ],
     [
       ['pads ', '#7f95b4'], [String(inp.connected).padEnd(3), inp.connected > 0 ? '#8fd48f' : '#ff6b6b'],
-      ['L ', '#7f95b4'], [`${la[0].toFixed(2)},${la[1].toFixed(2)}`.padEnd(13), '#cfe3ff'],
-      ['R ', '#7f95b4'], [`${ra[0].toFixed(2)},${ra[1].toFixed(2)}`.padEnd(13), '#cfe3ff'],
-      [questInputSource, '#7f95b4'],
+      ['L ', '#7f95b4'], [`${la[0].toFixed(2)},${la[1].toFixed(2)}`.padEnd(12), '#cfe3ff'],
+      ['R ', '#7f95b4'], [`${ra[0].toFixed(2)},${ra[1].toFixed(2)}`.padEnd(12), '#cfe3ff'],
+      [questInputSource.padEnd(7), '#7f95b4'],
+      // Metres to the ground under the cursor, the only ruler this view has,
+      // and the world X/Z it lands on. `-` is the ray reaching the horizon, not
+      // a failure. On this row because the canvas fits ~74 characters and the
+      // FPS row already spends 55; with coordinates running to `-1234` each,
+      // this is the row with room. Cells are padded so X/Z hold one column.
+      ...(cursor
+        ? [
+            ['CURSOR ', '#7f95b4'], [(cursor.dist === null ? '-' : `${cursor.dist.toFixed(1)}m`).padEnd(8), '#ff6b6b'],
+            [
+              cursor.at === null
+                ? 'X     - Z     -'
+                : `X ${cursor.at.x.toFixed(0).padStart(5)} Z ${cursor.at.z.toFixed(0).padStart(5)}`,
+              '#ff6b6b',
+            ],
+          ]
+        : []),
     ],
   ])
 }
@@ -1416,6 +1460,7 @@ const questToggles = QUEST_MODE
       // buys. Starting one off would mean the panel's default state disagreed
       // with the world outside quest mode.
       wind: true, treeTiers: true, treeCutout: true,
+      terrainWire: false,
       // Walk, not teleport, is the default: teleport hides exactly the symptom
       // this panel exists to look at, which is what the world does to the frame
       // while you are moving continuously through it.
@@ -1590,12 +1635,14 @@ function findSpawnV2(h, wet, bands) {
 
 async function bootWorld() {
   bootSay(`loading <b>${HEIGHTMAP_URL}</b> ...`)
+  await bootStep('heightmap')
   const heightmap = await Heightmap.load({ url: HEIGHTMAP_URL, metaUrl: HEIGHTMAP_META_URL })
 
   // BEFORE the scratch V2Height, because the relief changes what `bands` says
   // and the snow defaults are derived from bands. Booting with the knobs off and
   // applying them afterwards would put the snow line where the unrelieved world
   // wanted it and then move the ground out from under it.
+  await bootStep('height field')
   relief = loadRelief()
 
   // The scratch document. See the header: `bands` needs a V2Height and the snow
@@ -1604,6 +1651,7 @@ async function bootWorld() {
   const bands = height.bands
 
   bootSay('loading <b>world/layers.json</b> ...')
+  await bootStep('layers')
   const snow = snowDefaults(bands)
   const { doc, from } = await persist.loadInitial(snow)
   layers = Layers.deserialize(doc)
@@ -1614,7 +1662,8 @@ async function bootWorld() {
       `document from ${from}`
   )
 
-  bootSay('meshing ...')
+  bootSay('building the world ...')
+  await bootStep('terrain')
   // The atlas is built HERE, ahead of the terrain, and not down with the trees
   // where it used to live: createTerrainMaterial decides at compile time whether
   // to declare a sampler at all, so it has to have the array in hand before the
@@ -1656,6 +1705,7 @@ async function bootWorld() {
 
   // The authored surfaces. Water first, because the spawn search asks it what is
   // wet before the player is placed.
+  await bootStep('water+roads')
   waterSurfaces = new WaterSurfaces({ water, layers })
   roads = new RoadSurfaces({ scene, layers })
   // Per-vertex, like v1's props and village and NOT like the terrain: a road is
@@ -1668,6 +1718,7 @@ async function bootWorld() {
   roads.rebuild()
   markers.sync()
 
+  await bootStep('spawn')
   player = new Player(rig, camera, height)
   const spawn = findSpawnV2(height, waterSurfaces, bands)
   player.spawnAt(spawn.x, spawn.z)
@@ -1693,6 +1744,7 @@ async function bootWorld() {
   // ground. Quest mode does not weaken it -- the toggle only sets `batch.visible`
   // and the beds are placed and stepped either way, so what the trees see does
   // not change when the rocks are switched off.
+  await bootStep('rocks')
   rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
   // A cacheKey of its own, not a second use of the one above: the shell is a
@@ -1720,6 +1772,7 @@ async function bootWorld() {
   // `ground: terrain` is what stops distant trees floating: a tree's Y comes off
   // the chunk mesh that is actually drawn under it, not off the exact field the
   // chunk's triangles are chording across. See Trees._groundFor.
+  await bootStep('trees')
   trees = new Trees(scene, height, waterSurfaces, propTextures, {
     seed: SEED,
     ground: terrain,
@@ -1760,6 +1813,7 @@ async function bootWorld() {
   // The whole Layers goes in, not just its paths: a fern takes a hue cue from
   // the terrain colour underfoot, which needs the snow band and the road
   // flattening as well as the path exclusions.
+  await bootStep('ferns')
   ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, rocks })
   lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
   ferns.syncSnowLine(layers)
@@ -1787,6 +1841,7 @@ async function bootWorld() {
   // dither at each tuft's own cull distance so nothing pops. A fixed disc at
   // this density would be 46,000 instances for the same horizon. See
   // render/grass.js, which lays out where its ~54k triangles go.
+  await bootStep('grass')
   buildGrass(grassStyle, spawn.x, spawn.z)
   // A/B hooks for the two grass strategies, from the console. `M` swaps the bed;
   // these tune it without a reload.
@@ -1829,6 +1884,7 @@ async function bootWorld() {
   // the stamps pick the pictures up the frame they land in it. What would NOT
   // be fine is placing litter before the atlas exists at all, which is why this
   // sits below `propTextures` like everything else that samples it.
+  await bootStep('litter')
   litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain, rocks })
   lighting.patch(litter.material, { mode: 'vertex', cacheKey: 'v2-litter' })
   litter.place(spawn.x, spawn.z)
@@ -1851,6 +1907,7 @@ async function bootWorld() {
   //
   // The array order is load-bearing too: [trees, rocks] is the order the
   // constructor documents, and the layer weights its anchor kinds by it.
+  await bootStep('mushrooms')
   mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed: SEED })
   // A FOURTH cacheKey, distinct for the reason spelled out at the trees above:
   // three keys its program cache on this string, and this material's
@@ -1885,6 +1942,7 @@ async function bootWorld() {
   // on its own grid and then refuses any candidate lying on a trunk. That reads
   // the forest's PLACED instances, so this must stay after trees.place above and
   // deadwood.update must stay after trees.update in the frame loop.
+  await bootStep('deadwood')
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, propTextures, trees, { seed: SEED })
   // A FIFTH cacheKey, for the reason spelled out at the trees: the key is what
   // the program cache is keyed on, and this material's uBillboardLayers is its
@@ -1907,6 +1965,7 @@ async function bootWorld() {
   // rather than lazily inside the readout: a missing scatter should be a boot
   // error next to the thing that failed to build, not a readout that silently
   // stops naming ferns.
+  await bootStep('ui')
   bindCursorPicks()
 
   // The weather, which until now nothing in v2 ever turned on: the props have
@@ -2068,7 +2127,7 @@ async function bootWorld() {
   }
 
   ready = true
-  bootDone()
+  await bootDone()
 }
 
 // --- the edit -> world channel ----------------------------------------------
@@ -2310,18 +2369,18 @@ const builtTerrainVariants = new Map()
 // terrain shader outright lands at 62, so the rest is props. That is why this
 // stops at two rungs, and why the 2.74 was eventually taken.
 //
-// `stipple` IS THE PLAIN RUNG PLUS A PROP'S WORTH OF TEXTURE, and it is the
-// question this row is asking now: whether the ground can carry surface detail
-// at what a textured static mesh costs. Same vertex-lit chain, plus ONE
-// implicit-LOD fetch of the grit tile on a per-face frame the mesher baked --
-// random rotation, tile size from that face's distance to the camera at build
-// time (chunk-mesh-v2 STIPPLE FRAME) -- and a tilt on the normal; no
-// derivatives, no guards, no classification. UNMEASURED on the headset -- the
-// number it puts against `plain` is what decides whether it ships.
+// `stipple` IS THE PLAIN RUNG PLUS A PROP'S WORTH OF TEXTURE, and it is what
+// ships: the ground carrying surface detail at what a textured static mesh
+// costs. Same vertex-lit chain, plus ONE implicit-LOD fetch of the stipple tile
+// on a per-face frame the mesher baked -- world-aligned on the face's dominant
+// plane, tile size stepped by that face's distance to the camera at build time
+// (chunk-mesh-v2 STIPPLE FRAME) -- and a tilt on the normal; no derivatives, no
+// guards, no classification. Its frame time against `plain` is still
+// unmeasured on the headset; the row is where to read it.
 //
 // FIRST ENTRY IS THE DEFAULT, and the row still cycles all four -- what it costs
 // to put the near field back is the thing this is read for.
-const TERRAIN_SHADERS = ['plain', 'stipple', 'axis', 'grain']
+const TERRAIN_SHADERS = ['stipple', 'plain', 'axis', 'grain']
 let terrainShaderMode = 0
 
 /**

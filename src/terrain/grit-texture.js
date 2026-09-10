@@ -436,6 +436,114 @@ function applyFieldSampling(tex, magFilter, minFilter) {
   return tex
 }
 
+// ---------------------------------------------------------------------------
+// THE STIPPLE TILE: the one field the plain-stipple rung lays over every face
+// (terrain-material.js, createPlainTerrainMaterial). Its own bake rather than a
+// layer of the grit array because it wants the opposite of everything above:
+// no quantise (each riser is a hard edge, and per-face tiling puts hundreds of
+// them in the near field), no speckle, no lattice (value noise's grid shows in
+// the gradient as crosses), no feature anywhere near the tile size (a blotch a
+// third of a tile wide is a visible repeat at 2x2), and LINEAR filtering.
+//
+// So it is blurred white noise at three radii, summed: isotropic, no grid,
+// nothing bigger than about 1/10 of the tile. Wrapped convolution keeps it
+// seamless. Each radius is normalised to unit variance before the sum, because
+// a blur eats variance in proportion to its radius and the weights below are
+// meant as weights.
+//
+//   R   the field through a tanh, 0..1: the 1st..99th percentiles reach about
+//       0.05..0.95 and the rarer extremes squash instead of clipping, because a
+//       clipped white speck is a landmark the eye finds again in the next tile
+//   GB  0.5 + 0.5 * (dh/du, dh/dv) / p99|grad| -- so (gb - 0.5) * 2 is a unit
+//       slope and the shader's bump uniform is the tilt at that slope
+//   A   255
+export const STIPPLE_SIZE = 256
+const STIPPLE_SPEC = [
+  { sigma: 1.5, weight: 0.4 },
+  { sigma: 3, weight: 0.35 },
+  { sigma: 6, weight: 0.25 },
+]
+
+function blurredNoise(rand, size, sigma) {
+  const radius = Math.ceil(sigma * 3)
+  const kernel = new Float32Array(radius * 2 + 1)
+  let ksum = 0
+  for (let i = -radius; i <= radius; i++) ksum += kernel[i + radius] = Math.exp(-(i * i) / (2 * sigma * sigma))
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= ksum
+  const w = (i) => ((i % size) + size) % size
+  const src = new Float32Array(size * size)
+  for (let i = 0; i < src.length; i++) src[i] = rand() - 0.5
+  const tmp = new Float32Array(size * size)
+  const out = new Float32Array(size * size)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let s = 0
+      for (let k = -radius; k <= radius; k++) s += src[y * size + w(x + k)] * kernel[k + radius]
+      tmp[y * size + x] = s
+    }
+  }
+  let sq = 0
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let s = 0
+      for (let k = -radius; k <= radius; k++) s += tmp[w(y + k) * size + x] * kernel[k + radius]
+      out[y * size + x] = s
+      sq += s * s
+    }
+  }
+  const inv = 1 / Math.sqrt(sq / out.length)
+  for (let i = 0; i < out.length; i++) out[i] *= inv
+  return out
+}
+
+const percentile = (values, p) => {
+  const sorted = Float32Array.from(values).sort()
+  return sorted[Math.min(sorted.length - 1, Math.round(p * (sorted.length - 1)))]
+}
+
+export function stippleTexture() {
+  const size = STIPPLE_SIZE
+  const rand = mulberry32(0x5717)
+  const h = new Float32Array(size * size)
+  for (const { sigma, weight } of STIPPLE_SPEC) {
+    const f = blurredNoise(rand, size, sigma)
+    for (let i = 0; i < h.length; i++) h[i] += f[i] * weight
+  }
+  const hi = percentile(h, 0.99)
+  const k = Math.atanh(0.9) / hi
+  for (let i = 0; i < h.length; i++) h[i] = 0.5 + 0.5 * Math.tanh(h[i] * k)
+
+  const grad = new Float32Array(size * size * 2)
+  const mags = new Float32Array(size * size)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const [gx, gy] = gradAt(h, size, x, y)
+      const i = y * size + x
+      grad[i * 2] = gx
+      grad[i * 2 + 1] = gy
+      mags[i] = Math.hypot(gx, gy)
+    }
+  }
+  const gmax = percentile(mags, 0.99)
+
+  const data = new Uint8Array(size * size * 4)
+  for (let i = 0; i < size * size; i++) {
+    data[i * 4] = pack(h[i])
+    data[i * 4 + 1] = pack(0.5 + (0.5 * grad[i * 2]) / gmax)
+    data[i * 4 + 2] = pack(0.5 + (0.5 * grad[i * 2 + 1]) / gmax)
+    data[i * 4 + 3] = 255
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType)
+  return applyFieldSampling(tex, THREE.LinearFilter, THREE.LinearMipmapLinearFilter)
+}
+
+let stippleCached = null
+
+export function stippleTile() {
+  if (!stippleCached) stippleCached = stippleTexture()
+  return stippleCached
+}
+
 // ONE PAIR FOR THE WHOLE WORLD, built on first use. createTerrainMaterial is
 // called by v1's terrain, v2's terrain, the macro diagnostic mesh and three
 // gates; they all want the same fields, and generating them per material would
