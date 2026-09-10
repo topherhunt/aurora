@@ -19,6 +19,14 @@ import {
   algorithmById, groupsFor, paramsFor, defaultsFor, isCurtain,
 } from './aurora-lab/curtain/registry.js'
 import { BUILTIN_NAMES, builtinByName } from './aurora-lab/presets.js'
+// What /v2 does to these knobs between the clock and the shader. Imported
+// rather than restated so this page and the world cannot drift -- the whole
+// point of the world group on the panel. See aurora-lab/world-drive.js.
+import { worldDrivenValues, worldFieldSeed, nearestPattern } from './aurora-lab/world-drive.js'
+// The world's own seed, so `fieldSeed` lands on the same piece of sky the
+// headset is showing. It is one integer out of v2's config and nothing else
+// from /v2 is reachable from here.
+import { SEED } from './v2/config.js'
 
 // ---------------------------------------------------------------------------
 // The /test-aurora route: a rig for designing the aurora that replaces
@@ -85,6 +93,29 @@ import { BUILTIN_NAMES, builtinByName } from './aurora-lab/presets.js'
 // is always constructed and always switched to a SHADER id.
 //
 // ===========================================================================
+// THE PAGE OPENS ON WHAT THE WORLD DRAWS
+// ===========================================================================
+//
+// DEFAULT_ALGORITHM is `skymap` and the world group is on, so a fresh load is
+// the sky /?quest renders, not a bench default that resembles it. That is the
+// difference between a rig you tune on and a rig you tune on and then have to
+// re-check in the headset.
+//
+// `worldDrive` is what buys it, and the cost is real and worth stating: with it
+// on, six shared knobs -- the five in ACTIVITY_SHAPE plus `exposure` -- are
+// OUTPUTS of the two world sliders. Turning them by hand moves the sky and then
+// the next change to anything overwrites them, exactly as the world's next frame
+// would. Tuning one of those six for keeps means changing its endpoints in
+// world-drive.js, not the slider. Turn the drive off and you have the old
+// free-for-all bench back, and the page stops claiming to be /?quest.
+//
+// Two things still cannot match and neither is a shader difference. The FOV
+// slider is a monitor's, not a headset's, so the sky is framed differently even
+// when it is identical. And the world's `worldAurora` is a function of the hour
+// -- 1.0 only near midnight -- so a sky tuned at 1.0 is the brightest the game
+// ever shows.
+//
+// ===========================================================================
 // THE CAMERA IS A TURNTABLE, NOT A PLAYER
 // ===========================================================================
 //
@@ -97,7 +128,7 @@ import { BUILTIN_NAMES, builtinByName } from './aurora-lab/presets.js'
 // you.
 // ---------------------------------------------------------------------------
 
-const STORE = 'aurora-lab.state.v1'
+const STORE = 'aurora-lab.state.v2'
 const PRESETS = 'aurora-lab.presets.v1'
 
 // The star field turns on the clock's monotonic hours. A whole revolution in
@@ -159,6 +190,12 @@ function main() {
   }
 
   const values = defaultsFor(algorithmId)
+  // The world's seed, folded the way SkyAurora's constructor folds it. Applied
+  // as a DEFAULT rather than by the live drive, because that is what it is in
+  // /v2 too -- set once at construction, never per frame -- and because leaving
+  // it under the drive would take away the one knob you turn to see whether a
+  // shape you like is the tuning or is that patch of field.
+  if ('fieldSeed' in values) values.fieldSeed = worldFieldSeed(SEED)
   if (saved && saved.values) {
     for (const k of Object.keys(saved.values)) {
       if (k in values) values[k] = saved.values[k]
@@ -271,6 +308,36 @@ function main() {
     pmRadRes: () => planmap.setSize(values.pmRadRes, values.pmAzRes),
     pmAzRes: () => planmap.setSize(values.pmRadRes, values.pmAzRes),
     stars: () => {},
+    // The three world knobs. All `uniform: false`, so without a route here each
+    // would be a slider that moves and does nothing -- the failure the schema
+    // exists to prevent. They do not write a uniform themselves; they recompute
+    // the six that do.
+    worldDrive: () => applyWorldDrive(),
+    worldAct: () => applyWorldDrive(),
+    worldAurora: () => applyWorldDrive(),
+  }
+
+  // Push the world's six values at the panel and the shader. Idempotent, and
+  // called after anything that could have moved either the two world sliders or
+  // the six knobs they own.
+  //
+  // The panel is written as well as the shader, and that is the load-bearing
+  // half: a drive that changed the sky without moving the sliders would leave
+  // six rows quietly lying about what is on screen, and this page is only worth
+  // having if the numbers on it are the numbers in the frame.
+  //
+  // Off under the curtain rather than under any particular algorithm. The five
+  // belt knobs are SHARED, so they exist under every shader entry and driving
+  // them there is meaningful; the curtain's schema has never heard of them and
+  // setParam would throw on the first one.
+  function applyWorldDrive() {
+    if (!values.worldDrive || curtainLive) return
+    const driven = worldDrivenValues(values.worldAct, values.worldAurora)
+    for (const key of Object.keys(driven)) {
+      values[key] = driven[key]
+      sidebar.setValue(key, driven[key])
+      screen.setParam(key, driven[key])
+    }
   }
 
   function applyParam(key, value) {
@@ -290,6 +357,11 @@ function main() {
 
   function applyAll() {
     for (const p of paramsFor(algorithmId)) applyParam(p.key, values[p.key])
+    // Last, and unconditionally. The loop above walks the schema in declaration
+    // order, so it can and does write a stale beltOffset after the world route
+    // has already computed the live one; this settles it. Cheap enough to be
+    // worth not reasoning about the order.
+    applyWorldDrive()
   }
 
   // ---- sidebar -------------------------------------------------------------
@@ -503,6 +575,10 @@ function main() {
     Object.assign(values, accepted)
     sidebar.setValues(accepted)
     for (const k of Object.keys(accepted)) applyParam(k, accepted[k])
+    // A blob carries its keys in whatever order it was written in, so worldAct
+    // can land before worldDrive and drive from the outgoing flag. One more
+    // pass costs nothing and removes the question.
+    applyWorldDrive()
     saveState()
   }
 
@@ -693,6 +769,14 @@ function main() {
         'skymap ms': fmtMs(timer.median('skymap')),
         // Never omitted and never abbreviated to something that could pass for a GPU reading. `cpu-sync` means this browser has no GPU timer and these are wall-clock intervals fenced by a readPixels: correct for ranking two shaders against each other, biased high in absolute terms, and not a number to quote as "the aurora costs X on this GPU".
         timer: timer.mode,
+        // Which sky this is, in the world's own vocabulary. The four names are
+        // the ones /v2's HUD prints, so a screenshot from here and a console
+        // line from the headset can be compared without arithmetic. Says so
+        // loudly when the drive is off, because then the page is a bench again
+        // and nothing on it is a promise about what the headset will show.
+        world: values.worldDrive
+          ? nearestPattern(values.worldAct).name + ' ' + values.worldAct.toFixed(2)
+          : 'drive off -- free tuning',
         // The one number that predicts the cost of this shader anywhere else.
         // At 40 steps a full-screen 1080p quad is ~83 million field evaluations
         // a frame, and the headset has to do it twice. Divided by the low-res divisor SQUARED, because a buffer smaller in both axes is what makes this quadratic; without it the stat goes on reporting the reference's cost for a sky that is costing a sixteenth of it.

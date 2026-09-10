@@ -79,6 +79,7 @@ import { SLAB } from './algo/slab.js'
 import { SLABMAP } from './algo/slabmap.js'
 import { SKYMAP } from './skymap/algorithm.js'
 import { BACKDROP_PARAMS } from './backdrop.js'
+import { WORLD_ALGORITHM, ACT_LO, ACT_HI } from './world-drive.js'
 
 // Ordered cheapest-looking-first is tempting and wrong: the list is the order
 // they appear in the dropdown, and `leyline` has to stay at the head of it
@@ -98,7 +99,13 @@ import { BACKDROP_PARAMS } from './backdrop.js'
 // item in the list against the last, one click apart at either end.
 export const ALGORITHMS = [ LEYLINE, SLAB, SINE, RIBBON, LUT, WEAVE, FILAMENT, PLANMAP, SLABMAP, SKYMAP ]
 
-export const DEFAULT_ALGORITHM = 'leyline'
+// The one /v2 draws, and that is the whole reason it is the default rather than
+// the reference the others are judged against. Opening the bench on an
+// algorithm the world does not use means every judgement made in the first five
+// minutes is about a sky nothing ships. Kept in step with WORLD_ALGORITHM by the
+// gate in check-aurora-lab.mjs; `leyline` is one click away at the head of the
+// list when you want the reference back.
+export const DEFAULT_ALGORITHM = WORLD_ALGORITHM
 
 // ===========================================================================
 // SHARED -- applied by the frame, identical for every algorithm.
@@ -505,6 +512,40 @@ export const SHARED_GROUPS = [
 ]
 
 // ===========================================================================
+// THE WORLD -- read by the page, and the reason the bench is worth trusting.
+// ===========================================================================
+
+// NOT in SCENE_GROUPS, and the distinction is load-bearing rather than tidy:
+// SCENE_GROUPS is also what the curtain gets, and the curtain has none of the
+// six knobs this drives. Under it these three would be sliders that move and do
+// nothing, which is the one failure the schema exists to prevent -- the same
+// argument curtain/params.js makes about step count and dither.
+export const WORLD_GROUP = {
+  title: 'The world clock',
+  open: true,
+  params: [
+    {
+      key: 'worldDrive',
+      label: 'drive from the world',
+      hint: 'On, the two sliders below stand in for clock.js and the six knobs they own -- belt offset, belt width, belt amount, rays, caustic, exposure -- are OUTPUTS: they move when you move these, and turning them by hand does nothing that survives the next change. That is the point, because that is exactly what happens in the world, where every frame overwrites them. Off, you get the six back as free knobs and the page stops claiming to show you /?quest.',
+      type: 'bool', value: true, uniform: false,
+    },
+    {
+      key: 'worldAct',
+      label: 'activity (substorm)',
+      hint: `state.activity from clock.js, on its own scale: ${ACT_LO} is the quiet floor an auroral night never drops below and ${ACT_HI} is a full storm. The four named points the world's HUD reports are 0.16 quiet arc, 0.45 active bands, 0.75 substorm breakup, 1.0 full storm. This is the SHAPE knob -- it pulls the oval toward you, widens it, lifts the floor under it and raises the rays and shimmer, all from one table.`,
+      type: 'float', min: ACT_LO, max: ACT_HI, step: 0.01, value: 0.45, uniform: false,
+    },
+    {
+      key: 'worldAurora',
+      label: 'brightness (time of night)',
+      hint: 'state.aurora from clock.js, which is auroraMax * activity: 0 through the day, 0.08 at dusk, 1 at deep midnight. It drives exposure and nothing else, so it changes how bright the sky is and nothing about its structure. Leave it at 1 to tune, then drop it to see what the same sky looks like at ten in the evening.',
+      type: 'float', min: 0, max: 1, step: 0.01, value: 1.0, uniform: false,
+    },
+  ],
+}
+
+// ===========================================================================
 // SCENE -- read by the page, not by the shader. `uniform: false` throughout.
 // ===========================================================================
 
@@ -557,11 +598,13 @@ export function algorithmById( id ) {
 }
 
 // Every group the panel shows for one algorithm, in the order it shows them.
-// The algorithm's own groups come FIRST: they are what you are here to turn,
-// and pushing them below eight shared groups means scrolling past sixty sliders
-// to reach the four that make this algorithm what it is.
+// The world's three rows come first because they decide whether anything below
+// them is the sky /v2 draws, and then the algorithm's own groups: those are what
+// you are here to turn, and pushing them below eight shared groups means
+// scrolling past sixty sliders to reach the four that make this algorithm what
+// it is.
 export function groupsFor( id ) {
-  return [ ...algorithmById( id ).groups, ...SHARED_GROUPS, ...SCENE_GROUPS ]
+  return [ WORLD_GROUP, ...algorithmById( id ).groups, ...SHARED_GROUPS, ...SCENE_GROUPS ]
 }
 
 // Flat list of every param for one algorithm. Throws on a duplicate key rather

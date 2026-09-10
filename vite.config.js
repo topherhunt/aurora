@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { defineConfig, loadEnv } from 'vite'
 import { decodePng } from './src/v2/height/png.js'
 import basicSsl from '@vitejs/plugin-basic-ssl'
-import { generateImage } from './tools/characters/openrouter.mjs'
+import { generateImage, IMAGE_MODELS, requireImageModel } from './tools/characters/openrouter.mjs'
 import { buildViewPrompt } from './tools/characters/sheet-prompt.mjs'
 import { generateCharacter } from './tools/characters/generate-character.mjs'
 import { decodeSheet, keyBackground, silhouetteProfile, columnProfile, cropToFigure } from './tools/characters/chromakey.mjs'
@@ -955,6 +955,7 @@ function treeGen() {
       server.middlewares.use('/__tree9-species', json(() => ({
         ok: true,
         species: TREE_V9_SPECIES,
+        imageModels: IMAGE_MODELS,
         credits: {
           meshTextured: tripoCredits({ step: 'mesh', texture: true }),
           meshBare: tripoCredits({ step: 'mesh', texture: false }),
@@ -989,12 +990,15 @@ function treeGen() {
       // for it: an image that only ever lived in a tab is an image bought twice.
       server.middlewares.use('/__tree9-image', json(async (req) => {
         postOnly(req)
-        const { id, description, crown, trunk, styleNote, seed } = JSON.parse(await readBody(req, 1 << 16))
+        const { id, prompt: treePrompt, styleNote, seed, model } = JSON.parse(await readBody(req, 1 << 16))
         if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid tree id "${id}"`)
-        const prompt = buildTreePrompt({ description, crown, trunk, styleNote })
-        const { buffer, cost } = await generateImage({ prompt, aspectRatio: '1:1', seed })
+        // A model id from the browser picks what the account is billed for, so it
+        // is checked against the offered list rather than passed through.
+        const chosen = requireImageModel(model ?? IMAGE_MODELS[0].id)
+        const prompt = buildTreePrompt({ prompt: treePrompt, styleNote })
+        const { buffer, cost } = await generateImage({ prompt, model: chosen.id, aspectRatio: '1:1', seed })
         const file = treesV9.saveCandidate(id, buffer, cost)
-        return { ok: true, file, cost, prompt }
+        return { ok: true, file, cost, prompt, model: chosen.id }
       }))
 
       server.middlewares.use('/__tree9-pick', json(async (req) => {

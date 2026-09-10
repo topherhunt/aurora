@@ -95,6 +95,17 @@ const REFERENCE_V1 = {
     fov: 62,
     resScale: 1,
     stars: 1,
+    // OFF on all three, and that is what a builtin is FOR. Each of these is a
+    // sky somebody pinned, exact, to compare a change against -- and the world
+    // drive owns six of the knobs they pin, so loading one with the drive on
+    // would overwrite the belt and the exposure with whatever the activity
+    // slider happened to be showing. The reference would silently stop being
+    // the reference. The two sliders below it are inert while it is off; they
+    // carry the world's own default so that turning it back on lands somewhere
+    // sensible rather than at zero.
+    worldDrive: false,
+    worldAct: 0.45,
+    worldAurora: 1,
     apex: 1,
     relief: 1,
     haze: 0.35,

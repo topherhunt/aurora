@@ -1,18 +1,45 @@
 // ---------------------------------------------------------------------------
 // Thin client for OpenRouter's image-generation endpoint (POST /api/v1/images).
-// sheet-prompt.mjs builds the prompts this sends; gen-sheet.html's dev-server
-// endpoint (vite.config.js) is the only caller in this codebase, so every
-// call here is triggered by an explicit button click in that bench -- never
+// Every caller is a dev-server endpoint behind a button in a bench (sheets,
+// fish, creatures, trees), so every call here is one explicit click -- never
 // invoke this in a loop or on a timer, per the project's spend-gate rule.
 //
-// Model: FLUX.2 Klein 4B (black-forest-labs/flux.2-klein-4b), OpenRouter's
-// cheapest/fastest image model as of writing. Pricing (openrouter.ai/black-
-// forest-labs/flux.2-klein-4b): $0.014 for the first megapixel, $0.001 per
-// megapixel after -- a "1K" (~1MP) generation is ~$0.014-0.015.
+// Default model: FLUX.2 Klein 4B (black-forest-labs/flux.2-klein-4b), the
+// cheapest of the offered models. Pricing (openrouter.ai/black-forest-labs/
+// flux.2-klein-4b): $0.014 for the first megapixel, $0.001 per megapixel after
+// -- a "1K" (~1MP) generation is ~$0.014-0.015. A bench that wants a better
+// picture passes a `model` from IMAGE_MODELS below; /gen-tree-v9 does, because
+// FLUX draws a symmetrical specimen tree where Nano Banana photographs a real
+// one (§28).
 // ---------------------------------------------------------------------------
 
 const API_URL = 'https://openrouter.ai/api/v1/images'
 const DEFAULT_MODEL = 'black-forest-labs/flux.2-klein-4b'
+
+/**
+ * The models a bench is allowed to offer, cheapest first. A model id arriving
+ * from a browser must be checked against this list before it reaches a paid
+ * endpoint -- the dev server binds to the LAN, and an unchecked id is someone
+ * else choosing what your account buys.
+ *
+ * `usd` is per image at ~1MP and is an ESTIMATE for printing on a button; the
+ * real figure comes back in the response's usage.cost and is what gets recorded.
+ * Google bills these per output token (~1290 tokens an image), so the estimate
+ * is that arithmetic, not a quoted price.
+ */
+export const IMAGE_MODELS = [
+  { id: 'black-forest-labs/flux.2-klein-4b', label: 'FLUX.2 Klein 4B', usd: 0.015 },
+  { id: 'google/gemini-2.5-flash-image', label: 'Nano Banana', usd: 0.04 },
+  { id: 'google/gemini-3.1-flash-image', label: 'Nano Banana 2', usd: 0.08 },
+  { id: 'google/gemini-3-pro-image', label: 'Nano Banana Pro', usd: 0.15 },
+]
+
+/** Throws unless `id` is one of IMAGE_MODELS; returns the entry. */
+export function requireImageModel(id) {
+  const model = IMAGE_MODELS.find((m) => m.id === id)
+  if (!model) throw new Error(`"${id}" is not an offered image model -- one of ${IMAGE_MODELS.map((m) => m.id).join(', ')}`)
+  return model
+}
 
 /**
  * Generates one image. `referenceImages`, if given, is an array of PNG

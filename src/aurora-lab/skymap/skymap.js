@@ -284,6 +284,12 @@ export class SkyMapAurora {
     // Restore whatever was bound rather than assuming null: on this page it is null, inside a post chain or an XR frame it is not, and hardcoding null there redirects the rest of the frame to the canvas with no error.
     const prevTarget = renderer.getRenderTarget()
 
+    // XR OFF FOR THE DURATION, and it is not optional: while a session is live, three replaces the camera handed to render() with its own ArrayCamera, and each of that camera's eyes carries a VIEWPORT sized to the HEADSET framebuffer. So these four full-target quads get rasterised into a rect some two thousand texels wide instead of the target's sixty-four, which squeezes the whole of vSkyUv into one corner of every map -- and that corner is below u_horizonCut, where the sky is by definition black. The symptom is an aurora that is perfect on a monitor and completely absent in the headset, with no error anywhere. Passing a bare Camera through xr.updateCamera also writes undefined into cameraXR.near/far on the way past.
+    //
+    // Same fix and the same reason as SkyProbe.update. What makes it safe is what makes it safe there: this runs before the frame's real render, so three sets the session's camera and framebuffer up again on the way back in.
+    const wasXR = renderer.xr.enabled
+    renderer.xr.enabled = false
+
     for ( const pass of this._passes ) {
       this._mesh( pass )
       renderer.setRenderTarget( pass.target() )
@@ -293,6 +299,7 @@ export class SkyMapAurora {
 
     this._scene.clear()
     renderer.setRenderTarget( prevTarget )
+    renderer.xr.enabled = wasXR
   }
 
   // One mesh in the scene at a time. Swapping the child rather than toggling four `visible` flags means a pass that is somehow not in PASSES cannot draw by accident.

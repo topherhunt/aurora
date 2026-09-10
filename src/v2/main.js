@@ -155,8 +155,53 @@ const bootFail = (err) => {
 // below); reportRuntimeError still runs bootFail unconditionally, since it
 // also covers the flatscreen desktop-testing case.
 let showQuestRuntimeError = null
+
+// The first error to arrive, held forever. Two things read it: tick(), which
+// stops dead (a throw inside A-Frame's tick fires window.onerror EVERY frame
+// after, and the fiftieth copy of a stack buries the first), and
+// reportRuntimeError itself, so the overlay keeps the first error rather than
+// whatever the dying frame threw next.
+let fatalError = null
+
+/**
+ * Leave VR, so the DOM overlay is on a surface the wearer can actually see.
+ *
+ * Not a courtesy: while an XR session is live the headset composites the
+ * SESSION's framebuffer and nothing in the page is on screen at all, so the red
+ * message is invisible until the session is gone.
+ *
+ * try/catch around the whole of it, and around `sceneEl` in particular, because
+ * this runs from window.onerror: a crash during module evaluation reaches here
+ * before the `let sceneEl` line has run, and reading it then is a temporal dead
+ * zone throw out of the one handler nobody else is watching.
+ */
+function exitVR() {
+  try {
+    // A-Frame's own exit, when A-Frame owns the session: it ends the session AND
+    // does its bookkeeping (the vr-mode state, the enter-VR button, the canvas
+    // resize back to the page). Raw session.end() on the normal path, where
+    // three owns the session outright.
+    //
+    // `sceneEl.is` is guarded as well as `sceneEl`: the element is created
+    // before A-Frame upgrades it, so a crash in that window would find a plain
+    // <a-scene> with none of its prototype on it yet.
+    if (sceneEl && sceneEl.is && sceneEl.is('vr-mode')) sceneEl.exitVR()
+    else if (renderer) renderer.xr.getSession()?.end()
+  } catch (err) {
+    console.error('[v2] could not leave VR to show the error', err)
+  }
+}
+
 function reportRuntimeError(err) {
+  if (fatalError) {
+    console.error(err)
+    return
+  }
+  fatalError = err
   bootFail(err)
+  exitVR()
+  // Belt and braces, and the order matters: if the session refuses to end, the
+  // world-space plane is the only surface the wearer has left.
   if (showQuestRuntimeError) showQuestRuntimeError(err)
 }
 window.addEventListener('error', (e) => reportRuntimeError(e.error ?? new Error(e.message)))
@@ -3704,6 +3749,11 @@ function panelStats() {
 }
 
 function tick() {
+  // A frame that threw once throws every frame, and A-Frame's tick loop has no
+  // catch of its own -- so without this the overlay's first stack is replaced
+  // sixty times a second by the same one. See reportRuntimeError.
+  if (fatalError) return
+
   const now = performance.now()
   const raw = now - last
   last = now
@@ -3804,9 +3854,19 @@ function tick() {
   // Rocks first, and it is the same hard ordering the construction has: the tree,
   // fern, grass and litter scatters all ask the stone where it is before they
   // place anything, so a tile of stone has to be grown before the tile of wood
-  // over it. `rocks.update` is called whatever the quest toggle says -- the
-  // toggle hides the batches, and a hidden boulder still displaces a tree.
-  rocks.update(headTmp.x, headTmp.y, headTmp.z)
+  // over it.
+  //
+  // A LAYER TOGGLE HALTS THE SCATTER, it does not merely hide the batch. The
+  // hidden-but-stepping version cost 2.4 ms a frame in `rocks` alone at 1000 m/s
+  // (headless, desktop node -- a Quest 2 core is several times slower) against
+  // 0.65 ms standing, spent on a layer the panel said was off, which made the
+  // panel unable to answer the one question it exists for. The stale-anchor consequence is
+  // real and accepted: with rocks frozen and trees on, wood placed in ground you
+  // fly into afterwards does not know about stone that was never grown there, so
+  // trees may sit where a boulder would have pushed them. That is invisible while
+  // the boulder is, and an ablation panel that cannot ablate is worth less than an
+  // exact one.
+  if (!QUEST_MODE || questToggles.rocks) rocks.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (!QUEST_MODE || questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
   // TWO ROWS, ONE LAYER, and the split is the whole point: `grass` hides the
@@ -3818,14 +3878,18 @@ function tick() {
   if (!QUEST_MODE || (questToggles.grass && questToggles.grassUpdate)) {
     grass.update(headTmp.x, headTmp.y, headTmp.z)
   }
-  // litter/mushrooms/deadwood aren't among the 9 requested toggles -- always
-  // updated (they're the cheapest layers in the world; see their own
-  // headers), just permanently hidden in quest mode with no button to show them.
-  litter.update(headTmp.x, headTmp.y, headTmp.z)
-  // After rocks, and for the same reason the construction and the relief
-  // re-place are: a clump follows the anchors, so it wants them stepped first.
-  mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
-  deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+  // Three layers on one `litter` row, hidden AND frozen together -- see the row's
+  // own note for why they share a button. Cheap per frame standing still, which is
+  // what "the cheapest layers in the world" was measured at; all three are tiled
+  // ground scatters, so at flight speed they churn their whole footprint like
+  // every other one and the row has to be able to take that away.
+  if (!QUEST_MODE || questToggles.litter) {
+    litter.update(headTmp.x, headTmp.y, headTmp.z)
+    // After rocks, and for the same reason the construction and the relief
+    // re-place are: a clump follows the anchors, so it wants them stepped first.
+    mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
+    deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+  }
 
   clock.advance(dt)
   // Held in a local because the world probe wants it too: the capture is taken

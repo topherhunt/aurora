@@ -41,6 +41,7 @@ const TEX_SIZE = 128
 
 let library = []      // every tree the bench knows about: species seeds + anything on disk
 let credits = {}      // mesh price, bare and textured, from the server's own table
+let imageModels = []  // the models the server will accept, cheapest first
 let pool = []         // every PNG a face could wear
 let candidates = []
 let assets = { source: false, mesh: false, meshes: [], painted: false, lods: [], state: {} }
@@ -67,8 +68,24 @@ async function loadSpecies() {
   const j = await (await fetch('/__tree9-species')).json()
   if (!j.ok) throw new Error(j.error)
   credits = j.credits
+  imageModels = j.imageModels ?? []
+  // The list comes from the server because the server is what enforces it: an id
+  // the select does not offer is refused rather than billed.
+  $('imageModel').innerHTML = imageModels
+    .map((m) => `<option value="${m.id}">${m.label} (~$${m.usd.toFixed(3)})</option>`).join('')
+  // Nano Banana rather than the cheapest: FLUX draws a symmetrical specimen tree
+  // from this prompt and puts it on a grass hill the prompt bans, and three cents
+  // is nothing against the 40 credits the picture goes on to spend.
+  const preferred = imageModels.find((m) => m.id === 'google/gemini-2.5-flash-image') ?? imageModels[0]
+  if (preferred) $('imageModel').value = preferred.id
+  updateImagePrice()
   if (!j.hasTripoKey) setStatus('TRIPO_API_KEY is not set -- the mesh step will fail until it is in .env', 'warn')
   updateMeshPrice()
+}
+
+function updateImagePrice() {
+  const m = imageModels.find((x) => x.id === $('imageModel').value)
+  $('genImage').textContent = m ? `generate candidate (~$${m.usd.toFixed(3)})` : 'generate candidate'
 }
 
 function updateMeshPrice() {
@@ -131,7 +148,7 @@ function renderLibrary() {
     card.innerHTML =
       `<div class="top">${t.thumbUrl ? `<img src="${t.thumbUrl}" alt="" />` : '<div class="noimg">no image</div>'}` +
       `<div><div class="name">${t.label ?? t.id}</div><div class="label">${t.id} &middot; ${t.heightM}m</div></div></div>` +
-      `<div class="prompt">${t.description ?? ''}</div><div class="chips">${chips}</div>`
+      `<div class="prompt">${t.prompt ?? ''}</div><div class="chips">${chips}</div>`
     card.addEventListener('click', () => {
       $('library').classList.remove('on')
       loadTree(t.id).catch((e) => setStatus(e.message, 'warn'))
@@ -184,9 +201,7 @@ async function loadTree(id) {
   $('treeId').value = t.id
   $('label').value = t.label ?? t.id
   $('heightM').value = t.heightM ?? 10
-  $('crown').value = t.crown ?? ''
-  $('trunk').value = t.trunk ?? ''
-  $('description').value = t.description ?? ''
+  $('prompt').value = t.prompt ?? ''
   $('roster').value = t.id
   clearPaint()
   clearLods()
@@ -334,9 +349,7 @@ $('saveMeta').addEventListener('click', () => withButton($('saveMeta'), 'saving'
   const j = await post(`/__tree9-save?id=${encodeURIComponent(currentId())}`, {
     label: $('label').value.trim(),
     heightM: Number($('heightM').value),
-    crown: $('crown').value.trim(),
-    trunk: $('trunk').value.trim(),
-    description: $('description').value.trim(),
+    prompt: $('prompt').value.trim(),
   })
   $('metaOut').textContent = `saved ${j.tree.id}`
   await loadLibrary()
@@ -348,7 +361,7 @@ $('saveMeta').addEventListener('click', () => withButton($('saveMeta'), 'saving'
 $('newTree').addEventListener('click', () => {
   $('treeId').value = ''
   $('label').value = ''
-  $('metaOut').textContent = 'give it an id, a crown clause, a trunk clause and a description, then save'
+  $('metaOut').textContent = 'give it an id and a prompt, then save'
   clearPaint()
   clearLods()
 })
@@ -372,9 +385,8 @@ async function queueImage() {
   // generation belongs to the words that were on screen when it was asked for.
   const body = {
     id: currentId(),
-    description: $('description').value.trim(),
-    crown: $('crown').value.trim(),
-    trunk: $('trunk').value.trim(),
+    prompt: $('prompt').value.trim(),
+    model: $('imageModel').value,
   }
   pendingImages++
   renderGallery()
@@ -452,11 +464,29 @@ scene.add(sun)
 
 const orbit = new OrbitControls(camera, renderer.domElement)
 orbit.enableDamping = true
-// The left button paints, so orbiting moves to the right one. Both stay bound
-// the whole session rather than swapping with the mode: a control that means
-// two things depending on a state you cannot see is one misplaced stroke away
-// from repainting a trunk you had finished.
-orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }
+// Right-drag orbits without the browser's menu landing on top of the stroke.
+canvas.addEventListener('contextmenu', (e) => e.preventDefault())
+
+/**
+ * The left button orbits until there is something to paint, and then it paints
+ * and orbiting moves to the right button.
+ *
+ * The binding follows `paint.mesh` because that is the SAME condition the stroke
+ * handler tests: if a left-drag can paint, it paints, and if it cannot, it
+ * orbits. So the button never means two things in one state -- which is the
+ * hazard -- while a bought mesh can still be turned around with the button
+ * everything else in the world turns things around with.
+ */
+function setOrbitButtons() {
+  orbit.mouseButtons = {
+    LEFT: paint.mesh ? null : THREE.MOUSE.ROTATE,
+    MIDDLE: THREE.MOUSE.DOLLY,
+    RIGHT: THREE.MOUSE.ROTATE,
+  }
+  $('viewHint').textContent = paint.mesh
+    ? 'left-drag paints, right-drag orbits, wheel zooms'
+    : 'left-drag or right-drag orbits, wheel zooms'
+}
 
 const loader = new GLTFLoader()
 let model = null
@@ -657,6 +687,7 @@ const paint = {
 
 function clearPaint() {
   paint.mesh = null
+  setOrbitButtons()
   paint.frames = null
   paint.adjacency = null
   paint.faceSlot = null
@@ -881,6 +912,7 @@ $('startPaint').addEventListener('click', () => withButton($('startPaint'), 'pre
   const mesh = unweld(src)
   const grounded = groundAndScale(mesh.positions, heightM)
   paint.mesh = mesh
+  setOrbitButtons()
   paint.frames = faceFrames(mesh.positions)
   paint.adjacency = buildFaceAdjacency(mesh.positions)
   paint.faceSlot = new Int16Array(paint.frames.count).fill(-1)
@@ -1134,6 +1166,7 @@ $('rosterPrev').addEventListener('click', () => stepRoster(-1))
 $('rosterNext').addEventListener('click', () => stepRoster(1))
 $('treeId').addEventListener('change', () => { clearLods(); clearPaint(); refresh().catch((e) => setStatus(e.message, 'warn')) })
 $('wantTexture').addEventListener('change', updateMeshPrice)
+$('imageModel').addEventListener('change', updateImagePrice)
 $('faceLimit').addEventListener('input', () => { $('faceLimitVal').textContent = $('faceLimit').value })
 $('brushRadius').addEventListener('input', () => { $('brushVal').textContent = `${$('brushRadius').value} m` })
 $('fillAngle').addEventListener('input', () => { $('fillVal').textContent = `${$('fillAngle').value}°` })
@@ -1150,6 +1183,7 @@ $('faceLimitVal').textContent = $('faceLimit').value
 $('brushVal').textContent = `${$('brushRadius').value} m`
 $('fillVal').textContent = `${$('fillAngle').value}°`
 bill('session start', 0)
+setOrbitButtons()
 loadSpecies()
   // Balance after the species list (it prices itself against credits.meshBare)
   // but before anything else, so an empty wallet is on screen before the first

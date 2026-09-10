@@ -11,9 +11,9 @@
 //   and the count of misses is the headline.
 //
 //   AND NO TWO PLATES OVERLAP BY MORE THAN A TENTH. Overlap is the cheap centre-
-//   radius one the placer itself uses: 1 - d / (r + ro) over the plan shadows, so
-//   a pair reading 0.10 is two discs touching with the seam shut and anything
-//   past it is stone paid for twice.
+//   radius one the placer itself uses: 1 - d / (r + ro), over the plates' own
+//   in-plane radii and in THREE dimensions, so a pair reading 0.10 is two discs
+//   touching with the seam shut and anything past it is stone paid for twice.
 //
 // Everything else here is context for those two. The masked fraction says how
 // much wall the plates actually clothe; the bare runs say whether what is left is
@@ -254,12 +254,6 @@ spots.sort((a, b) => b.tan - a.tan)
 
 for (const s of [spots[0], spots[40], spots[400]]) {
   const rocks = new Rocks(new THREE.Scene(), field, dryWater, layers, texArray, { seed: 7 })
-  if (process.env.LATTICE_N) {
-    for (const b of rocks.beds.filter((x) => CAP_BEDS.includes(x.cfg.name))) {
-      b.latticeN = +process.env.LATTICE_N
-      b.perTile = b.latticeN * b.latticeN
-    }
-  }
   const t = performance.now()
   rocks.place(s.x, s.z)
   const ms = performance.now() - t

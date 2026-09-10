@@ -159,6 +159,9 @@ try {
     // for the same reason every other file here is: it holds strings and pulls
     // in params.js, and neither touches three.js.
     ...(await import('../src/aurora-lab/curtain/glsl.js')),
+    // The one module both pages read to decide what the knobs hold. Pure
+    // numbers and one lerp; nothing here touches three.js.
+    ...(await import('../src/aurora-lab/world-drive.js')),
   }
 } catch (e) {
   console.log(`\n FAIL  the lab modules do not load, so nothing below can be checked   ${e.message.split('\n')[0]}`)
@@ -173,6 +176,9 @@ const { PALETTE_GLSL, MARCH_GLSL, MAIN_GLSL, VERTEX_GLSL, SLAB_MARCH_GLSL } = LA
 const { LUT_GLSL, PLANMAP_GLSL } = LAB_MODULES
 const { SKYMAP_GLSL, SKYMAP_FRAME_GLSL } = LAB_MODULES
 const { CURTAIN_VERTEX, CURTAIN_FRAGMENT } = LAB_MODULES
+const { DEFAULT_ALGORITHM } = LAB_MODULES
+const { WORLD_ALGORITHM, ACT_LO, ACT_HI, ACTIVITY_SHAPE, DRIVEN_KEYS } = LAB_MODULES
+const { PATTERNS, worldDrivenValues, worldFieldSeed } = LAB_MODULES
 
 // ---------------------------------------------------------------------------
 // The shader assembly, DUPLICATED FROM screen.js ON PURPOSE.
@@ -583,6 +589,121 @@ check(/BUILTIN_NAMES/.test(saveCase),
   'and it refuses to save over a name a builtin already holds')
 
 // ===========================================================================
+console.log('\n--- the bench and the world are the same sky -------------------')
+// ===========================================================================
+//
+// The lab is only worth having if a sky tuned on it is the sky the headset
+// shows. That held by accident for a while and then quietly stopped: /v2 pinned
+// `skymap` and overwrote six shared knobs from a table of its own every frame,
+// while the page opened on `leyline` and left them at their schema defaults. Two
+// different skies, no error, and no way to see the gap from either page.
+//
+// world-drive.js is now the single copy of that table and both sides import it.
+// What this section guards is that they GO ON importing it -- the failure to
+// catch is somebody restating a number locally because it was one line.
+
+const v2Rel = 'src/v2/render/aurora.js'
+const v2Src = fs.readFileSync(path.join(ROOT, v2Rel), 'utf8')
+
+check(/from\s+['"]\.\.\/\.\.\/aurora-lab\/world-drive\.js['"]/.test(v2Src),
+  'the world imports its aurora tuning from world-drive.js', v2Rel)
+check(!/ACTIVITY_SHAPE\s*=/.test(v2Src),
+  'and does not keep a second copy of the shape table', v2Rel)
+check(/worldDrivenValues\s*\(/.test(v2Src),
+  'and turns the clock into knob values through the shared function', v2Rel)
+check(/worldFieldSeed\s*\(/.test(v2Src),
+  'and folds the world seed through the shared function', v2Rel)
+
+check(/from\s+['"]\.\/aurora-lab\/world-drive\.js['"]/.test(mainSrc),
+  'the bench imports the same module', mainRel)
+check(/worldDrivenValues\s*\(/.test(mainSrc),
+  'and drives its panel from the same function', mainRel)
+check(/from\s+['"]\.\/v2\/config\.js['"]/.test(mainSrc) && /worldFieldSeed\s*\(\s*SEED\s*\)/.test(mainSrc),
+  'and seeds its field from the world SEED, so it is the same patch of sky', mainRel)
+
+// The page opening on an algorithm the world does not draw is the original bug
+// in its purest form, and it is one constant.
+check(DEFAULT_ALGORITHM === WORLD_ALGORITHM,
+  'the bench opens on the algorithm the world draws',
+  `default ${DEFAULT_ALGORITHM}, world ${WORLD_ALGORITHM}`)
+check(ALGORITHMS.some((a) => a.id === WORLD_ALGORITHM),
+  `and ${WORLD_ALGORITHM} is a real entry in the registry`)
+
+// Bumping STORE is what makes the default reach anyone who has already used the
+// page: without it a stored `leyline` wins forever and the fix ships to nobody.
+check(/const STORE = 'aurora-lab\.state\.v2'/.test(mainSrc),
+  'and the store key was bumped, so a stored algorithm cannot outlive the change',
+  mainRel)
+
+// ACT_LO and ACT_HI are AURORA_ACTIVITY.quiet and .storm, restated in the lab
+// because clock.js is a v2 module. Restated values drift; this is the only
+// thing that would notice.
+const clockSrc = fs.readFileSync(path.join(ROOT, 'src', 'clock.js'), 'utf8')
+const quiet = Number((clockSrc.match(/\bquiet:\s*([\d.]+)/) || [])[1])
+const storm = Number((clockSrc.match(/\bstorm:\s*([\d.]+)/) || [])[1])
+check(quiet === ACT_LO && storm === ACT_HI,
+  "the activity bounds still match clock.js's AURORA_ACTIVITY",
+  `clock ${quiet}..${storm}, world-drive ${ACT_LO}..${ACT_HI}`)
+
+// Every driven key has to be a real param under the world's algorithm, or the
+// bench throws on the first frame: the panel's setValue refuses a key with no
+// widget, which is exactly the loud failure wanted here -- but only if it is
+// found before the page loads rather than by the page loading.
+const worldDefaults = defaultsFor(WORLD_ALGORITHM)
+const missing = DRIVEN_KEYS.filter((k) => !(k in worldDefaults))
+check(missing.length === 0,
+  `every driven key is a param of ${WORLD_ALGORITHM}`, missing.join(', '))
+check(DRIVEN_KEYS.length === Object.keys(ACTIVITY_SHAPE).length + 1,
+  'and DRIVEN_KEYS is the shape table plus exposure, with nothing invented')
+
+// The world sliders themselves. Without routes in sceneApply they are
+// `uniform: false` params that fall through to screen.setParam and silently do
+// nothing -- three sliders that move and change nothing, which is the exact
+// failure the schema was built to prevent.
+for (const key of ['worldDrive', 'worldAct', 'worldAurora']) {
+  check(key in worldDefaults, `the panel declares ${key}`)
+  check(new RegExp(`\\b${key}:\\s*\\(`).test(mainSrc),
+    `and the page routes ${key} rather than letting it fall through`, mainRel)
+}
+
+// The drive must land inside the sliders it is writing into, at both ends and
+// in the middle, or the panel shows a number the widget then clamps and the two
+// stop agreeing about what is on screen.
+const paramByKey = new Map(paramsFor(WORLD_ALGORITHM).map((p) => [p.key, p]))
+const outOfRange = []
+for (const activity of [ACT_LO, 0.45, 0.75, ACT_HI]) {
+  const driven = worldDrivenValues(activity, 1.0)
+  for (const [key, v] of Object.entries(driven)) {
+    const p = paramByKey.get(key)
+    if (v < p.min || v > p.max) outOfRange.push(`${key} ${v.toFixed(2)} outside ${p.min}..${p.max} at a=${activity}`)
+  }
+}
+check(outOfRange.length === 0,
+  'every value the drive produces fits the slider it writes to', outOfRange.join('; '))
+
+// The four named points are what /v2's HUD prints and what the bench's stat row
+// prints. A pattern outside the clock's own envelope is a name for a sky the
+// world cannot reach.
+const badPattern = PATTERNS.filter((p) => p.activity < ACT_LO || p.activity > ACT_HI)
+check(badPattern.length === 0,
+  'every named pattern is a real point on the clock scale',
+  badPattern.map((p) => p.name).join(', '))
+
+check(worldFieldSeed(20260824) === 22 && worldFieldSeed(-3) === 98,
+  'the seed fold stays inside 0..100 and handles a negative seed')
+
+// And the curtain must NOT show them. It has none of the six knobs the drive
+// writes, so under it these would be three sliders that move nothing -- the same
+// argument curtain/params.js makes for dropping the march and belt groups. This
+// is why the world group is exported on its own rather than living inside
+// SCENE_GROUPS, which the curtain does get.
+const { curtainParams } = await import('../src/aurora-lab/curtain/params.js')
+const curtainKeys = new Set(curtainParams().map((p) => p.key))
+const leaked = ['worldDrive', 'worldAct', 'worldAurora'].filter((k) => curtainKeys.has(k))
+check(leaked.length === 0,
+  'the curtain is not handed world sliders it cannot obey', leaked.join(', '))
+
+// ===========================================================================
 console.log('\n--- every chunk carries its include guard ----------------------')
 // ===========================================================================
 //
@@ -810,6 +931,42 @@ for (const file of labFiles) {
 check(sweptLiterals >= RESERVED_SCAN.length,
   'the source sweep found at least as many GLSL literals as the scan list names',
   `${sweptLiterals} literals swept, ${RESERVED_SCAN.length} named`)
+
+// ===========================================================================
+console.log('\n--- the prepasses are not drawn through the headset ------------')
+// ===========================================================================
+//
+// This one shipped, and it is the shape of bug this whole file exists for: a
+// picture, not an error, and only on the one machine that cannot be attached to
+// a debugger.
+//
+// While an XR session is live, three.js REPLACES the camera handed to render()
+// with its own ArrayCamera, and each of that camera's eye cameras carries a
+// viewport sized to the HEADSET's framebuffer. skymap.js's four prepasses are
+// full-target quads in clip space, so they were being rasterised into a rect two
+// thousand texels wide instead of the sixty-four the map actually is -- which
+// squeezes the whole of vSkyUv into one corner of every map, and that corner is
+// below u_horizonCut, where the sky is black by definition. The aurora was
+// perfect on a monitor and completely absent in the headset, with nothing in any
+// console.
+//
+// Textual, because the fault needs a live XR session to reproduce and there is
+// no session in node. `renderer.xr.enabled = false` around the passes is the
+// whole fix, and it is the same one sky-probe.js and world-probe.js already
+// carry for the same reason -- so all three are asserted together, since a
+// future prepass that forgets it will look exactly like this did.
+const XR_OFF = [
+  ['src/aurora-lab/skymap/skymap.js', "the sky map's four prepasses"],
+  ['src/sky-probe.js', "the sky probe's cube faces"],
+  ['src/world-probe.js', "the world probe's cube faces"],
+]
+for (const [rel, what] of XR_OFF) {
+  const src = fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  check(/renderer\.xr\.enabled\s*=\s*false/.test(src),
+    `${what} turn renderer.xr off before rendering`, rel)
+  check(/renderer\.xr\.enabled\s*=\s*(wasXR|prevXR)/.test(src),
+    'and put back what was there rather than a literal', rel)
+}
 
 // ===========================================================================
 console.log('\n--- the page is wired -----------------------------------------')

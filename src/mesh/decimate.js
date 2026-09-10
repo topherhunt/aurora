@@ -53,6 +53,18 @@
 
 const EPS = 1e-12
 
+// How hard a point that draws the outline resists being dragged off it, against
+// the surface's own average error. Zero is plain Garland-Heckbert. Swept over
+// eleven creature meshes in scripts/probe-decimate-profile.mjs: the curve is a
+// broad plateau from about 0.5 to 1.5 and this sits in the middle of it, so the
+// exact figure is not load-bearing. See the feature term in `decimate`.
+const FEATURE_WEIGHT = 1
+
+// Directions sampled to find the points that draw the outline. The same sweep
+// shows 32 through 256 all land inside each other's noise, so this is a floor on
+// "enough", not a tuned number. Costs one pass over the points per direction.
+const PROFILE_DIRECTIONS = 64
+
 // --- quadrics ---------------------------------------------------------------
 //
 // Garland-Heckbert: the error of a point against a plane is (n.p + d)^2, which
@@ -61,7 +73,7 @@ const EPS = 1e-12
 // this vertex's original planes is this position", and the sum survives a
 // collapse -- which is the whole trick. Stored as 10 floats, the upper triangle.
 
-function planeQuadric(ax, ay, az, bx, by, bz, cx, cy, cz, Q, o) {
+function planeQuadric(ax, ay, az, bx, by, bz, cx, cy, cz, Q, o, n) {
   let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay)
   let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az)
   let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
@@ -76,7 +88,27 @@ function planeQuadric(ax, ay, az, bx, by, bz, cx, cy, cz, Q, o) {
   Q[o + 4] = ny * ny * w; Q[o + 5] = ny * nz * w; Q[o + 6] = ny * d * w
   Q[o + 7] = nz * nz * w; Q[o + 8] = nz * d * w
   Q[o + 9] = d * d * w
+  // The unit normal, for callers measuring how much the surface turns at a point.
+  if (n) { n[0] = nx; n[1] = ny; n[2] = nz }
   return w
+}
+
+/**
+ * The quadric of a POINT rather than a plane: w * |x - p|^2, the squared
+ * distance travelled away from p, weighted by w. Same 10-float form, so it adds
+ * straight into a vertex's plane quadric and rides through every collapse the
+ * way the rest of the sum does.
+ *
+ * A plane quadric is blind along its own plane, which is exactly the direction a
+ * thin feature runs: around a fox's ear tip every face is nearly parallel to the
+ * ear, so sliding the tip down to the ear's base barely leaves any of those
+ * planes and barely registers. This is the term that notices.
+ */
+function pointQuadric(px, py, pz, w, Q, o) {
+  Q[o] = w; Q[o + 1] = 0; Q[o + 2] = 0; Q[o + 3] = -w * px
+  Q[o + 4] = w; Q[o + 5] = 0; Q[o + 6] = -w * py
+  Q[o + 7] = w; Q[o + 8] = -w * pz
+  Q[o + 9] = w * (px * px + py * py + pz * pz)
 }
 
 function quadricError(Q, o, x, y, z) {
@@ -366,7 +398,7 @@ class MinHeap {
  * and cost more reduction than it bought.
  */
 export function decimate(mesh, targetTris, opts = {}) {
-  const { flipTolerance = 0.2, weldEps, seamCollapse = true, uvMode = 'preserve' } = opts
+  const { flipTolerance = 0.2, weldEps, seamCollapse = true, uvMode = 'preserve', featureWeight = FEATURE_WEIGHT } = opts
   const { positions, uvs, normals, indices } = mesh
   if (!positions || !indices) throw new Error('decimate requires positions and indices')
   if (!Number.isFinite(targetTris) || targetTris < 1) throw new Error(`decimate requires a positive targetTris, got ${targetTris}`)
@@ -409,15 +441,90 @@ export function decimate(mesh, targetTris, opts = {}) {
 
   const Q = new Float64Array(pointCount * 10)
   const fq = new Float64Array(10)
+  const fn = new Float64Array(3)
+  // Per point: the area around it, and the area-weighted sum of its face normals
+  // kept UNNORMALISED, because the length that sum loses is the measurement.
+  const mass = new Float64Array(pointCount)
+  const normalSum = new Float64Array(pointCount * 3)
+  let totalArea = 0
   for (let f = 0; f < faceCount; f++) {
     const a = facePoints[f * 3] * 3, b = facePoints[f * 3 + 1] * 3, c = facePoints[f * 3 + 2] * 3
-    planeQuadric(
+    const area = planeQuadric(
       pointPos[a], pointPos[a + 1], pointPos[a + 2],
       pointPos[b], pointPos[b + 1], pointPos[b + 2],
       pointPos[c], pointPos[c + 1], pointPos[c + 2],
-      fq, 0,
+      fq, 0, fn,
     )
+    totalArea += area
     for (const p of [facePoints[f * 3], facePoints[f * 3 + 1], facePoints[f * 3 + 2]]) {
+      for (let i = 0; i < 10; i++) Q[p * 10 + i] += fq[i]
+      mass[p] += area
+      normalSum[p * 3] += fn[0] * area
+      normalSum[p * 3 + 1] += fn[1] * area
+      normalSum[p * 3 + 2] += fn[2] * area
+    }
+  }
+
+  // --- the feature term -----------------------------------------------------
+  //
+  // What kills a fox's ears is not the quadric being wrong, it is the quadric
+  // being AREA-WEIGHTED. An ear carries about one percent of the fox's surface,
+  // so every collapse inside it is priced at about one percent of a collapse
+  // across the flank, and the ears are gone long before the torso has given up
+  // anything. Small features are cheap in proportion to how small they are,
+  // which is the opposite of what a silhouette wants.
+  //
+  // So each point gets a second quadric that does NOT scale with its own area: a
+  // point quadric of weight `featureWeight * importance * meanMass`, where
+  // meanMass is one point's share of the whole surface. Every point then resists
+  // being dragged by the same absolute amount, and `importance` -- how hard the
+  // surface turns there, plus one if the point draws the outline -- decides how
+  // much it cares.
+  //
+  //   turn = 1 - |sum of area-weighted face normals| / (area at the point)
+  //
+  // Zero where the surface is flat, whatever its area -- the normals add up to
+  // their own total length and cancel nothing. Near one at an ear tip, where they
+  // fan out around the cone, and near one in the notch BETWEEN the ears, where
+  // they oppose each other. Both of those matter: lopping the ears off and
+  // welding the gap between them shut are the same failure seen twice, and a
+  // measure of how hard the surface turns catches them both without needing to
+  // know which way it turned.
+  //
+  // Flat regions are left almost alone, so this costs the smooth majority of the
+  // mesh nothing -- it only makes the few places that draw the outline expensive.
+  //
+  // `turn` says where the surface bends, which is where an outline can be. The
+  // second half says where one IS. A point that is the furthest thing in some
+  // direction is on the silhouette from every view square to that direction --
+  // that is what a silhouette is -- so sampling directions over the sphere and
+  // marking the extreme point in each one picks out the nose, the ear tips, the
+  // toes, the tail, the ridge of the back, and nothing in the middle of a flank.
+  // A point can be extreme in many directions at once and it counts once: this is
+  // a question with a yes or no answer, not a vote.
+  const meanMass = pointCount ? (3 * totalArea) / pointCount : 0
+  if (featureWeight > 0 && meanMass > 0) {
+    const extreme = new Uint8Array(pointCount)
+    for (let d = 0; d < PROFILE_DIRECTIONS; d++) {
+      // Fibonacci sphere -- an even spread with no clustering at the poles, which
+      // a lat/long grid would give and which would over-sample up and down.
+      const z = 1 - (2 * d + 1) / PROFILE_DIRECTIONS
+      const r = Math.sqrt(Math.max(0, 1 - z * z))
+      const theta = d * Math.PI * (3 - Math.sqrt(5))
+      const dx = Math.cos(theta) * r, dy = Math.sin(theta) * r, dz = z
+      let best = -Infinity, at = -1
+      for (let p = 0; p < pointCount; p++) {
+        const s = dx * pointPos[p * 3] + dy * pointPos[p * 3 + 1] + dz * pointPos[p * 3 + 2]
+        if (s > best) { best = s; at = p }
+      }
+      if (at >= 0) extreme[at] = 1
+    }
+    for (let p = 0; p < pointCount; p++) {
+      if (mass[p] < EPS) continue
+      const turn = 1 - Math.hypot(normalSum[p * 3], normalSum[p * 3 + 1], normalSum[p * 3 + 2]) / mass[p]
+      const importance = Math.max(0, turn) + extreme[p]
+      if (importance <= 0) continue
+      pointQuadric(pointPos[p * 3], pointPos[p * 3 + 1], pointPos[p * 3 + 2], featureWeight * importance * meanMass, fq, 0)
       for (let i = 0; i < 10; i++) Q[p * 10 + i] += fq[i]
     }
   }

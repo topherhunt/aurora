@@ -153,6 +153,79 @@ function icosahedron() {
   return { positions: Float32Array.from(p.flat()), indices: Uint32Array.from(f.flat()), uvs: null }
 }
 
+/**
+ * A coarse ball with two finely-tessellated cone ears grafted into it, replacing
+ * the triangle fan around one of the ball's own vertices. The fox in miniature,
+ * and the fine tessellation is the whole point: an ear built from many small
+ * triangles carries a tiny share of the surface area, so an area-weighted quadric
+ * prices every collapse inside it at almost nothing and the ears go first.
+ *
+ * Returns the mesh plus the two tip positions, so a check can ask how far the
+ * output still reaches in each ear's direction.
+ */
+function earedBall({ rings = 8, segs = 12, earRings = 7, earHeight = 0.5, earBase = 0.16 } = {}) {
+  const P = [], tri = []
+  P.push([0, 1, 0])
+  for (let r = 1; r <= rings; r++) {
+    const phi = (r * Math.PI) / (rings + 1)
+    for (let s = 0; s < segs; s++) {
+      const th = (s * 2 * Math.PI) / segs
+      P.push([Math.sin(phi) * Math.cos(th), Math.cos(phi), Math.sin(phi) * Math.sin(th)])
+    }
+  }
+  P.push([0, -1, 0])
+  const south = P.length - 1
+  const at = (r, s) => 1 + (r - 1) * segs + ((s % segs) + segs) % segs
+  for (let s = 0; s < segs; s++) tri.push([0, at(1, s + 1), at(1, s)])
+  for (let r = 1; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      tri.push([at(r, s), at(r, s + 1), at(r + 1, s + 1)])
+      tri.push([at(r, s), at(r + 1, s + 1), at(r + 1, s)])
+    }
+  }
+  for (let s = 0; s < segs; s++) tri.push([south, at(rings, s), at(rings, s + 1)])
+
+  const tips = []
+  for (const v of [at(2, 2), at(2, 5)]) {
+    // Walk the fan around v into a ring in order, then cut the fan out. The ring
+    // is the hole's boundary and becomes the ear's base, so the graft is manifold.
+    const fan = tri.filter((t) => t.includes(v))
+    const next = new Map()
+    for (const t of fan) { const i = t.indexOf(v); next.set(t[(i + 1) % 3], t[(i + 2) % 3]) }
+    const ring = [fan[0][(fan[0].indexOf(v) + 1) % 3]]
+    while (ring.length < fan.length) ring.push(next.get(ring[ring.length - 1]))
+    for (const t of fan) tri.splice(tri.indexOf(t), 1)
+
+    const c = P[v], axis = c.map((x) => x / Math.hypot(...c))
+    const n = ring.length
+    let prev = ring
+    for (let k = 1; k <= earRings; k++) {
+      const u = k / (earRings + 1)
+      const rad = 1 - u * (1 - earBase)
+      const cur = ring.map((b) => P.push(P[b].map((x, j) => c[j] + (x - c[j]) * rad + axis[j] * earHeight * u)) - 1)
+      for (let i = 0; i < n; i++) {
+        const a0 = prev[i], a1 = prev[(i + 1) % n], b0 = cur[i], b1 = cur[(i + 1) % n]
+        tri.push([a0, a1, b1]); tri.push([a0, b1, b0])
+      }
+      prev = cur
+    }
+    const tip = P.push(c.map((x, j) => x + axis[j] * earHeight)) - 1
+    for (let i = 0; i < n; i++) tri.push([prev[i], prev[(i + 1) % n], tip])
+    tips.push(P[tip].slice())
+  }
+  return { mesh: { positions: Float32Array.from(P.flat()), indices: Uint32Array.from(tri.flat()) }, tips }
+}
+
+/** How far the mesh reaches in direction d -- the silhouette's extent that way. */
+function support(m, d) {
+  const len = Math.hypot(d[0], d[1], d[2])
+  let best = -Infinity
+  for (let i = 0; i < m.positions.length / 3; i++) {
+    best = Math.max(best, m.positions[i * 3] * d[0] + m.positions[i * 3 + 1] * d[1] + m.positions[i * 3 + 2] * d[2])
+  }
+  return best / len
+}
+
 const uvSet = (m) => {
   const s = new Set()
   for (let i = 0; i < m.uvs.length / 2; i++) s.add(`${m.uvs[i * 2].toFixed(6)},${m.uvs[i * 2 + 1].toFixed(6)}`)
@@ -440,6 +513,28 @@ console.log('\nanalyzeMesh')
   // small non-zero floor is correct. It should stay small.
   check(a.lockedFaces > 0 && a.lockedFaces < a.tris * 0.1,
     'a grid has a small floor of fully-pinned faces at its corners', `${a.lockedFaces} of ${a.tris}`)
+}
+
+// --- silhouette -------------------------------------------------------------
+
+console.log('\nsmall features survive a hard decimation')
+{
+  const { mesh, tips } = earedBall()
+  const full = tips.map((t) => support(mesh, t))
+  // 40 triangles out of 360 -- past the point where a plain quadric has eaten the
+  // ears, and about where a creature's coarsest LOD tier lands.
+  const kept = decimate(mesh, 40, { uvMode: 'drop' })
+  const reach = tips.map((t, i) => support(kept, t) / full[i])
+  check(reach.every((r) => r > 0.9), 'at 40 triangles a ball still reaches the tip of both its ears', reach.map((r) => r.toFixed(2)).join(' '))
+
+  // The same run with the feature term switched off, so the check names the
+  // mechanism it is guarding rather than just asserting a good number.
+  const flat = decimate(mesh, 40, { uvMode: 'drop', featureWeight: 0 })
+  const flatReach = tips.map((t, i) => support(flat, t) / full[i])
+  check(flatReach.some((r) => r < 0.75), 'and a plain area-weighted quadric lops them off', flatReach.map((r) => r.toFixed(2)).join(' '))
+
+  check(triCount(kept) === triCount(flat), 'the ears are kept at the same triangle count, not by stopping early',
+    `${triCount(kept)} vs ${triCount(flat)}`)
 }
 
 // --- failure modes ----------------------------------------------------------

@@ -10,19 +10,42 @@ The EZ-Tree generator (`tools/trees/generate.mjs`) makes trees that look superb 
 
 So the deliverable is a **solid opaque shell**: no cutouts, no cards, nothing for the depth pre-pass to give up on. Everything in this pipeline exists to end up with one.
 
-## Departure one: ask for a photograph, and let the reconstruction close the shell
+## Departure one: ask for a picture of the mesh you want, not of a tree
 
-Every image-to-3D model fails the same way on vegetation. Structure thinner than a few pixels -- twigs, needle sprays, single leaves -- reconstructs as mush, because a photograph of a gap between two leaves carries no depth information. §27's prompt works *around* that failure by asking for held-clear limbs and a clean silhouette.
+Every image-to-3D model fails the same way on vegetation. Structure thinner than a few pixels -- twigs, needle sprays, single leaves -- reconstructs as mush, because a photograph of a gap between two leaves carries no depth information.
 
-The obvious move is to order the opposite: one closed opaque canopy, which is both what reconstruction is good at and what Adreno needs. **That was the first pass and it was wrong.** It asked for a canopy "like carved foam or modelling clay" and got exactly that -- smooth, symmetrical, lumpy, a lollipop rather than a tree. The clause was not misread; it was granted.
+Two passes were spent trying to prompt around that, and both failed in a way worth recording:
 
-So the prompt now asks for **a photorealistic photograph of a real tree**, and solidity is left to what real summer foliage already is. The opacity bans are gone except the one a tree in full leaf also satisfies -- no bare winter twigs past the foliage -- and the clumps are asked for only as *dense enough to read as solid masses at a glance*. Clay, carved foam, plastic and topiary are banned by name, because they were once asked for by name. **Adreno's demand is answered by the reconstruction, which returns a closed shell whatever it was shown, not by flattening the picture it works from.** The bet is that Tripo can resolve realistic foliage; if it cannot, the failure shows up as a 40-credit blob rather than as a shipped tree.
+1. **Order the canopy closed.** It asked for foliage "like carved foam or modelling clay" and got exactly that: smooth, symmetrical, lumpy, a lollipop rather than a tree. The clause was not misread; it was granted.
+2. **Order a real photograph.** A survey photo on an overcast day, camera named, proportions as ratios, irregularity spelled out. The pictures came back genuinely good -- and reconstructed as *a contorted agglomeration of lollipops*, because a dense lush crown gives the reconstruction nothing to be right about. **The better the photograph, the worse the mesh.**
 
-Two clauses are ordered outright that the model will not volunteer. **Proportions as ratios, not adjectives** -- "a broad crown on a thick trunk" is drawn as a specimen-tree diagram, while "a crown one and a third times as wide as the tree is tall, on a trunk a tenth of its height thick" is drawn as an oak. Every species carries the crown's width against the height, where the crown's underside starts, and the trunk's thickness against the height. And **asymmetry** -- one side heavier, the crown off-centre over the trunk -- because a symmetrical tree is the single most reliable tell that a mesh was generated.
+So the prompt asks for the thing there is going to be a mesh of: **a clean low-poly model of the tree**, the kind sold as a game asset. Large flat facets, foliage as five or six big smooth masses, no individual leaves, no twigs, no holes smaller than a branch, one closed watertight object. Tripo reconstructs that well for the same reason it fails on leaves -- every surface in the picture is a surface the mesh can actually have -- and the decimator downstream is then reducing a shape that was already polygonal.
 
-**The trunk clause is per species**, and mandatory. It exists to keep a later stage possible: the paint step can only paint faces that exist, and a canopy swallowing the trunk to the ground has no bark region in it, which is §27's "limbs held clear of the body" applied here. But one shared "a clear length of bare trunk" is what gave the pine a bare pole halfway up itself. Each species now states where its own lowest branches start and how thick the trunk is under them -- an oak divides two metres up, a pine is bare for its lowest third and keeps a visible trunk between the boughs above that.
+It is worth being explicit that **the picture is not the deliverable.** Judging a candidate on whether it is a beautiful tree is what bought two rounds of lovely images and no usable mesh.
 
-`scripts/check-tree-v9.mjs` pins both edges of this road, because a 40-credit mesh that arrives as lace and a 40-credit mesh that arrives as a blob are both beautiful pictures and neither one announces itself.
+Three clauses survive from the failed passes, because they are still the difference between a usable mesh and a paid-for one that is not:
+
+- **Proportions as ratios, not adjectives.** "A broad crown on a thick trunk" is drawn as a specimen diagram; "a crown one and a third times as wide as the tree is tall, on a trunk a tenth of its height thick" is drawn as an oak.
+- **Where the lowest branches start**, per species. The paint step can only paint faces that exist, and a canopy swallowing the trunk to the ground has no bark region in it. One shared "a clear length of bare trunk" is what gave the pine a bare pole halfway up itself, so the pine says it in pine terms.
+- **Irregularity**, named outright: masses at different heights and sizes, one side heavier, the crown off-centre. A mirror-symmetrical tree is the surest tell that a mesh was generated.
+
+The pine costs more passes than the other three, and the reason is worth keeping: **counting the boughs is what stacks them.** "Six or seven boughs" is drawn as six or seven evenly spaced plates -- a bonsai -- and no amount of "nothing tiered" alongside it holds. It is asked for as one merged ragged cone instead, and the two shapes it defaults to (stacked plates, and an umbrella on a bare pole) are refused by name. The silhouette is also stated positively, bottom upward, rather than left to a bare-trunk fraction: the widest masses attach a quarter of the way up and shorten to a point.
+
+### One editable field
+
+The crown / trunk / description split existed to force proportions to be stated, and it did its job, but three boxes are three places to edit for one change. **Each species now carries a single `prompt`** holding everything specific to that tree, and the bench edits it as one textarea. `buildTreePrompt` appends only the staging every later stage depends on and nobody should have to retype: one closed object, a three-quarter view, a margin on all four sides, a plain mid-grey background, flat even light. Those serve the reconstruction and `src/lighting.js`, not the tree.
+
+**Framing is pinned with a margin**, because asked for loosely ("whole tree in frame, nothing cropped") the pine came back with its trunk running off the bottom edge -- and the foot of the trunk is what `groundAndScale` measures from.
+
+A meta saved under the old three-field bench is folded into one prompt on read (`foldLegacyMeta` in `workspace.mjs`), so an edit made before this change survives rather than silently reverting to the species seed.
+
+`scripts/check-tree-v9.mjs` pins the shape of all of it -- including that nothing asks for a photograph again, which is the mistake that repeats.
+
+### The model matters less now
+
+Both offered models draw this brief well: FLUX.2 Klein 4B returns crisper facets, Nano Banana (`google/gemini-2.5-flash-image`) follows the stated proportions more closely -- a wide crown and a low fork where FLUX draws a narrower, more symmetrical tree. On the photographic brief the gap was decisive; on this one it is a preference, and FLUX is a third of the price. The bench defaults to Nano Banana and offers both.
+
+The list is `IMAGE_MODELS` in `tools/characters/openrouter.mjs`, cheapest first, and it is an **allow-list, not a menu**: the id arrives from the browser and decides what the account is billed for, on a dev server bound to the LAN, so `requireImageModel` refuses anything not on it. Nano Banana Pro is ten times FLUX per click, which is the reason that check exists. Prices there are estimates for printing on a button; what gets recorded is the `usage.cost` the response carries back.
 
 ## Departure two: projection, not unwrap
 
@@ -59,7 +82,7 @@ Every mesh in the paint stage is unwelded, three positions per face. `texLayer` 
 
 | # | stage | vendor | cost | writes |
 |---|-------|--------|------|--------|
-| 1 | candidate image | OpenRouter (FLUX) | ~$0.015 | `candidates/<n>.png` |
+| 1 | candidate image | OpenRouter (FLUX or Nano Banana) | $0.015-$0.15 | `candidates/<n>.png` |
 | 2 | pick an image | -- | free | `source.png` |
 | 3 | mesh | Tripo image-to-model, P1 | 40 credits (50 with texture) | `meshes/<n>.glb` |
 | 4 | pick a mesh | -- | free | `mesh.glb` |

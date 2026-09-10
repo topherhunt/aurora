@@ -13,18 +13,17 @@
 //   `../` there is an arbitrary file write, so the validator is a security
 //   boundary and not tidiness.
 //
-//   THE PROMPT DRIFTS OFF EITHER EDGE OF ONE NARROW ROAD. Too thin and the
-//   crown reconstructs as mush -- twigs and single leaves carry no depth -- and
-//   a 50-credit mesh arrives as lace that nothing downstream notices, because
-//   it is a beautiful picture. Too closed and the whole canopy comes back as one
-//   smooth symmetrical lump that reads as modelling clay, which is what the first
-//   pass literally asked for. So both edges are pinned: the clumps are opaque,
-//   the clumps are apart, and clay is banned by name.
+//   THE PROMPT GOES BACK TO ASKING FOR A PHOTOGRAPH. It did twice. A picture of
+//   dense foliage carries no depth between the leaves, so the reconstruction has
+//   nothing to be right about and the better the picture the worse the mesh --
+//   40 credits of contorted lollipops that nothing downstream notices, because
+//   the picture is lovely. The prompt asks for a low-poly MODEL: big flat
+//   facets, foliage as a few smooth masses, no leaves, no twigs, closed.
 //
-//   THE TRUNK CLAUSE GOES MISSING. The paint step can only paint faces that
-//   exist, so a canopy swallowing the trunk has no bark region in it. It is per
-//   species because one shared "a clear length of bare trunk" gave the pine a
-//   bare pole halfway up itself.
+//   THE TRUNK GOES MISSING. The paint step can only paint faces that exist, so a
+//   canopy swallowing the trunk has no bark region in it. Every species says
+//   where its own lowest branches start; one shared "a clear length of bare
+//   trunk" gave the pine a bare pole halfway up itself.
 //
 //   THE PRICE DRIFTS FROM THE REQUEST. The bench prints a cost on a button
 //   before anyone clicks it, out of the same table the request is built from.
@@ -47,6 +46,7 @@ import { fileURLToPath } from 'node:url'
 import { TREE_SPECIES, buildTreePrompt, speciesById } from '../tools/trees/v9/tree-species.mjs'
 import { workDir } from '../tools/trees/v9/workspace.mjs'
 import { estimateCredits } from '../tools/creatures/tripo.mjs'
+import { IMAGE_MODELS, requireImageModel } from '../tools/characters/openrouter.mjs'
 import {
   boundsDiagonal, buildFaceAdjacency, buildPaintedMesh, faceCount, faceFrames,
   facesInSphere, floodFill, groundAndScale, projectUvs, unweld,
@@ -74,36 +74,46 @@ check(workDir('v9-oak').startsWith(path.join(ROOT, 'tools/trees/v9/work')), 'wor
 // --- the prompt --------------------------------------------------------------
 
 console.log('\nimage prompt')
-check(throws(() => buildTreePrompt({ crown: 'a dome', trunk: 'a pole' })), 'a prompt without a description throws')
-check(throws(() => buildTreePrompt({ description: 'an oak', trunk: 'a pole' })), 'a prompt without a crown clause throws')
-check(throws(() => buildTreePrompt({ description: 'an oak', crown: 'a dome' })), 'a prompt without a trunk clause throws')
+check(throws(() => buildTreePrompt({})), 'a prompt with no text throws -- there is nothing left to fall back on')
+check(throws(() => buildTreePrompt({ styleNote: 'painterly' })), 'and a style note alone is not a tree')
 
 const prompt = buildTreePrompt(TREE_SPECIES[0])
 const lower = prompt.toLowerCase()
-check(lower.includes('photorealistic'), 'the picture is ordered photoreal, which is what the mesh is judged against')
-check(/dense enough to read as solid masses/.test(lower),
-  'foliage clumps are still asked for dense -- the one reconstruction hedge a real summer tree also satisfies')
-check(/no bare winter twigs/.test(lower), 'and bare twigs past the foliage are still ruled out, which is the structure that reconstructs as mush')
-check(/never sculpted clay|not sculpted clay/.test(lower), 'clay, foam and plastic are ruled out by name, having been asked for by name once')
-check(/these proportions are the point/.test(lower), 'the proportion clauses are ordered as binding, not as flavour')
-check(/asymmetric/.test(lower) && /not mirror-symmetrical/.test(lower), 'asymmetry is ordered, both positively and as a ban')
-check(lower.includes('light-grey'), 'the background is neutral grey')
+check(prompt.includes(TREE_SPECIES[0].prompt), 'the species prompt is in the built prompt verbatim -- one field, edited in one place')
+check(/low-poly/.test(lower) && /flat polygon facets/.test(lower),
+  'the picture is ordered as a low-poly MODEL, not a photograph: a photo of dense foliage has no depth between the leaves to reconstruct')
+check(/no individual leaves/.test(lower) && /no twigs/.test(lower),
+  'and the structure that reconstructs as lollipops is ruled out by name')
+check(!/photorealistic|photograph of/.test(lower), 'nothing asks for a photograph any more -- two passes of that produced better pictures and worse meshes')
+check(/one closed solid object/.test(lower) && /watertight/.test(lower),
+  'the model is ordered closed, which is the whole reason this pipeline exists (alpha-tested foliage costs the draw its low-res Z)')
+check(/asymmetric/.test(lower), 'irregularity is ordered -- a mirror-symmetrical tree is the surest tell that a mesh was generated')
+check(/plain flat mid-grey background/.test(lower), 'the background is plain and neutral')
 check(!/magenta|chroma|green screen/.test(lower), 'no chroma key -- it bleeds its own colour into the reconstruction')
-check(!/shadow(?!less)/.test(lower.replace('no cast shadow', '')), 'no baked shadow is asked for')
-check(prompt.includes(TREE_SPECIES[0].crown), 'the species crown clause is in the prompt verbatim')
-check(prompt.includes(TREE_SPECIES[0].trunk), 'the species trunk clause is in the prompt verbatim')
-check(prompt.includes(TREE_SPECIES[0].description), 'the species description is in the prompt verbatim')
+check(/no cast shadow/.test(lower) && /even flat lighting/.test(lower),
+  'the light is flat and unshadowed, so nothing bakes into base colour and fights src/lighting.js')
+check(/the foot of the trunk is well above the bottom edge/.test(lower),
+  'the framing is pinned with a margin -- asked for loosely, the tree came back with its trunk cropped at the frame edge')
 
-// The species the proportion rules were written for. The first pass gave the
-// pine a spindly trunk running halfway up a lumpy symmetrical crown: the crown
-// was asked for as "distinct stacked tiers", which is a drawing of a Christmas
-// tree, and nothing anywhere said how thick the trunk under it should be.
+// The pine is the species every pass gets wrong, twice over: a spindly trunk
+// running halfway up, under a crown of evenly stacked flat plates. Counting the
+// boughs ("six or seven") is what invites the stack, so the crown is asked for
+// as one merged ragged cone instead, and the bonsai it kept drawing is named and
+// refused. The trunk needs both a thickness and a low first bough, or it returns
+// as a bare pole.
 const pine = TREE_SPECIES.find((s) => s.id === 'v9-pine')
-const pineText = `${pine.crown} ${pine.trunk}`.toLowerCase()
-check(/lowest third/.test(pineText), 'the pine\'s boughs start a third of the way up, not half')
-check(/thirtieth of the tree's height|forty centimetres/.test(pineText), 'and the trunk under them has a stated thickness, which is what stops it being a stick')
-check(/nothing tiered/.test(pineText), 'tiers are banned outright, since asking for them is what made the crown symmetrical')
-check(/uneven|different distances/.test(pineText), 'and the boughs are ordered uneven by name')
+const pineText = pine.prompt.toLowerCase()
+check(/lowest quarter/.test(pineText) && /barely a quarter of the way up the trunk/.test(pineText),
+  'the pine\'s foliage starts low on the trunk, not halfway up')
+check(/no bare pole under an umbrella/.test(pineText),
+  'and the umbrella-on-a-pole it drew instead is refused by name')
+check(/thirtieth of the tree's height/.test(pineText), 'and the trunk under it has a stated thickness, which is what stops it being a stick')
+check(/no evenly stacked tiers/.test(pineText) && /not a bonsai/.test(pineText),
+  'the stacked-plate bonsai it keeps drawing is refused by name')
+check(/merging into their neighbours/.test(pineText) && /one ragged irregular cone/.test(pineText),
+  'and the crown is asked for as one merged mass, since counting boughs is what stacks them')
+check(!/\b(six or seven|five or six|four or five)\b/.test(pineText),
+  'the pine does not count its boughs')
 
 // --- the species table -------------------------------------------------------
 
@@ -112,12 +122,16 @@ check(new Set(TREE_SPECIES.map((s) => s.id)).size === TREE_SPECIES.length, 'spec
 for (const s of TREE_SPECIES) {
   check(/^[a-z0-9-]+$/.test(s.id), `"${s.id}" is a usable id`)
   check(s.heightM > 0 && s.heightM < 60, `"${s.id}" has a plausible height`, `${s.heightM}m`)
-  check(Boolean(s.crown && s.trunk && s.description), `"${s.id}" carries all three prompt clauses`)
+  check(Boolean(s.prompt), `"${s.id}" carries a prompt`)
+  check(/low-poly/.test(s.prompt), `"${s.id}" asks for a low-poly model rather than a picture of a tree`)
   // The ratios, per species. An adjective ("broad", "slender") is drawn as a
   // diagram of a tree; a ratio against the tree's own height is drawn as a tree,
   // and it is the only part of the prompt that fixes the proportions.
-  check(/as wide as the tree is tall/.test(s.crown), `"${s.id}" states its crown width against its height`)
-  check(/thick/.test(s.trunk), `"${s.id}" states how thick its trunk is`)
+  check(/as wide as the tree is tall/.test(s.prompt), `"${s.id}" states its crown width against its height`)
+  check(/trunk is[^.]*thick|thick[^.]*trunk/.test(s.prompt), `"${s.id}" states how thick its trunk is`)
+  // The paint step can only paint faces that exist: a canopy swallowing the
+  // trunk has no bark region in it and no amount of clicking recovers one.
+  check(/clear of branches|bare only for|undivided|divides/.test(s.prompt), `"${s.id}" says where its lowest branches start`)
   // The bench opens its slot table on these two files. A rename in public/trees
   // leaves the paint stage with nothing to click with, at the point where a
   // mesh has already been paid for.
@@ -135,6 +149,23 @@ check(estimateCredits({ step: 'mesh', texture: false }) === 40, 'a bare P1 mesh 
 check(estimateCredits({ step: 'mesh', texture: true }) === 50, 'a textured P1 mesh is 50 credits')
 check(estimateCredits({ step: 'mesh', texture: false }) < estimateCredits({ step: 'mesh', texture: true }),
   'turning the texture off is what makes the default cheaper -- every face is repainted downstream')
+
+// The image model arrives from the browser and decides what the account is
+// billed for -- Nano Banana Pro is ten times FLUX a click. Passing it through
+// unchecked is a stranger on the LAN choosing the bill, which is the same shape
+// of hole as the id validator above.
+console.log('\nimage models')
+check(IMAGE_MODELS.length > 1, 'more than one model is offered -- the bench is a comparison')
+check(IMAGE_MODELS.every((m) => m.id && m.label && m.usd > 0), 'every offered model carries an id, a label and a price to print')
+check(IMAGE_MODELS.every((m, i, a) => i === 0 || a[i - 1].usd <= m.usd), 'the list is cheapest first')
+check(throws(() => requireImageModel('anthropic/expensive-thing')), 'a model the list does not offer is refused, not billed')
+check(throws(() => requireImageModel(undefined)), 'and so is a missing one')
+check(requireImageModel(IMAGE_MODELS[0].id) === IMAGE_MODELS[0], 'an offered model comes back as its own entry, with its price')
+{
+  const config = fs.readFileSync(path.join(ROOT, 'vite.config.js'), 'utf8')
+  const image = config.slice(config.indexOf("'/__tree9-image'"), config.indexOf("'/__tree9-pick'"))
+  check(/requireImageModel\(/.test(image), 'and the tree image endpoint runs a model id through that check before generating')
+}
 
 // --- the mesh slot claim ------------------------------------------------------
 //

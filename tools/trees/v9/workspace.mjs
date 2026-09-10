@@ -366,18 +366,31 @@ export function readMeta(id) {
   const seed = speciesById(id)
   const { meta } = readState(id)
   if (!seed && !meta) throw new Error(`no tree "${id}" -- not in the species list and nothing saved for it`)
-  return { id, ...(seed ?? {}), ...(meta ?? {}) }
+  return { id, ...(seed ?? {}), ...foldLegacyMeta(meta ?? {}) }
+}
+
+/**
+ * A meta saved before the three prompt boxes became one carries description,
+ * crown and trunk instead of prompt. Joining them is what the prompt builder did
+ * anyway, so an edit made under the old bench survives rather than silently
+ * reverting to the species seed.
+ */
+function foldLegacyMeta(meta) {
+  if (meta.prompt || !(meta.description || meta.crown || meta.trunk)) return meta
+  const { description, crown, trunk, ...rest } = meta
+  const parts = [description, crown && `Crown: ${crown}.`, trunk && `Trunk: ${trunk}.`].filter(Boolean)
+  return { ...rest, prompt: parts.join(' ') }
 }
 
 export function saveMeta(id, patch) {
-  const allowed = ['label', 'heightM', 'description', 'crown', 'trunk', 'styleNote', 'bark', 'foliage']
+  const allowed = ['label', 'heightM', 'prompt', 'styleNote', 'bark', 'foliage']
   const meta = {}
   for (const k of allowed) if (patch[k] !== undefined) meta[k] = patch[k]
-  if (!meta.description) throw new Error('a tree needs a description -- it is the prompt')
-  if (!meta.crown) throw new Error('a tree needs a crown clause -- it is what makes one species not another')
-  if (!meta.trunk) throw new Error('a tree needs a trunk clause -- without one a pine grows a bare pole halfway up itself')
+  if (!meta.prompt) throw new Error('a tree needs a prompt -- it is the whole description of the tree')
   const state = readState(id)
-  state.meta = { ...(state.meta ?? {}), ...meta }
+  // Spread over the FOLDED old meta, so saving once retires the legacy fields
+  // rather than leaving a stale description sitting beside the new prompt.
+  state.meta = { ...foldLegacyMeta(state.meta ?? {}), ...meta }
   writeState(id, state)
   return readMeta(id)
 }

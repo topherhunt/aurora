@@ -2,40 +2,42 @@
 // The v9 species list and the image prompt built from it -- the one picture
 // Tripo reconstructs a tree from.
 //
-// This is NOT tools/creatures/creature-prompt.mjs with the nouns changed:
+//   ASK FOR THE THING YOU WANT A MESH OF. Two passes were spent asking for a
+//   better photograph: first a closed opaque canopy (which came back as
+//   modelling clay), then a real survey photograph on an overcast day (which
+//   came back looking like a tree and reconstructed as an agglomeration of
+//   lollipops). A photograph of dense lush foliage has no depth information
+//   between the leaves, so there is nothing for the reconstruction to be right
+//   about, and the better the photograph the worse the mesh. The picture is not
+//   the deliverable -- the mesh is. So the prompt now asks for a LOW-POLY MODEL
+//   of the tree: large flat facets, foliage as a few big smooth masses, no
+//   individual leaves, no twigs, a closed silhouette. Tripo reconstructs that
+//   well for the same reason it fails on leaves -- every surface in the picture
+//   is a surface the mesh can actually have.
 //
-//   IT ASKS FOR A PHOTOGRAPH OF A REAL TREE, and the solidity the mesh needs is
-//   left to what real foliage already is. Vegetation reconstructs badly where the
-//   structure is thinner than a few pixels -- bare twigs, single leaves against
-//   the sky -- and the obvious defence is to order the canopy as one closed
-//   opaque mass. That was tried and it produces exactly what it says: a smooth
-//   symmetrical lollipop that reads as modelling clay. Every one of those bans
-//   is now gone except the one that is also true of a real summer tree -- no bare
-//   winter twigs past the foliage -- and the clumps are asked for as dense enough
-//   to read solid at a glance, which a tree in full leaf is anyway.
+//   ONE EDITABLE FIELD PER TREE. The crown/trunk/description split existed to
+//   force proportions to be stated, and it worked, but three boxes are three
+//   places to edit for one change. Each species now carries a single `prompt`
+//   holding everything specific to that tree -- style, proportions, colours,
+//   irregularity -- and buildTreePrompt appends only the staging that every
+//   later stage depends on and no one should have to retype.
 //
-//   PROPORTIONS ARE ORDERED AS RATIOS, not adjectives. "A broad crown on a thick
-//   trunk" is drawn as a specimen-tree diagram; "a crown one and a third times as
-//   wide as the tree is tall, on a trunk a tenth of its height thick" is drawn as
-//   an oak. Every species carries the crown's width against the height, where the
-//   crown starts up the trunk, and the trunk's thickness against the height.
-//   Asymmetry has to be named too, or the model mirrors the tree down its axis.
+//   THE TRUNK STILL HAS TO BE THERE. The paint step can only paint faces that
+//   exist, so a canopy swallowing the trunk to the ground has no bark region in
+//   it and no amount of clicking recovers one. Every species prompt says where
+//   its own lowest branches start; the pine's says it in pine terms, because one
+//   shared "a clear length of bare trunk" gave it a bare pole halfway up itself.
 //
-//   THE TRUNK CLAUSE IS PER SPECIES, and mandatory. The paint step can only paint
-//   faces that exist, so a canopy swallowing the trunk to the ground has no bark
-//   region in it and no amount of clicking recovers one. But "a clear length of
-//   bare trunk" applied to every species gives a pine a bare pole halfway up
-//   itself, which no pine has.
+//   IRREGULARITY IS ORDERED, or the model returns a mirror-symmetrical lollipop,
+//   which is the single most reliable tell that a mesh was generated.
 //
-// Alpha-tested foliage is still what costs the whole draw its low-resolution-Z on
-// Adreno (tools/trees/solidify-leaves.mjs), and is still why v9 exists. That is
-// answered by the RECONSTRUCTION, which returns a closed shell whatever it was
-// shown, rather than by flattening the picture it works from.
-//
-// The rest is inherited from §27 for the same reasons argued there: neutral grey
-// and never a chroma key, flat shadowless light so nothing bakes into base
-// colour and fights src/lighting.js, and a three-quarter view because
-// reconstruction wants depth.
+// The staging is inherited from §27 for the reasons argued there: a plain
+// background and never a chroma key (it bleeds its own hue into the
+// reconstruction), flat light so nothing bakes into base colour and fights
+// src/lighting.js, and a three-quarter view because reconstruction wants depth.
+// Framing is pinned with a margin because asked for loosely the tree came back
+// with its trunk cropped at the frame edge, and the foot of the trunk is what
+// src/mesh/paint.js `groundAndScale` measures from.
 // ---------------------------------------------------------------------------
 
 /**
@@ -46,47 +48,77 @@
  * `bark` and `foliage` name the STARTING texture slots the paint step opens
  * with. They are a convenience, not a constraint -- the whole point of the bench
  * is picking something else and seeing it.
+ *
+ * `prompt` is the whole editable half, and the bench edits it as one box.
  */
 export const TREE_SPECIES = [
   {
     id: 'v9-oak',
     label: 'Oak',
     heightM: 9,
-    crown: 'a broad rounded crown about one and a third times as wide as the tree is tall, its underside beginning a third of the way up, built of five or six irregular leaf masses at different heights with one side of the tree carrying visibly more than the other',
-    trunk: 'a short trunk about a tenth of the tree\'s height thick -- close to a metre across at the base -- dividing barely two metres up into three or four heavy crooked limbs that stay visible where they enter the foliage',
     bark: 'bark_oak.png',
     foliage: 'leaf_oak_solid.png',
-    description: 'a mature English oak grown in the open, deeply fissured grey-brown bark, heavy spreading limbs, dense deep-green summer foliage in full leaf',
+    prompt:
+      'A clean low-poly 3D model of a mature English oak, the kind sold as a game asset. ' +
+      'The foliage is five or six big smooth rounded masses built from large flat polygon facets -- no individual leaves, no twigs, ' +
+      'no holes smaller than a branch. The crown is about one and a third times as wide as the tree is tall and its underside begins ' +
+      'a third of the way up. The trunk is short and heavy, about a tenth of the tree\'s height thick, and divides barely two metres up ' +
+      'into three or four crooked limbs that stay visible where they enter the foliage. ' +
+      'Irregular and asymmetric: the masses at different heights and different sizes, one side of the tree heavier than the other, ' +
+      'the crown sitting off-centre over the trunk. ' +
+      'Matte flat-shaded surfaces in two solid colours, grey-brown bark and deep summer green, with crisp visible facet edges.',
   },
   {
     id: 'v9-aspen',
     label: 'Aspen',
     heightM: 12,
-    crown: 'a narrow crown about a third as wide as the tree is tall, occupying the top half of the tree, fuller near the top, its outline uneven from side to side',
-    trunk: 'a straight trunk about a fortieth of the tree\'s height thick -- roughly the thickness of a forearm -- clear of branches for its lower half',
     bark: 'bark_birch.png',
     foliage: 'leaf_aspen_solid.png',
-    description: 'a tall quaking aspen in full summer leaf, smooth pale grey-green bark darkening and roughening toward the base, crown of small round leaves',
+    prompt:
+      'A clean low-poly 3D model of a tall quaking aspen, the kind sold as a game asset. ' +
+      'The foliage is four or five tall smooth masses built from large flat polygon facets -- no individual leaves, no twigs -- ' +
+      'stacked into a narrow crown about a third as wide as the tree is tall, occupying the top half and fuller near the top. ' +
+      'The trunk is straight and slender, about a fortieth of the tree\'s height thick, clear of branches for its lower half. ' +
+      'Irregular and asymmetric: the masses at different heights and different sizes, one side heavier, the outline uneven. ' +
+      'Matte flat-shaded surfaces in two solid colours, pale grey-green bark darkening toward the base and yellow-green foliage, ' +
+      'with crisp visible facet edges.',
   },
   {
     id: 'v9-birch',
     label: 'Birch',
     heightM: 10,
-    crown: 'an open crown about half as wide as the tree is tall, carried in the top half, built of foliage hanging outward and downward from the ends of arching limbs, wider on one side than the other',
-    trunk: 'a slender trunk about a fortieth of the tree\'s height thick with a slight natural lean, undivided for its lower half, then splitting into two or three arching limbs',
     bark: 'bark_birch.png',
     foliage: 'leaf2_aspen_solid.png',
-    description: 'a silver birch in summer, bright white papery bark with dark horizontal scars and a dark rough base, drooping light-green crown',
+    prompt:
+      'A clean low-poly 3D model of a silver birch, the kind sold as a game asset. ' +
+      'The foliage is four or five smooth masses built from large flat polygon facets -- no individual leaves, no twigs -- ' +
+      'hanging outward and downward from the ends of a few arching limbs, forming a crown about half as wide as the tree is tall ' +
+      'carried in the top half. The trunk is slender, about a fortieth of the tree\'s height thick, with a slight lean, ' +
+      'undivided for its lower half and then splitting into two or three arching limbs. ' +
+      'Irregular and asymmetric: the masses at different heights and different sizes, one side wider than the other, the lean off vertical. ' +
+      'Matte flat-shaded surfaces in solid colours, bright white bark with dark horizontal scars and a dark rough base, light green foliage, ' +
+      'with crisp visible facet edges.',
   },
   {
     id: 'v9-pine',
     label: 'Pine',
     heightM: 11,
-    crown: 'a crown about half as wide as the tree is tall, occupying the top two thirds, built of thick boughs that leave the trunk at uneven heights and reach different distances on each side -- longest and heaviest low down, shortening toward a narrow leader at the top, with daylight between one bough and the next and nothing tiered, mirrored or evenly spaced',
-    trunk: 'a straight trunk about a thirtieth of the tree\'s height thick at the base -- some forty centimetres -- tapering as it rises, bare of boughs for its lowest third and then visible between the boughs above that',
     bark: 'bark_pine.png',
     foliage: 'leaf_pine_solid.png',
-    description: 'a mature Scots pine, orange-red plated bark on the upper trunk and grey fissured bark below, dark blue-green needles massed into thick flat sprays at the ends of the boughs',
+    prompt:
+      'A clean low-poly 3D model of a mature Scots pine, the kind sold as a game asset. ' +
+      'The foliage is a few large angular masses built from large flat polygon facets -- no needles, no twigs -- of clearly unequal ' +
+      'size, most of them touching or merging into their neighbours so the whole crown reads as one ragged irregular cone rather than ' +
+      'a stack of separate discs, with two or three gaps where a bough is simply missing on one side. ' +
+      'Not a bonsai, not a Japanese pine, no evenly stacked tiers, no flat-topped plates, no bare pole under an umbrella, ' +
+      'not mirror-symmetrical. ' +
+      'The silhouette is a tall ragged cone: the widest and heaviest masses attach barely a quarter of the way up the trunk, ' +
+      'near the ground, and the masses shorten as they rise to a narrow point at the top. The crown is about half as wide as the ' +
+      'tree is tall and occupies the upper three quarters of its height. ' +
+      'The trunk is straight, about a thirtieth of the tree\'s height thick at the base, tapering as it rises, ' +
+      'bare only for its lowest quarter and glimpsed between the masses above that. ' +
+      'Matte flat-shaded surfaces in solid colours, orange-red bark high on the trunk and grey below, dark blue-green foliage, ' +
+      'with crisp visible facet edges.',
   },
 ]
 
@@ -95,31 +127,22 @@ export const speciesById = (id) => TREE_SPECIES.find((s) => s.id === id) ?? null
 /**
  * Builds the image prompt for one tree.
  *
- * `crown` and `trunk` are the species' own shape clauses; everything else is
- * fixed, because everything else is about what the reconstruction and the paint
- * step need rather than about which tree this is.
+ * `prompt` is the species' own text and is everything about which tree this is.
+ * The tail is fixed because it is about what the RECONSTRUCTION and the paint
+ * step need -- a closed object, a plain background, flat light, a whole tree in
+ * frame with its foot showing -- rather than about the tree.
  */
-export function buildTreePrompt({ description, crown, trunk, styleNote } = {}) {
-  if (!description) throw new Error('buildTreePrompt requires a description')
-  if (!crown) throw new Error('buildTreePrompt requires a crown clause -- it is what makes one species not another')
-  if (!trunk) throw new Error('buildTreePrompt requires a trunk clause -- a prompt without one grows a bare pole halfway up a pine')
+export function buildTreePrompt({ prompt, styleNote } = {}) {
+  if (!prompt) throw new Error('buildTreePrompt requires a prompt -- it is the whole description of the tree')
 
   return (
-    `A PHOTOREALISTIC photograph of one real tree, alone, upright, centred, whole from root to crown against a flat plain neutral light-grey studio background. ` +
-    `Crown: ${crown}. ` +
-    `Trunk: ${trunk}. ` +
-    `These proportions are the point: get the crown's width against the tree's height, and the trunk's thickness against both, exactly as stated. ` +
-    `The tree is asymmetrical, as a real one is -- one side heavier than the other, the crown sitting off-centre over the trunk, no two limbs alike. ` +
-    `Not mirror-symmetrical, not a smooth geometric solid on a bare stick, not a lollipop, not a topiary, not a cartoon or a diagram of a tree, ` +
-    `and never sculpted clay, carved foam, plastic or a moss ball. ` +
-    `Real photographic detail: real bark texture on the trunk, real leaves in real depth, the foliage carried in natural clumps ` +
-    `that are dense enough to read as solid masses at a glance while the limbs between them stay legible. ` +
-    `Summer, in full leaf. No bare winter twigs poking out past the foliage. ` +
-    `Seen three-quarters from the side at eye level, whole tree in frame with nothing cropped. ` +
-    `Evenly lit from all sides with soft shadowless light -- no cast shadow on the ground, no strong rim light, no coloured light, ` +
-    `no gradient or vignette on the background. Sharp focus throughout, no depth-of-field blur. ` +
-    `Nothing else in frame: no ground plane, no grass, no scenery, no other trees, no people, no text, no watermark, no border. ` +
-    (styleNote ? `${styleNote} ` : '') +
-    `\n\nTree: ${description}.`
+    `${prompt} ` +
+    `The model is one closed solid object, watertight, with nothing floating detached from it. ` +
+    `Seen three-quarters from the side at eye level. ` +
+    `Framing: the tree fills about three quarters of the frame's height and no more, with empty background as a clear margin on all four sides. ` +
+    `The foot of the trunk is well above the bottom edge and the top well below the top edge. Nothing is cropped. ` +
+    `Plain flat mid-grey background: no ground plane, no shadow, no grass, no scenery, no other objects, no text, no watermark, no border. ` +
+    `Even flat lighting from every side, matte surfaces, no glossy highlights, no cast shadow, no coloured light, no vignette. ` +
+    (styleNote ? `${styleNote} ` : '')
   )
 }

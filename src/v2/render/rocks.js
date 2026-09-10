@@ -690,12 +690,25 @@ const BEDS = [
     // metres across, deeply sunk, and they overlap into each other rather than
     // leaving seams for anything smaller to fill.
     //
+    // THE RULE, IN TWO LINES, AND EVERYTHING BELOW SERVES IT:
+    //
+    //   EVERY CONTIGUOUS FACE FIVE METRES ACROSS OR WIDER HOLDS A PLATE, and that
+    //   plate is as large as the face holds without protruding. `_fitFactor` is the
+    //   second half of that sentence and the lattice rate is the first -- a face
+    //   holds a plate when a candidate lands in it, so the pitch has to be finer
+    //   than the smallest face the promise covers.
+    //
+    //   AND NO PLATE CLOSES MORE THAN `packOverlap` OF THE ROOM BETWEEN CENTRES.
+    //   See `_packRadius`. Overlap is wanted -- it is what makes the joins between
+    //   panels ragged instead of a tiling -- but a plate mostly inside another one
+    //   is triangles skinned and never seen.
+    //
     // THERE WAS A CARPET BED UNDER THIS ONE and it is gone. It ran at 0.12 and put
     // 1,851 plates of a 3.2 m median on the steepest face against this bed's 95,
     // for a third of the cover -- a hundred thousand instances of litter nobody
     // can pick out from ten metres away, on ground the panels want anyway. What
-    // replaced it is `coverDart` and a rate on THIS bed: the same wall, clothed by
-    // a couple of hundred plates that are tens of metres across.
+    // replaced it is the pack and a rate on THIS bed: the same wall, clothed by a
+    // few hundred plates that are tens of metres across.
     //
     // WHAT A FACE LOOKS LIKE WITH NEITHER: the `embedded` bed is the only other
     // one allowed past 62 degrees, and what it puts there is a knuckle of a buried
@@ -722,38 +735,41 @@ const BEDS = [
     // five at this size, and the density needed to cover a wall anyway would have
     // cost a six-figure instance pool.
     //
-    // WHY THE PLATES MAY GROW THROUGH EACH OTHER: `coverDart`. This bed keeps no
-    // spacing at all. Two panels overlapping by a third of their width is a face
-    // broken along a line, and plates fitted to folded ground are ragged, so the
-    // overlap is what closes the seams between them -- MEASURED, spacing them out
-    // covered less wall rather than more. What is refused instead is a panel whose
-    // ground is already in another panel's shadow, which is the same rule read
-    // from the wall's side: every plate placed clothes stone nothing else was
-    // clothing.
+    // AND THE BIGGEST PLATES GO DOWN FIRST, which is the only ordering under which
+    // the two halves of the rule agree. The pack is greedy, so whatever is standing
+    // when a candidate is tested is what shrinks it: place small-first and a 9 m
+    // chip in the middle of a 60 m face cuts the panel that face was owed down to
+    // nothing. Phase zero of `_growTile` asks the ground for every candidate's size
+    // and phase one replays them largest first, so a face is panelled before it is
+    // filled in. That is the whole reason a packing bed grows in two passes.
     name: 'cliff slabs',
     shape: 'cap',
     roll: false,
-    // SPARSE, AND THE NUMBER IS A COVERAGE TARGET RATHER THAN A LOOK: the plates
-    // it places are eight to seventy metres across, so one candidate per hundred
-    // square metres is already a panelled wall. probe-mask.mjs measures it on the
-    // three real faces a 4,000-sample sweep of the map calls steepest -- 85, 74
-    // and 45 degrees -- and reports the fraction of qualifying WALL with a plate
-    // over it, splitting the rest into wall no candidate reached and wall the fit
-    // ladder refuses at any size. This rate reads 41%, 80% and 87% masked with 238,
-    // 208 and 520 plates of a 26-40 m median.
+    // THE RATE IS A LATTICE PITCH AND THE PITCH IS THE PROMISE. With `lattice` this
+    // is not a rate at all: 220 m of tile at 0.0285 is a 37 by 37 grid, so
+    // candidates land every 5.95 m, and THAT is the number the five-metre face rule
+    // is made of -- a face narrower than the pitch can fall between two candidates
+    // and go bare. Everything else here is downstream of it.
     //
-    // AND IT IS SET AT THE POOL THE TWO BEDS USED TO COST BETWEEN THEM, 382k, so
-    // the carpet's removal was spent here rather than banked. More cover is
-    // available and it is bought with pool and nothing else: 0.014 reads 48/87/91
-    // for 563k, because `_poolBound` counts rank survivors and knows nothing about
-    // slope, so a bed that places on a twentieth of the map still allocates for all
-    // of it. That is why this pool is the largest in the file.
+    // MEASURED, by probe-mask.mjs, on the three real faces a 4,000-sample sweep of
+    // the map calls steepest -- 85, 74 and 45 degrees. Of the contiguous faces over
+    // 5 m across, 1 of 7, 5 of 16 and 3 of 28 hold no plate, and they are the
+    // smallest ones: 0.0%, 0.4% and 0.1% of that wall, widest miss 7, 9 and 10 m.
+    // Worst overlapping pair 10.0% at every spot, none past it. 50.6%, 64.8% and
+    // 78.2% of the wall carries stone, from 330, 270 and 639 plates.
     //
-    // THE 41 IS THE GROUND, NOT THE RATE. That face is the single steepest cell on
-    // the map, a folded knife edge, and a quarter of it is wall the ladder will not
-    // lay any plate on at all (see `fitFloor`). Of the rest, this bed clothes more
-    // than half.
+    // AND FINER IS STRICTLY BETTER, WITH NO KNEE, which is why this is a budget
+    // decision and not a tuning one. Cover against pitch, same three faces:
+    // 10.5 m reads 8/28/38% for 1.7 s of cold build, 8.5 m reads 11/38/54 for
+    // 2.5 s, 7.3 m reads 24/50/64 for 3.3 s, and this one reads 51/65/78 for 4.5 s.
+    // The curve is a straight line in plate count. What stops it is the frame: a
+    // tile costs 4 ms to grow here and `update` checks its budget BEFORE a tile
+    // rather than during, so the tile the player walks into is a 4 ms spike whole.
+    // Halve the pitch-squared and that halves too, along with the cover.
     density: 0.0285,
+    // NOT 0.85 ON CLIFF. A face the environment gate thinned was a face with holes
+    // in it, and the holes were the promise: worth 3 to 4 points of cover for
+    // nothing but the candidates it stops throwing away.
     envDensity: { river: 0, forest: 0, cliff: 1, peak: 1 },
     // Further out than any other bed's, because a panel is a landform: inside
     // this nothing is thinned, and a cliff you are walking along is inside it.
@@ -794,12 +810,11 @@ const BEDS = [
       peak: [9.0, 70.0],
     },
     // AND THE PROBE MAY CUT ONE TO EIGHT METRES rather than reject it, BUT NO
-    // FURTHER, AND THE FLOOR IS FREE. A site that cannot hold eight metres is left
-    // bare -- a quarter of the steepest face is exactly that -- and dropping the
-    // floor to five recovers half of it and covers NO MORE WALL: measured, the
-    // three faces read the same 41/80/87 either way, because what those cells are
-    // short of is a candidate, not a smaller plate. So the floor costs nothing and
-    // buys the promise that nothing under eight metres is ever placed on a cliff.
+    // FURTHER. A site that cannot hold eight metres is left bare -- on the steepest
+    // face that is a third of the wall, and it is the ground refusing rather than
+    // the rate missing, which is the column probe-mask.mjs prints it in. The floor
+    // is what keeps the promise that nothing under eight metres is ever laid on a
+    // cliff: below it this bed becomes the carpet it replaced.
     fitFloor: 8.0,
     // A QUARTER OF THE WORLD'S LEAN. Fifteen degrees on a seventy-metre panel is
     // nine metres of rim off the hill, and the fit budget now charges for it, so
@@ -812,10 +827,37 @@ const BEDS = [
     // hold, so a wide face gets a wide panel instead of whatever a roll happened
     // to want there. `sizeBias` is not read on this bed.
     fitFromTop: true,
+    // HALF A SPAN OF RIM MAY BE BURIED, AND THAT IS WHAT MAKES THE LADDER MEASURE A
+    // FACE. Left unbounded, ground ABOVE the plate's plane reads as a rim let into
+    // the hill, so at the foot of a cliff a plate grows across the whole hillside
+    // with most of itself under the valley floor -- no edges, no faces, one plate.
+    // The knob saturates at 1.0 (bit-identical to Infinity) and tightening it past
+    // this buys nothing: 0.25 refuses 46% of the steepest wall against 27% here,
+    // for a point or two of cover.
     fitBury: 0.5,
+    // A JITTERED GRID RATHER THAN THE POISSON DRAW. Same candidate count, but the
+    // draw clumps, and a clump on this bed is one plate and a pile of rejects while
+    // the gap beside it goes bare. The grid is what turns the rate into a PITCH, and
+    // the pitch is what the five-metre face promise is made of.
     lattice: true,
+    // A TENTH OF THE ROOM BETWEEN CENTRES, and no more. See `_packRadius` for the
+    // metric, which is three-dimensional and has to be. THIS BOUND IS THE ASK AND
+    // NOT THE GROUND'S: measured at a third of this rate, letting plates close
+    // freely reads 44/63/84 against 37/53/67, so the tenth costs seven to seventeen
+    // points of cover. It is the one number to move if the stone looks scarce.
     packOverlap: 0.1,
-    siteFrac: 0.2,
+    // THREE CANDIDATES IN TEN, DECLARED, AND IT PAYS FOR THE PITCH. `_poolBound`
+    // counts rank survivors and knows nothing about slope or the pack, so this bed
+    // is allocated as if every candidate placed -- 1.14M instances at this density,
+    // 91 MB of matrices for 17 MB of rock. What actually places is bounded by the
+    // PACK and not by the rate: on a fixture that is qualifying wall edge to edge,
+    // the worst case there is, the bed draws 187 of 1369 per tile. So this is set
+    // above that with room, at a pool of 341k -- which is what the bed cost at a
+    // third of this pitch, so the finer lattice is bought with nothing but time.
+    //
+    // A PROMISE, NOT AN ESTIMATE. Set it under what a world really wants and the
+    // bed does not degrade, it THROWS on the tile that overruns.
+    siteFrac: 0.3,
   },
   {
     // THE SAME PLATE, UNDERWATER AND SMALL. River beds and lake floors are bedrock

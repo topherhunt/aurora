@@ -147,16 +147,9 @@
           <input type="number" id="heightM" step="0.5" min="0.5" />
         </div>
         <div class="field">
-          <label>crown (the silhouette clause)</label>
-          <textarea id="crown"></textarea>
-        </div>
-        <div class="field">
-          <label>trunk (where the lowest branches start, and how thick under them)</label>
-          <textarea id="trunk"></textarea>
-        </div>
-        <div class="field">
-          <label>description</label>
-          <textarea id="description"></textarea>
+          <label>prompt (the whole tree: style, proportions, colours)</label>
+          <textarea id="prompt" rows="10"></textarea>
+          <div class="step">Staging is appended and not editable here: one closed object, three-quarter view, a margin on all four sides, plain grey background, flat light. Those serve the reconstruction and the paint step rather than the tree.</div>
         </div>
         <div class="row">
           <button id="saveMeta" class="local">save</button>
@@ -165,8 +158,13 @@
         <div id="metaOut" class="step"></div>
 
         <h2>2. candidate image</h2>
-        <div class="step">FLUX.2 Klein 4B via OpenRouter. The prompt orders each leaf mass opaque but the masses apart, real proportions, and a trunk clause per species -- one closed canopy comes back as modelling clay.</div>
-        <button id="genImage" class="wide spend">generate candidate (~$0.015)</button>
+        <div class="step">The prompt asks for a low-poly model of the tree, not a photograph of one: big flat facets, foliage as a few smooth masses, no individual leaves. Dense lush foliage carries no depth between the leaves, so the better the photograph the worse the mesh.</div>
+        <div class="field">
+          <label>image model</label>
+          <select id="imageModel"></select>
+          <div class="step">FLUX is the cheap one and still draws a symmetrical specimen tree; Nano Banana obeys the framing and the proportions and is worth the extra three cents.</div>
+        </div>
+        <button id="genImage" class="wide spend">generate candidate</button>
 
         <h2>3. mesh</h2>
         <div class="step">Tripo image-to-model on the picked candidate, at a prop's face count rather than a hero's.</div>
@@ -239,7 +237,7 @@
           <div class="viewControls">
             <label><input type="checkbox" id="showWire" /> wireframe</label>
             <label><input type="checkbox" id="showUnpainted" checked /> flag unpainted faces</label>
-            <span class="label">drag with the left button to paint, right button to orbit</span>
+            <span class="label" id="viewHint">left-drag or right-drag orbits, wheel zooms</span>
           </div>
           <div id="meshStats" class="label"></div>
           <div id="meshAnalysis" class="label"></div>
@@ -271,7 +269,7 @@
     <div id="budget">
       <h2>this bench</h2>
       <p class="note">
-        Two orange buttons and nothing fires on its own. The image step bills OpenRouter (~$0.015);
+        Two orange buttons and nothing fires on its own. The image step bills OpenRouter at whatever the chosen model costs (the button prints it);
         the mesh step bills Tripo credits at $0.01 each. Decimating and painting are
         <span class="ok">free and local</span> and can be re-run until they look right.
       </p>
