@@ -1,12 +1,12 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
-  buildTrunkV8, buildFoliageV8, resolveTreeV8, treeV8Lod, TREE_V8_SPECIES, treeV8Species,
+  buildTrunkV8, buildFoliageV8, resolveTreeV8, treeV8Lod, TREE_V8_SPECIES, treeV8Species, HEM_FRAY,
 } from './props/tree-v8.js'
 import { buildTreeOak, resolveTreeOak, treeOakLod, TREE_OAK_SPECIES, treeOakSpecies } from './props/tree-oak.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { buildTextureArray, loadImageLayers } from './textures.js'
-import { createPropMaterial } from './material.js'
+import { createPropMaterial, HEM_FRAY_GLSL } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 
 // ---------------------------------------------------------------------------
@@ -25,12 +25,14 @@ import { grassTexture, wrapLambert } from './preview-stage.js'
 // the panel plumbing are the same for both, which is the whole reason they
 // share a page.
 //
-// THE MAT IS OPAQUE ON BOTH, AT EVERY RUNG. v6 wears a cut-out at LOD0 and
-// swaps to the opaque tile past it; here the silhouette is modelled, the air
-// between the boughs and between the scoops being geometry and not alpha. So
-// there is no cutout slider and no swap in the ladder. A cloak and a scoop are
-// both sheets, seen from both faces, so one double-sided material dresses
-// every crown.
+// THE MAT IS OPAQUE PAST LOD0 ON BOTH. The silhouette is modelled, the air
+// between the boughs and between the scoops being geometry and not alpha, so
+// there is no cutout slider and the coarse rungs never swap a mat. A species
+// with a NEAR mat (tree-v8.js's V8_NEAR_MATS: the pine) wears it at LOD0 only,
+// with the bough hems frayed by the same discard the world compiles into its
+// tree program, so the rung on the stage is the rung the near tier draws. A
+// cloak and a scoop are both sheets, seen from both faces, so the crown
+// materials are double-sided.
 //
 // THE SPECIES DROPDOWN sits above every slider because it moves every slider
 // -- and, crossing generators, replaces them. Picking one replaces the
@@ -47,7 +49,7 @@ import { grassTexture, wrapLambert } from './preview-stage.js'
 // range stops.
 const V8_SLIDERS = [
   ['#', 'tier'],
-  ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes and each is a SUBSET of LOD0 -- fewer spine stations, then whole boughs and whole whorls dropped, over a wedge of a trunk -- so every tip that survives is on the point LOD0 put it and switching rungs moves nothing. 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you. Every mesh rung wears the same opaque mat, v8 having no use for a cut-out'],
+  ['lod', 0, 3, 1, 'which rung to draw. 0, 1 and 2 are meshes and each is a SUBSET of LOD0 -- fewer spine stations, then whole boughs and whole whorls dropped, over a wedge of a trunk -- so every tip that survives is on the point LOD0 put it and switching rungs moves nothing. 3 is the card, one spun quad carrying a photograph of LOD0 baked off the tree in front of you. A species with a near mat wears it at 0, hems frayed, and the solid one past it'],
 
   ['#', 'size'],
   ['height', 1, 32, 0.25, 'metres, root to tip. Every shape slider below is a fraction of this, so the tree scales rather than growing'],
@@ -183,7 +185,8 @@ const OAK_SLIDERS = [
 //   sliders     the panel, in the spec above
 //   notShape    parameter keys the LADDER writes per tier and the copy leaves
 //               out -- see NOT_SHAPE
-//   defaults    a species' full parameter set; mat its foliage tile
+//   defaults    a species' full parameter set; mat its foliage tile, nearMat
+//               the holed one LOD0 wears instead, or null
 //   wood        the bark material, as a thunk since the materials are made
 //               further down: the oak's reads a colour the pine's lacks
 //   lod/resolve the ladder and the triangle law, the same pair the builder
@@ -197,6 +200,7 @@ const GEN_V8 = {
   notShape: ['skirtKeep', 'boughKeep'],
   defaults: treeV8Species,
   mat: (key) => TREE_V8_SPECIES[key].mat,
+  nearMat: (key) => TREE_V8_SPECIES[key].nearMat,
   wood: () => barkMaterial,
   lod: treeV8Lod,
   resolve: resolveTreeV8,
@@ -243,12 +247,17 @@ const GEN_V8 = {
       ['one whorl covers', `${(crownH / Math.max(1, f.skirts)).toFixed(2)} m of stack`],
     ]
   },
-  geonote: (mat, p) =>
+  geonote: (mat, p, frayed) =>
     `Two meshes and two draw calls per tree: the trunk is the shared prop material over the texture ` +
-    `array, exactly as the game draws bark, and the crown is one OPAQUE mapped Lambert over ` +
-    `<em>${mat}</em> tiled at <em>${p.texMetres.toFixed(2)} m</em> &mdash; no cut-out at ` +
-    `any tier, a bough's outline being geometry. There is no third primitive: v8 has no wood in its ` +
-    `crown, so every triangle above is either the trunk or a cloak.`,
+    `array, exactly as the game draws bark, and the crown is one mapped Lambert over ` +
+    `<em>${mat}</em> tiled at <em>${p.texMetres.toFixed(2)} m</em>` +
+    (frayed
+      ? `, the NEAR mat with its holes cut by the alpha test and every bough's hem frayed by the ` +
+        `world's own discard (material.js's hemFrayFragment, tree-v8.js's HEM_FRAY), which is what ` +
+        `the near tier draws. Past this rung the solid mat, uncut.`
+      : ` &mdash; opaque and uncut, a bough's outline being geometry.`) +
+    ` There is no third primitive: v8 has no wood in its crown, so every triangle above is either ` +
+    `the trunk or a cloak.`,
   ladderNote:
     `The <em>LOD</em> slider at the top of the panel is this table, live. Three of the four rungs ` +
     `are the same tree with less of it drawn: first a <em>spine station</em> out of every bough, ` +
@@ -260,10 +269,11 @@ const GEN_V8 = {
     `a different plant. Switch between the rungs on the stage and you should see limbs straighten ` +
     `and then thin out, with nothing jumping. Both losses are harder than v6's, where dropping ` +
     `spokes off a cone of revolution takes notches and keeps the cone. That is the price of ` +
-    `spending the triangles on separate boughs, and what it buys is the air between them: unlike ` +
-    `v6 the mat never changes down the ladder, because a v8 silhouette is modelled and there is no ` +
-    `cut-out to swap out. The last rung is one spun quad carrying a photograph of LOD0, baked here ` +
-    `and now off the tree on the stage.`,
+    `spending the triangles on separate boughs, and what it buys is the air between them: a v8 ` +
+    `silhouette is modelled, so past LOD0 the mat is solid and never changes down the ladder. LOD0 ` +
+    `alone wears a species' near mat, if it has one, with the hems frayed. The last rung is one spun ` +
+    `quad carrying a photograph of LOD0 -- the SOLID one, as the world bakes it, since the card takes ` +
+    `over from LOD1 -- baked here and now off the tree on the stage.`,
 }
 
 const GEN_OAK = {
@@ -271,6 +281,7 @@ const GEN_OAK = {
   notShape: ['boughKeep', 'quadScoops', 'straightWood'],
   defaults: treeOakSpecies,
   mat: (key) => TREE_OAK_SPECIES[key].mat,
+  nearMat: () => null,
   wood: () => shadedBarkMaterial,
   lod: treeOakLod,
   resolve: resolveTreeOak,
@@ -446,56 +457,95 @@ const layersReady = loadImageLayers(atlas)
 // several repeats across one cloak, and every layer of the prop atlas is a cut
 // meant to be sampled once across a card.
 //
-// FULLY OPAQUE, at every tier. A v8 bough's outline is its own geometry, so
-// there is nothing for an alpha test to cut and no threshold to tune -- which
-// is the one real saving this scheme has over v6's cones.
-const foliageMaterial = new THREE.MeshLambertMaterial({
-  color: 0xffffff,
-  side: THREE.DoubleSide,
-  // The crown's baked occlusion rides in on the geometry's grey `color`
-  // attribute. Without this flag three drops the attribute without a word and
-  // every whorl is lit exactly like the one above it.
-  vertexColors: true,
-})
-foliageMaterial.onBeforeCompile = (shader) => {
-  wrapLambert(shader)
-  // Both sides of a cloak are the same surface, so three's double-sided flip
-  // has to be undone or the underside of the crown goes black -- the same fix
-  // createPropMaterial makes, argued in full at its normal_fragment_begin
-  // patch. tree-v8.js authors the panel normals for this reason.
-  shader.fragmentShader = shader.fragmentShader.replace(
-    '#include <normal_fragment_begin>',
-    `#include <normal_fragment_begin>
-    normal *= faceDirection;`
-  )
+// Two of them. The SOLID one is what every coarse rung and the card bake wear:
+// a v8 bough's outline is its own geometry, so there is nothing for an alpha
+// test to cut. The FRAYED one is LOD0's, for a species with a near mat: the
+// holed mat under an alpha test, and the world's own hem discard compiled in
+// from the pieces material.js exports, so what the stage shows at 0 is what
+// the near tier draws. Two materials because the fray is literals in the
+// program, not a uniform.
+const crownMaterialFor = (frayed) => {
+  const material = new THREE.MeshLambertMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+    // The crown's baked occlusion rides in on the geometry's grey `color`
+    // attribute. Without this flag three drops the attribute without a word and
+    // every whorl is lit exactly like the one above it.
+    vertexColors: true,
+    alphaTest: frayed ? 0.5 : 0,
+  })
+  material.onBeforeCompile = (shader) => {
+    wrapLambert(shader)
+    // Both sides of a cloak are the same surface, so three's double-sided flip
+    // has to be undone or the underside of the crown goes black -- the same fix
+    // createPropMaterial makes, argued in full at its normal_fragment_begin
+    // patch. tree-v8.js authors the panel normals for this reason.
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_begin>',
+      `#include <normal_fragment_begin>
+      normal *= faceDirection;`
+    )
+    if (!frayed) return
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>\n${HEM_FRAY_GLSL.vertexCommon}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${HEM_FRAY_GLSL.vertexBegin}`)
+    // After the map sample, so diffuseColor carries the mat the fray reads.
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\n${HEM_FRAY_GLSL.fragmentCommon}`)
+      .replace('#include <map_fragment>', `#include <map_fragment>\n${HEM_FRAY_GLSL.fragment(HEM_FRAY, 'vMapUv')}`)
+  }
+  material.customProgramCacheKey = () => `gen-tree-v8-foliage-v2-${frayed ? 'frayed' : 'solid'}`
+  return material
 }
-foliageMaterial.customProgramCacheKey = () => 'gen-tree-v8-foliage-v1'
+const foliageMaterial = crownMaterialFor(false)
+const frayMaterial = crownMaterialFor(true)
+const crownMaterials = [foliageMaterial, frayMaterial]
 
 const texLoader = new THREE.TextureLoader()
-let matLoaded = false
+// Both mats, or the solid one alone for a species with no near mat. `pending`
+// is how many are still on their way; the swatch waits on zero.
+let pending = 0
 let needleTex = null
+let nearTex = null
 
 // refresh() rather than drawSwatch(): a card baked before its mat landed is a
 // photograph of an untextured crown, and nothing else would ever re-take it.
-function loadMat(url) {
-  const prev = needleTex
-  matLoaded = false
-  needleTex = texLoader.load(url, () => {
-    matLoaded = true
+function loadTex(url) {
+  pending++
+  const tex = texLoader.load(url, () => {
+    pending--
     refresh()
   })
-  needleTex.wrapS = needleTex.wrapT = THREE.RepeatWrapping
-  needleTex.colorSpace = THREE.SRGBColorSpace
-  needleTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy())
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy())
+  return tex
+}
+function loadMats() {
+  const prev = [needleTex, nearTex]
+  pending = 0
+  needleTex = loadTex(matUrl())
   foliageMaterial.map = needleTex
   foliageMaterial.needsUpdate = true
-  // Nothing else holds the old one once it is off the material, and a bench
-  // you sit on for an hour flipping species would otherwise keep every mat it
-  // ever showed on the GPU.
-  if (prev) prev.dispose()
+  const near = nearMatUrl()
+  nearTex = near ? loadTex(near) : null
+  frayMaterial.map = nearTex
+  frayMaterial.needsUpdate = true
+  // Nothing else holds the old ones once they are off the materials, and a
+  // bench you sit on for an hour flipping species would otherwise keep every
+  // mat it ever showed on the GPU.
+  for (const t of prev) if (t) t.dispose()
 }
 const matUrl = () => gen().mat(current().key)
-loadMat(matUrl())
+const nearMatUrl = () => gen().nearMat(current().key)
+// Whether the rung on the stage is the frayed near tier: LOD0 of a species
+// with a near mat. The card (3) is not, and neither is its bake -- the world
+// photographs the solid tree, since the card takes over from LOD1.
+const frayed = () => Math.round(params.lod) === 0 && nearMatUrl() !== null
+// The mat the rung on the stage wears, for the swatch and the panel.
+const stageTex = () => (frayed() ? nearTex : needleTex)
+const stageMatUrl = () => (frayed() ? nearMatUrl() : matUrl())
+loadMats()
 
 // --- the card ---------------------------------------------------------------
 //
@@ -647,9 +697,12 @@ function rebuild() {
     m.wireframe = wireframe
     m.color.setScalar(params.brightness)
   }
-  foliageMaterial.wireframe = wireframe
-  foliageMaterial.color.setScalar(params.brightness)
+  for (const m of crownMaterials) {
+    m.wireframe = wireframe
+    m.color.setScalar(params.brightness)
+  }
   cardMaterial.color.setScalar(params.brightness)
+  const crown = frayed() ? frayMaterial : foliageMaterial
 
   const p = g.lod(params, meshTier)
 
@@ -715,7 +768,7 @@ function rebuild() {
       for (const [, key] of g.parts) agg.parts[key] += b.stats[key]
       agg.bytes += geometryBytes(b.trunk) + geometryBytes(b.foliage)
       place(new THREE.Mesh(b.trunk, g.wood()), i, spacing)
-      place(new THREE.Mesh(b.foliage, foliageMaterial), i, spacing)
+      place(new THREE.Mesh(b.foliage, crown), i, spacing)
     })
   }
 
@@ -777,7 +830,7 @@ function frameCamera() {
 const fmt = (b) =>
   b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`
 
-const matName = () => matUrl().split('/').pop()
+const matName = () => stageMatUrl().split('/').pop()
 
 const TIER_NAMES = ['LOD0', 'LOD1', 'LOD2', 'card']
 
@@ -794,16 +847,17 @@ function table(el, rows) {
 // so a change to either law moves this table with it. The card is two by
 // construction, being a quad.
 //
-// The mat column reads `solid` on every mesh rung, and that sameness is the
-// point: it is where v6's ladder swaps a cut-out out and these have nothing to
-// swap.
+// The mat column reads `solid` on every mesh rung but a near-mat species'
+// LOD0, and that sameness is the point: it is where v6's ladder swaps a
+// cut-out out and these have nothing to swap.
 function ladderRows() {
   const g = gen()
+  const near = nearMatUrl() !== null
   const rows = []
   for (let t = 0; t < 3; t++) {
     const p = g.lod(params, t)
     const r = g.resolve(p)
-    rows.push({ name: TIER_NAMES[t], what: g.ladderWhat(p, r), mat: 'solid', tris: r.triangles })
+    rows.push({ name: TIER_NAMES[t], what: g.ladderWhat(p, r), mat: t === 0 && near ? 'frayed' : 'solid', tris: r.triangles })
   }
   rows.push({ name: 'card', what: 'one spun quad, baked off LOD0', mat: 'baked', tris: 2 })
   return rows
@@ -839,7 +893,7 @@ function refresh() {
     ? `One mesh and one draw call: a quad ${cardSize.width.toFixed(2)} &times; ${cardSize.height.toFixed(2)} m ` +
       `carrying a ${CARD_TEX}&sup2; photograph of the LOD0 tree, taken here and spun about world up in the ` +
       `vertex shader. Every card on the stage samples that one bake, which is what an impostor is.`
-    : g.geonote(matName(), params)
+    : g.geonote(matName(), params, frayed())
 
   document.getElementById('laddernote').innerHTML = g.ladderNote
 
@@ -887,7 +941,7 @@ function drawSwatch() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   ctx.imageSmoothingEnabled = false
 
-  const img = needleTex.image
+  const img = stageTex().image
   if (img) {
     for (let y = 0; y < canvas.height; y += SWATCH_CELL) {
       for (let x = 0; x < canvas.width; x += SWATCH_CELL) {
@@ -896,7 +950,7 @@ function drawSwatch() {
     }
   }
 
-  if (!matLoaded) {
+  if (pending > 0) {
     ctx.fillStyle = 'rgba(8,14,26,.75)'
     ctx.fillRect(0, canvas.height / 2 - 9, canvas.width, 18)
     ctx.fillStyle = '#c9a227'
@@ -908,13 +962,15 @@ function drawSwatch() {
   const dims = img ? `${img.width}&times;${img.height}` : 'still loading'
   document.getElementById('swatchnote').innerHTML =
     `<em>${matName()}</em>, ${dims}, drawn here repeated so you are looking at the seam ` +
-    `rather than at the picture. One mat per species, and every rung wears it: v6 needs a cut-out at LOD0 because its ` +
-    `whorl is a closed cone whose only ragged edge is painted, and a v8 whorl is separate limbs with ` +
-    `real air between them, so the alpha would be paying a per-pixel test to erase what the silhouette ` +
-    `already does not have. Fully opaque is also what a DISTANT crown should be made of, an alpha test ` +
-    `at range swimming frame to frame as a one-pixel bough's coverage flickers. It tiles, which is the ` +
-    `property a cloak needs and a leaf CUT does not have -- v1's art is one spray meant to be sampled ` +
-    `once across a card, and stretching it over a bough would read as one enormous leaf.`
+    `rather than at the picture. This is the mat the rung on the stage wears: a species' near mat at ` +
+    `LOD0 if it has one, holed and frayed, and the solid one past it. v6 needs a cut-out at every ` +
+    `rung because its whorl is a closed cone whose only ragged edge is painted; a v8 whorl is separate ` +
+    `limbs with real air between them, so past the near tier the alpha would be paying a per-pixel ` +
+    `test to erase what the silhouette already does not have. Fully opaque is also what a DISTANT ` +
+    `crown should be made of, an alpha test at range swimming frame to frame as a one-pixel bough's ` +
+    `coverage flickers. It tiles, which is the property a cloak needs and a leaf CUT does not have -- ` +
+    `v1's art is one spray meant to be sampled once across a card, and stretching it over a bough ` +
+    `would read as one enormous leaf.`
 }
 
 // --- controls ---------------------------------------------------------------
@@ -1040,7 +1096,7 @@ speciesEl.addEventListener('change', () => {
   for (const key of Object.keys(params)) delete params[key]
   Object.assign(params, DEFAULTS, bench)
   seedInput.value = params.seed
-  loadMat(matUrl())
+  loadMats()
   if (gen() !== prevGen) buildSliders(gen().sliders)
   else syncSliders()
   refresh()

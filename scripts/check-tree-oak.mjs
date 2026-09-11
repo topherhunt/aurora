@@ -49,22 +49,24 @@ const check = (ok, label, detail = '') => {
 
 // --- 1. the pine is pinned ---------------------------------------------------
 //
-// Recorded from tree-v8.js the day the oak generator landed. A change to these
-// is a change to a tree the user called dialed; the gate does not decide
-// whether it was wanted, it only makes sure nobody finds out on the stage.
+// Recorded from tree-v8.js, `hem` on the foliage included: the fingerprint is
+// every attribute, and a generator that grows one changes it as surely as a
+// moved vertex does. A change to these is a change to a tree the user called
+// dialed; the gate does not decide whether it was wanted, it only makes sure
+// nobody finds out on the stage.
 const V8_PINS = {
-  'pine:0': 'trunk=1ef594f423802cac foliage=c92bec72344b8ca9 tris=352',
-  'pine:1': 'trunk=b83848a437413be2 foliage=a39896a215aed5dc tris=201',
-  'pine:2': 'trunk=b83848a437413be2 foliage=0903319e3a478852 tris=129',
-  'oak:0': 'trunk=be27625b78491d16 foliage=88e2e98295994839 tris=432',
-  'oak:1': 'trunk=0fd6881c2ed9fee0 foliage=d2de6305f66f3019 tris=219',
-  'oak:2': 'trunk=0fd6881c2ed9fee0 foliage=0946e228d8ae5202 tris=75',
-  'aspen:0': 'trunk=c18cec8e2511e4c2 foliage=56642a0a90c56231 tris=433',
-  'aspen:1': 'trunk=aeb3af654e8f9cb3 foliage=ec79211c45a728c9 tris=243',
-  'aspen:2': 'trunk=aeb3af654e8f9cb3 foliage=5dabde299ae551fa tris=111',
-  'birch:0': 'trunk=272bc8a31ef615da foliage=15bef92f225aaa7d tris=413',
-  'birch:1': 'trunk=1955d9b4e256d7e6 foliage=e76b1a01e7703b2e tris=219',
-  'birch:2': 'trunk=1955d9b4e256d7e6 foliage=e1d6dae54b1e4104 tris=93',
+  'pine:0': 'trunk=1ef594f423802cac foliage=aa8164ef65564095 tris=352',
+  'pine:1': 'trunk=b83848a437413be2 foliage=e362a69c90e746f8 tris=201',
+  'pine:2': 'trunk=b83848a437413be2 foliage=5a898bf7a2562e24 tris=129',
+  'oak:0': 'trunk=be27625b78491d16 foliage=c68dbb520ea6c27f tris=432',
+  'oak:1': 'trunk=0fd6881c2ed9fee0 foliage=94cf8605ccf099fb tris=219',
+  'oak:2': 'trunk=0fd6881c2ed9fee0 foliage=b6de989ba4754c80 tris=75',
+  'aspen:0': 'trunk=c18cec8e2511e4c2 foliage=c732bed903fb96e7 tris=433',
+  'aspen:1': 'trunk=aeb3af654e8f9cb3 foliage=06996c6f0ab752fb tris=243',
+  'aspen:2': 'trunk=aeb3af654e8f9cb3 foliage=f993b6f2e6d5c7a5 tris=111',
+  'birch:0': 'trunk=272bc8a31ef615da foliage=76628008664a8582 tris=413',
+  'birch:1': 'trunk=1955d9b4e256d7e6 foliage=b619e8be0261c09e tris=219',
+  'birch:2': 'trunk=1955d9b4e256d7e6 foliage=b4a40f6ef4bf4bf4 tris=93',
 }
 
 function fingerprint(geo) {

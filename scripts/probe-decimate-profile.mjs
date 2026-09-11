@@ -304,7 +304,7 @@ const targetsFor = (tris) => targetArgsOrDefault
 // WEIGHTS sweeps the feature term; with none given it runs whatever decimate.js
 // defaults to, so the plain invocation reports the shipping algorithm.
 const weights = process.env.WEIGHTS ? process.env.WEIGHTS.split(',').map(Number) : [undefined]
-const modes = (process.env.MODES ?? 'preserve,drop').split(',')
+const modes = (process.env.MODES ?? 'preserve,stretch').split(',')
 const label = (w) => (w === undefined ? 'dflt' : w.toFixed(2)).padStart(4)
 
 /** Mean of the per-tier scores, and the coarsest tier on its own -- the tier the ladder is judged on. */

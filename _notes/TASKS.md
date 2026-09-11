@@ -32,14 +32,26 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - [ ] Player characters: rig bones, move arms/hands to match actual hand position.
+- [ ] Create a cheatsheet of steps to rig and animate a creature
+  - Open mesh in Blender, set origin at world origin
+  - How to create an armature, how to orient the hips, follow the bone structure to build out center line and left side, naming everything on the left `*.L` instead of `Left*` 
+  - Mirror along X axis (may need to rotate bones first)
+  - Select all bones (edit mode), batch rename all bones from (regex) `^(.*).R` to `Right\1` and same for .L -> Left
+  - While you're in Edit Mode, run Armature > Bone Roll > Recalculate Roll > Global +Z. (Roll controls which way a bone's local axes point, which decides whether rotations feel sane later.)
+  - Bind the mesh: In Object mode, select the mesh, shift + select the armature, then Object > Parent > Armature Deform > With automatic weights. Watch carefully for errors at the bottom of the screen, They likely will mean that the Deform didn't take. 
+    - If you get error "Bone heat weighting: failed to find solution for one or more bones", first clean up the mesh: go into edit mode, `A` to select all verts, then `M` -> Merge by distance.
+    - Then select the armature and `Ctrl + Tab` to enter Pose mode, then pick a bone and rotate it, and confirm that the mesh deforms to follow it.
+    - To fix bad weights, select the mesh, switch to Weight Paint mode, in the right sidebar click Data and select a bone, then paint to adjust vertex weights.
+  - Before exporting: select the mesh, `Ctrl + A`, then apply All Transforms on the mesh.
+  - 
 
 - Get VR looking passable
   - [ ] 
   - [ ] Oak trees
-    - instead of separate icosahedrons for separate boughs, let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
+    - Let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
   - [ ] Rocks
     - [x] Get rid of all these rock caps. Boulders should be placed and rendered at a distance relative to their size, maxing out at 1.1km. (Ensure trees max out at 1km. Trees must place AFTER boulders, and thus must have a closer viewing distance.)
-    - [ ] Rock caps: positioned impostor card rather than billboard.
+    - [x] Rock caps: positioned impostor card rather than billboard.
     - [ ] Fix boulder billboard colors & positions
       - Currently billboard color is substantially misaligned from the color / light level of the rock itself.
       - Also, billboard POSITION is off-center, and often size too, it needs to match the center-position and size of the rock mesh it's replacing. (I may have previously specified that billboards should never embed in the ground; that was wrong and I'm sorry.
@@ -67,22 +79,18 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] procedual flowers.
   - [ ] Multiplayer: support shooting up a flare that other players can find each other.
 - 
-- Make auroras more sinuous. Also the curtains / ley-lines currently tend to run east<>west, shouldn't they roughly run north-south?
 - Rivers should sit into the hillside (node needs to be placed deep enough that the river wall bites in
 - 2x ground variation at the 0.5m-2m level. This should help riverbanks feel broken up rather than smooth splines.
-- [ ] Deadwood: currently it's always placed in the same places as trees. Scatter it randomly, NOT under trees, though it's OK if it occasionally intersects. Also it needs to be browner, less red. Also vary size randomly from (current size) to 4x current size.
-- [ ] Mushrooms: double current default size? and randomly vary sizes obvi
+- [ ] Deadwood: generate more lively-looking props using Tripo.
 - [ ] Procedural bushes - Scattered throguhout the forest like trees, but with different LOD thresholds. 2 sizes x 2 random seed rolls x species.
 
-- [ ] Pebbles on ground: can they be atlassed so they bend following the existing triangles, ratehr than being new separate triangles? Perf implications of that? (if doable, it would be very useful)
 - [ ] Leaf atlas and lichen atlas - scatter onto boulders & forest floor. (Moss is done for boulders -- see the moss bullet under nature props; trunks are the next entry in `MOSS_LAYERS` and need a height cue first.)
 
-- [ ] **Redo the Aurora as a raymarched field instead of eleven curtain meshes.**
-
-  - Gorgeous starting point, but unworkable perf-wise. Leylines and Weave looked gorgeous, the 3rd algo (filament) was nothing.
-  - [ ] Get data on, how is the new aurora structured? Is it a dome mesh, a plane, or sth else? It should be as few tris as possible ideally.
-
 - [ ] Clear out the scanned 3D assets that are bad-quality & not worth keeping
+
+### Wishlist
+
+- [ ] Cheap API-fed TTS so NPCs can actually speak to you with realistic voices.
 
 - [ ] Props should cast shadows on the terrain and on other props. See \_notes/local-shadows.md.
 

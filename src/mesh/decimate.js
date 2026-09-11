@@ -18,37 +18,45 @@
 // it swaps which part of the atlas a triangle samples.
 //
 // THE ONE RULE: no vertex attribute is ever interpolated or invented. Every UV
-// in the output is a UV that was in the input, on a triangle that could already
-// reach it. Nothing below ever computes a new texture coordinate.
+// in the output is a UV that was in the input, and every output triangle's three
+// UVs lie inside one input island. Nothing below ever computes a new texture
+// coordinate.
 //
-// What DOES vary is whether the vendor's atlas is kept at all -- `uvMode`:
+// What DOES vary is how the vendor's atlas is kept -- `uvMode`:
 //
-//   'preserve'  Keep it. A seam vertex is collapsible, but only into a vertex
+//   'preserve'  Exactly. A seam vertex is collapsible, but only into a vertex
 //     carrying a matching wedge on every face involved; `wedgeMap` decides that
 //     per edge. Because the correspondence is read off faces that already
 //     contain both endpoints, every rewritten corner moves along an edge of an
 //     existing atlas triangle -- island outlines shrink, no triangle jumps to
-//     unrelated texture. Only boundary and non-manifold points are pinned.
+//     unrelated texture. Floor: about one triangle per UV island.
 //
-//   'drop'  Give it up. Topology is built from positions alone, so the whole
-//     mesh is free and reduction is bounded only by geometry. The output has NO
-//     `uv`; it carries `sampleUvs` instead -- per vertex, where in the original
-//     texture that point sat -- which is what the caller bakes into vertex
-//     colours. Neighbouring corners can come from unrelated islands, so these
-//     are not atlas coordinates and must never be handed to a sampler.
+//   'stretch'  Same, but an edge with no consistent wedge map collapses anyway
+//     and each surviving corner KEEPS ITS OWN UV while its position moves. The
+//     UV triangle is then an input UV triangle verbatim; only the 3D triangle
+//     under it changed shape, so the island's texels stretch over the new face.
+//     Reduction is bounded only by geometry, the tier stays textured, and the
+//     cost is texture sliding by one edge length per collapse.
 //
-//   'auto'  Try 'preserve'; use 'drop' only for a tier it could not reach.
+//   'drop'  Give the atlas up. The output has NO `uv`; it carries `sampleUvs`
+//     instead -- per vertex, where in the original texture that point sat --
+//     which is what the caller bakes into vertex colours. Neighbouring corners
+//     can come from unrelated islands, so these are not atlas coordinates.
 //
-// WHY 'drop' HAD TO EXIST. Preserving a shattered atlas puts a hard floor on
-// reduction at roughly one triangle per UV island, and no algorithm gets under
-// it: a one-triangle island cannot be reduced. A Tripo P1 fox came back as 112
-// islands across 487 triangles, 76 of those islands three triangles or fewer,
-// and stalled at 291. The same 487 triangles reach 49 on geometry alone. A
-// far-LOD creature does not need the vendor's atlas -- at that range it needs a
-// silhouette and a handful of colours -- so the coarse tiers stop carrying one.
+//   'auto'  'preserve' where it reaches the target, else 'stretch'.
 //
-// `analyzeMesh` reports free, seam and locked points apart, so the bench can say
-// which kind of mesh it is holding before deciding.
+// Whatever the mode, a piece of geometry -- faces joined by manifold edges or
+// shared unlocked points, `piecesOf` -- is deleted outright when that is cheaper
+// than the next collapse (`dropIslands`). A Tripo mesh carries dozens of
+// detached four-face tetrahedra and crests of "pillows", two faces back to back
+// on three points chained by shared vertices; the fen-dragon has 46 pieces on a
+// few percent of its surface, and a coarse tier that keeps every one of them has
+// nothing left for the body. A pillow has one vertex opposite its base edge,
+// not two, and the link condition allows that so its tip can fold in; the only
+// collapse refused on that count is one that would leave no face at all.
+//
+// `analyzeMesh` reports free, seam and locked points apart, and how many pieces
+// the mesh is in, so the bench can say which kind of mesh it is holding.
 // ---------------------------------------------------------------------------
 
 const EPS = 1e-12
@@ -215,6 +223,63 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
 }
 
 /**
+ * The pieces a mesh falls into once the pins are honoured: faces joined by a
+ * manifold edge or by an unpinned point. A detached shell is a piece; so is a
+ * crest fin glued to the body along one edge, because that edge carries four
+ * faces, its endpoints are pinned, and the fin's tip can never collapse into
+ * anything -- the fin is immortal unless it is deleted whole. Pieces only meet
+ * across pinned points and non-manifold or boundary edges, so removing one
+ * never opens a hole in another. `area` is left at zero for a caller with face
+ * areas to hand.
+ */
+export function piecesOf({ faces, faceCount, pointCount, pointPos, locked }) {
+  const parent = Int32Array.from({ length: faceCount }, (_, i) => i)
+  const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a] } return a }
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb }
+  const edgeFaces = new Map()
+  const firstAt = new Int32Array(pointCount).fill(-1)
+  for (let f = 0; f < faceCount; f++) {
+    const a = faces[f * 3], b = faces[f * 3 + 1], c = faces[f * 3 + 2]
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = u < v ? u * pointCount + v : v * pointCount + u
+      const list = edgeFaces.get(k)
+      if (list) list.push(f); else edgeFaces.set(k, [f])
+    }
+    for (const p of [a, b, c]) {
+      if (locked[p]) continue
+      if (firstAt[p] === -1) firstAt[p] = f; else union(firstAt[p], f)
+    }
+  }
+  for (const list of edgeFaces.values()) if (list.length === 2) union(list[0], list[1])
+
+  const pieceOf = new Int32Array(faceCount)
+  const idOf = new Map()
+  const pieces = []
+  for (let f = 0; f < faceCount; f++) {
+    const r = find(f)
+    let id = idOf.get(r)
+    if (id === undefined) {
+      id = pieces.length
+      idOf.set(r, id)
+      pieces.push({ faces: 0, area: 0, diag: 0, min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] })
+    }
+    pieceOf[f] = id
+    const c = pieces[id]
+    c.faces++
+    for (let s = 0; s < 3; s++) {
+      const o = faces[f * 3 + s] * 3
+      for (let k = 0; k < 3; k++) {
+        const x = pointPos[o + k]
+        if (x < c.min[k]) c.min[k] = x
+        if (x > c.max[k]) c.max[k] = x
+      }
+    }
+  }
+  for (const c of pieces) c.diag = Math.hypot(c.max[0] - c.min[0], c.max[1] - c.min[1], c.max[2] - c.min[2])
+  return { pieceOf, pieces }
+}
+
+/**
  * Connected components of the UV atlas. This is the number the 128px downrez
  * actually cares about: an atlas of 8 large islands keeps its gutters at 128px,
  * one of 300 small islands does not, and no triangle count distinguishes them.
@@ -316,7 +381,14 @@ export function analyzeMesh(mesh, { weldEps } = {}) {
     const a = topo.faces[f * 3], b = topo.faces[f * 3 + 1], c = topo.faces[f * 3 + 2]
     if (topo.locked[a] && topo.locked[b] && topo.locked[c]) lockedFaces++
   }
+  const { pieces } = piecesOf(topo)
+  const mainFaces = Math.max(...pieces.map((c) => c.faces))
   return {
+    // How many pieces, and how many faces sit outside the biggest one: those
+    // are the faces a coarse tier spends on crest spines and claws unless it
+    // deletes the pieces they belong to.
+    pieces: pieces.length,
+    minorFaces: topo.faceCount - mainFaces,
     tris: topo.faceCount,
     vertices: mesh.positions.length / 3,
     points: topo.pointCount,
@@ -398,25 +470,25 @@ class MinHeap {
  * and cost more reduction than it bought.
  */
 export function decimate(mesh, targetTris, opts = {}) {
-  const { flipTolerance = 0.2, weldEps, seamCollapse = true, uvMode = 'preserve', featureWeight = FEATURE_WEIGHT } = opts
+  const { flipTolerance = 0.2, weldEps, seamCollapse = true, uvMode = 'preserve', featureWeight = FEATURE_WEIGHT, dropIslands = true } = opts
   const { positions, uvs, normals, indices } = mesh
   if (!positions || !indices) throw new Error('decimate requires positions and indices')
   if (!Number.isFinite(targetTris) || targetTris < 1) throw new Error(`decimate requires a positive targetTris, got ${targetTris}`)
-  if (!['preserve', 'drop', 'auto'].includes(uvMode)) throw new Error(`unknown uvMode "${uvMode}" -- want preserve, drop or auto`)
+  if (!['preserve', 'stretch', 'drop', 'auto'].includes(uvMode)) throw new Error(`unknown uvMode "${uvMode}" -- want preserve, stretch, drop or auto`)
 
-  // Cheapest tier that works: keep the atlas if it can reach the target, and
-  // only give it up when it demonstrably cannot. Which one ran is in the stats,
-  // because the two answers are not interchangeable downstream.
+  // The exact atlas where it reaches the target, the stretched one where it
+  // does not. Which one ran is in the stats.
   if (uvMode === 'auto') {
     const kept = decimate(mesh, targetTris, { ...opts, uvMode: 'preserve' })
-    return kept.stats.outputTris <= targetTris ? kept : decimate(mesh, targetTris, { ...opts, uvMode: 'drop' })
+    return kept.stats.outputTris <= targetTris ? kept : decimate(mesh, targetTris, { ...opts, uvMode: 'stretch' })
   }
 
   // An input carrying `sampleUvs` instead of `uvs` has already had its atlas
-  // dropped by an earlier tier. Preserving is then not a choice on offer, and
+  // dropped by an earlier tier. Keeping it is then not a choice on offer, and
   // saying it happened would put a `uv` attribute back on a mesh whose corners
   // come from unrelated islands.
-  const keepAtlas = uvMode === 'preserve' && Boolean(uvs)
+  const keepAtlas = uvMode !== 'drop' && Boolean(uvs)
+  const stretch = keepAtlas && uvMode === 'stretch'
   const topo = buildTopology(keepAtlas ? mesh : { positions, indices }, { weldEps })
   const { pointPos, locked, seam, uvId, pointCount, faceCount } = topo
 
@@ -439,6 +511,8 @@ export function decimate(mesh, targetTris, opts = {}) {
     neighbours[c].add(a); neighbours[c].add(b)
   }
 
+  const { pieceOf, pieces } = piecesOf(topo)
+
   const Q = new Float64Array(pointCount * 10)
   const fq = new Float64Array(10)
   const fn = new Float64Array(3)
@@ -456,6 +530,7 @@ export function decimate(mesh, targetTris, opts = {}) {
       fq, 0, fn,
     )
     totalArea += area
+    pieces[pieceOf[f]].area += area
     for (const p of [facePoints[f * 3], facePoints[f * 3 + 1], facePoints[f * 3 + 2]]) {
       for (let i = 0; i < 10; i++) Q[p * 10 + i] += fq[i]
       mass[p] += area
@@ -503,6 +578,10 @@ export function decimate(mesh, targetTris, opts = {}) {
   // A point can be extreme in many directions at once and it counts once: this is
   // a question with a yes or no answer, not a vote.
   const meanMass = pointCount ? (3 * totalArea) / pointCount : 0
+  // Kept per point because deleting a whole piece is priced against the same
+  // term below: a crest spine's tip is an extreme point and should cost as much
+  // to delete as it would to collapse.
+  const featureW = new Float64Array(pointCount)
   if (featureWeight > 0 && meanMass > 0) {
     const extreme = new Uint8Array(pointCount)
     for (let d = 0; d < PROFILE_DIRECTIONS; d++) {
@@ -524,7 +603,8 @@ export function decimate(mesh, targetTris, opts = {}) {
       const turn = 1 - Math.hypot(normalSum[p * 3], normalSum[p * 3 + 1], normalSum[p * 3 + 2]) / mass[p]
       const importance = Math.max(0, turn) + extreme[p]
       if (importance <= 0) continue
-      pointQuadric(pointPos[p * 3], pointPos[p * 3 + 1], pointPos[p * 3 + 2], featureWeight * importance * meanMass, fq, 0)
+      featureW[p] = featureWeight * importance * meanMass
+      pointQuadric(pointPos[p * 3], pointPos[p * 3 + 1], pointPos[p * 3 + 2], featureW[p], fq, 0)
       for (let i = 0; i < 10; i++) Q[p * 10 + i] += fq[i]
     }
   }
@@ -553,6 +633,42 @@ export function decimate(mesh, targetTris, opts = {}) {
   for (let u = 0; u < pointCount; u++) {
     if (locked[u]) continue
     for (const v of neighbours[u]) pushEdge(u, v)
+  }
+
+  // --- deleting a piece outright --------------------------------------------
+  //
+  // A piece is priced as if every point it owns were collapsed to its centre:
+  // plane term `area * r^2` plus the feature term at the same radius, with r
+  // half its bounding diagonal -- the same units as an edge collapse, so it
+  // sits in the same heap and goes when the next collapse costs more than it
+  // does. That is exactly the order wanted: a crest fin is 0.03% of the
+  // surface and a few millimetres across, so it costs nothing beside a flank
+  // collapse late in the ladder, while a wing modelled as its own shell costs
+  // more than any collapse ever will. The largest piece is never offered: a
+  // mesh that is all pinned specks still keeps one.
+  //
+  // A point belongs to the piece that holds every face at it; pinned points
+  // where two pieces meet belong to neither and survive the deletion.
+  const pieceAlive = new Uint8Array(pieces.length).fill(1)
+  const ownerOf = new Int32Array(pointCount).fill(-1)
+  for (let p = 0; p < pointCount; p++) {
+    let owner = -1
+    for (const f of facesAt[p]) {
+      if (owner === -1) owner = pieceOf[f]
+      else if (pieceOf[f] !== owner) { owner = -1; break }
+    }
+    ownerOf[p] = owner
+  }
+  let piecesDropped = 0
+  if (dropIslands && pieces.length > 1) {
+    const featureAt = new Float64Array(pieces.length)
+    for (let p = 0; p < pointCount; p++) if (ownerOf[p] !== -1) featureAt[ownerOf[p]] += featureW[p]
+    const largest = pieces.reduce((best, c, i) => (c.area > pieces[best].area ? i : best), 0)
+    pieces.forEach((c, i) => {
+      if (i === largest) return
+      const r2 = c.diag * c.diag * 0.25
+      heap.push({ cost: (c.area + featureAt[i]) * r2, piece: i })
+    })
   }
 
   /**
@@ -609,15 +725,30 @@ export function decimate(mesh, targetTris, opts = {}) {
   }
 
   /**
-   * A collapse is legal only if u and v share exactly the two vertices opposite
-   * their shared edge. More than two means the collapse would weld together
-   * parts of the surface that only meet in the index buffer, and the result is a
-   * non-manifold pinch that no later step can undo.
+   * A collapse is legal only if the neighbours u and v share are exactly the
+   * vertices opposite their edge in the faces that contain it. Any other shared
+   * neighbour means the collapse would weld together parts of the surface that
+   * only meet in the index buffer, a non-manifold pinch no later step can undo.
+   * That is two vertices on a manifold edge, and ONE on a pillow -- two faces
+   * back to back on the same three points, a crest scale or what a spine
+   * collapses down to -- so a pillow's tip can fold in and take both faces with
+   * it.
    */
   const linkConditionOk = (u, v) => {
+    const opposite = new Set()
+    for (const f of facesAt[u]) {
+      if (!faceAlive[f]) continue
+      const a = facePoints[f * 3], b = facePoints[f * 3 + 1], c = facePoints[f * 3 + 2]
+      if (a !== v && b !== v && c !== v) continue
+      opposite.add(a === u || a === v ? (b === u || b === v ? c : b) : a)
+    }
     let shared = 0
-    for (const n of neighbours[u]) if (neighbours[v].has(n)) shared++
-    return shared === 2
+    for (const n of neighbours[u]) {
+      if (!neighbours[v].has(n)) continue
+      if (!opposite.has(n)) return false
+      shared++
+    }
+    return shared === opposite.size
   }
 
   const wouldFlip = (u, v) => {
@@ -646,11 +777,22 @@ export function decimate(mesh, targetTris, opts = {}) {
 
   let liveFaces = faceCount
   let collapses = 0
+  let stretched = 0
   let reason = 'reached target'
 
   while (liveFaces > targetTris) {
     if (heap.size === 0) { reason = 'ran out of legal collapses -- the rest of the mesh is seam or boundary'; break }
     const e = heap.pop()
+    if (e.piece !== undefined) {
+      if (!pieceAlive[e.piece]) continue
+      pieceAlive[e.piece] = 0
+      piecesDropped++
+      for (let f = 0; f < faceCount; f++) {
+        if (faceAlive[f] && pieceOf[f] === e.piece) { faceAlive[f] = 0; liveFaces-- }
+      }
+      for (let p = 0; p < pointCount; p++) if (ownerOf[p] === e.piece) removed[p] = 1
+      continue
+    }
     const { u, v } = e
     if (removed[u] || removed[v]) continue
     if (locked[u] || locked[v]) continue
@@ -659,16 +801,24 @@ export function decimate(mesh, targetTris, opts = {}) {
     if (!linkConditionOk(u, v)) continue
     if (wouldFlip(u, v)) continue
     // Read the correspondence before anything is retired -- it is sourced from
-    // exactly the faces the collapse is about to kill.
+    // exactly the faces the collapse is about to kill. No answer means the
+    // collapse is refused, unless stretching: then every moved corner keeps its
+    // own UV and the island's texels stretch over the new triangle.
     const wedges = wedgeMap(u, v)
-    if (!wedges) continue
+    if (!wedges && !stretch) continue
+    if (!wedges) stretched++
 
-    // Retire the faces on the collapsed edge.
+    // Retire the faces on the collapsed edge -- unless they are the last ones:
+    // a lone pillow folding in would empty the mesh, and the caller asked for
+    // a mesh.
+    const retiring = []
     for (const f of facesAt[u]) {
       if (!faceAlive[f]) continue
       const a = facePoints[f * 3], b = facePoints[f * 3 + 1], c = facePoints[f * 3 + 2]
-      if (a === v || b === v || c === v) { faceAlive[f] = 0; liveFaces-- }
+      if (a === v || b === v || c === v) retiring.push(f)
     }
+    if (retiring.length >= liveFaces) continue
+    for (const f of retiring) { faceAlive[f] = 0; liveFaces-- }
     // Rewrite the rest onto v, each corner taking the corner of v that sits in
     // its own island.
     for (const f of facesAt[u]) {
@@ -676,7 +826,7 @@ export function decimate(mesh, targetTris, opts = {}) {
       for (let s = 0; s < 3; s++) {
         if (facePoints[f * 3 + s] === u) {
           facePoints[f * 3 + s] = v
-          faceCorners[f * 3 + s] = wedges.get(uvId[faceCorners[f * 3 + s]])
+          if (wedges) faceCorners[f * 3 + s] = wedges.get(uvId[faceCorners[f * 3 + s]])
         }
       }
       facesAt[v].add(f)
@@ -690,6 +840,17 @@ export function decimate(mesh, targetTris, opts = {}) {
       version[n]++
     }
     neighbours[v].delete(u)
+    // A pillow's base edge has no face left once its tip folds in; an edge with
+    // no face is not one to collapse along, or the next collapse would drag
+    // surface across a gap.
+    for (const n of neighbours[v]) {
+      let joined = false
+      for (const f of facesAt[v]) {
+        if (!faceAlive[f]) continue
+        if (facePoints[f * 3] === n || facePoints[f * 3 + 1] === n || facePoints[f * 3 + 2] === n) { joined = true; break }
+      }
+      if (!joined) { neighbours[v].delete(n); neighbours[n].delete(v) }
+    }
     removed[u] = 1
     version[u]++
     version[v]++
@@ -701,7 +862,11 @@ export function decimate(mesh, targetTris, opts = {}) {
 
   // --- rebuild --------------------------------------------------------------
 
+  // An output vertex is an input corner (its attributes) at the point it now
+  // sits on -- which under stretching is not the point it was born at. A corner
+  // only ever moves with every face that holds it, so it resolves to one point.
   const usedCorner = new Map()
+  const cornerPoint = []
   const outIndices = []
   for (let f = 0; f < faceCount; f++) {
     if (!faceAlive[f]) continue
@@ -709,8 +874,10 @@ export function decimate(mesh, targetTris, opts = {}) {
     if (a === b || b === c || a === c) continue // defensive: never emit a degenerate
     for (let s = 0; s < 3; s++) {
       const corner = faceCorners[f * 3 + s]
+      const p = facePoints[f * 3 + s]
       let out = usedCorner.get(corner)
-      if (out === undefined) { out = usedCorner.size; usedCorner.set(corner, out) }
+      if (out === undefined) { out = usedCorner.size; usedCorner.set(corner, out); cornerPoint.push(p) }
+      else if (cornerPoint[out] !== p) throw new Error(`corner ${corner} is used at two points (${cornerPoint[out]}, ${p}) -- a collapse rewrote a corner inconsistently`)
       outIndices.push(out)
     }
   }
@@ -726,9 +893,7 @@ export function decimate(mesh, targetTris, opts = {}) {
   const outSampleUvs = !keepAtlas && srcUv ? new Float32Array(outVerts * 2) : null
   const outNormals = normals ? new Float32Array(outVerts * 3) : null
   for (const [corner, out] of usedCorner) {
-    // Position comes from the welded point so a rewritten face lands on the
-    // surviving vertex, not on wherever its original corner used to be.
-    const p = topo.pointOf[corner] * 3
+    const p = cornerPoint[out] * 3
     outPositions[out * 3] = pointPos[p]
     outPositions[out * 3 + 1] = pointPos[p + 1]
     outPositions[out * 3 + 2] = pointPos[p + 2]
@@ -753,9 +918,17 @@ export function decimate(mesh, targetTris, opts = {}) {
       outputTris: outTris,
       targetTris,
       collapses,
+      // Collapses that had no consistent wedge map and went ahead anyway; zero
+      // outside 'stretch', and the count of triangles wearing slid texture.
+      stretched,
+      // Pieces in, pieces with a face left, and how many went by deletion --
+      // the rest folded away collapse by collapse.
+      pieces: pieces.length,
+      piecesLeft: new Set(Array.from({ length: faceCount }, (_, f) => f).filter((f) => faceAlive[f]).map((f) => pieceOf[f])).size,
+      piecesDropped,
       // What actually happened, not what was asked for -- 'auto' resolves here,
       // and so does 'preserve' on a mesh that had no atlas left to preserve.
-      uvMode: keepAtlas ? 'preserve' : 'drop',
+      uvMode: !keepAtlas ? 'drop' : stretch ? 'stretch' : 'preserve',
       reduction: faceCount ? 1 - outTris / faceCount : 0,
       lockedPoints: locked.reduce((s, x) => s + x, 0),
       seamPoints: seam.reduce((s, x) => s + x, 0),

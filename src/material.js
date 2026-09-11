@@ -2198,11 +2198,14 @@ const STRIP_SAMPLE = /* glsl */ `
 // src/props-main.js's preview sway needs `uHeight` only because it builds one
 // material per asset; a batch cannot and does not have to.
 //
-// A TRAVELLING WAVE, NOT A PER-INSTANCE PHASE. The phase is
-// `dot(rootXZ, windDir) * k - t * w`, so a gust crosses the meadow instead of
-// every plant twitching on its own schedule -- and it is the CHEAP option too, a
-// dot and a multiply-add where a per-instance hash would be the 5-6 ops of the
-// mossRoll / snowRoll pattern. There was no trade to make.
+// A TRAVELLING WAVE WITH A PER-INSTANCE PHASE ON TOP. The phase is
+// `dot(rootXZ, windDir) * k - t * w + hash(rootXZ) * jitter`. The wave alone
+// makes a gust cross the meadow, but with waveK at 0.06 rad/m two trees 10 m
+// apart are 0.6 rad apart, so a whole hillside rocks in step and reads as one
+// choreographed forest. The hash (the mossRoll / snowRoll pattern, ~6 ops, once
+// per vertex) gives each plant its own start time inside the wave: the carrier
+// is scrambled by up to a full cycle so neighbours never lock, the slow gust
+// only by a fraction so the front still visibly arrives.
 //
 // THE DISTANCE RAMP IS THE WHOLE COST CONTROL, and a ramp rather than a tier
 // test on purpose. Sway is not meant to read past ~100 m, and for the forest
@@ -2358,6 +2361,11 @@ function windFreq(hzPerSecond) {
  *          for one dot; on a card the same term varies across the quad and reads
  *          as the foliage rippling rather than the card shearing, which is why
  *          it stays small.
+ *   jitter / gustJitter   per-instance phase scatter, in CYCLES of the carrier
+ *          and the envelope respectively, hashed off the root so both halves
+ *          of a cross-dissolve draw the same number. 1.0 on the carrier means
+ *          neighbours share nothing but the wave; the gust's stays well under
+ *          0.5 or the front stops being a front.
  */
 export const WIND_PRESETS = {
   // pin MUST stay under the SHORTEST trunk that will ever stand in the world,
@@ -2371,9 +2379,11 @@ export const WIND_PRESETS = {
   // and that
   // is the cheaper thing to give up -- on a 12 m pine the eye is on the canopy
   // either way, and pow( wH, stiff ) still carries the motion upward.
-  tree: { amp: 0.012, stiff: 2.6, pin: 1.2, carrier: 1.7, envelope: 0.31, waveK: 0.06, gustK: 0.012, branch: 0.55 },
-  fern: { amp: 0.075, stiff: 1.3, pin: 0.35, carrier: 2.3, envelope: 0.37, waveK: 0.22, gustK: 0.02, branch: 0.8 },
-  grass: { amp: 0.075, stiff: 1.3, pin: 0.3, carrier: 2.6, envelope: 0.41, waveK: 0.3, gustK: 0.025, branch: 0.5 },
+  tree: { amp: 0.012, stiff: 2.6, pin: 1.2, carrier: 1.7, envelope: 0.31, waveK: 0.06, gustK: 0.012, branch: 0.55, jitter: 1.0, gustJitter: 0.3 },
+  fern: { amp: 0.075, stiff: 1.3, pin: 0.35, carrier: 2.3, envelope: 0.37, waveK: 0.22, gustK: 0.02, branch: 0.8, jitter: 1.0, gustJitter: 0.3 },
+  // Grass gets less: a strip already lags clump by clump along its length, and
+  // the wave sweeping a meadow is the thing worth seeing there.
+  grass: { amp: 0.075, stiff: 1.3, pin: 0.3, carrier: 2.6, envelope: 0.41, waveK: 0.3, gustK: 0.025, branch: 0.5, jitter: 0.5, gustJitter: 0.2 },
 }
 
 // Where the amplitude ramps out, in metres from the camera. Shared by all three
@@ -2456,12 +2466,20 @@ ${scaleFix}
       distance( cameraPosition, wRoot ) );
 
     float wRun = dot( wRoot.xz, uWindDir );
+    // This plant's own start time, in [0, 1) of a cycle, off the root so every
+    // vertex of an instance (and both tiers of a dissolve) agree. fract() FIRST
+    // for the same reason vStripSeed does it: world XZ runs to thousands of
+    // metres and sin() of that times 43758 is float32 noise, not a hash.
+    float wJitter = fract( sin( dot( fract( wRoot.xz * 0.0371 ),
+      vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
     // Slow envelope over fast carrier: what makes it read as gusting rather than
     // as a metronome. The envelope never reaches zero (foliage in a breeze is
     // never quite still) and never exceeds 1, so amp stays the honest maximum
     // lean rather than a number the gust can overshoot.
-    float wGust = 0.65 + 0.35 * sin( wRun * ${w.gustK.toFixed(6)} - uPropClock * ${envelope} );
+    float wGust = 0.65 + 0.35 * sin( wRun * ${w.gustK.toFixed(6)} - uPropClock * ${envelope}
+      + wJitter * ${(w.gustJitter * 2 * Math.PI).toFixed(6)} );
     float wPhase = wRun * ${w.waveK.toFixed(6)} - uPropClock * ${carrier}
+      + wJitter * ${(w.jitter * 2 * Math.PI).toFixed(6)}
       + dot( transformed.xz, vec2( 0.7, 1.3 ) ) * ${w.branch.toFixed(6)} ${along};
 
 ${height}
@@ -2498,6 +2516,70 @@ ${height}
 }
 
 /**
+ * The ragged edge on a bough. `hemFray` compiles a per-vertex `hem` attribute
+ * in -- 0 down a bough's ridge, 1 around its outline, tip included (tree-v8.js
+ * authors it) -- and discards every fragment past a cut that runs ALONG the edge
+ * like a thatch fringe (buildings/tiles.js's tileFringe): the bough's mat uv
+ * is split into `straws` cells per repeat, each cell hangs to its own length,
+ * and neighbours blend so the edge reads as torn rather than as a barcode. A
+ * finer run at three times the pitch splits the teeth, and the mat's own
+ * brightness, read in linear light off the sample already taken, nibbles
+ * `wisp` of needle-scale jitter on top. The cells are a 2-D noise over both
+ * uv axes rather than teeth down one of them, because every bough wears its
+ * mat at its own random turn and a 1-D run lined up with an edge would hang
+ * the whole edge to one length.
+ *
+ * The cut sits at `keep` on average and wanders `band` either way with the
+ * straws, so with keep + band / 2 at or under 1 no column of the hem reaches
+ * the polygon's edge and the straight line of the geometry never shows; over
+ * 1 the longest straws run out to it. `keep - band / 2 - wisp / 2` must stay
+ * above 0: a vertex with hem 0 is the ridge, or any geometry the fray has no
+ * business on (wood, a coarse tier, a card), and it has to keep every
+ * fragment however dark the mat is under it.
+ *
+ * `uv` is the GLSL expression for the bough's mat uv in the fragment stage;
+ * it differs between the prop material and a plain mapped Lambert.
+ */
+function hemFrayFragment({ keep, band, straws, wisp, lumaLo, lumaHi }, uv) {
+  return /* glsl */ `
+  {
+    vec2 hemAlong = ( ${uv} ) * ${straws.toFixed(2)};
+    float hemTeeth = hemTooth( hemAlong ) * 0.7 + hemTooth( hemAlong * 3.1 + 7.3 ) * 0.3;
+    float hemLuma = dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+    float hemWisp = clamp( ( hemLuma - ${lumaLo.toFixed(4)} ) / ${(lumaHi - lumaLo).toFixed(4)}, 0.0, 1.0 );
+    if ( vHem > ${keep.toFixed(4)} + ( hemTeeth - 0.5 ) * ${band.toFixed(4)} + ( hemWisp - 0.5 ) * ${wisp.toFixed(4)} ) discard;
+  }`
+}
+
+// The fray in four pieces, one per slot it lands in. Exported for the
+// gen-tree-v8 bench, which previews the near tier on a plain Lambert and cuts
+// the same edge: `fragment` goes after the map sample, where `diffuseColor`
+// already carries the mat. The straw lengths are a value noise over a
+// sine-free hash, because a sin() hash loses its randomness in the large
+// arguments a tall tree's uv reaches, on a headset's GPU before a desktop's.
+export const HEM_FRAY_GLSL = {
+  vertexCommon: 'attribute float hem;\nvarying float vHem;',
+  vertexBegin: 'vHem = hem;',
+  fragmentCommon: /* glsl */ `
+    varying float vHem;
+    float hemHash( vec2 p ) {
+      vec3 q = fract( p.xyx * 0.1031 );
+      q += dot( q, q.yzx + 33.33 );
+      return fract( ( q.x + q.y ) * q.z );
+    }
+    float hemTooth( vec2 x ) {
+      vec2 i = floor( x );
+      vec2 f = x - i;
+      f = f * f * ( 3.0 - 2.0 * f );
+      return mix(
+        mix( hemHash( i ), hemHash( i + vec2( 1.0, 0.0 ) ), f.x ),
+        mix( hemHash( i + vec2( 0.0, 1.0 ) ), hemHash( i + vec2( 1.0, 1.0 ) ), f.x ),
+        f.y );
+    }`,
+  fragment: hemFrayFragment,
+}
+
+/**
  * `vertexColors` opts into a per-vertex tint multiplied over the array sample.
  *
  * Off for props and it has to stay off: turning it on changes the program, and
@@ -2517,10 +2599,24 @@ export function createPropMaterial(
   {
     vertexColors = false, billboardLayers = null, sphericalBillboard = false, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
-    side = THREE.DoubleSide, bump = false, seasons = false,
+    side = THREE.DoubleSide, bump = false, seasons = false, hemFray = null,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
+  if (hemFray) {
+    for (const k of ['keep', 'band', 'straws', 'wisp', 'lumaLo', 'lumaHi']) {
+      if (!Number.isFinite(hemFray[k])) throw new Error(`createPropMaterial: hemFray.${k} must be a number`)
+    }
+    // See hemFrayFragment: below zero the ridge itself frays, and with it every
+    // geometry that carries hem 0 because it has no hem at all.
+    if (!(hemFray.keep - hemFray.band / 2 - hemFray.wisp / 2 > 0)) {
+      throw new Error(`createPropMaterial: hemFray needs keep > (band + wisp) / 2, got ${hemFray.keep}, ${hemFray.band} and ${hemFray.wisp}`)
+    }
+    if (!(hemFray.straws > 0)) throw new Error(`createPropMaterial: hemFray.straws must be positive, got ${hemFray.straws}`)
+    if (!(hemFray.lumaHi > hemFray.lumaLo)) {
+      throw new Error(`createPropMaterial: hemFray needs lumaHi > lumaLo, got ${hemFray.lumaLo}..${hemFray.lumaHi}`)
+    }
+  }
   // A flag with nothing to act on is a caller who thinks their cards are being
   // spun differently and is looking at unchanged pixels. Say so instead.
   if (sphericalBillboard && !billboards) {
@@ -2634,6 +2730,7 @@ export function createPropMaterial(
         ${instancedFade ? `
         #define PROP_FADE_ATTRIBUTE
         attribute float aPropFade;` : ''}
+        ${hemFray ? HEM_FRAY_GLSL.vertexCommon : ''}
         varying float vTexLayer;
         varying vec2 vUvProj;
         ${seasons ? SEASONS_VERTEX_COMMON : ''}
@@ -2658,6 +2755,7 @@ export function createPropMaterial(
         `#include <begin_vertex>
         vTexLayer = texLayer;
         vUvProj = uvProj;
+        ${hemFray ? HEM_FRAY_GLSL.vertexBegin : ''}
         vec3 propObjPos = transformed;
         ${FADE_VERTEX}
         ${windSpec && windCompiled ? windVertex(windSpec, { strip: stripTiling, cards: !!billboards }) : ''}
@@ -2683,6 +2781,7 @@ export function createPropMaterial(
         varying float vTexLayer;
         varying vec2 vUvProj;
         varying float vPropFade;
+        ${hemFray ? HEM_FRAY_GLSL.fragmentCommon : ''}
         ${IGN_GLSL}
         ${seasons ? SNOW_COMMON : ''}
         ${seasons ? MOSS_COMMON : ''}
@@ -2723,6 +2822,7 @@ export function createPropMaterial(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
         `vec4 diffuseColor = vec4( diffuse, opacity );
         ${stripTiling ? STRIP_SAMPLE : 'diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );'}
+        ${hemFray ? HEM_FRAY_GLSL.fragment(hemFray, 'vUvProj') : ''}
         ${FADE_FRAGMENT}`
       )
 
@@ -2741,7 +2841,7 @@ export function createPropMaterial(
   // sharing puts the wrong meadow's growth curve on another bed's cards), and
   // `instancedFade`, the sharpest of them -- a program declaring `aPropFade`
   // bound to a mesh without that attribute reads garbage timers and dissolves at
-  // random.
+  // random. `hemFray` for both reasons at once: an attribute and six literals.
   //
   // The wind suffix is evaluated per CALL rather than folded into `key`, because
   // setWindEnabled flips it under a material that is already built.
@@ -2754,7 +2854,8 @@ export function createPropMaterial(
     ? `-grow${billboardGrow.from}.${billboardGrow.to}.${billboardGrow.scale}.`
       + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
     : ''
-  const key = `prop-moss-v5${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}`
+  const hemKey = hemFray ? `-hem${hemFray.keep}.${hemFray.band}.${hemFray.straws}.${hemFray.wisp}.${hemFray.lumaLo}.${hemFray.lumaHi}` : ''
+  const key = `prop-moss-v5${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
   material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
 
   if (windSpec) windMaterials.add(material)

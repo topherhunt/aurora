@@ -78,6 +78,18 @@
       .lightbox[hidden] { display: none; }
       .lightbox img { max-width: 92vw; max-height: 84vh; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
       @keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: .8 } }
+      dialog { max-width: 70ch; max-height: 84vh; overflow-y: auto; color: var(--ink); background: var(--panel); border: 1px solid var(--edge); border-radius: 3px; padding: 12px 14px; }
+      dialog::backdrop { background: rgba(6, 10, 18, .8); }
+      dialog pre { white-space: pre-wrap; margin: 8px 0; }
+      /* A bone tree is indentation-carrying: wrapping it destroys the shape, so
+         it scrolls sideways instead. */
+      dialog pre.tree { white-space: pre; overflow-x: auto; color: #d6ecff; }
+      dialog details { margin: 4px 0; }
+      dialog summary { cursor: pointer; color: var(--local); }
+      dialog h4 { margin: 12px 0 4px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
+      dialog ul { margin: 0; padding-left: 18px; }
+      dialog li { margin-bottom: 4px; }
+      dialog code { color: #d6ecff; }
 
       #viewRow { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
       #viewer { display: none; flex-direction: column; gap: 4px; }
@@ -181,11 +193,16 @@
         <div class="row">
           <button id="saveMeta" class="local">save</button>
           <button id="newCreature">new&hellip;</button>
+          <button id="previewPrompt" title="the full prompt the image model will get, without generating anything">preview prompt</button>
         </div>
         <div id="metaOut" class="step"></div>
 
         <h2>2. candidate image</h2>
-        <div class="step">FLUX.2 Klein 4B via OpenRouter</div>
+        <div class="step">via OpenRouter</div>
+        <div class="field">
+          <label>model (FLUX is the cheap default; Nano Banana 2 for when it will not listen)</label>
+          <select id="imageModel"></select>
+        </div>
         <div class="field">
           <label>frame (defaults from the rig type; the subject fills it)</label>
           <select id="aspectRatio">
@@ -210,7 +227,7 @@
         </div>
         <div class="field">
           <label>face limit <span id="faceLimitVal" class="label"></span></label>
-          <input type="range" id="faceLimit" min="500" max="10000" step="250" value="500" />
+          <input type="range" id="faceLimit" min="500" max="10000" step="250" value="2000" />
         </div>
         <div class="field check">
           <label><input type="checkbox" id="smartLowPoly" /> smart low-poly (H3 only, +10 credits)</label>
@@ -242,6 +259,7 @@
         <div class="step">Presets available for this rig type.</div>
         <div id="animList" class="field"></div>
         <button id="genAnim" class="wide spend" disabled>retarget selected</button>
+        <button id="blenderRoundTrip" class="wide local" style="margin-top:4px" disabled>author in Blender (free)</button>
       </div>
     </div>
 
@@ -331,6 +349,91 @@
       <img id="lightboxImg" alt="candidate image at full size" />
       <div id="lightboxCap" class="label"></div>
     </div>
+
+    <dialog id="promptDialog">
+      <div class="label">the full prompt, as /__creature-image will send it</div>
+      <pre id="promptDialogText"></pre>
+      <form method="dialog"><button>close</button></form>
+    </dialog>
+
+    <dialog id="blenderDialog">
+      <div class="label">author clips in Blender &mdash; the round trip</div>
+      <p class="step" id="blenderDir"></p>
+      <div class="row">
+        <button id="blenderReveal" class="local">reveal in Finder</button>
+        <button id="blenderCopy" class="local">copy path</button>
+      </div>
+
+      <h4>take it out</h4>
+      <ul>
+        <li>Import <code id="blenderImport">rig-fixed.glb</code> &mdash; File &gt; Import &gt; glTF 2.0.</li>
+        <li id="blenderNoRig">This one has no skeleton yet, so that is the bare mesh and the armature is yours to build. Rigging in Tripo first ($0.25) is the other option; it gets the hierarchy right and the names wrong.</li>
+        <li>Name the bones from one of the trees below. Shared names are what let a clip retarget onto another creature instead of being authored per animal.</li>
+      </ul>
+
+      <h4>bone names</h4>
+      <p class="step">Mixamo's convention throughout: side is a <b>prefix word</b> (<code>LeftArm</code>, not <code>Arm.L</code>), the first of a chain carries no number (<code>Spine</code>, <code>Spine1</code>, <code>Spine2</code>), thigh is <code>UpLeg</code> and shin is <code>Leg</code>, upper arm is <code>Arm</code> and forearm is <code>ForeArm</code>.</p>
+      <p class="step">Reading the trees: a run joined by <code>&#9472;</code> is an unbranched chain, and anything that has children of its own nests onto its own line. So the neck and both shoulders hang off <b><code>Spine2</code></b>, the last spine bone &mdash; not off <code>Spine</code>. In Blender only the unbranched runs are <em>connected</em> bones; every child that starts somewhere its parent's tail is not (both shoulders, both <code>UpLeg</code>s, the tail) is parented but disconnected.</p>
+
+      <details>
+        <summary>biped &mdash; the Mixamo skeleton, verbatim</summary>
+        <pre class="tree">Hips
+├─ Spine
+│  └─ Spine1
+│     └─ Spine2
+│        ├─ Neck ─ Head ─ HeadTop_End
+│        ├─ LeftShoulder  ─ LeftArm  ─ LeftForeArm  ─ LeftHand  ─ fingers
+│        └─ RightShoulder ─ RightArm ─ RightForeArm ─ RightHand ─ fingers
+├─ LeftUpLeg  ─ LeftLeg  ─ LeftFoot  ─ LeftToeBase  ─ LeftToe_End
+└─ RightUpLeg ─ RightLeg ─ RightFoot ─ RightToeBase ─ RightToe_End
+
+fingers: LeftHand{Thumb,Index,Middle,Ring,Pinky}{1,2,3,4}
+         the 4 is the tip marker, not a knuckle</pre>
+        <p class="step">Files downloaded from Mixamo prefix every bone with <code>mixamorig:</code>. Strip it, or keep it and stay consistent &mdash; but note that three.js sanitises the colon away on load, so <code>mixamorig:Hips</code> arrives as <code>mixamorigHips</code>.</p>
+      </details>
+
+      <details>
+        <summary>quadruped &mdash; the same convention, applied to four legs</summary>
+        <pre class="tree">Hips
+├─ Spine
+│  └─ Spine1
+│     └─ Spine2
+│        ├─ Neck
+│        │  └─ Neck1               only if the neck is long
+│        │     └─ Head
+│        │        ├─ LeftEar ─ LeftEar1
+│        │        ├─ RightEar ─ RightEar1
+│        │        └─ Jaw
+│        ├─ LeftShoulder  ─ LeftArm  ─ LeftForeArm  ─ LeftHand
+│        └─ RightShoulder ─ RightArm ─ RightForeArm ─ RightHand
+├─ LeftUpLeg  ─ LeftLeg  ─ LeftFoot  ─ LeftToeBase
+├─ RightUpLeg ─ RightLeg ─ RightFoot ─ RightToeBase
+└─ Tail ─ Tail1 ─ Tail2 ─ Tail3</pre>
+        <p class="step">Nothing is renamed here &mdash; the front legs are Mixamo's arm chain and the hind legs are its leg chain, which is also anatomically right: <code>Shoulder</code> is the scapula, <code>Hand</code> and <code>ToeBase</code> are the paws, and on a digitigrade animal <code>Foot</code> is the hock held vertical. Extras Mixamo has no word for get the same numbering style: <code>Tail</code>, <code>LeftEar</code>, <code>Jaw</code>. A dragon whose wings are its forelimbs uses the arm chain and the <code>LeftHand*</code> finger names for the wing fingers; wings on top of four legs need an invented <code>LeftWing ─ LeftWing1</code>.</p>
+      </details>
+
+      <p class="step"><b>Neither tree is what the tools speak yet.</b> <code>quadruped-rig.mjs</code> and the rig editor's dropdowns still use the Quaternius vocabulary (<code>Body</code>, <code>Back</code>, <code>FrontUpperLeg.L</code>, <code>FF.L</code>) because that is what plays the Quaternius clips by name. Adopting the tree above means changing that file and its gate &mdash; worth doing if you are authoring your own clips, pointless if you are still retargeting the pack's.</p>
+
+      <p class="step">Mixamo itself is humanoid-only: there is no quadruped auto-rigger, so the tree above buys one convention in your head rather than access to Mixamo clips.</p>
+
+      <h4>bring it back</h4>
+      <ul>
+        <li>File &gt; Export &gt; glTF 2.0, format <b>glTF Binary (.glb)</b>, with <b>Animation</b> ticked.</li>
+        <li>Save it into the folder above as <code>anim-&lt;name&gt;.glb</code> &mdash; <code>anim-walk.glb</code>, <code>anim-idle.glb</code>. Anything matching <code>anim-*.glb</code> is picked up automatically; the clip dropdown labels it with the middle part.</li>
+        <li><b>One clip per file.</b> The preview plays the first animation in a .glb and ignores the rest, so four actions in one export shows up as one clip.</li>
+        <li>Export mesh <em>and</em> armature <em>and</em> action together. Each file is loaded on its own here, so a clip with no skin in it has nothing to move.</li>
+        <li>Hit refresh (or re-pick the creature) to see it in the dropdown.</li>
+      </ul>
+
+      <h4>if you change the skeleton</h4>
+      <ul>
+        <li>It rides inside each <code>anim-*.glb</code>. There is no separate skeleton file to keep in sync.</li>
+        <li>Do not write it back to <code>rig.glb</code> (Tripo's paid artifact, never overwritten) or <code>rig-fixed.glb</code> (regenerated from <code>rig.glb</code> + <code>rig-edit.json</code> every time you save in rig-edit &mdash; your Blender edit would vanish on the next save).</li>
+        <li>Past that point Blender owns the skeleton and <code>rig-edit.json</code> stops describing it. Pick one owner; editing in both is how the names drift apart.</li>
+      </ul>
+
+      <form method="dialog"><button>close</button></form>
+    </dialog>
 
     <script type="module" src="/src/gen-creature-main.js"></script>
   </body>

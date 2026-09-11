@@ -2,6 +2,7 @@ import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
+import { HEM_FRAY } from '../../props/tree-v8.js'
 import {
   createPropMaterial, setSnowLine, setLeafSnowVary,
   getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS,
@@ -533,6 +534,9 @@ export class Trees {
       // No colour alpha to hide a fade timer in on an InstancedMesh; the arena
       // carries a per-instance float instead. See material.js's FADE_VERTEX.
       instancedFade: true,
+      // The ragged edge and the holed mat ride on the near tier alone
+      // (tree-bank.js), so nothing past 8 m is touched by either.
+      hemFray: HEM_FRAY,
     })
     // What the layer SHIPS at, so `setCutout` restores the material's own
     // threshold rather than a number typed here that could drift from it.
@@ -1798,4 +1802,5 @@ export const TREE_TUNING = {
   PLACEMENT_CELL,
   FADE_MAX_INFLIGHT,
   SCALE,
+  HEM_FRAY,
 }

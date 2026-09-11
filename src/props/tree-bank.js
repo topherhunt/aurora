@@ -28,17 +28,23 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 // EACH GENERATOR HANDS OVER TWO GEOMETRIES -- the wood in createPropMaterial's
 // `{position, normal, uvProj, texLayer}` and the crown in a mapped Lambert's
 // `{position, normal, uv, color}` over its species' mat -- and the bank welds
-// them into ONE in the prop layout with `color` on both: the crown's `uv` is
-// the tile coordinate the array's RepeatWrapping already understands, its mat
-// is a layer of the array (LAYER.MAT_*), and wood that carries no baked shade
-// takes white. One geometry a tier, so the arena stays one material and one
-// program with every other prop -- textures.js's "adding a species means
-// adding a layer, not a material". The baked occlusion in `color` is why
-// trees.js asks the material for `vertexColors`.
+// them into ONE in the prop layout with `color` and `hem` on both: the crown's
+// `uv` is the tile coordinate the array's RepeatWrapping already understands,
+// its mat is a layer of the array (LAYER.MAT_*), and wood that carries no
+// baked shade takes white. One geometry a tier, so the arena stays one
+// material and one program with every other prop -- textures.js's "adding a
+// species means adding a layer, not a material". The baked occlusion in
+// `color` is why trees.js asks the material for `vertexColors`, and `hem` is
+// why it asks for `hemFray`.
 //
 // THREE TIERS, FINEST FIRST -- tier 0 is the one you stand under:
 //
-//   0  LOD0   the generator's full tree.
+//   0  LOD0   the generator's full tree. A species with a `nearMat` wears it
+//             here and ONLY here -- the pine's is its mat with holes cut in it
+//             -- and carries its crown's own `hem` so the material can fray
+//             the edge of every bough. No other tier is a cutout: past 8 m a
+//             hole in a bough is a hole in the tree, and the alpha-tested
+//             rim would shimmer at every step.
 //   1  LOD1   the generator's own LOD1: the pine keeps every bough and drops a
 //             station from each; a broadleaf keeps every scoop as two
 //             triangles on LOD0's own corners and straightens its wood to one
@@ -69,7 +75,10 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 
 /**
  * The species the bank knows, in a stable order. `generator` names which
- * builder grows it and `matLayer` the array layer its crown is tiled from.
+ * builder grows it, `matLayer` the array layer its crown is tiled from, and
+ * `nearMat` the holed one the near tier wears instead, if it has one -- the
+ * hem fray rides with it, so a species without a `nearMat` is solid to the
+ * edge at every tier.
  *
  * ONLY THE `planted` ONES ARE BUILT: the world is a pine forest until the
  * broadleaf crowns look right, so the three scoop species stay here, ready,
@@ -77,10 +86,10 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
  * the planted subset, is a variant id.
  */
 export const TREE_BANK_SPECIES = {
-  pine: { generator: 'v8', matLayer: LAYER.MAT_PINE, impostorLayer: LAYER.IMPOSTOR_PINE, billboardTri: 'up', planted: true },
-  oak: { generator: 'oak', matLayer: LAYER.MAT_OAK, impostorLayer: LAYER.IMPOSTOR_OAK, billboardTri: 'down', planted: false },
-  birch: { generator: 'oak', matLayer: LAYER.MAT_BIRCH, impostorLayer: LAYER.IMPOSTOR_BIRCH, billboardTri: 'down', planted: false },
-  aspen: { generator: 'oak', matLayer: LAYER.MAT_ASPEN, impostorLayer: LAYER.IMPOSTOR_ASPEN, billboardTri: 'down', planted: false },
+  pine: { generator: 'v8', matLayer: LAYER.MAT_PINE, nearMat: LAYER.MAT_PINE_ALPHA, impostorLayer: LAYER.IMPOSTOR_PINE, billboardTri: 'up', planted: true },
+  oak: { generator: 'oak', matLayer: LAYER.MAT_OAK, nearMat: null, impostorLayer: LAYER.IMPOSTOR_OAK, billboardTri: 'down', planted: false },
+  birch: { generator: 'oak', matLayer: LAYER.MAT_BIRCH, nearMat: null, impostorLayer: LAYER.IMPOSTOR_BIRCH, billboardTri: 'down', planted: false },
+  aspen: { generator: 'oak', matLayer: LAYER.MAT_ASPEN, nearMat: null, impostorLayer: LAYER.IMPOSTOR_ASPEN, billboardTri: 'down', planted: false },
 }
 
 /** The species the world plants, in table order. */
@@ -150,11 +159,13 @@ function grow(species, tier) {
 const runOf = (count, value) => new Float32Array(count).fill(value)
 
 /**
- * Weld a generator's two geometries into one in the prop layout, `color`
- * included -- see the header. Returns a fresh geometry and disposes neither
- * input; the caller owns all three.
+ * Weld a generator's two geometries into one in the prop layout, `color` and
+ * `hem` included -- see the header. `near` is the tier you stand under: a
+ * species with a `nearMat` tiles its crown from that and keeps the crown's own
+ * `hem`; every other weld is solid to the edge, with hem 0 throughout. Returns
+ * a fresh geometry and disposes neither input; the caller owns all three.
  */
-function weldTree(species, { trunk, foliage, stats }) {
+function weldTree(species, { trunk, foliage, stats }, { near }) {
   const need = (geo, name, ...attrs) => {
     if (!geo.index) throw new Error(`weldTree: ${species} ${name} is not indexed`)
     for (const a of attrs) {
@@ -163,6 +174,9 @@ function weldTree(species, { trunk, foliage, stats }) {
   }
   need(trunk, 'wood', 'position', 'normal', 'uvProj', 'texLayer')
   need(foliage, 'crown', 'position', 'normal', 'uv', 'color')
+  const sp = TREE_BANK_SPECIES[species]
+  const frayed = near && sp.nearMat !== null
+  if (frayed) need(foliage, 'crown', 'hem')
   const nw = trunk.attributes.position.count
   const nc = foliage.attributes.position.count
 
@@ -176,9 +190,10 @@ function weldTree(species, { trunk, foliage, stats }) {
   geo.setAttribute('position', cat(trunk.attributes.position.array, foliage.attributes.position.array, 3))
   geo.setAttribute('normal', cat(trunk.attributes.normal.array, foliage.attributes.normal.array, 3))
   geo.setAttribute('uvProj', cat(trunk.attributes.uvProj.array, foliage.attributes.uv.array, 2))
-  geo.setAttribute('texLayer', cat(trunk.attributes.texLayer.array, runOf(nc, TREE_BANK_SPECIES[species].matLayer), 1))
+  geo.setAttribute('texLayer', cat(trunk.attributes.texLayer.array, runOf(nc, frayed ? sp.nearMat : sp.matLayer), 1))
   const woodShade = trunk.attributes.color ? trunk.attributes.color.array : runOf(nw * 3, 1)
   geo.setAttribute('color', cat(woodShade, foliage.attributes.color.array, 3))
+  geo.setAttribute('hem', cat(runOf(nw, 0), frayed ? foliage.attributes.hem.array : runOf(nc, 0), 1))
 
   const index = new Uint32Array(trunk.index.count + foliage.index.count)
   index.set(trunk.index.array, 0)
@@ -204,10 +219,14 @@ function weldTree(species, { trunk, foliage, stats }) {
   return geo
 }
 
-/** One mesh tier of one species, welded; the generator's own buffers are let go. */
-function buildTier(species, tier) {
+/**
+ * One mesh tier of one species, welded; the generator's own buffers are let
+ * go. `near` defaults to tier 0 being the tier you stand under; the bake
+ * turns it off to photograph the solid tree.
+ */
+function buildTier(species, tier, { near = tier === 0 } = {}) {
   const built = grow(species, tier)
-  const geo = weldTree(species, built)
+  const geo = weldTree(species, built, { near })
   built.trunk.dispose()
   built.foliage.dispose()
   return geo
@@ -292,8 +311,11 @@ export function buildTreeBank({ billboard = true } = {}) {
       const card = buildImpostorCard(ext.width, ext.height, v.impostorLayer, 1,
         { upNormal: true, tri: v.billboardTri, sink: ext.sink })
       // The mesh tiers carry their baked shade in `color`; the card's shade is
-      // in its photograph, so it wears white to share their layout and program.
-      card.setAttribute('color', new THREE.BufferAttribute(runOf(card.attributes.position.count * 3, 1), 3))
+      // in its photograph, so it wears white to share their layout and program,
+      // and hem 0 because a card has no edge to fray.
+      const nCard = card.attributes.position.count
+      card.setAttribute('color', new THREE.BufferAttribute(runOf(nCard * 3, 1), 3))
+      card.setAttribute('hem', new THREE.BufferAttribute(runOf(nCard, 0), 1))
       cards.push(card)
     }
   }
@@ -331,7 +353,9 @@ export function buildTreeBank({ billboard = true } = {}) {
 export function bakeTreeImpostors(renderer, texArray) {
   const done = []
   for (const v of treeVariants()) {
-    const geo = buildTier(v.species, 0)
+    // The SOLID tree, not the frayed one the near tier is: the card takes over
+    // from LOD1, and LOD1 is solid to the edge.
+    const geo = buildTier(v.species, 0, { near: false })
     const u = geo.userData.tree
     const ext = bakeImpostor(renderer, geo, texArray, v.impostorLayer, {
       width: u.crownWidth,

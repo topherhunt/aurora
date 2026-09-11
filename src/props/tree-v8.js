@@ -111,25 +111,49 @@ import { buildTree, crownProfile, TREE_DEFAULTS } from './tree.js'
 // above -- measured per bough, so a short bough under a wide whorl goes darker
 // than a long one beside it. The tip is never shaded.
 //
-// ATTRIBUTES: `{ position, normal, uv, color }` on the foliage and buildTree's
-// `{ position, normal, uvProj, texLayer }` on the trunk, as v6.
+// ATTRIBUTES: `{ position, normal, uv, color, hem }` on the foliage -- `hem`
+// is 0 down a bough's ridge and 1 around its outline, the cloak corners and
+// the tip, for a material that frays the edge -- and buildTree's `{ position,
+// normal, uvProj, texLayer }` on the trunk, as v6.
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2
 const UP = new THREE.Vector3(0, 1, 0)
 
-// One foliage mat per species, and every one is OPAQUE at every tier. See the
-// header: a bough's outline is geometry, so a cut-out mat would only be paying
-// an alpha test to erase pixels the silhouette already does not have. All four
-// are checked opaque -- an RGBA file whose alpha is 255 everywhere -- because a
-// hole in one of these would render as whatever colour is underneath it rather
-// than as a hole.
+// One foliage mat per species, OPAQUE: a bough's outline is geometry, so past
+// the near tier a cut-out would only be paying an alpha test to erase pixels
+// the silhouette already does not have, and a hole in one of these renders as
+// whatever is underneath it rather than as a hole.
 export const V8_MATS = {
   pine: '/trees/mat_pine.png',
   oak: '/trees/mat_oak.png',
   aspen: '/trees/mat_aspen.png',
   birch: '/trees/mat_birch.png',
 }
+
+// The holed mat a species' NEAR tier wears instead, over the same cloaks, with
+// the edge frayed to match (HEM_FRAY, below). Null is solid to the edge at
+// every tier. tree-bank.js pairs this with the atlas layer the world draws
+// from; gen-tree-v8-main.js loads it straight.
+export const V8_NEAR_MATS = {
+  pine: '/trees/mat_pine_128-alpha.png',
+  oak: null,
+  aspen: null,
+  birch: null,
+}
+
+// The ragged edge on a near bough, see material.js's hemFrayFragment. `keep`
+// is how far out from the ridge the cut sits on average and `band` how far it
+// wanders either way from straw to straw; keep + band / 2 is 1, so the
+// longest straw just reaches the polygon's edge and the straight line never
+// shows. `straws` is teeth per mat repeat down the bough -- at the pine's
+// 1 m repeat one every 4 cm -- and `wisp` the needle-scale nibble the mat's
+// own brightness adds, with `lumaLo..lumaHi` that mat's tenth-to-ninetieth
+// percentile of needle brightness in LINEAR light (mat_pine_128-alpha.png
+// measures 0.048..0.206). One set of numbers, not one per species: the world
+// compiles them into the one program every tree shares, and the pine is the
+// only species with a near mat.
+export const HEM_FRAY = { keep: 0.7, band: 0.6, straws: 24, wisp: 0.12, lumaLo: 0.05, lumaHi: 0.2 }
 
 export const TREE_V8_DEFAULTS = {
   seed: 78480,
@@ -306,7 +330,7 @@ export const TREE_V8_SPECIES = {
   // The tree the generator was written for: a spire, whorled, with the widest
   // ring at the very bottom (`crownPeak` 0) and boughs that hang more than they
   // reach.
-  pine: { label: 'pine', mat: V8_MATS.pine, params: {} },
+  pine: { label: 'pine', mat: V8_MATS.pine, nearMat: V8_NEAR_MATS.pine, params: {} },
 
   // OAK, and the ONE ASCENDING crown in the bank -- everything the header says
   // about the second form is here or nowhere. A short thick bole under a crown
@@ -325,6 +349,7 @@ export const TREE_V8_SPECIES = {
   oak: {
     label: 'oak',
     mat: V8_MATS.oak,
+    nearMat: V8_NEAR_MATS.oak,
     params: {
       seed: 10496,
       height: 9,
@@ -355,6 +380,7 @@ export const TREE_V8_SPECIES = {
   aspen: {
     label: 'aspen',
     mat: V8_MATS.aspen,
+    nearMat: V8_NEAR_MATS.aspen,
     params: {
       seed: 30917,
       height: 6,
@@ -385,6 +411,7 @@ export const TREE_V8_SPECIES = {
   birch: {
     label: 'birch',
     mat: V8_MATS.birch,
+    nearMat: V8_NEAR_MATS.birch,
     params: {
       seed: 62755,
       height: 6,
@@ -788,6 +815,7 @@ export function buildFoliageV8(options, frame) {
   const normals = []
   const uvs = []
   const shades = []
+  const hems = []
   const indices = []
 
   const e1 = new THREE.Vector3()
@@ -880,14 +908,16 @@ export function buildFoliageV8(options, frame) {
   const rise = (y, r) =>
     Math.max(0, p.skirtTop * H - y) * Math.max(0, p.skirtDrop) + r * Math.max(0, p.dropByHeight)
 
-  // One vertex: place it, author its normal, and give it a uv and a shade. `u`
-  // and `v` come in as metres ACROSS and ALONG the bough and are turned into
-  // the bough's own mat frame here. The normal is forced to the SKYWARD side of
+  // One vertex: place it, author its normal, and give it a uv, a shade and a
+  // hem-ness -- 0 on the ridge, 1 on the outline, so a material can fray the
+  // edge of a bough without knowing which vertex is which. `u` and `v` come in
+  // as metres ACROSS and ALONG the bough and are turned into the bough's own
+  // mat frame here. The normal is forced to the SKYWARD side of
   // its own surface before the `leafSkyward` turn, because a bough is one cell
   // thick and lit from everywhere -- a panel normal taken with its sign would
   // send half of every cloak black under any rig, which is the same argument
   // material.js makes for its cards.
-  const push = (at, normal, u, v, shade) => {
+  const push = (at, normal, u, v, shade, edge) => {
     positions.push(at.x, at.y, at.z)
     nrm.copy(normal)
     if (nrm.dot(w) < 0) nrm.negate()
@@ -899,6 +929,7 @@ export function buildFoliageV8(options, frame) {
     normals.push(nrm.x, nrm.y, nrm.z)
     uvs.push(matU + u * matCos - v * matSin, matV + u * matSin + v * matCos)
     shades.push(shade, shade, shade)
+    hems.push(edge)
     widest = Math.max(widest, Math.hypot(at.x, at.z))
   }
 
@@ -1105,11 +1136,15 @@ export function buildFoliageV8(options, frame) {
       // and to the spine's, the latter taken across the station's NEIGHBOURS so
       // that a hard bow does not put a crease down the ridge. This is what
       // makes the top of a bough the brightest line on it. The interior shades
-      // are placeholders -- the coverage pass below owns them.
+      // are placeholders -- the coverage pass below owns them. The tip is on
+      // the outline, so it takes the corners' hem: the run from the last corner
+      // out to it is the longest stretch of edge on the bough, and with the tip
+      // at 0 that whole run would stay a straight line through the fray. The
+      // butt station stays at 0 -- it sits on the trunk, under the whorl.
       for (let j = 0; j < ns; j++) {
         tan.copy(sp[Math.min(ns - 1, j + 1)]).sub(sp[Math.max(0, j - 1)])
         nrm.crossVectors(side, tan)
-        push(sp[j], nrm, 0, sv[j] / tex, j === 0 ? apexShade : 1)
+        push(sp[j], nrm, 0, sv[j] / tex, j === 0 ? apexShade : 1, j === ns - 1 ? 1 : 0)
       }
 
       // The cloak corners, left side then right. Each takes the normal of ITS
@@ -1150,7 +1185,7 @@ export function buildFoliageV8(options, frame) {
           tan.copy(sp[j + 1]).sub(sp[j])
           arm.copy(hem).sub(sp[j])
           nrm.crossVectors(tan, arm)
-          push(hem, nrm, (sg * half) / tex, at(sv) / tex, 1)
+          push(hem, nrm, (sg * half) / tex, at(sv) / tex, 1, 1)
         }
       }
 
@@ -1223,6 +1258,7 @@ export function buildFoliageV8(options, frame) {
   // built with vertexColors on to read this at all -- silently ignored
   // otherwise, and the crown comes back flat with nothing to say why.
   geo.setAttribute('color', new THREE.Float32BufferAttribute(shades, 3))
+  geo.setAttribute('hem', new THREE.Float32BufferAttribute(hems, 1))
   geo.setIndex(indices)
   geo.computeBoundingBox()
   geo.computeBoundingSphere()

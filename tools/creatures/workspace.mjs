@@ -70,11 +70,12 @@ export function writeState(id, state) {
  * instead of silently overwriting an image that was paid for. Deleting a
  * candidate leaves a hole, which the next generation fills.
  *
- * The prompt and frame are recorded WITH the image. The description field is
- * editable and images are generated in batches, so "which words produced this
- * picture" stops being answerable from memory after about four of them.
+ * The prompt, frame and model are recorded WITH the image. The description
+ * field is editable and images are generated in batches, so "which words
+ * produced this picture" stops being answerable from memory after about four
+ * of them.
  */
-export function saveCandidate(id, buffer, cost, { prompt = null, aspectRatio = null } = {}) {
+export function saveCandidate(id, buffer, cost, { prompt = null, aspectRatio = null, model = null } = {}) {
   const dest = path.join(workDir(id), 'candidates')
   fs.mkdirSync(dest, { recursive: true })
   let file = null
@@ -88,7 +89,7 @@ export function saveCandidate(id, buffer, cost, { prompt = null, aspectRatio = n
   }
   if (!file) throw new Error(`no free candidate slot for "${id}" -- 1000 images is not a workflow`)
   const state = readState(id)
-  state.candidates.push({ file, cost, prompt, aspectRatio })
+  state.candidates.push({ file, cost, prompt, aspectRatio, model })
   writeState(id, state)
   return file
 }
@@ -273,7 +274,7 @@ export async function runMesh(id, opts = {}) {
   const source = path.join(dir, 'source.png')
   if (!fs.existsSync(source)) throw new Error(`no source.png for "${id}" -- pick a candidate image first`)
 
-  const params = { model: MODELS.p1, faceLimit: 500, quad: true, texture: true, pbr: false, ...opts }
+  const params = { model: MODELS.p1, faceLimit: 2000, quad: true, texture: true, pbr: false, ...opts }
   const credits = estimateCredits({ step: 'mesh', ...params })
 
   const fileToken = await uploadImage(fs.readFileSync(source), `${id}.png`)
@@ -419,7 +420,9 @@ export function assets(id) {
   const lods = state.pickedMesh ? lodsOf(id, state.pickedMesh).map((l) => `meshes/${l.file}`) : []
   // `mesh` is the working file's name, not a flag: the bench has to fetch it,
   // and which loader it needs is in the extension.
-  return { source: has('source.png'), mesh: workingMesh(dir), rig: has('rig.glb'), anims, lods, meshCount: (state.meshes ?? []).length, state }
+  // `rigFixed` is the rig editor's output -- the same skeleton with our bone
+  // vocabulary on it. It is what Blender should import, when it exists.
+  return { source: has('source.png'), mesh: workingMesh(dir), rig: has('rig.glb'), rigFixed: has('rig-fixed.glb'), anims, lods, meshCount: (state.meshes ?? []).length, state }
 }
 
 // --- the asset index --------------------------------------------------------

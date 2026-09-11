@@ -122,7 +122,13 @@ export class PeerAvatars {
   /** A fresh body: the template's meshes with their own materials, scaled to stature, feet on the origin, facing -Z. */
   makeBody(template, entry) {
     const model = template.clone()
-    model.traverse((o) => { if (o.isMesh) o.material = o.material.clone() })
+    model.traverse((o) => {
+      if (!o.isMesh) return
+      o.material = o.material.clone()
+      // Tripo exports some bodies doubleSided, which the GLTFLoader honours;
+      // a closed mesh never shows its inside, so cull it like everything else.
+      o.material.side = THREE.FrontSide
+    })
     model.rotation.y = Math.PI / 2
     model.scale.setScalar(entry.heightM)
     model.position.y = entry.heightM / 2

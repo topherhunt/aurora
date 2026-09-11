@@ -639,11 +639,11 @@ const bankSpecies = plantedSpecies()
     `${lo[last - 1]}-${hi[last - 1]} then ${lo[last]}-${hi[last]} triangles`)
 
   // One material and one program over the whole arena, so every geometry has
-  // to carry exactly what createPropMaterial({ vertexColors }) reads: the two
-  // generators' wood and crown are welded into this layout and the card is
-  // padded to it, and a stray `uv` or a missing `color` is a boot failure for
-  // the entire forest rather than a wrong-looking tree.
-  const PROP_LAYOUT = 'color,normal,position,texLayer,uvProj'
+  // to carry exactly what createPropMaterial({ vertexColors, hemFray }) reads:
+  // the two generators' wood and crown are welded into this layout and the
+  // card is padded to it, and a stray `uv` or a missing `color` is a boot
+  // failure for the entire forest rather than a wrong-looking tree.
+  const PROP_LAYOUT = 'color,hem,normal,position,texLayer,uvProj'
   const layouts = new Set()
   let indexed = true
   for (const t of bank.tiers) {
@@ -664,6 +664,31 @@ const bankSpecies = plantedSpecies()
     return false
   })
   check(shaded, 'every LOD0 tree carries some baked shade in its colour, so the weld kept the bake')
+
+  // THE CUTOUT STOPS AT 8 m. Only the near tier wears the holed mat and a hem
+  // the material can fray; LOD1 and the card are solid to the edge, so no
+  // alpha-tested rim shimmers in the distance. Both halves per tier: a far tier
+  // wearing the holed mat is a hole in the tree, and one carrying a hem is an
+  // edge the shader would eat.
+  const layersOf = (g) => new Set(Array.from(g.attributes.texLayer.array))
+  const hemMax = (g) => Math.max(...g.attributes.hem.array)
+  const nearHoled = variants.every((v, i) => {
+    const g = bank.tiers[0].geometries[i]
+    const sp = TREE_BANK_SPECIES[v.species]
+    return layersOf(g).has(sp.nearMat) && !layersOf(g).has(sp.matLayer) && hemMax(g) === 1
+  })
+  check(nearHoled, 'the near tier wears the holed mat and carries a hem to fray',
+    variants.map((v) => `${v.species} ${TREE_BANK_SPECIES[v.species].nearMat}`).join(', '))
+  const farSolid = bank.tiers.slice(1).every((t) => t.geometries.every((g, i) => {
+    const sp = TREE_BANK_SPECIES[variants[i].species]
+    return !layersOf(g).has(sp.nearMat) && hemMax(g) === 0
+  }))
+  check(farSolid, 'every tier past the near one is solid to the edge, with hem 0 and the solid mat')
+  // The near mat is a real file of its own, not the solid one under a second
+  // name, and the alpha in it is the whole point.
+  const nearFiles = variants.map((v) => IMAGE_LAYERS[TREE_BANK_SPECIES[v.species].nearMat])
+  check(nearFiles.every((f, i) => f && f !== IMAGE_LAYERS[variants[i].matLayer]),
+    'each near mat is its own image in the array', nearFiles.join(', '))
   // The crown's mat is a layer of the array like every other prop's skin.
   const matsIn = variants.every((v) => Number.isInteger(v.matLayer) && v.matLayer >= 0 && v.matLayer < LAYER_COUNT)
   check(matsIn, 'every species mat is a layer inside the texture array',

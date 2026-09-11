@@ -34,9 +34,10 @@ let library = [] // every creature the bench knows about: roster seeds + anythin
 let presets = {}
 let frames = {} // rigType -> the frame a creature with that silhouette gets by default
 let credits = {}
+let imageModels = [] // the image models the server will bill for, cheapest first
 let candidates = []
 let meshCandidates = []
-let assets = { source: false, mesh: null, rig: false, anims: [], lods: [], state: {} }
+let assets = { source: false, mesh: null, rig: false, rigFixed: false, anims: [], lods: [], state: {} }
 // The mesh candidate section 4 operates on. Not the same thing as the PICKED
 // candidate: picking is what rigs and ships, selecting is what you are currently
 // comparing ladders for, and the whole point of keeping every candidate is being
@@ -74,12 +75,19 @@ async function loadRoster() {
   // middleware does not hot-reload, so a dev server older than this page is the
   // way that happens.
   if (!j.ok) throw new Error(j.error ?? 'GET /__creature-roster failed')
-  for (const k of ['presets', 'frames', 'credits']) {
+  for (const k of ['presets', 'frames', 'credits', 'imageModels']) {
     if (!j[k]) throw new Error(`/__creature-roster answered without "${k}" -- restart the dev server, its middleware is older than this page`)
   }
   presets = j.presets
   frames = j.frames
   credits = j.credits
+  imageModels = j.imageModels
+  // The list comes from the server because the server is what enforces it: an id
+  // the select does not offer is refused rather than billed. Cheapest first, so
+  // the default is FLUX.
+  $('imageModel').innerHTML = imageModels
+    .map((m) => `<option value="${m.id}">${m.label} (~$${m.usd.toFixed(3)})</option>`).join('')
+  updateImagePrice()
   if (!j.hasTripoKey) setStatus('TRIPO_API_KEY is not set -- the 3D steps will fail until it is in .env', 'warn')
 
   const rigSel = $('rigType')
@@ -92,6 +100,13 @@ async function loadRoster() {
   $('genMesh').textContent = `generate mesh ($${(credits.mesh / 100).toFixed(2)})`
   $('genRig').textContent = `rig ($${(credits.rig / 100).toFixed(2)})`
 }
+
+function updateImagePrice() {
+  const m = imageModels.find((x) => x.id === $('imageModel').value)
+  if (!m) throw new Error(`image model "${$('imageModel').value}" is not one the server offers`)
+  $('genImage').textContent = `generate candidate (~$${m.usd.toFixed(3)})`
+}
+$('imageModel').addEventListener('change', updateImagePrice)
 
 /**
  * Reads the Tripo wallet at startup. Costs nothing, and it is the difference
@@ -273,6 +288,20 @@ $('newCreature').addEventListener('click', () => withButton($('newCreature'), 'c
   setStatus(`created ${id} -- generate a candidate image to start`, 'ok')
 }))
 
+// The description is only the last line of the prompt: the studio, the pose
+// clause for the rig type and the lighting rules are wrapped around it on the
+// server, so the preview asks the server rather than guessing at the wrapping.
+$('previewPrompt').addEventListener('click', () => withButton($('previewPrompt'), 'composing', async () => {
+  const j = await post('/__creature-prompt', {
+    description: $('description').value.trim(),
+    rigType: $('rigType').value,
+    aspectRatio: $('aspectRatio').value,
+  })
+  $('promptDialogText').textContent = `${j.aspectRatio} frame, ${$('imageModel').selectedOptions[0].textContent}\n\n${j.prompt}`
+  $('promptDialog').showModal()
+  setStatus('prompt composed -- nothing generated', 'ok')
+}))
+
 // --- disk state -> which buttons are live ----------------------------------
 
 async function refresh() {
@@ -312,6 +341,8 @@ async function refresh() {
   $('rigCheck').disabled = !assets.mesh
   $('genRig').disabled = !assets.mesh
   $('genAnim').disabled = !assets.rig
+  // A mesh, not a rig: the armature is one of the things Blender can supply.
+  $('blenderRoundTrip').disabled = !assets.mesh
   renderClipSelect()
 }
 
@@ -543,14 +574,15 @@ $('genImage').addEventListener('click', () => {
 })
 
 async function queueImage() {
-  // Read now, not when the response lands: the prompt field is editable and a
-  // queued generation belongs to the words that were on screen when it was asked
-  // for.
+  // Read now, not when the response lands: the prompt field and model are
+  // editable and a queued generation belongs to what was on screen when it was
+  // asked for.
   const body = {
     id: currentId(),
     description: $('description').value.trim(),
     rigType: $('rigType').value,
     aspectRatio: $('aspectRatio').value,
+    model: $('imageModel').value,
   }
   pendingImages++
   renderGallery()
@@ -561,7 +593,7 @@ async function queueImage() {
     pendingImages--
     // The server's own copy, not the page's reconstruction of it: "is my edit
     // even being used" is otherwise unanswerable without reading the source.
-    $('promptOut').querySelector('pre').textContent = `${body.aspectRatio} frame\n\n${j.prompt}`
+    $('promptOut').querySelector('pre').textContent = `${body.aspectRatio} frame, ${j.model}\n\n${j.prompt}`
     await refresh()
     setStatus(`candidate saved (${j.file}), $${j.cost.toFixed(4)}${pendingImages ? ` -- ${pendingImages} still generating` : ''}`, 'ok')
   } catch (e) {
@@ -670,6 +702,49 @@ $('genAnim').addEventListener('click', () => withButton($('genAnim'), 'retargeti
   await refresh()
   setStatus(`${j.files.length} clip(s) written (${j.credits} credits)`, 'ok')
 }))
+
+// A click on a <dialog>'s backdrop targets the dialog element itself, so the
+// hit test is against its box rather than the event target: the dialog has
+// padding, and a click landing in that padding is inside the popup even though
+// it targets the same element the backdrop does.
+for (const dlg of document.querySelectorAll('dialog')) {
+  dlg.addEventListener('click', (e) => {
+    if (e.target !== dlg) return
+    const r = dlg.getBoundingClientRect()
+    const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
+    if (!inside) dlg.close()
+  })
+}
+
+// --- the Blender round trip -------------------------------------------------
+//
+// Authoring clips is Blender's job, not ours, so the bench's whole part in it
+// is telling you where the files go. The instructions live in the dialog's
+// markup; what is computed here is the path and which file to import, because
+// that differs by how far the creature has got.
+
+const workPath = (id) => `tools/creatures/work/${id}`
+
+$('blenderRoundTrip').addEventListener('click', () => {
+  const id = currentId()
+  $('blenderDir').textContent = `${workPath(id)}/`
+  // Whatever is furthest along: rig-fixed.glb once the rig editor has saved
+  // names to it, rig.glb if Tripo rigged it, and otherwise the bare mesh --
+  // which is the right import when the armature is Blender's job too.
+  $('blenderImport').textContent = assets.rigFixed ? 'rig-fixed.glb' : assets.rig ? 'rig.glb' : assets.mesh
+  $('blenderNoRig').hidden = assets.rig
+  $('blenderDialog').showModal()
+})
+
+$('blenderReveal').addEventListener('click', () => withButton($('blenderReveal'), 'opening Finder', async () => {
+  const j = await post(`/__creature-reveal?id=${encodeURIComponent(currentId())}`, {})
+  setStatus(j.revealed ? `Finder: ${j.revealed} in ${j.dir}` : `Finder: ${j.dir}`, 'ok')
+}))
+
+$('blenderCopy').addEventListener('click', async () => {
+  await navigator.clipboard.writeText(`${workPath(currentId())}/`)
+  setStatus('path copied', 'ok')
+})
 
 // --- 3D preview -------------------------------------------------------------
 
@@ -960,8 +1035,8 @@ function toPlainMesh(geometry) {
 function toGeometry(mesh, colors) {
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3))
-  // A drop-mode tier has no atlas: two corners of one triangle can come from
-  // unrelated islands, so there is no `uv` to set and the colour bake stands in.
+  // A drop-mode tier has no atlas, so there is no `uv` to set and the colour
+  // bake stands in.
   if (mesh.uvs) g.setAttribute('uv', new THREE.BufferAttribute(mesh.uvs, 2))
   if (colors) g.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   if (mesh.normals) g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3))
@@ -1088,12 +1163,14 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
   const plain = toPlainMesh(meshes[0].geometry)
   const weldEps = parseWeld($('lodWeld').value, boundsDiagonal(plain.positions))
   const analysis = analyzeMesh(plain, { weldEps })
-  // The atlas floor: where decimation stops if the UV atlas must survive intact.
-  // One island cannot go below one triangle, so a shattered atlas is a hard floor
-  // no amount of tuning moves, and it is the number that explains a stalled tier.
+  // The atlas floor: where decimation stops if every UV island must survive
+  // exactly. One island cannot go below one triangle, so a shattered atlas is a
+  // hard floor, and it is the number that explains a tier switching to stretch.
   const floor = decimate(plain, 1, { weldEps, uvMode: 'preserve' }).stats.outputTris
   $('meshAnalysis').innerHTML =
     `${analysis.tris} tris, ${analysis.points} welded points &middot; ` +
+    `${analysis.pieces} piece${analysis.pieces === 1 ? '' : 's'}` +
+    `${analysis.pieces === 1 ? '' : ` (${analysis.minorFaces} faces off the main one)`} &middot; ` +
     `${analysis.uvIslands} UV island${analysis.uvIslands === 1 ? '' : 's'} &middot; ` +
     `${analysis.lockedPoints} pinned (${Math.round((analysis.lockedPoints / analysis.points) * 100)}%) &middot; ` +
     `${analysis.lockedFaces} unremovable faces &middot; ` +
@@ -1107,8 +1184,8 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
   const sample = map && map.image ? textureSampler(map.image, map.flipY) : null
   lodTiers = tiers.map((t, i) => {
     const baked = t.stats.uvMode === 'drop' && sample ? bakeColors(t, sample) : null
-    // A tier that gave up the atlas cannot wear the textured material: its
-    // corners index an atlas that no longer describes it.
+    // Preserve and stretch tiers still index the original atlas, so they wear
+    // the source material; only a drop tier has to fall back to the bake.
     const material = baked ? bakedMaterial() : lodMaterial
     const object = new THREE.Mesh(toGeometry(t, baked), material)
     return {
@@ -1123,7 +1200,10 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
       detail:
         `lod${i + 1}: ${t.stats.outputTris} tris (asked ${t.stats.targetTris}, from ${t.stats.inputTris}) &middot; ` +
         `${t.stats.collapses} collapses &middot; ${t.stats.lockedPoints}/${t.stats.totalPoints} points pinned &middot; ` +
-        `${t.stats.uvMode === 'drop' ? 'atlas dropped, texture baked to vertex colours' : 'atlas preserved'}`,
+        `${t.stats.pieces} &rarr; ${t.stats.piecesLeft} pieces (${t.stats.piecesDropped} deleted whole) &middot; ` +
+        (t.stats.uvMode === 'drop' ? 'atlas dropped, texture baked to vertex colours'
+          : t.stats.uvMode === 'stretch' ? `atlas kept, ${t.stats.stretched} collapses stretched texels`
+          : 'atlas preserved exactly'),
     }
   })
 
@@ -1353,7 +1433,8 @@ function renderLodTable() {
   t.innerHTML = `<tr><th>tier</th><th>target</th><th>got</th><th>texture</th><th>${fresh ? 'why it stopped' : 'source'}</th></tr>`
   for (const r of rows) {
     const tr = document.createElement('tr')
-    const texture = r.uvMode === 'cards' ? `2 x ${TEX_SIZE}px cards` : r.uvMode === 'drop' ? 'baked colours' : r.uvMode === 'preserve' ? 'atlas' : 'unrecorded'
+    const texture = r.uvMode === 'cards' ? `2 x ${TEX_SIZE}px cards` : r.uvMode === 'drop' ? 'baked colours'
+      : r.uvMode === 'preserve' ? 'atlas' : r.uvMode === 'stretch' ? 'atlas, stretched' : 'unrecorded'
     tr.innerHTML =
       `<td>lod${r.level}</td><td>${r.target ?? '--'}</td><td>${r.tris ?? '--'}</td>` +
       `<td class="label">${texture}</td><td class="label">${r.reason}</td>`

@@ -1,5 +1,6 @@
 import { dirname, join, relative, resolve } from 'node:path'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { execFile } from 'node:child_process'
 import { defineConfig, loadEnv } from 'vite'
 import { decodePng } from './src/v2/height/png.js'
 import basicSsl from '@vitejs/plugin-basic-ssl'
@@ -692,20 +693,21 @@ function fishGen() {
 // --- creature pipeline: image -> Tripo mesh -> rig -> animation (dev only) --
 //
 // gen-creature.html's bench. Two vendors and two wallets behind these
-// endpoints: OpenRouter (FLUX.2 Klein 4B, ~$0.015) for the candidate image,
-// Tripo (credits at $0.01 each) for everything 3D. The API keys stay here --
-// the page never sees either one.
+// endpoints: OpenRouter (one of IMAGE_MODELS, FLUX.2 Klein 4B at ~$0.015 by
+// default) for the candidate image, Tripo (credits at $0.01 each) for
+// everything 3D. The API keys stay here -- the page never sees either one.
 //
 // The endpoints are split so that SPENDING IS ALWAYS ONE EXPLICIT CLICK, and
 // the four that spend say so in their names' company below:
 //
 //   free     /__creature-roster, /__creature-list, /__creature-candidates,
 //            /__creature-assets, /__creature-save, /__creature-pick,
+//            /__creature-prompt (the assembled prompt, nothing generated),
 //            /__creature-meshes, /__creature-pick-mesh,
-//            /__creature-delete-candidate,
+//            /__creature-delete-candidate, /__creature-reveal (Finder),
 //            /__creature-lod (decimation is ours, not a vendor's),
 //            /__creature-balance, /__creature-rig-check (Tripo prices both at 0)
-//   ~$0.015  /__creature-image
+//   ~$0.015+ /__creature-image (per the chosen model)
 //   ~$0.50   /__creature-mesh
 //   $0.25    /__creature-rig
 //   $0.10/ea /__creature-animate
@@ -768,6 +770,7 @@ function creatureGen() {
         // src/ is a second copy to keep in step.
         frames: Object.fromEntries([...Object.keys(TRIPO_PRESETS), 'none'].map((r) => [r, frameForRig(r)])),
         aspectRatios: ASPECT_RATIOS,
+        imageModels: IMAGE_MODELS,
         credits: {
           mesh: tripoCredits({ step: 'mesh' }),
           rig: tripoCredits({ step: 'rig' }),
@@ -853,6 +856,26 @@ function creatureGen() {
 
       server.middlewares.use('/__creature-assets', json((req) => ({ ok: true, ...creatures.assets(idOf(req)) })))
 
+      // Free, local: opens the creature's work directory in Finder with the
+      // file Blender should import already selected, so the round-trip starts
+      // from a folder rather than a path to retype. `open` is spawned with an
+      // argument array and never a shell string: the id is validated, but this
+      // endpoint is reachable from the LAN (server.host) and a shell here would
+      // be one careless edit away from arbitrary execution.
+      server.middlewares.use('/__creature-reveal', json(async (req) => {
+        postOnly(req)
+        if (process.platform !== 'darwin') throw new Error(`reveal-in-Finder is macOS-only, and this server is on ${process.platform}`)
+        const id = idOf(req)
+        const dir = creatures.workDir(id)
+        if (!existsSync(dir)) throw new Error(`no work directory for "${id}" -- generate a mesh first`)
+        // Whatever is furthest along the pipeline: that is the file to rig or
+        // animate against, and the one the instructions tell you to import.
+        const a = creatures.assets(id)
+        const pick = ['rig-fixed.glb', 'rig.glb', a.mesh].find((f) => f && existsSync(join(dir, f)))
+        await new Promise((ok, fail) => execFile('open', ['-R', pick ? join(dir, pick) : dir], (e) => (e ? fail(e) : ok())))
+        return { ok: true, dir, revealed: pick ?? null }
+      }))
+
       server.middlewares.use('/__creature-meshes', json((req) => ({
         ok: true, meshes: creatures.listMeshes(idOf(req)),
       })))
@@ -870,20 +893,37 @@ function creatureGen() {
       // SPENDS (OpenRouter, ~$0.015). One candidate image, saved to disk
       // immediately -- an image that was paid for and only lived in a tab is
       // an image paid for twice after a reload.
-      server.middlewares.use('/__creature-image', json(async (req) => {
-        postOnly(req)
-        const { id, description, rigType, styleNote, seed, aspectRatio } = JSON.parse(await readBody(req, 1 << 16))
-        if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid creature id "${id}"`)
+      // The prompt and frame exactly as /__creature-image would send them, from
+      // the same code, so the bench can show what the description is wrapped
+      // in without paying for a picture.
+      const composeImageRequest = ({ description, rigType, styleNote, aspectRatio }) => {
         // Defaulted from the rig type rather than to a square -- see
         // FRAME_BY_RIG, the frame outranks the words. Whitelisted rather than
         // passed through: an unknown ratio is a silent 400 from OpenRouter
         // after the request has already been queued and the caller is waiting.
         const ratio = aspectRatio ?? frameForRig(rigType)
         if (!ASPECT_RATIOS.includes(ratio)) throw new Error(`unknown aspect ratio "${ratio}" -- expected one of ${ASPECT_RATIOS.join(', ')}`)
-        const prompt = buildCreaturePrompt({ description, rigType, styleNote })
-        const { buffer, cost } = await generateImage({ prompt, aspectRatio: ratio, seed })
-        const file = creatures.saveCandidate(id, buffer, cost, { prompt, aspectRatio: ratio })
-        return { ok: true, file, cost, prompt }
+        return { prompt: buildCreaturePrompt({ description, rigType, styleNote }), ratio }
+      }
+
+      server.middlewares.use('/__creature-prompt', json(async (req) => {
+        postOnly(req)
+        const { prompt, ratio } = composeImageRequest(JSON.parse(await readBody(req, 1 << 16)))
+        return { ok: true, prompt, aspectRatio: ratio }
+      }))
+
+      server.middlewares.use('/__creature-image', json(async (req) => {
+        postOnly(req)
+        const body = JSON.parse(await readBody(req, 1 << 16))
+        const { id, seed, model } = body
+        if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid creature id "${id}"`)
+        // A model id from the browser picks what the account is billed for, so it
+        // is checked against the offered list rather than passed through.
+        const chosen = requireImageModel(model ?? IMAGE_MODELS[0].id)
+        const { prompt, ratio } = composeImageRequest(body)
+        const { buffer, cost } = await generateImage({ prompt, model: chosen.id, aspectRatio: ratio, seed })
+        const file = creatures.saveCandidate(id, buffer, cost, { prompt, aspectRatio: ratio, model: chosen.id })
+        return { ok: true, file, cost, prompt, model: chosen.id }
       }))
 
       // Free, local: promotes one candidate to source.png, the image every

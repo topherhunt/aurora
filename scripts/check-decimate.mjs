@@ -216,6 +216,27 @@ function earedBall({ rings = 8, segs = 12, earRings = 7, earHeight = 0.5, earBas
   return { mesh: { positions: Float32Array.from(P.flat()), indices: Uint32Array.from(tri.flat()) }, tips }
 }
 
+/**
+ * A body with detached tetrahedra scattered around it: the fen-dragon in
+ * miniature, whose crest is 42 loose four-face spines that no edge collapse can
+ * shrink. Each entry of `pieces` is `{ size, at }`; the body is an icosahedron
+ * of the given radius. No UVs, so the geometry is all that is under test.
+ */
+function bodyWithTets(radius, pieces) {
+  const positions = [], indices = []
+  const add = (pts, tris) => {
+    const base = positions.length / 3
+    positions.push(...pts.flat())
+    indices.push(...tris.flat().map((i) => i + base))
+  }
+  const ico = icosahedron()
+  add(Array.from({ length: 12 }, (_, i) => [0, 1, 2].map((k) => ico.positions[i * 3 + k] * radius)), [Array.from(ico.indices)])
+  for (const { size, at } of pieces) {
+    add([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]].map((p) => p.map((x, k) => at[k] + x * size)), [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
+  }
+  return { positions: Float32Array.from(positions), indices: Uint32Array.from(indices), uvs: null }
+}
+
 /** How far the mesh reaches in direction d -- the silhouette's extent that way. */
 function support(m, d) {
   const len = Math.hypot(d[0], d[1], d[2])
@@ -390,24 +411,50 @@ console.log('\nuvMode: the atlas floor and the way past it')
   check(foreign === 0, 'and every sampleUv is a texture coordinate the input had', `${foreign} foreign`)
 }
 {
+  // Stretch: the same geometry drop reaches, but every corner keeps a UV it
+  // already had, so the tier still wears the original texture. In this fixture
+  // an island is one grid cell, so which island a UV belongs to is arithmetic.
+  const s = shatteredAtlas(10)
+  const island = (u, v) => `${Math.floor(u * 10)},${Math.floor(v * 10)}`
+  const stretched = decimate(s, 60, { uvMode: 'stretch' })
+  check(triCount(stretched) <= 60, 'stretching reaches the target a preserved atlas cannot', `${triCount(stretched)} triangles`)
+  check(stretched.uvs instanceof Float32Array && stretched.sampleUvs === null, 'and still emits a uv attribute')
+  check(stretched.stats.stretched > 0, 'having stretched at least one collapse', String(stretched.stats.stretched))
+  const before = uvSet(s)
+  const foreign = [...uvSet(stretched)].filter((k) => !before.has(k)).length
+  check(foreign === 0, 'every output UV is a texture coordinate the input had', `${foreign} foreign`)
+  let split = 0
+  for (let f = 0; f < triCount(stretched); f++) {
+    const ids = [0, 1, 2].map((k) => { const c = stretched.indices[f * 3 + k]; return island(stretched.uvs[c * 2], stretched.uvs[c * 2 + 1]) })
+    if (ids[0] !== ids[1] || ids[1] !== ids[2]) split++
+  }
+  check(split === 0, 'and every output triangle\'s three UVs lie inside one input island', `${split} straddle`)
+  check(degenerateCount(stretched) === 0, 'with no degenerate triangles', String(degenerateCount(stretched)))
+}
+{
   const s = shatteredAtlas(10)
   const easy = decimate(s, 60, { uvMode: 'auto' })
-  check(easy.stats.uvMode === 'drop', 'auto gives up the atlas when preserving cannot hit the target', easy.stats.uvMode)
+  check(easy.stats.uvMode === 'stretch', 'auto stretches the atlas when preserving cannot hit the target', easy.stats.uvMode)
   check(triCount(easy) <= 60, 'and hits it', `${triCount(easy)} triangles`)
 
   const g = bumpyGrid(20)
   const cheap = decimate(g, 200, { uvMode: 'auto' })
-  check(cheap.stats.uvMode === 'preserve', 'and keeps it when preserving is enough', cheap.stats.uvMode)
+  check(cheap.stats.uvMode === 'preserve', 'and preserves it exactly when that is enough', cheap.stats.uvMode)
   check(cheap.uvs instanceof Float32Array, 'so a continuous chart still comes back textured')
 }
 {
+  const src = shatteredAtlas(10)
+  const before = uvSet(src)
+  const tiers = decimateLadder(src, [140, 60], { uvMode: 'auto' })
+  check(tiers.every((t) => t.stats.uvMode === 'stretch' && t.uvs instanceof Float32Array), 'every tier of a shattered ladder stays textured',
+    tiers.map((t) => t.stats.uvMode).join(' -> '))
+  check([...uvSet(tiers[1])].every((k) => before.has(k)), 'and the coarsest tier\'s UVs all come from the source')
+  check(triCount(tiers[1]) <= 60, 'the coarsest tier reaches its target', `${triCount(tiers[1])} triangles`)
+
   // Chaining is where sample coordinates are easiest to mistake for an atlas:
   // tier 2 sees a mesh with no uvs and must not promote sampleUvs into the slot.
-  const tiers = decimateLadder(shatteredAtlas(10), [140, 60], { uvMode: 'auto' })
-  check(tiers.every((t) => t.stats.uvMode === 'drop'), 'every tier of a shattered ladder drops',
-    tiers.map((t) => t.stats.uvMode).join(' -> '))
-  check(tiers.every((t) => t.uvs === null && t.sampleUvs), 'and no later tier re-emits sample coordinates as an atlas')
-  check(triCount(tiers[1]) <= 60, 'the coarsest tier reaches its target', `${triCount(tiers[1])} triangles`)
+  const dropped = decimateLadder(src, [140, 60], { uvMode: 'drop' })
+  check(dropped.every((t) => t.uvs === null && t.sampleUvs), 'a drop ladder never re-emits sample coordinates as an atlas')
 }
 check(throws(() => decimate(grid(4), 4, { uvMode: 'sometimes' })), 'an unknown uvMode throws rather than guessing')
 
@@ -457,8 +504,10 @@ console.log('\nreduction')
     uvs: Float32Array.from([0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1]),
     indices: Uint32Array.from([0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6]),
   }
-  const out = decimate(cube, 1)
+  const out = decimate(cube, 1, { dropIslands: false })
   check(triCount(out) === 4, 'an all-boundary mesh refuses to reduce', `${triCount(out)} triangles`)
+  const culled = decimate(cube, 1)
+  check(triCount(culled) === 2 && culled.stats.piecesDropped === 1, 'unless a whole detached piece can go', `${triCount(culled)} triangles`)
   check(/ran out of legal collapses/.test(out.stats.reason), 'and reports why', out.stats.reason)
   // lockedFaces predicts that refusal ahead of time, which is what makes it
   // worth showing in the bench rather than discovering by running a decimation.
@@ -535,6 +584,65 @@ console.log('\nsmall features survive a hard decimation')
 
   check(triCount(kept) === triCount(flat), 'the ears are kept at the same triangle count, not by stopping early',
     `${triCount(kept)} vs ${triCount(flat)}`)
+}
+
+// --- detached pieces --------------------------------------------------------
+
+console.log('\ndetached pieces go before the body does')
+{
+  // A big body, one medium piece and six specks, all far enough apart that no
+  // weld joins them.
+  const specks = Array.from({ length: 6 }, (_, i) => ({ size: 0.05, at: [8 + i * 0.5, 0, 0] }))
+  const medium = { size: 1.5, at: [-9, 0, 0] }
+  const mesh = bodyWithTets(5.7, [medium, ...specks])
+  const a = analyzeMesh(mesh)
+  check(a.pieces === 8 && a.minorFaces === 28, 'analyzeMesh counts the pieces and the faces off the main one', `${a.pieces} pieces, ${a.minorFaces} faces`)
+
+  // 24 = the body plus the medium piece: the specks must go and nothing else.
+  // Whether a speck is deleted whole or folds away edge by edge is a tie
+  // between two near-zero costs, so these check what is left, not which path
+  // took it.
+  const some = decimate(mesh, 24)
+  check(analyzeMesh(some).pieces === 2 && triCount(some) === 24, 'the smallest pieces go first', `${analyzeMesh(some).pieces} pieces, ${triCount(some)} triangles`)
+  check(support(some, [-1, 0, 0]) >= 9, 'and the medium piece is still standing', support(some, [-1, 0, 0]).toFixed(2))
+
+  const body = boundsOf(icosahedron()).map((v) => v * 5.7)
+  const all = decimate(mesh, 20)
+  check(analyzeMesh(all).pieces === 1 && triCount(all) === 20, 'at the body\'s own count every other piece is gone', `${analyzeMesh(all).pieces} pieces, ${triCount(all)} triangles`)
+  check(boundsOf(all).every((v, k) => Math.abs(v - body[k]) < 1e-5), 'and the body itself is untouched')
+
+  const floor = decimate(mesh, 1)
+  check(triCount(floor) > 0 && analyzeMesh(floor).pieces === 1, 'the largest piece is never deleted, however low the target', `${triCount(floor)} triangles`)
+
+  const kept = decimate(mesh, 20, { dropIslands: false })
+  check(kept.stats.piecesDropped === 0 && analyzeMesh(kept).pieces === 1 && boundsOf(kept).every((v, k) => Math.abs(v - body[k]) < 1e-5),
+    'dropIslands:false deletes nothing whole; the tetrahedra still fold away before the body pays', `${triCount(kept)} triangles`)
+}
+
+console.log('\na ridge of pillows folds away')
+{
+  // Eight pillows -- two faces back to back on three points -- chained along a
+  // line by shared base points, floating over a body. Each has one vertex
+  // opposite its base edge, not two, and the link condition must allow that
+  // or the ridge can never lose a triangle.
+  const positions = [], indices = []
+  const ico = icosahedron()
+  positions.push(...Array.from(ico.positions, (x) => x * 5))
+  indices.push(...ico.indices)
+  const N = 8, base = 12
+  for (let i = 0; i <= N; i++) positions.push(i * 0.4, 10, 0)
+  for (let i = 0; i < N; i++) {
+    positions.push(i * 0.4 + 0.2, 10.5, 0)
+    const q = base + N + 1 + i
+    indices.push(base + i, base + i + 1, q, base + i + 1, base + i, q)
+  }
+  const mesh = { positions: Float32Array.from(positions), indices: Uint32Array.from(indices), uvs: null }
+  check(analyzeMesh(mesh).pieces === 2 && triCount(mesh) === 20 + 2 * N, 'the ridge is one piece of 16 triangles')
+  const out = decimate(mesh, 20, { dropIslands: false })
+  check(triCount(out) === 20 && analyzeMesh(out).pieces === 1 && support(out, [0, 1, 0]) < 9,
+    'and is gone at the body\'s own count with deletion off', `${triCount(out)} triangles, reaches y=${support(out, [0, 1, 0]).toFixed(2)}`)
+  const one = decimate({ positions: mesh.positions.slice(base * 3), indices: Uint32Array.from(indices.slice(60).map((i) => i - base)) }, 1)
+  check(triCount(one) === 2, 'a lone pillow ridge stops at one pillow rather than emptying the mesh', `${triCount(one)} triangles`)
 }
 
 // --- failure modes ----------------------------------------------------------

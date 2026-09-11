@@ -168,6 +168,27 @@ for (const [label, preset] of Object.entries(WIND_PRESETS)) {
   check(preset.branch > 0, `${label}: branch ${preset.branch} is live, not zeroed out`)
 }
 
+console.log('\n=== wind: one forest is not one metronome ===\n')
+
+// The travelling wave alone puts trees 10 m apart 0.6 rad apart in phase, so a
+// hillside rocks in step. A per-instance phase hashed off the root breaks the
+// lockstep; the same silent-deletion hazard as the branch term above, so the
+// same shape of gate: the hash exists, it feeds the carrier phase, and the tree
+// preset asks for a full cycle of it. The gust keeps a fraction so a front still
+// visibly crosses the meadow.
+{
+  const { src } = vertexSource({ billboardLayers: [0, 1, 2], wind: 'tree' })
+  check(/float wJitter = fract\( sin\( dot\( fract\( wRoot\.xz/.test(src),
+    'the phase scatter is hashed off the ROOT, with fract() before the sin()')
+  check(/float wPhase =[^;]*wJitter \*/s.test(src), 'and the carrier phase carries it')
+  check(/float wGust =[^;]*wJitter \*/s.test(src), 'and so does the gust envelope')
+}
+check(WIND_PRESETS.tree.jitter >= 1, `tree: jitter ${WIND_PRESETS.tree.jitter} scatters the carrier by a full cycle`)
+for (const [label, preset] of Object.entries(WIND_PRESETS)) {
+  check(preset.jitter > 0 && preset.gustJitter > 0, `${label}: jitter ${preset.jitter} / gustJitter ${preset.gustJitter} are live`)
+  check(preset.gustJitter < 0.5, `${label}: gustJitter ${preset.gustJitter} leaves the gust front intact`)
+}
+
 console.log('\n=== wind: nothing pays for wind it did not ask for ===\n')
 
 {

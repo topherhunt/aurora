@@ -437,6 +437,21 @@ const PROP_VARIANTS = [
     { batched: false, instanced: true },
     { vert: [...PROP_MARKS.vert, ...SEASON_MARKS.vert], frag: [...PROP_MARKS.frag, ...SEASON_MARKS.frag] },
   ],
+  // THE FOREST'S OWN PROGRAM, with the hem fray that appears under no other
+  // option: a `hem` attribute carried to the fragment stage and a discard keyed
+  // on it. Instanced, as trees.js draws it, so aPropFade compiles too.
+  [
+    'trees: wind, cards, hem fray, instanced',
+    createPropMaterial(atlas, {
+      billboardLayers: [0, 1, 2], wind: 'tree', vertexColors: true, instancedFade: true,
+      hemFray: { keep: 0.7, band: 0.6, straws: 24, wisp: 0.12, lumaLo: 0.05, lumaHi: 0.2 },
+    }),
+    { batched: false, instanced: true },
+    {
+      vert: [...PROP_MARKS.vert, 'attribute float hem;', 'vHem = hem;', 'aPropFade'],
+      frag: [...PROP_MARKS.frag, 'varying float vHem;', 'hemTooth(', 'if ( vHem >'],
+    },
+  ],
   [
     'impostor bake',
     createImpostorBakeMaterial(atlas),
