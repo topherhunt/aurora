@@ -26,6 +26,8 @@ import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood } from './render/deadwood.js'
 import { Fish } from './render/fish.js'
+import { Frogs } from './render/frogs.js'
+import { Crabs } from './render/crabs.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeLitterSet } from '../props/litter.js'
@@ -49,7 +51,7 @@ import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murk
 import { WorldClock, CLOCK } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { SkyProbe } from '../sky-probe.js'
-import { WorldProbe } from '../world-probe.js'
+import { WorldProbe, WORLD_PROBE } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
 import { PeerAvatars } from './render/avatar.js'
@@ -538,6 +540,49 @@ SkyProbe.include(aurora.mesh)
 // turns "is there land along this ray" into "yes, always". See world-probe.js.
 worldProbe.exclude(water.group, sky.mesh, stars.points, aurora.mesh)
 
+// WHERE THE WORLD PROBE CAPTURES FROM: out on the water, not on the bank beside
+// her. Anchored at her own x/z, a shoreline capture is taken from among the
+// trunks and boulders of the shore, and the lake then reflects the near side of
+// a tree standing between the probe and the water -- a trunk drawn across the
+// far mountains. So each re-anchor searches a few rings around her for VISIBLE
+// water, meaning the drawn polygon covers the point AND the walk surface (the
+// field, lifted onto any boulder) sits under the level by a margin, and takes
+// the deepest point on the nearest ring that has one. Deepest is the cheap proxy
+// for "furthest from every shore". Nothing within reach means the old rule, her
+// own x/z under the duck floor, which is what a lake seen from a hilltop wants.
+//
+// Cost: at most 4 rings x 12 azimuths of levelAt + heightAt, and only on the
+// frame a re-anchor fires -- once per 12 m walked, at most once per second.
+const PROBE_VANTAGE = {
+  near: 2.5,   // innermost ring, metres: "at least a couple of metres out"
+  step: 2.5,
+  rings: 4,    // outermost is near + (rings - 1) * step = 10 m
+  azimuths: 12,
+  // How far the ground must sit under the surface for the point to count. The
+  // camera goes at level + WORLD_PROBE.height with a 0.3 m near plane, and the
+  // drawn mesh sits a few centimetres either side of the field.
+  minDepth: 0.3,
+}
+function probeVantage(head, out) {
+  let bestDepth = 0
+  for (let ring = 0; ring < PROBE_VANTAGE.rings; ring++) {
+    const r = PROBE_VANTAGE.near + ring * PROBE_VANTAGE.step
+    for (let i = 0; i < PROBE_VANTAGE.azimuths; i++) {
+      const a = (i / PROBE_VANTAGE.azimuths) * Math.PI * 2
+      const x = head.x + Math.cos(a) * r
+      const z = head.z + Math.sin(a) * r
+      const level = waterSurfaces.levelAt(x, z, true)
+      if (level === null) continue
+      const depth = level - walk.heightAt(x, z)
+      if (depth < PROBE_VANTAGE.minDepth || depth <= bestDepth) continue
+      bestDepth = depth
+      out.set(x, level + WORLD_PROBE.height, z)
+    }
+    if (bestDepth > 0) return true
+  }
+  return false
+}
+
 // ---------------------------------------------------------------------------
 // Quest mode: a world-space toggle panel, ported from quest-main.js's
 // already-proven pattern (same laser-controls raycast, same panel-button
@@ -590,6 +635,8 @@ const QUEST_TOGGLE_ROWS = [
   // measurement that separated them would be three readings of the same number.
   { key: 'litter', text: 'litter, fungi & deadfall' },
   { key: 'fish', text: 'fish' },
+  { key: 'frogs', text: 'frogs' },
+  { key: 'crabs', text: 'crabs' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -614,6 +661,9 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'terrainWire', text: 'landscape wireframe' },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
+  // The world probe's capture, drawn as a cube at the point it was taken from.
+  // See buildProbeCube.
+  { key: 'probeCube', text: 'show reflection cube' },
   { key: 'aurora', text: 'aurora' },
   { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
@@ -666,6 +716,8 @@ function applyQuestToggle(key) {
       deadwood.batch.visible = enabled
       break
     case 'fish': fish.batch.visible = enabled; break
+    case 'frogs': frogs.batch.visible = enabled; break
+    case 'crabs': crabs.batch.visible = enabled; break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -687,8 +739,73 @@ function applyQuestToggle(key) {
     // this row must never be in -- that is a lake mirroring last minute's
     // world. Expect a one-off compile hitch on the frame you press it.
     case 'reflections': water.setCubeReflections(enabled); break
+    case 'probeCube': probeCube.visible = enabled; break
     case 'aurora': aurora.mesh.visible = enabled; break
   }
+}
+
+// THE REFLECTION CUBE: the world probe's capture, drawn as a literal cube
+// standing at the point it was captured from, so what the water is being handed
+// can be looked at directly. Each face of the box shows that face of the
+// cubemap, sampled by the direction from the cube's centre exactly as the water
+// samples it by the reflected ray -- so the +X face shows what lies east of the
+// anchor. Seen from OUTSIDE, each face is left-right mirrored against what she
+// would see standing at the anchor and facing that way; that is inherent to
+// looking at the outside of an environment cube and is not a bug in the capture.
+//
+// It shows the same blend of the two ping-pong cubes the shader is reading, in
+// the scene's own output encoding and nothing else: no water tint, no aerial
+// ramp, no silhouette mix. Where the capture holds no land (alpha 0, the target's
+// cleared black) it paints a dim magenta instead, so "sky" and "black ground" can
+// be told apart.
+//
+// Where it is drawn doubles as a readout of the first thing worth checking: the
+// cube sits over the anchor, so if it is standing on the bank the vantage
+// search failed and the reflection was captured from among the trees.
+const PROBE_CUBE_SIZE = 1.0
+let probeCube = null
+function buildProbeCube() {
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uCubeA: { value: worldProbe.textureA },
+      uCubeB: { value: worldProbe.textureB },
+      uBlend: { value: 0 },
+    },
+    vertexShader: `
+      varying vec3 vDir;
+      void main() {
+        vDir = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+      }
+    `,
+    fragmentShader: `
+      uniform samplerCube uCubeA;
+      uniform samplerCube uCubeB;
+      uniform float uBlend;
+      varying vec3 vDir;
+      void main() {
+        vec3 dir = normalize( vDir );
+        vec4 c = mix( texture( uCubeA, dir ), texture( uCubeB, dir ), uBlend );
+        gl_FragColor = vec4( mix( vec3( 0.25, 0.0, 0.25 ), c.rgb, c.a ), 1.0 );
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
+  })
+  probeCube = new THREE.Mesh(new THREE.BoxGeometry(PROBE_CUBE_SIZE, PROBE_CUBE_SIZE, PROBE_CUBE_SIZE), material)
+  probeCube.name = 'v2-probe-cube'
+  probeCube.visible = questToggles.probeCube
+  scene.add(probeCube)
+  // Or the next capture holds a cube of the previous capture, on every face.
+  worldProbe.exclude(probeCube)
+}
+
+// Per frame, while shown: over the anchor, bottom face a quarter-metre clear of
+// the capture point so the cube stands on the water rather than in it.
+function updateProbeCube() {
+  if (!probeCube.visible) return
+  probeCube.position.set(worldProbe.anchor.x, worldProbe.anchor.y + PROBE_CUBE_SIZE * 0.75, worldProbe.anchor.z)
+  probeCube.material.uniforms.uBlend.value = worldProbe.blend
 }
 
 // WHICH BED IS A CAP IS THE BED'S OWN SHAPE, not a name list here. `cap` is the
@@ -925,6 +1042,9 @@ function buildQuestPanel() {
   // the group's children are not culled, not sorted, and not drawn, and their
   // triangles never reach the render list at all.
   questPanelGroup.visible = false
+  // A menu floating over the lake is not land, and neither are the laser dots
+  // below: none of it may reach the water's reflection.
+  worldProbe.exclude(questPanelGroup)
 
   // See questPanelBottom for why the bottom edge is computed rather than typed;
   // the title at 1.05 fixes the top. A fourth column would be the wrong fix for
@@ -1031,6 +1151,7 @@ function buildQuestPanel() {
     const dot = new THREE.Mesh(dotGeometry, dotMaterial)
     dot.visible = false
     scene.add(dot)
+    worldProbe.exclude(dot)
     questControllerHits.set(el, { hit: null, dot })
     el.addEventListener('triggerdown', () => {
       const key = questKeyAt(questControllerHits.get(el)?.hit)
@@ -1429,6 +1550,8 @@ let litter = null
 let mushrooms = null
 let deadwood = null
 let fish = null
+let frogs = null
+let crabs = null
 let editor = null
 let panel = null
 let ready = false
@@ -1456,8 +1579,10 @@ let ready = false
 const questToggles = QUEST_MODE
   ? {
       terrain: true, lighting: true,
-      trees: true, boulders: true, grass: true, ferns: true, litter: true, fish: true,
+      trees: true, boulders: true, grass: true, ferns: true, litter: true, fish: true, frogs: true, crabs: true,
       water: true, reflections: true, aurora: true,
+      // Debug furniture, off until asked for. See buildProbeCube.
+      probeCube: false,
       // The cliff plates are not in the shipped set; the row is there to look
       // at them on their own (see QUEST_TOGGLE_ROWS).
       rockCaps: false,
@@ -1707,10 +1832,6 @@ async function bootWorld() {
   await bootStep('rocks')
   rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
-  // A cacheKey of its own, not a second use of the one above: the shell is a
-  // separate program (BackSide flips FLIP_SIDED) and sharing the key would pin
-  // both materials to whichever entry compiled first. See lighting.patch.
-  lighting.patch(rocks.shellMaterial, { mode: 'vertex', cacheKey: 'v2-rock-shell' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
   const rs = rocks.stats
@@ -1765,6 +1886,9 @@ async function bootWorld() {
   // once both are on the ground. See v2/walk.js.
   walk = new WalkSurface(height, rocks, trees)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
+  // Only now: probeVantage reads the walk surface and the water polygons.
+  worldProbe.setVantage(probeVantage)
+  window.v2probe = worldProbe // console: `v2probe.anchor`, `v2probe.origin`
   player = new Player(rig, camera, walk)
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
   player.spawnAt(spawn.x, spawn.z)
@@ -1942,6 +2066,21 @@ async function bootWorld() {
   fish.ready.then(() => fish.place(fish.head.x, fish.head.z))
   window.v2fish = fish
 
+  // The frogs on the banks and the crabs on the lake boulders (render/frogs.js,
+  // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
+  await bootStep('frogs')
+  frogs = new Frogs(scene, height, waterSurfaces, { seed: SEED, rocks, ground: terrain })
+  lighting.patch(frogs.material, { mode: 'vertex', cacheKey: 'v2-frogs' })
+  frogs.place(spawn.x, spawn.z)
+  console.log(`[v2] frogs ${frogs.stats.alive} on ${frogs.stats.tiles} tiles at boot`)
+  window.v2frogs = frogs
+  await bootStep('crabs')
+  crabs = new Crabs(scene, height, waterSurfaces, { seed: SEED, rocks })
+  lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
+  crabs.place(spawn.x, spawn.z)
+  console.log(`[v2] crabs ${crabs.stats.alive} on ${crabs.stats.perches} perches at boot`)
+  window.v2crabs = crabs
+
   // Last of the five, so the cursor readout can be bound now. Deliberately here
   // rather than lazily inside the readout: a missing scatter should be a boot
   // error next to the thing that failed to build, not a readout that silently
@@ -2076,6 +2215,8 @@ async function bootWorld() {
     mushrooms.batch.visible = questToggles.litter
     deadwood.batch.visible = questToggles.litter
     fish.batch.visible = questToggles.fish
+    frogs.batch.visible = questToggles.frogs
+    crabs.batch.visible = questToggles.crabs
     // THE EDITOR OVERLAY, which had no business being in the headset and was the
     // single largest thing drawing before any layer is switched on. Markers is
     // three InstancedMeshes of authoring handles -- 96 triangles a spline point,
@@ -2111,6 +2252,7 @@ async function bootWorld() {
     // on that constant for why a per-route override was the wrong trade.
     applyBatchCulling()
     buildQuestPanel()
+    buildProbeCube()
     logSceneCensus()
   }
 
@@ -2248,6 +2390,8 @@ function replacePropsOnMovedGround(cx, cz) {
     deadwood.place(cx, cz)
   }
   if (fish) fish.place(cx, cz)
+  if (frogs) frogs.place(cx, cz)
+  if (crabs) crabs.place(cx, cz)
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
   // that resolves y from the field rather than integrating toward it, and the
@@ -3961,6 +4105,7 @@ function tick() {
   player.update(dt, moveInput)
 
   if (QUEST_MODE) updateQuestPanel()
+  if (QUEST_MODE) updateProbeCube()
 
   // The clock the prop LOD cross-dissolves run on, and the only per-frame cost
   // any of them has. Set BEFORE the scatters update, so the sweep that retires
@@ -4020,6 +4165,8 @@ function tick() {
   }
   // The one scatter that is also a simulation, so it takes dt. Frozen with its row like the others.
   if (!QUEST_MODE || questToggles.fish) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  if (!QUEST_MODE || questToggles.frogs) frogs.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  if (!QUEST_MODE || questToggles.crabs) crabs.update(headTmp.x, headTmp.y, headTmp.z, dt)
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

@@ -214,7 +214,7 @@ const TRIPO_PATH = /creatures\/work|trees\/v9\/work|['`]creatures\//
 const srcFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
   e.isDirectory() ? srcFiles(path.join(dir, e.name)) : e.name.endsWith('.js') ? [path.join(dir, e.name)] : [])
 const loaders = srcFiles(path.join(ROOT, 'src')).filter((f) => TRIPO_PATH.test(fs.readFileSync(f, 'utf8')))
-check(loaders.length >= 4, `found the Tripo loaders (${loaders.length}; the bench, the rig editor, the tree bench, avatar.js)`)
+check(loaders.length >= 5, `found the Tripo loaders (${loaders.length}; the bench, the rig editor, the tree bench, avatar.js, critters.js)`)
 for (const f of loaders) {
   check(/from '[./]*\/tripo-culling\.js'/.test(fs.readFileSync(f, 'utf8')),
     `${path.relative(ROOT, f)} imports tripo-culling.js -- a Tripo loader that does not cull z-fights its fins`)

@@ -55,10 +55,12 @@
  * enough to be free. Walk far enough for the parallax to matter and it re-anchors
  * and refills every face back-to-back. See REFRESH below.
  *
- * WHERE IT IS CAPTURED FROM: 20 cm above the water, at her own x/z. Not at the
- * head: a capture taken two metres up and then sampled by a surface at water
+ * WHERE IT IS CAPTURED FROM: 20 cm above the water, OUT ON THE WATER when the
+ * host can find some within reach (see setVantage), else at her own x/z. Not at
+ * the head: a capture taken two metres up and then sampled by a surface at water
  * level puts the horizon in the wrong place, and the horizon is the one feature
- * a grazing reflection is entirely made of.
+ * a grazing reflection is entirely made of. And not on the bank: a capture
+ * taken beside a trunk on the shore is a reflection with that trunk across it.
  */
 import THREE from './three-instance.js'
 
@@ -97,11 +99,9 @@ export const WORLD_PROBE = {
   // this floor is under `surfaceY + height` and the max picks the surface, which
   // is the case the surface offset was written for in the first place.
   //
-  // It also removes the bigger half of the jumping. Walking a shoreline, that
-  // polygon test flickers in and out with every step, swinging the anchor by the
-  // whole height of the bank and tripping a re-anchor on a proxy for her
-  // position rather than her position. Above the water both branches now give
-  // the same answer and the flicker is simply gone.
+  // Only the FALLBACK rule reads this. When the host's vantage finds water
+  // within reach the capture goes out onto it, at `level + height` over ground
+  // it has checked is under the surface, and no floor is needed.
   duck: 1.2,
 
   // Frames between faces while she is standing still. Five faces to go round, so
@@ -206,15 +206,35 @@ export class WorldProbe {
     this.frame = 0
     this.captures = 0
 
-    // Where the current cube was taken from, and the thing moveRefresh measures
-    // against. Starts absurd so the first update always anchors.
-    this.anchor = new THREE.Vector3(Infinity, Infinity, Infinity)
+    // Where the current cube was taken from.
+    this.anchor = new THREE.Vector3()
+    // Where HER HEAD was when it was taken, which is what moveRefresh measures
+    // against: the anchor may sit metres out on the water, and measuring from
+    // there would re-anchor after a step. Starts absurd so the first update
+    // always anchors.
+    this.origin = new THREE.Vector3(Infinity, Infinity, Infinity)
 
     // Faces still owed on the cube being filled. Counted down one per frame.
     this.burst = 0
 
     // Objects hidden for the duration of every capture. See the header.
     this.hidden = []
+
+    // See setVantage.
+    this.vantage = null
+  }
+
+  /**
+   * `fn(head, out)` picks the capture point at each re-anchor: fill `out` with
+   * it and return true, or return false to fall back to her own x/z under the
+   * duck rule in update(). The host owns the terrain and the water polygons, so
+   * "a couple of metres out on the water" is its question to answer; called
+   * only when a re-anchor actually happens, so it may afford a few dozen height
+   * samples.
+   */
+  setVantage(fn) {
+    if (typeof fn !== 'function') throw new Error('WorldProbe.setVantage needs a (head, out) => boolean')
+    this.vantage = fn
   }
 
   /** Register something that must not appear in the capture. Order does not
@@ -260,17 +280,6 @@ export class WorldProbe {
   update(renderer, scene, head, surfaceY, dt, air = null) {
     if (!(dt >= 0)) throw new Error(`WorldProbe.update: needs a real dt, got ${dt}`)
 
-    // The duck floor applies on BOTH branches, and that is what actually kills
-    // the shoreline flicker rather than merely shrinking it. Anchoring at her
-    // eye when there is no water under her and at eye-minus-duck when there is
-    // still leaves the two answers `duck` apart, so a step across the polygon
-    // edge still moves the capture point -- just by 1.2 m instead of the height
-    // of the bank. Taking the floor unconditionally makes the two branches give
-    // the same number everywhere above the water, and the surface offset wins
-    // only where it is genuinely higher, which is only ever when she is in it.
-    const floor = head.y - WORLD_PROBE.duck
-    const y = surfaceY === null ? floor : Math.max(surfaceY + WORLD_PROBE.height, floor)
-
     // THE CROSS-FADE, stepped first so a fade that finishes this frame frees the
     // probe to start the next burst in the same frame rather than the one after.
     if (this.filling < 0 && this.fade !== this.live) {
@@ -280,9 +289,9 @@ export class WorldProbe {
 
     const busy = this.filling >= 0 || this.fade !== this.live
 
-    // RE-ANCHOR. Squared distance, and deliberately including y: swimming down
-    // through ten metres of water changes what the surface overhead reflects as
-    // surely as walking does.
+    // RE-ANCHOR. Squared distance from her head, and deliberately including y:
+    // swimming down through ten metres of water changes what the surface
+    // overhead reflects as surely as walking does.
     //
     // REFUSED WHILE BUSY. There is only one spare cube, so a second burst would
     // have to overwrite the one mid-fade -- and at flying speed 12 m comes round
@@ -290,11 +299,16 @@ export class WorldProbe {
     // handover ending in the snap this exists to remove. Deferring lets the
     // reflection go staler and keeps every transition smooth, which is the way
     // round this feature was asked for.
-    const dx = head.x - this.anchor.x
-    const dy = y - this.anchor.y
-    const dz = head.z - this.anchor.z
-    if (!busy && dx * dx + dy * dy + dz * dz > WORLD_PROBE.moveRefresh * WORLD_PROBE.moveRefresh) {
-      this.anchor.set(head.x, y, head.z)
+    if (!busy && head.distanceToSquared(this.origin) > WORLD_PROBE.moveRefresh * WORLD_PROBE.moveRefresh) {
+      this.origin.copy(head)
+      if (this.vantage === null || !this.vantage(head, this.anchor)) {
+        // No water within reach of her, so the capture is taken where she is,
+        // under the duck floor on BOTH branches: the surface offset wins only
+        // where it is genuinely higher, which is only ever when she is in it.
+        const floor = head.y - WORLD_PROBE.duck
+        const y = surfaceY === null ? floor : Math.max(surfaceY + WORLD_PROBE.height, floor)
+        this.anchor.set(head.x, y, head.z)
+      }
       this.filling = 1 - this.live
       this.burst = FACES.length
       this.face = 0

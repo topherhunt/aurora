@@ -32,8 +32,11 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - [x] Sync times of day across different users
-- [ ] Water cubemap reflections: place one cubemap out in the middle of the water body you're nearest. Currently the cubemap position appears to be near the shore, or UNDER the shore. In / editor mode, show a little camera sprite for 1s each time a cubemap is updating, positioned at the place and angle it's looking at, so I can see WHERE those cubemap pics are getting captured from.
-- [ ] Let each player shoot up a flare
+- [ ] Water cubemap reflections: place one cubemap out in the middle of the water body you're nearest. Currently the cubemap position appears to be near the shore, or even ON the shore rather than on the water surface far away from the shore. Please find a highly performance-cheap way to do this.
+- [ ] Sound effects
+  - [ ] 
+- [ ] Add a procedural jaggedness to terrain so the smooth curves aren't so smooth. OR if we already have that, it needs to be amplified by 4x.
+- [ ] Let each player shoot up a flare so they can find each other
 - [ ] Player characters: rig bones, move arms/hands to match actual hand position. mixamo?
 
 - Get VR looking passable

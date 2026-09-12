@@ -65,9 +65,27 @@ for (const a of assets.species) {
   check(roster && Math.abs(a.lengthM - roster.lengthCm / 100) < 1e-6, `${a.id}: lengthM matches the roster`, `${a.lengthM} m`)
   check(a.bend.length === n && a.uv.length === n * 2 && a.nrm.length === n * 3, `${a.id}: attribute lengths agree`, `${n} verts`)
   check(a.idx.length % 3 === 0 && Math.max(...a.idx) < n, `${a.id}: index in range`, `${a.idx.length / 3} tris`)
+  // The picks are Tripo's 500-face meshes as they came; a coarse ship reads as a card up close.
+  check(a.idx.length / 3 >= 240, `${a.id}: shipped at the pick's density`, `${a.idx.length / 3} tris`)
   check(a.bend.every((b) => b >= 0 && b <= 1), `${a.id}: bend weights in [0, 1]`)
-  check(a.uv.every((v) => v >= -1e-4 && v <= 1 + 1e-4), `${a.id}: uvs inside the cutout`)
-  check(fs.existsSync(new URL(`../public/fauna/${a.texture}`, import.meta.url)), `${a.id}: cutout ${a.texture} is shipped`)
+  check(a.uv.every((v) => v >= -1e-4 && v <= 1 + 1e-4), `${a.id}: uvs inside the map`)
+  check(fs.existsSync(new URL(`../public/fauna/${a.texture}`, import.meta.url)), `${a.id}: colour map ${a.texture} is shipped`)
+  // Nose at -Z, centred, at the roster length: the tail fin is the blade end, so the outer tenth at +Z is narrower across than the outer tenth at -Z.
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity]
+  for (let i = 0; i < a.pos.length; i += 3) for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], a.pos[i + c]); hi[c] = Math.max(hi[c], a.pos[i + c]) }
+  check(Math.abs(hi[2] - lo[2] - a.lengthM) < 1e-3 && Math.abs(hi[2] + lo[2]) < 1e-3 && Math.abs(hi[0] + lo[0]) < 1e-3, `${a.id}: spans its length along z about the origin`, `${lo[2]}..${hi[2]}`)
+  const width = (sign) => {
+    let xmin = Infinity, xmax = -Infinity
+    for (let i = 0; i < a.pos.length; i += 3) {
+      if (sign * a.pos[i + 2] < 0.4 * a.lengthM) continue
+      xmin = Math.min(xmin, a.pos[i]); xmax = Math.max(xmax, a.pos[i])
+    }
+    return xmax - xmin
+  }
+  check(width(+1) < 0.5 * width(-1), `${a.id}: nose at -Z, tail at +Z`, `ends ${width(-1).toFixed(3)} / ${width(+1).toFixed(3)} m across`)
+  let bendRises = true
+  for (let i = 0; i < a.pos.length; i += 3) if (Math.abs(a.bend[i / 3] - ((a.pos[i + 2] / a.lengthM + 0.5) ** 2)) > 0.01) bendRises = false
+  check(bendRises, `${a.id}: bend weight is the squared nose-to-tail fraction`)
 }
 
 // --- construction and the shader hook --------------------------------------
@@ -77,7 +95,7 @@ check(fish.species.length === 3 && fish.species.every((sp) => sp.loaded), 'three
 for (const sp of fish.species) {
   const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n' }
   sp.material.onBeforeCompile(shader)
-  check(shader.vertexShader.includes('attribute vec2 aSwim') && shader.vertexShader.includes('FISH_WAVE_K'), `${sp.id}: swim wiggle spliced into begin_vertex`)
+  check(shader.vertexShader.includes('attribute vec4 aSwim') && shader.vertexShader.includes('FISH_WAVE_K') && shader.vertexShader.includes('+ aSwim.z') && shader.vertexShader.includes('aBend * aSwim.w'), `${sp.id}: swim wiggle, turn curve and lift spliced into begin_vertex`)
   check(parseFloat(sp.material.defines.FISH_WAVE_K) > 0, `${sp.id}: wave number set from the length`, sp.material.defines.FISH_WAVE_K)
   check(sp.mesh.geometry.getAttribute('aBend') && sp.mesh.geometry.getAttribute('aSwim').isInstancedBufferAttribute, `${sp.id}: aBend per vertex, aSwim per instance`)
 }
@@ -106,8 +124,33 @@ let bar = 0
 let maxDist = 0
 const speeds = { 'ironscale-bass': 0, 'rime-fangpike': 0, 'glimmerfin': 0 }
 let samples = 0
+// Every frame's yaw per fish, to catch a fish that turns without bending: a turn faster than 0.6 rad/s must carry a curve toward its inside. Likewise a fish pitched past 0.15 rad must carry a lift the same way, so a climb is an arc and not a tilted board.
+const yawOf = new Map()
+let turning = 0
+let bent = 0
+let stiff = 0
+let pitched = 0
+let arched = 0
 for (let i = 0; i < SECONDS / DT; i++) {
   fish.update(0, LEVEL + 1.6, 0, DT)
+  for (const sp of fish.species) {
+    for (const f of sp.slots) {
+      const yaw = Math.atan2(-f.hx, -f.hz)
+      const was = yawOf.get(f)
+      yawOf.set(f, f.alive ? yaw : undefined)
+      if (!f.alive || was === undefined || f.born < 0.5) continue
+      if (Math.abs(f.pitch) > 0.15) {
+        pitched++
+        if (Math.sign(f.lift) === Math.sign(f.pitch) && Math.abs(f.lift) > 0.05 * sp.lengthM) arched++
+      }
+      const rate = Math.atan2(Math.sin(yaw - was), Math.cos(yaw - was)) / DT
+      if (Math.abs(rate) < 0.6) continue
+      turning++
+      // A left turn is yaw increasing and the tail swung to local -X.
+      if (Math.sign(f.curve) === -Math.sign(rate) && Math.abs(f.curve) > 0.03 * sp.lengthM) bent++
+      else if (Math.abs(f.curve) < 0.01 * sp.lengthM) stiff++
+    }
+  }
   if (i % 8) continue
   samples++
   for (const sp of fish.species) {
@@ -129,6 +172,9 @@ for (let i = 0; i < SECONDS / DT; i++) {
 check(dry === 0, `no fish out of the water over ${SECONDS} s`, `${dry} samples dry`)
 check(bar === 0, 'no fish crossed the bar of land', `${bar} samples on it`)
 check(far === 0, 'no fish left alive beyond the retire radius', `max ${maxDist.toFixed(1)} m`)
+check(turning > 1000 && bent / turning > 0.9, 'a turning fish arcs into its turn', `${bent} of ${turning} turning frames bent the right way`)
+check(stiff / Math.max(1, turning) < 0.01, 'no fish turns straight as a board', `${stiff} of ${turning} turning frames stiff`)
+check(pitched > 1000 && arched / pitched > 0.9, 'a pitched fish arcs into its climb or dive', `${arched} of ${pitched} pitched frames arched the right way`)
 for (const sp of fish.species) {
   const mean = speeds[sp.id] / samples
   // The upper bound is loose because the bolts and bursts are on top of the cruise; it is there to catch a runaway, not to measure.

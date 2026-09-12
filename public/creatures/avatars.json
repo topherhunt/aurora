@@ -35,6 +35,10 @@
     {
       "id": "alchemist",
       "heightM": 1.62
+    },
+    {
+      "id": "shieldmaiden",
+      "heightM": 1.72
     }
   ]
 }

@@ -289,16 +289,17 @@ export const UNDERWATER = {
   // window and the water around it stay one medium.
   veil: 0.18,
 
-  // THE UNDERSIDE TAKES NO DISTANCE FADE, and has no knob for one. Fading it is
-  // the sound-sounding argument -- you are looking at the ceiling through metres
-  // of water -- and it gives the wrong picture, because the ceiling is not a
-  // thing IN the medium, it is the medium's boundary. What says "there is a
-  // surface up there" is that it stays lighter and more structured than the
-  // water all the way to the rim; fading it toward `murk` greys it out exactly
-  // where a real surface goes hard and silver, and it becomes fog with ripples.
+  // THE UNDERSIDE TAKES THE FULL MURK FADE, the same one the bed takes, and has
+  // no knob of its own for it. Light off the far ceiling crosses the same
+  // twenty metres of water as light off a far rock, so the rim where the
+  // surface meets the bank is lost in the murk along with the bank -- a
+  // crisp rim against a fogged bed is a plane intersecting terrain, not a
+  // lake. A PARTIAL share is the one wrong answer: it leaves a fraction of
+  // the rim crisp and greys the rest, which is the worst of both.
   //
-  // Fog is for what is IN the water: bed, rocks, weeds, far bank, all at
-  // `visibility`. The surface does not fade at all.
+  // What keeps this from being fog with ripples is `tirLit` below, not a
+  // reduced fade: the near ceiling is lit brighter than the murk, so it
+  // reads as a surface overhead and only RECEDES to murk with distance.
 
   // How much brighter the surface gets, outside the window, where the wave
   // tilts toward the vertical -- as a multiple of the murk it is modulating.
@@ -1052,17 +1053,25 @@ export class Water {
           // An early return, not an else-branch: the underside shares the wave
           // normal and nothing after it.
           if ( uSubmerged > 0.5 && ! gl_FrontFacing ) {
-            // NO FOG ON IT AT ALL, the one surface in the world exempt. The
-            // murk fade is calibrated so anything at UNDERWATER.visibility is
-            // gone, and at a grazing angle the far rim of the ceiling is exactly
-            // that far -- right for a rock twenty metres off, wrong for the
-            // boundary of the medium doing the fading. See UNDERWATER.
-            //
+            vec3 ceiling = underside( V, N );
+
+            // THE SAME MURK FADE THE BED TAKES, from the same expression, so the
+            // rim of the ceiling and the bank it meets are lost at one distance
+            // and the seam between them cannot be seen. Exp2 in distance, so the
+            // metre or two straight overhead is untouched -- under 4% murk at
+            // 2 m against 20 m visibility -- and what fades is the far end,
+            // which is seen through twenty metres of water like anything else
+            // that far off. See UNDERWATER for why the near ceiling stays lit
+            // rather than being murk already.
+            #ifdef USE_FOG
+              ceiling = mix( ceiling, uMurk, waterFogAmt() );
+            #endif
+
             // Alpha 1 whatever WATER.clarity says. Seen from below this is the
             // ceiling of the world -- there is no bed behind it to show through,
             // only scene.background, and blending against that punches a hole to
             // the clear colour.
-            gl_FragColor = vec4( underside( V, N ), 1.0 );
+            gl_FragColor = vec4( ceiling, 1.0 );
             #include <tonemapping_fragment>
             #include <colorspace_fragment>
             return;

@@ -202,15 +202,14 @@ check(
   frag.includes('mix( skyRadiance( horizonDir, 0.0 ) * uReflTint, uMurk, uSubmerged )'),
   "water's fog exemption is itself switched off underwater"
 )
-// Exactly two mentions: the definition, and the ONE call on the top-face path.
-// Not three. The underside used to take a share of the same fade and does not
-// any more -- see the ceiling checks below for why -- and this count is what
-// notices if a third call appears, on either side, without that argument being
-// revisited.
+// Exactly three mentions: the definition, one call on the top face, one on the
+// underside. Both faces fade from the one expression, so they cannot recede at
+// different rates, and this count is what notices a fourth call -- or a second
+// fade authored beside the first -- appearing on either side.
 check(
-  (frag.match(/waterFogAmt\(\)/g) || []).length === 2,
-  'and it is the only place the surface fades, from one expression',
-  `${(frag.match(/waterFogAmt\(\)/g) || []).length} mentions; expected the definition plus the top face`
+  (frag.match(/waterFogAmt\(\)/g) || []).length === 3,
+  'and both faces fade from that one expression',
+  `${(frag.match(/waterFogAmt\(\)/g) || []).length} mentions; expected the definition plus one call per face`
 )
 
 // The underside must not be reachable while she is dry: a back face is also
@@ -292,20 +291,23 @@ check(
   check(UNDERWATER.distort > 1, 'and the waves bend the view by more than their own slope', `distort ${UNDERWATER.distort}`)
 }
 
-// THE CEILING IS NOT IN THE WATER, IT IS THE EDGE OF IT -- so it takes no
-// distance fade at all, and this pair of checks is what stops the fade coming
-// back the next time someone reasons that a far surface ought to recede.
+// THE CEILING FADES TO MURK AT THE SAME RATE AS THE BED, in full and from the
+// same expression, and this pair of checks is what stops the fade being dropped
+// or reduced the next time someone reasons that the surface is the boundary of
+// the medium rather than a thing in it.
 //
-// The murk is calibrated so that anything at UNDERWATER.visibility is gone, and
-// at a grazing angle the far end of the surface overhead is exactly that far.
-// Applying any of it shades the whole rim of the ceiling into the same blue-grey
-// as the water hanging in front of it, which is precisely where a real surface
-// goes hard and silver -- and the ceiling stops reading as a boundary and starts
-// reading as more fog with ripples in it.
+// Light off the far rim crosses the same water as light off the far bank. Left
+// crisp, the rim reads as a plane intersecting fogged terrain; given a PARTIAL
+// share it stays part-crisp and part-grey, which was tried and was worse than
+// either. What stops the full fade reading as fog with ripples is tirLit, which
+// lights the near ceiling above the murk it recedes to -- checked below.
 {
   const under = frag.slice(frag.indexOf('! gl_FrontFacing'), frag.indexOf('vec3 R = reflect'))
-  check(!/waterFogAmt/.test(under), 'the underside takes no murk fade -- fog is for what is IN the water')
-  check(/vec4\( underside\( V, N \), 1\.0 \)/.test(under), 'and it stays fully opaque whatever WATER.clarity says')
+  check(
+    /ceiling = mix\( ceiling, uMurk, waterFogAmt\(\) \)/.test(under),
+    'the underside takes the full murk fade toward uMurk, from the shared expression'
+  )
+  check(/vec4\( ceiling, 1\.0 \)/.test(under), 'and it stays fully opaque whatever WATER.clarity says')
 }
 
 // THE MIRROR OUTSIDE SNELL'S WINDOW, which has to be two things at once.
@@ -533,6 +535,36 @@ check(
     bursts <= ceiling,
     'and flying past the re-anchor distance every frame is rate-limited to one handover per fade',
     `${bursts} bursts in 200 frames, ceiling ${ceiling.toFixed(1)}`
+  )
+
+  // THE VANTAGE. The host may put the capture out on the water; when it does,
+  // the anchor is the point it named, and the re-anchor distance is still
+  // measured from HER, or a capture 10 m out would re-anchor after two steps.
+  const p5 = new WorldProbe()
+  let asked = 0
+  p5.setVantage((h, out) => { asked++; out.set(h.x + 10, 100 + WORLD_PROBE.height, h.z); return true })
+  head.set(0, 105, 0)
+  for (let k = 0; k < 5; k++) p5.update(stub, scene2, head, 100, DT)
+  check(
+    asked === 1 && p5.anchor.x === 10 && Math.abs(p5.anchor.y - (100 + WORLD_PROBE.height)) < 1e-6,
+    'a vantage puts the capture where the host says, asked once per re-anchor',
+    `asked ${asked}x, anchor (${p5.anchor.x}, ${p5.anchor.y.toFixed(2)}, ${p5.anchor.z})`
+  )
+  head.set(0, 105, WORLD_PROBE.moveRefresh - 1)
+  for (let k = 0; k < 5; k++) p5.update(stub, scene2, head, 100, DT)
+  check(
+    asked === 1,
+    'and walking short of moveRefresh from where she stood does not re-anchor, however far out the capture sits',
+    `asked ${asked}x after ${WORLD_PROBE.moveRefresh - 1} m`
+  )
+  const p6 = new WorldProbe()
+  p6.setVantage(() => false)
+  head.set(0, 105, 0)
+  p6.update(stub, scene2, head, 100, DT)
+  check(
+    Math.abs(p6.anchor.y - p1.anchor.y) < 1e-6 && p6.anchor.x === 0 && p6.anchor.z === 0,
+    'a vantage that finds no water falls back to her own x/z under the duck floor',
+    `anchor y ${p6.anchor.y.toFixed(2)}`
   )
 }
 

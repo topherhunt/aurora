@@ -249,13 +249,7 @@ export class WaterSurfaces {
    * It is an UPPER BOUND on tight turns, not an exact silhouette: `ribbonVertices` also narrows the ribbon through a corner by its circumradius and drops folded quads outright, and reproducing that here would mean rebuilding the geometry to ask a question about it. The residue is a few centimetres on the inside of a hairpin, which is the one place a river is least likely to be over her head.
    */
   levelAt(x, z, drawn = false) {
-    let best = null
-
-    for (const b of this.lakeBoxes) {
-      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue
-      if (footprint(b.lake, x, z) <= 0) continue
-      if (best === null || b.lake.y > best) best = b.lake.y
-    }
+    let best = this.lakeLevelAt(x, z)
 
     const bi = Math.floor(x / BUCKET)
     const bj = Math.floor(z / BUCKET)
@@ -293,6 +287,19 @@ export class WaterSurfaces {
     return best
   }
 
+  /**
+   * The lake half of levelAt: the highest LAKE surface over (x, z), or null where no lake's footprint covers it. Rivers are not consulted, which is what a caller that lives in lakes and not streams (the crabs) wants. Remember the ocean is one of these lakes and its footprint runs under the whole landscape, so this is non-null on most dry ground -- compare against the ground before reading it as water.
+   */
+  lakeLevelAt(x, z) {
+    let best = null
+    for (const b of this.lakeBoxes) {
+      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue
+      if (footprint(b.lake, x, z) <= 0) continue
+      if (best === null || b.lake.y > best) best = b.lake.y
+    }
+    return best
+  }
+
   /** True where levelAt reports water standing above `groundY`. The predicate the scatter's exclusion actually wants, spelled once here rather than three times at three call sites. */
   isSubmerged(x, z, groundY) {
     const level = this.levelAt(x, z)
@@ -316,34 +323,7 @@ export class WaterSurfaces {
     if (reach + this.maxHalfWidth > BUCKET) {
       throw new Error(`WaterSurfaces.shoreDistAt: a ${reach} m reach past a ${this.maxHalfWidth.toFixed(1)} m half-width river overruns the ${BUCKET} m lookup bucket; the fringe would have holes`)
     }
-    if (!Number.isFinite(groundY) || !(tan >= 0)) throw new Error(`WaterSurfaces.shoreDistAt: needs the ground height and slope at the point, got ${groundY}, ${tan}`)
-    let best = reach
-
-    for (const b of this.lakeBoxes) {
-      if (x < b.minX - reach || x > b.maxX + reach || z < b.minZ - reach || z > b.maxZ + reach) continue
-      const lake = b.lake
-      const dx = x - lake.x
-      const dz = z - lake.z
-      const c = Math.cos(lake.rot)
-      const s = Math.sin(lake.rot)
-      const lx = c * dx + s * dz
-      const lz = -s * dx + c * dz
-      let d
-      if (lake.shape === SHAPE_RECT) {
-        const ex = Math.abs(lx) - lake.rx
-        const ez = Math.abs(lz) - lake.rz
-        d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0)) + Math.min(Math.max(ex, ez), 0)
-      } else {
-        const ux = lx / lake.rx
-        const uz = lz / lake.rz
-        const q = Math.sqrt(ux * ux + uz * uz)
-        d = q < 1e-6 ? -reach : Math.hypot(lx, lz) * (1 - 1 / q)
-      }
-      // The waterline term. MIN_TAN keeps level ground from dividing to NaN at the surface, and puts a hand's height over a flat plane a few tens of metres from its shore.
-      const line = (groundY - lake.y) / Math.max(tan, MIN_TAN)
-      if (line > d) d = line
-      if (d < best) best = d
-    }
+    let best = this.lakeShoreDistAt(x, z, reach, groundY, tan)
 
     const bi = Math.floor(x / BUCKET)
     const bj = Math.floor(z / BUCKET)
@@ -370,6 +350,41 @@ export class WaterSurfaces {
           if (d < best) best = d
         }
       }
+    }
+
+    return best < -reach ? -reach : best
+  }
+
+  /** The lake half of shoreDistAt, on the same terms and with the same clamp, rivers left out. The crabs' shore: a stream bank is not one. */
+  lakeShoreDistAt(x, z, reach, groundY, tan) {
+    if (!(reach > 0)) throw new Error(`WaterSurfaces.lakeShoreDistAt: reach must be positive, got ${reach}`)
+    if (!Number.isFinite(groundY) || !(tan >= 0)) throw new Error(`WaterSurfaces.lakeShoreDistAt: needs the ground height and slope at the point, got ${groundY}, ${tan}`)
+    let best = reach
+
+    for (const b of this.lakeBoxes) {
+      if (x < b.minX - reach || x > b.maxX + reach || z < b.minZ - reach || z > b.maxZ + reach) continue
+      const lake = b.lake
+      const dx = x - lake.x
+      const dz = z - lake.z
+      const c = Math.cos(lake.rot)
+      const s = Math.sin(lake.rot)
+      const lx = c * dx + s * dz
+      const lz = -s * dx + c * dz
+      let d
+      if (lake.shape === SHAPE_RECT) {
+        const ex = Math.abs(lx) - lake.rx
+        const ez = Math.abs(lz) - lake.rz
+        d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0)) + Math.min(Math.max(ex, ez), 0)
+      } else {
+        const ux = lx / lake.rx
+        const uz = lz / lake.rz
+        const q = Math.sqrt(ux * ux + uz * uz)
+        d = q < 1e-6 ? -reach : Math.hypot(lx, lz) * (1 - 1 / q)
+      }
+      // The waterline term. MIN_TAN keeps level ground from dividing to NaN at the surface, and puts a hand's height over a flat plane a few tens of metres from its shore.
+      const line = (groundY - lake.y) / Math.max(tan, MIN_TAN)
+      if (line > d) d = line
+      if (d < best) best = d
     }
 
     return best < -reach ? -reach : best

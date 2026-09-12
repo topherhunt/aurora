@@ -1,5 +1,6 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
+import { cullTripoBackfaces } from '../../tripo-culling.js'
 
 // ---------------------------------------------------------------------------
 // Fish: every authored lake and river stocked with the three roster species,
@@ -45,15 +46,21 @@ import { mulberry32 } from '../../sim/mathx.js'
 // one thing in this file that is not arithmetic.
 //
 // THE TAIL IS THE SHADER'S. public/fauna/fish.json (tools/fauna/ship.mjs)
-// carries loft-fish-mesh.mjs's per-vertex swim-bend weight, and each fish is
-// one InstancedMesh instance with a (phase, amplitude) pair: the vertex stage
-// bends every vertex sideways by bend * amplitude * sin(phase - k * z). The CPU
-// advances the phase at a rate that follows the fish's speed, so a lurking
-// pike barely sculls and a bolting glimmerfin is a blur.
+// carries each species' picked Tripo mesh, nose at -Z, with a per-vertex
+// swim-bend weight, and each fish is one InstancedMesh instance with (phase,
+// amplitude, curve, lift): the vertex stage bends every vertex sideways by
+// bend * (amplitude * sin(phase - k * z) + curve) and up by bend * lift. The
+// CPU advances the phase at a rate that follows the fish's speed, so a lurking
+// pike barely sculls and a bolting glimmerfin is a blur, and it sets curve and
+// lift from the turn and the pitch in hand, so the body arcs into every turn
+// and climb and the tail beats harder through it: a fish never swings round
+// or tilts straight as a board.
 // ---------------------------------------------------------------------------
 
 const ASSET_URL = 'fauna/fish.json'
 const TEXTURE_URL = (file) => `fauna/${file}`
+// A big deep-water pike (2.6x the roster length) swum right up to spans the screen once; its colour map keeps this many texels a side.
+const TEX_PX = 1024
 
 // The seed disc and the retire ring, both sized against the 20 m murk: 40% of the disc is in sight, and a school is gone before it is 20 m past it.
 export const POOL_RADIUS = 32
@@ -90,7 +97,7 @@ export const SPECIES = {
     count: 72, school: [4, 9], schoolRadius: 3, separation: 0.5,
     minDepth: 1.0, clearance: 3, depth: [0.3, 0.7],
     cruise: 0.55, agility: 1.4, wander: 0.9, lookahead: 3,
-    tailHz: 2.0, tailAmp: 0.07, size: [0.55, 2.6], sizeVary: 0.2,
+    tailHz: 2.0, tailAmp: 0.11, size: [0.55, 2.6], sizeVary: 0.2,
     anchorSpeed: 0.3, anchorHop: [6, 14], anchorEvery: [8, 16],
     fidgetEvery: [3, 9], fidgetSpeed: 1.3, fidgetFor: 0.5,
     material: { color: 0xffffff },
@@ -99,7 +106,7 @@ export const SPECIES = {
     count: 10, school: [1, 1], schoolRadius: 6, separation: 6,
     minDepth: 1.5, clearance: 2.5, depth: [0.08, 0.3],
     cruise: 0.28, agility: 0.8, wander: 0.35, lookahead: 6,
-    tailHz: 1.1, tailAmp: 0.05, size: [0.6, 2.6], sizeVary: 0.25,
+    tailHz: 1.1, tailAmp: 0.08, size: [0.6, 2.6], sizeVary: 0.25,
     anchorSpeed: 0.2, anchorHop: [8, 20], anchorEvery: [10, 24],
     // The three moods of an ambush predator: seconds in each, and the speed it holds.
     glide: [6, 14], lurk: [4, 10], lurkSpeed: 0.03, burst: 0.9, burstSpeed: 2.2,
@@ -109,7 +116,7 @@ export const SPECIES = {
     count: 90, school: [6, 14], schoolRadius: 1.2, separation: 0.25,
     minDepth: 0.5, clearance: 1.5, depth: [0.6, 0.9],
     cruise: 0.18, agility: 3.5, wander: 3.0, lookahead: 1.5,
-    tailHz: 3.5, tailAmp: 0.08, size: [0.5, 2.2], sizeVary: 0.3,
+    tailHz: 3.5, tailAmp: 0.12, size: [0.5, 2.2], sizeVary: 0.3,
     anchorSpeed: 0.15, anchorHop: [2, 5], anchorEvery: [3, 8],
     // The startle: the shoal's anchor jumps `boltHop` metres, every fish bolts at `boltSpeed` for `boltFor` seconds.
     boltEvery: [4, 12], boltHop: [2, 4], boltSpeed: 2.0, boltFor: 1.0,
@@ -169,18 +176,13 @@ export class Fish {
   }
 
   makeSpecies(id, cfg) {
-    const material = new THREE.MeshLambertMaterial({
-      ...cfg.material,
-      // The fins are single triangles and the body loft is closed, so the whole thing is drawn two-sided rather than the fins alone getting their own mesh.
-      side: THREE.DoubleSide,
-      // The fin triangles overshoot the painted fin; the cutout's alpha trims them back to the art. Opaque otherwise: nothing here sorts.
-      alphaTest: 0.5,
-    })
-    // The swim bend. `aBend` is loft-fish-mesh.mjs's per-vertex weight (0 at the nose, 1 at the tail tip); `aSwim` is per instance. Amplitude and wave number are literals scaled to the species' length, so a pike's wave is one body length long just like a glimmerfin's.
+    // Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
+    const material = new THREE.MeshLambertMaterial(cfg.material)
+    // The swim bend. `aBend` is ship.mjs's per-vertex weight (0 at the nose, 1 at the tail tip); `aSwim` is per instance: phase, amplitude, and the turn's sideways curve and the climb's lift, all in local metres. The wave number is a literal scaled to the species' length, so a pike's wave is one body length long just like a glimmerfin's.
     material.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float aBend;\nattribute vec2 aSwim;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z );')
+        .replace('#include <common>', '#include <common>\nattribute float aBend;\nattribute vec4 aSwim;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z );\ntransformed.y += aBend * aSwim.w;')
     }
     material.customProgramCacheKey = () => `fish-${id}`
     material.defines = { FISH_WAVE_K: '0.0' }
@@ -193,7 +195,7 @@ export class Fish {
         // Smoothed facing, so a fish that stops does not snap to whatever its last velocity happened to be.
         hx: 0, hz: -1, pitch: 0, roll: 0,
         wander: 0, depthFrac: 0.5, scale: 1, margin: 0, tint: 1, born: 0,
-        phase: 0, amp: 0,
+        phase: 0, amp: 0, curve: 0, lift: 0,
         // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s, plus a slow vertical bob.
         pace: 1, verve: 1, beat: 1, ring: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
         bed: 0, level: 0, probeAt: i % PROBE_EVERY,
@@ -212,15 +214,16 @@ export class Fish {
     mesh.frustumCulled = false
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cfg.count * 3).fill(1), 3)
-    const swim = new THREE.InstancedBufferAttribute(new Float32Array(cfg.count * 2), 2)
+    const swim = new THREE.InstancedBufferAttribute(new Float32Array(cfg.count * 4), 4)
     swim.setUsage(THREE.DynamicDrawUsage)
     mesh.geometry.setAttribute('aSwim', swim)
+    cullTripoBackfaces(mesh)
     this.batch.add(mesh)
     // `travel` is the metres she has swum that this species has not yet spent on a recycle.
     return { id, cfg, material, mesh, swim, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0, travel: 0 }
   }
 
-  /** public/fauna/fish.json and its three cutouts. Throws on a roster mismatch rather than drawing a species as a blank. */
+  /** public/fauna/fish.json and its three colour maps. Throws on a roster mismatch rather than drawing a species as a blank. */
   async load() {
     const res = await fetch(ASSET_URL)
     if (!res.ok) throw new Error(`fish: ${ASSET_URL} answered ${res.status} -- run tools/fauna/ship.mjs`)
@@ -230,6 +233,15 @@ export class Fish {
       const asset = this.assetFor(assets, sp)
       this.setAsset(sp, asset)
       const tex = await loader.loadAsync(TEXTURE_URL(asset.texture))
+      // Tripo bakes 2048 px a side; a fish never fills more than TEX_PX of screen, so the map is boxed down once here instead of sitting on the GPU four times over.
+      const img = tex.image
+      if (img.width > TEX_PX) {
+        const canvas = document.createElement('canvas')
+        canvas.width = TEX_PX
+        canvas.height = Math.round((img.height * TEX_PX) / img.width)
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+        tex.image = canvas
+      }
       tex.colorSpace = THREE.SRGBColorSpace
       tex.anisotropy = 4
       sp.material.map = tex
@@ -386,6 +398,8 @@ export class Fish {
       f.vy = 0
       f.pitch = 0
       f.roll = 0
+      f.curve = 0
+      f.lift = 0
       // A big fish swims faster and beats slower than a small one of its kind, and each has its own temperament on top.
       f.pace = (0.8 + 0.4 * rand()) * Math.sqrt(f.scale)
       f.beat = (0.85 + 0.3 * rand()) / Math.sqrt(f.scale)
@@ -475,12 +489,13 @@ export class Fish {
 
         // Facing chases velocity; the pitch is read straight off it and the roll leans into the turn.
         const spd = Math.hypot(f.vx, f.vz)
+        // Cross product of the facing and the velocity's direction: the sine of the turn in hand, negative to the left.
+        let turn = 0
         if (spd > 0.02) {
           const k = Math.min(1, 6 * dt)
           const wantX = f.vx / spd
           const wantZ = f.vz / spd
-          // Cross product of old and new heading: the sign of the turn, for the bank.
-          const turn = f.hx * wantZ - f.hz * wantX
+          turn = f.hx * wantZ - f.hz * wantX
           f.hx += (wantX - f.hx) * k
           f.hz += (wantZ - f.hz) * k
           const hl = Math.hypot(f.hx, f.hz) || 1
@@ -491,14 +506,20 @@ export class Fish {
           f.roll += (0 - f.roll) * Math.min(1, 3 * dt)
         }
         const wantPitch = Math.atan2(f.vy, Math.max(spd, 0.05))
-        f.pitch += (wantPitch - f.pitch) * Math.min(1, 4 * dt)
+        const climb = wantPitch - f.pitch
+        f.pitch += climb * Math.min(1, 4 * dt)
 
-        // Tail rate follows speed, relative to this fish's own cruise: idle sculling at 40% of its beat, a burst at nearly three times it.
+        // The body arcs into the turn: the tail swings to the inside (left turn, tail left), by up to 0.4 of the length on a hard turn. Vertically it arcs the same way, and keeps arcing for as long as the fish holds a pitch, so a climbing or diving fish is a curve and not a tilted board.
+        const kb = Math.min(1, 8 * dt)
+        f.curve += (Math.max(-0.4, Math.min(0.4, turn * 2)) * sp.lengthM - f.curve) * kb
+        f.lift += (Math.max(-0.3, Math.min(0.3, climb * 1.5 + f.pitch * 0.8)) * sp.lengthM - f.lift) * kb
+
+        // Tail rate follows speed, relative to this fish's own cruise: idle sculling at 40% of its beat, a burst at nearly three times it. The beat deepens through a turn, since a turn is driven by the tail.
         const rel = Math.hypot(f.vx, f.vy, f.vz) / (cfg.cruise * f.pace)
         f.phase = (f.phase + dt * TAU * cfg.tailHz * f.beat * (0.4 + 0.6 * rel)) % TAU
-        f.amp = cfg.tailAmp * sp.lengthM * Math.min(1.6, 0.5 + 0.5 * rel)
+        f.amp = cfg.tailAmp * sp.lengthM * Math.min(1.6, 0.5 + 0.5 * rel) * (1 + 2 * Math.abs(turn))
 
-        // Local -Z is the nose (loft-fish-mesh.mjs), so yaw = atan2(-hx, -hz) points it down the heading.
+        // Local -Z is the nose (ship.mjs turns every pick that way), so yaw = atan2(-hx, -hz) points it down the heading.
         _euler.set(f.pitch, Math.atan2(-f.hx, -f.hz), f.roll)
         _quat.setFromEuler(_euler)
         _pos.set(f.x, f.y, f.z)
@@ -508,8 +529,10 @@ export class Fish {
         _mat.compose(_pos, _quat, _scl)
         _mat.toArray(mat, n * 16)
         col[n * 3] = col[n * 3 + 1] = col[n * 3 + 2] = f.tint
-        swim[n * 2] = f.phase
-        swim[n * 2 + 1] = f.amp
+        swim[n * 4] = f.phase
+        swim[n * 4 + 1] = f.amp
+        swim[n * 4 + 2] = f.curve
+        swim[n * 4 + 3] = f.lift
         n++
       }
       sp.mesh.count = n

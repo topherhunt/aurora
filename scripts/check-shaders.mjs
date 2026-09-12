@@ -812,8 +812,8 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     sp.material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
     const defines = [
       `#define FISH_WAVE_K ${sp.material.defines.FISH_WAVE_K}`,
-      '#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST',
-      '#define USE_FOG', '#define FOG_EXP2', '#define DOUBLE_SIDED',
+      '#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv',
+      '#define USE_FOG', '#define FOG_EXP2',
     ]
     const label = `fish ${sp.id.padEnd(15)}`
     const vert = finish(shader.vertexShader)
@@ -822,7 +822,8 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
     CROSS_STAGE.push([label, vert, frag])
     // The bend itself. Losing it is silent: the fish still draw, stiff as decoys.
-    if (!vert.includes('transformed.x += aBend * aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
+    if (!vert.includes('transformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
+    if (!vert.includes('transformed.y += aBend * aSwim.w')) MISSING_MARKS.push(`${label} vert: the climb lift`)
   }
 }
 

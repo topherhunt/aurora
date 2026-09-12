@@ -76,11 +76,12 @@ const PROFILE_DIRECTIONS = 64
 // How much every point resists being dragged regardless of what the surface
 // does there, in the same units as the feature term. This is what makes a
 // collapse across a big flat triangle cost more than one across a small flat
-// triangle: a plane quadric prices both at zero. Kept well under the feature
-// weight: a feature IS small triangles, and at 0.25 the size term outbids the
-// feature term and takes a fox's ears by the 10% tier. See the size term in
-// `decimate` and design/27-creature-pipeline.md for the measured trade-off.
-const SIZE_WEIGHT = 0.05
+// triangle: a plane quadric prices both at zero. At 10 it outweighs the feature
+// term outright, so the ladder is even everywhere -- the flank of a 25% tier is
+// a regular lattice -- and a feature IS small triangles, so the 10% tier pays
+// with its ears and its legs. Chosen by eye on the bench over the silhouette
+// score; design/27-creature-pipeline.md has the numbers both ways.
+const SIZE_WEIGHT = 10
 
 // Exponent on how much worse a collapse leaves the triangles it reshapes
 // (quality before / quality after, worst face). 0 ignores shape; at 1 a
