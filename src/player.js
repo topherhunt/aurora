@@ -98,6 +98,9 @@ export const LOCOMOTION = {
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
+// Metres between the samples pathClear takes along a line. Under the smallest
+// padded trunk's diameter (a 3 cm sapling plus WalkSurface's 15 cm pad).
+const PATH_STEP = 0.3
 
 export class Player {
   constructor(rig, camera, terrainHeight) {
@@ -550,6 +553,32 @@ export class Player {
   //
   // The extra sample is only paid on the frames the immediate test already
   // failed, which are the frames she is not moving anyway.
+  /**
+   * Whether she could WALK the straight line from (x0, z0) to (x1, z1): every
+   * step of it passes the slope rule below and none enters a trunk. What the
+   * teleport asks before it accepts a landing, so a lob over a boulder or round
+   * a tree cannot reach ground her feet could not. Straight-line only -- the
+   * contour slide might get her round a small obstacle, but "can I go THAT way"
+   * is the question being asked. Steps are shorter than the thinnest padded
+   * trunk so a sapling cannot fall between two samples.
+   */
+  pathClear(x0, z0, x1, z1) {
+    const len = Math.hypot(x1 - x0, z1 - z0)
+    const n = Math.max(1, Math.ceil(len / PATH_STEP))
+    const dx = (x1 - x0) / n
+    const dz = (z1 - z0) / n
+    const step = len / n
+    let x = x0
+    let z = z0
+    for (let i = 0; i < n; i++) {
+      if (step > 1e-6 && !this._walkable(x, z, dx, dz, step)) return false
+      x += dx
+      z += dz
+      if (this.obstacles && this.obstacles.obstacleAt(x, z, this._obstacle)) return false
+    }
+    return true
+  }
+
   _walkable(x, z, dx, dz, dist) {
     const h0 = this.th.heightAt(x, z)
     const h1 = this.th.heightAt(x + dx, z + dz)

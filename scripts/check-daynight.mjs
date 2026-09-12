@@ -55,6 +55,23 @@ console.log('\n--- clock: the pace -------------------------------------------')
   check(Math.abs(d.hour - 12) < 1e-9, 'four skips return to the same hour of day', `${d.clockText}`)
   check(Math.abs(d.elapsed - 36) < 1e-9, 'and to a different point in the substorm cycle', `elapsed ${d.elapsed} h`)
   check(d.state().activity !== new WorldClock({ hour: 12 }).state().activity, 'aurora activity differs after a full day skipped')
+
+  // The wall-clock pace, which is what netplay syncs on: elapsed is derived
+  // from an anchor, so two clocks built at different moments but handed the
+  // same anchor agree, and a skip is a count the anchor's owner can restate.
+  const e = new WorldClock({ hour: 0, anchorMs: 1000 })
+  e.tick(61000)
+  check(Math.abs(e.elapsed - 1) < 1e-9, 'tick: one real minute past the anchor is one in-world hour', `got ${e.elapsed.toFixed(6)} h`)
+  e.skip(6)
+  e.tick(61000)
+  check(Math.abs(e.elapsed - 7) < 1e-9, 'tick: a local skip survives the next tick', `got ${e.elapsed.toFixed(6)} h`)
+  const f = new WorldClock({ hour: 0, anchorMs: 999999 })
+  f.sync({ anchorMs: 1000, skipHours: 6 })
+  f.tick(61000)
+  check(Math.abs(f.elapsed - e.elapsed) < 1e-9, 'sync: a clock built later agrees once handed the same anchor and skips', `${f.elapsed} vs ${e.elapsed}`)
+  f.sync({ anchorMs: 1000, skipHours: 0 })
+  f.tick(61000)
+  check(Math.abs(f.elapsed - 1) < 1e-9, 'sync: the relay\'s skip count replaces the local one rather than adding to it', `got ${f.elapsed}`)
 }
 
 // ===========================================================================

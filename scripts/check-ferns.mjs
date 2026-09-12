@@ -24,13 +24,15 @@
 //   same way. So the walk below audits the three counts that must agree --
 //   sum(tile.n), `placed`, and the pool's own used count -- every frame.
 //
-// The world here is deliberately flat, unrejecting and pathless: every candidate
-// stands, which is the WORST case for the pool and the only one the bound is
-// written against. A real world only ever places fewer.
+// The world here is deliberately flat, unrejecting, pathless and ALL SHORE:
+// every candidate stands, which is the WORST case for the pool and the only one
+// the bound is written against. A real world only ever places fewer. Section 4
+// then checks the lush rule itself -- a quarter carpet on plain ground, full
+// within reach of water or a boulder.
 
 import * as THREE from 'three'
 
-import { Ferns } from '../src/v2/render/ferns.js'
+import { Ferns, FERN_TUNING } from '../src/v2/render/ferns.js'
 import { buildTextureArray } from '../src/textures.js'
 import { setPropClock } from '../src/material.js'
 
@@ -40,20 +42,21 @@ const check = (ok, label, detail = '') => {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
 
-// Ground at 60 m, no slope, no snow, no water, no path -- so nothing is rejected
-// and every tile grows its full graded complement. The camera rides 1.6 m over
-// it, which is what puts the near tiles on the mesh rings.
+// Ground at 60 m, no slope, no snow, no path, and dry ground that is everywhere
+// at a water's edge -- so nothing is rejected and every tile grows its full
+// graded complement. The camera rides 1.6 m over it, which is what puts the near
+// tiles on the mesh rings.
 const GROUND = 60
 const field = {
   heightAndSlopeAt: () => ({ h: GROUND, tan: 0 }),
   snowLineAt: () => 9999,
   bands: { altLo: 0, altSpan: 900 },
 }
-const water = { isSubmerged: () => false, levelAt: () => null }
+const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: () => 0 }
 const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
 const textures = buildTextureArray()
 
-const build = () => new Ferns(new THREE.Scene(), field, water, layers, textures, { seed: 7 })
+const build = (w = water, opts = {}) => new Ferns(new THREE.Scene(), field, w, layers, textures, { seed: 7, ...opts })
 
 /** The three counts that have to agree, or an id has gone missing. */
 const audit = (ferns) => {
@@ -150,6 +153,78 @@ for (let i = 0; i < 3600; i++) {
 check(!thrown, 'a 700 m walk, a fly and twenty circles never run the pool dry',
   thrown || `peak ${peak} of ${walk.maxInstances} (${peakTiles} tiles)`)
 check(!leaked, 'and the ids balance on every frame of it', leaked || audit(walk).used + ' still out')
+
+// ---------------------------------------------------------------------------
+console.log('\n4. the carpet is a quarter as thick away from water and stone\n')
+
+// Ferns standing inside a box, off the tile ledgers.
+const countIn = (ferns, x0, x1, z0, z1) => {
+  let n = 0
+  for (const tile of ferns.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const x = ferns.instX[id]
+      const z = ferns.instZ[id]
+      if (x >= x0 && x < x1 && z >= z0 && z < z1) n++
+    }
+  }
+  return n
+}
+const { LUSH, FULL_RADIUS } = FERN_TUNING
+// A box well inside the full-density radius, so no graded thinning is in it.
+const R = FULL_RADIUS * 0.6
+const lush = boot
+const plain = build({ ...water, shoreDistAt: (x, z, reach) => reach })
+plain.place(0, 0)
+{
+  const a = countIn(lush, -R, R, -R, R)
+  const b = countIn(plain, -R, R, -R, R)
+  check(Math.abs(b / a - 1 / LUSH.gain) < 0.02,
+    `plain ground carries 1/${LUSH.gain} of the shore's carpet`, `${b} of ${a}`)
+  check(plain.rejected.sparse > 0 && lush.rejected.sparse === 0,
+    'and the difference is counted as `sparse`', `${plain.rejected.sparse} vs ${lush.rejected.sparse}`)
+}
+{
+  // A straight shore: water at x < 0, so the dry side's distance is x itself.
+  const shore = build({ ...water, shoreDistAt: (x, z, reach) => Math.min(reach, Math.max(-reach, x)) })
+  shore.place(0, 0)
+  const bank = countIn(shore, 0, LUSH.shoreReach, -R, R)
+  const bankLush = countIn(lush, 0, LUSH.shoreReach, -R, R)
+  const beyond = countIn(shore, LUSH.shoreReach, R, -R, R)
+  const beyondPlain = countIn(plain, LUSH.shoreReach, R, -R, R)
+  check(bank === bankLush, `the ${LUSH.shoreReach} m bank is the full carpet`, `${bank} vs ${bankLush}`)
+  check(beyond === beyondPlain, 'and past it is the plain one', `${beyond} vs ${beyondPlain}`)
+}
+{
+  // One boulder at the origin with a 2 m foot and nothing standing on it, so the
+  // lush disc is its foot plus rockReach and every fern in it is on the ground.
+  const foot = 2
+  const rocks = {
+    blockTopAt: () => -Infinity,
+    anchorsInto: (x0, z0, x1, z1, out) => {
+      if (x0 > 0 || x1 <= 0 || z0 > 0 || z1 <= 0) return 0
+      out[0] = 0; out[1] = GROUND; out[2] = 0; out[3] = foot
+      return 1
+    },
+  }
+  const stony = build({ ...water, shoreDistAt: (x, z, reach) => reach }, { rocks })
+  stony.place(0, 0)
+  const ring = (ferns, r) => {
+    let n = 0
+    for (const tile of ferns.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (Math.hypot(ferns.instX[id], ferns.instZ[id]) - foot <= r) n++
+      }
+    }
+    return n
+  }
+  const near = ring(stony, LUSH.rockReach)
+  const nearLush = ring(lush, LUSH.rockReach)
+  check(near === nearLush && near > 0, `the carpet is full within ${LUSH.rockReach} m of a boulder's foot`, `${near} vs ${nearLush}`)
+  check(countIn(stony, -R, R, -R, R) - near === countIn(plain, -R, R, -R, R) - ring(plain, LUSH.rockReach),
+    'and plain beyond it')
+}
 
 // ---------------------------------------------------------------------------
 

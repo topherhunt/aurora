@@ -28,6 +28,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { analyzeMesh, decimateLadder } from './mesh/decimate.js'
+import { cullTripoBackfaces } from './tripo-culling.js'
 import {
   buildFaceAdjacency, buildPaintedMesh, faceFrames, facesInSphere, floodFill,
   groundAndScale, unweld,
@@ -526,6 +527,7 @@ const workUrl = (id, file) => `/tools/trees/v9/work/${encodeURIComponent(id)}/${
 
 async function loadGeometry(file) {
   const gltf = await loader.loadAsync(workUrl(currentId(), file))
+  cullTripoBackfaces(gltf.scene)
   const meshes = []
   gltf.scene.traverse((o) => { if (o.isMesh) meshes.push(o) })
   // Loud rather than clever: silently taking the first of several would look

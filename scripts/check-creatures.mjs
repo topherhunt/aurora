@@ -34,7 +34,16 @@
 //   A PRESET IS OFFERED THAT DOES NOT EXIST. Non-biped animation coverage is
 //   one gait per rig type, and the bench renders its checkboxes straight off
 //   PRESETS. A stale entry there is a paid retarget that fails.
+//
+//   A TRIPO MESH IS DRAWN DOUBLE-SIDED. Tripo's material says doubleSided and
+//   its fins are closed slabs a tenth of a millimetre thick, so a loader that
+//   forgets to cull shows z-fighting the shipped game never would, or ships
+//   it. Every src file that loads from a Tripo work directory or from
+//   public/creatures has to import src/tripo-culling.js.
 
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildCreaturePrompt, frameForRig, ASPECT_RATIOS } from '../tools/creatures/creature-prompt.mjs'
 import { CREATURES } from '../tools/creatures/creature-roster.mjs'
 import { MODELS, PRESETS, RIG_TYPES, createMeshTask, estimateCredits, creditsToUsd } from '../tools/creatures/tripo.mjs'
@@ -196,6 +205,19 @@ check(PRESETS.biped.length > PRESETS.quadruped.length,
 for (const [type, list] of Object.entries(PRESETS)) {
   check(list.every((p) => p.startsWith('preset:')), `"${type}" presets are all preset: identifiers`)
   check(new Set(list).size === list.length, `"${type}" presets are unique`)
+}
+
+// --- every Tripo loader culls -------------------------------------------------
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const TRIPO_PATH = /creatures\/work|trees\/v9\/work|['`]creatures\//
+const srcFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+  e.isDirectory() ? srcFiles(path.join(dir, e.name)) : e.name.endsWith('.js') ? [path.join(dir, e.name)] : [])
+const loaders = srcFiles(path.join(ROOT, 'src')).filter((f) => TRIPO_PATH.test(fs.readFileSync(f, 'utf8')))
+check(loaders.length >= 4, `found the Tripo loaders (${loaders.length}; the bench, the rig editor, the tree bench, avatar.js)`)
+for (const f of loaders) {
+  check(/from '[./]*\/tripo-culling\.js'/.test(fs.readFileSync(f, 'utf8')),
+    `${path.relative(ROOT, f)} imports tripo-culling.js -- a Tripo loader that does not cull z-fights its fins`)
 }
 
 // ---------------------------------------------------------------------------

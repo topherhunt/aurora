@@ -160,6 +160,14 @@ import { RimFade, RIM_PHASES } from './rim.js'
 // with FULL_RADIUS below is what makes that affordable -- read the two together.
 const DENSITY = 6
 
+// THE SHORE IS THICKER AND TALLER. Within `reach` metres of a lake or river edge
+// (dry side; WaterSurfaces.shoreDistAt) a tile offers `gain` x its candidates and
+// every survivor's height roll is `size` x. The extra candidates are the ones at
+// index k >= the plain count, so the carpet away from water is byte-for-byte the
+// one it always was, and the pool is bounded by the shore's count, not the mean's.
+// Applies to every style, since all three place through the one loop.
+const SHORE = { reach: 5, gain: 2, size: 2 }
+
 // Metres. Inside this every tuft stands; past it density scales by
 // FULL_RADIUS / d, so every doubling of distance halves it. The strip bed keeps
 // the law and cuts further on top of it -- STRIP_FULL_RADIUS and STRIP_THIN.
@@ -997,7 +1005,7 @@ export class Grass {
   /**
    * @param scene         THREE.Scene to add the single BatchedMesh to.
    * @param field         V2Height. Needs heightAndSlopeAt and snowLineAt.
-   * @param water         WaterSurfaces. Needs isSubmerged.
+   * @param water         WaterSurfaces. Needs isSubmerged and shoreDistAt.
    * @param paths         PathSet. Needs nearest.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param style         'tufts' for the clump-then-billboard ladder, 'strips'
@@ -1052,8 +1060,8 @@ export class Grass {
     if (typeof field.snowLineAt !== 'function') {
       throw new Error('Grass: needs a V2Height with snowLineAt')
     }
-    if (!water || typeof water.isSubmerged !== 'function') {
-      throw new Error('Grass: needs WaterSurfaces with isSubmerged')
+    if (!water || typeof water.isSubmerged !== 'function' || typeof water.shoreDistAt !== 'function') {
+      throw new Error('Grass: needs WaterSurfaces with isSubmerged and shoreDistAt')
     }
     if (!paths || typeof paths.nearest !== 'function') {
       throw new Error('Grass: needs a PathSet with nearest')
@@ -1120,7 +1128,10 @@ export class Grass {
     this.thinFrom = this.strips ? STRIP_FULL_RADIUS : fullRadius
     this.fullSq = this.thinFrom * this.thinFrom
 
-    this.perTile = Math.max(1, Math.round(TILE * TILE * density))
+    // Candidates at or past plainCount stand only on the shore; perTile is what a
+    // shoreline tile offers and what the pool is bounded by.
+    this.plainCount = Math.max(1, Math.round(TILE * TILE * density))
+    this.perTile = this.plainCount * SHORE.gain
     // R2's jitter, in tile units: a fraction of the mean spacing between points,
     // which at n points in a unit square is 1/sqrt(n).
     this.jitter = this.strips ? R2_JITTER / Math.sqrt(this.perTile) : 0
@@ -1346,7 +1357,7 @@ export class Grass {
     this.samples = 0
     this.regrows = 0
     this.nearTiles = 0
-    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, path: 0, rock: 0 }
+    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, path: 0, rock: 0, sparse: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -1846,6 +1857,14 @@ export class Grass {
       if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
       const snowLine = this.field.snowLineAt(x, z)
       if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
+      // THE SHORE CUT, before the path pair: a candidate past plainCount stands
+      // only within SHORE.reach of water, and on plain ground that is every one
+      // of them. Strict `<`, because `reach` is shoreDistAt's nothing-near answer.
+      let onShore = false
+      if (k >= this.plainCount) {
+        onShore = this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
+        if (!onShore) { rej.sparse++; continue }
+      }
       const road = this.paths.nearest(x, z, 'road')
       if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       const river = this.paths.nearest(x, z, 'river')
@@ -1875,7 +1894,10 @@ export class Grass {
       rank[n] = u
       n++
 
-      const sy = height / this.baseHeight
+      // A plain candidate pays the shore query only once it has survived
+      // everything else, and only for its size.
+      if (!onShore) onShore = this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
+      const sy = (onShore ? height * SHORE.size : height) / this.baseHeight
       if (this.strips) {
         // ONE EXTRA HEIGHT SAMPLE AT EACH END, and the strip is rolled onto the
         // line between them. A flat card metres long cannot follow ground any
@@ -2181,6 +2203,7 @@ export class Grass {
  */
 export const GRASS_TUNING = {
   DENSITY,
+  SHORE,
   FULL_RADIUS,
   DRAW_RADIUS,
   LOD_BANDS,

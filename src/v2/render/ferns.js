@@ -150,6 +150,13 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // wherever the world is interesting. The exclusions are meant to show as bare
 // ground.
 //
+// THE CARPET IS FULL ONLY WHERE THE GROUND IS DAMP OR SHADED. DENSITY is the
+// density at a lake or river bank and against a boulder; everywhere else only the
+// first 1/LUSH.gain of a tile's candidates may stand, so the open wood averages a
+// quarter of it and a shoreline reads as the lush strip it is. The split is by
+// candidate INDEX rather than by a fresh roll, so the sparse carpet is exactly the
+// subset of the lush one and the pool bound stays the honest per-tile maximum.
+//
 // THE COLOUR. Two separate things, and they were separate problems:
 //
 //   The frond ART was almost black -- a raw Megascans capture of a fern
@@ -169,9 +176,28 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //   and none of them changes brightness.
 // ---------------------------------------------------------------------------
 
-// Ferns per square metre at full density. This is the NEAR-FIELD density; past
-// FULL_RADIUS it decays as (FULL_RADIUS / d)^FALLOFF.
+// Ferns per square metre at full density, on LUSH ground -- the open wood gets
+// DENSITY / LUSH.gain. This is the NEAR-FIELD density; past FULL_RADIUS it
+// decays as (FULL_RADIUS / d)^FALLOFF.
 const DENSITY = 0.5
+
+// Where the carpet is full rather than a quarter. See the header.
+const LUSH = {
+  // Only candidate index k < perTile / gain stands on plain ground.
+  gain: 4,
+  // Metres from a lake or river edge, measured on the dry side.
+  shoreReach: 10,
+  // Metres from a boulder's footprint edge. A fern ON the rock always counts.
+  rockReach: 2.5,
+  // Metres the anchor query box is padded past rockReach, so a boulder centred
+  // outside the tile whose foot reaches into it is still seen: the widest foot
+  // the boulders bed lays is ~5 m in radius.
+  rockPad: 8,
+  // Anchors one padded tile box may hold before the query is truncated, at which
+  // point _growTile throws rather than silently thin the carpet round the rocks
+  // it lost. Expected count is ~2.
+  rockCap: 64,
+}
 
 // Metres. Inside this every fern stands. It wants to be comfortably past the
 // last mesh band (10 m) so the bed you walk through and look across is uniform
@@ -256,6 +282,9 @@ export const FERN_LOD = {
   fullRadius: FULL_RADIUS,
   drawRadius: DRAW_RADIUS,
 }
+
+/** The placement tuning scripts/check-ferns.mjs gates, so it reads these numbers rather than a copy. */
+export const FERN_TUNING = { DENSITY, FULL_RADIUS, DRAW_RADIUS, LUSH }
 
 // Metres per tile. Half the forest's, and sized against FULL_RADIUS rather than
 // against density: the keep-fraction is evaluated once per tile from its nearest
@@ -376,9 +405,11 @@ export class Ferns {
   /**
    * @param scene         THREE.Scene to add the three ring meshes to.
    * @param field         V2Height. Needs heightAndSlopeAt, snowLineAt and bands.
-   * @param water         WaterSurfaces. Needs isSubmerged.
+   * @param water         WaterSurfaces. Needs isSubmerged and shoreDistAt.
    * @param layers        Layers. Needs `paths`, `snow.band` and flattenAt.
    * @param textureArray  The shared prop atlas from buildTextureArray().
+   * @param rocks         Optional Rocks. Needs blockTopAt and anchorsInto; without
+   *                      it no fern is raised onto a boulder or thickened beside one.
    */
   constructor(
     scene,
@@ -394,8 +425,8 @@ export class Ferns {
     if (typeof field.snowLineAt !== 'function') {
       throw new Error('Ferns: needs a V2Height with snowLineAt')
     }
-    if (!water || typeof water.isSubmerged !== 'function') {
-      throw new Error('Ferns: needs WaterSurfaces with isSubmerged')
+    if (!water || typeof water.isSubmerged !== 'function' || typeof water.shoreDistAt !== 'function') {
+      throw new Error('Ferns: needs WaterSurfaces with isSubmerged and shoreDistAt')
     }
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') {
       throw new Error('Ferns: needs Layers with a PathSet')
@@ -404,9 +435,10 @@ export class Ferns {
       throw new Error('Ferns: needs Layers with flattenAt and a snow field')
     }
     // Optional, so the probes under tmp/ can run the scatter with no rock bed
-    // built. Without it a fern that lands inside a boulder is placed inside it.
-    if (rocks && typeof rocks.blockTopAt !== 'function') {
-      throw new Error('Ferns: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
+    // built. Without it a fern that lands inside a boulder is placed inside it
+    // and no boulder thickens the carpet round its foot.
+    if (rocks && (typeof rocks.blockTopAt !== 'function' || typeof rocks.anchorsInto !== 'function')) {
+      throw new Error('Ferns: `rocks` was given but lacks blockTopAt or anchorsInto -- pass the Rocks or nothing')
     }
     if (LOD_BANDS.length !== RING_TIERS.length) {
       throw new Error('Ferns: LOD_BANDS and RING_TIERS must be the same length')
@@ -441,6 +473,9 @@ export class Ferns {
     this.fullSq = fullRadius * fullRadius
 
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
+    // Candidates at or past this index stand only on lush ground.
+    this.plainCount = Math.max(1, Math.round(this.perTile / LUSH.gain))
+    this._anchors = new Float32Array(LUSH.rockCap * 4)
     this.tileSpan = Math.ceil(radius / TILE) + 1
     this.radiusSq = radius * radius
     // Evict only once a tile is well outside the radius, so a player pacing back
@@ -603,7 +638,7 @@ export class Ferns {
     this.tris = 0
     this.regrows = 0
     this.nearTiles = 0
-    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, snow: 0 }
+    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, snow: 0, sparse: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -880,6 +915,20 @@ export class Ferns {
     const rej = this.rejected
     const scaleSpan = this.scaleHi - this.scaleLo
 
+    // Every boulder whose foot can reach into this tile, read once per grow. The
+    // rocks are placed and stepped ahead of the ferns in v2/main.js and the
+    // boulders bed holds full density well past this bed's draw radius, so what
+    // is resident is what is there.
+    const anchors = this._anchors
+    let nAnchors = 0
+    if (this.rocks) {
+      const pad = LUSH.rockReach + LUSH.rockPad
+      nAnchors = this.rocks.anchorsInto(tx * TILE - pad, tz * TILE - pad, (tx + 1) * TILE + pad, (tz + 1) * TILE + pad, anchors)
+      if (nAnchors >= LUSH.rockCap) {
+        throw new Error(`Ferns: tile (${tx}, ${tz}) has ${nAnchors}+ boulders in reach, over LUSH.rockCap ${LUSH.rockCap}`)
+      }
+    }
+
     for (let k = 0; k < this.perTile; k++) {
       // EVERY candidate draws the same randoms whether or not it survives, so a
       // fern's identity cannot depend on how many of its neighbours happened to
@@ -911,6 +960,23 @@ export class Ferns {
       if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
       const snowLine = this.field.snowLineAt(x, z)
       if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
+
+      // See ROCK_STAND_MIN and the placement below for what `top` is.
+      const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
+      // THE SPARSE CUT. A candidate past plainCount stands only on lush ground:
+      // on a boulder, within rockReach of one's foot, or within shoreReach of
+      // water on the dry side (the candidate is already dry, so the signed
+      // distance is what it is without an abs; strict `<`, because `reach` is
+      // the nothing-near answer). Before the path pair because three quarters
+      // of the carpet leave here.
+      if (k >= this.plainCount) {
+        let lush = top > -Infinity || this.water.shoreDistAt(x, z, LUSH.shoreReach, h, tan) < LUSH.shoreReach
+        for (let a = 0; !lush && a < nAnchors; a++) {
+          const o = a * 4
+          lush = Math.hypot(x - anchors[o], z - anchors[o + 2]) - anchors[o + 3] <= LUSH.rockReach
+        }
+        if (!lush) { rej.sparse++; continue }
+      }
 
       const road = this.paths.nearest(x, z, 'road')
       if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
@@ -947,7 +1013,6 @@ export class Ferns {
       // those agree. That is the near field, which is the only place a fern is
       // more than a few pixels, and it is the same error the fern already carries
       // against the drawn ground.
-      const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
       this.instY[id] = Math.max(h - PLACEMENT.sink * scale, top)
       this.instZ[id] = z
 

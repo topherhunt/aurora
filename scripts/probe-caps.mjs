@@ -128,7 +128,7 @@ const hm = await Heightmap.read({
   metaPath: new URL('../public/world/height.json', import.meta.url),
 })
 const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: WORLD_SEED })
-const dryWater = { levelAt: () => null, isSubmerged: () => false }
+const dryWater = { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 
 // Three spots, so the answer is not one valley's. Picked by slope: the sampler
 // below walks the map and takes the steepest cells it finds.
@@ -164,7 +164,7 @@ const lake = {
     snowLineAt: () => 9999,
     bands: { altLo: 0, altSpan: 900 },
   },
-  water: { levelAt: () => 70, isSubmerged: () => true },
+  water: { levelAt: () => 70, isSubmerged: () => true, shoreDistAt: (x, z, reach) => reach },
 }
 {
   const rocks = new Rocks(new THREE.Scene(), lake.field, lake.water, layers, texArray, { seed: 7 })

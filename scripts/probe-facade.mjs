@@ -42,7 +42,7 @@ const hm = await Heightmap.read({
   metaPath: new URL('../public/world/height.json', import.meta.url),
 })
 const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: WORLD_SEED })
-const dryWater = { levelAt: () => null, isSubmerged: () => false }
+const dryWater = { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 
 const BEDS = ['cliff slabs', 'giants', 'boulders']
 

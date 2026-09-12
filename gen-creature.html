@@ -250,6 +250,13 @@
           <label>weld tolerance, % of bounding diagonal</label>
           <input type="text" id="lodWeld" value="" placeholder="default: hair-thin" />
         </div>
+        <div class="field">
+          <label>size / shape weight &mdash; small triangles first, and regular ones; higher costs silhouette</label>
+          <div class="row">
+            <input type="text" id="lodSize" value="0.05" title="size: how much every point resists being moved, flat or not (0 = plain quadric)" />
+            <input type="text" id="lodShape" value="1" title="shape: exponent on how much worse a collapse leaves its triangles (0 = ignore shape)" />
+          </div>
+        </div>
         <button id="genLod" class="wide local" disabled>decimate (free)</button>
         <button id="genCards" class="wide local" disabled style="margin-top:4px">bake card cross (4 tris, free)</button>
         <button id="saveLod" class="wide local" disabled style="margin-top:4px">save tiers to disk</button>

@@ -1732,6 +1732,7 @@ console.log('\nscatter')
     water: {
       levelAt: () => level,
       isSubmerged: (x, z, groundY) => level !== null && level > groundY,
+      shoreDistAt: (x, z, reach) => reach,
     },
   })
 
@@ -1764,7 +1765,7 @@ console.log('\nscatter')
       snowLineAt: () => 880,
       bands: { altLo: 0, altSpan: 900 },
     },
-    water: { levelAt: () => null, isSubmerged: () => false },
+    water: { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach },
   }
 
   const texArray = buildTextureArray()
@@ -2691,7 +2692,7 @@ console.log('\nscatter')
         snowLineAt: () => 9999,
         bands: { altLo: 0, altSpan: 900 },
       },
-      water: { levelAt: () => null, isSubmerged: () => false },
+      water: { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach },
     }
     {
       const slabRocks = build(slabPlane)
@@ -2764,7 +2765,7 @@ console.log('\nscatter')
           snowLineAt: () => 9999,
           bands: { altLo: 0, altSpan: 900 },
         },
-        water: { levelAt: () => null, isSubmerged: () => false },
+        water: { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach },
       }
       const foldRocks = build(fold)
       // How far a plate's skirt bottom ends up ABOVE the ground at its rim, over
@@ -2929,7 +2930,7 @@ console.log('\nscatter')
       // The BANK is dry and inside SHORE_RISE of the water, which is the case
       // that matters: `levelAt` answers everywhere, so `_envAt` calls the whole
       // world `river` and only `isSubmerged` separates the two halves.
-      water: { levelAt: () => 60.8, isSubmerged: (x) => x < 0 },
+      water: { levelAt: () => 60.8, isSubmerged: (x) => x < 0, shoreDistAt: (x, z, reach) => reach },
     }
     const shoreRocks = build(shore)
     const bed = shoreRocks.beds.find((b) => b.cfg.name === 'sunken')
@@ -2990,6 +2991,41 @@ console.log('\nscatter')
     const sunkN = nearN('sunken')
     check(coverN > sunkN * 2, 'and the floor carries several stones underfoot for every one of them',
       `${sunkN} boulders against ${coverN} underfoot stones inside 100 m, ${(coverN / Math.max(1, sunkN)).toFixed(1)}x`)
+
+    // TWICE THE BOULDERS ALONG THE SHORE, wet and dry alike. `shoreGain` multiplies
+    // the accept rate within SHORE_REACH of the edge, so a world that is all edge
+    // places twice what the same world with no edge does, and a world with one
+    // straight edge places the no-edge bed exactly, stone for stone, everywhere
+    // past the reach.
+    const boulders = (rocks) => {
+      const b = rocks.beds.find((x) => x.cfg.name === 'boulders')
+      const out = []
+      for (const t of b.tiles.values()) {
+        for (let k = 0; k < t.n; k++) out.push([b.instX[t.ids[k]], b.instZ[t.ids[k]]])
+      }
+      return out.sort((p, q) => p[0] - q[0] || p[1] - q[1])
+    }
+    const gain = shoreRocks.beds.find((x) => x.cfg.name === 'boulders').shoreGain
+    const REACH = 10
+    const allEdge = build({ ...shore, water: { ...shore.water, shoreDistAt: () => 0 } })
+    const noEdge = shoreRocks
+    const oneEdge = build({ ...shore, water: { ...shore.water, shoreDistAt: (x, z, reach) => Math.min(reach, Math.max(-reach, x)) } })
+    const all = boulders(allEdge).length
+    const none = boulders(noEdge).length
+    check(gain === 2, 'the boulders bed doubles along a shore', `shoreGain ${gain}`)
+    check(Math.abs(all / none - gain) < gain * 0.06, `and a world that is all shore places ${gain}x the boulders`,
+      `${all} vs ${none}`)
+    const far = (list) => list.filter(([x]) => Math.abs(x) >= REACH)
+    const nearEdge = (list, side) => list.filter(([x]) => Math.abs(x) < REACH && (side < 0 ? x < 0 : x >= 0)).length
+    const a = far(boulders(oneEdge))
+    const c = far(boulders(noEdge))
+    check(a.length === c.length && a.every((p, i) => p[0] === c[i][0] && p[1] === c[i][1]),
+      `past ${REACH} m of a straight edge the bed is the no-shore bed, stone for stone`, `${a.length} vs ${c.length}`)
+    check(nearEdge(boulders(oneEdge), -1) > nearEdge(boulders(noEdge), -1) && nearEdge(boulders(oneEdge), 1) > nearEdge(boulders(noEdge), 1),
+      'and inside it there are more on both the wet side and the dry',
+      `wet ${nearEdge(boulders(oneEdge), -1)} vs ${nearEdge(boulders(noEdge), -1)}, dry ${nearEdge(boulders(oneEdge), 1)} vs ${nearEdge(boulders(noEdge), 1)}`)
+    allEdge.dispose()
+    oneEdge.dispose()
     shoreRocks.dispose()
   }
 

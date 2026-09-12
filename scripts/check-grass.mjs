@@ -72,7 +72,7 @@ const check = (ok, label, detail = '') => {
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol
 
-const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, RIM_PHASES, TILE, HEIGHT, PLACEMENT,
+const { DENSITY, SHORE, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, RIM_PHASES, TILE, HEIGHT, PLACEMENT,
   GROW_FROM, GROW_TO, GROW_SCALE, GROW_SINK,
   STRIP_MATCH, STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK,
   STRIP_FULL_RADIUS, STRIP_THIN, STRIP_THIN_OCTAVES, stripThinAt } = GRASS_TUNING
@@ -449,7 +449,7 @@ const flat = {
   heightAt: () => 60,
   snowLineAt: () => 9999,
 }
-const dry = { isSubmerged: () => false }
+const dry = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 const clear = { nearest: () => null }
 
 // The camera has to stand ON the flat world, not at y = 1.6 in absolute terms:
@@ -488,7 +488,9 @@ check(st.rejected.elev + st.rejected.slope + st.rejected.water + st.rejected.sno
   'nothing rejected on a flat dry world', JSON.stringify(st.rejected))
 check(st.used === st.placed, 'the pool ledger agrees with the tile ledger', `${st.used} vs ${st.placed}`)
 check(st.used < st.pool, 'the pool is not exhausted', `${st.used}/${st.pool}`)
-check(st.pool < st.used * 2, 'the pool is not wildly oversized', `${st.used}/${st.pool}`)
+// The pool is bounded by a SHORELINE tile's count, SHORE.gain x what dry ground
+// holds, and this world has no shore in it.
+check(st.pool < st.used * 2 * SHORE.gain, 'the pool is not wildly oversized', `${st.used}/${st.pool}`)
 
 // The count the whole design rests on: pi*F^2*D inside, 2*pi*F*D*(R-F) beyond.
 const ideal = Math.PI * FULL_RADIUS ** 2 * DENSITY + 2 * Math.PI * FULL_RADIUS * DENSITY * (DRAW_RADIUS - FULL_RADIUS)
@@ -991,7 +993,7 @@ console.log('\n-- one tier --')
 console.log('\n-- placement --')
 
 {
-  const wet = { isSubmerged: (x, z, y) => y < 61 }
+  const wet = { isSubmerged: (x, z, y) => y < 61, shoreDistAt: (x, z, reach) => reach }
   const roaded = { nearest: (x, z, kind) => (kind === 'road' ? { dist: 0.1, halfWidth: 2 } : null) }
   const snowy = { heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 60 }
   const cliff = { heightAndSlopeAt: () => ({ h: 60, tan: 9, gx: 9, gz: 0 }), snowLineAt: () => 9999 }
@@ -1015,6 +1017,52 @@ console.log('\n-- placement --')
   check(PLACEMENT.maxSlopeDeg > 32, 'grass holds ground a tree will not', `${PLACEMENT.maxSlopeDeg} deg`)
   check(PLACEMENT.pathClearance < 1.0, 'grass grows to the verge', `${PLACEMENT.pathClearance} m`)
   check(PLACEMENT.minElev < 22, 'grass reaches lower than ferns do', `${PLACEMENT.minElev} m`)
+
+  // THE SHORE: a straight water's edge along x = 0, dry side x > 0, so the
+  // signed shore distance is x itself. Tufts inside SHORE.reach of it come up
+  // SHORE.gain x as many and SHORE.size x as tall; past it the carpet is
+  // byte-for-byte the dry world's.
+  const shoreWater = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => Math.min(reach, Math.max(-reach, x)) }
+  const shore = new Grass(new THREE.Scene(), flat, shoreWater, clear, texArray, { seed: 7, style: 'tufts' })
+  shore.place(0, 0)
+  const plain = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+  plain.place(0, 0)
+  const R = FULL_RADIUS * 0.8
+  // Every tuft in a box, with its scale-y read back off the instance matrix.
+  const inBox = (g, x0, x1) => {
+    const out = []
+    const m = new THREE.Matrix4()
+    const p = new THREE.Vector3()
+    const q = new THREE.Quaternion()
+    const sc = new THREE.Vector3()
+    for (const tile of g.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const x = g.instX[id]
+        const z = g.instZ[id]
+        if (x < x0 || x >= x1 || z < -R || z >= R) continue
+        g.batch.getMatrixAt(id, m)
+        m.decompose(p, q, sc)
+        out.push({ x, z, sy: sc.y })
+      }
+    }
+    return out
+  }
+  const bank = inBox(shore, 0, SHORE.reach)
+  const bankPlain = inBox(plain, 0, SHORE.reach)
+  // Out through the thinned field, which both beds thin identically.
+  const beyond = inBox(shore, SHORE.reach, DRAW_RADIUS)
+  const beyondPlain = inBox(plain, SHORE.reach, DRAW_RADIUS)
+  const mean = (a) => a.reduce((t, e) => t + e.sy, 0) / a.length
+  check(near(bank.length / bankPlain.length, SHORE.gain, 0.08),
+    `${SHORE.gain}x the tufts within ${SHORE.reach} m of the water`, `${bank.length} vs ${bankPlain.length}`)
+  check(near(mean(bank) / mean(bankPlain), SHORE.size, 0.08),
+    `and ${SHORE.size}x as tall`, `${mean(bank).toFixed(2)} vs ${mean(bankPlain).toFixed(2)} mean scale`)
+  check(beyond.length > 0 && beyond.length === beyondPlain.length
+    && beyond.every((e, i) => e.x === beyondPlain[i].x && e.sy === beyondPlain[i].sy),
+    'and past it the carpet is exactly the dry one', `${beyond.length} vs ${beyondPlain.length}`)
+  shore.dispose()
+  plain.dispose()
 }
 
 // --- 8. the bake ------------------------------------------------------------

@@ -76,20 +76,17 @@ const PROFILE_DIRECTIONS = 64
 // How much every point resists being dragged regardless of what the surface
 // does there, in the same units as the feature term. This is what makes a
 // collapse across a big flat triangle cost more than one across a small flat
-// triangle: a plane quadric prices both at zero. See the size term in `decimate`.
-const SIZE_WEIGHT = 0.25
+// triangle: a plane quadric prices both at zero. Kept well under the feature
+// weight: a feature IS small triangles, and at 0.25 the size term outbids the
+// feature term and takes a fox's ears by the 10% tier. See the size term in
+// `decimate` and design/27-creature-pipeline.md for the measured trade-off.
+const SIZE_WEIGHT = 0.05
 
-// Exponent on 1 / (worst mean-ratio quality among the triangles a collapse
-// reshapes). 0 ignores shape; at 2 a collapse that leaves a 3:1 triangle costs
-// four times what one leaving equilateral triangles does, and a 4:1 six times.
-const SHAPE_WEIGHT = 2
-
-// Cost multiplier per quad a collapse breaks in half, and the dihedral cosine
-// under which two faces sharing their longest edge count as one quad. 0.95 is
-// eighteen degrees: on a five-hundred-triangle creature the faces of a genuine
-// quad on a curved flank turn about that much.
-const QUAD_WEIGHT = 3
-const QUAD_COS_TOL = 0.95
+// Exponent on how much worse a collapse leaves the triangles it reshapes
+// (quality before / quality after, worst face). 0 ignores shape; at 1 a
+// collapse that halves a triangle's quality costs double; at 2 it costs four
+// times but the silhouette pays for it, same as the size term.
+const SHAPE_WEIGHT = 1
 
 // Mean-ratio quality of a triangle: 1 equilateral, 0 degenerate; a right
 // isosceles half-square is 0.87, a 3:1 sliver about 0.5.
@@ -502,7 +499,7 @@ class MinHeap {
 export function decimate(mesh, targetTris, opts = {}) {
   const {
     flipTolerance = 0.2, weldEps, seamCollapse = true, uvMode = 'preserve', dropIslands = true,
-    featureWeight = FEATURE_WEIGHT, sizeWeight = SIZE_WEIGHT, shapeWeight = SHAPE_WEIGHT, quadWeight = QUAD_WEIGHT, quadCosTol = QUAD_COS_TOL,
+    featureWeight = FEATURE_WEIGHT, sizeWeight = SIZE_WEIGHT, shapeWeight = SHAPE_WEIGHT,
   } = opts
   const { positions, uvs, normals, indices } = mesh
   if (!positions || !indices) throw new Error('decimate requires positions and indices')
@@ -547,8 +544,8 @@ export function decimate(mesh, targetTris, opts = {}) {
   const { pieceOf, pieces } = piecesOf(topo)
 
   const Q = new Float64Array(pointCount * 10)
-  // The feature term rides in its own quadric so the shape and quad factors
-  // below scale the surface error and leave silhouette protection absolute.
+  // The feature term rides in its own quadric so the shape factor below
+  // scales the surface error and leaves silhouette protection absolute.
   const F = new Float64Array(pointCount * 10)
   const fq = new Float64Array(10)
   const fn = new Float64Array(3)
@@ -556,7 +553,6 @@ export function decimate(mesh, targetTris, opts = {}) {
   // kept UNNORMALISED, because the length that sum loses is the measurement.
   const mass = new Float64Array(pointCount)
   const normalSum = new Float64Array(pointCount * 3)
-  const faceNormal = new Float64Array(faceCount * 3)
   let totalArea = 0
   for (let f = 0; f < faceCount; f++) {
     const a = facePoints[f * 3] * 3, b = facePoints[f * 3 + 1] * 3, c = facePoints[f * 3 + 2] * 3
@@ -568,51 +564,12 @@ export function decimate(mesh, targetTris, opts = {}) {
     )
     totalArea += area
     pieces[pieceOf[f]].area += area
-    faceNormal[f * 3] = fn[0]; faceNormal[f * 3 + 1] = fn[1]; faceNormal[f * 3 + 2] = fn[2]
     for (const p of [facePoints[f * 3], facePoints[f * 3 + 1], facePoints[f * 3 + 2]]) {
       for (let i = 0; i < 10; i++) Q[p * 10 + i] += fq[i]
       mass[p] += area
       normalSum[p * 3] += fn[0] * area
       normalSum[p * 3 + 1] += fn[1] * area
       normalSum[p * 3 + 2] += fn[2] * area
-    }
-  }
-
-  // --- quads ----------------------------------------------------------------
-  //
-  // A glTF mesh is triangles, but a vendor mesh is often a quad mesh that was
-  // split on arrival, and a quad reads as a quad only while both halves are
-  // there. Two faces are one quad when they share their longest edge -- the
-  // diagonal of a convex quad is longer than its sides -- and lie within
-  // `quadCosTol` of each other. That leaves each face at most one candidate
-  // partner, so the pairing is unambiguous and needs no global matching.
-  //
-  // Collapsing a quad's DIAGONAL removes both halves and leaves every
-  // neighbouring quad a quad: that is the quad-mesh decimation primitive, and
-  // it is priced as a plain collapse. Collapsing one of its SIDES kills one
-  // half and leaves the other a lone triangle in a field of quads, which is
-  // what `quadWeight` charges for, once per orphan. Partners are read at the
-  // start and only ever severed; two orphans are never re-paired.
-  const partner = new Int32Array(faceCount).fill(-1)
-  if (quadWeight > 1) {
-    const longest = new Map()
-    for (let f = 0; f < faceCount; f++) {
-      const a = facePoints[f * 3], b = facePoints[f * 3 + 1], c = facePoints[f * 3 + 2]
-      const d2 = (p, q) => {
-        const dx = pointPos[p * 3] - pointPos[q * 3], dy = pointPos[p * 3 + 1] - pointPos[q * 3 + 1], dz = pointPos[p * 3 + 2] - pointPos[q * 3 + 2]
-        return dx * dx + dy * dy + dz * dz
-      }
-      const ab = d2(a, b), bc = d2(b, c), ca = d2(c, a)
-      const [u, v] = ab >= bc && ab >= ca ? [a, b] : bc >= ca ? [b, c] : [c, a]
-      const k = u < v ? u * pointCount + v : v * pointCount + u
-      const list = longest.get(k)
-      if (list) list.push(f); else longest.set(k, [f])
-    }
-    for (const list of longest.values()) {
-      if (list.length !== 2) continue
-      const [f, g] = list
-      const dot = faceNormal[f * 3] * faceNormal[g * 3] + faceNormal[f * 3 + 1] * faceNormal[g * 3 + 1] + faceNormal[f * 3 + 2] * faceNormal[g * 3 + 2]
-      if (dot >= quadCosTol) { partner[f] = g; partner[g] = f }
     }
   }
 
@@ -707,11 +664,12 @@ export function decimate(mesh, targetTris, opts = {}) {
   // The quadric says how far a collapse takes the surface from where it was
   // and nothing about what it leaves behind. Two collapses of the same error
   // can leave an equilateral fan or a fan of 4:1 slivers, and on a flat back the
-  // quadric cannot tell them apart. So the cost is scaled by the worst
-  // mean-ratio quality among the faces the collapse reshapes -- the faces at u
-  // that survive it, with u's corner moved to v -- to the power `shapeWeight`.
-  // Measured on what results, not on how much worse it got: a region whose
-  // every collapse leaves slivers is expensive, and the budget goes elsewhere.
+  // quadric cannot tell them apart. So the cost is scaled by how much worse the
+  // collapse leaves the faces it reshapes -- the faces at u that survive it,
+  // with u's corner moved to v -- as (quality before / quality after) of the
+  // worst one, to the power `shapeWeight`. Relative, not absolute: a collapse
+  // that leaves a sliver where there was a sliver is not punished, or an ear
+  // that is slivers by construction would be the cheapest thing on the mesh.
   // Multiplicative so that within a region the quadric's own order is kept;
   // and the size term keeps the quadric off zero, so it always has purchase.
   const shapePenalty = (u, v) => {
@@ -730,22 +688,6 @@ export function decimate(mesh, targetTris, opts = {}) {
     return Math.pow(worst, shapeWeight)
   }
 
-  // Quads the collapse would leave half-standing: a retiring face whose
-  // partner is not itself retiring.
-  const orphansOf = (u, v) => {
-    let n = 0
-    for (const f of facesAt[u]) {
-      if (!faceAlive[f]) continue
-      if (facePoints[f * 3] !== v && facePoints[f * 3 + 1] !== v && facePoints[f * 3 + 2] !== v) continue
-      const g = partner[f]
-      if (g < 0 || !faceAlive[g]) continue
-      const ga = facePoints[g * 3], gb = facePoints[g * 3 + 1], gc = facePoints[g * 3 + 2]
-      if ((ga === u || gb === u || gc === u) && (ga === v || gb === v || gc === v)) continue
-      n++
-    }
-    return n
-  }
-
   // Cost of removing u by merging it into v, evaluated at v's own position.
   const sumQ = new Float64Array(10)
   const costOf = (u, v) => {
@@ -757,7 +699,6 @@ export function decimate(mesh, targetTris, opts = {}) {
     // negative through float cancellation, which would sort as the best edge.
     let cost = e < 0 ? 0 : e
     if (shapeWeight > 0) cost *= shapePenalty(u, v)
-    if (quadWeight > 1) cost *= Math.pow(quadWeight, orphansOf(u, v))
     for (let i = 0; i < 10; i++) sumQ[i] = F[a + i] + F[b + i]
     const f = quadricError(sumQ, 0, pointPos[o], pointPos[o + 1], pointPos[o + 2])
     return cost + (f < 0 ? 0 : f)
@@ -960,17 +901,7 @@ export function decimate(mesh, targetTris, opts = {}) {
       if (a === v || b === v || c === v) retiring.push(f)
     }
     if (retiring.length >= liveFaces) continue
-    for (const f of retiring) {
-      faceAlive[f] = 0; liveFaces--
-      // A surviving partner is now a lone triangle, and every edge priced on
-      // it being half a quad is stale: its far corner is not u's neighbour, so
-      // the bumps below would not reach it.
-      const g = partner[f]
-      if (g >= 0) {
-        partner[g] = -1; partner[f] = -1
-        for (let s = 0; s < 3; s++) version[facePoints[g * 3 + s]]++
-      }
-    }
+    for (const f of retiring) { faceAlive[f] = 0; liveFaces-- }
     // Rewrite the rest onto v, each corner taking the corner of v that sits in
     // its own island.
     for (const f of facesAt[u]) {

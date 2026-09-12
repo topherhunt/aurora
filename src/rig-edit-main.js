@@ -1,6 +1,7 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { cullTripoBackfaces } from './tripo-culling.js'
 import { BONES, HIERARCHY, REQUIRED, expectedParent } from '../tools/creatures/quadruped-rig.mjs'
 
 // ---------------------------------------------------------------------------
@@ -196,7 +197,7 @@ async function loadRig(id) {
 
   if (root) scene.remove(root)
   stopPreview()
-  root = gltf.scene
+  root = cullTripoBackfaces(gltf.scene)
   scene.add(root)
 
   // The rig stays exactly where the glb puts it, so a joint's world position is

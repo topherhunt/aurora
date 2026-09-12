@@ -7,10 +7,13 @@
 // dry land across it. Everything below is a way a fish can go wrong without
 // anything throwing: a fish on the bank, a fish in the air, a school that has
 // quietly dispersed, a pike lying beside another pike, a shoal of glimmerfin
-// on the bed, a pool that fails to empty on dry land or to refill in water,
-// a frame that costs more than a scatter is allowed to. The shipped asset is
-// checked against the roster too, because a species missing from fish.json
-// would draw as nothing.
+// on the bed, a school swimming in lockstep or all one size, a 2 m lake
+// handing out giants or a 24 m one handing out only fry, a pool that stays
+// where she entered the water instead of turning over as she swims, that
+// churns while she stands still, that fails to empty on dry land or to refill
+// in water, a frame that costs more than a scatter is allowed to. The shipped
+// asset is checked against the roster too, because a species missing from
+// fish.json would draw as nothing.
 //
 // What this can NOT check: whether they look like fish, or whether the tail
 // moves. That needs eyes, in the world.
@@ -157,6 +160,75 @@ for (const sp of fish.species) {
   const bass = fish.species.find((sp) => sp.id === 'ironscale-bass')
   const depth = (sp) => { const a = sp.slots.filter((f) => f.alive); return a.reduce((s, f) => s + (f.level - f.y), 0) / a.length }
   check(depth(glim) < depth(bass) && depth(bass) < depth(pike[0] ? fish.species.find((sp) => sp.id === 'rime-fangpike') : bass), 'glimmerfin above the bass above the pike', `${depth(glim).toFixed(2)} / ${depth(bass).toFixed(2)} m below the surface`)
+}
+
+// --- no two fish alike ------------------------------------------------------
+// Read off the final frame: within a school, headings fan out and speeds differ, and the sizes of a school are not one size.
+for (const sp of fish.species) {
+  const schools = sp.schools.filter((sc) => sc.members.length >= 3)
+  if (!schools.length) continue
+  let fan = 0
+  let spread = 0
+  let sizes = 0
+  for (const sc of schools) {
+    const m = sc.members
+    let mx = 0
+    let mz = 0
+    for (const f of m) { mx += f.hx; mz += f.hz }
+    const ml = Math.hypot(mx, mz) || 1
+    fan += m.reduce((s, f) => s + Math.acos(Math.max(-1, Math.min(1, (f.hx * mx + f.hz * mz) / ml))), 0) / m.length
+    const v = m.map((f) => Math.hypot(f.vx, f.vz))
+    const mean = v.reduce((a, b) => a + b, 0) / v.length
+    spread += Math.sqrt(v.reduce((s, x) => s + (x - mean) ** 2, 0) / v.length) / (mean || 1)
+    const sc0 = m.map((f) => f.scale)
+    sizes += (Math.max(...sc0) - Math.min(...sc0)) / Math.min(...sc0)
+  }
+  fan /= schools.length
+  spread /= schools.length
+  sizes /= schools.length
+  check(fan > 0.2, `${sp.id}: a school's headings fan out`, `mean ${fan.toFixed(2)} rad off the school's mean heading`)
+  check(spread > 0.1, `${sp.id}: a school's speeds differ`, `coefficient of variation ${spread.toFixed(2)}`)
+  check(sizes > 0.2, `${sp.id}: a school's sizes differ`, `largest is ${(1 + sizes).toFixed(2)}x the smallest on average`)
+}
+
+// --- the deep is where the big ones are ------------------------------------
+{
+  const shallow = alive().map((f) => f.scale)
+  const meanShallow = shallow.reduce((a, b) => a + b, 0) / shallow.length
+  check(meanShallow < 0.9, 'fish in a 2 m lake are on the small side', `mean scale ${meanShallow.toFixed(2)}`)
+  const DEEP2 = 24
+  const deepHeight = { heightAt: (x, z) => { const r = Math.hypot(x, z) / LAKE_R; return LEVEL - DEEP2 * Math.max(0, 1 - r * r) } }
+  const deepWater = { levelAt: (x, z) => (Math.hypot(x, z) < LAKE_R ? LEVEL : null) }
+  const deepFish = new Fish(new THREE.Scene(), deepHeight, deepWater, { seed: 5, assets })
+  deepFish.place(0, 0)
+  const deep = deepFish.species.flatMap((sp) => sp.slots.filter((f) => f.alive && LEVEL - f.bed > 12).map((f) => f.scale))
+  const meanDeep = deep.reduce((a, b) => a + b, 0) / deep.length
+  check(deep.length > 40 && meanDeep > 1.6, 'fish over 12 m of water skew large', `${deep.length} fish, mean scale ${meanDeep.toFixed(2)}`)
+  check(Math.min(...deep) < 0.9 && Math.max(...deep) > 2.2, 'but the deep still holds the odd small one, and some giants', `${Math.min(...deep).toFixed(2)} .. ${Math.max(...deep).toFixed(2)}`)
+  for (let i = 0; i < 10 * 72; i++) deepFish.update(0, LEVEL - 5, 0, DT)
+  const big = deepFish.species.flatMap((sp) => sp.slots.filter((f) => f.alive))
+  check(big.every((f) => f.y >= f.bed + f.margin && f.y <= f.level - f.margin), 'a giant keeps its own bulk off the bed and under the surface', `${big.length} fish after 10 s`)
+  deepFish.dispose()
+}
+
+// --- the pool turns over as she swims ---------------------------------------
+{
+  const before = new Set(fish.species.flatMap((sp) => sp.schools))
+  const n0 = alive().length
+  // 20 s at 2 m/s, straight across the lake: about a swimmer's pace.
+  for (let i = 0; i < 20 * 72; i++) fish.update(0, LEVEL - 1, -2 * i * DT, DT)
+  const after = fish.species.flatMap((sp) => sp.schools)
+  const fresh = after.filter((sc) => !before.has(sc)).length
+  check(fresh / after.length > 0.5, 'swimming 40 m turns over more than half the pool', `${fresh} of ${after.length} schools are new`)
+  check(alive().length > n0 * 0.7, 'and keeps it full on the way', `${alive().length} of ${n0} before`)
+  check(alive().every(inWater), 'every fish met on the way is in the water')
+  const nearHer = alive().filter((f) => Math.hypot(f.x, f.z + 40) < 20).length
+  check(nearHer > 30, 'with fish in sight where she has arrived', `${nearHer} within 20 m of her`)
+  for (let i = 0; i < 5 * 72; i++) fish.update(0, LEVEL - 1, -40, DT)
+  const still = new Set(fish.species.flatMap((sp) => sp.schools))
+  for (let i = 0; i < 5 * 72; i++) fish.update(0, LEVEL - 1, -40, DT)
+  const kept = fish.species.flatMap((sp) => sp.schools).filter((sc) => still.has(sc)).length
+  check(kept >= still.size - 3, 'standing still recycles nothing', `${kept} of ${still.size} schools kept over 5 s`)
 }
 
 // --- the pool follows her ---------------------------------------------------

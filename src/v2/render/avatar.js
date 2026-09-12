@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { cullTripoBackfaces } from '../../tripo-culling.js'
 
 const SKIN = 0xd99b78
 
@@ -125,10 +126,9 @@ export class PeerAvatars {
     model.traverse((o) => {
       if (!o.isMesh) return
       o.material = o.material.clone()
-      // Tripo exports some bodies doubleSided, which the GLTFLoader honours;
-      // a closed mesh never shows its inside, so cull it like everything else.
-      o.material.side = THREE.FrontSide
     })
+    // World placement of a Tripo mesh culls by default -- see tripo-culling.js.
+    cullTripoBackfaces(model)
     model.rotation.y = Math.PI / 2
     model.scale.setScalar(entry.heightM)
     model.position.y = entry.heightM / 2

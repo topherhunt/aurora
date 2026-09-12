@@ -47,7 +47,7 @@ const ridge = {
     snowLineAt: () => 880,
     bands: { altLo: 0, altSpan: 900 },
   },
-  water: { levelAt: () => null, isSubmerged: () => false },
+  water: { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach },
 }
 const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 } }
 

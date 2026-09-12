@@ -12,10 +12,13 @@ const MAX_PAYLOAD = 4096
 const rooms = new Map()
 let serverTick = 0
 
+// A room owns the world clock as one anchor and one skip count: every client
+// derives the hour from `anchorMs` locally (WorldClock.tick), so the first
+// joiner spawns at CLOCK.startHour and everyone after sees the room's hour.
 function roomFor(name) {
   let room = rooms.get(name)
   if (!room) {
-    room = new Map()
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0 }
     rooms.set(name, room)
   }
   return room
@@ -34,10 +37,15 @@ function validPose(message) {
     (message.avatar === undefined || (typeof message.avatar === 'string' && /^[a-z0-9-]{1,32}$/.test(message.avatar)))
 }
 
+// Bounded so a bad client cannot fling the room's sun across years.
+function validSkip(message) {
+  return message && message.type === 'skip' && Number.isInteger(message.hours) && Math.abs(message.hours) <= 24
+}
+
 function leave(client) {
   if (!client.room) return
-  client.room.delete(client.id)
-  if (!client.room.size) rooms.delete(client.roomName)
+  client.room.clients.delete(client.id)
+  if (!client.room.clients.size) rooms.delete(client.roomName)
   client.room = null
 }
 
@@ -65,20 +73,25 @@ wss.on('connection', (ws, request) => {
     return
   }
   const room = roomFor(roomName)
-  if (room.size >= ROOM_CAP) {
+  if (room.clients.size >= ROOM_CAP) {
     ws.close(1013, 'room full')
     return
   }
 
   const client = { id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null }
-  room.set(client.id, client)
+  room.clients.set(client.id, client)
   ws.isAlive = true
   ws.on('pong', () => { ws.isAlive = true; client.lastSeen = Date.now() })
   ws.on('message', (raw) => {
     let message
     try { message = JSON.parse(raw.toString()) } catch { return }
-    if (!validPose(message)) return
     const now = Date.now()
+    if (validSkip(message)) {
+      room.skipHours += message.hours
+      client.lastSeen = now
+      return
+    }
+    if (!validPose(message)) return
     if (now - client.lastPoseAt < 20) return
     client.pose = message.pose
     client.hands = message.hands
@@ -94,18 +107,20 @@ wss.on('connection', (ws, request) => {
 setInterval(() => {
   const now = Date.now()
   serverTick++
-  for (const [roomName, room] of rooms) {
-    for (const client of room.values()) {
+  for (const room of rooms.values()) {
+    for (const client of room.clients.values()) {
       if (now - client.lastSeen > SILENCE_MS) {
         client.ws.terminate()
         continue
       }
       const peers = []
-      for (const peer of room.values()) {
+      for (const peer of room.clients.values()) {
         if (peer === client || !peer.pose) continue
         peers.push({ id: peer.id, pose: peer.pose, hands: peer.hands, avatar: peer.avatar })
       }
-      send(client, { version: 1, type: 'snapshot', tick: serverTick, peers })
+      // The clock rides on every snapshot rather than on welcome alone, so a
+      // late joiner, a reconnect and a missed message all converge in one tick.
+      send(client, { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers })
     }
   }
 }, TICK_MS)

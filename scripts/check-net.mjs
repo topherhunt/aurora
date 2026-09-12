@@ -44,7 +44,31 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, false] }))
   const bare = await nextSnapshot(second, (p) => p.hands[0] === false)
   if (bare.avatar !== null) throw new Error(`avatar should be null when unsent, got ${JSON.stringify(bare.avatar)}`)
-  console.log('net relay check: OK (pose, hands, avatar round-trip; malformed avatar dropped)')
+  // The room clock: every snapshot carries the room's anchor and skip count,
+  // a skip from one client reaches the other, and an unbounded skip is dropped.
+  const nextClock = (ws, accept) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('clock snapshot timeout')), 1000)
+    const onMessage = (event) => {
+      const message = JSON.parse(event.data)
+      if (message.type === 'snapshot' && accept(message)) {
+        clearTimeout(timer)
+        ws.removeEventListener('message', onMessage)
+        resolve(message)
+      }
+    }
+    ws.addEventListener('message', onMessage)
+  })
+  const startedAt = Date.now()
+  const clock = await nextClock(second, () => true)
+  if (!Number.isFinite(clock.anchorMs) || clock.anchorMs > startedAt || startedAt - clock.anchorMs > 5000) throw new Error(`anchorMs should be the room's creation time, got ${clock.anchorMs} at ${startedAt}`)
+  if (clock.skipHours !== 0) throw new Error(`a fresh room has no skips, got ${clock.skipHours}`)
+  first.send(JSON.stringify({ version: 1, type: 'skip', hours: 1000 }))
+  first.send(JSON.stringify({ version: 1, type: 'skip', hours: 6.5 }))
+  first.send(JSON.stringify({ version: 1, type: 'skip', hours: 6 }))
+  const skipped = await nextClock(second, (m) => m.skipHours !== 0)
+  if (skipped.skipHours !== 6) throw new Error(`only the bounded integer skip should land, got ${skipped.skipHours}`)
+  if (skipped.anchorMs !== clock.anchorMs) throw new Error('a skip must not move the anchor')
+  console.log('net relay check: OK (pose, hands, avatar round-trip; malformed avatar dropped; room clock anchor and skip relayed)')
   first.close()
   second.close()
 } finally {

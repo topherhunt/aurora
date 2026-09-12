@@ -655,7 +655,7 @@ function paletteAt(sunElevDeg) {
 }
 
 export class WorldClock {
-  constructor({ hour = CLOCK.startHour, seed = 1 } = {}) {
+  constructor({ hour = CLOCK.startHour, seed = 1, anchorMs = Date.now() } = {}) {
     // Total in-world hours since the world began, monotonic and never wrapped.
     // The hotkey adds to THIS, not to the wrapped hour of day, which is what
     // makes skipping forward advance the aurora's slow noise by the same six
@@ -664,18 +664,41 @@ export class WorldClock {
     this.elapsed = hour
     this.seed = seed
     this.skips = 0
+    // The wall-clock anchor for tick(): the Date.now() at which elapsed was
+    // `hour`, plus every skip since. A relay hands every client in a room the
+    // same pair (see sync), which is the whole of netplay time sync.
+    this.startHour = hour
+    this.anchorMs = anchorMs
+    this.skipHours = 0
     this._recompute()
   }
 
-  // dt is REAL seconds. One real minute is one in-world hour (§8).
+  // dt is REAL seconds. One real minute is one in-world hour (§8). The
+  // accumulating pace; a client whose sky must match its peers uses tick().
   advance(dt) {
     this.elapsed += (dt / 60) * (24 / CLOCK.dayMinutes)
     this._recompute()
   }
 
+  // The wall-clock pace: elapsed is DERIVED from the anchor, never accumulated,
+  // so two machines holding the same anchor draw the same sky with nothing sent
+  // per frame and nothing to drift. Date.now() on any NTP-synced machine agrees
+  // to well under a second, and one real second is one in-world minute.
+  tick(now = Date.now()) {
+    this.elapsed = this.startHour + ((now - this.anchorMs) / 60000) * (24 / CLOCK.dayMinutes) + this.skipHours
+    this._recompute()
+  }
+
+  // Adopt the room's anchor and skip count. Takes effect on the next tick().
+  sync({ anchorMs, skipHours }) {
+    this.anchorMs = anchorMs
+    this.skipHours = skipHours
+  }
+
   // The hotkey. Returns the new hour of day so the caller can say so out loud.
   skip(hours = CLOCK.skipHours) {
     this.elapsed += hours
+    this.skipHours += hours
     this.skips++
     this._recompute()
     return this.hour

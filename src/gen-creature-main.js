@@ -23,6 +23,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { analyzeMesh, decimate, decimateLadder } from './mesh/decimate.js'
+import { cullTripoBackfaces } from './tripo-culling.js'
 import { TEX_SIZE } from './textures.js'
 import { SUPERSAMPLE, BAKE_ROCK_BOUNCE, impostorCardExtents, downsample, dilate } from './props/impostor.js'
 
@@ -769,12 +770,16 @@ const fbxLoader = new FBXLoader()
  * candidate is not always a glb. The workspace names each file from the bytes it
  * downloaded, which makes the extension the honest answer to which loader to use.
  */
+// Every Tripo file the bench shows comes through here, so this is where they
+// get culled (see tripo-culling.js).
 async function loadScene(url) {
   if (/\.fbx(\?|$)/i.test(url)) {
     const root = await fbxLoader.loadAsync(url)
-    return { scene: root, animations: root.animations ?? [] }
+    return { scene: cullTripoBackfaces(root), animations: root.animations ?? [] }
   }
-  return loader.loadAsync(url)
+  const gltf = await loader.loadAsync(url)
+  cullTripoBackfaces(gltf.scene)
+  return gltf
 }
 let model = null
 let skeletonHelper = null
@@ -1142,6 +1147,12 @@ function parseWeld(text, diagonal) {
   return (n / 100) * diagonal
 }
 
+function parseWeight(text, name) {
+  const n = Number(text.trim())
+  if (!Number.isFinite(n) || n < 0) throw new Error(`"${text}" is not a ${name} weight -- want a number, 0 or more`)
+  return n
+}
+
 /** Diagonal of the bounding box, the unit the weld tolerance is expressed in. */
 function boundsDiagonal(positions) {
   const lo = [Infinity, Infinity, Infinity]
@@ -1217,7 +1228,8 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
     `atlas floor ${floor} tris`
 
   const targets = parseTargets($('lodTargets').value, analysis.tris)
-  const tiers = decimateLadder(plain, targets, { weldEps, uvMode: 'auto' })
+  const sizeWeight = parseWeight($('lodSize').value, 'size'), shapeWeight = parseWeight($('lodShape').value, 'shape')
+  const tiers = decimateLadder(plain, targets, { weldEps, uvMode: 'auto', sizeWeight, shapeWeight })
   // Sampled once, not per tier: every tier reads the same original texture.
   const map = lodMaterial.map
   const sample = map && map.image ? textureSampler(map.image, map.flipY) : null

@@ -311,6 +311,12 @@ const BEDS = [
     // accept rate is capped at 1, so 0.4 * (1 + CLUMP_GAIN * clump) has room to
     // move where 1.0 would have every last bit of it truncated away.
     footDense: true,
+    // TWICE AS THICK ALONG A SHORE, on both sides of the waterline -- the bed
+    // allows water, so the same gain lays them in the shallows. Multiplies the
+    // accept rate within SHORE_REACH of a lake or river edge, and 2 x 0.4 is
+    // still under the cap the note above is about. The sunken bed has no gain:
+    // it is already a bed of nothing but shoreline.
+    shoreGain: 2,
     // A METRE AND A HALF TO TEN, THE SAME EVERYWHERE. Four identical entries is
     // not a mistake -- `sizeByEnv` is per environment because the sunken and
     // embedded beds need it to be, and a bed that wants one range everywhere says
@@ -986,6 +992,10 @@ const BEDS = [
 // is chosen off the environment, and a hard edge at the waterline would put a
 // lichen boulder half in the stream.
 const SHORE_RISE = 1.6
+
+// Metres either side of a SHORE (WaterSurfaces.shoreDistAt) inside which a
+// bed's `shoreGain` multiplies its accept rate.
+const SHORE_REACH = 10
 
 // Metres BELOW the local snow line at which a site counts as peak country. Well
 // below, because the jagged stuff has to start before the white does: bare rock
@@ -1686,6 +1696,7 @@ class RockBed {
     // asks for neither never takes the four extra field samples. See `_relief`.
     this.footOnly = cfg.footOnly ?? false
     this.footDense = cfg.footDense ?? false
+    this.shoreGain = cfg.shoreGain ?? 1
     this.probesRelief = this.footOnly || this.footDense
     // One cell per RELIEF_CELL of tile, plus one so the last partial cell has a
     // slot. 0 is "not asked yet"; see `_reliefAt`.
@@ -1785,6 +1796,17 @@ class RockBed {
     // presents as an empty lake with no error anywhere. Say it here instead.
     if (cfg.submergedOnly && !cfg.allowSubmerged) {
       throw new Error(`RockBed ${cfg.name}: \`submergedOnly\` without \`allowSubmerged\` can never place a rock`)
+    }
+    // An accept rate is capped at 1, so a shore gain that pushes one past it is
+    // truncated and the shore comes out less than `shoreGain` x thicker with no
+    // sign of it. Refuse the config instead.
+    if (cfg.shoreGain !== undefined) {
+      if (!(cfg.shoreGain >= 1)) throw new Error(`RockBed ${cfg.name}: shoreGain must be >= 1, got ${cfg.shoreGain}`)
+      for (const env of ENVIRONMENTS) {
+        if (cfg.envDensity[env] * cfg.shoreGain > 1) {
+          throw new Error(`RockBed ${cfg.name}: shoreGain ${cfg.shoreGain} x envDensity.${env} ${cfg.envDensity[env]} is over the accept-rate cap of 1`)
+        }
+      }
     }
     // EVERY BED SAYS HOW BIG IN METRES. One shape in the bank means a multiplier
     // on it and a target width differ only by the constant `measured.width`, so
@@ -3137,9 +3159,15 @@ class RockBed {
       // A FOOT SITE RUNS DENSER, and unevenly. Scree does not lie in a band of
       // constant density along the base of a cliff, it lies in piles with bare
       // ground between them, and the clump field is the difference -- see _clump.
-      const dens = site === 'foot'
+      let dens = site === 'foot'
         ? cfg.envDensity[env] * (1 + CLUMP_GAIN * clump)
         : cfg.envDensity[env]
+      // THICKER ALONG A SHORE, wet or dry -- |d|, because this candidate may be
+      // standing in the shallows and the gain is meant for both sides. Only a
+      // bed with a gain pays for the lookup.
+      if (this.shoreGain !== 1 && Math.abs(this.water.shoreDistAt(x, z, SHORE_REACH, h, tan)) < SHORE_REACH) {
+        dens *= this.shoreGain
+      }
       if (envRoll >= dens) {
         this.rejected.env++
         continue
@@ -4092,7 +4120,7 @@ export class Rocks {
   /**
    * @param scene         THREE.Scene. Gets one PropArena per bed, plus the shell.
    * @param field         V2Height. Needs scatterAt, heightAt, snowLineAt, bands.
-   * @param water         WaterSurfaces. Needs levelAt and isSubmerged.
+   * @param water         WaterSurfaces. Needs levelAt, isSubmerged and shoreDistAt.
    * @param layers        Layers. Needs `snow.band` and flattenAt, for the ground
    *                      cue -- see GROUND_CUE. Same argument Ferns takes and in
    *                      the same position.
@@ -4106,7 +4134,9 @@ export class Rocks {
    */
   constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, allBeds = false } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
-    if (!water || typeof water.levelAt !== 'function') throw new Error('Rocks: needs WaterSurfaces with levelAt')
+    if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
+      throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
+    }
     if (!layers || typeof layers.flattenAt !== 'function' || !layers.snow) {
       throw new Error('Rocks: needs Layers with flattenAt and a snow field')
     }

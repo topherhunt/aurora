@@ -11,6 +11,7 @@ import * as THREE from 'three'
 import { Markers } from '../src/v2/render/markers.js'
 import { ribbonVertices, discVertices, discSegments, LAKE_OVERHANG, RIVER_WIDEN, RIVER_WIDEN_FRAC, ROAD_LIFT } from '../src/v2/render/ribbon.js'
 import { Layers } from '../src/v2/layers/layers.js'
+import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 // The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
 import { footprint } from '../src/v2/layers/water-bodies.js'
 import { WORLD_HALF } from '../src/v2/config.js'
@@ -400,6 +401,94 @@ export async function run() {
     check(threw(() => ribbonVertices(new Float32Array(7))), 'a sample buffer that is not a multiple of 4 throws')
     check(threw(() => discVertices({ id: 'x', x: 0, z: 0, y: 0, rx: 40, rz: 40, rot: 0, shape: 2 })), 'an unknown lake shape throws')
     check(threw(() => discVertices({ id: 'x', x: 0, z: 0, y: 0, rx: 0, rz: 0, rot: 0, shape: 0 })), 'a zero-extent lake throws')
+  }
+
+  // --- 8. the shoreline fringe -----------------------------------------------
+  //
+  // shoreDistAt is what the fern, grass and boulder scatters read to run lusher along the water, and it fails the way levelAt fails: silently, as a fringe that is a few metres off, or missing on one side of a river. So the distances are pinned by hand on bodies whose geometry makes the answer obvious -- a circle, an unrotated rectangle, a straight river -- and then the SIGN is checked against levelAt over a spray of points, because the two are the same footprint asked two questions and must never disagree about which side of the edge a point is on.
+  //
+  // The first half stands on a bed well under every surface and dead level, which silences the waterline term and measures the footprints alone. The second half is the waterline term on its own: the shipped world's ocean is a 20 km plane under the whole landscape, and the fringe must be where the ground meets it, not around a rim in the next county.
+  {
+    // The document authors the FULL width; the flattened samples carry the half.
+    const WIDTH = 12
+    const HW = WIDTH / 2
+    const doc = {
+      v: 1,
+      snow: { base: 100, band: 40, points: [] },
+      lakes: [
+        { id: 'round', x: 0, z: 0, y: 10, rx: 40, rz: 40, rot: 0, shape: 0, carve: 1, depth: 4 },
+        { id: 'rect', x: 300, z: 0, y: 10, rx: 50, rz: 30, rot: 0, shape: 1, carve: 1, depth: 4 },
+      ],
+      rivers: [{ id: 'r', depth: 2, pts: [[-200, 5, -300, WIDTH], [-60, 5, -300, WIDTH], [60, 5, -300, WIDTH], [200, 5, -300, WIDTH]] }],
+      roads: [],
+    }
+    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers: new Layers(doc) })
+    ws.rebuild()
+    const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol
+    const REACH = 20
+    const BED = 0
+    const dist = (x, z, reach) => ws.shoreDistAt(x, z, reach, BED, 0)
+
+    check(near(dist(60, 0, REACH), 20), 'a circle answers its rim distance on the dry side', `${dist(60, 0, REACH).toFixed(3)}`)
+    check(near(dist(30, 0, REACH), -10), 'and the same distance, negative, inside', `${dist(30, 0, REACH).toFixed(3)}`)
+    check(dist(0, 0, REACH) === -REACH, 'the centre of a lake clamps to -reach')
+    check(near(dist(360, 0, REACH), 10), 'a rectangle answers its edge distance', `${dist(360, 0, REACH).toFixed(3)}`)
+    check(near(dist(360, 40, REACH), Math.hypot(10, 10)), 'and the corner distance past a corner', `${dist(360, 40, REACH).toFixed(3)}`)
+    check(near(dist(340, 20, REACH), -10), 'and the nearest edge, negative, inside', `${dist(340, 20, REACH).toFixed(3)}`)
+    check(near(dist(0, -291, REACH), 3), 'a river answers the distance past its authored half-width', `${dist(0, -291, REACH).toFixed(3)}`)
+    check(near(dist(0, -300, REACH), -HW), 'and its half-width, negative, on the centreline', `${dist(0, -300, REACH).toFixed(3)}`)
+    check(dist(150, 150, REACH) === REACH, 'nothing within reach answers reach itself')
+    check(dist(0, 0, 2 * REACH) === -2 * REACH, 'the clamp scales with reach', `${dist(0, 0, 2 * REACH)}`)
+
+    // The sign against levelAt, on the three bodies at once. Points on the boundary itself are excluded rather than chased, since the two tests are `<` and `<=` of the same distance.
+    let disagree = 0
+    let wetSeen = 0
+    let samples = 0
+    for (const [cx, cz, r] of [[0, 0, 55], [300, 0, 65], [0, -300, 25]]) {
+      for (let i = 0; i < 60; i++) {
+        for (let j = 0; j < 60; j++) {
+          const x = cx + (i / 59 - 0.5) * 2 * r + 0.137
+          const z = cz + (j / 59 - 0.5) * 2 * r + 0.071
+          const d = dist(x, z, REACH)
+          if (Math.abs(d) < 1e-3) continue
+          samples++
+          const wet = ws.levelAt(x, z) !== null
+          if (wet) wetSeen++
+          if (wet !== d < 0) disagree++
+        }
+      }
+    }
+    check(disagree === 0 && wetSeen > 0, 'negative exactly where levelAt is wet, on every body', `${disagree} of ${samples} disagree, ${wetSeen} wet`)
+
+    const threw = (fn) => {
+      try {
+        fn()
+        return false
+      } catch {
+        return true
+      }
+    }
+    check(threw(() => dist(0, 0, 0)) && threw(() => dist(0, 0, -1)), 'a non-positive reach throws')
+    // The 3x3 bucket block is 64 m on a side; a reach that, past the widest river, could see past it would miss segments and leave holes in the fringe.
+    check(ws.maxHalfWidth === HW, 'the widest authored half-width is recorded', `${ws.maxHalfWidth}`)
+    check(!threw(() => dist(0, 0, 64 - HW)) && threw(() => dist(0, 0, 64 - HW + 1)), 'a reach that overruns the lookup bucket throws')
+    check(threw(() => ws.shoreDistAt(0, 0, REACH)) && threw(() => ws.shoreDistAt(0, 0, REACH, 5, -1)), 'a call without the ground height and slope throws')
+    ws.dispose()
+
+    // The waterline term, on a plane the size of the ocean: ground above it is dry by how far it has to run down its slope to meet the surface, ground below it is wet by the same measure, and a plateau over it is nowhere near a shore however deep inside the footprint it stands.
+    const LEVEL = 100
+    const sea = new WaterSurfaces({
+      water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() },
+      layers: new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [{ id: 'sea', x: 0, z: 0, y: LEVEL, rx: 10000, rz: 10000, rot: 0, shape: 1, carve: 0, depth: 8 }], rivers: [], roads: [] }),
+    })
+    sea.rebuild()
+    check(sea.shoreDistAt(0, 0, REACH, LEVEL + 150, 0.3) === REACH, 'a landscape over a buried plane is not a shore')
+    check(sea.shoreDistAt(0, 0, REACH, LEVEL + 0.3, 0) === REACH, 'nor is level ground a hand above it')
+    check(near(sea.shoreDistAt(0, 0, REACH, LEVEL + 2, 0.5), 4), 'a bank 2 m over the plane at 1:2 is 4 m from the shore', `${sea.shoreDistAt(0, 0, REACH, LEVEL + 2, 0.5).toFixed(3)}`)
+    check(near(sea.shoreDistAt(0, 0, REACH, LEVEL - 2, 0.5), -4), 'and a floor 2 m under it is 4 m out', `${sea.shoreDistAt(0, 0, REACH, LEVEL - 2, 0.5).toFixed(3)}`)
+    check(sea.shoreDistAt(0, 0, REACH, LEVEL - 30, 0.5) === -REACH, 'deep water clamps to -reach')
+    check(sea.levelAt(0, 0) === LEVEL, 'while levelAt still answers the plane everywhere under it')
+    sea.dispose()
   }
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)

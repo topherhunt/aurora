@@ -6,6 +6,7 @@ import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
+import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
@@ -1738,6 +1739,9 @@ async function bootWorld() {
     // Constructed above, and it has to be: a trunk that lands inside a boulder
     // stands on the boulder. See Rocks.blockTopAt.
     rocks,
+    // Where the wood is dense, sparse or open meadow. Off the world seed, like
+    // the scatter itself, so the clearings are the same on every boot.
+    biome: new BiomeField({ seed: SEED }),
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -1762,6 +1766,7 @@ async function bootWorld() {
   walk = new WalkSurface(height, rocks, trees)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
   player = new Player(rig, camera, walk)
+  window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
   player.spawnAt(spawn.x, spawn.z)
 
   // Ferns, as an undercarpet at half a plant per square metre. Its own material
@@ -2705,7 +2710,14 @@ function onSpacePress(now) {
   setFlying(true)
 }
 
+// The room's clock lives on the relay, so a skip is a request: everyone in the
+// room, this client included, moves when the next snapshot carries the new
+// count. With no relay to ask, the skip lands here directly.
 function skipTime() {
+  if (netplay.sendSkip(CLOCK.skipHours)) {
+    console.log(`[clock] +${CLOCK.skipHours}h requested of room "${room}"`)
+    return
+  }
   clock.skip(CLOCK.skipHours)
   console.log(`[clock] +${CLOCK.skipHours}h -> ${clock.clockText}  sun ${clock.sun.elevDeg.toFixed(1)}deg`)
 }
@@ -3496,9 +3508,12 @@ function aimTeleport(origin, dir) {
   arc.visible = true
   // A landing counts only where she could have walked: within reach, on ground
   // the slope limiter would let her stand on (a cliff face or a boulder's flank
-  // is a step in the walk surface, so it fails this), and not inside a trunk.
+  // is a step in the walk surface, so it fails this), not inside a trunk, and
+  // with a walkable straight line from her feet to it -- a lob clears a
+  // boulder or a trunk that her legs would not.
   const inRange = hit !== null && Math.hypot(hit.x - feet.x, hit.z - feet.z) <= TELEPORT_RANGE
-  const standable = inRange && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE && !walk.obstacleAt(hit.x, hit.z, teleportObstacle)
+  const standable = inRange && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE &&
+    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z)
   teleportTarget.valid = standable
   arc.material.color.setHex(standable ? TELEPORT_OK : TELEPORT_NO)
   ring.material.color.setHex(standable ? TELEPORT_OK : TELEPORT_NO)
@@ -4006,7 +4021,10 @@ function tick() {
   // The one scatter that is also a simulation, so it takes dt. Frozen with its row like the others.
   if (!QUEST_MODE || questToggles.fish) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
 
-  clock.advance(dt)
+  // Wall-clock time, anchored by the relay when there is one, so every headset
+  // in the room reads the same hour off Date.now() with nothing sent per frame.
+  if (netplay.time) clock.sync(netplay.time)
+  clock.tick()
   // Held in a local because the world probe wants it too: the capture is taken
   // in air even while she is under, and putting the air back for that one face
   // means restating this hour's palette. See airHook.

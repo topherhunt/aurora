@@ -118,7 +118,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol
 const pct = (v) => `${(v * 100).toFixed(2)}%`
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, LOD_HYSTERESIS, Y_SQUASH,
-  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE } = TREE_TUNING
+  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, TREELINE, BIOME } = TREE_TUNING
 
 const species = Object.keys(TREE_SPECIES)
 
@@ -1782,6 +1782,64 @@ console.log('\n-- placement --')
   check(one(cliff, dry) === 0, 'no trees on a cliff')
   check(one(sunk, dry) === 0, 'no trees below the minimum elevation')
   check(one(snowy, dry) === 0, 'no trees far above the snow line')
+
+  // THE TREELINE IS A GRADIENT. Mean height and scale of the bed on flat ground
+  // whose snow line sits `above` metres below it, so every candidate reads the
+  // same point on the gradient; on the same seed the bed at 0 m above is the
+  // reference bed exactly.
+  const at = (above, opts = {}) => {
+    const t = new Trees(new THREE.Scene(), { ...flat, snowLineAt: () => 60 - above }, dry, texArray, { seed: 7, radius: 200, ...opts })
+    t.place(0, 0)
+    const m = new THREE.Matrix4()
+    const p = new THREE.Vector3()
+    const q = new THREE.Quaternion()
+    const sc = new THREE.Vector3()
+    let sum = 0
+    for (const tile of t.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        t.batch.getMatrixAt(tile.ids[k], m)
+        m.decompose(p, q, sc)
+        sum += sc.y
+      }
+    }
+    const out = { n: t.placed, scale: sum / Math.max(1, t.placed) }
+    t.dispose()
+    return out
+  }
+  const ref = at(-100)
+  const mid = at(TREELINE.fade / 2)
+  const high = at(TREELINE.fade)
+  const higher = at((TREELINE.fade + TREELINE.top) / 2)
+  check(ref.n === baseline, 'below the snow line the bed is the reference bed', `${ref.n} vs ${baseline}`)
+  check(mid.n < ref.n * 0.8 && mid.n > ref.n * TREELINE.floor * 2,
+    `halfway up the ${TREELINE.fade} m fade the wood has thinned but not to its floor`, `${mid.n} of ${ref.n}`)
+  check(Math.abs(high.n / ref.n - TREELINE.floor) < 0.03 && high.n > 20,
+    `at the top of the fade ${TREELINE.floor * 100}% of the trees still stand`, `${high.n} of ${ref.n}`)
+  check(higher.n > 0 && higher.n < high.n,
+    'and above that they thin on toward the summit rather than stopping', `${higher.n} at ${(TREELINE.fade + TREELINE.top) / 2} m`)
+  check(Math.abs(high.scale / ref.scale - TREELINE.stunt) < 0.03,
+    `and the trees up there are ${TREELINE.stunt}x the height`, `${high.scale.toFixed(2)} vs ${ref.scale.toFixed(2)}`)
+  check(mid.scale < ref.scale && mid.scale > high.scale, 'stunting eases in with the thinning')
+
+  // THE BIOME. A field that answers one cover value everywhere, so the bed reads
+  // one point on the ramp; meadow keeps a few lone trees, forest is the
+  // reference bed untouched and taller.
+  const cover = (c) => at(-100, { biome: { coverAt: () => c } })
+  const meadow = cover(0)
+  const wood = cover(1)
+  const between = cover((BIOME.ramp[0] + BIOME.ramp[1]) / 2)
+  check(wood.n === baseline, 'full cover is the reference bed', `${wood.n} vs ${baseline}`)
+  check(Math.abs(meadow.n / baseline - BIOME.meadowKeep) < 0.02 && meadow.n > 0,
+    `a meadow keeps ${BIOME.meadowKeep * 100}% of its trees, not none`, `${meadow.n} of ${baseline}`)
+  check(between.n > meadow.n * 3 && between.n < wood.n * 0.8, 'the ramp between is a sparser wood', `${between.n}`)
+  check(Math.abs(meadow.scale / ref.scale - BIOME.scale[0]) < 0.03 && Math.abs(wood.scale / ref.scale - BIOME.scale[1]) < 0.03,
+    `and the trees run ${BIOME.scale[0]}x tall in a meadow to ${BIOME.scale[1]}x in the wood`,
+    `${meadow.scale.toFixed(2)} / ${wood.scale.toFixed(2)} vs ${ref.scale.toFixed(2)}`)
+  {
+    let threw = false
+    try { new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, biome: {} }) } catch { threw = true }
+    check(threw, 'something passed as `biome` that cannot answer throws at construction')
+  }
 
   // Tighter than the grass bed on both axes it shares with it, which is the
   // whole reason trees carry their own PLACEMENT block: a slope grass holds is

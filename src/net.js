@@ -45,6 +45,9 @@ export class Netplay {
     // roster loads and sent with every pose since the relay keeps only the
     // latest message per client.
     this.avatar = null
+    // The room's world clock as the relay last stated it, `{ anchorMs,
+    // skipHours }` for WorldClock.sync, or null until the first snapshot.
+    this.time = null
     this.connect()
   }
 
@@ -60,6 +63,9 @@ export class Netplay {
       try { message = JSON.parse(event.data) } catch { return }
       if (message.version !== 1 || message.type !== 'snapshot' || !Array.isArray(message.peers)) return
       const receivedAt = performance.now()
+      if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
+        this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours }
+      }
       const peers = message.peers.filter((p) => p && typeof p.id === 'string' && Array.isArray(p.pose) && p.pose.length === 21)
       this.snapshots.push({ receivedAt, peers, serial: ++this.snapshotSerial })
       if (this.snapshots.length > MAX_SNAPSHOTS) this.snapshots.shift()
@@ -77,6 +83,14 @@ export class Netplay {
     this.lastSend = now
     const { avatar } = this
     this.socket.send(JSON.stringify({ version: 1, type: 'pose', pose, hands, ...(avatar ? { avatar } : {}) }))
+  }
+
+  // Ask the relay to move the room's clock. False when there is no relay to
+  // ask, so the caller can skip locally instead.
+  sendSkip(hours) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, type: 'skip', hours }))
+    return true
   }
 
   update(now = performance.now()) {

@@ -10,6 +10,7 @@ import {
 import { RimFade } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
 import { PropArena } from './prop-arena.js'
+import { smoothstep } from '../../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
 // The forest on the /v2 route: a tiled, camera-following scatter whose density
@@ -373,13 +374,39 @@ const TRUNK_PICK_SLACK = 1.5
 const TRUNK_REACH = 2
 
 // Placement rules, lifted from v1's `tree` kind so the two routes agree about
-// where a tree can stand. `maxElevAboveSnow` is metres ABOVE the local snow
-// line, not absolute -- a real treeline sits well above the snow line.
+// where a tree can stand. The treeline is not here: it is a gradient, below.
 const PLACEMENT = {
   minElev: 25,
-  maxElevAboveSnow: 67,
   maxSlopeDeg: 32,
   sink: 0.15, // metres of trunk buried, so a tree on a slope does not float
+}
+
+// The treeline, as a gradient rather than a contour. All metres are ABOVE the
+// local snow line -- a real treeline sits well above where the snow starts.
+// Below the snow line nothing here applies. Over the first `fade` metres above
+// it a candidate's keep-probability eases from 1 down to `floor` and its height
+// multiplier from 1 down to `stunt`, so the wood thins into scattered, stunted
+// trees rather than stopping at a line; from `fade` to `top` the floor itself
+// eases to nothing, and past `top` a summit is bare. 70 m is about where the
+// old hard cut stood (67 m), so the forest reaches the same height it did and
+// then keeps going, thinner.
+const TREELINE = {
+  fade: 70,
+  floor: 0.1,
+  stunt: 0.5,
+  top: 220,
+}
+
+// How the biome field (layers/biome.js) reads onto the forest. `ramp` is the
+// band of cover over which a place goes from open meadow to full forest; below
+// it the keep-probability is `meadowKeep` (a lone tree in a clearing, not
+// none) and the height multiplier is scale[0], above it the wood is untouched at
+// full density and scale[1]. The field is flat over 0..1, so 15% of the ground
+// is meadow, 15% is towering, and the rest is the gradient between.
+const BIOME = {
+  ramp: [0.15, 0.85],
+  meadowKeep: 0.04,
+  scale: [0.65, 1.2],
 }
 
 // The band limit the EXISTENCE tests run at, in metres, and it is a constant
@@ -453,6 +480,9 @@ export class Trees {
    * @param opts.ground   TerrainV2, or anything with groundAt/groundKeyAt. Optional
    *                      only so the probes can run headless; without it every tree
    *                      falls back to the exact field and the far ones float.
+   * @param opts.biome    BiomeField, or anything with coverAt(x, z) -> 0..1. Optional
+   *                      on the same terms: without it every place is full forest,
+   *                      which is what the scatter gates measure against.
    */
   constructor(
     scene,
@@ -467,6 +497,7 @@ export class Trees {
       falloff = FALLOFF,
       ground = null,
       rocks = null,
+      biome = null,
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -489,11 +520,15 @@ export class Trees {
     if (rocks && typeof rocks.blockTopAt !== 'function') {
       throw new Error('Trees: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
     }
+    if (biome && typeof biome.coverAt !== 'function') {
+      throw new Error('Trees: `biome` was given but has no coverAt -- pass the BiomeField or nothing')
+    }
 
     this.field = field
     this.water = water
     this.ground = ground
     this.rocks = rocks
+    this.biome = biome
     this.textureArray = textureArray
     this.seed = seed
     this.density = density
@@ -1416,6 +1451,10 @@ export class Trees {
     const uOld = tile ? tile.u : 0
 
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
+    // A SECOND STREAM for the keep roll, one draw per candidate, so the first
+    // stream is byte-for-byte what it always was and the wood stands exactly
+    // where it did wherever the keep-probability is 1.
+    const keepRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x5bd1e995))
     const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
     const ids = tile ? tile.ids : new Int32Array(this.perTile)
     const rank = tile ? tile.rank : new Float32Array(this.perTile)
@@ -1431,10 +1470,13 @@ export class Trees {
       const z = (tz + rand()) * TILE
       const variant = (rand() * this.variantCount) | 0
       const yaw = rand() * Math.PI * 2
-      const scale = SCALE[0] + rand() * (SCALE[1] - SCALE[0])
+      let scale = SCALE[0] + rand() * (SCALE[1] - SCALE[0])
       const tintG = rand()
       const tintR = rand()
       const u = rand()
+      // One roll against the keep-probability the treeline and the biome
+      // multiply into.
+      const keepRoll = keepRand()
 
       if (u >= uNew || u < uOld) continue
 
@@ -1446,7 +1488,20 @@ export class Trees {
       if (h < PLACEMENT.minElev) continue
       if (tan > maxSlopeTan) continue
       if (this.water.isSubmerged(x, z, h)) continue
-      if (h > this.field.snowLineAt(x, z) + PLACEMENT.maxElevAboveSnow) continue
+      const above = h - this.field.snowLineAt(x, z)
+      if (above > TREELINE.top) continue
+      // Both gradients fold into one probability and one height factor before
+      // the single roll, so a stunted tree in a high meadow is rarer than either
+      // alone and no smaller than the two say together. See TREELINE and BIOME.
+      const snowT = smoothstep(0, TREELINE.fade, above)
+      let keep = (1 + (TREELINE.floor - 1) * snowT) * (1 - smoothstep(TREELINE.fade, TREELINE.top, above))
+      scale *= 1 + (TREELINE.stunt - 1) * snowT
+      if (this.biome) {
+        const cover = smoothstep(BIOME.ramp[0], BIOME.ramp[1], this.biome.coverAt(x, z))
+        keep *= BIOME.meadowKeep + (1 - BIOME.meadowKeep) * cover
+        scale *= BIOME.scale[0] + (BIOME.scale[1] - BIOME.scale[0]) * cover
+      }
+      if (keepRoll >= keep) continue
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
       // tile was leaked -- either way it must be loud, because the quiet version
@@ -1843,6 +1898,8 @@ export const TREE_TUNING = {
   NEAR_MARGIN,
   PLACEMENT,
   PLACEMENT_CELL,
+  TREELINE,
+  BIOME,
   FADE_MAX_INFLIGHT,
   SCALE,
   HEM_FRAY,

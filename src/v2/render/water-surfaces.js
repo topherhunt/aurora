@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { footprint } from '../layers/water-bodies.js'
+import { footprint, SHAPE_RECT } from '../layers/water-bodies.js'
 import { ribbonVertices, discVertices, RIVER_WIDEN, RIVER_WIDEN_FRAC } from './ribbon.js'
 
 /**
@@ -14,6 +14,9 @@ import { ribbonVertices, discVertices, RIVER_WIDEN, RIVER_WIDEN_FRAC } from './r
 
 // Bucket edge for the river lookup index, in metres. Query cost is a 3x3 block of buckets, so this is also the largest half-width levelAt can answer for -- a river wider than this would have samples outside the block and go silently missing. Asserted, not assumed.
 const BUCKET = 64
+
+// Slope floor for shoreDistAt's waterline term: at 1:100 a point 0.3 m over a lake plane is 30 m from its shore.
+const MIN_TAN = 0.01
 
 // Bucket key. A 32-bit hash of the cell pair rather than a template string: levelAt is on the prop scatter's inner loop and a string key per query allocates one string per bucket per candidate.
 const bucketKey = (i, j) => i * 100003 + j
@@ -37,6 +40,8 @@ export class WaterSurfaces {
 
     this.buckets = new Map()
     this.lakeBoxes = []
+    // The widest authored river half-width in the index, which bounds how far out shoreDistAt can answer honestly -- see the throw there.
+    this.maxHalfWidth = 0
 
     // The editor's per-object hide, as a predicate. Default: everything is
     // drawn, so nothing outside the editor has to know this exists.
@@ -174,6 +179,7 @@ export class WaterSurfaces {
    */
   reindex() {
     this.buckets.clear()
+    this.maxHalfWidth = 0
 
     let total = 0
     for (const s of this.riverSamples.values()) total += s.length / 4
@@ -191,6 +197,7 @@ export class WaterSurfaces {
         this.idxPts[d + 2] = s[o + 2]
         this.idxPts[d + 3] = s[o + 3]
         if (s[o + 3] > BUCKET) throw new Error(`WaterSurfaces: a river sample is ${s[o + 3].toFixed(1)} m half-width, past the ${BUCKET} m lookup bucket; levelAt would miss it`)
+        if (s[o + 3] > this.maxHalfWidth) this.maxHalfWidth = s[o + 3]
       }
       // The last sample of a run starts no segment, or the index would join the end of one river to the start of the next with a segment straight across the map.
       this.idxTail[g + n - 1] = 1
@@ -290,6 +297,82 @@ export class WaterSurfaces {
   isSubmerged(x, z, groundY) {
     const level = this.levelAt(x, z)
     return level !== null && groundY < level
+  }
+
+  /**
+   * Signed metres from (x, z) to the nearest SHORE, clamped to [-reach, reach]: positive on dry ground, negative in the water, `reach` when nothing is within reach. The shoreline fringe the scatters read -- ferns and grass run lusher and the boulders thicker within a few metres of it on either side. `reach` itself is the "nothing near" answer, so a dry caller tests `d < reach` (strict) and a caller that may stand in the water takes |d|.
+   *
+   * A RIVER'S SHORE IS ITS AUTHORED HALF-WIDTH, the footprint levelAt answers wet for, because the carve cuts the channel to exactly that. A LAKE'S IS NOT ITS RIM. Every lake in the shipped world is an uncarved plane, and one of them is the ocean: a 20 km rectangle whose surface runs UNDER the whole landscape and only breaks it at the coast. Its footprint edge is nowhere near any shore, so a lake's distance is the larger of two: the footprint edge, and the waterline -- how far the ground has to run, down its own slope, to meet the surface: `(groundY - lake.y) / tan`. That is first-order, so it over-reads on a bank that steepens toward the water and under-reads on one that flattens, by a fraction of the fringe. Flat ground a hand above the plane reads as far away, which is what a plateau over a buried plane is. A carved lake gets the same rule, and it is a better answer there too: on the feather bank inside the rim the ground is above the water, and this says how far it is to the edge of it.
+   *
+   * The ellipse rim distance is measured along the ray from the centre, which is exact for a circle and over-reads by the eccentricity on a stretched lake -- a fringe a metre wider on the long sides of a 2:1 lake, against a fringe five to ten metres deep. The rectangle is exact.
+   *
+   * Same 3x3 bucket block as levelAt, which is why `reach` is bounded: a segment is binned by its own cells, so a query can only be sure of seeing every segment within BUCKET metres of the point, and a river answers to `hw + reach` from its centreline.
+   *
+   * @param groundY  the terrain height at (x, z), which the scatter has already looked up.
+   * @param tan      the terrain slope there, as a tangent.
+   */
+  shoreDistAt(x, z, reach, groundY, tan) {
+    if (!(reach > 0)) throw new Error(`WaterSurfaces.shoreDistAt: reach must be positive, got ${reach}`)
+    if (reach + this.maxHalfWidth > BUCKET) {
+      throw new Error(`WaterSurfaces.shoreDistAt: a ${reach} m reach past a ${this.maxHalfWidth.toFixed(1)} m half-width river overruns the ${BUCKET} m lookup bucket; the fringe would have holes`)
+    }
+    if (!Number.isFinite(groundY) || !(tan >= 0)) throw new Error(`WaterSurfaces.shoreDistAt: needs the ground height and slope at the point, got ${groundY}, ${tan}`)
+    let best = reach
+
+    for (const b of this.lakeBoxes) {
+      if (x < b.minX - reach || x > b.maxX + reach || z < b.minZ - reach || z > b.maxZ + reach) continue
+      const lake = b.lake
+      const dx = x - lake.x
+      const dz = z - lake.z
+      const c = Math.cos(lake.rot)
+      const s = Math.sin(lake.rot)
+      const lx = c * dx + s * dz
+      const lz = -s * dx + c * dz
+      let d
+      if (lake.shape === SHAPE_RECT) {
+        const ex = Math.abs(lx) - lake.rx
+        const ez = Math.abs(lz) - lake.rz
+        d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0)) + Math.min(Math.max(ex, ez), 0)
+      } else {
+        const ux = lx / lake.rx
+        const uz = lz / lake.rz
+        const q = Math.sqrt(ux * ux + uz * uz)
+        d = q < 1e-6 ? -reach : Math.hypot(lx, lz) * (1 - 1 / q)
+      }
+      // The waterline term. MIN_TAN keeps level ground from dividing to NaN at the surface, and puts a hand's height over a flat plane a few tens of metres from its shore.
+      const line = (groundY - lake.y) / Math.max(tan, MIN_TAN)
+      if (line > d) d = line
+      if (d < best) best = d
+    }
+
+    const bi = Math.floor(x / BUCKET)
+    const bj = Math.floor(z / BUCKET)
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const b = this.buckets.get(bucketKey(bi + di, bj + dj))
+        if (!b) continue
+        for (const i of b) {
+          const o = i * 4
+          const x0 = this.idxPts[o]
+          const z0 = this.idxPts[o + 2]
+          const h0 = this.idxPts[o + 3]
+          const x1 = this.idxPts[o + 4]
+          const z1 = this.idxPts[o + 6]
+          const h1 = this.idxPts[o + 7]
+          const ex = x1 - x0
+          const ez = z1 - z0
+          const len2 = ex * ex + ez * ez
+          let t = ((x - x0) * ex + (z - z0) * ez) / len2
+          t = t < 0 ? 0 : t > 1 ? 1 : t
+          const cx = x0 + t * ex
+          const cz = z0 + t * ez
+          const d = Math.hypot(x - cx, z - cz) - (h0 + t * (h1 - h0))
+          if (d < best) best = d
+        }
+      }
+    }
+
+    return best < -reach ? -reach : best
   }
 
   dispose() {

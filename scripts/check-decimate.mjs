@@ -264,6 +264,20 @@ function degenerateCount(m) {
   return n
 }
 
+/** Mean-ratio quality per triangle: 1 equilateral, about 0.5 at 3:1, 0 degenerate. */
+function triQualities(m) {
+  const P = m.positions, out = []
+  for (let f = 0; f < triCount(m); f++) {
+    const [a, b, c] = [m.indices[f * 3] * 3, m.indices[f * 3 + 1] * 3, m.indices[f * 3 + 2] * 3]
+    const e = (i, j) => [P[j] - P[i], P[j + 1] - P[i + 1], P[j + 2] - P[i + 2]]
+    const ab = e(a, b), ac = e(a, c), bc = e(b, c)
+    const n = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]]
+    const sum = [ab, ac, bc].reduce((t, v) => t + v[0] * v[0] + v[1] * v[1] + v[2] * v[2], 0)
+    out.push(sum > 0 ? (2 * Math.sqrt(3) * Math.hypot(n[0], n[1], n[2])) / sum : 0)
+  }
+  return out
+}
+
 function boundsOf(m) {
   const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]
   for (let i = 0; i < m.positions.length / 3; i++) {
@@ -576,14 +590,29 @@ console.log('\nsmall features survive a hard decimation')
   const reach = tips.map((t, i) => support(kept, t) / full[i])
   check(reach.every((r) => r > 0.9), 'at 40 triangles a ball still reaches the tip of both its ears', reach.map((r) => r.toFixed(2)).join(' '))
 
-  // The same run with the feature term switched off, so the check names the
+  // The same run with every point term switched off, so the check names the
   // mechanism it is guarding rather than just asserting a good number.
-  const flat = decimate(mesh, 40, { uvMode: 'drop', featureWeight: 0 })
+  const flat = decimate(mesh, 40, { uvMode: 'drop', featureWeight: 0, sizeWeight: 0, shapeWeight: 0 })
   const flatReach = tips.map((t, i) => support(flat, t) / full[i])
   check(flatReach.some((r) => r < 0.75), 'and a plain area-weighted quadric lops them off', flatReach.map((r) => r.toFixed(2)).join(' '))
 
   check(triCount(kept) === triCount(flat), 'the ears are kept at the same triangle count, not by stopping early',
     `${triCount(kept)} vs ${triCount(flat)}`)
+}
+
+console.log('\ncoarse triangles keep their proportions')
+{
+  // A bumpy grid to 15%: a plane quadric alone spends the budget on the bumps
+  // and leaves the flat between them as long slivers. The size and shape terms
+  // are what make the collapses spread out and stay well-shaped.
+  const g = bumpyGrid(20)
+  const shaped = triQualities(decimate(g, 120, { uvMode: 'drop' }))
+  const plain = triQualities(decimate(g, 120, { uvMode: 'drop', sizeWeight: 0, shapeWeight: 0 }))
+  const mean = (qs) => qs.reduce((a, b) => a + b, 0) / qs.length
+  const slivers = (qs) => qs.filter((q) => q < 0.5).length
+  check(mean(shaped) > mean(plain) + 0.05, 'at 120 triangles the mean triangle quality is higher with the size and shape terms',
+    `${mean(shaped).toFixed(3)} vs ${mean(plain).toFixed(3)}`)
+  check(slivers(shaped) < slivers(plain) * 0.75, 'and there are fewer triangles worse than 3:1', `${slivers(shaped)} vs ${slivers(plain)}`)
 }
 
 // --- detached pieces --------------------------------------------------------
