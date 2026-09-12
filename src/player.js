@@ -104,6 +104,11 @@ export class Player {
     this.rig = rig
     this.camera = camera
     this.th = terrainHeight
+    // Solid things she walks AROUND rather than over -- v2's tree trunks, via
+    // WalkSurface.obstacleAt. v1's TerrainHeight has none, so the hook is
+    // optional and the check below is skipped without it.
+    this.obstacles = typeof terrainHeight.obstacleAt === 'function' ? terrainHeight : null
+    this._obstacle = { x: 0, z: 0, r: 0 }
 
     this.speed = 0
     this.snapArmed = true
@@ -478,6 +483,38 @@ export class Player {
       if (!this._walkable(origin.x, origin.z, dx, dz, dist)) {
         this.blocked = true
         return
+      }
+    }
+
+    // A trunk in the way. Only ENTERING one blocks: if she is already inside --
+    // a tile regrown under her, a spawn on a sapling -- every step out would
+    // be refused too, and she would be stuck in a tree. The step is projected
+    // onto the bark's tangent, NOT redirected along it at full speed like the
+    // contour slide: walking straight at a tree stops her at it, brushing past
+    // one deflects her round it, and neither reads as being shoved.
+    if (this.obstacles && !this.obstacles.obstacleAt(origin.x, origin.z, this._obstacle)) {
+      const ob = this.obstacles.obstacleAt(origin.x + dx, origin.z + dz, this._obstacle)
+      if (ob) {
+        let tx = -(origin.z - ob.z)
+        let tz = origin.x - ob.x
+        const tlen = Math.hypot(tx, tz)
+        if (tlen < 1e-6) {
+          this.blocked = true
+          return
+        }
+        tx /= tlen
+        tz /= tlen
+        const along = tx * dx + tz * dz
+        if (Math.abs(along) < 0.05 * dist) {
+          this.blocked = true
+          return
+        }
+        dx = tx * along
+        dz = tz * along
+        if (!this._walkable(origin.x, origin.z, dx, dz, Math.abs(along)) || this.obstacles.obstacleAt(origin.x + dx, origin.z + dz, this._obstacle)) {
+          this.blocked = true
+          return
+        }
       }
     }
 

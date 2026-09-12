@@ -10,10 +10,19 @@
 //   between the leaves, so there is nothing for the reconstruction to be right
 //   about, and the better the photograph the worse the mesh. The picture is not
 //   the deliverable -- the mesh is. So the prompt now asks for a LOW-POLY MODEL
-//   of the tree: large flat facets, foliage as a few big smooth masses, no
-//   individual leaves, no twigs, a closed silhouette. Tripo reconstructs that
-//   well for the same reason it fails on leaves -- every surface in the picture
-//   is a surface the mesh can actually have.
+//   of the tree: large flat facets, foliage as a few big masses, no individual
+//   leaves, no twigs, a closed silhouette. Tripo reconstructs that well for the
+//   same reason it fails on leaves -- every surface in the picture is a surface
+//   the mesh can actually have.
+//
+//   EACH MASS IS ONE FACETED POLYHEDRON, NOT A SMOOTH BLOB. "Smooth masses" was
+//   drawn as leaf-patterned clumps, and P1 -- trained on game assets, where
+//   foliage is leaf cards -- rebuilt the oak as a bare trunk with floating
+//   planes (work/v9-oak/meshes/1-preview.png). The aspen and birch prompts
+//   instead describe the Walkabout-Mini-Golf vocabulary: each mass a crumpled
+//   convex polyhedron of a few dozen flat triangles, each facet its own shade
+//   so the facets read, the trunk a faceted prism. A picture with no leaf
+//   pattern anywhere gives the reconstruction nothing to turn into a card.
 //
 //   ONE EDITABLE FIELD PER TREE. The crown/trunk/description split existed to
 //   force proportions to be stated, and it worked, but three boxes are three
@@ -75,13 +84,17 @@ export const TREE_SPECIES = [
     bark: 'bark_birch.png',
     foliage: 'leaf_aspen_solid.png',
     prompt:
-      'A clean low-poly 3D model of a tall quaking aspen, the kind sold as a game asset. ' +
-      'The foliage is four or five tall smooth masses built from large flat polygon facets -- no individual leaves, no twigs -- ' +
-      'stacked into a narrow crown about a third as wide as the tree is tall, occupying the top half and fuller near the top. ' +
-      'The trunk is straight and slender, about a fortieth of the tree\'s height thick, clear of branches for its lower half. ' +
-      'Irregular and asymmetric: the masses at different heights and different sizes, one side heavier, the outline uneven. ' +
-      'Matte flat-shaded surfaces in two solid colours, pale grey-green bark darkening toward the base and yellow-green foliage, ' +
-      'with crisp visible facet edges.',
+      'A clean low-poly 3D model of a tall quaking aspen in a stylised flat-shaded origami look, the kind sold as a game asset. ' +
+      'The foliage is four or five separate faceted masses, each one a single chunky irregular convex polyhedron of twenty to forty ' +
+      'large flat triangular polygon facets, like a boulder or a crumpled paper ball -- not a smooth sphere, no leaf texture or leaf pattern ' +
+      'on the surface, no individual leaves, no twigs. Each facet is a slightly different shade of the same colour so the facets read. ' +
+      'The masses are stacked along the upper trunk and overlap into a narrow columnar crown about a third as wide as the tree is tall, ' +
+      'occupying the top half, the largest masses just above the middle and the smallest at the top. ' +
+      'The trunk is a straight slender faceted tapered prism, about a fortieth of the tree\'s height thick, clear of branches for its ' +
+      'lower half, and it shows between the masses above that. ' +
+      'Irregular and asymmetric: the masses at different heights and different sizes, offset to alternate sides of the trunk, ' +
+      'one side heavier, the outline uneven. ' +
+      'Matte flat-shaded solid colours: pale grey-green bark darkening toward the base, yellow-green foliage, crisp visible facet edges.',
   },
   {
     id: 'v9-birch',
@@ -90,14 +103,17 @@ export const TREE_SPECIES = [
     bark: 'bark_birch.png',
     foliage: 'leaf2_aspen_solid.png',
     prompt:
-      'A clean low-poly 3D model of a silver birch, the kind sold as a game asset. ' +
-      'The foliage is four or five smooth masses built from large flat polygon facets -- no individual leaves, no twigs -- ' +
-      'hanging outward and downward from the ends of a few arching limbs, forming a crown about half as wide as the tree is tall ' +
-      'carried in the top half. The trunk is slender, about a fortieth of the tree\'s height thick, with a slight lean, ' +
-      'undivided for its lower half and then splitting into two or three arching limbs. ' +
+      'A clean low-poly 3D model of a silver birch in a stylised flat-shaded origami look, the kind sold as a game asset. ' +
+      'The trunk is a slender faceted tapered prism, about a fortieth of the tree\'s height thick, with a slight lean and one gentle kink, ' +
+      'undivided for its lower half and then splitting into two or three arching limbs, each limb a thin angular faceted rod. ' +
+      'The foliage is three or four separate faceted masses, one hanging from the end of each limb, each mass a single chunky irregular ' +
+      'convex polyhedron of twenty to forty large flat triangular polygon facets, like a boulder or a crumpled paper ball, taller than it is ' +
+      'wide and drooping -- not a smooth sphere, no leaf texture or leaf pattern on the surface, no individual leaves, no twigs, ' +
+      'no dangling strands. Each facet is a slightly different shade of the same colour so the facets read. ' +
+      'Together the masses form an open crown about half as wide as the tree is tall, carried in the top half, with the limbs visible between them. ' +
       'Irregular and asymmetric: the masses at different heights and different sizes, one side wider than the other, the lean off vertical. ' +
-      'Matte flat-shaded surfaces in solid colours, bright white bark with dark horizontal scars and a dark rough base, light green foliage, ' +
-      'with crisp visible facet edges.',
+      'Matte flat-shaded solid colours: bright white bark with a few dark angular chevron marks and a dark rough base, light green foliage, ' +
+      'crisp visible facet edges.',
   },
   {
     id: 'v9-pine',

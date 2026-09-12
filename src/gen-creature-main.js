@@ -464,7 +464,7 @@ function renderMeshGallery() {
     const p = m.params
     meta.innerHTML = [
       m.file,
-      p ? `${p.model.replace(/-\d+$/, '')} @ ${p.faceLimit}f` : 'params not recorded',
+      p ? `${p.model.replace(/-\d+$/, '')} @ ${p.faceLimit}f${p.pbr ? ' pbr' : ''}` : 'params not recorded',
       `${m.credits} credits`,
       m.lods.length ? `${m.lods.length} lod${m.lods.length === 1 ? '' : 's'}` : 'no lods',
     ].join(' &middot; ')
@@ -645,6 +645,7 @@ async function queueMesh() {
     faceLimit: Number($('faceLimit').value),
     // P1 is already a low-poly generator and Tripo rejects the flag on it.
     smartLowPoly: !p1 && $('smartLowPoly').checked,
+    pbr: $('meshPbr').checked,
   }
   // The creature is captured too: a mesh takes a minute, and switching creatures
   // meanwhile must not file the result under whichever one is on screen.
@@ -890,11 +891,15 @@ async function showModel(which) {
 
   let tris = 0
   let found = null
+  let foundRough = null
   model.traverse((o) => {
     if (!o.isMesh) return
     const g = o.geometry
     tris += (g.index ? g.index.count : g.attributes.position.count) / 3
-    if (!found && o.material?.map?.image) found = o.material.map
+    if (!found && o.material?.map?.image) {
+      found = o.material.map
+      foundRough = o.material.roughnessMap ?? null
+    }
     o.material.wireframe = $('showWire').checked
   })
 
@@ -917,7 +922,7 @@ async function showModel(which) {
     mixer.clipAction(gltf.animations[0]).play()
   }
 
-  drawTexture(found)
+  drawTexture(found, foundRough)
   $('viewer').classList.add('on')
   setSize()
 }
@@ -936,7 +941,7 @@ let downrez = null // the 128px canvas as a texture, rebuilt per source
 let sourceMap = null // the map `downrez` was reduced from, and the other choice
 const originalMaps = new WeakMap() // material -> the map it arrived with
 
-function drawTexture(map) {
+function drawTexture(map, roughnessMap = null) {
   const row = $('texRow')
   sourceMap = map?.image ? map : null
   downrez = null
@@ -946,7 +951,7 @@ function drawTexture(map) {
   // loader does not wait for: the image exists with width 0, and drawing it
   // paints nothing at all rather than failing.
   if (!sourceMap.image.width) {
-    sourceMap.image.addEventListener('load', () => drawTexture(map), { once: true })
+    sourceMap.image.addEventListener('load', () => drawTexture(map, roughnessMap), { once: true })
     return
   }
 
@@ -957,6 +962,7 @@ function drawTexture(map) {
     ctx.clearRect(0, 0, size, size)
     ctx.drawImage(sourceMap.image, 0, 0, size, size)
   }
+  drawRoughness(roughnessMap)
 
   downrez = new THREE.CanvasTexture($('tex128'))
   // Copied, not defaulted. CanvasTexture flips Y where a glTF texture does not,
@@ -970,6 +976,32 @@ function drawTexture(map) {
 
   row.classList.add('on')
   applyTexture()
+}
+
+/**
+ * Tripo's roughness at the shipping resolution, as greyscale. glTF packs
+ * roughness into the GREEN channel of the metallicRoughness texture (blue is
+ * metallic, red unused), so the raw image reads as a green-blue wash and says
+ * nothing; the G channel alone is the shiny/matte segmentation this figure
+ * exists to judge. Hidden when the mesh was generated without PBR.
+ */
+function drawRoughness(roughnessMap) {
+  const fig = $('texRoughFig')
+  const image = roughnessMap?.image
+  fig.hidden = !image
+  if (!image) return
+  if (!image.width) {
+    image.addEventListener('load', () => drawRoughness(roughnessMap), { once: true })
+    return
+  }
+  const ctx = $('texRough').getContext('2d')
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(image, 0, 0, 128, 128)
+  const px = ctx.getImageData(0, 0, 128, 128)
+  const d = px.data
+  for (let i = 0; i < d.length; i += 4) d[i] = d[i + 2] = d[i + 1]
+  ctx.putImageData(px, 0, 0)
 }
 
 /** Put the chosen resolution on every material that arrived wearing `sourceMap`. */
@@ -1003,10 +1035,17 @@ for (const [id, choice] of [['texFull', 'source'], ['tex128', '128']]) {
 
 let lodMaterial = null // the source mesh's material, reused so tiers preview textured
 
-/** The source material with the atlas taken off and the bake switched on. */
+/**
+ * The source material with the atlas taken off and the bake switched on. The
+ * PBR maps go with it: a drop tier has no uv attribute, so any map left on
+ * would sample texel (0,0) across the whole creature.
+ */
 function bakedMaterial() {
   const m = lodMaterial.clone()
   m.map = null
+  m.roughnessMap = null
+  m.metalnessMap = null
+  m.normalMap = null
   m.vertexColors = true
   return m
 }
@@ -1197,6 +1236,7 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
       uvMode: t.stats.uvMode,
       reason: t.stats.reason,
       texture: material.map ?? null,
+      roughness: material.roughnessMap ?? null,
       detail:
         `lod${i + 1}: ${t.stats.outputTris} tris (asked ${t.stats.targetTris}, from ${t.stats.inputTris}) &middot; ` +
         `${t.stats.collapses} collapses &middot; ${t.stats.lockedPoints}/${t.stats.totalPoints} points pinned &middot; ` +
@@ -1456,7 +1496,7 @@ async function showTier(tier) {
   model.traverse((o) => { if (o.isMesh) o.material.wireframe = $('showWire').checked })
   frameModel()
   $('meshStats').innerHTML = tier.detail
-  drawTexture(tier.texture)
+  drawTexture(tier.texture, tier.roughness ?? null)
   $('viewer').classList.add('on')
   setSize()
 }

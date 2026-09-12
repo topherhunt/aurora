@@ -142,7 +142,7 @@ function measureAt(cp, pxToM, lengthM, t) {
  * lengthM: nose-to-tail length in metres.
  * lod: 0 or 1 -- picks LOD_PARAMS.
  *
- * Returns { pos, nrm, uv, idx, t, bend, spine }. `t`/`bend` are per-vertex
+ * Returns { pos, nrm, uv, idx, t, bend, spine, lengthM, yShift, pxToM }. `t`/`bend` are per-vertex
  * (one entry per position, not per-component) so a swim shader can read them
  * straight off the same vertex it's displacing. `spine` is the body loft's
  * ring centreline ({z,t,bend} per ring), handy for a preview/debug overlay of
@@ -268,5 +268,6 @@ export function buildFishMesh(sideColumnProfile, { lengthM = 0.3, lod = 0 } = {}
   const idx = geo.idx
   const nrm = computeNormals(pos, idx)
 
-  return { pos: Array.from(pos), nrm: Array.from(nrm), uv: geo.uv, idx, t, bend, spine, lengthM }
+  // yShift and pxToM let a caller map a vertex back onto the source image (ship.mjs's side-projected UVs).
+  return { pos: Array.from(pos), nrm: Array.from(nrm), uv: geo.uv, idx, t, bend, spine, lengthM, yShift, pxToM }
 }

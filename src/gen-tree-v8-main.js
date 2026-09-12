@@ -272,8 +272,8 @@ const GEN_V8 = {
     `spending the triangles on separate boughs, and what it buys is the air between them: a v8 ` +
     `silhouette is modelled, so past LOD0 the mat is solid and never changes down the ladder. LOD0 ` +
     `alone wears a species' near mat, if it has one, with the hems frayed. The last rung is one spun ` +
-    `quad carrying a photograph of LOD0 -- the SOLID one, as the world bakes it, since the card takes ` +
-    `over from LOD1 -- baked here and now off the tree on the stage.`,
+    `quad carrying a photograph of that LOD0, near mat and fray included, as the world bakes it -- ` +
+    `baked here and now off the tree on the stage.`,
 }
 
 const GEN_OAK = {
@@ -541,7 +541,8 @@ const nearMatUrl = () => gen().nearMat(current().key)
 // Whether the rung on the stage is the frayed near tier: LOD0 of a species
 // with a near mat. The card (3) is not, and neither is its bake -- the world
 // photographs the solid tree, since the card takes over from LOD1.
-const frayed = () => Math.round(params.lod) === 0 && nearMatUrl() !== null
+// The card is a photograph of LOD0, so it frays too.
+const frayed = () => (Math.round(params.lod) === 0 || Math.round(params.lod) === 3) && nearMatUrl() !== null
 // The mat the rung on the stage wears, for the swatch and the panel.
 const stageTex = () => (frayed() ? nearTex : needleTex)
 const stageMatUrl = () => (frayed() ? nearMatUrl() : matUrl())
@@ -626,6 +627,7 @@ function bakeCard(trunkGeo, foliageGeo, stats) {
   bakeTrunk.geometry = trunkGeo
   bakeTrunk.material = gen().wood()
   bakeFoliage.geometry = foliageGeo
+  bakeFoliage.material = frayed() ? frayMaterial : foliageMaterial
 
   const reach = Math.max(width, height)
   const cam = new THREE.OrthographicCamera(-width / 2, width / 2, height, 0, 0.01, reach * 8)
@@ -859,7 +861,7 @@ function ladderRows() {
     const r = g.resolve(p)
     rows.push({ name: TIER_NAMES[t], what: g.ladderWhat(p, r), mat: t === 0 && near ? 'frayed' : 'solid', tris: r.triangles })
   }
-  rows.push({ name: 'card', what: 'one spun quad, baked off LOD0', mat: 'baked', tris: 2 })
+  rows.push({ name: 'card', what: 'one spun quad, baked off LOD0', mat: near ? 'baked frayed' : 'baked', tris: 2 })
   return rows
 }
 

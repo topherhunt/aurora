@@ -24,6 +24,7 @@ import { createPlainTerrainMaterial, createTerrainMaterial } from '../terrain/te
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood } from './render/deadwood.js'
+import { Fish } from './render/fish.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeLitterSet } from '../props/litter.js'
@@ -36,6 +37,7 @@ import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWind
 // sim/terrain-height.js and sim/phase-a.js -- and scripts/check-v2.mjs fails
 // the build if it ever does.
 import { Player, LOCOMOTION } from '../player.js'
+import { WalkSurface } from './walk.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
 // See the header of render/aurora.js: the field is integrated as a convolution
@@ -586,6 +588,7 @@ const QUEST_TOGGLE_ROWS = [
   // all three are ground scatters that only exist inside ~100 m -- so a
   // measurement that separated them would be three readings of the same number.
   { key: 'litter', text: 'litter, fungi & deadfall' },
+  { key: 'fish', text: 'fish' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -661,6 +664,7 @@ function applyQuestToggle(key) {
       mushrooms.batch.visible = enabled
       deadwood.batch.visible = enabled
       break
+    case 'fish': fish.batch.visible = enabled; break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -670,7 +674,7 @@ function applyQuestToggle(key) {
     case 'wind': setWindEnabled(enabled); break
     case 'teleport': // pure state; readInput branches on it. Drop any half-made aim.
       questTeleportArmed = false
-      if (questTeleportMarker) questTeleportMarker.visible = false
+      hideTeleport()
       break
     case 'water': water.group.visible = enabled; break
     // Two halves of one thing, and they have to move together: the row gates
@@ -1339,6 +1343,14 @@ function updateQuestStats() {
       ['L ', '#7f95b4'], [`${la[0].toFixed(2)},${la[1].toFixed(2)}`.padEnd(12), '#cfe3ff'],
       ['R ', '#7f95b4'], [`${ra[0].toFixed(2)},${ra[1].toFixed(2)}`.padEnd(12), '#cfe3ff'],
       [questInputSource.padEnd(7), '#7f95b4'],
+      // The two numbers the submersion rule compares, which the view cannot be
+      // trusted for. EYE is the head above the rig's feet: on the headset that is
+      // the pose the floor calibration reports, and a standing wearer reading
+      // anything but their own eye height has found the bug. WATER is signed
+      // metres from the eye to the surface over it, negative under, `-` on dry
+      // ground.
+      ['EYE ', '#7f95b4'], [`${(eyeY - player.originPosition().y).toFixed(2)}`.padEnd(6), '#cfe3ff'],
+      ['WATER ', '#7f95b4'], [(waterY === null ? '-' : (eyeY - waterY).toFixed(2)).padEnd(6), submerged ? '#7fd7ff' : '#cfe3ff'],
       // Metres to the ground under the cursor, the only ruler this view has,
       // and the world X/Z it lands on. `-` is the ray reaching the horizon, not
       // a failure. On this row because the canvas fits ~74 characters and the
@@ -1403,6 +1415,7 @@ let layers = null
 let terrain = null
 let terrainTint = null
 let player = null
+let walk = null
 let markers = null
 let waterSurfaces = null
 let roads = null
@@ -1414,6 +1427,7 @@ let rocks = null
 let litter = null
 let mushrooms = null
 let deadwood = null
+let fish = null
 let editor = null
 let panel = null
 let ready = false
@@ -1441,7 +1455,7 @@ let ready = false
 const questToggles = QUEST_MODE
   ? {
       terrain: true, lighting: true,
-      trees: true, boulders: true, grass: true, ferns: true, litter: true,
+      trees: true, boulders: true, grass: true, ferns: true, litter: true, fish: true,
       water: true, reflections: true, aurora: true,
       // The cliff plates are not in the shipped set; the row is there to look
       // at them on their own (see QUEST_TOGGLE_ROWS).
@@ -1665,10 +1679,8 @@ async function bootWorld() {
   markers.sync()
 
   await bootStep('spawn')
-  player = new Player(rig, camera, height)
   const spawn = { x: SPAWN.x, z: SPAWN.z, y: height.heightAt(SPAWN.x, SPAWN.z) }
   if (waterSurfaces.isSubmerged(spawn.x, spawn.z, spawn.y)) throw new Error(`v2: SPAWN (${spawn.x}, ${spawn.z}) is underwater`)
-  player.spawnAt(spawn.x, spawn.z)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
   // Stone, in seven size beds at once: pebbles underfoot, boulders through the
@@ -1744,6 +1756,13 @@ async function bootWorld() {
     `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius} m, ` +
     `pool ${ts.used}/${ts.pool}), ${ts.bankKB} KB bank`
   )
+
+  // She stands on the rocks and walks around the trunks, so she is placed only
+  // once both are on the ground. See v2/walk.js.
+  walk = new WalkSurface(height, rocks, trees)
+  window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
+  player = new Player(rig, camera, walk)
+  player.spawnAt(spawn.x, spawn.z)
 
   // Ferns, as an undercarpet at half a plant per square metre. Its own material
   // rather than instances in the tree batch, and that is not a violation of
@@ -1908,6 +1927,16 @@ async function bootWorld() {
   )
   window.v2deadwood = deadwood
 
+  // The fish: a pool that follows her through whatever water is in reach (see
+  // render/fish.js). Its materials are patched here, like every other layer's,
+  // before the mesh and cutouts arrive -- the pool stays empty until they do.
+  await bootStep('fish')
+  fish = new Fish(scene, height, waterSurfaces, { seed: SEED })
+  for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
+  fish.place(spawn.x, spawn.z)
+  fish.ready.then(() => fish.place(fish.head.x, fish.head.z))
+  window.v2fish = fish
+
   // Last of the five, so the cursor readout can be bound now. Deliberately here
   // rather than lazily inside the readout: a missing scatter should be a boot
   // error next to the thing that failed to build, not a readout that silently
@@ -2041,6 +2070,7 @@ async function bootWorld() {
     litter.batch.visible = questToggles.litter
     mushrooms.batch.visible = questToggles.litter
     deadwood.batch.visible = questToggles.litter
+    fish.batch.visible = questToggles.fish
     // THE EDITOR OVERLAY, which had no business being in the headset and was the
     // single largest thing drawing before any layer is switched on. Markers is
     // three InstancedMeshes of authoring handles -- 96 triangles a spline point,
@@ -2212,6 +2242,7 @@ function replacePropsOnMovedGround(cx, cz) {
     deadwood.syncSnowLine(layers)
     deadwood.place(cx, cz)
   }
+  if (fish) fish.place(cx, cz)
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
   // that resolves y from the field rather than integrating toward it, and the
@@ -2520,11 +2551,11 @@ function loadDoc(doc) {
 
 // --- input ------------------------------------------------------------------
 
-// v1's table minus two rows. `h` and `t` are gone: the panel binds H itself
-// (see its constructor) and there is no tuner on this route. Everything else is
-// v1's, including the Dvorak double binding -- `,aoe` sit on the physical WASD
-// keys, `KeyboardEvent.code` reports position and `.key` reports the character,
-// so binding both means the file works on either layout.
+// v1's table minus `h`, which the panel binds itself (see its constructor), and
+// with `t` reassigned from v1's tuner to teleport. Everything else is v1's,
+// including the Dvorak double binding -- `,aoe` sit on the physical WASD keys,
+// `KeyboardEvent.code` reports position and `.key` reports the character, so
+// binding both means the file works on either layout.
 const KEY_ACTIONS = {
   ',': 'forward',
   a: 'left',
@@ -2532,6 +2563,7 @@ const KEY_ACTIONS = {
   e: 'right',
   ' ': 'flyUp',
   Shift: 'flyDown',
+  t: 'teleport',
   u: 'unstick',
   n: 'timeSkip',
   p: 'auroraPattern',
@@ -2552,6 +2584,7 @@ const CODE_ACTIONS = {
   Space: 'flyUp',
   ShiftLeft: 'flyDown',
   ShiftRight: 'flyDown',
+  KeyT: 'teleport',
   KeyN: 'timeSkip',
   KeyP: 'auroraPattern',
   KeyM: 'grassStyle',
@@ -2588,6 +2621,7 @@ const HOTKEYS = [
       { keys: 'space', what: 'start flying, and hold to climb' },
       { keys: 'space space', what: 'double-tap to stop flying and land' },
       { keys: 'shift', what: 'fly down while flying' },
+      { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
     ],
   },
@@ -3323,46 +3357,196 @@ function readQuestFallback(st) {
   st.connected = found
 }
 
-// Teleport. Armed by pushing the right stick forward, fired on release -- the
-// Quest system convention, so it needs no explanation in the headset.
+// Teleport. In the headset, armed by pushing a stick forward and fired on
+// release -- the Quest system convention. On the desktop, hold T and release.
+//
+// THE AIM IS A LOB, NOT A RAY. The destination is where a ball thrown from the
+// pointer at TELEPORT_LOB m/s along the pointer's direction lands under
+// gravity, so it is always SHORT of a straight-line hit and never beyond it,
+// and pointing higher reaches further only up to 45 degrees. Flat-ground reach
+// from a hand at 1.3 m: ~3.3 m level, ~5.4 m at the best angle -- that is
+// what LOB tunes, at reach ~ LOB^2 / g. TELEPORT_RANGE is the hard cap on the
+// landing's horizontal distance from the rig, because a lob down a cliff would
+// otherwise carry as far as the cliff is tall.
 const QUEST_TELEPORT_ARM = 0.7
 const QUEST_TELEPORT_FIRE = 0.35
-const QUEST_TELEPORT_RANGE = 250
+const TELEPORT_LOB = 6.5
+const TELEPORT_GRAVITY = 9.81
+const TELEPORT_RANGE = 6
+// Samples along the flight. 0.04 s at 6.5 m/s is a 26 cm segment, and the ground
+// crossing is bisected between samples, so the landing is exact at that
+// spacing. 40 samples is 1.6 s of flight, past which the lob is a fall.
+const TELEPORT_STEP_S = 0.04
+const TELEPORT_SAMPLES = 40
+// A landing is refused where she could not have walked to: a slope past the
+// limiter's, or inside a trunk. The arc turns this colour to say so.
+const TELEPORT_OK = 0x7fd7ff
+const TELEPORT_NO = 0xff5a5a
+const TELEPORT_MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
+// How far the ring floats over the drawn ground. Enough that a chunk mesh
+// sitting a little proud of the field does not swallow it, not so much that it
+// reads as hovering.
+const TELEPORT_RING_LIFT = 0.06
+const TELEPORT_UP = new THREE.Vector3(0, 1, 0)
 let questTeleportArmed = false
-let questTeleportMarker = null
-const questTeleportTarget = { x: 0, z: 0, valid: false }
-const questHandPos = new THREE.Vector3()
-const questHandDir = new THREE.Vector3()
+let desktopTeleportArmed = false
+const teleportTarget = { x: 0, z: 0, valid: false }
+// The arc and the landing ring, built together on first aim. The arc is a
+// dotted trail -- one instanced bead per sample -- rather than a Line, because
+// WebGL draws every line one pixel wide and a 1 px line at half opacity
+// vanishes into the ferns. Instance matrices are overwritten in place: no
+// geometry is allocated while aiming. Both are depth-tested like anything else
+// in the world: a bead behind a bank is behind the bank.
+let teleportGfx = null
+const teleportOrigin = new THREE.Vector3()
+const teleportDir = new THREE.Vector3()
+const teleportRight = new THREE.Vector3()
+const teleportBead = new THREE.Matrix4()
+const teleportNormal = new THREE.Vector3()
+const teleportObstacle = { x: 0, z: 0, r: 0 }
 const questFlyDir = new THREE.Vector3()
 
-function questTeleportAim(hand) {
-  // Aimed down the HAND THAT IS PUSHING THE STICK, not the gaze. Marching the
-  // head ray would make the destination move whenever she looked around while
-  // holding the stick, and would put it wherever she happened to be reading the
-  // panel. Taking it off the pushing hand is what keeps the two mirrored.
-  hand.getWorldPosition(questHandPos)
-  hand.getWorldQuaternion(questTempQuat)
-  questHandDir.set(0, 0, -1).applyQuaternion(questTempQuat)
-  // The march walks the exact height FIELD, not the meshed chunk, so it lands
-  // in the same place whether or not the terrain layer is even switched on --
-  // which it usually is not, in the mode this panel exists for.
-  const hit = raymarchGround(height, questHandPos, questHandDir, { maxDist: QUEST_TELEPORT_RANGE })
-  questTeleportTarget.valid = !!hit
-  if (hit) {
-    questTeleportTarget.x = hit.x
-    questTeleportTarget.z = hit.z
-    if (!questTeleportMarker) {
-      questTeleportMarker = new THREE.Mesh(
-        new THREE.RingGeometry(0.28, 0.42, 28),
-        new THREE.MeshBasicMaterial({ color: 0x7fd7ff, toneMapped: false, side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthTest: false })
-      )
-      questTeleportMarker.rotation.x = -Math.PI / 2
-      questTeleportMarker.renderOrder = 998
-      scene.add(questTeleportMarker)
-    }
-    questTeleportMarker.position.set(hit.x, hit.y + 0.05, hit.z)
+function ensureTeleportGfx() {
+  if (teleportGfx) return teleportGfx
+  // The ring lies in XZ in its own frame and is turned onto the ground's normal
+  // where it lands, so on a slope it lies ALONG the slope instead of cutting
+  // into the uphill side. The polygon offset pulls its depth a little toward
+  // the eye, so a chunk drawn a few centimetres proud of the exact field does
+  // not swallow it, while a hill actually in front still hides it.
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.28, 0.42, 28).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: TELEPORT_OK, toneMapped: false, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+    })
+  )
+  const arc = new THREE.InstancedMesh(
+    new THREE.SphereGeometry(0.03, 6, 4),
+    new THREE.MeshBasicMaterial({ color: TELEPORT_OK, toneMapped: false, transparent: true, opacity: 0.7, depthWrite: false }),
+    TELEPORT_SAMPLES
+  )
+  arc.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+  arc.frustumCulled = false
+  scene.add(ring, arc)
+  teleportGfx = { ring, arc }
+  return teleportGfx
+}
+
+function hideTeleport() {
+  teleportTarget.valid = false
+  if (!teleportGfx) return
+  teleportGfx.ring.visible = false
+  teleportGfx.arc.visible = false
+}
+
+/**
+ * Fly the lob from `origin` along `dir` (unit), write the arc, place the ring
+ * where it meets the WALK surface -- the field plus the rock tops, the same
+ * thing Player stands on, so the arc lands on a boulder rather than inside it
+ * and lands in the same place whether or not the terrain layer is drawn. A
+ * trunk in the way stops the arc at the bark with no landing.
+ */
+function aimTeleport(origin, dir) {
+  const { ring, arc } = ensureTeleportGfx()
+  const feet = player.originPosition()
+  const vx = dir.x * TELEPORT_LOB
+  const vy = dir.y * TELEPORT_LOB
+  const vz = dir.z * TELEPORT_LOB
+  const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * TELEPORT_GRAVITY * t * t, z: origin.z + vz * t })
+  const clear = (t) => {
+    const p = at(t)
+    return p.y > walk.heightAt(p.x, p.z) && !walk.obstacleAt(p.x, p.z, teleportObstacle)
   }
-  if (questTeleportMarker) questTeleportMarker.visible = questTeleportTarget.valid
+  let count = 0
+  let hit = null
+  let stopped = false
+  let prevT = 0
+  for (let i = 0; i < TELEPORT_SAMPLES; i++) {
+    const t = i * TELEPORT_STEP_S
+    const p = at(t)
+    if (i > 0 && !clear(t)) {
+      let lo = prevT
+      let hi = t
+      for (let k = 0; k < 12; k++) {
+        const mid = (lo + hi) * 0.5
+        if (clear(mid)) lo = mid
+        else hi = mid
+      }
+      const end = at(hi)
+      stopped = true
+      if (walk.obstacleAt(end.x, end.z, teleportObstacle)) {
+        // Bark: the last bead sits on the trunk, nothing to land on.
+        p.x = end.x
+        p.y = end.y
+        p.z = end.z
+      } else {
+        hit = { x: end.x, y: walk.heightAt(end.x, end.z), z: end.z }
+        // The last bead sits ON the ground, not a sample past it.
+        p.x = hit.x
+        p.y = hit.y
+        p.z = hit.z
+      }
+    }
+    arc.setMatrixAt(count++, teleportBead.makeTranslation(p.x, p.y, p.z))
+    if (stopped) break
+    prevT = t
+  }
+  arc.count = count
+  arc.instanceMatrix.needsUpdate = true
+  arc.visible = true
+  // A landing counts only where she could have walked: within reach, on ground
+  // the slope limiter would let her stand on (a cliff face or a boulder's flank
+  // is a step in the walk surface, so it fails this), and not inside a trunk.
+  const inRange = hit !== null && Math.hypot(hit.x - feet.x, hit.z - feet.z) <= TELEPORT_RANGE
+  const standable = inRange && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE && !walk.obstacleAt(hit.x, hit.z, teleportObstacle)
+  teleportTarget.valid = standable
+  arc.material.color.setHex(standable ? TELEPORT_OK : TELEPORT_NO)
+  ring.material.color.setHex(standable ? TELEPORT_OK : TELEPORT_NO)
+  if (inRange) {
+    teleportTarget.x = hit.x
+    teleportTarget.z = hit.z
+    // Over the DRAWN ground where a chunk exists, since that is what would hide
+    // it; the walk height is the field, which the chunk mesh sits a few
+    // centimetres either side of.
+    const drawn = terrain.groundAt(hit.x, hit.z)
+    const ground = drawn !== null && drawn > hit.y ? drawn : hit.y
+    ring.position.set(hit.x, ground + TELEPORT_RING_LIFT, hit.z)
+    ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal))
+  }
+  ring.visible = inRange
+}
+
+/**
+ * The pointer of the hand pushing the stick, taken from the SAME ray A-Frame
+ * draws the laser along. The hand entity itself sits at the XR gripSpace, whose
+ * -Z is pitched well above where a Touch controller points; the laser is the
+ * model's pointing pose, and the arc has to leave from the line the wearer can
+ * see. Aimed off the pushing hand rather than the gaze so that looking around
+ * while holding the stick does not move the destination.
+ */
+function questTeleportAim(handEl) {
+  const rc = handEl.components.raycaster
+  if (!rc || typeof rc.updateOriginDirection !== 'function') {
+    throw new Error(`teleport: ${handEl.id} has no raycaster component to aim along`)
+  }
+  rc.updateOriginDirection()
+  aimTeleport(rc.raycaster.ray.origin, rc.raycaster.ray.direction)
+}
+
+/**
+ * Desktop stand-in for the hand: the cursor's ray, thrown from a point a little
+ * below and to the right of the eye so the arc reads as leaving a hand rather
+ * than the face. With no cursor seen yet, straight ahead.
+ */
+function desktopTeleportAim() {
+  camera.getWorldPosition(teleportOrigin)
+  camera.getWorldQuaternion(questTempQuat)
+  teleportRight.set(1, 0, 0).applyQuaternion(questTempQuat)
+  teleportOrigin.addScaledVector(teleportRight, 0.2)
+  teleportOrigin.y -= 0.35
+  if (cursorNdc.seen) teleportDir.copy(screenRay(camera, cursorNdc.x, cursorNdc.y).dir)
+  else teleportDir.set(0, 0, -1).applyQuaternion(questTempQuat)
+  aimTeleport(teleportOrigin, teleportDir)
 }
 
 function readInput() {
@@ -3418,12 +3602,15 @@ function readInput() {
       moveHand.getWorldQuaternion(questTempQuat)
       questFlyDir.set(0, 0, -1).applyQuaternion(questTempQuat).normalize()
       moveInput.flyDirection = questFlyDir
-      if (questTeleportMarker) questTeleportMarker.visible = false
+      hideTeleport()
       questTeleportArmed = false
       return
     }
 
-    if (!questToggles.teleport) return
+    // questToggles is null outside ?quest, so the plain route walks. Reading
+    // it bare here threw on the first frame a controller reported connected,
+    // which the boot handler surfaced as "v2 failed to start".
+    if (!QUEST_MODE || !questToggles.teleport) return
 
     // Teleport: aim while held, go on release. Fired from readInput rather than
     // from a button event because the whole gesture is a stick threshold. Push
@@ -3433,11 +3620,11 @@ function readInput() {
     const push = -moveAxis
     if (push > QUEST_TELEPORT_ARM) {
       questTeleportArmed = true
-      questTeleportAim(moveHand)
+      questTeleportAim(useRight ? rightHandEl : leftHandEl)
     } else if (questTeleportArmed && push < QUEST_TELEPORT_FIRE) {
       questTeleportArmed = false
-      if (questTeleportMarker) questTeleportMarker.visible = false
-      if (questTeleportTarget.valid) player.teleportTo(questTeleportTarget.x, questTeleportTarget.z)
+      if (teleportTarget.valid) player.teleportTo(teleportTarget.x, teleportTarget.z)
+      hideTeleport()
     }
     return
   }
@@ -3452,6 +3639,17 @@ function readInput() {
   // left in place after the controllers drop out would steer desktop flight off
   // a quaternion nothing is updating any more.
   moveInput.flyDirection = null
+  // T held aims the same lob the headset throws, off the cursor; release goes.
+  // Not while flying, matching the headset, and the walk keys stay live so the
+  // arc can be aimed by walking or dragging the view as well as by the mouse.
+  if (on('teleport') && !player.flying) {
+    desktopTeleportArmed = true
+    desktopTeleportAim()
+  } else if (desktopTeleportArmed) {
+    desktopTeleportArmed = false
+    if (teleportTarget.valid) player.teleportTo(teleportTarget.x, teleportTarget.z)
+    hideTeleport()
+  }
 }
 
 // Where the mouse last was, in NDC. `seen` stays false until the pointer has
@@ -3805,6 +4003,8 @@ function tick() {
     mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
     deadwood.update(headTmp.x, headTmp.y, headTmp.z)
   }
+  // The one scatter that is also a simulation, so it takes dt. Frozen with its row like the others.
+  if (!QUEST_MODE || questToggles.fish) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
 
   clock.advance(dt)
   // Held in a local because the world probe wants it too: the capture is taken

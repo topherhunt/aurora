@@ -110,9 +110,11 @@ const REJECTS_QUAD = new Set([MODELS.p1])
  * the count deviates with geometry complexity, so the caller checks the mesh it
  * actually gets against the budget rather than trusting this number.
  *
- * `pbr` defaults OFF. This world does its own lighting (src/lighting.js); baked
- * metallic/roughness maps fight it and cost texture budget for maps nothing
- * reads. `texture: true` with `pbr: false` gives base colour only.
+ * `pbr` defaults ON: Tripo adds metallic/roughness and normal maps beside the
+ * base colour, and the roughness map is the only per-region shininess signal
+ * in the pipeline -- a fish's scales against its fins, mail against a tunic.
+ * P1 charges nothing extra for it (`estimateCredits` has no pbr term). Off
+ * gives base colour only.
  */
 export async function createMeshTask({
   fileToken,
@@ -120,7 +122,7 @@ export async function createMeshTask({
   faceLimit = 500,
   quad = true,
   texture = true,
-  pbr = false,
+  pbr = true,
   textureQuality = 'standard',
   smartLowPoly = false,
   textureAlignment = 'original_image',

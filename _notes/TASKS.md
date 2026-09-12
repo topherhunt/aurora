@@ -31,19 +31,10 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- [ ] Player characters: rig bones, move arms/hands to match actual hand position.
-- [ ] Create a cheatsheet of steps to rig and animate a creature
-  - Open mesh in Blender, set origin at world origin
-  - How to create an armature, how to orient the hips, follow the bone structure to build out center line and left side, naming everything on the left `*.L` instead of `Left*` 
-  - Mirror along X axis (may need to rotate bones first)
-  - Select all bones (edit mode), batch rename all bones from (regex) `^(.*).R` to `Right\1` and same for .L -> Left
-  - While you're in Edit Mode, run Armature > Bone Roll > Recalculate Roll > Global +Z. (Roll controls which way a bone's local axes point, which decides whether rotations feel sane later.)
-  - Bind the mesh: In Object mode, select the mesh, shift + select the armature, then Object > Parent > Armature Deform > With automatic weights. Watch carefully for errors at the bottom of the screen, They likely will mean that the Deform didn't take. 
-    - If you get error "Bone heat weighting: failed to find solution for one or more bones", first clean up the mesh: go into edit mode, `A` to select all verts, then `M` -> Merge by distance.
-    - Then select the armature and `Ctrl + Tab` to enter Pose mode, then pick a bone and rotate it, and confirm that the mesh deforms to follow it.
-    - To fix bad weights, select the mesh, switch to Weight Paint mode, in the right sidebar click Data and select a bone, then paint to adjust vertex weights.
-  - Before exporting: select the mesh, `Ctrl + A`, then apply All Transforms on the mesh.
-  - 
+- [ ] Sync times of day across different users
+- [ ] Water cubemap reflections: place one cubemap out in the middle of the water body you're nearest. Currently the cubemap position appears to be near the shore, or UNDER the shore. In / editor mode, show a little camera sprite for 1s each time a cubemap is updating, positioned at the place and angle it's looking at, so I can see WHERE those cubemap pics are getting captured from.
+- [ ] Let each player shoot up a flare
+- [ ] Player characters: rig bones, move arms/hands to match actual hand position. mixamo?
 
 - Get VR looking passable
   - [ ] 

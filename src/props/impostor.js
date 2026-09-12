@@ -172,7 +172,7 @@ export function impostorCardExtents({ width, height, foot = 0 }) {
  */
 export function bakeImpostor(
   renderer, geometry, texArray, layer,
-  { width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false, bounce = BAKE_GROUND }
+  { width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false, hemFray = null, bounce = BAKE_GROUND }
 ) {
   if (!(width > 0) || !(height > 0)) {
     throw new Error(`bakeImpostor: need a positive width and height, got ${width}x${height}`)
@@ -212,7 +212,7 @@ export function bakeImpostor(
     Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
 
   const pixels = captureLayer(
-    renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, bounce })
+    renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, hemFray, bounce })
   return { width: cardW, height: cardH, sink, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
 }
 
@@ -293,14 +293,15 @@ export function bakeImpostorPlate(
  * The half both bakes share; what a bake chooses is its camera and where the key
  * stands. Restores the render target and clear state it found.
  */
-function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, vertexColors, bounce }) {
+function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, vertexColors, hemFray = null, bounce }) {
   if (layer < 0 || layer >= texArray.image.depth) {
     throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
 
-  // `vertexColors` is the building kit's -- see createImpostorBakeMaterial. A
-  // prop leaves it off and carries no `color` attribute at all.
-  const material = createImpostorBakeMaterial(texArray, { vertexColors })
+  // `vertexColors` is the building kit's and `hemFray` the trees' -- see
+  // createImpostorBakeMaterial. A prop leaves both off and carries neither
+  // attribute.
+  const material = createImpostorBakeMaterial(texArray, { vertexColors, hemFray })
   // A FAMILY MAY BE TINTED, and if it is, the photograph has to be tinted the
   // same way or the card is a different colour from the mesh it stands in for --
   // which is the most visible artefact an impostor can have, because the swap

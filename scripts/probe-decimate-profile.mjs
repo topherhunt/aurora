@@ -291,8 +291,10 @@ function overlay(sourceMask, tierMask, cols = 76) {
 
 const WORK = path.join(ROOT, 'tools/creatures/work')
 const [, , idArg = 'red-fox', ...targetArgs] = process.argv
-const ids = idArg === 'all'
-  ? fs.readdirSync(WORK).filter((d) => fs.existsSync(path.join(WORK, d, 'mesh.glb'))).sort()
+// IDS pins the roster to a comma-separated list, so two runs made while another
+// session is generating meshes still score the same creatures.
+const ids = process.env.IDS ? process.env.IDS.split(',')
+  : idArg === 'all' ? fs.readdirSync(WORK).filter((d) => fs.existsSync(path.join(WORK, d, 'mesh.glb'))).sort()
   : [idArg]
 // Percentages of the source, which is what gen-creature.html's LOD box defaults
 // to -- an absolute ladder would mean something different on each creature.
@@ -302,8 +304,10 @@ const targetsFor = (tris) => targetArgsOrDefault
   .sort((a, b) => b - a)
 
 // WEIGHTS sweeps the feature term; with none given it runs whatever decimate.js
-// defaults to, so the plain invocation reports the shipping algorithm.
+// defaults to, so the plain invocation reports the shipping algorithm. OPTS is
+// a JSON object of any other decimate options, e.g. '{"sizeWeight":0}'.
 const weights = process.env.WEIGHTS ? process.env.WEIGHTS.split(',').map(Number) : [undefined]
+const extraOpts = process.env.OPTS ? JSON.parse(process.env.OPTS) : {}
 const modes = (process.env.MODES ?? 'preserve,stretch').split(',')
 const label = (w) => (w === undefined ? 'dflt' : w.toFixed(2)).padStart(4)
 
@@ -343,7 +347,7 @@ for (const id of ids) {
     console.log(`  uvMode ${uvMode}`)
     if (ids.length === 1) console.log('      fw   target   tris  verts     IoU   lost   gained   maxDev   why')
     for (const featureWeight of weights) {
-      const tiers = decimateLadder(source, targets, { uvMode, ...(featureWeight === undefined ? {} : { featureWeight }) })
+      const tiers = decimateLadder(source, targets, { uvMode, ...extraOpts, ...(featureWeight === undefined ? {} : { featureWeight }) })
       const scores = profileError(source, tiers, frame, unit)
       bank(`${uvMode} ${label(featureWeight)}`, scores)
       if (ids.length === 1) {

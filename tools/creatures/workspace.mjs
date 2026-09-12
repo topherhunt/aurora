@@ -274,7 +274,7 @@ export async function runMesh(id, opts = {}) {
   const source = path.join(dir, 'source.png')
   if (!fs.existsSync(source)) throw new Error(`no source.png for "${id}" -- pick a candidate image first`)
 
-  const params = { model: MODELS.p1, faceLimit: 2000, quad: true, texture: true, pbr: false, ...opts }
+  const params = { model: MODELS.p1, faceLimit: 2000, quad: true, texture: true, pbr: true, ...opts }
   const credits = estimateCredits({ step: 'mesh', ...params })
 
   const fileToken = await uploadImage(fs.readFileSync(source), `${id}.png`)

@@ -367,6 +367,10 @@ const NEAR_MARGIN = TILE * 1.5
 // ground and a pick cylinder at exactly that radius still sits inside the bark
 // over most of the trunk's length. See `pickTrunkAt`.
 const TRUNK_PICK_SLACK = 1.5
+// How far from a point `trunkAt` looks for a trunk axis, in metres: the largest
+// oak at the top of the scale range has a 0.7 m base, and the caller's pad rides
+// inside the remaining margin.
+const TRUNK_REACH = 2
 
 // Placement rules, lifted from v1's `tree` kind so the two routes agree about
 // where a tree can stand. `maxElevAboveSnow` is metres ABOVE the local snow
@@ -565,8 +569,8 @@ export class Trees {
     )
 
     // The trunk's world radius WHERE IT MEETS THE GROUND, per variant, at
-    // instance scale 1. `anchorsInto` is the only reader; see there for what it
-    // is for.
+    // instance scale 1. Read by `anchorsInto` and `trunkAt`; see there for what
+    // it is for.
     //
     // TAKEN FROM THE GENERATOR RATHER THAN MEASURED OFF THE MESH, because both
     // generators (tree-v8.js's pine, tree-oak.js's broadleaves) publish it
@@ -1208,6 +1212,45 @@ export class Trees {
       }
     }
     return n
+  }
+
+  /**
+   * The trunk whose footprint, widened by `pad` metres, covers (x, z): its axis
+   * and that padded radius written into `out` as {x, z, r}, or null when the
+   * point is clear. The walking and teleport collider -- a trunk is a circle on
+   * the ground and nothing more, which is what makes it affordable to ask on
+   * every step.
+   *
+   * Keyed rather than swept, like Rocks._blockAt: the widest trunk in the bank is
+   * under a metre across at any scale, so with `pad` under TRUNK_REACH only the
+   * tiles within that reach of the point can hold an answer -- one tile in the
+   * middle of one, four at a corner. Same resident-tiles-only, live-prefix
+   * contract as `anchorsInto`, so a point past the forest disc reads as clear.
+   */
+  trunkAt(x, z, pad, out) {
+    if (pad > TRUNK_REACH - 1) throw new Error(`Trees.trunkAt: pad ${pad} reaches past the tiles it searches`)
+    const gx0 = Math.floor((x - TRUNK_REACH) / TILE)
+    const gx1 = Math.floor((x + TRUNK_REACH) / TILE)
+    const gz0 = Math.floor((z - TRUNK_REACH) / TILE)
+    const gz1 = Math.floor((z + TRUNK_REACH) / TILE)
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const tile = this.tiles.get(gx * 0x10000 + gz)
+        if (!tile) continue
+        for (let k = 0; k < tile.n; k++) {
+          const id = tile.ids[k]
+          const dx = x - this.instX[id]
+          const dz = z - this.instZ[id]
+          const r = this.unitTrunkRadius[this.variantAt[id]] * this.instScale[id] + pad
+          if (dx * dx + dz * dz >= r * r) continue
+          out.x = this.instX[id]
+          out.z = this.instZ[id]
+          out.r = r
+          return out
+        }
+      }
+    }
+    return null
   }
 
   /**

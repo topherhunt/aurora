@@ -2551,10 +2551,29 @@ function hemFrayFragment({ keep, band, straws, wisp, lumaLo, lumaHi }, uv) {
   }`
 }
 
+function checkHemFray(hemFray, who) {
+  for (const k of ['keep', 'band', 'straws', 'wisp', 'lumaLo', 'lumaHi']) {
+    if (!Number.isFinite(hemFray[k])) throw new Error(`${who}: hemFray.${k} must be a number`)
+  }
+  // See hemFrayFragment: below zero the ridge itself frays, and with it every
+  // geometry that carries hem 0 because it has no hem at all.
+  if (!(hemFray.keep - hemFray.band / 2 - hemFray.wisp / 2 > 0)) {
+    throw new Error(`${who}: hemFray needs keep > (band + wisp) / 2, got ${hemFray.keep}, ${hemFray.band} and ${hemFray.wisp}`)
+  }
+  if (!(hemFray.straws > 0)) throw new Error(`${who}: hemFray.straws must be positive, got ${hemFray.straws}`)
+  if (!(hemFray.lumaHi > hemFray.lumaLo)) {
+    throw new Error(`${who}: hemFray needs lumaHi > lumaLo, got ${hemFray.lumaLo}..${hemFray.lumaHi}`)
+  }
+}
+
+// The fray's cache-key suffix: every literal it compiles in.
+const hemFrayKey = (h) => `-hem${h.keep}.${h.band}.${h.straws}.${h.wisp}.${h.lumaLo}.${h.lumaHi}`
+
 // The fray in four pieces, one per slot it lands in. Exported for the
 // gen-tree-v8 bench, which previews the near tier on a plain Lambert and cuts
 // the same edge: `fragment` goes after the map sample, where `diffuseColor`
-// already carries the mat. The straw lengths are a value noise over a
+// already carries the mat. The impostor bake takes the same pieces so a card is
+// a photograph of the frayed tree. The straw lengths are a value noise over a
 // sine-free hash, because a sin() hash loses its randomness in the large
 // arguments a tall tree's uv reaches, on a headset's GPU before a desktop's.
 export const HEM_FRAY_GLSL = {
@@ -2603,20 +2622,7 @@ export function createPropMaterial(
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
-  if (hemFray) {
-    for (const k of ['keep', 'band', 'straws', 'wisp', 'lumaLo', 'lumaHi']) {
-      if (!Number.isFinite(hemFray[k])) throw new Error(`createPropMaterial: hemFray.${k} must be a number`)
-    }
-    // See hemFrayFragment: below zero the ridge itself frays, and with it every
-    // geometry that carries hem 0 because it has no hem at all.
-    if (!(hemFray.keep - hemFray.band / 2 - hemFray.wisp / 2 > 0)) {
-      throw new Error(`createPropMaterial: hemFray needs keep > (band + wisp) / 2, got ${hemFray.keep}, ${hemFray.band} and ${hemFray.wisp}`)
-    }
-    if (!(hemFray.straws > 0)) throw new Error(`createPropMaterial: hemFray.straws must be positive, got ${hemFray.straws}`)
-    if (!(hemFray.lumaHi > hemFray.lumaLo)) {
-      throw new Error(`createPropMaterial: hemFray needs lumaHi > lumaLo, got ${hemFray.lumaLo}..${hemFray.lumaHi}`)
-    }
-  }
+  if (hemFray) checkHemFray(hemFray, 'createPropMaterial')
   // A flag with nothing to act on is a caller who thinks their cards are being
   // spun differently and is looking at unchanged pixels. Say so instead.
   if (sphericalBillboard && !billboards) {
@@ -2854,7 +2860,7 @@ export function createPropMaterial(
     ? `-grow${billboardGrow.from}.${billboardGrow.to}.${billboardGrow.scale}.`
       + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
     : ''
-  const hemKey = hemFray ? `-hem${hemFray.keep}.${hemFray.band}.${hemFray.straws}.${hemFray.wisp}.${hemFray.lumaLo}.${hemFray.lumaHi}` : ''
+  const hemKey = hemFray ? hemFrayKey(hemFray) : ''
   const key = `prop-moss-v5${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
   material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
 
@@ -3058,8 +3064,13 @@ const SEASONS_VERTEX = /* glsl */ `
  * roof at the swap distance: the one artefact an impostor is least allowed to
  * have. An option rather than the default because three requires the attribute
  * once it is on, and a fern geometry does not have one.
+ *
+ * `hemFray` likewise: a tree bakes its near tier, holed mat and frayed hems,
+ * because the card is the photograph of the tree at its best and every other
+ * subject carries no `hem` attribute to compile against.
  */
-export function createImpostorBakeMaterial(textureArray, { vertexColors = false } = {}) {
+export function createImpostorBakeMaterial(textureArray, { vertexColors = false, hemFray = null } = {}) {
+  if (hemFray) checkHemFray(hemFray, 'createImpostorBakeMaterial')
   const material = new THREE.MeshLambertMaterial({
     color: 0xffffff,
     alphaTest: 0.5,
@@ -3078,13 +3089,15 @@ export function createImpostorBakeMaterial(textureArray, { vertexColors = false 
         attribute float texLayer;
         attribute vec2 uvProj;
         varying float vTexLayer;
-        varying vec2 vUvProj;`
+        varying vec2 vUvProj;
+        ${hemFray ? HEM_FRAY_GLSL.vertexCommon : ''}`
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
         vTexLayer = texLayer;
-        vUvProj = uvProj;`
+        vUvProj = uvProj;
+        ${hemFray ? HEM_FRAY_GLSL.vertexBegin : ''}`
       )
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -3093,7 +3106,8 @@ export function createImpostorBakeMaterial(textureArray, { vertexColors = false 
         precision highp sampler2DArray;
         uniform sampler2DArray uAtlas;
         varying float vTexLayer;
-        varying vec2 vUvProj;`
+        varying vec2 vUvProj;
+        ${hemFray ? HEM_FRAY_GLSL.fragmentCommon : ''}`
       )
       // Same undo as createPropMaterial's, for the same reason: a leaf is one
       // cell thick and the geometry's authored normal is the truth from either
@@ -3108,10 +3122,11 @@ export function createImpostorBakeMaterial(textureArray, { vertexColors = false 
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
         `vec4 diffuseColor = vec4( diffuse, opacity );
-        diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );`
+        diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );
+        ${hemFray ? HEM_FRAY_GLSL.fragment(hemFray, 'vUvProj') : ''}`
       )
   }
 
-  material.customProgramCacheKey = () => `impostor-bake-lit-v1${vertexColors ? '-vc' : ''}`
+  material.customProgramCacheKey = () => `impostor-bake-lit-v1${vertexColors ? '-vc' : ''}${hemFray ? hemFrayKey(hemFray) : ''}`
   return material
 }

@@ -12,7 +12,7 @@
 // separately below: its GLSL does not exist as a literal anywhere, so it has to
 // be ASSEMBLED by actually running the onBeforeCompile hook.
 import { execFileSync } from 'node:child_process'
-import { writeFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,7 @@ import { SkyProbe } from '../src/sky-probe.js'
 import { WorldProbe } from '../src/world-probe.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { createBladeMaterial } from '../src/props/grass-blades.js'
+import { Fish } from '../src/v2/render/fish.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -461,6 +462,15 @@ const PROP_VARIANTS = [
       frag: ['uniform sampler2DArray uAtlas;', 'texture( uAtlas', 'normal *= faceDirection;'],
     },
   ],
+  [
+    'impostor bake: tree, hem fray',
+    createImpostorBakeMaterial(atlas, { vertexColors: true, hemFray: { keep: 0.7, band: 0.6, straws: 24, wisp: 0.12, lumaLo: 0.05, lumaHi: 0.2 } }),
+    { batched: false },
+    {
+      vert: ['attribute float texLayer;', 'vUvProj = uvProj;', 'attribute float hem;', 'vHem = hem;'],
+      frag: ['uniform sampler2DArray uAtlas;', 'texture( uAtlas', 'varying float vHem;', 'hemTooth(', 'if ( vHem >'],
+    },
+  ],
 ]
 
 // Collected here and checked after the compile loop: glslangValidator takes one
@@ -778,6 +788,42 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     MISSING_MARKS.push(`${label} frag: the dissolve leaked into the build that is meant to have none`)
   }
   if (!wind && vert.includes('uWindAmp')) MISSING_MARKS.push(`${label} vert: wind leaked into the still build`)
+}
+
+// --- src/v2/render/fish.js: the swim bend --------------------------------------
+//
+// One program per species (the wave number is a define), each a Lambert with
+// the fish's own onBeforeCompile under the vertex-mode lighting patch, which is
+// the only way it ever compiles. USE_INSTANCING and USE_INSTANCING_COLOR because
+// every fish is an instance and the bend reads a per-instance attribute; a
+// compile without them would type-check the tail against nothing.
+{
+  const FISH_ASSETS = JSON.parse(readFileSync(new URL('../public/fauna/fish.json', import.meta.url), 'utf8'))
+  const fish = new Fish(new THREE.Scene(), { heightAt: () => 0 }, { levelAt: () => null }, { assets: FISH_ASSETS })
+  for (const sp of fish.species) {
+    const lib = THREE.ShaderLib.lambert
+    const shader = {
+      uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+      vertexShader: lib.vertexShader,
+      fragmentShader: lib.fragmentShader,
+      defines: {},
+    }
+    new WorldLighting().patch(sp.material, { mode: 'vertex', cacheKey: `check-fish-${sp.id}` })
+    sp.material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+    const defines = [
+      `#define FISH_WAVE_K ${sp.material.defines.FISH_WAVE_K}`,
+      '#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST',
+      '#define USE_FOG', '#define FOG_EXP2', '#define DOUBLE_SIDED',
+    ]
+    const label = `fish ${sp.id.padEnd(15)}`
+    const vert = finish(shader.vertexShader)
+    const frag = finish(shader.fragmentShader)
+    SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+    SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+    CROSS_STAGE.push([label, vert, frag])
+    // The bend itself. Losing it is silent: the fish still draw, stiff as decoys.
+    if (!vert.includes('transformed.x += aBend * aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
+  }
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

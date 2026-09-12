@@ -114,7 +114,9 @@
       #texRow.on { display: flex; }
       #texRow figure { margin: 0; display: flex; flex-direction: column; gap: 4px; align-items: center; cursor: pointer; }
       #texRow canvas { border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; image-rendering: pixelated; width: 200px; height: 200px; }
-      #texRow figure:hover canvas { border-color: #4a7fbf; }
+      #texRow figure[hidden] { display: none; }
+      #texRoughFig { cursor: default; }
+      #texRow figure:not(#texRoughFig):hover canvas { border-color: #4a7fbf; }
       #texRow figure.is-active canvas { border-color: var(--good); }
       #texRow figure.is-active figcaption { color: var(--good); }
 
@@ -232,6 +234,9 @@
         <div class="field check">
           <label><input type="checkbox" id="smartLowPoly" /> smart low-poly (H3 only, +10 credits)</label>
         </div>
+        <div class="field check">
+          <label><input type="checkbox" id="meshPbr" checked /> PBR maps (roughness/metallic/normal beside the colour; no extra credits)</label>
+        </div>
         <button id="genMesh" class="wide spend" disabled>generate mesh</button>
 
         <h2>4. LOD</h2>
@@ -295,6 +300,7 @@
         <div id="texRow">
           <figure><canvas id="texFull" width="256" height="256"></canvas><figcaption class="label">source texture (ships)</figcaption></figure>
           <figure><canvas id="tex128" width="128" height="128"></canvas><figcaption class="label">128px downrez</figcaption></figure>
+          <figure id="texRoughFig" hidden><canvas id="texRough" width="128" height="128"></canvas><figcaption class="label">roughness at 128px (white = matte)</figcaption></figure>
           <p class="note">The preview wears the source by default &mdash; creatures ship on their own 512px array, not in the 128px prop atlas. The small figure is there to show what the prop atlas would cost you. Click a texture to put it on the mesh.</p>
         </div>
       </div>

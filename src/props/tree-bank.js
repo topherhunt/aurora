@@ -1,7 +1,7 @@
 import THREE from '../three-instance.js'
 
 import { LAYER } from '../textures.js'
-import { buildTreeV8, treeV8Lod, treeV8Species } from './tree-v8.js'
+import { buildTreeV8, treeV8Lod, treeV8Species, HEM_FRAY } from './tree-v8.js'
 import { buildTreeOak, treeOakLod, treeOakSpecies } from './tree-oak.js'
 import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'
 
@@ -70,7 +70,8 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 //
 // `crownWidth`, `height` and `trunkDiameter` ARE READ OFF TIER 0 AND USED FOR
 // EVERY TIER: the card is framed on them and the impostor is a photograph OF
-// that tree, so no tier can disagree with any other about how wide it is.
+// that tree -- the near tier as you stand under it, holed mat and frayed hems
+// -- so no tier can disagree with any other about how wide it is.
 // ---------------------------------------------------------------------------
 
 /**
@@ -221,8 +222,8 @@ function weldTree(species, { trunk, foliage, stats }, { near }) {
 
 /**
  * One mesh tier of one species, welded; the generator's own buffers are let
- * go. `near` defaults to tier 0 being the tier you stand under; the bake
- * turns it off to photograph the solid tree.
+ * go. `near` defaults to tier 0 being the tier you stand under, which is the
+ * tree the bake photographs too.
  */
 function buildTier(species, tier, { near = tier === 0 } = {}) {
   const built = grow(species, tier)
@@ -353,13 +354,15 @@ export function buildTreeBank({ billboard = true } = {}) {
 export function bakeTreeImpostors(renderer, texArray) {
   const done = []
   for (const v of treeVariants()) {
-    // The SOLID tree, not the frayed one the near tier is: the card takes over
-    // from LOD1, and LOD1 is solid to the edge.
-    const geo = buildTier(v.species, 0, { near: false })
+    // The near tier, frayed hems and holed mat: the card is the picture of the
+    // tree at its best, not of the solid tier it happens to take over from.
+    // A species without a near mat welds solid and the fray finds hem 0.
+    const geo = buildTier(v.species, 0)
     const u = geo.userData.tree
     const ext = bakeImpostor(renderer, geo, texArray, v.impostorLayer, {
       width: u.crownWidth,
       height: u.height,
+      hemFray: HEM_FRAY,
       // The same strip of empty ground the card's apex hangs into. Framed here
       // and not just in the geometry, or the picture sits `sink` too high on it.
       foot: cardFoot(u, v.billboardTri),
