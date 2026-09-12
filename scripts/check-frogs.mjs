@@ -10,16 +10,18 @@
 // number of frogs for the density; frogs all one size or one colour; a frog
 // that hops off the band or into the river, that never hops, that drifts away
 // from where it was placed; a scatter that is not the same twice; a frame that
-// costs more than a scatter is allowed to. The shipped GLB is checked for
-// existence and shape too, because the world loads it by name.
+// costs more than a scatter is allowed to; a far frog still drawn as the mesh,
+// or a card that is not its frog's own matrix and tint, or that is not dithered.
+// The shipped GLB is checked for existence and shape too, because the world
+// loads it by name.
 //
 // What this can NOT check: whether they look like frogs, or how the hop reads.
 // That needs eyes, in the world.
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX } from '../src/v2/render/frogs.js'
-import { CRITTER_GLB } from '../src/v2/render/critters.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP } from '../src/v2/render/frogs.js'
+import { CARD_M, CRITTER_GLB } from '../src/v2/render/critters.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -138,7 +140,7 @@ for (let i = 0; i < SECONDS / DT; i++) {
     if (home) {
       const d = Math.hypot(f.x - home.x, f.z - home.z)
       if (d > maxStray) maxStray = d
-      if (d > 5) strayed++
+      if (d > TETHER_M + 1e-9) strayed++
     }
   }
 }
@@ -147,15 +149,93 @@ check(hopped > 0, 'frogs hop', `${hopped} hop-frames`)
 check(wet === 0, 'no frog ever lands in the river', `${wet} wet frames`)
 check(offBand === 0, 'no frog hops off the shore band', `${offBand} frames`)
 check(onRock === 0, 'no frog sits on the boulder', `${onRock} frames`)
-check(strayed === 0, 'frogs stay near where they were placed', `furthest ${maxStray.toFixed(2)} m`)
+check(strayed === 0, `no frog ever lands more than ${TETHER_M} m from home`, `furthest ${maxStray.toFixed(2)} m`)
 check(alive().every((f) => f.state !== 'sit' || Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'a sitting frog is on the ground')
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame with ${alive().length} frogs`)
 check(frogs.mesh.count === alive().length, 'the instance count is the live count', `${frogs.mesh.count}`)
 
+// --- breathing: pin every frog sitting and watch instance 0's scale over one breath ----
+{
+  for (const f of alive()) { f.state = 'sit'; f.left = 1e9 }
+  const e = frogs.mesh.instanceMatrix.array
+  const sy = [], sx = [], px = []
+  for (let i = 0; i < Math.ceil(BREATH_S / DT); i++) {
+    frogs.update(0, GROUND + 1.6, 0, DT)
+    sx.push(Math.hypot(e[0], e[1], e[2]))
+    sy.push(Math.hypot(e[4], e[5], e[6]))
+    px.push(e[12])
+  }
+  const swell = Math.max(...sy) / Math.min(...sy)
+  const girth = Math.max(...sx) / Math.min(...sx)
+  check(swell > 1 + BREATH_AMP * 0.8 && swell < 1 + BREATH_AMP * 1.2, 'a sitting frog swells and shrinks in height as it breathes', `height ${((swell - 1) * 100).toFixed(1)}% over ${BREATH_S} s`)
+  check(girth > 1.005 && girth < swell, 'and rather less in girth', `girth ${((girth - 1) * 100).toFixed(1)}%`)
+  check(px.every((x) => x === px[0]), 'without moving')
+  const phases = new Set(alive().map((f) => f.breath.toFixed(3)))
+  check(phases.size > alive().length * 0.8, 'each frog breathes on its own phase', `${phases.size} distinct of ${alive().length}`)
+}
+
+// --- the cross card: far frogs leave the mesh for the card, under the same matrix and tint ----
+{
+  const card = frogs.card
+  check(card.parent === frogs.batch && !card.visible && card.count === 0, 'the card mesh rides in the batch, hidden until its picture is baked')
+  const geo = card.geometry
+  const pos = geo.getAttribute('position')
+  const uv = geo.getAttribute('uv')
+  const nrm = geo.getAttribute('normal')
+  const xs = new Set(), zs = new Set()
+  for (let i = 0; i < pos.count; i++) { xs.add(pos.getX(i).toFixed(3)); zs.add(pos.getZ(i).toFixed(3)) }
+  check(pos.count === 8 && geo.index.count === 12 && xs.has('0.000') && zs.has('0.000') && xs.size === 3 && zs.size === 3, 'the card is two quads crossed on the body axis', `${pos.count} verts, ${geo.index.count} indices`)
+  const sideU = [0, 1, 2, 3].map((i) => uv.getX(i)), frontU = [4, 5, 6, 7].map((i) => uv.getX(i))
+  check(Math.max(...sideU) === 0.5 && Math.min(...frontU) === 0.5 && Math.max(...frontU) === 1, 'the side quad reads the left half of the picture, the front quad the right')
+  let up = true
+  for (let i = 0; i < nrm.count; i++) if (nrm.getY(i) !== 1) up = false
+  check(up, 'every card normal points straight up, so the two planes take the same light')
+  const m = frogs.cardMaterial
+  check(m.alphaTest === 0.5 && m.side === THREE.DoubleSide, 'the card is a double-sided cutout', `alphaTest ${m.alphaTest}`)
+  const shader = { vertexShader: '#include <common>', fragmentShader: '#include <clipping_planes_fragment>\n#include <normal_fragment_begin>' }
+  m.onBeforeCompile(shader)
+  check(/mod\( gl_FragCoord\.x \+ gl_FragCoord\.y, 2\.0 \) < 1\.0 \) discard/.test(shader.fragmentShader), 'the card discards every other pixel of a fixed screen checkerboard')
+  check(/normal \*= faceDirection;/.test(shader.fragmentShader), 'and undoes the double-sided normal flip')
+  check(m.customProgramCacheKey() !== frogs.material.customProgramCacheKey(), 'the card compiles its own program')
+
+  frogs.place(0, 0)
+  frogs.update(0, GROUND + 1.6, 0, DT)
+  check(frogs.card.count === 0 && frogs.mesh.count === alive().length, 'before the bake every frog is the mesh')
+  frogs.setCard(null)
+  check(card.visible, 'setCard shows the card')
+  const HEAD = [0, GROUND + 1.6, 0]
+  frogs.update(...HEAD, DT)
+  const at = (mesh, i) => { const e = mesh.instanceMatrix.array; return [e[i * 16 + 12], e[i * 16 + 13], e[i * 16 + 14]] }
+  const dist = (p) => Math.hypot(p[0] - HEAD[0], p[1] - HEAD[1], p[2] - HEAD[2])
+  const near = [], far = []
+  for (let i = 0; i < frogs.mesh.count; i++) near.push(dist(at(frogs.mesh, i)))
+  for (let i = 0; i < card.count; i++) far.push(dist(at(card, i)))
+  check(frogs.mesh.count + card.count === alive().length && card.count > 0 && frogs.mesh.count > 0, 'the mesh and the card together hold every frog', `${frogs.mesh.count} mesh, ${card.count} card, ${alive().length} alive`)
+  check(near.every((d) => d <= CARD_M) && far.every((d) => d > CARD_M), `the mesh holds the frogs within ${CARD_M} m of her head and the card the rest`, `mesh to ${Math.max(...near).toFixed(2)} m, card from ${Math.min(...far).toFixed(2)} m`)
+  // A card instance is some far frog: same seat, same size (the matrix's scale up to the breath), same tint. The buffers are float32.
+  let matched = 0
+  for (let i = 0; i < card.count; i++) {
+    const e = card.instanceMatrix.array
+    const p = at(card, i)
+    const f = alive().find((g) => Math.abs(g.x - p[0]) < 1e-4 && Math.abs(g.z - p[2]) < 1e-4)
+    if (!f) continue
+    const sx = Math.hypot(e[i * 16], e[i * 16 + 1], e[i * 16 + 2]) * frogs.span
+    const c = card.instanceColor.array
+    const tint = Math.abs(c[i * 3] - f.r) < 1e-6 && Math.abs(c[i * 3 + 1] - f.g) < 1e-6 && Math.abs(c[i * 3 + 2] - f.b) < 1e-6
+    if (Math.abs(sx / f.size - 1) < 0.3 && tint) matched++
+  }
+  check(matched === card.count, 'each card carries its frog\'s own matrix and tint', `${matched} of ${card.count}`)
+  // Walk her out to the far bank: what was card is mesh.
+  frogs.update(HALF + 2, GROUND + 1.6, 40, DT)
+  const swapped = []
+  for (let i = 0; i < frogs.mesh.count; i++) swapped.push(at(frogs.mesh, i))
+  check(swapped.some((p) => dist(p) > CARD_M), 'a frog she walks up to comes back as the mesh', `${swapped.length} in the mesh now`)
+}
+
 // Dry land far from any water: nothing.
 frogs.place(500, 0)
 frogs.update(500, GROUND, 0, DT)
-check(alive().length === 0 && frogs.mesh.count === 0, 'no frogs away from water', `${alive().length} alive, count ${frogs.mesh.count}`)
+check(alive().length === 0 && frogs.mesh.count === 0 && frogs.card.count === 0, 'no frogs away from water', `${alive().length} alive, mesh ${frogs.mesh.count}, card ${frogs.card.count}`)
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 if (failures) process.exit(1)

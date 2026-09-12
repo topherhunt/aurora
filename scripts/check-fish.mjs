@@ -131,10 +131,31 @@ let bent = 0
 let stiff = 0
 let pitched = 0
 let arched = 0
+// Every glimmerfin bolt onset, grouped by the startle that armed it (the frame a school's boltIn timers were set), to catch a startle that fires the whole shoal at once: one startle's onsets must spread over time and miss some of the shoal.
+const startles = new Map()
+const armedBy = new Map()
+const wasBolt = new Map()
 for (let i = 0; i < SECONDS / DT; i++) {
   fish.update(0, LEVEL + 1.6, 0, DT)
   for (const sp of fish.species) {
     for (const f of sp.slots) {
+      const bolt = f.alive && f.mood === 'bolt'
+      const onset = bolt && !wasBolt.get(f)
+      if (!f.alive) armedBy.delete(f)
+      // A fish at the very edge the fright starts from bolts on the arming frame itself, so its timer is never seen above zero.
+      else if ((f.boltIn > 0 || onset) && !armedBy.has(f)) {
+        const key = `${sp.schools.indexOf(f.school)}@${i}`
+        if (!startles.has(key)) startles.set(key, { first: Infinity, last: 0, n: 0, size: f.school.members.length })
+        armedBy.set(f, startles.get(key))
+      }
+      if (onset) {
+        const s = armedBy.get(f)
+        armedBy.delete(f)
+        s.first = Math.min(s.first, i * DT)
+        s.last = Math.max(s.last, i * DT)
+        s.n++
+      }
+      wasBolt.set(f, bolt)
       const yaw = Math.atan2(-f.hx, -f.hz)
       const was = yawOf.get(f)
       yawOf.set(f, f.alive ? yaw : undefined)
@@ -175,6 +196,17 @@ check(far === 0, 'no fish left alive beyond the retire radius', `max ${maxDist.t
 check(turning > 1000 && bent / turning > 0.9, 'a turning fish arcs into its turn', `${bent} of ${turning} turning frames bent the right way`)
 check(stiff / Math.max(1, turning) < 0.01, 'no fish turns straight as a board', `${stiff} of ${turning} turning frames stiff`)
 check(pitched > 1000 && arched / pitched > 0.9, 'a pitched fish arcs into its climb or dive', `${arched} of ${pitched} pitched frames arched the right way`)
+{
+  // A startle still rippling when the run ends is cut short; only whole ones count.
+  const shoals = [...startles.values()].filter((s) => s.size >= 6 && s.n > 0 && s.first < SECONDS - 2)
+  const spreads = shoals.map((s) => s.last - s.first)
+  const onOneFrame = spreads.filter((s) => s < DT / 2).length
+  const meanSpread = spreads.reduce((a, b) => a + b, 0) / Math.max(1, spreads.length)
+  const bolted = shoals.reduce((a, s) => a + s.n / s.size, 0) / Math.max(1, shoals.length)
+  check(shoals.length >= 20, 'glimmerfin shoals startle over the run', `${shoals.length} startles of 6+ fish`)
+  check(onOneFrame === 0 && meanSpread > 0.25, 'a startle ripples through a shoal, never in one frame', `${onOneFrame} startles fired on one frame; onsets spread ${meanSpread.toFixed(2)} s first to last on average`)
+  check(bolted > 0.5 && bolted < 0.97, 'a startle misses a few of the shoal', `${(bolted * 100).toFixed(0)}% of a shoal bolts on average`)
+}
 for (const sp of fish.species) {
   const mean = speeds[sp.id] / samples
   // The upper bound is loose because the bolts and bursts are on top of the cruise; it is there to catch a runaway, not to measure.

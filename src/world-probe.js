@@ -148,6 +148,18 @@ export const WORLD_PROBE = {
 // case, the riverbed seen from the surface -- which the water's own body colour
 // is already standing in for.
 const FACES = [0, 1, 2, 4, 5]
+// The same fold means the lower half of each SIDE face -- the riverbed again,
+// seen at a slant -- is never read either, so those four cameras draw only the
+// rows above the horizon: the frustum is cut off just under it (culling the bed
+// and everything standing in it) and rasterised into that band of the face; the
+// rest keeps the clear. Plus a two-texel margin, because the bilinear fetch at
+// dir.y == 0 straddles the horizon row and must not blend toward transparent.
+//
+// Which band: a cube face's rows run top-down, so the world's +Y lands at the
+// BOTTOM of the framebuffer (NDC -y) for these cameras -- verified by reading
+// the faces back, not assumed from the up vector.
+const SIDE_FACES = [0, 1, 4, 5]
+const SIDE_ROWS = WORLD_PROBE.size / 2 + 2
 
 /** One cube target. Two of these exist so a new capture can be faded in over
  *  the one it replaces rather than cutting to it. */
@@ -265,13 +277,15 @@ export class WorldProbe {
    */
   /**
    * `air`, when given, is a pair of closures the host uses to lend the capture
-   * an atmosphere different from the one the frame is being drawn with. It
-   * exists for exactly one case: swimming. The capture is anchored just ABOVE
-   * the surface -- in air -- but it runs inside a frame whose fog, lights and
-   * aerial ramp have already been sunk to the murk, so without it the cube
-   * comes back with a 20 m haze ceiling and grey, murk-tinted props, and that
-   * cube is what the underside of the surface is shaded from. The murk would
-   * arrive on the sky she is looking up at through the water, twice over.
+   * an atmosphere different from the one the frame is being drawn with. Two
+   * things need that. Swimming: the capture is anchored just ABOVE the surface
+   * -- in air -- but it runs inside a frame whose fog, lights and aerial ramp
+   * have already been sunk to the murk, so without it the cube comes back with
+   * a 20 m haze ceiling and grey, murk-tinted props, and that cube is what the
+   * underside of the surface is shaded from. And the target itself: it is
+   * linear, and the host's aerial ramp is declared in output space, so its two
+   * ends have to be handed over in linear for the capture or every far ridge
+   * comes back pale (see WorldLighting.airToLinear).
    *
    * Called around the ONE face this update draws, which is why it can be two
    * closures rather than a mode: enter() before the render, leave() after, and
@@ -330,6 +344,8 @@ export class WorldProbe {
     if (this.rig.coordinateSystem !== renderer.coordinateSystem) {
       this.rig.coordinateSystem = renderer.coordinateSystem
       this.rig.updateCoordinateSystem()
+      const size = WORLD_PROBE.size
+      for (const i of SIDE_FACES) this.rig.children[i].setViewOffset(size, size, 0, size - SIDE_ROWS, size, SIDE_ROWS)
     }
 
     // The anchor, not the head. The faces of one cube must agree about where
@@ -366,11 +382,16 @@ export class WorldProbe {
       this.hidden[i].visible = false
     }
 
-    const cam = this.rig.children[FACES[this.face]]
-    renderer.setRenderTarget(target, FACES[this.face])
+    const face = FACES[this.face]
+    const cam = this.rig.children[face]
+    // The target's own viewport, which setRenderTarget applies -- not
+    // renderer.setViewport, which is the canvas's and is scaled by pixel ratio.
+    target.viewport.set(0, 0, WORLD_PROBE.size, face === 2 ? WORLD_PROBE.size : SIDE_ROWS)
+    renderer.setRenderTarget(target, face)
     // The clear is unaffected by `air` either way: it goes to transparent black
     // because alpha zero is what "nothing along this ray" means, and no
-    // atmosphere changes that.
+    // atmosphere changes that. A clear ignores the viewport, so the rows a side
+    // camera never draws are transparent black BECAUSE of this.
     renderer.clear(true, true, false)
     renderer.render(scene, cam)
 

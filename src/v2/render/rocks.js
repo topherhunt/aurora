@@ -1157,6 +1157,9 @@ export const BLOCK_SETTLE_MAX = 0.35
 // something you would walk around.
 export const ROCK_STAND_MIN = 1
 
+// Floats per rock in a perchesInto buffer: x, y, z, hull radius, size. Anchors stay at 4.
+export const PERCH_STRIDE = 5
+
 // --- relief, which is how the scree bed finds the foot of a face -------------
 //
 // Metres along the fall line for the direction probe and for the relief probe.
@@ -3700,16 +3703,16 @@ class RockBed {
    * the far edge.
    */
   _anchorsInto(x0, z0, x1, z1, out, w, cap) {
-    return this._rocksInto(x0, z0, x1, z1, out, w, cap, this.footRadius)
+    return this._rocksInto(x0, z0, x1, z1, out, w, cap, this.footRadius, 4)
   }
 
-  /** One bed's share of Rocks.perchesInto: same walk, the hull's radius in slot 3. */
+  /** One bed's share of Rocks.perchesInto: same walk, the hull's radius in slot 3 and the rock's size in slot 4. */
   _perchesInto(x0, z0, x1, z1, out, w, cap) {
-    return this._rocksInto(x0, z0, x1, z1, out, w, cap, this.hull.radius)
+    return this._rocksInto(x0, z0, x1, z1, out, w, cap, this.hull.radius, PERCH_STRIDE)
   }
 
-  /** The walk both of the above share; `radius` is per unit of instance scale. */
-  _rocksInto(x0, z0, x1, z1, out, w, cap, radius) {
+  /** The walk both of the above share; `radius` is per unit of instance scale, and a stride past 4 gets the size. */
+  _rocksInto(x0, z0, x1, z1, out, w, cap, radius, stride) {
     const tile = this.tile
     for (const t of this.tiles.values()) {
       if (w >= cap) return w
@@ -3724,11 +3727,12 @@ class RockBed {
         // see Rocks.anchorsInto.
         if (x < x0 || x >= x1 || z < z0 || z >= z1) continue
         if (w >= cap) return w
-        const o = w * 4
+        const o = w * stride
         out[o] = x
         out[o + 1] = this.instY[id]
         out[o + 2] = z
         out[o + 3] = radius * this.instScale[id]
+        if (stride > 4) out[o + 4] = this.shapeLod * this.instScale[id]
         w++
       }
     }
@@ -4165,15 +4169,16 @@ export class Rocks {
 
   /**
    * Every rock a crab may walk on with its origin in the half-open box, on the same
-   * terms as anchorsInto (stride 4, saturation, half-open, bed order) with one
-   * difference in slot 3: THE HULL'S CIRCUMSCRIBED RADIUS at instance scale, not the
-   * footprint. A crab wants the disc the stone's surface can be found in, and it is
-   * `blockTopAt(x, z, size, false)` inside that disc that tells it where the stone
-   * actually is. Only the beds flagged `perch` answer -- the boulders and the sunken
-   * stones, both of which stand in and beside lakes. See v2/render/crabs.js.
+   * terms as anchorsInto (saturation, half-open, bed order) but STRIDE 5: slot 3 is
+   * THE HULL'S CIRCUMSCRIBED RADIUS at instance scale, not the footprint, and slot 4
+   * the rock's size -- its longest measured extent, the same size `blockTopAt`
+   * screens on. A crab wants the disc the stone's surface can be found in, and it
+   * is `blockTopAt(x, z, size, false)` inside that disc that tells it where the
+   * stone actually is. Only the beds flagged `perch` answer -- the boulders and the
+   * sunken stones, both of which stand in and beside lakes. See v2/render/crabs.js.
    */
   perchesInto(x0, z0, x1, z1, out) {
-    const cap = (out.length / 4) | 0
+    const cap = (out.length / PERCH_STRIDE) | 0
     let w = 0
     for (const bed of this.beds) {
       if (!bed.perch) continue

@@ -187,6 +187,7 @@ const WORLD_POS_GLSL = /* glsl */ `
 const APPLY = (sun, sky, near) => /* glsl */ `
   float wlNear = ${near};
   reflectedLight.directDiffuse *= ${sun} * mix( uFarLight.x, 1.0, wlNear );
+  reflectedLight.directSpecular *= ${sun} * mix( uFarLight.x, 1.0, wlNear );
   float wlSkyF = mix( uSkyFloor, 1.0, ${sky} ) * mix( uFarLight.y, 1.0, wlNear );
   reflectedLight.indirectDiffuse *= wlSkyF;
   reflectedLight.indirectDiffuse += uNightLift * wlSkyF;
@@ -307,6 +308,9 @@ export const AIR_CEILING = new THREE.Color(0xc2d4ee).multiplyScalar(0.8)
 // Scratch for the once-a-frame trip fogColor -> linear -> ceiling -> sRGB.
 const _airLin = new THREE.Color()
 const _airOut = { r: 0, g: 0, b: 0 }
+// The output-space ramp ends, held while a capture has the linear ones in.
+const _airSavedNear = new THREE.Vector3()
+const _airSavedFar = new THREE.Vector3()
 
 // CAUSTICS: the moving net of focused sunlight on a bed under water (§11).
 //
@@ -465,7 +469,8 @@ export class WorldLighting {
       // had room to lighten it again. A Vector3 of RAW sRGB components, not a
       // Color: the mix it feeds happens after colorspace_fragment, in output
       // space, which is the same space three uploads fogColor in. Converting to
-      // linear here would put the two halves of one lerp in two spaces.
+      // linear here would put the two halves of one lerp in two spaces -- which
+      // is exactly what a render into a LINEAR target does; see airToLinear.
       uAirNear: { value: new THREE.Vector3(0, 0, 0) },
       // The far end of it, in the same raw-sRGB terms and for the same reason.
       // Not fogColor but fogColor under AIR_CEILING -- see the note there.
@@ -622,6 +627,35 @@ export class WorldLighting {
   }
 
   /**
+   * THE RAMP ENDS ARE OUTPUT-SPACE COLOURS, and a render into a linear target
+   * has no output encoding: colorspace_fragment compiles to nothing there, so
+   * the aerial mix runs on LINEAR surface colour against ends that are still
+   * sRGB -- roughly twice too bright, read as linear. Every distant ridge in
+   * such a capture comes back with its haze encoded twice over once the reader
+   * encodes it for the screen: pale and washed out, and the water mirrors
+   * exactly that. three makes this switch for its own fogColor on every draw
+   * (getUnlitUniformColorSpace); this is the same switch for the two uniforms
+   * the patch added. Bracket a capture with the pair. A frame drawn to the
+   * canvas never calls either, and a second airToLinear before the airToOutput
+   * would linearise linear, so the two must strictly alternate.
+   */
+  airToLinear() {
+    const near = this.uniforms.uAirNear.value
+    const far = this.uniforms.uAirFar.value
+    _airSavedNear.copy(near)
+    _airSavedFar.copy(far)
+    _airLin.setRGB(near.x, near.y, near.z, THREE.SRGBColorSpace)
+    near.set(_airLin.r, _airLin.g, _airLin.b)
+    _airLin.setRGB(far.x, far.y, far.z, THREE.SRGBColorSpace)
+    far.set(_airLin.r, _airLin.g, _airLin.b)
+  }
+
+  airToOutput() {
+    this.uniforms.uAirNear.value.copy(_airSavedNear)
+    this.uniforms.uAirFar.value.copy(_airSavedFar)
+  }
+
+  /**
    * The caustic net on the bed (§11). `gain` of 0 turns it off, which is the
    * resting state and the only off there is.
    *
@@ -642,7 +676,8 @@ export class WorldLighting {
   }
 
   /**
-   * Patch a MeshLambertMaterial to be shadowed and occluded by the terrain.
+   * Patch a MeshLambertMaterial (or a MeshPhongMaterial -- same chunks, and its
+   * specular takes the sun's shadow too) to be shadowed and occluded by the terrain.
    *
    * `mode` is 'fragment' for the terrain and 'vertex' for everything else --
    * see the header for why the two exist.

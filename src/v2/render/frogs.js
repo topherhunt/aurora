@@ -13,42 +13,53 @@
 // rejecting rather than sampling the band -- the band has no closed form.
 //
 // A frog is tethered to where it was placed: it hops in a random direction,
-// biased home once it strays, and every hop target passes the same tests its
-// placement did, so a frog never hops into the water, up a rock or off the
-// band. The ground is re-read at each hop, so a frog seated on the height field
-// before the drawn terrain arrived settles onto the drawn surface at its next
-// move; a frog whose seat turns out to be inside a boulder that landed after it
-// leaves. The mesh faces +X; a hop turns it to face where it is going.
+// never landing past TETHER_M from home (aimed home once it is out that far),
+// and every hop target passes the same tests its placement did, so a frog
+// never hops into the water, up a rock or off the band. The ground is re-read
+// at each hop, so a frog seated on the height field before the drawn terrain
+// arrived settles onto the drawn surface at its next move; a frog whose seat
+// turns out to be inside a boulder that landed after it leaves. The mesh faces
+// +X; a hop turns it to face where it is going.
+//
+// Past CARD_M from her head a frog is its cross card (critters.js), written to
+// the card mesh under the same matrix and tint the body would have had; once
+// the card's picture is baked, the two meshes together hold every live frog.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileSeed, walkTiles } from './critters.js'
+import {
+  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, setCritterAsset, setCritterCard,
+  tileSeed, walkTiles,
+} from './critters.js'
 
-// Frogs per square metre, the brief's figure; candidates per tile before the shore band rejects most of them.
-export const DENSITY = 0.1
+// Frogs per square metre, half the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
+export const DENSITY = 0.05
 export const TILE = 8
-// Tiles whose centre is within this of her are grown. Small on purpose: a frog is a tenth of a metre and invisible past thirty.
-export const RADIUS = 36
+// Tiles whose centre is within this of her are grown; a third-of-a-metre frog is a speck past fifty.
+export const RADIUS = 48
 // How far from the waterline a frog may sit, on the dry side.
 export const SHORE_M = 5
 // The ground a frog will not sit on: steeper than this (a tangent), or within SNOW_MARGIN metres of the snow line, which is the cold the brief excludes.
 export const MAX_TAN = Math.tan((35 * Math.PI) / 180)
 export const SNOW_MARGIN = 25
-// Body length in metres, and the pool: 200 slots is a shore's worth at the density and radius above, with room over.
-export const SIZE_M = [0.06, 0.12]
+// Body length in metres, half to one and a half times the 0.36 m middle; and the pool: 200 slots is a shore's worth at the density and radius above, with room over.
+export const SIZE_M = [0.18, 0.54]
 export const MAX = 200
+// A sitting frog breathes: its body swells by BREATH_AMP (more in height than in length) once every BREATH_S seconds, each frog on its own phase.
+export const BREATH_S = 1.3
+export const BREATH_AMP = 0.05
 // The frog's tint, a per-channel multiplier on the texture.
 const TINT_R = [0.7, 1.15]
 const TINT_G = [0.8, 1.2]
 const TINT_B = [0.6, 1.1]
-// Sit between hops, then hop `HOP_M` body lengths in `HOP_S` seconds, `HOP_RISE` of the distance high, straying at most TETHER_M from home before the bias home takes over.
+// Sit between hops, then hop `HOP_M` body lengths in `HOP_S` seconds, `HOP_RISE` of the distance high, never landing more than TETHER_M from home.
 const SIT_S = [2, 8]
 const HOPS = [1, 3]
 const HOP_M = [3, 6]
 const HOP_S = [0.3, 0.45]
 const HOP_RISE = 0.45
-const TETHER_M = 3
+export const TETHER_M = 3
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -91,17 +102,26 @@ export class Frogs {
     this.mesh.frustumCulled = false
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
+    // The far frogs, as cards; hidden until the picture is baked, and until then every frog is the mesh.
+    this.cardMaterial = createCritterCardMaterial('frogs')
+    this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
+    this.card.name = 'v2-frogs-card'
+    this.card.count = 0
+    this.card.visible = false
+    this.card.frustumCulled = false
+    this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.card.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-frogs'
-    this.batch.add(this.mesh)
+    this.batch.add(this.mesh, this.card)
     scene.add(this.batch)
 
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
         id: i, tile: null,
-        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.09, r: 1, g: 1, b: 1,
+        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1,
         // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed.
         state: 'sit', left: 0, hops: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
       })
@@ -109,7 +129,9 @@ export class Frogs {
     this.free = this.slots.slice()
     this.tiles = new Map()
     this.head = { x: 0, z: 0 }
-    // Unit span of the baked mesh; the instance scale is size / span.
+    this.time = 0
+    // The baked mesh's bounds (setCritterAsset) and its unit span; the instance scale is size / span.
+    this.bounds = null
     this.span = 1
     this.loaded = false
     // Candidates the shore band would have kept that found no free slot.
@@ -129,8 +151,24 @@ export class Frogs {
   }
 
   setAsset(asset) {
-    this.span = setCritterAsset(this.mesh, this.material, asset, 'frogs').span
+    this.bounds = setCritterAsset(this.mesh, this.material, asset, 'frogs')
+    this.span = this.bounds.span
+    setCritterCard(this.card, this.bounds)
     this.loaded = true
+  }
+
+  /** Photograph the loaded frog onto its card and start drawing the far frogs as cards. Once, after `ready`. */
+  bakeCard(renderer) {
+    if (!this.loaded) throw new Error('Frogs.bakeCard: the asset has not landed')
+    this.setCard(bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds))
+  }
+
+  setCard(map) {
+    if (map) {
+      this.cardMaterial.map = map
+      this.cardMaterial.needsUpdate = true
+    }
+    this.card.visible = true
   }
 
   _groundFor(x, z, fieldH) {
@@ -179,6 +217,7 @@ export class Frogs {
       f.size = size
       f.r = r; f.g = g; f.b = b
       f.yaw = yaw
+      f.breath = this.rand() * Math.PI * 2
       f.state = 'sit'
       f.left = between(this.rand, SIT_S)
       f.hops = 0
@@ -230,7 +269,7 @@ export class Frogs {
       const x1 = f.x + Math.cos(a) * reach
       const z1 = f.z - Math.sin(a) * reach
       const h1 = this.seat(x1, z1)
-      if (h1 === null) continue
+      if (h1 === null || Math.hypot(x1 - f.homeX, z1 - f.homeZ) > TETHER_M) continue
       f.x0 = f.x; f.z0 = f.z; f.y0 = f.y
       f.x1 = x1; f.z1 = z1; f.y1 = this._groundFor(x1, z1, h1)
       f.yaw = a
@@ -246,18 +285,29 @@ export class Frogs {
   update(hx, hy, hz, dt) {
     this.head.x = hx
     this.head.z = hz
+    this.time += dt
     walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
 
+    const breath = (this.time * Math.PI * 2) / BREATH_S
     const mat = this.mesh.instanceMatrix.array
     const col = this.mesh.instanceColor.array
+    const cmat = this.card.instanceMatrix.array
+    const ccol = this.card.instanceColor.array
+    const card2 = this.card.visible ? CARD_M * CARD_M : Infinity
     let n = 0
+    let m = 0
     for (const t of this.tiles.values()) {
       // Backwards, because a frog that finds itself inside a rock leaves the list mid-walk.
       for (let i = t.frogs.length - 1; i >= 0; i--) {
         const f = t.frogs[i]
         let sy = 1
         let sx = 1
+        let sz = 1
         if (f.state === 'sit') {
+          // The breath: a swell that is mostly height, a little girth.
+          const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
+          sy = 1 + s
+          sx = sz = 1 + s * 0.4
           f.left -= dt
           if (f.left <= 0) {
             // A boulder placed after the frog sat here: the seat is stone now, and the frog goes.
@@ -289,17 +339,26 @@ export class Frogs {
         const k = f.size / this.span
         _pos.set(f.x, f.y, f.z)
         _quat.setFromAxisAngle(UP, f.yaw)
-        _scl.set(k * sx, k * sy, k)
+        _scl.set(k * sx, k * sy, k * sz)
         _mat.compose(_pos, _quat, _scl)
-        _mat.toArray(mat, n * 16)
-        const o = n * 3
-        col[o] = f.r; col[o + 1] = f.g; col[o + 2] = f.b
-        n++
+        const dx = f.x - hx
+        const dy = f.y - hy
+        const dz = f.z - hz
+        const far = dx * dx + dy * dy + dz * dz > card2
+        _mat.toArray(far ? cmat : mat, (far ? m : n) * 16)
+        const o = (far ? m : n) * 3
+        const c = far ? ccol : col
+        c[o] = f.r; c[o + 1] = f.g; c[o + 2] = f.b
+        if (far) m++
+        else n++
       }
     }
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
     this.mesh.instanceColor.needsUpdate = true
+    this.card.count = m
+    this.card.instanceMatrix.needsUpdate = true
+    this.card.instanceColor.needsUpdate = true
   }
 
   dispose() {
@@ -307,5 +366,8 @@ export class Frogs {
     this.mesh.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()
+    this.card.geometry.dispose()
+    this.cardMaterial.map?.dispose()
+    this.cardMaterial.dispose()
   }
 }

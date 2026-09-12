@@ -801,7 +801,7 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   const FISH_ASSETS = JSON.parse(readFileSync(new URL('../public/fauna/fish.json', import.meta.url), 'utf8'))
   const fish = new Fish(new THREE.Scene(), { heightAt: () => 0 }, { levelAt: () => null }, { assets: FISH_ASSETS })
   for (const sp of fish.species) {
-    const lib = THREE.ShaderLib.lambert
+    const lib = THREE.ShaderLib.phong
     const shader = {
       uniforms: THREE.UniformsUtils.clone(lib.uniforms),
       vertexShader: lib.vertexShader,
@@ -824,6 +824,8 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     // The bend itself. Losing it is silent: the fish still draw, stiff as decoys.
     if (!vert.includes('transformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
     if (!vert.includes('transformed.y += aBend * aSwim.w')) MISSING_MARKS.push(`${label} vert: the climb lift`)
+    // The glint is Phong's alone, and it has to sit in the same shadow as the diffuse or a fish shines in the dark under a ridge.
+    if (!frag.includes('reflectedLight.directSpecular +=') || !frag.includes('reflectedLight.directSpecular *=')) MISSING_MARKS.push(`${label} frag: the shadowed glint`)
   }
 }
 

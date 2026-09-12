@@ -138,6 +138,29 @@ check(
   )
 }
 
+// A capture into a linear target gets the ramp ends in linear, and the canvas
+// gets its sRGB ones back afterwards, bit for bit.
+{
+  const near = lighting.uniforms.uAirNear.value
+  const farAir = lighting.uniforms.uAirFar.value
+  near.set(0.5, 0.25, 0.75)
+  farAir.set(0.8, 0.6, 0.4)
+  const srgbNear = near.clone()
+  const srgbFar = farAir.clone()
+  lighting.airToLinear()
+  const lin = (c) => new THREE.Color().setRGB(c.x, c.y, c.z, THREE.SRGBColorSpace)
+  const ln = lin(srgbNear)
+  const lf = lin(srgbFar)
+  check(
+    Math.abs(near.x - ln.r) < 1e-9 && Math.abs(near.z - ln.b) < 1e-9 && Math.abs(farAir.y - lf.g) < 1e-9,
+    'airToLinear decodes both ramp ends from sRGB to linear',
+    `near ${near.x.toFixed(4)} vs ${ln.r.toFixed(4)}`
+  )
+  check(near.x < srgbNear.x && farAir.x < srgbFar.x, 'and linear is darker than the sRGB it came from')
+  lighting.airToOutput()
+  check(near.equals(srgbNear) && farAir.equals(srgbFar), 'and airToOutput restores the sRGB pair exactly')
+}
+
 // --- 3. the visibility --------------------------------------------------------
 //
 // The aerial chunk keeps `exp( -(d * density)^2 )` of a surface's own colour.
@@ -831,15 +854,30 @@ check(
   check(sawAir.length > clean, 'and a probe called without a hook still captures', `${sawAir.length - clean} face`)
 }
 
-// The call site. Passed only while she is under, because a dry frame's air is
-// already the air the capture wants and swapping it for itself is work for
-// nothing.
+// The call site. The hook goes in on every frame -- the linear ramp ends are
+// wanted for every capture -- and the hook itself lifts the murk only while
+// she is under, in the order that keeps the lift's palette rewrite from undoing
+// the linearisation: lift, then linear; output, then sink.
 {
   const v2 = fs.readFileSync(new URL('../src/v2/main.js', import.meta.url), 'utf8')
   check(
-    /worldProbe\.update\(renderer, scene, headTmp, waterY, dt, submerged \? airHook : null\)/.test(v2),
-    'v2 lends the capture the air only while she is under'
+    /worldProbe\.update\(renderer, scene, headTmp, waterY, dt, airHook\)/.test(v2),
+    'v2 hands the capture the air hook on every frame'
   )
+  const hook = /const airHook = \{([\s\S]*?)\n\}/.exec(v2)
+  check(hook !== null, 'v2 has an airHook')
+  if (hook) {
+    const enter = /enter: \(\) => \{([\s\S]*?)\n  \}/.exec(hook[1])
+    const leave = /leave: \(\) => \{([\s\S]*?)\n  \}/.exec(hook[1])
+    check(
+      enter !== null && enter[1].indexOf('if (submerged) liftAir(') < enter[1].indexOf('lighting.airToLinear()'),
+      'and enter lifts the murk (only when under) BEFORE it linearises the ramp'
+    )
+    check(
+      leave !== null && leave[1].indexOf('lighting.airToOutput()') < leave[1].indexOf('if (submerged) sinkAir()'),
+      'and leave restores the ramp BEFORE it sinks the murk back (only when under)'
+    )
+  }
   // SINK IS NOT IDEMPOTENT and lift is the thing that makes that safe. The light
   // lines multiply -- they are dimming the palette's own answer for this hour,
   // not landing on a fixed number -- so sinking twice with no lift between dims

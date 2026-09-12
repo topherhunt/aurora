@@ -50,7 +50,8 @@ import { SkyAurora } from './render/aurora.js'
 import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
-import { SkyProbe } from '../sky-probe.js'
+import { SkyProbe, PROBE } from '../sky-probe.js'
+import { SKY_GLSL } from '../sky-glsl.js'
 import { WorldProbe, WORLD_PROBE } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
@@ -746,18 +747,21 @@ function applyQuestToggle(key) {
 
 // THE REFLECTION CUBE: the world probe's capture, drawn as a literal cube
 // standing at the point it was captured from, so what the water is being handed
-// can be looked at directly. Each face of the box shows that face of the
-// cubemap, sampled by the direction from the cube's centre exactly as the water
-// samples it by the reflected ray -- so the +X face shows what lies east of the
-// anchor. Seen from OUTSIDE, each face is left-right mirrored against what she
-// would see standing at the anchor and facing that way; that is inherent to
-// looking at the outside of an environment cube and is not a bug in the capture.
+// can be looked at directly. Each face is a WINDOW: the face she is looking at
+// shows what the capture holds beyond it in the direction she is facing, the
+// right way up and the right way round. That is the outward direction mirrored
+// through the face's own plane (`reflect`), which is what makes it a window
+// rather than the outside of an environment cube -- sampling by the outward
+// direction puts the view BEHIND her on the face she sees, and by its negation
+// puts the right view there rotated a half turn.
 //
-// It shows the same blend of the two ping-pong cubes the shader is reading, in
-// the scene's own output encoding and nothing else: no water tint, no aerial
-// ramp, no silhouette mix. Where the capture holds no land (alpha 0, the target's
-// cleared black) it paints a dim magenta instead, so "sky" and "black ground" can
-// be told apart.
+// It composes the reflection's ingredients the way water.js does and nothing
+// more: the blend of the two ping-pong cubes where the capture holds land, and
+// where it holds none (alpha 0) the analytic sky plus the aurora probe, with the
+// direction folded into the upper hemisphere exactly as the water folds its
+// reflected ray, so every texel this shows is one the water can actually read.
+// No water tint, no aerial ramp, no silhouette mix; the sun and moon discs are
+// off, as they are for the water.
 //
 // Where it is drawn doubles as a readout of the first thing worth checking: the
 // cube sits over the anchor, so if it is standing on the bank the vantage
@@ -767,26 +771,35 @@ let probeCube = null
 function buildProbeCube() {
   const material = new THREE.ShaderMaterial({
     uniforms: {
+      // The sky block by reference, as the water takes it: Sky writes it per frame.
+      ...sky.uniforms,
       uCubeA: { value: worldProbe.textureA },
       uCubeB: { value: worldProbe.textureB },
       uBlend: { value: 0 },
+      uProbe: { value: probe.texture },
+      uProbeGain: { value: PROBE.gain },
     },
     vertexShader: `
       varying vec3 vDir;
       void main() {
-        vDir = position;
+        vDir = reflect( position, normal );
         gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
       }
     `,
     fragmentShader: `
       uniform samplerCube uCubeA;
       uniform samplerCube uCubeB;
+      uniform samplerCube uProbe;
       uniform float uBlend;
+      uniform float uProbeGain;
       varying vec3 vDir;
+      ${SKY_GLSL}
       void main() {
         vec3 dir = normalize( vDir );
+        dir.y = abs( dir.y );
         vec4 c = mix( texture( uCubeA, dir ), texture( uCubeB, dir ), uBlend );
-        gl_FragColor = vec4( mix( vec3( 0.25, 0.0, 0.25 ), c.rgb, c.a ), 1.0 );
+        vec3 sky = skyRadiance( dir, 0.0 ) + texture( uProbe, dir ).rgb * uProbeGain;
+        gl_FragColor = vec4( mix( sky, c.rgb, c.a ), 1.0 );
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }
@@ -2069,15 +2082,20 @@ async function bootWorld() {
   // The frogs on the banks and the crabs on the lake boulders (render/frogs.js,
   // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
   await bootStep('frogs')
+  // Each critter's cross card is photographed off its GLB, so the bake waits on the load.
   frogs = new Frogs(scene, height, waterSurfaces, { seed: SEED, rocks, ground: terrain })
   lighting.patch(frogs.material, { mode: 'vertex', cacheKey: 'v2-frogs' })
+  lighting.patch(frogs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-frogs-card' })
   frogs.place(spawn.x, spawn.z)
+  frogs.ready.then(() => frogs.bakeCard(renderer))
   console.log(`[v2] frogs ${frogs.stats.alive} on ${frogs.stats.tiles} tiles at boot`)
   window.v2frogs = frogs
   await bootStep('crabs')
   crabs = new Crabs(scene, height, waterSurfaces, { seed: SEED, rocks })
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
+  lighting.patch(crabs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-crabs-card' })
   crabs.place(spawn.x, spawn.z)
+  crabs.ready.then(() => crabs.bakeCard(renderer))
   console.log(`[v2] crabs ${crabs.stats.alive} on ${crabs.stats.perches} perches at boot`)
   window.v2crabs = crabs
 
@@ -3390,13 +3408,22 @@ function liftAir(state) {
   lighting.update(state)
 }
 
-// The pair handed to the world probe while she is under. Held at module scope
-// with the frame's clock state in a slot rather than built per frame, so a
-// swim allocates nothing.
+// The pair handed to the world probe around every face it captures. Two jobs,
+// undone in reverse order: while she is under, the murk is lifted so the capture
+// is taken in air; always, the aerial ramp's ends go to linear for the linear
+// target (see WorldLighting.airToLinear), AFTER the lift, which rewrites them
+// from the palette. Held at module scope with the frame's clock state in a slot
+// rather than built per frame, so it allocates nothing.
 const airHook = {
   state: null,
-  enter: () => liftAir(airHook.state),
-  leave: sinkAir,
+  enter: () => {
+    if (submerged) liftAir(airHook.state)
+    lighting.airToLinear()
+  },
+  leave: () => {
+    lighting.airToOutput()
+    if (submerged) sinkAir()
+  },
 }
 
 // --- frame loop -------------------------------------------------------------
@@ -4211,10 +4238,10 @@ function tick() {
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
   // capturing from inside the bank. `dt` drives the cross-fade and nothing else.
-  // The air hook only while she is under, because that is the only time the
-  // frame's atmosphere is not the one the capture wants.
+  // The air hook on every frame: the linear ramp ends are wanted for every
+  // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
-  if (!QUEST_MODE || questToggles.reflections) worldProbe.update(renderer, scene, headTmp, waterY, dt, submerged ? airHook : null)
+  if (!QUEST_MODE || questToggles.reflections) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
 
   // A-Frame renders the scene itself after every registered component's tick()
   // runs (see the `v2-quest-tick` component below) -- calling renderer.render

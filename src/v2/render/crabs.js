@@ -12,7 +12,8 @@
 // Rivers do not count; a stream bank is not a crab's shore. How many crabs a
 // perch carries and how big they are comes from the perch's own position, so a
 // rock has the same crabs every visit. DEPTH IS SIZE: a crab under eight metres
-// of water is DEEP_MUL times the one on the beach.
+// of water is DEEP_MUL times the one on the beach, but never more than
+// ROCK_FRACTION of its rock's size (or SIZE_M[0], whichever is more); the rock is never under a metre.
 //
 // The rocks arrive over frames after a move, so a tile scanned before its
 // boulders exist would stay empty; every tile is rescanned in turn, one per
@@ -24,31 +25,41 @@
 // normal off the same surface query). The legs -- the parts of the mesh out past
 // the body along Z and below its middle -- lift and fall in the vertex shader
 // while it moves.
+//
+// Past CARD_M from her head a crab is its cross card (critters.js), written to
+// the card mesh under the same matrix the body would have had, legs still; once
+// the card's picture is baked, the two meshes together hold every live crab.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileKey, walkTiles } from './critters.js'
+import {
+  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, setCritterAsset, setCritterCard,
+  tileKey, walkTiles,
+} from './critters.js'
+import { PERCH_STRIDE } from './rocks.js'
 
 export const TILE = 16
 export const RADIUS = 40
 // How far from a lake's waterline a dry perch may stand.
 export const SHORE_M = 5
-// Stone smaller than this (metres) is not a perch surface; keeps the crabs off cobbles and scree at the foot of a boulder.
-export const PERCH_MIN = 0.9
-// Body span in metres on the beach, times up to DEEP_MUL at DEEP_M of water.
-export const SIZE_M = [0.08, 0.16]
+// A rock under this (metres, its longest extent) is not a perch; the same measure blockTopAt screens on, so a crab's every step stays on metre-plus stone.
+export const PERCH_MIN = 1
+// Body span in metres at the surface, times up to DEEP_MUL at DEEP_M of water, capped at ROCK_FRACTION of the rock's size -- but never under SIZE_M[0], so a metre of rock carries the smallest crab at nearly a third of its size.
+export const SIZE_M = [0.3, 0.5]
 export const DEEP_M = 8
 export const DEEP_MUL = 2.5
-// Crabs per perch: 1 + rand * min(PERCH_CAP, r^2), r the hull radius, so a two-metre stone has one or two and a shed-sized one a handful.
+export const ROCK_FRACTION = 0.2
+// Crabs per perch: PER_PERCH * (1 + rand * min(PERCH_CAP, r^2)), r the hull radius, rounded at random so a half is a crab on every other rock; a two-metre stone has none or one and a shed-sized one a couple.
+export const PER_PERCH = 0.5
 const PERCH_CAP = 7
 export const MAX = 160
 // A perch buffer this size covers a 16 m tile of the densest shore.
 const PERCH_BUF = 64
-// Scuttle for a spell at `SPEED` body spans per second, then pause. A step may climb or drop at most STEP_SPANS of the crab's span; more is a ledge, and it turns.
+// Scuttle for a spell, then pause. Each spell draws its own pace from `SPEED` body spans per second, the draw squared so most spells are a slow, leisurely crawl and a few a dash. A step may climb or drop at most STEP_SPANS of the crab's span; more is a ledge, and it turns.
 const GO_S = [0.5, 2]
 const PAUSE_S = [1, 4]
-const SPEED = [0.5, 1.2]
+export const SPEED = [0.08, 1.2]
 const STEP_SPANS = 0.8
 // Frames between normal re-reads on a moving crab, and tiles rescanned per frame.
 const NORMAL_EVERY = 4
@@ -123,17 +134,25 @@ export class Crabs {
     this.legs = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2)
     this.legs.setUsage(THREE.DynamicDrawUsage)
     this.mesh.geometry.setAttribute('aLegs', this.legs)
+    // The far crabs, as cards; hidden until the picture is baked, and until then every crab is the mesh.
+    this.cardMaterial = createCritterCardMaterial('crabs')
+    this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
+    this.card.name = 'v2-crabs-card'
+    this.card.count = 0
+    this.card.visible = false
+    this.card.frustumCulled = false
+    this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-crabs'
-    this.batch.add(this.mesh)
+    this.batch.add(this.mesh, this.card)
     scene.add(this.batch)
 
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
         id: i, perch: null,
-        x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.1, speed: 0,
+        x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.3, speed: 0,
         // 'go' scuttles along ±local Z for `left` seconds, 'pause' waits; `phase` drives the legs.
         state: 'pause', left: 0, phase: 0, normalAt: 0, depth: 0,
       })
@@ -143,7 +162,9 @@ export class Crabs {
     this.rescan = []
     this.frame = 0
     this.head = { x: 0, z: 0 }
-    this.perchBuf = new Float32Array(PERCH_BUF * 4)
+    this.perchBuf = new Float32Array(PERCH_BUF * PERCH_STRIDE)
+    // The baked mesh's bounds (setCritterAsset) and its unit span; the instance scale is size / span.
+    this.bounds = null
     this.span = 1
     this.loaded = false
     // Perch crabs that found no free slot, and perches whose tile buffer was full.
@@ -164,8 +185,24 @@ export class Crabs {
   }
 
   setAsset(asset) {
-    this.span = setCritterAsset(this.mesh, this.material, asset, 'crabs').span
+    this.bounds = setCritterAsset(this.mesh, this.material, asset, 'crabs')
+    this.span = this.bounds.span
+    setCritterCard(this.card, this.bounds)
     this.loaded = true
+  }
+
+  /** Photograph the loaded crab onto its card and start drawing the far crabs as cards. Once, after `ready`. */
+  bakeCard(renderer) {
+    if (!this.loaded) throw new Error('Crabs.bakeCard: the asset has not landed')
+    this.setCard(bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds))
+  }
+
+  setCard(map) {
+    if (map) {
+      this.cardMaterial.map = map
+      this.cardMaterial.needsUpdate = true
+    }
+    this.card.visible = true
   }
 
   /** The stone surface a crab may stand on at (x, z), or -Infinity: stone of perch size, proud of the terrain. */
@@ -198,22 +235,27 @@ export class Crabs {
     const n = this.rocks.perchesInto(x0, z0, x0 + TILE, z0 + TILE, buf)
     if (n === PERCH_BUF) this.saturated++
     for (let i = 0; i < n; i++) {
-      const px = buf[i * 4]
-      const pz = buf[i * 4 + 2]
-      const r = buf[i * 4 + 3]
+      const o = i * PERCH_STRIDE
+      const px = buf[o]
+      const pz = buf[o + 2]
+      const r = buf[o + 3]
+      const rockSize = buf[o + 4]
       const key = perchKey(px, pz)
       if (t.perches.has(key)) continue
-      const depth = this.qualify(px, pz)
       const perch = { x: px, z: pz, r, crabs: [] }
       t.perches.set(key, perch)
+      // The rock as a whole must be a perch, not just the stone under one step.
+      if (rockSize < PERCH_MIN) continue
+      const depth = this.qualify(px, pz)
       if (depth === null) continue
       const rand = mulberry32(perchSeed(px, pz, this.seed))
-      const count = 1 + Math.floor(rand() * Math.min(PERCH_CAP, r * r))
+      const want = PER_PERCH * (1 + rand() * Math.min(PERCH_CAP, r * r))
+      const count = Math.floor(want) + (rand() < want % 1 ? 1 : 0)
       const mul = 1 + (DEEP_MUL - 1) * Math.min(1, depth / DEEP_M)
+      const cap = Math.max(SIZE_M[0], ROCK_FRACTION * rockSize)
       for (let k = 0; k < count; k++) {
-        const size = between(rand, SIZE_M) * mul
+        const size = Math.min(between(rand, SIZE_M) * mul, cap)
         const yaw = rand() * Math.PI * 2
-        const speed = between(rand, SPEED)
         // Up to eight tries for a point over stone inside the hull's disc; the disc is circumscribed, so its corners are air.
         let x = 0, z = 0, y = -Infinity
         for (let a = 0; a < 8 && y === -Infinity; a++) {
@@ -231,7 +273,6 @@ export class Crabs {
         c.yaw = yaw
         c.side = rand() < 0.5 ? -1 : 1
         c.size = size
-        c.speed = speed
         c.depth = depth
         c.state = 'pause'
         c.left = between(this.rand, PAUSE_S)
@@ -318,7 +359,10 @@ export class Crabs {
 
     const mat = this.mesh.instanceMatrix.array
     const legs = this.legs.array
+    const cmat = this.card.instanceMatrix.array
+    const card2 = this.card.visible ? CARD_M * CARD_M : Infinity
     let n = 0
+    let m = 0
     for (const t of this.tiles.values()) {
       for (const p of t.perches.values()) {
         for (const c of p.crabs) {
@@ -335,6 +379,7 @@ export class Crabs {
           } else if (c.left <= 0) {
             c.state = 'go'
             c.left = between(this.rand, GO_S)
+            c.speed = SPEED[0] + (SPEED[1] - SPEED[0]) * this.rand() ** 2
             if (this.rand() < 0.3) c.side = -c.side
             c.yaw += (this.rand() - 0.5) * 0.8
           }
@@ -344,16 +389,26 @@ export class Crabs {
           _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, c.yaw))
           _scl.set(k, k, k)
           _mat.compose(_pos, _quat, _scl)
-          _mat.toArray(mat, n * 16)
-          legs[n * 2] = c.phase
-          legs[n * 2 + 1] = amp
-          n++
+          const dx = c.x - hx
+          const dy = c.y - hy
+          const dz = c.z - hz
+          if (dx * dx + dy * dy + dz * dz > card2) {
+            _mat.toArray(cmat, m * 16)
+            m++
+          } else {
+            _mat.toArray(mat, n * 16)
+            legs[n * 2] = c.phase
+            legs[n * 2 + 1] = amp
+            n++
+          }
         }
       }
     }
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
     this.legs.needsUpdate = true
+    this.card.count = m
+    this.card.instanceMatrix.needsUpdate = true
   }
 
   dispose() {
@@ -361,5 +416,8 @@ export class Crabs {
     this.mesh.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()
+    this.card.geometry.dispose()
+    this.cardMaterial.map?.dispose()
+    this.cardMaterial.dispose()
   }
 }

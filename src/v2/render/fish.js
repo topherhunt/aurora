@@ -31,8 +31,9 @@ import { cullTripoBackfaces } from '../../tripo-culling.js'
 //                       one fish or another darting or hanging back.
 //   rime fangpike    -- alone, on the bed. Glides, then hangs, then bursts.
 //   glimmerfin       -- shoals of 6-14 under the surface, jittery, and
-//                       STARTLING: every few seconds the whole shoal bolts a
-//                       few metres and then hangs again.
+//                       STARTLING: every few seconds a fright ripples through
+//                       the shoal, fish by fish, and it bolts a few metres
+//                       and then hangs again.
 //
 // THE DEEP IS WHERE THE BIG ONES ARE. A fish's size is drawn at birth from the
 // water under its own spot: the shore hands out fry, and the ceiling and the
@@ -61,6 +62,9 @@ const ASSET_URL = 'fauna/fish.json'
 const TEXTURE_URL = (file) => `fauna/${file}`
 // A big deep-water pike (2.6x the roster length) swum right up to spans the screen once; its colour map keeps this many texels a side.
 const TEX_PX = 1024
+// The wet-scale glint: a mid-grey lobe, broad enough to read on a fish a few pixels wide.
+const SPECULAR = 0x555555
+const SHININESS = 35
 
 // The seed disc and the retire ring, both sized against the 20 m murk: 40% of the disc is in sight, and a school is gone before it is 20 m past it.
 export const POOL_RADIUS = 32
@@ -77,6 +81,10 @@ const DEEP_M = 12
 // Seed attempts per frame across all species. A lake shore is roughly half water, so a dozen tries a frame refills an emptied pool in well under a second.
 const SEEDS_PER_FRAME = 12
 const PROBE_EVERY = 4
+// A startle crosses a shoal at BOLT_WAVE m/s, each fish reacting up to BOLT_JITTER s late on top, and BOLT_MISS of the shoal never bolts at all: a fright is a ripple through the shoal, never one frame's broadcast.
+const BOLT_WAVE = 4
+const BOLT_JITTER = 0.4
+const BOLT_MISS = 0.15
 // How far off the bed and under the surface a fish is held, in metres, plus a fifth of its own length. The probe is PROBE_EVERY frames stale, so this also covers the distance a bolting fish crosses between probes.
 const BED_MARGIN = 0.25
 const SURFACE_MARGIN = 0.3
@@ -176,8 +184,8 @@ export class Fish {
   }
 
   makeSpecies(id, cfg) {
-    // Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
-    const material = new THREE.MeshLambertMaterial(cfg.material)
+    // Phong, not the Lambert everything else wears: the one extra term is the sun's glint on a wet flank, a Blinn-Phong lobe per pixel of fish, and lighting.js gates it with the same shadow as the diffuse. Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
+    const material = new THREE.MeshPhongMaterial({ specular: SPECULAR, shininess: SHININESS, ...cfg.material })
     // The swim bend. `aBend` is ship.mjs's per-vertex weight (0 at the nose, 1 at the tail tip); `aSwim` is per instance: phase, amplitude, and the turn's sideways curve and the climb's lift, all in local metres. The wave number is a literal scaled to the species' length, so a pike's wave is one body length long just like a glimmerfin's.
     material.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
@@ -199,8 +207,8 @@ export class Fish {
         // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s, plus a slow vertical bob.
         pace: 1, verve: 1, beat: 1, ring: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
         bed: 0, level: 0, probeAt: i % PROBE_EVERY,
-        // Seconds left steering back to the anchor after the probe found the shore ahead.
-        homing: 0,
+        // Seconds left steering back to the anchor after the probe found the shore ahead, and until the shoal's startle reaches this fish.
+        homing: 0, boltIn: 0,
         // Mood: pike glide/lurk/burst, bass and glimmerfin fidget. `speed` is the mood's target speed.
         mood: 'glide', moodLeft: 0, speed: cfg.cruise,
       })
@@ -367,6 +375,7 @@ export class Fish {
       x, z, tx: x, tz: z, y: this.column(bed, level, between(rand, cfg.depth)),
       hopLeft: between(rand, cfg.anchorEvery),
       boltLeft: cfg.boltEvery ? between(rand, cfg.boltEvery) : Infinity,
+      fleeAt: 0,
       members: [],
     }
     for (let i = 0; i < size; i++) {
@@ -412,6 +421,7 @@ export class Fish {
       f.tint = 0.85 + rand() * 0.2
       f.phase = rand() * TAU
       f.homing = 0
+      f.boltIn = 0
       f.mood = 'glide'
       f.moodLeft = cfg.glide ? between(rand, cfg.glide) : cfg.fidgetEvery ? between(rand, cfg.fidgetEvery) : Infinity
       f.speed = cfg.cruise
@@ -556,13 +566,17 @@ export class Fish {
       if (school.boltLeft <= 0) {
         school.boltLeft = between(rand, cfg.boltEvery)
         if (this.hop(sp, school, between(rand, cfg.boltHop))) {
-          // The anchor arrives at once; the fish chase it at bolt speed.
+          // The anchor arrives at once. The fright does not: it starts at the edge the shoal flees from and runs through it at BOLT_WAVE, each fish adding its own reaction time, and BOLT_MISS of them never notice and just get pulled along after.
+          const fx = school.tx - school.x
+          const fz = school.tz - school.z
+          const fd = Math.hypot(fx, fz) || 1
+          school.fleeAt = Math.atan2(fz, fx)
           school.x = school.tx
           school.z = school.tz
           for (const f of school.members) {
-            f.mood = 'bolt'
-            f.moodLeft = cfg.boltFor * (0.8 + 0.4 * rand())
-            f.speed = cfg.boltSpeed
+            if (rand() < BOLT_MISS) continue
+            const along = ((f.x - school.x) * fx + (f.z - school.z) * fz) / fd + cfg.schoolRadius
+            f.boltIn = Math.max(0, along) / BOLT_WAVE + rand() * BOLT_JITTER
           }
         }
       }
@@ -606,6 +620,16 @@ export class Fish {
     const rand = this.rand
     const school = f.school
 
+    // The startle wave reaching this fish: it bolts at its own speed, a little off the shoal's line, and the wander is re-aimed so it stays on that line when the bolt ends.
+    if (f.boltIn > 0) {
+      f.boltIn -= dt
+      if (f.boltIn <= 0) {
+        f.mood = 'bolt'
+        f.moodLeft = cfg.boltFor * (0.6 + 0.8 * rand())
+        f.speed = cfg.boltSpeed * (0.7 + 0.6 * rand())
+        f.wander = school.fleeAt + (rand() - 0.5) * 1.2
+      }
+    }
     // Moods. Pike cycle glide -> lurk -> burst -> glide; bass and glimmerfin fidget, each fish on its own clock: a dart or a hang, with a kick to the heading either way.
     f.moodLeft -= dt
     if (cfg.glide) {
