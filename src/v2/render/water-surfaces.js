@@ -319,11 +319,18 @@ export class WaterSurfaces {
    * @param tan      the terrain slope there, as a tangent.
    */
   shoreDistAt(x, z, reach, groundY, tan) {
-    if (!(reach > 0)) throw new Error(`WaterSurfaces.shoreDistAt: reach must be positive, got ${reach}`)
+    const lake = this.lakeShoreDistAt(x, z, reach, groundY, tan)
+    const river = this.riverShoreDistAt(x, z, reach)
+    return lake < river ? lake : river
+  }
+
+  /** The river half of shoreDistAt, on the same terms and with the same clamp, lakes left out. The brook's shore: a lake's is not one. */
+  riverShoreDistAt(x, z, reach) {
+    if (!(reach > 0)) throw new Error(`WaterSurfaces.riverShoreDistAt: reach must be positive, got ${reach}`)
     if (reach + this.maxHalfWidth > BUCKET) {
-      throw new Error(`WaterSurfaces.shoreDistAt: a ${reach} m reach past a ${this.maxHalfWidth.toFixed(1)} m half-width river overruns the ${BUCKET} m lookup bucket; the fringe would have holes`)
+      throw new Error(`WaterSurfaces.riverShoreDistAt: a ${reach} m reach past a ${this.maxHalfWidth.toFixed(1)} m half-width river overruns the ${BUCKET} m lookup bucket; the fringe would have holes`)
     }
-    let best = this.lakeShoreDistAt(x, z, reach, groundY, tan)
+    let best = reach
 
     const bi = Math.floor(x / BUCKET)
     const bj = Math.floor(z / BUCKET)

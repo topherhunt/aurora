@@ -7,19 +7,24 @@
 // Reads tools/creatures/work/<creature>/mesh.glb (the pick made in
 // gen-creature.html) for each species in TRIPO and writes public/fauna/fish.json
 // -- the mesh as plain arrays, turned nose to -Z, scaled to the roster length,
-// centred, with the per-vertex swim-bend weight fish.js's vertex stage reads --
-// and public/fauna/<id>.jpg, the base colour map lifted out of the glb as is.
-// Re-run after picking a new mesh, and commit what it writes.
+// centred, with the per-vertex swim-bend weight fish.js's vertex stage reads,
+// and the mean of Tripo's metalness map as one number -- and
+// public/fauna/<id>.webp, the base colour map at TEX_PX a side with Tripo's
+// roughness map in its alpha (tools/tripo-pack.mjs). Re-run after picking a
+// new mesh, and commit what it writes.
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SPECIES } from './fish-roster.mjs'
+import { packTexture, readGlbChunks, tripoJpegs, viewOf } from '../tripo-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const WORK = path.join(ROOT, 'tools/creatures/work')
 const OUT = path.join(ROOT, 'public/fauna')
+// A big deep-water pike (2.6x the roster length) swum right up to spans the screen once; Tripo bakes 2048 and the map ships at this many texels a side.
+const TEX_PX = 1024
 
 // Which creature-bench pick each species wears, and which way Tripo happened
 // to point its nose: Tripo orients the model to face the camera of its own
@@ -36,30 +41,16 @@ const TRIPO = {
 const COMPONENT = { 5121: Uint8Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array }
 const COUNTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }
 
-/** The one mesh in a Tripo glb: its node transform, attributes, indices and the base colour image's bytes. */
+/** The one mesh in a Tripo glb: its node transform, attributes, indices and the bytes of the base colour and metallic-roughness images. */
 function readGlb(file) {
-  const buf = fs.readFileSync(file)
-  if (buf.readUInt32LE(0) !== 0x46546c67) throw new Error(`${file} is not a GLB (bad magic)`)
-  let off = 12, json = null, bin = null
-  while (off < buf.length) {
-    const len = buf.readUInt32LE(off), type = buf.readUInt32LE(off + 4)
-    const data = buf.subarray(off + 8, off + 8 + len)
-    if (type === 0x4e4f534a) json = JSON.parse(data.toString('utf8'))
-    else if (type === 0x004e4942) bin = data
-    off += 8 + len + ((4 - (len % 4)) % 4)
-  }
-  if (!json || !bin) throw new Error(`${file}: missing JSON or BIN chunk`)
-  const view = (i) => {
-    const v = json.bufferViews[i]
-    return bin.subarray(v.byteOffset ?? 0, (v.byteOffset ?? 0) + v.byteLength)
-  }
+  const { json, bin } = readGlbChunks(file)
   const accessor = (i) => {
     const acc = json.accessors[i]
     const per = COUNTS[acc.type], Ctor = COMPONENT[acc.componentType]
     if (!per || !Ctor) throw new Error(`${file}: accessor ${i} is ${acc.type}/${acc.componentType}, which this reader does not take`)
     const v = json.bufferViews[acc.bufferView]
     if (v.byteStride && v.byteStride !== per * Ctor.BYTES_PER_ELEMENT) throw new Error(`${file}: accessor ${i} is interleaved`)
-    const bytes = view(acc.bufferView).subarray(acc.byteOffset ?? 0)
+    const bytes = viewOf(json, bin, acc.bufferView).subarray(acc.byteOffset ?? 0)
     return new Ctor(bytes.buffer, bytes.byteOffset, acc.count * per)
   }
   const nodes = json.scenes[json.scene ?? 0].nodes
@@ -70,9 +61,6 @@ function readGlb(file) {
   const prim = prims[0]
   if (prim.mode !== undefined && prim.mode !== 4) throw new Error(`${file}: primitive is not TRIANGLES`)
   for (const a of ['POSITION', 'NORMAL', 'TEXCOORD_0']) if (prim.attributes[a] === undefined) throw new Error(`${file}: no ${a}`)
-  const mat = json.materials[prim.material]
-  const image = json.images[json.textures[mat.pbrMetallicRoughness.baseColorTexture.index].source]
-  if (image.mimeType !== 'image/jpeg') throw new Error(`${file}: base colour is ${image.mimeType}, expected JPEG`)
   if (node.matrix === undefined || node.translation || node.rotation || node.scale) throw new Error(`${file}: node carries TRS, expected Tripo's matrix`)
   return {
     matrix: node.matrix,
@@ -80,7 +68,7 @@ function readGlb(file) {
     nrm: accessor(prim.attributes.NORMAL),
     uv: accessor(prim.attributes.TEXCOORD_0),
     idx: accessor(prim.indices),
-    jpeg: view(image.bufferView),
+    ...tripoJpegs(file, json, bin, prim.material),
   }
 }
 
@@ -143,20 +131,21 @@ for (const s of SPECIES) {
   const uv = new Float32Array(glb.uv.length)
   for (let i = 0; i < uv.length; i += 2) { uv[i] = glb.uv[i]; uv[i + 1] = 1 - glb.uv[i + 1] }
 
-  const texture = `${s.id}.jpg`
-  fs.writeFileSync(path.join(OUT, texture), glb.jpeg)
+  const texture = `${s.id}.webp`
+  const metalness = packTexture(glb, path.join(OUT, texture), TEX_PX)
   const round = (v) => Math.round(v * 1e4) / 1e4
   species.push({
     id: s.id,
     lengthM,
     texture,
+    metalness: round(metalness),
     pos: Array.from(pos, round),
     nrm: Array.from(nrm, round),
     uv: Array.from(uv, round),
     bend: Array.from(bend, round),
     idx: Array.from(glb.idx),
   })
-  console.log(`ship ${s.id}: ${pick.creature} pick, ${glb.idx.length / 3} tris, ${lengthM} m, texture ${(glb.jpeg.length / 1024).toFixed(0)} KB`)
+  console.log(`ship ${s.id}: ${pick.creature} pick, ${glb.idx.length / 3} tris, ${lengthM} m, metalness ${metalness.toFixed(2)}, texture ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`)
 }
 fs.writeFileSync(path.join(OUT, 'fish.json'), JSON.stringify({ species }) + '\n')
 console.log(`wrote public/fauna/fish.json with ${species.length} species`)

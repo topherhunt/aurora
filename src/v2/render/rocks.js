@@ -3953,6 +3953,11 @@ class RockBed {
   }
 }
 
+// The beds looseCountIn counts, and its saturation; the scratch is written and never read.
+const LOOSE_BEDS = new Set(['boulders', 'scree', 'giants'])
+const LOOSE_COUNT_CAP = 256
+const looseScratch = new Float32Array(LOOSE_COUNT_CAP * 4)
+
 /**
  * All the world's stone: one bank, one material, one bed per BEDS entry.
  *
@@ -4183,6 +4188,21 @@ export class Rocks {
     for (const bed of this.beds) {
       if (!bed.perch) continue
       w = bed._perchesInto(x0, z0, x1, z1, out, w, cap)
+    }
+    return w
+  }
+
+  /**
+   * How many LOOSE rocks -- boulders, scree, giants -- have their origin in the
+   * half-open box, saturating at LOOSE_COUNT_CAP. The talus she is standing in,
+   * for the rockslide sounds (v2/audio); the embedded and cliff beds are the hill
+   * itself and do not count.
+   */
+  looseCountIn(x0, z0, x1, z1) {
+    let w = 0
+    for (const bed of this.beds) {
+      if (!LOOSE_BEDS.has(bed.cfg.name)) continue
+      w = bed._rocksInto(x0, z0, x1, z1, looseScratch, w, LOOSE_COUNT_CAP, 0, 4)
     }
     return w
   }

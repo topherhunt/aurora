@@ -432,9 +432,9 @@ check(
   // must hold is that the slow path is genuinely slow -- this is a full scene
   // traversal per face, and the whole argument for affording it is the cadence.
   check(
-    WORLD_PROBE.everyNFrames >= 10,
+    WORLD_PROBE.refreshFrames >= 50,
     'and it refreshes slowly while she stands still, which is what makes it affordable',
-    `one face every ${WORLD_PROBE.everyNFrames} frames, ${WORLD_PROBE.everyNFrames * 5} for a full cube`
+    `five faces every ${WORLD_PROBE.refreshFrames} frames`
   )
   check(
     WORLD_PROBE.moveRefresh > 0 && WORLD_PROBE.moveRefresh < 50,
@@ -558,6 +558,34 @@ check(
     bursts <= ceiling,
     'and flying past the re-anchor distance every frame is rate-limited to one handover per fade',
     `${bursts} bursts in 200 frames, ceiling ${ceiling.toFixed(1)}`
+  )
+
+  // STANDING STILL. The timed refresh is the same handover as a re-anchor: five
+  // faces into the cube that is NOT on screen, then a fade. A face written into
+  // the live cube is a fifth of the reflection cutting in one frame, which with
+  // wind in the trees is a visible blink.
+  const p7 = new WorldProbe()
+  head.set(0, 105, 0)
+  for (let k = 0; k < 5; k++) p7.update(stub, scene2, head, null, DT)
+  const shown = p7.live
+  const anchorBefore = p7.anchor.clone()
+  written.length = 0
+  let firstFade = -1
+  for (let k = 0; k < WORLD_PROBE.refreshFrames + 5; k++) {
+    p7.update(stub, scene2, head, null, DT)
+    if (firstFade < 0 && p7.fade !== shown) firstFade = k
+  }
+  const liveTarget = shown === 0 ? p7.a : p7.b
+  const faces = written.filter((w) => w.t !== null)   // the restore binds null
+  check(
+    faces.length === 5 && faces.every((w) => w.t !== liveTarget),
+    'standing still, the timed refresh fills the cube that is not on screen',
+    `${faces.length} faces written, ${faces.filter((w) => w.t === liveTarget).length} of them into the live cube`
+  )
+  check(
+    p7.live === shown ^ 1 && firstFade > 0 && p7.fade !== p7.live && p7.anchor.equals(anchorBefore),
+    'and then fades over to it from the same anchor, rather than cutting',
+    `live ${shown} -> ${p7.live}, fade began ${firstFade} frames in, at ${p7.fade.toFixed(3)} now`
   )
 
   // THE VANTAGE. The host may put the capture out on the water; when it does,

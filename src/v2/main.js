@@ -56,6 +56,9 @@ import { WorldProbe, WORLD_PROBE } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
 import { PeerAvatars } from './render/avatar.js'
+import { SoundEngine } from './audio/sound-engine.js'
+import { WorldSense } from './audio/sense.js'
+import { Ambience, SOUNDS } from './audio/ambience.js'
 
 // Explicit presentation mode, rather than a user-agent guess. This keeps
 // desktop profiling unchanged and also makes Quest mode testable in a desktop
@@ -666,6 +669,7 @@ const QUEST_TOGGLE_ROWS = [
   // See buildProbeCube.
   { key: 'probeCube', text: 'show reflection cube' },
   { key: 'aurora', text: 'aurora' },
+  { key: 'sound', text: 'sound' },
   { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
 ]
@@ -742,6 +746,9 @@ function applyQuestToggle(key) {
     case 'reflections': water.setCubeReflections(enabled); break
     case 'probeCube': probeCube.visible = enabled; break
     case 'aurora': aurora.mesh.visible = enabled; break
+    // The master fader, not the rules: the ambience keeps sensing and firing so
+    // it is where it should be the moment the row goes back on.
+    case 'sound': if (sound) sound.setMuted(!enabled); break
   }
 }
 
@@ -1567,6 +1574,10 @@ let frogs = null
 let crabs = null
 let editor = null
 let panel = null
+// The ambient sound (audio/): both stay null when the clips fail to load, and
+// the frame loop runs silent rather than half-voiced. See bootWorld.
+let sound = null
+let ambience = null
 let ready = false
 
 // Quest-mode toggle panel state. The world boots as it ships -- every layer the
@@ -1593,7 +1604,7 @@ const questToggles = QUEST_MODE
   ? {
       terrain: true, lighting: true,
       trees: true, boulders: true, grass: true, ferns: true, litter: true, fish: true, frogs: true, crabs: true,
-      water: true, reflections: true, aurora: true,
+      water: true, reflections: true, aurora: true, sound: true,
       // Debug furniture, off until asked for. See buildProbeCube.
       probeCube: false,
       // The cliff plates are not in the shipped set; the row is there to look
@@ -2098,6 +2109,25 @@ async function bootWorld() {
   crabs.ready.then(() => crabs.bakeCard(renderer))
   console.log(`[v2] crabs ${crabs.stats.alive} on ${crabs.stats.perches} perches at boot`)
   window.v2crabs = crabs
+
+  // The ambient sound (audio/). The clips load in the background so a slow
+  // fetch never holds the world; until they land, and forever if one fails, the
+  // frame loop sees `ambience` null and stays silent -- a world with half its
+  // sounds is worse than one with none. The context itself stays suspended
+  // until the first gesture; see unlockSound.
+  await bootStep('sound')
+  sound = new SoundEngine()
+  sound.load(SOUNDS).then(
+    () => {
+      ambience = new Ambience({
+        engine: sound,
+        sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
+      })
+      window.v2ambience = ambience
+      console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`)
+    },
+    (err) => console.error('[v2] sound disabled:', err),
+  )
 
   // Last of the five, so the cursor readout can be bound now. Deliberately here
   // rather than lazily inside the readout: a missing scatter should be a boot
@@ -3326,6 +3356,36 @@ function applySubmersion(head, elapsedReal, state) {
   sinkAir()
 }
 
+// --- the ambient sound -------------------------------------------------------
+// The world's half lives in audio/; this is only what main.js knows and hands
+// over each frame: where her ears are and which way they face, the hour, and
+// whether she is under. Runs after applySky so `submerged` is this frame's.
+const earFwd = new THREE.Vector3()
+const earUp = new THREE.Vector3()
+const earQuat = new THREE.Quaternion()
+function updateAmbience(dt, state) {
+  if (!ambience) return
+  camera.getWorldDirection(earFwd)
+  camera.getWorldQuaternion(earQuat)
+  earUp.set(0, 1, 0).applyQuaternion(earQuat)
+  sound.setListener(headTmp.x, headTmp.y, headTmp.z, earFwd.x, earFwd.y, earFwd.z, earUp.x, earUp.y, earUp.z)
+  ambience.update(dt, {
+    head: headTmp,
+    dayness: Math.max(0, Math.min(1, (state.sun.elevDeg + 6) / 10)),
+    submerged,
+    speed: player.speed,
+    afoot: !player.flying && !player.travel,
+  })
+}
+
+// Browsers keep an AudioContext suspended until a user gesture on the page;
+// every gesture the world already listens for is one, and the resume is idempotent.
+function unlockSound() {
+  if (sound) sound.unlock()
+}
+for (const ev of ['pointerdown', 'keydown', 'touchend', 'click']) addEventListener(ev, unlockSound, { passive: true })
+renderer.xr.addEventListener('sessionstart', unlockSound)
+
 /**
  * The half-dozen values that are not true underwater, written over the top of
  * the ones applySky has already set from the palette.
@@ -3622,6 +3682,14 @@ function hideTeleport() {
   teleportGfx.arc.visible = false
 }
 
+/** Land the aimed teleport, and let the ambience count it as the walk it stands in for. */
+function fireTeleport() {
+  if (!teleportTarget.valid) return
+  const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
+  player.teleportTo(teleportTarget.x, teleportTarget.z)
+  if (ambience) ambience.onTeleport(dist, TELEPORT_RANGE)
+}
+
 /**
  * Fly the lob from `origin` along `dir` (unit), write the arc, place the ring
  * where it meets the WALK surface -- the field plus the rock tops, the same
@@ -3809,7 +3877,7 @@ function readInput() {
       questTeleportAim(useRight ? rightHandEl : leftHandEl)
     } else if (questTeleportArmed && push < QUEST_TELEPORT_FIRE) {
       questTeleportArmed = false
-      if (teleportTarget.valid) player.teleportTo(teleportTarget.x, teleportTarget.z)
+      fireTeleport()
       hideTeleport()
     }
     return
@@ -3833,7 +3901,7 @@ function readInput() {
     desktopTeleportAim()
   } else if (desktopTeleportArmed) {
     desktopTeleportArmed = false
-    if (teleportTarget.valid) player.teleportTo(teleportTarget.x, teleportTarget.z)
+    fireTeleport()
     hideTeleport()
   }
 }
@@ -4204,6 +4272,7 @@ function tick() {
   // means restating this hour's palette. See airHook.
   const state = clock.state()
   applySky(state, headTmp, now / 1000)
+  updateAmbience(dt, state)
 
   // BEFORE the render, and it must be the only caller of markers.update(): the
   // handles are scaled to hold a constant angular size, so a second call with a

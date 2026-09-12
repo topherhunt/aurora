@@ -65,6 +65,13 @@ const ground = { groundAt: () => GROUND + 0.05 }
     const json = JSON.parse(buf.toString('utf8', 20, 20 + jsonLen))
     check(json.meshes?.length === 1 && json.meshes[0].primitives.length === 1, 'one mesh, one primitive', `${json.meshes?.length} meshes`)
     check(json.images?.length >= 1 && json.materials?.[0]?.pbrMetallicRoughness?.baseColorTexture !== undefined, 'a base colour texture to draw')
+    // Packed (tools/creatures/ship.mjs): the colour map is a WebP beside the GLB with the roughness in its alpha, the metalness a number, and Tripo's own JPEGs are gone.
+    const image = json.images?.[0]
+    check(image?.uri?.endsWith('.webp') && image.bufferView === undefined && json.images.length === 1, 'the one image is the packed WebP beside the GLB, not an embedded JPEG', JSON.stringify(json.images))
+    check(image?.uri && fs.existsSync(new URL(image.uri, file)), 'and it is shipped')
+    check(json.extensionsRequired?.includes('EXT_texture_webp') && json.textures?.[0]?.extensions?.EXT_texture_webp?.source === 0, 'the texture declares EXT_texture_webp')
+    const pbr = json.materials?.[0]?.pbrMetallicRoughness
+    check(pbr?.metallicFactor >= 0 && pbr.metallicFactor <= 1 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'metalness is the shipper\'s number and the ORM and normal maps are gone', JSON.stringify(json.materials?.[0]))
   }
 }
 

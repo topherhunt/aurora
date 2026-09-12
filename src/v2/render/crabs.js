@@ -34,7 +34,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, setCritterAsset, setCritterCard,
+  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, packedPbr, setCritterAsset, setCritterCard,
   tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
@@ -61,9 +61,15 @@ const GO_S = [0.5, 2]
 const PAUSE_S = [1, 4]
 export const SPEED = [0.08, 1.2]
 const STEP_SPANS = 0.8
+// Drawn STRETCH_Y taller than the mesh (which is squashed flat), and sunk SINK of its height into the stone along the normal, so the legs grip the surface instead of tiptoeing on it.
+export const STRETCH_Y = 1.25
+export const SINK = 0.2
 // Frames between normal re-reads on a moving crab, and tiles rescanned per frame.
 const NORMAL_EVERY = 4
 const RESCAN_FRAMES = 4
+// The normal is read from the surface NORMAL_SPAN of the crab's span either side of it; two sides whose rises differ by more than LIP of that are a lip, not a slope (see _slope).
+const NORMAL_SPAN = 0.25
+const LIP = 2
 // The leg wiggle: amplitude in unit-mesh metres, and the wave's cadence in cycles per span travelled.
 const LEG_AMP = 0.04
 const LEG_CYCLES = 1.5
@@ -111,7 +117,8 @@ export class Crabs {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0xc4ab)
 
-    this.material = new THREE.MeshLambertMaterial({ color: 0xffffff })
+    // A wet shell glints: critters.js's packedPbr, metalness set with the asset.
+    this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0 })
     // `aLegs` is per instance: the wave's phase and its amplitude (zero at rest). Weighted onto the parts of the unit mesh that are legs -- out past the body along Z and low -- so the shell holds still.
     this.material.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
@@ -122,6 +129,7 @@ export class Crabs {
             'float legW = smoothstep( 0.18, 0.36, abs( position.z ) ) * ( 1.0 - smoothstep( 0.08, 0.22, position.y ) );\n' +
             'transformed.y += legW * aLegs.y * sin( aLegs.x + 12.0 * position.x + sign( position.z ) * 1.5708 );'
         )
+      packedPbr(shader)
     }
     this.material.customProgramCacheKey = () => 'crabs'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
@@ -163,9 +171,10 @@ export class Crabs {
     this.frame = 0
     this.head = { x: 0, z: 0 }
     this.perchBuf = new Float32Array(PERCH_BUF * PERCH_STRIDE)
-    // The baked mesh's bounds (setCritterAsset) and its unit span; the instance scale is size / span.
+    // The baked mesh's bounds (setCritterAsset), its unit span and its unit height; the instance scale is size / span.
     this.bounds = null
     this.span = 1
+    this.bodyH = 0
     this.loaded = false
     // Perch crabs that found no free slot, and perches whose tile buffer was full.
     this.overflow = 0
@@ -185,8 +194,11 @@ export class Crabs {
   }
 
   setAsset(asset) {
+    if (!(asset.metalness >= 0 && asset.metalness <= 1)) throw new Error('crabs: the asset has no metalness -- run tools/creatures/ship.mjs')
+    this.material.metalness = asset.metalness
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'crabs')
     this.span = this.bounds.span
+    this.bodyH = this.bounds.height
     setCritterCard(this.card, this.bounds)
     this.loaded = true
   }
@@ -312,19 +324,33 @@ export class Crabs {
     return { alive: MAX - this.free.length, tiles: this.tiles.size, perches, overflow: this.overflow, saturated: this.saturated }
   }
 
-  /** The stone's normal under a crab by finite differences a body span apart; straight up where a sample falls off the stone. */
+  /**
+   * The stone's normal under a crab, from the surface NORMAL_SPAN either side of
+   * it along X and Z. Where the two sides of an axis disagree -- one falls off
+   * the stone, or the crab stands at the lip of a drop -- the side whose surface
+   * runs on from the crab's own seat is used alone, so a crab at the top of a
+   * face stands on the top and a crab on the face clings to it. Straight up
+   * only where the stone is gone on both sides.
+   */
   _normal(c) {
-    const e = c.size * 0.5
-    const xa = this.stoneAt(c.x - e, c.z)
-    const xb = this.stoneAt(c.x + e, c.z)
-    const za = this.stoneAt(c.x, c.z - e)
-    const zb = this.stoneAt(c.x, c.z + e)
-    if (xa === -Infinity || xb === -Infinity || za === -Infinity || zb === -Infinity) {
-      c.nx = 0; c.ny = 1; c.nz = 0
-      return
-    }
-    _n.set(-(xb - xa) / (2 * e), 1, -(zb - za) / (2 * e)).normalize()
+    const e = c.size * NORMAL_SPAN
+    const sx = this._slope(this.stoneAt(c.x - e, c.z), c.y, this.stoneAt(c.x + e, c.z), e)
+    const sz = this._slope(this.stoneAt(c.x, c.z - e), c.y, this.stoneAt(c.x, c.z + e), e)
+    _n.set(-sx, 1, -sz).normalize()
     c.nx = _n.x; c.ny = _n.y; c.nz = _n.z
+  }
+
+  /** The surface's rise per metre along one axis from the samples `a` and `b` a distance `e` either side of the seat height `y`; -Infinity is no stone. */
+  _slope(a, y, b, e) {
+    const da = a === -Infinity ? null : y - a
+    const db = b === -Infinity ? null : b - y
+    if (da !== null && db !== null) {
+      if (Math.abs(da - db) <= LIP * e) return (da + db) / (2 * e)
+      return (Math.abs(da) <= Math.abs(db) ? da : db) / e
+    }
+    if (da !== null) return da / e
+    if (db !== null) return db / e
+    return 0
   }
 
   /** One scuttle step; false when the stone ran out or rose too far, in which case the crab has not moved. */
@@ -384,10 +410,11 @@ export class Crabs {
             c.yaw += (this.rand() - 0.5) * 0.8
           }
           const k = c.size / this.span
-          _pos.set(c.x, c.y, c.z)
+          const sink = SINK * this.bodyH * k
+          _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
           _n.set(c.nx, c.ny, c.nz)
           _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, c.yaw))
-          _scl.set(k, k, k)
+          _scl.set(k, k * STRETCH_Y, k)
           _mat.compose(_pos, _quat, _scl)
           const dx = c.x - hx
           const dy = c.y - hy

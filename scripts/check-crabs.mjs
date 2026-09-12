@@ -14,7 +14,10 @@
 // rock or never moves; a scatter that is not the same twice; a tile whose
 // rocks landed late and never got its crabs; a frame that costs more than a
 // scatter is allowed to; a far crab still drawn as the mesh, or a card that does
-// not stand on its crab's stone at its crab's tilt, or that is not dithered.
+// not stand on its crab's stone at its crab's tilt, or that is not dithered; a
+// crab drawn as flat as its mesh or tiptoeing on the stone instead of sunk into
+// it; a crab on a steep shoulder standing straight up because the far side of
+// its footprint is off the stone, or one at the top of a face tipped over it.
 // The shipped GLB is checked for existence and shape too, because the world
 // loads it by name.
 //
@@ -23,9 +26,9 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
-import { CARD_M, CRITTER_GLB } from '../src/v2/render/critters.js'
+import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -114,6 +117,13 @@ const boulderOf = (c) => BOULDERS.find((b) => surfaceOf(b, c.x, c.z) > -Infinity
     const json = JSON.parse(buf.toString('utf8', 20, 20 + jsonLen))
     check(json.meshes?.length === 1 && json.meshes[0].primitives.length === 1, 'one mesh, one primitive', `${json.meshes?.length} meshes`)
     check(json.images?.length >= 1 && json.materials?.[0]?.pbrMetallicRoughness?.baseColorTexture !== undefined, 'a base colour texture to draw')
+    // Packed (tools/creatures/ship.mjs): the colour map is a WebP beside the GLB with the roughness in its alpha, the metalness a number, and Tripo's own JPEGs are gone.
+    const image = json.images?.[0]
+    check(image?.uri?.endsWith('.webp') && image.bufferView === undefined && json.images.length === 1, 'the one image is the packed WebP beside the GLB, not an embedded JPEG', JSON.stringify(json.images))
+    check(image?.uri && fs.existsSync(new URL(image.uri, file)), 'and it is shipped')
+    check(json.extensionsRequired?.includes('EXT_texture_webp') && json.textures?.[0]?.extensions?.EXT_texture_webp?.source === 0, 'the texture declares EXT_texture_webp')
+    const pbr = json.materials?.[0]?.pbrMetallicRoughness
+    check(pbr?.metallicFactor >= 0 && pbr.metallicFactor <= 1 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'metalness is the shipper\'s number and the ORM and normal maps are gone', JSON.stringify(json.materials?.[0]))
   }
 }
 
@@ -125,6 +135,7 @@ const asset = {
   uv: box.getAttribute('uv').array,
   idx: Array.from(box.index.array),
   map: null,
+  metalness: 0.02,
 }
 
 // --- construction and the shader hook -----------------------------------------
@@ -132,10 +143,17 @@ const scene = new THREE.Scene()
 const crabs = new Crabs(scene, height, water, { seed: 11, rocks, assets: asset })
 check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${crabs.span}`)
 {
-  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n' }
+  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
   crabs.material.onBeforeCompile(shader)
   check(shader.vertexShader.includes('attribute vec2 aLegs') && shader.vertexShader.includes('legW') && shader.vertexShader.includes('transformed.y +='), 'leg wiggle spliced into begin_vertex')
   check(crabs.mesh.geometry.getAttribute('aLegs').isInstancedBufferAttribute, 'aLegs is per instance')
+  // The glint: a Standard wearing the asset's metalness, roughness from the colour alpha, the lobe scaled by GLINT.
+  check(crabs.material.isMeshStandardMaterial && crabs.material.roughness === 1 && crabs.material.metalness === asset.metalness, 'a Standard material with the asset\'s metalness', `${crabs.material.type} metalness ${crabs.material.metalness}`)
+  check(shader.fragmentShader.includes('roughness * sampledDiffuseColor.a') && !shader.fragmentShader.includes('<roughnessmap_fragment>'), 'roughness read from the colour alpha in place of three\'s sampler')
+  check(shader.fragmentShader.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && GLINT > 0 && GLINT < 1, 'the glint is scaled down after lights_fragment_end', `GLINT ${GLINT}`)
+  let threw = null
+  try { new Crabs(new THREE.Scene(), height, water, { seed: 11, rocks, assets: { ...asset, metalness: undefined } }) } catch (e) { threw = e.message }
+  check(threw && threw.includes('metalness'), 'an asset without metalness is refused', threw)
 }
 
 // --- placement -----------------------------------------------------------------
@@ -230,6 +248,43 @@ check(tilted > 0, 'crabs ride the stone\'s slope', `${tilted} tilted frames`)
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame, ${(rocks.calls / (SECONDS / DT)).toFixed(1)} surface queries/frame`)
 check(crabs.mesh.count === alive().length && crabs.card.count === 0, 'the instance count is the live count, and before the bake all of it is the mesh', `${crabs.mesh.count}`)
 
+// --- the drawn pose: stretched, and sunk into the stone along its normal --------
+// The stand-in slab is 0.3 tall at span 1, so a crab sinks SINK * 0.3 * size.
+const sinkOf = (c) => SINK * 0.3 * c.size
+{
+  const e = crabs.mesh.instanceMatrix.array
+  let seated = 0, stretched = 0
+  alive().forEach((c, i) => {
+    const s = sinkOf(c)
+    const off = Math.hypot(e[i * 16 + 12] - (c.x - c.nx * s), e[i * 16 + 13] - (c.y - c.ny * s), e[i * 16 + 14] - (c.z - c.nz * s))
+    if (off < 1e-4) seated++
+    const sx = Math.hypot(e[i * 16], e[i * 16 + 1], e[i * 16 + 2])
+    const sy = Math.hypot(e[i * 16 + 4], e[i * 16 + 5], e[i * 16 + 6])
+    if (Math.abs(sx - c.size) < 1e-4 && Math.abs(sy / sx - STRETCH_Y) < 1e-4) stretched++
+  })
+  check(seated === alive().length, `each crab is drawn ${SINK * 100}% of its body height into the stone along its own normal`, `${seated} of ${alive().length}`)
+  check(stretched === alive().length, `each crab is drawn ${STRETCH_Y}x taller than its mesh, its footprint its size`, `${stretched} of ${alive().length}`)
+}
+
+// --- cling: the normal on a shoulder, at a lip, on a face -----------------------
+{
+  const shelf = BOULDERS.find((b) => b.name === 'shelf')
+  // Low on the shelf's lakeward flank the outer sample is off the stone; the inner one alone must tip the crab outward, toward the lake.
+  const c = { x: shelf.x - 1.96, z: shelf.z, size: 0.3 }
+  c.y = surfaceOf(shelf, c.x, c.z)
+  crabs._normal(c)
+  check(c.nx < -0.8 && c.ny < 0.45 && Math.abs(c.nz) < 1e-6, 'a crab on a steep shoulder clings to it, even with the stone gone on its far side', `normal (${c.nx.toFixed(2)}, ${c.ny.toFixed(2)}, ${c.nz.toFixed(2)})`)
+  const top = { x: shelf.x, z: shelf.z, y: shelf.y + shelf.r, size: 0.3 }
+  crabs._normal(top)
+  check(Math.abs(top.ny - 1) < 1e-6, 'a crab on the crown stands straight up', `ny ${top.ny.toFixed(4)}`)
+  const e = 0.075
+  check(crabs._slope(5, 5, -Infinity, e) === 0, 'a crab at the edge of a flat top, nothing beyond, stands flat')
+  check(crabs._slope(5, 5, 0, e) === 0, 'a crab at the top of a face stands on the top, not tipped over the drop')
+  check(crabs._slope(5, 5, 10, e) === 0, 'a crab at the foot of a face stands on the floor, not tipped against the wall')
+  check(Math.abs(crabs._slope(4.7, 5, 5.3, e) - 4) < 1e-9, 'a crab on a face reads the face\'s own slope', `${crabs._slope(4.7, 5, 5.3, e)}`)
+  check(crabs._slope(-Infinity, 5, -Infinity, e) === 0, 'stone gone on both sides is level')
+}
+
 // --- the cross card: far crabs leave the mesh for the card, under the same matrix ----
 {
   check(crabs.card.parent === crabs.batch && !crabs.card.visible && crabs.card.geometry.index.count === 12, 'the card mesh rides in the batch, hidden until its picture is baked, two quads')
@@ -251,8 +306,8 @@ check(crabs.mesh.count === alive().length && crabs.card.count === 0, 'the instan
     for (let i = 0; i < k.mesh.count; i++) near.push(dist(e, i))
     for (let i = 0; i < k.card.count; i++) {
       far.push(dist(ce, i))
-      // The card stands where its crab stands, on the crab's own normal.
-      const c = alive(k).find((c) => Math.abs(c.x - ce[i * 16 + 12]) < 1e-4 && Math.abs(c.z - ce[i * 16 + 14]) < 1e-4)
+      // The card stands where its crab stands, sunk the same way, on the crab's own normal.
+      const c = alive(k).find((c) => Math.abs(c.x - c.nx * sinkOf(c) - ce[i * 16 + 12]) < 1e-4 && Math.abs(c.z - c.nz * sinkOf(c) - ce[i * 16 + 14]) < 1e-4)
       if (!c) continue
       const up = new THREE.Vector3(ce[i * 16 + 4], ce[i * 16 + 5], ce[i * 16 + 6]).normalize()
       if (Math.abs(up.x - c.nx) < 1e-5 && Math.abs(up.y - c.ny) < 1e-5 && Math.abs(up.z - c.nz) < 1e-5 && Math.abs(up.length() - 1) < 1e-5) matched++

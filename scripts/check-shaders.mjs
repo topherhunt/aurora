@@ -792,16 +792,18 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
 
 // --- src/v2/render/fish.js: the swim bend --------------------------------------
 //
-// One program per species (the wave number is a define), each a Lambert with
+// One program per species (the wave number is a define), each a Standard with
 // the fish's own onBeforeCompile under the vertex-mode lighting patch, which is
 // the only way it ever compiles. USE_INSTANCING and USE_INSTANCING_COLOR because
 // every fish is an instance and the bend reads a per-instance attribute; a
-// compile without them would type-check the tail against nothing.
+// compile without them would type-check the tail against nothing. USE_MAP
+// because the roughness override reads map_fragment's sample, and the map is
+// the one texture a fish ever wears.
 {
   const FISH_ASSETS = JSON.parse(readFileSync(new URL('../public/fauna/fish.json', import.meta.url), 'utf8'))
   const fish = new Fish(new THREE.Scene(), { heightAt: () => 0 }, { levelAt: () => null }, { assets: FISH_ASSETS })
   for (const sp of fish.species) {
-    const lib = THREE.ShaderLib.phong
+    const lib = THREE.ShaderLib.standard
     const shader = {
       uniforms: THREE.UniformsUtils.clone(lib.uniforms),
       vertexShader: lib.vertexShader,
@@ -824,8 +826,10 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     // The bend itself. Losing it is silent: the fish still draw, stiff as decoys.
     if (!vert.includes('transformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
     if (!vert.includes('transformed.y += aBend * aSwim.w')) MISSING_MARKS.push(`${label} vert: the climb lift`)
-    // The glint is Phong's alone, and it has to sit in the same shadow as the diffuse or a fish shines in the dark under a ridge.
+    // The glint is the sun's GGX lobe, and it has to sit in the same shadow as the diffuse or a fish shines in the dark under a ridge.
     if (!frag.includes('reflectedLight.directSpecular +=') || !frag.includes('reflectedLight.directSpecular *=')) MISSING_MARKS.push(`${label} frag: the shadowed glint`)
+    // Roughness is the colour map's alpha; three's own sampler must be gone, or a fish with no roughnessMap is uniformly rough 1.
+    if (!frag.includes('roughness * sampledDiffuseColor.a') || frag.includes('texture2D( roughnessMap')) MISSING_MARKS.push(`${label} frag: roughness from the colour alpha`)
   }
 }
 

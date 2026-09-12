@@ -50,10 +50,12 @@
  * description survives being off by a few degrees. It reads as "the bank is
  * over there and it is green", which is the whole ask.
  *
- * So the refresh policy is built around movement rather than time. Standing
- * still, the world is static apart from the light, and this ticks over slowly
- * enough to be free. Walk far enough for the parallax to matter and it re-anchors
- * and refills every face back-to-back. See REFRESH below.
+ * So the refresh policy is built around movement first. Standing still, the
+ * cube is re-taken every couple of seconds for the light and the wind; walk far
+ * enough for the parallax to matter and it is re-anchored at once. Either way
+ * the five faces land in the cube that is NOT on screen and are faded over the
+ * one that is, so the reflection never changes in a single frame. See
+ * refreshFrames and fadeSeconds below.
  *
  * WHERE IT IS CAPTURED FROM: 20 cm above the water, OUT ON THE WATER when the
  * host can find some within reach (see setVantage), else at her own x/z. Not at
@@ -104,28 +106,29 @@ export const WORLD_PROBE = {
   // it has checked is under the surface, and no floor is needed.
   duck: 1.2,
 
-  // Frames between faces while she is standing still. Five faces to go round, so
-  // a full refresh is this times five: 150 frames, about 2 s at 72 Hz. Slow on
-  // purpose -- what changes on that timescale is the light, not the land.
-  everyNFrames: 30,
+  // Frames between refreshes while she is standing still: about 2 s at 72 Hz,
+  // five faces each, so the same average cost as one face every 30 frames.
+  // Slow on purpose -- each face is a full scene traversal, and what changes
+  // on this timescale is the light and the wind in the trees, not the land.
+  refreshFrames: 150,
 
   // How far she can move from the anchor before the capture is re-taken from
-  // where she is now, in metres. Crossing it refills all five faces on
-  // consecutive frames rather than over the next two seconds, because the case
-  // this exists for is walking along a river bank, where the whole reflection is
+  // where she is now, in metres, without waiting for the timer. The case this
+  // exists for is walking along a river bank, where the whole reflection is
   // wrong until it catches up.
   moveRefresh: 12,
 
   // Seconds to cross-fade a freshly-taken cube over the one it replaces.
   //
-  // The slow one-face-every-30-frames refresh is invisible: same anchor, and
-  // only the light has moved. A RE-ANCHOR is not, because five faces change at
-  // once and the whole reflection cuts to a different vantage point in a single
-  // frame. So the probe keeps two cubes and ping-pongs: the new one is filled
+  // EVERY refresh goes through this, the standing-still one included. A face
+  // written straight into the cube on screen is a fifth of the reflection
+  // changing in one frame, and with the wind in the foliage and critters on the
+  // bank the difference between two captures is never nothing -- it reads as a
+  // blink. So the probe keeps two cubes and ping-pongs: the new one is filled
   // into the target that is not currently being displayed, and only once all
   // five faces are in does the shader begin mixing toward it.
   //
-  // A re-anchor is REFUSED while a fill or a fade is still running, which is
+  // A refresh is REFUSED while a fill or a fade is still running, which is
   // what keeps this from degenerating during fast flight. Crossing 12 m every
   // half second would otherwise queue transitions faster than they can finish
   // and every one of them would end in a snap; deferring instead rate-limits
@@ -193,8 +196,8 @@ export class WorldProbe {
 
     // 0 means the shader is showing A, 1 means B, in between is a cross-fade.
     this.fade = 0
-    // Which cube is fully live, and therefore which one the slow same-anchor
-    // refresh is allowed to touch. Equals `fade` whenever nothing is in flight.
+    // Which cube is fully live. Nothing is ever drawn into it; it is only read.
+    // Equals `fade` whenever nothing is in flight.
     this.live = 0
     // The cube being burst-filled, or -1 when nothing is. Never equals `live`.
     this.filling = -1
@@ -215,7 +218,8 @@ export class WorldProbe {
     // excluded is excluded by visibility, below, not by layer.
 
     this.face = 0
-    this.frame = 0
+    // Frames since the last refresh began; refreshFrames of them starts the next.
+    this.idle = 0
     this.captures = 0
 
     // Where the current cube was taken from.
@@ -302,10 +306,12 @@ export class WorldProbe {
     }
 
     const busy = this.filling >= 0 || this.fade !== this.live
+    this.idle++
 
-    // RE-ANCHOR. Squared distance from her head, and deliberately including y:
-    // swimming down through ten metres of water changes what the surface
-    // overhead reflects as surely as walking does.
+    // START A REFRESH: at once if she has moved, otherwise on the timer. Moved
+    // is squared distance from her head, deliberately including y: swimming
+    // down through ten metres of water changes what the surface overhead
+    // reflects as surely as walking does.
     //
     // REFUSED WHILE BUSY. There is only one spare cube, so a second burst would
     // have to overwrite the one mid-fade -- and at flying speed 12 m comes round
@@ -313,29 +319,30 @@ export class WorldProbe {
     // handover ending in the snap this exists to remove. Deferring lets the
     // reflection go staler and keeps every transition smooth, which is the way
     // round this feature was asked for.
-    if (!busy && head.distanceToSquared(this.origin) > WORLD_PROBE.moveRefresh * WORLD_PROBE.moveRefresh) {
-      this.origin.copy(head)
-      if (this.vantage === null || !this.vantage(head, this.anchor)) {
-        // No water within reach of her, so the capture is taken where she is,
-        // under the duck floor on BOTH branches: the surface offset wins only
-        // where it is genuinely higher, which is only ever when she is in it.
-        const floor = head.y - WORLD_PROBE.duck
-        const y = surfaceY === null ? floor : Math.max(surfaceY + WORLD_PROBE.height, floor)
-        this.anchor.set(head.x, y, head.z)
+    if (!busy) {
+      const moved = head.distanceToSquared(this.origin) > WORLD_PROBE.moveRefresh * WORLD_PROBE.moveRefresh
+      if (moved) {
+        this.origin.copy(head)
+        if (this.vantage === null || !this.vantage(head, this.anchor)) {
+          // No water within reach of her, so the capture is taken where she is,
+          // under the duck floor on BOTH branches: the surface offset wins only
+          // where it is genuinely higher, which is only ever when she is in it.
+          const floor = head.y - WORLD_PROBE.duck
+          const y = surfaceY === null ? floor : Math.max(surfaceY + WORLD_PROBE.height, floor)
+          this.anchor.set(head.x, y, head.z)
+        }
       }
-      this.filling = 1 - this.live
-      this.burst = FACES.length
-      this.face = 0
+      if (moved || this.idle >= WORLD_PROBE.refreshFrames) {
+        this.idle = 0
+        this.filling = 1 - this.live
+        this.burst = FACES.length
+        this.face = 0
+      }
     }
 
-    // Which cube this frame writes to: the spare one during a burst, otherwise
-    // the live one, whose faces are only ever being topped up for the light.
-    const writing = this.filling >= 0 ? this.filling : this.live
-    const target = writing === 0 ? this.a : this.b
-
-    if (this.burst > 0) this.burst--
-    else if (this.filling >= 0 || this.fade !== this.live) return
-    else if (this.frame++ % WORLD_PROBE.everyNFrames !== 0) return
+    if (this.filling < 0) return
+    this.burst--
+    const target = this.filling === 0 ? this.a : this.b
 
     // The six cameras have no orientation until updateCoordinateSystem runs, and
     // CubeCamera only calls it from its own update(), which this never uses.

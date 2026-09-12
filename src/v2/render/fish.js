@@ -1,6 +1,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
+import { packedPbr } from './critters.js'
 
 // ---------------------------------------------------------------------------
 // Fish: every authored lake and river stocked with the three roster species,
@@ -60,11 +61,6 @@ import { cullTripoBackfaces } from '../../tripo-culling.js'
 
 const ASSET_URL = 'fauna/fish.json'
 const TEXTURE_URL = (file) => `fauna/${file}`
-// A big deep-water pike (2.6x the roster length) swum right up to spans the screen once; its colour map keeps this many texels a side.
-const TEX_PX = 1024
-// The wet-scale glint: a mid-grey lobe, broad enough to read on a fish a few pixels wide.
-const SPECULAR = 0x555555
-const SHININESS = 35
 
 // The seed disc and the retire ring, both sized against the 20 m murk: 40% of the disc is in sight, and a school is gone before it is 20 m past it.
 export const POOL_RADIUS = 32
@@ -184,13 +180,14 @@ export class Fish {
   }
 
   makeSpecies(id, cfg) {
-    // Phong, not the Lambert everything else wears: the one extra term is the sun's glint on a wet flank, a Blinn-Phong lobe per pixel of fish, and lighting.js gates it with the same shadow as the diffuse. Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
-    const material = new THREE.MeshPhongMaterial({ specular: SPECULAR, shininess: SHININESS, ...cfg.material })
+    // The glint is critters.js's packedPbr: Standard, roughness from the alpha of the colour map ship.mjs packs, metalness the species' one number from the same bake. Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
+    const material = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, ...cfg.material })
     // The swim bend. `aBend` is ship.mjs's per-vertex weight (0 at the nose, 1 at the tail tip); `aSwim` is per instance: phase, amplitude, and the turn's sideways curve and the climb's lift, all in local metres. The wave number is a literal scaled to the species' length, so a pike's wave is one body length long just like a glimmerfin's.
     material.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nattribute float aBend;\nattribute vec4 aSwim;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z );\ntransformed.y += aBend * aSwim.w;')
+      packedPbr(shader)
     }
     material.customProgramCacheKey = () => `fish-${id}`
     material.defines = { FISH_WAVE_K: '0.0' }
@@ -231,7 +228,7 @@ export class Fish {
     return { id, cfg, material, mesh, swim, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0, travel: 0 }
   }
 
-  /** public/fauna/fish.json and its three colour maps. Throws on a roster mismatch rather than drawing a species as a blank. */
+  /** public/fauna/fish.json and its three colour-plus-roughness maps. Throws on a roster mismatch rather than drawing a species as a blank. */
   async load() {
     const res = await fetch(ASSET_URL)
     if (!res.ok) throw new Error(`fish: ${ASSET_URL} answered ${res.status} -- run tools/fauna/ship.mjs`)
@@ -241,15 +238,7 @@ export class Fish {
       const asset = this.assetFor(assets, sp)
       this.setAsset(sp, asset)
       const tex = await loader.loadAsync(TEXTURE_URL(asset.texture))
-      // Tripo bakes 2048 px a side; a fish never fills more than TEX_PX of screen, so the map is boxed down once here instead of sitting on the GPU four times over.
-      const img = tex.image
-      if (img.width > TEX_PX) {
-        const canvas = document.createElement('canvas')
-        canvas.width = TEX_PX
-        canvas.height = Math.round((img.height * TEX_PX) / img.width)
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
-        tex.image = canvas
-      }
+      // sRGB decodes the colour channels only; the roughness in alpha stays linear.
       tex.colorSpace = THREE.SRGBColorSpace
       tex.anisotropy = 4
       sp.material.map = tex
@@ -263,6 +252,8 @@ export class Fish {
     const n = asset.pos.length / 3
     if (asset.bend.length !== n || asset.uv.length !== n * 2 || asset.nrm.length !== n * 3) throw new Error(`fish: ${sp.id} asset attribute lengths disagree`)
     if (!(asset.lengthM > 0)) throw new Error(`fish: ${sp.id} has no lengthM`)
+    if (!(asset.metalness >= 0 && asset.metalness <= 1)) throw new Error(`fish: ${sp.id} has no metalness -- run tools/fauna/ship.mjs`)
+    sp.material.metalness = asset.metalness
     const geo = sp.mesh.geometry
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(asset.pos), 3))
     geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(asset.nrm), 3))

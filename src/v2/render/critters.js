@@ -27,8 +27,10 @@ async function gltfLoader() {
 /**
  * A shipped Tripo creature as one baked geometry: the single mesh's node
  * transform applied, feet moved to y = 0, horizontal centre at the origin. The
- * result has the shape `setCritterAsset` takes -- plain arrays plus the base
- * colour texture -- so a gate can build the same thing by hand.
+ * result has the shape `setCritterAsset` takes -- plain arrays plus the colour
+ * map, which carries Tripo's roughness in its alpha, and the shipper's scalar
+ * metalness (tools/creatures/ship.mjs) -- so a gate can build the same thing
+ * by hand.
  *
  * Tripo normalises the longest axis to about one unit, so `span` (the longer
  * horizontal extent) is what a caller divides its metres by to scale the
@@ -51,15 +53,15 @@ export async function loadCritterGlb(url) {
   geo.computeBoundingBox()
   const box = geo.boundingBox
   geo.translate(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2)
-  // Only the colour map is drawn; Tripo's ORM and normal maps would sit on the GPU for nothing.
   const mat = mesh.material
   const map = mat.map
   if (!map) throw new Error(`${url}: material has no base colour map`)
+  // The raw Tripo pick carries its 2048 ORM and normal maps too, which the loader would already have decoded by now.
+  if (mat.roughnessMap || mat.metalnessMap || mat.normalMap) throw new Error(`${url}: carries Tripo's raw maps -- run tools/creatures/ship.mjs`)
+  if (!(mat.metalness >= 0 && mat.metalness <= 1)) throw new Error(`${url}: no metalness -- run tools/creatures/ship.mjs`)
+  // sRGB decodes the colour channels only; the roughness in alpha stays linear.
   map.colorSpace = THREE.SRGBColorSpace
   map.anisotropy = 4
-  for (const key of ['normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap']) {
-    if (mat[key] && mat[key] !== map) mat[key].dispose()
-  }
   mat.dispose()
   return {
     pos: geo.getAttribute('position').array,
@@ -67,7 +69,33 @@ export async function loadCritterGlb(url) {
     uv: geo.getAttribute('uv').array,
     idx: Array.from(geo.index.array),
     map,
+    metalness: mat.metalness,
   }
+}
+
+// ---------------------------------------------------------------------------
+// THE GLINT. A packed Tripo creature (tools/tripo-pack.mjs) that is meant to
+// shine -- the fish, the crabs -- wears a Standard material with roughness 1
+// and metalness the shipper's number, not the Lambert everything else wears:
+// the extra term is the sun's GGX lobe on a wet flank or shell, shaped per
+// texel by Tripo's roughness map, which this hook reads from the alpha of the
+// colour sample in place of three's second sampler. The lobe is then scaled
+// by GLINT: at Tripo's roughness the full lobe catches an edge -- a jaw, a
+// fin's rim -- harder than wet reads, and half of it does not. No environment
+// map exists, so the indirect specular is nothing and the glint is the sun's
+// alone, as in the creature bench; lighting.js gates it with the same shadow
+// as the diffuse.
+// ---------------------------------------------------------------------------
+
+export const GLINT = 0.5
+
+/** Splice the packed roughness and the glint scale into a Standard material's fragment shader, from its onBeforeCompile. */
+export function packedPbr(shader) {
+  shader.fragmentShader = shader.fragmentShader
+    // `sampledDiffuseColor` is map_fragment's, still in scope; the alpha itself never reaches the frame, since opaque_fragment pins an OPAQUE material's alpha to 1. Guarded for the frames before the map has landed.
+    .replace('#include <roughnessmap_fragment>', '#ifdef USE_MAP\nfloat roughnessFactor = roughness * sampledDiffuseColor.a;\n#else\nfloat roughnessFactor = roughness;\n#endif')
+    // lighting.js splices its shadow multiply into the same slot, ahead of this line; the two commute.
+    .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\nreflectedLight.directSpecular *= ${GLINT.toFixed(2)};`)
 }
 
 /**

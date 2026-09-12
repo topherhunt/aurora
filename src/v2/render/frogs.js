@@ -33,8 +33,8 @@ import {
   tileSeed, walkTiles,
 } from './critters.js'
 
-// Frogs per square metre, half the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
-export const DENSITY = 0.05
+// Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
+export const DENSITY = 0.025
 export const TILE = 8
 // Tiles whose centre is within this of her are grown; a third-of-a-metre frog is a speck past fifty.
 export const RADIUS = 48
