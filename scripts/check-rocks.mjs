@@ -1881,6 +1881,10 @@ console.log('\nscatter')
       continue
     }
     let over = 0
+    // And the foot drop: the spin lowers a boxed card to the turned box's
+    // lowest corner, at most the box's farthest corner from the origin.
+    const box = card.userData.impostor.box
+    const drop = box ? Math.hypot(box.width * 0.5, box.height, box.depth * 0.5) : 0
     // Eight bases spread over the sphere, standing in for every camera the
     // player could have. Orthonormal by construction, as the view matrix rows
     // the shader reads are.
@@ -1891,12 +1895,13 @@ console.log('\nscatter')
       const up = new THREE.Vector3(-Math.sin(th) * Math.sin(ph), Math.cos(ph), Math.cos(th) * Math.sin(ph))
       for (let k = 0; k < pos.length; k += 3) {
         const v = right.clone().multiplyScalar(pos[k]).addScaledVector(up, pos[k + 1])
+        v.y -= drop
         over = Math.max(over, v.distanceTo(sph.center) - sph.radius)
       }
     }
     check(over <= 1e-4,
       `the ${shape.name} card's bounding sphere contains the card at every angle the spin can reach`,
-      `worst overhang ${over.toFixed(4)} m over 8 camera bases`)
+      `worst overhang ${over.toFixed(4)} m over 8 camera bases, foot dropped ${drop.toFixed(2)} m`)
   }
 
   // A PHOTOGRAPH PER SHAPE, AND THE CARDS THAT READ THEM. Two shapes, two
@@ -4491,6 +4496,74 @@ console.log('\nscatter')
       shaderText.includes('vec3 bbUw = cross( bbFw, bbRw );') &&
       !shaderText.includes('inversesqrt( bbS2 )'),
       'and the shipped shader is the one the model describes, so this is not testing dead code')
+  }
+
+  // THE BILLBOARD IS BEDDED WHERE THE ROCK IT REPLACED WAS.
+  //
+  // The spin pivots on the instance origin, and `_growTile` seats a MESH by the
+  // lowest corner of its quarter-turned box -- so on the twelve turns in sixteen
+  // that lay the boulder on a side or its crown, the origin is a half-width or
+  // a whole height above the ground and a card standing on it hung in the air
+  // over a mesh sunk 40-80% into the hill. The card now carries the box
+  // (`aCardBox`) and the shader drops its foot to that corner under the
+  // instance's own rotation. Modelled in JS exactly as the shader writes it,
+  // over the placed forest boulders, against the corner the scatter itself
+  // seated by.
+  {
+    const bed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
+    const card = bed.shape.tiers[ROCK_BAND_COUNT - 1]
+    const box = card.userData.impostor.box
+    check(box && card.attributes.aCardBox &&
+      Math.abs(card.attributes.aCardBox.getX(0) - bed.shape.measured.width) < 1e-6 &&
+      Math.abs(card.attributes.aCardBox.getY(0) - bed.shape.measured.height) < 1e-6 &&
+      Math.abs(card.attributes.aCardBox.getZ(0) - bed.shape.measured.depth) < 1e-6,
+      'the boulder card carries the mesh box the scatter seats by, on every vertex',
+      box ? `${box.width.toFixed(3)} x ${box.height.toFixed(3)} x ${box.depth.toFixed(3)}` : 'no box')
+    // The shader's foot: the y row of the world-from-object linear map against
+    // the half-extents, scale folded in through the matrix.
+    const footOf = (m4) => {
+      const e = new THREE.Matrix3().setFromMatrix4(m4).elements
+      // Column-major: e[1], e[4], e[7] are M[0][1], M[1][1], M[2][1].
+      return -Math.abs(e[1]) * box.width * 0.5 + Math.min(0, e[4]) * box.height - Math.abs(e[7]) * box.depth * 0.5
+    }
+    const mat = new THREE.Matrix4()
+    const v = new THREE.Vector3()
+    let worst = 0
+    let originHigh = 0
+    let n = 0
+    for (const t of bed.tiles.values()) {
+      for (let k = 0; k < t.n; k++) {
+        const id = t.ids[k]
+        bed.batch.getMatrixAt(id, mat)
+        // The corner the eye sees the mesh standing on: the local box pushed
+        // through the matrix, exactly as the burial fraction is measured.
+        let lo = Infinity
+        for (let corner = 0; corner < 8; corner++) {
+          v.set(
+            corner & 1 ? box.width * 0.5 : -box.width * 0.5,
+            corner & 2 ? box.height : 0,
+            corner & 4 ? box.depth * 0.5 : -box.depth * 0.5
+          )
+          lo = Math.min(lo, v.applyMatrix4(mat).y)
+        }
+        const foot = bed.instY[id] + footOf(mat)
+        worst = Math.max(worst, Math.abs(foot - lo))
+        // How far the origin -- the old pivot -- stood above that corner, in
+        // units of what the rock stands.
+        if (bed.instY[id] - lo > 0.25 * bed.shape.measured.height * bed.instScale[id]) originHigh++
+        n++
+      }
+    }
+    check(n > 0 && worst < 1e-6,
+      "the spun card's foot lands on the lowest corner of the rolled mesh box, so it is bedded as deep as the mesh",
+      `worst ${worst.toExponential(1)} m over ${n} forest boulders`)
+    check(originHigh > n * 0.4,
+      'and that is not the origin: the roll leaves it well above the seated corner on most instances',
+      `${originHigh} of ${n} origins over a quarter-height above the corner`)
+    const shaderText = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8')
+    check(shaderText.includes('+ min( 0.0, bbM[ 1 ][ 1 ] ) * aCardBox.y') &&
+      shaderText.includes('+ vec3( 0.0, bbFoot, 0.0 );'),
+      'and the shipped shader lowers the foot the way the model does')
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

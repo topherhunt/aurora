@@ -1402,9 +1402,23 @@ function billboardVertex(spherical, grow, spin = true) {
       vec3 bbS = sqrt( bbS2 );
 
       // The card spans local X for its width and local Y for its height, with
-      // its foot on y = 0 (buildImpostorCard). So the foot pivot is free: y is
-      // already measured up from it, and the two axes go straight onto screen
-      // right and screen up.
+      // its foot on y = 0 (buildImpostorCard). So y is already measured up from
+      // the foot, and the two axes go straight onto screen right and screen up.
+      //
+      // THE FOOT IS WHERE THE MESH'S FOOT IS, NOT WHERE THE ORIGIN IS. A rock
+      // bed quarter-turns its instances, then seats each by the lowest corner
+      // of the turned box -- so a boulder on its side or its crown has its
+      // origin a half-width or a whole height above the bedded mesh, and a
+      // card pivoting on the origin stood that far up in the air while the
+      // mesh it replaced was sunk into the hill. aCardBox is that box at
+      // scale 1 (buildImpostorCard's box option), and this is its lowest corner
+      // under THIS instance's rotation, in world metres below the origin: the
+      // y row of bbM against the half-extents, with the scale already folded
+      // in through bbM. Zero for an upright instance, and zero on a card built
+      // without a box, so every other spun card pivots exactly as before.
+      float bbFoot = -abs( bbM[ 0 ][ 1 ] ) * aCardBox.x * 0.5
+        + min( 0.0, bbM[ 1 ][ 1 ] ) * aCardBox.y
+        - abs( bbM[ 2 ][ 1 ] ) * aCardBox.z * 0.5;
       //
       // THOSE LOCAL METRES ARE THE CARD AT SCALE 1, and the instance scale has
       // to multiply them exactly as it multiplies a mesh vertex. Leave it out
@@ -1423,7 +1437,8 @@ function billboardVertex(spherical, grow, spin = true) {
       // card would have had standing still. The cylindrical branch below never
       // needed any of this: it rotates within object space and never leaves it,
       // so the scale is never divided out to begin with.
-      vec3 bbW = ( transformed.x * bbS.x ) * bbRw + ( transformed.y * bbS.y ) * bbUw;
+      vec3 bbW = ( transformed.x * bbS.x ) * bbRw + ( transformed.y * bbS.y ) * bbUw
+        + vec3( 0.0, bbFoot, 0.0 );
       // v * M is M-transpose * v in GLSL; the divide finishes the inverse.
       transformed = ( bbW * bbM ) / bbS2;`
     : /* glsl */ `
@@ -2733,6 +2748,7 @@ export function createPropMaterial(
         `#include <common>
         attribute float texLayer;
         attribute vec2 uvProj;
+        ${sphericalBillboard ? 'attribute vec3 aCardBox;' : ''}
         ${instancedFade ? `
         #define PROP_FADE_ATTRIBUTE
         attribute float aPropFade;` : ''}

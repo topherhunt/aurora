@@ -1974,13 +1974,13 @@ class RockBed {
     // THE TIER TABLE, one arena id and one triangle count per band. The last slot
     // is the 2-triangle card and NO BED DECLINES IT.
     //
-    // WHAT THAT COSTS is that a card is a flat photograph while the mesh it
-    // replaces was bedded into a face, so the quad stands proud of it -- a
-    // boulder's by however much of the mesh was underground, a plate's by
-    // whatever of its crown the sink left showing plus PLATE_CARD_LIFT, which is
-    // deliberate and is the only thing keeping a flat card out of the wall.
-    // Either way it is a fraction of a metre at a range where the rock is a few
-    // pixels across, and it is the price of one ladder rather than six.
+    // A BOULDER'S CARD IS BEDDED WHERE ITS MESH WAS. The spin plants the card's
+    // foot on the lowest corner of the rolled box (`aCardBox`, see rock-bank's
+    // THE CARD), which is the corner `_growTile` seats the mesh by, so however
+    // the roll turned the rock and however deep the sink put it, the card is
+    // sunk the same. A PLATE'S STANDS PROUD, by whatever of its crown the sink
+    // left showing plus PLATE_CARD_LIFT, which is deliberate and is the only
+    // thing keeping a flat card out of the wall.
     this.tierIds = new Int32Array(ROCK_BAND_COUNT)
     this.tierTris = new Int32Array(ROCK_BAND_COUNT)
     for (let t = 0; t < ROCK_BAND_COUNT; t++) {

@@ -376,6 +376,10 @@ export function bakeLitter(renderer, texArray, layer, { seed = 1, pool = null } 
   const prevTarget = renderer.getRenderTarget()
   const prevClear = renderer.getClearColor(new THREE.Color())
   const prevAlpha = renderer.getClearAlpha()
+  // XR off for the capture, or a headset already presenting photographs its
+  // own view instead of the rig's -- see captureLayer in impostor.js.
+  const prevXR = renderer.xr.enabled
+  renderer.xr.enabled = false
 
   renderer.setRenderTarget(target)
   renderer.setClearColor(0x000000, 0)
@@ -385,6 +389,7 @@ export function bakeLitter(renderer, texArray, layer, { seed = 1, pool = null } 
   const raw = new Uint8Array(big * big * 4)
   renderer.readRenderTargetPixels(target, 0, 0, big, big, raw)
 
+  renderer.xr.enabled = prevXR
   renderer.setRenderTarget(prevTarget)
   renderer.setClearColor(prevClear, prevAlpha)
   target.dispose()

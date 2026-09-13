@@ -22,7 +22,6 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS } from '../src/v2/render/fish.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
-import { GLINT } from '../src/v2/render/critters.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -70,7 +69,7 @@ for (const a of assets.species) {
   check(a.idx.length / 3 >= 240, `${a.id}: shipped at the pick's density`, `${a.idx.length / 3} tris`)
   check(a.bend.every((b) => b >= 0 && b <= 1), `${a.id}: bend weights in [0, 1]`)
   check(a.uv.every((v) => v >= -1e-4 && v <= 1 + 1e-4), `${a.id}: uvs inside the map`)
-  check(fs.existsSync(new URL(`../public/fauna/${a.texture}`, import.meta.url)) && a.texture.endsWith('.webp'), `${a.id}: colour-plus-roughness map ${a.texture} is shipped`)
+  check(fs.existsSync(new URL(`../public/fauna/${a.texture}`, import.meta.url)) && a.texture.endsWith('.webp'), `${a.id}: colour map ${a.texture} is shipped`)
   check(a.metalness >= 0 && a.metalness <= 1, `${a.id}: metalness in [0, 1]`, `${a.metalness}`)
   // Nose at -Z, centred, at the roster length: the tail fin is the blade end, so the outer tenth at +Z is narrower across than the outer tenth at -Z.
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity]
@@ -95,12 +94,11 @@ const scene = new THREE.Scene()
 const fish = new Fish(scene, height, water, { seed: 23, assets })
 check(fish.species.length === 3 && fish.species.every((sp) => sp.loaded), 'three species, all loaded from assets')
 for (const sp of fish.species) {
-  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
+  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <map_fragment>\n#include <lights_fragment_end>\n' }
   sp.material.onBeforeCompile(shader)
   check(shader.vertexShader.includes('attribute vec4 aSwim') && shader.vertexShader.includes('FISH_WAVE_K') && shader.vertexShader.includes('+ aSwim.z') && shader.vertexShader.includes('aBend * aSwim.w'), `${sp.id}: swim wiggle, turn curve and lift spliced into begin_vertex`)
-  check(shader.fragmentShader.includes('roughness * sampledDiffuseColor.a') && !shader.fragmentShader.includes('<roughnessmap_fragment>'), `${sp.id}: roughness read from the colour map's alpha`)
-  check(GLINT > 0 && GLINT < 1 && shader.fragmentShader.includes(`#include <lights_fragment_end>\nreflectedLight.directSpecular *= ${GLINT.toFixed(2)};`), `${sp.id}: the sun's glint scaled by GLINT after the lights`, `GLINT ${GLINT}`)
-  check(sp.material.isMeshStandardMaterial && sp.material.roughness === 1 && sp.material.metalness === assets.species.find((a) => a.id === sp.id).metalness, `${sp.id}: Standard, roughness 1 so the map is the roughness, metalness from the asset`, `metalness ${sp.material.metalness}`)
+  // Underwater a fish does not glint -- the surface does. A specular term here would be a fish shining as if it were held up in the air.
+  check(sp.material.isMeshLambertMaterial && !shader.fragmentShader.includes('directSpecular'), `${sp.id}: Lambert, no specular, untouched fragment stage`, sp.material.type)
   check(parseFloat(sp.material.defines.FISH_WAVE_K) > 0, `${sp.id}: wave number set from the length`, sp.material.defines.FISH_WAVE_K)
   check(sp.mesh.geometry.getAttribute('aBend') && sp.mesh.geometry.getAttribute('aSwim').isInstancedBufferAttribute, `${sp.id}: aBend per vertex, aSwim per instance`)
 }

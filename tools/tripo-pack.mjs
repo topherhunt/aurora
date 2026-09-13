@@ -4,9 +4,10 @@
 // and metallic-roughness JPEGs Tripo embeds, and packing them into ONE WebP --
 // the colour boxed down, with Tripo's roughness in its alpha -- plus the mean
 // of the metalness map as a scalar. One texture on the GPU carries both, since
-// an RGB upload is padded to RGBA anyway; the material reads roughness from
-// the alpha of its colour sample (critters.js packedPbr). WebP because JPEG
-// has no alpha and a PNG of a photographic map is five times the download.
+// an RGB upload is padded to RGBA anyway; a material that glints reads
+// roughness from the alpha of its colour sample (critters.js packedPbr), and
+// one that does not (the fish, underwater) simply never looks. WebP because
+// JPEG has no alpha and a PNG of a photographic map is five times the download.
 // Needs ImageMagick 7 (`magick`) on the path.
 // ---------------------------------------------------------------------------
 

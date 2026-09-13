@@ -1,7 +1,6 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
-import { packedPbr } from './critters.js'
 
 // ---------------------------------------------------------------------------
 // Fish: every authored lake and river stocked with the three roster species,
@@ -180,14 +179,13 @@ export class Fish {
   }
 
   makeSpecies(id, cfg) {
-    // The glint is critters.js's packedPbr: Standard, roughness from the alpha of the colour map ship.mjs packs, metalness the species' one number from the same bake. Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
-    const material = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, ...cfg.material })
+    // Lambert, no specular: a fish only glints once it is out of the water -- under it, the sheen the eye reads belongs to the surface, and the fish is a matte thing in dim light. Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
+    const material = new THREE.MeshLambertMaterial({ ...cfg.material })
     // The swim bend. `aBend` is ship.mjs's per-vertex weight (0 at the nose, 1 at the tail tip); `aSwim` is per instance: phase, amplitude, and the turn's sideways curve and the climb's lift, all in local metres. The wave number is a literal scaled to the species' length, so a pike's wave is one body length long just like a glimmerfin's.
     material.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nattribute float aBend;\nattribute vec4 aSwim;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z );\ntransformed.y += aBend * aSwim.w;')
-      packedPbr(shader)
     }
     material.customProgramCacheKey = () => `fish-${id}`
     material.defines = { FISH_WAVE_K: '0.0' }
@@ -228,7 +226,7 @@ export class Fish {
     return { id, cfg, material, mesh, swim, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0, travel: 0 }
   }
 
-  /** public/fauna/fish.json and its three colour-plus-roughness maps. Throws on a roster mismatch rather than drawing a species as a blank. */
+  /** public/fauna/fish.json and its three colour maps. Throws on a roster mismatch rather than drawing a species as a blank. */
   async load() {
     const res = await fetch(ASSET_URL)
     if (!res.ok) throw new Error(`fish: ${ASSET_URL} answered ${res.status} -- run tools/fauna/ship.mjs`)
@@ -238,7 +236,7 @@ export class Fish {
       const asset = this.assetFor(assets, sp)
       this.setAsset(sp, asset)
       const tex = await loader.loadAsync(TEXTURE_URL(asset.texture))
-      // sRGB decodes the colour channels only; the roughness in alpha stays linear.
+      // The map is tools/tripo-pack.mjs's, Tripo's roughness in its alpha; a Lambert never reads that channel, and opaque_fragment pins the alpha to 1.
       tex.colorSpace = THREE.SRGBColorSpace
       tex.anisotropy = 4
       sp.material.map = tex
@@ -252,8 +250,6 @@ export class Fish {
     const n = asset.pos.length / 3
     if (asset.bend.length !== n || asset.uv.length !== n * 2 || asset.nrm.length !== n * 3) throw new Error(`fish: ${sp.id} asset attribute lengths disagree`)
     if (!(asset.lengthM > 0)) throw new Error(`fish: ${sp.id} has no lengthM`)
-    if (!(asset.metalness >= 0 && asset.metalness <= 1)) throw new Error(`fish: ${sp.id} has no metalness -- run tools/fauna/ship.mjs`)
-    sp.material.metalness = asset.metalness
     const geo = sp.mesh.geometry
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(asset.pos), 3))
     geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(asset.nrm), 3))

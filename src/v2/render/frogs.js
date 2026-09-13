@@ -12,9 +12,11 @@
 // fraction of the candidates, which is the point of rolling everything and
 // rejecting rather than sampling the band -- the band has no closed form.
 //
-// A frog is tethered to where it was placed: it hops in a random direction,
-// never landing past TETHER_M from home (aimed home once it is out that far),
-// and every hop target passes the same tests its placement did, so a frog
+// A frog sits, then moves in a bout: usually a WALK, a string of short hops
+// along one heading with a beat between them, now and then a LEAP or three in
+// any direction. It is tethered to where it was placed, never landing past
+// TETHER_M from home (aimed home once it is out that far), and every hop
+// target passes the same tests its placement did, so a frog
 // never hops into the water, up a rock or off the band. The ground is re-read
 // at each hop, so a frog seated on the height field before the drawn terrain
 // arrived settles onto the drawn surface at its next move; a frog whose seat
@@ -29,7 +31,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, setCritterAsset, setCritterCard,
+  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, packedPbr, setCritterAsset, setCritterCard,
   tileSeed, walkTiles,
 } from './critters.js'
 
@@ -53,11 +55,12 @@ export const BREATH_AMP = 0.05
 const TINT_R = [0.7, 1.15]
 const TINT_G = [0.8, 1.2]
 const TINT_B = [0.6, 1.1]
-// Sit between hops, then hop `HOP_M` body lengths in `HOP_S` seconds, `HOP_RISE` of the distance high, never landing more than TETHER_M from home.
+// Sit SIT_S, then a bout: WALK_P of the time a walk, otherwise a leap. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between; a walk holds one heading give or take WOBBLE, a leap picks a fresh direction every hop. Every hop rises HOP_RISE of its distance.
 const SIT_S = [2, 8]
-const HOPS = [1, 3]
-const HOP_M = [3, 6]
-const HOP_S = [0.3, 0.45]
+const WALK_P = 0.7
+export const WALK = { hops: [3, 8], m: [0.6, 1.2], dur: [0.18, 0.28], pause: [0.3, 1] }
+export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0.5] }
+const WOBBLE = 0.6
 const HOP_RISE = 0.45
 export const TETHER_M = 3
 
@@ -92,7 +95,9 @@ export class Frogs {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0x5f0a)
 
-    this.material = new THREE.MeshLambertMaterial({ color: 0xffffff })
+    // Wet skin glints: critters.js's packedPbr, metalness set with the asset.
+    this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0 })
+    this.material.onBeforeCompile = (shader) => packedPbr(shader)
     this.material.customProgramCacheKey = () => 'frogs'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
     this.mesh.name = 'v2-frogs'
@@ -122,8 +127,8 @@ export class Frogs {
       this.slots.push({
         id: i, tile: null,
         x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1,
-        // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed.
-        state: 'sit', left: 0, hops: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
+        // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed. `bout` is WALK or LEAP with `hops` of it to go, `heading` the walk's line.
+        state: 'sit', left: 0, bout: LEAP, hops: 0, heading: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
       })
     }
     this.free = this.slots.slice()
@@ -151,6 +156,8 @@ export class Frogs {
   }
 
   setAsset(asset) {
+    if (!(asset.metalness >= 0 && asset.metalness <= 1)) throw new Error('frogs: the asset has no metalness -- run tools/creatures/ship.mjs')
+    this.material.metalness = asset.metalness
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'frogs')
     this.span = this.bounds.span
     setCritterCard(this.card, this.bounds)
@@ -255,26 +262,28 @@ export class Frogs {
     return { alive: MAX - this.free.length, tiles: this.tiles.size, overflow: this.overflow }
   }
 
-  /** Pick the next hop for a sitting frog, or return false to keep sitting. */
+  /** Pick the next hop of a sitting frog's bout, or return false to keep sitting. */
   _hop(f) {
     const dx = f.homeX - f.x
     const dz = f.homeZ - f.z
-    const far = Math.hypot(dx, dz)
-    const reach = between(this.rand, HOP_M) * f.size
+    // Past the tether the bout turns for home, within a quarter turn of it.
+    if (Math.hypot(dx, dz) > TETHER_M) f.heading = Math.atan2(-dz, dx) + (this.rand() - 0.5) * (Math.PI / 2)
+    const reach = between(this.rand, f.bout.m) * f.size
     for (let attempt = 0; attempt < 3; attempt++) {
-      // Past the tether, aim home within a quarter turn; otherwise anywhere.
-      const a = far > TETHER_M
-        ? Math.atan2(-dz, dx) + (this.rand() - 0.5) * (Math.PI / 2)
-        : this.rand() * Math.PI * 2
+      const a = f.bout === WALK ? f.heading + (this.rand() - 0.5) * WOBBLE : this.rand() * Math.PI * 2
       const x1 = f.x + Math.cos(a) * reach
       const z1 = f.z - Math.sin(a) * reach
       const h1 = this.seat(x1, z1)
-      if (h1 === null || Math.hypot(x1 - f.homeX, z1 - f.homeZ) > TETHER_M) continue
+      if (h1 === null || Math.hypot(x1 - f.homeX, z1 - f.homeZ) > TETHER_M) {
+        // The walk's line is blocked: swing it a quarter to three-quarters of a turn and try that way.
+        f.heading += (this.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + this.rand() * Math.PI / 2)
+        continue
+      }
       f.x0 = f.x; f.z0 = f.z; f.y0 = f.y
       f.x1 = x1; f.z1 = z1; f.y1 = this._groundFor(x1, z1, h1)
       f.yaw = a
       f.rise = reach * HOP_RISE
-      f.dur = between(this.rand, HOP_S)
+      f.dur = between(this.rand, f.bout.dur)
       f.t = 0
       f.state = 'hop'
       return true
@@ -312,7 +321,11 @@ export class Frogs {
           if (f.left <= 0) {
             // A boulder placed after the frog sat here: the seat is stone now, and the frog goes.
             if (this.rocks.blockTopAt(f.x, f.z, 0) > -Infinity) { this._drop(f); continue }
-            if (f.hops <= 0) f.hops = Math.round(between(this.rand, HOPS))
+            if (f.hops <= 0) {
+              f.bout = this.rand() < WALK_P ? WALK : LEAP
+              f.hops = Math.round(between(this.rand, f.bout.hops))
+              f.heading = this.rand() * Math.PI * 2
+            }
             if (this._hop(f)) {
               f.hops--
             } else {
@@ -333,7 +346,7 @@ export class Frogs {
           if (u >= 1) {
             f.state = 'sit'
             f.y = f.y1
-            f.left = f.hops > 0 ? between(this.rand, [0.15, 0.5]) : between(this.rand, SIT_S)
+            f.left = between(this.rand, f.hops > 0 ? f.bout.pause : SIT_S)
           }
         }
         const k = f.size / this.span

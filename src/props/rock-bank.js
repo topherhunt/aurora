@@ -250,7 +250,7 @@ function geometryBytes(geo) {
 //
 // A BOULDER GETS A SPUN BILLBOARD: ONE QUAD, TURNED IN EVERY DIRECTION. The
 // pinned call is `buildImpostorCard(w, h, LAYER.IMPOSTOR_ROCK, 1,
-// { upNormal: true, spherical: true })` and every argument is load-bearing. A
+// { upNormal: true, spherical: true, box })` and every argument is load-bearing. A
 // rock is looked DOWN on as often as across, so rocks.js is the only bed whose
 // material is built with `sphericalBillboard`; `spherical` here tells the card
 // which spin it will meet, and the difference is the bounding sphere -- centred
@@ -261,7 +261,13 @@ function geometryBytes(geo) {
 // because a vertical normal is the mark material.js's billboardVertex tests
 // before yawing a quad toward the eye. Spun, one plane never goes edge-on, and
 // two triangles is the floor -- which a rock needs, its far band being the
-// largest population in the world.
+// largest population in the world. `box` is the mesh's measured bounds, and it
+// is what puts the card's FOOT where the mesh's was: a bed quarter-turns the
+// boulder onto any of its faces and seats the mesh by the turned box's lowest
+// corner, so the origin ends up a half-width or a whole height above the
+// ground on twelve turns in sixteen. The spin lowers the foot to that same
+// corner, read off the instance matrix, so the card is bedded as deep as the
+// mesh it replaces instead of standing on the origin in the air.
 //
 // A CAP GETS A PLATE CARD: the same two triangles LYING FLAT, photographed from
 // straight above, at the plate's own yaw and tilt. Spinning it was wrong on
@@ -550,7 +556,15 @@ function buildShapeCard(spec, measured) {
     })
   }
   const ext = impostorCardExtents(rockCardFrame(measured))
-  return buildImpostorCard(ext.width, ext.height, spec.layer, 1, { upNormal: true, spherical: true })
+  // `box` is the mesh's own bounds, which rocks.js seats an instance by: the
+  // spin lowers the card's foot to that box's lowest corner under the instance's
+  // roll, so a card lands where the mesh it replaces was bedded rather than on
+  // an origin the roll left in the air. See THE CARD.
+  return buildImpostorCard(ext.width, ext.height, spec.layer, 1, {
+    upNormal: true,
+    spherical: true,
+    box: { width: measured.width, height: measured.height, depth: measured.depth },
+  })
 }
 
 /**

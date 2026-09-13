@@ -306,6 +306,12 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const raptors = engine.plays.filter((p) => RAPTORS.includes(p.name))
   check(raptors.every((p) => p.at.y - HEAD.y > Math.sin(RULES.raptor.elev[0] * Math.PI / 180) * RULES.raptor.range[0] - 1e-6), 'every raptor is high above her')
   check(raptors.every((p) => within(p.rate, RATE[0], RATE[1]) && within(p.gain, ...RULES.raptor.gain)), 'raptors are pitched and levelled in range')
+  const night = fakeEngine()
+  run(new Ambience({ engine: night, sense, rand: mulberry32(3) }), 300, { dayness: NIGHT })
+  check(count(night, ...RAPTORS) === 0, 'no crow, eagle or hawk at night, even above the snow', `${count(night, ...RAPTORS)}`)
+  const dusk = fakeEngine()
+  run(new Ambience({ engine: dusk, sense, rand: mulberry32(3) }), 300, { dayness: 0.3 })
+  check(count(dusk, ...RAPTORS) === 0, 'nor at dusk below the daylight threshold')
   // The first one does not fire the moment the rule turns on.
   const first = engine.plays.find((p) => RAPTORS.includes(p.name))
   check(first !== undefined && engine.plays.indexOf(first) >= 0 && amb.timers.raptor.armed, 'the raptor timer arms on entry')

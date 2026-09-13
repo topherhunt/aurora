@@ -27,6 +27,7 @@ import { WorldProbe } from '../src/world-probe.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { createBladeMaterial } from '../src/props/grass-blades.js'
 import { Fish } from '../src/v2/render/fish.js'
+import { GLINT, packedPbr } from '../src/v2/render/critters.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -792,18 +793,17 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
 
 // --- src/v2/render/fish.js: the swim bend --------------------------------------
 //
-// One program per species (the wave number is a define), each a Standard with
+// One program per species (the wave number is a define), each a Lambert with
 // the fish's own onBeforeCompile under the vertex-mode lighting patch, which is
 // the only way it ever compiles. USE_INSTANCING and USE_INSTANCING_COLOR because
 // every fish is an instance and the bend reads a per-instance attribute; a
 // compile without them would type-check the tail against nothing. USE_MAP
-// because the roughness override reads map_fragment's sample, and the map is
-// the one texture a fish ever wears.
+// because the map is the one texture a fish ever wears.
 {
   const FISH_ASSETS = JSON.parse(readFileSync(new URL('../public/fauna/fish.json', import.meta.url), 'utf8'))
   const fish = new Fish(new THREE.Scene(), { heightAt: () => 0 }, { levelAt: () => null }, { assets: FISH_ASSETS })
   for (const sp of fish.species) {
-    const lib = THREE.ShaderLib.standard
+    const lib = THREE.ShaderLib.lambert
     const shader = {
       uniforms: THREE.UniformsUtils.clone(lib.uniforms),
       vertexShader: lib.vertexShader,
@@ -826,11 +826,43 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     // The bend itself. Losing it is silent: the fish still draw, stiff as decoys.
     if (!vert.includes('transformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
     if (!vert.includes('transformed.y += aBend * aSwim.w')) MISSING_MARKS.push(`${label} vert: the climb lift`)
-    // The glint is the sun's GGX lobe, and it has to sit in the same shadow as the diffuse or a fish shines in the dark under a ridge.
-    if (!frag.includes('reflectedLight.directSpecular +=') || !frag.includes('reflectedLight.directSpecular *=')) MISSING_MARKS.push(`${label} frag: the shadowed glint`)
-    // Roughness is the colour map's alpha; three's own sampler must be gone, or a fish with no roughnessMap is uniformly rough 1.
-    if (!frag.includes('roughness * sampledDiffuseColor.a') || frag.includes('texture2D( roughnessMap')) MISSING_MARKS.push(`${label} frag: roughness from the colour alpha`)
+    // Underwater a fish has no glint of its own -- the surface does that -- so no specular term may creep in.
+    if (frag.includes('reflectedLight.directSpecular +=')) MISSING_MARKS.push(`${label} frag: a specular term on an underwater fish`)
   }
+}
+
+// --- src/v2/render/critters.js: the packed glint ------------------------------
+//
+// What a frog wears exactly, and a crab's fragment stage: a Standard whose
+// onBeforeCompile is packedPbr, under the vertex-mode lighting patch, with
+// USE_MAP because the roughness override reads map_fragment's sample. Compiled
+// here because the override replaces a chunk of three's own and the glint line
+// lands in the slot the lighting patch also splices into.
+{
+  const material = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0.02 })
+  material.onBeforeCompile = (shader) => packedPbr(shader)
+  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-packed-pbr' })
+  const lib = THREE.ShaderLib.standard
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+  const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_FOG', '#define FOG_EXP2']
+  const label = 'critters packedPbr   '
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+  SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+  CROSS_STAGE.push([label, vert, frag])
+  // The glint is the sun's GGX lobe, and it has to sit in the same shadow as the diffuse or a frog shines in the dark under a ridge.
+  if (!frag.includes('reflectedLight.directSpecular +=') || !/reflectedLight\.directSpecular \*= .* mix\( uFarLight\.x, 1\.0, wlNear \);/.test(frag)) MISSING_MARKS.push(`${label} frag: the shadowed glint`)
+  // ...and then GLINT tames it; without the scale a jaw edge catches the whole lobe.
+  if (!frag.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`)) MISSING_MARKS.push(`${label} frag: the glint scale`)
+  // Roughness is the colour map's alpha; three's own sampler must be gone, or a creature with no roughnessMap is uniformly rough 1.
+  if (!frag.includes('roughness * sampledDiffuseColor.a') || frag.includes('texture2D( roughnessMap')) MISSING_MARKS.push(`${label} frag: roughness from the colour alpha`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

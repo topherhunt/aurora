@@ -60,8 +60,8 @@ export const RATE = [0.9, 1.1]
  * the ear in degrees. Exported so the gate asserts against the same values.
  */
 export const RULES = {
-  // Crow, eagle and hawk: above the snowline, or high on a hillside with a cliff within earshot.
-  raptor: { interval: [15, 45], gain: [0.3, 0.8], range: [25, 40], elev: [20, 60], cliffTan: 1.0, cliffBand: 120 },
+  // Crow, eagle and hawk: by day, above the snowline, or high on a hillside with a cliff within earshot.
+  raptor: { interval: [15, 45], gain: [0.3, 0.8], range: [25, 40], elev: [20, 60], cliffTan: 1.0, cliffBand: 120, light: 0.4 },
   // Owl: night, in dense wood, below the snow.
   owl: { interval: [12, 35], gain: [0.3, 0.7], range: [8, 25], elev: [10, 40], dark: 0.3, forest: 0.75 },
   // Woodpecker: a single burst, sporadic, anywhere there is wood at any hour and altitude.
@@ -237,7 +237,7 @@ export class Ambience {
   _birds(dt, head, s, dayness, below) {
     const R = RULES.raptor
     const highCliff = s.aboveSnow > -R.cliffBand && s.cliff > R.cliffTan
-    if (this.due('raptor', s.aboveSnow > 0 || highCliff, R.interval, dt)) {
+    if (this.due('raptor', dayness > R.light && (s.aboveSnow > 0 || highCliff), R.interval, dt)) {
       this.fire(this.pick(RAPTORS), {
         rate: this.rate(), gain: this.between(...R.gain),
         at: this.aroundHead(head, this.between(...R.range), this.between(...R.elev)),

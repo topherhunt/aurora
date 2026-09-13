@@ -344,6 +344,14 @@ function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, 
   const prevTarget = renderer.getRenderTarget()
   const prevClear = renderer.getClearColor(new THREE.Color())
   const prevAlpha = renderer.getClearAlpha()
+  // XR OFF FOR THE CAPTURE. This runs whenever the layer PNGs finish decoding,
+  // which on a headset is often after the player has entered VR, and while
+  // presenting three replaces the camera handed to render() with the headset's
+  // own. The photograph is then of wherever her head is pointing, the layer
+  // comes back transparent, and every card in the world is an alpha-tested
+  // nothing. Same guard as world-probe.js and three's CubeCamera.
+  const prevXR = renderer.xr.enabled
+  renderer.xr.enabled = false
 
   renderer.setRenderTarget(target)
   renderer.setClearColor(0x000000, 0)
@@ -353,6 +361,7 @@ function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, 
   const raw = new Uint8Array(big * big * 4)
   renderer.readRenderTargetPixels(target, 0, 0, big, big, raw)
 
+  renderer.xr.enabled = prevXR
   renderer.setRenderTarget(prevTarget)
   renderer.setClearColor(prevClear, prevAlpha)
   target.dispose()
@@ -654,8 +663,28 @@ export function buildImpostorCard(
   height,
   layer,
   planes = 3,
-  { upNormal = false, canopy = false, tri = false, sink = 0, spherical = false, azimuth = 0 } = {}
+  { upNormal = false, canopy = false, tri = false, sink = 0, spherical = false, azimuth = 0, box = null } = {}
 ) {
+  // `box` IS THE SUBJECT'S OWN BOUNDS AT SCALE 1 -- `{ width, height, depth }`
+  // spanning x and z about zero and y from 0 to `height`, which is where rock.js
+  // puts a rock's origin. A card carrying one has its foot LOWERED by
+  // billboardVertex to the lowest corner of that box under the instance's own
+  // rotation, instead of standing on the origin. That is what keeps a rolled
+  // subject's card where its mesh was: a bed that quarter-turns a rock onto its
+  // side seats the MESH by that same corner, so its origin rides half a width
+  // above the ground and a card pivoting there hangs in the air. The mesh tiers
+  // the card stands in for do not carry the attribute and never enter the spun
+  // branch, so it costs them nothing.
+  //
+  // Spherical only: the cylindrical spin turns within object space and any bed
+  // using it stands its subjects upright, so a box there would be a claim with
+  // no reader.
+  if (box && !spherical) {
+    throw new Error('buildImpostorCard: a box lowers the foot of a spherical spin and nothing else')
+  }
+  if (box && !(box.width > 0 && box.height > 0 && box.depth > 0)) {
+    throw new Error(`buildImpostorCard: box needs positive width, height and depth, got ${JSON.stringify(box)}`)
+  }
   // `sink` comes out of impostorCardExtents and is already counted INSIDE
   // `height` -- it says how much of that height hangs below y = 0, not how much
   // to add. Taking it as an addition instead would stretch every card that asks
@@ -785,6 +814,14 @@ export function buildImpostorCard(
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
   geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(uvs, 2))
   geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(layers, 1))
+  // The same box on every vertex: billboardVertex reads it as a per-card
+  // constant, and a geometry attribute is the one channel that reaches a card
+  // and not the mesh tiers sharing its material.
+  if (box) {
+    const boxes = []
+    for (let k = 0; k < positions.length / 3; k++) boxes.push(box.width, box.height, box.depth)
+    geo.setAttribute('aCardBox', new THREE.Float32BufferAttribute(boxes, 3))
+  }
   geo.setIndex(indices)
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
@@ -809,13 +846,17 @@ export function buildImpostorCard(
   // longest vertex, which is exactly what is measured here. It is bigger than
   // the tight one (about 2x on a square card) and that is the honest price of
   // a quad that can face any direction.
+  //
+  // A `box` lowers the foot as well, by up to the box's farthest corner from
+  // the origin -- the deepest any rotation can swing a corner under it -- so
+  // the sphere grows by that much to keep holding the card.
   if (spherical) {
     let r2 = 0
     for (let k = 0; k < positions.length; k += 3) {
       const d2 = positions[k] ** 2 + positions[k + 1] ** 2 + positions[k + 2] ** 2
       if (d2 > r2) r2 = d2
     }
-    const r = Math.sqrt(r2)
+    const r = Math.sqrt(r2) + (box ? Math.hypot(box.width * 0.5, box.height, box.depth * 0.5) : 0)
     geo.boundingSphere.center.set(0, 0, 0)
     geo.boundingSphere.radius = r
     geo.boundingBox.min.set(-r, -r, -r)
@@ -824,7 +865,7 @@ export function buildImpostorCard(
 
   geo.userData.impostor = {
     width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
-    upNormal, canopy, tri, sink, spherical, azimuth,
+    upNormal, canopy, tri, sink, spherical, azimuth, box,
   }
   return geo
 }

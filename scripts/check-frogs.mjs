@@ -9,7 +9,9 @@
 // the cold, on the boulder or past the shore band; a shore with the wrong
 // number of frogs for the density; frogs all one size or one colour; a frog
 // that hops off the band or into the river, that never hops, that drifts away
-// from where it was placed; a scatter that is not the same twice; a frame that
+// from where it was placed; a frog that only ever leaps, a walk whose hops are
+// leap-sized or wander off its line, or that has no beat between its hops; a
+// scatter that is not the same twice; a frame that
 // costs more than a scatter is allowed to; a far frog still drawn as the mesh,
 // or a card that is not its frog's own matrix and tint, or that is not dithered.
 // The shipped GLB is checked for existence and shape too, because the world
@@ -20,8 +22,8 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP } from '../src/v2/render/frogs.js'
-import { CARD_M, CRITTER_GLB } from '../src/v2/render/critters.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP } from '../src/v2/render/frogs.js'
+import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -83,13 +85,25 @@ const asset = {
   uv: box.getAttribute('uv').array,
   idx: Array.from(box.index.array),
   map: null,
+  metalness: 0.02,
 }
 
-// --- construction ------------------------------------------------------------
+// --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
 const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset })
 check(frogs.loaded && frogs.mesh.visible && Math.abs(frogs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${frogs.span}`)
 check(frogs.mesh.instanceColor && frogs.mesh.instanceColor.isInstancedBufferAttribute, 'tint rides in instanceColor')
+{
+  const shader = { vertexShader: '#include <common>\n', fragmentShader: '#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
+  frogs.material.onBeforeCompile(shader)
+  // The glint: a Standard wearing the asset's metalness, roughness from the colour alpha, the lobe scaled by GLINT.
+  check(frogs.material.isMeshStandardMaterial && frogs.material.roughness === 1 && frogs.material.metalness === asset.metalness, 'a Standard material with the asset\'s metalness', `${frogs.material.type} metalness ${frogs.material.metalness}`)
+  check(shader.fragmentShader.includes('roughness * sampledDiffuseColor.a') && !shader.fragmentShader.includes('<roughnessmap_fragment>'), 'roughness read from the colour alpha in place of three\'s sampler')
+  check(shader.fragmentShader.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && GLINT > 0 && GLINT < 1, 'the glint is scaled down after lights_fragment_end', `GLINT ${GLINT}`)
+  let threw = null
+  try { new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: { ...asset, metalness: undefined } }) } catch (e) { threw = e.message }
+  check(threw && threw.includes('metalness'), 'an asset without metalness is refused', threw)
+}
 
 // --- placement ---------------------------------------------------------------
 const alive = () => frogs.slots.filter((f) => f.tile !== null)
@@ -135,10 +149,24 @@ let offBand = 0
 let onRock = 0
 let strayed = 0
 let maxStray = 0
+// The gait, read off each frog's transitions: a bout starts with a hop from a spent `hops` count.
+const bouts = { walk: 0, leap: 0 }
+let badReach = 0, badPause = 0, walkPairs = 0, straight = 0
+const last = new Map()
+const turn = (a) => Math.abs(Math.atan2(Math.sin(a), Math.cos(a)))
 const t0 = performance.now()
 for (let i = 0; i < SECONDS / DT; i++) {
   frogs.update(0, GROUND + 1.6, 0, DT)
   for (const f of alive()) {
+    const p = last.get(f)
+    if (p && f.state === 'hop' && p.state !== 'hop') {
+      const m = Math.hypot(f.x1 - f.x0, f.z1 - f.z0) / f.size
+      if (m < f.bout.m[0] - 1e-6 || m > f.bout.m[1] + 1e-6) badReach++
+      if (p.hops === 0) bouts[f.bout === WALK ? 'walk' : 'leap']++
+      else if (f.bout === WALK) { walkPairs++; if (turn(f.yaw - p.yaw) < 0.6 + 1e-9) straight++ }
+    }
+    if (p && f.state === 'sit' && p.state === 'hop' && f.hops > 0 && (f.left < f.bout.pause[0] - 1e-9 || f.left > f.bout.pause[1] + 1e-9)) badPause++
+    last.set(f, { state: f.state, yaw: f.yaw, hops: f.hops })
     if (f.state === 'hop') hopped++
     if (Math.abs(f.x) < HALF) wet++
     if (Math.abs(f.x) >= HALF + SHORE_M) offBand++
@@ -153,6 +181,10 @@ for (let i = 0; i < SECONDS / DT; i++) {
 }
 const ms = (performance.now() - t0) / (SECONDS / DT)
 check(hopped > 0, 'frogs hop', `${hopped} hop-frames`)
+check(bouts.walk > bouts.leap && bouts.leap > 0, 'most bouts are walks, the rest leaps', `${bouts.walk} walks, ${bouts.leap} leaps`)
+check(badReach === 0, `a walk's hops are ${WALK.m[0]}-${WALK.m[1]} body lengths and a leap's ${LEAP.m[0]}-${LEAP.m[1]}`, `${badReach} off`)
+check(walkPairs > 0 && straight / walkPairs > 0.7, 'a walk\'s hops follow one another along its line', `${straight} of ${walkPairs} pairs within the wobble`)
+check(badPause === 0, 'the beat between a bout\'s hops is the bout\'s own', `${badPause} off`)
 check(wet === 0, 'no frog ever lands in the river', `${wet} wet frames`)
 check(offBand === 0, 'no frog hops off the shore band', `${offBand} frames`)
 check(onRock === 0, 'no frog sits on the boulder', `${onRock} frames`)

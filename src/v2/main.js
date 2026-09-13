@@ -348,11 +348,11 @@ if (QUEST_MODE) {
   // of Player's 1.45 m/s walk as well, which is the ice-skating glide.
   //
   // The explicit `position` is the same class of default: the primitive puts
-  // the ENTITY at y 1.6, and an entity offset is not the same thing as normal
-  // mode's camera offset -- in XR the headset pose is written to the THREE
-  // camera (the child), so a 1.6 on the parent stacks with it and lifts her a
-  // whole standing height off the ground. Zero it here and set eyeHeight on
-  // the camera itself below, exactly as normal mode does.
+  // the ENTITY at y 1.6. In XR A-Frame overwrites the entity's transform with
+  // the headset pose (local-floor, so y is her real eye height), and the THREE
+  // camera child under it must then carry NO offset of its own -- see the
+  // sessionstart handler at the end of the file. Zero the entity here and
+  // set the desktop eyeHeight on the camera itself below, as normal mode does.
   // near/far ARE NOT COSMETIC HERE, and this is the fix for the distant-ridge
   // Z-fighting that only shows up in the headset. The <a-camera> primitive
   // defaults to near 0.005 / far 10000 -- a 2,000,000:1 ratio -- while normal
@@ -421,7 +421,11 @@ if (QUEST_MODE) {
   // 'YXZ' (yaw first, then pitch) is the standard FPS-camera order and is
   // what keeps normal mode's own drag-look free of that coupling.
   camera.rotation.order = 'YXZ'
-  camera.position.y = LOCOMOTION.eyeHeight // desktop only; XR overwrites this from the pose
+  // Desktop only. In XR, A-Frame writes the headset pose to the camera ENTITY
+  // (renderer.xr.setPoseTarget(camera.el.object3D)), not to this child camera,
+  // so this offset would stack under the pose: the session handlers below zero
+  // it on entry and put it back on exit.
+  camera.position.y = LOCOMOTION.eyeHeight
   rigEl = sceneEl.querySelector('#rig')
   leftHandEl = sceneEl.querySelector('#left-hand')
   rightHandEl = sceneEl.querySelector('#right-hand')
@@ -4338,6 +4342,28 @@ renderer.xr.addEventListener('sessionstart', () => {
   if (editor) editor.setActive(false)
   if (panel) panel.syncSelection()
 })
+
+// In quest mode the headset pose lands on the camera ENTITY, and `camera` is a
+// child under it (A-Frame's setPoseTarget, see the quest boot block). Its
+// desktop offset -- eyeHeight and whatever the drag-look left in its rotation
+// -- composes under the pose, invisibly to the wearer (cameraXR is built from
+// the entity alone) but not to anything that asks `camera` where her head is:
+// the netplay pose put every peer's feet at her eye line, and headPosition /
+// headYaw feed terrain selection. So the child is made identity for the
+// session and handed its desktop offset back on exit. Normal mode's three
+// writes the pose straight onto `camera` and needs none of this.
+if (QUEST_MODE) {
+  const desktopRotation = new THREE.Euler()
+  renderer.xr.addEventListener('sessionstart', () => {
+    desktopRotation.copy(camera.rotation)
+    camera.position.y = 0
+    camera.rotation.set(0, 0, 0)
+  })
+  renderer.xr.addEventListener('sessionend', () => {
+    camera.position.y = LOCOMOTION.eyeHeight
+    camera.rotation.copy(desktopRotation)
+  })
+}
 
 bootWorld().catch(reportRuntimeError)
 

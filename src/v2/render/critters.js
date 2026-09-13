@@ -74,17 +74,18 @@ export async function loadCritterGlb(url) {
 }
 
 // ---------------------------------------------------------------------------
-// THE GLINT. A packed Tripo creature (tools/tripo-pack.mjs) that is meant to
-// shine -- the fish, the crabs -- wears a Standard material with roughness 1
-// and metalness the shipper's number, not the Lambert everything else wears:
-// the extra term is the sun's GGX lobe on a wet flank or shell, shaped per
-// texel by Tripo's roughness map, which this hook reads from the alpha of the
-// colour sample in place of three's second sampler. The lobe is then scaled
-// by GLINT: at Tripo's roughness the full lobe catches an edge -- a jaw, a
-// fin's rim -- harder than wet reads, and half of it does not. No environment
-// map exists, so the indirect specular is nothing and the glint is the sun's
-// alone, as in the creature bench; lighting.js gates it with the same shadow
-// as the diffuse.
+// THE GLINT. A packed Tripo creature (tools/tripo-pack.mjs) that sits wet in
+// the air -- the frogs, the crabs; not the fish, which are under the water
+// whose surface does their shining for them -- wears a Standard material with
+// roughness 1 and metalness the shipper's number, not the Lambert everything
+// else wears: the extra term is the sun's GGX lobe on wet skin or shell,
+// shaped per texel by Tripo's roughness map, which this hook reads from the
+// alpha of the colour sample in place of three's second sampler. The lobe is
+// then scaled by GLINT: at Tripo's roughness the full lobe catches an edge --
+// a jaw, a rim -- harder than wet reads, and half of it does not. No
+// environment map exists, so the indirect specular is nothing and the glint is
+// the sun's alone, as in the creature bench; lighting.js gates it with the
+// same shadow as the diffuse.
 // ---------------------------------------------------------------------------
 
 export const GLINT = 0.5
@@ -211,6 +212,11 @@ export function bakeCritterCard(renderer, geometry, map, bounds) {
   const prevTarget = renderer.getRenderTarget()
   const prevClear = renderer.getClearColor(new THREE.Color())
   const prevAlpha = renderer.getClearAlpha()
+  // XR off for the capture: this runs when the GLB lands, which may be after
+  // she has entered VR, and a presenting renderer photographs the headset's
+  // view instead of the rig's -- see captureLayer in props/impostor.js.
+  const prevXR = renderer.xr.enabled
+  renderer.xr.enabled = false
   renderer.setRenderTarget(target)
   renderer.setClearColor(0x000000, 0)
 
@@ -231,6 +237,7 @@ export function bakeCritterCard(renderer, geometry, map, bounds) {
   const side = view(hx, 0, 10)
   const front = view(hz, 10, 0)
 
+  renderer.xr.enabled = prevXR
   renderer.setRenderTarget(prevTarget)
   renderer.setClearColor(prevClear, prevAlpha)
   target.dispose()
