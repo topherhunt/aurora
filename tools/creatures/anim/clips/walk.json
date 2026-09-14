@@ -1,0 +1,24 @@
+{
+  "note": "Lateral-sequence walk: hind foot lands, then the fore foot on the same side. Duty above 0.5 keeps three feet down at all times, which is what makes a walk read as a walk rather than a slow trot.",
+  "duration": 1.1,
+  "samples": 24,
+  "stride": 0.55,
+  "stepHeight": 0.1,
+  "duty": 0.65,
+  "crouch": 0.055,
+  "toeOff": 0.4,
+  "phases": {
+    "hindLeft": 0,
+    "frontLeft": 0.25,
+    "hindRight": 0.5,
+    "frontRight": 0.75
+  },
+  "bodyBob": 0.012,
+  "bodySway": 0.01,
+  "tailPitch": 1.1,
+  "headPitch": -0.05,
+  "spineYaw": 0.12,
+  "tailSway": 0.35,
+  "tailLift": 0.15,
+  "headBob": 0.05
+}

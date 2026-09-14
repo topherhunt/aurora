@@ -11,19 +11,22 @@
 // that hops off the band or into the river, that never hops, that drifts away
 // from where it was placed; a frog that only ever leaps, a walk whose hops are
 // leap-sized or wander off its line, or that has no beat between its hops; a
-// scatter that is not the same twice; a frame that
-// costs more than a scatter is allowed to; a far frog still drawn as the mesh,
-// or a card that is not its frog's own matrix, tint and hue, or that is not dithered.
-// The shipped GLB is checked for existence and shape too, because the world
-// loads it by name.
+// scatter that is not the same twice; a frog standing level on a slope, or
+// still tilted to the slope it left after a hop; a frame that costs more than a
+// scatter is allowed to; a frog drawn as a tier its apparent size does not
+// call for, or drawn at all under a degree of arc, a tier that flickers as her
+// head sways on a threshold, or a tier instance that is not its frog's own
+// matrix, tint and hue.
+// The shipped GLB and its ladder are checked for existence, shape and facing
+// too, because the world loads them by name and hops them along +X.
 //
 // What this can NOT check: whether they look like frogs, or how the hop reads.
 // That needs eyes, in the world.
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP, WET_ROUGHNESS, HUE } from '../src/v2/render/frogs.js'
-import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP, WET_ROUGHNESS, HUE, LOD_DEG } from '../src/v2/render/frogs.js'
+import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, critterLodUrl, critterTier } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -80,25 +83,64 @@ const ground = { groundAt: () => GROUND + 0.05 }
     check(json.extensionsRequired?.includes('EXT_texture_webp') && json.textures?.[0]?.extensions?.EXT_texture_webp?.source === 0, 'the texture declares EXT_texture_webp')
     const pbr = json.materials?.[0]?.pbrMetallicRoughness
     check(pbr?.metallicFactor === 0 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'no metalness, and the ORM and normal maps are gone', JSON.stringify(json.materials?.[0]))
+    // Facing: the eyes are the top of a crouched frog, so the highest vertices' centroid lies ahead of the body's, and ahead must be +X once the node's matrix is applied -- ship.mjs turns the pick there by the roster's faceTurnDeg, measured per pick, and its ladder the same.
+    const node = json.nodes.find((n) => n.mesh !== undefined)
+    check(!node.rotation && !node.translation && !node.scale, 'the mesh node carries its transform as one matrix')
+    const { ahead, tris } = shape(buf, json)
+    check(Math.abs(ahead) < 10, 'the frog faces +X: its eyes lie ahead of its body along +X', `head ${ahead.toFixed(1)} deg from +X`)
+    let last = tris
+    for (let k = 1; k < LOD_DEG.length; k++) {
+      const url = critterLodUrl(CRITTER_GLB.frog, k)
+      const tierFile = new URL(`../public/${url}`, import.meta.url)
+      check(fs.existsSync(tierFile), `${url} is shipped`)
+      if (!fs.existsSync(tierFile)) continue
+      const tierBuf = fs.readFileSync(tierFile)
+      const tierJson = JSON.parse(tierBuf.toString('utf8', 20, 20 + tierBuf.readUInt32LE(12)))
+      const t = shape(tierBuf, tierJson)
+      check(t.tris < last && tierJson.images?.[0]?.uri === image?.uri, `tier ${k} is coarser than the one above and wears the pick's WebP`, `${t.tris} tris after ${last}`)
+      // The coarsest tier is lopsided today (the decimator's doing, see the design doc); the world still needs it looking the right way.
+      check(Math.abs(t.ahead) < 25, `tier ${k} faces +X`, `head ${t.ahead.toFixed(1)} deg from +X`)
+      last = t.tris
+    }
   }
 }
 
-// --- a stand-in asset: a unit box, feet at y = 0 -----------------------------
-const box = new THREE.BoxGeometry(1, 0.5, 0.7).translate(0, 0.25, 0)
-const asset = {
-  pos: box.getAttribute('position').array,
-  nrm: box.getAttribute('normal').array,
-  uv: box.getAttribute('uv').array,
-  idx: Array.from(box.index.array),
-  map: null,
+/** A GLB's triangle count and the bearing of its highest vertices from its centroid, degrees from +X, after the mesh node's matrix. */
+function shape(buf, json) {
+  const jsonLen = buf.readUInt32LE(12)
+  const node = json.nodes.find((n) => n.mesh !== undefined)
+  const m = node.matrix ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+  const prim = json.meshes[0].primitives[0]
+  const acc = json.accessors[prim.attributes.POSITION]
+  const view = json.bufferViews[acc.bufferView]
+  const binOff = 20 + jsonLen + 8
+  const pos = new Float32Array(buf.buffer.slice(buf.byteOffset + binOff + (view.byteOffset ?? 0) + (acc.byteOffset ?? 0), buf.byteOffset + binOff + (view.byteOffset ?? 0) + (acc.byteOffset ?? 0) + acc.count * 12))
+  const pts = []
+  for (let i = 0; i < acc.count; i++) {
+    const x = pos[3 * i], y = pos[3 * i + 1], z = pos[3 * i + 2]
+    pts.push([m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]])
+  }
+  const yTop = Math.max(...pts.map((p) => p[1])), yFoot = Math.min(...pts.map((p) => p[1]))
+  const mean = (list) => list.reduce((a, p) => [a[0] + p[0] / list.length, a[1] + p[1] / list.length, a[2] + p[2] / list.length], [0, 0, 0])
+  const body = mean(pts)
+  const head = mean(pts.filter((p) => p[1] > yFoot + 0.85 * (yTop - yFoot)))
+  return { ahead: Math.atan2(-(head[2] - body[2]), head[0] - body[0]) * 180 / Math.PI, tris: json.accessors[prim.indices].count / 3 }
 }
+
+// --- stand-in assets: a unit box, feet at y = 0, and a coarser one for each tier --------------
+const boxAsset = (segments) => {
+  const box = new THREE.BoxGeometry(1, 0.5, 0.7, segments, segments, segments).translate(0, 0.25, 0)
+  return { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
+}
+const asset = LOD_DEG.map((_, k) => boxAsset(LOD_DEG.length - k))
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
 const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset })
-check(frogs.loaded && frogs.mesh.visible && Math.abs(frogs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${frogs.span}`)
-check(frogs.mesh.instanceColor && frogs.mesh.instanceColor.isInstancedBufferAttribute, 'tint rides in instanceColor')
-check(frogs.mesh.geometry.getAttribute('aHue') === frogs.hue && frogs.hue.isInstancedBufferAttribute && frogs.card.geometry.getAttribute('aHue') === frogs.cardHue, 'hue rides in aHue on the mesh and the card')
+check(frogs.loaded && frogs.tiers.length === LOD_DEG.length && frogs.tiers.every((t) => t.visible && t.parent === frogs.batch) && Math.abs(frogs.span - 1) < 1e-6, 'assets set: every tier visible in the batch, span 1', `span ${frogs.span}`)
+check(frogs.tiers.every((t, k) => t.geometry.index.count === asset[k].idx.length && t.material === frogs.material), 'each tier wears its own geometry under the one material')
+check(frogs.tiers.every((t) => t.instanceColor && t.instanceColor.isInstancedBufferAttribute), 'tint rides in instanceColor')
+check(frogs.tiers.every((t, k) => t.geometry.getAttribute('aHue') === frogs.hues[k] && frogs.hues[k].isInstancedBufferAttribute) && frogs.mesh === frogs.tiers[0], 'hue rides in aHue on every tier')
 {
   const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
   frogs.material.onBeforeCompile(shader)
@@ -145,6 +187,21 @@ frogs.place(50, 50)
 frogs.place(0, 0)
 const snapB = alive().map((f) => [f.homeX, f.homeZ, f.size, f.r]).sort((a, b) => a[0] - b[0] || a[1] - b[1])
 check(JSON.stringify(snapA) === JSON.stringify(snapB), 'placement is a pure function of position', `${snapA.length} frogs`)
+
+// What is drawn: every tier's instances, each with its distance from `head` and the frog whose seat it stands on.
+const at = (mesh, i) => { const e = mesh.instanceMatrix.array; return [e[i * 16 + 12], e[i * 16 + 13], e[i * 16 + 14]] }
+const drawn = (head) => {
+  const out = []
+  frogs.tiers.forEach((mesh, tier) => {
+    for (let i = 0; i < mesh.count; i++) {
+      const p = at(mesh, i)
+      const f = alive().find((g) => Math.abs(g.x - p[0]) < 1e-4 && Math.abs(g.z - p[2]) < 1e-4)
+      out.push({ tier, i, p, f, dist: Math.hypot(p[0] - head[0], p[1] - head[1], p[2] - head[2]) })
+    }
+  })
+  return out
+}
+const drawnCount = () => frogs.tiers.reduce((n, t) => n + t.count, 0)
 
 // --- the run ---------------------------------------------------------------------
 const DT = 1 / 72
@@ -198,12 +255,14 @@ check(onRock === 0, 'no frog sits on the boulder', `${onRock} frames`)
 check(strayed === 0, `no frog ever lands more than ${TETHER_M} m from home`, `furthest ${maxStray.toFixed(2)} m`)
 check(alive().every((f) => f.state !== 'sit' || Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'a sitting frog is on the ground')
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame with ${alive().length} frogs`)
-check(frogs.mesh.count === alive().length, 'the instance count is the live count', `${frogs.mesh.count}`)
+check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && drawnCount() > 0, 'the tiers\' instance counts are the live frogs in view', `${drawnCount()} of ${alive().length} alive`)
 
 // --- breathing: pin every frog sitting and watch instance 0's scale over one breath ----
 {
   for (const f of alive()) { f.state = 'sit'; f.left = 1e9 }
-  const e = frogs.mesh.instanceMatrix.array
+  frogs.update(0, GROUND + 1.6, 0, DT)
+  // Instance 0 of the first tier with anything in it; pinned and with her head still, it stays that frog.
+  const e = frogs.tiers.find((t) => t.count > 0).instanceMatrix.array
   const sy = [], sx = [], px = []
   for (let i = 0; i < Math.ceil(BREATH_S / DT); i++) {
     frogs.update(0, GROUND + 1.6, 0, DT)
@@ -220,71 +279,119 @@ check(frogs.mesh.count === alive().length, 'the instance count is the live count
   check(phases.size > alive().length * 0.8, 'each frog breathes on its own phase', `${phases.size} distinct of ${alive().length}`)
 }
 
-// --- the cross card: far frogs leave the mesh for the card, under the same matrix, tint and hue ----
+// --- the ladder: each frog is the tier its apparent size calls for, none under a degree ----
 {
-  const card = frogs.card
-  check(card.parent === frogs.batch && !card.visible && card.count === 0, 'the card mesh rides in the batch, hidden until its picture is baked')
-  const geo = card.geometry
-  const pos = geo.getAttribute('position')
-  const uv = geo.getAttribute('uv')
-  const nrm = geo.getAttribute('normal')
-  const xs = new Set(), zs = new Set()
-  for (let i = 0; i < pos.count; i++) { xs.add(pos.getX(i).toFixed(3)); zs.add(pos.getZ(i).toFixed(3)) }
-  check(pos.count === 8 && geo.index.count === 12 && xs.has('0.000') && zs.has('0.000') && xs.size === 3 && zs.size === 3, 'the card is two quads crossed on the body axis', `${pos.count} verts, ${geo.index.count} indices`)
-  const sideU = [0, 1, 2, 3].map((i) => uv.getX(i)), frontU = [4, 5, 6, 7].map((i) => uv.getX(i))
-  check(Math.max(...sideU) === 0.5 && Math.min(...frontU) === 0.5 && Math.max(...frontU) === 1, 'the side quad reads the left half of the picture, the front quad the right')
-  // The side quad stands on the XY plane, feet down; the front quad on the ZY plane.
-  const ys = [0, 1, 2, 3].map((i) => pos.getY(i))
-  check([0, 1, 2, 3].every((i) => pos.getZ(i) === 0) && [4, 5, 6, 7].every((i) => pos.getX(i) === 0) && Math.min(...ys) < 0 && Math.max(...ys) > frogs.bounds.height, 'the side quad stands upright on the body\'s length, the front quad upright across it')
-  let up = true
-  for (let i = 0; i < nrm.count; i++) if (nrm.getY(i) !== 1) up = false
-  check(up, 'every card normal points straight up, so the two planes take the same light')
-  const m = frogs.cardMaterial
-  check(m.alphaTest === 0.5 && m.side === THREE.DoubleSide, 'the card is a double-sided cutout', `alphaTest ${m.alphaTest}`)
-  const shader = { vertexShader: '#include <common>', fragmentShader: '#include <clipping_planes_fragment>\n#include <normal_fragment_begin>' }
-  m.onBeforeCompile(shader)
-  check(/mod\( gl_FragCoord\.x \+ gl_FragCoord\.y, 2\.0 \) < 1\.0 \) discard/.test(shader.fragmentShader), 'the card discards every other pixel of a fixed screen checkerboard')
-  check(/normal \*= faceDirection;/.test(shader.fragmentShader), 'and undoes the double-sided normal flip')
-  check(m.customProgramCacheKey() !== frogs.material.customProgramCacheKey(), 'the card compiles its own program')
+  const deg = (span, dist) => Math.atan2(span, dist) * 180 / Math.PI
+  check(LOD_DEG.length === 4 && LOD_DEG.every((d, k) => k === 0 || d < LOD_DEG[k - 1]) && LOD_DEG[LOD_DEG.length - 1] === 1, 'four tiers, each holding down to a smaller angle, the last to one degree', LOD_DEG.join(', '))
+  // critterTier on its own: the pick near, each tier one step down, nothing under the last degree, and hysteresis both ways round a threshold.
+  const span = (SIZE_M[0] + SIZE_M[1]) / 2
+  const ladder = LOD_DEG.map((d) => critterTier(span, span / Math.tan(d * Math.PI / 180) * 0.99, -1, LOD_DEG))
+  check(ladder.every((t, k) => t === k) && critterTier(span, 0.5, -1, LOD_DEG) === 0 && critterTier(span, 1000, -1, LOD_DEG) === LOD_DEG.length, 'critterTier steps a frog with no tier yet down the ladder by its apparent size and off its foot', ladder.join(', '))
+  // Around the tier 1 / tier 2 threshold.
+  const edge = span / Math.tan(LOD_DEG[1] * Math.PI / 180)
+  const H = LOD_HYSTERESIS
+  const stayUp = critterTier(span, edge * (1 + H * 0.5), 1, LOD_DEG), stayDown = critterTier(span, edge * (1 - H * 0.5), 2, LOD_DEG)
+  const goUp = critterTier(span, edge * (1 - H * 1.5), 2, LOD_DEG), goDown = critterTier(span, edge * (1 + H * 1.5), 1, LOD_DEG)
+  check(stayUp === 1 && stayDown === 2 && goUp === 1 && goDown === 2, 'a frog just over a threshold keeps its tier until it is well over', `stay ${stayUp}/${stayDown}, go ${goUp}/${goDown}`)
+  check(critterTier(span, 1000, LOD_DEG.length - 1, LOD_DEG) === LOD_DEG.length && critterTier(span, span / Math.tan(1.05 * Math.PI / 180), LOD_DEG.length, LOD_DEG) === LOD_DEG.length, 'a frog under a degree is not drawn, and one just over it not yet')
 
+  // In the scatter: her head on the bank, every drawn frog is in the tier its size over its distance calls for, and every frog under a degree is undrawn.
   frogs.place(0, 0)
-  frogs.update(0, GROUND + 1.6, 0, DT)
-  check(frogs.card.count === 0 && frogs.mesh.count === alive().length, 'before the bake every frog is the mesh')
-  frogs.setCard(null)
-  check(card.visible, 'setCard shows the card')
-  const HEAD = [0, GROUND + 1.6, 0]
+  const HEAD = [HALF + 1, GROUND + 1.6, 0]
   frogs.update(...HEAD, DT)
-  const at = (mesh, i) => { const e = mesh.instanceMatrix.array; return [e[i * 16 + 12], e[i * 16 + 13], e[i * 16 + 14]] }
-  const dist = (p) => Math.hypot(p[0] - HEAD[0], p[1] - HEAD[1], p[2] - HEAD[2])
-  const near = [], far = []
-  for (let i = 0; i < frogs.mesh.count; i++) near.push(dist(at(frogs.mesh, i)))
-  for (let i = 0; i < card.count; i++) far.push(dist(at(card, i)))
-  check(frogs.mesh.count + card.count === alive().length && card.count > 0 && frogs.mesh.count > 0, 'the mesh and the card together hold every frog', `${frogs.mesh.count} mesh, ${card.count} card, ${alive().length} alive`)
-  check(near.every((d) => d <= CARD_M) && far.every((d) => d > CARD_M), `the mesh holds the frogs within ${CARD_M} m of her head and the card the rest`, `mesh to ${Math.max(...near).toFixed(2)} m, card from ${Math.min(...far).toFixed(2)} m`)
-  // A card instance is some far frog: same seat, same size (the matrix's scale up to the breath), same tint and hue. The buffers are float32.
+  frogs.update(...HEAD, DT)
+  const list = drawn(HEAD)
+  check(list.length > 0 && list.every((d) => d.f), 'every instance stands on some live frog\'s seat', `${list.length} drawn`)
+  const tiersUsed = new Set(list.map((d) => d.tier))
+  check(tiersUsed.size >= 3, 'the bank in view spans several tiers', `tiers ${[...tiersUsed].sort().join(', ')}`)
+  const right = list.filter((d) => d.f && critterTier(d.f.size, d.dist, -1, LOD_DEG) === d.tier).length
+  check(right === list.length, 'each is drawn as the tier its apparent size calls for', `${right} of ${list.length}`)
+  const hidden = alive().filter((f) => f.lod === LOD_DEG.length)
+  check(hidden.length > 0 && hidden.every((f) => deg(f.size, Math.hypot(f.x - HEAD[0], f.y - HEAD[1], f.z - HEAD[2])) < LOD_DEG[LOD_DEG.length - 1] * (1 + H)) && list.every((d) => deg(d.f.size, d.dist) >= LOD_DEG[LOD_DEG.length - 1] * (1 - H)), 'the frogs under a degree of arc are not drawn, and every drawn one is over it', `${hidden.length} hidden of ${alive().length}`)
+  // A tier instance is its frog: same size (the matrix's scale up to the breath), same tint and hue. The buffers are float32.
   let matched = 0
-  for (let i = 0; i < card.count; i++) {
-    const e = card.instanceMatrix.array
-    const p = at(card, i)
-    const f = alive().find((g) => Math.abs(g.x - p[0]) < 1e-4 && Math.abs(g.z - p[2]) < 1e-4)
-    if (!f) continue
-    const sx = Math.hypot(e[i * 16], e[i * 16 + 1], e[i * 16 + 2]) * frogs.span
-    const c = card.instanceColor.array
-    const tint = Math.abs(c[i * 3] - f.r) < 1e-6 && Math.abs(c[i * 3 + 1] - f.g) < 1e-6 && Math.abs(c[i * 3 + 2] - f.b) < 1e-6
-    if (Math.abs(sx / f.size - 1) < 0.3 && tint && Math.abs(frogs.cardHue.array[i] - f.hue) < 1e-6) matched++
+  for (const d of list) {
+    const mesh = frogs.tiers[d.tier]
+    const e = mesh.instanceMatrix.array
+    const sx = Math.hypot(e[d.i * 16], e[d.i * 16 + 1], e[d.i * 16 + 2]) * frogs.span
+    const c = mesh.instanceColor.array
+    const tint = Math.abs(c[d.i * 3] - d.f.r) < 1e-6 && Math.abs(c[d.i * 3 + 1] - d.f.g) < 1e-6 && Math.abs(c[d.i * 3 + 2] - d.f.b) < 1e-6
+    if (Math.abs(sx / d.f.size - 1) < 0.3 && tint && Math.abs(frogs.hues[d.tier].array[d.i] - d.f.hue) < 1e-6) matched++
   }
-  check(matched === card.count, 'each card carries its frog\'s own matrix, tint and hue', `${matched} of ${card.count}`)
-  // Walk her out to the far bank: what was card is mesh.
-  frogs.update(HALF + 2, GROUND + 1.6, 40, DT)
-  const swapped = []
-  for (let i = 0; i < frogs.mesh.count; i++) swapped.push(at(frogs.mesh, i))
-  check(swapped.some((p) => dist(p) > CARD_M), 'a frog she walks up to comes back as the mesh', `${swapped.length} in the mesh now`)
+  check(matched === list.length, 'each instance carries its frog\'s own matrix, tint and hue', `${matched} of ${list.length}`)
+  // Her head swaying on a threshold: a frog there changes tier at most once, not every frame.
+  for (const f of alive()) { f.state = 'sit'; f.left = 1e9 }
+  const target = alive().find((f) => f.lod === 1)
+  const dist0 = Math.hypot(target.x - HEAD[0], target.y - HEAD[1], target.z - HEAD[2])
+  const edgeD = target.size / Math.tan(LOD_DEG[1] * Math.PI / 180)
+  let changes = 0, prev = target.lod
+  for (let i = 0; i < 200; i++) {
+    // Along the line from her head to the frog, so the distance is exactly the threshold plus a sway of half the hysteresis.
+    const sway = edgeD * (1 + Math.sin(i * 0.7) * H * 0.4)
+    const t = 1 - sway / dist0
+    frogs.update(HEAD[0] + (target.x - HEAD[0]) * t, HEAD[1] + (target.y - HEAD[1]) * t, HEAD[2] + (target.z - HEAD[2]) * t, DT)
+    if (target.lod !== prev) { changes++; prev = target.lod }
+  }
+  check(changes <= 1, 'a frog on a threshold does not flicker between tiers as her head sways', `${changes} tier changes over 200 frames`)
+  // Walk her out to the far bank: what was undrawn is the pick.
+  frogs.update(-HALF - 2, GROUND + 1.6, 40, DT)
+  frogs.update(-HALF - 2, GROUND + 1.6, 40, DT)
+  const near = drawn([-HALF - 2, GROUND + 1.6, 40]).filter((d) => d.tier === 0)
+  check(near.length > 0 && near.every((d) => Math.hypot(d.p[0] - HEAD[0], d.p[2] - HEAD[2]) > 20), 'a frog she walks up to comes back as the pick', `${near.length} in the pick now`)
+}
+
+// --- a bank that slopes: frogs sit along its normal, and turn to the new slope over a hop ----
+{
+  // The east bank rises 0.4 in x beyond SEAM, level nearer the water and on the west bank, so a hop across the seam changes the normal.
+  const GX = 0.4
+  const SEAM = HALF + 2
+  const slope = { ...height, heightAndSlopeAt: (x) => (x > SEAM ? { h: GROUND, tan: GX, gx: GX, gz: 0 } : { h: GROUND, tan: 0, gx: 0, gz: 0 }) }
+  const tilted = new Frogs(new THREE.Scene(), slope, water, { seed: 7, rocks, ground, assets: asset })
+  tilted.place(0, 0)
+  tilted.update(0, GROUND + 1.6, 0, DT)
+  const want = [-GX, 1, 0].map((c) => c / Math.hypot(GX, 1))
+  const upOf = (mesh, i) => { const e = mesh.instanceMatrix.array; const y = [e[i * 16 + 4], e[i * 16 + 5], e[i * 16 + 6]]; const l = Math.hypot(...y); return y.map((c) => c / l) }
+  const live = tilted.slots.filter((f) => f.tile !== null)
+  const east = live.filter((f) => f.x > SEAM), west = live.filter((f) => f.x < SEAM)
+  check(east.length >= 3 && east.every((f) => Math.hypot(f.nx - want[0], f.ny - want[1], f.nz - want[2]) < 1e-9), 'a frog on the sloped bank holds the ground normal', `${east.length} frogs, normal ${want.map((c) => c.toFixed(3))}`)
+  check(west.length >= 3 && west.every((f) => f.nx === 0 && f.ny === 1 && f.nz === 0), 'and one on the level ground the world up')
+  // The matrix's up column is that normal, on whichever tier the frog is drawn in.
+  let tiltedOk = 0, tiltedN = 0
+  for (const mesh of tilted.tiers) {
+    for (let i = 0; i < mesh.count; i++) {
+      const p = at(mesh, i)
+      const f = live.find((g) => Math.abs(g.x - p[0]) < 1e-4 && Math.abs(g.z - p[2]) < 1e-4)
+      const u = upOf(mesh, i)
+      tiltedN++
+      if (f && Math.hypot(u[0] - f.nx, u[1] - f.ny, u[2] - f.nz) < 1e-5) tiltedOk++
+    }
+  }
+  check(tiltedN > 0 && tiltedOk === tiltedN, 'each instance matrix stands its frog up along its normal', `${tiltedOk} of ${tiltedN}`)
+  // Run until some frogs have hopped across the seam: mid-hop the normal is between the two, on landing it is the new one.
+  let crossed = 0, between = 0, landed = 0
+  const flying = new Set()
+  for (let step = 0; step < 6000 && crossed < 3; step++) {
+    tilted.update(0, GROUND + 1.6, 0, DT)
+    for (const f of live) {
+      if (f.state === 'hop' && (f.x0 > SEAM) !== (f.x1 > SEAM)) {
+        flying.add(f)
+        const u = f.t / f.dur
+        if (u > 0.2 && u < 0.5 && f.ny < 1 && f.ny > want[1]) between++
+      } else if (f.state === 'sit' && flying.delete(f)) {
+        crossed++
+        const n = f.x > SEAM ? want : [0, 1, 0]
+        if (Math.hypot(f.nx - n[0], f.ny - n[1], f.nz - n[2]) < 1e-9) landed++
+      }
+    }
+  }
+  check(crossed >= 3 && landed === crossed, 'a frog hopping across the seam lands along the slope it lands on', `${landed} of ${crossed}`)
+  check(between > 0, 'and turns toward it in the air', `${between} mid-hop frames between the two`)
 }
 
 // Dry land far from any water: nothing.
 frogs.place(500, 0)
 frogs.update(500, GROUND, 0, DT)
-check(alive().length === 0 && frogs.mesh.count === 0 && frogs.card.count === 0, 'no frogs away from water', `${alive().length} alive, mesh ${frogs.mesh.count}, card ${frogs.card.count}`)
+check(alive().length === 0 && drawnCount() === 0, 'no frogs away from water', `${alive().length} alive, ${drawnCount()} drawn`)
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 if (failures) process.exit(1)

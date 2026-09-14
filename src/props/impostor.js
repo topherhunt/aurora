@@ -701,10 +701,13 @@ export function buildImpostorCard(
   if (azimuth !== 0 && upNormal) {
     throw new Error('buildImpostorCard: a spun card has no fixed azimuth to be baked at')
   }
-  // `spherical` is not a shape -- the vertices below are identical either way.
-  // It says which of billboardVertex's two spins this card will meet, and the
-  // only thing that depends on that is the bounding volume. See the note by
-  // the bounds at the end of this function.
+  // `spherical` says which of billboardVertex's two spins this card will meet.
+  // A cylindrical card stands on its origin, as a plant stands on the ground;
+  // a spherical one is CENTRED on it, because the spin pivots there and the
+  // pivot of a thing seen from every side is its middle: rocks.js puts the
+  // card's origin at the rock's centre, and the shader slides it up the view
+  // ray by the z scale (the rock's plan radius) so the ground cuts it where it
+  // cuts the mesh. See the note by the bounds at the end of this function.
   if (spherical && !upNormal) {
     throw new Error('buildImpostorCard: a card that is not marked for spinning cannot be spun spherically')
   }
@@ -754,9 +757,9 @@ export function buildImpostorCard(
     // so an apex-down triangle has real width where the subject's feet are. The
     // buried part is empty in every bake -- there is nothing under a tree -- so
     // it costs the fill of a strip the depth buffer mostly rejects against the
-    // terrain in front of it.
-    const y0 = -sink
-    const y1 = height - sink
+    // terrain in front of it. A spherical card is centred instead: see above.
+    const y0 = spherical ? -height / 2 : -sink
+    const y1 = y0 + height
     const corners = tri === 'up'
       ? [[-hw, y0, 0, 1], [hw, y0, 1, 1], [0, y1, 0.5, 0]]
       : tri === 'down'
@@ -829,19 +832,21 @@ export function buildImpostorCard(
   // describe. That is why only rocks show this and no other card does.
   //
   // The spherical spin does not. It rebuilds the vertex as
-  // `x * screenRight + y * screenUp` -- an orthonormal pair -- so a vertex ends
-  // up at distance hypot(x, y) FROM THE FOOT, pointing anywhere at all. The
-  // envelope is therefore a sphere centred on the foot whose radius is the
-  // longest vertex, which is exactly what is measured here. It is bigger than
-  // the tight one (about 2x on a square card) and that is the honest price of
-  // a quad that can face any direction.
+  // `x * screenRight + y * screenUp + toEye` -- an orthonormal pair and one
+  // local z unit up the view ray -- so a vertex ends up at distance
+  // hypot(x, y) + 1 from the centre, pointing anywhere at all. The envelope is
+  // therefore a sphere centred on the origin of that radius, which is exactly
+  // what is measured here. It is bigger than the tight one and that is the
+  // honest price of a quad that can face any direction. (The rock arena culls
+  // no instance against it -- PropArena is never perObjectFrustumCulled -- so
+  // this is the bound the geometry claims, not one anything draws by.)
   if (spherical) {
     let r2 = 0
     for (let k = 0; k < positions.length; k += 3) {
       const d2 = positions[k] ** 2 + positions[k + 1] ** 2 + positions[k + 2] ** 2
       if (d2 > r2) r2 = d2
     }
-    const r = Math.sqrt(r2)
+    const r = Math.sqrt(r2) + 1
     geo.boundingSphere.center.set(0, 0, 0)
     geo.boundingSphere.radius = r
     geo.boundingBox.min.set(-r, -r, -r)

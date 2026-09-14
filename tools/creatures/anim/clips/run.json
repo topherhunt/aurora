@@ -1,0 +1,25 @@
+{
+  "note": "Transverse gallop: both hind feet land close together, then both front, then a suspension. The back flexes once per stride and the body rises once, which is why bobFreq drops to 1 here.",
+  "duration": 0.38,
+  "samples": 24,
+  "stride": 0.7,
+  "stepHeight": 0.18,
+  "duty": 0.32,
+  "crouch": 0.05,
+  "toeOff": 0.5,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0.12,
+    "frontLeft": 0.46,
+    "frontRight": 0.58
+  },
+  "bodyBob": 0.02,
+  "bobFreq": 1,
+  "tailPitch": 1.25,
+  "tailSway": 0.15,
+  "tailLift": 0.3,
+  "headPitch": -0.1,
+  "headBob": 0.09,
+  "spineFlex": 0.15,
+  "spineRoll": 0.04
+}

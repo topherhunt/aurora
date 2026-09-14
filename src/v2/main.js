@@ -1467,6 +1467,7 @@ function updateQuestStats() {
   const info = renderer.info
   const st = terrain.stats
   const ts = trees.stats
+  const rs = rocks.stats
   const fps = avgMs > 0 ? 1000 / avgMs : 0
   const fps5 = avgMs5 > 0 ? 1000 / avgMs5 : 0
   const low5 = worstMs5 > 0 ? 1000 / worstMs5 : 0
@@ -1542,7 +1543,16 @@ function updateQuestStats() {
     ],
     [
       ...scatterCells('grass ', questToggles.grass, grass.stats),
-      ...scatterCells('rock ', questToggles.rockCaps || questToggles.boulders, rocks.stats),
+      ...scatterCells('rock ', questToggles.rockCaps || questToggles.boulders, rs),
+      // Main-thread ms of Rocks.update, and the instances its per-rock LOD
+      // ladder walked this frame over the resident tile count. The draw cost
+      // is what is left of the rock row's toll once this is subtracted.
+      ...(questToggles.rockCaps || questToggles.boulders
+        ? [
+            ['upd ', '#7f95b4'], [`${rs.updateMs.toFixed(1)}ms`.padEnd(7), rs.updateMs >= 1.5 ? '#ffd27a' : '#cfe3ff'],
+            ['walk ', '#7f95b4'], [`${kilo(rs.walked)}/${kilo(rs.tiles)}`.padEnd(11), '#cfe3ff'],
+          ]
+        : []),
       ...scatterCells('fern ', questToggles.ferns, ferns.stats),
       ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(6), '#8fd48f'],
       ['mode ', '#7f95b4'], [player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk', '#8fd48f'],
@@ -2164,15 +2174,13 @@ async function bootWorld() {
   // The frogs on the banks and the crabs on the lake boulders (render/frogs.js,
   // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
   await bootStep('frogs')
-  // Each critter's cross card is photographed off its GLB, so the bake waits on the load.
   frogs = new Frogs(scene, height, waterSurfaces, { seed: SEED, rocks, ground: terrain })
   lighting.patch(frogs.material, { mode: 'vertex', cacheKey: 'v2-frogs' })
-  lighting.patch(frogs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-frogs-card' })
   frogs.place(spawn.x, spawn.z)
-  frogs.ready.then(() => frogs.bakeCard(renderer))
   console.log(`[v2] frogs ${frogs.stats.alive} on ${frogs.stats.tiles} tiles at boot`)
   window.v2frogs = frogs
   await bootStep('crabs')
+  // The crab's cross card is photographed off its GLB, so the bake waits on the load.
   crabs = new Crabs(scene, height, waterSurfaces, { seed: SEED, rocks })
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
   lighting.patch(crabs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-crabs-card' })

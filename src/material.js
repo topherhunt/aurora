@@ -1419,13 +1419,24 @@ function billboardVertex(spherical, grow, spin = true) {
         dot( bbM[ 0 ], bbM[ 0 ] ), dot( bbM[ 1 ], bbM[ 1 ] ), dot( bbM[ 2 ], bbM[ 2 ] ) );
       vec3 bbS = sqrt( bbS2 );
 
-      // The card spans local X for its width and local Y for its height, with
-      // its foot on y = 0 (buildImpostorCard). So y is already measured up from
-      // the foot, and the two axes go straight onto screen right and screen up.
-      // The foot is the instance origin and nothing here moves it: a bed whose
-      // mesh does not stand on its origin hands the card tier its own matrix
-      // (RockBed._placeTier). The one attempt to read a foot off the instance
-      // matrix here drew nothing on the Quest's Adreno, silently.
+      // The card spans local X for its width and local Y for its height,
+      // CENTRED on its origin (buildImpostorCard, spherical), so the two axes
+      // go straight onto screen right and screen up about the instance origin,
+      // which the bed puts at the rock's centre (RockBed._placeTier). The one
+      // attempt to read a foot off the instance matrix here drew nothing on the
+      // Quest's Adreno, silently.
+      //
+      // AND THE CARD STANDS IN THE ROCK'S NEAR BULGE, NOT THROUGH ITS MIDDLE.
+      // The z column's length is the slide the bed chose (CARD_SLIDE of the
+      // placed rock's plan radius, rocks.js; a flat card has no other use for
+      // it), and the card moves that far up the view ray, so the ground cuts
+      // it about where it cuts the rock's silhouette. A card through the
+      // centre is cut too high from every eye that is not level: on the flat
+      // from above it loses the whole near face, and on a hillside seen from
+      // below the ground at the centre is over the card's top -- a rock
+      // backing over the card rung vanished on the spot. Every spun card's
+      // matrix is the bed's own (spunCardFrame), so the column is never 0,
+      // which the divide below could not take.
       //
       // THOSE LOCAL METRES ARE THE CARD AT SCALE 1, and the instance scale has
       // to multiply them exactly as it multiplies a mesh vertex. Leave it out
@@ -1444,7 +1455,7 @@ function billboardVertex(spherical, grow, spin = true) {
       // card would have had standing still. The cylindrical branch below never
       // needed any of this: it rotates within object space and never leaves it,
       // so the scale is never divided out to begin with.
-      vec3 bbW = ( transformed.x * bbS.x ) * bbRw + ( transformed.y * bbS.y ) * bbUw;
+      vec3 bbW = ( transformed.x * bbS.x ) * bbRw + ( transformed.y * bbS.y ) * bbUw + bbFw * bbS.z;
       // v * M is M-transpose * v in GLSL; the divide finishes the inverse.
       transformed = ( bbW * bbM ) / bbS2;`
     : /* glsl */ `

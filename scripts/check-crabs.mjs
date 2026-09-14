@@ -15,7 +15,7 @@
 // rocks landed late and never got its crabs; a frame that costs more than a
 // scatter is allowed to; crabs all one colour; a far crab still drawn as the
 // mesh, or a card that does not stand on its crab's stone at its crab's tilt
-// and hue, that has no top to be seen from above, or that is not dithered; a
+// and hue, that has no top to be seen from above, or that is dithered; a
 // crab drawn as flat as its mesh or tiptoeing on the stone instead of sunk into
 // it; a crab on a steep shoulder standing straight up because the far side of
 // its footprint is off the stone, or one at the top of a face tipped over it.
@@ -306,9 +306,9 @@ const sinkOf = (c) => SINK * 0.3 * c.size
     check(topY.every((y) => Math.abs(y - height / 2) < 1e-6) && Math.min(...topX) < -halfX && Math.max(...topX) > halfX && Math.min(...topZ) < -halfZ && Math.max(...topZ) > halfZ && new Set(topX).size === 2 && new Set(topZ).size === 2, 'the other quad lies flat at the body\'s middle, the body\'s length by its breadth: the top', `y ${topY[0].toFixed(3)} of ${height.toFixed(3)}`)
     check([4, 5, 6, 7].every((i) => uv.getX(i) >= 0.5) && [0, 1, 2, 3].every((i) => uv.getX(i) <= 0.5), 'the side reads the left half of the picture, the top the right')
   }
-  const shader = { vertexShader: '#include <common>', fragmentShader: '#include <clipping_planes_fragment>\n#include <normal_fragment_begin>' }
+  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <normal_fragment_begin>' }
   crabs.cardMaterial.onBeforeCompile(shader)
-  check(/gl_FragCoord\.x \+ gl_FragCoord\.y, 2\.0 \) < 1\.0 \) discard/.test(shader.fragmentShader) && crabs.cardMaterial.alphaTest === 0.5, 'the card is a cutout drawn on every other pixel of a fixed screen checkerboard')
+  check(!/discard/.test(shader.fragmentShader) && crabs.cardMaterial.alphaTest === 0.5, 'the card is a cutout drawn whole, not dithered')
   check(crabs.cardMaterial.customProgramCacheKey() !== crabs.material.customProgramCacheKey(), 'the card compiles its own program')
   // Pooled over seeds again, so both sides of the line are populated: the shelf is a few metres from her, the floor and the beach well past CARD_M.
   const HEAD = [15, LEVEL + 1.6, 0]

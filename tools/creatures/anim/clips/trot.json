@@ -1,0 +1,26 @@
+{
+  "note": "Diagonal pairs move together and duty drops below half, so there is a moment with no foot down at all. That suspension is what makes a trot look like a trot instead of a fast walk.",
+  "duration": 0.51,
+  "samples": 24,
+  "stride": 0.7,
+  "stepHeight": 0.16,
+  "duty": 0.42,
+  "crouch": 0.06,
+  "toeOff": 0.45,
+  "phases": {
+    "frontLeft": 0,
+    "hindRight": 0,
+    "frontRight": 0.5,
+    "hindLeft": 0.5
+  },
+  "bodyBob": 0.016,
+  "bobFreq": 2,
+  "bodySway": 0.006,
+  "tailPitch": 1.2,
+  "tailSway": 0.25,
+  "tailLift": 0.2,
+  "headPitch": -0.06,
+  "headBob": 0.07,
+  "spineYaw": 0.06,
+  "spineRoll": 0.05
+}

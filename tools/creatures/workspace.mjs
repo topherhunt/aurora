@@ -39,6 +39,7 @@ import {
   waitForTask, download, estimateCredits, uploadImage,
 } from './tripo.mjs'
 import { CREATURES } from './creature-roster.mjs'
+import { blendRig } from './blend-rig.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const WORK = path.join(ROOT, 'tools/creatures/work')
@@ -367,7 +368,20 @@ export async function runRig(id, { rigType, spec = 'mixamo' }) {
   const s = readState(id)
   s.rigType = rigType
   writeState(id, s)
-  return { taskId, credits, rigType, path: path.relative(ROOT, path.join(dir, 'rig.glb')) }
+  return { taskId, credits, rigType, path: path.relative(ROOT, path.join(dir, 'rig.glb')), blend: tryBlendRig(id) }
+}
+
+/**
+ * The .blend that makes the rig animatable in Blender. Reported rather than
+ * thrown, and only here: the Tripo half is paid for and already on disk, so a
+ * missing local Blender must not surface as a failed rig.
+ */
+export function tryBlendRig(id) {
+  try {
+    return { ok: true, ...blendRig(id) }
+  } catch (err) {
+    return { ok: false, error: String(err.message ?? err) }
+  }
 }
 
 /**
@@ -422,7 +436,9 @@ export function assets(id) {
   // and which loader it needs is in the extension.
   // `rigFixed` is the rig editor's output -- the same skeleton with our bone
   // vocabulary on it. It is what Blender should import, when it exists.
-  return { source: has('source.png'), mesh: workingMesh(dir), rig: has('rig.glb'), rigFixed: has('rig-fixed.glb'), anims, lods, meshCount: (state.meshes ?? []).length, state }
+  // `blend` is the animatable rig: the same skeleton with its bones connected,
+  // its widget spheres hidden and Auto IK on -- none of which glTF can carry.
+  return { source: has('source.png'), mesh: workingMesh(dir), rig: has('rig.glb'), rigFixed: has('rig-fixed.glb'), blend: has('rig.blend'), anims, lods, meshCount: (state.meshes ?? []).length, state }
 }
 
 // --- the asset index --------------------------------------------------------

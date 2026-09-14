@@ -234,9 +234,10 @@ const SHIPPED = path.join(ROOT, 'public/creatures')
 const shipped = fs.readdirSync(SHIPPED).filter((n) => n.endsWith('.glb'))
 check(shipped.length > 0, `found the shipped creatures (${shipped.length})`)
 for (const name of shipped) {
-  const id = name.slice(0, -4)
+  // A ladder tier, <id>-lod<k>.glb, wears its pick's WebP.
+  const id = name.slice(0, -4).replace(/-lod\d+$/, '')
   const entry = CREATURES.find((c) => c.id === id)
-  check(!!entry, `${name} is a roster creature`)
+  check(!!entry, `${name} is a roster creature${id === name.slice(0, -4) ? '' : "'s ladder tier"}`)
   if (!entry) continue
   const { json } = readGlbChunks(path.join(SHIPPED, name))
   const images = json.images ?? []

@@ -113,6 +113,16 @@ export const KNEE_TEXELS = 2
 // looked pockmarked and leaves this one alone.
 export const DETAIL_GAIN = 4 / 3
 
+// Per-octave multipliers laid on AFTER the fit, keyed by wavelength in metres.
+// Applied outside calibrateRough's unit stack for the same reason `bare` is:
+// the fit probes at knee / 16 = 1 m, exactly where these octaves live, so a cut
+// inside the law would shrink `unitAt` and be re-measured away into the 4-16 m
+// band. Outside it, the fit is untouched and only the named octaves move.
+export const FINE_CUT = new Map([
+  [2, 0.5],
+  [1, 0.5],
+])
+
 /** The amplitude law, as one function, so the calibration and the octave table cannot disagree. */
 function amplitude(lambda, rough, knee, hurst, slopeKnee, hurstFine, shoulder) {
   if (lambda > knee) return rough * knee ** hurst * (knee / lambda) ** shoulder
@@ -126,7 +136,7 @@ export class Detail {
    * V2Height passes heightmap.texelSize * KNEE_TEXELS. `rough` is the amplitude
    * scale and comes from calibrateRough, not from a literal.
    */
-  constructor({ seed, knee, rough, sharpen = 0, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
+  constructor({ seed, knee, rough, sharpen = 0, fineCut = FINE_CUT, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
     if (!Number.isFinite(seed)) throw new Error(`Detail: seed must be a finite number, got ${seed}`)
     if (!Number.isFinite(sharpen) || sharpen < 0 || sharpen > 1) throw new Error(`Detail: sharpen must be 0..1, got ${sharpen}`)
     if (!(knee > 0) || !Number.isFinite(knee)) throw new Error(`Detail: knee must be a finite number of metres > 0, got ${knee}`)
@@ -154,7 +164,8 @@ export class Detail {
     this.table = []
     for (let k = 0; k < K; k++) {
       const lambda = LAMBDA0 / 2 ** k
-      const amp = amplitude(lambda, rough, knee, hurst, slopeKnee, hurstFine, shoulder)
+      const cut = fineCut !== null && fineCut.has(lambda) ? fineCut.get(lambda) : 1
+      const amp = amplitude(lambda, rough, knee, hurst, slopeKnee, hurstFine, shoulder) * cut
       this._lambda[k] = lambda
       this._amp[k] = amp
       this._freq[k] = 1 / lambda
@@ -466,6 +477,9 @@ function roughnessOf(f, lag, sites = CAL_SITES) {
  * structure of its own (JPEG blocking, a bad resample) and the extrapolation is
  * measuring that instead of terrain.
  *
+ * The unit stack is built WITHOUT FINE_CUT, so the cut is not re-measured away
+ * -- see that constant.
+ *
  * The last step is DETAIL_GAIN: the fit is a curvature rms and the eye is not,
  * so the shipped amplitude sits a stated ratio above exact continuity. `rough`
  * is linear in every measurement above, so the gain is a clean multiply and
@@ -513,7 +527,7 @@ export function calibrateRough({ heightmap, seed, knee, sharpen = 0, exposureGai
   // is differently rough, not more rough -- so a side-by-side is a comparison of
   // two characters, not a comparison of two amplitudes, which is the only way to
   // tell whether the idea was any good.
-  const unit = new Detail({ seed, knee, rough: 1, sharpen, hurst, slopeKnee, hurstFine, shoulder })
+  const unit = new Detail({ seed, knee, rough: 1, sharpen, fineCut: null, hurst, slopeKnee, hurstFine, shoulder })
   const unitAt = unit.roughnessAt(probe, heightmap, exposureGain)
   if (!(unitAt > 0)) throw new Error(`calibrateRough: unit detail has no roughness at lag ${probe} m -- the octave table is empty or the band limit is inverted`)
 

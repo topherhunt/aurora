@@ -27,16 +27,22 @@ const TIMEOUT_MS = 240000
 const SHOT = process.argv.includes('--shot') ? process.argv[process.argv.indexOf('--shot') + 1] : null
 
 // Brightness and colour within a tenth; ground covered within a fifth over the
-// bed and within a half on any one rock. The sphere mean is exact for a sphere
-// and the boulder is not one, and the card is the mean silhouette squeezed from
-// the widest photograph -- see THE CARD in rock-bank.js -- so a mesh seen
-// broadside covers more than its card and one seen end-on less, and only the
-// bed's mean is the card's to match. The per-rock bound is loose for that yaw
-// and still a third of what a box-shaped frame drew a leaned rock at.
+// bed and within half again, either way, on any one rock. The sphere mean is
+// exact for a sphere and the boulder is not one, and the card is the mean
+// silhouette squeezed from the widest photograph -- see THE CARD in
+// rock-bank.js -- so a mesh seen broadside covers more than its card and one
+// seen end-on less, and only the bed's mean is the card's to match. On the
+// hill the ground cuts the card along a line and the rock around its bulge,
+// and the two part most where the eye looks square into the slope: a sunk
+// roll draws a card up to half again the rock's height on screen, a third of
+// what a box-shaped frame drew a leaned rock at. A rock the hill leaves a
+// sliver of, under a third of what one on the flat covers, may swap to a
+// sliver or to nothing, never to a whole card, and never the other way round.
 const LUMA_TOL = 0.10
 const CHROMA_TOL = 0.04
 const COVER_TOL = 0.20
-const COVER_ONE_TOL = 0.50
+const COVER_ONE = 1.5 * 1.5
+const SLIVER = 1 / 3
 
 const chrome = findChrome()
 if (!chrome) {
@@ -127,11 +133,18 @@ for (const row of report.rows) {
     `${tag}: and covers the ground the mesh covers`,
     `card/mesh pixels ${cover.toFixed(3)} (${card.pixels} / ${mesh.pixels}), want within ${COVER_TOL}`)
   if (mesh.each) {
-    const ratios = mesh.each.map((m, i) => card.each[i] / m)
-    const worst = ratios.reduce((w, r, i) => Math.abs(r - 1) > Math.abs(ratios[w] - 1) ? i : w, 0)
-    check(ratios.every((r) => Math.abs(r - 1) <= COVER_ONE_TOL),
+    const flat = report.placements.map((p, i) => i).filter((i) => !report.placements[i].includes('hill'))
+    const sliver = flat.reduce((sum, i) => sum + mesh.each[i], 0) / flat.length * SLIVER
+    const shown = mesh.each.map((m, i) => m >= sliver && card.each[i] >= sliver)
+    const ratios = mesh.each.map((m, i) => shown[i] ? card.each[i] / m : 1)
+    const worst = ratios.reduce((w, r, i) => Math.abs(Math.log(r)) > Math.abs(Math.log(ratios[w])) ? i : w, 0)
+    check(ratios.every((r) => r <= COVER_ONE && r >= 1 / COVER_ONE),
       `${tag}: on every roll and lean the bed can place`,
-      `card/mesh ${Math.min(...ratios).toFixed(2)} .. ${Math.max(...ratios).toFixed(2)} over ${ratios.length} rocks, worst ${report.placements[worst]}, want each within ${COVER_ONE_TOL}`)
+      `card/mesh ${Math.min(...ratios).toFixed(2)} .. ${Math.max(...ratios).toFixed(2)} over ${shown.filter(Boolean).length} rocks showing, worst ${report.placements[worst]}, want each within ${COVER_ONE}x`)
+    const half = mesh.each.map((m, i) => !shown[i] && (m >= sliver || card.each[i] >= sliver) ? i : -1).filter((i) => i >= 0)
+    check(half.length === 0,
+      `${tag}: and a rock the hill leaves a sliver of swaps to a sliver or nothing, and never the other way round`,
+      half.length ? half.map((i) => `${report.placements[i]}: mesh ${mesh.each[i]} card ${card.each[i]} px`).join('; ') : `${shown.filter((x) => !x).length} slivers, under ${sliver.toFixed(0)} px`)
   }
 }
 

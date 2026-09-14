@@ -826,10 +826,13 @@ function creatureGen() {
         const report = applyRigEdit(gltf, edit, bin)
         writeGlb(join(dir, 'rig-fixed.glb'), gltf, report.bin)
         writeFileSync(editFile, JSON.stringify(edit, null, 2))
+        // rig.blend is built from rig-fixed.glb once one exists, so it has to be
+        // rebuilt here or Blender keeps opening the pre-rename skeleton.
+        const blend = creatures.tryBlendRig(id)
         // Everything but the rebuilt buffer, which is the whole mesh and has
         // just been written to disk where it belongs.
         const { bin: _rebuilt, ...counts } = report
-        return { ok: true, ...counts }
+        return { ok: true, ...counts, blend }
       }))
 
       // Free, local. src/mesh/decimate.js runs in the page and posts the GLB it

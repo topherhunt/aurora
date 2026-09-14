@@ -499,12 +499,17 @@ console.log('\nreduction')
 {
   const g = bumpyGrid(20)
   const before = boundsOf(g)
-  const after = boundsOf(decimate(g, 150))
-  // Half-edge collapse only ever removes vertices, so the result cannot reach
-  // outside the original bounds. Growth means a vertex was moved somewhere new.
-  const grew = after.slice(0, 3).some((v, i) => v < before[i] - 1e-6) ||
-    after.slice(3).some((v, i) => v > before[i + 3] + 1e-6)
-  check(!grew, 'the decimated mesh never grows outside the original bounds')
+  const diag = Math.hypot(before[3] - before[0], before[4] - before[1], before[5] - before[2])
+  const growth = (m) => {
+    const after = boundsOf(m)
+    return Math.max(...after.slice(0, 3).map((v, i) => before[i] - v), ...after.slice(3).map((v, i) => v - before[i + 3]))
+  }
+  // Half-edge collapse only ever removes vertices, so without the fit the
+  // result cannot reach outside the original bounds. The fit moves them, and
+  // is allowed outside by half a percent of the diagonal and no more.
+  check(growth(decimate(g, 150, { fit: false })) <= 1e-6, 'unfitted, the decimated mesh never grows outside the original bounds')
+  const grew = growth(decimate(g, 150))
+  check(grew <= 0.005 * diag + 1e-6, 'fitted, it grows by at most half a percent of the diagonal', `${(100 * grew / diag).toFixed(2)}%`)
 }
 {
   // A mesh that is all seam cannot reduce, and must say so rather than
@@ -587,19 +592,26 @@ console.log('\nsmall features survive a hard decimation')
   // 40 triangles out of 360 -- past the point where a plain quadric has eaten the
   // ears, and about where a creature's coarsest LOD tier lands. The size and
   // shape terms are off here: both outbid the feature term by design, and this
-  // check is about the feature term.
-  const kept = decimate(mesh, 40, { uvMode: 'drop', sizeWeight: 0, shapeWeight: 0 })
+  // check is about the feature term. So is the fit, which would push a stub
+  // back up the ear and hide what the collapse order did.
+  const kept = decimate(mesh, 40, { uvMode: 'drop', sizeWeight: 0, shapeWeight: 0, fit: false })
   const reach = tips.map((t, i) => support(kept, t) / full[i])
   check(reach.every((r) => r > 0.9), 'at 40 triangles a ball still reaches the tip of both its ears', reach.map((r) => r.toFixed(2)).join(' '))
 
   // The same run with every point term switched off, so the check names the
   // mechanism it is guarding rather than just asserting a good number.
-  const flat = decimate(mesh, 40, { uvMode: 'drop', featureWeight: 0, sizeWeight: 0, shapeWeight: 0 })
+  const flat = decimate(mesh, 40, { uvMode: 'drop', featureWeight: 0, sizeWeight: 0, shapeWeight: 0, fit: false })
   const flatReach = tips.map((t, i) => support(flat, t) / full[i])
   check(flatReach.some((r) => r < 0.75), 'and a plain area-weighted quadric lops them off', flatReach.map((r) => r.toFixed(2)).join(' '))
 
   check(triCount(kept) === triCount(flat), 'the ears are kept at the same triangle count, not by stopping early',
     `${triCount(kept)} vs ${triCount(flat)}`)
+
+  // The fit's samples inside the lost ear pull the stub's points up it: a
+  // point inside the source is never clamped.
+  const refit = decimate(mesh, 40, { uvMode: 'drop', featureWeight: 0, sizeWeight: 0, shapeWeight: 0 })
+  const refitReach = tips.map((t, i) => support(refit, t) / full[i])
+  check(refitReach.every((r) => r > 0.85), 'and the fit grows the stubs back most of the way up', refitReach.map((r) => r.toFixed(2)).join(' '))
 
   // What ships: the size term takes the last ring or two off each ear, and
   // that is the trade the bench's default makes. Pinned so it changes on
@@ -644,16 +656,19 @@ console.log('\ndetached pieces go before the body does')
   check(analyzeMesh(some).pieces === 2 && triCount(some) === 24, 'the smallest pieces go first', `${analyzeMesh(some).pieces} pieces, ${triCount(some)} triangles`)
   check(support(some, [-1, 0, 0]) >= 9, 'and the medium piece is still standing', support(some, [-1, 0, 0]).toFixed(2))
 
+  // The fit is what nudges the body: the deleted pieces' samples still pull
+  // on the surface nearest them, by area, so by well under a percent of it.
   const body = boundsOf(icosahedron()).map((v) => v * 5.7)
+  const nudge = 0.05
   const all = decimate(mesh, 20)
   check(analyzeMesh(all).pieces === 1 && triCount(all) === 20, 'at the body\'s own count every other piece is gone', `${analyzeMesh(all).pieces} pieces, ${triCount(all)} triangles`)
-  check(boundsOf(all).every((v, k) => Math.abs(v - body[k]) < 1e-5), 'and the body itself is untouched')
+  check(boundsOf(all).every((v, k) => Math.abs(v - body[k]) < nudge), 'and the body itself is not carved')
 
   const floor = decimate(mesh, 1)
   check(triCount(floor) > 0 && analyzeMesh(floor).pieces === 1, 'the largest piece is never deleted, however low the target', `${triCount(floor)} triangles`)
 
   const kept = decimate(mesh, 20, { dropIslands: false })
-  check(kept.stats.piecesDropped === 0 && analyzeMesh(kept).pieces === 1 && boundsOf(kept).every((v, k) => Math.abs(v - body[k]) < 1e-5),
+  check(kept.stats.piecesDropped === 0 && analyzeMesh(kept).pieces === 1 && boundsOf(kept).every((v, k) => Math.abs(v - body[k]) < nudge),
     'dropIslands:false deletes nothing whole; the tetrahedra still fold away before the body pays', `${triCount(kept)} triangles`)
 }
 

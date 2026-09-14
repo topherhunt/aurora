@@ -52,7 +52,7 @@ import {
   buildGrassStripBank, stripTiles, STRIP_BASE, STRIP_TILE_ASPECT, grassCardAspect,
   GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
-import { Grass, GRASS_TUNING } from '../src/v2/render/grass.js'
+import { Grass, GRASS_TUNING, shoreClumpAt } from '../src/v2/render/grass.js'
 import { RIM_AT, RIM_HYST, RIM_HYST_FRAC } from '../src/v2/render/rim.js'
 import {
   LAYER, LAYER_COUNT, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, buildTextureArray,
@@ -1019,18 +1019,21 @@ console.log('\n-- placement --')
   check(PLACEMENT.minElev < 22, 'grass reaches lower than ferns do', `${PLACEMENT.minElev} m`)
 
   // THE SHORE: a straight water's edge along x = 0, dry side x > 0, so the
-  // signed shore distance is x itself. Tufts inside SHORE.reach of it come up
-  // SHORE.gain x as many and SHORE.size x as tall; past it the carpet is
-  // byte-for-byte the dry world's.
+  // signed shore distance is x itself. Inside SHORE.reach of it, in a lush cell
+  // (shoreClumpAt), the plain tufts stand SHORE.size x as tall and the extra
+  // candidates join them; in the other cells and past the reach the carpet is
+  // byte-for-byte the dry world's. The plain-indexed tufts land on the same
+  // (x, z) in both beds, so they are matched by position and compared exactly;
+  // only the extras' count is statistical, which is why z runs the whole bed.
   const shoreWater = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => Math.min(reach, Math.max(-reach, x)) }
   const shore = new Grass(new THREE.Scene(), flat, shoreWater, clear, texArray, { seed: 7, style: 'tufts' })
   shore.place(0, 0)
   const plain = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
   plain.place(0, 0)
-  const R = FULL_RADIUS * 0.8
-  // Every tuft in a box, with its scale-y read back off the instance matrix.
-  const inBox = (g, x0, x1) => {
-    const out = []
+  // Every tuft in an x band, keyed by position, with its scale-y read back off
+  // the instance matrix.
+  const inBand = (g, x0, x1) => {
+    const out = new Map()
     const m = new THREE.Matrix4()
     const p = new THREE.Vector3()
     const q = new THREE.Quaternion()
@@ -1040,27 +1043,57 @@ console.log('\n-- placement --')
         const id = tile.ids[k]
         const x = g.instX[id]
         const z = g.instZ[id]
-        if (x < x0 || x >= x1 || z < -R || z >= R) continue
+        if (x < x0 || x >= x1) continue
         g.batch.getMatrixAt(id, m)
         m.decompose(p, q, sc)
-        out.push({ x, z, sy: sc.y })
+        out.set(`${x},${z}`, { x, z, sy: sc.y })
       }
     }
     return out
   }
-  const bank = inBox(shore, 0, SHORE.reach)
-  const bankPlain = inBox(plain, 0, SHORE.reach)
+  const bank = inBand(shore, 0, SHORE.reach)
+  const bankPlain = inBand(plain, 0, SHORE.reach)
+  let lushPlain = 0, lushExtra = 0, tallWrong = 0, sameWrong = 0, strayExtra = 0
+  for (const [key, e] of bank) {
+    const lush = shoreClumpAt(e.x, e.z, 7)
+    const twin = bankPlain.get(key)
+    if (!twin) {
+      if (lush) lushExtra++; else strayExtra++
+      continue
+    }
+    if (lush) {
+      lushPlain++
+      if (!near(e.sy / twin.sy, SHORE.size, 1e-4)) tallWrong++
+    } else if (e.sy !== twin.sy) {
+      sameWrong++
+    }
+  }
+  check(bankPlain.size > 200 && lushPlain > 50 && lushPlain < bankPlain.size * 0.7,
+    `the ${SHORE.reach} m bank is part lush cells, part plain`, `${lushPlain} of ${bankPlain.size} plain tufts in lush cells`)
+  check(bank.size > bankPlain.size && bankPlain.size > 0 && [...bankPlain.keys()].every((k) => bank.has(k)),
+    'and every plain tuft on the bank still stands', `${bank.size} vs ${bankPlain.size}`)
+  check(tallWrong === 0, `in a lush cell every plain tuft is exactly ${SHORE.size}x as tall`, `${tallWrong} off`)
+  check(sameWrong === 0, 'and outside one it is the height it always was', `${sameWrong} off`)
+  check(strayExtra === 0 && near(lushExtra / lushPlain, SHORE.gain - 1, 0.2),
+    `the extra candidates stand only in lush cells, ${SHORE.gain - 1}x the plain count there`,
+    `${lushExtra} extras vs ${lushPlain} plain in lush cells, ${strayExtra} strays`)
   // Out through the thinned field, which both beds thin identically.
-  const beyond = inBox(shore, SHORE.reach, DRAW_RADIUS)
-  const beyondPlain = inBox(plain, SHORE.reach, DRAW_RADIUS)
-  const mean = (a) => a.reduce((t, e) => t + e.sy, 0) / a.length
-  check(near(bank.length / bankPlain.length, SHORE.gain, 0.08),
-    `${SHORE.gain}x the tufts within ${SHORE.reach} m of the water`, `${bank.length} vs ${bankPlain.length}`)
-  check(near(mean(bank) / mean(bankPlain), SHORE.size, 0.08),
-    `and ${SHORE.size}x as tall`, `${mean(bank).toFixed(2)} vs ${mean(bankPlain).toFixed(2)} mean scale`)
+  const beyond = [...inBand(shore, SHORE.reach, DRAW_RADIUS).values()]
+  const beyondPlain = [...inBand(plain, SHORE.reach, DRAW_RADIUS).values()]
   check(beyond.length > 0 && beyond.length === beyondPlain.length
     && beyond.every((e, i) => e.x === beyondPlain[i].x && e.sy === beyondPlain[i].sy),
     'and past it the carpet is exactly the dry one', `${beyond.length} vs ${beyondPlain.length}`)
+  // The clump mask itself: a pure function of position and seed, at about the
+  // fraction it declares, and not the same mask under another seed.
+  {
+    let a = 0, b = 0, n = 0
+    for (let x = -40; x < 40; x += 0.5) for (let z = -40; z < 40; z += 0.5) { n++; if (shoreClumpAt(x, z, 7)) a++; if (shoreClumpAt(x, z, 8)) b++ }
+    check(near(a / n, SHORE.clumpFrac, 0.05) && near(b / n, SHORE.clumpFrac, 0.05),
+      `shoreClumpAt marks about ${SHORE.clumpFrac} of the ground lush`, `${(a / n).toFixed(3)} and ${(b / n).toFixed(3)}`)
+    check(shoreClumpAt(0.1, 0.1, 7) === shoreClumpAt(SHORE.clump - 0.1, SHORE.clump - 0.1, 7)
+      && shoreClumpAt(3.2, -7.9, 7) === shoreClumpAt(3.2, -7.9, 7),
+      `and it is constant across a ${SHORE.clump} m cell`)
+  }
   shore.dispose()
   plain.dispose()
 }

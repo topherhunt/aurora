@@ -14,6 +14,12 @@
 // are a few pixels tall in the world are designated 128. Tripo's 2048 stays in
 // the work dir either way, so a designation is one edit and a re-ship.
 //
+// `faceTurnDeg` is the yaw about +Y ship.mjs turns the picked mesh by so it
+// faces +X, which is what the world assumes of every shipped creature. Tripo
+// hands a mesh back facing wherever its source image looked from, so a pick
+// generated off a three-quarter view stands 45 deg off until told otherwise;
+// it is a fact about the pick, so a new pick means measuring it again.
+//
 // Editable in the bench -- this is the starting point for judging whether a
 // concept is worth spending art on, not a fixed list.
 //
@@ -179,6 +185,7 @@ const ANIMALS = [
     rigType: 'none',
     sizeM: 0.09,
     texPx: TEX_PX_SMALL,
+    faceTurnDeg: -48,
     description:
       'a plump marsh frog crouched low, damp mottled green and olive skin with darker blotches and a pale cream ' +
       'throat, a bright ridge line down each side of the back, long folded hind legs, splayed webbed feet, ' +

@@ -748,9 +748,11 @@ const workPath = (id) => `tools/creatures/work/${id}`
 $('blenderRoundTrip').addEventListener('click', () => {
   const id = currentId()
   $('blenderDir').textContent = `${workPath(id)}/`
-  // Whatever is furthest along: rig-fixed.glb once the rig editor has saved
-  // names to it, rig.glb if Tripo rigged it, and otherwise the bare mesh --
-  // which is the right import when the armature is Blender's job too.
+  // Opening rig.blend beats importing the glb: the .blend is the same skeleton
+  // with the Blender-only authoring state already on it. The glb import is the
+  // fallback for a creature that has no rig yet, where the armature is yours.
+  $('blenderOpen').hidden = !assets.blend
+  $('blenderImportStep').hidden = assets.blend
   $('blenderImport').textContent = assets.rigFixed ? 'rig-fixed.glb' : assets.rig ? 'rig.glb' : assets.mesh
   $('blenderNoRig').hidden = assets.rig
   $('blenderDialog').showModal()

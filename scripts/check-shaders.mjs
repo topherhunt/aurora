@@ -27,7 +27,7 @@ import { WorldProbe } from '../src/world-probe.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { createBladeMaterial } from '../src/props/grass-blades.js'
 import { Fish } from '../src/v2/render/fish.js'
-import { GLINT, glint, hueVary } from '../src/v2/render/critters.js'
+import { GLINT, createCritterCardMaterial, glint, hueVary } from '../src/v2/render/critters.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -831,7 +831,7 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   }
 }
 
-// --- src/v2/render/critters.js: the glint and the hue ---------------------------
+// --- src/v2/render/critters.js: the glint, the hue and the card -----------------
 //
 // What a frog wears exactly, and a crab's fragment stage: a Standard at a
 // uniform roughness whose onBeforeCompile is glint then hueVary, under the
@@ -866,6 +866,30 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   // The hue turn, at both ends: the per-instance attribute in, the rotation applied to the sampled colour.
   if (!vert.includes('vHue = aHue;')) MISSING_MARKS.push(`${label} vert: the hue attribute`)
   if (!frag.includes('cross( hueK, diffuseColor.rgb )')) MISSING_MARKS.push(`${label} frag: the hue turn`)
+}
+
+// The critter card: a Lambert cutout with the hue turn again, and the double-sided normal flip undone.
+{
+  const material = createCritterCardMaterial('check-card')
+  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-card' })
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+  const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']
+  const label = 'critters card        '
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+  SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+  CROSS_STAGE.push([label, vert, frag])
+  if (!frag.includes('cross( hueK, diffuseColor.rgb )')) MISSING_MARKS.push(`${label} frag: the hue turn`)
+  if (!frag.includes('normal *= faceDirection;')) MISSING_MARKS.push(`${label} frag: the flip undone`)
+  if (frag.includes('gl_FragCoord.x + gl_FragCoord.y')) MISSING_MARKS.push(`${label} frag: a dither the card no longer wears`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

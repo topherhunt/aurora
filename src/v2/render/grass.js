@@ -160,13 +160,18 @@ import { RimFade, RIM_PHASES } from './rim.js'
 // with FULL_RADIUS below is what makes that affordable -- read the two together.
 const DENSITY = 6
 
-// THE SHORE IS THICKER AND TALLER. Within `reach` metres of a lake or river edge
-// (dry side; WaterSurfaces.shoreDistAt) a tile offers `gain` x its candidates and
-// every survivor's height roll is `size` x. The extra candidates are the ones at
-// index k >= the plain count, so the carpet away from water is byte-for-byte the
-// one it always was, and the pool is bounded by the shore's count, not the mean's.
-// Applies to every style, since all three place through the one loop.
-const SHORE = { reach: 5, gain: 2, size: 2 }
+// THE SHORE IS THICKER AND TALLER, IN CLUMPS. Within `reach` metres of a lake or
+// river edge (dry side; WaterSurfaces.shoreDistAt) a tile offers `gain` x its
+// candidates and every survivor's height roll is `size` x -- but only inside a
+// LUSH CELL. The ground is cut into `clump`-metre squares and `clumpFrac` of
+// them, picked by hashing the cell, are lush; the rest of the bank is the plain
+// carpet, so the fringe reads as tussocks along the water rather than a mown
+// strip of one height. One integer hash a candidate (shoreClumpAt), no noise.
+// The extra candidates are the ones at index k >= the plain count, so the carpet
+// away from water is byte-for-byte the one it always was, and the pool is
+// bounded by the shore's count, not the mean's. Applies to every style, since
+// all three place through the one loop.
+const SHORE = { reach: 2, gain: 2, size: 2, clump: 1.5, clumpFrac: 0.5 }
 
 // Metres. Inside this every tuft stands; past it density scales by
 // FULL_RADIUS / d, so every doubling of distance halves it. The strip bed keeps
@@ -721,6 +726,18 @@ function tileSeed(tx, tz, seed) {
   h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d)
   h = Math.imul(h ^ (h >>> 12), 0x297a2d39)
   return (h ^ (h >>> 15)) >>> 0
+}
+
+/**
+ * Whether (x, z) lies in a lush shore cell -- see SHORE. A pure function of
+ * position and the world seed, like tileSeed, so a clump does not move when the
+ * tile it straddles is regrown. The seed is folded so the cell hash is not the
+ * tile hash of the same integers.
+ */
+export function shoreClumpAt(x, z, seed) {
+  const cx = Math.floor(x / SHORE.clump)
+  const cz = Math.floor(z / SHORE.clump)
+  return tileSeed(cx, cz, (seed | 0) ^ 0x5bd1e995) / 4294967296 < SHORE.clumpFrac
 }
 
 // ---------------------------------------------------------------------------
@@ -1858,11 +1875,14 @@ export class Grass {
       const snowLine = this.field.snowLineAt(x, z)
       if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
       // THE SHORE CUT, before the path pair: a candidate past plainCount stands
-      // only within SHORE.reach of water, and on plain ground that is every one
-      // of them. Strict `<`, because `reach` is shoreDistAt's nothing-near answer.
+      // only in a lush cell within SHORE.reach of water, and on plain ground that
+      // is every one of them. Cell hash first, because it is cheaper than the
+      // shore query and halves the candidates that pay for one. Strict `<`,
+      // because `reach` is shoreDistAt's nothing-near answer.
       let onShore = false
       if (k >= this.plainCount) {
-        onShore = this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
+        onShore = shoreClumpAt(x, z, this.seed)
+          && this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
         if (!onShore) { rej.sparse++; continue }
       }
       const road = this.paths.nearest(x, z, 'road')
@@ -1896,7 +1916,10 @@ export class Grass {
 
       // A plain candidate pays the shore query only once it has survived
       // everything else, and only for its size.
-      if (!onShore) onShore = this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
+      if (!onShore) {
+        onShore = shoreClumpAt(x, z, this.seed)
+          && this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
+      }
       const sy = (onShore ? height * SHORE.size : height) / this.baseHeight
       if (this.strips) {
         // ONE EXTRA HEIGHT SAMPLE AT EACH END, and the strip is rolled onto the

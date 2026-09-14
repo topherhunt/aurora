@@ -383,14 +383,15 @@
 
       <h4>take it out</h4>
       <ul>
-        <li>Import <code id="blenderImport">rig-fixed.glb</code> &mdash; File &gt; Import &gt; glTF 2.0.</li>
+        <li id="blenderOpen">Open <code>rig.blend</code> &mdash; not the glb. It is rebuilt from the rig on every rig and every rig-edit save, and it carries three things glTF cannot: bones <b>connected</b> so Auto IK works, Tripo's icosphere bone widgets hidden, and Auto IK already on. <code>npm run creatures:blend</code> rebuilds it by hand if you ever need to.</li>
+        <li id="blenderImportStep">Import <code id="blenderImport">rig-fixed.glb</code> &mdash; File &gt; Import &gt; glTF 2.0.</li>
         <li id="blenderNoRig">This one has no skeleton yet, so that is the bare mesh and the armature is yours to build. Rigging in Tripo first ($0.25) is the other option; it gets the hierarchy right and the names wrong.</li>
         <li>Name the bones from one of the trees below. Shared names are what let a clip retarget onto another creature instead of being authored per animal.</li>
       </ul>
 
       <h4>bone names</h4>
       <p class="step">Mixamo's convention throughout: side is a <b>prefix word</b> (<code>LeftArm</code>, not <code>Arm.L</code>), the first of a chain carries no number (<code>Spine</code>, <code>Spine1</code>, <code>Spine2</code>), thigh is <code>UpLeg</code> and shin is <code>Leg</code>, upper arm is <code>Arm</code> and forearm is <code>ForeArm</code>.</p>
-      <p class="step">Reading the trees: a run joined by <code>&#9472;</code> is an unbranched chain, and anything that has children of its own nests onto its own line. So the neck and both shoulders hang off <b><code>Spine2</code></b>, the last spine bone &mdash; not off <code>Spine</code>. In Blender only the unbranched runs are <em>connected</em> bones; every child that starts somewhere its parent's tail is not (both shoulders, both <code>UpLeg</code>s, the tail) is parented but disconnected.</p>
+      <p class="step">Reading the trees: a run joined by <code>&#9472;</code> is an unbranched chain, and anything that has children of its own nests onto its own line. So the neck and both shoulders hang off <b><code>Spine2</code></b>, the last spine bone &mdash; not off <code>Spine</code>. In Blender only the unbranched runs are <em>connected</em> bones, and that is what <code>rig.blend</code> sets up for you: a child whose head already sits on its parent's tail gets connected, and every branch point (both shoulders, both <code>UpLeg</code>s, the tail) stays disconnected, because snapping it would move the joint and shift the bind. That is also exactly where an IK chain should stop.</p>
 
       <details>
         <summary>biped &mdash; the Mixamo skeleton, verbatim</summary>

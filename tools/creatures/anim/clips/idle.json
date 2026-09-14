@@ -1,0 +1,24 @@
+{
+  "note": "Standing at rest. Zero stride with duty 1 keeps every foot planted for the whole cycle, so the IK holds the paws on the ground while the body breathes over them.",
+  "duration": 3.2,
+  "samples": 32,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.03,
+  "phases": {
+    "hindLeft": 0,
+    "frontLeft": 0,
+    "hindRight": 0,
+    "frontRight": 0
+  },
+  "bodyBob": 0.006,
+  "bobFreq": 2,
+  "tailPitch": 0.9,
+  "tailSway": 0.3,
+  "tailLift": 0.12,
+  "headPitch": -0.04,
+  "headBob": 0.035,
+  "headYaw": 0.06
+}

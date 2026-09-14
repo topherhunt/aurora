@@ -1,0 +1,24 @@
+{
+  "note": "Standing and scanning. Same planted-foot trick as idle, but the head sweeps a full arc and the body holds still under it, which is what makes it read as looking rather than fidgeting.",
+  "duration": 4.0,
+  "samples": 40,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.02,
+  "phases": {
+    "hindLeft": 0,
+    "frontLeft": 0,
+    "hindRight": 0,
+    "frontRight": 0
+  },
+  "bodyBob": 0.003,
+  "bobFreq": 2,
+  "tailPitch": 1.15,
+  "tailSway": 0.16,
+  "headPitch": -0.14,
+  "headYaw": 0.55,
+  "headYawPhase": 0,
+  "headBob": 0.03
+}

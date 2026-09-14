@@ -1,0 +1,50 @@
+{
+  "kind": "pose",
+  "note": "Folds down into a sphinx -- chest on the ground, forelegs stretched ahead, hind legs tucked out to the sides -- holds, and gets up. Same shape as the sit: the hold is a flat pair of keys so a game can cut it into down / rest / up.",
+  "samples": 52,
+  "limits": { "hipLimit": 1.6, "fold": 2.3 },
+  "keys": [
+    { "t": 0.0, "pose": { "tail": { "pitch": 0.9 } } },
+    { "t": 0.7, "pose": {
+      "root": { "lift": -0.14 },
+      "spine": { "pitch": -0.1 },
+      "head": { "pitch": 0.16 },
+      "tail": { "pitch": 1.0 },
+      "legs": {
+        "frontLeft": { "fore": 0.06 }, "frontRight": { "fore": 0.06 },
+        "hindLeft": { "fore": 0.16 }, "hindRight": { "fore": 0.16 }
+      }
+    } },
+    { "t": 1.7, "pose": {
+      "root": { "lift": -0.4, "fore": -0.02 },
+      "spine": { "pitch": -0.18 },
+      "head": { "pitch": 0.3 },
+      "tail": { "pitch": 1.5, "yaw": 0.7 },
+      "legs": {
+        "frontLeft": { "fore": 0.26, "lat": 0.03 }, "frontRight": { "fore": 0.26, "lat": -0.03 },
+        "hindLeft": { "fore": 0.36, "lat": 0.12 }, "hindRight": { "fore": 0.36, "lat": -0.12 }
+      }
+    } },
+    { "t": 3.6, "pose": {
+      "root": { "lift": -0.4, "fore": -0.02 },
+      "spine": { "pitch": -0.18 },
+      "head": { "pitch": 0.24, "yaw": -0.16 },
+      "tail": { "pitch": 1.5, "yaw": 0.7 },
+      "legs": {
+        "frontLeft": { "fore": 0.26, "lat": 0.03 }, "frontRight": { "fore": 0.26, "lat": -0.03 },
+        "hindLeft": { "fore": 0.36, "lat": 0.12 }, "hindRight": { "fore": 0.36, "lat": -0.12 }
+      }
+    } },
+    { "t": 4.6, "pose": {
+      "root": { "lift": -0.14 },
+      "spine": { "pitch": -0.1 },
+      "head": { "pitch": 0.16 },
+      "tail": { "pitch": 1.0 },
+      "legs": {
+        "frontLeft": { "fore": 0.06 }, "frontRight": { "fore": 0.06 },
+        "hindLeft": { "fore": 0.16 }, "hindRight": { "fore": 0.16 }
+      }
+    } },
+    { "t": 5.2, "pose": { "tail": { "pitch": 0.9 } } }
+  ]
+}

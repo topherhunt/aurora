@@ -41,13 +41,15 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 //   GIANTS      1.6 - 15 m    sparse, 1250 m   the landmarks
 //   EMBEDDED    2 - 32 m      sparse, 1900 m   blocks let INTO a face or a bed
 //   CLIFF SLABS 8 - 70 m      sparse, 4200 m   the panels a face is BUILT of
-//   CLIFF CAPS  1.5 - 9 m     medium, 530 m    the joint and rubble between them
 //   BED CAPS    0.8 - 6 m     medium, 360 m    plates showing through lake silt
+//   SHORE       0.5 - 2.5 m   dense, 80 m      the stones along a waterline
 //
 // EACH BED EXISTS BECAUSE SOMETHING IT NEEDS IS PER-BED AND CANNOT BE VARIED
 // WITHIN ONE -- the only test a new bed has to pass. Scree needs the candidate
 // count (`envDensity` is an accept rate capped at 1, so a saturated site cannot be
-// made denser by any multiplier); sunken needs `submergedOnly` and a size range of
+// made denser by any multiplier), and shore needs it for the same reason on a
+// strip the boulders bed's `shoreGain` can only double; sunken needs
+// `submergedOnly` and a size range of
 // its own; embedded needs `sinkRange` -- 70 to 90% under, where every other bed's
 // burial roll tops out at 80% of the way there, and a rock cannot be sunk that far
 // and also stand on the ground in the same bed. The two cliff beds are the
@@ -156,7 +158,7 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // walk around, and the stamps carry everything below it.
 const ROCK_MIN_SIZE = 0.5
 
-// A BED MAY BE SWITCHED OFF, and three of the eight are. `enabled: false` keeps
+// A BED MAY BE SWITCHED OFF, and three of the nine are. `enabled: false` keeps
 // the entry -- its sizes, its rates and the argument behind them -- and stops it
 // being constructed, so it costs no pool, no tiles and no placement work rather
 // than being built and hidden. NOT A DELETION: remove the flag to have it back.
@@ -987,6 +989,65 @@ const BEDS = [
     // surface.
     minGap: 0.7,
   },
+  {
+    // THE STONES ALONG THE WATER'S EDGE: a frequent scatter of small and medium
+    // boulders in a strip `shoreOnly` metres either side of every lake shore and
+    // river bank, and nowhere else. Its own bed on the scree bed's reasoning --
+    // the boulders bed's `shoreGain` can at most double a rate that lays one rock
+    // every 21 m, and a bank wants one every few strides, which is made of
+    // candidates and candidates are per-bed. What that buys, as with scree, is a
+    // bed that is dense and SHORT-SIGHTED at once: it reaches 80 m, so the stones
+    // are populated only as she comes near the water and the disc is a fiftieth
+    // of the boulders bed's.
+    //
+    // LAST IN THE TABLE ON PURPOSE. `tileSeed` takes a bed's index, so a bed
+    // added anywhere but the end would move every rock of the beds after it.
+    name: 'shore',
+    // Candidates per m2 over the whole disc, of which only the strip survives
+    // `shoreOnly`. 0.15 x 0.6 in the strip is one rock per 11 m2: over a strip
+    // 3 m each side of the line that is a stone every 1.9 m of bank.
+    density: 0.15,
+    // Ground within SHORE_RISE of the water is `river` (see _envAt), which is
+    // most of the strip; a bank rising steeper than that is forest or cliff and
+    // takes a little less. Nothing on a summit, where the water is a tarn on
+    // bare rock the giants and embedded beds already furnish.
+    envDensity: { river: 0.6, forest: 0.4, cliff: 0.4, peak: 0 },
+    fullRadius: 25,
+    // Set by `minReach`, not taste: a 2.5 m stone cards at 62.5 m and owes the
+    // billboard band past it, which asks 73.5 m of this.
+    radius: 80,
+    tile: 12,
+    minElev: 0,
+    maxSlopeDeg: 42,
+    // Both sides of the line -- the shallows take stones as the bank does, and
+    // `shoreOnly` is measured as |d| for exactly that.
+    allowSubmerged: true,
+    // Metres either side of a shore a candidate may stand. Tighter than the
+    // boulders bed's SHORE_REACH: that gain is a fringe, this is the waterline.
+    shoreOnly: 3,
+    tilt: 0.5,
+    sinkVary: true,
+    // Not an anchor: a metre stone on a beach has no damp shaded base worth a
+    // fern, and this bed lays enough of them to crowd Rocks.anchorsInto.
+    anchor: false,
+    // Displaces grass, as every closed stone over ROCK_MIN_SIZE does; the grass
+    // bed's shore clumps grow AROUND these rather than through them.
+    blocks: true,
+    // A crab's rock, on the same terms as the boulders -- see Rocks.perchesInto.
+    perch: true,
+    // Half a metre to two and a half, everywhere it may stand: from something you
+    // step over to something you sit on. The top is what sets `radius` above.
+    sizeByEnv: {
+      river: [ROCK_MIN_SIZE, 2.5],
+      forest: [ROCK_MIN_SIZE, 2.5],
+      cliff: [ROCK_MIN_SIZE, 2.5],
+    },
+    // Weighted small: the median comes out at 1.0 m and the top decile past
+    // 1.9, so the strip is mostly stones with a boulder now and then.
+    sizeBias: 1.6,
+    // No rock inside another rock, and cheap: 17 candidates a tile.
+    minGap: 0.5,
+  },
 ]
 
 // Where the four environments cut. All read off the same field sample the
@@ -1503,8 +1564,11 @@ function blockHull(shape) {
 /**
  * The spun card's frame for a mesh placed by matrix elements `e` (column-major,
  * scale and every rotation in it) whose shape measures `measured` at scale 1:
- * `out[o]` metres from the origin down to the placed rock's lowest point (<= 0),
- * `out[o + 1]` the card's x scale and `out[o + 2]` its y scale.
+ * `out[o .. o + 2]` metres from the origin to the placed rock's centre,
+ * `out[o + 3]` the card's x scale, `out[o + 4]` its y scale and `out[o + 5]`
+ * CARD_SLIDE of the placed rock's plan radius in metres, which the card's z
+ * scale carries for the shader to slide the card that far up the view ray
+ * (see billboardVertex).
  *
  * Each column is a local axis in the world, and the rock is taken as THE
  * ELLIPSOID IN ITS BOX, centred half a height up its local y (rock.js puts the
@@ -1527,10 +1591,24 @@ export function spunCardFrame(e, measured, out, o = 0) {
   const c = e[2] * e[2] * w * w + e[6] * e[6] * h * h + e[10] * e[10] * d * d
   const mid = (a + c) * 0.5
   const r = Math.sqrt(((a - c) * 0.5) ** 2 + b * b)
-  out[o] = uy * 0.5 - halfUp
-  out[o + 1] = (Math.sqrt(mid + r) + Math.sqrt(Math.max(0, mid - r))) / (w + d)
-  out[o + 2] = halfUp * 2 / h
+  out[o] = e[4] * h * 0.5
+  out[o + 1] = uy * 0.5
+  out[o + 2] = e[6] * h * 0.5
+  out[o + 3] = (Math.sqrt(mid + r) + Math.sqrt(Math.max(0, mid - r))) / (w + d)
+  out[o + 4] = halfUp * 2 / h
+  out[o + 5] = out[o + 3] * (w + d) * 0.25 * CARD_SLIDE
 }
+export const CARD_FRAME_STRIDE = 6
+/**
+ * How far up the view ray the card stands, in plan radii. The ground cuts a
+ * flat card along a line and a rock along its bulge, which stands a full
+ * radius toward the eye at the card's middle and nothing at its rim: over
+ * eyes 5-80 deg up, slopes to 40 deg and sinks to 0.85 of the stand, a card
+ * slid three quarters covers 0.8-1.4x the ground the rock does, where a card
+ * through the centre draws nothing on a hillside seen from below and one at
+ * the near face 3.4x from above.
+ */
+export const CARD_SLIDE = 0.75
 
 /**
  * One size band's scatter: its own tile grid, its own pool, its own PropArena.
@@ -1715,6 +1793,10 @@ class RockBed {
     this.footOnly = cfg.footOnly ?? false
     this.footDense = cfg.footDense ?? false
     this.shoreGain = cfg.shoreGain ?? 1
+    // Metres either side of a shore outside which the bed REFUSES a candidate --
+    // `footOnly` for the waterline. 0 is "anywhere". See the shore bed.
+    this.shoreOnly = cfg.shoreOnly ?? 0
+    if (!(this.shoreOnly >= 0)) throw new Error(`RockBed ${cfg.name}: shoreOnly must be metres >= 0, got ${cfg.shoreOnly}`)
     this.probesRelief = this.footOnly || this.footDense
     // One cell per RELIEF_CELL of tile, plus one so the last partial cell has a
     // slot. 0 is "not asked yet"; see `_reliefAt`.
@@ -2007,10 +2089,16 @@ class RockBed {
     // is the 2-triangle card and NO BED DECLINES IT.
     //
     // A BOULDER'S CARD IS BEDDED WHERE ITS MESH WAS, AND STANDS AS TALL AND AS
-    // WIDE. The card tier is handed ITS OWN instance matrix (`_placeTier`): foot
-    // under the placed rock's lowest point and a per-axis scale spanning what
-    // the turned, tilted rock stands and covers, read off the final mesh matrix
-    // by `spunCardFrame`. The mesh matrix stays in `instM` for the tiers that
+    // WIDE. The card tier is handed ITS OWN instance matrix (`_placeTier`):
+    // centred on the placed rock, a per-axis scale spanning what the turned,
+    // tilted rock stands and covers, and CARD_SLIDE of its plan radius in the
+    // z scale, read off the final mesh matrix by `spunCardFrame`. The shader
+    // slides the card that far up the view ray, into the rock's near bulge,
+    // so the ground cuts it about where it cuts the mesh, on a hillside seen
+    // from below as on the flat seen from above; a card cut at the rock's
+    // centre drew nothing at all from below on a 40 deg slope, the instant the
+    // mesh it replaced had been plainly there. The mesh matrix stays in
+    // `instM` for the tiers that
     // want it and for `_surfaceAt`. A PLATE'S STANDS PROUD, by whatever of its
     // crown the sink left showing plus PLATE_CARD_LIFT, which is deliberate and
     // is the only thing keeping a flat card out of the wall.
@@ -2061,7 +2149,7 @@ class RockBed {
     // writes the right one from here (`_placeTier`) and `_surfaceAt` reads the
     // mesh's from here rather than from the arena.
     this.instM = new Float32Array(this.maxInstances * 16)
-    this.instCard = new Float32Array(this.maxInstances * 3)
+    this.instCard = new Float32Array(this.maxInstances * CARD_FRAME_STRIDE)
     // The rim dissolve: which rocks are drawn, which are hidden, and the quarter
     // second between. It holds each rock's gone-distance as `rim.gone`, and it
     // shares ONE float per instance with the cross-dissolve below -- so it is
@@ -2133,12 +2221,13 @@ class RockBed {
     this._gc = new Float32Array(3)
 
     this.tris = 0
+    this.walked = 0
     this.placed = 0
     this.samples = 0
     this.regrows = 0
     this.regrounds = 0
     this.sited = { foot: 0, brow: 0 }
-    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, gap: 0, fit: 0 }
+    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, gap: 0, fit: 0 }
     this.placeMs = 0
     this.lastBuildMs = 0
 
@@ -2709,6 +2798,9 @@ class RockBed {
     this._sweep = (this._sweep + 1) % GROUND_SWEEP
     const ground = this.ground
     let ti = 0
+    // Instances the per-rock ladder below walks THIS frame -- the O(instances)
+    // part of the bill, which the resident-tile count alone does not show.
+    let walked = 0
     for (const t of this.tiles.values()) {
       if (ground && ti++ % GROUND_SWEEP === phase) {
         const gkey = ground.groundKeyAt((t.tx + 0.5) * tile, (t.tz + 0.5) * tile)
@@ -2757,6 +2849,7 @@ class RockBed {
         continue
       }
       t.near = true
+      walked += t.n
       for (let k = 0; k < t.n; k++) {
         const i = t.ids[k]
         if (this.rim.isHidden(i)) continue
@@ -2797,6 +2890,7 @@ class RockBed {
     // The duplicates are drawn too, and are counted after the loop rather than
     // inside it so this frame's own swaps are in this frame's number.
     this.tris = tris + this.fadeTris
+    this.walked = walked
   }
 
   /**
@@ -3168,6 +3262,14 @@ class RockBed {
       if (this.shoreGain !== 1 && Math.abs(this.water.shoreDistAt(x, z, SHORE_REACH, h, tan)) < SHORE_REACH) {
         dens *= this.shoreGain
       }
+      // AND A BED THAT ONLY EXISTS AT THE WATERLINE refuses everything past it,
+      // wet or dry alike. After the field sample because the lake half of the
+      // distance needs the ground height and slope; before the rate so a refused
+      // candidate costs one lookup and nothing else.
+      if (this.shoreOnly > 0 && Math.abs(this.water.shoreDistAt(x, z, this.shoreOnly, h, tan)) >= this.shoreOnly) {
+        this.rejected.shore++
+        continue
+      }
       if (envRoll >= dens) {
         this.rejected.env++
         continue
@@ -3446,7 +3548,7 @@ class RockBed {
       this.instM.set(e, id * 16)
       // Off the FINAL columns rather than the rolled box above, so the tilt and
       // the lean are in the card's frame too.
-      spunCardFrame(e, s.measured, this.instCard, id * 3)
+      spunCardFrame(e, s.measured, this.instCard, id * CARD_FRAME_STRIDE)
 
       // A TINT PER INSTANCE, ROLLED FROM THE ENVIRONMENT'S PALETTE. With one mesh
       // in the world this is most of what keeps a scree slope from being one grey
@@ -3597,19 +3699,19 @@ class RockBed {
 
   /**
    * Write arena slot `target`'s matrix for instance `id` drawn at `tier`: the
-   * mesh matrix from `instM`, or for a spun card its own -- foot dropped under
-   * the placed rock's lowest point, unrotated (the spin faces it), scaled per
-   * axis to what the rock stands and covers. `target` is the ghost in `_crossFade`
-   * and `id` itself everywhere else. The card's matrix is built on the CPU
-   * because the Quest's Adreno drew nothing for the shader that read it off the
-   * mesh's, and said nothing -- see material.js's billboardVertex.
+   * mesh matrix from `instM`, or for a spun card its own -- centred on the
+   * placed rock, unrotated (the spin faces it), scaled per axis to what the
+   * rock stands and covers, its slide toward the eye in z. `target` is the ghost in `_crossFade` and `id` itself
+   * everywhere else. The card's matrix is built on the CPU because the Quest's
+   * Adreno drew nothing for the shader that read it off the mesh's, and said
+   * nothing -- see material.js's billboardVertex.
    */
   _placeTier(id, tier, target = id) {
     const e = this._m.elements
     if (this.spunCard && tier === ROCK_BAND_COUNT - 1) {
-      const c = id * 3
-      this._p.set(this.instX[id], this.instY[id] + this.instCard[c], this.instZ[id])
-      this._s.set(this.instCard[c + 1], this.instCard[c + 2], this.instScale[id])
+      const c = id * CARD_FRAME_STRIDE
+      this._p.set(this.instX[id] + this.instCard[c], this.instY[id] + this.instCard[c + 1], this.instZ[id] + this.instCard[c + 2])
+      this._s.set(this.instCard[c + 3], this.instCard[c + 4], this.instCard[c + 5])
       this._m.compose(this._p, this._cardQ, this._s)
     } else {
       for (let k = 0; k < 16; k++) e[k] = this.instM[id * 16 + k]
@@ -3996,6 +4098,7 @@ class RockBed {
       placed: this.placed,
       samples: this.samples,
       tris: this.tris,
+      walked: this.walked,
       tiles: this.tiles.size,
       queued: this.queue.length,
       fading: this.fades.length,
@@ -4129,6 +4232,7 @@ export class Rocks {
 
     this.buildMs = performance.now() - t0
     this.placeMs = 0
+    this.updateMs = 0
   }
 
   /** Grow every bed at once, ignoring the frame budget. Boot only. */
@@ -4147,8 +4251,12 @@ export class Rocks {
    * visible than a missing pebble at 30.
    */
   update(camX, camY, camZ) {
+    const tStart = performance.now()
     const slice = BUILD_BUDGET_MS / this.beds.length
     for (const bed of this.beds) bed.update(camX, camY, camZ, slice)
+    // The whole of this call, smoothed over ~20 frames: the layer's main-thread
+    // bill, which the headset cannot otherwise separate from its draw cost.
+    this.updateMs += (performance.now() - tStart - this.updateMs) * 0.05
   }
 
   /**
@@ -4642,6 +4750,9 @@ export class Rocks {
       // counts stone the GPU never sees.
       rimHidden: beds.reduce((n, b) => n + b.rimHidden, 0),
       tris: beds.reduce((n, b) => n + b.tris, 0),
+      walked: beds.reduce((n, b) => n + b.walked, 0),
+      tiles: beds.reduce((n, b) => n + b.tiles, 0),
+      updateMs: this.updateMs,
       pool: beds.reduce((n, b) => n + b.pool, 0),
       used: beds.reduce((n, b) => n + b.used, 0),
       bankKB: Math.round(this.bank.bytes / 1024),

@@ -176,7 +176,7 @@ export function decompose(m) {
 }
 
 /** A node's local transform, from either spelling glTF allows. */
-const localOf = (node) => {
+export const localOf = (node) => {
   const m = node.matrix
   if (!m) return compose(node.translation ?? [0, 0, 0], node.rotation ?? [0, 0, 0, 1], node.scale ?? [1, 1, 1])
   return [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]]

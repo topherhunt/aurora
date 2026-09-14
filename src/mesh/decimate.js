@@ -472,6 +472,287 @@ class MinHeap {
   }
 }
 
+// --- the fit ----------------------------------------------------------------
+//
+// Half-edge collapse never moves a vertex, so every coarse face is a chord
+// strung between points that were on the surface, and on a convex body every
+// chord lies inside it: a coarse tier is the original with its volume shaved
+// off, and the coarser the tier the deeper the shave. At 64 triangles the frog
+// loses 38% of its volume and 12% of its height, most of it out of its back.
+// The fit puts the volume back: each output point slides along its own normal
+// to the least-squares fit of the source surface to the coarse one.
+//
+// Only positions move. Every corner keeps the UV it was born with, so the atlas
+// invariant holds exactly as it does under 'stretch' -- the UV triangle is an
+// input triangle verbatim, the 3D triangle under it changed shape.
+
+// How far outside the source a fitted point may sit, as a fraction of the
+// bounding diagonal. Least squares on a convex body sets its vertices OUTSIDE
+// the surface (the face between them cuts a chord inside, the vertex balances
+// it out), and left to itself the fit grows the box by a quarter. Swept over
+// the roster's coarsest tiers in scripts/probe-decimate-profile.mjs: 0 and
+// 0.01 both score under this, and it is the best on 17 of 22 creatures.
+const FIT_OUT = 0.005
+
+// Re-pairings of source samples with the coarse surface, and relaxation steps
+// per pairing. The step is a bounded mean-residual move, so it cannot fly, and
+// past this the numbers stop moving.
+const FIT_ROUNDS = 8
+const FIT_STEPS = 20
+
+// Barycentric coordinates of the closest point on triangle abc to p (Ericson,
+// Real-Time Collision Detection 5.1.5), written into `out`.
+function closestOnTriangle(px, py, pz, P, a, b, c, out) {
+  const abx = P[b] - P[a], aby = P[b + 1] - P[a + 1], abz = P[b + 2] - P[a + 2]
+  const acx = P[c] - P[a], acy = P[c + 1] - P[a + 1], acz = P[c + 2] - P[a + 2]
+  const apx = px - P[a], apy = py - P[a + 1], apz = pz - P[a + 2]
+  const d1 = abx * apx + aby * apy + abz * apz, d2 = acx * apx + acy * apy + acz * apz
+  if (d1 <= 0 && d2 <= 0) { out[0] = 1; out[1] = 0; out[2] = 0; return }
+  const bpx = px - P[b], bpy = py - P[b + 1], bpz = pz - P[b + 2]
+  const d3 = abx * bpx + aby * bpy + abz * bpz, d4 = acx * bpx + acy * bpy + acz * bpz
+  if (d3 >= 0 && d4 <= d3) { out[0] = 0; out[1] = 1; out[2] = 0; return }
+  const vc = d1 * d4 - d3 * d2
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); out[0] = 1 - v; out[1] = v; out[2] = 0; return }
+  const cpx = px - P[c], cpy = py - P[c + 1], cpz = pz - P[c + 2]
+  const d5 = abx * cpx + aby * cpy + abz * cpz, d6 = acx * cpx + acy * cpy + acz * cpz
+  if (d6 >= 0 && d5 <= d6) { out[0] = 0; out[1] = 0; out[2] = 1; return }
+  const vb = d5 * d2 - d1 * d6
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); out[0] = 1 - w; out[1] = 0; out[2] = w; return }
+  const va = d3 * d6 - d5 * d4
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { const w = (d4 - d3) / (d4 - d3 + (d5 - d6)); out[0] = 0; out[1] = 1 - w; out[2] = w; return }
+  const denom = 1 / (va + vb + vc), v = vb * denom, w = vc * denom
+  out[0] = 1 - v - w; out[1] = v; out[2] = w
+}
+
+/**
+ * Uniform grid over `count` items, each spanning the box `boundsOf(i, box)`
+ * fills in, answering "which item is nearest this point" by scanning cells in
+ * expanding shells until the nearest found is closer than the next shell can
+ * be. `dist2Of(i)` prices an item against the query. Without this the fit is
+ * every source sample against every coarse face, every round.
+ */
+class CellGrid {
+  constructor(count, boundsOf, cell) {
+    this.cell = cell
+    this.cells = new Map()
+    this.stamp = new Int32Array(count)
+    this.query = 0
+    const box = new Float64Array(6)
+    for (let i = 0; i < count; i++) {
+      boundsOf(i, box)
+      const x0 = Math.floor(box[0] / cell), y0 = Math.floor(box[1] / cell), z0 = Math.floor(box[2] / cell)
+      const x1 = Math.floor(box[3] / cell), y1 = Math.floor(box[4] / cell), z1 = Math.floor(box[5] / cell)
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+        const k = `${x},${y},${z}`
+        let list = this.cells.get(k)
+        if (!list) { list = []; this.cells.set(k, list) }
+        list.push(i)
+      }
+    }
+  }
+  nearest(px, py, pz, dist2Of) {
+    const cell = this.cell, stamp = this.stamp, q = ++this.query
+    const cx = Math.floor(px / cell), cy = Math.floor(py / cell), cz = Math.floor(pz / cell)
+    let best = Infinity, index = -1
+    // Cells at index distance r + 1 are at least r cells from the point, so
+    // once shell r is scanned anything closer than r cells has been seen.
+    for (let r = 0; ; r++) {
+      if (r > 1e4) throw new Error('CellGrid.nearest ran off the grid -- no items at all')
+      for (let x = cx - r; x <= cx + r; x++) for (let y = cy - r; y <= cy + r; y++) for (let z = cz - r; z <= cz + r; z++) {
+        if (Math.max(Math.abs(x - cx), Math.abs(y - cy), Math.abs(z - cz)) !== r) continue
+        const list = this.cells.get(`${x},${y},${z}`)
+        if (!list) continue
+        for (const i of list) {
+          if (stamp[i] === q) continue
+          stamp[i] = q
+          const d2 = dist2Of(i)
+          if (d2 < best) { best = d2; index = i }
+        }
+      }
+      if (best <= (r * cell) ** 2) return { index, d2: best }
+    }
+  }
+}
+
+/**
+ * Moves the welded points of a coarse mesh (`V` positions, `I` indices,
+ * `pointOf` vertex -> point, `pointCount`) onto the least-squares fit of
+ * `source`'s surface, in place. Samples are the source's welded points and face
+ * centroids, area weighted; each round pairs every sample with the closest
+ * point on the coarse surface, then relaxes every coarse point by the weighted
+ * mean of its samples' residuals, projected onto the point's normal so a point
+ * never slides along the surface. After each step a point further outside the
+ * source than `outFraction` of its diagonal -- signed by the nearest source
+ * point's normal -- is pulled back to it.
+ */
+function fitToSurface(V, I, pointOf, pointCount, source, outFraction) {
+  const n = V.length / 3
+  const faceCount = I.length / 3
+  const src = buildTopology({ positions: source.positions, indices: source.indices })
+  const SP = src.pointPos, SF = src.faces
+  const outMax = outFraction * src.diag
+
+  // Source samples, area weighted.
+  const sampleCount = src.pointCount + src.faceCount
+  const sp = new Float64Array(sampleCount * 3), sw = new Float64Array(sampleCount)
+  sp.set(SP)
+  for (let f = 0; f < src.faceCount; f++) {
+    const a = SF[f * 3], b = SF[f * 3 + 1], c = SF[f * 3 + 2]
+    const ux = SP[b * 3] - SP[a * 3], uy = SP[b * 3 + 1] - SP[a * 3 + 1], uz = SP[b * 3 + 2] - SP[a * 3 + 2]
+    const vx = SP[c * 3] - SP[a * 3], vy = SP[c * 3 + 1] - SP[a * 3 + 1], vz = SP[c * 3 + 2] - SP[a * 3 + 2]
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+    const area = Math.hypot(nx, ny, nz) / 2
+    for (const p of [a, b, c]) sw[p] += area / 3
+    const s = src.pointCount + f
+    sw[s] = area
+    sp[s * 3] = (SP[a * 3] + SP[b * 3] + SP[c * 3]) / 3
+    sp[s * 3 + 1] = (SP[a * 3 + 1] + SP[b * 3 + 1] + SP[c * 3 + 1]) / 3
+    sp[s * 3 + 2] = (SP[a * 3 + 2] + SP[b * 3 + 2] + SP[c * 3 + 2]) / 3
+  }
+
+  // Residuals further than twice the median coarse edge are some other part of
+  // the body -- a leg's samples must not pull on the belly above it.
+  const edges = new Float64Array(I.length)
+  for (let f = 0; f < faceCount; f++) for (let k = 0; k < 3; k++) {
+    const a = I[f * 3 + k] * 3, b = I[f * 3 + ((k + 1) % 3)] * 3
+    edges[f * 3 + k] = Math.hypot(V[a] - V[b], V[a + 1] - V[b + 1], V[a + 2] - V[b + 2])
+  }
+  edges.sort()
+  const medianEdge = edges[edges.length >> 1] || src.diag * 0.01
+  const reach2 = (2 * medianEdge) ** 2
+
+  const sourceGrid = new CellGrid(src.pointCount, (p, box) => {
+    box[0] = box[3] = SP[p * 3]; box[1] = box[4] = SP[p * 3 + 1]; box[2] = box[5] = SP[p * 3 + 2]
+  }, medianEdge)
+  const nearestSourcePoint = (x, y, z) => sourceGrid.nearest(x, y, z, (p) => (SP[p * 3] - x) ** 2 + (SP[p * 3 + 1] - y) ** 2 + (SP[p * 3 + 2] - z) ** 2).index
+  const srcFacesAt = Array.from({ length: src.pointCount }, () => [])
+  for (let f = 0; f < src.faceCount; f++) for (let k = 0; k < 3; k++) srcFacesAt[SF[f * 3 + k]].push(f)
+
+  // Inside or outside the source, by ray parity along +x: a coarse point
+  // strung between two antler tines is a centimetre from the nearest tine, so
+  // no normal test can tell it from a point on the tine. Faces are bucketed by
+  // the (y, z) column they cover.
+  const column = 4 * (src.diag / Math.sqrt(src.faceCount))
+  const columns = new Map()
+  for (let f = 0; f < src.faceCount; f++) {
+    const a = SF[f * 3] * 3, b = SF[f * 3 + 1] * 3, c = SF[f * 3 + 2] * 3
+    const y0 = Math.floor(Math.min(SP[a + 1], SP[b + 1], SP[c + 1]) / column), y1 = Math.floor(Math.max(SP[a + 1], SP[b + 1], SP[c + 1]) / column)
+    const z0 = Math.floor(Math.min(SP[a + 2], SP[b + 2], SP[c + 2]) / column), z1 = Math.floor(Math.max(SP[a + 2], SP[b + 2], SP[c + 2]) / column)
+    for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+      const k = `${y},${z}`
+      let list = columns.get(k)
+      if (!list) { list = []; columns.set(k, list) }
+      list.push(f)
+    }
+  }
+  const insideSource = (x, y, z) => {
+    const list = columns.get(`${Math.floor(y / column)},${Math.floor(z / column)}`)
+    if (!list) return false
+    let crossings = 0
+    for (const f of list) {
+      const a = SF[f * 3] * 3, b = SF[f * 3 + 1] * 3, c = SF[f * 3 + 2] * 3
+      const ay = SP[a + 1] - y, az = SP[a + 2] - z, by = SP[b + 1] - y, bz = SP[b + 2] - z, cy = SP[c + 1] - y, cz = SP[c + 2] - z
+      const d = (by - ay) * (cz - az) - (bz - az) * (cy - ay)
+      if (Math.abs(d) < EPS) continue
+      const wc = ((by - ay) * -az - (bz - az) * -ay) / d, wb = (-ay * (cz - az) - -az * (cy - ay)) / d
+      if (wb < 0 || wc < 0 || wb + wc > 1) continue
+      const hx = SP[a] + wb * (SP[b] - SP[a]) + wc * (SP[c] - SP[a])
+      if (hx > x) crossings++
+    }
+    return (crossings & 1) === 1
+  }
+
+  const sf = new Int32Array(sampleCount), sb = new Float64Array(sampleCount * 3), sq = new Float64Array(sampleCount * 3)
+  const bary = new Float64Array(3)
+  const PN = new Float64Array(pointCount * 3), num = new Float64Array(pointCount * 3), den = new Float64Array(pointCount)
+  const project = (s) => {
+    const f = sf[s] * 3, a = I[f] * 3, b = I[f + 1] * 3, c = I[f + 2] * 3
+    const wa = sb[s * 3], wb = sb[s * 3 + 1], wc = sb[s * 3 + 2]
+    sq[s * 3] = wa * V[a] + wb * V[b] + wc * V[c]
+    sq[s * 3 + 1] = wa * V[a + 1] + wb * V[b + 1] + wc * V[c + 1]
+    sq[s * 3 + 2] = wa * V[a + 2] + wb * V[b + 2] + wc * V[c + 2]
+  }
+  // A point outside the source and further from it than outMax comes back to
+  // outMax from the closest point on the faces around its nearest source point.
+  const clamp = () => {
+    num.fill(0)
+    for (let v = 0; v < n; v++) {
+      const p = pointOf[v], x = V[v * 3], y = V[v * 3 + 1], z = V[v * 3 + 2]
+      if (insideSource(x, y, z)) continue
+      const s = nearestSourcePoint(x, y, z)
+      let best = (SP[s * 3] - x) ** 2 + (SP[s * 3 + 1] - y) ** 2 + (SP[s * 3 + 2] - z) ** 2
+      let qx = SP[s * 3], qy = SP[s * 3 + 1], qz = SP[s * 3 + 2]
+      for (const f of srcFacesAt[s]) {
+        const a = SF[f * 3] * 3, b = SF[f * 3 + 1] * 3, c = SF[f * 3 + 2] * 3
+        closestOnTriangle(x, y, z, SP, a, b, c, bary)
+        const cx = bary[0] * SP[a] + bary[1] * SP[b] + bary[2] * SP[c]
+        const cy = bary[0] * SP[a + 1] + bary[1] * SP[b + 1] + bary[2] * SP[c + 1]
+        const cz = bary[0] * SP[a + 2] + bary[1] * SP[b + 2] + bary[2] * SP[c + 2]
+        const d2 = (cx - x) ** 2 + (cy - y) ** 2 + (cz - z) ** 2
+        if (d2 < best) { best = d2; qx = cx; qy = cy; qz = cz }
+      }
+      const d = Math.sqrt(best)
+      if (d <= outMax) continue
+      const k = (d - outMax) / d
+      num[p * 3] = (qx - x) * k; num[p * 3 + 1] = (qy - y) * k; num[p * 3 + 2] = (qz - z) * k
+    }
+    for (let v = 0; v < n; v++) { const p = pointOf[v] * 3; V[v * 3] += num[p]; V[v * 3 + 1] += num[p + 1]; V[v * 3 + 2] += num[p + 2] }
+  }
+
+  for (let round = 0; round < FIT_ROUNDS; round++) {
+    const faceGrid = new CellGrid(faceCount, (f, box) => {
+      const a = I[f * 3] * 3, b = I[f * 3 + 1] * 3, c = I[f * 3 + 2] * 3
+      for (let k = 0; k < 3; k++) { box[k] = Math.min(V[a + k], V[b + k], V[c + k]); box[k + 3] = Math.max(V[a + k], V[b + k], V[c + k]) }
+    }, medianEdge)
+    for (let s = 0; s < sampleCount; s++) {
+      const x = sp[s * 3], y = sp[s * 3 + 1], z = sp[s * 3 + 2]
+      sf[s] = faceGrid.nearest(x, y, z, (f) => {
+        closestOnTriangle(x, y, z, V, I[f * 3] * 3, I[f * 3 + 1] * 3, I[f * 3 + 2] * 3, bary)
+        const a = I[f * 3] * 3, b = I[f * 3 + 1] * 3, c = I[f * 3 + 2] * 3
+        const qx = bary[0] * V[a] + bary[1] * V[b] + bary[2] * V[c]
+        const qy = bary[0] * V[a + 1] + bary[1] * V[b + 1] + bary[2] * V[c + 1]
+        const qz = bary[0] * V[a + 2] + bary[1] * V[b + 2] + bary[2] * V[c + 2]
+        return (qx - x) ** 2 + (qy - y) ** 2 + (qz - z) ** 2
+      }).index
+      closestOnTriangle(x, y, z, V, I[sf[s] * 3] * 3, I[sf[s] * 3 + 1] * 3, I[sf[s] * 3 + 2] * 3, bary)
+      sb.set(bary, s * 3)
+      project(s)
+    }
+    for (let step = 0; step < FIT_STEPS; step++) {
+      PN.fill(0); num.fill(0); den.fill(0)
+      for (let f = 0; f < faceCount; f++) {
+        const a = I[f * 3] * 3, b = I[f * 3 + 1] * 3, c = I[f * 3 + 2] * 3
+        const ux = V[b] - V[a], uy = V[b + 1] - V[a + 1], uz = V[b + 2] - V[a + 2]
+        const vx = V[c] - V[a], vy = V[c + 1] - V[a + 1], vz = V[c + 2] - V[a + 2]
+        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+        for (let k = 0; k < 3; k++) { const p = pointOf[I[f * 3 + k]] * 3; PN[p] += nx; PN[p + 1] += ny; PN[p + 2] += nz }
+      }
+      for (let s = 0; s < sampleCount; s++) {
+        const rx = sp[s * 3] - sq[s * 3], ry = sp[s * 3 + 1] - sq[s * 3 + 1], rz = sp[s * 3 + 2] - sq[s * 3 + 2]
+        if (rx * rx + ry * ry + rz * rz > reach2) continue
+        for (let k = 0; k < 3; k++) {
+          const p = pointOf[I[sf[s] * 3 + k]], w = sw[s] * sb[s * 3 + k]
+          num[p * 3] += w * rx; num[p * 3 + 1] += w * ry; num[p * 3 + 2] += w * rz
+          den[p] += w
+        }
+      }
+      for (let p = 0; p < pointCount; p++) {
+        if (den[p] < EPS) { num[p * 3] = num[p * 3 + 1] = num[p * 3 + 2] = 0; continue }
+        const l = Math.hypot(PN[p * 3], PN[p * 3 + 1], PN[p * 3 + 2]) || 1
+        const nx = PN[p * 3] / l, ny = PN[p * 3 + 1] / l, nz = PN[p * 3 + 2] / l
+        const t = (num[p * 3] * nx + num[p * 3 + 1] * ny + num[p * 3 + 2] * nz) / den[p]
+        num[p * 3] = t * nx; num[p * 3 + 1] = t * ny; num[p * 3 + 2] = t * nz
+      }
+      for (let v = 0; v < n; v++) { const p = pointOf[v] * 3; V[v * 3] += num[p]; V[v * 3 + 1] += num[p + 1]; V[v * 3 + 2] += num[p + 2] }
+      clamp()
+      for (let s = 0; s < sampleCount; s++) project(s)
+    }
+  }
+  // The clamp is one nearest-point step; a point that came in from far out
+  // lands beside a different source point, so it takes a few to settle.
+  for (let i = 0; i < 6; i++) clamp()
+}
+
 // --- decimation -------------------------------------------------------------
 
 /**
@@ -501,6 +782,7 @@ export function decimate(mesh, targetTris, opts = {}) {
   const {
     flipTolerance = 0.2, weldEps, seamCollapse = true, uvMode = 'preserve', dropIslands = true,
     featureWeight = FEATURE_WEIGHT, sizeWeight = SIZE_WEIGHT, shapeWeight = SHAPE_WEIGHT,
+    fit = true, fitTo = mesh, fitOut = FIT_OUT,
   } = opts
   const { positions, uvs, normals, indices } = mesh
   if (!positions || !indices) throw new Error('decimate requires positions and indices')
@@ -989,6 +1271,9 @@ export function decimate(mesh, targetTris, opts = {}) {
       outNormals[out * 3 + 2] = normals[corner * 3 + 2]
     }
   }
+  // Fitted against `fitTo`, the ORIGINAL when this is a ladder tier: fitting
+  // to the tier above would chase its shave rather than undo it.
+  if (fit && outIndices.length) fitToSurface(outPositions, outIndices, cornerPoint, pointCount, fitTo, fitOut)
 
   const outTris = outIndices.length / 3
   return {
@@ -1027,14 +1312,16 @@ export function decimate(mesh, targetTris, opts = {}) {
  * Builds a whole LOD ladder in one pass, each tier decimated from the tier above
  * rather than from the original. Successive decimation is what keeps the tiers
  * nested -- a vertex present at tier 2 is present at tier 1 -- which is what
- * stops a visible pop when the renderer swaps between them.
+ * stops a visible pop when the renderer swaps between them. Every tier is
+ * fitted to the original, not to the tier above, so the fit undoes the shave
+ * instead of chasing it.
  */
 export function decimateLadder(mesh, targets, opts) {
   const sorted = [...targets].sort((a, b) => b - a)
   const tiers = []
   let current = mesh
   for (const t of sorted) {
-    const out = decimate(current, t, opts)
+    const out = decimate(current, t, { fitTo: mesh, ...opts })
     tiers.push(out)
     current = out
   }

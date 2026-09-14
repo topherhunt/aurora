@@ -264,13 +264,14 @@ function geometryBytes(geo) {
 // largest population in the world.
 //
 // WHERE THE CARD STANDS AND HOW BIG IT IS ARE THE BED'S TO SAY, NOT THE
-// SHADER'S. The card pivots on its instance origin, spanning its quad's width
-// and height times the instance scale, and knows nothing of the rolled,
+// SHADER'S. The card is centred on its instance origin, spanning its quad's
+// width and height times the instance scale, and knows nothing of the rolled,
 // tilted, half-buried mesh it stands in for. rocks.js hands the card tier its
-// OWN instance matrix -- foot on the rolled box's lowest corner, the corner
-// the mesh was seated by, and a per-axis scale that spans what the rolled box
-// stands and covers (RockBed._placeTier). Not in the vertex shader, which could
-// read the same corner off the instance matrix: the Quest's Adreno draws
+// OWN instance matrix -- origin at the rolled rock's centre, a per-axis scale
+// that spans what it stands and covers, and in z the slide the shader gives
+// it up the view ray so the ground cuts it about where it cuts the rock
+// (RockBed._placeTier, spunCardFrame, CARD_SLIDE). Not in the vertex shader,
+// which could read the same off the instance matrix: the Quest's Adreno draws
 // nothing at all for that block, and says nothing.
 //
 // A CAP GETS A PLATE CARD: the same two triangles LYING FLAT, photographed from

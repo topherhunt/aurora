@@ -2,7 +2,7 @@ import THREE from './three-instance.js'
 import { buildTextureArray, loadImageLayers } from './textures.js'
 import { buildRockBank, bakeRockImpostor, rockImpostorLayers, ROCK_CARD_SEED, ROCK_BAND_COUNT } from './props/rock-bank.js'
 import { createPropMaterial } from './material.js'
-import { spunCardFrame } from './v2/render/rocks.js'
+import { spunCardFrame, CARD_FRAME_STRIDE } from './v2/render/rocks.js'
 
 // ---------------------------------------------------------------------------
 // The rock card probe (rock-card-probe.html): one boulder drawn as its LOD0
@@ -22,6 +22,15 @@ import { spunCardFrame } from './v2/render/rocks.js'
 // the world's noon, straight overhead, over the eye's shoulder and behind the
 // rock. The world's per-instance shadow and sky terms (lighting.js) multiply
 // mesh and card alike and are not in this rig.
+//
+// HALF THE BED STANDS ON A HILLSIDE, seen from below, with the ground drawn
+// into the depth buffer and nothing else: a bed on a slope tilts a boulder to
+// the face and sinks most of it into the hill, and what shows is the downhill
+// face, where the ground falls away. A card cut by the ground at the rock's
+// origin showed a sliver of that or nothing, and a rock backing over the card
+// rung vanished on the spot; the shader stands the card at the near face
+// instead (billboardVertex, material.js), and the coverage checks here are
+// what say so.
 // ---------------------------------------------------------------------------
 
 const N_COLS = 8
@@ -37,21 +46,27 @@ const SUNS = [
   { name: 'behind the rock', dir: [0.2, 0.4, -1] },
 ]
 const EYE_ELEVATION = 0.6
+// The hillside: a face the boulder beds still take, rising away from the eye,
+// and the share of its stand the bed sinks a boulder on one (SINK_MIN plus the
+// slope term, times the normal correction, under SINK_CAP -- rocks.js).
+const SLOPE = 40 * Math.PI / 180
+const SLOPE_SINK = 0.85
 
 const out = document.getElementById('out')
 const canvas = document.getElementById('view')
 window.PROBE_STATE = 'running'
 
-try {
-  const report = await run()
+// Not a top-level await: Vite's es2020 build target rejects it and this page
+// is a build entry like every root .html.
+run().then((report) => {
   out.textContent = JSON.stringify(report, null, 1)
   window.PROBE_STATE = 'done'
-} catch (err) {
+}, (err) => {
   out.textContent = String(err && err.stack || err)
   window.PROBE_ERR = String(err && err.message || err)
   window.PROBE_STATE = 'error'
   throw err
-}
+})
 
 async function run() {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false })
@@ -73,10 +88,13 @@ async function run() {
   })
 
   // THE SAME PLACEMENTS FOR BOTH: every quarter-turn roll the bed can draw,
-  // twice over, half of them leaned as a tilting bed leans, at a yaw each. The
+  // twice over, at a yaw each; the second half on the hillside, tilted to its
+  // face, leaned as a tilting bed leans and sunk as the bed sinks them. The
   // card's matrix comes off the mesh's exactly as RockBed._placeTier takes it.
   // Rows are spread further than columns so a card's foot and a neighbour's
-  // crown never share a screen row and every drawn pixel has one nearest origin.
+  // crown never share a screen row and every drawn pixel has one nearest
+  // rock centre, and the hillside rows are the far ones, so their ground rises
+  // behind every rock on the flat and in front of none.
   const rand = mulberry32(7)
   const span = Math.max(measured.width, measured.height, measured.depth) * 2.2
   const meshes = new THREE.InstancedMesh(meshGeo, material, N)
@@ -91,35 +109,65 @@ async function run() {
   const yaw = new THREE.Quaternion()
   const s = new THREE.Vector3()
   const up = new THREE.Vector3(0, 1, 0)
-  const frame = new Float32Array(3)
-  const origins = []
+  const tilt = new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(0, Math.cos(SLOPE), Math.sin(SLOPE)))
+  const frame = new Float32Array(CARD_FRAME_STRIDE)
+  const centres = []
   const placements = []
+  const rowSpan = span * 1.6
+  const scene = new THREE.Scene()
+  // One face under both hill rows, its foot on the flat rows' ground at their
+  // edge and rising from there, so it never crosses a sight line from any rock
+  // to the eye and the hill rows sit well up the screen from the flat ones.
+  const hill = new THREE.Mesh(
+    new THREE.PlaneGeometry((N_COLS + 2) * span, 2 * rowSpan / Math.cos(SLOPE)),
+    new THREE.MeshBasicMaterial({ colorWrite: false }))
+  hill.rotateX(-Math.PI / 2 + SLOPE)
+  hill.position.set(0, Math.tan(SLOPE) * rowSpan, -rowSpan)
+  hill.renderOrder = -1
+  scene.add(hill)
+  const v = new THREE.Vector3()
+  const pos = meshGeo.attributes.position.array
   for (let i = 0; i < N; i++) {
     const ri = i % 16
+    const onHill = i >= 16
     q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), ((ri / 4) | 0) * (Math.PI / 2))
     q.multiply(qx.setFromAxisAngle(new THREE.Vector3(1, 0, 0), (ri % 4) * (Math.PI / 2)))
     yaw.setFromAxisAngle(up, rand() * Math.PI * 2)
     yaw.multiply(q)
     let leanBy = 0
-    if (i >= 16) {
+    if (onHill) {
+      yaw.premultiply(tilt)
       const a = rand() * Math.PI * 2
       leanBy = rand() * 0.4
       yaw.premultiply(lean.setFromAxisAngle(new THREE.Vector3(Math.cos(a), 0, Math.sin(a)), leanBy))
     }
-    placements.push(`roll ${ri} lean ${leanBy.toFixed(2)}`)
-    p.set(((i % N_COLS) - (N_COLS - 1) / 2) * span, 0, (((i / N_COLS) | 0) - (N_ROWS - 1) / 2) * span * 1.6)
+    placements.push(`roll ${ri}${onHill ? ` on the hill, lean ${leanBy.toFixed(2)}` : ''}`)
+    const row = (i / N_COLS) | 0
+    p.set(((i % N_COLS) - (N_COLS - 1) / 2) * span, 0, ((N_ROWS - 1) / 2 - row) * rowSpan)
     s.set(1, 1, 1)
+    if (onHill) {
+      // Seated as the bed seats it: the lowest vertex of the placed mesh
+      // SLOPE_SINK of its stand under the ground at the origin.
+      m.compose(p, yaw, s)
+      let lo = Infinity, hi = -Infinity
+      for (let k = 0; k < pos.length; k += 3) {
+        v.set(pos[k], pos[k + 1], pos[k + 2]).applyMatrix4(m)
+        lo = Math.min(lo, v.y); hi = Math.max(hi, v.y)
+      }
+      p.y = -Math.tan(SLOPE) * p.z - SLOPE_SINK * (hi - lo) - lo
+    }
     m.compose(p, yaw, s)
     meshes.setMatrixAt(i, m)
-    origins.push(p.clone())
     spunCardFrame(m.elements, measured, frame)
-    p.y += frame[0]
-    s.set(frame[1], frame[2], 1)
+    p.x += frame[0]; p.y += frame[1]; p.z += frame[2]
+    // Pixels are credited to the nearest rock centre, which a roll leaves
+    // nowhere near the origin.
+    centres.push(p.clone())
+    s.set(frame[3], frame[4], frame[5])
     m.compose(p, new THREE.Quaternion(), s)
     cards.setMatrixAt(i, m)
   }
 
-  const scene = new THREE.Scene()
   const sun = new THREE.DirectionalLight(0xfff2dc, 2.1)
   scene.add(sun)
   scene.add(new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85))
@@ -146,7 +194,7 @@ async function run() {
       renderer.readRenderTargetPixels(rt, 0, 0, W, H, px)
       row[what] = measure(px)
       // Coverage does not depend on the sun; once is enough.
-      if (k === 0) row[what].each = perInstance(px, origins, cam)
+      if (k === 0) row[what].each = perInstance(px, centres, cam)
       // And on screen, for a person: mesh on the left, card on the right, one
       // row per sun.
       renderer.setRenderTarget(null)
@@ -168,15 +216,15 @@ async function run() {
 }
 
 /** Each instance's own pixel count: every drawn pixel handed to the nearest instance origin on screen. */
-function perInstance(px, origins, cam) {
+function perInstance(px, centres, cam) {
   const sx = [], sy = []
   const v = new THREE.Vector3()
-  for (const o of origins) {
+  for (const o of centres) {
     v.copy(o).project(cam)
     sx.push((v.x + 1) * 0.5 * W)
     sy.push((v.y + 1) * 0.5 * H)
   }
-  const n = new Array(origins.length).fill(0)
+  const n = new Array(centres.length).fill(0)
   for (let i = 0; i < px.length; i += 4) {
     if (px[i + 3] === 0) continue
     const x = (i / 4) % W, y = (i / 4 / W) | 0
